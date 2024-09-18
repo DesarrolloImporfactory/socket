@@ -11,10 +11,6 @@ router.route('/').get(userController.findAllUsers);
 
 router.get('/', userController.findAllUsers);
 
-router
-  .route('/:id')
-  .get(usersMiddleware.validUser, userController.findOneUser)
-  .patch(usersMiddleware.validUser, userController.updateUser)
-  .delete(usersMiddleware.validUser, userController.deleteUser);
+router.route('/:id').get(usersMiddleware.validUser, userController.findOneUser);
 
 module.exports = router;
