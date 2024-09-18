@@ -1,4 +1,4 @@
-const PostService = require('../services/post.service');
+/* const PostService = require('../services/post.service');
 
 class Sockets {
   constructor(io) {
@@ -23,3 +23,4 @@ class Sockets {
 }
 
 module.exports = Sockets;
+ */
