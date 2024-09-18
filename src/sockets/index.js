@@ -1,14 +1,10 @@
-/* const PostService = require('../services/post.service');
-
 class Sockets {
   constructor(io) {
     this.io = io;
-    this.postService = new PostService();
-    this.socketEvents();
   }
 
   socketEvents() {
-    this.io.on('connection', async (socket) => {
+    /* this.io.on('connection', async (socket) => {
       socket.on('new-post', async ({ id }) => {
         try {
           const post = await this.postService.findPost(id);
@@ -18,9 +14,8 @@ class Sockets {
           throw new Error(error);
         }
       });
-    });
+    }); */
   }
 }
 
 module.exports = Sockets;
- */
