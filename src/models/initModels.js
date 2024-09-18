@@ -1,6 +1,6 @@
-const User = require('./User'); // Asegúrate de que la ruta y el nombre son correctos
-const Plataforma = require('./Plataforma');
-const UsuarioPlataforma = require('./UsuarioPlataforma');
+const User = require('./user.model');
+const Plataforma = require('./plataforma.model');
+const UsuarioPlataforma = require('./usuario_plataforma.model');
 
 const initModel = () => {
   // Relación muchos a muchos entre User y Plataforma a través de UsuarioPlataforma
