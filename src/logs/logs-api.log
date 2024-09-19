@@ -130,3 +130,9 @@
 [2023-06-29T02:22:49.874Z] info: jwt malformed || undefined undefined
 [2023-06-29T02:22:49.877Z] info: jwt malformed || undefined undefined
 [2023-06-29T02:25:45.121Z] info: jwt malformed || undefined undefined
+[2024-09-19T15:42:46.642Z] info: Can't find / on this server! 🧨 || undefined undefined
+[2024-09-19T15:42:46.736Z] info: Can't find /favicon.ico on this server! 🧨 || undefined undefined
+[2024-09-19T15:43:02.715Z] info: Can't find / on this server! 🧨 || undefined undefined
+[2024-09-19T15:44:00.938Z] info: You are not logged in! Please log in to get access. || undefined undefined
+[2024-09-19T15:45:29.796Z] info: You are not logged in! Please log in to get access. || undefined undefined
+[2024-09-19T15:47:19.743Z] info: data and hash arguments required || undefined undefined

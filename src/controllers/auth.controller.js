@@ -4,9 +4,6 @@ const bcrypt = require('bcrypt');
 const generateJWT = require('./../utils/jwt');
 const AppError = require('../utils/appError');
 
-const { ref, uploadBytes, getDownloadURL } = require('firebase/storage');
-const { storage } = require('../utils/firebase');
-
 exports.signup = catchAsync(async (req, res, next) => {
   const { nombre, usuario, con, email } = req.body;
   const salt = await bcrypt.genSalt(12);
@@ -46,7 +43,7 @@ exports.login = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError('User with that email not found!', 404));
   }
-  if (!(await bcrypt.compare(con, user.password))) {
+  if (!(await bcrypt.compare(con, user.con_users))) {
     return next(new AppError('Incorrect email/password!', 401));
   }
 
