@@ -27,11 +27,11 @@ const server = app.listen(process.env.PORT, () => {
   console.log(`Server listening on port ${process.env.PORT}`);
 });
 
-/* const io = new Server(server, {
+const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
   },
 });
- */
-/* new Sockets(io); */
+
+new Sockets(io);

@@ -18,7 +18,7 @@ exports.createUserValidation = [
   body('con')
     .notEmpty()
     .withMessage('Password cannot be empty!')
-    .isLength({ min: 8 })
+    .isLength({ min: 5 })
     .withMessage('Password must be at least 6 characters long!'),
   body('usuario').notEmpty().withMessage('Usuaario cannot be empty!'),
   validField,
@@ -33,7 +33,7 @@ exports.loginValidation = [
   body('con')
     .notEmpty()
     .withMessage('Password cannot be empty!')
-    .isLength({ min: 5 })
+    .isLength({ min: 4 })
     .withMessage('Password must be at least 6 characters long!'),
   validField,
 ];

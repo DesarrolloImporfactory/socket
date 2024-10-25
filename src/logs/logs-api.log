@@ -136,3 +136,457 @@
 [2024-09-19T15:44:00.938Z] info: You are not logged in! Please log in to get access. || undefined undefined
 [2024-09-19T15:45:29.796Z] info: You are not logged in! Please log in to get access. || undefined undefined
 [2024-09-19T15:47:19.743Z] info: data and hash arguments required || undefined undefined
+[2024-10-21T21:48:36.100Z] info: WHERE parameter "email_users" has invalid "undefined" value || undefined undefined
+[2024-10-21T21:48:56.247Z] info: WHERE parameter "email_users" has invalid "undefined" value || undefined undefined
+[2024-10-21T21:49:22.964Z] info: data and hash arguments required || undefined undefined
+[2024-10-21T21:49:32.606Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:49:42.591Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:49:52.875Z] info: Can't find /Users/diseno1academy/Downloads/im/socket/src/controllers/auth.controller.js:47:17 on this server! 🧨 || undefined undefined
+[2024-10-21T21:49:53.429Z] info: Can't find /favicon.ico on this server! 🧨 || undefined undefined
+[2024-10-21T21:50:26.692Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:50:46.424Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:51:17.973Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:51:51.728Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:52:18.298Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:52:39.031Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:53:01.419Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:53:42.520Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T21:59:44.392Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:02:01.863Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:02:49.715Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:02:50.618Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:03:20.327Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:05:25.287Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:07:03.550Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:07:14.320Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:06.192Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:06.974Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:07.492Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:07.959Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:08.401Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:08.797Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:09.172Z] info: Incorrect email/password! || undefined undefined
+[2024-10-21T22:08:09.531Z] info: Incorrect email/password! || undefined undefined
+[2024-10-23T13:55:08.661Z] info: Incorrect email/password! || undefined undefined
+[2024-10-23T14:08:59.462Z] info: Incorrect email/password! || undefined Error: Incorrect email/password!
+[2024-10-23T14:09:45.156Z] info: Incorrect email/password!}
+[2024-10-23T14:12:37.771Z] info: Incorrect email/password!
+[2024-10-23T14:28:27.482Z] info: Can't find /auth/renew on this server! 🧨
+[2024-10-23T14:28:49.947Z] info: jwt malformed
+[2024-10-23T14:28:59.129Z] info: Incorrect email/password!
+[2024-10-23T14:29:54.931Z] info: jwt malformed
+[2024-10-23T14:33:22.719Z] info: jwt malformed
+[2024-10-23T14:33:43.720Z] info: jwt malformed
+[2024-10-23T14:33:47.183Z] info: Incorrect email/password!
+[2024-10-23T14:34:06.490Z] info: jwt malformed
+[2024-10-23T14:34:08.093Z] info: Incorrect email/password!
+[2024-10-23T14:34:14.133Z] info: jwt malformed
+[2024-10-23T14:34:15.815Z] info: Incorrect email/password!
+[2024-10-23T14:34:48.858Z] info: jwt malformed
+[2024-10-23T14:35:09.751Z] info: jwt malformed
+[2024-10-23T14:35:14.701Z] info: Incorrect email/password!
+[2024-10-23T14:35:39.705Z] info: jwt malformed
+[2024-10-23T14:35:43.804Z] info: jwt malformed
+[2024-10-23T14:35:45.878Z] info: Incorrect email/password!
+[2024-10-23T14:35:48.475Z] info: Incorrect email/password!
+[2024-10-23T14:35:54.330Z] info: jwt malformed
+[2024-10-23T14:36:25.444Z] info: jwt malformed
+[2024-10-23T14:37:15.097Z] info: jwt malformed
+[2024-10-23T14:37:17.748Z] info: Incorrect email/password!
+[2024-10-23T14:37:22.903Z] info: Incorrect email/password!
+[2024-10-23T14:37:24.661Z] info: Incorrect email/password!
+[2024-10-23T14:37:26.367Z] info: Incorrect email/password!
+[2024-10-23T14:38:11.658Z] info: Incorrect email/password!
+[2024-10-23T14:38:40.631Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:38:41.294Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:38:55.156Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:38:59.501Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:40:16.979Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:40:25.803Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:40:30.447Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:40:32.195Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:40:57.645Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:01.099Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:04.235Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:05.057Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:05.643Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:05.992Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:06.384Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:06.673Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:06.951Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:07.245Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:41:07.612Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:07.259Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:10.810Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:15.644Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:44.031Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:44.967Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:43:56.777Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:44:29.654Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:44:43.314Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:44:51.877Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:45:06.174Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:45:25.405Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:45:34.489Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:45:37.390Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:45:43.984Z] info: jwt malformed
+[2024-10-23T14:45:45.826Z] info: Incorrect email/password!
+[2024-10-23T14:45:49.471Z] info: jwt malformed
+[2024-10-23T14:45:50.623Z] info: jwt malformed
+[2024-10-23T14:46:08.118Z] info: Incorrect email/password!
+[2024-10-23T14:46:19.895Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:46:21.746Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:46:22.635Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:46:23.344Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T14:46:28.496Z] info: jwt malformed
+[2024-10-23T14:47:56.707Z] info: jwt malformed
+[2024-10-23T14:48:45.839Z] info: jwt malformed
+[2024-10-23T14:48:46.856Z] info: jwt malformed
+[2024-10-23T14:48:48.513Z] info: Incorrect email/password!
+[2024-10-23T14:48:53.481Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:22:57.835Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:23:08.674Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:23:50.578Z] info: jwt malformed
+[2024-10-23T15:23:55.505Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:25:10.915Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:27:40.323Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:29:04.445Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_kkm on this server! 🧨
+[2024-10-23T15:29:06.429Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_lDr on this server! 🧨
+[2024-10-23T15:29:09.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_lyj on this server! 🧨
+[2024-10-23T15:29:10.704Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_mGk on this server! 🧨
+[2024-10-23T15:29:11.197Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:29:11.495Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_mS_ on this server! 🧨
+[2024-10-23T15:29:13.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_mxB on this server! 🧨
+[2024-10-23T15:29:14.213Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_n7U on this server! 🧨
+[2024-10-23T15:29:16.948Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_noE on this server! 🧨
+[2024-10-23T15:29:19.424Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_oOz on this server! 🧨
+[2024-10-23T15:29:22.421Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_p7n on this server! 🧨
+[2024-10-23T15:29:25.428Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_psj on this server! 🧨
+[2024-10-23T15:29:28.427Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_qbb on this server! 🧨
+[2024-10-23T15:29:31.420Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_rKO on this server! 🧨
+[2024-10-23T15:29:34.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_s3K on this server! 🧨
+[2024-10-23T15:29:37.423Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_soB on this server! 🧨
+[2024-10-23T15:29:40.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_tX4 on this server! 🧨
+[2024-10-23T15:29:43.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_uFy on this server! 🧨
+[2024-10-23T15:29:46.424Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_u-q on this server! 🧨
+[2024-10-23T15:29:49.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_vjg on this server! 🧨
+[2024-10-23T15:29:52.428Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_wSb on this server! 🧨
+[2024-10-23T15:29:55.421Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_xBQ on this server! 🧨
+[2024-10-23T15:29:58.469Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_xwS on this server! 🧨
+[2024-10-23T15:30:01.432Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_yfE on this server! 🧨
+[2024-10-23T15:30:04.445Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_zO5 on this server! 🧨
+[2024-10-23T15:30:07.434Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_-71 on this server! 🧨
+[2024-10-23T15:30:10.426Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv_-rr on this server! 🧨
+[2024-10-23T15:30:13.420Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAv__ad on this server! 🧨
+[2024-10-23T15:30:16.421Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw00JX on this server! 🧨
+[2024-10-23T15:30:19.423Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw012S on this server! 🧨
+[2024-10-23T15:30:22.424Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw01nJ on this server! 🧨
+[2024-10-23T15:30:25.420Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw02W8 on this server! 🧨
+[2024-10-23T15:30:28.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw03F4 on this server! 🧨
+[2024-10-23T15:30:31.420Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw03zt on this server! 🧨
+[2024-10-23T15:30:34.420Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw04im on this server! 🧨
+[2024-10-23T15:30:37.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw05Rh on this server! 🧨
+[2024-10-23T15:30:40.423Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw06AY on this server! 🧨
+[2024-10-23T15:30:43.421Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw06vR on this server! 🧨
+[2024-10-23T15:30:46.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw07eF on this server! 🧨
+[2024-10-23T15:30:49.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw08NB on this server! 🧨
+[2024-10-23T15:30:52.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0960 on this server! 🧨
+[2024-10-23T15:30:55.431Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw09q- on this server! 🧨
+[2024-10-23T15:30:58.430Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0AZr on this server! 🧨
+[2024-10-23T15:31:01.418Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0BId on this server! 🧨
+[2024-10-23T15:31:04.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0C1Y on this server! 🧨
+[2024-10-23T15:31:07.423Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0CmP on this server! 🧨
+[2024-10-23T15:31:10.423Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0DVG on this server! 🧨
+[2024-10-23T15:31:13.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0EEA on this server! 🧨
+[2024-10-23T15:31:16.422Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0Ez1 on this server! 🧨
+[2024-10-23T15:31:19.425Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0Fhw on this server! 🧨
+[2024-10-23T15:31:22.426Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0GQo on this server! 🧨
+[2024-10-23T15:31:25.427Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0H9e on this server! 🧨
+[2024-10-23T15:31:28.428Z] info: Can't find /socket.io/?EIO=4&transport=polling&t=PAw0HuZ on this server! 🧨
+[2024-10-23T15:31:41.257Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:32:00.867Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:33:56.597Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:40:23.279Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:40:45.408Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:46:54.993Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:54:16.466Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:54:54.615Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:56:09.684Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:56:19.280Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:56:31.762Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:56:39.533Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:57:30.596Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:58:28.386Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:58:38.275Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T15:59:49.307Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:26:05.964Z] info: jwt expired
+[2024-10-23T16:27:10.855Z] info: jwt expired
+[2024-10-23T16:28:30.816Z] info: jwt expired
+[2024-10-23T16:28:31.891Z] info: jwt expired
+[2024-10-23T16:29:05.958Z] info: jwt malformed
+[2024-10-23T16:29:13.864Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:34:34.023Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:34:53.796Z] info: jwt malformed
+[2024-10-23T16:35:01.223Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:52:47.689Z] info: jwt malformed
+[2024-10-23T16:52:53.760Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:53:02.159Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T16:53:06.795Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T17:37:26.757Z] info: jwt malformed
+[2024-10-23T17:37:31.250Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T17:40:25.288Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T17:43:07.315Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T17:43:51.445Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T17:50:23.982Z] info: jwt malformed
+[2024-10-23T17:51:43.525Z] info: Incorrect email/password!
+[2024-10-23T17:51:59.974Z] info: Incorrect email/password!
+[2024-10-23T17:54:13.891Z] info: Incorrect email/password!
+[2024-10-23T17:54:25.291Z] info: Incorrect email/password!
+[2024-10-23T17:54:40.068Z] info: Incorrect email/password!
+[2024-10-23T17:55:14.171Z] info: Incorrect email/password!
+[2024-10-23T17:56:22.130Z] info: Incorrect email/password!
+[2024-10-23T17:57:02.045Z] info: Incorrect email/password!
+[2024-10-23T17:57:03.058Z] info: Incorrect email/password!
+[2024-10-23T17:57:03.901Z] info: Incorrect email/password!
+[2024-10-23T17:57:04.663Z] info: Incorrect email/password!
+[2024-10-23T17:57:30.709Z] info: Incorrect email/password!
+[2024-10-23T18:00:01.152Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T19:16:38.063Z] info: jwt expired
+[2024-10-23T19:16:38.240Z] info: jwt malformed
+[2024-10-23T19:16:41.659Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T19:19:19.493Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-23T21:35:33.829Z] info: jwt malformed
+[2024-10-24T14:07:59.349Z] info: jwt malformed
+[2024-10-24T14:08:03.237Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:14:57.017Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:18:38.998Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:20:52.644Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:24:35.539Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:28:27.176Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:33:20.426Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:36:55.699Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:36:57.909Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T14:58:36.205Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:11:34.793Z] info: jwt malformed
+[2024-10-24T15:11:42.357Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:12:07.187Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:21:40.735Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:21:42.712Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:22:56.004Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:23:10.470Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:24:54.932Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:30:28.838Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:30:48.438Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:31:14.741Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:33:06.212Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:43:49.060Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:45:13.550Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:50:22.738Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T15:50:56.030Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:01:45.084Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:02:44.486Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:02:52.847Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:04:15.429Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:07:23.591Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:11:32.387Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:11:36.425Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:14:23.438Z] info: jwt expired
+[2024-10-24T16:14:23.689Z] info: jwt malformed
+[2024-10-24T16:14:26.958Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:15:12.788Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:15:55.202Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:16:02.819Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:16:25.901Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:16:56.178Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:17:13.556Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:18:20.183Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:18:52.468Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:19:38.513Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:21:38.940Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:24:16.531Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:37:52.149Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T16:58:03.764Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:02:07.487Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:10:05.949Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:10:37.456Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:10:54.682Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:10:59.742Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:11:31.264Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:11:50.615Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:12:11.216Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:13:34.541Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:16:23.973Z] info: jwt expired
+[2024-10-24T17:16:23.982Z] info: jwt expired
+[2024-10-24T17:16:24.280Z] info: jwt malformed
+[2024-10-24T17:16:24.282Z] info: jwt malformed
+[2024-10-24T17:16:27.736Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:16:27.832Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:15.906Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:15.913Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:43.269Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:43.367Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:47.916Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:20:47.918Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:22:16.169Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:22:16.174Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:23:24.836Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:23:24.838Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:24:08.790Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:24:08.792Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:24:54.202Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:24:54.298Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:25:39.924Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:25:39.933Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:31:55.161Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:31:55.162Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:31.347Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:31.348Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:48.888Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:48.901Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:50.285Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:32:50.286Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:33:05.397Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:33:05.399Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:33:29.469Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:33:29.471Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:36:42.336Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:36:42.434Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:37:49.648Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:37:49.650Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:38:00.905Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:38:00.907Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:39:44.147Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:39:44.249Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:40:38.923Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:40:39.023Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:57:03.865Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:57:03.967Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:57:23.783Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T17:57:23.882Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:13:12.364Z] info: jwt malformed
+[2024-10-24T19:13:12.367Z] info: jwt malformed
+[2024-10-24T19:13:16.939Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:13:16.941Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:38:32.463Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:38:32.464Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:45:51.244Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T19:45:51.253Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:36:23.319Z] info: jwt expired
+[2024-10-24T20:36:23.428Z] info: jwt malformed
+[2024-10-24T20:36:23.431Z] info: jwt malformed
+[2024-10-24T20:36:26.468Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:36:26.668Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:38:11.486Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:38:11.588Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:39:02.500Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:39:02.601Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:42:38.506Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:42:38.528Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:42:55.838Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:42:55.844Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:46:45.070Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:46:45.081Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:47:45.169Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:47:45.176Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:52:33.545Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:52:33.550Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:55:44.418Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:55:44.422Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:56:30.966Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:56:30.972Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:58:30.902Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:58:30.946Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:59:51.289Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T20:59:51.405Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:00:07.762Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:00:07.872Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:02:39.371Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:02:39.474Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:10:17.377Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:10:17.382Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:11:08.526Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:11:08.530Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:11.569Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:11.581Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:57.230Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:57.233Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:58.998Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:16:59.000Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:48:49.960Z] info: jwt expired
+[2024-10-24T21:48:49.970Z] info: jwt expired
+[2024-10-24T21:48:50.242Z] info: jwt malformed
+[2024-10-24T21:48:50.245Z] info: jwt malformed
+[2024-10-24T21:48:53.022Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:48:53.025Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:53:33.530Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:53:33.541Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:53:58.361Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:53:58.376Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:04.093Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:04.095Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:25.584Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:25.689Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:35.708Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-24T21:54:35.811Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:05:50.881Z] info: jwt malformed
+[2024-10-25T13:05:50.886Z] info: jwt malformed
+[2024-10-25T13:08:53.720Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:08:53.923Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:10:49.092Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:10:49.198Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:12:21.811Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:12:21.918Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:13:30.377Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:13:30.380Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:13:39.286Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:13:39.291Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:14:08.738Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:14:08.740Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:14:11.990Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:14:11.990Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:15:09.438Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:15:09.460Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:15:45.835Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:15:46.034Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:32:56.835Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:32:56.945Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:33:30.169Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:33:30.173Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:33:45.796Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:33:45.798Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:35:01.915Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:35:01.917Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:35:17.260Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:35:17.277Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:39:54.624Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T13:39:54.628Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T15:53:45.393Z] info: jwt malformed
+[2024-10-25T15:53:45.407Z] info: jwt malformed
+[2024-10-25T15:53:48.102Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T15:53:48.108Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T16:08:16.029Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T16:08:16.136Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T16:09:42.658Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T16:09:42.759Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T19:17:59.625Z] info: jwt malformed
+[2024-10-25T19:17:59.627Z] info: jwt malformed
+[2024-10-25T19:18:04.124Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T19:18:04.126Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T21:31:10.875Z] info: jwt expired
+[2024-10-25T21:31:10.879Z] info: jwt expired
+[2024-10-25T21:31:11.197Z] info: jwt malformed
+[2024-10-25T21:31:11.199Z] info: jwt malformed
+[2024-10-25T21:31:15.733Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T21:31:15.835Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T21:36:10.855Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:36:10.871Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:37:49.706Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:37:49.707Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:39:32.836Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:39:32.851Z] info: Can't find /api/v1/auth/renew on this server! 🧨
+[2024-10-25T21:40:02.180Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T21:40:02.185Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2024-10-25T21:40:34.583Z] info: id is not defined
+[2024-10-25T21:40:34.587Z] info: id is not defined
+[2024-10-25T21:41:00.032Z] info: id is not defined
+[2024-10-25T21:41:00.037Z] info: id is not defined

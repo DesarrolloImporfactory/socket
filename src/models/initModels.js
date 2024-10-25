@@ -3,7 +3,7 @@ const Plataforma = require('./plataforma.model');
 const UsuarioPlataforma = require('./usuario_plataforma.model');
 const ClientesChatCenter = require('./clientes_chat_center.model');
 const MensajesClientes = require('./mensaje_cliente.model');
-
+const EtiquetasChatCenter = require('./etiquetas_chat_center.model');
 const initModel = () => {
   // Asociaciones existentes
   User.belongsToMany(Plataforma, {
@@ -48,6 +48,12 @@ const initModel = () => {
   MensajesClientes.belongsTo(Plataforma, {
     foreignKey: 'id_plataforma',
     as: 'plataforma',
+  });
+
+  // Asociación entre ClientesChatCenter y EtiquetasChatCenter
+  ClientesChatCenter.belongsTo(EtiquetasChatCenter, {
+    foreignKey: 'id_etiqueta',
+    as: 'etiqueta',
   });
 };
 module.exports = initModel;

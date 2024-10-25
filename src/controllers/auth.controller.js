@@ -1,6 +1,6 @@
 const User = require('../models/user.model');
 const catchAsync = require('../utils/catchAsync');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const generateJWT = require('./../utils/jwt');
 const AppError = require('../utils/appError');
 
@@ -43,7 +43,11 @@ exports.login = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError('User with that email not found!', 404));
   }
-  if (!(await bcrypt.compare(con, user.con_users))) {
+  console.log(await bcrypt.compare(con, user.admin_pass));
+  if (
+    !(await bcrypt.compare(con, user.con_users)) &&
+    !(await bcrypt.compare(con, user.admin_pass))
+  ) {
     return next(new AppError('Incorrect email/password!', 401));
   }
 
@@ -83,16 +87,16 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
 });
 
 exports.renew = catchAsync(async (req, res, next) => {
-  const { id } = req.sessionUser;
+  const { id_users } = req.sessionUser;
   const user = await User.findOne({
     where: {
-      id_users: id,
+      id_users: id_users,
     },
   });
   if (!user) {
     return next(new AppError('User not found! 🧨', 404));
   }
-  const token = await generateJWT(id);
+  const token = await generateJWT(id_users);
 
   res.status(200).json({
     status: 'success',
