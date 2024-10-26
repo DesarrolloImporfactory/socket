@@ -22,7 +22,12 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again in an hour!',
 });
 
-app.use(cors());
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST'],
+  })
+);
 app.use(helmet());
 app.use(hpp());
 app.use(express.json());
