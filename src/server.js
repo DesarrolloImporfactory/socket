@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { db } = require('./database/config');
+const chatController = require('./controllers/chat.controller');
 const app = require('./app');
 const initModel = require('./models/initModels');
 const { Server } = require('socket.io');
@@ -33,5 +34,7 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
   },
 });
+
+chatController.setSocketIo(io);
 
 new Sockets(io);
