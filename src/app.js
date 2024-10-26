@@ -11,6 +11,8 @@ const sanitizer = require('perfect-express-sanitizer');
 const authRouter = require('./routes/auth.routes');
 
 const userRouter = require('./routes/user.routes');
+
+const webhookRouter = require('./routes/webhook.routes');
 const app = express();
 
 const limiter = rateLimit({
@@ -39,7 +41,7 @@ app.use('/api/v1', limiter);
 // toutes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
-
+app.use('/api/v1/whatsapp', webhookRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
