@@ -39,10 +39,8 @@ class Sockets {
 
       socket.on('GET_CHATS_BOX', async ({ chatId, plataforma }) => {
         try {
-          console.log(chatId, plataforma);
           const chatService = new ChatService();
           const chat = await chatService.getChatsByClient(chatId, plataforma);
-          console.log(chat);
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
         } catch (error) {
@@ -51,6 +49,68 @@ class Sockets {
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
             message: 'Error al obtener los chats. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
+      socket.on('GET_TEMPLATES', async ({ id_plataforma, palabraClave }) => {
+        try {
+          const chatService = new ChatService();
+          const templates = await chatService.getTemplates(
+            id_plataforma,
+            palabraClave
+          );
+
+          // Enviar los templates al cliente que hizo la solicitud
+          socket.emit('TEMPLATES_RESPONSE', templates);
+        } catch (error) {
+          console.error('Error al obtener los templates:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al obtener los templates. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
+      socket.on('GET_DATA_ADMIN', async (id_plataforma) => {
+        try {
+          const chatService = new ChatService();
+          const data = await chatService.getDataAdmin(id_plataforma);
+
+          // Enviar los datos al cliente que hizo la solicitud
+          socket.emit('DATA_ADMIN_RESPONSE', data);
+        } catch (error) {
+          console.error('Error al obtener los datos del admin:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
+      socket.on('SEND_MESSAGE', async (data) => {
+        try {
+          const chatService = new ChatService();
+          const message = await chatService.sendMessage(data);
+
+          // Enviar el mensaje al cliente que hizo la solicitud
+          socket.emit('MESSAGE_RESPONSE', message);
+
+          // Emitir evento para actualizar el chat en tiempo real
+          this.io.emit('UPDATE_CHAT', {
+            chatId: data.to, // Asume que `data.to` tiene el identificador del receptor
+            message,
+          });
+        } catch (error) {
+          console.error('Error al enviar el mensaje:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message: 'Error al enviar el mensaje. Intenta de nuevo más tarde.',
           });
         }
       });
