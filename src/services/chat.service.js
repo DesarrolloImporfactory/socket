@@ -62,6 +62,18 @@ class ChatService {
           ],
           [
             Sequelize.literal(`(
+              SELECT mc1.ruta_archivo
+              FROM mensajes_clientes AS mc1
+              WHERE mc1.celular_recibe = clientes_chat_center.id
+              AND mc1.rol_mensaje = 1
+              AND mc1.ruta_archivo IS NOT NULL
+              ORDER BY mc1.created_at DESC
+              LIMIT 1
+            )`),
+            'ruta_archivo',
+          ],
+          [
+            Sequelize.literal(`(
               SELECT mc1.texto_mensaje 
               FROM mensajes_clientes AS mc1 
               WHERE mc1.celular_recibe = clientes_chat_center.id 
