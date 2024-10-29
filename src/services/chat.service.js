@@ -205,6 +205,7 @@ class ChatService {
 
   async getCellphones(id_plataforma, texto) {
     try {
+      console.log(id_plataforma, texto);
       const telefonos = await ClientesChatCenter.findAll({
         where: {
           id_plataforma,

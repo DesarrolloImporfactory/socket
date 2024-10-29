@@ -94,10 +94,7 @@ class Sockets {
       socket.on('GET_CELLPHONES', async ({ id_plataforma, texto }) => {
         try {
           const chatService = new ChatService();
-          const data = await chatService.getCellphones({
-            id_plataforma,
-            texto,
-          });
+          const data = await chatService.getCellphones(id_plataforma, texto);
 
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_CELLPHONE_RESPONSE', data);
