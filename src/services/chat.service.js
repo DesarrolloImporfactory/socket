@@ -5,6 +5,7 @@ const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const TemplatesChatCenter = require('../models/templates_chat_center.model');
+const { db } = require('../database/config');
 
 class ChatService {
   async findChats(id_plataforma) {
@@ -28,74 +29,19 @@ class ChatService {
       }
 
       // Realiza la consulta para obtener los chats excluyendo el número específico
-      const chats = await ClientesChatCenter.findAll({
-        where: {
-          id_plataforma,
-          celular_cliente: {
-            [Op.ne]: numero, // Filtra clientes cuyo número no sea el del dueño
-          },
-        },
-        attributes: [
-          'nombre_cliente',
-          'apellido_cliente',
-          'celular_cliente',
-          'id',
-          [
-            Sequelize.literal(`(
-              SELECT MAX(mc1.created_at) 
-              FROM mensajes_clientes AS mc1 
-              WHERE mc1.celular_recibe = clientes_chat_center.id 
-              AND (mc1.rol_mensaje = 0 OR mc1.rol_mensaje = 1) 
-              AND mc1.created_at IS NOT NULL
-            )`),
-            'mensaje_created_at',
-          ],
-          [
-            Sequelize.literal(`(
-              SELECT COUNT(*)
-              FROM mensajes_clientes AS mc1
-              WHERE mc1.celular_recibe = clientes_chat_center.id 
-              AND mc1.rol_mensaje = 0 
-              AND mc1.visto = 0
-            )`),
-            'mensajes_pendientes',
-          ],
-          [
-            Sequelize.literal(`(
-              SELECT mc1.ruta_archivo
-              FROM mensajes_clientes AS mc1
-              WHERE mc1.celular_recibe = clientes_chat_center.id
-              AND mc1.rol_mensaje = 1
-              AND mc1.ruta_archivo IS NOT NULL
-              ORDER BY mc1.created_at DESC
-              LIMIT 1
-            )`),
-            'ruta_archivo',
-          ],
-          [
-            Sequelize.literal(`(
-              SELECT mc1.texto_mensaje 
-              FROM mensajes_clientes AS mc1 
-              WHERE mc1.celular_recibe = clientes_chat_center.id 
-              AND (mc1.rol_mensaje = 0 OR mc1.rol_mensaje = 1)
-              ORDER BY mc1.created_at DESC
-              LIMIT 1
-            )`),
-            'texto_mensaje',
-          ],
-          [Sequelize.col('etiqueta.color_etiqueta'), 'color_etiqueta'],
-        ],
-        include: [
-          {
-            model: EtiquetasChatCenter,
-            as: 'etiqueta',
-            required: false,
-            attributes: [],
-          },
-        ],
-        group: ['clientes_chat_center.id'],
-        order: [[Sequelize.literal('mensaje_created_at'), 'DESC']],
-      });
+      const chats = await db.query(
+        `
+        SELECT * FROM vista_chats
+        WHERE id_plataforma = :id_plataforma
+          AND celular_cliente != :numero
+        ORDER BY mensaje_created_at DESC;
+      `,
+        {
+          replacements: { id_plataforma: id_plataforma, numero: numero },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
       return chats;
     } catch (error) {
       throw new AppError(error.message, 500);
@@ -113,6 +59,15 @@ class ChatService {
               celular_recibe: id_cliente,
               id_plataforma: id_plataforma,
             },
+            attributes: [
+              'texto_mensaje',
+              'created_at',
+              'ruta_archivo',
+              'visto',
+              'tipo_mensaje',
+              'id',
+              'rol_mensaje',
+            ],
             order: [['created_at', 'ASC']], // Ordenar los mensajes por fecha de creación ascendente
           },
         ],
