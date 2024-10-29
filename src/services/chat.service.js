@@ -213,7 +213,7 @@ class ChatService {
             [Op.like]: `%${texto}%`,
           },
         },
-        attributes: ['celular_cliente'],
+        attributes: ['celular_cliente', 'nombre_cliente'],
       });
 
       return telefonos;
