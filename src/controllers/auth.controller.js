@@ -43,7 +43,6 @@ exports.login = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError('User with that email not found!', 404));
   }
-  console.log(await bcrypt.compare(con, user.admin_pass));
   if (
     !(await bcrypt.compare(con, user.con_users)) &&
     !(await bcrypt.compare(con, user.admin_pass))

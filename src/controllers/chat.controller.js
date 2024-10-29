@@ -30,7 +30,6 @@ exports.webhook = catchAsync(async (req, res, next) => {
         ultimoMensaje,
       });
     }
-    console.log('Xd');
     // Enviar una respuesta al Webhook
     return res.status(200).json({ message: 'Mensaje recibido y emitido' });
   } catch (error) {

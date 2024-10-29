@@ -595,3 +595,6 @@
 [2024-10-26T17:51:52.775Z] info: jwt malformed
 [2024-10-26T17:51:52.794Z] info: jwt malformed
 [2024-10-26T19:29:05.591Z] info: jwt malformed
+[2024-10-28T18:07:57.718Z] info: jwt malformed
+[2024-10-28T21:16:47.007Z] info: jwt expired
+[2024-10-28T21:16:47.316Z] info: jwt malformed

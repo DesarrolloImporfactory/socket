@@ -247,6 +247,43 @@ class ChatService {
       throw new Error('Ocurrió un error al enviar el mensaje.');
     }
   }
+
+  async getCellphones(id_plataforma, texto) {
+    try {
+      const telefonos = await ClientesChatCenter.findAll({
+        where: {
+          id_plataforma,
+          celular_cliente: {
+            [Op.like]: `%${texto}%`,
+          },
+        },
+        attributes: ['celular_cliente'],
+      });
+
+      return telefonos;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async seenMessage(chatId, id_plataforma) {
+    try {
+      const mensajes = await MensajesClientes.update(
+        { visto: 1 },
+        {
+          where: {
+            celular_recibe: chatId,
+            id_plataforma,
+            visto: 0,
+          },
+        }
+      );
+
+      return mensajes;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
 }
 
 module.exports = ChatService;

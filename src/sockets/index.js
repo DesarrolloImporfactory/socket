@@ -30,7 +30,6 @@ class Sockets {
       });
 
       socket.on('GET_CHATS', async (id_plataforma) => {
-        console.log(id_plataforma);
         const chatService = new ChatService();
         const chat = await chatService.findChats(id_plataforma);
 
@@ -92,6 +91,26 @@ class Sockets {
         }
       });
 
+      socket.on('GET_CELLPHONES', async ({ id_plataforma, texto }) => {
+        try {
+          const chatService = new ChatService();
+          const data = await chatService.getCellphones({
+            id_plataforma,
+            texto,
+          });
+
+          // Enviar los datos al cliente que hizo la solicitud
+          socket.emit('DATA_CELLPHONE_RESPONSE', data);
+        } catch (error) {
+          console.error('Error al obtener los datos del admin:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          });
+        }
+      });
       socket.on('connect_error', (err) => {
         // the reason of the error, for example "xhr poll error"
         console.log(err.message);
@@ -125,6 +144,36 @@ class Sockets {
           });
         }
       });
+
+      socket.on('SEEN_MESSAGE', async ({ celular_recibe, plataforma }) => {
+        try {
+          const chatService = new ChatService();
+          const message = await chatService.seenMessage(
+            celular_recibe,
+            plataforma
+          );
+
+          // Emitir evento para actualizar el chat en tiempo real
+          this.io.emit('RECEIVED_MESSAGE', {
+            celular_recibe,
+            message,
+          });
+          console.log('XD');
+        } catch (error) {
+          console.error(
+            'Error al marcar el mensaje como visto:',
+            error.message
+          );
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al marcar el mensaje como visto. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
+      socket.on('SEND_IMAGE', async (data) => {});
 
       socket.on('disconnect', () => {
         this.removeUser(socket.id);
