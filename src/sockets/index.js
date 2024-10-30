@@ -108,6 +108,25 @@ class Sockets {
           });
         }
       });
+
+      socket.on('GET_FACTURAS', async ({ id_plataforma, telefono }) => {
+        try {
+          const chatService = new ChatService();
+          const data = await chatService.getFacturas(id_plataforma, telefono);
+
+          // Enviar los datos al cliente que hizo la solicitud
+          socket.emit('DATA_FACTURA_RESPONSE', data);
+        } catch (error) {
+          console.error('Error al obtener los datos del admin:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
       socket.on('connect_error', (err) => {
         // the reason of the error, for example "xhr poll error"
         console.log(err.message);

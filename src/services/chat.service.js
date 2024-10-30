@@ -105,7 +105,7 @@ class ChatService {
         where: {
           id_plataforma,
         },
-        attributes: ['id_telefono', 'token', 'id_plataforma'],
+        attributes: ['id_telefono', 'token', 'id_plataforma', 'id_whatsapp'],
       });
 
       return configuraciones;
@@ -217,6 +217,22 @@ class ChatService {
       });
 
       return telefonos;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async getFacturas(id_plataforma, telefono) {
+    try {
+      const facturas = await ClientesChatCenter.findAll({
+        where: {
+          id_plataforma,
+          celular_cliente: telefono,
+        },
+        attributes: ['factura'],
+      });
+
+      return facturas;
     } catch (error) {
       throw new AppError(error.message, 500);
     }
