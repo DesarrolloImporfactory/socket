@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
 const UsuarioPlataforma = require('../models/usuario_plataforma.model');
+const Plataforma = require('../models/plataforma.model');
 require('dotenv').config();
 
 const generateJWT = async (id) => {
@@ -22,6 +23,19 @@ const generateJWT = async (id) => {
   if (!platform) {
     return new Error('Platform not found');
   }
+
+  // buscar id_matriz
+  const matriz = await Plataforma.findOne({
+    where: {
+      id_plataforma: platform.id_plataforma,
+    },
+    attributes: ['id_matriz'],
+  });
+
+  if (!matriz) {
+    return new Error('Matriz not found');
+  }
+
   return new Promise((resolve, reject) => {
     const payload = {
       id,
@@ -29,6 +43,7 @@ const generateJWT = async (id) => {
       nombre: user.nombre_users,
       correo: user.email_users,
       cargo: user.cargo_users,
+      id_matriz: matriz.id_matriz,
     };
     jwt.sign(
       payload,

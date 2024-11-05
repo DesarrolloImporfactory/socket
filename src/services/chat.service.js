@@ -10,6 +10,7 @@ const FacturasCot = require('../models/facturas_cot.model');
 const DetalleFactCot = require('../models/detalle_fact_cot.model');
 const ProvinciaLaar = require('../models/provincia_laar.model');
 const CiudadCotizacion = require('../models/ciudad_cotizacion.model');
+const Plataforma = require('../models/plataforma.model');
 class ChatService {
   async findChats(id_plataforma) {
     try {
@@ -119,45 +120,56 @@ class ChatService {
 
   async sendMessage(data) {
     try {
-      const { mensaje, to, dataAdmin } = data;
+      const {
+        mensaje,
+        to,
+        dataAdmin,
+        tipo_mensaje,
+        ruta_archivo = null,
+      } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
       const fromToken = dataAdmin.token;
 
-      // Construcción de la URL de la API
-      const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
+      console.log(tipo_mensaje);
+      let responseData = {};
+      if (tipo_mensaje !== 'image') {
+        // Construcción de la URL de la API
+        console.log('entre');
+        const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
 
-      // Datos de la petición
-      const requestData = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: to,
-        type: 'text',
-        text: {
-          preview_url: true,
-          body: mensaje, // Mensaje a enviar
-        },
-      };
+        // Datos de la petición
+        const requestData = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: to,
+          type: 'text',
+          text: {
+            preview_url: true,
+            body: mensaje, // Mensaje a enviar
+          },
+        };
 
-      // Encabezados de la petición
-      const headers = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${fromToken}`,
-      };
+        // Encabezados de la petición
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${fromToken}`,
+        };
 
-      // Realiza la petición para enviar el mensaje
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(requestData),
-      });
+        // Realiza la petición para enviar el mensaje
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(requestData),
+        });
 
-      // Parsear la respuesta de la API
-      const responseData = await response.json();
+        // Parsear la respuesta de la API
+        responseData = await response.json();
 
-      // Manejo de errores en la respuesta
-      if (responseData.error) {
-        console.error('Error al enviar el mensaje:', responseData.error);
-        throw new Error(responseData.error.message);
+        // Manejo de errores en la respuesta
+        if (responseData.error) {
+          console.error('Error al enviar el mensaje:', responseData.error);
+          throw new Error(responseData.error.message);
+        }
       }
 
       const cliente = await ClientesChatCenter.findOne({
@@ -179,7 +191,7 @@ class ChatService {
       const mensajeCliente = {
         id_plataforma: dataAdmin.id_plataforma,
         mid_mensaje: fromTelefono,
-        tipo_mensaje: 'text',
+        tipo_mensaje: tipo_mensaje,
         rol_mensaje: 1,
         id_cliente,
         uid_whatsapp: to,
@@ -190,6 +202,10 @@ class ChatService {
         created_at: new Date(),
         updated_at: new Date(),
       };
+
+      if (ruta_archivo !== null) {
+        mensajeCliente.ruta_archivo = ruta_archivo;
+      }
 
       // Guardar el mensaje en la base de datos
       const mensajeAgregado = await MensajesClientes.create(mensajeCliente);
@@ -307,6 +323,104 @@ class ChatService {
       );
 
       return mensajes;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async getTarifas(ciudadId, provincia, montoFactura, recuado, id_plataforma) {
+    try {
+      // Consulta para obtener los datos de la ciudad
+      const ciudadData = await CiudadCotizacion.findOne({
+        where: { id_cotizacion: ciudadId },
+        attributes: [
+          'trayecto_laar',
+          'trayecto_servientrega',
+          'trayecto_gintracom',
+          'ciudad',
+        ],
+      });
+
+      if (!ciudadData) throw new Error('Datos de ciudad no encontrados.');
+
+      const {
+        trayecto_laar,
+        trayecto_servientrega,
+        trayecto_gintracom,
+        ciudad,
+      } = ciudadData;
+
+      // Consultas para obtener los precios de cobertura según los trayectos
+      const [precioLaar] = (await CoberturaLaar.findOne({
+        where: { tipo_cobertura: trayecto_laar },
+      })) || { precio: 0 };
+      const [precioServientrega] = (await CoberturaServientrega.findOne({
+        where: { tipo_cobertura: trayecto_servientrega },
+      })) || { precio: 0 };
+      const [precioGintracom] = (await CoberturaGintracom.findOne({
+        where: { trayecto: trayecto_gintracom },
+      })) || { precio: 0 };
+
+      let tarifas = {
+        laar: precioLaar.precio || 0,
+        servientrega: precioServientrega.precio || 0,
+        gintracom: precioGintracom.precio || 0,
+      };
+
+      // Obtener el valor de la matriz
+      const matrizData = await this.obtenerMatriz();
+      const matriz = matrizData[0] ? matrizData[0].idmatriz : null;
+
+      // Cálculo de "previo" con monto de factura
+      let previo = montoFactura * 0.03;
+      if (previo < 1.35) previo = 1.35;
+
+      // Aplicación de lógica condicional para cada tarifa según el trayecto y el recuado
+      if (trayecto_laar && trayecto_laar !== '0') {
+        tarifas.laar += recuado === '1' ? previo : 0;
+        if (matriz === 2) tarifas.laar = 5.99;
+      } else {
+        tarifas.laar = 0;
+      }
+
+      if (trayecto_gintracom && trayecto_gintracom !== '0') {
+        tarifas.gintracom += recuado === '1' ? previo : 0;
+        if (id_plataforma === 1206) tarifas.gintracom -= 0.5;
+      } else {
+        tarifas.gintracom = 0;
+      }
+
+      if (trayecto_servientrega && trayecto_servientrega !== '0') {
+        tarifas.servientrega += recuado === '1' ? previo : 0;
+        if (ciudad === 'QUITO' && recuado !== '1') tarifas.servientrega = 4.97;
+      } else {
+        tarifas.servientrega = 0;
+      }
+
+      // Aplicación de tarifas "speed" según la ciudad y plataforma
+      const speedTarifas = {
+        QUITO: 5.5,
+        'VALLE DE LOS CHILLOS': 6.5,
+        CUMBAYA: 6.5,
+        TUMBACO: 6.5,
+        SANGOLQUI: 6.5,
+        PIFO: 6.5,
+        'SAN RAFAEL': 6.5,
+        CONOCOTO: 6.5,
+        GUAYAQUIL: id_plataforma === 1206 ? 5.5 : 0,
+        DAULE: id_plataforma === 1206 ? 6.5 : 0,
+        SAMBORONDON: id_plataforma === 1206 ? 6.5 : 0,
+        'LA PUNTILLA/GUAYAS': id_plataforma === 1206 ? 6.5 : 0,
+      };
+
+      tarifas.speed = speedTarifas[ciudad] || 0;
+
+      // Formato de los valores de tarifas a 2 decimales
+      tarifas.laar = parseFloat(tarifas.laar.toFixed(2));
+      tarifas.servientrega = parseFloat(tarifas.servientrega.toFixed(2));
+      tarifas.gintracom = parseFloat(tarifas.gintracom.toFixed(2));
+
+      return tarifas;
     } catch (error) {
       throw new AppError(error.message, 500);
     }
