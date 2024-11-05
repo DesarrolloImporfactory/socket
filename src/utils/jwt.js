@@ -22,9 +22,6 @@ const generateJWT = async (id) => {
   if (!platform) {
     return new Error('Platform not found');
   }
-
-  console.log(platform);
-
   return new Promise((resolve, reject) => {
     const payload = {
       id,

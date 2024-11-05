@@ -6,7 +6,10 @@ const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const TemplatesChatCenter = require('../models/templates_chat_center.model');
 const { db } = require('../database/config');
-
+const FacturasCot = require('../models/facturas_cot.model');
+const DetalleFactCot = require('../models/detalle_fact_cot.model');
+const ProvinciaLaar = require('../models/provincia_laar.model');
+const CiudadCotizacion = require('../models/ciudad_cotizacion.model');
 class ChatService {
   async findChats(id_plataforma) {
     try {
@@ -205,7 +208,6 @@ class ChatService {
 
   async getCellphones(id_plataforma, texto) {
     try {
-      console.log(id_plataforma, texto);
       const telefonos = await ClientesChatCenter.findAll({
         where: {
           id_plataforma,
@@ -224,15 +226,68 @@ class ChatService {
 
   async getFacturas(id_plataforma, telefono) {
     try {
-      const facturas = await ClientesChatCenter.findAll({
+      // Normalizamos el teléfono de entrada quitando caracteres no numéricos
+      const telefonoNormalizado = telefono.replace(/[^\d]/g, '');
+
+      // Creamos las posibles variantes de formato
+      const telefonoFormateado = [
+        `593${telefonoNormalizado.replace(/^0+/, '')}`, // Formato con prefijo 593 y sin cero inicial
+        telefonoNormalizado.replace(/^593/, ''), // Sin prefijo internacional
+        telefonoNormalizado.replace(/^0+/, ''), // Solo el número sin cero inicial ni prefijo
+        `0${telefonoNormalizado.replace(/^593/, '')}`, // Con cero inicial, sin prefijo internacional
+      ];
+
+      // Consultamos utilizando `Op.or` para buscar en cualquiera de los formatos generados
+      const facturas = await FacturasCot.findAll({
         where: {
           id_plataforma,
-          celular_cliente: telefono,
+          guia_enviada: 0,
+          [Op.or]: telefonoFormateado.map((formato) => ({
+            telefono: {
+              [Op.like]: `%${formato}%`,
+            },
+          })),
         },
-        attributes: ['factura'],
+        include: [
+          {
+            model: DetalleFactCot,
+            as: 'detalles',
+            attributes: ['id_inventario', 'cantidad', 'precio_venta'],
+          },
+        ],
       });
 
       return facturas;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async getProvincias() {
+    try {
+      const provincias = await ProvinciaLaar.findAll({
+        distinct: true,
+        where: {
+          id_pais: 1,
+        },
+        attributes: ['id_prov', 'codigo_provincia', 'provincia'],
+      });
+      return provincias;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async getCiudades(codigo_provincia) {
+    try {
+      const ciudades = await CiudadCotizacion.findAll({
+        where: {
+          codigo_provincia_laar: codigo_provincia,
+        },
+        attributes: ['id_cotizacion', 'ciudad'],
+      });
+
+      return ciudades;
     } catch (error) {
       throw new AppError(error.message, 500);
     }

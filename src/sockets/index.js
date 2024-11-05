@@ -127,6 +127,36 @@ class Sockets {
         }
       });
 
+      socket.on('GET_PROVINCIAS', async () => {
+        try {
+          const chatService = new ChatService();
+          const data = await chatService.getProvincias();
+
+          // Enviar los datos al cliente que hizo la solicitud
+          socket.emit('DATA_PROVINCIAS_RESPONSE', data);
+        } catch (error) {
+          console.error('Error al obtener los datos del admin:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message:
+              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
+      socket.on('GET_CIUDADES', async (id_provincia) => {
+        try {
+          const chatService = new ChatService();
+          const data = await chatService.getCiudades(id_provincia);
+
+          // Enviar los datos al cliente que hizo la solicitud
+          socket.emit('DATA_CIUDADES_RESPONSE', data);
+        } catch (error) {
+          console.error('Error al obtener los datos del admin:', error.message);
+        }
+      });
+
       socket.on('connect_error', (err) => {
         // the reason of the error, for example "xhr poll error"
         console.log(err.message);
@@ -174,7 +204,6 @@ class Sockets {
             celular_recibe,
             message,
           });
-          console.log('XD');
         } catch (error) {
           console.error(
             'Error al marcar el mensaje como visto:',
