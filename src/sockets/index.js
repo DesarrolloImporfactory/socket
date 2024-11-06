@@ -240,6 +240,23 @@ class Sockets {
         }
       });
 
+      socket.on('SAVE_AUDIO', async (data) => {
+        try {
+          const chatService = new ChatService();
+          const audio = await chatService.saveAudio(data);
+
+          // Enviar el audio al cliente que hizo la solicitud
+          socket.emit('AUDIO_RESPONSE', audio);
+        } catch (error) {
+          console.error('Error al guardar el audio:', error.message);
+
+          // Enviar mensaje de error al cliente en caso de fallo
+          socket.emit('ERROR_RESPONSE', {
+            message: 'Error al guardar el audio. Intenta de nuevo más tarde.',
+          });
+        }
+      });
+
       socket.on('SEND_IMAGE', async (data) => {});
 
       socket.on('disconnect', () => {

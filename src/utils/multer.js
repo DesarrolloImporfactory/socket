@@ -1,19 +1,32 @@
 const multer = require('multer');
+const path = require('path');
 
-const storage = multer.memoryStorage();
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    // Especifica la carpeta de destino
+    cb(null, path.join(__dirname, '../uploads/audios'));
+  },
+  filename: (req, file, cb) => {
+    // Genera un nombre único para el archivo
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  },
+});
 
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    // Define los tipos de archivos permitidos
-    const allowedFileTypes = ['image/jpeg', 'image/png'];
+    const allowedFileTypes = [
+      'image/jpeg',
+      'image/png',
+      'audio/mpeg',
+      'audio/wav',
+      'audio/ogg',
+    ];
 
-    // Verifica si el tipo de archivo es permitido
     if (allowedFileTypes.includes(file.mimetype)) {
-      // Acepta el archivo
       cb(null, true);
     } else {
-      // Rechaza el archivo
       cb(new Error('Tipo de archivo no permitido'));
     }
   },

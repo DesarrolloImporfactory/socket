@@ -11,6 +11,7 @@ const DetalleFactCot = require('../models/detalle_fact_cot.model');
 const ProvinciaLaar = require('../models/provincia_laar.model');
 const CiudadCotizacion = require('../models/ciudad_cotizacion.model');
 const Plataforma = require('../models/plataforma.model');
+
 class ChatService {
   async findChats(id_plataforma) {
     try {
@@ -258,6 +259,7 @@ class ChatService {
         where: {
           id_plataforma,
           guia_enviada: 0,
+          anulada: 0,
           [Op.or]: telefonoFormateado.map((formato) => ({
             telefono: {
               [Op.like]: `%${formato}%`,
@@ -327,6 +329,8 @@ class ChatService {
       throw new AppError(error.message, 500);
     }
   }
+
+  async sendAudio(data) {}
 
   async getTarifas(ciudadId, provincia, montoFactura, recuado, id_plataforma) {
     try {

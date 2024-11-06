@@ -621,3 +621,13 @@
 [2024-11-05T17:04:03.843Z] info: jwt expired
 [2024-11-05T17:58:09.335Z] info: jwt malformed
 [2024-11-05T19:41:50.416Z] info: jwt malformed
+[2024-11-06T13:44:57.047Z] info: jwt malformed
+[2024-11-06T15:32:58.504Z] info: jwt malformed
+[2024-11-06T15:33:09.465Z] info: jwt malformed
+[2024-11-06T16:34:15.016Z] info: jwt malformed
+[2024-11-06T16:34:29.622Z] info: Incorrect email/password!
+[2024-11-06T16:55:23.073Z] info: jwt malformed
+[2024-11-06T17:09:13.545Z] info: Can't find /api/v1/upload on this server! 🧨
+[2024-11-06T17:09:37.562Z] info: Can't find /api/v1/webhook/upload on this server! 🧨
+[2024-11-06T17:13:52.234Z] info: ENOENT: no such file or directory, open 'uploads/audios/1730913232230-218165963-audio.ogg'
+[2024-11-06T17:16:06.688Z] info: ENOENT: no such file or directory, open 'uploads/audios/1730913366685-413518953-audio.ogg'
