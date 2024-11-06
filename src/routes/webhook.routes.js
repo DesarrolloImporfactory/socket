@@ -35,6 +35,7 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
 
     // Usa ffmpeg para convertir a OGG Opus
     ffmpeg(inputFilePath)
+      .audioBitrate(128)
       .audioCodec('libopus') // Codec Opus
       .format('ogg')
       .on('end', () => {
