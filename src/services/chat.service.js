@@ -112,7 +112,13 @@ class ChatService {
         where: {
           id_plataforma,
         },
-        attributes: ['id_telefono', 'token', 'id_plataforma', 'id_whatsapp'],
+        attributes: [
+          'id_telefono',
+          'token',
+          'id_plataforma',
+          'id_whatsapp',
+          'telefono',
+        ],
       });
 
       return configuraciones;
