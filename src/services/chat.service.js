@@ -72,6 +72,8 @@ class ChatService {
               'tipo_mensaje',
               'id',
               'rol_mensaje',
+              'celular_recibe',
+              'mid_mensaje',
             ],
             order: [['created_at', 'ASC']], // Ordenar los mensajes por fecha de creación ascendente
           },

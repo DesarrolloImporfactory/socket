@@ -632,3 +632,4 @@
 [2024-11-06T17:13:52.234Z] info: ENOENT: no such file or directory, open 'uploads/audios/1730913232230-218165963-audio.ogg'
 [2024-11-06T17:16:06.688Z] info: ENOENT: no such file or directory, open 'uploads/audios/1730913366685-413518953-audio.ogg'
 [2024-11-06T19:03:26.686Z] info: jwt malformed
+[2024-11-06T20:27:34.256Z] info: jwt malformed
