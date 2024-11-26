@@ -109,27 +109,35 @@ class Sockets {
         }
       });
 
-      socket.on('GET_TARIFAS', async ({ ciudad, provincia, id_plataforma }) => {
-        try {
-          const chatService = new ChatService();
-          const data = await chatService.getTarifas(
-            ciudad,
-            provincia,
-            id_plataforma
-          );
+      socket.on(
+        'GET_TARIFAS',
+        async ({
+          ciudad,
+          provincia,
+          id_plataforma,
+          monto_factura,
+          recaudo,
+        }) => {
+          try {
+            const chatService = new ChatService();
+            const data = await chatService.getTarifas(
+              ciudad,
+              monto_factura,
+              recaudo,
+              id_plataforma
+            );
+            // Enviar los datos al cliente que hizo la solicitud
+            socket.emit('DATA_TARIFAS_RESPONSE', data);
+          } catch (error) {
+            console.error('Error al obtener los datos:', error.message);
 
-          // Enviar los datos al cliente que hizo la solicitud
-          socket.emit('DATA_TARIFAS_RESPONSE', data);
-        } catch (error) {
-          console.error('Error al obtener los datos del admin:', error.message);
-
-          // Enviar mensaje de error al cliente en caso de fallo
-          socket.emit('ERROR_RESPONSE', {
-            message:
-              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
-          });
+            // Enviar mensaje de error al cliente en caso de fallo
+            socket.emit('ERROR_RESPONSE', {
+              message: 'Error al obtener los datos del admin. ' + error.message,
+            });
+          }
         }
-      });
+      );
 
       socket.on('GET_FACTURAS', async ({ id_plataforma, telefono }) => {
         try {

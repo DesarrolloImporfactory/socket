@@ -11,6 +11,11 @@ const DetalleFactCot = require('../models/detalle_fact_cot.model');
 const ProvinciaLaar = require('../models/provincia_laar.model');
 const CiudadCotizacion = require('../models/ciudad_cotizacion.model');
 const Plataforma = require('../models/plataforma.model');
+const CoberturaLaar = require('../models/cobertura_laar.model');
+const CoberturaServientrega = require('../models/cobertura_servientrega.model');
+const CoberturaGintracom = require('../models/cobertura_gintracom.model');
+const InventarioBodegas = require('../models/inventario_bodegas.model');
+const Productos = require('../models/productos.model');
 
 class ChatService {
   async findChats(id_plataforma) {
@@ -79,7 +84,7 @@ class ChatService {
           },
         ],
       });
-
+      //obtener el mid_mensaje
       return chats;
     } catch (error) {
       console.error('Error al obtener los chats:', error.message);
@@ -274,14 +279,21 @@ class ChatService {
             },
           })),
         },
-        include: [
-          {
-            model: DetalleFactCot,
-            as: 'detalles',
-            attributes: ['id_inventario', 'cantidad', 'precio_venta'],
-          },
-        ],
       });
+
+      // Iteramos sobre cada factura para agregar sus productos
+      for (const factura of facturas) {
+        const productos = await db.query(
+          `SELECT * FROM vista_productos WHERE numero_factura = :numero_factura`,
+          {
+            replacements: { numero_factura: factura.numero_factura },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        );
+
+        // Añadimos los productos al objeto de la factura
+        factura.dataValues.productos = productos;
+      }
 
       return facturas;
     } catch (error) {
@@ -340,7 +352,7 @@ class ChatService {
 
   async sendAudio(data) {}
 
-  async getTarifas(ciudadId, provincia, montoFactura, recuado, id_plataforma) {
+  async getTarifas(ciudadId, montoFactura, recuado, id_plataforma) {
     try {
       // Consulta para obtener los datos de la ciudad
       const ciudadData = await CiudadCotizacion.findOne({
@@ -361,32 +373,35 @@ class ChatService {
         trayecto_gintracom,
         ciudad,
       } = ciudadData;
-
       // Consultas para obtener los precios de cobertura según los trayectos
-      const [precioLaar] = (await CoberturaLaar.findOne({
+      const precioLaar = (await CoberturaLaar.findOne({
         where: { tipo_cobertura: trayecto_laar },
       })) || { precio: 0 };
-      const [precioServientrega] = (await CoberturaServientrega.findOne({
+      const precioServientrega = (await CoberturaServientrega.findOne({
         where: { tipo_cobertura: trayecto_servientrega },
       })) || { precio: 0 };
-      const [precioGintracom] = (await CoberturaGintracom.findOne({
+      const precioGintracom = (await CoberturaGintracom.findOne({
         where: { trayecto: trayecto_gintracom },
       })) || { precio: 0 };
 
       let tarifas = {
         laar: precioLaar.precio || 0,
-        servientrega: precioServientrega.precio || 0,
+        servientrega: precioServientrega.dataValues.precio || 0,
         gintracom: precioGintracom.precio || 0,
       };
-
+      if (ciudadId == 599) {
+        tarifas.servientrega = 5;
+      }
       // Obtener el valor de la matriz
-      const matrizData = await this.obtenerMatriz();
+      const matrizData = await this.obtenerMatriz(id_plataforma);
       const matriz = matrizData[0] ? matrizData[0].idmatriz : null;
 
       // Cálculo de "previo" con monto de factura
       let previo = montoFactura * 0.03;
-      if (previo < 1.35) previo = 1.35;
-
+      let previoServientrega = montoFactura * 0.03;
+      if (previoServientrega < 1.35) previoServientrega = 1.35;
+      console.log(previoServientrega);
+      console.log(tarifas.servientrega);
       // Aplicación de lógica condicional para cada tarifa según el trayecto y el recuado
       if (trayecto_laar && trayecto_laar !== '0') {
         tarifas.laar += recuado === '1' ? previo : 0;
@@ -403,11 +418,12 @@ class ChatService {
       }
 
       if (trayecto_servientrega && trayecto_servientrega !== '0') {
-        tarifas.servientrega += recuado === '1' ? previo : 0;
+        tarifas.servientrega += recuado === '1' ? previoServientrega : 0;
         if (ciudad === 'QUITO' && recuado !== '1') tarifas.servientrega = 4.97;
       } else {
         tarifas.servientrega = 0;
       }
+      console.log(tarifas.servientrega);
 
       // Aplicación de tarifas "speed" según la ciudad y plataforma
       const speedTarifas = {
@@ -433,6 +449,22 @@ class ChatService {
       tarifas.gintracom = parseFloat(tarifas.gintracom.toFixed(2));
 
       return tarifas;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async obtenerMatriz(id_plataforma) {
+    try {
+      const matriz = await db.query(
+        `SELECT id_matriz FROM plataformas WHERE id_plataforma = :id_plataforma`,
+        {
+          replacements: { id_plataforma },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      return matriz;
     } catch (error) {
       throw new AppError(error.message, 500);
     }

@@ -5,7 +5,7 @@ const CiudadCotizacion = db.define(
   'ciudad_cotizacion',
   {
     id_cotizacion: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.INTEGER,
       allowNull: false,
       primaryKey: true,
     },

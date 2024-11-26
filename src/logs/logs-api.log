@@ -633,3 +633,58 @@
 [2024-11-06T17:16:06.688Z] info: ENOENT: no such file or directory, open 'uploads/audios/1730913366685-413518953-audio.ogg'
 [2024-11-06T19:03:26.686Z] info: jwt malformed
 [2024-11-06T20:27:34.256Z] info: jwt malformed
+[2024-11-07T20:19:34.479Z] info: jwt malformed
+[2024-11-07T20:58:34.678Z] info: jwt malformed
+[2024-11-08T19:19:23.116Z] info: jwt malformed
+[2024-11-08T19:24:38.253Z] info: jwt malformed
+[2024-11-11T14:01:54.768Z] info: jwt malformed
+[2024-11-11T19:41:30.029Z] info: jwt malformed
+[2024-11-12T15:18:17.810Z] info: jwt malformed
+[2024-11-12T16:21:49.924Z] info: jwt malformed
+[2024-11-12T21:33:42.317Z] info: jwt malformed
+[2024-11-13T13:10:25.106Z] info: jwt malformed
+[2024-11-13T15:00:08.233Z] info: jwt malformed
+[2024-11-13T18:01:02.507Z] info: jwt expired
+[2024-11-13T18:01:02.839Z] info: jwt malformed
+[2024-11-13T19:34:00.920Z] info: jwt expired
+[2024-11-13T19:34:01.325Z] info: jwt malformed
+[2024-11-13T19:52:45.105Z] info: jwt malformed
+[2024-11-14T14:06:57.402Z] info: jwt malformed
+[2024-11-14T16:10:05.966Z] info: jwt expired
+[2024-11-14T16:10:06.371Z] info: jwt malformed
+[2024-11-14T20:22:59.971Z] info: jwt malformed
+[2024-11-15T19:58:56.471Z] info: jwt malformed
+[2024-11-15T21:29:17.978Z] info: jwt expired
+[2024-11-15T21:29:18.272Z] info: jwt malformed
+[2024-11-19T17:37:13.992Z] info: jwt malformed
+[2024-11-20T14:40:04.318Z] info: jwt malformed
+[2024-11-20T15:46:54.594Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T15:47:26.105Z] info: jwt expired
+[2024-11-20T15:47:40.653Z] info: jwt expired
+[2024-11-20T15:47:41.374Z] info: jwt malformed
+[2024-11-20T16:07:55.693Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T16:07:55.702Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T16:07:56.299Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T16:08:46.238Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T16:08:46.360Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T17:06:43.952Z] info: Named replacement ":limit" has no entry in the replacement map.
+[2024-11-20T17:06:44.048Z] info: Named replacement ":limit" has no entry in the replacement map.
+[2024-11-20T17:07:19.673Z] info: jwt expired
+[2024-11-20T17:07:49.065Z] info: Named replacement ":limit" has no entry in the replacement map.
+[2024-11-20T17:07:49.190Z] info: Named replacement ":limit" has no entry in the replacement map.
+[2024-11-20T17:11:31.352Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T17:11:31.358Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T17:11:31.546Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T17:11:44.567Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T17:11:44.687Z] info: You are not logged in! Please log in to get access.
+[2024-11-20T19:12:51.912Z] info: jwt malformed
+[2024-11-21T13:05:48.286Z] info: jwt malformed
+[2024-11-21T16:48:35.800Z] info: jwt expired
+[2024-11-21T16:48:48.432Z] info: jwt expired
+[2024-11-21T16:48:49.083Z] info: jwt malformed
+[2024-11-21T19:12:24.615Z] info: jwt expired
+[2024-11-21T19:12:25.026Z] info: jwt malformed
+[2024-11-21T20:07:05.114Z] info: jwt malformed
+[2024-11-25T17:05:57.310Z] info: jwt malformed
+[2024-11-25T17:07:43.974Z] info: jwt malformed
+[2024-11-25T20:40:33.139Z] info: jwt malformed

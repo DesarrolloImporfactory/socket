@@ -130,5 +130,15 @@ const initModel = () => {
     foreignKey: 'id_plataforma',
     as: 'plataforma',
   });
+
+  DetalleFactCot.belongsTo(InventarioBodegas, {
+    foreignKey: 'id_inventario',
+    as: 'inventario',
+  });
+
+  InventarioBodegas.hasMany(DetalleFactCot, {
+    foreignKey: 'id_inventario',
+    as: 'detalles',
+  });
 };
 module.exports = initModel;

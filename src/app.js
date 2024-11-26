@@ -7,6 +7,7 @@ const hpp = require('hpp');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const sanitizer = require('perfect-express-sanitizer');
+const productRouter = require('./routes/product.routes');
 
 const authRouter = require('./routes/auth.routes');
 
@@ -47,6 +48,7 @@ app.use('/api/v1', limiter);
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
+app.use('/api/v1/product', productRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)

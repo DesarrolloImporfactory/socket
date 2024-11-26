@@ -9,7 +9,7 @@ const CoberturaGintracom = db.define(
       allowNull: false,
       primaryKey: true,
     },
-    tipo_cobertura: {
+    trayecto: {
       type: DataTypes.STRING(10),
       allowNull: false,
     },
