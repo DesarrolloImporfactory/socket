@@ -1,4 +1,4 @@
-const { DataTypes } = require('sequelize');
+const { DataTypes, TINYINT } = require('sequelize');
 const { db } = require('../database/config');
 
 const MensajesClientes = db.define(
@@ -109,6 +109,11 @@ const MensajesClientes = db.define(
       type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
+    },
+    visto: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
     },
   },
   {

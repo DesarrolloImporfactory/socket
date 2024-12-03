@@ -94,6 +94,7 @@ class Sockets {
       socket.on('GET_CELLPHONES', async ({ id_plataforma, texto }) => {
         try {
           const chatService = new ChatService();
+
           const data = await chatService.getCellphones(id_plataforma, texto);
 
           // Enviar los datos al cliente que hizo la solicitud
@@ -108,6 +109,30 @@ class Sockets {
           });
         }
       });
+
+      socket.on(
+        'GET_SERVIENTREGA',
+        async ({ ciudadO, ciudadD, provinciaD, monto_factura }) => {
+          try {
+            const chatService = new ChatService();
+
+            ciudadD = await chatService.getNombre(ciudadD, 'ciudad');
+            ciudadO = await chatService.getNombre(ciudadO, 'ciudad');
+
+            const data = await chatService.getServientrega(
+              ciudadO.ciudad,
+              ciudadD.ciudad,
+              provinciaD.provincia,
+              monto_factura
+            );
+
+            // Enviar los datos al cliente que hizo la solicitud
+            socket.emit('DATA_SERVIENTREGA_RESPONSE', data);
+          } catch (error) {
+            console.log('Error al solicitar la petición servi: ' + error);
+          }
+        }
+      );
 
       socket.on(
         'GET_TARIFAS',

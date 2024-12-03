@@ -1,4 +1,4 @@
-const { Op, Sequelize } = require('sequelize');
+const { Op, Sequelize, where } = require('sequelize');
 const AppError = require('../utils/appError');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
@@ -16,7 +16,8 @@ const CoberturaServientrega = require('../models/cobertura_servientrega.model');
 const CoberturaGintracom = require('../models/cobertura_gintracom.model');
 const InventarioBodegas = require('../models/inventario_bodegas.model');
 const Productos = require('../models/productos.model');
-
+const axios = require('axios');
+const xml2js = require('xml2js');
 class ChatService {
   async findChats(id_plataforma) {
     try {
@@ -58,6 +59,26 @@ class ChatService {
     }
   }
 
+  async getNombre(codigo, nombre) {
+    let sql = '';
+    if (nombre === 'ciudad') {
+      sql = `SELECT ${nombre} FROM ciudad_cotizacion WHERE id_cotizacion = '${codigo}';`;
+    } else {
+      sql = `SELECT ${nombre} FROM ciudad_cotizacion WHERE codigo_provincia_laar = '${codigo}' LIMIT 1`;
+    }
+
+    try {
+      const [results, metadata] = await db.query(sql); // El resultado está en `results`
+      console.log('Resultado:', results); // Imprime el resultado de forma legible
+
+      // Devuelve el primer elemento si esperas solo un resultado
+      return results.length > 0 ? results[0] : null;
+    } catch (error) {
+      console.error('Error ejecutando la consulta:', error.message);
+      throw error; // Opcional: Lanza el error para manejarlo en niveles superiores
+    }
+  }
+
   async getChatsByClient(id_cliente, id_plataforma) {
     try {
       const chats = await ClientesChatCenter.findAll({
@@ -84,6 +105,23 @@ class ChatService {
           },
         ],
       });
+      console.log(id_cliente);
+      console.log(id_plataforma);
+
+      const actualizarVistos = await MensajesClientes.update(
+        { visto: 1 }, // Campos a actualizar
+        {
+          where: {
+            celular_recibe: id_cliente,
+            id_plataforma: id_plataforma,
+            visto: 0,
+            rol_mensaje: 0,
+          },
+        }
+      );
+
+      console.log(actualizarVistos);
+
       //obtener el mid_mensaje
       return chats;
     } catch (error) {
@@ -251,6 +289,87 @@ class ChatService {
       return telefonos;
     } catch (error) {
       throw new AppError(error.message, 500);
+    }
+  }
+
+  async getServientrega(ciudadO, ciudadD, provinciaD, monto_factura) {
+    let destino;
+    console.log('inicio servi' + ciudadD);
+    try {
+      if (ciudadD.includes('/')) {
+        destino = `${ciudadD} (${provinciaD})-${provinciaD}`;
+      } else {
+        destino = `${ciudadD}-${provinciaD}`;
+      }
+
+      const url =
+        'https://servientrega-ecuador.appsiscore.com/app/ws/cotizador_ser_recaudo.php?wsdl';
+
+      const xml = `
+<soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://servientrega-ecuador.appsiscore.com/app/ws/">
+    <soapenv:Header/>
+    <soapenv:Body>
+        <ws:Consultar soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+            <producto xsi:type="xsd:string">MERCANCIA PREMIER</producto>
+            <origen xsi:type="xsd:string">${ciudadO}</origen>
+            <destino xsi:type="xsd:string">${destino}</destino>
+            <valor_mercaderia xsi:type="xsd:string">${monto_factura}</valor_mercaderia>
+            <piezas xsi:type="xsd:string">1</piezas>
+            <peso xsi:type="xsd:string">2</peso>
+            <alto xsi:type="xsd:string">10</alto>
+            <ancho xsi:type="xsd:string">50</ancho>
+            <largo xsi:type="xsd:string">50</largo>
+            <tokn xsi:type="xsd:string">1593aaeeb60a560c156387989856db6be7edc8dc220f9feae3aea237da6a951d</tokn>
+            <usu xsi:type="xsd:string">IMPCOMEX</usu>
+            <pwd xsi:type="xsd:string">Rtcom-ex9912</pwd>
+        </ws:Consultar>
+    </soapenv:Body>
+</soapenv:Envelope>
+`;
+
+      const response = await axios.post(url, xml, {
+        headers: { 'Content-Type': 'text/xml' },
+      });
+
+      const parser = new xml2js.Parser({ explicitArray: false });
+      const parsed = await parser.parseStringPromise(response.data);
+
+      const resultNode =
+        parsed['soapenv:Envelope']['soapenv:Body']['ns1:ConsultarResponse'][
+          'Result'
+        ];
+      if (!resultNode) {
+        console.error('No se encontró la etiqueta <Result>');
+        return {
+          flete: 0,
+          seguro: 0,
+          comision: 0,
+          otros: 0,
+          impuestos: 0,
+        };
+      }
+
+      const result = await parser.parseStringPromise(resultNode);
+      const data = {
+        flete: parseFloat(result.flete || 0).toFixed(2),
+        seguro: parseFloat(result.seguro || 0).toFixed(2),
+        comision: parseFloat(result.valor_comision || 0).toFixed(2),
+        otros: parseFloat(result.otros || 0).toFixed(2),
+        impuestos: parseFloat(result.impuesto || 0).toFixed(2),
+      };
+
+      console.log('La data es: ', data);
+
+      return data;
+    } catch (error) {
+      console.error('Error en la solicitud SOAP:', error.message);
+      return {
+        flete: 0,
+        seguro: 0,
+        comision: 0,
+        otros: 0,
+        impuestos: 0,
+      };
     }
   }
 
