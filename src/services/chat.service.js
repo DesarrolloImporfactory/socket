@@ -18,6 +18,7 @@ const InventarioBodegas = require('../models/inventario_bodegas.model');
 const Productos = require('../models/productos.model');
 const axios = require('axios');
 const xml2js = require('xml2js');
+const { decode } = require('html-entities');
 class ChatService {
   async findChats(id_plataforma) {
     try {
@@ -294,7 +295,7 @@ class ChatService {
 
   async getServientrega(ciudadO, ciudadD, provinciaD, monto_factura) {
     let destino;
-    console.log('inicio servi' + ciudadD);
+
     try {
       if (ciudadD.includes('/')) {
         destino = `${ciudadD} (${provinciaD})-${provinciaD}`;
@@ -306,41 +307,48 @@ class ChatService {
         'https://servientrega-ecuador.appsiscore.com/app/ws/cotizador_ser_recaudo.php?wsdl';
 
       const xml = `
-<soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://servientrega-ecuador.appsiscore.com/app/ws/">
-    <soapenv:Header/>
-    <soapenv:Body>
-        <ws:Consultar soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-            <producto xsi:type="xsd:string">MERCANCIA PREMIER</producto>
-            <origen xsi:type="xsd:string">${ciudadO}</origen>
-            <destino xsi:type="xsd:string">${destino}</destino>
-            <valor_mercaderia xsi:type="xsd:string">${monto_factura}</valor_mercaderia>
-            <piezas xsi:type="xsd:string">1</piezas>
-            <peso xsi:type="xsd:string">2</peso>
-            <alto xsi:type="xsd:string">10</alto>
-            <ancho xsi:type="xsd:string">50</ancho>
-            <largo xsi:type="xsd:string">50</largo>
-            <tokn xsi:type="xsd:string">1593aaeeb60a560c156387989856db6be7edc8dc220f9feae3aea237da6a951d</tokn>
-            <usu xsi:type="xsd:string">IMPCOMEX</usu>
-            <pwd xsi:type="xsd:string">Rtcom-ex9912</pwd>
-        </ws:Consultar>
-    </soapenv:Body>
-</soapenv:Envelope>
-`;
+              <soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="https://servientrega-ecuador.appsiscore.com/app/ws/">
+                  <soapenv:Header/>
+                  <soapenv:Body>
+                      <ws:Consultar soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                          <producto xsi:type="xsd:string">MERCANCIA PREMIER</producto>
+                          <origen xsi:type="xsd:string">${ciudadO}</origen>
+                          <destino xsi:type="xsd:string">${destino}</destino>
+                          <valor_mercaderia xsi:type="xsd:string">${monto_factura}</valor_mercaderia>
+                          <piezas xsi:type="xsd:string">1</piezas>
+                          <peso xsi:type="xsd:string">2</peso>
+                          <alto xsi:type="xsd:string">10</alto>
+                          <ancho xsi:type="xsd:string">50</ancho>
+                          <largo xsi:type="xsd:string">50</largo>
+                          <tokn xsi:type="xsd:string">1593aaeeb60a560c156387989856db6be7edc8dc220f9feae3aea237da6a951d</tokn>
+                          <usu xsi:type="xsd:string">IMPCOMEX</usu>
+                          <pwd xsi:type="xsd:string">Rtcom-ex9912</pwd>
+                      </ws:Consultar>
+                  </soapenv:Body>
+              </soapenv:Envelope>
+          `;
 
       const response = await axios.post(url, xml, {
         headers: { 'Content-Type': 'text/xml' },
       });
 
+      console.log('Respuesta RAW:', response.data);
+
       const parser = new xml2js.Parser({ explicitArray: false });
       const parsed = await parser.parseStringPromise(response.data);
 
-      const resultNode =
-        parsed['soapenv:Envelope']['soapenv:Body']['ns1:ConsultarResponse'][
-          'Result'
-        ];
-      if (!resultNode) {
-        console.error('No se encontró la etiqueta <Result>');
+      // Detectar dinámicamente los prefijos
+      const envelopeKey = Object.keys(parsed).find((key) =>
+        key.includes('Envelope')
+      );
+      const bodyKey = envelopeKey
+        ? Object.keys(parsed[envelopeKey]).find((key) => key.includes('Body'))
+        : null;
+
+      if (!bodyKey) {
+        console.error('No se encontró el nodo Body en la respuesta SOAP');
         return {
+          mensaje: 'No se pudo procesar la solicitud',
           flete: 0,
           seguro: 0,
           comision: 0,
@@ -349,21 +357,53 @@ class ChatService {
         };
       }
 
-      const result = await parser.parseStringPromise(resultNode);
+      const resultNode =
+        parsed[envelopeKey][bodyKey]['ns1:ConsultarResponse']?.Result;
+
+      if (!resultNode) {
+        console.error('No se encontró el nodo <Result>');
+        return {
+          mensaje: 'No se pudo procesar la solicitud',
+          flete: 0,
+          seguro: 0,
+          comision: 0,
+          otros: 0,
+          impuestos: 0,
+        };
+      }
+
+      // Extraer y decodificar el contenido de <Result>
+      const rawResult = resultNode._; // Contenido del nodo
+      const decodedResult = decode(rawResult); // Decodificar entidades HTML
+
+      console.log('Resultado decodificado:', decodedResult);
+
+      // Parsear el XML anidado en <Result>
+      const resultParser = new xml2js.Parser({ explicitArray: false });
+      const resultData = await resultParser.parseStringPromise(decodedResult);
+
       const data = {
-        flete: parseFloat(result.flete || 0).toFixed(2),
-        seguro: parseFloat(result.seguro || 0).toFixed(2),
-        comision: parseFloat(result.valor_comision || 0).toFixed(2),
-        otros: parseFloat(result.otros || 0).toFixed(2),
-        impuestos: parseFloat(result.impuesto || 0).toFixed(2),
+        flete: parseFloat(resultData.ConsultarResult.flete || 0).toFixed(2),
+        seguro: parseFloat(resultData.ConsultarResult.seguro || 0).toFixed(2),
+        comision: parseFloat(
+          resultData.ConsultarResult.valor_comision || 0
+        ).toFixed(2),
+        otros: parseFloat(resultData.ConsultarResult.otros || 0).toFixed(2),
+        impuestos: parseFloat(resultData.ConsultarResult.impuesto || 0).toFixed(
+          2
+        ),
       };
 
-      console.log('La data es: ', data);
+      console.log('La data es:', data);
 
-      return data;
+      return {
+        mensaje: 'Procesado correctamente',
+        ...data,
+      };
     } catch (error) {
       console.error('Error en la solicitud SOAP:', error.message);
       return {
+        mensaje: 'Error en la solicitud',
         flete: 0,
         seguro: 0,
         comision: 0,

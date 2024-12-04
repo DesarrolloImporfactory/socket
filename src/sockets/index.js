@@ -118,7 +118,7 @@ class Sockets {
 
             ciudadD = await chatService.getNombre(ciudadD, 'ciudad');
             ciudadO = await chatService.getNombre(ciudadO, 'ciudad');
-
+            provinciaD = await chatService.getNombre(provinciaD, 'provincia');
             const data = await chatService.getServientrega(
               ciudadO.ciudad,
               ciudadD.ciudad,
