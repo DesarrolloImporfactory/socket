@@ -440,6 +440,19 @@ class ChatService {
         },
       });
 
+      const guias = await FacturasCot.findAll({
+        where: {
+          id_plataforma,
+          guia_enviada: 1,
+          anulada: 0,
+          [Op.or]: telefonoFormateado.map((formato) => ({
+            telefono: {
+              [Op.like]: `%${formato}%`,
+            },
+          })),
+        },
+      });
+
       // Iteramos sobre cada factura para agregar sus productos
       for (const factura of facturas) {
         const productos = await db.query(
@@ -454,7 +467,20 @@ class ChatService {
         factura.dataValues.productos = productos;
       }
 
-      return facturas;
+      for (const guia of guias) {
+        const productos = await db.query(
+          `SELECT * FROM vista_productos WHERE numero_factura = :numero_factura`,
+          {
+            replacements: { numero_factura: guia.numero_factura },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        );
+
+        // Añadimos los productos al objeto de la factura
+        guia.dataValues.productos = productos;
+      }
+
+      return { facturas, guias };
     } catch (error) {
       throw new AppError(error.message, 500);
     }
