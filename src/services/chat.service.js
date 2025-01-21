@@ -43,10 +43,10 @@ class ChatService {
       // Realiza la consulta para obtener los chats excluyendo el número específico
       const chats = await db.query(
         `
-        SELECT * FROM vista_chats
+        SELECT * FROM vista_chats_2  
         WHERE id_plataforma = :id_plataforma
           AND celular_cliente != :numero
-        ORDER BY mensaje_created_at DESC;
+        ;
       `,
         {
           replacements: { id_plataforma: id_plataforma, numero: numero },
@@ -432,6 +432,7 @@ class ChatService {
           id_plataforma,
           guia_enviada: 0,
           anulada: 0,
+          id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
             telefono: {
               [Op.like]: `%${formato}%`,
@@ -444,7 +445,8 @@ class ChatService {
         where: {
           id_plataforma,
           guia_enviada: 1,
-          anulada: 0,
+
+          id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
             telefono: {
               [Op.like]: `%${formato}%`,
