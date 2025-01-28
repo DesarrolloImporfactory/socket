@@ -178,6 +178,7 @@ class ChatService {
         to,
         dataAdmin,
         tipo_mensaje,
+        id_plataforma,
         ruta_archivo = null,
       } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
@@ -228,12 +229,14 @@ class ChatService {
       const cliente = await ClientesChatCenter.findOne({
         where: {
           uid_cliente: fromTelefono,
+          id_plataforma: id_plataforma,
         },
       });
 
       const receptor = await ClientesChatCenter.findOne({
         where: {
           celular_cliente: to,
+          id_plataforma: id_plataforma,
         },
       });
 
