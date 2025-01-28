@@ -549,6 +549,9 @@ class ChatService {
           'trayecto_servientrega',
           'trayecto_gintracom',
           'ciudad',
+          'cobertura_servientrega',
+          'cobertura_gintracom',
+          'cobertura_laar',
         ],
       });
 
@@ -570,6 +573,17 @@ class ChatService {
       const precioGintracom = (await CoberturaGintracom.findOne({
         where: { trayecto: trayecto_gintracom },
       })) || { precio: 0 };
+
+      // revisar coberturas
+      if (ciudadData.cobertura_servientrega === 0) {
+        precioServientrega.precio = 0;
+      }
+      if (ciudadData.cobertura_gintracom === 0) {
+        precioGintracom.precio = 0;
+      }
+      if (ciudadData.cobertura_laar === 0) {
+        precioLaar.precio = 0;
+      }
 
       let tarifas = {
         laar: precioLaar.precio || 0,
