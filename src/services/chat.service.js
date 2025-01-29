@@ -219,7 +219,7 @@ class ChatService {
         // Parsear la respuesta de la API
         responseData = await response.json();
 
-        // Manejo de errores en la respuesta
+        // Manejo de errores en la respuestas
         if (responseData.error) {
           console.error('Error al enviar el mensaje:', responseData.error);
           throw new Error(responseData.error.message);
