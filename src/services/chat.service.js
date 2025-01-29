@@ -236,7 +236,6 @@ class ChatService {
       const receptor = await ClientesChatCenter.findOne({
         where: {
           celular_cliente: to,
-          id_plataforma: id_plataforma,
         },
       });
 

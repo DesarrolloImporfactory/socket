@@ -720,3 +720,17 @@
 [2025-01-21T16:13:54.779Z] info: jwt expired
 [2025-01-21T16:13:55.388Z] info: jwt malformed
 [2025-01-21T16:15:06.285Z] info: jwt malformed
+[2025-01-29T14:41:32.765Z] info: Can't find //api/v1/auth/renew on this server! 🧨
+[2025-01-29T14:41:40.608Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:41:44.336Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:42:04.707Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:42:24.746Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:42:38.610Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:43:58.867Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:46:04.144Z] info: Can't find //api/v1/auth/renew on this server! 🧨
+[2025-01-29T14:46:05.643Z] info: Can't find //api/v1/auth/login on this server! 🧨
+[2025-01-29T14:47:18.754Z] info: jwt malformed
+[2025-01-29T18:36:45.688Z] info: jwt malformed
+[2025-01-29T19:21:48.193Z] info: Can't find / on this server! 🧨
+[2025-01-29T19:21:48.448Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-01-29T21:11:45.156Z] info: jwt malformed
