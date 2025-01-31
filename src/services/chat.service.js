@@ -418,6 +418,16 @@ class ChatService {
 
   async getFacturas(id_plataforma, telefono) {
     try {
+      if (
+        telefono == 'undefined' ||
+        telefono == 'null' ||
+        telefono == null ||
+        telefono == undefined ||
+        telefono == ''
+      ) {
+        return [];
+      }
+
       // Normalizamos el teléfono de entrada quitando caracteres no numéricos
       const telefonoNormalizado = telefono.replace(/[^\d]/g, '');
 
