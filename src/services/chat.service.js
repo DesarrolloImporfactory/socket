@@ -567,7 +567,7 @@ class ChatService {
           'cobertura_laar',
         ],
       });
-      let precio = 0;
+
       if (!ciudadData) throw new Error('Datos de ciudad no encontrados.');
 
       const {
@@ -576,39 +576,50 @@ class ChatService {
         trayecto_gintracom,
         ciudad,
       } = ciudadData;
-      // Consultas para obtener los precios de cobertura según los trayectos
-      const precioLaar =
-        (await CoberturaLaar.findOne({
-          where: { tipo_cobertura: trayecto_laar },
-        })) || 0;
-      const precioServientrega =
-        (await CoberturaServientrega.findOne({
-          where: { tipo_cobertura: trayecto_servientrega },
-        })) || 0;
-      const precioGintracom =
-        (await CoberturaGintracom.findOne({
-          where: { trayecto: trayecto_gintracom },
-        })) || 0;
 
-      // revisar coberturas
+      // Consultas para obtener los precios de cobertura según los trayectos
+      const precioLaarResult = await CoberturaLaar.findOne({
+        where: { tipo_cobertura: trayecto_laar },
+      });
+
+      const precioServientregaResult = await CoberturaServientrega.findOne({
+        where: { tipo_cobertura: trayecto_servientrega },
+      });
+
+      const precioGintracomResult = await CoberturaGintracom.findOne({
+        where: { trayecto: trayecto_gintracom },
+      });
+
+      // Asignar precios o 0 si no se encontraron resultados
+      let precioLaar = precioLaarResult ? precioLaarResult.precio : 0;
+      let precioServientrega = precioServientregaResult
+        ? precioServientregaResult.precio
+        : 0;
+      let precioGintracom = precioGintracomResult
+        ? precioGintracomResult.precio
+        : 0;
+
+      // Revisar coberturas y asignar 0 si no están disponibles
       if (ciudadData.cobertura_servientrega === 0) {
-        precioServientrega.precio = 0;
+        precioServientrega = 0;
       }
       if (ciudadData.cobertura_gintracom === 0) {
-        precioGintracom.precio = 0;
+        precioGintracom = 0;
       }
       if (ciudadData.cobertura_laar === 0) {
-        precioLaar.precio = 0;
+        precioLaar = 0;
       }
 
       let tarifas = {
-        laar: precioLaar.precio || 0,
-        servientrega: precioServientrega.dataValues.precio || 0,
-        gintracom: precioGintracom.precio || 0,
+        laar: precioLaar,
+        servientrega: precioServientrega,
+        gintracom: precioGintracom,
       };
+
       if (ciudadId == 599) {
         tarifas.servientrega = 5;
       }
+
       // Obtener el valor de la matriz
       const matrizData = await this.obtenerMatriz(id_plataforma);
       const matriz = matrizData[0] ? matrizData[0].idmatriz : null;
@@ -617,8 +628,10 @@ class ChatService {
       let previo = montoFactura * 0.03;
       let previoServientrega = montoFactura * 0.03;
       if (previoServientrega < 1.35) previoServientrega = 1.35;
+
       console.log(previoServientrega);
       console.log(tarifas.servientrega);
+
       // Aplicación de lógica condicional para cada tarifa según el trayecto y el recuado
       if (trayecto_laar && trayecto_laar !== '0') {
         tarifas.laar += recuado === '1' ? previo : 0;
@@ -640,6 +653,7 @@ class ChatService {
       } else {
         tarifas.servientrega = 0;
       }
+
       console.log(tarifas.servientrega);
 
       // Aplicación de tarifas "speed" según la ciudad y plataforma
@@ -659,6 +673,7 @@ class ChatService {
       };
 
       tarifas.speed = speedTarifas[ciudad] || 0;
+
       if (ciudadData.cobertura_servientrega === 0) {
         tarifas.servientrega = 0;
       }
@@ -668,6 +683,7 @@ class ChatService {
       if (ciudadData.cobertura_laar === 0) {
         tarifas.laar = 0;
       }
+
       // Formato de los valores de tarifas a 2 decimales
       tarifas.laar = parseFloat(tarifas.laar.toFixed(2));
       tarifas.servientrega = parseFloat(tarifas.servientrega.toFixed(2));
