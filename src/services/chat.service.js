@@ -567,7 +567,7 @@ class ChatService {
           'cobertura_laar',
         ],
       });
-
+      let precio = 0;
       if (!ciudadData) throw new Error('Datos de ciudad no encontrados.');
 
       const {
@@ -577,15 +577,18 @@ class ChatService {
         ciudad,
       } = ciudadData;
       // Consultas para obtener los precios de cobertura según los trayectos
-      const precioLaar = (await CoberturaLaar.findOne({
-        where: { tipo_cobertura: trayecto_laar },
-      })) || { precio: 0 };
-      const precioServientrega = (await CoberturaServientrega.findOne({
-        where: { tipo_cobertura: trayecto_servientrega },
-      })) || { precio: 0 };
-      const precioGintracom = (await CoberturaGintracom.findOne({
-        where: { trayecto: trayecto_gintracom },
-      })) || { precio: 0 };
+      const precioLaar =
+        (await CoberturaLaar.findOne({
+          where: { tipo_cobertura: trayecto_laar },
+        })) || 0;
+      const precioServientrega =
+        (await CoberturaServientrega.findOne({
+          where: { tipo_cobertura: trayecto_servientrega },
+        })) || 0;
+      const precioGintracom =
+        (await CoberturaGintracom.findOne({
+          where: { trayecto: trayecto_gintracom },
+        })) || 0;
 
       // revisar coberturas
       if (ciudadData.cobertura_servientrega === 0) {
