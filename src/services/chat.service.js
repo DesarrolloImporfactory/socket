@@ -656,7 +656,15 @@ class ChatService {
       };
 
       tarifas.speed = speedTarifas[ciudad] || 0;
-
+      if (ciudadData.cobertura_servientrega === 0) {
+        tarifas.servientrega = 0;
+      }
+      if (ciudadData.cobertura_gintracom === 0) {
+        tarifas.gintracom = 0;
+      }
+      if (ciudadData.cobertura_laar === 0) {
+        tarifas.laar = 0;
+      }
       // Formato de los valores de tarifas a 2 decimales
       tarifas.laar = parseFloat(tarifas.laar.toFixed(2));
       tarifas.servientrega = parseFloat(tarifas.servientrega.toFixed(2));
