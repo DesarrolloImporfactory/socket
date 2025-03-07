@@ -243,6 +243,10 @@ const FacturasCot = db.define(
       type: DataTypes.STRING(100),
       allowNull: true,
     },
+    nombre_responsable: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+    },
   },
   {
     sequelize: db,

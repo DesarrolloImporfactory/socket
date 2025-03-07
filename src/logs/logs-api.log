@@ -734,3 +734,22 @@
 [2025-01-29T19:21:48.193Z] info: Can't find / on this server! 🧨
 [2025-01-29T19:21:48.448Z] info: Can't find /favicon.ico on this server! 🧨
 [2025-01-29T21:11:45.156Z] info: jwt malformed
+[2025-02-05T20:56:42.776Z] info: jwt malformed
+[2025-02-05T20:57:05.744Z] info: Incorrect email/password!
+[2025-02-06T13:57:57.067Z] info: jwt malformed
+[2025-02-06T14:30:43.269Z] info: jwt malformed
+[2025-02-06T14:31:15.817Z] info: jwt malformed
+[2025-02-06T16:32:34.790Z] info: jwt malformed
+[2025-02-06T16:32:51.662Z] info: jwt malformed
+[2025-02-06T22:04:06.222Z] info: jwt malformed
+[2025-02-07T15:44:31.078Z] info: jwt malformed
+[2025-02-07T15:46:14.692Z] info: jwt malformed
+[2025-02-17T16:03:29.906Z] info: jwt expired
+[2025-02-17T16:03:30.812Z] info: jwt malformed
+[2025-02-17T16:07:23.363Z] info: jwt malformed
+[2025-02-27T19:54:19.505Z] info: jwt malformed
+[2025-03-06T16:58:22.284Z] info: invalid signature
+[2025-03-06T16:59:04.437Z] info: jwt malformed
+[2025-03-07T15:18:19.920Z] info: jwt malformed
+[2025-03-07T15:18:20.860Z] info: jwt malformed
+[2025-03-07T15:18:45.535Z] info: jwt malformed
