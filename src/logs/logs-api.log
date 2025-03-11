@@ -753,3 +753,57 @@
 [2025-03-07T15:18:19.920Z] info: jwt malformed
 [2025-03-07T15:18:20.860Z] info: jwt malformed
 [2025-03-07T15:18:45.535Z] info: jwt malformed
+[2025-03-11T14:37:18.567Z] info: jwt malformed
+[2025-03-11T15:41:09.309Z] info: jwt expired
+[2025-03-11T15:41:10.222Z] info: jwt malformed
+[2025-03-11T15:43:57.370Z] info: jwt malformed
+[2025-03-11T16:03:12.155Z] info: jwt malformed
+[2025-03-11T16:04:35.652Z] info: jwt malformed
+[2025-03-11T17:13:50.103Z] info: jwt expired
+[2025-03-11T17:13:51.212Z] info: jwt malformed
+[2025-03-11T17:13:51.516Z] info: jwt malformed
+[2025-03-11T17:17:30.281Z] info: jwt malformed
+[2025-03-11T20:34:24.813Z] info: jwt malformed
+[2025-03-11T21:43:02.286Z] info: searchTerm is not defined
+[2025-03-11T21:43:47.035Z] info: searchTerm is not defined
+[2025-03-11T21:43:57.540Z] info: searchTerm is not defined
+[2025-03-11T21:44:12.984Z] info: searchTerm is not defined
+[2025-03-11T21:44:13.027Z] info: searchTerm is not defined
+[2025-03-11T21:44:13.065Z] info: searchTerm is not defined
+[2025-03-11T21:45:09.706Z] info: searchTerm is not defined
+[2025-03-11T21:45:09.811Z] info: searchTerm is not defined
+[2025-03-11T21:45:31.247Z] info: searchTerm is not defined
+[2025-03-11T21:45:31.319Z] info: searchTerm is not defined
+[2025-03-11T21:45:38.311Z] info: searchTerm is not defined
+[2025-03-11T21:45:38.407Z] info: searchTerm is not defined
+[2025-03-11T21:47:37.608Z] info: searchTerm is not defined
+[2025-03-11T21:47:52.677Z] info: searchTerm is not defined
+[2025-03-11T21:47:52.897Z] info: searchTerm is not defined
+[2025-03-11T21:49:31.278Z] info: searchTerm is not defined
+[2025-03-11T21:49:33.844Z] info: searchTerm is not defined
+[2025-03-11T21:49:34.024Z] info: searchTerm is not defined
+[2025-03-11T21:49:34.304Z] info: searchTerm is not defined
+[2025-03-11T21:49:34.574Z] info: searchTerm is not defined
+[2025-03-11T21:49:34.664Z] info: searchTerm is not defined
+[2025-03-11T21:49:35.272Z] info: searchTerm is not defined
+[2025-03-11T21:49:48.345Z] info: searchTerm is not defined
+[2025-03-11T21:50:44.961Z] info: searchTerm is not defined
+[2025-03-11T21:50:51.257Z] info: searchTerm is not defined
+[2025-03-11T21:50:51.380Z] info: searchTerm is not defined
+[2025-03-11T21:50:51.532Z] info: searchTerm is not defined
+[2025-03-11T21:50:51.705Z] info: searchTerm is not defined
+[2025-03-11T21:50:51.819Z] info: searchTerm is not defined
+[2025-03-11T21:50:52.066Z] info: searchTerm is not defined
+[2025-03-11T21:50:52.186Z] info: searchTerm is not defined
+[2025-03-11T21:51:25.942Z] info: searchTerm is not defined
+[2025-03-11T21:51:26.042Z] info: searchTerm is not defined
+[2025-03-11T21:52:45.478Z] info: searchTerm is not defined
+[2025-03-11T21:52:48.451Z] info: searchTerm is not defined
+[2025-03-11T21:52:48.524Z] info: searchTerm is not defined
+[2025-03-11T21:52:49.507Z] info: searchTerm is not defined
+[2025-03-11T21:52:49.688Z] info: searchTerm is not defined
+[2025-03-11T21:52:49.834Z] info: searchTerm is not defined
+[2025-03-11T21:52:50.038Z] info: searchTerm is not defined
+[2025-03-11T21:52:52.740Z] info: searchTerm is not defined
+[2025-03-11T21:52:52.855Z] info: searchTerm is not defined
+[2025-03-11T21:53:00.922Z] info: searchTerm is not defined
