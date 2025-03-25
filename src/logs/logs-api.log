@@ -807,3 +807,6 @@
 [2025-03-11T21:52:52.740Z] info: searchTerm is not defined
 [2025-03-11T21:52:52.855Z] info: searchTerm is not defined
 [2025-03-11T21:53:00.922Z] info: searchTerm is not defined
+[2025-03-24T15:07:38.812Z] info: jwt malformed
+[2025-03-24T16:27:12.486Z] info: jwt expired
+[2025-03-24T16:27:13.055Z] info: jwt malformed

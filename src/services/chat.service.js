@@ -471,7 +471,7 @@ class ChatService {
       // Iteramos sobre cada factura para agregar sus productos
       for (const factura of facturas) {
         const productos = await db.query(
-          `SELECT * FROM vista_productos WHERE numero_factura = :numero_factura`,
+          `SELECT * FROM vista_productos_2 WHERE numero_factura = :numero_factura`,
           {
             replacements: { numero_factura: factura.numero_factura },
             type: Sequelize.QueryTypes.SELECT,
@@ -484,7 +484,7 @@ class ChatService {
 
       for (const guia of guias) {
         const productos = await db.query(
-          `SELECT * FROM vista_productos WHERE numero_factura = :numero_factura`,
+          `SELECT * FROM vista_productos_2 WHERE numero_factura = :numero_factura`,
           {
             replacements: { numero_factura: guia.numero_factura },
             type: Sequelize.QueryTypes.SELECT,
