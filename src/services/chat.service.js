@@ -162,6 +162,7 @@ class ChatService {
           'id_plataforma',
           'id_whatsapp',
           'telefono',
+          'metodo_pago',
         ],
       });
 

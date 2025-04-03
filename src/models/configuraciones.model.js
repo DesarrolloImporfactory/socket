@@ -16,6 +16,11 @@ const Configuraciones = db.define(
       allowNull: true,
       unique: true, // Configuración como clave única
     },
+    metodo_pago: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      unique: true,
+    },
     key_imporsuit: {
       type: DataTypes.STRING(200),
       allowNull: true,
