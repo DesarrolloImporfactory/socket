@@ -24,7 +24,9 @@ router.post("/obtener_numeros", async (req, res) => {
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
 
     // Llamada a la WhatsApp Cloud API
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/phone_numbers?access_token=${ACCESS_TOKEN}`;
+    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/phone_numbers?` +
+    `fields=id,display_phone_number,platform_type,webhook_configuration,throughput,verified_name,code_verification_status,quality_rating,messaging_limit_tier,status,account_mode` +
+    `&access_token=${ACCESS_TOKEN}`;
     const response = await axios.get(url);
 
     return res.json({

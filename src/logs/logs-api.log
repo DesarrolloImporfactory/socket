@@ -815,3 +815,8 @@
 [2025-04-03T15:26:41.029Z] info: Can't find /api/v1/whatsapp_numbers on this server! 🧨
 [2025-04-03T15:35:19.681Z] info: Can't find /api/v1/whatsapp_numbers/obtener_numeros on this server! 🧨
 [2025-04-03T15:35:23.875Z] info: Can't find /api/v1/whatsapp_numbers/obtener_numeros on this server! 🧨
+[2025-04-03T16:00:23.122Z] info: jwt expired
+[2025-04-03T17:25:59.987Z] info: jwt expired
+[2025-04-03T17:26:00.239Z] info: jwt malformed
+[2025-04-03T17:42:11.804Z] info: jwt malformed
+[2025-04-03T18:06:49.094Z] info: jwt malformed
