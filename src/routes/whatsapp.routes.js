@@ -43,6 +43,54 @@ router.post("/obtener_numeros", async (req, res) => {
 });
 
 /**
+ * POST /api/whatsapp/crear_plantilla
+ * - Recibe: id_plataforma y datos de la plantilla (name, language, category, components)
+ * - Envía una solicitud a la Cloud API para crear una plantilla.
+ */
+router.post("/crear_plantilla", async (req, res) => {
+  try {
+    const { id_plataforma, name, language, category, components } = req.body;
+
+    if (!id_plataforma || !name || !language || !category || !components) {
+      return res.status(400).json({ error: "Faltan campos obligatorios." });
+    }
+
+    const wabaConfig = await getConfigFromDB(id_plataforma);
+    if (!wabaConfig) {
+      return res.status(404).json({ error: "No se encontró configuración para esta plataforma." });
+    }
+
+    const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates`;
+
+    const payload = {
+      name,
+      language,
+      category,
+      components
+    };
+
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    return res.json({
+      success: true,
+      data: response.data,
+    });
+  } catch (error) {
+    console.error("Error al crear plantilla:", error?.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      error: error?.response?.data || error.message,
+    });
+  }
+});
+
+/**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
  * 
  * La tabla debe tener columnas: id_plataforma, id_whatsapp, token.

@@ -50,7 +50,7 @@ app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
-app.use('/api/v1/whatsapp_numbers', whatsappRouter);
+app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
