@@ -6,7 +6,7 @@ const { db } = require("../database/config");
 const router = express.Router();
 
 /**
- * POST /api/whatsapp/obtener_numeros
+ * POST /api/v1/whatsapp_managment/obtener_numeros
  *  - Recibe: id_plataforma
  *  - Retorna: los phone_numbers desde la Cloud API (según la config en DB).
  */
@@ -43,7 +43,7 @@ router.post("/obtener_numeros", async (req, res) => {
 });
 
 /**
- * POST /api/whatsapp/crear_plantilla
+ * POST /api/v1/whatsapp_managment/crear_plantilla
  * - Recibe: id_plataforma y datos de la plantilla (name, language, category, components)
  * - Envía una solicitud a la Cloud API para crear una plantilla.
  */
@@ -89,6 +89,44 @@ router.post("/crear_plantilla", async (req, res) => {
     });
   }
 });
+
+
+
+/**
+ * Ruta: POST /api/v1/whatsapp_managment/obtener_plantillas_plataforma
+ *
+ * Me permite obtener todos los datos de la tabla templates_chat_center
+ * relacionados a una plataforma específica.
+ *
+ * @param {number} req.body.id_plataforma - ID de la plataforma.
+ * @return {Array<Object>} - Lista de plantillas rápidas disponibles.
+ */
+router.post("/obtener_plantillas_plataforma", async (req, res) => {
+  const { id_plataforma } = req.body;
+
+  if (!id_plataforma) {
+    return res.status(400).json({
+      success: false,
+      message: "Falta el id_plataforma.",
+    });
+  }
+
+  try {
+    const [rows] = await db.query(
+      `SELECT * FROM templates_chat_center WHERE id_plataforma = ${id_plataforma}`,
+    );
+
+    return res.json(rows); // o { success: true, data: rows } si deseas uniformar
+  } catch (error) {
+    console.error("Error al obtener plantillas rápidas:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error interno al consultar la base de datos.",
+      error: error.message,
+    });
+  }
+});
+
 
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
