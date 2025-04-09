@@ -127,6 +127,51 @@ router.post("/obtener_plantillas_plataforma", async (req, res) => {
   }
 });
 
+/**
+ * POST /api/whatsapp/crear_plantilla_rapida
+ * Permite registrar una plantilla de respuesta rápida para el chat center
+ * @param {string} atajo - Comando corto (atajo) para usar la plantilla
+ * @param {string} mensaje - Contenido del mensaje de la plantilla
+ * @param {int} id_plataforma - Plataforma a la que pertenece la plantilla
+ * @return {object} status 200 | 500
+ */
+router.post("/crear_plantilla_rapida", async (req, res) => {
+  const { atajo, mensaje, id_plataforma } = req.body;
+
+  try {
+    if (!id_plataforma, !atajo, !mensaje) {
+      return res.status(400).json({
+        success: false,
+        message: "Faltan datos requeridos.",
+      });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO templates_chat_center (atajo, mensaje, id_plataforma)
+       VALUES (?, ?, ?)`,
+      {
+        replacements: [atajo, mensaje, id_plataforma],
+        type: db.QueryTypes.INSERT,
+      }
+    );
+    
+    return res.json({
+      success: true,
+      message: "Plantilla rápida agregada correctamente.",
+      insertId: result.insertId,
+    });
+  } catch (error) {
+    console.error("Error al crear plantilla rápida:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error interno al guardar plantilla.",
+      error: error.message,
+    });
+  }
+});
+
+
+
 
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
