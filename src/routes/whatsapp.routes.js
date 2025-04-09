@@ -171,6 +171,50 @@ router.post("/crear_plantilla_rapida", async (req, res) => {
 });
 
 
+router.post("/cambiar_estado", async (req, res) => {
+  const { estado, id_template } = req.body;
+
+  if (estado === undefined || !id_template) {
+    return res.status(400).json({
+      success: false,
+      message: "Faltan datos requeridos.",
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE templates_chat_center SET principal = ? WHERE id_template = ?`,
+      {
+        replacements: [estado, id_template],
+        type: db.QueryTypes.UPDATE,
+      }
+    );
+
+    if (result > 0) {
+      return res.json({
+        status: 200,
+        success: true,
+        title: "Petición exitosa",
+        message: "Estado actualizado correctamente",
+      });
+    } else {
+      return res.status(500).json({
+        status: 500,
+        success: false,
+        title: "Error",
+        message: "No se actualizó ninguna fila.",
+      });
+    }
+  } catch (error) {
+    console.error("Error al cambiar estado:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      error: error.message,
+    });
+  }
+});
+
 
 
 /**
