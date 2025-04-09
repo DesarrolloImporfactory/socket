@@ -832,3 +832,7 @@
 [2025-04-09T17:00:04.456Z] info: Can't find /api/v1/whatsapp/obtener_plantillas_plataforma on this server! 🧨
 [2025-04-09T17:00:22.955Z] info: Can't find /api/v1/whatsapp/obtener_plantillas_plataforma on this server! 🧨
 [2025-04-09T19:21:39.062Z] info: Expected double-quoted property name in JSON at position 98 (line 5 column 1)
+[2025-04-09T21:37:12.609Z] info: No plataforma found with that ID
+[2025-04-09T21:38:01.907Z] info: No se encontro una plataforma con dicho ID_PLATAFORMA
+[2025-04-09T21:38:16.631Z] info: No se encontro una plataforma con dicho ID_PLATAFORMA
+[2025-04-09T21:38:46.899Z] info: No se encontro una plataforma con dicho ID_PLATAFORMA

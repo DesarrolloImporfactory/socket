@@ -10,6 +10,8 @@ const sanitizer = require('perfect-express-sanitizer');
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require ('./routes/whatsapp.routes')
 
+const plataformaRouter = require('./routes/plataformas.routes');
+
 const authRouter = require('./routes/auth.routes');
 
 const userRouter = require('./routes/user.routes');
@@ -51,6 +53,7 @@ app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
+app.use("/api/v1/plataformas", plataformaRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
