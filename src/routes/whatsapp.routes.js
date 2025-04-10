@@ -6,11 +6,11 @@ const { db } = require("../database/config");
 const router = express.Router();
 
 /**
- * POST /api/v1/whatsapp_managment/obtener_numeros
+ * POST /api/v1/whatsapp_managment/ObtenerNumeros
  *  - Recibe: id_plataforma
  *  - Retorna: los phone_numbers desde la Cloud API (según la config en DB).
  */
-router.post("/obtener_numeros", async (req, res) => {
+router.post("/ObtenerNumeros", async (req, res) => {
   try {
     const { id_plataforma } = req.body;
 
@@ -43,11 +43,11 @@ router.post("/obtener_numeros", async (req, res) => {
 });
 
 /**
- * POST /api/v1/whatsapp_managment/crear_plantilla
+ * POST /api/v1/whatsapp_managment/CrearPlantilla
  * - Recibe: id_plataforma y datos de la plantilla (name, language, category, components)
  * - Envía una solicitud a la Cloud API para crear una plantilla.
  */
-router.post("/crear_plantilla", async (req, res) => {
+router.post("/CrearPlantilla", async (req, res) => {
   try {
     const { id_plataforma, name, language, category, components } = req.body;
 
@@ -93,7 +93,7 @@ router.post("/crear_plantilla", async (req, res) => {
 
 
 /**
- * Ruta: POST /api/v1/whatsapp_managment/obtener_plantillas_plataforma
+ * Ruta: POST /api/v1/whatsapp_managment/obtenerPlantillasPlataforma
  *
  * Me permite obtener todos los datos de la tabla templates_chat_center
  * relacionados a una plataforma específica.
@@ -101,7 +101,7 @@ router.post("/crear_plantilla", async (req, res) => {
  * @param {number} req.body.id_plataforma - ID de la plataforma.
  * @return {Array<Object>} - Lista de plantillas rápidas disponibles.
  */
-router.post("/obtener_plantillas_plataforma", async (req, res) => {
+router.post("/obtenerPlantillasPlataforma", async (req, res) => {
   const { id_plataforma } = req.body;
 
   if (!id_plataforma) {
@@ -128,14 +128,14 @@ router.post("/obtener_plantillas_plataforma", async (req, res) => {
 });
 
 /**
- * POST /api/v1/whatsapp_managment/crear_plantilla_rapida
+ * POST /api/v1/whatsapp_managment/crearPlantillaRapida
  * Permite registrar una plantilla de respuesta rápida para el chat center
  * @param {string} atajo - Comando corto (atajo) para usar la plantilla
  * @param {string} mensaje - Contenido del mensaje de la plantilla
  * @param {int} id_plataforma - Plataforma a la que pertenece la plantilla
  * @return {object} status 200 | 500
  */
-router.post("/crear_plantilla_rapida", async (req, res) => {
+router.post("/crearPlantillaRapida", async (req, res) => {
   const { atajo, mensaje, id_plataforma } = req.body;
 
   try {
@@ -171,7 +171,7 @@ router.post("/crear_plantilla_rapida", async (req, res) => {
 });
 
 /**
- * PUT /api/v1/whatsapp_managment/cambiar_estado
+ * PUT /api/v1/whatsapp_managment/cambiarEstado
  * Cambia el estado "principal" de una plantilla rápida en el chat center.
  * 
  * Este endpoint actualiza el valor del campo `principal` de una plantilla específica,
@@ -195,7 +195,7 @@ router.post("/crear_plantilla_rapida", async (req, res) => {
  * }
  */
 
-router.put("/cambiar_estado", async (req, res) => {
+router.put("/cambiarEstado", async (req, res) => {
   const { estado, id_template } = req.body;
 
   if (estado === undefined || !id_template) {
@@ -244,7 +244,7 @@ router.put("/cambiar_estado", async (req, res) => {
 
 
 /**
- * DELETE /api/v1/whatsapp_managment/eliminar_plantilla
+ * DELETE /api/v1/whatsapp_managment/eliminarPlantilla
  * Elimina una plantilla rápida del sistema del chat center.
  *
  * Este endpoint elimina de forma permanente una plantilla específica 
@@ -284,7 +284,7 @@ router.put("/cambiar_estado", async (req, res) => {
  * }
  */
 
-router.delete("/eliminar_plantilla", async (req, res) => {
+router.delete("/eliminarPlantilla", async (req, res) => {
   const { id_template } = req.body;
 
   if (!id_template) {
@@ -330,7 +330,7 @@ router.delete("/eliminar_plantilla", async (req, res) => {
 });
 
 /**
- * PUT /api/v1/whatsapp_managment/editar_plantilla
+ * PUT /api/v1/whatsapp_managment/EditarPlantilla
  * Edita una plantilla rápida en el chat center.
  * 
  * Actualiza el contenido de una plantilla específica usando su ID.

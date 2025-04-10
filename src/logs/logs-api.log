@@ -843,3 +843,4 @@
 [2025-04-10T16:24:42.230Z] info: Can't find /api/v1/whatsapp_managment/cambiar_estado on this server! 🧨
 [2025-04-10T16:55:33.543Z] info: Can't find /api/v1/whatsapp_managment/eliminar_plantilla on this server! 🧨
 [2025-04-10T16:56:08.566Z] info: Can't find /api/v1/whatsapp_managment/eliminar_plantilla on this server! 🧨
+[2025-04-10T18:18:31.288Z] info: jwt malformed
