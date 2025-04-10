@@ -128,7 +128,7 @@ router.post("/obtener_plantillas_plataforma", async (req, res) => {
 });
 
 /**
- * POST /api/whatsapp/crear_plantilla_rapida
+ * POST /api/v1/whatsapp_managment/crear_plantilla_rapida
  * Permite registrar una plantilla de respuesta rápida para el chat center
  * @param {string} atajo - Comando corto (atajo) para usar la plantilla
  * @param {string} mensaje - Contenido del mensaje de la plantilla
@@ -170,6 +170,30 @@ router.post("/crear_plantilla_rapida", async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/v1/whatsapp_managment/cambiar_estado
+ * Cambia el estado "principal" de una plantilla rápida en el chat center.
+ * 
+ * Este endpoint actualiza el valor del campo `principal` de una plantilla específica,
+ * permitiendo marcarla (o desmarcarla) como principal para la plataforma correspondiente.
+ *
+ * @param {int} id_template - ID de la plantilla a modificar
+ * @param {int} estado - Valor del nuevo estado (1 = principal, 0 = no principal)
+ * @return {object} status 200 | 500
+ *
+ * @example Body JSON:
+ * {
+ *   "id_template": 74,
+ *   "estado": 1
+ * }
+ *
+ * @response
+ * {
+ *   "success": true,
+ *   "modificado": true | false,
+ *   "message": "Estado modificado correctamente." | "El estado ya estaba asignado."
+ * }
+ */
 
 router.put("/cambiar_estado", async (req, res) => {
   const { estado, id_template } = req.body;
