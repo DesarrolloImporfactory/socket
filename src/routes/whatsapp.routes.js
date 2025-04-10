@@ -243,6 +243,47 @@ router.put("/cambiar_estado", async (req, res) => {
 });
 
 
+/**
+ * DELETE /api/v1/whatsapp_managment/eliminar_plantilla
+ * Elimina una plantilla rápida del sistema del chat center.
+ *
+ * Este endpoint elimina de forma permanente una plantilla específica 
+ * de la tabla `templates_chat_center`, identificada por su `id_template`.
+ *
+ * @param {int} id_template - ID de la plantilla a eliminar
+ * @return {object} status 200 | 404 | 500
+ *
+ * @example Body JSON:
+ * {
+ *   "id_template": 74
+ * }
+ *
+ * @response (Éxito)
+ * {
+ *   "status": 200,
+ *   "success": true,
+ *   "title": "Petición exitosa",
+ *   "message": "Plantilla eliminada correctamente."
+ * }
+ *
+ * @response (No encontrado)
+ * {
+ *   "status": 404,
+ *   "success": false,
+ *   "title": "No encontrado",
+ *   "message": "No se encontró la plantilla a eliminar."
+ * }
+ *
+ * @response (Error interno)
+ * {
+ *   "status": 500,
+ *   "success": false,
+ *   "title": "Error del servidor",
+ *   "message": "No se pudo eliminar la plantilla.",
+ *   "error": "Mensaje del error"
+ * }
+ */
+
 router.delete("/eliminar_plantilla", async (req, res) => {
   const { id_template } = req.body;
 
@@ -284,6 +325,68 @@ router.delete("/eliminar_plantilla", async (req, res) => {
       title: "Error del servidor",
       message: "No se pudo eliminar la plantilla.",
       error: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/v1/whatsapp_managment/editar_plantilla
+ * Edita una plantilla rápida en el chat center.
+ * 
+ * Actualiza el contenido de una plantilla específica usando su ID.
+ *
+ * @param {int} id_template - ID de la plantilla a editar
+ * @param {string} atajo - Nuevo valor del atajo
+ * @param {string} mensaje - Nuevo contenido del mensaje
+ * @return {object} status 200 | 500
+ *
+ * @example Body JSON:
+ * {
+ *   "id_template": 74,
+ *   "atajo": "/gracias",
+ *   "mensaje": "¡Gracias por tu compra!"
+ * }
+ */
+
+router.put("/EditarPlantilla", async (req, res) => {
+  const { atajo, mensaje, id_template } = req.body;
+
+  if (!atajo || !mensaje || !id_template) {
+    return res.status(400).json({
+      success: false,
+      message: "Faltan datos requeridos.",
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE templates_chat_center SET atajo = ?, mensaje = ? WHERE id_template = ?`,
+      {
+        replacements: [atajo, mensaje, id_template],
+      }
+    );
+
+    if (result.changedRows > 0) {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: true,
+        message: "Plantilla editada correctamente.",
+      });
+    } else {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: false,
+        message: "Los datos enviados son iguales a los actuales.",
+      });
+    }
+  } catch (error) {
+    console.error("Error al editar la plantilla:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      error: error.message,
     });
   }
 });
