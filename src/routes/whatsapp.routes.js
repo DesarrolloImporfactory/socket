@@ -224,7 +224,7 @@ router.put("/cambiar_estado", async (req, res) => {
         modificado: true,
         message: "Estado modificado correctamente.",
       });
-    } else if (result.affectedRows < 0); {
+    } else {
       return res.json({
         status: 200,
         success: true,
