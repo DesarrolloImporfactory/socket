@@ -350,13 +350,13 @@ router.delete("/eliminarPlantilla", async (req, res) => {
 
 router.put("/EditarPlantilla", async (req, res) => {
   const { atajo, mensaje, id_template } = req.body;
-
-  if (!atajo || !mensaje || !id_template) {
-    return res.status(400).json({
-      success: false,
-      message: "Faltan datos requeridos.",
-    });
-  }
+  //No validamos por completo ya que hay algunas plantillas que van vacias.
+  // if (!atajo || !mensaje || !id_template) {
+  //   return res.status(400).json({
+  //     success: false,
+  //     message: "Faltan datos requeridos.",
+  //   });
+  // }
 
   try {
     const [result] = await db.query(
