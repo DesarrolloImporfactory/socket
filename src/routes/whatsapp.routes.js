@@ -243,6 +243,52 @@ router.put("/cambiar_estado", async (req, res) => {
 });
 
 
+router.delete("/eliminar_plantilla", async (req, res) => {
+  const { id_template } = req.body;
+
+  if (!id_template) {
+    return res.status(400).json({
+      success: false,
+      message: "Faltan datos requeridos."
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `DELETE FROM templates_chat_center WHERE id_template = ?`,
+      {
+        replacements: [id_template],
+      }
+    );
+
+    // Validamos si se eliminó al menos una fila
+    if (result.affectedRows > 0) {
+      return res.status(200).json({
+        status: 200,
+        success: true,
+        title: "Petición exitosa",
+        message: "Plantilla eliminada correctamente."
+      });
+    } else {
+      return res.status(404).json({
+        status: 404,
+        success: false,
+        title: "No encontrado",
+        message: "No se encontró la plantilla a eliminar."
+      });
+    }
+  } catch (error) {
+    console.error("Error al eliminar plantilla:", error);
+    return res.status(500).json({
+      success: false,
+      title: "Error del servidor",
+      message: "No se pudo eliminar la plantilla.",
+      error: error.message
+    });
+  }
+});
+
+
 
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
