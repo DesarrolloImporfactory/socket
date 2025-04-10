@@ -171,7 +171,7 @@ router.post("/crear_plantilla_rapida", async (req, res) => {
 });
 
 
-router.post("/cambiar_estado", async (req, res) => {
+router.put("/cambiar_estado", async (req, res) => {
   const { estado, id_template } = req.body;
 
   if (estado === undefined || !id_template) {
@@ -182,27 +182,30 @@ router.post("/cambiar_estado", async (req, res) => {
   }
 
   try {
-    const [result] = await db.query(
+    const [result, metadata] = await db.query(
       `UPDATE templates_chat_center SET principal = ? WHERE id_template = ?`,
       {
         replacements: [estado, id_template],
-        type: db.QueryTypes.UPDATE,
       }
     );
+    
+    //Depurando porque no se recibia un mensaje de un cambio realmente hecho.
+    // console.log("Metadata:", metadata);
+    // console.log("Result:", result);
 
-    if (result > 0) {
+    if (result.changedRows > 0) {
       return res.json({
         status: 200,
         success: true,
-        title: "Petición exitosa",
-        message: "Estado actualizado correctamente",
+        modificado: true,
+        message: "Estado modificado correctamente.",
       });
-    } else {
-      return res.status(500).json({
-        status: 500,
-        success: false,
-        title: "Error",
-        message: "No se actualizó ninguna fila.",
+    } else if (result.affectedRows < 0); {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: false,
+        message: "El estado ya estaba asignado.",
       });
     }
   } catch (error) {
