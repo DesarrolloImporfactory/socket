@@ -845,3 +845,13 @@
 [2025-04-10T16:56:08.566Z] info: Can't find /api/v1/whatsapp_managment/eliminar_plantilla on this server! 🧨
 [2025-04-10T18:18:31.288Z] info: jwt malformed
 [2025-04-10T19:39:38.335Z] info: Can't find /api/v1/whatsapp_managment/editar_plantilla on this server! 🧨
+[2025-04-10T20:39:09.335Z] info: jwt expired
+[2025-04-10T20:46:21.944Z] info: Can't find /api/v1/whatsapp_managment/editar_configuracion on this server! 🧨
+[2025-04-10T20:48:37.188Z] info: Can't find /api/v1/whatsapp_managment/editarConfiguraci%C3%B3n on this server! 🧨
+[2025-04-10T20:50:08.645Z] info: Can't find /api/v1/whatsapp_managment/editarConfiguracion on this server! 🧨
+[2025-04-10T20:50:35.462Z] info: Can't find /api/v1/whatsapp_managment/editarConfiguracion on this server! 🧨
+[2025-04-10T20:51:46.260Z] info: Can't find /api/v1/whatsapp_managment/editarConfiguracion on this server! 🧨
+[2025-04-10T20:58:52.004Z] info: Can't find /api/v1/whatsapp_managment/obtenerConfiguracion on this server! 🧨
+[2025-04-10T20:59:02.620Z] info: Can't find /api/v1/whatsapp_managment/obtenerConfiguracion on this server! 🧨
+[2025-04-10T20:59:14.078Z] info: Can't find /api/v1/whatsapp_managment/obtenerConfiguracion on this server! 🧨
+[2025-04-10T20:59:58.785Z] info: Can't find /api/v1/whatsapp_managment/obtenerConfiguracion on this server! 🧨

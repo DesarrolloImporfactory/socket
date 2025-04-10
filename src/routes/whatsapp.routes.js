@@ -394,6 +394,182 @@ router.put("/EditarPlantilla", async (req, res) => {
 
 
 /**
+ * PUT /api/v1/whatsapp_managment/editarConfiguración
+ * 
+ * Actualiza la configuración de una plataforma relacionada con WhatsApp,
+ * guardando el ID de la plantilla que se debe usar para generar guías.
+ *
+ * @param {string} id_template_whatsapp - ID de la plantilla seleccionada
+ * @param {number} id_plataforma - ID de la plataforma (opcional si se extrae de token/session)
+ *
+ * @returns {object} status 200 | 500
+ *
+ * @example Body JSON:
+ * {
+ *   "id_template_whatsapp": "greeting_template_01",
+ *   "id_plataforma": 12
+ * }
+ */
+router.put("/editarConfiguracion", async (req, res) => {
+  const { id_template_whatsapp, id_plataforma } = req.body;
+
+  if (!id_template_whatsapp || !id_plataforma) {
+    return res.status(400).json({
+      success: false,
+      message: "Faltan datos requeridos."
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE configuraciones SET template_generar_guia = ? WHERE id_plataforma = ?`,
+      {
+        replacements: [id_template_whatsapp, id_plataforma]
+      }
+    );
+
+    if (result.affectedRows > 0) {
+      return res.status(200).json({
+        success: true,
+        status: 200,
+        message: "Configuración editada correctamente."
+      });
+    } else {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: false,
+        message: "El estado ya estaba asignado.",
+      });
+    }
+  } catch (error) {
+    console.error("Error al editar configuración:", error);
+    return res.status(500).json({
+      success: false,
+      status: 500,
+      message: "Error interno al editar configuración.",
+      error: error.message
+    });
+  }
+});
+
+
+/**
+ * GET /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp
+ * Obtiene la lista de plantillas de WhatsApp Business configuradas en la cuenta.
+ * 
+ * @param {int} id_plataforma (en query o body)
+ * @returns {Array} [{ id_template, nombre }]
+ */
+router.post("/obtenerTemplatesWhatsapp", async (req, res) => {
+  const { id_plataforma } = req.body;
+
+  if (!id_plataforma) {
+    return res.status(400).json({
+      success: false,
+      message: "Falta el id_plataforma.",
+    });
+  }
+
+  try {
+    // Obtener configuración desde la DB
+    const [rows] = await db.query(
+      `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
+       FROM configuraciones WHERE id_plataforma = ?`,
+      { replacements: [id_plataforma] }
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró configuración para esta plataforma.",
+      });
+    }
+
+    const { WABA_ID, ACCESS_TOKEN } = rows[0];
+    const url = `https://graph.facebook.com/v20.0/${WABA_ID}/message_templates`;
+
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const data = response.data?.data || [];
+
+    // Retornamos solo lo necesario
+    const templates = data.map((template) => ({
+      id_template: template.id,
+      nombre: template.name,
+    }));
+
+    return res.json({
+      success: true,
+      templates,
+    });
+
+  } catch (error) {
+    console.error("Error al obtener templates de WhatsApp:", error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Error al consultar la API de WhatsApp.",
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+
+/**
+ * POST /api/v1/whatsapp_managment/obtenerConfiguracion
+ * 
+ * Consulta la plantilla actualmente seleccionada para generar guías
+ * de la tabla `configuraciones` según el id_plataforma.
+ *
+ * @param {number} id_plataforma - ID de la plataforma
+ * @returns {object} { success, config: { template_generar_guia } }
+ */
+router.post("/obtenerConfiguracion", async (req, res) => {
+  const { id_plataforma } = req.body;
+
+  if (!id_plataforma) {
+    return res.status(400).json({
+      success: false,
+      message: "Falta el id_plataforma.",
+    });
+  }
+
+  try {
+    const [rows] = await db.query(
+      `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia 
+       FROM configuraciones 
+       WHERE id_plataforma = ?`,
+      { replacements: [id_plataforma] }
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró configuración para esta plataforma.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      config: rows[0],
+    });
+
+  } catch (error) {
+    console.error("Error al obtener configuración:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error al consultar configuración.",
+      error: error.message,
+    });
+  }
+});
+
+/**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
  * 
  * La tabla debe tener columnas: id_plataforma, id_whatsapp, token.
