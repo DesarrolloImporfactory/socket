@@ -569,6 +569,10 @@ router.post("/obtenerConfiguracion", async (req, res) => {
   }
 });
 
+// router.post("/configuracionesAutomatizador", async(req, res)=>{
+//   const {id_plataforma} = req.body;
+// })
+
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
  * 
