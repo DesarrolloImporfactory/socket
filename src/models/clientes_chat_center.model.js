@@ -71,6 +71,16 @@ const ClientesChatCenter = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    chat_cerrado: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    bot_opneia: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
   },
   {
     tableName: 'clientes_chat_center',
