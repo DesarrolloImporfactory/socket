@@ -12,4 +12,9 @@ router.post(
   clientes_chat_centerController.actualizar_cerrado
 );
 
+router.post(
+  '/actualizar_bot_openia',
+  clientes_chat_centerController.actualizar_bot_openia
+);
+
 module.exports = router;

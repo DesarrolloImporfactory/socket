@@ -10,7 +10,7 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
 
   try {
     const [result] = await db.query(
-      `UPDATE clientes_chat_center SET chat_cerrado = ?, bot_opneia = ? WHERE id = ?`,
+      `UPDATE clientes_chat_center SET chat_cerrado = ?, bot_openia = ? WHERE id = ?`,
       {
         replacements: [nuevoEstado, bot_openia, chatId],
         type: db.QueryTypes.UPDATE,
@@ -25,5 +25,26 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
     });
   } catch (error) {
     return next(new AppError('Error al actualizar el chat', 500));
+  }
+});
+
+exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
+  const { chatId, nuevoEstado } = req.body;
+
+  try {
+    const [result] = await db.query(
+      `UPDATE clientes_chat_center SET bot_openia = ? WHERE id = ?`,
+      {
+        replacements: [nuevoEstado, chatId],
+        type: db.QueryTypes.UPDATE,
+      }
+    );
+
+    res.status(200).json({
+      status: '200',
+      message: 'Estado del bot actualizado correctamente',
+    });
+  } catch (error) {
+    return next(new AppError('Error al actualizar bot_openia', 500));
   }
 });

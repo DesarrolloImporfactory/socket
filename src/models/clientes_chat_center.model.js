@@ -76,7 +76,7 @@ const ClientesChatCenter = db.define(
       allowNull: false,
       defaultValue: 0,
     },
-    bot_opneia: {
+    bot_openia: {
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 0,
