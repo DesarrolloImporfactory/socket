@@ -455,6 +455,71 @@ router.put('/editarConfiguracion', async (req, res) => {
 });
 
 /**
+ * PUT /api/v1/whatsapp_managment/actualizarMetodoPago
+ * Cambia el metodo de pago de la configuracion de una cuenta.
+ *
+ *
+ * @param {int} id_configuracion - ID de la configuracion a modificar
+ * @param {int} metodo_pago - Valor del nmetodo de pago (1 = activo, 0 = no activo)
+ * @return {object} status 200 | 500
+ *
+ * @example Body JSON:
+ * {
+ *   "id_template": 74,
+ *   "metodo_pago": 1
+ * }
+ *
+ * @response
+ * {
+ *   "success": true,
+ *   "modificado": true | false,
+ *   "message": "Metodo de pago actualizado correctamente." | "El método ya estaba asignado."
+ * }
+ */
+router.put('/actualizarMetodoPago', async (req, res) => {
+  const { metodo_pago, id } = req.body;
+
+  if (metodo_pago === undefined || !id) {
+    return res.status(400).json({
+      success: false,
+      message: 'Faltan datos requeridos',
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE configuraciones SET metodo_pago = ? WHERE id = ?`,
+      {
+        replacements: [metodo_pago, id],
+      }
+    );
+
+    if (result.changedRows > 0) {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: true,
+        message: 'Método actualizado correctamente.',
+      });
+    } else {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: false,
+        message: 'El método ya estaba asignado',
+      });
+    }
+  } catch (error) {
+    console.error('Error al actualizar el método de pago', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor.',
+      error: error.message,
+    });
+  }
+});
+
+/**
  * GET /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp
  * Obtiene la lista de plantillas de WhatsApp Business configuradas en la cuenta.
  *
@@ -601,10 +666,7 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
       });
     }
 
-    return res.json({
-      success: true,
-      config: rows[0],
-    });
+    return res.json(rows);
   } catch (err) {
     console.error('Error al obtener configuración:', error);
     return res.status(500).json({
