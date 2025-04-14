@@ -859,3 +859,6 @@
 [2025-04-11T21:51:12.435Z] info: jwt malformed
 [2025-04-11T21:51:23.310Z] info: jwt malformed
 [2025-04-11T21:53:46.625Z] info: jwt malformed
+[2025-04-14T14:11:31.645Z] info: jwt malformed
+[2025-04-14T14:11:38.035Z] info: User with that email not found!
+[2025-04-14T15:05:32.754Z] info: Can't find /api/v1/whatsapp-managment/configuracionesAutomatizador on this server! 🧨

@@ -1,7 +1,7 @@
 // whatsapp.routes.js
-const express = require("express");
-const axios = require("axios");
-const { db } = require("../database/config");
+const express = require('express');
+const axios = require('axios');
+const { db } = require('../database/config');
 
 const router = express.Router();
 
@@ -10,23 +10,24 @@ const router = express.Router();
  *  - Recibe: id_plataforma
  *  - Retorna: los phone_numbers desde la Cloud API (según la config en DB).
  */
-router.post("/ObtenerNumeros", async (req, res) => {
+router.post('/ObtenerNumeros', async (req, res) => {
   try {
     const { id_plataforma } = req.body;
 
-    const wabaConfig = await getConfigFromDB(id_plataforma); 
+    const wabaConfig = await getConfigFromDB(id_plataforma);
     if (!wabaConfig) {
-      return res
-        .status(404)
-        .json({ error: "No se encontraron registros para la plataforma dada." });
+      return res.status(404).json({
+        error: 'No se encontraron registros para la plataforma dada.',
+      });
     }
 
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
 
     // Llamada a la WhatsApp Cloud API
-    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/phone_numbers?` +
-    `fields=id,display_phone_number,platform_type,webhook_configuration,throughput,verified_name,code_verification_status,quality_rating,messaging_limit_tier,status,account_mode` +
-    `&access_token=${ACCESS_TOKEN}`;
+    const url =
+      `https://graph.facebook.com/v17.0/${WABA_ID}/phone_numbers?` +
+      `fields=id,display_phone_number,platform_type,webhook_configuration,throughput,verified_name,code_verification_status,quality_rating,messaging_limit_tier,status,account_mode` +
+      `&access_token=${ACCESS_TOKEN}`;
     const response = await axios.get(url);
 
     return res.json({
@@ -34,7 +35,7 @@ router.post("/ObtenerNumeros", async (req, res) => {
       data: response.data?.data || [],
     });
   } catch (error) {
-    console.error("Error al obtener phone_numbers:", error);
+    console.error('Error al obtener phone_numbers:', error);
     return res.status(500).json({
       success: false,
       error: error?.response?.data || error.message,
@@ -47,17 +48,19 @@ router.post("/ObtenerNumeros", async (req, res) => {
  * - Recibe: id_plataforma y datos de la plantilla (name, language, category, components)
  * - Envía una solicitud a la Cloud API para crear una plantilla.
  */
-router.post("/CrearPlantilla", async (req, res) => {
+router.post('/CrearPlantilla', async (req, res) => {
   try {
     const { id_plataforma, name, language, category, components } = req.body;
 
     if (!id_plataforma || !name || !language || !category || !components) {
-      return res.status(400).json({ error: "Faltan campos obligatorios." });
+      return res.status(400).json({ error: 'Faltan campos obligatorios.' });
     }
 
     const wabaConfig = await getConfigFromDB(id_plataforma);
     if (!wabaConfig) {
-      return res.status(404).json({ error: "No se encontró configuración para esta plataforma." });
+      return res
+        .status(404)
+        .json({ error: 'No se encontró configuración para esta plataforma.' });
     }
 
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
@@ -67,13 +70,13 @@ router.post("/CrearPlantilla", async (req, res) => {
       name,
       language,
       category,
-      components
+      components,
     };
 
     const response = await axios.post(url, payload, {
       headers: {
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
     });
 
@@ -82,15 +85,16 @@ router.post("/CrearPlantilla", async (req, res) => {
       data: response.data,
     });
   } catch (error) {
-    console.error("Error al crear plantilla:", error?.response?.data || error.message);
+    console.error(
+      'Error al crear plantilla:',
+      error?.response?.data || error.message
+    );
     return res.status(500).json({
       success: false,
       error: error?.response?.data || error.message,
     });
   }
 });
-
-
 
 /**
  * Ruta: POST /api/v1/whatsapp_managment/obtenerPlantillasPlataforma
@@ -101,27 +105,27 @@ router.post("/CrearPlantilla", async (req, res) => {
  * @param {number} req.body.id_plataforma - ID de la plataforma.
  * @return {Array<Object>} - Lista de plantillas rápidas disponibles.
  */
-router.post("/obtenerPlantillasPlataforma", async (req, res) => {
+router.post('/obtenerPlantillasPlataforma', async (req, res) => {
   const { id_plataforma } = req.body;
 
   if (!id_plataforma) {
     return res.status(400).json({
       success: false,
-      message: "Falta el id_plataforma.",
+      message: 'Falta el id_plataforma.',
     });
   }
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM templates_chat_center WHERE id_plataforma = ${id_plataforma}`,
+      `SELECT * FROM templates_chat_center WHERE id_plataforma = ${id_plataforma}`
     );
 
     return res.json(rows); // o { success: true, data: rows } si deseas uniformar
   } catch (error) {
-    console.error("Error al obtener plantillas rápidas:", error);
+    console.error('Error al obtener plantillas rápidas:', error);
     return res.status(500).json({
       success: false,
-      message: "Error interno al consultar la base de datos.",
+      message: 'Error interno al consultar la base de datos.',
       error: error.message,
     });
   }
@@ -135,14 +139,14 @@ router.post("/obtenerPlantillasPlataforma", async (req, res) => {
  * @param {int} id_plataforma - Plataforma a la que pertenece la plantilla
  * @return {object} status 200 | 500
  */
-router.post("/crearPlantillaRapida", async (req, res) => {
+router.post('/crearPlantillaRapida', async (req, res) => {
   const { atajo, mensaje, id_plataforma } = req.body;
 
   try {
-    if (!id_plataforma, !atajo, !mensaje) {
+    if ((!id_plataforma, !atajo, !mensaje)) {
       return res.status(400).json({
         success: false,
-        message: "Faltan datos requeridos.",
+        message: 'Faltan datos requeridos.',
       });
     }
 
@@ -154,17 +158,17 @@ router.post("/crearPlantillaRapida", async (req, res) => {
         type: db.QueryTypes.INSERT,
       }
     );
-    
+
     return res.json({
       success: true,
-      message: "Plantilla rápida agregada correctamente.",
+      message: 'Plantilla rápida agregada correctamente.',
       insertId: result.insertId,
     });
   } catch (error) {
-    console.error("Error al crear plantilla rápida:", error);
+    console.error('Error al crear plantilla rápida:', error);
     return res.status(500).json({
       success: false,
-      message: "Error interno al guardar plantilla.",
+      message: 'Error interno al guardar plantilla.',
       error: error.message,
     });
   }
@@ -173,7 +177,7 @@ router.post("/crearPlantillaRapida", async (req, res) => {
 /**
  * PUT /api/v1/whatsapp_managment/cambiarEstado
  * Cambia el estado "principal" de una plantilla rápida en el chat center.
- * 
+ *
  * Este endpoint actualiza el valor del campo `principal` de una plantilla específica,
  * permitiendo marcarla (o desmarcarla) como principal para la plataforma correspondiente.
  *
@@ -195,13 +199,13 @@ router.post("/crearPlantillaRapida", async (req, res) => {
  * }
  */
 
-router.put("/cambiarEstado", async (req, res) => {
+router.put('/cambiarEstado', async (req, res) => {
   const { estado, id_template } = req.body;
 
   if (estado === undefined || !id_template) {
     return res.status(400).json({
       success: false,
-      message: "Faltan datos requeridos.",
+      message: 'Faltan datos requeridos.',
     });
   }
 
@@ -212,7 +216,7 @@ router.put("/cambiarEstado", async (req, res) => {
         replacements: [estado, id_template],
       }
     );
-    
+
     //Depurando porque no se recibia un mensaje de un cambio realmente hecho.
     // console.log("Metadata:", metadata);
     // console.log("Result:", result);
@@ -222,32 +226,31 @@ router.put("/cambiarEstado", async (req, res) => {
         status: 200,
         success: true,
         modificado: true,
-        message: "Estado modificado correctamente.",
+        message: 'Estado modificado correctamente.',
       });
     } else {
       return res.json({
         status: 200,
         success: true,
         modificado: false,
-        message: "El estado ya estaba asignado.",
+        message: 'El estado ya estaba asignado.',
       });
     }
   } catch (error) {
-    console.error("Error al cambiar estado:", error);
+    console.error('Error al cambiar estado:', error);
     return res.status(500).json({
       success: false,
-      message: "Error interno del servidor.",
+      message: 'Error interno del servidor.',
       error: error.message,
     });
   }
 });
 
-
 /**
  * DELETE /api/v1/whatsapp_managment/eliminarPlantilla
  * Elimina una plantilla rápida del sistema del chat center.
  *
- * Este endpoint elimina de forma permanente una plantilla específica 
+ * Este endpoint elimina de forma permanente una plantilla específica
  * de la tabla `templates_chat_center`, identificada por su `id_template`.
  *
  * @param {int} id_template - ID de la plantilla a eliminar
@@ -284,13 +287,13 @@ router.put("/cambiarEstado", async (req, res) => {
  * }
  */
 
-router.delete("/eliminarPlantilla", async (req, res) => {
+router.delete('/eliminarPlantilla', async (req, res) => {
   const { id_template } = req.body;
 
   if (!id_template) {
     return res.status(400).json({
       success: false,
-      message: "Faltan datos requeridos."
+      message: 'Faltan datos requeridos.',
     });
   }
 
@@ -307,24 +310,24 @@ router.delete("/eliminarPlantilla", async (req, res) => {
       return res.status(200).json({
         status: 200,
         success: true,
-        title: "Petición exitosa",
-        message: "Plantilla eliminada correctamente."
+        title: 'Petición exitosa',
+        message: 'Plantilla eliminada correctamente.',
       });
     } else {
       return res.status(404).json({
         status: 404,
         success: false,
-        title: "No encontrado",
-        message: "No se encontró la plantilla a eliminar."
+        title: 'No encontrado',
+        message: 'No se encontró la plantilla a eliminar.',
       });
     }
   } catch (error) {
-    console.error("Error al eliminar plantilla:", error);
+    console.error('Error al eliminar plantilla:', error);
     return res.status(500).json({
       success: false,
-      title: "Error del servidor",
-      message: "No se pudo eliminar la plantilla.",
-      error: error.message
+      title: 'Error del servidor',
+      message: 'No se pudo eliminar la plantilla.',
+      error: error.message,
     });
   }
 });
@@ -332,7 +335,7 @@ router.delete("/eliminarPlantilla", async (req, res) => {
 /**
  * PUT /api/v1/whatsapp_managment/EditarPlantilla
  * Edita una plantilla rápida en el chat center.
- * 
+ *
  * Actualiza el contenido de una plantilla específica usando su ID.
  *
  * @param {int} id_template - ID de la plantilla a editar
@@ -348,7 +351,7 @@ router.delete("/eliminarPlantilla", async (req, res) => {
  * }
  */
 
-router.put("/EditarPlantilla", async (req, res) => {
+router.put('/EditarPlantilla', async (req, res) => {
   const { atajo, mensaje, id_template } = req.body;
   //No validamos por completo ya que hay algunas plantillas que van vacias.
   // if (!atajo || !mensaje || !id_template) {
@@ -371,31 +374,29 @@ router.put("/EditarPlantilla", async (req, res) => {
         status: 200,
         success: true,
         modificado: true,
-        message: "Plantilla editada correctamente.",
+        message: 'Plantilla editada correctamente.',
       });
     } else {
       return res.json({
         status: 200,
         success: true,
         modificado: false,
-        message: "Los datos enviados son iguales a los actuales.",
+        message: 'Los datos enviados son iguales a los actuales.',
       });
     }
   } catch (error) {
-    console.error("Error al editar la plantilla:", error);
+    console.error('Error al editar la plantilla:', error);
     return res.status(500).json({
       success: false,
-      message: "Error interno del servidor.",
+      message: 'Error interno del servidor.',
       error: error.message,
     });
   }
 });
 
-
-
 /**
  * PUT /api/v1/whatsapp_managment/editarConfiguración
- * 
+ *
  * Actualiza la configuración de una plataforma relacionada con WhatsApp,
  * guardando el ID de la plantilla que se debe usar para generar guías.
  *
@@ -410,13 +411,13 @@ router.put("/EditarPlantilla", async (req, res) => {
  *   "id_plataforma": 12
  * }
  */
-router.put("/editarConfiguracion", async (req, res) => {
+router.put('/editarConfiguracion', async (req, res) => {
   const { id_template_whatsapp, id_plataforma } = req.body;
 
   if (!id_template_whatsapp || !id_plataforma) {
     return res.status(400).json({
       success: false,
-      message: "Faltan datos requeridos."
+      message: 'Faltan datos requeridos.',
     });
   }
 
@@ -424,7 +425,7 @@ router.put("/editarConfiguracion", async (req, res) => {
     const [result] = await db.query(
       `UPDATE configuraciones SET template_generar_guia = ? WHERE id_plataforma = ?`,
       {
-        replacements: [id_template_whatsapp, id_plataforma]
+        replacements: [id_template_whatsapp, id_plataforma],
       }
     );
 
@@ -432,42 +433,41 @@ router.put("/editarConfiguracion", async (req, res) => {
       return res.status(200).json({
         success: true,
         status: 200,
-        message: "Configuración editada correctamente."
+        message: 'Configuración editada correctamente.',
       });
     } else {
       return res.json({
         status: 200,
         success: true,
         modificado: false,
-        message: "El estado ya estaba asignado.",
+        message: 'El estado ya estaba asignado.',
       });
     }
   } catch (error) {
-    console.error("Error al editar configuración:", error);
+    console.error('Error al editar configuración:', error);
     return res.status(500).json({
       success: false,
       status: 500,
-      message: "Error interno al editar configuración.",
-      error: error.message
+      message: 'Error interno al editar configuración.',
+      error: error.message,
     });
   }
 });
 
-
 /**
  * GET /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp
  * Obtiene la lista de plantillas de WhatsApp Business configuradas en la cuenta.
- * 
+ *
  * @param {int} id_plataforma (en query o body)
  * @returns {Array} [{ id_template, nombre }]
  */
-router.post("/obtenerTemplatesWhatsapp", async (req, res) => {
+router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
   const { id_plataforma } = req.body;
 
   if (!id_plataforma) {
     return res.status(400).json({
       success: false,
-      message: "Falta el id_plataforma.",
+      message: 'Falta el id_plataforma.',
     });
   }
 
@@ -482,7 +482,7 @@ router.post("/obtenerTemplatesWhatsapp", async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({
         success: false,
-        message: "No se encontró configuración para esta plataforma.",
+        message: 'No se encontró configuración para esta plataforma.',
       });
     }
 
@@ -492,7 +492,7 @@ router.post("/obtenerTemplatesWhatsapp", async (req, res) => {
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
     });
 
@@ -508,34 +508,35 @@ router.post("/obtenerTemplatesWhatsapp", async (req, res) => {
       success: true,
       templates,
     });
-
   } catch (error) {
-    console.error("Error al obtener templates de WhatsApp:", error.response?.data || error.message);
+    console.error(
+      'Error al obtener templates de WhatsApp:',
+      error.response?.data || error.message
+    );
     return res.status(500).json({
       success: false,
-      message: "Error al consultar la API de WhatsApp.",
+      message: 'Error al consultar la API de WhatsApp.',
       error: error.response?.data || error.message,
     });
   }
 });
 
-
 /**
  * POST /api/v1/whatsapp_managment/obtenerConfiguracion
- * 
+ *
  * Consulta la plantilla actualmente seleccionada para generar guías
  * de la tabla `configuraciones` según el id_plataforma.
  *
  * @param {number} id_plataforma - ID de la plataforma
  * @returns {object} { success, config: { template_generar_guia } }
  */
-router.post("/obtenerConfiguracion", async (req, res) => {
+router.post('/obtenerConfiguracion', async (req, res) => {
   const { id_plataforma } = req.body;
 
   if (!id_plataforma) {
     return res.status(400).json({
       success: false,
-      message: "Falta el id_plataforma.",
+      message: 'Falta el id_plataforma.',
     });
   }
 
@@ -550,7 +551,7 @@ router.post("/obtenerConfiguracion", async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "No se encontró configuración para esta plataforma.",
+        message: 'No se encontró configuración para esta plataforma.',
       });
     }
 
@@ -558,24 +559,65 @@ router.post("/obtenerConfiguracion", async (req, res) => {
       success: true,
       config: rows[0],
     });
-
   } catch (error) {
-    console.error("Error al obtener configuración:", error);
+    console.error('Error al obtener configuración:', error);
     return res.status(500).json({
       success: false,
-      message: "Error al consultar configuración.",
+      message: 'Error al consultar configuración.',
       error: error.message,
     });
   }
 });
 
-// router.post("/configuracionesAutomatizador", async(req, res)=>{
-//   const {id_plataforma} = req.body;
-// })
+/**
+ * POST /api/v1/whatsapp_managment/configuracionesAutomatizador
+ *
+ * Consulta si la plataforma existente contiene alguna configuración automatizada.
+ *
+ * @param {number} id_plataforma - ID de la plataforma
+ * @returns {object} { success, config: {configuraciones} }
+ */
+router.post('/configuracionesAutomatizador', async (req, res) => {
+  const { id_plataforma } = req.body;
+
+  if (!id_plataforma) {
+    return res.status(400).json({
+      success: false,
+      message: 'Falta el id_plataforma',
+    });
+  }
+
+  try {
+    const [rows] = await db.query(
+      `SELECT * FROM configuraciones WHERE id_plataforma =?`,
+      { replacements: [id_plataforma] }
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message:
+          'No se encontró configuración automatizada para esta plataforma ',
+      });
+    }
+
+    return res.json({
+      success: true,
+      config: rows[0],
+    });
+  } catch (err) {
+    console.error('Error al obtener configuración:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al consultar configuración.',
+      error: error.message,
+    });
+  }
+});
 
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
- * 
+ *
  * La tabla debe tener columnas: id_plataforma, id_whatsapp, token.
  * Devuelve un objeto { WABA_ID, ACCESS_TOKEN } si encuentra registro.
  */
@@ -589,11 +631,11 @@ async function getConfigFromDB(id_plataforma) {
     );
     // Si la consulta encontró datos, retornamos la primera fila
     if (rows.length > 0) {
-      return rows[0]; 
+      return rows[0];
     }
     return null;
   } catch (error) {
-    console.error("Error en getConfigFromDB:", error);
+    console.error('Error en getConfigFromDB:', error);
     throw error;
   }
 }
