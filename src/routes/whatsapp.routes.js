@@ -678,6 +678,129 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
 });
 
 /**
+ * POST /api/v1/whatsapp_managment/agregarConfiguracion
+ *
+ * Insertar en `configuraciones`,
+ * actualizar `webhook_url` y luego insertar en `clientes_chat_center`.
+ *
+ * @param {string} nombre_configuracion
+ * @param {string} telefono
+ * @param {string} id_telefono
+ * @param {string} id_whatsapp
+ * @param {string} token
+ * @param {number} id_plataforma
+ *
+ * @return {object} {status: 200|500, message: string}
+ */
+router.post('/agregarConfiguracion', async (req, res) => {
+  const {
+    nombre_configuracion,
+    telefono,
+    id_telefono,
+    id_whatsapp,
+    token,
+    id_plataforma,
+  } = req.body;
+
+  // Validaciones básicas
+  if (
+    !nombre_configuracion ||
+    !telefono ||
+    !id_telefono ||
+    !id_whatsapp ||
+    !token ||
+    !id_plataforma
+  ) {
+    return res.status(400).json({
+      status: 400,
+      message: 'Faltan campos obligatorios para agregar configuración.',
+    });
+  }
+
+  try {
+    // 1. Generamos la clave única key_imporsuit
+    const key_imporsuit = generarClaveUnica(); 
+
+    // 2. Insertamos en `configuraciones`
+    const insertSql = `
+      INSERT INTO configuraciones
+        (id_plataforma, nombre_configuracion, telefono, id_telefono, id_whatsapp, token, key_imporsuit)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `;
+    const [insertResult] = await db.query(insertSql, {
+      replacements: [
+        id_plataforma,
+        nombre_configuracion,
+        telefono,
+        id_telefono,
+        id_whatsapp,
+        token,
+        key_imporsuit,
+      ],
+    });
+
+    const webhook_url =
+      'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54';
+
+    const updateSql = `
+      UPDATE configuraciones
+      SET webhook_url = ?
+      WHERE key_imporsuit = ?
+    `;
+    const [updateResult] = await db.query(updateSql, {
+      replacements: [webhook_url, key_imporsuit],
+    });
+
+    if (updateResult.affectedRows !== 1) {
+      return res.status(500).json({
+        status: 500,
+        title: 'Error en actualización',
+        message: 'Hubo un problema al actualizar la configuración.',
+      });
+    }
+
+    // 4. Insertamos un registro en `clientes_chat_center`
+    //    con el uid_cliente = id_telefono
+    const insertClienteSql = `
+      INSERT INTO clientes_chat_center
+        (id_plataforma, uid_cliente, nombre_cliente, celular_cliente)
+      VALUES (?, ?, ?, ?)
+    `;
+    const [insertClienteRes] = await db.query(insertClienteSql, {
+      replacements: [
+        id_plataforma,
+        id_telefono,
+        nombre_configuracion,
+        telefono,
+      ],
+    });
+
+    return res.status(200).json({
+      status: 200,
+      title: 'Petición exitosa',
+      message: 'Configuración agregada y actualizada correctamente.',
+    });
+  } catch (error) {
+    console.error('Error al agregar configuración:', error);
+    return res.status(500).json({
+      title: 'Error interno',
+      message: 'Hubo un problema al agregar la configuración.',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * Función para generar una clave única (similar a la que usabas en PHP).
+ * Puede ser con random bytes, un uuid, etc.
+ */
+function generarClaveUnica() {
+  // Aquí un ejemplo con currentTime + random:
+  const randomStr = Math.random().toString(36).substring(2, 8);
+  return `key_${Date.now()}_${randomStr}`;
+}
+
+/**
  * Obtiene la config de la tabla 'configuraciones' según el id_plataforma.
  *
  * La tabla debe tener columnas: id_plataforma, id_whatsapp, token.
