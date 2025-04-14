@@ -499,7 +499,7 @@ router.put('/actualizarMetodoPago', async (req, res) => {
         status: 200,
         success: true,
         modificado: true,
-        message: 'Método actualizado correctamente.',
+        message: 'Método de pago actualizado correctamente.',
       });
     } else {
       return res.json({
