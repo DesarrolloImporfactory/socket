@@ -1,14 +1,15 @@
-const Productos = require("../models/productos.model");
-const catchAsync = require("../utils/catchAsync");
-const { db } = require("../database/config");
+const AppError = require('../utils/appError');
+const Productos = require('../models/productos.model');
+const catchAsync = require('../utils/catchAsync');
+const { db } = require('../database/config');
 
 exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 5, searchTerm, id_producto, sku } = req.body;
 
   if (!id_producto || !sku) {
     return res.status(400).json({
-      status: "fail",
-      message: "Se requieren el id_producto y el sku.",
+      status: 'fail',
+      message: 'Se requieren el id_producto y el sku.',
     });
   }
 
@@ -27,15 +28,15 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
 
   if (!datos.length) {
     return res.status(404).json({
-      status: "fail",
-      message: "No se encontró información con ese id_producto y sku.",
+      status: 'fail',
+      message: 'No se encontró información con ese id_producto y sku.',
     });
   }
 
   const { bodega, id_plataforma } = datos[0];
 
   // 👇 Ahora sí filtramos los productos relacionados
-  const hasSearchTerm = searchTerm && searchTerm.trim() !== "";
+  const hasSearchTerm = searchTerm && searchTerm.trim() !== '';
 
   const replacements = {
     bodega,
@@ -54,7 +55,7 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     FROM inventario_bodegas ib
     INNER JOIN productos p ON p.id_producto = ib.id_producto
     WHERE ib.bodega = :bodega AND p.id_plataforma = :id_plataforma
-    ${hasSearchTerm ? "AND p.nombre_producto LIKE :search" : ""}
+    ${hasSearchTerm ? 'AND p.nombre_producto LIKE :search' : ''}
   `;
 
   const totalProductos = await db.query(totalProductosQuery, {
@@ -70,7 +71,7 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     FROM inventario_bodegas ib
     INNER JOIN productos p ON p.id_producto = ib.id_producto
     WHERE ib.bodega = :bodega AND p.id_plataforma = :id_plataforma
-    ${hasSearchTerm ? "AND p.nombre_producto LIKE :search" : ""}
+    ${hasSearchTerm ? 'AND p.nombre_producto LIKE :search' : ''}
     LIMIT :limit OFFSET :offset
   `;
 
@@ -83,10 +84,64 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
 
   // 📤 Enviar respuesta
   res.status(200).json({
-    status: "success",
+    status: 'success',
     results: productos.length,
     page,
     totalPages,
     products: productos, // <-- ✅ nombre correcto esperado por el frontend
   });
+});
+
+exports.agregarProducto = catchAsync(async (req, res, next) => {
+  const { id_factura, id_producto, id_inventario, sku, cantidad, precio } =
+    req.body;
+
+  try {
+    // 1. Verificamos si existe la factura
+    const [factura] = await db.query(
+      'SELECT * FROM facturas_cot WHERE id_factura = ? LIMIT 1',
+      {
+        replacements: [id_factura],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!factura) {
+      return res.status(400).json({
+        status: 400,
+        message: 'Factura no encontrada',
+      });
+    }
+
+    const { numero_factura, id_plataforma } = factura;
+
+    // 2. Insertamos el producto
+    const [insertResult] = await db.query(
+      `INSERT INTO detalle_fact_cot 
+        (id_inventario, id_producto, sku, precio_venta, cantidad, id_factura, numero_factura, id_plataforma)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_inventario,
+          id_producto,
+          sku,
+          precio,
+          cantidad,
+          id_factura,
+          numero_factura,
+          id_plataforma,
+        ],
+        type: db.QueryTypes.INSERT,
+      }
+    );
+
+    res.status(200).json({
+      status: 200,
+      title: 'Éxito',
+      message: 'Producto agregado correctamente',
+    });
+  } catch (error) {
+    console.error('Error real al agregar producto:', error); // 👈 Muestra el error real
+    return next(new AppError('Error al agregar producto a la factura', 500));
+  }
 });

@@ -882,3 +882,15 @@
 [2025-04-14T21:09:27.835Z] info: Can't find /api/v1/whatsapp_managment/agregar_configuracion on this server! 🧨
 [2025-04-14T21:31:00.693Z] info: jwt malformed
 [2025-04-14T21:32:58.347Z] info: jwt malformed
+[2025-04-15T20:06:14.434Z] info: jwt malformed
+[2025-04-16T13:07:45.495Z] info: jwt malformed
+[2025-04-16T19:04:35.302Z] info: jwt malformed
+[2025-04-16T20:15:18.998Z] info: You are not logged in! Please log in to get access.
+[2025-04-16T20:15:19.382Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-04-16T20:40:28.878Z] info: AppError is not defined
+[2025-04-16T20:40:37.113Z] info: AppError is not defined
+[2025-04-16T20:43:01.661Z] info: Error al agregar producto a la factura
+[2025-04-16T20:45:05.458Z] info: Error al agregar producto a la factura
+[2025-04-16T20:46:13.721Z] info: Error al agregar producto a la factura
+[2025-04-16T20:47:30.636Z] info: Error al agregar producto a la factura
+[2025-04-16T20:48:34.138Z] info: Error al agregar producto a la factura
