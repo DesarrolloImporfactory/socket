@@ -896,3 +896,11 @@
 [2025-04-16T20:48:34.138Z] info: Error al agregar producto a la factura
 [2025-04-21T17:22:57.680Z] info: Can't find /api/v1/etiquetas_chat_center/agregarEtiqueta on this server! 🧨
 [2025-04-21T17:23:02.889Z] info: Datos incompletos al crear la etiqueta
+[2025-04-21T18:22:32.956Z] info: Etiqueta no encontrada
+[2025-04-21T18:23:02.860Z] info: Etiqueta no encontrada
+[2025-04-21T18:24:58.768Z] info: Etiqueta no encontrada
+[2025-04-21T18:27:57.572Z] info: Etiqueta no encontrada
+[2025-04-21T18:28:01.740Z] info: Etiqueta no encontrada
+[2025-04-21T18:28:37.325Z] info: Etiqueta no encontrada
+[2025-04-21T18:28:50.195Z] info: Etiqueta no encontrada
+[2025-04-21T18:36:10.528Z] info: Etiqueta no encontrada

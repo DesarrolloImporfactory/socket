@@ -1,4 +1,5 @@
 const { db } = require('../database/config');
+const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 
 class EtiquetaService {
     static async guardar(etiqueta) {
@@ -15,6 +16,17 @@ class EtiquetaService {
         );
 
         return result;
+    }
+
+    static async eliminar(id_etiqueta){        
+        const etiqueta = await EtiquetasChatCenter.findByPk(id_etiqueta);
+
+        if (!etiqueta) {
+            throw new Error('Etiqueta no encontrada');
+        }
+        
+        await etiqueta.destroy();
+        return true;
     }
 }
 

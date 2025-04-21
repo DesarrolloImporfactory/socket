@@ -3,9 +3,11 @@ const etiquetasController = require('../controllers/etiquetas_chat_center.contro
 const express = require('express');
 const router = express.Router();
 
-const { protect } = require('../middlewares/auth.middleware');
-// router.use(protect);
+// const authMiddleware = require('../middlewares/auth.middleware');
+// router.use(authMiddleware.protect);
 
 router.post('/agregarEtiqueta', etiquetasController.AgregarEtiqueta);
+
+router.delete('/eliminarEtiqueta/:id', etiquetasController.EliminarEtiqueta);
 
 module.exports = router;
