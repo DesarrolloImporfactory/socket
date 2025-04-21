@@ -17,6 +17,8 @@ const clientes_chat_centerRouter = require('./routes/clientes_chat_center.routes
 
 const detalle_fact_cotRouter = require('./routes/detalle_fact_cot.routes');
 
+const bodegaRouter = require('./routes/bodega.routes');
+
 const openai_assistantsRouter = require('./routes/openai_assistants.routes');
 
 const authRouter = require('./routes/auth.routes');
@@ -63,6 +65,7 @@ app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
+app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.all('*', (req, res, next) => {
