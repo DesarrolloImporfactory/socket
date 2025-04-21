@@ -10,4 +10,5 @@ router.post('/agregarEtiqueta', etiquetasController.AgregarEtiqueta);
 
 router.delete('/eliminarEtiqueta/:id', etiquetasController.EliminarEtiqueta);
 
+router.post('/toggleAsignacionEtiqueta', etiquetasController.ToggleAsignacionEtiqueta);
 module.exports = router;

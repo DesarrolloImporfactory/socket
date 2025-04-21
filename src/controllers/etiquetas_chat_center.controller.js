@@ -65,3 +65,18 @@ exports.EliminarEtiqueta = catchAsync(async (req, res, next) => {
         return next(new AppError(err.message || 'Error al eliminar la etiqueta', 500));
     }
 });
+
+exports.ToggleAsignacionEtiqueta = catchAsync(async (req, res, next) =>{
+    const {id_cliente_chat_center, id_etiqueta, id_plataforma} = req.body;
+
+    try{
+        const resultado = await EtiquetaService.toggleAsignacion(
+            id_cliente_chat_center,
+            id_etiqueta,
+            id_plataforma
+        );  
+        res.status(resultado.status).json(resultado);
+    } catch (err){
+        return next(new AppError(err.message || 'Error al asignar/desasignar etiqueta', 500));
+    }
+})
