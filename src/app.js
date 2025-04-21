@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const sanitizer = require('perfect-express-sanitizer');
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
+const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
 
 const plataformaRouter = require('./routes/plataformas.routes');
 
@@ -60,6 +61,7 @@ app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
+app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
