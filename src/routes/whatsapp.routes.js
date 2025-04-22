@@ -519,69 +519,69 @@ router.put('/actualizarMetodoPago', async (req, res) => {
   }
 });
 
+
 /**
- * GET /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp
- * Obtiene la lista de plantillas de WhatsApp Business configuradas en la cuenta.
- *
- * @param {int} id_plataforma (en query o body)
- * @returns {Array} [{ id_template, nombre }]
+ * POST /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp
+ * Body: { id_plataforma: number }
+ *  ‑ Devuelve TODO el JSON que entrega Meta.
  */
 router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
   const { id_plataforma } = req.body;
 
+  /* 1. Validación mínima */
   if (!id_plataforma) {
     return res.status(400).json({
-      success: false,
+      error  : true,
       message: 'Falta el id_plataforma.',
     });
   }
 
   try {
-    // Obtener configuración desde la DB
+    /* 2. Configuración de la plataforma */
     const [rows] = await db.query(
-      `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
-       FROM configuraciones WHERE id_plataforma = ?`,
+      'SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN \
+       FROM configuraciones \
+       WHERE id_plataforma = ?',
       { replacements: [id_plataforma] }
     );
 
     if (!rows.length) {
       return res.status(404).json({
-        success: false,
+        error  : true,
         message: 'No se encontró configuración para esta plataforma.',
       });
     }
 
     const { WABA_ID, ACCESS_TOKEN } = rows[0];
-    const url = `https://graph.facebook.com/v20.0/${WABA_ID}/message_templates`;
 
-    const response = await axios.get(url, {
+    /* 3. Petición a la Graph API (v22.0) */
+    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+
+    const { data } = await axios.get(url, {
       headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        Authorization : `Bearer ${ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
       },
+      timeout: 15000,          // evita que se congele si Meta no responde
     });
 
-    const data = response.data?.data || [];
-
-    // Retornamos solo lo necesario
-    const templates = data.map((template) => ({
-      id_template: template.id,
-      nombre: template.name,
-    }));
-
-    return res.json({
-      success: true,
-      templates,
-    });
+    /* 4. Éxito ➜ devolver la respuesta tal cual */
+    return res.json(data);     // ≈ echo json_encode($dataApi) en PHP
   } catch (error) {
-    console.error(
-      'Error al obtener templates de WhatsApp:',
-      error.response?.data || error.message
-    );
+    /* 5. Errores: red/DNS o respuesta 4xx‑5xx de Meta */
+    if (error.response) {
+      // La API de WhatsApp devolvió un error con código HTTP
+      return res.status(error.response.status).json({
+        error   : true,
+        message : 'Error de la API de WhatsApp',
+        response: error.response.data,   // mismo campo que usaste en PHP
+      });
+    }
+
+    // Error de red, DNS, timeout, etc.
     return res.status(500).json({
-      success: false,
-      message: 'Error al consultar la API de WhatsApp.',
-      error: error.response?.data || error.message,
+      error  : true,
+      message: 'Error de conexión: ' + error.message,
     });
   }
 });

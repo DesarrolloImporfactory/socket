@@ -933,3 +933,9 @@
 }
 [2025-04-21T20:03:28.227Z] info: res.status is not a function
 [2025-04-21T20:05:07.809Z] info: res.status is not a function
+[2025-04-21T20:26:27.902Z] info: jwt malformed
+[2025-04-21T20:26:50.302Z] info: jwt malformed
+[2025-04-21T21:35:47.347Z] info: Can't find /api/v1/etiquetas_chat_center/toggleAsignacionEtiqueta on this server! 🧨
+[2025-04-22T16:41:29.202Z] info: jwt malformed
+[2025-04-22T16:52:38.402Z] info: jwt malformed
+[2025-04-22T16:55:11.102Z] info: jwt malformed
