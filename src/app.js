@@ -10,6 +10,7 @@ const sanitizer = require('perfect-express-sanitizer');
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
+const etiquetasAsignadasRouter = require('./routes/etiquetas_asignadas.routes')
 
 const plataformaRouter = require('./routes/plataformas.routes');
 
@@ -68,6 +69,7 @@ app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
 app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
+app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)

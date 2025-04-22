@@ -1,6 +1,8 @@
 const { response } = require('express');
 const { db } = require('../database/config');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
+const EtiquetasAsignadas = require('../models/etiquetas_asignadas.model');
+
 
 class EtiquetaService {
     static async guardar(etiqueta) {
@@ -78,6 +80,36 @@ class EtiquetaService {
 
         return response;
     }
+
+    static async obtenerEtiquetas(id_plataforma) {
+        // Validación defensiva
+        if (!id_plataforma) {
+          throw new Error('id_plataforma es obligatorio');
+        }
+      
+        // Opción A – consulta cruda
+        // const etiquetas = await db.query(
+        //   `SELECT * FROM etiquetas_chat_center WHERE id_plataforma = ?`,
+        //   {
+        //     replacements: [id_plataforma],
+        //     type: db.QueryTypes.SELECT,
+        //   }
+        // );
+        // return etiquetas;
+      
+        // ── Ó ──
+        // Opción B – ORM Sequelize (si definió el modelo con mapping):
+        return await EtiquetasChatCenter.findAll({where: {id_plataforma}});
+    }
+
+    static async obtenerEtiquetasAsignadas(id_cliente_chat_center){
+       if (!id_cliente_chat_center){
+        throw new Error('id_cliente_chat_center es obligatorio');
+       } 
+
+       return await EtiquetasAsignadas.findAll({where: {id_cliente_chat_center}})
+    }
+
 }
 
 module.exports = EtiquetaService;

@@ -939,3 +939,13 @@
 [2025-04-22T16:41:29.202Z] info: jwt malformed
 [2025-04-22T16:52:38.402Z] info: jwt malformed
 [2025-04-22T16:55:11.102Z] info: jwt malformed
+[2025-04-22T19:08:21.483Z] info: Can't find /api/v1/etiquetas_chat_center/obtenerEtiqueta on this server! 🧨
+[2025-04-22T19:08:45.098Z] info: id_plataforma es requerido
+[2025-04-22T19:08:45.814Z] info: id_plataforma es requerido
+[2025-04-22T19:08:53.036Z] info: id_plataforma es requerido
+[2025-04-22T19:09:11.071Z] info: Can't find /api/v1/etiquetas_chat_center/obtenerEtiquetas/1 on this server! 🧨
+[2025-04-22T19:09:15.520Z] info: id_plataforma es requerido
+[2025-04-22T19:09:40.471Z] info: id_plataforma es requerido
+[2025-04-22T19:12:22.703Z] info: Expected double-quoted property name in JSON at position 28 (line 4 column 1)
+[2025-04-22T20:45:07.213Z] info: Can't find /api/v1/etiquetas_chat_center/obtenerEtiquetasAsignadas/ on this server! 🧨
+[2025-04-22T20:46:03.044Z] info: id_cliente_chat_center es requerido

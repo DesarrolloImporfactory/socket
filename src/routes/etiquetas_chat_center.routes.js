@@ -6,9 +6,11 @@ const router = express.Router();
 // const authMiddleware = require('../middlewares/auth.middleware');
 // router.use(authMiddleware.protect);
 
-router.post('/agregarEtiqueta', etiquetasController.AgregarEtiqueta);
+router.post('/agregarEtiqueta', etiquetasController.agregarEtiqueta);
 
-router.delete('/eliminarEtiqueta/:id', etiquetasController.EliminarEtiqueta);
+router.delete('/eliminarEtiqueta/:id', etiquetasController.eliminarEtiqueta);
 
-router.post('/toggleAsignacionEtiqueta', etiquetasController.ToggleAsignacionEtiqueta);
+router.post('/toggleAsignacionEtiqueta', etiquetasController.toggleAsignacionEtiqueta);
+
+router.post('/obtenerEtiquetas', etiquetasController.obtenerEtiquetas);
 module.exports = router;
