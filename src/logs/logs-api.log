@@ -960,3 +960,7 @@
 [2025-04-23T21:32:25.862Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
 [2025-04-23T21:33:43.860Z] info: Can't find /api/v1/etiquetas_chat_center/obtener_etiquetas on this server! 🧨
 [2025-04-23T21:33:43.879Z] info: Can't find /api/v1/etiquetas_chat_center/obtener_etiquetas on this server! 🧨
+[2025-04-23T22:35:16.445Z] info: jwt expired
+[2025-04-23T22:35:16.845Z] info: jwt malformed
+[2025-04-23T22:36:14.462Z] info: jwt malformed
+[2025-04-23T22:46:03.808Z] info: jwt malformed

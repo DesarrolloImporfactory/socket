@@ -3,8 +3,8 @@ const etiquetasController = require('../controllers/etiquetas_chat_center.contro
 const express = require('express');
 const router = express.Router();
 
-// const authMiddleware = require('../middlewares/auth.middleware');
-// router.use(authMiddleware.protect);
+const authMiddleware = require('../middlewares/auth.middleware');
+router.use(authMiddleware.protect);
 
 router.post('/agregarEtiqueta', etiquetasController.agregarEtiqueta);
 

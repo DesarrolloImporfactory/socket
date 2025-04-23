@@ -3,8 +3,8 @@ const EtiquetasAsignadas = require('../controllers/etiquetas_asignadas.controlle
 const express = require('express');
 const router = express.Router();
 
-// const authMiddleware = require('../middlewares/auth.middleware');
-// router.use(authMiddleware.protect);
+const authMiddleware = require('../middlewares/auth.middleware');
+router.use(authMiddleware.protect);
 
 router.post('/obtenerEtiquetasAsignadas', EtiquetasAsignadas.obtenerEtiquetasAsignadas);
 module.exports = router;
