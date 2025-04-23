@@ -949,3 +949,4 @@
 [2025-04-22T19:12:22.703Z] info: Expected double-quoted property name in JSON at position 28 (line 4 column 1)
 [2025-04-22T20:45:07.213Z] info: Can't find /api/v1/etiquetas_chat_center/obtenerEtiquetasAsignadas/ on this server! 🧨
 [2025-04-22T20:46:03.044Z] info: id_cliente_chat_center es requerido
+[2025-04-23T14:06:38.873Z] info: jwt malformed

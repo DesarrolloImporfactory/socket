@@ -48,3 +48,66 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
     return next(new AppError('Error al actualizar bot_openia', 500));
   }
 });
+
+exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
+  const { telefono, nombre, apellido, id_plataforma } = req.body;
+
+  try {
+    // 1. Obtener id_telefono desde configuraciones
+    const [configuracion] = await db.query(
+      'SELECT id_telefono FROM configuraciones WHERE id_plataforma = ?',
+      {
+        replacements: [id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!configuracion) {
+      return next(
+        new AppError('No se encontró configuración para la plataforma', 400)
+      );
+    }
+
+    const uid_cliente = configuracion.id_telefono;
+
+    await db.query(
+      `INSERT INTO clientes_chat_center 
+      (id_plataforma, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente)
+      VALUES (?, ?, ?, ?, ?)`,
+      {
+        replacements: [id_plataforma, nombre, apellido, telefono, uid_cliente],
+        type: db.QueryTypes.INSERT,
+      }
+    );
+
+    const [resultado] = await db.query(
+      `SELECT id FROM clientes_chat_center 
+       WHERE celular_cliente = ? AND id_plataforma = ?
+       ORDER BY id DESC LIMIT 1`,
+      {
+        replacements: [telefono, id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!resultado) {
+      return next(new AppError('No se pudo recuperar el ID del registro', 400));
+    }
+
+    const lastId = resultado.id;
+
+    return res.status(200).json({
+      status: 200,
+      title: 'Petición exitosa',
+      message: 'Número agregado correctamente',
+      id: lastId,
+    });
+  } catch (error) {
+    console.error('Error al agregar número de chat:', error);
+    return res.status(500).json({
+      status: 500,
+      title: 'Error',
+      message: 'Ocurrió un error al agregar el número de chat',
+    });
+  }
+});

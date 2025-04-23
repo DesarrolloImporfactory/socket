@@ -16,7 +16,7 @@ exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
   );
   if (configuraciones.length === 0) {
     return next(
-      new AppError('No se encontro una plataforma con dicho ID_PLATAFORMA', 404)
+      new AppError('No se encontro una plataforma con dicho ID_PLATAFORMA', 400)
     );
   }
 

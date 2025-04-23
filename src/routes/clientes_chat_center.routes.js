@@ -18,4 +18,9 @@ router.post(
   clientes_chat_centerController.actualizar_bot_openia
 );
 
+router.post(
+  '/agregarNumeroChat',
+  clientes_chat_centerController.agregarNumeroChat
+);
+
 module.exports = router;
