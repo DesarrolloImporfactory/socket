@@ -29,6 +29,9 @@ const authRouter = require('./routes/auth.routes');
 const userRouter = require('./routes/user.routes');
 
 const webhookRouter = require('./routes/webhook.routes');
+
+const chat_serviceRouter = require('./routes/chat_service.routes');
+
 const app = express();
 
 const limiter = rateLimit({
@@ -73,6 +76,7 @@ app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
+app.use('/api/v1/chat_service', chat_serviceRouter);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)

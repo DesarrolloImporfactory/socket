@@ -696,6 +696,23 @@ class ChatService {
     }
   }
 
+  /**
+   * Obtiene la ciudad y la provincia según el id_cotizacion
+   * @param {number|string} id - id_cotizacion de ciudad_cotizacion
+   * @returns {Promise<{ciudad:string, provincia:string}|null>}
+   */
+  static async obtenerCiudadProvincia(id) {
+    try {
+      const data = await CiudadCotizacion.findOne({
+        where: { id_cotizacion: id },
+        attributes: ['ciudad', 'provincia'],
+      });
+      return data;
+    } catch (err) {
+      throw new AppError(err.message, 500);
+    }
+  }
+
   async obtenerMatriz(id_plataforma) {
     try {
       const matriz = await db.query(

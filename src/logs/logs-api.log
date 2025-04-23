@@ -950,3 +950,5 @@
 [2025-04-22T20:45:07.213Z] info: Can't find /api/v1/etiquetas_chat_center/obtenerEtiquetasAsignadas/ on this server! 🧨
 [2025-04-22T20:46:03.044Z] info: id_cliente_chat_center es requerido
 [2025-04-23T14:06:38.873Z] info: jwt malformed
+[2025-04-23T20:39:38.250Z] info: Can't find /api/v1/chat_service/ciudad_provincia/ on this server! 🧨
+[2025-04-23T20:40:35.302Z] info: Can't find /api/v1/chat_service/ciudadProvincia/ on this server! 🧨
