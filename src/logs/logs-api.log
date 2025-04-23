@@ -952,3 +952,11 @@
 [2025-04-23T14:06:38.873Z] info: jwt malformed
 [2025-04-23T20:39:38.250Z] info: Can't find /api/v1/chat_service/ciudad_provincia/ on this server! 🧨
 [2025-04-23T20:40:35.302Z] info: Can't find /api/v1/chat_service/ciudadProvincia/ on this server! 🧨
+[2025-04-23T21:30:39.881Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:30:39.907Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:32:20.851Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:32:20.867Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:32:25.850Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:32:25.862Z] info: Can't find /api/v1/pedidos/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:33:43.860Z] info: Can't find /api/v1/etiquetas_chat_center/obtener_etiquetas on this server! 🧨
+[2025-04-23T21:33:43.879Z] info: Can't find /api/v1/etiquetas_chat_center/obtener_etiquetas on this server! 🧨

@@ -3,7 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 
 const EtiquetaService = require ('../services/etiqueta.service');
 
-exports.obtenerEtiqueasAsignadas = catchAsync(async(req, res, next)=>{
+exports.obtenerEtiquetasAsignadas = catchAsync(async(req, res, next)=>{
     const id_cliente_chat_center = parseInt(req.body.id_cliente_chat_center, 10);
     
     if(!id_cliente_chat_center){
