@@ -111,3 +111,37 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
     });
   }
 });
+
+exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
+  const { telefono, id_plataforma } = req.body;
+
+  try {
+    const [clientes_chat_center] = await db.query(
+      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_plataforma = ?',
+      {
+        replacements: [telefono, id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!clientes_chat_center) {
+      return next(
+        new AppError('No se encontró configuración para la plataforma', 400)
+      );
+    }
+
+    const id_recibe = clientes_chat_center.id;
+
+    return res.status(200).json({
+      status: 200,
+      data: { id_recibe: id_recibe },
+    });
+  } catch (error) {
+    console.error('Error al agregar número de chat:', error);
+    return res.status(500).json({
+      status: 500,
+      title: 'Error',
+      message: 'Ocurrió un error al agregar el número de chat',
+    });
+  }
+});

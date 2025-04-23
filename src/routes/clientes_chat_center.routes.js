@@ -23,4 +23,9 @@ router.post(
   clientes_chat_centerController.agregarNumeroChat
 );
 
+router.post(
+  '/buscar_id_recibe',
+  clientes_chat_centerController.buscar_id_recibe
+);
+
 module.exports = router;
