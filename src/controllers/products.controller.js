@@ -145,3 +145,33 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     return next(new AppError('Error al agregar producto a la factura', 500));
   }
 });
+
+exports.eliminarProducto = catchAsync(async (req, res, next) => {
+  const { id_detalle } = req.body;
+
+  try {
+    const result = await db.query(
+      'DELETE FROM detalle_fact_cot WHERE id_detalle = ?',
+      {
+        replacements: [id_detalle],
+        type: db.QueryTypes.BULKDELETE,
+      }
+    );
+
+    if (result == 0){
+      return next(new AppError('Error al borrar el producto', 400));
+    }
+
+    return res.status(200).json({
+      status: 200,
+      title: 'Éxito',
+      message: 'Producto eliminado correctamente',
+    });
+  } catch (error) {
+    console.error('Error al eliminar producto:', error.message);
+    return res.status(400).json({
+      status: 400,
+      message: error.message || 'Error al eliminar producto',
+    });
+  }
+});

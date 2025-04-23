@@ -8,6 +8,8 @@ router.use(authMiddleware.protect);
 
 router.post('/agregarProducto', productosController.agregarProducto);
 
+router.post('/eliminarProducto', productosController.eliminarProducto);
+
 router.route('/:bodega').post(productosController.findAllAditionalProducts);
 
 module.exports = router;
