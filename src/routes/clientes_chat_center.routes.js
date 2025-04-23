@@ -28,4 +28,9 @@ router.post(
   clientes_chat_centerController.buscar_id_recibe
 );
 
+router.post(
+  '/agregarMensajeEnviado',
+  clientes_chat_centerController.agregarMensajeEnviado
+);
+
 module.exports = router;

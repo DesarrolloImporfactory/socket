@@ -145,3 +145,111 @@ exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
     });
   }
 });
+
+exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
+  const {
+    texto_mensaje,
+    tipo_mensaje,
+    mid_mensaje,
+    id_recibe,
+    ruta_archivo,
+    telefono_configuracion,
+    telefono_recibe,
+    id_plataforma,
+  } = req.body;
+
+  try {
+    // 1. Verificar si ya existe cliente con el teléfono de configuración
+    const [clienteExistente] = await db.query(
+      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_plataforma = ?',
+      {
+        replacements: [telefono_configuracion, id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    let id_cliente_configuracion;
+
+    if (!clienteExistente) {
+      // 2. Obtener datos desde configuraciones
+      const [config] = await db.query(
+        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id_plataforma = ?',
+        {
+          replacements: [id_plataforma],
+          type: db.QueryTypes.SELECT,
+        }
+      );
+
+      const id_telefono = config.id_telefono;
+      const nombre_cliente = config.nombre_configuracion;
+      const apellido_cliente = '';
+
+      // 3. Insertar nuevo cliente
+      await db.query(
+        `INSERT INTO clientes_chat_center 
+        (id_plataforma, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
+        {
+          replacements: [
+            id_plataforma,
+            id_telefono,
+            nombre_cliente,
+            apellido_cliente,
+            telefono_configuracion,
+          ],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+
+      // 4. Obtener ID insertado
+      const [insertado] = await db.query(
+        `SELECT id FROM clientes_chat_center 
+         WHERE celular_cliente = ? AND id_plataforma = ?
+         ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [telefono_configuracion, id_plataforma],
+          type: db.QueryTypes.SELECT,
+        }
+      );
+
+      id_cliente_configuracion = insertado.id;
+    } else {
+      id_cliente_configuracion = clienteExistente.id;
+    }
+
+    // 5. Insertar mensaje en mensajes_clientes
+    await db.query(
+      `INSERT INTO mensajes_clientes 
+        (id_plataforma, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_plataforma,
+          id_cliente_configuracion,
+          mid_mensaje,
+          tipo_mensaje,
+          1, // rol_mensaje fijo en 1
+          id_recibe,
+          texto_mensaje,
+          ruta_archivo,
+          1, // visto por defecto en 1
+          telefono_recibe,
+        ],
+        type: db.QueryTypes.INSERT,
+      }
+    );
+
+    return res.status(200).json({
+      status: 200,
+      title: 'Petición exitosa',
+      message: 'Mensaje agregado correctamente',
+    });
+  } catch (error) {
+    console.error('Error al agregar mensaje enviado:', error);
+    return res.status(500).json({
+      status: 500,
+      title: 'Error',
+      message: 'Ocurrió un error al agregar el mensaje',
+    });
+  }
+});
