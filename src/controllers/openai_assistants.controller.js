@@ -18,6 +18,7 @@ exports.datosCliente = catchAsync(async (req, res, next) => {
     res.status(200).json({
       status: '200',
       data: datosCliente,
+      prueba: "prueba",
     });
   } catch (error) {
     return next(
