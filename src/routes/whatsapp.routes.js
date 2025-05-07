@@ -826,10 +826,11 @@ async function getConfigFromDB(id_plataforma) {
 }
 
 
+// whatsapp.routes.js  ▸  Ruta completa y actualizada
 router.post('/embeddedSignupComplete', async (req, res) => {
   const { code, id_plataforma } = req.body;
 
-  if (!code || !id_plataforma ) {
+  if (!code || !id_plataforma) {
     return res.status(400).json({
       success: false,
       message: 'Faltan code o id_plataforma.',
@@ -842,80 +843,79 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       'https://graph.facebook.com/v22.0/oauth/access_token',
       {
         params: {
-          client_id: process.env.FB_APP_ID,
+          client_id    : process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
           code,
         },
       }
     );
     const businessToken = t1.access_token;
+    const businessId    = t1.business_id;                 // ← NEW
 
-    /* ➋ Obtén WABA ID y (si existe) System‑User */
-    const { data: wabas } = await axios.get(
-      'https://graph.facebook.com/v22.0/me/owned_whatsapp_business_accounts',
+    /* ➋ Obtén WABA ID desde el business */
+    const { data: biz } = await axios.get(
+      `https://graph.facebook.com/v22.0/${businessId}`,
       {
-        params: { fields: 'id' },
+        params : { fields: 'owned_whatsapp_business_accounts' },
         headers: { Authorization: `Bearer ${businessToken}` },
       }
     );
-    const wabaId = wabas.data[0].id;
+    const wabaId = biz.owned_whatsapp_business_accounts.data[0].id;
 
-    const { data: sys } = await axios.get(
+    /* ➌ Obtén o crea System‑User */
+    const { data: sysList } = await axios.get(
       `https://graph.facebook.com/v22.0/${wabaId}/system_users`,
       { headers: { Authorization: `Bearer ${businessToken}` } }
     );
     const systemUserId =
-      sys.data.length > 0
-        ? sys.data[0].id
+      sysList.data.length > 0
+        ? sysList.data[0].id
         : (
             await axios.post(
               `https://graph.facebook.com/v22.0/${wabaId}/system_users`,
-              { name: 'ChatCenter‑SU', role: 'ADMIN' },
+              { name: 'ChatCenter-SU', role: 'ADMIN' },
               { headers: { Authorization: `Bearer ${businessToken}` } }
             )
           ).data.id;
 
-    /* ➌ Token permanente (no expira) */
+    /* ➍ Token permanente (no expira) */
     const { data: t2 } = await axios.post(
       `https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
       null,
       {
         params: {
           app_id: process.env.FB_APP_ID,
-          scope:
-            'whatsapp_business_management,whatsapp_business_messaging',
+          scope : 'whatsapp_business_management,whatsapp_business_messaging',
         },
         headers: { Authorization: `Bearer ${businessToken}` },
       }
     );
     const permanentToken = t2.access_token;
 
-    /* ➍ phone_number_id y número */
+    /* ➎ phone_number_id y número */
     const { data: nums } = await axios.get(
       `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
       {
-        params: { fields: 'id,display_phone_number' },
+        params : { fields: 'id,display_phone_number' },
         headers: { Authorization: `Bearer ${permanentToken}` },
       }
     );
     const phoneNumberId = nums.data[0].id;
     const telefono      = nums.data[0].display_phone_number;
 
-    /* ➎ /register + /subscribed_apps */
+    /* ➏ /register + /subscribed_apps */
     await axios.post(
       `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${permanentToken}` } }
     );
-
     await axios.post(
       `https://graph.facebook.com/v22.0/${phoneNumberId}/subscribed_apps`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${permanentToken}` } }
     );
 
-    /* ➏ Insertar / actualizar SOLO los campos existentes */
-    // ¿ya existe una fila para esta plataforma?
+    /* ➐ Insertar / actualizar en la tabla configuraciones */
     const [rows] = await db.query(
       'SELECT id FROM configuraciones WHERE id_plataforma = ?',
       { replacements: [id_plataforma] }
@@ -968,10 +968,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     return res.status(400).json({
       success: false,
       message: 'Error en la activación.',
-      error: err.response?.data || err.message,
+      error  : err.response?.data || err.message,
     });
   }
 });
+
 
 
 module.exports = router;
