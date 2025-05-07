@@ -827,12 +827,12 @@ async function getConfigFromDB(id_plataforma) {
 
 
 router.post('/embeddedSignupComplete', async (req, res) => {
-  const { code, redirect_uri, id_plataforma } = req.body;
+  const { code, id_plataforma } = req.body;
 
-  if (!code || !redirect_uri || !id_plataforma) {
+  if (!code || !id_plataforma) {
     return res.status(400).json({
       success: false,
-      message: 'Faltan code, redirect_uri o id_plataforma.',
+      message: 'Faltan code o id_plataforma.',
     });
   }
 
