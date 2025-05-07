@@ -844,7 +844,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         params: {
           client_id: process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
-          redirect_uri,
+          redirect_uri : 'https://www.facebook.com/connect/login_success.html',
           code,
         },
       }
