@@ -827,9 +827,9 @@ async function getConfigFromDB(id_plataforma) {
 
 
 router.post('/embeddedSignupComplete', async (req, res) => {
-  const { code, id_plataforma } = req.body;
+  const { code, id_plataforma, redirect_uri } = req.body;
 
-  if (!code || !id_plataforma) {
+  if (!code || !id_plataforma || !redirect_uri) {
     return res.status(400).json({
       success: false,
       message: 'Faltan code o id_plataforma.',
@@ -844,7 +844,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         params: {
           client_id: process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
-          redirect_uri : 'https://www.facebook.com/connect/login_success.html',
+          redirect_uri,
           code,
         },
       }
