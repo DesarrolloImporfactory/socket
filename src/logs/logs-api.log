@@ -968,3 +968,5 @@
 [2025-05-07T18:22:34.033Z] info: You are not logged in! Please log in to get access.
 [2025-05-07T18:22:50.875Z] info: jwt malformed
 [2025-05-07T19:46:27.390Z] info: jwt malformed
+[2025-05-08T05:27:07.784Z] info: invalid signature
+[2025-05-08T05:27:07.873Z] info: invalid signature
