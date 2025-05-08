@@ -824,10 +824,11 @@ async function getConfigFromDB(id_plataforma) {
   }
 }
 
-// whatsapp.routes.js  ▸  Ruta completa y actualizada
+// whatsapp.routes.js  ▸  Ruta 100 % operativa para Embedded Signup
 router.post('/embeddedSignupComplete', async (req, res) => {
   const { code, id_plataforma } = req.body;
 
+  /* Validación mínima */
   if (!code || !id_plataforma) {
     return res.status(400).json({
       success: false,
@@ -836,7 +837,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   }
 
   try {
-    /* ➊ Intercambio code → business‑token (60 d) */
+    /* ───────────────────────────────────────────────
+       1) code  →  business‑integration access_token
+       ─────────────────────────────────────────────── */
     const t1 = await axios
       .get('https://graph.facebook.com/v22.0/oauth/access_token', {
         params: {
@@ -847,104 +850,109 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       })
       .then((r) => r.data);
 
-    let businessId = t1.business_id; // ← puede venir undefined
     const businessToken = t1.access_token;
 
-    /* Fallback: /me?fields=businesses */
-    if (!businessId) {
-      const me = await axios
-        .get('https://graph.facebook.com/v22.0/me', {
-          params: { fields: 'businesses' },
-          headers: { Authorization: `Bearer ${businessToken}` },
-        })
-        .then((r) => r.data);
-
-      if (!me.businesses?.data?.length) {
-        throw new Error(
-          'El token no está vinculado a ningún Business Manager.'
-        );
-      }
-      businessId = me.businesses.data[0].id;
-    }
-
-    /* ➋ Ahora sí obtenemos el WABA con businessId */
-    const biz = await axios
-      .get(`https://graph.facebook.com/v22.0/${businessId}`, {
-        params: { fields: 'owned_whatsapp_business_accounts' },
+    /* ───────────────────────────────────────────────
+       2) Obtener WABA del usuario
+          (campo whatsapp_business_accounts)
+       ─────────────────────────────────────────────── */
+    const me = await axios
+      .get('https://graph.facebook.com/v22.0/me', {
+        params: { fields: 'whatsapp_business_accounts' },
         headers: { Authorization: `Bearer ${businessToken}` },
       })
       .then((r) => r.data);
 
-    const wabaId = biz.owned_whatsapp_business_accounts.data[0].id;
+    if (!me.whatsapp_business_accounts?.data?.length) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'El usuario no tiene ninguna cuenta de WhatsApp Business asociada.',
+      });
+    }
+    const wabaId = me.whatsapp_business_accounts.data[0].id;
 
-    /* ➌ Obtén o crea System‑User */
-    const { data: sysList } = await axios.get(
-      `https://graph.facebook.com/v22.0/${wabaId}/system_users`,
-      { headers: { Authorization: `Bearer ${businessToken}` } }
-    );
+    /* ───────────────────────────────────────────────
+       3) Obtener (o crear) System‑User
+       ─────────────────────────────────────────────── */
+    const sysList = await axios
+      .get(`https://graph.facebook.com/v22.0/${wabaId}/system_users`, {
+        headers: { Authorization: `Bearer ${businessToken}` },
+      })
+      .then((r) => r.data);
+
     const systemUserId =
       sysList.data.length > 0
         ? sysList.data[0].id
-        : (
-            await axios.post(
+        : await axios
+            .post(
               `https://graph.facebook.com/v22.0/${wabaId}/system_users`,
               { name: 'ChatCenter-SU', role: 'ADMIN' },
               { headers: { Authorization: `Bearer ${businessToken}` } }
             )
-          ).data.id;
+            .then((r) => r.data.id);
 
-    /* ➍ Token permanente (no expira) */
-    const { data: t2 } = await axios.post(
-      `https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
-      null,
-      {
-        params: {
-          app_id: process.env.FB_APP_ID,
-          scope: 'whatsapp_business_management,whatsapp_business_messaging',
-        },
-        headers: { Authorization: `Bearer ${businessToken}` },
-      }
-    );
-    const permanentToken = t2.access_token;
+    /* ───────────────────────────────────────────────
+       4) Token permanente (no expira)
+       ─────────────────────────────────────────────── */
+    const permanentToken = await axios
+      .post(
+        `https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
+        null,
+        {
+          params: {
+            app_id: process.env.FB_APP_ID,
+            scope: 'whatsapp_business_management,whatsapp_business_messaging',
+          },
+          headers: { Authorization: `Bearer ${businessToken}` },
+        }
+      )
+      .then((r) => r.data.access_token);
 
-    /* ➎ phone_number_id y número */
-    const { data: nums } = await axios.get(
-      `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-      {
+    /* ───────────────────────────────────────────────
+       5) phone_number_id  +  teléfono
+       ─────────────────────────────────────────────── */
+    const nums = await axios
+      .get(`https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`, {
         params: { fields: 'id,display_phone_number' },
         headers: { Authorization: `Bearer ${permanentToken}` },
-      }
-    );
+      })
+      .then((r) => r.data);
+
     const phoneNumberId = nums.data[0].id;
     const telefono = nums.data[0].display_phone_number;
 
-    /* ➏ /register + /subscribed_apps */
+    /* ───────────────────────────────────────────────
+       6) /register  +  /subscribed_apps
+       ─────────────────────────────────────────────── */
     await axios.post(
       `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${permanentToken}` } }
     );
+
     await axios.post(
       `https://graph.facebook.com/v22.0/${phoneNumberId}/subscribed_apps`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${permanentToken}` } }
     );
 
-    /* ➐ Insertar / actualizar en la tabla configuraciones */
+    /* ───────────────────────────────────────────────
+       7) Insertar / actualizar en tu tabla 'configuraciones'
+       ─────────────────────────────────────────────── */
     const [rows] = await db.query(
       'SELECT id FROM configuraciones WHERE id_plataforma = ?',
       { replacements: [id_plataforma] }
     );
 
     if (rows.length) {
-      // update
       await db.query(
         `UPDATE configuraciones SET
-           telefono      = ?,
-           id_telefono   = ?,
-           id_whatsapp   = ?,
-           token         = ?,
-           updated_at    = NOW()
+           telefono    = ?,
+           id_telefono = ?,
+           id_whatsapp = ?,
+           token       = ?,
+           updated_at  = NOW()
          WHERE id_plataforma = ?`,
         {
           replacements: [
@@ -957,11 +965,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         }
       );
     } else {
-      // insert
       await db.query(
         `INSERT INTO configuraciones
           (id_plataforma, key_imporsuit, nombre_configuracion,
-           telefono, id_telefono, id_whatsapp, token, created_at, updated_at)
+           telefono, id_telefono, id_whatsapp, token,
+           created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         {
           replacements: [
