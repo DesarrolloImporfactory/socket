@@ -1025,7 +1025,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     // 5. Subscribir la app (subscribed_apps)
     await axios.post(`https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`, {
       messaging_product: 'whatsapp',
-      pin: '123456'
+      pin: "123456"
     }, {
       headers: {
         Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
