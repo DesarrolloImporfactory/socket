@@ -824,19 +824,14 @@ async function getConfigFromDB(id_plataforma) {
   }
 }
 
-// whatsapp.routes.js  ▸  Embedded Signup → activar número
 // router.post('/embeddedSignupComplete', async (req, res) => {
 //   const { code, id_plataforma } = req.body;
-
 //   if (!code || !id_plataforma) {
-//     return res.status(400).json({
-//       success: false,
-//       message: 'Faltan code o id_plataforma.',
-//     });
+//     return res.status(400).json({ success: false, message: 'Faltan code o id_plataforma.' });
 //   }
 
 //   try {
-//     /* 1) code → business‑integration token (≈60 días) */
+//     /* 1) code → token de System‑User */
 //     const t1 = await axios
 //       .get('https://graph.facebook.com/v22.0/oauth/access_token', {
 //         params: {
@@ -845,69 +840,63 @@ async function getConfigFromDB(id_plataforma) {
 //           code,
 //         },
 //       })
-//       .then((r) => r.data);
+//       .then(r => r.data);
 
 //     const businessToken = t1.access_token;
 
-//     /* 2) WABA ID vía edge /me/whatsapp_business_accounts */
-//     const wabas = await axios
-//       .get('https://graph.facebook.com/v22.0/me/whatsapp_business_accounts', {
+//     /* 2) Obtener systemUserId */
+//     const systemUserId = await axios
+//       .get('https://graph.facebook.com/v22.0/me', {
+//         params : { fields: 'id' },
 //         headers: { Authorization: `Bearer ${businessToken}` },
 //       })
-//       .then((r) => r.data);
+//       .then(r => r.data.id);
 
-//     if (!wabas.data?.length) {
+//     /* 3) WABA via /system_user_id/whatsapp_business_accounts */
+//     const wabaId = await axios
+//       .get(`https://graph.facebook.com/v22.0/${systemUserId}/whatsapp_business_accounts`, {
+//         headers: { Authorization: `Bearer ${businessToken}` },
+//       })
+//       .then(r => r.data.data?.[0]?.id);
+
+//     if (!wabaId) {
 //       return res.status(400).json({
 //         success: false,
-//         message:
-//           'No se encontraron cuentas de WhatsApp Business para este usuario.',
+//         message: 'El System‑User no posee cuentas de WhatsApp Business.',
 //       });
 //     }
-//     const wabaId = wabas.data[0].id;
-
-//     /* 3) Obtén o crea System‑User */
-//     const sysList = await axios
-//       .get(`https://graph.facebook.com/v22.0/${wabaId}/system_users`, {
-//         headers: { Authorization: `Bearer ${businessToken}` },
-//       })
-//       .then((r) => r.data);
-
-//     const systemUserId =
-//       sysList.data.length > 0
-//         ? sysList.data[0].id
-//         : await axios
-//             .post(
-//               `https://graph.facebook.com/v22.0/${wabaId}/system_users`,
-//               { name: 'ChatCenter-SU', role: 'ADMIN' },
-//               { headers: { Authorization: `Bearer ${businessToken}` } }
-//             )
-//             .then((r) => r.data.id);
 
 //     /* 4) Token permanente */
 //     const permanentToken = await axios
-//       .post(
-//         `https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
+//       .post(`https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
 //         null,
 //         {
 //           params: {
 //             app_id: process.env.FB_APP_ID,
-//             scope: 'whatsapp_business_management,whatsapp_business_messaging',
+//             scope : 'whatsapp_business_management,whatsapp_business_messaging',
 //           },
 //           headers: { Authorization: `Bearer ${businessToken}` },
 //         }
 //       )
-//       .then((r) => r.data.access_token);
+//       .then(r => r.data.access_token);
 
 //     /* 5) phone_number_id + teléfono */
 //     const nums = await axios
 //       .get(`https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`, {
-//         params: { fields: 'id,display_phone_number' },
+//         params : { fields: 'id,display_phone_number' },
 //         headers: { Authorization: `Bearer ${permanentToken}` },
 //       })
-//       .then((r) => r.data);
+//       .then(r => r.data);
 
-//     const phoneNumberId = nums.data[0].id;
-//     const telefono = nums.data[0].display_phone_number;
+//     const phoneNumberId = nums.data?.[0]?.id;
+//     const telefono      = nums.data?.[0]?.display_phone_number;
+
+//     if (!phoneNumberId) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'No se encontró ningún número dentro del WABA.',
+//       });
+//     }
 
 //     /* 6) /register + /subscribed_apps */
 //     await axios.post(
@@ -915,14 +904,13 @@ async function getConfigFromDB(id_plataforma) {
 //       { messaging_product: 'whatsapp' },
 //       { headers: { Authorization: `Bearer ${permanentToken}` } }
 //     );
-
 //     await axios.post(
 //       `https://graph.facebook.com/v22.0/${phoneNumberId}/subscribed_apps`,
 //       { messaging_product: 'whatsapp' },
 //       { headers: { Authorization: `Bearer ${permanentToken}` } }
 //     );
 
-//     /* 7) Guarda/actualiza en tu tabla 'configuraciones' */
+//     /* 7) Guardar en la tabla configuraciones (igual que antes) */
 //     const [rows] = await db.query(
 //       'SELECT id FROM configuraciones WHERE id_plataforma = ?',
 //       { replacements: [id_plataforma] }
@@ -974,7 +962,7 @@ async function getConfigFromDB(id_plataforma) {
 //     return res.status(400).json({
 //       success: false,
 //       message: 'Error en la activación.',
-//       error: err.response?.data || err.message,
+//       error  : err.response?.data || err.message,
 //     });
 //   }
 // });
@@ -986,140 +974,117 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   }
 
   try {
-    /* 1) code → token de System‑User */
-    const t1 = await axios
-      .get('https://graph.facebook.com/v22.0/oauth/access_token', {
-        params: {
-          client_id: process.env.FB_APP_ID,
-          client_secret: process.env.FB_APP_SECRET,
-          code,
-        },
-      })
-      .then(r => r.data);
+    // 1. Intercambio del code por token temporal del cliente
+    const { data: tokenResp } = await axios.get('https://graph.facebook.com/v22.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FB_APP_ID,
+        client_secret: process.env.FB_APP_SECRET,
+        code,
+      },
+    });
 
-    const businessToken = t1.access_token;
+    const clientToken = tokenResp.access_token;
 
-    /* 2) Obtener systemUserId */
-    const systemUserId = await axios
-      .get('https://graph.facebook.com/v22.0/me', {
-        params : { fields: 'id' },
-        headers: { Authorization: `Bearer ${businessToken}` },
-      })
-      .then(r => r.data.id);
+    // 2. Obtener el business_id del cliente
+    const businessId = await axios.get('https://graph.facebook.com/v22.0/me/businesses', {
+      headers: { Authorization: `Bearer ${clientToken}` },
+    }).then(r => r.data.data?.[0]?.id);
 
-    /* 3) WABA via /system_user_id/whatsapp_business_accounts */
-    const wabaId = await axios
-      .get(`https://graph.facebook.com/v22.0/${systemUserId}/whatsapp_business_accounts`, {
-        headers: { Authorization: `Bearer ${businessToken}` },
-      })
-      .then(r => r.data.data?.[0]?.id);
+    if (!businessId) {
+      throw new Error('No se pudo identificar el business_id del cliente.');
+    }
+
+    // 3. Obtener el WABA_ID real (solo el autorizado por el cliente)
+    const wabaId = await axios.get(`https://graph.facebook.com/v22.0/${businessId}/owned_whatsapp_business_accounts`, {
+      headers: { Authorization: `Bearer ${clientToken}` },
+    }).then(r => r.data.data?.[0]?.id);
 
     if (!wabaId) {
-      return res.status(400).json({
-        success: false,
-        message: 'El System‑User no posee cuentas de WhatsApp Business.',
-      });
+      throw new Error('No se encontró ningún WABA autorizado en este flujo.');
     }
 
-    /* 4) Token permanente */
-    const permanentToken = await axios
-      .post(`https://graph.facebook.com/v22.0/${systemUserId}/access_tokens`,
-        null,
-        {
-          params: {
-            app_id: process.env.FB_APP_ID,
-            scope : 'whatsapp_business_management,whatsapp_business_messaging',
-          },
-          headers: { Authorization: `Bearer ${businessToken}` },
-        }
-      )
-      .then(r => r.data.access_token);
+    // 4. Obtener el número de teléfono desde el WABA
+    const numero = await axios.get(`https://graph.facebook.com/v22.0/${wabaId}/phone_numbers?fields=id,display_phone_number`, {
+      headers: { Authorization: `Bearer ${clientToken}` },
+    }).then(r => r.data.data?.[0]);
 
-    /* 5) phone_number_id + teléfono */
-    const nums = await axios
-      .get(`https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`, {
-        params : { fields: 'id,display_phone_number' },
-        headers: { Authorization: `Bearer ${permanentToken}` },
-      })
-      .then(r => r.data);
-
-    const phoneNumberId = nums.data?.[0]?.id;
-    const telefono      = nums.data?.[0]?.display_phone_number;
+    const phoneNumberId = numero?.id;
+    const telefono = numero?.display_phone_number?.replace(/\s+/g, '');
 
     if (!phoneNumberId) {
-      return res.status(400).json({
-        success: false,
-        message: 'No se encontró ningún número dentro del WABA.',
-      });
+      throw new Error('No se encontró ningún número de teléfono asociado al WABA.');
     }
 
-    /* 6) /register + /subscribed_apps */
-    await axios.post(
-      `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
-      { messaging_product: 'whatsapp' },
-      { headers: { Authorization: `Bearer ${permanentToken}` } }
-    );
-    await axios.post(
-      `https://graph.facebook.com/v22.0/${phoneNumberId}/subscribed_apps`,
-      { messaging_product: 'whatsapp' },
-      { headers: { Authorization: `Bearer ${permanentToken}` } }
-    );
+    // 5. Activar el número (register)
+    await axios.post(`https://graph.facebook.com/v22.0/${phoneNumberId}/register`, {
+      messaging_product: 'whatsapp',
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
+      },
+    });
 
-    /* 7) Guardar en la tabla configuraciones (igual que antes) */
-    const [rows] = await db.query(
-      'SELECT id FROM configuraciones WHERE id_plataforma = ?',
-      { replacements: [id_plataforma] }
-    );
+    // 6. Subscribir la app al WABA (subscribed_apps)
+    await axios.post(`https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`, {
+      messaging_product: 'whatsapp',
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
+      },
+    });
 
-    if (rows.length) {
-      await db.query(
-        `UPDATE configuraciones SET
-           telefono    = ?,
-           id_telefono = ?,
-           id_whatsapp = ?,
-           token       = ?,
-           updated_at  = NOW()
-         WHERE id_plataforma = ?`,
-        {
-          replacements: [
-            telefono,
-            phoneNumberId,
-            wabaId,
-            permanentToken,
-            id_plataforma,
-          ],
-        }
-      );
-    } else {
-      await db.query(
-        `INSERT INTO configuraciones
-          (id_plataforma, key_imporsuit, nombre_configuracion,
-           telefono, id_telefono, id_whatsapp, token,
-           created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        {
-          replacements: [
-            id_plataforma,
-            generarClaveUnica(),
-            'WhatsApp Cloud',
-            telefono,
-            phoneNumberId,
-            wabaId,
-            permanentToken,
-          ],
-        }
-      );
-    }
+    // 7. Guardar configuración en la base de datos
+    const key_imporsuit = generarClaveUnica();
+    const nombre_configuracion = `WhatsApp - ${telefono}`;
+
+    await db.query(`
+      INSERT INTO configuraciones
+        (id_plataforma, nombre_configuracion, telefono, id_telefono, id_whatsapp, token, key_imporsuit)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, {
+      replacements: [
+        id_plataforma,
+        nombre_configuracion,
+        telefono,
+        phoneNumberId,
+        wabaId,
+        process.env.FB_PROVIDER_TOKEN,
+        key_imporsuit,
+      ],
+    });
+
+    // 8. Asignar webhook_url
+    await db.query(`
+      UPDATE configuraciones
+      SET webhook_url = ?
+      WHERE key_imporsuit = ?
+    `, {
+      replacements: [
+        'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54',
+        key_imporsuit,
+      ],
+    });
+
+    // 9. Insertar en clientes_chat_center
+    await db.query(`
+      INSERT INTO clientes_chat_center
+        (id_plataforma, uid_cliente, nombre_cliente, celular_cliente)
+      VALUES (?, ?, ?, ?)
+    `, {
+      replacements: [id_plataforma, phoneNumberId, nombre_configuracion, telefono],
+    });
 
     return res.json({ success: true });
+
   } catch (err) {
-    console.error(err.response?.data || err);
+    console.error('❌ Error Embedded Signup:', err.response?.data || err);
     return res.status(400).json({
       success: false,
-      message: 'Error en la activación.',
-      error  : err.response?.data || err.message,
+      message: 'Error en la activación automática.',
+      error: err.response?.data || err.message,
     });
   }
 });
+
 
 module.exports = router;
