@@ -1007,7 +1007,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }).then(r => r.data.data?.[0]);
 
     const phoneNumberId = numero?.id;
-    const telefono = numero?.display_phone_number?.replace(/\s+/g, '');
+    const telefono = numero?.display_phone_number?.replace(/\s+/g, '').replace('+', '');
 
     if (!phoneNumberId || !telefono) {
       throw new Error('No se pudo obtener el número de teléfono asociado al WABA.');
@@ -1034,7 +1034,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     // 6. Guardar en base de datos
     const key_imporsuit = generarClaveUnica();
-    const nombre_configuracion = `WhatsApp - ${telefono}`;
+    const nombreNegocio = wabaSeleccionado.name || 'WhatsApp';
+    const nombre_configuracion = `${nombreNegocio} - Imporsuit`;
 
     await db.query(`
       INSERT INTO configuraciones
