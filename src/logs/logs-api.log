@@ -970,3 +970,21 @@
 [2025-05-07T19:46:27.390Z] info: jwt malformed
 [2025-05-08T05:27:07.784Z] info: invalid signature
 [2025-05-08T05:27:07.873Z] info: invalid signature
+[2025-05-22T13:54:05.234Z] info: invalid signature
+[2025-05-22T13:54:10.685Z] info: invalid signature
+[2025-05-22T13:54:11.182Z] info: jwt malformed
+[2025-05-22T13:54:19.516Z] info: Bad "options.expiresIn" option the payload already has an "exp" property.
+[2025-05-22T13:58:49.325Z] info: jwt malformed
+[2025-05-22T14:02:44.206Z] info: jwt malformed
+[2025-05-22T14:07:38.530Z] info: jwt malformed
+[2025-05-22T14:07:47.025Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-22T14:07:53.780Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-22T16:31:55.280Z] info: jwt malformed
+[2025-05-22T16:33:25.122Z] info: jwt malformed
+[2025-05-22T16:33:32.009Z] info: jwt malformed
+[2025-05-22T16:33:38.986Z] info: jwt malformed
+[2025-05-22T21:26:03.575Z] info: invalid signature
+[2025-05-22T21:26:05.536Z] info: invalid signature
+[2025-05-22T21:26:05.602Z] info: invalid signature
+[2025-05-22T21:26:41.281Z] info: jwt malformed
+[2025-05-22T21:26:50.917Z] info: jwt malformed
