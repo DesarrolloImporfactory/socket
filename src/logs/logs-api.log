@@ -988,3 +988,75 @@
 [2025-05-22T21:26:05.602Z] info: invalid signature
 [2025-05-22T21:26:41.281Z] info: jwt malformed
 [2025-05-22T21:26:50.917Z] info: jwt malformed
+[2025-05-27T17:31:52.030Z] info: jwt malformed
+[2025-05-27T17:32:28.866Z] info: jwt malformed
+[2025-05-27T17:32:41.401Z] info: jwt malformed
+[2025-05-27T17:32:41.416Z] info: jwt malformed
+[2025-05-27T17:32:43.959Z] info: jwt malformed
+[2025-05-27T17:32:43.965Z] info: jwt malformed
+[2025-05-27T17:32:46.348Z] info: jwt malformed
+[2025-05-27T17:32:46.359Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:32:46.444Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:32:48.870Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:32:48.873Z] info: jwt malformed
+[2025-05-27T17:33:20.887Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:33:20.890Z] info: jwt malformed
+[2025-05-27T17:33:27.193Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:33:27.201Z] info: jwt malformed
+[2025-05-27T17:33:30.571Z] info: jwt malformed
+[2025-05-27T17:33:32.292Z] info: jwt malformed
+[2025-05-27T17:33:32.417Z] info: jwt malformed
+[2025-05-27T17:33:37.144Z] info: jwt malformed
+[2025-05-27T17:33:37.395Z] info: jwt malformed
+[2025-05-27T17:33:37.554Z] info: jwt malformed
+[2025-05-27T17:33:38.047Z] info: jwt malformed
+[2025-05-27T17:33:38.551Z] info: jwt malformed
+[2025-05-27T17:33:38.888Z] info: jwt malformed
+[2025-05-27T17:33:39.561Z] info: jwt malformed
+[2025-05-27T17:33:39.564Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:33:40.569Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:33:40.572Z] info: jwt malformed
+[2025-05-27T17:34:29.424Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:29.474Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:38.115Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:38.120Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:43.621Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:43.628Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:43.732Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:56.682Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:57.618Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:58.359Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:59.490Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:34:59.494Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:35:00.850Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T17:35:00.853Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:52:44.701Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:52:44.741Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:53:02.013Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:53:02.019Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:53:02.769Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T19:53:02.773Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:07:31.643Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:07:31.695Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:07:37.088Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:07:37.094Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:08:18.606Z] info: jwt malformed
+[2025-05-27T20:08:23.299Z] info: jwt malformed
+[2025-05-27T20:08:25.266Z] info: jwt malformed
+[2025-05-27T20:08:25.272Z] info: jwt malformed
+[2025-05-27T20:08:34.599Z] info: jwt malformed
+[2025-05-27T20:08:34.609Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:08:34.705Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:34:48.258Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:34:48.264Z] info: jwt malformed
+[2025-05-27T20:34:48.273Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T20:34:48.711Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T21:11:45.467Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T21:11:45.472Z] info: jwt malformed
+[2025-05-27T21:14:00.675Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T21:14:00.682Z] info: jwt malformed
+[2025-05-27T21:14:49.242Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T21:14:49.247Z] info: jwt malformed
+[2025-05-27T21:14:49.251Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-05-27T21:14:49.257Z] info: jwt malformed
+[2025-05-27T21:14:49.743Z] info: WHERE parameter "id_users" has invalid "undefined" value
