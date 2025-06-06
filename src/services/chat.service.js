@@ -43,9 +43,10 @@ class ChatService {
       // Realiza la consulta para obtener los chats excluyendo el número específico
       const chats = await db.query(
         `
-        SELECT * FROM vista_chats_3
+        SELECT * FROM vista_chats_materializada  
         WHERE id_plataforma = :id_plataforma
           AND celular_cliente != :numero
+          ORDER BY mensaje_created_at DESC
         ;
       `,
         {
