@@ -1044,11 +1044,41 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     // );
 
     //  ⬆️  Después (sin PIN)
-    await axios.post(
-      `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
-      { messaging_product: 'whatsapp' },
-      { headers: { Authorization: `Bearer ${clientToken}` } }
-    );
+    // await axios.post(
+    //   `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
+    //   { messaging_product: 'whatsapp' },
+    //   { headers: { Authorization: `Bearer ${clientToken}` } }
+    // );
+
+    /* 4. Activar (register) ─────────────────────────────────────────── */
+    try {
+      /* 4-A · intenta registro SIN PIN (caso coexistencia con QR) */
+      await axios.post(
+        `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
+        { messaging_product: 'whatsapp' },
+        { headers: { Authorization: `Bearer ${clientToken}` } }   // token de 15 min del cliente
+      );
+    
+    } catch (e) {
+      const code = e?.response?.data?.error?.code;
+    
+      /* 4-B · ya estaba registrado ⇒ ignora el error y continúa */
+      if (code === 131070) {
+        // PHONE_ALREADY_REGISTERED  – no se hace nada
+      
+      /* 4-C · la API exige PIN ⇒ reintenta con PIN (123456) y token del partner */
+      } else if (code === 131071 || code === 131047) {
+        await axios.post(
+          `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
+          { messaging_product: 'whatsapp', pin: '123456' },
+          { headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` } }
+        );
+      
+      /* 4-D · cualquier otro error se propaga al catch general */
+      } else {
+        throw e;
+      }
+    }
 
     // 5. Subscribir la app (subscribed_apps)
     await axios.post(
