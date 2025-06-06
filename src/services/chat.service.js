@@ -43,7 +43,7 @@ class ChatService {
       // Realiza la consulta para obtener los chats excluyendo el número específico
       const chats = await db.query(
         `
-        SELECT * FROM vista_chats_3  
+        SELECT * FROM vista_chats_materializada  
         WHERE id_plataforma = :id_plataforma
           AND celular_cliente != :numero
         ;
@@ -497,6 +497,70 @@ class ChatService {
       }
 
       return { facturas, guias };
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async getNovedades(id_plataforma, telefono) {
+    try {
+      if (
+        telefono == 'undefined' ||
+        telefono == 'null' ||
+        telefono == null ||
+        telefono == undefined ||
+        telefono == ''
+      ) {
+        return { gestionadas: [], no_gestionadas: [] };
+      }
+
+      const telefonoNormalizado = telefono.replace(/[^\d]/g, '');
+
+      const baseSQL = `
+      SELECT 
+        nvd.guia_novedad as guia_novedad,
+        nvd.solucionada as solucionada,
+        nvd.estado_novedad as estado_novedad,
+        nvd.terminado as terminado,
+        nvd.cliente_novedad as cliente_novedad
+      FROM novedades nvd 
+      INNER JOIN facturas_cot fc ON fc.numero_guia = nvd.guia_novedad
+      WHERE nvd.id_plataforma = :id_plataforma
+      
+      AND NOT (
+        (nvd.guia_novedad LIKE 'IMP%' OR nvd.guia_novedad LIKE 'MKP%') 
+        AND nvd.estado_novedad IN (
+          97, 108, 118, 57, 44, 56, 53, 52, 123, 121, 51, 10,
+          54, 119, 109, 55, 99, 120, 104, 122, 93, 111, 3, 8,
+          98, 15, 113
+        )
+      )
+      AND NOT (
+        nvd.guia_novedad LIKE 'I00%' AND nvd.estado_novedad = 6
+      )
+    `;
+
+      // No gestionadas (sin condición adicional)
+      const no_gestionadas = await db.query(baseSQL, {
+        replacements: {
+          id_plataforma,
+          
+        },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      // Gestionadas (con condición adicional)
+      const gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 1 OR nvd.terminado = 1)`;
+
+      const gestionadas = await db.query(gestionadasSQL, {
+        replacements: {
+          id_plataforma,
+          
+        },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      return { gestionadas, no_gestionadas };
     } catch (error) {
       throw new AppError(error.message, 500);
     }

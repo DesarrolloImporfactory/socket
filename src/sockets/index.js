@@ -168,9 +168,11 @@ class Sockets {
         try {
           const chatService = new ChatService();
           const data = await chatService.getFacturas(id_plataforma, telefono);
+          const dataNovedades = await chatService.getNovedades(id_plataforma, telefono);
 
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_FACTURA_RESPONSE', data);
+          socket.emit('DATA_NOVEDADES', dataNovedades);
         } catch (error) {
           console.error('Error al obtener los datos del admin:', error.message);
 

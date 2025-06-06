@@ -27,7 +27,7 @@ exports.protect = catchAsync(async (req, res, next) => {
   // 4) Check if user still exists
   const user = await User.findOne({
     where: {
-      id_users: decoded.id,
+      id_users: decoded.data.id,
     },
   });
   if (!user) {
