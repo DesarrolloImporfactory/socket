@@ -1314,3 +1314,4 @@
 [2025-06-04T17:37:01.647Z] info: WHERE parameter "id_users" has invalid "undefined" value
 [2025-06-04T17:37:01.703Z] info: WHERE parameter "id_users" has invalid "undefined" value
 [2025-06-05T18:42:46.923Z] info: jwt malformed
+[2025-06-06T15:02:41.666Z] info: jwt malformed
