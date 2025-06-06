@@ -168,8 +168,12 @@ class Sockets {
         try {
           const chatService = new ChatService();
           const data = await chatService.getFacturas(id_plataforma, telefono);
-          const dataNovedades = await chatService.getNovedades(id_plataforma, telefono);
+          const dataNovedades = await chatService.getNovedades(
+            id_plataforma,
+            telefono
+          );
 
+          console.log('getfacturas: ' + data);
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_FACTURA_RESPONSE', data);
           socket.emit('DATA_NOVEDADES', dataNovedades);

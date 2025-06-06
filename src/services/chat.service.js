@@ -527,7 +527,7 @@ class ChatService {
       FROM novedades nvd 
       INNER JOIN facturas_cot fc ON fc.numero_guia = nvd.guia_novedad
       WHERE nvd.id_plataforma = :id_plataforma
-      
+      AND fc.telefono = :telefono
       AND NOT (
         (nvd.guia_novedad LIKE 'IMP%' OR nvd.guia_novedad LIKE 'MKP%') 
         AND nvd.estado_novedad IN (
@@ -545,7 +545,7 @@ class ChatService {
       const no_gestionadas = await db.query(baseSQL, {
         replacements: {
           id_plataforma,
-          
+          telefono: telefonoNormalizado,
         },
         type: Sequelize.QueryTypes.SELECT,
       });
@@ -556,7 +556,7 @@ class ChatService {
       const gestionadas = await db.query(gestionadasSQL, {
         replacements: {
           id_plataforma,
-          
+          telefono: telefonoNormalizado,
         },
         type: Sequelize.QueryTypes.SELECT,
       });
