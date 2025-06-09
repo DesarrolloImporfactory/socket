@@ -2,6 +2,7 @@
 const express = require('express');
 const axios = require('axios');
 const { db } = require('../database/config');
+const { error } = require('winston');
 
 const router = express.Router();
 
@@ -1160,6 +1161,231 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       contacto: 'https://wa.me/593962803007',
       error: err.response?.data || err.message,
     });
+  }
+});
+
+router.post('/crearPlantillasAutomaticas', async (req, res) => {
+  const { id_plataforma } = req.body;
+
+  if (!id_plataforma) {
+    return res.status(400).json({ error: 'Falta el id_plataforma.' });
+  }
+
+  // Base de plantillas que quieres crear
+  const plantillasBase = [
+      {
+        name: "zona_entrega",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "HEADER",
+            format: "TEXT",
+            text: "Llego el día de entrega"
+          },
+          {
+            type: "BODY",
+            text: "Hoy tu pedido ha llegado 📦✅ a {{1}} y está próximo a ser entregado en {{2}}, en el horario de 9 am a 6 pm. ¡Te recordamos tener el valor total de {{3}} en efectivo! Agradecemos estar atento a las llamadas del courier 🚚 Revisa el estado de tu guía aquí {{4}}",
+            example: {
+              body_text: [["Quito", "Av. Amazonas 123", "$20.00", "https://tracking.com/12345"]]
+            }
+          }
+        ]
+      },
+      {
+        name: "retiro_oficina_servientrega",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "BODY",
+            text: "¡Hola {{1}}! 😊💙\n\nTe cuento que tu pedido de {{2}} está para entrega en la oficina principal de {{3}} en la ciudad de {{4}}.\n\nEl valor a pagar es de: $ {{5}}\nLa guia de transporte es: {{6}}\n\nDebes acercarte a la oficina, recuerda llevar la cédula y este número de guía para que puedan entregarte, si tienes algún inconveniente nos puedes escribir. 😊",
+            example: {
+              body_text: [["Daniel", "Zapatos Nike", "Servientrega", "Guayaquil", "50", "123456789"]]
+            }
+          }
+        ]
+      },
+      {
+        name: "en_transito",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "HEADER",
+            format: "TEXT",
+            text: "¡Tu pedido está en camino!"
+          },
+          {
+            type: "BODY",
+            text: "Tu producto, {{1}}, está próximo a ser entregado en {{2}}. El horario estimado de entrega es de 9:00 AM a 6:00 PM.\nTe recordamos tener listo el valor total de {{3}} en efectivo para facilitar la entrega. Además, por favor, mantente atento a las llamadas del courier para cualquier actualización. 🚚📞\n¡Gracias por elegirnos! 😊",
+            example: {
+              body_text: [["Audífonos Bluetooth", "Av. Eloy Alfaro 456", "$35.00"]]
+            }
+          }
+        ]
+      },
+      {
+        name: "novedad",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "HEADER",
+            format: "TEXT",
+            text: "Información Importante"
+          },
+          {
+            type: "BODY",
+            text: "Hola {{1}} intentamos entregar 🚚 tu pedido {{2}} pero al parecer tuvimos un inconveniente, me podrías confirmar si tuviste algún problema para recibirlo?",
+            example: {
+              body_text: [["Carlos", "Laptop HP"]]
+            }
+          }
+        ]
+      },
+      {
+        name: "remarketing_1",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "BODY",
+            text: "Hola, estamos por enviar los últimos pedidos. 🚛\n\nSolo queremos avisarte que el {{1}} está casi agotado.\n\n Si aún deseas tu pedido, ayúdame con tu ubicación por Google Maps para llegar con mayor facilidad. 📍\n\nRecuerda que es pago contra entrega para tu seguridad.",
+            example: {
+              body_text: [["Reloj inteligente Xiaomi"]]
+            }
+          },
+          {
+            type: "BUTTONS",
+            buttons: [
+              { type: "QUICK_REPLY", text: "Confirmar Pedido" }
+            ]
+          }
+        ]
+      },
+      {
+        name: "confirmacion_de_pedido",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "BODY",
+            text: "😃 Hola {{1}}, Acabo de recibir tu pedido de compra\nQuiero Confirmar tus Datos de envío:\n\n✅Producto: {{2}}\n👤Nombre: {{3}}\n📱Teléfono: {{4}}\n📍Dirección: {{5}}\n\n✅ Por favor enviame tu ubicación actual para tener una entrega exitosa.",
+            example: {
+              body_text: [["Daniel", "Corrector", "Daniel", "098765473", "Av. Simón Bolívar y Mariscal Sucre"]]
+            }
+          }
+        ]
+      },
+      {
+        name: "contacto_inicial",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "BODY",
+            text: "Hola, estamos enviando los últimos pedidos. 🚛\nNecesito confirmar unos detalles de tu orden.\n\nResponde este mensaje para continuar la conversación."
+          }
+        ]
+      },
+      {
+        name: "generada_chat_center",
+        language: "es",
+        category: "UTILITY",
+        components: [
+          {
+            type: "BODY",
+            text: "¡Hola {{1}}, tu envío ha sido procesado con éxito! 👍\nLa entrega se realizará dentro de 24 a 48 horas, el transportista se comunicará contigo para realizar la entrega. Cualquier duda que tengas estoy aquí para ayudarte ✅\nAdicional, tu número de guía es {{2}} y puedes revisar el tracking o descargar tu guía dándole a los botones de aquí abajo. 👇👇",
+            example: {
+              body_text: [
+                ["Sebastian", "1234567890"]
+              ]
+            }
+          },
+          {
+            type: "BUTTONS",
+            buttons: [
+              {
+                type: "URL",
+                text: "Descargar guía aquí",
+                url: "https://new.imporsuitpro.com/Pedidos/imprimir_guia/{{1}}",
+                example: [
+                  "https://new.imporsuitpro.com/Pedidos/imprimir_guia/numero_guia"
+                ]
+              },
+              {
+                type: "URL",
+                text: "Ver tracking de guía",
+                url: "https://new.imporsuitpro.com/Pedidos/tracking_guia/{{1}}",
+                example: [
+                  "https://new.imporsuitpro.com/Pedidos/tracking_guia/numero_guia"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ];
+
+  try {
+    const wabaConfig = await getConfigFromDB(id_plataforma);
+    if (!wabaConfig) {
+      return res.status(404).json({ error: 'Configuración no encontrada.' });
+    }
+
+    const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=100`;
+
+    // 1. Obtener plantillas existentes
+    const { data } = await axios.get(url);
+    const existentes = data.data.map(p => p.name);
+
+    const results = [];
+
+    // 2. Crear solo las que no existen
+    for (const plantilla of plantillasBase) {
+      if (existentes.includes(plantilla.name)) {
+        results.push({
+          nombre: plantilla.name,
+          status: 'omitido',
+          mensaje: 'La plantilla ya existe en Meta. No fue recreada.'
+        });
+        continue;
+      }
+
+      try {
+        const crearUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+        const response = await axios.post(crearUrl, plantilla, {
+          headers: {
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        results.push({
+          nombre: plantilla.name,
+          status: 'success',
+          response: response.data
+        });
+      } catch (err) {
+        results.push({
+          nombre: plantilla.name,
+          status: 'error',
+          error: err.response?.data || err.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      mensaje: "Proceso finalizado. Revisa los estados por cada plantilla.",
+      resultados: results
+    });
+
+  } catch (error) {
+    console.error('Error general al crear plantillas:', error?.response?.data || error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
