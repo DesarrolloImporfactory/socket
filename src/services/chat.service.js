@@ -523,11 +523,14 @@ class ChatService {
         nvd.solucionada as solucionada,
         nvd.estado_novedad as estado_novedad,
         nvd.terminado as terminado,
-        nvd.cliente_novedad as cliente_novedad
+        nvd.cliente_novedad as cliente_novedad,
+        nvd.tracking as tracking,
+        nvd.novedad as novedad,
+        nvd.id_novedad as id_novedad
       FROM novedades nvd 
       INNER JOIN facturas_cot fc ON fc.numero_guia = nvd.guia_novedad
       WHERE nvd.id_plataforma = :id_plataforma
-      AND fc.telefono = :telefono
+      AND fc.telefono_limpio = :telefono
       AND NOT (
         (nvd.guia_novedad LIKE 'IMP%' OR nvd.guia_novedad LIKE 'MKP%') 
         AND nvd.estado_novedad IN (
@@ -540,9 +543,10 @@ class ChatService {
         nvd.guia_novedad LIKE 'I00%' AND nvd.estado_novedad = 6
       )
     `;
+    const no_gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 0 AND nvd.terminado = 0)`;
 
       // No gestionadas (sin condición adicional)
-      const no_gestionadas = await db.query(baseSQL, {
+      const no_gestionadas = await db.query(no_gestionadasSQL, {
         replacements: {
           id_plataforma,
           telefono: telefonoNormalizado,

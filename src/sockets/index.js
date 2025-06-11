@@ -173,7 +173,6 @@ class Sockets {
             telefono
           );
 
-          console.log('getfacturas: ' + data);
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_FACTURA_RESPONSE', data);
           socket.emit('DATA_NOVEDADES', dataNovedades);
