@@ -10,6 +10,6 @@ const authMiddleware = require('../middlewares/auth.middleware');
 router.post('/validarDevolucion', facturas_cotController.validarDevolucion);
 
 // Ruta para generar la guía
-router.post('/generar_guia', facturasCotController.generarGuia);
+router.post('/generar_guia', facturas_cotController.generarGuia);
 
 module.exports = router;
