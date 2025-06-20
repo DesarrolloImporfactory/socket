@@ -7,9 +7,9 @@ const router = express.Router();
 const authMiddleware = require('../middlewares/auth.middleware');
 
 // routes/detalle_fact_cot.routes.js
-router.post(
-  '/validarDevolucion',
-  facturas_cotController.validarDevolucion
-);
+router.post('/validarDevolucion', facturas_cotController.validarDevolucion);
+
+// Ruta para generar la guía
+router.post('/generar_guia', facturasCotController.generarGuia);
 
 module.exports = router;
