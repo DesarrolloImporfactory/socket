@@ -64,7 +64,8 @@ app.use(
   })
 );
 app.use('/api/v1', limiter);
-// toutes
+app.use('/api/v1/facturas_cot', facturas_cotRouter);
+// routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
@@ -74,7 +75,6 @@ app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/configuraciones', configuracionesRouter);
 app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
-app.use('/api/v1/facturas_cot', facturas_cotRouter);
 app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
