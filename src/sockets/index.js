@@ -29,12 +29,29 @@ class Sockets {
         this.io.emit('USER_ADDED', onlineUsers);
       });
 
-      socket.on('GET_CHATS', async (id_plataforma) => {
-        const chatService = new ChatService();
-        const chat = await chatService.findChats(id_plataforma);
+      socket.on(
+        'GET_CHATS',
+        async (
+          id_plataforma,
+          { cursorFecha, cursorId, limit = 10, filtros = {} }
+        ) => {
+          try {
+            const chatService = new ChatService();
 
-        socket.emit('CHATS', chat);
-      });
+            const chats = await chatService.findChats(id_plataforma, {
+              cursorFecha,
+              cursorId,
+              limit,
+              filtros,
+            });
+
+            socket.emit('CHATS', chats);
+          } catch (error) {
+            console.error('Error al obtener los chats:', error);
+            socket.emit('ERROR', { message: 'Error al obtener los chats' });
+          }
+        }
+      );
 
       socket.on('GET_CHATS_BOX', async ({ chatId, plataforma }) => {
         try {

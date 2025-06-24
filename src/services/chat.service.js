@@ -20,19 +20,20 @@ const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
 class ChatService {
-  async findChats(id_plataforma) {
+  async findChats(
+    id_plataforma,
+    { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
+  ) {
     try {
-      // Obtener número del dueño de la plataforma
+      console.log('Filtros:', filtros);
+
       const configuraciones = await Configuraciones.findOne({
-        where: {
-          id_plataforma,
-        },
+        where: { id_plataforma },
         attributes: ['telefono'],
       });
 
       const numero = configuraciones ? configuraciones.telefono : null;
 
-      // Asegúrate de que 'numero' no sea null o undefined
       if (!numero) {
         throw new AppError(
           'El número de teléfono para excluir no se encontró.',
@@ -40,24 +41,136 @@ class ChatService {
         );
       }
 
-      // Realiza la consulta para obtener los chats excluyendo el número específico
-      const chats = await db.query(
-        `
-        SELECT * FROM vista_chats_materializada  
-        WHERE id_plataforma = :id_plataforma
-          AND celular_cliente != :numero
-          ORDER BY mensaje_created_at DESC
-        ;
-      `,
-        {
-          replacements: { id_plataforma: id_plataforma, numero: numero },
-          type: Sequelize.QueryTypes.SELECT,
+      let whereClause = `WHERE id_plataforma = :id_plataforma AND celular_cliente != :numero`;
+
+      if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
+        whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
+      }
+
+      if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
+        whereClause += ` AND JSON_CONTAINS(etiquetas, JSON_ARRAY(${filtros.selectedEtiquetas
+          .map((etiqueta) => `'${etiqueta.value}'`)
+          .join(', ')}), '$')`;
+      }
+
+      if (filtros.selectedEstado && filtros.selectedEstado.value) {
+        whereClause += ` AND estado_factura = :selectedEstado`;
+      }
+
+      if (
+        filtros.selectedTransportadora &&
+        filtros.selectedTransportadora.value
+      ) {
+        whereClause += ` AND transporte = :selectedTransportadora`;
+      }
+
+      if (filtros.selectedNovedad) {
+        if (filtros.selectedNovedad === 'gestionadas') {
+          whereClause += ` AND novedad_info IS NOT NULL AND novedad_info->'$.terminado' = 1 AND novedad_info->'$.solucionada' = 1`;
+        } else if (filtros.selectedNovedad === 'no_gestionadas') {
+          whereClause += ` AND (novedad_info IS NULL OR novedad_info->'$.terminado' = 0 AND novedad_info->'$.solucionada' = 0)`;
         }
-      );
+      }
+
+      if (filtros.selectedTab) {
+        if (filtros.selectedTab === 'abierto') {
+          whereClause += ` AND chat_cerrado = 0`;
+        } else if (filtros.selectedTab === 'resueltos') {
+          whereClause += ` AND chat_cerrado = 1`;
+        }
+      }
+
+      if (filtros.selectedTransportadora && filtros.selectedEstado) {
+        const estadoTransportadoraMap = {
+          LAAR: {
+            Generada: [1, 2],
+            'En transito': [5, 11, 12, 6],
+            Entregada: [7],
+            Novedad: [14],
+            Devolucion: [9],
+          },
+          SERVIENTREGA: {
+            Generada: [100, 102, 103],
+            'En transito': (estadoFactura) =>
+              estadoFactura >= 300 && estadoFactura <= 317,
+            Entregada: (estadoFactura) =>
+              estadoFactura >= 400 && estadoFactura <= 403,
+            Novedad: (estadoFactura) =>
+              estadoFactura >= 320 && estadoFactura <= 351,
+            Devolucion: (estadoFactura) =>
+              estadoFactura >= 500 && estadoFactura <= 502,
+          },
+          GINTRACOM: {
+            Generada: [1, 2, 3],
+            'En transito': [5, 4],
+            Entregada: [7],
+            Novedad: [6],
+            Devolucion: [8, 9, 13],
+          },
+          SPEED: {
+            Generada: [2],
+            'En transito': [3],
+            Devolucion: [9],
+          },
+        };
+
+        const estadosPermitidos =
+          estadoTransportadoraMap[filtros.selectedTransportadora.value][
+            filtros.selectedEstado.value
+          ];
+
+        if (Array.isArray(estadosPermitidos)) {
+          whereClause += ` AND estado_factura IN (${estadosPermitidos.join(
+            ', '
+          )})`;
+        } else if (typeof estadosPermitidos === 'function') {
+          whereClause += ` AND estado_factura BETWEEN ${estadosPermitidos(
+            0
+          )} AND ${estadosPermitidos(1)}`;
+        }
+      }
+
+      // Filtro de paginación por cursores
+      if (cursorFecha && cursorId) {
+        whereClause += ` AND (mensaje_created_at < :cursorFecha OR (mensaje_created_at = :cursorFecha AND id < :cursorId))`;
+      }
+
+      console.log('cursorFecha: ' + cursorFecha);
+      console.log('cursorId: ' + cursorId);
+
+      const sqlQuery = `
+      SELECT * FROM vista_chats_materializada
+      ${whereClause}
+      ORDER BY mensaje_created_at DESC, id DESC
+      LIMIT :limit;
+    `;
+
+      console.log('Consulta SQL completa:', sqlQuery);
+
+      const chats = await db.query(sqlQuery, {
+        replacements: {
+          id_plataforma,
+          numero,
+          searchTerm: filtros.searchTerm
+            ? `%${filtros.searchTerm.toLowerCase()}%`
+            : null,
+          selectedEstado: filtros.selectedEstado
+            ? filtros.selectedEstado.value
+            : null,
+          selectedTransportadora: filtros.selectedTransportadora
+            ? filtros.selectedTransportadora.value
+            : null,
+          cursorFecha,
+          cursorId,
+          limit,
+        },
+        type: Sequelize.QueryTypes.SELECT,
+      });
 
       return chats;
     } catch (error) {
-      throw new AppError(error.message, 500);
+      console.error('Error en la consulta:', error);
+      throw new AppError('Error al obtener los chats', 500);
     }
   }
 
@@ -543,7 +656,7 @@ class ChatService {
         nvd.guia_novedad LIKE 'I00%' AND nvd.estado_novedad = 6
       )
     `;
-    const no_gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 0 AND nvd.terminado = 0)`;
+      const no_gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 0 AND nvd.terminado = 0)`;
 
       // No gestionadas (sin condición adicional)
       const no_gestionadas = await db.query(no_gestionadasSQL, {
