@@ -53,9 +53,9 @@ class ChatService {
           .join(', ')}), '$')`;
       }
 
-      if (filtros.selectedEstado && filtros.selectedEstado.value) {
+      /* if (filtros.selectedEstado && filtros.selectedEstado.value) {
         whereClause += ` AND estado_factura = :selectedEstado`;
-      }
+      } */
 
       if (
         filtros.selectedTransportadora &&
@@ -65,9 +65,9 @@ class ChatService {
       }
 
       if (filtros.selectedNovedad) {
-        if (filtros.selectedNovedad === 'gestionadas') {
-          whereClause += ` AND novedad_info IS NOT NULL AND novedad_info->'$.terminado' = 1 AND novedad_info->'$.solucionada' = 1`;
-        } else if (filtros.selectedNovedad === 'no_gestionadas') {
+        if (filtros.selectedNovedad.value === 'gestionadas') {
+          whereClause += ` AND novedad_info IS NOT NULL AND (novedad_info->'$.terminado' = 1 OR novedad_info->'$.solucionada' = 1)`;
+        } else if (filtros.selectedNovedad.value === 'no_gestionadas') {
           whereClause += ` AND (novedad_info IS NULL OR novedad_info->'$.terminado' = 0 AND novedad_info->'$.solucionada' = 0)`;
         }
       }
@@ -124,9 +124,33 @@ class ChatService {
             ', '
           )})`;
         } else if (typeof estadosPermitidos === 'function') {
-          whereClause += ` AND estado_factura BETWEEN ${estadosPermitidos(
-            0
-          )} AND ${estadosPermitidos(1)}`;
+          // Funciones como las de SERVIENTREGA devuelven true/false, así que hay que reescribir manualmente
+          const estado = filtros.selectedEstado.value;
+          let condicionFuncion = '';
+
+          if (transportadora === 'SERVIENTREGA') {
+            switch (estado) {
+              case 'Generada':
+                condicionFuncion = `estado_factura IN (100, 102, 103)`;
+                break;
+              case 'En transito':
+                condicionFuncion = `estado_factura BETWEEN 300 AND 317`;
+                break;
+              case 'Entregada':
+                condicionFuncion = `estado_factura BETWEEN 400 AND 403`;
+                break;
+              case 'Novedad':
+                condicionFuncion = `estado_factura BETWEEN 320 AND 351`;
+                break;
+              case 'Devolucion':
+                condicionFuncion = `estado_factura BETWEEN 500 AND 502`;
+                break;
+            }
+          }
+
+          if (condicionFuncion) {
+            whereClause += ` AND ${condicionFuncion}`;
+          }
         }
       }
 

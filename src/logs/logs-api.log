@@ -1381,3 +1381,5 @@
 [2025-06-20T14:32:47.070Z] info: jwt malformed
 [2025-06-20T15:16:55.469Z] info: Can't find /api/v1/facturas_cot/generar_guia on this server! 🧨
 [2025-06-20T15:17:04.105Z] info: ID de transporte no soportado
+[2025-06-24T21:40:14.355Z] info: jwt malformed
+[2025-06-24T21:40:26.797Z] info: jwt malformed
