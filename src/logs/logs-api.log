@@ -1383,3 +1383,117 @@
 [2025-06-20T15:17:04.105Z] info: ID de transporte no soportado
 [2025-06-24T21:40:14.355Z] info: jwt malformed
 [2025-06-24T21:40:26.797Z] info: jwt malformed
+[2025-06-30T21:23:33.971Z] info: jwt expired
+[2025-06-30T21:23:34.006Z] info: jwt expired
+[2025-06-30T21:23:34.515Z] info: jwt malformed
+[2025-06-30T21:23:42.308Z] info: Incorrect email/password!
+[2025-06-30T21:24:23.448Z] info: jwt malformed
+[2025-06-30T21:24:27.401Z] info: jwt malformed
+[2025-06-30T21:24:27.410Z] info: jwt malformed
+[2025-06-30T21:24:36.284Z] info: jwt malformed
+[2025-06-30T21:24:36.290Z] info: jwt malformed
+[2025-06-30T21:24:38.714Z] info: jwt malformed
+[2025-06-30T21:24:38.721Z] info: jwt malformed
+[2025-06-30T21:27:38.455Z] info: Can't find /api/v1/facturas_cot/validarDevolucion on this server! 🧨
+[2025-06-30T21:27:38.537Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-06-30T21:30:09.044Z] info: Can't find /api/v1/facturas_cot/validarDevolucion on this server! 🧨
+[2025-06-30T21:36:08.250Z] info: jwt malformed
+[2025-06-30T21:36:08.259Z] info: jwt malformed
+[2025-06-30T21:36:27.033Z] info: jwt malformed
+[2025-06-30T21:36:27.038Z] info: jwt malformed
+[2025-06-30T21:36:31.221Z] info: jwt malformed
+[2025-06-30T21:36:31.228Z] info: jwt malformed
+[2025-06-30T21:36:35.246Z] info: jwt malformed
+[2025-06-30T21:36:35.253Z] info: jwt malformed
+[2025-06-30T21:36:37.212Z] info: jwt malformed
+[2025-06-30T21:36:37.221Z] info: jwt malformed
+[2025-06-30T21:36:39.212Z] info: jwt malformed
+[2025-06-30T21:36:39.220Z] info: jwt malformed
+[2025-06-30T21:36:41.231Z] info: jwt malformed
+[2025-06-30T21:36:41.239Z] info: jwt malformed
+[2025-06-30T21:36:43.211Z] info: jwt malformed
+[2025-06-30T21:36:43.219Z] info: jwt malformed
+[2025-06-30T21:36:52.213Z] info: jwt malformed
+[2025-06-30T21:36:52.219Z] info: jwt malformed
+[2025-06-30T21:36:55.218Z] info: jwt malformed
+[2025-06-30T21:36:55.226Z] info: jwt malformed
+[2025-06-30T21:36:57.212Z] info: jwt malformed
+[2025-06-30T21:36:57.221Z] info: jwt malformed
+[2025-06-30T21:36:59.210Z] info: jwt malformed
+[2025-06-30T21:36:59.216Z] info: jwt malformed
+[2025-06-30T21:37:04.222Z] info: jwt malformed
+[2025-06-30T21:37:04.230Z] info: jwt malformed
+[2025-06-30T21:37:06.517Z] info: jwt malformed
+[2025-06-30T21:37:06.535Z] info: jwt malformed
+[2025-06-30T21:37:10.213Z] info: jwt malformed
+[2025-06-30T21:37:10.236Z] info: jwt malformed
+[2025-06-30T21:37:14.208Z] info: jwt malformed
+[2025-06-30T21:37:14.215Z] info: jwt malformed
+[2025-06-30T21:37:17.211Z] info: jwt malformed
+[2025-06-30T21:37:17.218Z] info: jwt malformed
+[2025-06-30T21:37:26.222Z] info: jwt malformed
+[2025-06-30T21:37:26.229Z] info: jwt malformed
+[2025-06-30T21:37:31.214Z] info: jwt malformed
+[2025-06-30T21:37:31.226Z] info: jwt malformed
+[2025-06-30T21:37:56.779Z] info: jwt malformed
+[2025-06-30T21:37:56.790Z] info: jwt malformed
+[2025-06-30T21:38:04.220Z] info: jwt malformed
+[2025-06-30T21:38:04.225Z] info: jwt malformed
+[2025-06-30T21:38:07.210Z] info: jwt malformed
+[2025-06-30T21:38:07.220Z] info: jwt malformed
+[2025-06-30T21:38:41.053Z] info: jwt malformed
+[2025-06-30T21:38:41.060Z] info: jwt malformed
+[2025-06-30T21:38:55.206Z] info: jwt malformed
+[2025-06-30T21:38:55.214Z] info: jwt malformed
+[2025-06-30T21:39:06.208Z] info: jwt malformed
+[2025-06-30T21:39:06.214Z] info: jwt malformed
+[2025-06-30T21:39:15.538Z] info: jwt malformed
+[2025-06-30T21:39:15.549Z] info: jwt malformed
+[2025-06-30T21:39:18.266Z] info: jwt malformed
+[2025-06-30T21:39:18.274Z] info: jwt malformed
+[2025-06-30T21:39:24.228Z] info: jwt malformed
+[2025-06-30T21:39:24.237Z] info: jwt malformed
+[2025-06-30T21:46:45.218Z] info: jwt malformed
+[2025-06-30T21:46:45.225Z] info: jwt malformed
+[2025-06-30T21:46:53.227Z] info: jwt malformed
+[2025-06-30T21:46:53.251Z] info: jwt malformed
+[2025-06-30T21:47:09.223Z] info: jwt malformed
+[2025-06-30T21:47:09.231Z] info: jwt malformed
+[2025-06-30T21:48:29.009Z] info: jwt malformed
+[2025-06-30T21:48:29.016Z] info: jwt malformed
+[2025-06-30T21:48:53.227Z] info: jwt malformed
+[2025-06-30T21:48:53.234Z] info: jwt malformed
+[2025-06-30T21:52:02.210Z] info: jwt malformed
+[2025-06-30T21:52:02.216Z] info: jwt malformed
+[2025-06-30T21:52:05.172Z] info: jwt malformed
+[2025-06-30T21:52:05.180Z] info: jwt malformed
+[2025-06-30T21:52:07.558Z] info: jwt malformed
+[2025-06-30T21:52:07.567Z] info: jwt malformed
+[2025-06-30T21:54:04.240Z] info: jwt malformed
+[2025-06-30T21:54:04.248Z] info: jwt malformed
+[2025-06-30T21:59:11.222Z] info: jwt malformed
+[2025-06-30T21:59:11.230Z] info: jwt malformed
+[2025-06-30T22:03:19.191Z] info: jwt malformed
+[2025-06-30T22:03:19.207Z] info: jwt malformed
+[2025-06-30T22:09:02.191Z] info: jwt malformed
+[2025-06-30T22:09:02.224Z] info: jwt malformed
+[2025-06-30T22:09:26.296Z] info: jwt malformed
+[2025-06-30T22:09:26.298Z] info: jwt malformed
+[2025-06-30T22:09:30.531Z] info: Can't find /api/v1/Pedidos/info-cliente on this server! 🧨
+[2025-06-30T22:09:59.536Z] info: Can't find /api/v1/Pedidos/info-cliente on this server! 🧨
+[2025-06-30T22:09:59.763Z] info: Can't find /api/v1/Pedidos/info-cliente on this server! 🧨
+[2025-06-30T22:10:01.763Z] info: Can't find /api/v1/Pedidos/info-cliente on this server! 🧨
+[2025-06-30T22:11:38.613Z] info: Can't find /api/v1/Pedidos/info-cliente on this server! 🧨
+[2025-06-30T22:15:46.253Z] info: jwt malformed
+[2025-06-30T22:15:46.315Z] info: jwt malformed
+[2025-06-30T22:17:06.699Z] info: jwt malformed
+[2025-06-30T22:17:06.705Z] info: jwt malformed
+[2025-06-30T22:20:09.508Z] info: Faltan teléfono o id_plataforma
+[2025-06-30T22:20:42.606Z] info: You are not logged in! Please log in to get access.
+[2025-06-30T22:21:31.913Z] info: Faltan teléfono o id_plataforma
+[2025-06-30T22:28:57.663Z] info: idPlataforma is not defined
+[2025-06-30T22:28:58.275Z] info: idPlataforma is not defined
+[2025-07-01T13:22:03.706Z] info: jwt malformed
+[2025-07-01T13:22:07.626Z] info: jwt malformed
+[2025-07-01T13:22:16.763Z] info: jwt malformed
+[2025-07-01T13:22:16.770Z] info: jwt malformed
