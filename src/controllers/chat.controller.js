@@ -23,7 +23,8 @@ exports.webhook = catchAsync(async (req, res, next) => {
       include: [
         {
           model: ClientesChatCenter,
-          attributes: ['celular_cliente'], // Solo este campo de la tabla relacionada
+          as: 'cliente',
+          attributes: ['celular_cliente'],
         },
       ],
       order: [['created_at', 'DESC']],
@@ -40,7 +41,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
     // Enviar una respuesta al Webhook
     return res.status(200).json({ message: 'Mensaje recibido y emitido' });
   } catch (error) {
-    console.error('Error al guardar el chat:', error.message);
+    console.error('Error completo:', error); // Muestra todo el stack
     return res.status(500).json({ message: 'Error al procesar el mensaje' });
   }
 });
