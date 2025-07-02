@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
 const MensajesClientes = require('../models/mensaje_cliente.model');
+const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
 let io; // Variable global para almacenar el socket.io
 
@@ -19,6 +20,12 @@ exports.webhook = catchAsync(async (req, res, next) => {
         id_plataforma,
         celular_recibe,
       },
+      include: [
+        {
+          model: ClientesChatCenter,
+          attributes: ['celular_cliente'], // Solo este campo de la tabla relacionada
+        },
+      ],
       order: [['created_at', 'DESC']],
     });
 
