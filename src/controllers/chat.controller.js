@@ -23,7 +23,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
       include: [
         {
           model: ClientesChatCenter,
-          as: 'cliente',
+          as: 'clientePorCelular',
           attributes: ['celular_cliente','nombre_cliente'],
         },
       ],
@@ -39,7 +39,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
       });
     }
     // Enviar una respuesta al Webhook
-    return res.status(200).json({ message: 'Mensaje recibido y emitido' });
+    return res.status(200).json({ message: 'Mensaje recibido y emitido', ultimoMensaje: ultimoMensaje });
   } catch (error) {
     console.error('Error completo:', error); // Muestra todo el stack
     return res.status(500).json({ message: 'Error al procesar el mensaje' });
