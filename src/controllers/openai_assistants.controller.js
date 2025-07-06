@@ -4,7 +4,10 @@ const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const axios = require('axios');
 const OpenaiAssistants = require('../models/openai_assistants.model');
-const obtenerDatosClienteParaAssistant = require('../utils/datosClienteAssistant');
+const {
+  obtenerDatosClienteParaAssistant,
+  informacionProductos,
+} = require('../utils/datosClienteAssistant');
 
 exports.datosCliente = catchAsync(async (req, res, next) => {
   const { id_plataforma, telefono } = req.body;
@@ -31,7 +34,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     req.body;
 
   const assistants = await db.query(
-    `SELECT assistant_id, tipo FROM openai_assistants WHERE id_plataforma = ? AND activo = 1`,
+    `SELECT assistant_id, tipo, productos FROM openai_assistants WHERE id_plataforma = ? AND activo = 1`,
     {
       replacements: [id_plataforma],
       type: db.QueryTypes.SELECT,
@@ -49,7 +52,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     id_plataforma,
     telefono
   );
-  const bloqueInfo = datosCliente.bloque || null;
+  let bloqueInfo = datosCliente.bloque || null;
   const tipoInfo = datosCliente.tipo || null;
 
   let assistant_id = null;
@@ -61,6 +64,11 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   } else if (tipoInfo === 'datos_pedido') {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
+
+    if (sales?.productos && Array.isArray(sales.productos)) {
+      console.log('productos: ' + sales.productos);
+      bloqueInfo += await informacionProductos(sales.productos);
+    }
   }
 
   if (!assistant_id) {
@@ -154,5 +162,6 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 200,
     respuesta: respuesta || 'No se obtuvo respuesta del assistant.',
+    /* bloqueInfo: bloqueInfo, */
   });
 });

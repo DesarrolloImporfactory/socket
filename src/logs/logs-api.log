@@ -1497,3 +1497,10 @@
 [2025-07-01T13:22:07.626Z] info: jwt malformed
 [2025-07-01T13:22:16.763Z] info: jwt malformed
 [2025-07-01T13:22:16.770Z] info: jwt malformed
+[2025-07-06T20:12:23.621Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:22:14.004Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:22:25.614Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:24:27.178Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:30:01.333Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:30:09.034Z] info: Positional replacement (?) 3 has no entry in the replacement map (replacements[3] is undefined).
+[2025-07-06T20:33:01.662Z] info: obtenerDatosClienteParaAssistant is not a function
