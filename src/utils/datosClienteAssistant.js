@@ -158,7 +158,7 @@ const informacionProductos = async (productos) => {
       SELECT 
         p.nombre_producto AS nombre_producto,
         p.descripcion_producto AS descripcion_producto,
-        p.pvp AS precio_producto,
+        ib.pvp AS precio_producto,
         p.image_path AS image_path
       FROM inventario_bodegas ib
       INNER JOIN productos p ON ib.id_producto = p.id_producto
