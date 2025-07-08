@@ -69,6 +69,14 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       console.log('productos: ' + sales.productos);
       bloqueInfo += await informacionProductos(sales.productos);
     }
+  } else {
+    const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
+    assistant_id = sales?.assistant_id;
+
+    if (sales?.productos && Array.isArray(sales.productos)) {
+      console.log('productos: ' + sales.productos);
+      bloqueInfo += await informacionProductos(sales.productos);
+    }
   }
 
   if (!assistant_id) {
