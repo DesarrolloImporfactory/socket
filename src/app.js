@@ -82,7 +82,7 @@ app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
-app.use(ssoRoutes);
+app.use('/api/v1', ssoRoutes);
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
