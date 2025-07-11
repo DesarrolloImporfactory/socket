@@ -44,6 +44,11 @@ const initModel = () => {
     foreignKey: 'id_cliente',
     as: 'cliente',
   });
+  MensajesClientes.belongsTo(ClientesChatCenter, {
+    foreignKey: 'celular_recibe',
+    targetKey: 'id',
+    as: 'clientePorCelular',
+  });
 
   // Asociación entre Plataforma y MensajesClientes
   Plataforma.hasMany(MensajesClientes, {

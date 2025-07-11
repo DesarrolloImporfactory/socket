@@ -145,4 +145,46 @@ const obtenerDatosClienteParaAssistant = async (id_plataforma, telefono) => {
   };
 };
 
-module.exports = obtenerDatosClienteParaAssistant;
+const informacionProductos = async (productos) => {
+  let bloqueProductos =
+    '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido:\n\n';
+
+  console.log('productos2: ' + productos);
+  console.log('bloqueProductos: ' + bloqueProductos);
+
+  for (const id of productos) {
+    console.log('id: ' + id);
+    const sqlProducto = `
+      SELECT 
+        p.nombre_producto AS nombre_producto,
+        p.descripcion_producto AS descripcion_producto,
+        ib.pvp AS precio_producto,
+        p.image_path AS image_path
+      FROM inventario_bodegas ib
+      INNER JOIN productos p ON ib.id_producto = p.id_producto
+      WHERE ib.id_inventario = ?
+      LIMIT 1
+    `;
+
+    const [infoProducto] = await db.query(sqlProducto, {
+      replacements: [id],
+      type: db.QueryTypes.SELECT,
+    });
+
+    if (infoProducto) {
+      bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
+      bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+      bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
+      /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
+      bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+      bloqueProductos += `\n`;
+    }
+  }
+
+  return bloqueProductos;
+};
+
+module.exports = {
+  obtenerDatosClienteParaAssistant,
+  informacionProductos,
+};
