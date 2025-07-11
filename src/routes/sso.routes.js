@@ -3,6 +3,6 @@ const router = express.Router();
 const SSO = require('../controllers/sso.controller');
 
 // ⚠️  ¡Sin authMiddleware.protect!
-router.get('/api/sso', SSO.sso);
+router.get('sso', SSO.sso);
 
 module.exports = router;
