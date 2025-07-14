@@ -7,6 +7,8 @@ const hpp = require('hpp');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const sanitizer = require('perfect-express-sanitizer');
+const cookieParser = require('cookie-parser');
+
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
@@ -83,6 +85,7 @@ app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/sso', ssoRoutes);
+app.use(cookieParser());
 app.all('*', (req, res, next) => {
   return next(
     new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)

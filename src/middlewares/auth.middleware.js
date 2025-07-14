@@ -4,6 +4,10 @@ const { promisify } = require('util');
 const User = require('../models/user.model');
 const jwt = require('jsonwebtoken');
 
+/*  Este middleware protege las rutas privadas
+ *  — lee primero el header Authorization: Bearer <token>
+ *  — si no existe, intenta con la cookie chat_token
+ */
 exports.protect = catchAsync(async (req, res, next) => {
   let token;
   // 1) Getting token and check of it's there
@@ -13,7 +17,11 @@ exports.protect = catchAsync(async (req, res, next) => {
   ) {
     token = req.headers.authorization.split(' ')[1];
   }
-  // 2) Verification token
+  // 2) Verification token  Si no llegó por header, probar cookie
+  if (!token && req.cookies && req.cookies.chat_token) {
+    token = req.cookies.chat_token;
+  }
+
   if (!token) {
     return next(
       new AppError('You are not logged in! Please log in to get access.', 401)
