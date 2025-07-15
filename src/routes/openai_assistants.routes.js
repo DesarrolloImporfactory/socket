@@ -17,4 +17,24 @@ router.post(
   openai_assistantsController.mensaje_assistant
 );
 
+router.post(
+  '/info_asistentes',
+  openai_assistantsController.info_asistentes
+);
+
+router.post(
+  '/actualizar_api_key_openai',
+  openai_assistantsController.actualizar_api_key_openai
+);
+
+router.post(
+  '/actualizar_ia_logisctica',
+  openai_assistantsController.actualizar_ia_logisctica
+);
+
+router.post(
+  '/actualizar_ia_ventas',
+  openai_assistantsController.actualizar_ia_ventas
+);
+
 module.exports = router;

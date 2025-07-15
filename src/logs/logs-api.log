@@ -1508,3 +1508,14 @@
 [2025-07-07T21:37:28.266Z] info: jwt malformed
 [2025-07-07T21:42:03.221Z] info: jwt malformed
 [2025-07-07T21:42:10.851Z] info: jwt malformed
+[2025-07-08T21:45:40.163Z] info: jwt malformed
+[2025-07-08T21:45:42.673Z] info: jwt malformed
+[2025-07-14T16:05:40.027Z] info: jwt malformed
+[2025-07-14T16:05:56.520Z] info: jwt malformed
+[2025-07-14T16:06:00.444Z] info: jwt malformed
+[2025-07-14T16:06:03.357Z] info: jwt malformed
+[2025-07-14T18:02:53.935Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
+[2025-07-14T18:03:18.872Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
+[2025-07-14T18:04:10.572Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
+[2025-07-14T18:05:41.342Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
+[2025-07-14T21:24:47.843Z] info: Error al actualizar api_key_openai

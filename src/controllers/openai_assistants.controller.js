@@ -173,3 +173,195 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     /* bloqueInfo: bloqueInfo, */
   });
 });
+
+/* Informacion de asistentes */
+exports.info_asistentes = catchAsync(async (req, res, next) => {
+  const { id_plataforma } = req.body;
+
+  try {
+    const [configuracion] = await db.query(
+      'SELECT api_key_openai FROM configuraciones WHERE id_plataforma = ?',
+      {
+        replacements: [id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    let api_key_openai = null;
+
+    if (!configuracion) {
+      return next(
+        new AppError('No se encontró configuración para la plataforma', 400)
+      );
+    }
+
+    api_key_openai = configuracion.api_key_openai;
+
+    // Traer ambos tipos de asistentes
+    const asistentes = await db.query(
+      'SELECT * FROM openai_assistants WHERE id_plataforma = ? AND tipo IN ("logistico", "ventas")',
+      {
+        replacements: [id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    let logistico = null;
+    let ventas = null;
+
+    asistentes.forEach((asistente) => {
+      if (asistente.tipo === 'logistico') {
+        logistico = {
+          id: asistente.id,
+          nombre_bot: asistente.nombre_bot,
+          assistant_id: asistente.assistant_id,
+          activo: asistente.activo,
+          prompt: asistente.prompt,
+        };
+      } else if (asistente.tipo === 'ventas') {
+        ventas = {
+          id: asistente.id,
+          nombre_bot: asistente.nombre_bot,
+          assistant_id: asistente.assistant_id,
+          activo: asistente.activo,
+          prompt: asistente.prompt,
+          productos: asistente.productos,
+        };
+      }
+    });
+
+    if (!logistico || !ventas) {
+      return next(
+        new AppError(
+          'No se encontraron ambos asistentes (logistico y ventas)',
+          400
+        )
+      );
+    }
+
+    return res.status(200).json({
+      status: 200,
+      data: {
+        api_key_openai,
+        logistico,
+        ventas,
+      },
+    });
+  } catch (error) {
+    console.error('Error al buscar info_asistentes:', error);
+    return res.status(500).json({
+      status: 500,
+      title: 'Error',
+      message: 'Ocurrió un error al al buscar info_asistentes',
+    });
+  }
+});
+
+exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
+  const { id_plataforma, api_key } = req.body;
+
+  try {
+    const [result] = await db.query(
+      `UPDATE configuraciones SET api_key_openai = ? WHERE id_plataforma = ?`,
+      {
+        replacements: [api_key, id_plataforma],
+        type: db.QueryTypes.UPDATE,
+      }
+    );
+
+    res.status(200).json({
+      status: '200',
+      message: 'api key actualizado correctamente',
+    });
+  } catch (error) {
+    return next(new AppError('Error al actualizar api_key_openai', 500));
+  }
+});
+
+exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
+  const { id_plataforma, nombre_bot, assistant_id, activo } = req.body;
+
+  try {
+    const [existe] = await db.query(
+      `SELECT id FROM openai_assistants WHERE id_plataforma = ? AND tipo = "logistico"`,
+      {
+        replacements: [id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (existe) {
+      // Ya existe, entonces actualiza
+      await db.query(
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
+         WHERE id_plataforma = ? AND tipo = "logistico"`,
+        {
+          replacements: [nombre_bot, assistant_id, activo, id_plataforma],
+          type: db.QueryTypes.UPDATE,
+        }
+      );
+    } else {
+      // No existe, entonces inserta
+      await db.query(
+        `INSERT INTO openai_assistants (id_plataforma, tipo, nombre_bot, assistant_id, activo) 
+         VALUES (?, "logistico", ?, ?, ?)`,
+        {
+          replacements: [id_plataforma, nombre_bot, assistant_id, activo],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+    }
+
+    res.status(200).json({
+      status: '200',
+      message: 'Asistente logístico actualizado correctamente',
+    });
+  } catch (error) {
+    console.error(error);
+    return next(new AppError('Error al actualizar asistente logístico', 500));
+  }
+});
+
+exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
+  const { id_plataforma, nombre_bot, assistant_id, activo, productos } = req.body;
+
+  try {
+    const [existe] = await db.query(
+      `SELECT id FROM openai_assistants WHERE id_plataforma = ? AND tipo = "ventas"`,
+      {
+        replacements: [id_plataforma],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (existe) {
+      // Ya existe, entonces actualiza
+      await db.query(
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
+         WHERE id_plataforma = ? AND tipo = "ventas"`,
+        {
+          replacements: [nombre_bot, assistant_id, activo, id_plataforma],
+          type: db.QueryTypes.UPDATE,
+        }
+      );
+    } else {
+      // No existe, entonces inserta
+      await db.query(
+        `INSERT INTO openai_assistants (id_plataforma, tipo, nombre_bot, assistant_id, activo) 
+         VALUES (?, "ventas", ?, ?, ?)`,
+        {
+          replacements: [id_plataforma, nombre_bot, assistant_id, activo],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+    }
+
+    res.status(200).json({
+      status: '200',
+      message: 'Asistente logístico actualizado correctamente',
+    });
+  } catch (error) {
+    console.error(error);
+    return next(new AppError('Error al actualizar asistente logístico', 500));
+  }
+});
