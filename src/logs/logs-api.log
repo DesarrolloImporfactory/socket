@@ -1519,3 +1519,20 @@
 [2025-07-14T18:04:10.572Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
 [2025-07-14T18:05:41.342Z] info: Can't find /api/v1/openai_assistants/info_asistentes on this server! 🧨
 [2025-07-14T21:24:47.843Z] info: Error al actualizar api_key_openai
+[2025-07-15T16:05:29.672Z] info: jwt malformed
+[2025-07-15T16:05:36.982Z] info: jwt malformed
+[2025-07-15T16:05:36.987Z] info: jwt malformed
+[2025-07-15T17:33:22.792Z] info: jwt malformed
+[2025-07-15T18:29:16.093Z] info: Incorrect email/password!
+[2025-07-15T18:30:27.585Z] info: Incorrect email/password!
+[2025-07-15T18:32:17.150Z] info: Incorrect email/password!
+[2025-07-15T19:45:27.857Z] info: jwt malformed
+[2025-07-15T19:59:44.641Z] info: Incorrect email/password!
+[2025-07-15T20:02:04.505Z] info: jwt malformed
+[2025-07-15T20:10:03.463Z] info: jwt malformed
+[2025-07-15T20:10:14.626Z] info: jwt malformed
+[2025-07-15T20:38:37.965Z] info: jwt malformed
+[2025-07-15T20:39:14.593Z] info: jwt malformed
+[2025-07-15T20:44:15.151Z] info: jwt malformed
+[2025-07-15T20:44:23.338Z] info: jwt malformed
+[2025-07-16T15:55:02.616Z] info: jwt malformed

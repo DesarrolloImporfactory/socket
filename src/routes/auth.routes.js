@@ -14,6 +14,7 @@ router.post(
 
 // route for post request to login a user
 router.post('/login', authController.login);
+router.post('/newLogin', authController.newLogin);
 
 router.use(authMiddleware.protect);
 
