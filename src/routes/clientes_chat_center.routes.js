@@ -33,4 +33,9 @@ router.post(
   clientes_chat_centerController.agregarMensajeEnviado
 );
 
+router.get(
+  '/findFullByPhone/:phone',
+  clientes_chat_centerController.findFullByPhone
+);
+
 module.exports = router;

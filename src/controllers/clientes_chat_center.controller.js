@@ -4,6 +4,8 @@ const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
+const ChatService = require('../services/chat.service');
+
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
   const { chatId, nuevoEstado, bot_openia } = req.body;
@@ -252,4 +254,20 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       message: 'Ocurrió un error al agregar el mensaje',
     });
   }
+});
+
+exports.findFullByPhone = catchAsync(async (req, res, next) => {
+  const phone = req.params.phone.trim();
+  const id_plataforma = req.query.id_plataforma;
+
+  if (!id_plataforma)
+    return next(new AppError('id_plataforma es requerido', 400));
+
+  const chatService = new ChatService();
+  const chat = await chatService.findChatByPhone(id_plataforma, phone);
+
+  if (!chat)
+    return res.status(404).json({ status: 404, message: 'Chat no encontrado' });
+
+  res.json({ status: 200, data: chat });
 });

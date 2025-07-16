@@ -934,6 +934,28 @@ class ChatService {
       throw new AppError(error.message, 500);
     }
   }
+
+  async findChatByPhone(id_plataforma, phone) {
+    try {
+      const sql = `
+        SELECT *
+        FROM vista_chats_materializada
+        WHERE id_plataforma   = :id_plataforma
+          AND celular_cliente = :phone
+        ORDER BY mensaje_created_at DESC, id DESC
+        LIMIT 1
+      `;
+
+      const [chat] = await db.query(sql, {
+        replacements: { id_plataforma, phone },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      return chat || null; // null si no existe
+    } catch (err) {
+      throw new AppError(err.message, 500);
+    }
+  }
 }
 
 module.exports = ChatService;
