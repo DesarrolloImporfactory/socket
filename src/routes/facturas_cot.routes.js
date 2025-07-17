@@ -12,6 +12,8 @@ router.post('/validarDevolucion', facturas_cotController.validarDevolucion);
 // Ruta para generar la guía
 router.post('/generar_guia', facturas_cotController.generarGuia);
 
-router.post('/info-cliente',facturas_cotController.infoCliente);
+router.post('/info-cliente', facturas_cotController.infoCliente);
+
+router.post('/marcar_chat_center', facturas_cotController.marcarChatCenter);
 
 module.exports = router;

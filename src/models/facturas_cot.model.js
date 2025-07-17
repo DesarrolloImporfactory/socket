@@ -247,6 +247,15 @@ const FacturasCot = db.define(
       type: DataTypes.STRING(100),
       allowNull: true,
     },
+    muestra: {
+      type: DataTypes.TINYINT,
+      allowNull: true,
+    },
+    chat_center: {
+      type: DataTypes.TINYINT,
+      allowNull: true,
+      defaultValue: 0,
+    },
   },
   {
     sequelize: db,

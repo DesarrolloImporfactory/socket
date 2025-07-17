@@ -134,7 +134,6 @@ exports.generarGuia = catchAsync(async (req, res, next) => {
   }
 });
 
-
 const ESTADOS_ENTREGAS = '7,400,401,402,403';
 const ESTADOS_DEVOL = '8,9,13,500,501,502';
 
@@ -143,12 +142,12 @@ exports.infoCliente = catchAsync(async (req, res, next) => {
   if (!telefono || !id_plataforma) {
     return next(new AppError('Faltan teléfono o id_plataforma', 400));
   }
-  
+
   const soloDigitos = telefono.replace(/\D/g, '');
 
-  const telLike = `%${soloDigitos.slice(-9)}`;   // «…987654321»
+  const telLike = `%${soloDigitos.slice(-9)}`; // «…987654321»
 
-    /* ────────── consulta ────────── */
+  /* ────────── consulta ────────── */
   const sql = `
     SELECT
       COALESCE(SUM(CASE WHEN id_plataforma = :plat THEN 1 END),0)                       AS ordenes_tienda,
@@ -165,20 +164,38 @@ exports.infoCliente = catchAsync(async (req, res, next) => {
     type: db.QueryTypes.SELECT,
   });
 
-    /* ────────── semáforo ────────── */
-  const ratio = stats.ordenes_imporsuit > 0
-    ? stats.devoluciones / stats.ordenes_imporsuit
-    : 0;
+  /* ────────── semáforo ────────── */
+  const ratio =
+    stats.ordenes_imporsuit > 0
+      ? stats.devoluciones / stats.ordenes_imporsuit
+      : 0;
 
   const nivel =
-    ratio >= 0.40 ? { color: 'danger',  texto: 'Probabilidad baja de entrega.' } :
-    ratio >= 0.20 ? { color: 'warning', texto: 'Buena probabilidad, vigile factores.' } :
-                    { color: 'success', texto: 'Excelente historial de entrega.' };
+    ratio >= 0.4
+      ? { color: 'danger', texto: 'Probabilidad baja de entrega.' }
+      : ratio >= 0.2
+      ? { color: 'warning', texto: 'Buena probabilidad, vigile factores.' }
+      : { color: 'success', texto: 'Excelente historial de entrega.' };
 
   /* ────────── respuesta ───────── */
   res.status(200).json({
-    status : 200,
+    status: 200,
     stats,
-    nivel
+    nivel,
   });
-})
+});
+
+exports.marcarChatCenter = catchAsync(async (req, res, next) => {
+  const { numero_factura } = req.body;
+
+  if (!numero_factura)
+    return next(new AppError('numero_factura es obligatorio', 400));
+
+  const [filasAfectadas] = await FacturasCot.update(
+    { chat_center: 1 },
+    { where: { numero_factura } }
+  );
+
+  if (!filasAfectadas) return next(new AppError('Factura no encontrada', 404));
+  res.status(200).json({ status: 200, message: 'Factura actualizada' });
+});
