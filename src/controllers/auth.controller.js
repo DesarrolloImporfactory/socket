@@ -1,68 +1,121 @@
 const User = require('../models/user.model');
 const catchAsync = require('../utils/catchAsync');
 const bcrypt = require('bcryptjs');
-const generateJWT = require('./../utils/jwt');
+const { generarToken } = require('./../utils/jwt');
+const { crearSubUsuario } = require('./../utils/crearSubUsuario');
+const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
 const { db } = require('../database/config');
 
-exports.signup = catchAsync(async (req, res, next) => {
-  const { nombre, usuario, con, email } = req.body;
-  const salt = await bcrypt.genSalt(12);
-  const encryptedPassword = await bcrypt.hash(con, salt);
+exports.registrarUsuario = catchAsync(async (req, res, next) => {
+  const { nombre, usuario, password, email, nombre_encargado } = req.body;
 
-  const user = await User.create({
-    nombre_users: nombre,
-    usuario_users: usuario,
-    con_users: encryptedPassword,
-    email_users: email,
-    date_added: new Date(),
+  // Validar campos obligatorios
+  if (!nombre || !usuario || !password || !email || !nombre_encargado) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Todos los campos son obligatorios',
+    });
+  }
+
+  // Validar existencia de nombre de usuario principal
+  const existeUsuario = await Usuarios_chat_center.findOne({
+    where: { nombre },
   });
-  const token = await generateJWT(user.id);
+  if (existeUsuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Ya existe un usuario con ese nombre',
+    });
+  }
 
-  res.status(200).json({
+  // Validar usuario o email de subusuario
+  const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
+    where: {
+      [Op.or]: [{ usuario }, { email }],
+    },
+  });
+  if (existeSubUsuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'El usuario o el email ya están en uso',
+    });
+  }
+
+  // Crear usuario principal
+  const nuevoUsuario = await Usuarios_chat_center.create({ nombre });
+
+  // Crear subusuario administrador
+  const nuevoSubUsuario = await crearSubUsuario({
+    id_usuario: nuevoUsuario.id_usuario,
+    usuario,
+    password: password,
+    email,
+    nombre_encargado,
+    rol: 'administrador',
+  });
+
+  // Generar token JWT
+  const token = generarToken(nuevoUsuario.id_usuario);
+
+  res.status(201).json({
     status: 'success',
-    message: 'User created successfully!🎉',
+    message: 'Cuenta y usuario administrador creados correctamente 🎉',
     token,
     user: {
-      id: user.id_users,
-      nombre: user.nombre_users,
-      usuario: user.usuario_users,
-      email: user.email_users,
+      id_usuario: nuevoUsuario.id_usuario,
+      nombre: nuevoUsuario.nombre,
+      administrador: nuevoSubUsuario,
     },
   });
 });
 
 exports.login = catchAsync(async (req, res, next) => {
-  const { email, con } = req.body;
+  const { usuario, password } = req.body;
 
-  const user = await User.findOne({
+  // Buscar por usuario o email
+  const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
     where: {
-      email_users: email,
+      [Op.or]: [{ usuario }, { email: usuario }],
     },
   });
 
-  if (!user) {
-    return next(new AppError('User with that email not found!', 404));
-  }
-  if (
-    !(await bcrypt.compare(con, user.con_users)) &&
-    !(await bcrypt.compare(con, user.admin_pass))
-  ) {
-    return next(new AppError('Incorrect email/password!', 401));
+  if (!usuarioEncontrado) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'Credenciales inválidas',
+    });
   }
 
-  const token = await generateJWT(user.id_users);
+  // Verificar password principal o admin_pass
+  let autenticado = await bcrypt.compare(password, usuarioEncontrado.password);
+
+  if (!autenticado && usuarioEncontrado.admin_pass) {
+    autenticado = await bcrypt.compare(password, usuarioEncontrado.admin_pass);
+  }
+
+  if (!autenticado) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'Credenciales inválidas',
+    });
+  }
+
+  // Generar token
+  const token = generarToken(usuarioEncontrado.id_sub_usuario);
+
+  // Eliminar campos sensibles
+  const usuarioPlano = usuarioEncontrado.toJSON();
+  const { password: _, admin_pass, ...usuarioSinPassword } = usuarioPlano;
 
   res.status(200).json({
     status: 'success',
+    message: 'Login exitoso',
     token,
-    user: {
-      id: user.id_users,
-      nombre: user.nombre_users,
-      usuario: user.usuario_users,
-      email: user.email_users,
-    },
+    data: usuarioSinPassword,
   });
 });
 
@@ -132,7 +185,7 @@ exports.newLogin = async (req, res) => {
         .json({ message: 'Usuario no encontrado en tienda' });
     }
 
-    const sessionToken = await generateJWT(usuario.id_users);
+    const sessionToken = await generarToken(usuario.id_users);
 
     res.status(200).json({
       status: 'success',
@@ -182,7 +235,7 @@ exports.renew = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError('User not found! 🧨', 404));
   }
-  const token = await generateJWT(id_users);
+  const token = await generarToken(id_users);
 
   res.status(200).json({
     status: 'success',

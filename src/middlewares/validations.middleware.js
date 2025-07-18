@@ -1,39 +1,50 @@
 const { body, validationResult } = require('express-validator');
 
+// Middleware que maneja los errores de validación
 const validField = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ status: 'error', errors: errors.mapped() });
+    return res.status(400).json({
+      status: 'fail',
+      errors: errors.mapped(),
+    });
   }
   next();
 };
 
+// Validación para crear usuario (registro)
 exports.createUserValidation = [
-  body('nombre').notEmpty().withMessage('Name is required!'),
+  body('nombre').notEmpty().withMessage('El nombre es obligatorio.'),
+  body('usuario')
+    .notEmpty()
+    .withMessage('El nombre de usuario es obligatorio.'),
+  body('password')
+    .notEmpty()
+    .withMessage('La contraseña es obligatoria.')
+    .isLength({ min: 6 })
+    .withMessage('La contraseña debe tener al menos 6 caracteres.'),
   body('email')
     .notEmpty()
-    .withMessage('Email cannot be empty!')
+    .withMessage('El correo electrónico es obligatorio.')
     .isEmail()
-    .withMessage('Must be a valid email!'),
-  body('con')
+    .withMessage('Debe ser un correo electrónico válido.'),
+  body('nombre_encargado')
     .notEmpty()
-    .withMessage('Password cannot be empty!')
-    .isLength({ min: 5 })
-    .withMessage('Password must be at least 6 characters long!'),
-  body('usuario').notEmpty().withMessage('Usuaario cannot be empty!'),
+    .withMessage('El nombre del encargado es obligatorio.'),
   validField,
 ];
 
+// Validación para login (si luego se usa email + password)
 exports.loginValidation = [
   body('email')
     .notEmpty()
-    .withMessage('Email cannot be empty!')
+    .withMessage('El correo electrónico es obligatorio.')
     .isEmail()
-    .withMessage('Must be a valid email!'),
-  body('con')
+    .withMessage('Debe ser un correo electrónico válido.'),
+  body('password')
     .notEmpty()
-    .withMessage('Password cannot be empty!')
-    .isLength({ min: 4 })
-    .withMessage('Password must be at least 6 characters long!'),
+    .withMessage('La contraseña es obligatoria.')
+    .isLength({ min: 6 })
+    .withMessage('La contraseña debe tener al menos 6 caracteres.'),
   validField,
 ];

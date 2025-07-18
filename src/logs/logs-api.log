@@ -1536,3 +1536,12 @@
 [2025-07-15T20:44:15.151Z] info: jwt malformed
 [2025-07-15T20:44:23.338Z] info: jwt malformed
 [2025-07-16T15:55:02.616Z] info: jwt malformed
+[2025-07-17T19:51:04.498Z] info: You are not logged in! Please log in to get access.
+[2025-07-17T19:51:52.212Z] info: jwt malformed
+[2025-07-17T19:54:55.171Z] info: jwt malformed
+[2025-07-17T19:55:07.815Z] info: You are not logged in! Please log in to get access.
+[2025-07-17T20:03:43.461Z] info: Op is not defined
+[2025-07-17T20:04:35.634Z] info: crearSubUsuario is not a function
+[2025-07-17T20:08:00.743Z] info: generarToken is not defined
+[2025-07-17T21:08:38.844Z] info: WHERE parameter "usuario" has invalid "undefined" value
+[2025-07-17T21:12:43.796Z] info: jwt malformed

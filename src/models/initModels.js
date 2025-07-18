@@ -8,6 +8,9 @@ const FacturasCot = require('./facturas_cot.model');
 const DetalleFactCot = require('./detalle_fact_cot.model');
 const Productos = require('./productos.model');
 const InventarioBodegas = require('./inventario_bodegas.model');
+const Usuarios_chat_center = require('./usuarios_chat_center.model');
+const Sub_usuarios_chat_center = require('./sub_usuarios_chat_center.model');
+const Planes_chat_center = require('./planes_chat_center.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -144,6 +147,32 @@ const initModel = () => {
   InventarioBodegas.hasMany(DetalleFactCot, {
     foreignKey: 'id_inventario',
     as: 'detalles',
+  });
+
+  // Relación: Usuarios tiene muchos Sub_usuarios
+  Usuarios_chat_center.hasMany(Sub_usuarios_chat_center, {
+    foreignKey: 'id_usuario',
+    sourceKey: 'id_usuario',
+    as: 'sub_usuarios',
+  });
+
+  Sub_usuarios_chat_center.belongsTo(Usuarios_chat_center, {
+    foreignKey: 'id_usuario',
+    targetKey: 'id_usuario',
+    as: 'usuario_principal',
+  });
+
+  // Relación: Planes tiene muchos Usuarios
+  Planes_chat_center.hasMany(Usuarios_chat_center, {
+    foreignKey: 'id_plan',
+    sourceKey: 'id_plan',
+    as: 'usuarios',
+  });
+
+  Usuarios_chat_center.belongsTo(Planes_chat_center, {
+    foreignKey: 'id_plan',
+    targetKey: 'id_plan',
+    as: 'plan',
   });
 };
 module.exports = initModel;

@@ -7,9 +7,9 @@ const authMiddleware = require('../middlewares/auth.middleware');
 
 // route for post request to create a new user
 router.post(
-  '/signup',
+  '/registro',
   validationMiddleware.createUserValidation,
-  authController.signup
+  authController.registrarUsuario
 );
 
 // route for post request to login a user
