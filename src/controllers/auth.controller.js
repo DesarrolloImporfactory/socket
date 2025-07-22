@@ -59,7 +59,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
   });
 
   // Generar token JWT
-  const token = generarToken(nuevoUsuario.id_usuario);
+  const token = await generarToken(nuevoSubUsuario.id_sub_usuario);
 
   res.status(201).json({
     status: 'success',
@@ -105,7 +105,7 @@ exports.login = catchAsync(async (req, res, next) => {
   }
 
   // Generar token
-  const token = generarToken(usuarioEncontrado.id_sub_usuario);
+  const token = await generarToken(usuarioEncontrado.id_sub_usuario);
 
   // Eliminar campos sensibles
   const usuarioPlano = usuarioEncontrado.toJSON();

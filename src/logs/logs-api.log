@@ -1545,3 +1545,32 @@
 [2025-07-17T20:08:00.743Z] info: generarToken is not defined
 [2025-07-17T21:08:38.844Z] info: WHERE parameter "usuario" has invalid "undefined" value
 [2025-07-17T21:12:43.796Z] info: jwt malformed
+[2025-07-21T14:02:36.863Z] info: Cannot read properties of undefined (reading 'id')
+[2025-07-21T14:27:50.763Z] info: Unknown column 'nombre_configuraicon' in 'field list'
+[2025-07-21T14:28:35.257Z] info: No se encontro una plataforma con dicho ID_PLATAFORMA
+[2025-07-21T14:29:35.895Z] info: id_plataforma es requerido
+[2025-07-21T14:29:41.205Z] info: No se encontro una plataforma con dicho ID_PLATAFORMA
+[2025-07-21T15:57:15.350Z] info: Can't find /api/v1/planes/listarPlanes on this server! 🧨
+[2025-07-21T15:57:26.838Z] info: Can't find /api/v1/planes/listarPlanes on this server! 🧨
+[2025-07-21T15:58:52.237Z] info: Can't find /api/v1/planes/listarPlanes on this server! 🧨
+[2025-07-21T16:11:22.452Z] info: db is not defined
+[2025-07-21T16:11:47.888Z] info: res.status is not a function
+[2025-07-21T16:13:40.350Z] info: res.status is not a function
+[2025-07-21T17:27:31.837Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-07-21T17:27:40.538Z] info: Can't find /api/v1/conexiones/listarConexiones on this server! 🧨
+[2025-07-21T17:27:40.631Z] info: Can't find /api/v1/planes/infoPlanUsuario on this server! 🧨
+[2025-07-21T17:27:40.724Z] info: WHERE parameter "id_users" has invalid "undefined" value
+[2025-07-21T17:42:33.052Z] info: Can't find /api/v1/planes/listarPlanes on this server! 🧨
+[2025-07-21T18:06:19.219Z] info: id_usuario is not defined
+[2025-07-21T21:41:35.948Z] info: jwt malformed
+[2025-07-21T21:42:18.909Z] info: jwt malformed
+[2025-07-21T21:43:07.237Z] info: id_plataforma es requerido
+[2025-07-21T21:43:51.644Z] info: jwt malformed
+[2025-07-21T21:45:00.344Z] info: jwt malformed
+[2025-07-21T21:49:07.250Z] info: jwt malformed
+[2025-07-21T21:50:39.639Z] info: jwt malformed
+[2025-07-21T22:01:39.733Z] info: Cannot read properties of null (reading 'id_usuario')
+[2025-07-22T14:19:18.728Z] info: Cannot read properties of null (reading 'id_usuario')
+[2025-07-22T14:20:48.959Z] info: Cannot read properties of null (reading 'id_usuario')
+[2025-07-22T14:28:11.317Z] info: Cannot read properties of null (reading 'id_usuario')
+[2025-07-22T14:37:31.175Z] info: id_plataforma es requerido

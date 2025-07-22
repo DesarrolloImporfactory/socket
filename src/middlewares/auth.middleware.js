@@ -1,7 +1,7 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { promisify } = require('util');
-const User = require('../models/user.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const jwt = require('jsonwebtoken');
 
 /*  Este middleware protege las rutas privadas
@@ -29,9 +29,9 @@ exports.protect = catchAsync(async (req, res, next) => {
     process.env.SECRET_JWT_SEED
   );
   // 4) Check if user still exists
-  const user = await User.findOne({
+  const user = await Sub_usuarios_chat_center.findOne({
     where: {
-      id_users: decoded.data.id,
+      id_sub_usuario: decoded.id_sub_usuario,
     },
   });
   if (!user) {
@@ -42,21 +42,6 @@ exports.protect = catchAsync(async (req, res, next) => {
       )
     );
   }
-  // 5) Check if user changed password after the token was issued
-  /* if (user.passwordChangedAt) {
-    const changedTimestamp = parseInt(
-      user.passwordChangedAt.getTime() / 1000,
-      10
-    );
-    if (decoded.iat < changedTimestamp) {
-      return next(
-        new AppError(
-          'User recently changed password! Please log in again.',
-          401
-        )
-      );
-    }
-  } */
   req.sessionUser = user;
   next();
 });

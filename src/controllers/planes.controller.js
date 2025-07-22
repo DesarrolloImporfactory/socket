@@ -1,12 +1,14 @@
-const Planes_chat_center = require('../models/Planes_chat_center');
-const Usuarios_chat_center = require('../models/Usuarios_chat_center');
+const Planes_chat_center = require('../models/planes_chat_center.model');
+const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
+const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const { db } = require('../database/config');
 
 exports.seleccionarPlan = catchAsync(async (req, res, next) => {
-  const id_usuario = req.usuario?.id_usuario;
+  const subUsuario = req.sessionUser;
   const { id_plan } = req.body;
 
-  if (!id_usuario) {
+  if (!subUsuario.id_usuario) {
     return res.status(401).json({
       status: 'fail',
       message: 'No autenticado',
@@ -28,7 +30,7 @@ exports.seleccionarPlan = catchAsync(async (req, res, next) => {
   fechaRenovacion.setDate(hoy.getDate() + plan.duracion_plan);
 
   // Buscar usuario
-  const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+  const usuario = await Usuarios_chat_center.findByPk(subUsuario.id_usuario);
   if (!usuario) {
     return res.status(404).json({
       status: 'fail',
@@ -53,5 +55,19 @@ exports.seleccionarPlan = catchAsync(async (req, res, next) => {
       fecha_renovacion: usuario.fecha_renovacion,
       estado: usuario.estado,
     },
+  });
+});
+
+exports.listarPlanes = catchAsync(async (req, res, next) => {
+  const planes = await db.query('SELECT * FROM planes_chat_center', {
+    type: db.QueryTypes.SELECT,
+  });
+  if (!planes || planes.length === 0) {
+    return next(new AppError('No se encontraron planes', 400));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: planes,
   });
 });
