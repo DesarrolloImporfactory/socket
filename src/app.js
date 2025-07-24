@@ -7,7 +7,6 @@ const hpp = require('hpp');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const sanitizer = require('perfect-express-sanitizer');
-const cookieParser = require('cookie-parser');
 
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
@@ -38,6 +37,8 @@ const chat_serviceRouter = require('./routes/chat_service.routes');
 
 const planesRouter = require('./routes/planes.routes');
 
+const messengerRouter = require('./routes/messenger.routes');
+
 const app = express();
 
 const limiter = rateLimit({
@@ -55,11 +56,28 @@ app.use(
 );
 app.use(helmet());
 app.use(hpp());
-app.use(express.json());
 
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
+
+// ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
+app.use(
+  '/api/v1/messenger/webhook',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf; // <- guardamos el cuerpo crudo
+    },
+  })
+);
+
+//Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
+app.use('/api/v1/messenger', messengerRouter);
+
+// Luego el resto del stack “normal”
+
+app.use(express.json());
+
 app.use(
   sanitizer.clean({
     xss: true,
@@ -67,6 +85,7 @@ app.use(
     sql: false,
   })
 );
+
 app.use('/api/v1', limiter);
 // routes
 app.use('/api/v1/auth', authRouter);
