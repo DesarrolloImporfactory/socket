@@ -6,13 +6,13 @@ const EtiquetaService = require('../services/etiqueta.service');
 
 
 exports.obtenerEtiquetas = catchAsync(async (req, res, next) =>{
-    const id_plataforma = parseInt(req.body.id_plataforma, 10);
+    const id_configuracion = parseInt(req.body.id_configuracion, 10);
 
     if(!id_plataforma){
-        return next(new AppError('id_plataforma es requerido', 400));
+        return next(new AppError('id_configuracion es requerido', 400));
     }
 
-    const etiquetas = await EtiquetaService.obtenerEtiquetas(id_plataforma);
+    const etiquetas = await EtiquetaService.obtenerEtiquetas(id_configuracion);
 
     res.status(200).json({
         status: '200',

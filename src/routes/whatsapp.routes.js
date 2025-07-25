@@ -13,9 +13,9 @@ const router = express.Router();
  */
 router.post('/ObtenerNumeros', async (req, res) => {
   try {
-    const { id_plataforma } = req.body;
+    const { id_configuracion } = req.body;
 
-    const wabaConfig = await getConfigFromDB(id_plataforma);
+    const wabaConfig = await getConfigFromDB(id_configuracion);
     if (!wabaConfig) {
       return res.status(404).json({
         error: 'No se encontraron registros para la plataforma dada.',
@@ -643,9 +643,9 @@ router.post('/obtenerConfiguracion', async (req, res) => {
  * @returns {object} { success, config: {configuraciones} }
  */
 router.post('/configuracionesAutomatizador', async (req, res) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
-  if (!id_plataforma) {
+  if (!id_configuracion) {
     return res.status(400).json({
       success: false,
       message: 'Falta el id_plataforma',
@@ -654,8 +654,8 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM configuraciones WHERE id_plataforma =?`,
-      { replacements: [id_plataforma] }
+      `SELECT * FROM configuraciones WHERE id_configuracion =?`,
+      { replacements: [id_configuracion] }
     );
 
     if (rows.length === 0) {
@@ -806,13 +806,13 @@ function generarClaveUnica() {
  * La tabla debe tener columnas: id_plataforma, id_whatsapp, token.
  * Devuelve un objeto { WABA_ID, ACCESS_TOKEN } si encuentra registro.
  */
-async function getConfigFromDB(id_plataforma) {
+async function getConfigFromDB(id_configuracion) {
   try {
     // Realiza la consulta a MySQL
     const [rows] = await db.query(
       `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
        FROM configuraciones
-       WHERE id_plataforma = ${id_plataforma}`
+       WHERE id_configuracion = ${id_configuracion}`
     );
     // Si la consulta encontró datos, retornamos la primera fila
     if (rows.length > 0) {

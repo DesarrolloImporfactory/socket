@@ -198,6 +198,85 @@ class ChatService {
     }
   }
 
+  async findChats_desconect(
+    id_configuracion,
+    { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
+  ) {
+    try {
+      console.log('Filtros:', filtros);
+
+      const configuraciones = await Configuraciones.findOne({
+        where: { id: id_configuracion },
+        attributes: ['telefono'],
+      });
+
+      const numero = configuraciones ? configuraciones.telefono : null;
+
+      if (!numero) {
+        throw new AppError(
+          'El número de teléfono para excluir no se encontró.',
+          500
+        );
+      }
+
+      let whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+
+      if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
+        whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
+      }
+
+      if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
+        whereClause += ` AND JSON_CONTAINS(etiquetas, JSON_ARRAY(${filtros.selectedEtiquetas
+          .map((etiqueta) => `'${etiqueta.value}'`)
+          .join(', ')}), '$')`;
+      }
+
+      if (filtros.selectedTab) {
+        if (filtros.selectedTab === 'abierto') {
+          whereClause += ` AND chat_cerrado = 0`;
+        } else if (filtros.selectedTab === 'resueltos') {
+          whereClause += ` AND chat_cerrado = 1`;
+        }
+      }
+
+      // Filtro de paginación por cursores
+      if (cursorFecha && cursorId) {
+        whereClause += ` AND (mensaje_created_at < :cursorFecha OR (mensaje_created_at = :cursorFecha AND id < :cursorId))`;
+      }
+
+      console.log('cursorFecha: ' + cursorFecha);
+      console.log('cursorId: ' + cursorId);
+
+      const sqlQuery = `
+      SELECT * FROM chats_materializada_desco
+      ${whereClause}
+      ORDER BY mensaje_created_at DESC, id DESC
+      LIMIT :limit;
+    `;
+
+      console.log('Consulta SQL completa:', sqlQuery);
+
+      const chats = await db.query(sqlQuery, {
+        replacements: {
+          id_configuracion,
+          numero,
+          searchTerm: filtros.searchTerm
+            ? `%${filtros.searchTerm.toLowerCase()}%`
+            : null,
+          cursorFecha,
+          cursorId,
+          limit,
+        },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      return chats;
+    } catch (error) {
+      console.error('Error en la consulta:', error);
+      throw new AppError('Error al obtener los chats', 500);
+    }
+  }
+
   async getNombre(codigo, nombre) {
     let sql = '';
     if (nombre === 'ciudad') {
@@ -218,7 +297,7 @@ class ChatService {
     }
   }
 
-  async getChatsByClient(id_cliente, id_plataforma) {
+  async getChatsByClient(id_cliente, id_configuracion) {
     try {
       const chats = await ClientesChatCenter.findAll({
         include: [
@@ -227,7 +306,7 @@ class ChatService {
             as: 'mensajes',
             where: {
               celular_recibe: id_cliente,
-              id_plataforma: id_plataforma,
+              id_configuracion: id_configuracion,
             },
             attributes: [
               'texto_mensaje',
@@ -245,14 +324,14 @@ class ChatService {
         ],
       });
       console.log(id_cliente);
-      console.log(id_plataforma);
+      console.log(id_configuracion);
 
       const actualizarVistos = await MensajesClientes.update(
         { visto: 1 }, // Campos a actualizar
         {
           where: {
             celular_recibe: id_cliente,
-            id_plataforma: id_plataforma,
+            id_configuracion: id_configuracion,
             visto: 0,
             rol_mensaje: 0,
           },
@@ -269,12 +348,12 @@ class ChatService {
     }
   }
 
-  async getTemplates(id_plataforma, palabraClave) {
+  async getTemplates(id_configuracion, palabraClave) {
     try {
       // Realiza la consulta para obtener los templates filtrados
       const templates = await TemplatesChatCenter.findAll({
         where: {
-          id_plataforma,
+          id_configuracion,
           [Op.or]: [
             { atajo: { [Op.like]: `%${palabraClave}%` } },
             { mensaje: { [Op.like]: `%${palabraClave}%` } },
@@ -288,13 +367,14 @@ class ChatService {
     }
   }
 
-  async getDataAdmin(id_plataforma) {
+  async getDataAdmin(id_configuracion) {
     try {
       const configuraciones = await Configuraciones.findOne({
         where: {
-          id_plataforma,
+          id: id_configuracion,
         },
         attributes: [
+          'id',
           'id_telefono',
           'token',
           'id_plataforma',
@@ -317,7 +397,7 @@ class ChatService {
         to,
         dataAdmin,
         tipo_mensaje,
-        id_plataforma,
+        id_configuracion,
         ruta_archivo = null,
       } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
@@ -368,14 +448,14 @@ class ChatService {
       const cliente = await ClientesChatCenter.findOne({
         where: {
           uid_cliente: fromTelefono,
-          id_plataforma: id_plataforma,
+          id_configuracion: id_configuracion,
         },
       });
 
       const receptor = await ClientesChatCenter.findOne({
         where: {
           celular_cliente: to,
-          id_plataforma: id_plataforma,
+          id_configuracion: id_configuracion,
         },
       });
 
@@ -384,7 +464,7 @@ class ChatService {
 
       // Armar para guardar en la base de datos
       const mensajeCliente = {
-        id_plataforma: dataAdmin.id_plataforma,
+        id_configuracion: dataAdmin.id,
         mid_mensaje: fromTelefono,
         tipo_mensaje: tipo_mensaje,
         rol_mensaje: 1,
@@ -417,11 +497,11 @@ class ChatService {
     }
   }
 
-  async getCellphones(id_plataforma, texto) {
+  async getCellphones(id_configuracion, texto) {
     try {
       const telefonos = await ClientesChatCenter.findAll({
         where: {
-          id_plataforma,
+          id_configuracion,
           celular_cliente: {
             [Op.like]: `%${texto}%`,
           },
@@ -948,6 +1028,28 @@ class ChatService {
 
       const [chat] = await db.query(sql, {
         replacements: { id_plataforma, phone },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      return chat || null; // null si no existe
+    } catch (err) {
+      throw new AppError(err.message, 500);
+    }
+  }
+
+  async findChatByPhone_desconect(id_configuracion, phone) {
+    try {
+      const sql = `
+        SELECT *
+        FROM chats_materializada_desco
+        WHERE id_configuracion   = :id_configuracion
+          AND celular_cliente = :phone
+        ORDER BY mensaje_created_at DESC, id DESC
+        LIMIT 1
+      `;
+
+      const [chat] = await db.query(sql, {
+        replacements: { id_configuracion, phone },
         type: Sequelize.QueryTypes.SELECT,
       });
 

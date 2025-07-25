@@ -1,5 +1,5 @@
 const { DataTypes } = require('sequelize');
-const { db } = require('../database/config'); // Asegúrate de importar tu configuración de base de datos
+const { db } = require('../database/config');
 
 const Configuraciones = db.define(
   'configuraciones',
@@ -14,12 +14,16 @@ const Configuraciones = db.define(
     id_plataforma: {
       type: DataTypes.BIGINT,
       allowNull: true,
-      unique: true, // Configuración como clave única
+      unique: true,
+    },
+    id_usuario: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
     },
     metodo_pago: {
       type: DataTypes.INTEGER,
       allowNull: true,
-      unique: true,
+      defaultValue: 1,
     },
     key_imporsuit: {
       type: DataTypes.STRING(200),
@@ -30,7 +34,7 @@ const Configuraciones = db.define(
       allowNull: true,
     },
     telefono: {
-      type: DataTypes.BIGINT,
+      type: DataTypes.STRING(20), // En tu tabla es VARCHAR(20)
       allowNull: true,
     },
     id_telefono: {
@@ -45,44 +49,16 @@ const Configuraciones = db.define(
       type: DataTypes.STRING(255),
       allowNull: true,
     },
-    crm: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
     webhook_url: {
       type: DataTypes.STRING(255),
       allowNull: true,
     },
-    server: {
-      type: DataTypes.STRING(255),
+    template_generar_guia: {
+      type: DataTypes.TEXT,
       allowNull: true,
     },
-    port: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
-    security: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
-    from_name: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
-    from_email: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
-    auth_required: {
-      type: DataTypes.TINYINT,
-      allowNull: true,
-    },
-    usuario: {
-      type: DataTypes.STRING(255),
-      allowNull: true,
-    },
-    contrasena: {
-      type: DataTypes.STRING(255),
+    api_key_openai: {
+      type: DataTypes.STRING(1000),
       allowNull: true,
     },
     created_at: {

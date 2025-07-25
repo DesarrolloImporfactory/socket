@@ -34,6 +34,11 @@ router.post(
 );
 
 router.get(
+  '/findFullByPhone_desconect/:phone',
+  clientes_chat_centerController.findFullByPhone_desconect
+);
+
+router.get(
   '/findFullByPhone/:phone',
   clientes_chat_centerController.findFullByPhone
 );

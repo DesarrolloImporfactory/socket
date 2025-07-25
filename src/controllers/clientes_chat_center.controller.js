@@ -52,14 +52,14 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
 });
 
 exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
-  const { telefono, nombre, apellido, id_plataforma } = req.body;
+  const { telefono, nombre, apellido, id_configuracion } = req.body;
 
   try {
     // 1. Obtener id_telefono desde configuraciones
     const [configuracion] = await db.query(
-      'SELECT id_telefono FROM configuraciones WHERE id_plataforma = ?',
+      'SELECT id_telefono FROM configuraciones WHERE id = ?',
       {
-        replacements: [id_plataforma],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -74,20 +74,20 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
 
     await db.query(
       `INSERT INTO clientes_chat_center 
-      (id_plataforma, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente)
+      (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente)
       VALUES (?, ?, ?, ?, ?)`,
       {
-        replacements: [id_plataforma, nombre, apellido, telefono, uid_cliente],
+        replacements: [id_configuracion, nombre, apellido, telefono, uid_cliente],
         type: db.QueryTypes.INSERT,
       }
     );
 
     const [resultado] = await db.query(
       `SELECT id FROM clientes_chat_center 
-       WHERE celular_cliente = ? AND id_plataforma = ?
+       WHERE celular_cliente = ? AND id_configuracion = ?
        ORDER BY id DESC LIMIT 1`,
       {
-        replacements: [telefono, id_plataforma],
+        replacements: [telefono, id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -115,13 +115,13 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
 });
 
 exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
-  const { telefono, id_plataforma } = req.body;
+  const { telefono, id_configuracion } = req.body;
 
   try {
     const [clientes_chat_center] = await db.query(
-      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_plataforma = ?',
+      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ?',
       {
-        replacements: [telefono, id_plataforma],
+        replacements: [telefono, id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -157,15 +157,15 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     ruta_archivo,
     telefono_configuracion,
     telefono_recibe,
-    id_plataforma,
+    id_configuracion,
   } = req.body;
 
   try {
     // 1. Verificar si ya existe cliente con el teléfono de configuración
     const [clienteExistente] = await db.query(
-      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_plataforma = ?',
+      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ?',
       {
-        replacements: [telefono_configuracion, id_plataforma],
+        replacements: [telefono_configuracion, id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -175,9 +175,9 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     if (!clienteExistente) {
       // 2. Obtener datos desde configuraciones
       const [config] = await db.query(
-        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id_plataforma = ?',
+        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ?',
         {
-          replacements: [id_plataforma],
+          replacements: [id_configuracion],
           type: db.QueryTypes.SELECT,
         }
       );
@@ -189,11 +189,11 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       // 3. Insertar nuevo cliente
       await db.query(
         `INSERT INTO clientes_chat_center 
-        (id_plataforma, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at)
+        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
         {
           replacements: [
-            id_plataforma,
+            id_configuracion,
             id_telefono,
             nombre_cliente,
             apellido_cliente,
@@ -206,10 +206,10 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       // 4. Obtener ID insertado
       const [insertado] = await db.query(
         `SELECT id FROM clientes_chat_center 
-         WHERE celular_cliente = ? AND id_plataforma = ?
+         WHERE celular_cliente = ? AND id_configuracion = ?
          ORDER BY id DESC LIMIT 1`,
         {
-          replacements: [telefono_configuracion, id_plataforma],
+          replacements: [telefono_configuracion, id_configuracion],
           type: db.QueryTypes.SELECT,
         }
       );
@@ -222,11 +222,11 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     // 5. Insertar mensaje en mensajes_clientes
     await db.query(
       `INSERT INTO mensajes_clientes 
-        (id_plataforma, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
+        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
-          id_plataforma,
+          id_configuracion,
           id_cliente_configuracion,
           mid_mensaje,
           tipo_mensaje,
@@ -265,6 +265,22 @@ exports.findFullByPhone = catchAsync(async (req, res, next) => {
 
   const chatService = new ChatService();
   const chat = await chatService.findChatByPhone(id_plataforma, phone);
+
+  if (!chat)
+    return res.status(404).json({ status: 404, message: 'Chat no encontrado' });
+
+  res.json({ status: 200, data: chat });
+});
+
+exports.findFullByPhone_desconect = catchAsync(async (req, res, next) => {
+  const phone = req.params.phone.trim();
+  const id_configuracion = req.query.id_configuracion;
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const chatService = new ChatService();
+  const chat = await chatService.findChatByPhone_desconect(id_configuracion, phone);
 
   if (!chat)
     return res.status(404).json({ status: 404, message: 'Chat no encontrado' });

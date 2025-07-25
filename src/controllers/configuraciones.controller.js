@@ -43,7 +43,10 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
   );
   if (!configuraciones || configuraciones.length === 0) {
     return next(
-      new AppError('No se encontro una plataforma con dicho ID_PLATAFORMA', 400)
+      new AppError(
+        'No se encontro una configuracion con este id_usuario: ' + id_usuario,
+        400
+      )
     );
   }
 

@@ -39,6 +39,8 @@ const planesRouter = require('./routes/planes.routes');
 
 const messengerRouter = require('./routes/messenger.routes');
 
+const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes');
+
 const app = express();
 
 const limiter = rateLimit({
@@ -104,6 +106,7 @@ app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
+app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
 
 app.all('*', (req, res, next) => {
   return next(

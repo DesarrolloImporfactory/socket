@@ -81,10 +81,10 @@ class EtiquetaService {
         return response;
     }
 
-    static async obtenerEtiquetas(id_plataforma) {
+    static async obtenerEtiquetas(id_configuracion) {
         // Validación defensiva
-        if (!id_plataforma) {
-          throw new Error('id_plataforma es obligatorio');
+        if (!id_configuracion) {
+          throw new Error('id_configuracion es obligatorio');
         }
       
         // Opción A – consulta cruda
@@ -99,7 +99,7 @@ class EtiquetaService {
       
         // ── Ó ──
         // Opción B – ORM Sequelize (si definió el modelo con mapping):
-        return await EtiquetasChatCenter.findAll({where: {id_plataforma}});
+        return await EtiquetasChatCenter.findAll({where: {id_configuracion}});
     }
 
     static async obtenerEtiquetasAsignadas(id_cliente_chat_center){

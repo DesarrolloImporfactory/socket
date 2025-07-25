@@ -12,10 +12,18 @@ const MensajesClientes = db.define(
     },
     id_plataforma: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false,
+      allowNull: true,
       references: {
         model: 'plataformas',
         key: 'id_plataforma',
+      },
+    },
+    id_configuracion: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
+      references: {
+        model: 'configuraciones',
+        key: 'id',
       },
     },
     id_cliente: {

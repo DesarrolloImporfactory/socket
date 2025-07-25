@@ -32,13 +32,13 @@ class Sockets {
       socket.on(
         'GET_CHATS',
         async (
-          id_plataforma,
+          id_configuracion,
           { cursorFecha, cursorId, limit = 10, filtros = {} }
         ) => {
           try {
             const chatService = new ChatService();
 
-            const chats = await chatService.findChats(id_plataforma, {
+            const chats = await chatService.findChats_desconect(id_configuracion, {
               cursorFecha,
               cursorId,
               limit,
@@ -53,10 +53,10 @@ class Sockets {
         }
       );
 
-      socket.on('GET_CHATS_BOX', async ({ chatId, plataforma }) => {
+      socket.on('GET_CHATS_BOX', async ({ chatId, id_configuracion }) => {
         try {
           const chatService = new ChatService();
-          const chat = await chatService.getChatsByClient(chatId, plataforma);
+          const chat = await chatService.getChatsByClient(chatId, id_configuracion);
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
         } catch (error) {
@@ -69,11 +69,11 @@ class Sockets {
         }
       });
 
-      socket.on('GET_TEMPLATES', async ({ id_plataforma, palabraClave }) => {
+      socket.on('GET_TEMPLATES', async ({ id_configuracion, palabraClave }) => {
         try {
           const chatService = new ChatService();
           const templates = await chatService.getTemplates(
-            id_plataforma,
+            id_configuracion,
             palabraClave
           );
 
@@ -90,10 +90,10 @@ class Sockets {
         }
       });
 
-      socket.on('GET_DATA_ADMIN', async (id_plataforma) => {
+      socket.on('GET_DATA_ADMIN', async (id_configuracion) => {
         try {
           const chatService = new ChatService();
-          const data = await chatService.getDataAdmin(id_plataforma);
+          const data = await chatService.getDataAdmin(id_configuracion);
 
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_ADMIN_RESPONSE', data);
@@ -108,11 +108,11 @@ class Sockets {
         }
       });
 
-      socket.on('GET_CELLPHONES', async ({ id_plataforma, texto }) => {
+      socket.on('GET_CELLPHONES', async ({ id_configuracion, texto }) => {
         try {
           const chatService = new ChatService();
 
-          const data = await chatService.getCellphones(id_plataforma, texto);
+          const data = await chatService.getCellphones(id_configuracion, texto);
 
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_CELLPHONE_RESPONSE', data);

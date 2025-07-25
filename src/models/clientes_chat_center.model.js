@@ -18,6 +18,14 @@ const ClientesChatCenter = db.define(
         key: 'id_plataforma',
       },
     },
+    id_configuracion: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: false,
+      references: {
+        model: 'configuraciones',
+        key: 'id',
+      },
+    },
     uid_cliente: {
       type: DataTypes.STRING(255),
       allowNull: true,

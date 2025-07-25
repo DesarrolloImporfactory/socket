@@ -13,6 +13,10 @@ const TemplatesChatCenter = db.define(
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+    id_configuracion: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+    },
     atajo: {
       type: DataTypes.STRING,
       allowNull: true,
