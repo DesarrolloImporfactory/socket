@@ -9,6 +9,8 @@ router.use(protect);
 
 router.post('/seleccionarPlan', planesController.seleccionarPlan);
 
-router.get('/listarPlanes', planesController.listarPlanes);
+router.get('/listarPlanes', planesController.obtenerPlanes);
+
+/*router.get('/listarPlanes', planesController.listarPlanes); x */
 
 module.exports = router;

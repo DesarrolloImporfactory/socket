@@ -1,73 +1,59 @@
+// ✅ REFACTORIZADO: planes.controller.js
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
-const AppError = require('../utils/appError');
-const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
+/**
+ * ✅ Asigna un plan al usuario sin activarlo
+ * Este paso solo marca la intención de pago, no cambia el estado.
+ */
+exports.seleccionarPlan = async (req, res) => {
+  try {
+    const { id_plan } = req.body;
+    const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
 
-exports.seleccionarPlan = catchAsync(async (req, res, next) => {
-  const subUsuario = req.sessionUser;
-  const { id_plan } = req.body;
+    if (!id_plan || !id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Faltan datos necesarios (id_plan, id_usuario)' });
+    }
 
-  if (!subUsuario.id_usuario) {
-    return res.status(401).json({
+    // Validar que el plan exista
+    const plan = await Planes_chat_center.findByPk(id_plan);
+    if (!plan) {
+      return res.status(404).json({ status: 'fail', message: 'El plan no existe' });
+    }
+
+    // Validar que el usuario exista
+    const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+    if (!usuario) {
+      return res.status(404).json({ status: 'fail', message: 'El usuario no existe' });
+    }
+
+    // Solo actualiza la intención del plan sin activar
+    await usuario.update({ id_plan });
+
+    return res.status(200).json({ status: 'success', message: 'Plan seleccionado correctamente, pendiente de pago' });
+  } catch (error) {
+    console.error('Error al seleccionar plan:', error);
+    return res.status(500).json({ status: 'fail', message: 'Error interno al seleccionar plan' });
+  }
+};
+
+/**
+ * ✅ Lista todos los planes disponibles
+ */
+exports.obtenerPlanes = async (req, res) => {
+  try {
+    const planes = await Planes_chat_center.findAll();
+
+    return res.status(200).json({
+      status: 'success',
+      data: planes,
+    });
+  } catch (error) {
+    console.error('Error al obtener planes:', error);
+    return res.status(500).json({
       status: 'fail',
-      message: 'No autenticado',
+      message: 'Error interno al obtener los planes',
     });
   }
+};
 
-  // Verificar existencia del plan
-  const plan = await Planes_chat_center.findByPk(id_plan);
-  if (!plan) {
-    return res.status(404).json({
-      status: 'fail',
-      message: 'El plan seleccionado no existe',
-    });
-  }
-
-  // Calcular fechas
-  const hoy = new Date();
-  const fechaRenovacion = new Date(hoy);
-  fechaRenovacion.setDate(hoy.getDate() + plan.duracion_plan);
-
-  // Buscar usuario
-  const usuario = await Usuarios_chat_center.findByPk(subUsuario.id_usuario);
-  if (!usuario) {
-    return res.status(404).json({
-      status: 'fail',
-      message: 'Usuario no encontrado',
-    });
-  }
-
-  // Actualizar datos del plan en el usuario
-  await usuario.update({
-    id_plan,
-    fecha_inicio: hoy,
-    fecha_renovacion: fechaRenovacion,
-    estado: 'activo',
-  });
-
-  res.status(200).json({
-    status: 'success',
-    message: 'Plan seleccionado correctamente',
-    data: {
-      id_plan: usuario.id_plan,
-      fecha_inicio: usuario.fecha_inicio,
-      fecha_renovacion: usuario.fecha_renovacion,
-      estado: usuario.estado,
-    },
-  });
-});
-
-exports.listarPlanes = catchAsync(async (req, res, next) => {
-  const planes = await db.query('SELECT * FROM planes_chat_center', {
-    type: db.QueryTypes.SELECT,
-  });
-  if (!planes || planes.length === 0) {
-    return next(new AppError('No se encontraron planes', 400));
-  }
-
-  res.status(200).json({
-    status: 'success',
-    data: planes,
-  });
-});
