@@ -21,14 +21,14 @@ const xml2js = require('xml2js');
 const { decode } = require('html-entities');
 class ChatService {
   async findChats(
-    id_plataforma,
+    id_configuracion,
     { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
   ) {
     try {
       console.log('Filtros:', filtros);
 
       const configuraciones = await Configuraciones.findOne({
-        where: { id_plataforma },
+        where: { id: id_configuracion },
         attributes: ['telefono'],
       });
 
@@ -41,7 +41,7 @@ class ChatService {
         );
       }
 
-      let whereClause = `WHERE id_plataforma = :id_plataforma AND celular_cliente != :numero`;
+      let whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
 
       if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
         whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
@@ -163,91 +163,6 @@ class ChatService {
       console.log('cursorId: ' + cursorId);
 
       const sqlQuery = `
-      SELECT * FROM vista_chats_materializada
-      ${whereClause}
-      ORDER BY mensaje_created_at DESC, id DESC
-      LIMIT :limit;
-    `;
-
-      console.log('Consulta SQL completa:', sqlQuery);
-
-      const chats = await db.query(sqlQuery, {
-        replacements: {
-          id_plataforma,
-          numero,
-          searchTerm: filtros.searchTerm
-            ? `%${filtros.searchTerm.toLowerCase()}%`
-            : null,
-          selectedEstado: filtros.selectedEstado
-            ? filtros.selectedEstado.value
-            : null,
-          selectedTransportadora: filtros.selectedTransportadora
-            ? filtros.selectedTransportadora.value
-            : null,
-          cursorFecha,
-          cursorId,
-          limit,
-        },
-        type: Sequelize.QueryTypes.SELECT,
-      });
-
-      return chats;
-    } catch (error) {
-      console.error('Error en la consulta:', error);
-      throw new AppError('Error al obtener los chats', 500);
-    }
-  }
-
-  async findChats_desconect(
-    id_configuracion,
-    { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
-  ) {
-    try {
-      console.log('Filtros:', filtros);
-
-      const configuraciones = await Configuraciones.findOne({
-        where: { id: id_configuracion },
-        attributes: ['telefono'],
-      });
-
-      const numero = configuraciones ? configuraciones.telefono : null;
-
-      if (!numero) {
-        throw new AppError(
-          'El número de teléfono para excluir no se encontró.',
-          500
-        );
-      }
-
-      let whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
-
-      if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
-        whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
-      }
-
-      if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
-        whereClause += ` AND JSON_CONTAINS(etiquetas, JSON_ARRAY(${filtros.selectedEtiquetas
-          .map((etiqueta) => `'${etiqueta.value}'`)
-          .join(', ')}), '$')`;
-      }
-
-      if (filtros.selectedTab) {
-        if (filtros.selectedTab === 'abierto') {
-          whereClause += ` AND chat_cerrado = 0`;
-        } else if (filtros.selectedTab === 'resueltos') {
-          whereClause += ` AND chat_cerrado = 1`;
-        }
-      }
-
-      // Filtro de paginación por cursores
-      if (cursorFecha && cursorId) {
-        whereClause += ` AND (mensaje_created_at < :cursorFecha OR (mensaje_created_at = :cursorFecha AND id < :cursorId))`;
-      }
-
-      console.log('cursorFecha: ' + cursorFecha);
-      console.log('cursorId: ' + cursorId);
-
-      const sqlQuery = `
       SELECT * FROM chats_materializada_desco
       ${whereClause}
       ORDER BY mensaje_created_at DESC, id DESC
@@ -262,6 +177,12 @@ class ChatService {
           numero,
           searchTerm: filtros.searchTerm
             ? `%${filtros.searchTerm.toLowerCase()}%`
+            : null,
+          selectedEstado: filtros.selectedEstado
+            ? filtros.selectedEstado.value
+            : null,
+          selectedTransportadora: filtros.selectedTransportadora
+            ? filtros.selectedTransportadora.value
             : null,
           cursorFecha,
           cursorId,

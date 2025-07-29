@@ -38,7 +38,7 @@ class Sockets {
           try {
             const chatService = new ChatService();
 
-            const chats = await chatService.findChats_desconect(id_configuracion, {
+            const chats = await chatService.findChats(id_configuracion, {
               cursorFecha,
               cursorId,
               limit,
