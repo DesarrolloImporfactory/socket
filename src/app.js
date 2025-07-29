@@ -41,6 +41,11 @@ const messengerRouter = require('./routes/messenger.routes');
 
 const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes');
 
+const stripeRouter = require('./routes/stripe.routes');
+
+const stripe_webhookController = require('./controllers/stripe_webhook.controller');
+
+
 const app = express();
 
 const limiter = rateLimit({
@@ -76,7 +81,17 @@ app.use(
 //Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
 app.use('/api/v1/messenger', messengerRouter);
 
+
+// WEBHOOK: este debe ir antes del body parser y fuera del router
+app.post(
+  '/api/v1/stripe_plan/stripeWebhook',
+  express.raw({ type: 'application/json' }),
+  stripe_webhookController.stripeWebhook
+);
+
 // Luego el resto del stack “normal”
+
+
 
 app.use(express.json());
 
@@ -107,6 +122,7 @@ app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
+app.use('/api/v1/stripe_plan', stripeRouter);
 
 app.all('*', (req, res, next) => {
   return next(
