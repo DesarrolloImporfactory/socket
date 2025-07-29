@@ -143,14 +143,15 @@ router.post('/obtenerPlantillasPlataforma', async (req, res) => {
  * Permite registrar una plantilla de respuesta rápida para el chat center
  * @param {string} atajo - Comando corto (atajo) para usar la plantilla
  * @param {string} mensaje - Contenido del mensaje de la plantilla
- * @param {int} id_plataforma - Plataforma a la que pertenece la plantilla
+ * @param {int} id_configuracion - id_configuracion a la que pertenece la plantilla
+ * @param {int} id_plataforma - id_plataforma en caso de que la tienda realize dropshiping, caso contrario null
  * @return {object} status 200 | 500
  */
 router.post('/crearPlantillaRapida', async (req, res) => {
-  const { atajo, mensaje, id_plataforma } = req.body;
+  const { atajo, mensaje, id_configuracion } = req.body;
 
   try {
-    if ((!id_plataforma, !atajo, !mensaje)) {
+    if ((!id_configuracion, !atajo, !mensaje)) {
       return res.status(400).json({
         success: false,
         message: 'Faltan datos requeridos.',
@@ -158,10 +159,10 @@ router.post('/crearPlantillaRapida', async (req, res) => {
     }
 
     const [result] = await db.query(
-      `INSERT INTO templates_chat_center (atajo, mensaje, id_plataforma)
+      `INSERT INTO templates_chat_center (atajo, mensaje, id_configuracion)
        VALUES (?, ?, ?)`,
       {
-        replacements: [atajo, mensaje, id_plataforma],
+        replacements: [atajo, mensaje, id_configuracion],
         type: db.QueryTypes.INSERT,
       }
     );
@@ -534,10 +535,10 @@ router.put('/actualizarMetodoPago', async (req, res) => {
 router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
   const { id_configuracion } = req.body;
 
-  if (id_configuracion == null) {
+  if (!id_configuracion) {
     return res.status(400).json({
       success: false,
-      error: 'Falta el id (configuraciones.id) en el body.',
+      message: 'Falta el id_configuracion',
     });
   }
 
