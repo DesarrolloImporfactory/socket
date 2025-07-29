@@ -35,7 +35,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
   const configuraciones = await db.query(
-    'SELECT id, nombre_configuracion, telefono, webhook_url, metodo_pago FROM configuraciones WHERE id_usuario = ?',
+    'SELECT id, id_plataforma, nombre_configuracion, telefono, webhook_url, metodo_pago FROM configuraciones WHERE id_usuario = ?',
     {
       replacements: [id_usuario],
       type: db.QueryTypes.SELECT,

@@ -5,6 +5,7 @@ const { generarToken } = require('./../utils/jwt');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const Configuraciones = require('../models/configuraciones.model');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
@@ -116,6 +117,60 @@ exports.login = catchAsync(async (req, res, next) => {
     message: 'Login exitoso',
     token,
     data: usuarioSinPassword,
+  });
+});
+
+exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
+  const { usuario, password, id_configuracion } = req.body;
+
+  // Buscar por usuario o email
+  const [usuarioEncontrado] = await db.query(
+    `SELECT p.id_plataforma, u.id_users, u.nombre_users, u.usuario_users, u.email_users, u.con_users, u.admin_pass FROM users u
+      INNER JOIN usuario_plataforma up ON u.id_users = up.id_usuario
+      INNER JOIN plataformas p ON p.id_plataforma = up.id_plataforma
+       WHERE u.usuario_users = ?
+       LIMIT 1`,
+    {
+      replacements: [usuario],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
+  if (!usuarioEncontrado) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'Credenciales inválidas',
+    });
+  }
+
+  // Verificar password principal o admin_pass
+  let autenticado = await bcrypt.compare(password, usuarioEncontrado.con_users);
+
+  if (!autenticado && usuarioEncontrado.admin_pass) {
+    autenticado = await bcrypt.compare(password, usuarioEncontrado.admin_pass);
+  }
+
+  if (!autenticado) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'Credenciales inválidas',
+    });
+  }
+
+  await Configuraciones.update(
+    {
+      id_plataforma: usuarioEncontrado.id_plataforma,
+    },
+    {
+      where: {
+        id: id_configuracion,
+      },
+    }
+  );
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Login exitoso',
   });
 });
 

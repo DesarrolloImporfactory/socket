@@ -16,6 +16,8 @@ router.post(
 router.post('/login', authController.login);
 router.post('/newLogin', authController.newLogin);
 
+router.post('/validar_usuario_imporsuit', authController.validar_usuario_imporsuit);
+
 router.use(authMiddleware.protect);
 
 router.get('/renew', authController.renew);
