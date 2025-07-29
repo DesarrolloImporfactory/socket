@@ -54,22 +54,20 @@ router.post('/ObtenerNumeros', async (req, res) => {
 
 /**
  * POST /api/v1/whatsapp_managment/CrearPlantilla
- * - Recibe: id_plataforma y datos de la plantilla (name, language, category, components)
+ * - Recibe: id_configuracion y datos de la plantilla (name, language, category, components)
  * - Envía una solicitud a la Cloud API para crear una plantilla.
  */
 router.post('/CrearPlantilla', async (req, res) => {
   try {
-    const { id_plataforma, name, language, category, components } = req.body;
+    const { id_configuracion, name, language, category, components } = req.body;
 
-    if (!id_plataforma || !name || !language || !category || !components) {
+    if (!id_configuracion || !name || !language || !category || !components) {
       return res.status(400).json({ error: 'Faltan campos obligatorios.' });
     }
 
-    const wabaConfig = await getConfigFromDB(id_plataforma);
+    const wabaConfig = await getConfigFromDB(id_configuracion);
     if (!wabaConfig) {
-      return res
-        .status(404)
-        .json({ error: 'No se encontró configuración para esta plataforma.' });
+      return res.status(404).json({ error: 'No se encontró configuración.' });
     }
 
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
@@ -115,18 +113,18 @@ router.post('/CrearPlantilla', async (req, res) => {
  * @return {Array<Object>} - Lista de plantillas rápidas disponibles.
  */
 router.post('/obtenerPlantillasPlataforma', async (req, res) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
-  if (!id_plataforma) {
+  if (!id_configuracion) {
     return res.status(400).json({
       success: false,
-      message: 'Falta el id_plataforma.',
+      message: 'Falta el id_configuracion.',
     });
   }
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM templates_chat_center WHERE id_plataforma = ${id_plataforma}`
+      `SELECT * FROM templates_chat_center WHERE id_configuracion = ${id_configuracion}`
     );
 
     return res.json(rows); // o { success: true, data: rows } si deseas uniformar
@@ -534,29 +532,28 @@ router.put('/actualizarMetodoPago', async (req, res) => {
  *  ‑ Devuelve TODO el JSON que entrega Meta.
  */
 router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
-  /* 1. Validación mínima */
-  if (!id_plataforma) {
+  if (id_configuracion == null) {
     return res.status(400).json({
-      error: true,
-      message: 'Falta el id_plataforma.',
+      success: false,
+      error: 'Falta el id (configuraciones.id) en el body.',
     });
   }
 
   try {
     /* 2. Configuración de la plataforma */
     const [rows] = await db.query(
-      'SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN \
-       FROM configuraciones \
-       WHERE id_plataforma = ?',
-      { replacements: [id_plataforma] }
+      `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
+      FROM configuraciones
+      WHERE id = ?`,
+      { replacements: [id_configuracion] }
     );
 
     if (!rows.length) {
       return res.status(404).json({
         error: true,
-        message: 'No se encontró configuración para esta plataforma.',
+        message: 'No se encontró configuración.',
       });
     }
 
@@ -1182,10 +1179,10 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 });
 
 router.post('/crearPlantillasAutomaticas', async (req, res) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
-  if (!id_plataforma) {
-    return res.status(400).json({ error: 'Falta el id_plataforma.' });
+  if (!id_configuracion) {
+    return res.status(400).json({ error: 'Falta el id_configuracion.' });
   }
 
   // Base de plantillas que quieres crear
@@ -1386,7 +1383,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
   ];
 
   try {
-    const wabaConfig = await getConfigFromDB(id_plataforma);
+    const wabaConfig = await getConfigFromDB(id_configuracion);
     if (!wabaConfig) {
       return res.status(404).json({ error: 'Configuración no encontrada.' });
     }
