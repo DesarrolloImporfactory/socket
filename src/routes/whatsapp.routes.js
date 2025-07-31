@@ -409,20 +409,20 @@ router.put('/EditarPlantilla', async (req, res) => {
  * guardando el ID de la plantilla que se debe usar para generar guías.
  *
  * @param {string} id_template_whatsapp - ID de la plantilla seleccionada
- * @param {number} id_plataforma - ID de la plataforma (opcional si se extrae de token/session)
+ * @param {number} id_configuracion - ID configuracion
  *
  * @returns {object} status 200 | 500
  *
  * @example Body JSON:
  * {
  *   "id_template_whatsapp": "greeting_template_01",
- *   "id_plataforma": 12
+ *   "id_configuracion": 12
  * }
  */
 router.put('/editarConfiguracion', async (req, res) => {
-  const { id_template_whatsapp, id_plataforma } = req.body;
+  const { id_template_whatsapp, id_configuracion } = req.body;
 
-  if (!id_template_whatsapp || !id_plataforma) {
+  if (!id_template_whatsapp || !id_configuracion) {
     return res.status(400).json({
       success: false,
       message: 'Faltan datos requeridos.',
@@ -431,9 +431,9 @@ router.put('/editarConfiguracion', async (req, res) => {
 
   try {
     const [result] = await db.query(
-      `UPDATE configuraciones SET template_generar_guia = ? WHERE id_plataforma = ?`,
+      `UPDATE configuraciones SET template_generar_guia = ? WHERE id = ?`,
       {
-        replacements: [id_template_whatsapp, id_plataforma],
+        replacements: [id_template_whatsapp, id_configuracion],
       }
     );
 
@@ -596,18 +596,18 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
  * POST /api/v1/whatsapp_managment/obtenerConfiguracion
  *
  * Consulta la plantilla actualmente seleccionada para generar guías
- * de la tabla `configuraciones` según el id_plataforma.
+ * de la tabla `configuraciones` según el id_configuracion.
  *
- * @param {number} id_plataforma - ID de la plataforma
+ * @param {number} id_configuracion - ID de la plataforma
  * @returns {object} { success, config: { template_generar_guia } }
  */
 router.post('/obtenerConfiguracion', async (req, res) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
-  if (!id_plataforma) {
+  if (!id_configuracion) {
     return res.status(400).json({
       success: false,
-      message: 'Falta el id_plataforma.',
+      message: 'Falta el id_configuracion.',
     });
   }
 
@@ -615,8 +615,8 @@ router.post('/obtenerConfiguracion', async (req, res) => {
     const [rows] = await db.query(
       `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia 
        FROM configuraciones 
-       WHERE id_plataforma = ?`,
-      { replacements: [id_plataforma] }
+       WHERE id = ?`,
+      { replacements: [id_configuracion] }
     );
 
     if (rows.length === 0) {
@@ -687,36 +687,17 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
  * POST /api/v1/whatsapp_managment/agregarConfiguracion
  *
  * Insertar en `configuraciones`,
- * actualizar `webhook_url` y luego insertar en `clientes_chat_center`.
  *
  * @param {string} nombre_configuracion
  * @param {string} telefono
- * @param {string} id_telefono
- * @param {string} id_whatsapp
- * @param {string} token
- * @param {number} id_plataforma
+ * @param {string} id_usuario
  *
  * @return {object} {status: 200|500, message: string}
  */
 router.post('/agregarConfiguracion', async (req, res) => {
-  const {
-    nombre_configuracion,
-    telefono,
-    id_telefono,
-    id_whatsapp,
-    token,
-    id_plataforma,
-  } = req.body;
+  const { nombre_configuracion, telefono, id_usuario } = req.body;
 
-  // Validaciones básicas
-  if (
-    !nombre_configuracion ||
-    !telefono ||
-    !id_telefono ||
-    !id_whatsapp ||
-    !token ||
-    !id_plataforma
-  ) {
+  if (!nombre_configuracion || !telefono || !id_usuario) {
     return res.status(400).json({
       status: 400,
       message: 'Faltan campos obligatorios para agregar configuración.',
@@ -724,74 +705,117 @@ router.post('/agregarConfiguracion', async (req, res) => {
   }
 
   try {
-    // 1. Generamos la clave única key_imporsuit
+    // Generar clave única
     const key_imporsuit = generarClaveUnica();
 
-    // 2. Insertamos en `configuraciones`
+    // Insertar en `configuraciones`
     const insertSql = `
       INSERT INTO configuraciones
-        (id_plataforma, nombre_configuracion, telefono, id_telefono, id_whatsapp, token, key_imporsuit)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (id_usuario, nombre_configuracion, telefono, key_imporsuit, created_at)
+      VALUES (?, ?, ?, ?, NOW())
     `;
     const [insertResult] = await db.query(insertSql, {
-      replacements: [
-        id_plataforma,
-        nombre_configuracion,
-        telefono,
-        id_telefono,
-        id_whatsapp,
-        token,
-        key_imporsuit,
-      ],
+      replacements: [id_usuario, nombre_configuracion, telefono, key_imporsuit],
     });
 
+    return res.status(200).json({
+      status: 200,
+      message: 'Configuración agregada correctamente.',
+      id_configuracion: insertResult.insertId,
+      nombre_configuracion, // Este valor puede ser útil si lo necesitas más adelante
+    });
+  } catch (error) {
+    console.error('Error al agregar configuración:', error);
+    return res.status(500).json({
+      status: 500,
+      message: 'Hubo un problema al agregar la configuración.',
+    });
+  }
+});
+
+//Segundo paso
+router.post('/actualizarConfiguracionMeta', async (req, res) => {
+  const {
+    id_configuracion,
+    id_telefono,
+    id_whatsapp,
+    token,
+    nombre_configuracion,
+    telefono,
+  } = req.body;
+
+  // Validar que los datos existen y son correctos
+  if (
+    !id_configuracion ||
+    !id_telefono ||
+    !id_whatsapp ||
+    !token ||
+    !nombre_configuracion ||
+    !telefono
+  ) {
+    return res.status(400).json({
+      status: 400,
+      message: 'Faltan campos obligatorios para actualizar la configuración.',
+    });
+  }
+
+  try {
+    // Actualizar webhook_url en la tabla configuraciones
     const webhook_url =
       'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54';
-
     const updateSql = `
-      UPDATE configuraciones
-      SET webhook_url = ?
-      WHERE key_imporsuit = ?
-    `;
+    UPDATE configuraciones
+    SET 
+      id_telefono = ?,
+      id_whatsapp = ?,
+      webhook_url = ?,
+      token = ?,
+      updated_at = NOW()
+    WHERE id = ? 
+  `;
     const [updateResult] = await db.query(updateSql, {
-      replacements: [webhook_url, key_imporsuit],
+      replacements: [
+        id_telefono,
+        id_whatsapp,
+        webhook_url,
+        token,
+        id_configuracion,
+      ],
     });
 
     if (updateResult.affectedRows !== 1) {
       return res.status(500).json({
         status: 500,
-        title: 'Error en actualización',
-        message: 'Hubo un problema al actualizar la configuración.',
+        message: 'Error al actualizar la configuración.',
       });
     }
 
-    // 4. Insertamos un registro en `clientes_chat_center`
-    //    con el uid_cliente = id_telefono
+    // Insertar cliente en clientes_chat_center
     const insertClienteSql = `
-      INSERT INTO clientes_chat_center
-        (id_plataforma, uid_cliente, nombre_cliente, celular_cliente)
-      VALUES (?, ?, ?, ?)
-    `;
+    INSERT INTO clientes_chat_center
+      (id_configuracion, uid_cliente, nombre_cliente, celular_cliente)
+    VALUES (?, ?, ?, ?)
+  `;
     const [insertClienteRes] = await db.query(insertClienteSql, {
       replacements: [
-        id_plataforma,
+        id_configuracion,
         id_telefono,
         nombre_configuracion,
         telefono,
       ],
     });
 
+    console.log('Resultado de la inserción del cliente:', insertClienteRes); // Verifica el resultado de la inserción
+
     return res.status(200).json({
       status: 200,
-      title: 'Petición exitosa',
-      message: 'Configuración agregada y actualizada correctamente.',
+      message: 'Configuración actualizada y cliente insertado correctamente.',
     });
   } catch (error) {
-    console.error('Error al agregar configuración:', error);
+    console.error('Error al actualizar configuración Meta:', error); // Agregar el error completo en los logs
     return res.status(500).json({
-      title: 'Error interno',
-      message: 'Hubo un problema al agregar la configuración.',
-      error: error.message,
+      status: 500,
+      message: 'Hubo un problema al actualizar la configuración.',
     });
   }
 });
