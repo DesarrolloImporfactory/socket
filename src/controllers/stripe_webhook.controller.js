@@ -103,6 +103,46 @@ exports.stripeWebhook = async (req, res) => {
       return res.status(500).json({ message: "Error interno" });
     }
   }
+  // Cuando termina el periodo de una suscripción cancelada
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+
+    try {
+      const subscriptionId = subscription.id;
+
+      // Actualiza en tu base de datos el estado a 'cancelado'
+      await db.query(
+        `UPDATE transacciones_stripe_chat 
+         SET estado_suscripcion = 'canceled'
+         WHERE id_suscripcion = ?`,
+        { replacements: [subscriptionId] }
+      );
+
+      // Opcional: también puedes actualizar el estado del usuario si lo deseas
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET estado = 'inactivo', id_plan = NULL
+         WHERE id_usuario = (
+           SELECT id_usuario 
+           FROM transacciones_stripe_chat 
+           WHERE id_suscripcion = ?
+           ORDER BY fecha DESC 
+           LIMIT 1
+         )`,
+        { replacements: [subscriptionId] }
+      );
+
+      console.log(`✅ Suscripción cancelada definitivamente: ${subscriptionId}`);
+      return res.status(200).json({ received: true });
+
+    } catch (error) {
+      console.error("❌ Error en customer.subscription.deleted:", error);
+      return res.status(500).json({ message: "Error al manejar cancelación final" });
+    }
+  }
+
 
   return res.json({ received: true });
 };
+
+

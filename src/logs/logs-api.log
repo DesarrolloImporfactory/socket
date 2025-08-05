@@ -1740,3 +1740,226 @@
 [2025-07-29T17:47:42.857Z] info: id_plataforma is not defined
 [2025-07-29T17:54:30.368Z] info: Faltan teléfono o id_plataforma
 [2025-07-29T17:56:21.569Z] info: id_plataforma is not defined
+[2025-07-30T13:06:28.494Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:06:38.518Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:06:40.852Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:06:47.471Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:07:01.896Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:07:01.916Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:35:16.227Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T13:35:16.241Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T14:58:05.945Z] info: id_plataforma is not defined
+[2025-07-30T17:10:41.881Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T17:10:41.899Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T18:16:21.181Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T18:16:21.221Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T19:13:18.406Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T19:13:18.416Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-07-30T20:14:35.312Z] info: id_plataforma is not defined
+[2025-07-30T20:14:42.840Z] info: id_plataforma is not defined
+[2025-07-30T20:14:53.108Z] info: id_plataforma is not defined
+[2025-07-31T14:20:32.343Z] info: id_plataforma is not defined
+[2025-07-31T15:51:15.952Z] info: id_plataforma is not defined
+[2025-07-31T15:51:18.269Z] info: id_plataforma is not defined
+[2025-07-31T15:51:27.403Z] info: Faltan teléfono o id_plataforma
+[2025-07-31T16:20:18.940Z] info: id_plataforma is not defined
+[2025-07-31T16:20:19.852Z] info: id_plataforma is not defined
+[2025-07-31T16:20:27.016Z] info: Faltan teléfono o id_plataforma
+[2025-07-31T16:21:19.009Z] info: id_plataforma is not defined
+[2025-07-31T16:21:27.527Z] info: id_plataforma is not defined
+[2025-07-31T16:21:42.875Z] info: id_plataforma is not defined
+[2025-07-31T17:30:09.408Z] info: id_plataforma is not defined
+[2025-07-31T18:30:56.212Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T18:30:56.319Z] info: id_plataforma is not defined
+[2025-07-31T18:31:21.110Z] info: id_plataforma is not defined
+[2025-07-31T18:40:57.833Z] info: id_plataforma is not defined
+[2025-07-31T19:09:03.276Z] info: Faltan teléfono o id_plataforma
+[2025-07-31T19:25:31.475Z] info: id_plataforma is not defined
+[2025-07-31T19:25:50.594Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:25:50.706Z] info: id_plataforma is not defined
+[2025-07-31T19:25:51.871Z] info: id_plataforma is not defined
+[2025-07-31T19:33:49.264Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:33:49.724Z] info: id_plataforma is not defined
+[2025-07-31T19:36:28.848Z] info: id_plataforma is not defined
+[2025-07-31T19:36:46.852Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:36:46.958Z] info: id_plataforma is not defined
+[2025-07-31T19:36:56.940Z] info: id_plataforma is not defined
+[2025-07-31T19:37:20.489Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:37:20.946Z] info: id_plataforma is not defined
+[2025-07-31T19:37:23.594Z] info: id_plataforma is not defined
+[2025-07-31T19:39:11.254Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:39:11.723Z] info: id_plataforma is not defined
+[2025-07-31T19:39:13.792Z] info: id_plataforma is not defined
+[2025-07-31T19:46:24.239Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:46:24.752Z] info: id_plataforma is not defined
+[2025-07-31T19:46:31.088Z] info: id_plataforma is not defined
+[2025-07-31T19:47:08.437Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:47:08.895Z] info: id_plataforma is not defined
+[2025-07-31T19:47:10.312Z] info: id_plataforma is not defined
+[2025-07-31T19:47:14.835Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:47:14.957Z] info: id_plataforma is not defined
+[2025-07-31T19:47:16.403Z] info: id_plataforma is not defined
+[2025-07-31T19:47:48.564Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:47:48.690Z] info: id_plataforma is not defined
+[2025-07-31T19:47:50.906Z] info: id_plataforma is not defined
+[2025-07-31T19:48:18.266Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T19:48:19.285Z] info: id_plataforma is not defined
+[2025-07-31T19:48:42.380Z] info: id_plataforma is not defined
+[2025-07-31T20:01:51.894Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T20:01:52.358Z] info: id_plataforma is not defined
+[2025-07-31T20:01:53.959Z] info: id_plataforma is not defined
+[2025-07-31T21:03:10.980Z] info: id_plataforma is not defined
+[2025-07-31T21:03:17.743Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T21:03:17.835Z] info: id_plataforma is not defined
+[2025-07-31T21:03:38.140Z] info: id_plataforma is not defined
+[2025-07-31T21:04:31.767Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-07-31T21:04:31.997Z] info: id_plataforma is not defined
+[2025-07-31T21:04:34.547Z] info: id_plataforma is not defined
+[2025-08-01T13:06:08.008Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:06:08.519Z] info: id_plataforma is not defined
+[2025-08-01T13:06:13.053Z] info: id_plataforma is not defined
+[2025-08-01T13:12:20.076Z] info: id_plataforma is not defined
+[2025-08-01T13:12:22.927Z] info: id_plataforma is not defined
+[2025-08-01T13:12:27.571Z] info: id_plataforma is not defined
+[2025-08-01T13:12:29.034Z] info: id_plataforma is not defined
+[2025-08-01T13:12:31.160Z] info: id_plataforma is not defined
+[2025-08-01T13:12:31.762Z] info: id_plataforma is not defined
+[2025-08-01T13:12:40.540Z] info: id_plataforma is not defined
+[2025-08-01T13:12:48.042Z] info: id_plataforma is not defined
+[2025-08-01T13:18:46.302Z] info: id_plataforma is not defined
+[2025-08-01T13:18:46.606Z] info: id_plataforma is not defined
+[2025-08-01T13:18:47.770Z] info: id_plataforma is not defined
+[2025-08-01T13:22:24.055Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:22:24.538Z] info: id_plataforma is not defined
+[2025-08-01T13:22:25.831Z] info: id_plataforma is not defined
+[2025-08-01T13:24:57.390Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:24:57.849Z] info: id_plataforma is not defined
+[2025-08-01T13:24:58.817Z] info: id_plataforma is not defined
+[2025-08-01T13:29:02.584Z] info: id_plataforma is not defined
+[2025-08-01T13:29:04.080Z] info: id_plataforma is not defined
+[2025-08-01T13:29:04.945Z] info: id_plataforma is not defined
+[2025-08-01T13:29:05.875Z] info: id_plataforma is not defined
+[2025-08-01T13:29:16.040Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:29:16.163Z] info: id_plataforma is not defined
+[2025-08-01T13:29:17.180Z] info: id_plataforma is not defined
+[2025-08-01T13:31:47.517Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:31:47.634Z] info: id_plataforma is not defined
+[2025-08-01T13:31:48.881Z] info: id_plataforma is not defined
+[2025-08-01T13:32:02.616Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:32:02.837Z] info: id_plataforma is not defined
+[2025-08-01T13:32:04.175Z] info: id_plataforma is not defined
+[2025-08-01T13:32:18.127Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:32:18.309Z] info: id_plataforma is not defined
+[2025-08-01T13:32:19.976Z] info: id_plataforma is not defined
+[2025-08-01T13:32:27.402Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:32:27.516Z] info: id_plataforma is not defined
+[2025-08-01T13:32:28.948Z] info: id_plataforma is not defined
+[2025-08-01T13:32:50.822Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:32:51.275Z] info: id_plataforma is not defined
+[2025-08-01T13:32:53.230Z] info: id_plataforma is not defined
+[2025-08-01T13:56:49.276Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T13:56:49.732Z] info: id_plataforma is not defined
+[2025-08-01T13:59:10.513Z] info: id_plataforma is not defined
+[2025-08-01T14:03:07.818Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T14:03:08.290Z] info: id_plataforma is not defined
+[2025-08-01T14:03:09.229Z] info: id_plataforma is not defined
+[2025-08-01T14:20:38.253Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T14:20:38.376Z] info: id_plataforma is not defined
+[2025-08-01T14:21:13.611Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T14:21:14.112Z] info: id_plataforma is not defined
+[2025-08-01T14:21:14.917Z] info: id_plataforma is not defined
+[2025-08-01T15:15:19.479Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T15:15:19.936Z] info: id_plataforma is not defined
+[2025-08-01T15:15:21.040Z] info: id_plataforma is not defined
+[2025-08-01T15:40:43.598Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T15:40:44.082Z] info: id_plataforma is not defined
+[2025-08-01T15:41:02.040Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T15:41:02.137Z] info: id_plataforma is not defined
+[2025-08-01T15:41:03.684Z] info: id_plataforma is not defined
+[2025-08-01T16:13:10.498Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T16:13:10.993Z] info: id_plataforma is not defined
+[2025-08-01T16:13:13.241Z] info: Can't find /api/v1/plataformas/obtener_usuario_plataforma on this server! 🧨
+[2025-08-01T16:13:13.346Z] info: id_plataforma is not defined
+[2025-08-01T16:13:14.699Z] info: id_plataforma is not defined
+[2025-08-01T17:48:45.053Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T17:48:45.064Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T17:55:09.627Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T17:55:09.628Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T19:45:20.226Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T19:45:20.259Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T20:13:22.273Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:13:27.950Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:13:40.929Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:17:03.258Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:17:03.259Z] info: Can't find /api/v1/facturasUsuario on this server! 🧨
+[2025-08-01T20:17:56.259Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:18:03.257Z] info: Can't find /api/v1/obtenerSuscripcionActiva on this server! 🧨
+[2025-08-01T20:30:17.458Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T20:30:17.469Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T20:44:03.224Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T20:44:06.552Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T20:48:15.369Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T21:00:53.697Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-01T21:00:58.427Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T13:27:09.190Z] info: Can't find /api/v1/cancelarSuscripcion on this server! 🧨
+[2025-08-04T13:37:25.114Z] info: Can't find /api/v1/cancelarSuscripcion on this server! 🧨
+[2025-08-04T13:37:38.891Z] info: Can't find /api/v1/cancelarSuscripcion on this server! 🧨
+[2025-08-04T14:19:40.428Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T14:19:40.484Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:06:34.050Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:06:34.083Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:32:52.620Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:32:52.646Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:45:33.397Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:45:39.403Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:45:39.427Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:45:48.251Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T16:47:06.109Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:37:18.881Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:37:47.127Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:37:47.173Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:37:52.819Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:38:05.534Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:39:06.908Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:45:46.152Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:45:46.162Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:45:50.526Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:50:15.500Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:50:42.950Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:50:51.241Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:51:08.939Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:51:25.860Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T18:51:34.747Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T19:38:33.389Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T19:40:21.464Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T19:40:21.510Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T19:40:27.584Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:05:27.800Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:40:33.680Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:40:33.713Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:40:39.098Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:53:15.841Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:53:15.948Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:57:19.715Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:57:19.762Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T20:57:26.011Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:02:46.827Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:04:31.413Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:10:04.293Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:10:04.295Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:10:10.175Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:17:14.672Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:17:14.731Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:17:18.445Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-04T21:20:06.427Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:36:00.681Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:41:14.657Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:42:24.071Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:43:37.823Z] info: id_plataforma is not defined
+[2025-08-05T13:44:11.239Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:44:11.244Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:44:15.702Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:55:29.183Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:55:39.115Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:56:30.282Z] info: No se encontro una configuracion con este id_usuario: 5
+[2025-08-05T13:59:03.496Z] info: No se encontro una configuracion con este id_usuario: 5

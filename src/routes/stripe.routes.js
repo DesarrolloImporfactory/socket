@@ -6,6 +6,11 @@ const stripe_planesController = require('../controllers/stripe.controller');
 
 router.get('/stripe', stripe_planesController.listarPlanesStripe);
 router.post('/crearSesionPago', stripe_planesController.crearSesionPago);
+router.post('/facturasUsuario', stripe_planesController.obtenerFacturasUsuario);
+router.post('/cancelarSuscripcion', stripe_planesController.cancelarSuscripcion);
+router.post('/obtenerSuscripcionActiva', stripe_planesController.obtenerSuscripcionActiva);
+
+
 
 
 

@@ -91,6 +91,7 @@ exports.crearSesionPago = async (req, res) => {
       line_items: [{ price: plan.id_product_stripe, quantity: 1 }],
       success_url,
       cancel_url,
+      allow_promotion_codes: true,
       subscription_data: {
         metadata: {
           id_usuario: userId.toString(),
@@ -106,4 +107,152 @@ exports.crearSesionPago = async (req, res) => {
     return res.status(500).json({ status: "fail", message: error.message });
   }
 };
+
+exports.obtenerSuscripcionActiva = async (req, res) => {
+  try {
+    const { id_usuario } = req.body;
+
+    const [result] = await db.query(`
+      SELECT 
+        u.id_plan, 
+        u.estado, 
+        u.fecha_renovacion, 
+        p.nombre_plan, 
+        p.descripcion_plan, 
+        p.precio_plan, 
+        p.ahorro
+      FROM usuarios_chat_center u
+      JOIN planes_chat_center p ON u.id_plan = p.id_plan
+      WHERE u.id_usuario = :id_usuario
+      LIMIT 1
+    `, {
+      replacements: { id_usuario },
+      type: db.QueryTypes.SELECT
+    });
+
+    if (!result) {
+      return res.status(200).json({ plan: null });
+    }
+
+    const hoy = new Date();
+    const fechaRenovacion = new Date(result.fecha_renovacion);
+
+    // Verifica si ya caducó y actualiza estado si es necesario
+    if (fechaRenovacion < hoy && result.estado === 'activo') {
+      await db.query(`
+        UPDATE usuarios_chat_center SET estado = 'inactivo' WHERE id_usuario = :id_usuario
+      `, {
+        replacements: { id_usuario }
+      });
+
+      result.estado = 'inactivo';
+    }
+
+    return res.status(200).json({ plan: result });
+  } catch (err) {
+    console.error("Error al obtener suscripción activa:", err);
+    return res.status(500).json({ message: "Error interno al obtener la suscripción activa" });
+  }
+};
+
+
+
+
+
+
+/* ver factura stripe */
+exports.obtenerFacturasUsuario = async (req, res) => {
+  try {
+    const id_usuario = req.user?.id || req.body.id_usuario;
+
+    if (!id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Falta el id_usuario' });
+    }
+
+    const [results] = await db.query(`
+      SELECT DISTINCT customer_id 
+      FROM transacciones_stripe_chat 
+      WHERE 
+        id_usuario = ?
+        AND customer_id IS NOT NULL
+        AND id_pago IS NOT NULL
+        AND estado_suscripcion IS NOT NULL
+    `, { replacements: [id_usuario] });
+
+    const customerIds = results?.map(r => r.customer_id).filter(Boolean);
+
+    if (!customerIds || customerIds.length === 0) {
+      return res.status(404).json({ status: 'fail', message: 'No se encontraron clientes válidos para este usuario' });
+    }
+
+    const allInvoices = [];
+
+    for (const customerId of customerIds) {
+      const invoices = await stripe.invoices.list({
+        customer: customerId,
+        limit: 100,
+      });
+
+      allInvoices.push(...invoices.data);
+    }
+
+    // Ordenamos por fecha descendente
+    allInvoices.sort((a, b) => b.created - a.created);
+
+    res.status(200).json({ status: 'success', data: allInvoices });
+  } catch (error) {
+    console.error("❌ Error al obtener facturas:", error);
+    res.status(500).json({ status: 'fail', message: 'Error al obtener facturas' });
+  }
+};
+
+
+
+
+
+/* cancelar suscripcion / cancelar pago automatico stripe */
+exports.cancelarSuscripcion = async (req, res) => {
+  try {
+    const id_usuario = req.user?.id || req.body.id_usuario;
+
+    // 1. Buscar la suscripción activa más reciente del usuario
+    const [result] = await db.query(`
+      SELECT id_suscripcion FROM transacciones_stripe_chat 
+      WHERE id_usuario = ? AND estado_suscripcion = 'active'
+      ORDER BY fecha DESC LIMIT 1
+    `, { replacements: [id_usuario] });
+
+
+    const idSuscripcion = result?.[0]?.id_suscripcion;
+
+    if (!idSuscripcion) {
+      return res.status(404).json({ status: 'fail', message: 'No hay suscripción activa' });
+    }
+
+    // 2. Cancelar en Stripe al finalizar el período actual
+    await stripe.subscriptions.update(idSuscripcion, {
+      cancel_at_period_end: true,
+    });
+
+    // 3. Opcional: registrar en tu base de datos que está pendiente de cancelación
+    await db.query(`
+      UPDATE transacciones_stripe_chat 
+      SET estado_suscripcion = 'cancelando' 
+      WHERE id_suscripcion = ?
+    `, { replacements: [idSuscripcion] });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'La suscripción se cancelará al finalizar el periodo actual.',
+    });
+  } catch (error) {
+    console.error("Error al cancelar suscripción:", error);
+    res.status(500).json({
+      status: 'fail',
+      message: 'Error al cancelar la suscripción',
+    });
+  }
+};
+
+
 

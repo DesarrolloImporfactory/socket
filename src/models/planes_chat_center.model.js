@@ -38,6 +38,10 @@ const Planes_chat_center = db.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    ahorro: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+    },
   },
   {
     sequelize: db,
