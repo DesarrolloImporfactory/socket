@@ -170,7 +170,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
-    message: 'Login exitoso',
+    message: 'Vinculacion exitosa',
   });
 });
 

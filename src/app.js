@@ -45,6 +45,12 @@ const stripeRouter = require('./routes/stripe.routes');
 
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
 
+const categorias_chat_centerRouter = require('./routes/categorias_chat_center.routes');
+
+const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
+
+const path = require('path');
+
 
 const app = express();
 
@@ -123,6 +129,9 @@ app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
+app.use('/api/v1/categorias', categorias_chat_centerRouter);
+app.use('/api/v1/productos', productos_chat_centerRouter);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.all('*', (req, res, next) => {
   return next(

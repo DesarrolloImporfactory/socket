@@ -19,7 +19,7 @@ const checkPlanActivo = async (req, res, next) => {
       await usuario.update({ estado: 'vencido' });
     }
 
-    return res.status(403).json({
+    return res.status(402).json({
       status: 'fail',
       message: 'Tu plan ha caducado',
     });
