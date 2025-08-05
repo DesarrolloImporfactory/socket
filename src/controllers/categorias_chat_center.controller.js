@@ -67,7 +67,9 @@ exports.actualizarCategoria = catchAsync(async (req, res, next) => {
 exports.eliminarCategoria = catchAsync(async (req, res, next) => {
   const { id_categoria } = req.body;
 
-  const categoria = await CategoriasChatCenter.findOne({ id: id_categoria });
+  const categoria = await CategoriasChatCenter.findOne({
+    where: { id: id_categoria },
+  });
 
   if (!categoria) {
     return res.status(404).json({
