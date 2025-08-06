@@ -1984,3 +1984,11 @@
 [2025-08-06T20:36:16.371Z] info: jwt malformed
 [2025-08-06T20:36:48.647Z] info: Op is not defined
 [2025-08-06T20:40:11.923Z] info: Can't find /api/v1/usuarios_chat_center/eliminarSubUsuario on this server! 🧨
+[2025-08-06T21:25:42.789Z] info: id_plataforma is not defined
+[2025-08-06T21:26:06.395Z] info: id_plataforma is not defined
+[2025-08-06T21:26:32.610Z] info: id_plataforma is not defined
+[2025-08-06T21:31:01.023Z] info: id_plataforma is not defined
+[2025-08-06T21:32:54.872Z] info: id_plataforma is not defined
+[2025-08-06T21:34:04.700Z] info: id_plataforma is not defined
+[2025-08-06T21:48:42.325Z] info: id_plataforma is not defined
+[2025-08-06T21:48:51.926Z] info: id_plataforma is not defined

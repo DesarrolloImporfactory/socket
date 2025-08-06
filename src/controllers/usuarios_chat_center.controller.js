@@ -17,7 +17,7 @@ exports.listarUsuarios = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
   const sub_usuarios_chat_center = await Sub_usuarios_chat_center.findAll({
-    where: { id_usuario: id_usuario },
+    where: { id_usuario },
   });
 
   if (!sub_usuarios_chat_center || sub_usuarios_chat_center.length === 0) {
@@ -27,9 +27,15 @@ exports.listarUsuarios = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Limpiar datos sensibles
+  const usuariosSanitizados = sub_usuarios_chat_center.map((usuario) => {
+    const { password, admin_pass, ...safeData } = usuario.toJSON();
+    return safeData;
+  });
+
   res.status(200).json({
     status: 'success',
-    data: sub_usuarios_chat_center,
+    data: usuariosSanitizados,
   });
 });
 
