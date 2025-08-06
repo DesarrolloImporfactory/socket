@@ -1,27 +1,30 @@
+// services/appointments.service.js
 const { Op } = require('sequelize');
-const { zonedTimeToUtc } = require('date-fns-tz');
 const Appointment = require('../models/appointment.model');
 const AppointmentInvitee = require('../models/appointment_invitee.model');
-const CalendarMember = require('../models/calendar_member.model');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
+/**
+ * Verifica solapes de citas a nivel de calendario.
+ * Si quisieras validar por usuario, añade assigned_user_id al where (comentado abajo).
+ */
 async function assertNoOverlap({
   calendar_id,
   start_utc,
   end_utc,
-  ignoreId = null,
+  ignoreId = null /*, assigned_user_id*/,
 }) {
   const where = {
     calendar_id,
     status: { [Op.in]: ['scheduled', 'confirmed', 'blocked'] },
-    start_utc: { [Op.lt]: end_utc }, // empieza antes de que termine la nueva
-    end_utc: { [Op.gt]: start_utc }, // termina después de que empieza la nueva
+    start_utc: { [Op.lt]: end_utc },
+    end_utc: { [Op.gt]: start_utc },
   };
   if (ignoreId) where.id = { [Op.ne]: ignoreId };
 
-  // Si quisieras validar por usuario (no por todo el calendario):
-  // if (assigned_user_id) where.assigned_user_id = assigned_user_id;
+  // 👉 Para solape por usuario (si deseas):
+  // if (assigned_user_id != null) where.assigned_user_id = assigned_user_id;
 
   const conflict = await Appointment.findOne({ where });
   if (conflict)
@@ -31,7 +34,7 @@ async function assertNoOverlap({
 async function listAppointments({ calendar_id, start, end, user_ids }) {
   const where = { calendar_id };
   if (start && end) {
-    // Trae intersección con el rango [start,end]
+    // Intersección con el rango [start, end]
     where.start_utc = { [Op.lt]: end };
     where.end_utc = { [Op.gt]: start };
   }
@@ -43,10 +46,11 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
     where,
     order: [['start_utc', 'ASC']],
   });
+
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
-    start: r.start_utc, // ISO UTC (Z)
+    start: r.start_utc, // ISO UTC
     end: r.end_utc,
     extendedProps: {
       status: r.status,
@@ -55,16 +59,15 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
       booked_tz: r.booked_tz,
       location_text: r.location_text,
       meeting_url: r.meeting_url,
+      description: r.description,
     },
   }));
 }
 
 async function createAppointment(payload, currentUserId) {
-  // 1) parseo/validación de fechas
   const startUtc = new Date(payload.start);
   const endUtc = new Date(payload.end);
 
-  // Valida correctamente fechas
   if (
     isNaN(startUtc.getTime()) ||
     isNaN(endUtc.getTime()) ||
@@ -76,22 +79,15 @@ async function createAppointment(payload, currentUserId) {
   const assigned = payload.assigned_user_id ?? currentUserId ?? null;
   const invitees = Array.isArray(payload.invitees) ? payload.invitees : [];
 
+  // Valida solape (a nivel calendario por defecto)
+  await assertNoOverlap({
+    calendar_id: payload.calendar_id,
+    start_utc: startUtc,
+    end_utc: endUtc,
+    // assigned_user_id: assigned, // (actívalo si quieres solape por usuario)
+  });
+
   return await db.transaction(async (t) => {
-    if (assigned) {
-      await CalendarMember.findOrCreate({
-        where: { calendar_id: payload.calendar_id, user_id: assigned },
-        defaults: { role: 'editor' },
-        transaction: t,
-      });
-    }
-
-    await assertNoOverlap({
-      calendar_id: payload.calendar_id,
-      start_utc: startUtc,
-      end_utc: endUtc,
-      // assigned_user_id: assigned, // si quieres validar por usuario
-    });
-
     const appt = await Appointment.create(
       {
         calendar_id: payload.calendar_id,
@@ -110,7 +106,7 @@ async function createAppointment(payload, currentUserId) {
       { transaction: t }
     );
 
-    // Crear invitados (si vienen)
+    // Invitados (opcional)
     if (invitees.length) {
       const rows = invitees
         .filter((i) => i?.email || i?.phone)
@@ -150,7 +146,7 @@ async function updateAppointment(id, payload) {
 
   let startUtc = appt.start_utc;
   let endUtc = appt.end_utc;
-  const tz = payload.booked_tz || appt.booked_tz || 'America/Guayaquil';
+  const tz = payload.booked_tz || appt.booked_tz || 'America/Guayaquil'; // guardado como referencia
 
   if (payload.start) startUtc = new Date(payload.start);
   if (payload.end) endUtc = new Date(payload.end);
@@ -159,7 +155,7 @@ async function updateAppointment(id, payload) {
     if (
       isNaN(startUtc.getTime()) ||
       isNaN(endUtc.getTime()) ||
-      endUtc <= startUtc //valida que el fin sea posterior al inicio
+      endUtc <= startUtc
     ) {
       throw new AppError('Rango de fechas inválido.', 400);
     }
@@ -168,28 +164,24 @@ async function updateAppointment(id, payload) {
     up.booked_tz = tz;
   }
 
-  if (up.assigned_user_id) {
-    const member = await CalendarMember.findOne({
-      where: { calendar_id: appt.calendar_id, user_id: up.assigned_user_id },
-    });
-    if (!member)
-      throw new AppError(
-        'El usuario asignado no pertenece a este calendario.',
-        400
-      );
-  }
+  // ❌ Sin validación de membership (ya no usamos calendar_members)
+  // Si quieres, aquí puedes validar que assigned_user_id exista en tu sistema real.
 
-  await db.transaction(async (t) => {
+  return await db.transaction(async (t) => {
     await assertNoOverlap({
       calendar_id: appt.calendar_id,
-      start_utc: startUtc,
-      end_utc: endUtc,
+      start_utc: up.start_utc ?? startUtc,
+      end_utc: up.end_utc ?? endUtc,
       ignoreId: appt.id,
+      // assigned_user_id: up.assigned_user_id ?? appt.assigned_user_id, // (para solape por usuario)
     });
-    await appt.update(up, { transaction: t });
-  });
 
-  return appt;
+    await appt.update(up, { transaction: t });
+
+    // (Opcional) actualizar invitados aquí si lo necesitas en el futuro
+
+    return appt;
+  });
 }
 
 async function cancelAppointment(id) {
