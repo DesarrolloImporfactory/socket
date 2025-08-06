@@ -11,6 +11,10 @@ const InventarioBodegas = require('./inventario_bodegas.model');
 const Usuarios_chat_center = require('./usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('./sub_usuarios_chat_center.model');
 const Planes_chat_center = require('./planes_chat_center.model');
+const Calendar = require('./calendar.model');
+const CalendarMember = require('./calendar_member.model');
+const Appointment = require('./appointment.model');
+const AppointmentInvitee = require('./appointment_invitee.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -173,6 +177,73 @@ const initModel = () => {
     foreignKey: 'id_plan',
     targetKey: 'id_plan',
     as: 'plan',
+  });
+
+  // ===== Calendarios ↔ Citas
+  Calendar.hasMany(Appointment, {
+    foreignKey: 'calendar_id',
+    as: 'appointments',
+  });
+  Appointment.belongsTo(Calendar, {
+    foreignKey: 'calendar_id',
+    as: 'calendar',
+  });
+
+  // ===== Calendarios ↔ Miembros
+  Calendar.hasMany(CalendarMember, {
+    foreignKey: 'calendar_id',
+    as: 'members',
+  });
+  CalendarMember.belongsTo(Calendar, {
+    foreignKey: 'calendar_id',
+    as: 'calendar',
+  });
+
+  // ===== Citas ↔ Invitados
+  Appointment.hasMany(AppointmentInvitee, {
+    foreignKey: 'appointment_id',
+    as: 'invitees',
+  });
+  AppointmentInvitee.belongsTo(Appointment, {
+    foreignKey: 'appointment_id',
+    as: 'appointment',
+  });
+
+  // ===== Enlaces con tabla Users (id_users)
+  // Miembro -> User
+  CalendarMember.belongsTo(User, {
+    foreignKey: 'user_id',
+    targetKey: 'id_users',
+    as: 'user',
+  });
+  User.hasMany(CalendarMember, {
+    foreignKey: 'user_id',
+    sourceKey: 'id_users',
+    as: 'calendar_memberships',
+  });
+
+  // Cita.asignado -> User
+  Appointment.belongsTo(User, {
+    foreignKey: 'assigned_user_id',
+    targetKey: 'id_users',
+    as: 'assigned_user',
+  });
+  User.hasMany(Appointment, {
+    foreignKey: 'assigned_user_id',
+    sourceKey: 'id_users',
+    as: 'assigned_appointments',
+  });
+
+  // (Opcional) Cita.creada_por -> User
+  Appointment.belongsTo(User, {
+    foreignKey: 'created_by_user_id',
+    targetKey: 'id_users',
+    as: 'creator',
+  });
+  User.hasMany(Appointment, {
+    foreignKey: 'created_by_user_id',
+    sourceKey: 'id_users',
+    as: 'created_appointments',
   });
 };
 module.exports = initModel;

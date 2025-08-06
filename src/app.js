@@ -49,8 +49,13 @@ const categorias_chat_centerRouter = require('./routes/categorias_chat_center.ro
 
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
 
-const path = require('path');
+const calendarsRouter = require('./routes/calendars.routes');
 
+const appointmentsRouter = require('./routes/appointments.routes');
+
+const debugRouter = require('./routes/debug.routes');
+
+const path = require('path');
 
 const app = express();
 
@@ -87,7 +92,6 @@ app.use(
 //Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
 app.use('/api/v1/messenger', messengerRouter);
 
-
 // WEBHOOK: este debe ir antes del body parser y fuera del router
 app.post(
   '/api/v1/stripe_plan/stripeWebhook',
@@ -96,8 +100,6 @@ app.post(
 );
 
 // Luego el resto del stack “normal”
-
-
 
 app.use(express.json());
 
@@ -132,6 +134,9 @@ app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/v1/calendars', calendarsRouter);
+app.use('/api/v1/appointments', appointmentsRouter);
+app.use('/api/v1/debug', debugRouter);
 
 app.all('*', (req, res, next) => {
   return next(
