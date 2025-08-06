@@ -12,7 +12,6 @@ const Usuarios_chat_center = require('./usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('./sub_usuarios_chat_center.model');
 const Planes_chat_center = require('./planes_chat_center.model');
 const Calendar = require('./calendar.model');
-const CalendarMember = require('./calendar_member.model');
 const Appointment = require('./appointment.model');
 const AppointmentInvitee = require('./appointment_invitee.model');
 
@@ -189,16 +188,6 @@ const initModel = () => {
     as: 'calendar',
   });
 
-  // ===== Calendarios ↔ Miembros
-  Calendar.hasMany(CalendarMember, {
-    foreignKey: 'calendar_id',
-    as: 'members',
-  });
-  CalendarMember.belongsTo(Calendar, {
-    foreignKey: 'calendar_id',
-    as: 'calendar',
-  });
-
   // ===== Citas ↔ Invitados
   Appointment.hasMany(AppointmentInvitee, {
     foreignKey: 'appointment_id',
@@ -209,20 +198,7 @@ const initModel = () => {
     as: 'appointment',
   });
 
-  // ===== Enlaces con tabla Users (id_users)
-  // Miembro -> User
-  CalendarMember.belongsTo(User, {
-    foreignKey: 'user_id',
-    targetKey: 'id_users',
-    as: 'user',
-  });
-  User.hasMany(CalendarMember, {
-    foreignKey: 'user_id',
-    sourceKey: 'id_users',
-    as: 'calendar_memberships',
-  });
-
-  // Cita.asignado -> User
+  // ===== Enlaces con Users (si los usas para asignar/crear)
   Appointment.belongsTo(User, {
     foreignKey: 'assigned_user_id',
     targetKey: 'id_users',
@@ -234,7 +210,6 @@ const initModel = () => {
     as: 'assigned_appointments',
   });
 
-  // (Opcional) Cita.creada_por -> User
   Appointment.belongsTo(User, {
     foreignKey: 'created_by_user_id',
     targetKey: 'id_users',

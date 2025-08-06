@@ -26,11 +26,8 @@ exports.list = catchAsync(async (req, res) => {
 });
 
 exports.create = catchAsync(async (req, res) => {
-  console.log('[POST /appointments] body:', req.body);
-
   const currentUserId = req.user?.id_users ?? req.user?.id_usuario ?? null;
   const appt = await svc.createAppointment(req.body, currentUserId);
-  console.log('[POST /appointments] created id:', appt.id);
   res.status(201).json({ status: 'success', appointment: appt });
 });
 
