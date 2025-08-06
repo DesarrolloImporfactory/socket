@@ -8,7 +8,152 @@ const Mensaje_cliente = require('../models/mensaje_cliente.model');
 const Etiquetas_asignadas = require('../models/etiquetas_asignadas.model');
 const Etiquetas_chat_center = require('../models/etiquetas_chat_center.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
+const { Op } = require('sequelize');
+const { crearSubUsuario } = require('./../utils/crearSubUsuario');
+const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
 const catchAsync = require('../utils/catchAsync');
+
+exports.listarUsuarios = catchAsync(async (req, res, next) => {
+  const { id_usuario } = req.body;
+
+  const sub_usuarios_chat_center = await Sub_usuarios_chat_center.findAll({
+    where: { id_usuario: id_usuario },
+  });
+
+  if (!sub_usuarios_chat_center || sub_usuarios_chat_center.length === 0) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'No existen usuarios para este usuario.',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: sub_usuarios_chat_center,
+  });
+});
+
+exports.agregarUsuario = catchAsync(async (req, res, next) => {
+  const { id_usuario, usuario, password, email, nombre_encargado, rol } =
+    req.body;
+
+  // Validar campos obligatorios
+  if (
+    !id_usuario ||
+    !usuario ||
+    !password ||
+    !email ||
+    !nombre_encargado ||
+    !rol
+  ) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Todos los campos son obligatorios',
+    });
+  }
+
+  // Validar usuario o email de subusuario
+  const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
+    where: {
+      [Op.or]: [{ usuario }, { email }],
+    },
+  });
+  if (existeSubUsuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'El usuario o el email ya están en uso',
+    });
+  }
+
+  // Crear subusuario administrador
+  const nuevoSubUsuario = await crearSubUsuario({
+    id_usuario: id_usuario,
+    usuario,
+    password: password,
+    email,
+    nombre_encargado,
+    rol: rol,
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Cuenta y usuario administrador creados correctamente 🎉',
+    user: nuevoSubUsuario,
+  });
+});
+
+exports.actualizarUsuario = catchAsync(async (req, res, next) => {
+  const { id_sub_usuario, usuario, password, email, nombre_encargado, rol } =
+    req.body;
+
+  // Validar campos obligatorios
+  if (!id_sub_usuario || !usuario || !email || !nombre_encargado || !rol) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Todos los campos son obligatorios',
+    });
+  }
+
+  // Validar usuario o email en uso por otro subusuario
+  const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
+    where: {
+      [Op.or]: [{ usuario }, { email }],
+      id_sub_usuario: {
+        [Op.ne]: id_sub_usuario, // Excluir el mismo subusuario
+      },
+    },
+  });
+
+  if (existeSubUsuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'El usuario o el email ya están en uso por otro subusuario',
+    });
+  }
+
+  // Actualizar subusuario
+  const nuevoSubUsuario = await actualizarSubUsuario({
+    id_sub_usuario,
+    usuario,
+    password,
+    email,
+    nombre_encargado,
+    rol,
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Cuenta y usuario actualizados correctamente 🎉',
+    user: nuevoSubUsuario,
+  });
+});
+
+exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
+  const { id_sub_usuario } = req.body;
+
+  if (!id_sub_usuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'El ID del subusuario es obligatorio',
+    });
+  }
+
+  const subUsuario = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
+
+  if (!subUsuario) {
+    return res.status(404).json({
+      status: 'fail',
+      message: 'Subusuario no encontrado',
+    });
+  }
+
+  await subUsuario.destroy();
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Subusuario eliminado correctamente',
+  });
+});
 
 exports.importacion_chat_center = catchAsync(async (req, res, next) => {
   try {
