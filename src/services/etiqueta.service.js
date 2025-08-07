@@ -7,12 +7,12 @@ const EtiquetasAsignadas = require('../models/etiquetas_asignadas.model');
 class EtiquetaService {
     static async guardar(etiqueta) {
         const [result] = await db.query(
-            `INSERT INTO etiquetas_chat_center (nombre_etiqueta, color_etiqueta, id_plataforma) VALUES (?, ?, ?)`,
+            `INSERT INTO etiquetas_chat_center (nombre_etiqueta, color_etiqueta, id_configuracion) VALUES (?, ?, ?)`,
             {
                 replacements: [
                     etiqueta.nombre_etiqueta,
                     etiqueta.color_etiqueta,
-                    etiqueta.id_plataforma,
+                    etiqueta.id_configuracion,
                 ],
                 type: db.QueryTypes.INSERT,
             }
@@ -32,7 +32,7 @@ class EtiquetaService {
         return true;
     }
 
-    static async toggleAsignacion(id_cliente_chat_center, id_etiqueta, id_plataforma){
+    static async toggleAsignacion(id_cliente_chat_center, id_etiqueta, id_configuracion){
         const response = {
             status: 500,
             title: 'Error',
@@ -43,7 +43,7 @@ class EtiquetaService {
         const [asignada] = await db.query(
             `SELECT id FROM etiquetas_asignadas WHERE id_cliente_chat_center = ? AND id_etiqueta = ?`,
             {
-                replacements: [id_cliente_chat_center, id_etiqueta, id_plataforma],
+                replacements: [id_cliente_chat_center, id_etiqueta, id_configuracion],
                 type: db.QueryTypes.SELECT,
             }
         );
@@ -65,9 +65,9 @@ class EtiquetaService {
         } else {
             //No existe => insertar
             const result = await db.query(
-                `INSERT INTO etiquetas_asignadas (id_cliente_chat_center, id_etiqueta, id_plataforma) VALUES (?, ?, ?)`,
+                `INSERT INTO etiquetas_asignadas (id_cliente_chat_center, id_etiqueta, id_configuracion) VALUES (?, ?, ?)`,
                 {
-                    replacements: [id_cliente_chat_center, id_etiqueta, id_plataforma],
+                    replacements: [id_cliente_chat_center, id_etiqueta, id_configuracion],
                     type: db.QueryTypes.INSERT,
                 }
             );
@@ -86,19 +86,7 @@ class EtiquetaService {
         if (!id_configuracion) {
           throw new Error('id_configuracion es obligatorio');
         }
-      
-        // Opción A – consulta cruda
-        // const etiquetas = await db.query(
-        //   `SELECT * FROM etiquetas_chat_center WHERE id_plataforma = ?`,
-        //   {
-        //     replacements: [id_plataforma],
-        //     type: db.QueryTypes.SELECT,
-        //   }
-        // );
-        // return etiquetas;
-      
-        // ── Ó ──
-        // Opción B – ORM Sequelize (si definió el modelo con mapping):
+        
         return await EtiquetasChatCenter.findAll({where: {id_configuracion}});
     }
 

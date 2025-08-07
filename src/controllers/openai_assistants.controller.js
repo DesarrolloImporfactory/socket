@@ -30,13 +30,19 @@ exports.datosCliente = catchAsync(async (req, res, next) => {
 });
 
 exports.mensaje_assistant = catchAsync(async (req, res, next) => {
-  const { mensaje, id_thread, id_plataforma, telefono, api_key_openai } =
-    req.body;
+  const {
+    mensaje,
+    id_thread,
+    id_plataforma,
+    id_configuracion,
+    telefono,
+    api_key_openai,
+  } = req.body;
 
   const assistants = await db.query(
-    `SELECT assistant_id, tipo, productos FROM openai_assistants WHERE id_plataforma = ? AND activo = 1`,
+    `SELECT assistant_id, tipo, productos FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
     {
-      replacements: [id_plataforma],
+      replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
     }
   );
@@ -48,12 +54,17 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     });
   }
 
-  const datosCliente = await obtenerDatosClienteParaAssistant(
-    id_plataforma,
-    telefono
-  );
-  let bloqueInfo = datosCliente.bloque || null;
-  const tipoInfo = datosCliente.tipo || null;
+  let bloqueInfo = '';
+  let tipoInfo = null;
+
+  if (id_plataforma !== null) {
+    const datosCliente = await obtenerDatosClienteParaAssistant(
+      id_plataforma,
+      telefono
+    );
+    bloqueInfo = datosCliente.bloque || '';
+    tipoInfo = datosCliente.tipo || null;
+  }
 
   let assistant_id = null;
   if (tipoInfo === 'datos_guia') {
@@ -176,13 +187,13 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
 /* Informacion de asistentes */
 exports.info_asistentes = catchAsync(async (req, res, next) => {
-  const { id_plataforma } = req.body;
+  const { id_configuracion } = req.body;
 
   try {
     const [configuracion] = await db.query(
-      'SELECT api_key_openai FROM configuraciones WHERE id_plataforma = ?',
+      'SELECT api_key_openai FROM configuraciones WHERE id = ?',
       {
-        replacements: [id_plataforma],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -199,9 +210,9 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
 
     // Traer ambos tipos de asistentes
     const asistentes = await db.query(
-      'SELECT * FROM openai_assistants WHERE id_plataforma = ? AND tipo IN ("logistico", "ventas")',
+      'SELECT * FROM openai_assistants WHERE id_configuracion = ? AND tipo IN ("logistico", "ventas")',
       {
-        replacements: [id_plataforma],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -258,13 +269,13 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
-  const { id_plataforma, api_key } = req.body;
+  const { id_configuracion, api_key } = req.body;
 
   try {
     const [result] = await db.query(
-      `UPDATE configuraciones SET api_key_openai = ? WHERE id_plataforma = ?`,
+      `UPDATE configuraciones SET api_key_openai = ? WHERE id_configuracion = ?`,
       {
-        replacements: [api_key, id_plataforma],
+        replacements: [api_key, id_configuracion],
         type: db.QueryTypes.UPDATE,
       }
     );
@@ -279,13 +290,13 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
-  const { id_plataforma, nombre_bot, assistant_id, activo } = req.body;
+  const { id_configuracion, nombre_bot, assistant_id, activo } = req.body;
 
   try {
     const [existe] = await db.query(
-      `SELECT id FROM openai_assistants WHERE id_plataforma = ? AND tipo = "logistico"`,
+      `SELECT id FROM openai_assistants WHERE id_configuracion = ? AND tipo = "logistico"`,
       {
-        replacements: [id_plataforma],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -294,19 +305,19 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
       // Ya existe, entonces actualiza
       await db.query(
         `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
-         WHERE id_plataforma = ? AND tipo = "logistico"`,
+         WHERE id_configuracion = ? AND tipo = "logistico"`,
         {
-          replacements: [nombre_bot, assistant_id, activo, id_plataforma],
+          replacements: [nombre_bot, assistant_id, activo, id_configuracion],
           type: db.QueryTypes.UPDATE,
         }
       );
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_plataforma, tipo, nombre_bot, assistant_id, activo) 
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo) 
          VALUES (?, "logistico", ?, ?, ?)`,
         {
-          replacements: [id_plataforma, nombre_bot, assistant_id, activo],
+          replacements: [id_configuracion, nombre_bot, assistant_id, activo],
           type: db.QueryTypes.INSERT,
         }
       );
@@ -323,13 +334,14 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
-  const { id_plataforma, nombre_bot, assistant_id, activo, productos } = req.body;
+  const { id_configuracion, nombre_bot, assistant_id, activo, productos } =
+    req.body;
 
   try {
     const [existe] = await db.query(
-      `SELECT id FROM openai_assistants WHERE id_plataforma = ? AND tipo = "ventas"`,
+      `SELECT id FROM openai_assistants WHERE id_configuracion = ? AND tipo = "ventas"`,
       {
-        replacements: [id_plataforma],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
@@ -338,19 +350,19 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       // Ya existe, entonces actualiza
       await db.query(
         `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
-         WHERE id_plataforma = ? AND tipo = "ventas"`,
+         WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
-          replacements: [nombre_bot, assistant_id, activo, id_plataforma],
+          replacements: [nombre_bot, assistant_id, activo, id_configuracion],
           type: db.QueryTypes.UPDATE,
         }
       );
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_plataforma, tipo, nombre_bot, assistant_id, activo) 
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo) 
          VALUES (?, "ventas", ?, ?, ?)`,
         {
-          replacements: [id_plataforma, nombre_bot, assistant_id, activo],
+          replacements: [id_configuracion, nombre_bot, assistant_id, activo],
           type: db.QueryTypes.INSERT,
         }
       );

@@ -30,9 +30,12 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const { id_configuracion, nombre, descripcion, tipo, precio, id_categoria } =
     req.body;
 
+  // Define la URL base
+  const dominio = 'https://chatcenter.imporfactory.app';
+
   let imagen_url = null;
   if (req.file) {
-    imagen_url = `/uploads/productos/${req.file.filename}`;
+    imagen_url = `${dominio}/uploads/productos/${req.file.filename}`;
   }
 
   // Validaciones mínimas
@@ -72,20 +75,28 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Si subieron una nueva imagen, eliminar la anterior
+  // URL base del servidor
+  const dominio = 'https://chatcenter.imporfactory.app';
+
   let nuevaImagen = producto.imagen_url;
 
   if (req.file) {
     // Borrar imagen anterior si existe
     if (producto.imagen_url) {
-      const rutaAnterior = path.join(__dirname, '..', producto.imagen_url);
+      const rutaAnterior = path.join(
+        __dirname,
+        '..',
+        'uploads',
+        'productos',
+        path.basename(producto.imagen_url)
+      );
       if (fs.existsSync(rutaAnterior)) {
         fs.unlinkSync(rutaAnterior);
       }
     }
 
-    // Guardar nueva imagen
-    nuevaImagen = `/uploads/productos/${req.file.filename}`;
+    // Construir URL completa
+    nuevaImagen = `${dominio}/uploads/productos/${req.file.filename}`;
   }
 
   // Actualizar datos

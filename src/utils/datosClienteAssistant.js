@@ -154,7 +154,7 @@ const informacionProductos = async (productos) => {
 
   for (const id of productos) {
     console.log('id: ' + id);
-    const sqlProducto = `
+    /* const sqlProducto = `
       SELECT 
         p.nombre_producto AS nombre_producto,
         p.descripcion_producto AS descripcion_producto,
@@ -163,6 +163,20 @@ const informacionProductos = async (productos) => {
       FROM inventario_bodegas ib
       INNER JOIN productos p ON ib.id_producto = p.id_producto
       WHERE ib.id_inventario = ?
+      LIMIT 1
+    `; */
+
+    const sqlProducto = `
+      SELECT 
+        pc.nombre AS nombre_producto,
+        pc.descripcion AS descripcion_producto,
+        pc.tipo AS tipo,
+        pc.precio AS precio_producto,
+        pc.imagen_url AS image_path,
+        cc.nombre AS nombre_categoria,
+      FROM productos_chat_center pc
+      INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
+      WHERE pc.id = ?
       LIMIT 1
     `;
 
@@ -177,6 +191,8 @@ const informacionProductos = async (productos) => {
       bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
       /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
       bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+      bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
+      bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
       bloqueProductos += `\n`;
     }
   }

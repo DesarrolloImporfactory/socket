@@ -8,7 +8,7 @@ const EtiquetaService = require('../services/etiqueta.service');
 exports.obtenerEtiquetas = catchAsync(async (req, res, next) =>{
     const id_configuracion = parseInt(req.body.id_configuracion, 10);
 
-    if(!id_plataforma){
+    if(!id_configuracion){
         return next(new AppError('id_configuracion es requerido', 400));
     }
 
@@ -30,7 +30,7 @@ exports.obtenerEtiquetas = catchAsync(async (req, res, next) =>{
  *
  * @param {string} nombre_etiqueta - Nombre visible de la etiqueta
  * @param {string} color_etiqueta - Color en formato HEX (ej: #FF0000)
- * @param {number} id_plataforma - ID de la plataforma asociada
+ * @param {number} id_configuracion - id_configuracion
  * @returns {object} status 200 si se crea, 500 si ocurre error
  *
  * @example Body JSON:
@@ -42,10 +42,10 @@ exports.obtenerEtiquetas = catchAsync(async (req, res, next) =>{
  */
 
 exports.agregarEtiqueta = catchAsync(async (req, res, next) => {
-    const { nombre_etiqueta, color_etiqueta, id_plataforma } = req.body;
+    const { nombre_etiqueta, color_etiqueta, id_configuracion } = req.body;
 
     try {
-        const etiqueta = new EtiquetasChatCenterEntity(nombre_etiqueta, color_etiqueta, id_plataforma);
+        const etiqueta = new EtiquetasChatCenterEntity(nombre_etiqueta, color_etiqueta, id_configuracion);
         await EtiquetaService.guardar(etiqueta);
 
         res.status(200).json({
@@ -85,13 +85,13 @@ exports.eliminarEtiqueta = catchAsync(async (req, res, next) => {
 });
 
 exports.toggleAsignacionEtiqueta = catchAsync(async (req, res, next) =>{
-    const {id_cliente_chat_center, id_etiqueta, id_plataforma} = req.body;
+    const {id_cliente_chat_center, id_etiqueta, id_configuracion} = req.body;
 
     try{
         const resultado = await EtiquetaService.toggleAsignacion(
             id_cliente_chat_center,
             id_etiqueta,
-            id_plataforma
+            id_configuracion
         );  
         res.status(resultado.status).json(resultado);
     } catch (err){

@@ -2017,3 +2017,20 @@
 [2025-08-07T16:00:03.343Z] info: id_plataforma is not defined
 [2025-08-07T16:00:04.456Z] info: id_plataforma is not defined
 [2025-08-07T16:00:06.020Z] info: id_plataforma is not defined
+[2025-08-07T17:20:33.086Z] info: id_plataforma is not defined
+[2025-08-07T17:21:27.556Z] info: id_plataforma is not defined
+[2025-08-07T17:22:01.177Z] info: id_plataforma is not defined
+[2025-08-07T17:22:20.374Z] info: id_plataforma is not defined
+[2025-08-07T17:24:05.753Z] info: id_plataforma is not defined
+[2025-08-07T17:25:24.097Z] info: id_plataforma is not defined
+[2025-08-07T17:25:38.687Z] info: id_plataforma is not defined
+[2025-08-07T17:27:00.835Z] info: id_plataforma is not defined
+[2025-08-07T17:27:07.309Z] info: id_plataforma is not defined
+[2025-08-07T17:32:08.728Z] info: id_plataforma is not defined
+[2025-08-07T17:32:44.246Z] info: id_plataforma is not defined
+[2025-08-07T19:51:58.676Z] info: id_plataforma is not defined
+[2025-08-07T19:52:16.810Z] info: id_plataforma is not defined
+[2025-08-07T20:01:59.438Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
+[2025-08-07T20:02:04.711Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
+[2025-08-07T20:04:28.463Z] info: Field 'id_plataforma' doesn't have a default value
+[2025-08-07T20:04:33.524Z] info: Field 'id_plataforma' doesn't have a default value
