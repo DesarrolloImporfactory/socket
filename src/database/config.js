@@ -20,7 +20,6 @@ const db = new Sequelize({
   },
   define: {
     timestamps: true,
-    underscored: true,
   },
 });
 
