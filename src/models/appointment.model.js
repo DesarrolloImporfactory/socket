@@ -14,14 +14,14 @@ const Appointment = db.define(
     description: { type: DataTypes.TEXT, allowNull: true },
     status: {
       type: DataTypes.ENUM(
-        'scheduled',
-        'confirmed',
-        'completed',
-        'cancelled',
-        'blocked'
+        'Agendado',
+        'Confirmado',
+        'Completado',
+        'Cancelado',
+        'Bloqueado'
       ),
       allowNull: false,
-      defaultValue: 'scheduled',
+      defaultValue: 'Agendado',
     },
     assigned_user_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     contact_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },

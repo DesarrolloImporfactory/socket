@@ -1,29 +1,32 @@
-// services/appointments.service.js
+/* -----------------------------------------------------------------------
+   Servicio de Citas (Appointments)
+   - Valida solapes
+   - CRUD de citas
+   - Maneja invitados y actualiza contact_id ↔ appointment_invitees
+   ----------------------------------------------------------------------- */
 const { Op } = require('sequelize');
 const Appointment = require('../models/appointment.model');
 const AppointmentInvitee = require('../models/appointment_invitee.model');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
-/**
- * Verifica solapes de citas a nivel de calendario.
- * Si quisieras validar por usuario, añade assigned_user_id al where (comentado abajo).
- */
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ 1. VERIFY OVERLAPS                                                   ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function assertNoOverlap({
   calendar_id,
   start_utc,
   end_utc,
-  ignoreId = null /*, assigned_user_id*/,
+  ignoreId = null, // ← al actualizar excluimos la propia cita
+  /* assigned_user_id */ // ← descomenta si quieres solape por usuario
 }) {
   const where = {
     calendar_id,
-    status: { [Op.in]: ['scheduled', 'confirmed', 'blocked'] },
-    start_utc: { [Op.lt]: end_utc },
-    end_utc: { [Op.gt]: start_utc },
+    status: { [Op.in]: ['Agendado', 'Confirmado', 'Bloqueado'] },
+    start_utc: { [Op.lt]: end_utc }, // empieza antes de que termine la nueva
+    end_utc: { [Op.gt]: start_utc }, // termina después de que empieza la nueva
   };
   if (ignoreId) where.id = { [Op.ne]: ignoreId };
-
-  // 👉 Para solape por usuario (si deseas):
   // if (assigned_user_id != null) where.assigned_user_id = assigned_user_id;
 
   const conflict = await Appointment.findOne({ where });
@@ -31,14 +34,17 @@ async function assertNoOverlap({
     throw new AppError('Conflicto de horario en el calendario.', 409);
 }
 
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ 2. LIST                                                             ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function listAppointments({ calendar_id, start, end, user_ids }) {
   const where = { calendar_id };
   if (start && end) {
-    // Intersección con el rango [start, end]
+    // intersección con [start, end]
     where.start_utc = { [Op.lt]: end };
     where.end_utc = { [Op.gt]: start };
   }
-  if (user_ids && user_ids.length) {
+  if (user_ids?.length) {
     where.assigned_user_id = { [Op.in]: user_ids };
   }
 
@@ -47,10 +53,11 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
     order: [['start_utc', 'ASC']],
   });
 
+  /* Se devuelven en formato FullCalendar */
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
-    start: r.start_utc, // ISO UTC
+    start: r.start_utc,
     end: r.end_utc,
     extendedProps: {
       status: r.status,
@@ -64,74 +71,91 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
   }));
 }
 
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ 3. CREATE                                                            ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function createAppointment(payload, currentUserId) {
   const startUtc = new Date(payload.start);
   const endUtc = new Date(payload.end);
 
-  if (
-    isNaN(startUtc.getTime()) ||
-    isNaN(endUtc.getTime()) ||
-    endUtc <= startUtc
-  ) {
+  /* Validación básica del rango horario */
+  if (isNaN(startUtc) || isNaN(endUtc) || endUtc <= startUtc) {
     throw new AppError('Rango de fechas inválido.', 400);
   }
 
+  /* Quién atenderá y quién está creando */
   const assigned = payload.assigned_user_id ?? currentUserId ?? null;
+  const creator = payload.created_by_user_id ?? currentUserId ?? null;
+
+  /* Invitados recibidos desde el front (array de {name,email,phone}) */
   const invitees = Array.isArray(payload.invitees) ? payload.invitees : [];
 
-  // Valida solape (a nivel calendario por defecto)
+  /* Verifica que no se pise otra cita */
   await assertNoOverlap({
     calendar_id: payload.calendar_id,
     start_utc: startUtc,
     end_utc: endUtc,
-    // assigned_user_id: assigned, // (actívalo si quieres solape por usuario)
+    // assigned_user_id : assigned, // habilita si validas por usuario
   });
 
-  return await db.transaction(async (t) => {
+  /* Transacción para crear todo junto */
+  return db.transaction(async (t) => {
+    /* 3.1 Cita principal -------------------------------------------------- */
     const appt = await Appointment.create(
       {
         calendar_id: payload.calendar_id,
         title: payload.title,
         description: payload.description ?? null,
-        status: payload.status ?? 'scheduled',
+        status: payload.status ?? 'Agendado',
         assigned_user_id: assigned,
-        contact_id: payload.contact_id ?? null,
+        contact_id: payload.contact_id ?? null, // se actualizará abajo
         start_utc: startUtc,
         end_utc: endUtc,
         booked_tz: payload.booked_tz || 'America/Guayaquil',
         location_text: payload.location_text ?? null,
         meeting_url: payload.meeting_url ?? null,
-        created_by_user_id: currentUserId ?? null,
+        created_by_user_id: creator,
       },
       { transaction: t }
     );
 
-    // Invitados (opcional)
-    if (invitees.length) {
-      const rows = invitees
-        .filter((i) => i?.email || i?.phone)
-        .map((i) => ({
+    /* 3.2 Invitados ------------------------------------------------------- */
+    let firstInviteeId = null;
+    for (const [idx, inv] of invitees.entries()) {
+      const row = await AppointmentInvitee.create(
+        {
           appointment_id: appt.id,
-          name: i.name || null,
-          email: i.email || null,
-          phone: i.phone || null,
+          name: inv.name || null,
+          email: inv.email || null,
+          phone: inv.phone || null,
           response_status: 'needsAction',
-        }));
-      if (rows.length) {
-        await AppointmentInvitee.bulkCreate(rows, { transaction: t });
-      }
+        },
+        { transaction: t }
+      );
+
+      if (idx === 0) firstInviteeId = row.id; // primer invitado = contacto ppal
     }
 
-    return appt;
+    /* 3.3 Si la cita no traía contact_id y creamos invitados,
+            actualizamos con el primero                           */
+    if (!appt.contact_id && firstInviteeId) {
+      await appt.update({ contact_id: firstInviteeId }, { transaction: t });
+    }
+
+    return appt; // ya consistente
   });
 }
 
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ 4. UPDATE                                                             ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function updateAppointment(id, payload) {
   const appt = await Appointment.findByPk(id);
   if (!appt) throw new AppError('Cita no encontrada.', 404);
 
+  /* --- 4.1 Campos permitidos a editar ---------------------------------- */
   const up = {};
-  const fields = [
+  [
     'title',
     'description',
     'status',
@@ -139,51 +163,49 @@ async function updateAppointment(id, payload) {
     'contact_id',
     'location_text',
     'meeting_url',
-  ];
-  fields.forEach((f) => {
+    'booked_tz',
+    'created_by_user_id',
+  ].forEach((f) => {
     if (payload[f] !== undefined) up[f] = payload[f];
   });
 
+  /* --- 4.2 Manejo de start/end ----------------------------------------- */
   let startUtc = appt.start_utc;
   let endUtc = appt.end_utc;
-  const tz = payload.booked_tz || appt.booked_tz || 'America/Guayaquil'; // guardado como referencia
-
   if (payload.start) startUtc = new Date(payload.start);
   if (payload.end) endUtc = new Date(payload.end);
 
-  if (payload.start || payload.end || payload.booked_tz) {
-    if (
-      isNaN(startUtc.getTime()) ||
-      isNaN(endUtc.getTime()) ||
-      endUtc <= startUtc
-    ) {
+  if (payload.start || payload.end) {
+    if (isNaN(startUtc) || isNaN(endUtc) || endUtc <= startUtc) {
       throw new AppError('Rango de fechas inválido.', 400);
     }
     up.start_utc = startUtc;
     up.end_utc = endUtc;
-    up.booked_tz = tz;
   }
 
-  // ❌ Sin validación de membership (ya no usamos calendar_members)
-  // Si quieres, aquí puedes validar que assigned_user_id exista en tu sistema real.
+  /* --- 4.3 Validación de solape ---------------------------------------- */
+  await assertNoOverlap({
+    calendar_id: appt.calendar_id,
+    start_utc: up.start_utc ?? startUtc,
+    end_utc: up.end_utc ?? endUtc,
+    ignoreId: appt.id,
+    // assigned_user_id: up.assigned_user_id ?? appt.assigned_user_id,
+  });
 
-  return await db.transaction(async (t) => {
-    await assertNoOverlap({
-      calendar_id: appt.calendar_id,
-      start_utc: up.start_utc ?? startUtc,
-      end_utc: up.end_utc ?? endUtc,
-      ignoreId: appt.id,
-      // assigned_user_id: up.assigned_user_id ?? appt.assigned_user_id, // (para solape por usuario)
-    });
-
+  /* --- 4.4 Aplicamos cambios (invitados opcionales) -------------------- */
+  return db.transaction(async (t) => {
     await appt.update(up, { transaction: t });
 
-    // (Opcional) actualizar invitados aquí si lo necesitas en el futuro
+    /* (Opcional) si el front manda invitees en edición,
+       aquí podrías sincronzar la tabla AppointmentInvitee */
 
     return appt;
   });
 }
 
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ 5. CANCEL                                                             ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function cancelAppointment(id) {
   const appt = await Appointment.findByPk(id);
   if (!appt) throw new AppError('Cita no encontrada.', 404);
@@ -191,6 +213,9 @@ async function cancelAppointment(id) {
   return appt;
 }
 
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║ EXPORTS                                                               ║
+   ╚═══════════════════════════════════════════════════════════════════════╝ */
 module.exports = {
   listAppointments,
   createAppointment,
