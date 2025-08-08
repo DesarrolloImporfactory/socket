@@ -2034,3 +2034,5 @@
 [2025-08-07T20:02:04.711Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
 [2025-08-07T20:04:28.463Z] info: Field 'id_plataforma' doesn't have a default value
 [2025-08-07T20:04:33.524Z] info: Field 'id_plataforma' doesn't have a default value
+[2025-08-07T21:49:31.905Z] info: Can't find /api/v1/stripe_plan/facturasUsuario on this server! 🧨
+[2025-08-07T21:49:31.992Z] info: Can't find /favicon.ico on this server! 🧨

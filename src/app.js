@@ -69,7 +69,7 @@ const limiter = rateLimit({
 app.use(
   cors({
     origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
   })
 );
 app.use(helmet());
