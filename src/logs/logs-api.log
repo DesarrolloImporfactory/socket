@@ -2036,3 +2036,6 @@
 [2025-08-07T20:04:33.524Z] info: Field 'id_plataforma' doesn't have a default value
 [2025-08-07T21:49:31.905Z] info: Can't find /api/v1/stripe_plan/facturasUsuario on this server! 🧨
 [2025-08-07T21:49:31.992Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-08-08T20:43:56.500Z] info: Error al actualizar asistente logístico
+[2025-08-08T20:44:03.505Z] info: Error al actualizar asistente logístico
+[2025-08-08T20:46:12.582Z] info: Error al actualizar asistente ventas

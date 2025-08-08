@@ -338,6 +338,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     req.body;
 
   try {
+    const productosJSON = JSON.stringify(productos);
     const [existe] = await db.query(
       `SELECT id FROM openai_assistants WHERE id_configuracion = ? AND tipo = "ventas"`,
       {
@@ -352,17 +353,29 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
         `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
-          replacements: [nombre_bot, assistant_id, activo, productos, id_configuracion],
+          replacements: [
+            nombre_bot,
+            assistant_id,
+            activo,
+            productosJSON,
+            id_configuracion,
+          ],
           type: db.QueryTypes.UPDATE,
         }
       );
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo) 
-         VALUES (?, "ventas", ?, ?, ?)`,
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos) 
+         VALUES (?, "ventas", ?, ?, ?, ?)`,
         {
-          replacements: [id_configuracion, nombre_bot, assistant_id, activo],
+          replacements: [
+            id_configuracion,
+            nombre_bot,
+            assistant_id,
+            activo,
+            productosJSON,
+          ],
           type: db.QueryTypes.INSERT,
         }
       );
@@ -370,10 +383,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
 
     res.status(200).json({
       status: '200',
-      message: 'Asistente logístico actualizado correctamente',
+      message: 'Asistente ventas actualizado correctamente',
     });
   } catch (error) {
     console.error(error);
-    return next(new AppError('Error al actualizar asistente logístico', 500));
+    return next(new AppError('Error al actualizar asistente ventas', 500));
   }
 });
