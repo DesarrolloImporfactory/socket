@@ -7,6 +7,7 @@
 const { Op } = require('sequelize');
 const Appointment = require('../models/appointment.model');
 const AppointmentInvitee = require('../models/appointment_invitee.model');
+const Calendar = require('../models/calendar.model');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
@@ -39,6 +40,7 @@ async function assertNoOverlap({
    ╚═══════════════════════════════════════════════════════════════════════╝ */
 async function listAppointments({ calendar_id, start, end, user_ids }) {
   const where = { calendar_id };
+
   if (start && end) {
     // intersección con [start, end]
     where.start_utc = { [Op.lt]: end };
@@ -51,24 +53,74 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
   const rows = await Appointment.findAll({
     where,
     order: [['start_utc', 'ASC']],
+    attributes: [
+      'id',
+      'title',
+      'status',
+      'assigned_user_id',
+      'contact_id',
+      'start_utc',
+      'end_utc',
+      'booked_tz',
+      'location_text',
+      'meeting_url',
+    ],
+    include: [
+      {
+        model: Calendar,
+        as: 'calendar',
+        attributes: ['id', 'name', 'color_hex', 'time_zone'],
+        required: false,
+      },
+      {
+        model: AppointmentInvitee,
+        as: 'invitees',
+        attributes: ['id', 'name', 'email', 'phone', 'response_status'],
+        required: false,
+      },
+    ],
   });
 
-  /* Se devuelven en formato FullCalendar */
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    start: r.start_utc,
-    end: r.end_utc,
-    extendedProps: {
-      status: r.status,
-      assigned_user_id: r.assigned_user_id,
-      contact_id: r.contact_id,
-      booked_tz: r.booked_tz,
-      location_text: r.location_text,
-      meeting_url: r.meeting_url,
-      description: r.description,
-    },
-  }));
+  // Formato FullCalendar + props extra
+  return rows.map((r) => {
+    const invitees =
+      r.invitees?.map((i) => ({
+        id: i.id,
+        name: i.name,
+        email: i.email,
+        phone: i.phone,
+        response_status: i.response_status,
+      })) || [];
+
+    const contact = r.contact_id
+      ? invitees.find((i) => i.id === Number(r.contact_id)) || null
+      : null;
+
+    return {
+      id: r.id,
+      title: r.title,
+      start: r.start_utc, // devuelve Date; si prefieres ISO: r.start_utc.toISOString()
+      end: r.end_utc,
+      extendedProps: {
+        status: r.status,
+        assigned_user_id: r.assigned_user_id,
+        contact_id: r.contact_id,
+        contact, // objeto del invitado que quedó como contacto principal
+        booked_tz: r.booked_tz,
+        location_text: r.location_text,
+        meeting_url: r.meeting_url,
+        calendar: r.calendar
+          ? {
+              id: r.calendar.id,
+              name: r.calendar.name,
+              color_hex: r.calendar.color_hex,
+              time_zone: r.calendar.time_zone,
+            }
+          : null,
+        invitees,
+      },
+    };
+  });
 }
 
 /* ╔═══════════════════════════════════════════════════════════════════════╗
