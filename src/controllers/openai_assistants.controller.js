@@ -349,10 +349,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
-          replacements: [nombre_bot, assistant_id, activo, id_configuracion],
+          replacements: [nombre_bot, assistant_id, activo, productos, id_configuracion],
           type: db.QueryTypes.UPDATE,
         }
       );
