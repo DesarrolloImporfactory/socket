@@ -12,12 +12,12 @@ exports.setSocketIo = (ioInstance) => {
 
 exports.webhook = catchAsync(async (req, res, next) => {
   try {
-    const { id_plataforma, celular_recibe } = req.body;
+    const { id_configuracion, celular_recibe } = req.body;
 
     // Obtener el último mensaje del cliente
     const ultimoMensaje = await MensajesClientes.findOne({
       where: {
-        id_plataforma,
+        id_configuracion,
         celular_recibe,
       },
       include: [
@@ -33,7 +33,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
     // Emitir el mensaje recibido a través del socket
     if (io) {
       io.emit('RECEIVED_MESSAGE', {
-        id_plataforma,
+        id_configuracion,
         celular_recibe,
         ultimoMensaje,
       });
