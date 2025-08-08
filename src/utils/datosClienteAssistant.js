@@ -173,7 +173,7 @@ const informacionProductos = async (productos) => {
         pc.tipo AS tipo,
         pc.precio AS precio_producto,
         pc.imagen_url AS image_path,
-        cc.nombre AS nombre_categoria,
+        cc.nombre AS nombre_categoria
       FROM productos_chat_center pc
       INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
       WHERE pc.id = ?

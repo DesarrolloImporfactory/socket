@@ -2039,3 +2039,5 @@
 [2025-08-08T20:43:56.500Z] info: Error al actualizar asistente logístico
 [2025-08-08T20:44:03.505Z] info: Error al actualizar asistente logístico
 [2025-08-08T20:46:12.582Z] info: Error al actualizar asistente ventas
+[2025-08-08T20:58:34.991Z] info: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'FROM productos_chat_center pc
+      INNER JOIN categorias_chat_center cc ON cc.i' at line 8
