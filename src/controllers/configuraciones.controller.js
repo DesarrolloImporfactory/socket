@@ -55,3 +55,25 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
     data: configuraciones,
   });
 });
+
+exports.listarConfiguraciones = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+
+  const configuraciones = await db.query(
+    'SELECT id, id_plataforma, nombre_configuracion, telefono, webhook_url, metodo_pago, CASE WHEN id_telefono IS NOT NULL AND id_whatsapp IS NOT NULL AND token IS NOT NULL THEN 1 ELSE 0 END AS conectado FROM configuraciones WHERE id = ?',
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+  if (!configuraciones || configuraciones.length === 0) {
+    return next(
+      new AppError('No se encontro configuracion: ' + id_usuario, 400)
+    );
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: configuraciones,
+  });
+});

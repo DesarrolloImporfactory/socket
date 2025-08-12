@@ -20,4 +20,9 @@ router.post(
   configuracionesController.listarConexiones
 );
 
+router.post(
+  '/listar_configuraciones',
+  configuracionesController.listarConfiguraciones
+);
+
 module.exports = router;
