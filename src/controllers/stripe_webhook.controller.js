@@ -142,7 +142,153 @@ exports.stripeWebhook = async (req, res) => {
   }
 
 
+// Guarda el PM cuando se completa un SetupIntent (Checkout setup o Portal)
+if (event.type === 'setup_intent.succeeded') {
+  const si = event.data.object; // SetupIntent
+  try {
+    const pmId = si.payment_method;
+    const customerId = si.customer;
+
+    // Resuelve id_usuario a partir del customer o metadata
+    let id_usuario = si.metadata?.id_usuario;
+    if (!id_usuario && customerId) {
+      const [u] = await db.query(`
+        SELECT id_usuario
+        FROM transacciones_stripe_chat
+        WHERE customer_id = ?
+        ORDER BY fecha DESC
+        LIMIT 1
+      `, { replacements: [customerId] });
+      id_usuario = u?.[0]?.id_usuario;
+    }
+    if (!pmId || !id_usuario) return res.status(200).json({ received: true });
+
+    const [p] = await db.query(
+      `SELECT COALESCE(MAX(priority),0) AS maxp
+       FROM user_payment_methods
+       WHERE id_usuario = ?`,
+      { replacements: [id_usuario] }
+    );
+    const nextPriority = (p?.[0]?.maxp || 0) + 1;
+
+    await db.query(`
+      INSERT INTO user_payment_methods (id_usuario, pm_id, priority, status)
+      VALUES (?, ?, ?, 'active')
+      ON DUPLICATE KEY UPDATE status = VALUES(status)
+    `, { replacements: [id_usuario, pmId, nextPriority] });
+
+    return res.status(200).json({ received: true });
+  } catch (e) {
+    console.error('❌ setup_intent.succeeded handler:', e);
+    return res.status(500).json({ message: 'Error guardando PM' });
+  }
+}
+
+// También captura cuando Stripe adjunta un PM al customer (por Portal/otros flujos)
+if (event.type === 'payment_method.attached') {
+  const pm = event.data.object; // PaymentMethod
+  try {
+    const pmId = pm.id;
+    const customerId = pm.customer;
+
+    const [u] = await db.query(`
+      SELECT id_usuario
+      FROM transacciones_stripe_chat
+      WHERE customer_id = ?
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [customerId] });
+    const id_usuario = u?.[0]?.id_usuario;
+    if (!pmId || !id_usuario) return res.status(200).json({ received: true });
+
+    const [p] = await db.query(
+      `SELECT COALESCE(MAX(priority),0) AS maxp
+       FROM user_payment_methods
+       WHERE id_usuario = ?`,
+      { replacements: [id_usuario] }
+    );
+    const nextPriority = (p?.[0]?.maxp || 0) + 1;
+
+    await db.query(`
+      INSERT INTO user_payment_methods (id_usuario, pm_id, priority, status)
+      VALUES (?, ?, ?, 'active')
+      ON DUPLICATE KEY UPDATE status = 'active'
+    `, { replacements: [id_usuario, pmId, nextPriority] });
+
+    return res.status(200).json({ received: true });
+  } catch (e) {
+    console.error('❌ payment_method.attached handler:', e);
+    return res.status(500).json({ message: 'Error guardando PM (attached)' });
+  }
+}
+/* reintentar con la siguiente tarjeta */
+if (event.type === 'invoice.payment_failed') {
+  const invoice = event.data.object;
+  try {
+    const customerId = invoice.customer;
+    const invoiceId = invoice.id;
+
+    // ¿Qué usuario es?
+    const [u] = await db.query(`
+      SELECT id_usuario
+      FROM transacciones_stripe_chat
+      WHERE customer_id = ?
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [customerId] });
+    const id_usuario = u?.[0]?.id_usuario;
+    if (!id_usuario) return res.status(200).json({ received: true });
+
+    // PM que falló (default del invoice)
+    const failedPm = invoice.default_payment_method || null;
+
+    // Candidatos en orden de prioridad
+    const [pmRows] = await db.query(`
+      SELECT pm_id
+      FROM user_payment_methods
+      WHERE id_usuario = ? AND status = 'active'
+      ORDER BY priority ASC
+    `, { replacements: [id_usuario] });
+
+    const candidates = pmRows
+      .map(r => r.pm_id)
+      .filter(pm => pm && pm !== failedPm);
+
+    for (const nextPm of candidates) {
+      try {
+        // Reintenta el mismo invoice con otra tarjeta del MISMO customer
+        const paid = await stripe.invoices.pay(invoiceId, { payment_method: nextPm });
+
+        // Si cobró, fija default para futuros ciclos y corta el bucle
+        await stripe.customers.update(customerId, {
+          invoice_settings: { default_payment_method: nextPm }
+        });
+        if (invoice.subscription) {
+          await stripe.subscriptions.update(invoice.subscription, {
+            default_payment_method: nextPm
+          });
+        }
+        console.log(`✅ Fallback OK con ${nextPm} en invoice ${invoiceId}`);
+        return res.status(200).json({ received: true });
+      } catch (e) {
+        console.warn(`PM ${nextPm} falló, probando siguiente...`, e?.raw?.message || e.message);
+        continue;
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (e) {
+    console.error('❌ Error en fallback invoice.payment_failed:', e);
+    return res.status(500).json({ message: 'Fallback failed' });
+  }
+}
+
+
+
+
   return res.json({ received: true });
 };
+
+
 
 

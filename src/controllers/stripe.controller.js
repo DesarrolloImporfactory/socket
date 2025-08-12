@@ -2,6 +2,35 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const { db } = require('../database/config');
+
+
+
+// ⚠️ CORREGIDO: sin "active" en list() ni en create()
+async function ensurePortalConfigurationId() {
+  // 1) Usa env si lo definiste
+  if (process.env.STRIPE_PORTAL_CONFIGURATION_ID) {
+    return process.env.STRIPE_PORTAL_CONFIGURATION_ID;
+  }
+
+  // 2) Busca cualquier configuración existente (la primera vale)
+  const existing = await stripe.billingPortal.configurations.list({ limit: 1 });
+  if (existing.data?.length) return existing.data[0].id;
+
+  // 3) Crea una configuración mínima con "Manage payment methods" habilitado
+  const created = await stripe.billingPortal.configurations.create({
+    features: {
+      payment_method_update: { enabled: true },
+      invoice_history: { enabled: true },
+      // agrega más si quieres:
+      // subscription_cancel: { enabled: false },
+      // subscription_update: { enabled: false },
+      // customer_update: { enabled: false },
+    }
+    // business_profile: { privacy_policy_url: '...', terms_of_service_url: '...' } // opcional
+  });
+  return created.id;
+}
+
 /**
  * Lista los planes permitidos de Stripe (filtrados por priceId)
  */
@@ -93,6 +122,7 @@ exports.crearSesionPago = async (req, res) => {
       cancel_url,
       allow_promotion_codes: true,
       subscription_data: {
+        
         metadata: {
           id_usuario: userId.toString(),
           id_plan: id_plan.toString(),
@@ -254,5 +284,161 @@ exports.cancelarSuscripcion = async (req, res) => {
   }
 };
 
+
+// stripe.controller.js
+exports.crearSesionSetupPM = async (req, res) => {
+  try {
+    const { id_usuario } = req.body;
+    if (!id_usuario) return res.status(400).json({ message: 'Falta id_usuario' });
+
+    // 1) Resuelve el customer de Stripe del usuario (último que tengas en tu tabla)
+    const [rows] = await db.query(`
+      SELECT customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+        AND customer_id IS NOT NULL
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [id_usuario] });
+
+    let customerId = rows?.[0]?.customer_id;
+
+    // Si aún no tuviera customer, créalo
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        metadata: { id_usuario: String(id_usuario) }
+      });
+      customerId = customer.id;
+
+      // Guarda una fila mínima para poder referenciarlo después
+      await db.query(`
+        INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+        VALUES (?, ?, NOW())
+      `, { replacements: [id_usuario, customerId] });
+    }
+
+    // 2) Crea la sesión de Checkout en modo setup (tarjeta para uso futuro/off_session)
+    const baseUrl = req.headers.origin || req.headers.referer?.split('/').slice(0, 3).join('/') || 'https://tusitio.com';
+    const session = await stripe.checkout.sessions.create({
+      mode: 'setup',
+      payment_method_types: ['card'],
+      customer: customerId,
+      success_url: `${baseUrl}/miplan?setup=ok`,
+      cancel_url: `${baseUrl}/miplan?setup=cancel`,
+      setup_intent_data: {
+        usage: 'off_session', // importante para cobros automáticos
+        metadata: { id_usuario: String(id_usuario) }
+      }
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (err) {
+    console.error('Error crearSesionSetupPM:', err);
+    return res.status(500).json({ message: 'No se pudo crear la sesión de setup' });
+  }
+};
+
+
+/* Guardar metodo de pago */
+exports.portalAddPaymentMethod = async (req, res) => {
+  try {
+    const { id_usuario, id_users } = req.body;
+    const userId = id_usuario || id_users;
+    if (!userId) return res.status(400).json({ message: 'Falta id_usuario' });
+
+    const baseUrl =
+      req.headers.origin ||
+      req.headers.referer?.split('/').slice(0, 3).join('/') ||
+      'http://localhost:5173'; // tu front en dev; en prod puedes omitir este fallback
+
+    // 1) Resolver customer
+    const [rows] = await db.query(`
+      SELECT customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+        AND customer_id IS NOT NULL
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [userId] });
+
+    const customerId = rows?.[0]?.customer_id;
+    if (!customerId) return res.status(404).json({ message: 'No hay customer para este usuario' });
+
+    // 2) Asegura una configuración del portal (test o live según tu secret key)
+    const configurationId = await ensurePortalConfigurationId();
+
+    // 3) Crea la sesión del portal directamente en el flujo de “agregar/actualizar método”
+    let session;
+    try {
+      session = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        configuration: configurationId,     // <- clave
+        return_url: `${baseUrl}/miplan`,
+        flow_data: {
+          type: 'payment_method_update',
+          after_completion: {
+            type: 'redirect',
+            redirect: { return_url: `${baseUrl}/miplan?pm_saved=1` }
+          }
+        }
+      });
+    } catch (e) {
+      // Si tu cuenta/API no soporta flow_data, cae al portal “genérico”
+      console.warn('Portal flow_data no disponible. Fallback al portal básico:', e?.raw?.message || e.message);
+      session = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        configuration: configurationId,
+        return_url: `${baseUrl}/miplan`
+      });
+    }
+
+    return res.json({ url: session.url });
+  } catch (error) {
+    console.error('Stripe error (portalAddPaymentMethod):', error);
+    return res.status(500).json({
+      status: 'fail',
+      message: error?.raw?.message || error.message || 'No se pudo crear la sesión del portal'
+    });
+  }
+};
+
+/* mostrar metodos de pago */
+exports.portalGestionMetodos = async (req, res) => {
+  try {
+    const { id_usuario, id_users } = req.body;
+    const userId = id_usuario || id_users;
+    if (!userId) return res.status(400).json({ message: 'Falta id_usuario' });
+
+    const baseUrl =
+      req.headers.origin ||
+      req.headers.referer?.split('/').slice(0, 3).join('/') ||
+      'http://localhost:5173';
+
+    const [rows] = await db.query(`
+      SELECT customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+        AND customer_id IS NOT NULL
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [userId] });
+    const customerId = rows?.[0]?.customer_id;
+    if (!customerId) return res.status(404).json({ message: 'No hay customer' });
+
+    // Usa la misma ensurePortalConfigurationId() que ya hicimos antes
+    const configurationId = await ensurePortalConfigurationId();
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      configuration: configurationId,
+      return_url: `${baseUrl}/miplan`
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('portalGestionMetodos:', e);
+    res.status(500).json({ message: e?.raw?.message || e.message });
+  }
+};
 
 
