@@ -64,6 +64,7 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
       'booked_tz',
       'location_text',
       'meeting_url',
+      'created_at',
     ],
     include: [
       {
@@ -101,6 +102,7 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
       title: r.title,
       start: r.start_utc, // devuelve Date; si prefieres ISO: r.start_utc.toISOString()
       end: r.end_utc,
+      created_at: r.created_at,
       extendedProps: {
         status: r.status,
         assigned_user_id: r.assigned_user_id,
