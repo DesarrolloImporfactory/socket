@@ -318,7 +318,7 @@ exports.crearSesionSetupPM = async (req, res) => {
     }
 
     // 2) Crea la sesión de Checkout en modo setup (tarjeta para uso futuro/off_session)
-    const baseUrl = req.headers.origin || req.headers.referer?.split('/').slice(0, 3).join('/') || 'https://tusitio.com';
+    const baseUrl = req.headers.origin || req.headers.referer?.split('/').slice(0, 3).join('/');
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
       payment_method_types: ['card'],
@@ -348,8 +348,7 @@ exports.portalAddPaymentMethod = async (req, res) => {
 
     const baseUrl =
       req.headers.origin ||
-      req.headers.referer?.split('/').slice(0, 3).join('/') ||
-      'http://localhost:5173'; // tu front en dev; en prod puedes omitir este fallback
+      req.headers.referer?.split('/').slice(0, 3).join('/'); // tu front en dev; en prod puedes omitir este fallback
 
     // 1) Resolver customer
     const [rows] = await db.query(`
@@ -411,8 +410,7 @@ exports.portalGestionMetodos = async (req, res) => {
 
     const baseUrl =
       req.headers.origin ||
-      req.headers.referer?.split('/').slice(0, 3).join('/') ||
-      'http://localhost:5173';
+      req.headers.referer?.split('/').slice(0, 3).join('/');
 
     const [rows] = await db.query(`
       SELECT customer_id
