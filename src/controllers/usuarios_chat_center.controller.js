@@ -215,6 +215,10 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
     if (!sub_usuarios_chat_center) {
       const crear_usuario = await Usuarios_chat_center.create({
         nombre: nombre_configuracion,
+        id_plan: 2,
+        fecha_inicio:"2025-08-13",
+        fecha_renovacion: "2025-09-13",
+        estado: "activo",
       });
 
       const crear_sub_usuario = await Sub_usuarios_chat_center.create({
