@@ -246,13 +246,103 @@ async function updateAppointment(id, payload) {
     // assigned_user_id: up.assigned_user_id ?? appt.assigned_user_id,
   });
 
-  /* --- 4.4 Aplicamos cambios (invitados opcionales) -------------------- */
+  /* --- 4.4 Aplicamos cambios (invitados) -------------------- */
   return db.transaction(async (t) => {
     await appt.update(up, { transaction: t });
 
-    /* (Opcional) si el front manda invitees en edición,
-       aquí podrías sincronzar la tabla AppointmentInvitee */
+    if (Array.isArray(payload.invitees)) {
+      const norm = (s) => (s ?? '').toString().trim();
+      const normEmail = (s) => norm(s).toLowerCase();
+      const normPhone = (s) => norm(s).replace(/\D+/g, '');
 
+      //Traer actuales
+      const current = await AppointmentInvitee.findAll({
+        where: { appointment_id: appt.id },
+        transaction: t,
+      });
+
+      //Índices de busqueda rapida
+      const byId = new Map(current.map((i) => [i.id, i]));
+      const byEmail = new Map();
+      const byPhone = new Map();
+      for (const i of current) {
+        if (i.email) byEmail.set(i.email.toLowerCase(), i);
+        if (i.phone) byPhone.set(i.phone.replace(/\D+/g, ''), i);
+      }
+
+      // 2) Normalizar carga entrante y upsert
+      const keptIds = new Set();
+      for (const inv of payload.invitees) {
+        const data = {
+          name: norm(inv.name) || null,
+          email: normEmail(inv.email) || null,
+          phone: normPhone(inv.phone) || null,
+        };
+        const rs = inv.response_status;
+        const validRS = ['needsAction', 'accepted', 'declined', 'tentative'];
+        if (rs && validRS.includes(rs)) data.response_status = rs;
+
+        let row = null;
+
+        // Emparejar por prioridad: id → email → phone
+        if (inv.id && byId.has(Number(inv.id))) {
+          row = byId.get(Number(inv.id));
+        } else if (data.email && byEmail.has(data.email)) {
+          row = byEmail.get(data.email);
+        } else if (data.phone && byPhone.has(data.phone)) {
+          row = byPhone.get(data.phone);
+        }
+
+        if (row) {
+          // Si no envía response_status, conserve el existente
+          if (!('response_status' in data))
+            data.response_status = row.response_status;
+          await row.update(data, { transaction: t });
+          keptIds.add(row.id);
+        } else {
+          const created = await AppointmentInvitee.create(
+            {
+              appointment_id: appt.id,
+              response_status: 'needsAction',
+              ...data,
+            },
+            { transaction: t }
+          );
+          keptIds.add(created.id);
+        }
+      }
+
+      // 3) Borrar los que ya no vienen
+      const toDelete = current.filter((i) => !keptIds.has(i.id));
+      if (toDelete.length) {
+        await AppointmentInvitee.destroy({
+          where: { id: toDelete.map((i) => i.id) },
+          transaction: t,
+        });
+      }
+
+      // 4) Mantener contact_id coherente
+      let nextContactId = up.contact_id ?? appt.contact_id ?? null;
+      if (nextContactId && !keptIds.has(Number(nextContactId))) {
+        // Si el contact_id existente quedó eliminado, use el primer invitado vigente (si hay)
+        nextContactId = keptIds.size ? [...keptIds][0] : null;
+      }
+      if (up.contact_id !== undefined || nextContactId !== appt.contact_id) {
+        await appt.update({ contact_id: nextContactId }, { transaction: t });
+      }
+    }
+
+    // Opcional: devolver con invitados ya incluidos
+    await appt.reload({
+      include: [
+        {
+          model: AppointmentInvitee,
+          as: 'invitees',
+          attributes: ['id', 'name', 'email', 'phone', 'response_status'],
+        },
+      ],
+      transaction: t,
+    });
     return appt;
   });
 }
@@ -263,7 +353,7 @@ async function updateAppointment(id, payload) {
 async function cancelAppointment(id) {
   const appt = await Appointment.findByPk(id);
   if (!appt) throw new AppError('Cita no encontrada.', 404);
-  await appt.update({ status: 'cancelled' });
+  await appt.update({ status: 'Cancelado' });
   return appt;
 }
 
