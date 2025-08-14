@@ -2058,4 +2058,14 @@
 [2025-08-13T17:47:06.425Z] info: No se encontraron ambos asistentes (logistico y ventas)
 [2025-08-13T18:54:35.685Z] info: No se encontraron ambos asistentes (logistico y ventas)
 [2025-08-13T20:30:21.246Z] info: No se encontraron ambos asistentes (logistico y ventas)
+<<<<<<< HEAD
 [2025-08-14T16:42:00.700Z] info: Can't find /favicon.ico on this server! 🧨
+=======
+[2025-08-14T14:05:28.270Z] info: Can't find /api/v1/stripe_plan/obtenerFacturasUsuario on this server! 🧨
+[2025-08-14T14:05:32.607Z] info: Can't find /api/v1/stripe_plan/obtenerFacturasUsuario on this server! 🧨
+[2025-08-14T14:42:51.557Z] info: Can't find /api/v1/stripe_plan/facturasUsuario on this server! 🧨
+[2025-08-14T14:42:51.693Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-08-14T15:22:37.592Z] info: Can't find /api/v1/stripe_plan/facturasUsuario on this server! 🧨
+[2025-08-14T15:22:37.697Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-08-14T15:22:41.667Z] info: Can't find /api/v1/stripe_plan/facturasUsuario on this server! 🧨
+>>>>>>> 7cdc8e0dfd27303c4d872946b3bcaf10c857e624

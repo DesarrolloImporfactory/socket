@@ -2,7 +2,8 @@ const express = require('express');
 const { google } = require('googleapis');
 const { makeState, readState } = require('../utils/googleState');
 const { db } = require('../database/config');
-const { protect } = require('../middlewares/auth.middleware'); // tu middleware
+const { protect } = require('../middlewares/auth.middleware');
+
 const router = express.Router();
 
 const SCOPES = [
@@ -12,23 +13,14 @@ const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
 ];
 
-/**
- * Elige el redirect según el entorno:
- * - Si NODE_ENV === 'production' -> usa GOOGLE_REDIRECT_URI (prod)
- * - Si NO es production          -> usa GOOGLE_REDIRECT_URI_DEV (si existe) o cae a GOOGLE_REDIRECT_URI
- */
+/** Redirect según entorno */
 function getRedirectUri() {
-  const isProd = process.env.NODE_ENV === 'production'; // (1)
-  if (isProd) return process.env.GOOGLE_REDIRECT_URI; // (2)
-  return (
-    process.env.GOOGLE_REDIRECT_URI_DEV || // (3)
-    process.env.GOOGLE_REDIRECT_URI
-  ); // (4)
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd) return process.env.GOOGLE_REDIRECT_URI;
+  return process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
 }
 
-/**
- * Crea un cliente OAuth2 usando la URI elegida por getRedirectUri()
- */
+/** Cliente OAuth2 */
 function oauth2(redirectUri = getRedirectUri()) {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -38,20 +30,88 @@ function oauth2(redirectUri = getRedirectUri()) {
 }
 
 /**
- * GET /api/v1/google/auth
- * Inicia el flujo OAuth. Requiere usuario autenticado (protect).
- * Usa `state` para llevar el id_sub_usuario de forma segura.
+ * Obtiene el id_usuario (dueño) a partir del id_sub_usuario.
+ */
+async function getOwnerUserIdBySub(uid) {
+  const row = await db.query(
+    `SELECT id_usuario FROM sub_usuarios_chat_center WHERE id_sub_usuario = ? LIMIT 1`,
+    { replacements: [uid], type: db.QueryTypes.SELECT }
+  );
+  return row?.[0]?.id_usuario ? Number(row[0].id_usuario) : null;
+}
+
+/**
+ * Valida y resuelve el calendar_id de SU tabla `calendars` para el sub-usuario:
+ * 1) Si viene requestedCalendarId, verifica que pertenezca al mismo id_usuario (created_by).
+ * 2) Si no es válido o no viene, toma el calendario más reciente creado por ese id_usuario.
+ * Devuelve null si no encuentra ninguno (en la práctica el front ya hizo /calendars/ensure).
+ */
+async function resolveCalendarId(uid, requestedCalendarId) {
+  const ownerUserId = await getOwnerUserIdBySub(uid);
+  if (!ownerUserId) return null;
+
+  // 1) Validar el solicitado contra created_by = id_usuario
+  if (requestedCalendarId) {
+    const ok = await db.query(
+      `SELECT id FROM calendars WHERE id = ? AND created_by = ? LIMIT 1`,
+      {
+        replacements: [requestedCalendarId, ownerUserId],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+    if (ok?.[0]?.id) return Number(ok[0].id);
+  }
+
+  // 2) Tomar el más reciente del mismo owner
+  const last = await db.query(
+    `SELECT id FROM calendars WHERE created_by = ? ORDER BY id DESC LIMIT 1`,
+    { replacements: [ownerUserId], type: db.QueryTypes.SELECT }
+  );
+  return last?.[0]?.id ? Number(last[0].id) : null;
+}
+
+/**
+ * GET /api/v1/google/auth-url
+ * Devuelve la URL de autorización de Google. Usa `state` con { uid, calendarId }.
+ * Se espera query param opcional: ?calendar_id=10
+ */
+router.get('/google/auth-url', protect, (req, res) => {
+  const uid = Number(req.sessionUser?.id_sub_usuario);
+  if (!uid) return res.status(401).json({ message: 'No autorizado' });
+
+  const calendarId = req.query.calendar_id
+    ? Number(req.query.calendar_id)
+    : null;
+
+  const client = oauth2(getRedirectUri());
+  const url = client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: SCOPES,
+    state: makeState({ uid, calendarId, redirectAfter: '/panel' }),
+  });
+
+  return res.json({ url });
+});
+
+/**
+ * (Opcional) GET /api/v1/google/auth
+ * Variante que redirige directo (si no usa popup). Acepta ?calendar_id=10
  */
 router.get('/google/auth', protect, (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
   if (!uid) return res.status(401).send('Usuario no autenticado');
 
-  const client = oauth2(getRedirectUri()); // (5)
+  const calendarId = req.query.calendar_id
+    ? Number(req.query.calendar_id)
+    : null;
+
+  const client = oauth2(getRedirectUri());
   const url = client.generateAuthUrl({
-    access_type: 'offline', // (6) refresh_token
-    prompt: 'consent', // (7) garantiza refresh la 1ª vez
+    access_type: 'offline',
+    prompt: 'consent',
     scope: SCOPES,
-    state: makeState(uid, '/panel'), // (8) lleva tu uid
+    state: makeState({ uid, calendarId, redirectAfter: '/panel' }),
   });
 
   return res.redirect(url);
@@ -59,27 +119,24 @@ router.get('/google/auth', protect, (req, res) => {
 
 /**
  * GET /api/v1/google/oauth2/callback
- * Recibe ?code y ?state, intercambia por tokens y los guarda por usuario.
- * No usa protect (no viene tu token); valida el `state`.
+ * Intercambia tokens y guarda en users_google_accounts con el calendar_id correcto.
  */
 router.get('/google/oauth2/callback', async (req, res) => {
   try {
     const { code, state } = req.query;
-    const { uid } = readState(state);
+    const { uid, calendarId: stateCalendarId } = readState(state);
 
     const client = oauth2(getRedirectUri());
     const { tokens } = await client.getToken(code);
     client.setCredentials(tokens);
 
-    // 1) Intento principal: endpoint userinfo
+    // Obtener email (userinfo), fallback al id_token
     let googleEmail = null;
     try {
       const oauth2api = google.oauth2({ version: 'v2', auth: client });
       const me = await oauth2api.userinfo.get();
       googleEmail = me?.data?.email || null;
-    } catch (_) {}
-
-    // 2) Fallback: decodificar id_token si vino (por 'openid')
+    } catch {}
     if (!googleEmail && tokens.id_token) {
       try {
         const payload = JSON.parse(
@@ -89,23 +146,31 @@ router.get('/google/oauth2/callback', async (req, res) => {
       } catch {}
     }
 
-    // 3) Guarda en DB (aunque no haya email, pero suele venir)
+    // CalendarId efectivo (validado por created_by = id_usuario)
+    const effectiveCalendarId = await resolveCalendarId(
+      Number(uid),
+      Number(stateCalendarId) || null
+    );
+
+    // Guardar/actualizar cuenta vinculada
     await db.query(
       `INSERT INTO users_google_accounts
-        (id_sub_usuario, google_email, access_token, refresh_token, expiry_date, calendar_id)
-       VALUES (?, ?, ?, ?, ?, 'primary')
+         (id_sub_usuario, google_email, access_token, refresh_token, expiry_date, calendar_id)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          google_email = VALUES(google_email),
          access_token = VALUES(access_token),
          refresh_token = IFNULL(VALUES(refresh_token), refresh_token),
-         expiry_date  = VALUES(expiry_date)`,
+         expiry_date  = VALUES(expiry_date),
+         calendar_id  = IFNULL(VALUES(calendar_id), calendar_id)`,
       {
         replacements: [
-          uid,
+          Number(uid),
           googleEmail || '',
           tokens.access_token || null,
           tokens.refresh_token || null,
           tokens.expiry_date || null,
+          effectiveCalendarId, // << aquí va el ID real de su tabla calendars
         ],
         type: db.QueryTypes.INSERT,
       }
@@ -122,7 +187,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
 
 /**
  * GET /api/v1/google/status
- * Para que tu UI sepa si está vinculado y con qué correo.
+ * Para que la UI sepa si está vinculado y con qué correo.
  */
 router.get('/google/status', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
@@ -136,34 +201,18 @@ router.get('/google/status', protect, async (req, res) => {
 
 /**
  * POST /api/v1/google/unlink
- * Desvincula (elimina tokens). Opcional: también podrías desactivar watch.
+ * Desvincula (elimina tokens).
  */
 router.post('/google/unlink', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
   await db.query(
     `UPDATE users_google_accounts
-     SET is_active = 0, revoked_at = NOW(),
-         access_token = NULL, refresh_token = NULL, expiry_date = NULL
-     WHERE id_sub_usuario = ?`,
+        SET is_active = 0, revoked_at = NOW(),
+            access_token = NULL, refresh_token = NULL, expiry_date = NULL
+      WHERE id_sub_usuario = ?`,
     { replacements: [uid], type: db.QueryTypes.UPDATE }
   );
   return res.json({ status: 'success' });
-});
-
-// GET /api/v1/google/auth-url  -> devuelve { url } (usa protect con Bearer)
-router.get('/google/auth-url', protect, (req, res) => {
-  const uid = Number(req.sessionUser?.id_sub_usuario);
-  if (!uid) return res.status(401).json({ message: 'No autorizado' });
-
-  const client = oauth2(getRedirectUri());
-  const url = client.generateAuthUrl({
-    access_type: 'offline',
-    prompt: 'consent',
-    scope: SCOPES,
-    state: makeState(uid, '/panel'),
-  });
-
-  return res.json({ url });
 });
 
 module.exports = router;

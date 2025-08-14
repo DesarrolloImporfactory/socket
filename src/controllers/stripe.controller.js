@@ -191,48 +191,64 @@ exports.obtenerSuscripcionActiva = async (req, res) => {
 
 
 /* ver factura stripe */
+// controllers/stripe.controller.js
 exports.obtenerFacturasUsuario = async (req, res) => {
   try {
     const id_usuario = req.user?.id || req.body.id_usuario;
-
     if (!id_usuario) {
       return res.status(400).json({ status: 'fail', message: 'Falta el id_usuario' });
     }
 
-    const [results] = await db.query(`
-      SELECT DISTINCT customer_id 
-      FROM transacciones_stripe_chat 
-      WHERE 
-        id_usuario = ?
+    // Trae los últimos customers usados por el usuario (más recientes primero)
+    const [rows] = await db.query(`
+      SELECT DISTINCT customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
         AND customer_id IS NOT NULL
-        AND id_pago IS NOT NULL
-        AND estado_suscripcion IS NOT NULL
+      ORDER BY fecha DESC
     `, { replacements: [id_usuario] });
 
-    const customerIds = results?.map(r => r.customer_id).filter(Boolean);
-
-    if (!customerIds || customerIds.length === 0) {
-      return res.status(404).json({ status: 'fail', message: 'No se encontraron clientes válidos para este usuario' });
+    const customerIds = [...new Set((rows || []).map(r => r.customer_id).filter(Boolean))];
+    if (customerIds.length === 0) {
+      // No rompas el front: devuelve lista vacía con 200
+      return res.status(200).json({ status: 'success', data: [] });
     }
 
     const allInvoices = [];
 
     for (const customerId of customerIds) {
-      const invoices = await stripe.invoices.list({
-        customer: customerId,
-        limit: 100,
-      });
+      try {
+        // (Opcional) valida que el customer exista en el modo actual
+        await stripe.customers.retrieve(customerId);
 
-      allInvoices.push(...invoices.data);
+        const invoices = await stripe.invoices.list({
+          customer: customerId,
+          limit: 100,
+          // status: 'paid', // si solo quieres pagadas
+        });
+        allInvoices.push(...invoices.data);
+      } catch (e) {
+        // Si el customer no existe en este modo (o fue borrado), lo saltamos
+        const code = e?.raw?.code || e?.code;
+        const msg = e?.raw?.message || e?.message;
+        if (code === 'resource_missing' || /No such customer/i.test(msg)) {
+          console.warn(`[facturasUsuario] customer inválido u obsoleto: ${customerId} -> ${msg}`);
+          continue;
+        }
+        // Otros errores sí deben propagarse
+        throw e;
+      }
     }
 
-    // Ordenamos por fecha descendente
+    // Ordena por fecha DESC y responde OK (aunque sea vacío)
     allInvoices.sort((a, b) => b.created - a.created);
-
-    res.status(200).json({ status: 'success', data: allInvoices });
+    return res.status(200).json({ status: 'success', data: allInvoices });
   } catch (error) {
-    console.error("❌ Error al obtener facturas:", error);
-    res.status(500).json({ status: 'fail', message: 'Error al obtener facturas' });
+    console.error("❌ Error al obtener facturas:", error?.raw?.message || error.message);
+    return res.status(500).json({
+      status: 'fail',
+      message: error?.raw?.message || 'Error al obtener facturas'
+    });
   }
 };
 
