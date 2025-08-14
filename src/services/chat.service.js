@@ -53,10 +53,6 @@ class ChatService {
           .join(', ')}), '$')`;
       }
 
-      /* if (filtros.selectedEstado && filtros.selectedEstado.value) {
-        whereClause += ` AND estado_factura = :selectedEstado`;
-      } */
-
       if (
         filtros.selectedTransportadora &&
         filtros.selectedTransportadora.value
@@ -115,7 +111,7 @@ class ChatService {
         };
 
         const estadosPermitidos =
-          estadoTransportadoraMap[filtros.selectedTransportadora.value][
+          estadoTransportadoraMap[filtros.selectedTransportadora.value]?.[
             filtros.selectedEstado.value
           ];
 
@@ -124,11 +120,10 @@ class ChatService {
             ', '
           )})`;
         } else if (typeof estadosPermitidos === 'function') {
-          // Funciones como las de SERVIENTREGA devuelven true/false, así que hay que reescribir manualmente
           const estado = filtros.selectedEstado.value;
           let condicionFuncion = '';
 
-          if (transportadora === 'SERVIENTREGA') {
+          if (filtros.selectedTransportadora.value === 'SERVIENTREGA') {
             switch (estado) {
               case 'Generada':
                 condicionFuncion = `estado_factura IN (100, 102, 103)`;
@@ -154,13 +149,9 @@ class ChatService {
         }
       }
 
-      // Filtro de paginación por cursores
       if (cursorFecha && cursorId) {
         whereClause += ` AND (mensaje_created_at < :cursorFecha OR (mensaje_created_at = :cursorFecha AND id < :cursorId))`;
       }
-
-      console.log('cursorFecha: ' + cursorFecha);
-      console.log('cursorId: ' + cursorId);
 
       const sqlQuery = `
       SELECT * FROM chats_materializada_desco
@@ -169,25 +160,49 @@ class ChatService {
       LIMIT :limit;
     `;
 
-      console.log('Consulta SQL completa:', sqlQuery);
+      if (cursorFecha) {
+        const fechaUtc = new Date(cursorFecha);
+        fechaUtc.setHours(fechaUtc.getHours() - 5); // Ajustar según zona horaria del servidor
+        cursorFecha = fechaUtc.toISOString().slice(0, 19).replace('T', ' ');
+        console.log('Cursor ajustado (fecha local):', cursorFecha);
+      }
 
+      // Armar los replacements
+      const replacements = {
+        id_configuracion,
+        numero,
+        searchTerm: filtros.searchTerm
+          ? `%${filtros.searchTerm.toLowerCase()}%`
+          : null,
+        selectedEstado: filtros.selectedEstado
+          ? filtros.selectedEstado.value
+          : null,
+        selectedTransportadora: filtros.selectedTransportadora
+          ? filtros.selectedTransportadora.value
+          : null,
+        cursorFecha,
+        cursorId,
+        limit,
+      };
+
+      // Construir e imprimir la SQL final con valores reales (solo para debug)
+      let sqlFinal = sqlQuery;
+      Object.keys(replacements).forEach((key) => {
+        const value = replacements[key];
+        const replacedValue =
+          typeof value === 'string'
+            ? `'${value}'`
+            : value === null
+            ? 'NULL'
+            : value;
+        sqlFinal = sqlFinal.replace(new RegExp(`:${key}`, 'g'), replacedValue);
+      });
+
+      console.log('🚀 SQL Final ejecutada:\n', sqlFinal);
+
+      // Ejecutar la query
       const chats = await db.query(sqlQuery, {
-        replacements: {
-          id_configuracion,
-          numero,
-          searchTerm: filtros.searchTerm
-            ? `%${filtros.searchTerm.toLowerCase()}%`
-            : null,
-          selectedEstado: filtros.selectedEstado
-            ? filtros.selectedEstado.value
-            : null,
-          selectedTransportadora: filtros.selectedTransportadora
-            ? filtros.selectedTransportadora.value
-            : null,
-          cursorFecha,
-          cursorId,
-          limit,
-        },
+        replacements,
         type: Sequelize.QueryTypes.SELECT,
       });
 
