@@ -13,8 +13,9 @@ exports.listarCategorias = catchAsync(async (req, res, next) => {
   });
 
   if (!categorias_chat_center || categorias_chat_center.length === 0) {
-    return res.status(400).json({
-      status: 'fail',
+    return res.status(200).json({
+      status: 'success',
+      data: [],
       message: 'No existen categorías para esta configuración.',
     });
   }
