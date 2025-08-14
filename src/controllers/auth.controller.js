@@ -222,35 +222,43 @@ exports.newLogin = async (req, res) => {
     }
 
     /* usuario */
-    const [usuario] = await db.query(
-      `SELECT u.id_users, u.nombre_users, u.usuario_users, u.email_users FROM users u
-      INNER JOIN usuario_plataforma up ON u.id_users = up.id_usuario
-      INNER JOIN plataformas p ON p.id_plataforma = up.id_plataforma
-       WHERE p.id_plataforma = ?
-       LIMIT 1`,
-      {
-        replacements: [tienda],
-        type: db.QueryTypes.SELECT,
-      }
-    );
+    // Buscar configuración para obtener el id_usuario (dueño de la tienda)
+    const configuracion = await Configuraciones.findOne({
+      where: { id_plataforma: tienda },
+    });
 
-    if (!usuario) {
-      return res
-        .status(404)
-        .json({ message: 'Usuario no encontrado en tienda' });
+    if (!configuracion || !configuracion.id_usuario) {
+      return res.status(404).json({
+        message: 'Configuración no encontrada para esta tienda',
+      });
     }
 
-    const sessionToken = await generarToken(usuario.id_users);
+    // Buscar subusuario administrador asociado al id_usuario
+    const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
+      where: {
+        id_usuario: configuracion.id_usuario,
+        rol: 'administrador', // Asegúrate de que este valor exista así en tu BD
+      },
+    });
 
+    if (!usuarioEncontrado) {
+      return res.status(404).json({
+        message: 'Usuario administrador no encontrado para esta tienda',
+      });
+    }
+
+    // Generar token de sesión
+    const sessionToken = await generarToken(usuarioEncontrado.id_sub_usuario);
+
+    // Eliminar campos sensibles
+    const usuarioPlano = usuarioEncontrado.toJSON();
+    const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+    // Respuesta
     res.status(200).json({
       status: 'success',
       token: sessionToken,
-      user: {
-        id: usuario.id_users,
-        nombre: usuario.nombre_users,
-        usuario: usuario.usuario_users,
-        email: usuario.email_users,
-      },
+      user: usuarioSinPassword,
     });
   } catch (err) {
     return res
