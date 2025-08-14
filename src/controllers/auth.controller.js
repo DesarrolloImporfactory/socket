@@ -259,6 +259,8 @@ exports.newLogin = async (req, res) => {
       status: 'success',
       token: sessionToken,
       user: usuarioSinPassword,
+      id_plataforma: tienda,
+      id_configuracion: configuracion.id
     });
   } catch (err) {
     return res
