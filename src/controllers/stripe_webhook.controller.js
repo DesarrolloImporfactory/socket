@@ -49,7 +49,7 @@ exports.stripeWebhook = async (req, res) => {
 
     try {
       const lineItem = invoice.lines?.data?.[0];
-      const subscriptionId = lineItem?.parent?.subscription_item_details?.subscription;
+      const subscriptionId = invoice.subscription;
       const metadata = lineItem?.metadata || {};
       const customerId = invoice.customer;
 
