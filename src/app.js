@@ -55,6 +55,8 @@ const appointmentsRouter = require('./routes/appointments.routes');
 
 const debugRouter = require('./routes/debug.routes');
 
+const googleAuthRoutes = require('./routes/google_auth.routes');
+
 const path = require('path');
 
 const app = express();
@@ -137,6 +139,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/debug', debugRouter);
+app.use('/api/v1', googleAuthRoutes);
 
 app.all('*', (req, res, next) => {
   return next(
