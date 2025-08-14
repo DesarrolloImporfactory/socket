@@ -133,7 +133,7 @@ app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/debug', debugRouter);
