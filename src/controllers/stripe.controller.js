@@ -206,7 +206,6 @@ exports.obtenerFacturasUsuario = async (req, res) => {
       WHERE id_usuario = ?
         AND customer_id IS NOT NULL
       ORDER BY fecha DESC
-      LIMIT 5
     `, { replacements: [id_usuario] });
 
     const customerIds = [...new Set((rows || []).map(r => r.customer_id).filter(Boolean))];
