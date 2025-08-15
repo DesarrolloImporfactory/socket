@@ -155,22 +155,23 @@ router.get('/google/oauth2/callback', async (req, res) => {
     // Guardar/actualizar cuenta vinculada
     await db.query(
       `INSERT INTO users_google_accounts
-         (id_sub_usuario, google_email, access_token, refresh_token, expiry_date, calendar_id)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         google_email = VALUES(google_email),
-         access_token = VALUES(access_token),
-         refresh_token = IFNULL(VALUES(refresh_token), refresh_token),
-         expiry_date  = VALUES(expiry_date),
-         calendar_id  = IFNULL(VALUES(calendar_id), calendar_id)`,
+        (id_sub_usuario, calendar_id, google_email, access_token, refresh_token, expiry_date, is_active, revoked_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, NULL)
+      ON DUPLICATE KEY UPDATE
+      google_email = VALUES(google_email),
+      access_token = VALUES(access_token),
+      refresh_token = IFNULL(VALUES(refresh_token), refresh_token),
+      expiry_date  = VALUES(expiry_date),
+      is_active    = 1,
+      revoked_at   = NULL`,
       {
         replacements: [
           Number(uid),
+          effectiveCalendarId, // <-- calendario de TU tabla
           googleEmail || '',
           tokens.access_token || null,
           tokens.refresh_token || null,
-          tokens.expiry_date || null,
-          effectiveCalendarId, // << aquí va el ID real de su tabla calendars
+          tokens.expiry_date || null, // si quieres: fallback usando tokens.expires_in
         ],
         type: db.QueryTypes.INSERT,
       }
@@ -191,12 +192,21 @@ router.get('/google/oauth2/callback', async (req, res) => {
  */
 router.get('/google/status', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
+  const calId = Number(req.query.calendar_id);
+  if (!uid || !calId)
+    return res.status(400).json({ linked: false, google_email: null });
+
   const rows = await db.query(
-    `SELECT google_email FROM users_google_accounts WHERE id_sub_usuario = ? LIMIT 1`,
-    { replacements: [uid], type: db.QueryTypes.SELECT }
+    `SELECT google_email, access_token, refresh_token, expiry_date, is_active
+       FROM users_google_accounts
+      WHERE id_sub_usuario = ? AND calendar_id = ? AND is_active = 1
+      LIMIT 1`,
+    { replacements: [uid, calId], type: db.QueryTypes.SELECT }
   );
-  const linked = !!rows.length;
-  return res.json({ linked, google_email: rows[0]?.google_email || null });
+
+  const row = rows?.[0];
+  const linked = !!row && (!!row.access_token || !!row.refresh_token);
+  return res.json({ linked, google_email: linked ? row.google_email : null });
 });
 
 /**
@@ -205,12 +215,16 @@ router.get('/google/status', protect, async (req, res) => {
  */
 router.post('/google/unlink', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
+  const calId = Number(req.body?.calendar_id);
+  if (!uid || !calId)
+    return res.status(400).json({ message: 'calendar_id requerido' });
+
   await db.query(
     `UPDATE users_google_accounts
         SET is_active = 0, revoked_at = NOW(),
             access_token = NULL, refresh_token = NULL, expiry_date = NULL
-      WHERE id_sub_usuario = ?`,
-    { replacements: [uid], type: db.QueryTypes.UPDATE }
+      WHERE id_sub_usuario = ? AND calendar_id = ?`,
+    { replacements: [uid, calId], type: db.QueryTypes.UPDATE }
   );
   return res.json({ status: 'success' });
 });
