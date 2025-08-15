@@ -1,6 +1,7 @@
 const { google } = require('googleapis');
 const { db } = require('../database/config');
 const crypto = require('crypto');
+require('dotenv').config();
 
 function getRedirectUri() {
   const isProd = process.env.NODE_ENV === 'prod';

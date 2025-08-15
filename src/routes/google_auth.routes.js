@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const { makeState, readState } = require('../utils/googleState');
 const { db } = require('../database/config');
 const { protect } = require('../middlewares/auth.middleware');
+require('dotenv').config();
 
 const {
   startWatch,
