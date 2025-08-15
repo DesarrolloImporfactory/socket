@@ -4,6 +4,14 @@ const { makeState, readState } = require('../utils/googleState');
 const { db } = require('../database/config');
 const { protect } = require('../middlewares/auth.middleware');
 
+const {
+  startWatch,
+  stopWatch,
+  importChanges,
+  getActiveLink,
+  findLinkByHeaders,
+} = require('../utils/googleSync');
+
 const router = express.Router();
 
 const SCOPES = [
@@ -171,11 +179,22 @@ router.get('/google/oauth2/callback', async (req, res) => {
           googleEmail || '',
           tokens.access_token || null,
           tokens.refresh_token || null,
-          tokens.expiry_date || null, // si quieres: fallback usando tokens.expires_in
+          tokens.expiry_date || null, // (si no viene, puedes derivarlo de expires_in)
         ],
         type: db.QueryTypes.INSERT,
       }
     );
+
+    // 🔌 AÑADIDO: al vincular, inicia el canal watch (si tu googleSync lo maneja internamente)
+    try {
+      await startWatch({
+        id_sub_usuario: Number(uid),
+        calendar_id: Number(effectiveCalendarId),
+      });
+    } catch (e) {
+      console.warn('startWatch warning:', e?.message || e);
+      // No interrumpimos la vinculación por un fallo de watch
+    }
 
     return res.send(
       '✅ Google Calendar vinculado. Ya puede cerrar esta pestaña.'
@@ -189,6 +208,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
 /**
  * GET /api/v1/google/status
  * Para que la UI sepa si está vinculado y con qué correo.
+ * Acepta ?calendar_id= (tu id local de calendars)
  */
 router.get('/google/status', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
@@ -211,7 +231,7 @@ router.get('/google/status', protect, async (req, res) => {
 
 /**
  * POST /api/v1/google/unlink
- * Desvincula (elimina tokens).
+ * Desvincula (elimina tokens). Body: { calendar_id }
  */
 router.post('/google/unlink', protect, async (req, res) => {
   const uid = Number(req.sessionUser?.id_sub_usuario);
@@ -226,7 +246,98 @@ router.post('/google/unlink', protect, async (req, res) => {
       WHERE id_sub_usuario = ? AND calendar_id = ?`,
     { replacements: [uid, calId], type: db.QueryTypes.UPDATE }
   );
+
+  // 🔌 AÑADIDO: detener watch (best-effort)
+  try {
+    await stopWatch({ id_sub_usuario: uid, calendar_id: calId });
+  } catch (e) {
+    console.warn('stopWatch warning:', e?.message || e);
+  }
+
   return res.json({ status: 'success' });
+});
+
+/* ===========================================================
+   RUTAS NUEVAS (para controlar watch/sync vía googleSync
+   =========================================================== */
+
+/**
+ * POST /api/v1/google/watch/start
+ * Body: { calendar_id }
+ */
+router.post('/google/watch/start', protect, async (req, res) => {
+  const uid = Number(req.sessionUser?.id_sub_usuario);
+  const calId = Number(req.body?.calendar_id);
+  if (!uid || !calId)
+    return res.status(400).json({ message: 'calendar_id requerido' });
+
+  const r = await startWatch({ id_sub_usuario: uid, calendar_id: calId });
+  res.json(r);
+});
+
+/**
+ * POST /api/v1/google/watch/stop
+ * Body: { calendar_id }
+ */
+router.post('/google/watch/stop', protect, async (req, res) => {
+  const uid = Number(req.sessionUser?.id_sub_usuario);
+  const calId = Number(req.body?.calendar_id);
+  if (!uid || !calId)
+    return res.status(400).json({ message: 'calendar_id requerido' });
+
+  const r = await stopWatch({ id_sub_usuario: uid, calendar_id: calId });
+  res.json(r);
+});
+
+/**
+ * POST /api/v1/google/sync/pull
+ * Body: { calendar_id, reset?: boolean }
+ * Fuerza una importación (pull) desde Google → tu DB (appointments).
+ */
+router.post('/google/sync/pull', protect, async (req, res) => {
+  const uid = Number(req.sessionUser?.id_sub_usuario);
+  const calId = Number(req.body?.calendar_id);
+  if (!uid || !calId)
+    return res.status(400).json({ message: 'calendar_id requerido' });
+
+  const link = await getActiveLink(uid, calId);
+  if (!link)
+    return res.status(404).json({
+      ok: false,
+      message: 'No hay vínculo activo para este calendario',
+    });
+
+  const r = await importChanges({ linkId: link.id, reset: !!req.body?.reset });
+  res.json(r);
+});
+
+/**
+ * POST /api/v1/google/push
+ * Webhook público (Google → nosotros).
+ * Lee headers: X-Goog-Channel-Id, X-Goog-Resource-Id
+ */
+router.post('/google/push', async (req, res) => {
+  try {
+    const channelId = req.header('X-Goog-Channel-Id');
+    const resourceId = req.header('X-Goog-Resource-Id');
+
+    // Google manda "sync" en primera notificación vacía
+    // const resourceState = req.header('X-Goog-Resource-State'); // opcional
+
+    if (!channelId || !resourceId) return res.status(200).end();
+
+    // Delega la resolución al módulo de sync (no acoplamos SQL aquí)
+    const link = await findLinkByHeaders({ channelId, resourceId });
+    if (link?.id) {
+      await importChanges({ linkId: link.id, reset: false });
+    }
+
+    return res.status(200).end();
+  } catch (e) {
+    console.error('google/push error:', e?.message || e);
+    // Google solo exige 2xx; no reintenta si devolvemos 500
+    return res.status(200).end();
+  }
 });
 
 module.exports = router;

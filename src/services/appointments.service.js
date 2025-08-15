@@ -11,6 +11,8 @@ const Calendar = require('../models/calendar.model');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
+const { pushUpsertEvent, pushCancelEvent } = require('../utils/googleSync');
+
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 1. VERIFY OVERLAPS                                                   ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
@@ -33,6 +35,55 @@ async function assertNoOverlap({
   const conflict = await Appointment.findOne({ where });
   if (conflict)
     throw new AppError('Conflicto de horario en el calendario.', 409);
+}
+
+/* ================= ENGANCHE: push out (evita bucles) ================= */
+async function syncOutUpsert(appt, opts) {
+  // si el cambio proviene de Google (pull webhook), no empujar de vuelta
+  if (opts?.source === 'google') return;
+
+  try {
+    const res = await pushUpsertEvent({ appointmentId: appt.id });
+    // guarda metadatos si existen las columnas
+    if (res && (res.eventId || res.etag)) {
+      try {
+        await appt.update({
+          google_event_id: res.eventId ?? appt.google_event_id ?? null,
+          google_etag: res.etag ?? appt.google_etag ?? null,
+          last_synced_at: new Date(),
+          last_sync_error: null,
+        });
+      } catch (_) {}
+    } else {
+      try {
+        await appt.update({
+          last_synced_at: new Date(),
+          last_sync_error: null,
+        });
+      } catch (_) {}
+    }
+  } catch (e) {
+    try {
+      await appt.update({ last_sync_error: e.message || String(e) });
+    } catch (_) {}
+    console.warn('Google push upsert failed:', e?.message || e);
+  }
+}
+
+async function syncOutCancel(appt, opts) {
+  if (opts?.source === 'google') return;
+
+  try {
+    await pushCancelEvent({ appointmentId: appt.id });
+    try {
+      await appt.update({ last_synced_at: new Date(), last_sync_error: null });
+    } catch (_) {}
+  } catch (e) {
+    try {
+      await appt.update({ last_sync_error: e.message || String(e) });
+    } catch (_) {}
+    console.warn('Google push cancel failed:', e?.message || e);
+  }
 }
 
 /* ╔═══════════════════════════════════════════════════════════════════════╗
@@ -128,33 +179,23 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 3. CREATE                                                            ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
-async function createAppointment(payload, currentUserId) {
+async function createAppointment(payload, currentUserId, opts = {}) {
   const startUtc = new Date(payload.start);
   const endUtc = new Date(payload.end);
-
-  /* Validación básica del rango horario */
   if (isNaN(startUtc) || isNaN(endUtc) || endUtc <= startUtc) {
     throw new AppError('Rango de fechas inválido.', 400);
   }
-
-  /* Quién atenderá y quién está creando */
   const assigned = payload.assigned_user_id ?? currentUserId ?? null;
   const creator = payload.created_by_user_id ?? currentUserId ?? null;
-
-  /* Invitados recibidos desde el front (array de {name,email,phone}) */
   const invitees = Array.isArray(payload.invitees) ? payload.invitees : [];
 
-  /* Verifica que no se pise otra cita */
   await assertNoOverlap({
     calendar_id: payload.calendar_id,
     start_utc: startUtc,
     end_utc: endUtc,
-    // assigned_user_id : assigned, // habilita si validas por usuario
   });
 
-  /* Transacción para crear todo junto */
-  return db.transaction(async (t) => {
-    /* 3.1 Cita principal -------------------------------------------------- */
+  const appt = await db.transaction(async (t) => {
     const appt = await Appointment.create(
       {
         calendar_id: payload.calendar_id,
@@ -162,7 +203,7 @@ async function createAppointment(payload, currentUserId) {
         description: payload.description ?? null,
         status: payload.status ?? 'Agendado',
         assigned_user_id: assigned,
-        contact_id: payload.contact_id ?? null, // se actualizará abajo
+        contact_id: payload.contact_id ?? null,
         start_utc: startUtc,
         end_utc: endUtc,
         booked_tz: payload.booked_tz || 'America/Guayaquil',
@@ -173,7 +214,6 @@ async function createAppointment(payload, currentUserId) {
       { transaction: t }
     );
 
-    /* 3.2 Invitados ------------------------------------------------------- */
     let firstInviteeId = null;
     for (const [idx, inv] of invitees.entries()) {
       const row = await AppointmentInvitee.create(
@@ -186,28 +226,26 @@ async function createAppointment(payload, currentUserId) {
         },
         { transaction: t }
       );
-
-      if (idx === 0) firstInviteeId = row.id; // primer invitado = contacto ppal
+      if (idx === 0) firstInviteeId = row.id;
     }
-
-    /* 3.3 Si la cita no traía contact_id y creamos invitados,
-            actualizamos con el primero                           */
     if (!appt.contact_id && firstInviteeId) {
       await appt.update({ contact_id: firstInviteeId }, { transaction: t });
     }
-
-    return appt; // ya consistente
+    return appt;
   });
+
+  // 🔌 push → Google (si corresponde)
+  queueMicrotask(() => syncOutUpsert(appt, opts));
+  return appt;
 }
 
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 4. UPDATE                                                             ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
-async function updateAppointment(id, payload) {
+async function updateAppointment(id, payload, opts = {}) {
   const appt = await Appointment.findByPk(id);
   if (!appt) throw new AppError('Cita no encontrada.', 404);
 
-  /* --- 4.1 Campos permitidos a editar ---------------------------------- */
   const up = {};
   [
     'title',
@@ -223,7 +261,6 @@ async function updateAppointment(id, payload) {
     if (payload[f] !== undefined) up[f] = payload[f];
   });
 
-  /* --- 4.2 Manejo de start/end ----------------------------------------- */
   let startUtc = appt.start_utc;
   let endUtc = appt.end_utc;
   if (payload.start) startUtc = new Date(payload.start);
@@ -237,17 +274,14 @@ async function updateAppointment(id, payload) {
     up.end_utc = endUtc;
   }
 
-  /* --- 4.3 Validación de solape ---------------------------------------- */
   await assertNoOverlap({
     calendar_id: appt.calendar_id,
     start_utc: up.start_utc ?? startUtc,
     end_utc: up.end_utc ?? endUtc,
     ignoreId: appt.id,
-    // assigned_user_id: up.assigned_user_id ?? appt.assigned_user_id,
   });
 
-  /* --- 4.4 Aplicamos cambios (invitados) -------------------- */
-  return db.transaction(async (t) => {
+  const updated = await db.transaction(async (t) => {
     await appt.update(up, { transaction: t });
 
     if (Array.isArray(payload.invitees)) {
@@ -255,13 +289,10 @@ async function updateAppointment(id, payload) {
       const normEmail = (s) => norm(s).toLowerCase();
       const normPhone = (s) => norm(s).replace(/\D+/g, '');
 
-      //Traer actuales
       const current = await AppointmentInvitee.findAll({
         where: { appointment_id: appt.id },
         transaction: t,
       });
-
-      //Índices de busqueda rapida
       const byId = new Map(current.map((i) => [i.id, i]));
       const byEmail = new Map();
       const byPhone = new Map();
@@ -270,7 +301,6 @@ async function updateAppointment(id, payload) {
         if (i.phone) byPhone.set(i.phone.replace(/\D+/g, ''), i);
       }
 
-      // 2) Normalizar carga entrante y upsert
       const keptIds = new Set();
       for (const inv of payload.invitees) {
         const data = {
@@ -283,18 +313,13 @@ async function updateAppointment(id, payload) {
         if (rs && validRS.includes(rs)) data.response_status = rs;
 
         let row = null;
-
-        // Emparejar por prioridad: id → email → phone
-        if (inv.id && byId.has(Number(inv.id))) {
-          row = byId.get(Number(inv.id));
-        } else if (data.email && byEmail.has(data.email)) {
+        if (inv.id && byId.has(Number(inv.id))) row = byId.get(Number(inv.id));
+        else if (data.email && byEmail.has(data.email))
           row = byEmail.get(data.email);
-        } else if (data.phone && byPhone.has(data.phone)) {
+        else if (data.phone && byPhone.has(data.phone))
           row = byPhone.get(data.phone);
-        }
 
         if (row) {
-          // Si no envía response_status, conserve el existente
           if (!('response_status' in data))
             data.response_status = row.response_status;
           await row.update(data, { transaction: t });
@@ -312,7 +337,6 @@ async function updateAppointment(id, payload) {
         }
       }
 
-      // 3) Borrar los que ya no vienen
       const toDelete = current.filter((i) => !keptIds.has(i.id));
       if (toDelete.length) {
         await AppointmentInvitee.destroy({
@@ -321,10 +345,8 @@ async function updateAppointment(id, payload) {
         });
       }
 
-      // 4) Mantener contact_id coherente
       let nextContactId = up.contact_id ?? appt.contact_id ?? null;
       if (nextContactId && !keptIds.has(Number(nextContactId))) {
-        // Si el contact_id existente quedó eliminado, use el primer invitado vigente (si hay)
         nextContactId = keptIds.size ? [...keptIds][0] : null;
       }
       if (up.contact_id !== undefined || nextContactId !== appt.contact_id) {
@@ -332,7 +354,6 @@ async function updateAppointment(id, payload) {
       }
     }
 
-    // Opcional: devolver con invitados ya incluidos
     await appt.reload({
       include: [
         {
@@ -345,15 +366,26 @@ async function updateAppointment(id, payload) {
     });
     return appt;
   });
+
+  // 🔌 push → Google (upsert o cancel según status actual)
+  if ((updated.status || up.status) === 'Cancelado') {
+    queueMicrotask(() => syncOutCancel(updated, opts));
+  } else {
+    queueMicrotask(() => syncOutUpsert(updated, opts));
+  }
+  return updated;
 }
 
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 5. CANCEL                                                             ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
-async function cancelAppointment(id) {
+async function cancelAppointment(id, opts = {}) {
   const appt = await Appointment.findByPk(id);
   if (!appt) throw new AppError('Cita no encontrada.', 404);
   await appt.update({ status: 'Cancelado' });
+
+  // push -> Google como cancelado
+  queueMicrotask(() => syncOutCancel(appt, opts));
   return appt;
 }
 
