@@ -3,12 +3,17 @@ const { db } = require('../database/config');
 const crypto = require('crypto');
 require('dotenv').config();
 
+// function getRedirectUri() {
+//   const isProd = process.env.NODE_ENV === 'prod';
+//   return isProd
+//     ? process.env.GOOGLE_REDIRECT_URI
+//     : process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
+// }
+
 function getRedirectUri() {
-  const isProd = process.env.NODE_ENV === 'prod';
-  return isProd
-    ? process.env.GOOGLE_REDIRECT_URI
-    : process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
+  return process.env.GOOGLE_REDIRECT_URI;
 }
+
 function oauth2(redirectUri = getRedirectUri()) {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
