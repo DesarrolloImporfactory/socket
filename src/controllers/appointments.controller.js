@@ -3,23 +3,15 @@ const AppError = require('../utils/appError');
 const svc = require('../services/appointments.service');
 
 exports.list = catchAsync(async (req, res) => {
-  const { calendar_id, start, end, user_ids } = req.query;
+  const { calendar_id, start, end, user_ids, include_unassigned } = req.query;
   if (!calendar_id) throw new AppError('calendar_id es obligatorio.', 400);
-
-  const ids = Array.isArray(user_ids)
-    ? user_ids.map(Number).filter(Boolean)
-    : user_ids
-    ? String(user_ids)
-        .split(',')
-        .map((n) => Number(n))
-        .filter(Boolean)
-    : [];
 
   const events = await svc.listAppointments({
     calendar_id: Number(calendar_id),
     start: start ? new Date(start) : undefined,
     end: end ? new Date(end) : undefined,
-    user_ids: ids,
+    user_ids,
+    include_unassigned,
   });
 
   res.status(200).json({ status: 'success', events });

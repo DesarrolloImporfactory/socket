@@ -22,6 +22,32 @@ function oauth2(redirectUri = getRedirectUri()) {
   );
 }
 
+// --- Helpers de fechas ---
+function parseGoogleTime(g) {
+  // g: {dateTime, timeZone} o {date} (all-day)
+  if (g?.dateTime) return new Date(g.dateTime); // '2025-08-16T00:00:00Z' -> Date UTC
+  if (g?.date) return new Date(g.date + 'T00:00:00Z'); // all-day -> 00:00 UTC
+  return null;
+}
+
+function toMysqlDateTime(v) {
+  // v: Date | string | number
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  // 'YYYY-MM-DD HH:MM:SS' en UTC
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+// Si vienes de la DB con 'YYYY-MM-DD HH:MM:SS' (UTC), pásalo a Date sin shift local
+function asUtcDate(v) {
+  if (v instanceof Date) return v;
+  if (typeof v === 'string') {
+    if (v.includes('T')) return new Date(v); // ya es ISO
+    return new Date(v.replace(' ', 'T') + 'Z'); // trátalo como UTC
+  }
+  return new Date(v);
+}
+
 // ===== helpers de cuenta activa por calendario interno =====
 async function getActiveLink(id_sub_usuario, calendar_id) {
   const rows = await db.query(
@@ -66,7 +92,6 @@ async function getOAuthClientForLink(link) {
 
 // ===== mapping local -> Google payload =====
 function toGoogleEventPayload(appt) {
-  // appt: { title, description, location_text, start_utc, end_utc, booked_tz, meeting_url, status, invitees? }
   const attendees = Array.isArray(appt.invitees)
     ? appt.invitees
         .filter((i) => i.email)
@@ -76,18 +101,20 @@ function toGoogleEventPayload(appt) {
         }))
     : [];
 
+  const s = asUtcDate(appt.start_utc);
+  const e = asUtcDate(appt.end_utc);
+
   const payload = {
     summary: appt.title || '(Sin título)',
     description: appt.description || undefined,
     location: appt.location_text || undefined,
-    start: { dateTime: new Date(appt.start_utc).toISOString() },
-    end: { dateTime: new Date(appt.end_utc).toISOString() },
+    start: { dateTime: s.toISOString() }, // ISO UTC correcto
+    end: { dateTime: e.toISOString() },
     attendees,
   };
 
-  // Si quisieras autogenerar Google Meet cuando no hay meeting_url:
+  // Si quieres crear Google Meet automáticamente cuando no hay link:
   // payload.conferenceData = { createRequest: { requestId: crypto.randomUUID() } };
-
   return payload;
 }
 
@@ -370,11 +397,20 @@ async function applyGoogleEventToLocal({ link, ev }) {
     return;
   }
 
-  const startISO =
-    ev.start?.dateTime ||
-    (ev.start?.date ? ev.start.date + 'T00:00:00Z' : null);
-  const endISO =
-    ev.end?.dateTime || (ev.end?.date ? ev.end.date + 'T00:00:00Z' : null);
+  // --- normaliza tiempos ---
+  const startDate = parseGoogleTime(ev.start); // Date (UTC)
+  // end puede venir vacío; da fallback a +30min
+  let endDate = parseGoogleTime(ev.end);
+  if (!endDate && startDate)
+    endDate = new Date(startDate.getTime() + 30 * 60000);
+
+  // Si quieres que los "all-day" terminen 23:59:59 del mismo día
+  // en lugar de 00:00 del siguiente, descomenta:
+  // if (ev.start?.date && ev.end?.date) endDate = new Date(endDate.getTime() - 1000);
+
+  const startMy = toMysqlDateTime(startDate); // 'YYYY-MM-DD HH:MM:SS'
+  const endMy = toMysqlDateTime(endDate);
+
   const title = ev.summary || '(Sin título)';
   const desc = ev.description || null;
   const loc = ev.location || null;
@@ -394,8 +430,8 @@ async function applyGoogleEventToLocal({ link, ev }) {
           desc,
           loc,
           meet,
-          startISO,
-          endISO,
+          startMy,
+          endMy,
           tz,
           map.appointment_id,
         ],
@@ -407,7 +443,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
       { replacements: [ev.etag || null, map.id], type: db.QueryTypes.UPDATE }
     );
   } else {
-    const [res] = await db.query(
+    const [insertId] = await db.query(
       `INSERT INTO appointments
          (calendar_id, title, description, location_text, meeting_url,
           start_utc, end_utc, booked_tz, status, created_by_user_id)
@@ -419,18 +455,24 @@ async function applyGoogleEventToLocal({ link, ev }) {
           desc,
           loc,
           meet,
-          startISO,
-          endISO,
+          startMy,
+          endMy,
           tz,
         ],
         type: db.QueryTypes.INSERT,
       }
     );
-    const newId = res;
+    const newId = insertId;
+
     await db.query(
       `INSERT INTO google_events_links
-         (appointment_id, calendar_id, id_sub_usuario, google_event_id, google_etag, is_deleted)
-       VALUES (?, ?, ?, ?, ?, 0)`,
+         (appointment_id, calendar_id, id_sub_usuario, google_event_id, google_etag, is_deleted, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, 0, NOW())
+       ON DUPLICATE KEY UPDATE
+         appointment_id = VALUES(appointment_id),
+         google_etag = VALUES(google_etag),
+         is_deleted = 0,
+         last_synced_at = NOW()`,
       {
         replacements: [
           newId,

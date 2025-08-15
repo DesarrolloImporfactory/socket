@@ -89,16 +89,66 @@ async function syncOutCancel(appt, opts) {
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 2. LIST                                                             ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
-async function listAppointments({ calendar_id, start, end, user_ids }) {
+async function listAppointments({
+  calendar_id,
+  start,
+  end,
+  user_ids,
+  include_unassigned,
+}) {
   const where = { calendar_id };
 
+  // ── Rango de fechas (intersección) ──────────────────────────────
   if (start && end) {
-    // intersección con [start, end]
     where.start_utc = { [Op.lt]: end };
     where.end_utc = { [Op.gt]: start };
   }
-  if (user_ids?.length) {
-    where.assigned_user_id = { [Op.in]: user_ids };
+
+  // ── Normalizar parámetros de asignación ─────────────────────────
+  const rawIds = Array.isArray(user_ids)
+    ? user_ids
+    : typeof user_ids === 'string'
+    ? user_ids.split(',')
+    : [];
+
+  // Acepta "7", 7; filtra vacíos; conserva número si aplica
+  const ids = rawIds
+    .map((v) => String(v).trim())
+    .filter((v) => v !== '')
+    .map((v) => (Number.isFinite(Number(v)) ? Number(v) : v));
+
+  const incUnassigned =
+    include_unassigned === 1 ||
+    include_unassigned === '1' ||
+    include_unassigned === true ||
+    include_unassigned === 'true';
+
+  // Log mínimo de auditoría (opcional)
+  console.log(
+    '[appointments:list] calendar_id=%s, ids=%j, incUnassigned=%s, range=%s..%s',
+    calendar_id,
+    ids,
+    incUnassigned,
+    start,
+    end
+  );
+
+  // ── Reglas de filtrado por assigned_user_id ─────────────────────
+  if (ids.length && incUnassigned) {
+    // (usuarios seleccionados) ∪ (sin asignar)
+    where[Op.or] = [
+      { assigned_user_id: { [Op.in]: ids } },
+      { assigned_user_id: { [Op.is]: null } },
+    ];
+  } else if (ids.length && !incUnassigned) {
+    // solo usuarios seleccionados
+    where.assigned_user_id = { [Op.in]: ids };
+  } else if (!ids.length && incUnassigned) {
+    // solo sin asignar
+    where.assigned_user_id = { [Op.is]: null };
+  } else {
+    // (!ids.length && !incUnassigned) => devolver NADA (forzamos conjunto vacío)
+    where.assigned_user_id = { [Op.in]: [] };
   }
 
   const rows = await Appointment.findAll({
@@ -133,7 +183,7 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
     ],
   });
 
-  // Formato FullCalendar + props extra
+  // ── Formato FullCalendar + props extra ──────────────────────────
   return rows.map((r) => {
     const invitees =
       r.invitees?.map((i) => ({
@@ -151,14 +201,14 @@ async function listAppointments({ calendar_id, start, end, user_ids }) {
     return {
       id: r.id,
       title: r.title,
-      start: r.start_utc, // devuelve Date; si prefieres ISO: r.start_utc.toISOString()
+      start: r.start_utc, // Si prefieres ISO: r.start_utc.toISOString()
       end: r.end_utc,
       created_at: r.created_at,
       extendedProps: {
         status: r.status,
         assigned_user_id: r.assigned_user_id,
         contact_id: r.contact_id,
-        contact, // objeto del invitado que quedó como contacto principal
+        contact, // invitado que quedó como contacto principal
         booked_tz: r.booked_tz,
         location_text: r.location_text,
         meeting_url: r.meeting_url,
