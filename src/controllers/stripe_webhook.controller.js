@@ -339,6 +339,58 @@ if (event.type === 'invoice.payment_failed') {
   }
 }
 
+// ➕ NUEVO: completar upgrade cuando se paga la diferencia en Checkout
+if (event.type === 'checkout.session.completed') {
+  const session = event.data.object;
+  try {
+    // Solo nos interesan las sesiones de pago de "diferencia de upgrade"
+    if (session.mode !== 'payment') return res.status(200).json({ received: true });
+    const md = session.metadata || {};
+    if (md.tipo !== 'upgrade_delta') return res.status(200).json({ received: true });
+
+    const subscriptionId = md.subscription_id;
+    const toPriceId = md.to_price_id;
+    const id_usuario = md.id_usuario;
+    const id_plan = md.id_plan;
+
+    if (!subscriptionId || !toPriceId || !id_usuario || !id_plan) {
+      console.warn('[WH checkout.session.completed] Falta metadata para upgrade_delta', md);
+      return res.status(200).json({ received: true });
+    }
+
+    // Recupera item actual de la suscripción
+    const sub = await stripe.subscriptions.retrieve(subscriptionId);
+    const itemId = sub.items?.data?.[0]?.id;
+    if (!itemId) {
+      console.warn('[WH checkout.session.completed] No se encontró item en la suscripción', subscriptionId);
+      return res.status(200).json({ received: true });
+    }
+
+    // Cambia al nuevo price SIN prorrateo (ya cobramos la diferencia como pago único)
+    await stripe.subscriptions.update(subscriptionId, {
+      items: [{ id: itemId, price: toPriceId }],
+      proration_behavior: 'none'
+      // opcional: billing_cycle_anchor: 'unchanged'
+    });
+
+    // Reflejar en DB: cambia id_plan y id_product_stripe, NO toques fechas
+    const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+    const plan = await Planes_chat_center.findByPk(id_plan);
+    if (usuario && plan) {
+      await usuario.update({
+        id_plan: plan.id_plan,
+        id_product_stripe: plan.id_product_stripe
+      });
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (e) {
+    console.error('❌ WH checkout.session.completed (upgrade_delta):', e);
+    // siempre 200 al webhook para no reintentar en bucle (ya registramos el error)
+    return res.status(200).json({ received: true });
+  }
+}
+
 
 
 

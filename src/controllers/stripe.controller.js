@@ -77,66 +77,270 @@ exports.listarPlanesStripe = async (req, res) => {
 /**
  * Crea una sesión de Stripe Checkout para un usuario y plan específico
  */
+// controllers/stripe.controller.js
 exports.crearSesionPago = async (req, res) => {
   try {
     const { id_plan, success_url, cancel_url, id_usuario, id_users } = req.body;
     const userId = id_usuario || id_users;
 
-    if (!id_plan || !userId || !success_url || !cancel_url) {
+    if (!id_plan || !userId) {
       return res.status(400).json({
         status: "fail",
-        message: "Faltan datos necesarios (id_plan, id_usuario, success_url o cancel_url)",
+        message: "Faltan datos necesarios (id_plan, id_usuario)",
       });
     }
 
+    // Usuario + plan destino (DB)
     const usuario = await Usuarios_chat_center.findByPk(userId);
     if (!usuario) {
+      return res.status(404).json({ status: "fail", message: "Usuario no encontrado" });
+    }
+
+    const nuevoPlan = await Planes_chat_center.findOne({ where: { id_plan } });
+    if (!nuevoPlan || !nuevoPlan.id_product_stripe) {
       return res.status(404).json({
         status: "fail",
-        message: "Usuario no encontrado",
+        message: "Plan no encontrado o sin priceId de Stripe (id_product_stripe)",
       });
     }
 
-    if (usuario.estado === 'activo' && usuario.fecha_renovacion > new Date()) {
+    if (!success_url || !cancel_url) {
       return res.status(400).json({
         status: "fail",
-        message: "Ya tienes un plan activo. No puedes crear una nueva sesión de pago hasta que expire.",
+        message: "Faltan success_url y cancel_url para crear la sesión de pago",
       });
     }
 
-    const plan = await Planes_chat_center.findOne({ where: { id_plan } });
+    const hoy = new Date();
 
-    if (!plan || !plan.id_product_stripe) {
-      return res.status(404).json({
-        status: "fail",
-        message: "Plan no encontrado o no tiene ID de producto Stripe configurado",
+    // ─────────────────────────────────────────────────────────────
+    // A) Tiene plan ACTIVO → cobrar diferencia via Checkout (mode: 'payment')
+    // ─────────────────────────────────────────────────────────────
+    if (usuario.estado === "activo" && usuario.fecha_renovacion > hoy) {
+      // Resolver suscripción y customer
+      let subscriptionId = null;
+      let customerId = null;
+
+      const [rows] = await db.query(`
+        SELECT id_suscripcion, customer_id
+        FROM transacciones_stripe_chat
+        WHERE id_usuario = ? AND estado_suscripcion = 'active'
+        ORDER BY fecha DESC LIMIT 1
+      `, { replacements: [userId] });
+
+      subscriptionId = rows?.[0]?.id_suscripcion || null;
+      customerId = rows?.[0]?.customer_id || null;
+
+      if (!subscriptionId) {
+        if (!customerId) {
+          const [r2] = await db.query(`
+            SELECT customer_id
+            FROM transacciones_stripe_chat
+            WHERE id_usuario = ? AND customer_id IS NOT NULL
+            ORDER BY fecha DESC LIMIT 1
+          `, { replacements: [userId] });
+          customerId = r2?.[0]?.customer_id || null;
+        }
+        if (!customerId) {
+          return res.status(400).json({ status: "fail", message: "No se pudo resolver el customer del usuario" });
+        }
+        const subs = await stripe.subscriptions.list({ customer: customerId, status: "active", limit: 1 });
+        subscriptionId = subs.data?.[0]?.id || null;
+      }
+
+      if (!subscriptionId) {
+        return res.status(400).json({
+          status: "fail",
+          message: "No se encontró una suscripción activa para aplicar el upgrade",
+        });
+      }
+
+      // Traer sub + price actual (y producto) para armar el detalle
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+        expand: ["items.data.price", "items.data.price.product"],
       });
+
+      const currentItem = subscription.items.data[0];
+      const currentPrice = currentItem?.price;
+      if (!currentItem?.id || !currentPrice?.id) {
+        return res.status(400).json({
+          status: "fail",
+          message: "No se pudo identificar el item/price actual de la suscripción",
+        });
+      }
+
+      // Price destino desde Stripe
+      const targetPrice = await stripe.prices.retrieve(nuevoPlan.id_product_stripe);
+
+      // Validaciones (intervalo/moneda iguales)
+      const currentInterval = currentPrice?.recurring?.interval;
+      const targetInterval  = targetPrice?.recurring?.interval;
+      const currentCurrency = currentPrice?.currency;
+      const targetCurrency  = targetPrice?.currency;
+
+      if (currentInterval !== targetInterval) {
+        return res.status(400).json({
+          status: "fail",
+          message: `El intervalo actual (${currentInterval}) y el nuevo (${targetInterval}) no coincide.`,
+        });
+      }
+      if (currentCurrency !== targetCurrency) {
+        return res.status(400).json({
+          status: "fail",
+          message: `La moneda actual (${currentCurrency}) y la nueva (${targetCurrency}) no coincide.`,
+        });
+      }
+
+      // Preview de prorrateo (delta real)
+      let delta = 0;
+      let preview = null;
+      try {
+        preview = await stripe.invoices.retrieveUpcoming({
+          customer: subscription.customer,
+          subscription: subscriptionId,
+          subscription_items: [{ id: currentItem.id, price: targetPrice.id }],
+        });
+        delta = Math.max(0, Number(preview?.amount_due || 0));
+      } catch (e) {
+        console.warn("No se pudo obtener preview de prorrateo:", e?.raw?.message || e.message);
+      }
+
+      // Fallback: diferencia fija del price
+      const currentAmount = Number(currentPrice.unit_amount || 0); // centavos
+      const targetAmount  = Number(targetPrice.unit_amount || 0);  // centavos
+      const flatDelta = Math.max(0, targetAmount - currentAmount);
+
+      // Elegir monto a cobrar (delta > 0 ? delta : diferencia fija)
+      const amountToCharge = delta > 0 ? delta : flatDelta;
+
+      if (amountToCharge <= 0) {
+        return res.status(400).json({
+          status: "fail",
+          message: "Solo puedes hacer upgrade a un plan de mayor valor.",
+          debug: {
+            currentPriceId: currentPrice.id,
+            targetPriceId: targetPrice.id,
+            currentAmount,
+            targetAmount,
+            deltaPreview: delta
+          }
+        });
+      }
+
+      // 📌 Construir DETALLE bonito para factura
+      // Nombre del plan actual (desde Stripe o desde tu DB como fallback)
+      let nombrePlanActual = currentPrice?.product?.name;
+      if (!nombrePlanActual && usuario.id_plan) {
+        const planActualDB = await Planes_chat_center.findByPk(usuario.id_plan);
+        if (planActualDB?.nombre_plan) nombrePlanActual = planActualDB.nombre_plan;
+      }
+      const detalle = `Actualización de ${nombrePlanActual || "Actual"} → ${nuevoPlan.nombre_plan}`;
+
+      // Crear Checkout Session (payment) por la DIFERENCIA
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        payment_method_types: ["card"],
+        customer: subscription.customer,
+
+        line_items: [{
+          price_data: {
+            currency: targetPrice.currency,
+            product_data: {
+              // 🔹 Esto se verá como el concepto del ítem en la factura
+              name: detalle
+            },
+            unit_amount: amountToCharge, // centavos: lo que falta
+          },
+          quantity: 1,
+        }],
+
+        // 🔹 Crear factura para este pago y dejar el detalle ahí también
+        invoice_creation: {
+          enabled: true,
+          invoice_data: {
+            description: detalle,
+            // Opcional: campos personalizados visibles en la factura
+            custom_fields: [
+              { name: "Operación", value: "Upgrade" },
+              { name: "Detalle", value: `De ${nombrePlanActual || "Actual"} a ${nuevoPlan.nombre_plan}` }
+            ],
+            // Metadata util para tus procesos
+            metadata: {
+              tipo: "upgrade_delta",
+              id_usuario: String(userId),
+              id_plan: String(id_plan),
+              subscription_id: subscriptionId,
+              from_price_id: currentPrice.id,
+              to_price_id: targetPrice.id
+            }
+          }
+        },
+
+        success_url,
+        cancel_url,
+
+        // 🔹 También en el PaymentIntent (aparece en recibos/charge)
+        payment_intent_data: {
+          description: detalle,
+          metadata: {
+            tipo: "upgrade_delta",
+            id_usuario: String(userId),
+            id_plan: String(id_plan),
+            subscription_id: subscriptionId,
+            to_price_id: targetPrice.id
+          }
+        },
+
+        // Metadata al nivel de sesión (por si lees checkout.session.completed)
+        metadata: {
+          tipo: "upgrade_delta",
+          id_usuario: String(userId),
+          id_plan: String(id_plan),
+          subscription_id: subscriptionId,
+          to_price_id: targetPrice.id
+        }
+      });
+
+      return res.status(200).json({ url: session.url });
     }
 
-    //  Aquí va la corrección clave
+    // ─────────────────────────────────────────────────────────────
+    // B) NO tiene plan activo → Checkout de suscripción (flujo normal)
+    // ─────────────────────────────────────────────────────────────
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
-      line_items: [{ price: plan.id_product_stripe, quantity: 1 }],
+      line_items: [{ price: nuevoPlan.id_product_stripe, quantity: 1 }],
       success_url,
       cancel_url,
       allow_promotion_codes: true,
       subscription_data: {
-        
         metadata: {
-          id_usuario: userId.toString(),
-          id_plan: id_plan.toString(),
-        }
-      }
+          id_usuario: String(userId),
+          id_plan: String(id_plan),
+        },
+      },
     });
 
     return res.status(200).json({ url: session.url });
-
   } catch (error) {
     console.error("Error al crear sesión de Stripe:", error);
-    return res.status(500).json({ status: "fail", message: error.message });
+    return res.status(500).json({
+      status: "fail",
+      message: error?.raw?.message || error.message
+    });
   }
 };
+
+
+
+
+
+
+
+
+
+
 
 exports.obtenerSuscripcionActiva = async (req, res) => {
   try {
