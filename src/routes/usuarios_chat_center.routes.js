@@ -2,6 +2,7 @@ const usuarios_chat_centerController = require('../controllers/usuarios_chat_cen
 
 const restrictToRoles = require('../middlewares/restrictTo.middleware');
 const { protect } = require('../middlewares/auth.middleware');
+const limiteSub_usuarios = require('../middlewares/limiteSub_usuarios.middleware');
 
 const express = require('express');
 
@@ -19,6 +20,7 @@ router.post(
 router.post(
   '/agregarUsuario',
   restrictToRoles('administrador'),
+  limiteSub_usuarios,
   usuarios_chat_centerController.agregarUsuario
 );
 

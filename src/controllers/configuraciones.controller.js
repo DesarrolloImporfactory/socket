@@ -77,3 +77,48 @@ exports.listarConfiguraciones = catchAsync(async (req, res, next) => {
     data: configuraciones,
   });
 });
+
+exports.agregarConfiguracion = catchAsync(async (req, res, next) => {
+  const { nombre_configuracion, telefono, id_usuario } = req.body;
+
+  if (!nombre_configuracion || !telefono || !id_usuario) {
+    return res.status(400).json({
+      status: 400,
+      message: 'Faltan campos obligatorios para agregar configuración.',
+    });
+  }
+
+  try {
+    // Generar clave única
+    const key_imporsuit = generarClaveUnica();
+
+    // Insertar en `configuraciones`
+    const insertSql = `
+      INSERT INTO configuraciones
+        (id_usuario, nombre_configuracion, telefono, key_imporsuit, created_at)
+      VALUES (?, ?, ?, ?, NOW())
+    `;
+    const [insertResult] = await db.query(insertSql, {
+      replacements: [id_usuario, nombre_configuracion, telefono, key_imporsuit],
+    });
+
+    return res.status(200).json({
+      status: 200,
+      message: 'Configuración agregada correctamente.',
+      id_configuracion: insertResult.insertId,
+      nombre_configuracion, // Este valor puede ser útil si lo necesitas más adelante
+    });
+  } catch (error) {
+    console.error('Error al agregar configuración:', error);
+    return res.status(500).json({
+      status: 500,
+      message: 'Hubo un problema al agregar la configuración.',
+    });
+  }
+});
+
+function generarClaveUnica() {
+  // Aquí un ejemplo con currentTime + random:
+  const randomStr = Math.random().toString(36).substring(2, 8);
+  return `key_${Date.now()}_${randomStr}`;
+}

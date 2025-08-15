@@ -683,56 +683,6 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
   }
 });
 
-/**
- * POST /api/v1/whatsapp_managment/agregarConfiguracion
- *
- * Insertar en `configuraciones`,
- *
- * @param {string} nombre_configuracion
- * @param {string} telefono
- * @param {string} id_usuario
- *
- * @return {object} {status: 200|500, message: string}
- */
-router.post('/agregarConfiguracion', async (req, res) => {
-  const { nombre_configuracion, telefono, id_usuario } = req.body;
-
-  if (!nombre_configuracion || !telefono || !id_usuario) {
-    return res.status(400).json({
-      status: 400,
-      message: 'Faltan campos obligatorios para agregar configuración.',
-    });
-  }
-
-  try {
-    // Generar clave única
-    const key_imporsuit = generarClaveUnica();
-
-    // Insertar en `configuraciones`
-    const insertSql = `
-      INSERT INTO configuraciones
-        (id_usuario, nombre_configuracion, telefono, key_imporsuit, created_at)
-      VALUES (?, ?, ?, ?, NOW())
-    `;
-    const [insertResult] = await db.query(insertSql, {
-      replacements: [id_usuario, nombre_configuracion, telefono, key_imporsuit],
-    });
-
-    return res.status(200).json({
-      status: 200,
-      message: 'Configuración agregada correctamente.',
-      id_configuracion: insertResult.insertId,
-      nombre_configuracion, // Este valor puede ser útil si lo necesitas más adelante
-    });
-  } catch (error) {
-    console.error('Error al agregar configuración:', error);
-    return res.status(500).json({
-      status: 500,
-      message: 'Hubo un problema al agregar la configuración.',
-    });
-  }
-});
-
 //Segundo paso
 router.post('/actualizarConfiguracionMeta', async (req, res) => {
   const {
