@@ -23,7 +23,7 @@ const SCOPES = [
 
 /** Redirect según entorno */
 function getRedirectUri() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'prod';
   if (isProd) return process.env.GOOGLE_REDIRECT_URI;
   return process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
 }

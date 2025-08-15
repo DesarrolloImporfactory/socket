@@ -3,7 +3,7 @@ const { db } = require('../database/config');
 const crypto = require('crypto');
 
 function getRedirectUri() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'prod';
   return isProd
     ? process.env.GOOGLE_REDIRECT_URI
     : process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
