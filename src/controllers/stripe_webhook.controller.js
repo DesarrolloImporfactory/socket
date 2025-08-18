@@ -370,26 +370,32 @@ if (event.type === 'checkout.session.completed') {
     await stripe.subscriptions.update(subscriptionId, {
       items: [{ id: itemId, price: toPriceId }],
       proration_behavior: 'none'
-      // opcional: billing_cycle_anchor: 'unchanged'
     });
 
-    // Reflejar en DB: cambia id_plan y id_product_stripe, NO toques fechas
+    // Reflejar en DB: cambia id_plan y REINICIA fechas
     const usuario = await Usuarios_chat_center.findByPk(id_usuario);
     const plan = await Planes_chat_center.findByPk(id_plan);
     if (usuario && plan) {
+      const hoy = new Date();
+      const nuevaFechaRenovacion = new Date(hoy);
+      nuevaFechaRenovacion.setDate(hoy.getDate() + 30);
+
       await usuario.update({
         id_plan: plan.id_plan,
-        id_product_stripe: plan.id_product_stripe
+        id_product_stripe: plan.id_product_stripe,
+        estado: 'activo',
+        fecha_inicio: hoy,
+        fecha_renovacion: nuevaFechaRenovacion
       });
     }
 
     return res.status(200).json({ received: true });
   } catch (e) {
     console.error('❌ WH checkout.session.completed (upgrade_delta):', e);
-    // siempre 200 al webhook para no reintentar en bucle (ya registramos el error)
     return res.status(200).json({ received: true });
   }
 }
+
 
 
 
