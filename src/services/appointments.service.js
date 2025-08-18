@@ -165,6 +165,7 @@ async function listAppointments({
       'booked_tz',
       'location_text',
       'meeting_url',
+      'description',
       'created_at',
     ],
     include: [
@@ -212,6 +213,7 @@ async function listAppointments({
         booked_tz: r.booked_tz,
         location_text: r.location_text,
         meeting_url: r.meeting_url,
+        description: r.description || null,
         calendar: r.calendar
           ? {
               id: r.calendar.id,
@@ -284,8 +286,27 @@ async function createAppointment(payload, currentUserId, opts = {}) {
     return appt;
   });
 
-  // 🔌 push → Google (si corresponde)
-  queueMicrotask(() => syncOutUpsert(appt, opts));
+  // 🔌 push → Google
+  if (payload.create_meet) {
+    try {
+      const res = await pushUpsertEvent({
+        appointmentId: appt.id,
+        createMeet: true,
+      });
+      if (res?.meetingUrl) {
+        await appt.update({ meeting_url: res.meetingUrl }, { silent: true });
+      }
+    } catch (e) {
+      await appt.update(
+        { last_sync_error: e.message || String(e) },
+        { silent: true }
+      );
+      console.warn('Google push upsert (create_meet) failed:', e?.message || e);
+      // No lanzamos error: la cita ya se creó; simplemente no habrá link
+    }
+  } else {
+    queueMicrotask(() => syncOutUpsert(appt, opts));
+  }
   return appt;
 }
 

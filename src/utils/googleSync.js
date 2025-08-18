@@ -1,5 +1,8 @@
 const { google } = require('googleapis');
 const { db } = require('../database/config');
+const Appointment = require('../models/appointment.model');
+const AppointmentInvitee = require('../models/appointment_invitee.model');
+const Calendar = require('../models/calendar.model');
 const crypto = require('crypto');
 require('dotenv').config();
 
@@ -22,7 +25,7 @@ function oauth2(redirectUri = getRedirectUri()) {
   );
 }
 
-// --- Helpers de fechas ---
+/* ===================== Helpers de fechas ===================== */
 function parseGoogleTime(g) {
   // g: {dateTime, timeZone} o {date} (all-day)
   if (g?.dateTime) return new Date(g.dateTime); // '2025-08-16T00:00:00Z' -> Date UTC
@@ -38,7 +41,7 @@ function toMysqlDateTime(v) {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-// Si vienes de la DB con 'YYYY-MM-DD HH:MM:SS' (UTC), pásalo a Date sin shift local
+// Si viene de la DB 'YYYY-MM-DD HH:MM:SS' (UTC) pásalo a Date sin shift local
 function asUtcDate(v) {
   if (v instanceof Date) return v;
   if (typeof v === 'string') {
@@ -48,7 +51,7 @@ function asUtcDate(v) {
   return new Date(v);
 }
 
-// ===== helpers de cuenta activa por calendario interno =====
+/* ===== helpers de cuenta activa por calendario interno ===== */
 async function getActiveLink(id_sub_usuario, calendar_id) {
   const rows = await db.query(
     `SELECT *
@@ -59,6 +62,7 @@ async function getActiveLink(id_sub_usuario, calendar_id) {
   );
   return rows[0] || null;
 }
+
 async function getOAuthClientForLink(link) {
   if (!link || !link.refresh_token) return null;
   const client = oauth2(getRedirectUri());
@@ -90,7 +94,7 @@ async function getOAuthClientForLink(link) {
   return client;
 }
 
-// ===== mapping local -> Google payload =====
+/* ========== mapping local -> Google payload (push) ========== */
 function toGoogleEventPayload(appt) {
   const attendees = Array.isArray(appt.invitees)
     ? appt.invitees
@@ -113,12 +117,20 @@ function toGoogleEventPayload(appt) {
     attendees,
   };
 
-  // Si quieres crear Google Meet automáticamente cuando no hay link:
-  // payload.conferenceData = { createRequest: { requestId: crypto.randomUUID() } };
+  // ⤵️ Si no hay meeting_url y el front pide crear Meet, usamos conferenceData.
+  if (!appt.meeting_url && appt.create_meet) {
+    payload.conferenceData = {
+      createRequest: {
+        requestId: crypto.randomUUID(),
+        conferenceSolutionKey: { type: 'hangoutsMeet' },
+      },
+    };
+  }
+
   return payload;
 }
 
-// ===== Local -> Google (crear/actualizar/borrar) =====
+/* ========== Local -> Google (crear/actualizar/borrar) ========== */
 async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
   const link = await getActiveLink(id_sub_usuario, calendar_id);
   if (!link) return { ok: false, reason: 'no_link' };
@@ -158,11 +170,13 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
 
   try {
     if (map?.google_event_id) {
+      // PATCH (actualización)
       const { data } = await gcal.events.patch({
         calendarId: googleCalId,
         eventId: map.google_event_id,
         requestBody: body,
-        // conferenceDataVersion: 1,
+        // Habilita conferencia si viene conferenceData en body
+        conferenceDataVersion: 1,
       });
       await db.query(
         `UPDATE google_events_links
@@ -173,6 +187,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
           type: db.QueryTypes.UPDATE,
         }
       );
+      // Si no teníamos URL y Google creó un Meet, lo traemos
       if (!appointment.meeting_url && data.hangoutLink) {
         await db.query(`UPDATE appointments SET meeting_url = ? WHERE id = ?`, {
           replacements: [data.hangoutLink, appointment.id],
@@ -181,10 +196,11 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
       }
       return { ok: true };
     } else {
+      // INSERT (creación)
       const { data } = await gcal.events.insert({
         calendarId: googleCalId,
         requestBody: body,
-        // conferenceDataVersion: 1,
+        conferenceDataVersion: 1, // necesario si queremos crear Meet
       });
       await db.query(
         `INSERT INTO google_events_links
@@ -258,7 +274,7 @@ async function deleteGoogleEvent({
   return { ok: true };
 }
 
-// ===== Watch (push) Google -> Local =====
+/* ================= Watch (push) Google -> Local ================= */
 async function startWatch({ id_sub_usuario, calendar_id }) {
   const link = await getActiveLink(id_sub_usuario, calendar_id);
   if (!link) return { ok: false, reason: 'no_link' };
@@ -319,7 +335,7 @@ async function stopWatch({ id_sub_usuario, calendar_id }) {
   return { ok: true };
 }
 
-// ===== Pull (Google -> Local) =====
+/* ================= Pull (Google -> Local) ================= */
 async function importChanges({ linkId, reset = false }) {
   const [link] = await db.query(
     `SELECT * FROM users_google_accounts WHERE id = ? LIMIT 1`,
@@ -333,7 +349,23 @@ async function importChanges({ linkId, reset = false }) {
   const gcal = google.calendar({ version: 'v3', auth: client });
   const googleCalId = link.google_calendar_id || 'primary';
 
-  let params = { calendarId: googleCalId, showDeleted: true, maxResults: 100 };
+  // Forzamos la zona horaria de referencia del "pull" (evita desfases)
+  let calendarTz = 'America/Guayaquil';
+  try {
+    const [calRow] = await db.query(
+      `SELECT time_zone FROM calendars WHERE id = ? LIMIT 1`,
+      { replacements: [link.calendar_id], type: db.QueryTypes.SELECT }
+    );
+    if (calRow?.time_zone) calendarTz = calRow.time_zone;
+  } catch {}
+
+  let params = {
+    calendarId: googleCalId,
+    showDeleted: true,
+    maxResults: 100,
+    timeZone: calendarTz, // clave para evitar desfases
+  };
+
   if (!reset && link.sync_token) params.syncToken = link.sync_token;
   else
     params.timeMin = new Date(
@@ -374,6 +406,7 @@ async function importChanges({ linkId, reset = false }) {
   }
 }
 
+/* ========== Aplicar un evento de Google en la DB local ========== */
 async function applyGoogleEventToLocal({ link, ev }) {
   const isDeleted = ev.status === 'cancelled';
   const googleId = ev.id;
@@ -399,16 +432,14 @@ async function applyGoogleEventToLocal({ link, ev }) {
 
   // --- normaliza tiempos ---
   const startDate = parseGoogleTime(ev.start); // Date (UTC)
-  // end puede venir vacío; da fallback a +30min
-  let endDate = parseGoogleTime(ev.end);
+  let endDate = parseGoogleTime(ev.end); // end puede venir vacío; fallback a +30min
   if (!endDate && startDate)
     endDate = new Date(startDate.getTime() + 30 * 60000);
 
-  // Si quieres que los "all-day" terminen 23:59:59 del mismo día
-  // en lugar de 00:00 del siguiente, descomenta:
+  // Si quisieras que all-day termine 23:59:59 del mismo día (opcional):
   // if (ev.start?.date && ev.end?.date) endDate = new Date(endDate.getTime() - 1000);
 
-  const startMy = toMysqlDateTime(startDate); // 'YYYY-MM-DD HH:MM:SS'
+  const startMy = toMysqlDateTime(startDate); // 'YYYY-MM-DD HH:MM:SS' (UTC)
   const endMy = toMysqlDateTime(endDate);
 
   const title = ev.summary || '(Sin título)';
@@ -417,7 +448,25 @@ async function applyGoogleEventToLocal({ link, ev }) {
   const meet = ev.hangoutLink || null;
   const tz = ev.start?.timeZone || ev.end?.timeZone || 'UTC';
 
+  // --- attendees (invitados) normalizados una sola vez ---
+  const rawAttendees = Array.isArray(ev.attendees) ? ev.attendees : [];
+  const attendees = rawAttendees
+    .filter((a) => a?.email)
+    .map((a) => ({
+      email: String(a.email).toLowerCase(),
+      name: a.displayName || null,
+      phone: null,
+      response_status: (() => {
+        const s = (a.responseStatus || '').toLowerCase();
+        if (s === 'accepted') return 'accepted';
+        if (s === 'declined') return 'declined';
+        if (s === 'tentative') return 'tentative';
+        return 'needsAction';
+      })(),
+    }));
+
   if (map?.appointment_id) {
+    // ========= UPDATE =========
     await db.query(
       `UPDATE appointments
           SET title = ?, description = ?, location_text = ?,
@@ -438,11 +487,86 @@ async function applyGoogleEventToLocal({ link, ev }) {
         type: db.QueryTypes.UPDATE,
       }
     );
+
     await db.query(
       `UPDATE google_events_links SET google_etag = ?, is_deleted = 0, last_synced_at = NOW() WHERE id = ?`,
       { replacements: [ev.etag || null, map.id], type: db.QueryTypes.UPDATE }
     );
+
+    // Upsert de invitados por email (merge suave)
+    if (attendees.length) {
+      const current = await db.query(
+        `SELECT id, email FROM appointment_invitees WHERE appointment_id = ?`,
+        { replacements: [map.appointment_id], type: db.QueryTypes.SELECT }
+      );
+
+      const byEmail = new Map(
+        current.map((i) => [String(i.email || '').toLowerCase(), i])
+      );
+
+      const kept = new Set();
+      for (const a of attendees) {
+        const exists = byEmail.get(a.email);
+        if (exists) {
+          await db.query(
+            `UPDATE appointment_invitees
+               SET name = ?, response_status = ?
+             WHERE id = ?`,
+            {
+              replacements: [a.name, a.response_status, exists.id],
+              type: db.QueryTypes.UPDATE,
+            }
+          );
+          kept.add(exists.id);
+        } else {
+          const [iid] = await db.query(
+            `INSERT INTO appointment_invitees
+               (appointment_id, name, email, phone, response_status)
+             VALUES (?, ?, ?, ?, ?)`,
+            {
+              replacements: [
+                map.appointment_id,
+                a.name,
+                a.email,
+                a.phone,
+                a.response_status,
+              ],
+              type: db.QueryTypes.INSERT,
+            }
+          );
+          kept.add(iid);
+        }
+      }
+
+      // (Opcional) remover los que ya no vienen en Google
+      const toRemove = current.filter((i) => !kept.has(i.id));
+      if (toRemove.length) {
+        await db.query(
+          `DELETE FROM appointment_invitees WHERE id IN (${toRemove
+            .map(() => '?')
+            .join(',')})`,
+          {
+            replacements: toRemove.map((i) => i.id),
+            type: db.QueryTypes.DELETE,
+          }
+        );
+      }
+
+      // Asegurar contact_id si está vacío
+      await db.query(
+        `UPDATE appointments
+           SET contact_id = COALESCE(contact_id,
+             (SELECT id FROM appointment_invitees WHERE appointment_id = ? ORDER BY id ASC LIMIT 1)
+           )
+         WHERE id = ?`,
+        {
+          replacements: [map.appointment_id, map.appointment_id],
+          type: db.QueryTypes.UPDATE,
+        }
+      );
+    }
   } else {
+    // ========= INSERT =========
     const [insertId] = await db.query(
       `INSERT INTO appointments
          (calendar_id, title, description, location_text, meeting_url,
@@ -463,6 +587,26 @@ async function applyGoogleEventToLocal({ link, ev }) {
       }
     );
     const newId = insertId;
+
+    // Insertar invitados (si existen) y definir contact_id
+    let firstInviteeId = null;
+    for (const [idx, a] of attendees.entries()) {
+      const [iid] = await db.query(
+        `INSERT INTO appointment_invitees (appointment_id, name, email, phone, response_status)
+         VALUES (?, ?, ?, ?, ?)`,
+        {
+          replacements: [newId, a.name, a.email, a.phone, a.response_status],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+      if (idx === 0) firstInviteeId = iid;
+    }
+    if (firstInviteeId) {
+      await db.query(`UPDATE appointments SET contact_id = ? WHERE id = ?`, {
+        replacements: [firstInviteeId, newId],
+        type: db.QueryTypes.UPDATE,
+      });
+    }
 
     await db.query(
       `INSERT INTO google_events_links
@@ -487,6 +631,64 @@ async function applyGoogleEventToLocal({ link, ev }) {
   }
 }
 
+/* ========== Resolver vínculo por headers (webhook push) ========== */
+async function findLinkByHeaders({ channelId, resourceId }) {
+  const rows = await db.query(
+    `SELECT * FROM users_google_accounts
+      WHERE watch_channel_id = ? AND watch_resource_id = ?
+      LIMIT 1`,
+    { replacements: [channelId, resourceId], type: db.QueryTypes.SELECT }
+  );
+  return rows?.[0] || null;
+}
+
+async function pushUpsertEvent({ appointmentId, createMeet = false }) {
+  // Cargamos la cita completa para armar el payload que upsertGoogleEvent espera
+  const appt = await Appointment.findByPk(appointmentId, {
+    include: [
+      {
+        model: AppointmentInvitee,
+        as: 'invitees',
+        attributes: ['id', 'name', 'email', 'phone', 'response_status'],
+      },
+      { model: Calendar, as: 'calendar', attributes: ['id'] },
+    ],
+  });
+  if (!appt) throw new Error('appointment not found');
+
+  // Tomamos un "dueño" para la cuenta de Google (usa tu regla preferida)
+  const id_sub_usuario =
+    appt.assigned_user_id || appt.created_by_user_id || null;
+
+  const payload = {
+    ...appt.get({ plain: true }),
+    create_meet: createMeet || !appt.meeting_url, // si no hay link y pedimos crear
+  };
+
+  const res = await upsertGoogleEvent({
+    id_sub_usuario,
+    calendar_id: appt.calendar_id,
+    appointment: payload,
+  });
+
+  return res;
+}
+
+async function pushCancelEvent({ appointmentId }) {
+  const appt = await Appointment.findByPk(appointmentId);
+  if (!appt) throw new Error('appointment not found');
+
+  const id_sub_usuario =
+    appt.assigned_user_id || appt.created_by_user_id || null;
+
+  return deleteGoogleEvent({
+    id_sub_usuario,
+    calendar_id: appt.calendar_id,
+    appointment_id: appointmentId,
+  });
+}
+
+/* ===================== Exports ===================== */
 module.exports = {
   upsertGoogleEvent,
   deleteGoogleEvent,
@@ -494,4 +696,7 @@ module.exports = {
   stopWatch,
   importChanges,
   getActiveLink,
+  findLinkByHeaders,
+  pushUpsertEvent,
+  pushCancelEvent,
 };
