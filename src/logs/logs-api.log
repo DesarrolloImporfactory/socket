@@ -2072,3 +2072,13 @@
 [2025-08-15T13:57:00.450Z] info: Can't find /favicon.ico on this server! 🧨
 [2025-08-15T17:41:26.410Z] info: Can't find /favicon.ico on this server! 🧨
 [2025-08-15T18:28:05.781Z] info: Can't find /favicon.ico on this server! 🧨
+[2025-08-15T21:29:38.990Z] info: Cannot set headers after they are sent to the client
+[2025-08-15T21:29:50.960Z] info: Cannot set headers after they are sent to the client
+[2025-08-15T21:31:20.304Z] info: Cannot set headers after they are sent to the client
+[2025-08-15T21:34:26.280Z] info: No se encontró una configuración con este id_configuracion: 8
+[2025-08-15T21:48:45.282Z] info: No se encontró una configuración con este id_configuracion: 8
+[2025-08-15T21:49:17.037Z] info: No se encontró una configuración con este id_configuracion: 8
+[2025-08-15T21:51:00.987Z] info: No se encontró una configuración con este id_configuracion: 8
+[2025-08-15T21:52:03.581Z] info: No se encontró una configuración con este id_configuracion: 8
+[2025-08-18T15:16:38.877Z] info: jwt expired
+[2025-08-18T15:56:17.053Z] info: No se encontró una configuración con este id_configuracion: 8

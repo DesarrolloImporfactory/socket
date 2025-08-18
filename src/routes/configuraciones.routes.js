@@ -16,6 +16,11 @@ router.post(
 );
 
 router.post(
+  '/validar_conexion_usuario',
+  configuracionesController.validarConexionUsuario
+);
+
+router.post(
   '/listar_conexiones',
   checkPlanActivo,
   configuracionesController.listarConexiones

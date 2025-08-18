@@ -5,6 +5,45 @@ const { db } = require('../database/config');
 const Configuraciones = require('../models/configuraciones.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 
+exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
+  const { id_usuario, id_configuracion } = req.body;
+
+  const configuraciones = await db.query(
+    'SELECT id_usuario FROM configuraciones WHERE id = ?',
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
+  if (!configuraciones || configuraciones.length === 0) {
+    return next(
+      new AppError(
+        'No se encontró una configuración con este id_configuracion: ' +
+          id_configuracion,
+        400
+      )
+    );
+  }
+
+  const idUsuarioConfiguracion = configuraciones[0].id_usuario;
+
+  console.log('id_usuario: ' + id_usuario);
+  console.log('configuraciones.id_usuario: ' + idUsuarioConfiguracion);
+
+  if (id_usuario != idUsuarioConfiguracion) {
+    return res.status(200).json({
+      status: 'success',
+      coincidencia: false,
+    });
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    coincidencia: true,
+  });
+});
+
 exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
   const { id_plataforma } = req.body;
 
