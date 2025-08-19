@@ -391,11 +391,56 @@ if (event.type === 'checkout.session.completed') {
 
     return res.status(200).json({ received: true });
   } catch (e) {
-    console.error('❌ WH checkout.session.completed (upgrade_delta):', e);
+    console.error('WH checkout.session.completed (upgrade_delta):', e);
     return res.status(200).json({ received: true });
   }
 }
 
+// ➕ ADDON conexión: pago único completado en Checkout
+if (event.type === 'checkout.session.completed') {
+  const session = event.data.object;
+  try {
+    const md = session?.metadata || {};
+    if (session?.mode === 'payment' && md.tipo === 'addon_conexion') {
+      const id_usuario = md.id_usuario;
+      if (id_usuario) {
+        await db.query(
+          `UPDATE usuarios_chat_center
+           SET conexiones_adicionales = COALESCE(conexiones_adicionales, 0) + 1
+           WHERE id_usuario = ?`,
+          { replacements: [id_usuario] }
+        );
+        console.log(`addon_conexion aplicado a id_usuario=${id_usuario} (+1 conexiones_adicionales)`);
+      }
+      return res.status(200).json({ received: true });
+    }
+  } catch (e) {
+    console.error('WH addon_conexion (checkout.session.completed):', e);
+    return res.status(200).json({ received: true });
+  }
+}
+
+
+// ➕ Fallback: por si deseas basarte en el intent directo
+if (event.type === 'payment_intent.succeeded') {
+  const pi = event.data.object;
+  try {
+    const md = pi?.metadata || {};
+    if (md.tipo === 'addon_conexion' && md.id_usuario) {
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET conexiones_adicionales = COALESCE(conexiones_adicionales, 0) + 1
+         WHERE id_usuario = ?`,
+        { replacements: [md.id_usuario] }
+      );
+      console.log(`addon_conexion (PI) aplicado a id_usuario=${md.id_usuario} (+1 conexiones_adicionales)`);
+      return res.status(200).json({ received: true });
+    }
+  } catch (e) {
+    console.error('WH addon_conexion (payment_intent.succeeded):', e);
+    return res.status(200).json({ received: true });
+  }
+}
 
 
 

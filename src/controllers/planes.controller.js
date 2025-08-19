@@ -29,11 +29,13 @@ exports.seleccionarPlan = async (req, res) => {
 
     // ✅ Activar directamente el Plan Free (id_plan === 1)
     if (parseInt(id_plan) === 1) {
-      const nuevaFecha = new Date();
-      nuevaFecha.setDate(nuevaFecha.getDate() + 15);
+      const hoy = new Date();
+      const nuevaFechaRenovacion = new Date(hoy);
+      nuevaFechaRenovacion.setDate(hoy.getDate() + 15);
 
       await usuario.update({
         id_plan: 1,
+        fecha_inicio: hoy,
         fecha_renovacion: nuevaFecha,
         estado: 'activo',
       });
