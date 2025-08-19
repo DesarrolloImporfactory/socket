@@ -3,9 +3,11 @@ const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const { db } = require('../database/config');
 
+// Price del addon de conexión (fijo, según me diste)
+const ADDON_PRICE_ID = 'price_1RxZS7RwAlJ5h5wgjvXlxgZT';
 
 
-// ⚠️ CORREGIDO: sin "active" en list() ni en create()
+// CORREGIDO: sin "active" en list() ni en create()
 async function ensurePortalConfigurationId() {
   // 1) Usa env si lo definiste
   if (process.env.STRIPE_PORTAL_CONFIGURATION_ID) {
@@ -660,3 +662,72 @@ exports.portalGestionMetodos = async (req, res) => {
 };
 
 
+/**
+ * Crear sesión de Checkout para comprar 1 conexión adicional (pago único).
+ * Body: { id_usuario, success_url?, cancel_url? }
+ */
+exports.crearSesionAddonConexion = async (req, res) => {
+  try {
+    const { id_usuario, success_url, cancel_url } = req.body;
+    if (!id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
+
+    // 1) Resolver (o crear) el customer de Stripe para este usuario
+    let customerId = null;
+
+    const [rows] = await db.query(`
+      SELECT customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+        AND customer_id IS NOT NULL
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [id_usuario] });
+
+    customerId = rows?.[0]?.customer_id || null;
+
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        metadata: { id_usuario: String(id_usuario) },
+      });
+      customerId = customer.id;
+
+      await db.query(`
+        INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+        VALUES (?, ?, NOW())
+      `, { replacements: [id_usuario, customerId] });
+    }
+
+    // 2) Crear la sesión de Checkout usando DIRECTAMENTE tu price
+    const baseUrl =
+      req.body.base_url ||
+      req.headers.origin ||
+      (req.headers.referer ? req.headers.referer.split('/').slice(0, 3).join('/') : null);
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer: customerId,
+      line_items: [{ price: ADDON_PRICE_ID, quantity: 1 }],
+      success_url: success_url || `${baseUrl}/usuarios?addon=ok`,
+      cancel_url: cancel_url || `${baseUrl}/usuarios?addon=cancel`,
+      // Metadatos para identificarnos en el webhook
+      metadata: { tipo: 'addon_conexion', id_usuario: String(id_usuario), price_id: ADDON_PRICE_ID },
+      payment_intent_data: {
+        metadata: { tipo: 'addon_conexion', id_usuario: String(id_usuario), price_id: ADDON_PRICE_ID },
+      },
+      invoice_creation: {
+        enabled: true,
+        invoice_data: {
+          description: 'Conexión adicional',
+          metadata: { tipo: 'addon_conexion', id_usuario: String(id_usuario), price_id: ADDON_PRICE_ID },
+        },
+      },
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (error) {
+    console.error('Error en crearSesionAddonConexion:', error);
+    return res.status(500).json({ status: 'fail', message: error?.raw?.message || error.message });
+  }
+};
