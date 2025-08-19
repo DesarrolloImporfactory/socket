@@ -194,7 +194,12 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
           type: db.QueryTypes.UPDATE,
         });
       }
-      return { ok: true };
+      return {
+        ok: true,
+        eventId: data.id,
+        etag: data.etag || null,
+        meetingUrl: data.hangoutLink || null,
+      };
     } else {
       // INSERT (creación)
       const { data } = await gcal.events.insert({
@@ -228,7 +233,12 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
           type: db.QueryTypes.UPDATE,
         });
       }
-      return { ok: true };
+      return {
+        ok: true,
+        eventId: data.id,
+        etag: data.etag || null,
+        meetingUrl: data.hangoutLink || null,
+      };
     }
   } catch (e) {
     console.error('upsertGoogleEvent error', e?.response?.data || e.message);

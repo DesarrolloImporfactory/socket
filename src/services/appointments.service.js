@@ -39,11 +39,14 @@ async function assertNoOverlap({
 
 /* ================= ENGANCHE: push out (evita bucles) ================= */
 async function syncOutUpsert(appt, opts) {
-  // si el cambio proviene de Google (pull webhook), no empujar de vuelta
   if (opts?.source === 'google') return;
 
   try {
-    const res = await pushUpsertEvent({ appointmentId: appt.id });
+    const res = await pushUpsertEvent({
+      appointmentId: appt.id,
+      createMeet: !!opts?.createMeet,
+    });
+
     // guarda metadatos si existen las columnas
     if (res && (res.eventId || res.etag)) {
       try {
@@ -60,6 +63,13 @@ async function syncOutUpsert(appt, opts) {
           last_synced_at: new Date(),
           last_sync_error: null,
         });
+      } catch (_) {}
+    }
+
+    // si Google devolvió link, guárdalo
+    if (res?.meetingUrl) {
+      try {
+        await appt.update({ meeting_url: res.meetingUrl }, { silent: true });
       } catch (_) {}
     }
   } catch (e) {
@@ -438,11 +448,56 @@ async function updateAppointment(id, payload, opts = {}) {
     return appt;
   });
 
-  // 🔌 push → Google (upsert o cancel según status actual)
-  if ((updated.status || up.status) === 'Cancelado') {
-    queueMicrotask(() => syncOutCancel(updated, opts));
-  } else {
-    queueMicrotask(() => syncOutUpsert(updated, opts));
+  // === GOOGLE SYNC ===
+  const wantsCreateMeet = payload.create_meet === true && !payload.meeting_url;
+  const newStatus = up.status ?? updated.status;
+
+  try {
+    if (newStatus === 'Cancelado') {
+      // cancelar en Google
+      queueMicrotask(() => syncOutCancel(updated, opts));
+    } else if (wantsCreateMeet) {
+      // 👉 GENERA EL MEET *SINCRÓNICAMENTE* EN UPDATE (igual que en CREATE)
+      const res = await pushUpsertEvent({
+        appointmentId: updated.id,
+        createMeet: true,
+      });
+
+      if (res?.meetingUrl) {
+        await updated.update({ meeting_url: res.meetingUrl }, { silent: true });
+      }
+      if (res && (res.eventId || res.etag)) {
+        await updated.update(
+          {
+            google_event_id: res.eventId ?? updated.google_event_id ?? null,
+            google_etag: res.etag ?? updated.google_etag ?? null,
+            last_synced_at: new Date(),
+            last_sync_error: null,
+          },
+          { silent: true }
+        );
+      } else {
+        await updated.update(
+          { last_synced_at: new Date(), last_sync_error: null },
+          { silent: true }
+        );
+      }
+    } else {
+      // upsert “normal” (sin crear meet) en background
+      queueMicrotask(() => syncOutUpsert(updated, opts));
+    }
+  } catch (e) {
+    // no tumbar la actualización de la cita si falla Google
+    try {
+      await updated.update(
+        { last_sync_error: e.message || String(e) },
+        { silent: true }
+      );
+    } catch (_) {}
+    console.warn(
+      'Google push upsert (update/create_meet) failed:',
+      e?.message || e
+    );
   }
   return updated;
 }

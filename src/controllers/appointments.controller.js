@@ -20,12 +20,33 @@ exports.list = catchAsync(async (req, res) => {
 exports.create = catchAsync(async (req, res) => {
   const currentUserId = req.user?.id_users ?? req.user?.id_usuario ?? null;
   const appt = await svc.createAppointment(req.body, currentUserId);
-  res.status(201).json({ status: 'success', appointment: appt });
+
+  // ECHO de lo que mandó el cliente (si vino). Si no vino, caemos al valor persistido.
+  const startEcho = req.body?.start ?? appt.start_utc;
+  const endEcho = req.body?.end ?? appt.end_utc;
+
+  res.status(201).json({
+    status: 'success',
+    appointment: appt,
+    start: startEcho,
+    end: endEcho,
+    meeting_url: appt.meeting_url ?? null,
+  });
 });
 
 exports.update = catchAsync(async (req, res) => {
   const appt = await svc.updateAppointment(req.params.id, req.body);
-  res.status(200).json({ status: 'success', appointment: appt });
+
+  const startEcho = req.body?.start ?? appt.start_utc;
+  const endEcho = req.body?.end ?? appt.end_utc;
+
+  res.status(200).json({
+    status: 'success',
+    appointment: appt,
+    start: startEcho,
+    end: endEcho,
+    meeting_url: appt.meeting_url ?? null,
+  });
 });
 
 exports.cancel = catchAsync(async (req, res) => {
