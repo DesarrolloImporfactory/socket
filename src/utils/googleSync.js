@@ -1,3 +1,11 @@
+/*
+ * -------------------------------------------------------------
+ * Sincronización bidireccional con Google Calendar:
+ *  - PUSH (local → Google): crea/actualiza/elimina eventos.
+ *  - PULL (Google → local): importa cambios (watch + list con syncToken).
+ * -------------------------------------------------------------
+ */
+
 const { google } = require('googleapis');
 const { db } = require('../database/config');
 const Appointment = require('../models/appointment.model');
@@ -6,12 +14,7 @@ const Calendar = require('../models/calendar.model');
 const crypto = require('crypto');
 require('dotenv').config();
 
-// function getRedirectUri() {
-//   const isProd = process.env.NODE_ENV === 'prod';
-//   return isProd
-//     ? process.env.GOOGLE_REDIRECT_URI
-//     : process.env.GOOGLE_REDIRECT_URI_DEV || process.env.GOOGLE_REDIRECT_URI;
-// }
+/* ===================== OAuth helpers ===================== */
 
 function getRedirectUri() {
   return process.env.GOOGLE_REDIRECT_URI;
@@ -25,33 +28,86 @@ function oauth2(redirectUri = getRedirectUri()) {
   );
 }
 
-/* ===================== Helpers de fechas ===================== */
+/* ===================== Helpers de fechas (PULL) ===================== */
+
+/**
+ * Convierte la estructura de Google ({dateTime,timeZone} o {date}) a Date (UTC).
+ * - dateTime ISO (con Z u offset) → Date correcto
+ * - date all-day → 00:00:00 UTC del día
+ */
 function parseGoogleTime(g) {
-  // g: {dateTime, timeZone} o {date} (all-day)
-  if (g?.dateTime) return new Date(g.dateTime); // '2025-08-16T00:00:00Z' -> Date UTC
-  if (g?.date) return new Date(g.date + 'T00:00:00Z'); // all-day -> 00:00 UTC
+  if (g?.dateTime) return new Date(g.dateTime);
+  if (g?.date) return new Date(g.date + 'T00:00:00Z');
   return null;
 }
 
+/**
+ * Devuelve 'YYYY-MM-DD HH:MM:SS' en UTC para guardar en DB (DATETIME).
+ */
 function toMysqlDateTime(v) {
-  // v: Date | string | number
   const d = v instanceof Date ? v : new Date(v);
   if (Number.isNaN(d.getTime())) return null;
-  // 'YYYY-MM-DD HH:MM:SS' en UTC
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-// Si viene de la DB 'YYYY-MM-DD HH:MM:SS' (UTC) pásalo a Date sin shift local
-function asUtcDate(v) {
-  if (v instanceof Date) return v;
-  if (typeof v === 'string') {
-    if (v.includes('T')) return new Date(v); // ya es ISO
-    return new Date(v.replace(' ', 'T') + 'Z'); // trátalo como UTC
-  }
-  return new Date(v);
+/* ===================== Helpers de fechas (PUSH) ===================== */
+/**
+ * Determina si una cadena ISO trae offset explícito (±HH:MM) o 'Z'.
+ */
+function hasTZOffset(s) {
+  return typeof s === 'string' && (/[+-]\d{2}:\d{2}$/.test(s) || /Z$/i.test(s));
 }
 
-/* ===== helpers de cuenta activa por calendario interno ===== */
+/**
+ * Convierte 'YYYY-MM-DD HH:MM:SS' → 'YYYY-MM-DDTHH:MM:SS' (no añade Z).
+ */
+function asIsoNoT(s) {
+  return typeof s === 'string' ? s.replace(' ', 'T') : s;
+}
+
+/**
+ * Construye el campo de fecha para Google:
+ * - Si viene `fromFront` con offset → { dateTime: fromFront } (sin timeZone).
+ * - Si viene `fromFront` sin offset  → { dateTime: fromFront, timeZone: tz }.
+ * - Si no viene `fromFront`, usa `fromDb`:
+ *   - fromDb instanceof Date → { dateTime: fromDb.toISOString() } (UTC correcta).
+ *   - fromDb string con offset/Z → { dateTime: fromDb }.
+ *   - fromDb string 'YYYY-MM-DD HH:MM:SS' (UTC en DB) → { dateTime: '<iso>Z' }.
+ */
+function buildGoogleDateField({ fromFront, tz, fromDb }) {
+  // 1) Preferimos lo que envía el front
+  if (fromFront) {
+    if (typeof fromFront === 'string') {
+      const iso = asIsoNoT(fromFront);
+      if (hasTZOffset(iso)) return { dateTime: iso };
+      return { dateTime: iso, timeZone: tz || 'UTC' };
+    }
+    if (fromFront instanceof Date) {
+      return { dateTime: fromFront.toISOString() };
+    }
+  }
+
+  // 2) Fallback a lo que tengamos en la DB
+  if (fromDb instanceof Date) {
+    // Date representa un instante absoluto → ISO con Z correcto
+    return { dateTime: fromDb.toISOString() };
+  }
+  if (typeof fromDb === 'string') {
+    const iso = asIsoNoT(fromDb);
+    if (hasTZOffset(iso)) {
+      // ya trae offset o Z
+      return { dateTime: iso };
+    }
+    // Caso típico DB: 'YYYY-MM-DD HH:MM:SS' guardado como UTC (start_utc/end_utc)
+    // añadimos 'Z' para que Google lo interprete en UTC
+    return { dateTime: iso + 'Z' };
+  }
+
+  return undefined;
+}
+
+/* ===================== Vínculos de cuenta/cliente Google ===================== */
+
 async function getActiveLink(id_sub_usuario, calendar_id) {
   const rows = await db.query(
     `SELECT *
@@ -94,7 +150,13 @@ async function getOAuthClientForLink(link) {
   return client;
 }
 
-/* ========== mapping local -> Google payload (push) ========== */
+/* ===================== Mapping local → Google (PUSH) ===================== */
+/**
+ * Construye el requestBody para gcal.events.insert/patch respetando prioridad:
+ *   1) appt.__override.start / appt.__override.end / appt.__override.timeZone (vienen del servicio)
+ *   2) appt.booked_tz
+ *   3) fallback a valores de DB (start_utc/end_utc)
+ */
 function toGoogleEventPayload(appt) {
   const attendees = Array.isArray(appt.invitees)
     ? appt.invitees
@@ -105,19 +167,30 @@ function toGoogleEventPayload(appt) {
         }))
     : [];
 
-  const s = asUtcDate(appt.start_utc);
-  const e = asUtcDate(appt.end_utc);
+  const tz = appt.__override?.timeZone || appt.booked_tz || 'UTC';
+
+  const startField = buildGoogleDateField({
+    fromFront: appt.__override?.start,
+    tz,
+    fromDb: appt.start_utc,
+  });
+
+  const endField = buildGoogleDateField({
+    fromFront: appt.__override?.end,
+    tz,
+    fromDb: appt.end_utc,
+  });
 
   const payload = {
     summary: appt.title || '(Sin título)',
     description: appt.description || undefined,
     location: appt.location_text || undefined,
-    start: { dateTime: s.toISOString() }, // ISO UTC correcto
-    end: { dateTime: e.toISOString() },
+    start: startField,
+    end: endField,
     attendees,
   };
 
-  // ⤵️ Si no hay meeting_url y el front pide crear Meet, usamos conferenceData.
+  // Si no hay meeting_url y se pide crear Meet, añade conferenceData
   if (!appt.meeting_url && appt.create_meet) {
     payload.conferenceData = {
       createRequest: {
@@ -127,10 +200,14 @@ function toGoogleEventPayload(appt) {
     };
   }
 
+  // Log mínimo de auditoría (útil si hay dudas de TZ)
+  // console.log('[gcal push] start:', payload.start, 'end:', payload.end, 'tz=', tz);
+
   return payload;
 }
 
-/* ========== Local -> Google (crear/actualizar/borrar) ========== */
+/* ===================== Local → Google (crear/actualizar/borrar) ===================== */
+
 async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
   const link = await getActiveLink(id_sub_usuario, calendar_id);
   if (!link) return { ok: false, reason: 'no_link' };
@@ -146,7 +223,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
     { replacements: [appointment.id], type: db.QueryTypes.SELECT }
   );
 
-  // Cancelado => eliminar en Google (si existe)
+  // Si está cancelado, borra en Google
   if (appointment.status === 'Cancelado') {
     if (map?.google_event_id) {
       try {
@@ -166,16 +243,15 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
     return { ok: true };
   }
 
-  const body = toGoogleEventPayload(appointment);
+  const requestBody = toGoogleEventPayload(appointment);
 
   try {
     if (map?.google_event_id) {
-      // PATCH (actualización)
+      // PATCH
       const { data } = await gcal.events.patch({
         calendarId: googleCalId,
         eventId: map.google_event_id,
-        requestBody: body,
-        // Habilita conferencia si viene conferenceData en body
+        requestBody,
         conferenceDataVersion: 1,
       });
       await db.query(
@@ -187,7 +263,6 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
           type: db.QueryTypes.UPDATE,
         }
       );
-      // Si no teníamos URL y Google creó un Meet, lo traemos
       if (!appointment.meeting_url && data.hangoutLink) {
         await db.query(`UPDATE appointments SET meeting_url = ? WHERE id = ?`, {
           replacements: [data.hangoutLink, appointment.id],
@@ -201,11 +276,11 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
         meetingUrl: data.hangoutLink || null,
       };
     } else {
-      // INSERT (creación)
+      // INSERT
       const { data } = await gcal.events.insert({
         calendarId: googleCalId,
-        requestBody: body,
-        conferenceDataVersion: 1, // necesario si queremos crear Meet
+        requestBody,
+        conferenceDataVersion: 1,
       });
       await db.query(
         `INSERT INTO google_events_links
@@ -284,7 +359,8 @@ async function deleteGoogleEvent({
   return { ok: true };
 }
 
-/* ================= Watch (push) Google -> Local ================= */
+/* ===================== Watch (push) Google → Local ===================== */
+
 async function startWatch({ id_sub_usuario, calendar_id }) {
   const link = await getActiveLink(id_sub_usuario, calendar_id);
   if (!link) return { ok: false, reason: 'no_link' };
@@ -317,7 +393,7 @@ async function startWatch({ id_sub_usuario, calendar_id }) {
     }
   );
 
-  // primer pull para obtener sync_token
+  // Primer pull para obtener sync_token
   await importChanges({ linkId: link.id, reset: true });
   return { ok: true };
 }
@@ -328,6 +404,7 @@ async function stopWatch({ id_sub_usuario, calendar_id }) {
   const client = await getOAuthClientForLink(link);
   if (!client) return { ok: true };
   const gcal = google.calendar({ version: 'v3', auth: client });
+
   try {
     await gcal.channels.stop({
       requestBody: {
@@ -345,7 +422,8 @@ async function stopWatch({ id_sub_usuario, calendar_id }) {
   return { ok: true };
 }
 
-/* ================= Pull (Google -> Local) ================= */
+/* ===================== Pull (Google → Local) ===================== */
+
 async function importChanges({ linkId, reset = false }) {
   const [link] = await db.query(
     `SELECT * FROM users_google_accounts WHERE id = ? LIMIT 1`,
@@ -359,7 +437,7 @@ async function importChanges({ linkId, reset = false }) {
   const gcal = google.calendar({ version: 'v3', auth: client });
   const googleCalId = link.google_calendar_id || 'primary';
 
-  // Forzamos la zona horaria de referencia del "pull" (evita desfases)
+  // TZ de referencia para el pull (mejora consistencia)
   let calendarTz = 'America/Guayaquil';
   try {
     const [calRow] = await db.query(
@@ -373,14 +451,16 @@ async function importChanges({ linkId, reset = false }) {
     calendarId: googleCalId,
     showDeleted: true,
     maxResults: 100,
-    timeZone: calendarTz, // clave para evitar desfases
+    timeZone: calendarTz,
   };
 
-  if (!reset && link.sync_token) params.syncToken = link.sync_token;
-  else
+  if (!reset && link.sync_token) {
+    params.syncToken = link.sync_token;
+  } else {
     params.timeMin = new Date(
       Date.now() - 90 * 24 * 60 * 60 * 1000
     ).toISOString();
+  }
 
   try {
     let nextPageToken = null;
@@ -405,6 +485,7 @@ async function importChanges({ linkId, reset = false }) {
     return { ok: true };
   } catch (e) {
     if (e?.code === 410) {
+      // token inválido → reset
       await db.query(
         `UPDATE users_google_accounts SET sync_token = NULL WHERE id = ?`,
         { replacements: [link.id], type: db.QueryTypes.UPDATE }
@@ -416,7 +497,8 @@ async function importChanges({ linkId, reset = false }) {
   }
 }
 
-/* ========== Aplicar un evento de Google en la DB local ========== */
+/* ========== Aplicar un evento de Google en la DB local (PULL) ========== */
+
 async function applyGoogleEventToLocal({ link, ev }) {
   const isDeleted = ev.status === 'cancelled';
   const googleId = ev.id;
@@ -440,16 +522,13 @@ async function applyGoogleEventToLocal({ link, ev }) {
     return;
   }
 
-  // --- normaliza tiempos ---
+  // Normaliza tiempos de Google → UTC para DB
   const startDate = parseGoogleTime(ev.start); // Date (UTC)
-  let endDate = parseGoogleTime(ev.end); // end puede venir vacío; fallback a +30min
+  let endDate = parseGoogleTime(ev.end);
   if (!endDate && startDate)
     endDate = new Date(startDate.getTime() + 30 * 60000);
 
-  // Si quisieras que all-day termine 23:59:59 del mismo día (opcional):
-  // if (ev.start?.date && ev.end?.date) endDate = new Date(endDate.getTime() - 1000);
-
-  const startMy = toMysqlDateTime(startDate); // 'YYYY-MM-DD HH:MM:SS' (UTC)
+  const startMy = toMysqlDateTime(startDate);
   const endMy = toMysqlDateTime(endDate);
 
   const title = ev.summary || '(Sin título)';
@@ -458,7 +537,6 @@ async function applyGoogleEventToLocal({ link, ev }) {
   const meet = ev.hangoutLink || null;
   const tz = ev.start?.timeZone || ev.end?.timeZone || 'UTC';
 
-  // --- attendees (invitados) normalizados una sola vez ---
   const rawAttendees = Array.isArray(ev.attendees) ? ev.attendees : [];
   const attendees = rawAttendees
     .filter((a) => a?.email)
@@ -476,7 +554,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
     }));
 
   if (map?.appointment_id) {
-    // ========= UPDATE =========
+    // UPDATE local
     await db.query(
       `UPDATE appointments
           SET title = ?, description = ?, location_text = ?,
@@ -503,7 +581,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
       { replacements: [ev.etag || null, map.id], type: db.QueryTypes.UPDATE }
     );
 
-    // Upsert de invitados por email (merge suave)
+    // Upsert de invitados por email
     if (attendees.length) {
       const current = await db.query(
         `SELECT id, email FROM appointment_invitees WHERE appointment_id = ?`,
@@ -513,8 +591,8 @@ async function applyGoogleEventToLocal({ link, ev }) {
       const byEmail = new Map(
         current.map((i) => [String(i.email || '').toLowerCase(), i])
       );
-
       const kept = new Set();
+
       for (const a of attendees) {
         const exists = byEmail.get(a.email);
         if (exists) {
@@ -548,7 +626,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
         }
       }
 
-      // (Opcional) remover los que ya no vienen en Google
+      // (Opcional) eliminar los que ya no vienen en Google
       const toRemove = current.filter((i) => !kept.has(i.id));
       if (toRemove.length) {
         await db.query(
@@ -576,7 +654,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
       );
     }
   } else {
-    // ========= INSERT =========
+    // INSERT local
     const [insertId] = await db.query(
       `INSERT INTO appointments
          (calendar_id, title, description, location_text, meeting_url,
@@ -598,7 +676,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
     );
     const newId = insertId;
 
-    // Insertar invitados (si existen) y definir contact_id
+    // Invitados
     let firstInviteeId = null;
     for (const [idx, a] of attendees.entries()) {
       const [iid] = await db.query(
@@ -641,7 +719,8 @@ async function applyGoogleEventToLocal({ link, ev }) {
   }
 }
 
-/* ========== Resolver vínculo por headers (webhook push) ========== */
+/* ===================== Resolver vínculo por headers (webhook) ===================== */
+
 async function findLinkByHeaders({ channelId, resourceId }) {
   const rows = await db.query(
     `SELECT * FROM users_google_accounts
@@ -652,8 +731,21 @@ async function findLinkByHeaders({ channelId, resourceId }) {
   return rows?.[0] || null;
 }
 
-async function pushUpsertEvent({ appointmentId, createMeet = false }) {
-  // Cargamos la cita completa para armar el payload que upsertGoogleEvent espera
+/* ===================== Facades usadas por tu servicio ===================== */
+/**
+ * pushUpsertEvent
+ * Permite pasar overrides desde el servicio (create/update):
+ *   - start, end: cadenas ISO (idealmente con offset, p.ej. ...-05:00) o Date
+ *   - timeZone: 'America/Guayaquil', etc.
+ */
+async function pushUpsertEvent({
+  appointmentId,
+  createMeet = false,
+  start,
+  end,
+  timeZone,
+}) {
+  // Cargamos la cita con invitados (como antes)
   const appt = await Appointment.findByPk(appointmentId, {
     include: [
       {
@@ -666,22 +758,25 @@ async function pushUpsertEvent({ appointmentId, createMeet = false }) {
   });
   if (!appt) throw new Error('appointment not found');
 
-  // Tomamos un "dueño" para la cuenta de Google (usa tu regla preferida)
+  // Dueño para la cuenta de Google (misma regla que tenías)
   const id_sub_usuario =
     appt.assigned_user_id || appt.created_by_user_id || null;
 
   const payload = {
     ...appt.get({ plain: true }),
-    create_meet: createMeet || !appt.meeting_url, // si no hay link y pedimos crear
+    create_meet: createMeet || !appt.meeting_url,
   };
 
-  const res = await upsertGoogleEvent({
+  // Inyecta overrides si llegaron desde el servicio
+  if (start || end || timeZone) {
+    payload.__override = { start, end, timeZone };
+  }
+
+  return upsertGoogleEvent({
     id_sub_usuario,
     calendar_id: appt.calendar_id,
     appointment: payload,
   });
-
-  return res;
 }
 
 async function pushCancelEvent({ appointmentId }) {

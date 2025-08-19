@@ -45,6 +45,10 @@ async function syncOutUpsert(appt, opts) {
     const res = await pushUpsertEvent({
       appointmentId: appt.id,
       createMeet: !!opts?.createMeet,
+      // ⬇⬇ IMPORTANTE: propagar overrides del update/crear
+      start: opts?.start, // puede ser ISO con offset o Date
+      end: opts?.end, // idem
+      timeZone: opts?.timeZone, // p.ej. 'America/Guayaquil'
     });
 
     // guarda metadatos si existen las columnas
@@ -297,11 +301,16 @@ async function createAppointment(payload, currentUserId, opts = {}) {
   });
 
   // 🔌 push → Google
+  const tz = payload.booked_tz || 'UTC';
   if (payload.create_meet) {
     try {
       const res = await pushUpsertEvent({
         appointmentId: appt.id,
         createMeet: true,
+        // ⬇⬇ Usa lo que envía el front (con offset)
+        start: payload.start,
+        end: payload.end,
+        timeZone: tz,
       });
       if (res?.meetingUrl) {
         await appt.update({ meeting_url: res.meetingUrl }, { silent: true });
@@ -312,10 +321,17 @@ async function createAppointment(payload, currentUserId, opts = {}) {
         { silent: true }
       );
       console.warn('Google push upsert (create_meet) failed:', e?.message || e);
-      // No lanzamos error: la cita ya se creó; simplemente no habrá link
     }
   } else {
-    queueMicrotask(() => syncOutUpsert(appt, opts));
+    // ⬇⬇ Pasa start/end/timeZone al push en background
+    queueMicrotask(() =>
+      syncOutUpsert(appt, {
+        ...opts,
+        start: payload.start,
+        end: payload.end,
+        timeZone: tz,
+      })
+    );
   }
   return appt;
 }
@@ -448,19 +464,21 @@ async function updateAppointment(id, payload, opts = {}) {
     return appt;
   });
 
-  // === GOOGLE SYNC ===
   const wantsCreateMeet = payload.create_meet === true && !payload.meeting_url;
   const newStatus = up.status ?? updated.status;
+  const tz = payload.booked_tz || updated.booked_tz || 'UTC';
 
   try {
     if (newStatus === 'Cancelado') {
-      // cancelar en Google
       queueMicrotask(() => syncOutCancel(updated, opts));
     } else if (wantsCreateMeet) {
-      // 👉 GENERA EL MEET *SINCRÓNICAMENTE* EN UPDATE (igual que en CREATE)
+      // Sincrónico, pasando fechas/TZ
       const res = await pushUpsertEvent({
         appointmentId: updated.id,
         createMeet: true,
+        start: payload.start, // puede venir con offset
+        end: payload.end,
+        timeZone: tz,
       });
 
       if (res?.meetingUrl) {
@@ -483,11 +501,17 @@ async function updateAppointment(id, payload, opts = {}) {
         );
       }
     } else {
-      // upsert “normal” (sin crear meet) en background
-      queueMicrotask(() => syncOutUpsert(updated, opts));
+      // Background, pero pasando fechas/TZ
+      queueMicrotask(() =>
+        syncOutUpsert(updated, {
+          ...opts,
+          start: payload.start, // si no vinieron, quedarán undefined
+          end: payload.end, // y pushUpsertEvent cae a appt.start_utc/end_utc
+          timeZone: tz,
+        })
+      );
     }
   } catch (e) {
-    // no tumbar la actualización de la cita si falla Google
     try {
       await updated.update(
         { last_sync_error: e.message || String(e) },
