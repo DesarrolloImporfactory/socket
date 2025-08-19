@@ -27,15 +27,32 @@ exports.seleccionarPlan = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'El usuario no existe' });
     }
 
-    // Solo actualiza la intención del plan sin activar
+    // ✅ Activar directamente el Plan Free (id_plan === 1)
+    if (parseInt(id_plan) === 1) {
+      const nuevaFecha = new Date();
+      nuevaFecha.setDate(nuevaFecha.getDate() + 15);
+
+      await usuario.update({
+        id_plan: 1,
+        fecha_renovacion: nuevaFecha,
+        estado: 'activo',
+      });
+
+      return res.status(200).json({ status: 'success', message: 'Plan gratuito activado correctamente' });
+    }
+
+    // 🟣 Otros planes: solo actualizar intención
     await usuario.update({ id_plan });
 
     return res.status(200).json({ status: 'success', message: 'Plan seleccionado correctamente, pendiente de pago' });
+
   } catch (error) {
     console.error('Error al seleccionar plan:', error);
     return res.status(500).json({ status: 'fail', message: 'Error interno al seleccionar plan' });
   }
 };
+
+
 
 /**
  * ✅ Lista todos los planes disponibles
