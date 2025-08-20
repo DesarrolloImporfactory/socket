@@ -10,6 +10,8 @@ const Productos = require('./productos.model');
 const InventarioBodegas = require('./inventario_bodegas.model');
 const Usuarios_chat_center = require('./usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('./sub_usuarios_chat_center.model');
+const Departamentos_chat_center = require('./departamentos_chat_center.model');
+const Sub_usuarios_departamento = require('./sub_usuarios_departamento.model');
 const Planes_chat_center = require('./planes_chat_center.model');
 const Calendar = require('./calendar.model');
 const Appointment = require('./appointment.model');
@@ -176,6 +178,34 @@ const initModel = () => {
     foreignKey: 'id_plan',
     targetKey: 'id_plan',
     as: 'plan',
+  });
+
+  // Relación: Un departamento tiene muchos subusuarios
+
+  Departamentos_chat_center.hasMany(Sub_usuarios_departamento, {
+    foreignKey: 'id_departamento',
+    sourceKey: 'id_departamento',
+    as: 'sub_usuarios_departamento',
+  });
+
+  Sub_usuarios_departamento.belongsTo(Departamentos_chat_center, {
+    foreignKey: 'id_departamento',
+    targetKey: 'id_departamento',
+    as: 'departamento',
+  });
+
+  //Relación: Un subusuario puede estar en muchos departamentos
+
+  Sub_usuarios_chat_center.hasMany(Sub_usuarios_departamento, {
+    foreignKey: 'id_sub_usuario',
+    sourceKey: 'id_sub_usuario',
+    as: 'departamentos_sub_usuario',
+  });
+
+  Sub_usuarios_departamento.belongsTo(Sub_usuarios_chat_center, {
+    foreignKey: 'id_sub_usuario',
+    targetKey: 'id_sub_usuario',
+    as: 'sub_usuario',
   });
 
   // ===== Calendarios ↔ Citas

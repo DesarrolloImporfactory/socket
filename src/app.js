@@ -41,6 +41,8 @@ const messengerRouter = require('./routes/messenger.routes');
 
 const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes');
 
+const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
+
 const stripeRouter = require('./routes/stripe.routes');
 
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
@@ -132,6 +134,7 @@ app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
+app.use('/api/v1/departamentos_chat_center', departamentos_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
