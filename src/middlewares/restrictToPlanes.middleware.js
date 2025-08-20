@@ -1,4 +1,4 @@
-const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 
 const restrictToPlanes = (planesPermitidos = []) => {
   return async (req, res, next) => {
@@ -11,7 +11,13 @@ const restrictToPlanes = (planesPermitidos = []) => {
       });
     }
 
-    const id_plan = subUsuario.id_plan;
+    const user = await Usuarios_chat_center.findOne({
+      where: {
+        id_usuario: subUsuario.id_usuario,
+      },
+    });
+
+    const id_plan = user.id_plan;
 
     if (!planesPermitidos.includes(id_plan)) {
       return res.status(403).json({
