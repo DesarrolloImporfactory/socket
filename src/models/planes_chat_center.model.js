@@ -22,6 +22,10 @@ const Planes_chat_center = db.define(
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
     },
+    n_conexiones: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+    },
     max_subusuarios: {
       type: DataTypes.INTEGER,
       allowNull: false,
