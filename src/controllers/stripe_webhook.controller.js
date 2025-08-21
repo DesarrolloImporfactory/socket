@@ -442,6 +442,70 @@ if (event.type === 'payment_intent.succeeded') {
   }
 }
 
+  // 🔹 Registrar transacción addon_subusuario
+  if (event.type === 'payment_intent.created') {
+    const pi = event.data.object;
+    const md = pi.metadata || {};
+
+    if (md.tipo === 'addon_subusuario' && md.id_usuario && pi.customer) {
+      try {
+        await db.query(`
+          INSERT INTO transacciones_stripe_chat (id_pago, customer_id, id_usuario, fecha)
+          VALUES (?, ?, ?, NOW())
+        `, { replacements: [pi.id, pi.customer, md.id_usuario] });
+
+        console.log(`🟢 Transacción registrada para addon_subusuario: ${pi.id}`);
+      } catch (err) {
+        console.error('❌ Error registrando transacción addon_subusuario:', err);
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  }
+
+  // 🔹 Confirmación de compra addon_subusuario
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const md = session.metadata || {};
+
+    if (md.tipo === 'addon_subusuario' && md.id_usuario) {
+      try {
+        await db.query(`
+          UPDATE usuarios_chat_center
+          SET subusuarios_adicionales = COALESCE(subusuarios_adicionales, 0) + 1
+          WHERE id_usuario = ?
+        `, { replacements: [md.id_usuario] });
+
+        console.log(`✅ Subusuario adicional aplicado a id_usuario=${md.id_usuario}`);
+      } catch (err) {
+        console.error(`❌ Error aplicando addon_subusuario:`, err);
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  }
+
+  // 🔹 Fallback en caso de fallo en sesión pero éxito en pago
+  if (event.type === 'payment_intent.succeeded') {
+    const pi = event.data.object;
+    const md = pi.metadata || {};
+
+    if (md.tipo === 'addon_subusuario' && md.id_usuario) {
+      try {
+        await db.query(`
+          UPDATE usuarios_chat_center
+          SET subusuarios_adicionales = COALESCE(subusuarios_adicionales, 0) + 1
+          WHERE id_usuario = ?
+        `, { replacements: [md.id_usuario] });
+
+        console.log(`✅ Subusuario adicional (fallback) aplicado a id_usuario=${md.id_usuario}`);
+      } catch (err) {
+        console.error(`❌ Error fallback addon_subusuario:`, err);
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  }
 
 
 

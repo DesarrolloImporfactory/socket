@@ -12,9 +12,9 @@ router.post('/obtenerSuscripcionActiva', stripe_planesController.obtenerSuscripc
 router.post('/crearSesionSetupPM', stripe_planesController.crearSesionSetupPM);
 router.post('/portalAddPaymentMethod', stripe_planesController.portalAddPaymentMethod);
 router.post('/portalGestionMetodos', stripe_planesController.portalGestionMetodos);
-// 🔹 NUEVO: sesión de pago única para la conexión adicional
+// 🔹 NUEVO: sesión de pago única para la conexión adicional y subusuario adicional
 router.post('/crearSesionAddonConexion', stripe_planesController.crearSesionAddonConexion);
-
+router.post('/crearSesionAddonSubusuario', stripe_planesController.crearSesionAddonSubusuario);
 
 
 
