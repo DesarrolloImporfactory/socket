@@ -297,3 +297,100 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
     });
   }
 });
+
+async function obtenerFull(producto, plataformaSolicitada) {
+  // 1) inventario_bodegas (LIMIT 1)
+  const [inv] = await db.query(
+    'SELECT * FROM inventario_bodegas WHERE id_producto = ? LIMIT 1',
+    {
+      replacements: [producto.id_producto],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+  if (!inv) return 0;
+
+  // 2) bodega (LIMIT 1)
+  const [bodega] = await db.query('SELECT * FROM bodega WHERE id = ? LIMIT 1', {
+    replacements: [inv.bodega],
+    type: db.QueryTypes.SELECT,
+  });
+  if (!bodega) return 0;
+
+  const id_bodega = Number(bodega.id_plataforma) || 0;
+  let full = Number(bodega.full_filme) || 0;
+  const prodPlat = Number(producto.id_plataforma) || 0;
+  const paramPlat = Number(plataformaSolicitada) || 0;
+
+  // 🔹 Lógica exacta del PHP
+  if (prodPlat === id_bodega) {
+    full = 0;
+  } else if (id_bodega === prodPlat) {
+    full = 0; // redundante pero mantenido por fidelidad
+  } else if (paramPlat === prodPlat) {
+    full = full; // se queda igual
+  } else {
+    full = 0;
+  }
+
+  return full;
+}
+
+exports.calcularGuiaDirecta = catchAsync(async (req, res, next) => {
+  const { id_producto, total, tarifa, id_plataforma, costo } = req.body || {};
+
+  // 1) Validaciones mínimas
+  if (!id_producto || id_plataforma === undefined || id_plataforma === null) {
+    return next(
+      new AppError(
+        'Faltan campos obligatorios: id_producto o id_plataforma',
+        400
+      )
+    );
+  }
+
+  // 2) Normalización numérica
+  let totalNum = Number(total) || 0;
+  let tarifaNum = Number(tarifa) || 0;
+  let costoNum = Number(costo) || 0;
+  const idPlat = Number(id_plataforma) || 0;
+
+  // 3) Buscar producto
+  const [producto] = await db.query(
+    'SELECT * FROM productos WHERE id_producto = ? LIMIT 1',
+    {
+      replacements: [id_producto],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+  if (!producto) {
+    return next(new AppError('Producto no encontrado', 404));
+  }
+
+  // 4) Calcular FULL (como en PHP)
+  const fullNum = await obtenerFull(producto, idPlat);
+
+  // 5) Si plataforma del request == plataforma del producto → costo = 0
+  const plataformaProducto = Number(producto.id_plataforma) || 0;
+  if (idPlat === plataformaProducto) {
+    costoNum = 0;
+  }
+
+  // 6) Cálculo resultante y flag generar
+  let resultante = totalNum - costoNum - tarifaNum - fullNum;
+  const generar = resultante > 0;
+
+  // 7) Respuesta
+  return res.status(200).json({
+    status: 200,
+    title: 'Éxito',
+    message: 'Cálculo realizado correctamente',
+    data: {
+      total: totalNum.toFixed(2),
+      tarifa: tarifaNum.toFixed(2),
+      costo: costoNum.toFixed(2),
+      resultante: resultante.toFixed(2),
+      generar,
+      full: fullNum.toFixed(2),
+    },
+  });
+});

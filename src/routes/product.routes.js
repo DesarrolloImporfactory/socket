@@ -6,6 +6,8 @@ const router = express.Router();
 const authMiddleware = require('../middlewares/auth.middleware');
 router.use(authMiddleware.protect);
 
+router.post('/calcularGuiaDirecta', productosController.calcularGuiaDirecta);
+
 router.post('/agregarProducto', productosController.agregarProducto);
 
 router.post('/eliminarProducto', productosController.eliminarProducto);

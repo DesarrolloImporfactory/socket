@@ -839,10 +839,6 @@ class ChatService {
         gintracom: precioGintracom,
       };
 
-      if (ciudadId == 599) {
-        tarifas.servientrega = 5;
-      }
-
       // Obtener el valor de la matriz
       const matrizData = await this.obtenerMatriz(id_plataforma);
       const matriz = matrizData[0] ? matrizData[0].idmatriz : null;

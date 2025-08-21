@@ -2093,3 +2093,6 @@
 [2025-08-19T19:52:05.655Z] info: No se encontraron ambos asistentes (logistico y ventas)
 >>>>>>> 0fab7a4db96198a550bde1f7a035e5d1dc5b166e
 [2025-08-20T13:52:32.210Z] info: No se encontraron ambos asistentes (logistico y ventas)
+[2025-08-21T14:29:32.476Z] info: Faltan campos obligatorios: id_producto o id_plataforma
+[2025-08-21T15:21:34.250Z] info: Faltan campos obligatorios: id_producto o id_plataforma
+[2025-08-21T15:45:19.430Z] info: Faltan campos obligatorios: id_producto o id_plataforma
