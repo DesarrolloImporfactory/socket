@@ -151,7 +151,7 @@ router.post('/crearPlantillaRapida', async (req, res) => {
   const { atajo, mensaje, id_configuracion } = req.body;
 
   try {
-    if ((!id_configuracion, !atajo, !mensaje)) {
+    if ((!id_configuracion, !atajo)) {
       return res.status(400).json({
         success: false,
         message: 'Faltan datos requeridos.',
