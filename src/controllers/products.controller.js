@@ -1,5 +1,6 @@
 const AppError = require('../utils/appError');
 const Productos = require('../models/productos.model');
+const Detalle_fact_cot = require('../models/detalle_fact_cot.model');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 
@@ -237,30 +238,22 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
     const { numero_factura, id_plataforma } = factura;
 
-    // 2. Insertamos el producto
-    const [insertResult] = await db.query(
-      `INSERT INTO detalle_fact_cot 
-        (id_inventario, id_producto, sku, precio_venta, cantidad, id_factura, numero_factura, id_plataforma)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      {
-        replacements: [
-          id_inventario,
-          id_producto,
-          sku,
-          precio,
-          cantidad,
-          id_factura,
-          numero_factura,
-          id_plataforma,
-        ],
-        type: db.QueryTypes.INSERT,
-      }
-    );
+    const created = await Detalle_fact_cot.create({
+      id_inventario,
+      id_producto,
+      sku,
+      precio_venta: precio,
+      cantidad,
+      id_factura,
+      numero_factura,
+      id_plataforma
+    });
 
     res.status(200).json({
       status: 200,
       title: 'Éxito',
       message: 'Producto agregado correctamente',
+      id_detalle: created.id_detalle 
     });
   } catch (error) {
     console.error('Error real al agregar producto:', error); // 👈 Muestra el error real
