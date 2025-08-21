@@ -36,9 +36,10 @@ exports.seleccionarPlan = async (req, res) => {
       await usuario.update({
         id_plan: 1,
         fecha_inicio: hoy,
-        fecha_renovacion: nuevaFecha,
+        fecha_renovacion: nuevaFechaRenovacion,
         estado: 'activo',
       });
+
 
       return res.status(200).json({ status: 'success', message: 'Plan gratuito activado correctamente' });
     }
