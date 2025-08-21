@@ -1278,7 +1278,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
       components: [
         {
           type: 'BODY',
-          text: '😃 Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de {{2}}\nQuiero Confirmar tus Datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\n✅ Por favor enviame tu ubicación actual para tener una entrega exitosa.',
+          text: '😃 Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero Confirmar tus Datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\n✅ Por favor enviame tu ubicación actual para tener una entrega exitosa.',
           example: {
             body_text: [
               [
