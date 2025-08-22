@@ -6,7 +6,7 @@ const path = require('path');
 
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
-const { sequelize } = require('../models/initModels');
+const Clientes_chat_center = require('../models/clientes_chat_center.model');
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -199,5 +199,34 @@ exports.eliminarDepartamento = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'Departamento eliminado correctamente.',
+  });
+});
+
+exports.transferirChat = catchAsync(async (req, res, next) => {
+  const { id_encargado, id_departamento, id_cliente_chat_center } = req.body;
+
+  // Validaciones mínimas
+  if (!id_encargado || !id_departamento || !id_cliente_chat_center) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'No ha seleccionado correctamente a quién desea transferir.',
+    });
+  }
+
+  // Actualización
+  await Clientes_chat_center.update(
+    {
+      id_departamento,
+      id_encargado,
+    },
+    {
+      where: { id: id_cliente_chat_center },
+    }
+  );
+
+  // Respuesta
+  res.status(200).json({
+    status: 'success',
+    message: 'Chat transferido correctamente',
   });
 });

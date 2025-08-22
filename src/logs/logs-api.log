@@ -2096,3 +2096,13 @@
 [2025-08-21T14:29:32.476Z] info: Faltan campos obligatorios: id_producto o id_plataforma
 [2025-08-21T15:21:34.250Z] info: Faltan campos obligatorios: id_producto o id_plataforma
 [2025-08-21T15:45:19.430Z] info: Faltan campos obligatorios: id_producto o id_plataforma
+[2025-08-22T15:16:51.428Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:16:51.437Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:17:04.456Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:17:04.559Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:19:39.234Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:19:39.337Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:19:56.480Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:19:56.531Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:24:47.407Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-22T15:24:47.462Z] info: WHERE parameter "id_usuario" has invalid "undefined" value

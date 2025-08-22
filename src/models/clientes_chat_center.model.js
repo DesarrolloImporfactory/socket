@@ -89,6 +89,21 @@ const ClientesChatCenter = db.define(
       allowNull: false,
       defaultValue: 0,
     },
+    id_departamento: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
+    id_encargado: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
+    telefono_limpio : {
+      type: DataTypes.STRING(13),
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     tableName: 'clientes_chat_center',

@@ -30,4 +30,9 @@ router.delete(
   departamentos_chat_center.eliminarDepartamento
 );
 
+router.post(
+  '/transferirChat',
+  departamentos_chat_center.transferirChat
+);
+
 module.exports = router;
