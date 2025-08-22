@@ -41,6 +41,11 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
       defaultValue: 0,
     },
+    free_trial_used: {
+      type: DataTypes.TINYINT,
+      allowNull: true,
+      defaultValue: 0,
+    },
   },
   {
     sequelize: db,

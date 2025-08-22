@@ -15,6 +15,10 @@ router.post('/portalGestionMetodos', stripe_planesController.portalGestionMetodo
 // 🔹 NUEVO: sesión de pago única para la conexión adicional y subusuario adicional
 router.post('/crearSesionAddonConexion', stripe_planesController.crearSesionAddonConexion);
 router.post('/crearSesionAddonSubusuario', stripe_planesController.crearSesionAddonSubusuario);
+// NUEVO: free con Stripe (trial) y elegibilidad
++router.post('/crearFreeTrial', stripe_planesController.crearFreeTrial);
++router.post('/trialElegibilidad', stripe_planesController.trialElegibilidad);
+
 
 
 

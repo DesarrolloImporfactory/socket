@@ -815,3 +815,122 @@ exports.crearSesionAddonSubusuario = async (req, res) => {
     return res.status(500).json({ status: 'fail', message: error?.raw?.message || error.message });
   }
 };
+
+
+/**
+ * Devuelve si el usuario es elegible para prueba gratuita (no la usó antes)
+ */
+
+exports.trialElegibilidad = async (req, res) => {
+  try {
+    const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
+    if (!id_usuario) return res.status(400).json({ elegible: false, message: 'Falta id_usuario' });
+
+    const [rows] = await db.query(
+      `SELECT COALESCE(free_trial_used, 0) AS used
+       FROM usuarios_chat_center
+       WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] }
+    );
+
+    const elegible = !Boolean(rows?.[0]?.used);
+    return res.json({ elegible });
+  } catch (e) {
+    console.error('trialElegibilidad:', e);
+    // Si algo falla, sé permisivo o responde 500 según tu preferencia
+    return res.status(500).json({ elegible: false, message: 'Error verificando elegibilidad' });
+  }
+};
+
+/**
+ * Crea una sesión de Checkout (subscription) con TRIAL para el plan Conexión.
+ * - No cobra ahora (trial).
+ * - Obliga tarjeta (Stripe la guarda; tu webhook la inserta en user_payment_methods).
+ * - Al finalizar el trial, Stripe cobra y tu webhook pasa al plan Conexión.
+ */
+exports.crearFreeTrial = async (req, res) => {
+  try {
+    const { id_usuario, success_url, cancel_url, trial_days } = req.body;
+    if (!id_usuario) return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+
+    // Bloqueo por BD
+    const [rowsUser] = await db.query(
+      `SELECT COALESCE(free_trial_used,0) AS used
+       FROM usuarios_chat_center
+       WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] }
+    );
+    if (Boolean(rowsUser?.[0]?.used)) {
+      return res.status(400).json({ status: 'fail', message: 'Ya usaste tu plan gratuito.' });
+    }
+
+    // 2) Resolver el plan "Conexión" (o el más barato > FREE)
+    let planConexion = await Planes_chat_center.findOne({
+      where: db.where(db.fn('LOWER', db.col('nombre_plan')), 'like', '%conexion%')
+    });
+    if (!planConexion) {
+      // fallback: el más barato distinto de FREE (id_plan <> 1)
+      const [minRows] = await db.query(`
+        SELECT * FROM planes_chat_center
+        WHERE id_plan <> 1
+        ORDER BY precio_plan ASC
+        LIMIT 1
+      `);
+      planConexion = minRows?.[0];
+    }
+    if (!planConexion?.id_plan || !planConexion?.id_product_stripe) {
+      return res.status(404).json({ status: 'fail', message: 'No se pudo resolver el plan Conexión.' });
+    }
+
+    // 3) Resolver/crear customer de Stripe
+    let customerId = null;
+    const [rCust] = await db.query(`
+      SELECT customer_id FROM transacciones_stripe_chat
+      WHERE id_usuario = ? AND customer_id IS NOT NULL
+      ORDER BY fecha DESC LIMIT 1
+    `, { replacements: [id_usuario] });
+    customerId = rCust?.[0]?.customer_id || null;
+    if (!customerId) {
+      const customer = await stripe.customers.create({ metadata: { id_usuario: String(id_usuario) } });
+      customerId = customer.id;
+      await db.query(`
+        INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+        VALUES (?, ?, NOW())
+      `, { replacements: [id_usuario, customerId] });
+    }
+
+    // 4) Crear Checkout Session (subscription) con trial al plan Conexión
+    const baseUrl =
+      req.body.base_url ||
+      req.headers.origin ||
+      (req.headers.referer ? req.headers.referer.split('/').slice(0,3).join('/') : null);
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      payment_method_types: ['card'],
+      line_items: [{ price: planConexion.id_product_stripe, quantity: 1 }],
+      success_url: success_url || `${baseUrl}/miplan?trial=ok`,
+      cancel_url:  cancel_url  || `${baseUrl}/planes_view?trial=cancel`,
+      subscription_data: {
+        trial_period_days: Number.isInteger(trial_days) ? trial_days : 15,
+        metadata: {
+          tipo: 'free_trial_autorenew',
+          id_usuario: String(id_usuario),
+          id_plan: String(planConexion.id_plan) // <- para invoice.payment_succeeded
+        }
+      },
+      // metadatos a nivel de sesión para que el webhook sepa "activar FREE" al terminar Checkout
+      metadata: {
+        tipo: 'free_trial',
+        id_usuario: String(id_usuario),
+        plan_final_id: String(planConexion.id_plan)
+      }
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (e) {
+    console.error('crearFreeTrial:', e);
+    return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
+  }
+};

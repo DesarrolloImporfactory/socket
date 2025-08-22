@@ -86,6 +86,18 @@ exports.stripeWebhook = async (req, res) => {
       console.warn('[WH] No se pudo expandir la suscripción para leer metadata:', e?.raw?.message || e.message);
     }
 
+    // ⛔️ No promover al plan final si la suscripción sigue en trial o si la invoice fue de $0
+    if (subStatus === 'trialing' || (invoice.amount_paid || 0) === 0) {
+      // solo registramos la transacción y salimos 200
+      await db.query(`
+        UPDATE transacciones_stripe_chat
+        SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
+        WHERE customer_id = ?
+      `, { replacements: [subscriptionId, subStatus, customerId] });
+      return res.status(200).json({ received: true });
+    }
+
+
     // 5) FALLBACK: si no vino en la sub, toma metadata del lineItem (tu flujo actual)
     if (!id_usuario || !id_plan) {
       const md = lineItem?.metadata || {};
@@ -339,62 +351,108 @@ if (event.type === 'invoice.payment_failed') {
   }
 }
 
-// ➕ NUEVO: completar upgrade cuando se paga la diferencia en Checkout
+// ➕ NUEVO: completar upgrade cuando se paga la diferencia en Checkout y free trial
 if (event.type === 'checkout.session.completed') {
   const session = event.data.object;
   try {
-    // Solo nos interesan las sesiones de pago de "diferencia de upgrade"
-    if (session.mode !== 'payment') return res.status(200).json({ received: true });
     const md = session.metadata || {};
-    if (md.tipo !== 'upgrade_delta') return res.status(200).json({ received: true });
 
-    const subscriptionId = md.subscription_id;
-    const toPriceId = md.to_price_id;
-    const id_usuario = md.id_usuario;
-    const id_plan = md.id_plan;
+    // 1) FREE TRIAL vía Checkout (suscripción con trial: no cobra ahora)
+    if (session.mode === 'subscription' && md.tipo === 'free_trial') {
+      const id_usuario = Number(md.id_usuario);
+      const planFinalId = Number(md.plan_final_id || md.id_plan); // fallback si usas otra clave
+      const subscriptionId = session.subscription;
+      const customerId = session.customer;
 
-    if (!subscriptionId || !toPriceId || !id_usuario || !id_plan) {
-      console.warn('[WH checkout.session.completed] Falta metadata para upgrade_delta', md);
-      return res.status(200).json({ received: true });
-    }
+      // Traemos la suscripción para leer trial_end/status
+      const sub = await stripe.subscriptions.retrieve(subscriptionId);
+      const trialEnd = sub?.trial_end ? new Date(sub.trial_end * 1000) : null;
 
-    // Recupera item actual de la suscripción
-    const sub = await stripe.subscriptions.retrieve(subscriptionId);
-    const itemId = sub.items?.data?.[0]?.id;
-    if (!itemId) {
-      console.warn('[WH checkout.session.completed] No se encontró item en la suscripción', subscriptionId);
-      return res.status(200).json({ received: true });
-    }
-
-    // Cambia al nuevo price SIN prorrateo (ya cobramos la diferencia como pago único)
-    await stripe.subscriptions.update(subscriptionId, {
-      items: [{ id: itemId, price: toPriceId }],
-      proration_behavior: 'none'
-    });
-
-    // Reflejar en DB: cambia id_plan y REINICIA fechas
-    const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-    const plan = await Planes_chat_center.findByPk(id_plan);
-    if (usuario && plan) {
+      // Durante el trial, deja al usuario en plan FREE (id 1)
       const hoy = new Date();
-      const nuevaFechaRenovacion = new Date(hoy);
-      nuevaFechaRenovacion.setDate(hoy.getDate() + 30);
+      const fechaRenovacion = trialEnd || new Date(hoy.getTime() + 15 * 24 * 60 * 60 * 1000);
 
-      await usuario.update({
-        id_plan: plan.id_plan,
-        id_product_stripe: plan.id_product_stripe,
-        estado: 'activo',
-        fecha_inicio: hoy,
-        fecha_renovacion: nuevaFechaRenovacion
-      });
+      await Usuarios_chat_center.update(
+        {
+          id_plan: 1,
+          estado: 'activo',
+          fecha_inicio: hoy,
+          fecha_renovacion: fechaRenovacion,
+          free_trial_used: 1
+        },
+        { where: { id_usuario } }
+      );
+
+      // Guarda/actualiza referencia de suscripción en tu tabla de transacciones
+      await db.query(
+        `
+        INSERT INTO transacciones_stripe_chat (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
+        VALUES (?, ?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE
+          id_suscripcion = VALUES(id_suscripcion),
+          estado_suscripcion = VALUES(estado_suscripcion),
+          fecha = NOW()
+      `,
+        { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] }
+      );
+
+      return res.status(200).json({ received: true });
     }
 
+    // 2) UPGRADE DELTA (pago único de diferencia) — tu lógica existente
+    if (session.mode === 'payment' && md.tipo === 'upgrade_delta') {
+      const subscriptionId = md.subscription_id;
+      const toPriceId = md.to_price_id;
+      const id_usuario = md.id_usuario;
+      const id_plan = md.id_plan;
+
+      if (!subscriptionId || !toPriceId || !id_usuario || !id_plan) {
+        console.warn('[WH checkout.session.completed] Falta metadata para upgrade_delta', md);
+        return res.status(200).json({ received: true });
+      }
+
+      // Recupera item actual de la suscripción
+      const sub = await stripe.subscriptions.retrieve(subscriptionId);
+      const itemId = sub.items?.data?.[0]?.id;
+      if (!itemId) {
+        console.warn('[WH checkout.session.completed] No se encontró item en la suscripción', subscriptionId);
+        return res.status(200).json({ received: true });
+      }
+
+      // Cambia al nuevo price SIN prorrateo (ya cobraste la diferencia)
+      await stripe.subscriptions.update(subscriptionId, {
+        items: [{ id: itemId, price: toPriceId }],
+        proration_behavior: 'none',
+      });
+
+      // Refleja en DB: cambia id_plan y reinicia fechas
+      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+      const plan = await Planes_chat_center.findByPk(id_plan);
+      if (usuario && plan) {
+        const hoy = new Date();
+        const nuevaFechaRenovacion = new Date(hoy);
+        nuevaFechaRenovacion.setDate(hoy.getDate() + 30);
+
+        await usuario.update({
+          id_plan: plan.id_plan,
+          id_product_stripe: plan.id_product_stripe,
+          estado: 'activo',
+          fecha_inicio: hoy,
+          fecha_renovacion: nuevaFechaRenovacion,
+        });
+      }
+
+      return res.status(200).json({ received: true });
+    }
+
+    // Si no es ninguno de los dos casos, respondemos 200 y seguimos
     return res.status(200).json({ received: true });
   } catch (e) {
-    console.error('WH checkout.session.completed (upgrade_delta):', e);
+    console.error('WH checkout.session.completed:', e);
     return res.status(200).json({ received: true });
   }
 }
+
 
 // ➕ ADDON conexión: pago único completado en Checkout
 if (event.type === 'checkout.session.completed') {
