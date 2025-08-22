@@ -710,8 +710,8 @@ exports.crearSesionAddonConexion = async (req, res) => {
       mode: 'payment',
       customer: customerId,
       line_items: [{ price: ADDON_PRICE_ID, quantity: 1 }],
-      success_url: success_url || `${baseUrl}/usuarios?addon=ok`,
-      cancel_url: cancel_url || `${baseUrl}/usuarios?addon=cancel`,
+      success_url: success_url || `${baseUrl}/conexiones?addon=ok`,
+      cancel_url: cancel_url || `${baseUrl}/conexiones?addon=cancel`,
       // Metadatos para identificarnos en el webhook
       metadata: { tipo: 'addon_conexion', id_usuario: String(id_usuario), price_id: ADDON_PRICE_ID },
       payment_intent_data: {
