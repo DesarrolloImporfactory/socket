@@ -32,6 +32,6 @@ router.delete(
 
 router.post('/transferirChat', departamentos_chat_center.transferirChat);
 
-router.post('/asginar_encargado', departamentos_chat_center.asginar_encargado);
+router.post('/asignar_encargado', departamentos_chat_center.asignar_encargado);
 
 module.exports = router;

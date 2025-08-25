@@ -158,6 +158,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     telefono_configuracion,
     telefono_recibe,
     id_configuracion,
+    responsable
   } = req.body;
 
   try {
@@ -222,8 +223,8 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     // 5. Insertar mensaje en mensajes_clientes
     await db.query(
       `INSERT INTO mensajes_clientes 
-        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -232,6 +233,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           tipo_mensaje,
           1, // rol_mensaje fijo en 1
           id_recibe,
+          responsable,
           texto_mensaje,
           ruta_archivo,
           1, // visto por defecto en 1

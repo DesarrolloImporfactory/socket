@@ -231,7 +231,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.asginar_encargado = catchAsync(async (req, res, next) => {
+exports.asignar_encargado = catchAsync(async (req, res, next) => {
   const { id_encargado, id_cliente_chat_center } = req.body;
 
   // Validaciones mínimas

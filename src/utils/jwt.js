@@ -26,6 +26,7 @@ const generarToken = async (id_sub_usuario) => {
     conexiones_adicionales: usuario.conexiones_adicionales,
     id_plan: usuario.id_plan,
     rol: subUsuario.rol,
+    nombre_encargado: subUsuario.nombre_encargado,
     estado: usuario.estado,
   };
 
