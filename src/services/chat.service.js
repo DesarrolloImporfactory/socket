@@ -22,6 +22,8 @@ const { decode } = require('html-entities');
 class ChatService {
   async findChats(
     id_configuracion,
+    id_sub_usuario,
+    rol,
     { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
   ) {
     try {
@@ -40,8 +42,13 @@ class ChatService {
           500
         );
       }
+      let whereClause = '';
 
-      let whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+      if (rol == 'administrador') {
+        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+      } else {
+        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+      }
 
       if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
         whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
@@ -184,6 +191,11 @@ class ChatService {
         cursorId,
         limit,
       };
+
+      // Solo agregar id_sub_usuario si el rol no es 'administrador'
+      if (rol !== 'administrador') {
+        replacements.id_sub_usuario = id_sub_usuario;
+      }
 
       // Construir e imprimir la SQL final con valores reales (solo para debug)
       let sqlFinal = sqlQuery;

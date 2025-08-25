@@ -2106,3 +2106,9 @@
 [2025-08-22T15:19:56.531Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
 [2025-08-22T15:24:47.407Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
 [2025-08-22T15:24:47.462Z] info: WHERE parameter "id_usuario" has invalid "undefined" value
+[2025-08-25T15:14:37.979Z] info: id_cliente_chat_center es requerido
+[2025-08-25T15:20:33.600Z] info: id_cliente_chat_center es requerido
+[2025-08-25T15:20:33.779Z] info: id_cliente_chat_center es requerido
+[2025-08-25T15:20:41.046Z] info: id_cliente_chat_center es requerido
+[2025-08-25T15:25:37.615Z] info: id_cliente_chat_center es requerido
+[2025-08-25T15:25:37.792Z] info: id_cliente_chat_center es requerido

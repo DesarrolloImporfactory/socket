@@ -230,3 +230,31 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     message: 'Chat transferido correctamente',
   });
 });
+
+exports.asginar_encargado = catchAsync(async (req, res, next) => {
+  const { id_encargado, id_cliente_chat_center } = req.body;
+
+  // Validaciones mínimas
+  if (!id_encargado || !id_cliente_chat_center) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'No ha seleccionado correctamente a quién desea transferir.',
+    });
+  }
+
+  // Actualización
+  await Clientes_chat_center.update(
+    {
+      id_encargado,
+    },
+    {
+      where: { id: id_cliente_chat_center },
+    }
+  );
+
+  // Respuesta
+  res.status(200).json({
+    status: 'success',
+    message: 'Chat asginado correctamente',
+  });
+});

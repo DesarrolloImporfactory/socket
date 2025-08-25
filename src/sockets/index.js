@@ -33,16 +33,18 @@ class Sockets {
         'GET_CHATS',
         async (
           id_configuracion,
+          id_sub_usuario,
+          rol,
           { cursorFecha, cursorId, limit = 10, filtros = {} }
         ) => {
           try {
             const chatService = new ChatService();
 
-            const chats = await chatService.findChats(id_configuracion, {
+            const chats = await chatService.findChats(id_configuracion, id_sub_usuario, rol, {
               cursorFecha,
               cursorId,
               limit,
-              filtros,
+              filtros
             });
 
             socket.emit('CHATS', chats);
