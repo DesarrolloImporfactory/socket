@@ -67,14 +67,17 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   }
 
   let assistant_id = null;
+  let tipo_asistente = "";
   if (tipoInfo === 'datos_guia') {
     const logistic = assistants.find(
       (a) => a.tipo.toLowerCase() === 'logistico'
     );
     assistant_id = logistic?.assistant_id;
+    tipo_asistente = "IA_logistica";
   } else if (tipoInfo === 'datos_pedido') {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
+    tipo_asistente = "IA_ventas";
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
@@ -83,6 +86,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   } else {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
+    tipo_asistente = "IA_ventas";
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
@@ -181,6 +185,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 200,
     respuesta: respuesta || 'No se obtuvo respuesta del assistant.',
+    tipo_asistente: tipo_asistente,
     /* bloqueInfo: bloqueInfo, */
   });
 });
