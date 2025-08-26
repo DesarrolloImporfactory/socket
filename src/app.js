@@ -71,6 +71,15 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again in an hour!',
 });
 
+
+// WEBHOOK: este debe ir antes del body parser y fuera del router
+app.post(
+  '/api/v1/stripe_plan/stripeWebhook',
+  express.raw({ type: 'application/json' }),
+  stripe_webhookController.stripeWebhook
+);
+
+
 app.use(
   cors({
     origin: '*',
@@ -97,12 +106,6 @@ app.use(
 //Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
 app.use('/api/v1/messenger', messengerRouter);
 
-// WEBHOOK: este debe ir antes del body parser y fuera del router
-app.post(
-  '/api/v1/stripe_plan/stripeWebhook',
-  express.raw({ type: 'application/json' }),
-  stripe_webhookController.stripeWebhook
-);
 
 // Luego el resto del stack “normal”
 
