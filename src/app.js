@@ -109,7 +109,14 @@ app.use('/api/v1/messenger', messengerRouter);
 
 // Luego el resto del stack “normal”
 
-app.use(express.json());
+// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/v1/stripe_plan/stripeWebhook') {
+    return next();
+  }
+  return express.json()(req, res, next);
+});
+
 
 app.use((req, res, next) => {
   const isStripeWebhook =
