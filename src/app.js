@@ -2,12 +2,6 @@ const AppError = require('./utils/appError');
 const cors = require('cors');
 const express = require('express');
 const globalErrorHandler = require('./controllers/error.controller');
-// WEBHOOK: este debe ir antes del body parser y fuera del router
-app.post(
-  '/api/v1/stripe_plan/stripeWebhook',
-  express.raw({ type: 'application/json' }),
-  stripe_webhookController.stripeWebhook
-);
 const helmet = require('helmet');
 const hpp = require('hpp');
 const morgan = require('morgan');
@@ -76,6 +70,14 @@ const limiter = rateLimit({
 
   message: 'Too many requests from this IP, please try again in an hour!',
 });
+
+
+// WEBHOOK: este debe ir antes del body parser y fuera del router
+app.post(
+  '/api/v1/stripe_plan/stripeWebhook',
+  express.raw({ type: 'application/json' }),
+  stripe_webhookController.stripeWebhook
+);
 
 
 app.use(
