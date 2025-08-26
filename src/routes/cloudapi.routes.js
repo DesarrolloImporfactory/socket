@@ -990,14 +990,10 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
   try {
     /* 2. WABA más reciente de tu Business Manager (partner) */
-    const waba = await axios
-      .get(
-        `https://graph.facebook.com/v22.0/${process.env.FB_BUSINESS_ID}/client_whatsapp_business_accounts`,
-        {
-          headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` },
-        }
-      )
-      .then((r) => r.data.data?.[0]);
+    const waba = await axios(
+      'https://graph.facebook.com/v22.0/me/whatsapp_business_accounts',
+      { headers: { Authorization: `Bearer ${clientToken}` } }
+    ).then((r) => r.data.data?.[0]);
 
     if (!waba) throw new Error('No se encontró ningún WABA.');
     const wabaId = waba.id;
@@ -1006,14 +1002,13 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     /* 3. Primer teléfono dentro del WABA */
     const num = await axios
       .get(
-        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers?fields=id,display_phone_number`,
-        {
-          headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` },
-        }
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers?fields=id,display_phone_number,code_verification_status`,
+        { headers: { Authorization: `Bearer ${clientToken}` } }
       )
       .then((r) => r.data.data?.[0]);
 
     const phoneNumberId = num?.id;
+
     const telefono = num?.display_phone_number
       ?.replace(/\s+/g, '')
       ?.replace('+', '');
@@ -1027,9 +1022,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       await axios.post(
         `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
         { messaging_product: 'whatsapp' },
-        {
-          headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` },
-        }
+        { headers: { Authorization: `Bearer ${clientToken}` } }
       );
     } catch (e) {
       const c = e?.response?.data?.error?.code;
@@ -1038,12 +1031,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       } else if (c === 131071 || c === 131047) {
         await axios.post(
           `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
-          { messaging_product: 'whatsapp', pin: '123456' },
           {
-            headers: {
-              Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
-            },
-          }
+            messaging_product: 'whatsapp',
+            pin: '123456',
+          },
+          { headers: { Authorization: `Bearer ${clientToken}` } }
         );
       } else {
         throw e;
@@ -1054,7 +1046,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     await axios.post(
       `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`,
       { messaging_product: 'whatsapp' },
-      { headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` } }
+      { headers: { Authorization: `Bearer ${clientToken}` } }
     );
 
     /* 6. Guardar / actualizar en BD —— (mismo efecto que agregarConfiguracion + actualizarConfiguracionMeta) */

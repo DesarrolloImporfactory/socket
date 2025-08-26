@@ -109,7 +109,8 @@ app.post(
 app.use(express.json());
 
 app.use((req, res, next) => {
-  const isStripeWebhook = req.originalUrl === '/api/v1/stripe_plan/stripeWebhook';
+  const isStripeWebhook =
+    req.originalUrl === '/api/v1/stripe_plan/stripeWebhook';
   if (isStripeWebhook) return next(); // ¡No aplicar sanitizer aquí!
 
   return sanitizer.clean({
@@ -119,7 +120,6 @@ app.use((req, res, next) => {
   })(req, res, next);
 });
 
-
 app.use('/api/v1', limiter);
 // routes
 app.use('/api/v1/auth', authRouter);
@@ -127,7 +127,7 @@ app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
-app.use('/api/v1/whatsapp', cloudapiRouter);
+app.use('/api/v1/cloudapi', cloudapiRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/configuraciones', configuracionesRouter);
