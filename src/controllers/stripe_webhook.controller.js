@@ -13,8 +13,13 @@ exports.stripeWebhook = async (req, res) => {
     console.log("🔍 Tipo de req.body:", typeof req.body);
     console.log("🔍 Es buffer?:", Buffer.isBuffer(req.body));
     console.log("🔍 Payload (primeros 200 chars):", req.body.toString().slice(0, 200));
-      
-    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+
+    event = stripe.webhooks.constructEvent(
+      Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body)),
+      sig,
+      endpointSecret
+    );
+
   } catch (err) {
     console.error('❌ Webhook signature verification failed.', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
