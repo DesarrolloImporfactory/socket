@@ -75,10 +75,9 @@ const limiter = rateLimit({
 // WEBHOOK: este debe ir antes del body parser y fuera del router
 app.post(
   '/api/v1/stripe_plan/stripeWebhook',
-  express.raw({ type: ['application/json', 'application/json; charset=utf-8'] }),
+  express.raw({ type: 'application/json' }),
   stripe_webhookController.stripeWebhook
 );
-
 
 
 app.use(

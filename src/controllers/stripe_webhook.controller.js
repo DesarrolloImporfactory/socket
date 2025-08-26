@@ -9,17 +9,8 @@ exports.stripeWebhook = async (req, res) => {
 
   let event;
 
-  try {
-    console.log("🔍 Tipo de req.body:", typeof req.body);
-    console.log("🔍 Es buffer?:", Buffer.isBuffer(req.body));
-    console.log("🔍 Payload (primeros 200 chars):", req.body.toString().slice(0, 200));
-
-    event = stripe.webhooks.constructEvent(
-      Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body)),
-      sig,
-      endpointSecret
-    );
-
+  try {  
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
   } catch (err) {
     console.error('❌ Webhook signature verification failed.', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -367,45 +358,42 @@ if (event.type === 'checkout.session.completed') {
     const md = session.metadata || {};
 
     // 1) FREE TRIAL vía Checkout (suscripción con trial: no cobra ahora)
-    if (session.mode === 'subscription' && md.tipo === 'free_trial') {
+    if (session.mode === 'setup' && md.tipo === 'free_trial') {
       const id_usuario = Number(md.id_usuario);
-      const planFinalId = Number(md.plan_final_id || md.id_plan); // fallback si usas otra clave
-      const subscriptionId = session.subscription;
+      const planFinalId = Number(md.plan_final_id || md.id_plan || 1);
       const customerId = session.customer;
+      const paymentIntentId = session.setup_intent;
 
-      // Traemos la suscripción para leer trial_end/status
-      const sub = await stripe.subscriptions.retrieve(subscriptionId);
-      const trialEnd = sub?.trial_end ? new Date(sub.trial_end * 1000) : null;
+      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+      const plan = await Planes_chat_center.findByPk(planFinalId);
 
-      // Durante el trial, deja al usuario en plan FREE (id 1)
+      if (!usuario || !plan) return res.status(200).json({ received: true });
+
       const hoy = new Date();
-      const fechaRenovacion = trialEnd || new Date(hoy.getTime() + 15 * 24 * 60 * 60 * 1000);
+      const fechaRenovacion = new Date(hoy);
+      fechaRenovacion.setDate(hoy.getDate() + 15); // 15 días trial
 
-      await Usuarios_chat_center.update(
-        {
-          id_plan: 1,
-          estado: 'activo',
-          fecha_inicio: hoy,
-          fecha_renovacion: fechaRenovacion,
-          free_trial_used: 1
-        },
-        { where: { id_usuario } }
+      await usuario.update({
+        id_plan: planFinalId,
+        fecha_inicio: hoy,
+        fecha_renovacion: fechaRenovacion,
+        estado: 'activo',
+        id_product_stripe: plan.id_product_stripe,
+        free_trial_used: 1 // 🔒 evitar reutilización
+      });
+
+      // Guarda la transacción si no existe aún para este id_pago
+      const [existe] = await db.query(
+        `SELECT id FROM transacciones_stripe_chat WHERE id_pago = ? LIMIT 1`,
+        { replacements: [paymentIntentId] }
       );
 
-      // Guarda/actualiza referencia de suscripción en tu tabla de transacciones
-      // Evitar duplicado si ya existe esa suscripción
-      const [ex] = await db.query(
-        `SELECT id FROM transacciones_stripe_chat WHERE id_suscripcion = ? LIMIT 1`,
-        { replacements: [subscriptionId] }
-      );
-      if (!ex?.length) {
+      if (!existe?.length) {
         await db.query(`
-          INSERT INTO transacciones_stripe_chat (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
-          VALUES (?, ?, ?, ?, NOW())
-        `, { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] });
+          INSERT INTO transacciones_stripe_chat (id_usuario, id_pago, customer_id, estado_suscripcion, fecha)
+          VALUES (?, ?, ?, 'trialing', NOW())
+        `, { replacements: [id_usuario, paymentIntentId, customerId] });
       }
-      // si ya existe, no hacemos nada
-
 
       return res.status(200).json({ received: true });
     }
