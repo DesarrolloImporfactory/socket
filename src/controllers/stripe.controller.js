@@ -897,6 +897,11 @@ exports.crearFreeTrial = async (req, res) => {
       customerId = customer.id;
       // 👇 No insertamos en transacciones aquí. El único alta la hará el webhook al completar Checkout.
     }
+    // ✅ Guardar mínimo en la tabla para que el webhook lo tenga disponible
+    await db.query(`
+      INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+      VALUES (?, ?, NOW())
+    `, { replacements: [id_usuario, customerId] });
 
 
     // 4) Crear Checkout Session (subscription) con trial al plan Conexión
