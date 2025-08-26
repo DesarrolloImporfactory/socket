@@ -384,17 +384,19 @@ if (event.type === 'checkout.session.completed') {
       );
 
       // Guarda/actualiza referencia de suscripción en tu tabla de transacciones
-      await db.query(
-        `
-        INSERT INTO transacciones_stripe_chat (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
-        VALUES (?, ?, ?, ?, NOW())
-        ON DUPLICATE KEY UPDATE
-          id_suscripcion = VALUES(id_suscripcion),
-          estado_suscripcion = VALUES(estado_suscripcion),
-          fecha = NOW()
-      `,
-        { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] }
+      // Evitar duplicado si ya existe esa suscripción
+      const [ex] = await db.query(
+        `SELECT id FROM transacciones_stripe_chat WHERE id_suscripcion = ? LIMIT 1`,
+        { replacements: [subscriptionId] }
       );
+      if (!ex?.length) {
+        await db.query(`
+          INSERT INTO transacciones_stripe_chat (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
+          VALUES (?, ?, ?, ?, NOW())
+        `, { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] });
+      }
+      // si ya existe, no hacemos nada
+
 
       return res.status(200).json({ received: true });
     }
