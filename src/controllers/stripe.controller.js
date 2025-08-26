@@ -850,62 +850,108 @@ exports.trialElegibilidad = async (req, res) => {
  */
 exports.crearFreeTrial = async (req, res) => {
   try {
-    const { id_usuario, success_url, cancel_url } = req.body;
-    if (!id_usuario || !success_url || !cancel_url) {
-      return res.status(400).json({ message: 'Faltan datos necesarios' });
+    const { id_usuario, success_url, cancel_url, trial_days } = req.body;
+    if (!id_usuario) return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+
+    // Bloqueo por BD
+    const [rowsUser] = await db.query(
+      `SELECT COALESCE(free_trial_used,0) AS used
+       FROM usuarios_chat_center
+       WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] }
+    );
+    if (Boolean(rowsUser?.[0]?.used)) {
+      return res.status(400).json({ status: 'fail', message: 'Ya usaste tu plan gratuito.' });
     }
 
-    // 1. Verifica si ya existe customer
-    const [rows] = await db.query(`
-      SELECT customer_id
-      FROM transacciones_stripe_chat
-      WHERE id_usuario = ?
+    // 2) Resolver el plan "Conexión" (o el más barato > FREE)
+    let planConexion = await Planes_chat_center.findOne({
+      where: db.where(db.fn('LOWER', db.col('nombre_plan')), 'like', '%conexion%')
+    });
+    if (!planConexion) {
+      // fallback: el más barato distinto de FREE (id_plan <> 1)
+      const [minRows] = await db.query(`
+        SELECT * FROM planes_chat_center
+        WHERE id_plan <> 1
+        ORDER BY precio_plan ASC
+        LIMIT 1
+      `);
+      planConexion = minRows?.[0];
+    }
+    if (!planConexion?.id_plan || !planConexion?.id_product_stripe) {
+      return res.status(404).json({ status: 'fail', message: 'No se pudo resolver el plan Conexión.' });
+    }
+
+    // 3) Resolver/crear customer de Stripe
+    let customerId = null;
+    const [rCust] = await db.query(`
+      SELECT customer_id FROM transacciones_stripe_chat
+      WHERE id_usuario = ? AND customer_id IS NOT NULL
       ORDER BY fecha DESC LIMIT 1
     `, { replacements: [id_usuario] });
+    customerId = rCust?.[0]?.customer_id || null;
 
-    let customerId = rows?.[0]?.customer_id;
+
     if (!customerId) {
-      const customer = await stripe.customers.create({
-        metadata: { id_usuario: String(id_usuario) }
-      });
+      const customer = await stripe.customers.create({ metadata: { id_usuario: String(id_usuario) } });
       customerId = customer.id;
-
-      await db.query(`
-        INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
-        VALUES (?, ?, NOW())
-      `, { replacements: [id_usuario, customerId] });
+      // 👇 No insertamos en transacciones aquí. El único alta la hará el webhook al completar Checkout.
     }
 
-    // 2. Crea una sesión tipo "setup" con retención simbólica
-    const session = await stripe.checkout.sessions.create({
-      mode: 'setup',
-      payment_method_types: ['card'],
+
+    // 4) Crear Checkout Session (subscription) con trial al plan Conexión
+    // 4) Crear Checkout Session (subscription) con trial al plan Conexión
+    const baseUrl =
+      req.body.base_url ||
+      req.headers.origin ||
+      (req.headers.referer ? req.headers.referer.split('/').slice(0, 3).join('/') : null);
+      
+    // Configurables por .env
+    const requireCard = String(process.env.FREE_TRIAL_REQUIRE_CARD || 'true').toLowerCase() !== 'false';
+    const missingPmBehavior = (process.env.FREE_TRIAL_MISSING_PM_BEHAVIOR || 'cancel').toLowerCase();
+    const trialDays = Number.isInteger(trial_days) ? trial_days : Number(process.env.FREE_TRIAL_DAYS || 15);
+      
+    // Construimos el payload para Checkout
+    const sessionPayload = {
+      mode: 'subscription',
       customer: customerId,
-      success_url,
-      cancel_url,
-      setup_intent_data: {
-        usage: 'off_session',
+      line_items: [{ price: planConexion.id_product_stripe, quantity: 1 }],
+      success_url: success_url || `${baseUrl}/miplan?trial=ok`,
+      cancel_url:  cancel_url  || `${baseUrl}/planes_view?trial=cancel`,
+      // IMPORTANTE: el trial va en subscription_data según docs
+      subscription_data: {
+        trial_period_days: trialDays,
+        // Solo aplica si decides NO pedir tarjeta en el trial
+        trial_settings: {
+          end_behavior: { missing_payment_method: missingPmBehavior }
+        },
+        // metadata de la SUSCRIPCIÓN (se propaga a eventos customer.subscription.* e invoice.*)
         metadata: {
+          tipo: 'free_trial_autorenew',
           id_usuario: String(id_usuario),
-          tipo: 'free_trial',
-          plan_final_id: '1',
+          id_plan: String(planConexion.id_plan)
         }
       },
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: 'Retención para activar plan gratuito',
-          },
-          unit_amount: 100, // $1 USD retención
-        },
-        quantity: 1,
-      }],
-    });
-
+      // metadata de la SESIÓN (tu webhook ya lo lee para marcar FREE al completar)
+      metadata: {
+        tipo: 'free_trial',
+        id_usuario: String(id_usuario),
+        plan_final_id: String(planConexion.id_plan)
+      }
+    };
+    
+    // Si NO quieres pedir tarjeta durante el trial, díselo a Checkout:
+    if (!requireCard) {
+      // Según docs de Checkout para trials sin método de pago
+      sessionPayload.payment_method_collection = 'if_required'; // no pide tarjeta durante el trial
+    }
+    
+    const session = await stripe.checkout.sessions.create(sessionPayload);
+    
     return res.status(200).json({ url: session.url });
-  } catch (err) {
-    console.error('Error crearFreeTrial:', err);
-    return res.status(500).json({ message: 'No se pudo crear la sesión de free trial' });
+
+  } catch (e) {
+    console.error('crearFreeTrial:', e);
+    return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
   }
 };

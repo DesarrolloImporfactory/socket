@@ -358,42 +358,45 @@ if (event.type === 'checkout.session.completed') {
     const md = session.metadata || {};
 
     // 1) FREE TRIAL vía Checkout (suscripción con trial: no cobra ahora)
-    if (session.mode === 'setup' && md.tipo === 'free_trial') {
+    if (session.mode === 'subscription' && md.tipo === 'free_trial') {
       const id_usuario = Number(md.id_usuario);
-      const planFinalId = Number(md.plan_final_id || md.id_plan || 1);
+      const planFinalId = Number(md.plan_final_id || md.id_plan); // fallback si usas otra clave
+      const subscriptionId = session.subscription;
       const customerId = session.customer;
-      const paymentIntentId = session.setup_intent;
 
-      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-      const plan = await Planes_chat_center.findByPk(planFinalId);
+      // Traemos la suscripción para leer trial_end/status
+      const sub = await stripe.subscriptions.retrieve(subscriptionId);
+      const trialEnd = sub?.trial_end ? new Date(sub.trial_end * 1000) : null;
 
-      if (!usuario || !plan) return res.status(200).json({ received: true });
-
+      // Durante el trial, deja al usuario en plan FREE (id 1)
       const hoy = new Date();
-      const fechaRenovacion = new Date(hoy);
-      fechaRenovacion.setDate(hoy.getDate() + 15); // 15 días trial
+      const fechaRenovacion = trialEnd || new Date(hoy.getTime() + 15 * 24 * 60 * 60 * 1000);
 
-      await usuario.update({
-        id_plan: planFinalId,
-        fecha_inicio: hoy,
-        fecha_renovacion: fechaRenovacion,
-        estado: 'activo',
-        id_product_stripe: plan.id_product_stripe,
-        free_trial_used: 1 // 🔒 evitar reutilización
-      });
-
-      // Guarda la transacción si no existe aún para este id_pago
-      const [existe] = await db.query(
-        `SELECT id FROM transacciones_stripe_chat WHERE id_pago = ? LIMIT 1`,
-        { replacements: [paymentIntentId] }
+      await Usuarios_chat_center.update(
+        {
+          id_plan: 1,
+          estado: 'activo',
+          fecha_inicio: hoy,
+          fecha_renovacion: fechaRenovacion,
+          free_trial_used: 1
+        },
+        { where: { id_usuario } }
       );
 
-      if (!existe?.length) {
+      // Guarda/actualiza referencia de suscripción en tu tabla de transacciones
+      // Evitar duplicado si ya existe esa suscripción
+      const [ex] = await db.query(
+        `SELECT id FROM transacciones_stripe_chat WHERE id_suscripcion = ? LIMIT 1`,
+        { replacements: [subscriptionId] }
+      );
+      if (!ex?.length) {
         await db.query(`
-          INSERT INTO transacciones_stripe_chat (id_usuario, id_pago, customer_id, estado_suscripcion, fecha)
-          VALUES (?, ?, ?, 'trialing', NOW())
-        `, { replacements: [id_usuario, paymentIntentId, customerId] });
+          INSERT INTO transacciones_stripe_chat (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
+          VALUES (?, ?, ?, ?, NOW())
+        `, { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] });
       }
+      // si ya existe, no hacemos nada
+
 
       return res.status(200).json({ received: true });
     }
