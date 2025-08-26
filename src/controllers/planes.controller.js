@@ -28,7 +28,7 @@ exports.seleccionarPlan = async (req, res) => {
     }
 
     // ✅ Activar directamente el Plan Free (id_plan === 1)
-    /* if (parseInt(id_plan) === 1) {
+    if (parseInt(id_plan) === 1) {
       const hoy = new Date();
       const nuevaFechaRenovacion = new Date(hoy);
       nuevaFechaRenovacion.setDate(hoy.getDate() + 15);
@@ -42,7 +42,7 @@ exports.seleccionarPlan = async (req, res) => {
 
 
       return res.status(200).json({ status: 'success', message: 'Plan gratuito activado correctamente' });
-    } */
+    }
     
 
     // 🟣 Otros planes: solo actualizar intención
