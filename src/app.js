@@ -108,13 +108,17 @@ app.post(
 
 app.use(express.json());
 
-app.use(
-  sanitizer.clean({
+app.use((req, res, next) => {
+  const isStripeWebhook = req.originalUrl === '/api/v1/stripe_plan/stripeWebhook';
+  if (isStripeWebhook) return next(); // ¡No aplicar sanitizer aquí!
+
+  return sanitizer.clean({
     xss: true,
     noSql: true,
     sql: false,
-  })
-);
+  })(req, res, next);
+});
+
 
 app.use('/api/v1', limiter);
 // routes

@@ -4,8 +4,8 @@ const Planes_chat_center = require('../models/planes_chat_center.model');
 const { db } = require('../database/config');
 
 // Price del addon de conexión y subusuario(fijo, según me diste)
-const ADDON_PRICE_ID = 'price_1RxZS7RwAlJ5h5wgjvXlxgZT';
-const PRICE_ID_ADDON_SUBUSUARIO = 'price_1RyJ3jRwAlJ5h5wg32COBKDA';
+const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
+const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
 
 
 // CORREGIDO: sin "active" en list() ni en create()
@@ -891,7 +891,7 @@ exports.crearFreeTrial = async (req, res) => {
     `, { replacements: [id_usuario] });
     customerId = rCust?.[0]?.customer_id || null;
 
-    
+
     if (!customerId) {
       const customer = await stripe.customers.create({ metadata: { id_usuario: String(id_usuario) } });
       customerId = customer.id;
