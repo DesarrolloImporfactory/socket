@@ -81,16 +81,6 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-app.use(express.json());
-
-app.use(
-  sanitizer.clean({
-    xss: true,
-    noSql: true,
-    sql: false,
-  })
-);
-
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
 app.use(
   '/api/v1/messenger/webhook',
@@ -114,6 +104,11 @@ app.post(
 // Luego el resto del stack “normal”
 
 app.use('/api/v1', limiter);
+
+app.use('/api/v1/stripe_plan', stripeRouter);
+
+app.use(express.json());
+
 // routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
@@ -133,7 +128,6 @@ app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
-app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
 app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
