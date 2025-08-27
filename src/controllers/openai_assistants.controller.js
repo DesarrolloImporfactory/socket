@@ -37,10 +37,12 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     id_configuracion,
     telefono,
     api_key_openai,
+    business_phone_id,
+    accessToken,
   } = req.body;
 
   const assistants = await db.query(
-    `SELECT assistant_id, tipo, productos FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
+    `SELECT assistant_id, tipo, productos, tiempo_remarketing FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
@@ -67,17 +69,21 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   }
 
   let assistant_id = null;
-  let tipo_asistente = "";
+  let tipo_asistente = '';
+  let tiempo_remarketing = null;
+
   if (tipoInfo === 'datos_guia') {
     const logistic = assistants.find(
       (a) => a.tipo.toLowerCase() === 'logistico'
     );
     assistant_id = logistic?.assistant_id;
-    tipo_asistente = "IA_logistica";
+    tipo_asistente = 'IA_logistica';
   } else if (tipoInfo === 'datos_pedido') {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
-    tipo_asistente = "IA_ventas";
+
+    tiempo_remarketing = sales?.tiempo_remarketing;
+    tipo_asistente = 'IA_ventas';
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
@@ -86,7 +92,9 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   } else {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
-    tipo_asistente = "IA_ventas";
+
+    tiempo_remarketing = sales?.tiempo_remarketing;
+    tipo_asistente = 'IA_ventas';
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
@@ -181,6 +189,33 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     .reverse()
     .find((msg) => msg.role === 'assistant' && msg.run_id === run_id)
     ?.content[0]?.text?.value;
+
+  if (tiempo_remarketing && tiempo_remarketing > 0) {
+    const tiempoDisparo = new Date(
+      Date.now() + tiempo_remarketing * 60 * 60 * 1000
+    );
+
+    await db.query(
+      `INSERT INTO remarketing_pendientes 
+   (telefono, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread) 
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          telefono,
+          id_configuracion,
+          business_phone_id,
+          accessToken, // WhatsApp token (si lo usas después)
+          api_key_openai, // OpenAI token
+          assistant_id, // ID real del assistant
+          respuesta, // Mensaje generado
+          tipo_asistente,
+          tiempoDisparo,
+          id_thread,
+        ],
+        type: db.QueryTypes.INSERT,
+      }
+    );
+  }
 
   res.status(200).json({
     status: 200,

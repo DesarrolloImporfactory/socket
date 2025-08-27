@@ -13,24 +13,26 @@ const checkPlanActivo = async (req, res, next) => {
 
   const ahora = new Date();
 
-  // Verificar si el plan está vencido
-  if (usuario.fecha_renovacion && ahora > usuario.fecha_renovacion) {
-    if (usuario.estado !== 'vencido') {
-      await usuario.update({ estado: 'vencido' });
+  if (usuario.permanente == 0) {
+    // Verificar si el plan está vencido
+    if (usuario.fecha_renovacion && ahora > usuario.fecha_renovacion) {
+      if (usuario.estado !== 'vencido') {
+        await usuario.update({ estado: 'vencido' });
+      }
+
+      return res.status(402).json({
+        status: 'fail',
+        message: 'Tu plan ha caducado',
+      });
     }
 
-    return res.status(402).json({
-      status: 'fail',
-      message: 'Tu plan ha caducado',
-    });
-  }
-
-  // Verificar si está activo
-  if (usuario.estado !== 'activo') {
-    return res.status(403).json({
-      status: 'fail',
-      message: 'El plan del usuario está inactivo',
-    });
+    // Verificar si está activo
+    if (usuario.estado !== 'activo') {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'El plan del usuario está inactivo',
+      });
+    }
   }
 
   next();
