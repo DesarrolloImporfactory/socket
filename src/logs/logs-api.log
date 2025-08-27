@@ -2113,3 +2113,5 @@
 [2025-08-25T15:25:37.615Z] info: id_cliente_chat_center es requerido
 [2025-08-25T15:25:37.792Z] info: id_cliente_chat_center es requerido
 [2025-08-26T13:14:36.497Z] info: No se encontraron ambos asistentes (logistico y ventas)
+[2025-08-27T21:36:17.971Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
+[2025-08-27T21:39:06.233Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).

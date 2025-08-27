@@ -59,7 +59,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   let bloqueInfo = '';
   let tipoInfo = null;
 
-  if (id_plataforma !== null) {
+  if (id_plataforma) {
     const datosCliente = await obtenerDatosClienteParaAssistant(
       id_plataforma,
       telefono
