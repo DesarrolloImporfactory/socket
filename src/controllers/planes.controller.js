@@ -38,6 +38,7 @@ exports.seleccionarPlan = async (req, res) => {
         fecha_inicio: hoy,
         fecha_renovacion: nuevaFechaRenovacion,
         estado: 'activo',
+        free_trial_used: 1
       });
 
 

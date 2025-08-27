@@ -19,6 +19,9 @@ router.post('/crearSesionAddonSubusuario', stripe_planesController.crearSesionAd
 router.post('/crearFreeTrial', stripe_planesController.crearFreeTrial);
 router.post('/trialElegibilidad', stripe_planesController.trialElegibilidad);
 
+router.post('/crearSesionFreeSetup', stripe_planesController.crearSesionFreeSetup);
+
+
 
 
 

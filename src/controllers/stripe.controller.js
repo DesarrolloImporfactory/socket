@@ -955,3 +955,62 @@ exports.crearFreeTrial = async (req, res) => {
     return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
   }
 };
+
+
+exports.crearSesionFreeSetup = async (req, res) => {
+  try {
+    const { id_usuario } = req.body;
+
+    if (!id_usuario) {
+      return res.status(400).json({ message: "Falta el id_usuario" });
+    }
+
+    // Buscar customer
+    const [row] = await db.query(`
+      SELECT customer_id FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [id_usuario] });
+
+    let customerId = row?.[0]?.customer_id;
+
+    if (!customerId) {
+      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+      if (!usuario) return res.status(404).json({ message: "Usuario no encontrado" });
+
+      const customer = await stripe.customers.create({
+        name: usuario.nombre,
+        email: usuario.correo,
+        metadata: { id_usuario },
+      });
+
+      customerId = customer.id;
+
+      await db.query(`
+        INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+        VALUES (?, ?, NOW())
+      `, { replacements: [id_usuario, customerId] });
+    }
+
+    // Crear sesión de setup
+    const baseUrl = req.headers.origin || req.headers.referer?.split('/').slice(0, 3).join('/');
+    const session = await stripe.checkout.sessions.create({
+      mode: "setup",
+      payment_method_types: ["card"],
+      customer: customerId,
+      metadata: {
+        id_usuario,
+        motivo: "activar_plan_free"
+      },
+      success_url: `${baseUrl}/planes_view?setup=ok`,
+      cancel_url: `${baseUrl}/planes_view?setup=cancel`,
+    });
+
+    return res.status(200).json({ url: session.url });
+
+  } catch (error) {
+    console.error("❌ Error en crearSesionFreeSetup:", error);
+    return res.status(500).json({ message: "No se pudo crear la sesión de setup para el plan gratuito" });
+  }
+};
