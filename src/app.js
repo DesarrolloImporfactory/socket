@@ -10,6 +10,7 @@ const sanitizer = require('perfect-express-sanitizer');
 
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
+const cloudapiRouter = require('./routes/cloudapi.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
 const etiquetasAsignadasRouter = require('./routes/etiquetas_asignadas.routes');
 
@@ -43,6 +44,8 @@ const messengerRouter = require('./routes/messenger.routes');
 
 const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes');
 
+const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
+
 const stripeRouter = require('./routes/stripe.routes');
 
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
@@ -57,6 +60,8 @@ const appointmentsRouter = require('./routes/appointments.routes');
 
 const debugRouter = require('./routes/debug.routes');
 
+const googleAuthRoutes = require('./routes/google_auth.routes');
+
 const path = require('path');
 
 const app = express();
@@ -67,6 +72,15 @@ const limiter = rateLimit({
 
   message: 'Too many requests from this IP, please try again in an hour!',
 });
+
+
+// WEBHOOK: este debe ir antes del body parser y fuera del router
+app.post(
+  '/api/v1/stripe_plan/stripeWebhook',
+  express.raw({ type: 'application/json' }),
+  stripe_webhookController.stripeWebhook
+);
+
 
 app.use(
   cors({
@@ -94,27 +108,38 @@ app.use(
 //Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
 app.use('/api/v1/messenger', messengerRouter);
 
-// WEBHOOK: este debe ir antes del body parser y fuera del router
-app.post(
-  '/api/v1/stripe_plan/stripeWebhook',
-  express.raw({ type: 'application/json' }),
-  stripe_webhookController.stripeWebhook
-);
 
 // Luego el resto del stack “normal”
 
+// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/v1/stripe_plan/stripeWebhook') {
+    return next();
+  }
+  return express.json()(req, res, next);
+});
+
+
+app.use((req, res, next) => {
+  const isStripeWebhook =
+    req.originalUrl === '/api/v1/stripe_plan/stripeWebhook';
+  if (isStripeWebhook) return next(); // ¡No aplicar sanitizer aquí!
+
+  return sanitizer.clean({
+    xss: true,
+    noSql: true,
+    sql: false,
+  })(req, res, next);
+});
+
 app.use('/api/v1', limiter);
-
-app.use('/api/v1/stripe_plan', stripeRouter);
-
-app.use(express.json());
-
 // routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
+app.use('/api/v1/cloudapi', cloudapiRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/configuraciones', configuracionesRouter);
@@ -128,12 +153,15 @@ app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
+app.use('/api/v1/departamentos_chat_center', departamentos_chat_centerRouter);
+app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
 app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/debug', debugRouter);
+app.use('/api/v1', googleAuthRoutes);
 
 app.all('*', (req, res, next) => {
   return next(
