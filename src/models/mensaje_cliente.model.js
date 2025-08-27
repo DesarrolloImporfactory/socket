@@ -1,4 +1,4 @@
-const { DataTypes, TINYINT } = require('sequelize');
+const { DataTypes } = require('sequelize');
 const { db } = require('../database/config');
 
 const MensajesClientes = db.define(
@@ -13,43 +13,54 @@ const MensajesClientes = db.define(
     id_plataforma: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: true,
-      references: {
-        model: 'plataformas',
-        key: 'id_plataforma',
-      },
+      // references opcional: si existe FK real, déjalo; si no, quítalo
+      references: { model: 'plataformas', key: 'id_plataforma' },
     },
+    // En la tabla NO aparece como UNSIGNED
     id_configuracion: {
-      type: DataTypes.BIGINT.UNSIGNED,
+      type: DataTypes.BIGINT,
       allowNull: true,
-      references: {
-        model: 'configuraciones',
-        key: 'id',
-      },
+      // references: { model: 'configuraciones', key: 'id' }, // activa solo si coincide con tu FK real
     },
     id_cliente: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false,
-      references: {
-        model: 'clientes_chat_center',
-        key: 'id',
-      },
+      references: { model: 'clientes_chat_center', key: 'id' },
+    },
+    id_automatizador: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
     mid_mensaje: {
       type: DataTypes.STRING(100),
       allowNull: true,
       defaultValue: null,
     },
+    // En la tabla es NULLABLE con default 'text'
     tipo_mensaje: {
       type: DataTypes.STRING(255),
-      allowNull: false,
+      allowNull: true,
       defaultValue: 'text',
     },
+    // NOT NULL, sin default
     rol_mensaje: {
       type: DataTypes.BIGINT,
       allowNull: false,
     },
     celular_recibe: {
       type: DataTypes.STRING(250),
+      allowNull: true,
+      defaultValue: null,
+    },
+    // Campo presente en la tabla y faltaba en el modelo
+    responsable: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      defaultValue: null,
+    },
+    // Campo presente en la tabla y faltaba en el modelo
+    uid_whatsapp: {
+      type: DataTypes.STRING(50),
       allowNull: true,
       defaultValue: null,
     },
@@ -63,8 +74,9 @@ const MensajesClientes = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    // En la tabla es VARCHAR(4000)
     ruta_archivo: {
-      type: DataTypes.STRING(500),
+      type: DataTypes.STRING(4000),
       allowNull: true,
       defaultValue: null,
     },
@@ -106,7 +118,7 @@ const MensajesClientes = db.define(
     created_at: {
       type: DataTypes.DATE,
       allowNull: true,
-      defaultValue: DataTypes.NOW,
+      defaultValue: DataTypes.NOW, // CURRENT_TIMESTAMP
     },
     updated_at: {
       type: DataTypes.DATE,
@@ -118,8 +130,14 @@ const MensajesClientes = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    // En la tabla aparece como NULLable; default 0
     visto: {
       type: DataTypes.TINYINT,
+      allowNull: true,
+      defaultValue: 0,
+    },
+    notificacion_estado: {
+      type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 0,
     },
@@ -128,6 +146,7 @@ const MensajesClientes = db.define(
     tableName: 'mensajes_clientes',
     timestamps: false,
     freezeTableName: true,
+    underscored: false,
   }
 );
 

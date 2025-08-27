@@ -23,6 +23,9 @@ db.sync({
     console.log('Error syncing database 😞', err);
   });
 
+// Aquí ejecutamos el cron de remarketing
+require('./cron/remarketing');
+
 // Se agrega el puerto desde las variables de entorno -😁
 const server = app.listen(process.env.PORT, () => {
   console.log(`Server listening on port ${process.env.PORT}`);

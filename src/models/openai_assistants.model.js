@@ -48,6 +48,16 @@ const ClientesChatCenter = db.define(
       allowNull: false,
       defaultValue: null,
     },
+    // models/openai_assistants.js
+    productos: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+
+    tiempo_remarketing: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+    },
   },
   {
     tableName: 'openai_assistants',

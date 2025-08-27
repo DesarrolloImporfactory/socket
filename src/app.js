@@ -28,6 +28,8 @@ const bodegaRouter = require('./routes/bodega.routes');
 
 const openai_assistantsRouter = require('./routes/openai_assistants.routes');
 
+const remarketing_pendientesRouter = require('./routes/remarketing_pendientes.routes');
+
 const authRouter = require('./routes/auth.routes');
 
 const userRouter = require('./routes/user.routes');
@@ -145,6 +147,7 @@ app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
 app.use('/api/v1/facturas_cot', facturas_cotRouter);
 app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
+app.use('/api/v1/remarketing', remarketing_pendientesRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
 app.use('/api/v1/chat_service', chat_serviceRouter);

@@ -12,19 +12,18 @@ const ClientesChatCenter = db.define(
     },
     id_plataforma: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false,
-      references: {
-        model: 'plataformas',
-        key: 'id_plataforma',
-      },
+      allowNull: true, // En la tabla permite NULL
+      references: { model: 'plataformas', key: 'id_plataforma' },
     },
     id_configuracion: {
-      type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false,
-      references: {
-        model: 'configuraciones',
-        key: 'id',
-      },
+      type: DataTypes.BIGINT, // No es UNSIGNED en la tabla
+      allowNull: true,
+      // references opcional si existe FK real
+    },
+    id_etiqueta: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
     },
     uid_cliente: {
       type: DataTypes.STRING(255),
@@ -45,12 +44,15 @@ const ClientesChatCenter = db.define(
       type: DataTypes.STRING(255),
       allowNull: true,
       defaultValue: null,
-      validate: {
-        isEmail: true,
-      },
+      validate: { isEmail: true },
     },
     celular_cliente: {
       type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    imagePath: {
+      type: DataTypes.STRING(300),
       allowNull: true,
       defaultValue: null,
     },
@@ -99,7 +101,8 @@ const ClientesChatCenter = db.define(
       allowNull: true,
       defaultValue: null,
     },
-    telefono_limpio : {
+
+    telefono_limpio: {
       type: DataTypes.STRING(13),
       allowNull: true,
       defaultValue: null,
