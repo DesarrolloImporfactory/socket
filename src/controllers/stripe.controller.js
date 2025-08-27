@@ -345,6 +345,7 @@ exports.crearSesionPago = async (req, res) => {
 
 
 
+// controllers/stripe.controller.js
 exports.obtenerSuscripcionActiva = async (req, res) => {
   try {
     const { id_usuario } = req.body;
@@ -371,26 +372,26 @@ exports.obtenerSuscripcionActiva = async (req, res) => {
       return res.status(200).json({ plan: null });
     }
 
+    // ✅ Solo-calculo en memoria (sin mutar DB)
     const hoy = new Date();
-    const fechaRenovacion = new Date(result.fecha_renovacion);
+    const fechaRenovacion = result.fecha_renovacion ? new Date(result.fecha_renovacion) : null;
+    const vencido = fechaRenovacion ? fechaRenovacion < hoy : false;
 
-    // Verifica si ya caducó y actualiza estado si es necesario
-    if (fechaRenovacion < hoy && result.estado === 'activo') {
-      await db.query(`
-        UPDATE usuarios_chat_center SET estado = 'inactivo' WHERE id_usuario = :id_usuario
-      `, {
-        replacements: { id_usuario }
-      });
-
-      result.estado = 'inactivo';
-    }
-
-    return res.status(200).json({ plan: result });
+    return res.status(200).json({
+      plan: {
+        ...result,
+        vencido,               // flag de conveniencia para el front
+        dias_restantes: fechaRenovacion
+          ? Math.ceil((fechaRenovacion - hoy) / (1000 * 60 * 60 * 24))
+          : null,
+      }
+    });
   } catch (err) {
     console.error("Error al obtener suscripción activa:", err);
     return res.status(500).json({ message: "Error interno al obtener la suscripción activa" });
   }
 };
+
 
 
 
@@ -968,7 +969,7 @@ exports.crearSesionFreeSetup = async (req, res) => {
     // Buscar customer
     const [row] = await db.query(`
       SELECT customer_id FROM transacciones_stripe_chat
-      WHERE id_usuario = ?
+      WHERE id_usuario = ? AND estado_suscripcion = 'active'
       ORDER BY fecha DESC
       LIMIT 1
     `, { replacements: [id_usuario] });

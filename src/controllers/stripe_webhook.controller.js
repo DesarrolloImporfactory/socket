@@ -189,7 +189,7 @@ exports.stripeWebhook = async (req, res) => {
       // Opcional: también puedes actualizar el estado del usuario si lo deseas
       await db.query(
         `UPDATE usuarios_chat_center
-         SET estado = 'inactivo', id_plan = NULL
+         SET estado = 'vencido', id_plan = NULL
          WHERE id_usuario = (
            SELECT id_usuario 
            FROM transacciones_stripe_chat 
