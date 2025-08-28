@@ -5,6 +5,7 @@ const { generarToken } = require('./../utils/jwt');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const Openai_assistants = require('../models/openai_assistants.model');
 const Configuraciones = require('../models/configuraciones.model');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
@@ -168,9 +169,21 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
     }
   );
 
+  await Openai_assistants.update(
+    {
+      productos:null
+    },
+    {
+      where:{
+        id_configuracion: id_configuracion,
+      }
+    }
+  )
+
   res.status(200).json({
     status: 'success',
     message: 'Vinculacion exitosa',
+    id_plataforma: usuarioEncontrado.id_plataforma,
   });
 });
 

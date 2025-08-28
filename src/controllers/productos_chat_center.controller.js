@@ -1,6 +1,8 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
+const { db } = require('../database/config');
+
 const fs = require('fs');
 const path = require('path');
 
@@ -18,6 +20,38 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
       status: 'success',
       data: [],
       message: 'No existen productos para esta configuración.',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: productos,
+  });
+});
+
+exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
+  const { id_plataforma } = req.body;
+
+  const productos = await db.query(
+    `
+    SELECT 
+      p.nombre_producto AS nombre,
+      ib.id_inventario AS id
+    FROM inventario_bodegas ib
+    INNER JOIN productos p ON ib.id_producto = p.id_producto
+    WHERE p.id_plataforma = ?
+    `,
+    {
+      replacements: [id_plataforma],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
+  if (!productos || productos.length === 0) {
+    return res.status(200).json({
+      status: 'success',
+      data: [],
+      message: 'No existen productos para esta plataforma.',
     });
   }
 

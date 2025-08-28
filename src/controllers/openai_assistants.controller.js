@@ -7,6 +7,7 @@ const OpenaiAssistants = require('../models/openai_assistants.model');
 const {
   obtenerDatosClienteParaAssistant,
   informacionProductos,
+  informacionProductosVinculado,
 } = require('../utils/datosClienteAssistant');
 
 exports.datosCliente = catchAsync(async (req, res, next) => {
@@ -42,7 +43,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   } = req.body;
 
   const assistants = await db.query(
-    `SELECT assistant_id, tipo, productos, tiempo_remarketing FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
+    `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
@@ -87,7 +88,12 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
-      bloqueInfo += await informacionProductos(sales.productos);
+
+      if (sales?.tomar_productos == 'imporsuit') {
+        bloqueInfo += await informacionProductosVinculado(sales.productos);
+      } else {
+        bloqueInfo += await informacionProductos(sales.productos);
+      }
     }
   } else {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
@@ -98,7 +104,12 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
     if (sales?.productos && Array.isArray(sales.productos)) {
       console.log('productos: ' + sales.productos);
-      bloqueInfo += await informacionProductos(sales.productos);
+
+      if (sales?.tomar_productos == 'imporsuit') {
+        bloqueInfo += await informacionProductosVinculado(sales.productos);
+      } else {
+        bloqueInfo += await informacionProductos(sales.productos);
+      }
     }
   }
 
@@ -221,7 +232,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     status: 200,
     respuesta: respuesta || 'No se obtuvo respuesta del assistant.',
     tipo_asistente: tipo_asistente,
-    /* bloqueInfo: bloqueInfo, */
+    bloqueInfo: bloqueInfo,
   });
 });
 
@@ -277,6 +288,8 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
           activo: asistente.activo,
           prompt: asistente.prompt,
           productos: asistente.productos,
+          tomar_productos: asistente.tomar_productos,
+          tiempo_remarketing: asistente.tiempo_remarketing,
         };
       }
     });
@@ -374,8 +387,15 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
-  const { id_configuracion, nombre_bot, assistant_id, activo, productos } =
-    req.body;
+  const {
+    id_configuracion,
+    nombre_bot,
+    assistant_id,
+    activo,
+    productos,
+    tiempo_remarketing,
+    tomar_productos,
+  } = req.body;
 
   try {
     const productosJSON = JSON.stringify(productos);
@@ -390,7 +410,8 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?, tiempo_remarketing = ?
+        , tomar_productos = ? 
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
           replacements: [
@@ -398,6 +419,8 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             assistant_id,
             activo,
             productosJSON,
+            tiempo_remarketing,
+            tomar_productos,
             id_configuracion,
           ],
           type: db.QueryTypes.UPDATE,
@@ -406,8 +429,8 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos) 
-         VALUES (?, "ventas", ?, ?, ?, ?)`,
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos, tiempo_remarketing, tomar_productos) 
+         VALUES (?, "ventas", ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
@@ -415,6 +438,8 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             assistant_id,
             activo,
             productosJSON,
+            tiempo_remarketing,
+            tomar_productos,
           ],
           type: db.QueryTypes.INSERT,
         }

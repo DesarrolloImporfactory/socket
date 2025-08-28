@@ -2115,3 +2115,10 @@
 [2025-08-26T13:14:36.497Z] info: No se encontraron ambos asistentes (logistico y ventas)
 [2025-08-27T21:36:17.971Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
 [2025-08-27T21:39:06.233Z] info: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
+[2025-08-28T19:35:41.775Z] info: db is not defined
+[2025-08-28T19:35:48.733Z] info: db is not defined
+[2025-08-28T19:36:30.826Z] info: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'FROM inventario_bodegas ib
+    INNER JOIN productos p ON ib.id_producto = p.id_p' at line 4
+[2025-08-28T19:37:37.558Z] info: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'FROM inventario_bodegas ib
+    INNER JOIN productos p ON ib.id_producto = p.id_p' at line 4
+[2025-08-28T19:42:28.117Z] info: Error al actualizar asistente ventas
