@@ -7,7 +7,7 @@ const auth = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 
 router.use(auth.protect);
-router.use(checkPlanActivo);
+
 
 
 router.get('/stripe', stripe_planesController.listarPlanesStripe);
