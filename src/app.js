@@ -62,6 +62,8 @@ const debugRouter = require('./routes/debug.routes');
 
 const googleAuthRoutes = require('./routes/google_auth.routes');
 
+const pedidosRouter = require('./routes/pedidos.routes');
+
 const path = require('path');
 
 const app = express();
@@ -73,14 +75,12 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again in an hour!',
 });
 
-
 // WEBHOOK: este debe ir antes del body parser y fuera del router
 app.post(
   '/api/v1/stripe_plan/stripeWebhook',
   express.raw({ type: 'application/json' }),
   stripe_webhookController.stripeWebhook
 );
-
 
 app.use(
   cors({
@@ -108,7 +108,6 @@ app.use(
 //Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
 app.use('/api/v1/messenger', messengerRouter);
 
-
 // Luego el resto del stack “normal”
 
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe
@@ -118,7 +117,6 @@ app.use((req, res, next) => {
   }
   return express.json()(req, res, next);
 });
-
 
 app.use((req, res, next) => {
   const isStripeWebhook =
@@ -162,6 +160,7 @@ app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
+app.use('/api/v1/pedidos', pedidosRouter);
 
 app.all('*', (req, res, next) => {
   return next(
