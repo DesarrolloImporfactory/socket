@@ -45,17 +45,34 @@ async function markSessionUsed(id) {
 }
 
 class MessengerOAuthService {
-  static buildLoginUrl({ id_configuracion, redirect_uri }) {
+  static buildLoginUrl({ id_configuracion, redirect_uri, config_id }) {
+    // incluye el id_configuracion en el state
+    const state = `cfg_${id_configuracion}_${crypto
+      .randomBytes(8)
+      .toString('hex')}`;
+    const base = `https://www.facebook.com/${FB_VERSION}/dialog/oauth`;
+
+    if (config_id) {
+      // ✅ Facebook Login for Business (usa config_id, NO scope)
+      return `${base}?client_id=${encodeURIComponent(
+        FB_APP_ID
+      )}&redirect_uri=${encodeURIComponent(
+        redirect_uri
+      )}&config_id=${encodeURIComponent(
+        config_id
+      )}&response_type=code&override_default_response_type=true&state=${encodeURIComponent(
+        state
+      )}`;
+    }
+
+    // (fallback) Login “clásico” con scope – por si algún día se requiere
     const scope = [
       'pages_manage_metadata',
       'pages_read_engagement',
       'pages_messaging',
       'pages_show_list',
     ].join(',');
-    const state = `plat_${id_configuracion}_${crypto
-      .randomBytes(8)
-      .toString('hex')}`;
-    const url = `https://www.facebook.com/${FB_VERSION}/dialog/oauth?client_id=${encodeURIComponent(
+    return `${base}?client_id=${encodeURIComponent(
       FB_APP_ID
     )}&redirect_uri=${encodeURIComponent(
       redirect_uri
@@ -64,7 +81,6 @@ class MessengerOAuthService {
     )}&response_type=code&state=${encodeURIComponent(
       state
     )}&auth_type=rerequest`;
-    return url;
   }
 
   static async exchangeCodeAndCreateSession({

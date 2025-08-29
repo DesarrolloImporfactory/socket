@@ -2123,3 +2123,5 @@
     INNER JOIN productos p ON ib.id_producto = p.id_p' at line 4
 [2025-08-28T19:42:28.117Z] info: Error al actualizar asistente ventas
 [2025-08-29T19:26:28.831Z] info: Can't find /api/v1/configuraciones/toggle_suspension on this server! 🧨
+[2025-08-29T21:35:15.464Z] info: No se encontro una configuracion con este id_usuario: 32
+[2025-08-29T21:35:15.560Z] info: No se encontro una configuracion con este id_usuario: 32

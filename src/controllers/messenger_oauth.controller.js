@@ -5,7 +5,8 @@ const MessengerConnectService = require('../services/messenger_connect.service')
 
 // GET /api/v1/messenger/facebook/login-url?id_configuracion=123&redirect_uri=https://tu.front/conexiones
 exports.getLoginUrl = catchAsync(async (req, res, next) => {
-  const { id_configuracion, redirect_uri } = req.query;
+  const { id_configuracion, redirect_uri, config_id } = req.query;
+
   if (!id_configuracion || !redirect_uri) {
     return next(
       new AppError('id_configuracion y redirect_uri son requeridos', 400)
@@ -14,6 +15,7 @@ exports.getLoginUrl = catchAsync(async (req, res, next) => {
   const url = MessengerOAuthService.buildLoginUrl({
     id_configuracion,
     redirect_uri,
+    config_id,
   });
   res.json({ ok: true, url });
 });
