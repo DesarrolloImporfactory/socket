@@ -465,48 +465,75 @@ exports.obtenerFacturasUsuario = async (req, res) => {
 
 
 /* cancelar suscripcion / cancelar pago automatico stripe */
+
 exports.cancelarSuscripcion = async (req, res) => {
   try {
     const id_usuario = req.user?.id || req.body.id_usuario;
 
-    // 1. Buscar la suscripción activa más reciente del usuario
+    // 1) Intentar resolver por tu tabla (como ya haces)
     const [result] = await db.query(`
-      SELECT id_suscripcion FROM transacciones_stripe_chat 
+      SELECT id_suscripcion, customer_id
+      FROM transacciones_stripe_chat 
       WHERE id_usuario = ? AND estado_suscripcion = 'active'
       ORDER BY fecha DESC LIMIT 1
     `, { replacements: [id_usuario] });
 
+    let idSuscripcion = result?.[0]?.id_suscripcion || null;
+    let customerId    = result?.[0]?.customer_id    || null;
 
-    const idSuscripcion = result?.[0]?.id_suscripcion;
+    // 2) Fallback: si no hay idSuscripcion, resuelve por customer y busca en Stripe
+    if (!idSuscripcion) {
+      if (!customerId) {
+        const [r2] = await db.query(`
+          SELECT customer_id
+          FROM transacciones_stripe_chat
+          WHERE id_usuario = ? AND customer_id IS NOT NULL
+          ORDER BY fecha DESC LIMIT 1
+        `, { replacements: [id_usuario] });
+        customerId = r2?.[0]?.customer_id || null;
+      }
+      if (customerId) {
+        const subs = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 5 });
+        const candidate = subs.data.find(s => ['active','trialing','past_due','incomplete','incomplete_expired'].includes(s.status));
+        idSuscripcion = candidate?.id || null;
+      }
+    }
 
     if (!idSuscripcion) {
       return res.status(404).json({ status: 'fail', message: 'No hay suscripción activa' });
     }
 
-    // 2. Cancelar en Stripe al finalizar el período actual
-    await stripe.subscriptions.update(idSuscripcion, {
+    // 3) Programar cancelación al final del período en Stripe
+    const updated = await stripe.subscriptions.update(idSuscripcion, {
       cancel_at_period_end: true,
     });
 
-    // 3. Opcional: registrar en tu base de datos que está pendiente de cancelación
+    // 4) Reflejar "cancelando" en tu BD (como ya haces)
     await db.query(`
       UPDATE transacciones_stripe_chat 
       SET estado_suscripcion = 'cancelando' 
       WHERE id_suscripcion = ?
     `, { replacements: [idSuscripcion] });
 
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
       message: 'La suscripción se cancelará al finalizar el periodo actual.',
+      stripe: {
+        id: updated.id,
+        status: updated.status,
+        cancel_at_period_end: updated.cancel_at_period_end,
+        current_period_end: updated.current_period_end, // UNIX ts
+      },
     });
   } catch (error) {
     console.error("Error al cancelar suscripción:", error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'fail',
       message: 'Error al cancelar la suscripción',
     });
   }
 };
+
 
 
 // stripe.controller.js
@@ -1004,7 +1031,7 @@ exports.crearSesionFreeSetup = async (req, res) => {
         id_usuario,
         motivo: "activar_plan_free"
       },
-      success_url: `${baseUrl}/planes_view?setup=ok`,
+      success_url: `${baseUrl}/miplan?setup=ok`,
       cancel_url: `${baseUrl}/planes_view?setup=cancel`,
     });
 

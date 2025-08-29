@@ -43,133 +43,196 @@ exports.stripeWebhook = async (req, res) => {
     }
   }
 
-  // ✅ Activar usuario y actualizar fila usando customer
-  if (event.type === 'invoice.payment_succeeded') {
+  // Activar usuario y actualizar fila usando customer
+
+if (event.type === 'invoice.payment_succeeded') {
   const invoice = event.data.object;
 
   try {
-    const lineItem = invoice.lines?.data?.[0];
+      /* ────────────────────────────────────────────────────────────
+         A) BRANCH: Upgrades por “delta” (Checkout mode: payment)
+         Detectamos por metadata que enviaste en invoice_creation.invoice_data.metadata
+         ──────────────────────────────────────────────────────────── */
+      const metaInv = invoice?.metadata || {};
+      if (metaInv?.tipo === 'upgrade_delta') {
+        const customerId     = invoice.customer;
+        const subscriptionId = metaInv.subscription_id || null;
+        const toPriceId      = metaInv.to_price_id || null;
+        let   id_usuario     = metaInv.id_usuario || null;
+        const id_plan        = metaInv.id_plan || null;
 
-    // 1) TOMA EL ID DE SUSCRIPCIÓN COMO TÚ LO VENÍAS HACIENDO (PRIMARIO)
-    let subscriptionId =
-      lineItem?.parent?.subscription_item_details?.subscription
-      // 2) FALLBACK OFICIAL (por si algún día Stripe lo manda aquí)
-      || invoice.subscription
-      // 3) OTROS INTENTOS SUAVES (por compatibilidad)
-      || lineItem?.subscription_details?.subscription
-      || lineItem?.subscription
-      || null;
+        // Resolver id_usuario por customerId si no vino en metadata
+        if (!id_usuario && customerId) {
+          const [u] = await db.query(`
+            SELECT id_usuario
+            FROM transacciones_stripe_chat
+            WHERE customer_id = ?
+            ORDER BY fecha DESC
+            LIMIT 1
+          `, { replacements: [customerId] });
+          id_usuario = u?.[0]?.id_usuario || null;
+        }
 
-    const customerId = invoice.customer;
+        // 1) Actualizar la SUSCRIPCIÓN al nuevo price (sin prorratear de nuevo)
+        if (subscriptionId && toPriceId) {
+          const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data'] });
+          const itemId = sub?.items?.data?.[0]?.id;
+          if (itemId) {
+            await stripe.subscriptions.update(subscriptionId, {
+              items: [{ id: itemId, price: toPriceId }],
+              proration_behavior: 'none', // ya cobraste la diferencia
+            });
+          }
+        }
 
-    if (!subscriptionId || !customerId) {
-      console.warn('[WH] invoice.payment_succeeded: faltan subscriptionId/customerId', {
-        invoiceId: invoice.id, subscriptionId, customerId
-      });
-      // No cortar el flujo del webhook
-      return res.status(200).json({ received: true });
-    }
+        // 2) Promover el plan en tu DB (no tocar fechas para conservar el ciclo)
+        if (id_usuario && id_plan) {
+          const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+          const plan = await Planes_chat_center.findByPk(id_plan);
+          if (usuario && plan) {
+            await usuario.update({
+              id_plan: plan.id_plan,
+              id_product_stripe: plan.id_product_stripe,
+              estado: 'activo',
+            });
+          }
+        }
 
-    // 4) METADATA: primero intenta desde la SUSCRIPCIÓN (tú la llenas en checkout)
-    let id_usuario = undefined;
-    let id_plan = undefined;
+        // 3) Persistencia mínima en transacciones_stripe_chat
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+          SET id_suscripcion = COALESCE(?, id_suscripcion),
+              estado_suscripcion = 'active',
+              fecha = NOW()
+          WHERE customer_id = ?
+        `, { replacements: [subscriptionId || null, invoice.customer] });
 
-    let subStatus = 'sin_suscripcion';
-    try {
-      const sub = await stripe.subscriptions.retrieve(subscriptionId);
-      subStatus = sub?.status || subStatus;
-      if (sub?.metadata) {
-        id_usuario = sub.metadata.id_usuario || id_usuario;
-        id_plan    = sub.metadata.id_plan    || id_plan;
+        // Cortamos aquí: no ejecutar la rama de suscripciones normales
+        return res.status(200).json({ received: true });
       }
-    } catch (e) {
-      console.warn('[WH] No se pudo expandir la suscripción para leer metadata:', e?.raw?.message || e.message);
-    }
 
-    // ⛔️ No promover al plan final si la suscripción sigue en trial o si la invoice fue de $0
-    if (subStatus === 'trialing' || (invoice.amount_paid || 0) === 0) {
-      // solo registramos la transacción y salimos 200
+      /* ────────────────────────────────────────────────────────────
+         B) BRANCH: Suscripciones normales (mode: subscription)
+         (Tu flujo original)
+         ──────────────────────────────────────────────────────────── */
+      const lineItem = invoice.lines?.data?.[0];
+
+      // 1) Intenta obtener subscriptionId (varios fallbacks)
+      let subscriptionId =
+        lineItem?.parent?.subscription_item_details?.subscription
+        || invoice.subscription
+        || lineItem?.subscription_details?.subscription
+        || lineItem?.subscription
+        || null;
+
+      const customerId = invoice.customer;
+
+      if (!subscriptionId || !customerId) {
+        console.warn('[WH] invoice.payment_succeeded: faltan subscriptionId/customerId', {
+          invoiceId: invoice.id, subscriptionId, customerId
+        });
+        // No cortar el flujo: responde 200 para que Stripe no reintente
+        return res.status(200).json({ received: true });
+      }
+
+      // 2) Intenta leer metadata desde la SUSCRIPCIÓN
+      let id_usuario = undefined;
+      let id_plan = undefined;
+
+      let subStatus = 'sin_suscripcion';
+      try {
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        subStatus = sub?.status || subStatus;
+        if (sub?.metadata) {
+          id_usuario = sub.metadata.id_usuario || id_usuario;
+          id_plan    = sub.metadata.id_plan    || id_plan;
+        }
+      } catch (e) {
+        console.warn('[WH] No se pudo expandir la suscripción para leer metadata:', e?.raw?.message || e.message);
+      }
+
+      // 3) Si la sub sigue en trial o la invoice fue de $0, solo registra y sal
+      if (subStatus === 'trialing' || (invoice.amount_paid || 0) === 0) {
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+          SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
+          WHERE customer_id = ?
+        `, { replacements: [subscriptionId, subStatus, customerId] });
+        return res.status(200).json({ received: true });
+      }
+
+      // 4) Fallback: metadata desde el lineItem (tu flujo actual)
+      if (!id_usuario || !id_plan) {
+        const md = lineItem?.metadata || {};
+        id_usuario = id_usuario || md.id_usuario;
+        id_plan    = id_plan    || md.id_plan;
+      }
+
+      // 5) Último fallback: resolver id_usuario por customer_id en tu tabla
+      if (!id_usuario && customerId) {
+        const [u] = await db.query(`
+          SELECT id_usuario
+          FROM transacciones_stripe_chat
+          WHERE customer_id = ?
+          ORDER BY fecha DESC
+          LIMIT 1
+        `, { replacements: [customerId] });
+        id_usuario = u?.[0]?.id_usuario;
+      }
+
+      // 6) Si aún faltan datos críticos, al menos registra y sal
+      if (!id_usuario || !id_plan) {
+        console.warn('[WH] invoice.payment_succeeded: metadata incompleta', { id_usuario, id_plan, subscriptionId, customerId });
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+          SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
+          WHERE customer_id = ?
+        `, { replacements: [subscriptionId, subStatus, customerId] });
+        return res.status(200).json({ received: true });
+      }
+
+      // 7) Activar usuario en DB (tu lógica original: setea fechas y estado)
+      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+      const plan = await Planes_chat_center.findByPk(id_plan);
+      if (!usuario || !plan) {
+        console.warn('[WH] Usuario o plan no encontrado', { id_usuario, id_plan });
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+          SET id_suscripcion = ?, id_usuario = ?, estado_suscripcion = ?, fecha = NOW()
+          WHERE customer_id = ?
+        `, { replacements: [subscriptionId, id_usuario || null, subStatus, customerId] });
+        return res.status(200).json({ received: true });
+      }
+
+      const hoy = new Date();
+      const fechaRenovacion = new Date(hoy);
+      fechaRenovacion.setDate(hoy.getDate() + 30);
+
+      await usuario.update({
+        id_plan,
+        fecha_inicio: hoy,
+        fecha_renovacion: fechaRenovacion,
+        estado: 'activo',
+        id_product_stripe: plan.id_product_stripe
+      });
+
+      // 8) Persistencia en tu tabla de transacciones
       await db.query(`
-        UPDATE transacciones_stripe_chat
-        SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
-        WHERE customer_id = ?
-      `, { replacements: [subscriptionId, subStatus, customerId] });
-      return res.status(200).json({ received: true });
-    }
-
-
-    // 5) FALLBACK: si no vino en la sub, toma metadata del lineItem (tu flujo actual)
-    if (!id_usuario || !id_plan) {
-      const md = lineItem?.metadata || {};
-      id_usuario = id_usuario || md.id_usuario;
-      id_plan    = id_plan    || md.id_plan;
-    }
-
-    // 6) ÚLTIMO FALLBACK para id_usuario: resolverlo por customer_id en tu tabla
-    if (!id_usuario && customerId) {
-      const [u] = await db.query(`
-        SELECT id_usuario
-        FROM transacciones_stripe_chat
-        WHERE customer_id = ?
-        ORDER BY fecha DESC
-        LIMIT 1
-      `, { replacements: [customerId] });
-      id_usuario = u?.[0]?.id_usuario;
-    }
-
-    // Si aún faltan datos críticos, al menos registramos la transacción y salimos 200
-    if (!id_usuario || !id_plan) {
-      console.warn('[WH] invoice.payment_succeeded: metadata incompleta', { id_usuario, id_plan, subscriptionId, customerId });
-      await db.query(`
-        UPDATE transacciones_stripe_chat
-        SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
-        WHERE customer_id = ?
-      `, { replacements: [subscriptionId, subStatus, customerId] });
-      return res.status(200).json({ received: true });
-    }
-
-    // 7) Activar usuario y fechas (tu lógica original)
-    const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-    const plan = await Planes_chat_center.findByPk(id_plan);
-    if (!usuario || !plan) {
-      console.warn('[WH] Usuario o plan no encontrado', { id_usuario, id_plan });
-      // Aun así, registra la transacción
-      await db.query(`
-        UPDATE transacciones_stripe_chat
+        UPDATE transacciones_stripe_chat 
         SET id_suscripcion = ?, id_usuario = ?, estado_suscripcion = ?, fecha = NOW()
         WHERE customer_id = ?
-      `, { replacements: [subscriptionId, id_usuario || null, subStatus, customerId] });
+      `, { replacements: [subscriptionId, id_usuario, subStatus, customerId] });
+
+      console.log(`invoice.payment_succeeded OK -> cust:${customerId} sub:${subscriptionId}`);
+      return res.status(200).json({ received: true });
+
+    } catch (error) {
+      console.error('❌ invoice.payment_succeeded handler:', error);
+      // Importante: responde 200 para evitar reintentos agresivos de Stripe
       return res.status(200).json({ received: true });
     }
-
-    const hoy = new Date();
-    const fechaRenovacion = new Date(hoy);
-    fechaRenovacion.setDate(hoy.getDate() + 30);
-
-    await usuario.update({
-      id_plan,
-      fecha_inicio: hoy,
-      fecha_renovacion: fechaRenovacion,
-      estado: 'activo',
-      id_product_stripe: plan.id_product_stripe
-    });
-
-    // 8) Persistencia en tu tabla (igual que hacías)
-    await db.query(`
-      UPDATE transacciones_stripe_chat 
-      SET id_suscripcion = ?, id_usuario = ?, estado_suscripcion = ?, fecha = NOW()
-      WHERE customer_id = ?
-    `, { replacements: [subscriptionId, id_usuario, subStatus, customerId] });
-
-    console.log(`invoice.payment_succeeded OK -> cust:${customerId} sub:${subscriptionId}`);
-    return res.status(200).json({ received: true });
-
-  } catch (error) {
-    console.error('❌ invoice.payment_succeeded handler:', error);
-    // Nunca respondas 500 a Stripe; responde 200 y loguea
-    return res.status(200).json({ received: true });
   }
-}
+
 
   // Cuando termina el periodo de una suscripción cancelada
   if (event.type === 'customer.subscription.deleted') {
