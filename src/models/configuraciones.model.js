@@ -25,6 +25,16 @@ const Configuraciones = db.define(
       allowNull: true,
       defaultValue: 1,
     },
+    suspendido: {
+      type: DataTypes.TINYINT, // o DataTypes.BOOLEAN, pero TINYINT mapea 0/1
+      allowNull: false,
+      defaultValue: 0,
+    },
+    suspended_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
     key_imporsuit: {
       type: DataTypes.STRING(200),
       allowNull: true,

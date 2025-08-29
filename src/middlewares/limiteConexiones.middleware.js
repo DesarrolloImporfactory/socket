@@ -53,9 +53,11 @@ const limiteConexiones = async (req, res, next) => {
     const totalPermitido = maxPorPlan + adicionales;
 
     // Conteo actual de conexiones del usuario
-    const totalActual = await ConfiguracionesModel.count({
-      where: { id_usuario: usuario.id_usuario },
-    });
+    // middlewares/limiteConexiones.middleware.js
+const totalActual = await ConfiguracionesModel.count({
+  where: { id_usuario: usuario.id_usuario, suspendido: 0 }, 
+});
+
 
     // Validación contra el tope
     if (totalActual >= totalPermitido) {

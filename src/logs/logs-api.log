@@ -2122,3 +2122,4 @@
 [2025-08-28T19:37:37.558Z] info: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'FROM inventario_bodegas ib
     INNER JOIN productos p ON ib.id_producto = p.id_p' at line 4
 [2025-08-28T19:42:28.117Z] info: Error al actualizar asistente ventas
+[2025-08-29T19:26:28.831Z] info: Can't find /api/v1/configuraciones/toggle_suspension on this server! 🧨
