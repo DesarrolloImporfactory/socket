@@ -6,7 +6,7 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
-const uploadProductos = require('../middlewares/uploadProductos');
+const { uploadProductoMedia } = require('../middlewares/uploadProductos');
 
 router.use(protect);
 
@@ -24,13 +24,12 @@ router.post(
 
 router.post(
   '/agregarProducto',
-  uploadProductos.single('imagen'),
+  uploadProductoMedia,
   productos_chat_centerController.agregarProducto
 );
-
 router.post(
   '/actualizarProducto',
-  uploadProductos.single('imagen'),
+  uploadProductoMedia,
   productos_chat_centerController.actualizarProducto
 );
 

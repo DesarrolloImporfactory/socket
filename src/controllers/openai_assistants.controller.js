@@ -232,7 +232,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     status: 200,
     respuesta: respuesta || 'No se obtuvo respuesta del assistant.',
     tipo_asistente: tipo_asistente,
-    bloqueInfo: bloqueInfo,
+    /* bloqueInfo: bloqueInfo, */
   });
 });
 

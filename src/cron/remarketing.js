@@ -26,7 +26,7 @@ async function withLock(lockName, fn) {
 
 cron.schedule('*/5 * * * *', async () => {
   await withLock('remarketing_cron_lock', async () => {
-    console.log('⏱️ Ejecutando tarea de remarketing');
+    /* console.log('⏱️ Ejecutando tarea de remarketing'); */
 
     const pendientes = await db.query(
       `SELECT * FROM remarketing_pendientes 

@@ -61,19 +61,14 @@ exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
   });
 });
 
+// URL base pública donde sirve /uploads
+const dominio = 'https://chat.imporfactory.app';
+
+// ========== AGREGAR ==========
 exports.agregarProducto = catchAsync(async (req, res, next) => {
   const { id_configuracion, nombre, descripcion, tipo, precio, id_categoria } =
     req.body;
 
-  // Define la URL base
-  const dominio = 'https://chat.imporfactory.app';
-
-  let imagen_url = null;
-  if (req.file) {
-    imagen_url = `${dominio}/uploads/productos/${req.file.filename}`;
-  }
-
-  // Validaciones mínimas
   if (!id_configuracion || !nombre || !tipo || !precio) {
     return res.status(400).json({
       status: 'fail',
@@ -81,74 +76,96 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Archivos (con .fields())
+  const imagenFile = req.files?.imagen?.[0] || null;
+  const videoFile = req.files?.video?.[0] || null;
+
+  const imagen_url = imagenFile
+    ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
+    : null;
+
+  const video_url = videoFile
+    ? `${dominio}/uploads/productos/video/${videoFile.filename}`
+    : null;
+
   const nuevoProducto = await ProductosChatCenter.create({
     id_configuracion,
     nombre,
     descripcion,
     tipo,
     precio,
-    imagen_url,
     id_categoria,
+    imagen_url,
+    video_url,
   });
 
-  res.status(201).json({
-    status: 'success',
-    data: nuevoProducto,
-  });
+  return res.status(201).json({ status: 'success', data: nuevoProducto });
 });
 
+// ========== ACTUALIZAR ==========
 exports.actualizarProducto = catchAsync(async (req, res, next) => {
   const { id_producto, nombre, descripcion, tipo, precio, id_categoria } =
     req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
-
   if (!producto) {
-    return res.status(404).json({
-      status: 'fail',
-      message: 'Producto no encontrado.',
-    });
+    return res
+      .status(404)
+      .json({ status: 'fail', message: 'Producto no encontrado.' });
   }
 
-  // URL base del servidor
-  const dominio = 'https://chat.imporfactory.app';
+  const imagenFile = req.files?.imagen?.[0] || null;
+  const videoFile = req.files?.video?.[0] || null;
 
-  let nuevaImagen = producto.imagen_url;
-
-  if (req.file) {
-    // Borrar imagen anterior si existe
-    if (producto.imagen_url) {
-      const rutaAnterior = path.join(
-        __dirname,
-        '..',
-        'uploads',
-        'productos',
-        path.basename(producto.imagen_url)
-      );
-      if (fs.existsSync(rutaAnterior)) {
-        fs.unlinkSync(rutaAnterior);
+  // Si llega NUEVA IMAGEN: borrar anterior y setear nueva URL
+  if (imagenFile) {
+    try {
+      if (producto.imagen_url) {
+        const filename = path.basename(producto.imagen_url);
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'imagen',
+          filename
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
-    }
-
-    // Construir URL completa
-    nuevaImagen = `${dominio}/uploads/productos/${req.file.filename}`;
+    } catch (_) {}
+    producto.imagen_url = `${dominio}/uploads/productos/imagen/${imagenFile.filename}`;
   }
 
-  // Actualizar datos
-  producto.nombre = nombre || producto.nombre;
-  producto.descripcion = descripcion || producto.descripcion;
-  producto.tipo = tipo || producto.tipo;
-  producto.precio = precio || producto.precio;
-  producto.id_categoria = id_categoria ?? producto.id_categoria;
-  producto.imagen_url = nuevaImagen;
+  // Si llega NUEVO VIDEO: borrar anterior y setear nueva URL
+  if (videoFile) {
+    try {
+      if (producto.video_url) {
+        const filename = path.basename(producto.video_url);
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'video',
+          filename
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+    producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
+  }
+
+  // Actualizar campos básicos (si vienen)
+  if (typeof nombre !== 'undefined') producto.nombre = nombre;
+  if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
+  if (typeof tipo !== 'undefined') producto.tipo = tipo;
+  if (typeof precio !== 'undefined') producto.precio = precio;
+  if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
   producto.fecha_actualizacion = new Date();
 
   await producto.save();
 
-  res.status(200).json({
-    status: 'success',
-    data: producto,
-  });
+  return res.status(200).json({ status: 'success', data: producto });
 });
 
 exports.eliminarProducto = catchAsync(async (req, res, next) => {

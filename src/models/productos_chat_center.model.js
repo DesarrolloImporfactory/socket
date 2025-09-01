@@ -33,6 +33,10 @@ const ProductosChatCenter = db.define(
       type: DataTypes.STRING(512),
       allowNull: true,
     },
+    video_url: {
+      type: DataTypes.STRING(512),
+      allowNull: true,
+    },
     stock: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
