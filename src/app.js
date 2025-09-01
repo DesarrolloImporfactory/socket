@@ -105,23 +105,18 @@ app.use(
   })
 );
 
-//Monta primero el webhook de Messenger (sin sanitizer que lo rompa)
-app.use('/api/v1/messenger', messengerRouter);
-
-// Luego el resto del stack “normal”
-
-// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe
+// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger
 app.use((req, res, next) => {
-  if (req.originalUrl === '/api/v1/stripe_plan/stripeWebhook') {
-    return next();
-  }
+  // Usa req.path para no fallar por querystrings
+  const skipPaths = ['/api/v1/stripe_plan/stripeWebhook', '/api/v1/messenger/webhook'];
+  if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
 });
 
+//Sanitizer para TODO lo demás (no tocar webhooks)
 app.use((req, res, next) => {
-  const isStripeWebhook =
-    req.originalUrl === '/api/v1/stripe_plan/stripeWebhook';
-  if (isStripeWebhook) return next(); // ¡No aplicar sanitizer aquí!
+  const skipPaths = ['/api/v1/stripe_plan/stripeWebhook', '/api/v1/messenger/webhook'];
+  if (skipPaths.includes(req.path)) return next();
 
   return sanitizer.clean({
     xss: true,
@@ -161,6 +156,7 @@ app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
 app.use('/api/v1/pedidos', pedidosRouter);
+app.use('/api/v1/messenger', messengerRouter);
 
 app.all('*', (req, res, next) => {
   return next(
