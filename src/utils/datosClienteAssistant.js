@@ -170,6 +170,7 @@ const informacionProductos = async (productos) => {
         pc.tipo AS tipo,
         pc.precio AS precio_producto,
         pc.imagen_url AS image_path,
+        pc.video_url AS video_path,
         cc.nombre AS nombre_categoria
       FROM productos_chat_center pc
       INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
@@ -188,6 +189,7 @@ const informacionProductos = async (productos) => {
       bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
       /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
       bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+      bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
       bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
       bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
       bloqueProductos += `\n`;
