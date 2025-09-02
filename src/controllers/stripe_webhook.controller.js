@@ -1,6 +1,7 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
+const PlanesPersonalizadosStripe = require('../models/planes_personalizados_stripe.model');
 const { db } = require('../database/config');
 
 exports.stripeWebhook = async (req, res) => {
@@ -110,6 +111,39 @@ if (event.type === 'invoice.payment_succeeded') {
         // Cortamos aquí: no ejecutar la rama de suscripciones normales
         return res.status(200).json({ received: true });
       }
+      
+      // ────────────────────────────────────────────────────────────
+    // C) Plan PERSONALIZADO (NUEVO – guarda en tabla per-user)
+    // ────────────────────────────────────────────────────────────
+    if (metaInv?.tipo === 'personalizado') {
+      const customerId      = invoice.customer;
+      const id_usuario      = Number(metaInv.id_usuario);
+      const id_plan_base    = Number(metaInv.id_plan || 5);
+      const n_conexiones    = Number(metaInv.n_conexiones || 0);
+      const max_subusuarios = Number(metaInv.max_subusuarios || metaInv.n_subusuarios || 0);
+
+      await db.query(`
+        INSERT INTO planes_personalizados_stripe
+          (id_usuario, id_plan_base, n_conexiones, max_subusuarios)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          id_plan_base = VALUES(id_plan_base),
+          n_conexiones = VALUES(n_conexiones),
+          max_subusuarios = VALUES(max_subusuarios),
+          updated_at = CURRENT_TIMESTAMP()
+      `, { replacements: [id_usuario, id_plan_base, n_conexiones, max_subusuarios] });
+
+      if (customerId && id_usuario) {
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+          SET id_usuario = COALESCE(id_usuario, ?), fecha = NOW()
+          WHERE customer_id = ?
+        `, { replacements: [id_usuario, customerId] });
+      }
+
+      return res.status(200).json({ received: true });
+    }
+
 
       /* ────────────────────────────────────────────────────────────
          B) BRANCH: Suscripciones normales (mode: subscription)

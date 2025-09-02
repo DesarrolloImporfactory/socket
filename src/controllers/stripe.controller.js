@@ -1,11 +1,18 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
+const PlanesPersonalizadosStripe = require('../models/planes_personalizados_stripe.model');
 const { db } = require('../database/config');
 
 // Price del addon de conexión y subusuario(fijo, según me diste)
+/* const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
+const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr'; */
+
 const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
 const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
+
+const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
+const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
 
 
 // CORREGIDO: sin "active" en list() ni en create()
@@ -1042,3 +1049,171 @@ exports.crearSesionFreeSetup = async (req, res) => {
     return res.status(500).json({ message: "No se pudo crear la sesión de setup para el plan gratuito" });
   }
 };
+
+
+
+// ========== NUEVO: Crear sesión de Checkout para plan personalizado ==========
+// ========== NUEVO: Crear sesión de Checkout para plan personalizado ==========
+exports.crearSesionPlanPersonalizado = async (req, res) => {
+  try {
+    const {
+      id_usuario,
+      id_users, // compat
+      n_conexiones = 0,
+      max_subusuarios = 0,
+      success_url,
+      cancel_url,
+    } = req.body;
+
+    const userId = id_usuario || id_users || req.user?.id;
+
+    // ───────────────────────── Validaciones básicas
+    if (!userId) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
+    if (!success_url || !cancel_url) {
+      return res.status(400).json({ status: 'fail', message: 'Faltan success_url y cancel_url' });
+    }
+
+    // Fuerza a enteros seguros
+    const nConn = Number.isFinite(+n_conexiones) ? Math.max(0, Math.min(10, Math.floor(+n_conexiones))) : 0;
+    const nSubs = Number.isFinite(+max_subusuarios) ? Math.max(0, Math.min(10, Math.floor(+max_subusuarios))) : 0;
+
+    // Límites INDEPENDIENTES
+    if (nConn > 10) {
+      return res.status(400).json({ status: 'fail', message: 'Conexiones: máximo 10' });
+    }
+    if (nSubs > 10) {
+      return res.status(400).json({ status: 'fail', message: 'Subusuarios: máximo 10' });
+    }
+
+    // Debe elegir al menos uno (si quieres permitir 0/0, elimina este bloque)
+    if (nConn === 0 && nSubs === 0) {
+      return res.status(400).json({ status: 'fail', message: 'Selecciona al menos 1 conexión o 1 subusuario' });
+    }
+
+    // ───────────────────────── Price del plan base (id_plan = 5) desde tu DB
+    const planBase = await Planes_chat_center.findOne({
+      where: { id_plan: 5 },
+      attributes: ['id_plan', 'id_product_stripe', 'nombre_plan'],
+    });
+
+    if (!planBase?.id_product_stripe) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Plan base personalizado (id 5) no configurado con price de Stripe (id_product_stripe)',
+      });
+    }
+
+    // ───────────────────────── Construir line_items (base + addons)
+    const line_items = [
+      { price: planBase.id_product_stripe, quantity: 1 },
+    ];
+    if (nConn > 0) line_items.push({ price: ADDON_PRICE_ID_PERS, quantity: nConn });
+    if (nSubs > 0) line_items.push({ price: PRICE_ID_ADDON_SUBUSUARIO_PERS, quantity: nSubs });
+
+    // ───────────────────────── Crear sesión de Checkout (suscripción)
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      allow_promotion_codes: true,
+      line_items,
+      success_url,
+      cancel_url,
+      subscription_data: {
+        metadata: {
+          tipo: 'personalizado',
+          id_usuario: String(userId),
+          id_plan: '5',
+          n_conexiones: String(nConn),
+          max_subusuarios: String(nSubs),
+        },
+      },
+      // metadata a nivel de sesión (por si lees checkout.session.completed)
+      metadata: {
+        tipo: 'personalizado',
+        id_usuario: String(userId),
+        id_plan: '5',
+      },
+    });
+
+    // (Opcional) Pre-graba la intención del usuario en tu tabla per-user
+    await PlanesPersonalizadosStripe.upsert({
+      id_usuario: userId,
+      id_plan_base: 5,
+      n_conexiones: nConn,
+      max_conexiones: nConn, 
+      max_subusuarios: nSubs,
+    });
+
+    return res.status(200).json({ status: 'success', url: session.url });
+  } catch (error) {
+    console.error('crearSesionPlanPersonalizado:', error);
+    return res.status(500).json({
+      status: 'fail',
+      message: error?.raw?.message || error.message || 'Error creando la sesión de Stripe',
+    });
+  }
+};
+
+
+// ========== OPCIONAL: obtener configuración personalizada actual del usuario ==========
+exports.obtenerPlanPersonalizadoUsuario = async (req, res) => {
+  try {
+    const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
+    if (!id_usuario) return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+
+    const row = await PlanesPersonalizadosStripe.findOne({ where: { id_usuario } });
+    return res.status(200).json({ status: 'success', data: row || null });
+  } catch (e) {
+    console.error('obtenerPlanPersonalizadoUsuario:', e);
+    return res.status(500).json({ status: 'fail', message: e.message });
+  }
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD: devolver unit_amount de addons (conexión y subusuario) y el plan base 5
+// ─────────────────────────────────────────────────────────────────────────────
+// ========== NUEVO: Exponer precios de addons para calcular total en el front ==========
+exports.obtenerPreciosAddons = async (req, res) => {
+  try {
+    // Devuelve unit_amount (centavos) y el price del plan base id 5
+    const [conn, sub] = await Promise.all([
+      stripe.prices.retrieve(ADDON_PRICE_ID_PERS, { expand: ['product'] }),
+      stripe.prices.retrieve(PRICE_ID_ADDON_SUBUSUARIO_PERS, { expand: ['product'] }),
+    ]);
+
+    const basePlan = await Planes_chat_center.findOne({ where: { id_plan: 5 } });
+
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        base: {
+          id_plan: 5,
+          stripe_price_id: basePlan?.id_product_stripe || null,
+        },
+        addons: {
+          conexion: {
+            id: conn.id,
+            unit_amount: conn.unit_amount || 0,
+            currency: conn.currency,
+            interval: conn.recurring?.interval || 'month',
+            name: conn.product?.name || 'Conexión adicional',
+          },
+          subusuario: {
+            id: sub.id,
+            unit_amount: sub.unit_amount || 0,
+            currency: sub.currency,
+            interval: sub.recurring?.interval || 'month',
+            name: sub.product?.name || 'Subusuario adicional',
+          },
+        },
+      },
+    });
+  } catch (e) {
+    console.error('obtenerPreciosAddons:', e);
+    return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
+  }
+};
+

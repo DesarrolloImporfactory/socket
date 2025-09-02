@@ -1,6 +1,7 @@
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
 const Planes_chat_centerModel = require('../models/planes_chat_center.model');
+const PlanesPersonalizadosStripe = require('../models/planes_personalizados_stripe.model');
 
 // Middleware para limitar el número de subusuarios adicionales
 const limiteSub_usuarios = async (req, res, next) => {
@@ -48,7 +49,17 @@ const limiteSub_usuarios = async (req, res, next) => {
 
     // Cálculo de límites de subusuarios (max_subusuarios del plan + subusuarios_adicionales)
     const maxPorPlan = Number(usuario.plan.max_subusuarios || 0);
-    const adicionales = Number(usuario.subusuarios_adicionales || 0);
+    // 2) Adicionales (sistema “viejo” si existiera)
+    let adicionales = Number(usuario.subusuarios_adicionales || 0);
+
+    // 3) Si existe una configuración personalizada en la tabla per-user, domina
+    const personalizado = await PlanesPersonalizadosStripe.findOne({
+      where: { id_usuario: usuario.id_usuario },
+    });
+    if (personalizado && personalizado.max_subusuarios != null) {
+      adicionales = Number(personalizado.max_subusuarios) || 0;
+    }
+    
     const totalPermitido = maxPorPlan + adicionales;
 
     // Conteo actual de subusuarios asociados al usuario

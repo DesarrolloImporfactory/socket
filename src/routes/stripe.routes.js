@@ -28,6 +28,16 @@ router.post('/trialElegibilidad', stripe_planesController.trialElegibilidad);
 router.post('/crearSesionFreeSetup', stripe_planesController.crearSesionFreeSetup);
 
 
+// ========== NUEVAS RUTAS PARA PERSONALIZADO ==========
+router.get('/addons', stripe_planesController.obtenerPreciosAddons);
+router.post('/crearSesionPlanPersonalizado', stripe_planesController.crearSesionPlanPersonalizado);
+router.post('/obtenerPlanPersonalizadoUsuario', stripe_planesController.obtenerPlanPersonalizadoUsuario);
+
+
+
+
+
+
 
 
 
