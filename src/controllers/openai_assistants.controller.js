@@ -294,21 +294,12 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
       }
     });
 
-    if (!logistico || !ventas) {
-      return next(
-        new AppError(
-          'No se encontraron ambos asistentes (logistico y ventas)',
-          400
-        )
-      );
-    }
-
     return res.status(200).json({
       status: 200,
       data: {
         api_key_openai,
-        logistico,
-        ventas,
+        logistico: logistico || {},
+        ventas: ventas || {},
       },
     });
   } catch (error) {
