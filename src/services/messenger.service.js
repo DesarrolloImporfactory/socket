@@ -12,7 +12,16 @@ async function getPageTokenByPageId(page_id) {
 class MessengerService {
   static async routeEvent(event) {
     const senderPsid = event.sender?.id;
-    const pageId = event.recipient?.id; // <- muy importante
+    const pageId = event.recipient?.id;
+    const mid = event.message?.mid;
+    const text = event.message?.text;
+
+    console.log('[ROUTE_EVENT][IN]', {
+      pageId,
+      senderPsid,
+      mid,
+      text: text || '(no-text)',
+    });
 
     if (!senderPsid || !pageId) return;
 
@@ -37,36 +46,57 @@ class MessengerService {
         pageId
       );
     }
+
+    console.log('[ROUTE_EVENT][DONE]', { pageId, senderPsid });
   }
 
-  static async handleMessage(senderPsid, message, pageAccessToken) {
+  static async handleMessage(senderPsid, message, pageAccessToken, pageId) {
+    console.log('[HANDLE_MESSAGE][START]', { pageId, senderPsid });
+
     await fb.sendSenderAction(senderPsid, 'mark_seen', pageAccessToken);
     await fb.sendSenderAction(senderPsid, 'typing_on', pageAccessToken);
 
     const text = message.text || '';
+    let sendRes;
     if (text) {
-      await fb.sendText(
+      sendRes = await fb.sendText(
         senderPsid,
         `👋 Recibí tu mensaje: ${text}`,
         pageAccessToken
       );
     } else {
-      await fb.sendText(senderPsid, `Recibí tu adjunto ✅`, pageAccessToken);
-    }
-    await fb.sendSenderAction(senderPsid, 'typing_off', pageAccessToken);
-  }
-
-  static async handlePostback(senderPsid, postback, pageAccessToken) {
-    const payload = postback.payload || '';
-    if (payload === 'GET_STARTED') {
-      await fb.sendText(
+      sendRes = await fb.sendText(
         senderPsid,
-        '¡Bienvenido! ¿En qué puedo ayudarle?',
+        `Recibí tu adjunto ✅`,
         pageAccessToken
       );
-    } else {
-      await fb.sendText(senderPsid, `Postback: ${payload}`, pageAccessToken);
     }
+
+    await fb.sendSenderAction(senderPsid, 'typing_off', pageAccessToken);
+    console.log('[HANDLE_MESSAGE][SENT]', {
+      pageId,
+      senderPsid,
+      reply_message_id: sendRes?.message_id,
+      recipient_id: sendRes?.recipient_id,
+    });
+    console.log('[HANDLE_MESSAGE][DONE]', { pageId, senderPsid });
+  }
+
+  static async handlePostback(senderPsid, postback, pageAccessToken, pageId) {
+    const payload = postback.payload || '';
+    console.log('[HANDLE_POSTBACK]', { pageId, senderPsid, payload });
+
+    const text =
+      payload === 'GET_STARTED'
+        ? '¡Bienvenido! ¿En qué puedo ayudarle?'
+        : `Postback: ${payload}`;
+
+    const res = await fb.sendText(senderPsid, text, pageAccessToken);
+    console.log('[HANDLE_POSTBACK][SENT]', {
+      pageId,
+      senderPsid,
+      reply_message_id: res?.message_id,
+    });
   }
 }
 

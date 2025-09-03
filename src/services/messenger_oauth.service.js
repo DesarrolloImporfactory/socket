@@ -67,8 +67,6 @@ class MessengerOAuthService {
 
     // (fallback) Login “clásico” con scope – por si algún día se requiere
     const scope = [
-      'pages_manage_metadata',
-      'pages_read_engagement',
       'pages_messaging',
       'pages_show_list',
     ].join(',');

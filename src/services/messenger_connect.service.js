@@ -13,7 +13,6 @@ async function upsertMessengerPage({
   subscribed,
   fb_user_id,
 }) {
-  // UPSERT simple
   const [existing] = await db.query(
     `SELECT id_messenger_page FROM messenger_pages WHERE id_configuracion = ? AND page_id = ?`,
     { replacements: [id_configuracion, page_id], type: db.QueryTypes.SELECT }
@@ -22,7 +21,7 @@ async function upsertMessengerPage({
   if (existing) {
     await db.query(
       `UPDATE messenger_pages
-       SET page_name = ?, page_access_token = ?, subscribed = ?, connected_by_fb_user_id = ?, status='active'
+       SET page_name = ?, page_access_token = ?, subscribed = ?, connected_by_fb_user_id = ?, status='active', updated_at=NOW()
        WHERE id_messenger_page = ?`,
       {
         replacements: [
@@ -38,8 +37,8 @@ async function upsertMessengerPage({
     return existing.id_messenger_page;
   } else {
     const [insertId] = await db.query(
-      `INSERT INTO messenger_pages (id_configuracion, page_id, page_name, page_access_token, subscribed, connected_by_fb_user_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+      `INSERT INTO messenger_pages (id_configuracion, page_id, page_name, page_access_token, subscribed, connected_by_fb_user_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
       {
         replacements: [
           id_configuracion,
@@ -66,18 +65,36 @@ class MessengerConnectService {
         page_id
       );
 
-    // 2) suscribir app a la página
-    await axios.post(
-      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
-      new URLSearchParams({
-        subscribed_fields:
-          'messages,messaging_postbacks,message_deliveries,message_reads',
-        access_token: page_access_token,
-      }),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+    console.log('[CONNECT][START]', { page_id, page_name });
 
-    // 3) guardar en DB
+    // 2) Suscribir app a la página (pasando params, más claro para el reviewer)
+    const subscribed_fields =
+      'messages,messaging_postbacks,message_deliveries,message_reads';
+    console.log('[SUBSCRIBE][REQUEST]', {
+      endpoint: `/${page_id}/subscribed_apps`,
+      subscribed_fields,
+    });
+
+    const subRes = await axios.post(
+      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
+      {}, // cuerpo vacío
+      {
+        params: {
+          access_token: page_access_token,
+          subscribed_fields, // como query param
+        },
+      }
+    );
+    console.log('[SUBSCRIBE][RESPONSE]', subRes.data);
+
+    // 3) Verificar suscripción (esto es lo que quieres devolver al front)
+    const { data: status } = await axios.get(
+      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
+      { params: { access_token: page_access_token } }
+    );
+    console.log('[SUBSCRIBE_STATUS]', JSON.stringify(status));
+
+    // 4) guardar en DB
     const session = await db
       .query(
         `SELECT fb_user_id FROM messenger_oauth_sessions WHERE id_oauth_session = ?`,
@@ -94,10 +111,19 @@ class MessengerConnectService {
       fb_user_id: session?.fb_user_id || null,
     });
 
-    // 4) opcional: marcar sesión usada
+    // 5) opcional: marcar sesión usada
     await MessengerOAuthService.consumeSession(oauth_session_id);
 
-    return { id_messenger_page, page_id, page_name, subscribed: true };
+    console.log('[CONNECT][DONE]', { page_id, page_name, id_messenger_page });
+
+    // 🔎 Devolvemos el estado de suscripción para que el front lo muestre en el Network
+    return {
+      id_messenger_page,
+      page_id,
+      page_name,
+      subscribed: true,
+      subscribed_apps: status?.data || [],
+    };
   }
 }
 

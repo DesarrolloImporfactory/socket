@@ -2125,3 +2125,4 @@
 [2025-08-29T19:26:28.831Z] info: Can't find /api/v1/configuraciones/toggle_suspension on this server! 🧨
 [2025-08-29T21:35:15.464Z] info: No se encontro una configuracion con este id_usuario: 32
 [2025-08-29T21:35:15.560Z] info: No se encontro una configuracion con este id_usuario: 32
+[2025-09-02T21:43:56.413Z] info: Can't find /api/v1/stripe_plan/addons on this server! 🧨
