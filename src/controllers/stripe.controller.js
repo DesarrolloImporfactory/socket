@@ -473,22 +473,28 @@ exports.obtenerFacturasUsuario = async (req, res) => {
 
 /* cancelar suscripcion / cancelar pago automatico stripe */
 
+// controllers/stripe.controller.js
+
 exports.cancelarSuscripcion = async (req, res) => {
   try {
-    const id_usuario = req.user?.id || req.body.id_usuario;
+    const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
+    if (!id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
 
-    // 1) Intentar resolver por tu tabla (como ya haces)
+    // 1) Buscar en tu tabla SIN limitar a 'active' (puede estar 'trialing')
     const [result] = await db.query(`
-      SELECT id_suscripcion, customer_id
+      SELECT id_suscripcion, customer_id, estado_suscripcion
       FROM transacciones_stripe_chat 
-      WHERE id_usuario = ? AND estado_suscripcion = 'active'
-      ORDER BY fecha DESC LIMIT 1
+      WHERE id_usuario = ?
+      ORDER BY fecha DESC
+      LIMIT 1
     `, { replacements: [id_usuario] });
 
     let idSuscripcion = result?.[0]?.id_suscripcion || null;
     let customerId    = result?.[0]?.customer_id    || null;
 
-    // 2) Fallback: si no hay idSuscripcion, resuelve por customer y busca en Stripe
+    // 2) Fallback: si no hay idSuscripcion, resolver por customer y buscar en Stripe
     if (!idSuscripcion) {
       if (!customerId) {
         const [r2] = await db.query(`
@@ -499,32 +505,44 @@ exports.cancelarSuscripcion = async (req, res) => {
         `, { replacements: [id_usuario] });
         customerId = r2?.[0]?.customer_id || null;
       }
+
       if (customerId) {
-        const subs = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 5 });
-        const candidate = subs.data.find(s => ['active','trialing','past_due','incomplete','incomplete_expired'].includes(s.status));
+        const subs = await stripe.subscriptions.list({
+          customer: customerId,
+          status: 'all',
+          limit: 10,
+        });
+
+        // Prioriza trialing (prueba), luego active y luego estados aún "vivos"
+        const prefer = ['trialing', 'active', 'past_due', 'incomplete', 'incomplete_expired'];
+        subs.data.sort((a, b) => prefer.indexOf(a.status) - prefer.indexOf(b.status));
+        const candidate = subs.data.find(s => prefer.includes(s.status));
         idSuscripcion = candidate?.id || null;
       }
     }
 
     if (!idSuscripcion) {
-      return res.status(404).json({ status: 'fail', message: 'No hay suscripción activa' });
+      return res.status(404).json({ status: 'fail', message: 'No se encontró suscripción para cancelar' });
     }
 
-    // 3) Programar cancelación al final del período en Stripe
+    // 3) Programar cancelación al final del período (en trial = al finalizar la prueba, sin cobro)
     const updated = await stripe.subscriptions.update(idSuscripcion, {
       cancel_at_period_end: true,
     });
 
-    // 4) Reflejar "cancelando" en tu BD (como ya haces)
+    // 4) Reflejar estado en tu BD
     await db.query(`
       UPDATE transacciones_stripe_chat 
-      SET estado_suscripcion = 'cancelando' 
+      SET estado_suscripcion = ?, fecha = NOW()
       WHERE id_suscripcion = ?
-    `, { replacements: [idSuscripcion] });
+    `, { replacements: [updated.status || 'cancelando', idSuscripcion] });
 
     return res.status(200).json({
       status: 'success',
-      message: 'La suscripción se cancelará al finalizar el periodo actual.',
+      message:
+        updated.status === 'trialing'
+          ? 'La prueba gratuita se cancelará al finalizar el periodo. No se realizará ningún cobro.'
+          : 'La suscripción se cancelará al finalizar el periodo actual.',
       stripe: {
         id: updated.id,
         status: updated.status,
@@ -536,10 +554,11 @@ exports.cancelarSuscripcion = async (req, res) => {
     console.error("Error al cancelar suscripción:", error);
     return res.status(500).json({
       status: 'fail',
-      message: 'Error al cancelar la suscripción',
+      message: error?.raw?.message || 'Error al cancelar la suscripción',
     });
   }
 };
+
 
 
 
