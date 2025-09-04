@@ -353,51 +353,135 @@ exports.crearSesionPago = async (req, res) => {
 
 
 // controllers/stripe.controller.js
+// controllers/stripe.controller.js
 exports.obtenerSuscripcionActiva = async (req, res) => {
   try {
-    const { id_usuario } = req.body;
-
-    const [result] = await db.query(`
-      SELECT 
-        u.id_plan, 
-        u.estado, 
-        u.fecha_renovacion, 
-        p.nombre_plan, 
-        p.descripcion_plan, 
-        p.precio_plan, 
-        p.ahorro
-      FROM usuarios_chat_center u
-      JOIN planes_chat_center p ON u.id_plan = p.id_plan
-      WHERE u.id_usuario = :id_usuario
-      LIMIT 1
-    `, {
-      replacements: { id_usuario },
-      type: db.QueryTypes.SELECT
-    });
-
-    if (!result) {
-      return res.status(200).json({ plan: null });
+    const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
+    if (!id_usuario) {
+      return res.status(400).json({ message: "Falta id_usuario" });
     }
 
-    // ✅ Solo-calculo en memoria (sin mutar DB)
-    const hoy = new Date();
-    const fechaRenovacion = result.fecha_renovacion ? new Date(result.fecha_renovacion) : null;
-    const vencido = fechaRenovacion ? fechaRenovacion < hoy : false;
+    // 1) Datos del plan guardados en tu BD (como ya lo haces)
+    const [planRow] = await db.query(
+      `
+      SELECT 
+        u.id_plan,
+        u.estado                  AS estado_local,
+        u.fecha_renovacion        AS fecha_renovacion_bd,
+        p.nombre_plan,
+        p.descripcion_plan,
+        p.precio_plan,
+        p.ahorro
+      FROM usuarios_chat_center u
+      LEFT JOIN planes_chat_center p ON u.id_plan = p.id_plan
+      WHERE u.id_usuario = ?
+      LIMIT 1
+      `,
+      { replacements: [id_usuario] }
+    );
 
+    // Si no hay registro de plan en BD, devolvemos nulo
+    if (!planRow?.[0]) {
+      return res.status(200).json({ plan: null });
+    }
+    const base = planRow[0];
+
+    // 2) Intentar obtener customer/subscription vinculados
+    const [txRow] = await db.query(
+      `
+      SELECT id_suscripcion, customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+      ORDER BY fecha DESC
+      LIMIT 1
+      `,
+      { replacements: [id_usuario] }
+    );
+
+    let subId = txRow?.[0]?.id_suscripcion || null;
+    let customerId = txRow?.[0]?.customer_id || null;
+
+    // 3) Leer el estado real desde Stripe
+    let sub = null;
+
+    // a) si tengo subId, intento traerla
+    if (subId) {
+      try {
+        sub = await stripe.subscriptions.retrieve(subId);
+      } catch (_) {
+        sub = null;
+      }
+    }
+
+    // b) si no hay sub válida, busco por customer y priorizo estados útiles
+    if (!sub && customerId) {
+      const subs = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "all",
+        limit: 10,
+      });
+      const prefer = ["trialing", "active", "past_due", "incomplete", "incomplete_expired"];
+      subs.data.sort((a, b) => prefer.indexOf(a.status) - prefer.indexOf(b.status));
+      sub = subs.data.find((s) => prefer.includes(s.status)) || null;
+
+      // opcional: persistir subId si lo encontramos
+      if (sub?.id && !subId) {
+        await db.query(
+          `UPDATE transacciones_stripe_chat SET id_suscripcion = ? WHERE customer_id = ?`,
+          { replacements: [sub.id, customerId] }
+        );
+        subId = sub.id;
+      }
+    }
+
+    // 4) Armar metadatos Stripe para el front
+    const estado_suscripcion = sub?.status || null;                    // p.ej. 'trialing' | 'active' | ...
+    const cancel_at_period_end = Boolean(sub?.cancel_at_period_end);    // true si ya está programada la cancelación
+    const current_period_end_unix = sub?.current_period_end || null;    // UNIX ts (seg)
+    const current_period_end_iso =
+      current_period_end_unix ? new Date(current_period_end_unix * 1000).toISOString() : null;
+
+    // 5) Decidir fecha_renovacion a devolver:
+    //    preferimos la de Stripe si existe; si no, la de BD
+    const fechaRenovacionISO =
+      current_period_end_iso ||
+      (base.fecha_renovacion_bd ? new Date(base.fecha_renovacion_bd).toISOString() : null);
+
+    // Derivados para conveniencia del front
+    const hoy = new Date();
+    const fechaRenovacionDate = fechaRenovacionISO ? new Date(fechaRenovacionISO) : null;
+    const vencido = fechaRenovacionDate ? fechaRenovacionDate < hoy : false;
+    const dias_restantes = fechaRenovacionDate
+      ? Math.ceil((fechaRenovacionDate - hoy) / (1000 * 60 * 60 * 24))
+      : null;
+
+    // 6) Respuesta unificada
     return res.status(200).json({
       plan: {
-        ...result,
-        vencido,               // flag de conveniencia para el front
-        dias_restantes: fechaRenovacion
-          ? Math.ceil((fechaRenovacion - hoy) / (1000 * 60 * 60 * 24))
-          : null,
-      }
+        id_plan: base.id_plan,
+        nombre_plan: base.nombre_plan,
+        descripcion_plan: base.descripcion_plan,
+        precio_plan: base.precio_plan,
+        ahorro: base.ahorro,
+        estado: base.estado_local, // estado que tú guardas en BD
+        // Fechas (normalizadas)
+        fecha_renovacion: fechaRenovacionISO, // ISO string
+        dias_restantes,
+        vencido,
+        // === Metadatos REALES de Stripe (para UI) ===
+        estado_suscripcion,         // 'trialing' | 'active' | ...
+        cancel_at_period_end,       // true si la cancelación está programada
+        current_period_end: current_period_end_iso, // ISO
+        stripe_subscription_id: subId || null,
+        stripe_customer_id: customerId || null,
+      },
     });
   } catch (err) {
     console.error("Error al obtener suscripción activa:", err);
     return res.status(500).json({ message: "Error interno al obtener la suscripción activa" });
   }
 };
+
 
 
 
