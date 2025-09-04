@@ -3,6 +3,7 @@ const Plataforma = require('./plataforma.model');
 const UsuarioPlataforma = require('./usuario_plataforma.model');
 const ClientesChatCenter = require('./clientes_chat_center.model');
 const MensajesClientes = require('./mensaje_cliente.model');
+const ErroresChatMeta = require('./errores_chat_meta.model');
 const EtiquetasChatCenter = require('./etiquetas_chat_center.model');
 const FacturasCot = require('./facturas_cot.model');
 const DetalleFactCot = require('./detalle_fact_cot.model');
@@ -66,6 +67,18 @@ const initModel = () => {
   MensajesClientes.belongsTo(Plataforma, {
     foreignKey: 'id_plataforma',
     as: 'plataforma',
+  });
+
+  // Un error por mensaje (si tu tabla puede tener varios, igual te sirve hasOne para traer 1 fila)
+  MensajesClientes.hasOne(ErroresChatMeta, {
+    foreignKey: 'id_wamid_mensaje',
+    sourceKey: 'id_wamid_mensaje',
+    as: 'error_meta',
+  });
+  ErroresChatMeta.belongsTo(MensajesClientes, {
+    foreignKey: 'id_wamid_mensaje',
+    targetKey: 'id_wamid_mensaje',
+    as: 'mensaje',
   });
 
   // Asociación entre ClientesChatCenter y EtiquetasChatCenter

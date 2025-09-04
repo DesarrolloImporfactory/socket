@@ -1,6 +1,7 @@
 const { Op, Sequelize, where } = require('sequelize');
 const AppError = require('../utils/appError');
 const MensajesClientes = require('../models/mensaje_cliente.model');
+const ErroresChatMeta = require('../models/errores_chat_meta.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
@@ -267,16 +268,26 @@ class ChatService {
               'celular_recibe',
               'mid_mensaje',
               'responsable',
+              'id_wamid_mensaje',
+              'template_name',
+              'language_code',
             ],
-            order: [['created_at', 'ASC']], // Ordenar los mensajes por fecha de creación ascendente
+            include: [
+              {
+                model: ErroresChatMeta,
+                as: 'error_meta',
+                attributes: ['codigo_error', 'mensaje_error'],
+                required: false, // LEFT JOIN para que, si no existe, devuelva null
+              },
+            ],
+            order: [['created_at', 'ASC']],
           },
         ],
       });
-      console.log(id_cliente);
-      console.log(id_configuracion);
 
-      const actualizarVistos = await MensajesClientes.update(
-        { visto: 1 }, // Campos a actualizar
+      // marcar vistos
+      await MensajesClientes.update(
+        { visto: 1 },
         {
           where: {
             celular_recibe: id_cliente,
@@ -287,9 +298,6 @@ class ChatService {
         }
       );
 
-      console.log(actualizarVistos);
-
-      //obtener el mid_mensaje
       return chats;
     } catch (error) {
       console.error('Error al obtener los chats:', error.message);
@@ -394,6 +402,8 @@ class ChatService {
         }
       }
 
+      const wamid = responseData?.messages?.[0]?.id || null;
+
       const cliente = await ClientesChatCenter.findOne({
         where: {
           uid_cliente: fromTelefono,
@@ -419,6 +429,7 @@ class ChatService {
         rol_mensaje: 1,
         id_cliente,
         uid_whatsapp: to,
+        id_wamid_mensaje: wamid,
         texto_mensaje: mensaje,
         celular_recibe: id_recibe,
         informacion_suficiente: 1,

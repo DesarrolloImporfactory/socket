@@ -33,6 +33,11 @@ router.post(
   clientes_chat_centerController.agregarMensajeEnviado
 );
 
+router.post(
+  '/actualizarMensajeReenviado',
+  clientes_chat_centerController.actualizarMensajeReenviado
+);
+
 router.get(
   '/findFullByPhone_desconect/:phone',
   clientes_chat_centerController.findFullByPhone_desconect

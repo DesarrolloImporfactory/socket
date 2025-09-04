@@ -64,6 +64,11 @@ const MensajesClientes = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    id_wamid_mensaje: {
+      type: DataTypes.STRING(250),
+      allowNull: true,
+      defaultValue: null,
+    },
     texto_mensaje: {
       type: DataTypes.TEXT('long'),
       allowNull: true,
@@ -140,6 +145,16 @@ const MensajesClientes = db.define(
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 0,
+    },
+    template_name: {
+      type: DataTypes.STRING(250),
+      allowNull: true,
+      defaultValue: null,
+    },
+    language_code: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
     },
   },
   {

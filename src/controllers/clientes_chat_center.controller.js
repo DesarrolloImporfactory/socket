@@ -77,7 +77,13 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
       (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente)
       VALUES (?, ?, ?, ?, ?)`,
       {
-        replacements: [id_configuracion, nombre, apellido, telefono, uid_cliente],
+        replacements: [
+          id_configuracion,
+          nombre,
+          apellido,
+          telefono,
+          uid_cliente,
+        ],
         type: db.QueryTypes.INSERT,
       }
     );
@@ -158,7 +164,10 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     telefono_configuracion,
     telefono_recibe,
     id_configuracion,
-    responsable
+    responsable,
+    id_wamid_mensaje,
+    template_name,
+    language_code,
   } = req.body;
 
   try {
@@ -223,8 +232,8 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     // 5. Insertar mensaje en mensajes_clientes
     await db.query(
       `INSERT INTO mensajes_clientes 
-        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp, id_wamid_mensaje, template_name, language_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -238,6 +247,9 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           ruta_archivo,
           1, // visto por defecto en 1
           telefono_recibe,
+          id_wamid_mensaje,
+          template_name,
+          language_code,
         ],
         type: db.QueryTypes.INSERT,
       }
@@ -254,6 +266,49 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       status: 500,
       title: 'Error',
       message: 'Ocurrió un error al agregar el mensaje',
+    });
+  }
+});
+
+exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
+  const { id_mensaje, new_wamid, id_wamid_mensaje } = req.body;
+
+  try {
+    // Primero actualizamos
+    await db.query(
+      `UPDATE mensajes_clientes 
+       SET id_wamid_mensaje = ?
+       WHERE id = ?`,
+      {
+        replacements: [new_wamid, id_mensaje],
+        type: db.QueryTypes.UPDATE,
+      }
+    );
+
+    // Después eliminamos de la tabla errores_chat_meta
+    await db.query(
+      `DELETE FROM errores_chat_meta 
+       WHERE id_wamid_mensaje = ?`,
+      {
+        replacements: [id_wamid_mensaje],
+        type: db.QueryTypes.DELETE,
+      }
+    );
+
+    return res.status(200).json({
+      status: 200,
+      title: 'Petición exitosa',
+      message: 'Mensaje actualizado y error eliminado correctamente',
+    });
+  } catch (error) {
+    console.error(
+      'Error al actualizar mensaje reenviado o eliminar error:',
+      error
+    );
+    return res.status(500).json({
+      status: 500,
+      title: 'Error',
+      message: 'Ocurrió un error al actualizar o limpiar errores',
     });
   }
 });
@@ -282,7 +337,10 @@ exports.findFullByPhone_desconect = catchAsync(async (req, res, next) => {
     return next(new AppError('id_configuracion es requerido', 400));
 
   const chatService = new ChatService();
-  const chat = await chatService.findChatByPhone_desconect(id_configuracion, phone);
+  const chat = await chatService.findChatByPhone_desconect(
+    id_configuracion,
+    phone
+  );
 
   if (!chat)
     return res.status(404).json({ status: 404, message: 'Chat no encontrado' });
