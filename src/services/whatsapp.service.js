@@ -30,6 +30,9 @@ exports.sendWhatsappMessage = async ({
 
   const uid_whatsapp = telefono;
 
+  // Extraer wamid del response
+  const wamid = response.data?.messages?.[0]?.id || null;
+
   // Buscar cliente emisor o crearlo si no existe
   let cliente = await ClientesChatCenter.findOne({
     where: {
@@ -60,5 +63,6 @@ exports.sendWhatsappMessage = async ({
     rol_mensaje: 1,
     celular_recibe: cliente.id, // o 0 si aplica distinto
     uid_whatsapp,
+    id_wamid_mensaje: wamid,
   });
 };
