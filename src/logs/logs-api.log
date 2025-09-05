@@ -2126,3 +2126,6 @@
 [2025-08-29T21:35:15.464Z] info: No se encontro una configuracion con este id_usuario: 32
 [2025-08-29T21:35:15.560Z] info: No se encontro una configuracion con este id_usuario: 32
 [2025-09-02T21:43:56.413Z] info: Can't find /api/v1/stripe_plan/addons on this server! 🧨
+[2025-09-04T20:49:44.375Z] info: No se encontró configuración para la plataforma
+[2025-09-04T21:01:16.907Z] info: No se encontró configuración para la plataforma
+[2025-09-04T21:02:50.526Z] info: No se encontró configuración para la plataforma

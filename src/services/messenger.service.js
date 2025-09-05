@@ -1,5 +1,6 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
+const Store = require('./messenger_store.service');
 
 async function getPageTokenByPageId(page_id) {
   const [row] = await db.query(
@@ -9,10 +10,19 @@ async function getPageTokenByPageId(page_id) {
   return row?.page_access_token || null;
 }
 
+async function getConfigIdByPageId(page_id) {
+  const [row] = await db.query(
+    `SELECT id_configuracion FROM messenger_pages WHERE page_id = ? AND status='active' LIMIT 1`,
+    { replacements: [page_id], type: db.QueryTypes.SELECT }
+  );
+  return row?.id_configuracion || null;
+}
+
 class MessengerService {
   static async routeEvent(event) {
     const senderPsid = event.sender?.id;
     const pageId = event.recipient?.id;
+
     const mid = event.message?.mid;
     const text = event.message?.text;
 
@@ -21,6 +31,9 @@ class MessengerService {
       senderPsid,
       mid,
       text: text || '(no-text)',
+      hasDelivery: !!event.delivery,
+      hasRead: !!event.read,
+      hasPostback: !!event.postback,
     });
 
     if (!senderPsid || !pageId) return;
@@ -31,72 +44,200 @@ class MessengerService {
       return;
     }
 
+    const id_configuracion = await getConfigIdByPageId(pageId);
+    if (!id_configuracion) {
+      console.warn('[STORE][WARN] No id_configuracion para pageId', pageId);
+    }
+
+    // Evitar duplicados: Meta re-envía "echo" de tus propios envíos
+    if (event.message?.is_echo) {
+      console.log('[SKIP][ECHO]', {
+        pageId,
+        senderPsid,
+        mid: event.message?.mid,
+      });
+      return;
+    }
+
     if (event.message) {
       await this.handleMessage(
         senderPsid,
         event.message,
         pageAccessToken,
-        pageId
+        pageId,
+        id_configuracion
       );
     } else if (event.postback) {
       await this.handlePostback(
         senderPsid,
         event.postback,
         pageAccessToken,
-        pageId
+        pageId,
+        id_configuracion
       );
+    } else if (event.delivery) {
+      // estados de entrega (para salientes)
+      const watermark = event.delivery.watermark;
+      const mids = event.delivery.mids || [];
+      console.log('[DELIVERY][IN]', {
+        pageId,
+        watermark,
+        midsCount: mids.length,
+      });
+      await Store.markDelivered({ page_id: pageId, watermark, mids });
+    } else if (event.read) {
+      // estados de lectura (para salientes)
+      const watermark = event.read.watermark;
+      console.log('[READ][IN]', { pageId, watermark });
+      await Store.markRead({ page_id: pageId, watermark });
     }
 
     console.log('[ROUTE_EVENT][DONE]', { pageId, senderPsid });
   }
 
-  static async handleMessage(senderPsid, message, pageAccessToken, pageId) {
+  static async handleMessage(
+    senderPsid,
+    message,
+    pageAccessToken,
+    pageId,
+    id_configuracion
+  ) {
     console.log('[HANDLE_MESSAGE][START]', { pageId, senderPsid });
 
+    // 1) Persistir ENTRANTE
+    try {
+      const incomingSave = await Store.saveIncomingMessage({
+        id_configuracion,
+        page_id: pageId,
+        psid: senderPsid,
+        text: message.text || null,
+        attachments: message.attachments || null,
+        quick_reply_payload: message.quick_reply?.payload || null,
+        sticker_id: message.sticker_id || null,
+        mid: message.mid || null,
+        meta: { raw: message },
+      });
+      console.log('[STORE][INCOMING][OK]', incomingSave);
+    } catch (e) {
+      console.error('[STORE][INCOMING][ERROR]', e.message);
+    }
+
+    // 2) Feedback UX
     await fb.sendSenderAction(senderPsid, 'mark_seen', pageAccessToken);
     await fb.sendSenderAction(senderPsid, 'typing_on', pageAccessToken);
 
-    const text = message.text || '';
+    // 3) Enviar respuesta (SALIENTE) + persistir
+    const replyText = message.text
+      ? `👋 Recibí tu mensaje: ${message.text}`
+      : 'Recibí tu adjunto ✅';
+
     let sendRes;
-    if (text) {
-      sendRes = await fb.sendText(
+    try {
+      sendRes = await fb.sendText(senderPsid, replyText, pageAccessToken);
+      console.log('[HANDLE_MESSAGE][SENT]', {
+        pageId,
         senderPsid,
-        `👋 Recibí tu mensaje: ${text}`,
-        pageAccessToken
+        reply_message_id: sendRes?.message_id,
+        recipient_id: sendRes?.recipient_id,
+      });
+
+      await Store.saveOutgoingMessage({
+        id_configuracion,
+        page_id: pageId,
+        psid: senderPsid,
+        text: replyText,
+        mid: sendRes?.message_id || null,
+        status: 'sent',
+        meta: { response: sendRes },
+      });
+      console.log('[STORE][OUTGOING][OK]', { mid: sendRes?.message_id });
+    } catch (e) {
+      console.error(
+        '[SEND/STORE][OUTGOING][ERROR]',
+        e.response?.data || e.message
       );
-    } else {
-      sendRes = await fb.sendText(
-        senderPsid,
-        `Recibí tu adjunto ✅`,
-        pageAccessToken
-      );
+      // Opcional: guardar como failed
+      try {
+        await Store.saveOutgoingMessage({
+          id_configuracion,
+          page_id: pageId,
+          psid: senderPsid,
+          text: replyText,
+          status: 'failed',
+          meta: { error: e.response?.data || e.message },
+        });
+      } catch (_) {}
     }
 
     await fb.sendSenderAction(senderPsid, 'typing_off', pageAccessToken);
-    console.log('[HANDLE_MESSAGE][SENT]', {
-      pageId,
-      senderPsid,
-      reply_message_id: sendRes?.message_id,
-      recipient_id: sendRes?.recipient_id,
-    });
     console.log('[HANDLE_MESSAGE][DONE]', { pageId, senderPsid });
   }
 
-  static async handlePostback(senderPsid, postback, pageAccessToken, pageId) {
+  static async handlePostback(
+    senderPsid,
+    postback,
+    pageAccessToken,
+    pageId,
+    id_configuracion
+  ) {
     const payload = postback.payload || '';
     console.log('[HANDLE_POSTBACK]', { pageId, senderPsid, payload });
 
+    // 1) Persistir ENTRANTE (postback)
+    try {
+      const incomingSave = await Store.saveIncomingMessage({
+        id_configuracion,
+        page_id: pageId,
+        psid: senderPsid,
+        postback_payload: payload,
+        mid: postback.mid || null,
+        meta: { raw: postback },
+      });
+      console.log('[STORE][INCOMING_POSTBACK][OK]', incomingSave);
+    } catch (e) {
+      console.error('[STORE][INCOMING_POSTBACK][ERROR]', e.message);
+    }
+
+    // 2) Responder + persistir SALIENTE
     const text =
       payload === 'GET_STARTED'
         ? '¡Bienvenido! ¿En qué puedo ayudarle?'
         : `Postback: ${payload}`;
 
-    const res = await fb.sendText(senderPsid, text, pageAccessToken);
-    console.log('[HANDLE_POSTBACK][SENT]', {
-      pageId,
-      senderPsid,
-      reply_message_id: res?.message_id,
-    });
+    try {
+      const res = await fb.sendText(senderPsid, text, pageAccessToken);
+      console.log('[HANDLE_POSTBACK][SENT]', {
+        pageId,
+        senderPsid,
+        reply_message_id: res?.message_id,
+      });
+
+      await Store.saveOutgoingMessage({
+        id_configuracion,
+        page_id: pageId,
+        psid: senderPsid,
+        text,
+        mid: res?.message_id || null,
+        status: 'sent',
+        meta: { response: res },
+      });
+      console.log('[STORE][OUTGOING_POSTBACK][OK]', { mid: res?.message_id });
+    } catch (e) {
+      console.error(
+        '[SEND/STORE][OUTGOING_POSTBACK][ERROR]',
+        e.response?.data || e.message
+      );
+      try {
+        await Store.saveOutgoingMessage({
+          id_configuracion,
+          page_id: pageId,
+          psid: senderPsid,
+          text,
+          status: 'failed',
+          meta: { error: e.response?.data || e.message },
+        });
+      } catch (_) {}
+    }
   }
 }
 
