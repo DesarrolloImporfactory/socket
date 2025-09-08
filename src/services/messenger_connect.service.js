@@ -81,7 +81,7 @@ class MessengerConnectService {
 
     // 2) Suscribir app a la página (para que lleguen los webhooks)
     const subscribed_fields =
-      'messages,messaging_postbacks,message_deliveries,message_reads';
+      'messages,messaging_postbacks,message_deliveries,message_reads,message_echoes';
 
     console.log('[SUBSCRIBE][REQUEST]', {
       endpoint: `/${page_id}/subscribed_apps`,

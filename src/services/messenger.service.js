@@ -1,6 +1,7 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
+const FB_APP_ID = process.env.FB_APP_ID;
 
 async function getPageTokenByPageId(page_id) {
   const [row] = await db.query(
@@ -22,7 +23,6 @@ class MessengerService {
   static async routeEvent(event) {
     const senderPsid = event.sender?.id;
     const pageId = event.recipient?.id;
-
     const mid = event.message?.mid;
     const text = event.message?.text;
 
@@ -38,6 +38,40 @@ class MessengerService {
 
     if (!senderPsid || !pageId) return;
 
+    // ---- 1) Primero: manejar ECHOS (para no pedir token con el PSID del usuario) ----
+    if (event.message?.is_echo) {
+      const appId = event.message?.app_id || null;
+
+      // En echos: sender.id = PAGE, recipient.id = USUARIO
+      const pageIdEcho = event.sender?.id;
+      const psidEcho = event.recipient?.id;
+
+      // Si el echo es de *tu propia app*, ya lo guardaste al enviar -> ignora
+      if (String(appId || '') === String(FB_APP_ID)) {
+        console.log('[SKIP][ECHO][OWN]', { mid: event.message?.mid, appId });
+        return;
+      }
+
+      // Echo humano (Page Inbox/otra herramienta) -> persiste como OUT
+      const id_cfg_echo = await getConfigIdByPageId(pageIdEcho);
+      if (!id_cfg_echo) {
+        console.warn(
+          '[ECHO][WARN] No id_configuracion para pageId',
+          pageIdEcho
+        );
+        return;
+      }
+
+      await this.handleEcho({
+        pageId: pageIdEcho,
+        psid: psidEcho,
+        message: event.message,
+        id_configuracion: id_cfg_echo,
+      });
+      return;
+    }
+
+    // ---- 2) Luego: token/ids para mensajes normales, postbacks y estados ----
     const pageAccessToken = await getPageTokenByPageId(pageId);
     if (!pageAccessToken) {
       console.warn('No hay page_access_token para pageId', pageId);
@@ -47,16 +81,6 @@ class MessengerService {
     const id_configuracion = await getConfigIdByPageId(pageId);
     if (!id_configuracion) {
       console.warn('[STORE][WARN] No id_configuracion para pageId', pageId);
-    }
-
-    // Evitar duplicados: Meta re-envía "echo" de tus propios envíos
-    if (event.message?.is_echo) {
-      console.log('[SKIP][ECHO]', {
-        pageId,
-        senderPsid,
-        mid: event.message?.mid,
-      });
-      return;
     }
 
     if (event.message) {
@@ -76,7 +100,6 @@ class MessengerService {
         id_configuracion
       );
     } else if (event.delivery) {
-      // estados de entrega (para salientes)
       const watermark = event.delivery.watermark;
       const mids = event.delivery.mids || [];
       console.log('[DELIVERY][IN]', {
@@ -86,7 +109,6 @@ class MessengerService {
       });
       await Store.markDelivered({ page_id: pageId, watermark, mids });
     } else if (event.read) {
-      // estados de lectura (para salientes)
       const watermark = event.read.watermark;
       console.log('[READ][IN]', { pageId, watermark });
       await Store.markRead({ page_id: pageId, watermark });
@@ -237,6 +259,35 @@ class MessengerService {
           meta: { error: e.response?.data || e.message },
         });
       } catch (_) {}
+    }
+  }
+
+  static async handleEcho({ pageId, psid, message, id_configuracion }) {
+    // Importante: los echos pueden venir con texto o adjuntos
+    const text = message.text || null;
+    const attachments = message.attachments || null;
+
+    try {
+      const saved = await Store.saveOutgoingMessage({
+        id_configuracion,
+        page_id: pageId,
+        psid,
+        text,
+        attachments,
+        mid: message.mid || null,
+        status: 'sent',
+        meta: {
+          echo: true,
+          app_id: message.app_id || null,
+          raw: message,
+        },
+      });
+      console.log('[STORE][OUTGOING][ECHO_HUMAN][OK]', {
+        mid: message.mid,
+        saved,
+      });
+    } catch (e) {
+      console.error('[STORE][OUTGOING][ECHO_HUMAN][ERROR]', e.message);
     }
   }
 }
