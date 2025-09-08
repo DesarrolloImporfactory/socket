@@ -317,7 +317,7 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
 
   try {
     const [result] = await db.query(
-      `UPDATE configuraciones SET api_key_openai = ? WHERE id_configuracion = ?`,
+      `UPDATE configuraciones SET api_key_openai = ? WHERE id = ?`,
       {
         replacements: [api_key, id_configuracion],
         type: db.QueryTypes.UPDATE,
