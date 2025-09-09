@@ -206,26 +206,57 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       Date.now() + tiempo_remarketing * 60 * 60 * 1000
     );
 
-    await db.query(
-      `INSERT INTO remarketing_pendientes 
-   (telefono, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread) 
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    let existe = false;
+
+    // 1. Buscar si ya existe un registro con mismo telefono, id_configuracion y mismo día de tiempo_disparo
+    const rows = await db.query(
+      `
+    SELECT tiempo_disparo 
+    FROM remarketing_pendientes 
+    WHERE telefono = ? 
+      AND id_configuracion = ?
+      AND DATE(tiempo_disparo) = DATE(?)
+    LIMIT 1
+    `,
       {
-        replacements: [
-          telefono,
-          id_configuracion,
-          business_phone_id,
-          accessToken, // WhatsApp token (si lo usas después)
-          api_key_openai, // OpenAI token
-          assistant_id, // ID real del assistant
-          respuesta, // Mensaje generado
-          tipo_asistente,
-          tiempoDisparo,
-          id_thread,
-        ],
-        type: db.QueryTypes.INSERT,
+        replacements: [telefono, id_configuracion, tiempoDisparo],
+        type: db.QueryTypes.SELECT,
       }
     );
+
+    // 2. Si ya existe, no insertamos
+    if (rows.length > 0) {
+      /* console.log(
+        'Ya existe un remarketing para este día, no se inserta nada.'
+      ); */
+      existe = true;
+    }
+
+
+    // 3. Insertar si no existe
+    if (!existe) {
+      // 3. Insertar si no existe
+      await db.query(
+        `INSERT INTO remarketing_pendientes 
+    (telefono, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            telefono,
+            id_configuracion,
+            business_phone_id,
+            accessToken,
+            api_key_openai,
+            assistant_id,
+            respuesta,
+            tipo_asistente,
+            tiempoDisparo,
+            id_thread,
+          ],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+    }
   }
 
   res.status(200).json({
