@@ -56,9 +56,12 @@ class ChatService {
       }
 
       if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
-        whereClause += ` AND JSON_CONTAINS(etiquetas, JSON_ARRAY(${filtros.selectedEtiquetas
-          .map((etiqueta) => `'${etiqueta.value}'`)
-          .join(', ')}), '$')`;
+        whereClause += ` AND (${filtros.selectedEtiquetas
+          .map(
+            (etiqueta) =>
+              `JSON_CONTAINS(etiquetas, '{"id": ${etiqueta.value}}', '$')`
+          )
+          .join(' AND ')})`;
       }
 
       if (
@@ -72,7 +75,7 @@ class ChatService {
         if (filtros.selectedNovedad.value === 'gestionadas') {
           whereClause += ` AND novedad_info IS NOT NULL AND (novedad_info->'$.terminado' = 1 OR novedad_info->'$.solucionada' = 1)`;
         } else if (filtros.selectedNovedad.value === 'no_gestionadas') {
-          whereClause += ` AND (novedad_info IS NULL OR novedad_info->'$.terminado' = 0 AND novedad_info->'$.solucionada' = 0)`;
+          whereClause += ` AND (novedad_info IS NULL OR (novedad_info->'$.terminado' = 0 AND novedad_info->'$.solucionada' = 0))`;
         }
       }
 
