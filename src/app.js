@@ -64,6 +64,8 @@ const googleAuthRoutes = require('./routes/google_auth.routes');
 
 const pedidosRouter = require('./routes/pedidos.routes');
 
+const webhook_meta_whatsappRouter = require('./routes/webhook_meta_whatsapp.routes');
+
 const path = require('path');
 
 const app = express();
@@ -157,6 +159,7 @@ app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
 app.use('/api/v1/pedidos', pedidosRouter);
 app.use('/api/v1/messenger', messengerRouter);
+app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 
 app.all('*', (req, res, next) => {
   return next(
