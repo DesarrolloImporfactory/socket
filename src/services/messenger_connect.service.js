@@ -77,16 +77,9 @@ class MessengerConnectService {
         page_id
       );
 
-    console.log('[CONNECT][START]', { page_id, page_name });
-
     // 2) Suscribir app a la página (para que lleguen los webhooks)
     const subscribed_fields =
       'messages,messaging_postbacks,message_deliveries,message_reads,message_echoes';
-
-    console.log('[SUBSCRIBE][REQUEST]', {
-      endpoint: `/${page_id}/subscribed_apps`,
-      subscribed_fields,
-    });
 
     const subRes = await axios.post(
       `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
@@ -98,14 +91,12 @@ class MessengerConnectService {
         },
       }
     );
-    console.log('[SUBSCRIBE][RESPONSE]', subRes.data);
 
     // 3) Verificar suscripción
     const { data: status } = await axios.get(
       `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
       { params: { access_token: page_access_token } }
     );
-    console.log('[SUBSCRIBE_STATUS]', JSON.stringify(status));
 
     // 4) Guardar/actualizar en BD
     const session = await db
@@ -128,8 +119,6 @@ class MessengerConnectService {
 
     // 5) Marcar sesión usada (opcional)
     await MessengerOAuthService.consumeSession(oauth_session_id);
-
-    console.log('[CONNECT][DONE]', { page_id, page_name, id_messenger_page });
 
     // Devolvemos el estado de suscripción (útil para el video/Network)
     return {

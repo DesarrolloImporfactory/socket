@@ -1,7 +1,19 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
+
 const FB_APP_ID = process.env.FB_APP_ID;
+
+// Socket.IO (inyectado desde server.js)
+let IO = null;
+
+// helpers de rooms
+const roomConv = (conversation_id) => `ms:conv:${conversation_id}`;
+const roomCfg = (id_configuracion) => `ms:cfg:${id_configuracion}`;
+
+// id “seguro” para no romper el front si insertId viene undefined
+const safeMsgId = (dbId, mid) =>
+  dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 async function getPageTokenByPageId(page_id) {
   const [row] = await db.query(
@@ -20,6 +32,10 @@ async function getConfigIdByPageId(page_id) {
 }
 
 class MessengerService {
+  static setIO(io) {
+    IO = io;
+  }
+
   static async routeEvent(event) {
     const senderPsid = event.sender?.id;
     const pageId = event.recipient?.id;
@@ -36,23 +52,19 @@ class MessengerService {
       hasPostback: !!event.postback,
     });
 
-    if (!senderPsid || !pageId) return;
+    if (!pageId) return;
 
-    // ---- 1) Primero: manejar ECHOS (para no pedir token con el PSID del usuario) ----
+    // --- 1) ECHOS ---
     if (event.message?.is_echo) {
       const appId = event.message?.app_id || null;
+      const pageIdEcho = event.sender?.id; // en echos: sender.id = PAGE
+      const psidEcho = event.recipient?.id; // recipient.id = USER
 
-      // En echos: sender.id = PAGE, recipient.id = USUARIO
-      const pageIdEcho = event.sender?.id;
-      const psidEcho = event.recipient?.id;
-
-      // Si el echo es de *tu propia app*, ya lo guardaste al enviar -> ignora
       if (String(appId || '') === String(FB_APP_ID)) {
         console.log('[SKIP][ECHO][OWN]', { mid: event.message?.mid, appId });
         return;
       }
 
-      // Echo humano (Page Inbox/otra herramienta) -> persiste como OUT
       const id_cfg_echo = await getConfigIdByPageId(pageIdEcho);
       if (!id_cfg_echo) {
         console.warn(
@@ -71,19 +83,24 @@ class MessengerService {
       return;
     }
 
-    // ---- 2) Luego: token/ids para mensajes normales, postbacks y estados ----
-    const pageAccessToken = await getPageTokenByPageId(pageId);
-    if (!pageAccessToken) {
-      console.warn('No hay page_access_token para pageId', pageId);
-      return;
-    }
-
+    // --- 2) Mensajes / Postbacks ---
+    // (delivery/read se manejan abajo y NO requieren senderPsid)
     const id_configuracion = await getConfigIdByPageId(pageId);
     if (!id_configuracion) {
       console.warn('[STORE][WARN] No id_configuracion para pageId', pageId);
     }
 
+    // Mensaje normal
     if (event.message) {
+      if (!senderPsid) {
+        console.warn('[ROUTE_EVENT] message sin senderPsid; se ignora');
+        return;
+      }
+      const pageAccessToken = await getPageTokenByPageId(pageId);
+      if (!pageAccessToken) {
+        console.warn('No hay page_access_token para pageId', pageId);
+        return;
+      }
       await this.handleMessage(
         senderPsid,
         event.message,
@@ -91,7 +108,21 @@ class MessengerService {
         pageId,
         id_configuracion
       );
-    } else if (event.postback) {
+
+      return;
+    }
+
+    // Postback
+    if (event.postback) {
+      if (!senderPsid) {
+        console.warn('[ROUTE_EVENT] postback sin senderPsid; se ignora');
+        return;
+      }
+      const pageAccessToken = await getPageTokenByPageId(pageId);
+      if (!pageAccessToken) {
+        console.warn('No hay page_access_token para pageId', pageId);
+        return;
+      }
       await this.handlePostback(
         senderPsid,
         event.postback,
@@ -99,7 +130,12 @@ class MessengerService {
         pageId,
         id_configuracion
       );
-    } else if (event.delivery) {
+
+      return;
+    }
+
+    // --- 3) Estados (delivery/read) ---
+    if (event.delivery) {
       const watermark = event.delivery.watermark;
       const mids = event.delivery.mids || [];
       console.log('[DELIVERY][IN]', {
@@ -107,14 +143,33 @@ class MessengerService {
         watermark,
         midsCount: mids.length,
       });
+
       await Store.markDelivered({ page_id: pageId, watermark, mids });
-    } else if (event.read) {
-      const watermark = event.read.watermark;
-      console.log('[READ][IN]', { pageId, watermark });
-      await Store.markRead({ page_id: pageId, watermark });
+
+      const cfg = await getConfigIdByPageId(pageId);
+      if (IO && cfg) {
+        IO.to(roomCfg(cfg)).emit('MS_DELIVERED', {
+          page_id: pageId,
+          watermark,
+          mids,
+        });
+      }
+
+      return;
     }
 
-    console.log('[ROUTE_EVENT][DONE]', { pageId, senderPsid });
+    if (event.read) {
+      const watermark = event.read.watermark;
+
+      await Store.markRead({ page_id: pageId, watermark });
+
+      const cfg = await getConfigIdByPageId(pageId);
+      if (IO && cfg) {
+        IO.to(roomCfg(cfg)).emit('MS_READ', { page_id: pageId, watermark });
+      }
+
+      return;
+    }
   }
 
   static async handleMessage(
@@ -124,11 +179,10 @@ class MessengerService {
     pageId,
     id_configuracion
   ) {
-    console.log('[HANDLE_MESSAGE][START]', { pageId, senderPsid });
-
     // 1) Persistir ENTRANTE
+    let incomingSave = null;
     try {
-      const incomingSave = await Store.saveIncomingMessage({
+      incomingSave = await Store.saveIncomingMessage({
         id_configuracion,
         page_id: pageId,
         psid: senderPsid,
@@ -139,7 +193,29 @@ class MessengerService {
         mid: message.mid || null,
         meta: { raw: message },
       });
-      console.log('[STORE][INCOMING][OK]', incomingSave);
+
+      // Notificar a la conversación y a la lista
+      if (IO && incomingSave?.conversation_id) {
+        IO.to(roomConv(incomingSave.conversation_id)).emit('MS_MESSAGE', {
+          conversation_id: incomingSave.conversation_id,
+          message: {
+            id: safeMsgId(incomingSave.message_id, message.mid),
+            direction: 'in',
+            mid: message.mid || null,
+            text: message.text || null,
+            attachments: message.attachments || null,
+            status: 'received',
+            created_at: new Date().toISOString(),
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
+          id: incomingSave.conversation_id,
+          last_message_at: new Date().toISOString(),
+          last_incoming_at: new Date().toISOString(),
+          preview: message.text || '(adjunto)',
+          // unread_count: lo recalculas en front o ajustas acá si quieres
+        });
+      }
     } catch (e) {
       console.error('[STORE][INCOMING][ERROR]', e.message);
     }
@@ -148,22 +224,9 @@ class MessengerService {
     await fb.sendSenderAction(senderPsid, 'mark_seen', pageAccessToken);
     await fb.sendSenderAction(senderPsid, 'typing_on', pageAccessToken);
 
-    // 3) Enviar respuesta (SALIENTE) + persistir
-    const replyText = message.text
-      ? `👋 Recibí tu mensaje: ${message.text}`
-      : 'Recibí tu adjunto ✅';
-
-    let sendRes;
     try {
-      sendRes = await fb.sendText(senderPsid, replyText, pageAccessToken);
-      console.log('[HANDLE_MESSAGE][SENT]', {
-        pageId,
-        senderPsid,
-        reply_message_id: sendRes?.message_id,
-        recipient_id: sendRes?.recipient_id,
-      });
-
-      await Store.saveOutgoingMessage({
+      const sendRes = await fb.sendText(senderPsid, replyText, pageAccessToken);
+      const outSave = await Store.saveOutgoingMessage({
         id_configuracion,
         page_id: pageId,
         psid: senderPsid,
@@ -172,13 +235,32 @@ class MessengerService {
         status: 'sent',
         meta: { response: sendRes },
       });
-      console.log('[STORE][OUTGOING][OK]', { mid: sendRes?.message_id });
+
+      if (IO && incomingSave?.conversation_id) {
+        IO.to(roomConv(incomingSave.conversation_id)).emit('MS_MESSAGE', {
+          conversation_id: incomingSave.conversation_id,
+          message: {
+            id: safeMsgId(outSave?.message_id, sendRes?.message_id),
+            direction: 'out',
+            mid: sendRes?.message_id || null,
+            text: replyText,
+            status: 'sent',
+            created_at: new Date().toISOString(),
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
+          id: incomingSave.conversation_id,
+          last_message_at: new Date().toISOString(),
+          last_outgoing_at: new Date().toISOString(),
+          preview: replyText,
+          unread_count: 0,
+        });
+      }
     } catch (e) {
       console.error(
         '[SEND/STORE][OUTGOING][ERROR]',
         e.response?.data || e.message
       );
-      // Opcional: guardar como failed
       try {
         await Store.saveOutgoingMessage({
           id_configuracion,
@@ -192,7 +274,6 @@ class MessengerService {
     }
 
     await fb.sendSenderAction(senderPsid, 'typing_off', pageAccessToken);
-    console.log('[HANDLE_MESSAGE][DONE]', { pageId, senderPsid });
   }
 
   static async handlePostback(
@@ -203,11 +284,10 @@ class MessengerService {
     id_configuracion
   ) {
     const payload = postback.payload || '';
-    console.log('[HANDLE_POSTBACK]', { pageId, senderPsid, payload });
 
-    // 1) Persistir ENTRANTE (postback)
+    let incomingSave = null;
     try {
-      const incomingSave = await Store.saveIncomingMessage({
+      incomingSave = await Store.saveIncomingMessage({
         id_configuracion,
         page_id: pageId,
         psid: senderPsid,
@@ -215,12 +295,31 @@ class MessengerService {
         mid: postback.mid || null,
         meta: { raw: postback },
       });
-      console.log('[STORE][INCOMING_POSTBACK][OK]', incomingSave);
+
+      if (IO && incomingSave?.conversation_id) {
+        IO.to(roomConv(incomingSave.conversation_id)).emit('MS_MESSAGE', {
+          conversation_id: incomingSave.conversation_id,
+          message: {
+            id: safeMsgId(incomingSave.message_id, postback.mid),
+            direction: 'in',
+            mid: postback.mid || null,
+            text: null,
+            postback_payload: payload,
+            status: 'received',
+            created_at: new Date().toISOString(),
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
+          id: incomingSave.conversation_id,
+          last_message_at: new Date().toISOString(),
+          last_incoming_at: new Date().toISOString(),
+          preview: `Postback: ${payload}`,
+        });
+      }
     } catch (e) {
       console.error('[STORE][INCOMING_POSTBACK][ERROR]', e.message);
     }
 
-    // 2) Responder + persistir SALIENTE
     const text =
       payload === 'GET_STARTED'
         ? '¡Bienvenido! ¿En qué puedo ayudarle?'
@@ -228,13 +327,8 @@ class MessengerService {
 
     try {
       const res = await fb.sendText(senderPsid, text, pageAccessToken);
-      console.log('[HANDLE_POSTBACK][SENT]', {
-        pageId,
-        senderPsid,
-        reply_message_id: res?.message_id,
-      });
 
-      await Store.saveOutgoingMessage({
+      const outSave = await Store.saveOutgoingMessage({
         id_configuracion,
         page_id: pageId,
         psid: senderPsid,
@@ -243,7 +337,27 @@ class MessengerService {
         status: 'sent',
         meta: { response: res },
       });
-      console.log('[STORE][OUTGOING_POSTBACK][OK]', { mid: res?.message_id });
+
+      if (IO && incomingSave?.conversation_id) {
+        IO.to(roomConv(incomingSave.conversation_id)).emit('MS_MESSAGE', {
+          conversation_id: incomingSave.conversation_id,
+          message: {
+            id: safeMsgId(outSave?.message_id, res?.message_id),
+            direction: 'out',
+            mid: res?.message_id || null,
+            text,
+            status: 'sent',
+            created_at: new Date().toISOString(),
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
+          id: incomingSave.conversation_id,
+          last_message_at: new Date().toISOString(),
+          last_outgoing_at: new Date().toISOString(),
+          preview: text,
+          unread_count: 0,
+        });
+      }
     } catch (e) {
       console.error(
         '[SEND/STORE][OUTGOING_POSTBACK][ERROR]',
@@ -263,7 +377,6 @@ class MessengerService {
   }
 
   static async handleEcho({ pageId, psid, message, id_configuracion }) {
-    // Importante: los echos pueden venir con texto o adjuntos
     const text = message.text || null;
     const attachments = message.attachments || null;
 
@@ -276,16 +389,40 @@ class MessengerService {
         attachments,
         mid: message.mid || null,
         status: 'sent',
-        meta: {
-          echo: true,
-          app_id: message.app_id || null,
-          raw: message,
-        },
+        meta: { echo: true, app_id: message.app_id || null, raw: message },
       });
-      console.log('[STORE][OUTGOING][ECHO_HUMAN][OK]', {
-        mid: message.mid,
-        saved,
-      });
+
+      const [conv] = await db.query(
+        `SELECT id FROM messenger_conversations
+          WHERE id_configuracion=? AND page_id=? AND psid=? LIMIT 1`,
+        {
+          replacements: [id_configuracion, pageId, psid],
+          type: db.QueryTypes.SELECT,
+        }
+      );
+
+      if (IO && conv?.id) {
+        IO.to(roomConv(conv.id)).emit('MS_MESSAGE', {
+          conversation_id: conv.id,
+          message: {
+            id: safeMsgId(saved?.message_id, message.mid),
+            direction: 'out',
+            mid: message.mid || null,
+            text,
+            attachments,
+            status: 'sent',
+            created_at: new Date().toISOString(),
+            echo: true,
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
+          id: conv.id,
+          last_message_at: new Date().toISOString(),
+          last_outgoing_at: new Date().toISOString(),
+          preview: text || '(adjunto)',
+          unread_count: 0,
+        });
+      }
     } catch (e) {
       console.error('[STORE][OUTGOING][ECHO_HUMAN][ERROR]', e.message);
     }

@@ -175,10 +175,27 @@ async function markRead({ page_id, watermark }) {
   );
 }
 
+async function touchConversationOnOutgoing({
+  id_configuracion,
+  page_id,
+  psid,
+  now = new Date(),
+}) {
+  await db.query(
+    `UPDATE messenger_conversations
+     SET last_message_at = ?, last_outgoing_at = ?, updated_at = ?
+     WHERE id_configuracion = ? AND page_id = ? AND psid = ?`,
+    {
+      replacements: [now, now, now, id_configuracion, page_id, psid],
+    }
+  );
+}
+
 module.exports = {
   ensureConversation,
   saveIncomingMessage,
   saveOutgoingMessage,
   markDelivered,
   markRead,
+  touchConversationOnOutgoing,
 };

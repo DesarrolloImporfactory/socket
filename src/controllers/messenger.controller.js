@@ -9,7 +9,6 @@ exports.verifyWebhook = (req, res, next) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.FB_VERIFY_TOKEN) {
-    console.log('Webhook de Messenger Verificado correctamente');
     return res.status(200).send(challenge);
   }
   return res.status(403).send('Forbidden');
@@ -38,8 +37,6 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
         });
 
         await MessengerService.routeEvent(event);
-
-        console.log('[WEBHOOK_ACK]', { pageId, senderPsid });
       }
     })
   );

@@ -4,6 +4,7 @@ const router = express.Router();
 const messengerController = require('../controllers/messenger.controller');
 const oauthController = require('../controllers/messenger_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
+const conversationsController = require('../controllers/messenger_conversations.controller');
 
 //No colocamos authMiddleware: Facebook no enviara el JWT.
 
@@ -24,5 +25,11 @@ router.get('/facebook/pages', oauthController.listUserPages);
 
 // 4. Conectar página a id_configuracion (suscribe + guarda token en DB)
 router.post('/facebook/connect', oauthController.connectPage);
+
+// Listar conversaciones por id_configuracion
+router.get('/conversations', conversationsController.listConversations);
+
+// Listar mensajes de una conversación
+router.get('/conversations/:id/messages', conversationsController.listMessages);
 
 module.exports = router;

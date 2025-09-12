@@ -7,6 +7,7 @@ const path = require('path');
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
+const MessengerConversation = require('../models/messenger_conversations.model');
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -203,58 +204,88 @@ exports.eliminarDepartamento = catchAsync(async (req, res, next) => {
 });
 
 exports.transferirChat = catchAsync(async (req, res, next) => {
-  const { id_encargado, id_departamento, id_cliente_chat_center } = req.body;
+  const {
+    source,
+    id_encargado,
+    id_departamento,
+    id_cliente_chat_center,
+    id_conversation,
+  } = req.body;
 
-  // Validaciones mínimas
-  if (!id_encargado || !id_departamento || !id_cliente_chat_center) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'No ha seleccionado correctamente a quién desea transferir.',
+  if (source === 'ms') {
+    if (!id_conversation || (!id_encargado && !id_departamento)) {
+      return res.status(400).json({
+        status: 'fail',
+        message:
+          'Faltan datos: id_conversation y al menos id_encargado o id_departamento',
+      });
+    }
+
+    const fields = {};
+    if (id_encargado != null) fields.id_encargado = id_encargado;
+    if (id_departamento != null) fields.id_departamento = id_departamento;
+
+    await MessengerConversation.update(fields, {
+      where: { id: id_conversation },
+    });
+  } else {
+    // WhatsApp
+    if (!id_cliente_chat_center || (!id_encargado && !id_departamento)) {
+      return res.status(400).json({
+        status: 'fail',
+        message:
+          'Faltan datos: id_cliente_chat_center y al menos id_encargado o id_departamento',
+      });
+    }
+
+    const fields = {};
+    if (id_encargado != null) fields.id_encargado = id_encargado;
+    if (id_departamento != null) fields.id_departamento = id_departamento;
+
+    await Clientes_chat_center.update(fields, {
+      where: { id: id_cliente_chat_center },
     });
   }
 
-  // Actualización
-  await Clientes_chat_center.update(
-    {
-      id_departamento,
-      id_encargado,
-    },
-    {
-      where: { id: id_cliente_chat_center },
-    }
-  );
-
-  // Respuesta
-  res.status(200).json({
-    status: 'success',
-    message: 'Chat transferido correctamente',
-  });
+  res
+    .status(200)
+    .json({ status: 'success', message: 'Chat transferido correctamente' });
 });
 
 exports.asignar_encargado = catchAsync(async (req, res, next) => {
-  const { id_encargado, id_cliente_chat_center } = req.body;
+  const { source, id_encargado, id_cliente_chat_center, id_conversation } =
+    req.body;
 
-  // Validaciones mínimas
-  if (!id_encargado || !id_cliente_chat_center) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'No ha seleccionado correctamente a quién desea transferir.',
-    });
+  if (!id_encargado) {
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_encargado es requerido' });
   }
 
-  // Actualización
-  await Clientes_chat_center.update(
-    {
-      id_encargado,
-    },
-    {
-      where: { id: id_cliente_chat_center },
+  if (source === 'ms') {
+    if (!id_conversation) {
+      return res
+        .status(400)
+        .json({ status: 'fail', message: 'id_conversation es requerido' });
     }
-  );
+    await MessengerConversation.update(
+      { id_encargado },
+      { where: { id: id_conversation } }
+    );
+  } else {
+    if (!id_cliente_chat_center) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'id_cliente_chat_center es requerido',
+      });
+    }
+    await Clientes_chat_center.update(
+      { id_encargado },
+      { where: { id: id_cliente_chat_center } }
+    );
+  }
 
-  // Respuesta
-  res.status(200).json({
-    status: 'success',
-    message: 'Chat asginado correctamente',
-  });
+  res
+    .status(200)
+    .json({ status: 'success', message: 'Chat asignado correctamente' });
 });

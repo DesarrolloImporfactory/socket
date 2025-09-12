@@ -2129,3 +2129,11 @@
 [2025-09-04T20:49:44.375Z] info: No se encontró configuración para la plataforma
 [2025-09-04T21:01:16.907Z] info: No se encontró configuración para la plataforma
 [2025-09-04T21:02:50.526Z] info: No se encontró configuración para la plataforma
+[2025-09-09T17:47:52.775Z] info: Can't find /api/v1/messenger/conversations?id_configuracion=35&limit=50 on this server! 🧨
+[2025-09-09T17:48:58.077Z] info: Can't find /api/v1/messenger/conversations?id_configuracion=35&limit=50 on this server! 🧨
+[2025-09-09T17:48:58.741Z] info: Can't find /api/v1/messenger/conversations?id_configuracion=35&limit=50 on this server! 🧨
+[2025-09-09T17:49:04.577Z] info: Can't find /api/v1/messenger/conversations?id_configuracion=35&limit=50 on this server! 🧨
+[2025-09-09T17:49:46.029Z] info: Can't find /api/v1/messenger/conversations?id_configuracion=35&limit=50 on this server! 🧨
+[2025-09-10T17:25:55.612Z] info: Can't find /Account/v.1.0/PrivacySettings?clientId=135333107684344109 on this server! 🧨
+[2025-09-11T20:58:18.700Z] info: id_cliente_chat_center es requerido
+[2025-09-11T20:58:21.098Z] info: Truncated incorrect DOUBLE value: 'debug'
