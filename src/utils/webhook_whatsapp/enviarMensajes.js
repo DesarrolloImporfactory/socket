@@ -56,6 +56,13 @@ async function enviarMensajeTextoWhatsApp(
       )}`
     );
 
+    // Acceder al ID del mensaje (no wamid)
+    const mensajeId = response.data?.messages?.[0]?.id;
+    if (!mensajeId) {
+      await logError(`❌ No se recibió ID del mensaje`);
+      return;
+    }
+
     // Obtener configuración para registrar mensaje
     const config = await Configuraciones.findByPk(id_configuracion);
     if (!config) {
@@ -65,6 +72,7 @@ async function enviarMensajeTextoWhatsApp(
       return;
     }
 
+    // Registrar mensaje en la base de datos
     await procesarMensajeTexto({
       id_configuracion,
       business_phone_id,
@@ -76,6 +84,7 @@ async function enviarMensajeTextoWhatsApp(
       texto_mensaje,
       ruta_archivo: null,
       responsable,
+      wamid: mensajeId,
     });
 
     await logInfo(`💾 Mensaje guardado en DB para ${phone_whatsapp_to}`);
@@ -137,6 +146,7 @@ async function enviarMensajeWhatsapp({
         texto_mensaje,
         ruta_archivo: null,
         responsable,
+        wamid: mensajeId,
       });
     } else {
       const errorMsg = respData.error

@@ -39,20 +39,21 @@ async function enviarMedioWhatsapp({
     const status = response.status;
     const respData = response.data;
 
-    await fs.appendFile(
-      path.join(logsDir, 'debug_log.txt'),
+    // Registro detallado en el log
+    await logToFile(
       `[${new Date().toISOString()}] 📎 Envío ${tipo} - HTTP ${status}\n${JSON.stringify(
         respData
       )}\n`
     );
 
+    // Obtener el ID del mensaje
     const mensajeId = respData?.messages?.[0]?.id;
     if (status >= 200 && status < 300 && mensajeId) {
-      await fs.appendFile(
-        path.join(logsDir, 'debug_log.txt'),
+      await logToFile(
         `[${new Date().toISOString()}] ✅ ${tipo} enviado correctamente. ID: ${mensajeId}\n`
       );
 
+      // Si hay id_configuracion, procesamos el mensaje en la base de datos
       if (id_configuracion) {
         const config = await Configuraciones.findByPk(id_configuracion);
         if (config) {
@@ -67,6 +68,7 @@ async function enviarMedioWhatsapp({
             texto_mensaje: null,
             ruta_archivo: url_archivo,
             responsable,
+            wamid: mensajeId,
           });
         }
       }
@@ -74,19 +76,22 @@ async function enviarMedioWhatsapp({
       const errorMsg = respData?.error
         ? JSON.stringify(respData.error)
         : 'Respuesta inesperada';
-      await fs.appendFile(
-        path.join(logsDir, 'debug_log.txt'),
+      await logToFile(
         `[${new Date().toISOString()}] ❌ Error al enviar ${tipo}: ${errorMsg}\n`
       );
     }
   } catch (err) {
-    await fs.appendFile(
-      path.join(logsDir, 'debug_log.txt'),
+    await logToFile(
       `[${new Date().toISOString()}] ❌ Error axios al enviar ${tipo}: ${
         err.message
       }\n`
     );
   }
+}
+
+// Función para registrar los logs en el archivo
+async function logToFile(message) {
+  await fs.appendFile(path.join(logsDir, 'debug_log.txt'), message);
 }
 
 module.exports = { enviarMedioWhatsapp };

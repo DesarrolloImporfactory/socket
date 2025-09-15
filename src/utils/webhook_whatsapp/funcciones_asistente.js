@@ -12,6 +12,10 @@ const {
   procesarAsistenteMensaje,
 } = require('../../services/mensaje_assistant.service');
 
+const {
+  obtenerOCrearThreadId,
+} = require('../../services/obtener_thread.service');
+
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 
 async function cancelarRemarketingEnNode(telefono, id_configuracion) {
@@ -90,24 +94,18 @@ async function enviarAsistenteGpt({
   }
 }
 
-async function obtenerThreadId(celular_recibe, apiKeyOpenAI) {
+async function obtenerThreadId(id_cliente_chat_center, apiKeyOpenAI) {
   try {
-    const form = new FormData();
-    form.append('id_cliente_chat_center', celular_recibe);
-    form.append('api_key', apiKeyOpenAI);
-
-    const response = await axios.post(
-      'https://new.imporsuitpro.com/Pedidos/obtener_thread_id',
-      form,
-      { headers: form.getHeaders() }
+    const thread_id = await obtenerOCrearThreadId(
+      id_cliente_chat_center,
+      apiKeyOpenAI
     );
 
-    const data = response.data;
-    if (data?.thread_id) {
-      await log(`✅ thread_id: ${data.thread_id}`);
-      return data.thread_id;
+    if (thread_id) {
+      await log(`✅ thread_id: ${thread_id}`);
+      return thread_id;
     } else {
-      await log(`⚠️ Respuesta inesperada: ${JSON.stringify(data)}`);
+      await log(`⚠️ No se pudo obtener el thread_id.`);
       return false;
     }
   } catch (err) {

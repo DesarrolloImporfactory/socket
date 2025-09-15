@@ -19,9 +19,20 @@ async function procesarAsistenteMensaje(body) {
     accessToken,
   } = body;
 
+  /* buscar informacion del thread */
+  const openai_threads = await db.query(
+    `SELECT numero_factura, numero_guia, bloque_productos
+     FROM openai_threads 
+     WHERE thread_id = ?`,
+    {
+      replacements: [id_thread],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
   // 1. Obtener assistants activos
   const assistants = await db.query(
-    `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos 
+    `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, bloque_productos 
      FROM openai_assistants 
      WHERE id_configuracion = ? AND activo = 1`,
     {
@@ -43,7 +54,8 @@ async function procesarAsistenteMensaje(body) {
   if (id_plataforma) {
     const datosCliente = await obtenerDatosClienteParaAssistant(
       id_plataforma,
-      telefono
+      telefono,
+      id_thread
     );
     bloqueInfo = datosCliente.bloque || '';
     tipoInfo = datosCliente.tipo || null;
@@ -65,11 +77,26 @@ async function procesarAsistenteMensaje(body) {
     tipo_asistente = 'IA_ventas';
     tiempo_remarketing = sales?.tiempo_remarketing;
 
-    if (sales?.productos && Array.isArray(sales.productos)) {
-      if (sales.tomar_productos === 'imporsuit') {
-        bloqueInfo += await informacionProductosVinculado(sales.productos);
-      } else {
-        bloqueInfo += await informacionProductos(sales.productos);
+    if (sales.bloque_productos) {
+      /* console.log(
+        'openai_threads.bloque_productos: ' + openai_threads.bloque_productos
+      ); */
+      if (openai_threads.bloque_productos != sales.bloque_productos) {
+        bloqueInfo +=
+          '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos anteriores a este mensaje:\n\n';
+        bloqueInfo += sales.bloque_productos;
+
+        // Actualizar tabla openai_threads con numero_factura y numero_guia
+        const updateSql = `
+          UPDATE openai_threads
+          SET bloque_productos = ?
+          WHERE thread_id = ?
+        `;
+        /* console.log('thread_id: ' + id_thread); */
+        await db.query(updateSql, {
+          replacements: [sales.bloque_productos, id_thread],
+          type: db.QueryTypes.UPDATE,
+        });
       }
     }
   }
@@ -185,6 +212,8 @@ async function procesarAsistenteMensaje(body) {
       );
     }
   }
+
+  /* console.log('bloqueInfo: ' + bloqueInfo); */
 
   return {
     status: 200,

@@ -17,6 +17,7 @@ async function procesarMensajeTexto({
   texto_mensaje,
   ruta_archivo = null,
   responsable = 'sistema',
+  wamid,
 }) {
   try {
     await fs.mkdir(logsDir, { recursive: true });
@@ -63,6 +64,7 @@ async function procesarMensajeTexto({
       rol_mensaje: 1,
       celular_recibe: id_cliente_recibe,
       uid_whatsapp: phone_whatsapp_to,
+      id_wamid_mensaje: wamid,
     });
 
     await logInfo(

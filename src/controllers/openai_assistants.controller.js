@@ -87,7 +87,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     tipo_asistente = 'IA_ventas';
 
     if (sales?.productos && Array.isArray(sales.productos)) {
-      console.log('productos: ' + sales.productos);
+      /* console.log('productos: ' + sales.productos); */
 
       if (sales?.tomar_productos == 'imporsuit') {
         bloqueInfo += await informacionProductosVinculado(sales.productos);
@@ -103,7 +103,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     tipo_asistente = 'IA_ventas';
 
     if (sales?.productos && Array.isArray(sales.productos)) {
-      console.log('productos: ' + sales.productos);
+      /* console.log('productos: ' + sales.productos); */
 
       if (sales?.tomar_productos == 'imporsuit') {
         bloqueInfo += await informacionProductosVinculado(sales.productos);
@@ -231,7 +231,6 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       ); */
       existe = true;
     }
-
 
     // 3. Insertar si no existe
     if (!existe) {
@@ -429,10 +428,81 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       }
     );
 
+    /* hacer promt productos */
+    let bloqueProductos = '';
+    if (tomar_productos == 'imporsuit') {
+      for (const id of productos) {
+        const sqlProducto = `
+          SELECT 
+            p.nombre_producto AS nombre_producto,
+            p.descripcion_producto AS descripcion_producto,
+            ib.pvp AS precio_producto,
+            p.image_path AS image_path,
+            l.nombre_linea AS nombre_categoria
+          FROM inventario_bodegas ib
+          INNER JOIN productos p ON ib.id_producto = p.id_producto 
+          INNER JOIN lineas l ON l.id_linea = p.id_linea_producto
+          WHERE ib.id_inventario = ?
+          LIMIT 1
+        `;
+
+        const [infoProducto] = await db.query(sqlProducto, {
+          replacements: [id],
+          type: db.QueryTypes.SELECT,
+        });
+
+        if (infoProducto) {
+          bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
+          bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+          bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
+          /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
+          bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+          bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
+          bloqueProductos += `\n`;
+        }
+      }
+    } else if (tomar_productos == 'chat_center') {
+      for (const id of productos) {
+        const sqlProducto = `
+          SELECT 
+            pc.nombre AS nombre_producto,
+            pc.descripcion AS descripcion_producto,
+            pc.tipo AS tipo,
+            pc.precio AS precio_producto,
+            pc.imagen_url AS image_path,
+            pc.video_url AS video_path,
+            cc.nombre AS nombre_categoria
+          FROM productos_chat_center pc
+          INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
+          WHERE pc.id = ?
+          LIMIT 1
+        `;
+
+        const [infoProducto] = await db.query(sqlProducto, {
+          replacements: [id],
+          type: db.QueryTypes.SELECT,
+        });
+
+        if (infoProducto) {
+          bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
+          bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+          bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
+          /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
+          bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+          bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+          bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
+          bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
+          bloqueProductos += `\n`;
+        }
+      }
+    }
+
+    /* hacer promt productos */
+
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?, tiempo_remarketing = ?
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
         , tomar_productos = ? 
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
@@ -441,6 +511,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             assistant_id,
             activo,
             productosJSON,
+            bloqueProductos,
             tiempo_remarketing,
             tomar_productos,
             id_configuracion,
@@ -451,8 +522,8 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos, tiempo_remarketing, tomar_productos) 
-         VALUES (?, "ventas", ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos, bloque_productos = ?, tiempo_remarketing, tomar_productos) 
+         VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
@@ -460,6 +531,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             assistant_id,
             activo,
             productosJSON,
+            bloqueProductos,
             tiempo_remarketing,
             tomar_productos,
           ],

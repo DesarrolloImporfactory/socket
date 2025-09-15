@@ -1,0 +1,414 @@
+Inicio de mensaje
+[2025-09-12T15:14:48.240Z] Mensaje procesado:puedes darme informacion del producto ? 
+Después de mensaje procesado
+[2025-09-12T15:14:48.710Z] ✅ Mensaje guardado en DB con ID 139494
+[2025-09-12T15:14:48.822Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T15:14:48.843Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T15:14:49.642Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T15:15:22.168Z] ✅ Respuesta asistente: Por supuesto, aquí tienes la información del Carro Acrobata:
+
+- **Descripción:** Este carro a control remoto es una máquina de adrenalina en miniatura diseñada para correr, girar y saltar, haciendo de cualquier superficie una pista de carreras.
+- **Características:**
+  - Motor de alto rendimiento para alcanzar velocidades impresionantes.
+  - Suspensión todoterreno que domina cualquier tipo de terreno.
+  - Control preciso y alcance extendido para maniobras extremas.
+  - Batería recargable de larga duración.
+- **Ideal Para:** Niños, jóvenes y adultos que aman la velocidad y los desafíos.
+- **Precio:** $25.00
+
+Puedes ver la imagen y el video del producto a continuación:
+
+[producto_imagen_url]: https://chat.imporfactory.app/uploads/productos/ba787bb4-c8e3-4f49-b24e-11482e9cf48a.jpg
+
+[producto_video_url]: https://
+[2025-09-12T15:15:23.217Z] 📎 Envío image - HTTP 200
+{"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTAxMUYzOEZGNjk4OTNGMjdDAA=="}]}
+[2025-09-12T15:15:23.217Z] ✅ image enviado correctamente. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTAxMUYzOEZGNjk4OTNGMjdDAA==
+[2025-09-12T15:15:23.770Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T15:15:24.329Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQUVCMkQwREI0NzQ3MTkwRkM5AA=="}]}
+[2025-09-12T15:15:24.330Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQUVCMkQwREI0NzQ3MTkwRkM5AA==
+[2025-09-12T15:15:24.787Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T15:15:25.496Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T15:15:25.606Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T16:58:13.820Z] Mensaje procesado:puedes darme informacion del producto ? 
+Después de mensaje procesado
+[2025-09-12T16:58:14.292Z] ✅ Mensaje guardado en DB con ID 139574
+[2025-09-12T16:58:14.420Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T16:58:14.534Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T16:58:14.655Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T16:58:14.774Z] ❌ Error en enviarAsistenteGpt: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'Primaria	 = 'thread_DHcE9nZ1RtNW45fBrnnAhJIz'' at line 3
+[2025-09-12T16:58:15.618Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T16:58:15.735Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T16:59:09.049Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-12T16:59:09.526Z] ✅ Mensaje guardado en DB con ID 139575
+[2025-09-12T16:59:09.636Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T16:59:09.642Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T16:59:09.743Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T16:59:09.852Z] ❌ Error en enviarAsistenteGpt: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'Primaria	 = 'thread_DHcE9nZ1RtNW45fBrnnAhJIz'' at line 3
+[2025-09-12T16:59:10.292Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T16:59:10.400Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T17:00:04.052Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-12T17:00:04.521Z] ✅ Mensaje guardado en DB con ID 139577
+[2025-09-12T17:00:04.633Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T17:00:04.694Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T17:00:04.812Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T17:00:13.753Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊 ¿En qué puedo ayudarte hoy? Recuerda que tenemos pago contra entrega y envío gratis a tu ciudad 🏙. La entrega tarda entre 1 y 4 días hábiles. ¿Te gustaría saber más sobre nuestros productos o precios?
+[2025-09-12T17:00:14.847Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQkIyNTA4NjNBQzBDREY5RjNFAA=="}]}
+[2025-09-12T17:00:14.849Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQkIyNTA4NjNBQzBDREY5RjNFAA==
+[2025-09-12T17:00:15.444Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T17:00:16.042Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T17:00:16.159Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T17:01:17.068Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-12T17:01:17.826Z] ✅ Mensaje guardado en DB con ID 139579
+[2025-09-12T17:01:17.941Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T17:01:17.947Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T17:01:18.052Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T17:01:26.009Z] ✅ Respuesta asistente: ¡Hola de nuevo! 😊 ¿Cómo puedo asistirte hoy? Si tienes alguna pregunta sobre nuestros productos o deseas información adicional, estaré encantada de ayudarte.
+[2025-09-12T17:01:26.919Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNEEwRjRDNDU5REE5MDc1NzNFAA=="}]}
+[2025-09-12T17:01:26.920Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNEEwRjRDNDU5REE5MDc1NzNFAA==
+[2025-09-12T17:01:27.482Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T17:01:28.042Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T17:01:28.158Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:26:39.066Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:26:39.520Z] ✅ Mensaje guardado en DB con ID 139688
+[2025-09-12T21:26:39.640Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:26:39.750Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:26:39.866Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:26:39.981Z] ❌ Error en enviarAsistenteGpt: Unknown column 'id_productos' in 'field list'
+[2025-09-12T21:26:40.421Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:26:40.531Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:32:16.641Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:32:17.104Z] ✅ Mensaje guardado en DB con ID 139699
+[2025-09-12T21:32:17.222Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:32:17.339Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:32:17.455Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:32:17.805Z] ❌ Error en enviarAsistenteGpt: Positional replacement (?) 2 has no entry in the replacement map (replacements[2] is undefined).
+[2025-09-12T21:32:18.348Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:32:18.462Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:34:48.365Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:34:48.871Z] ✅ Mensaje guardado en DB con ID 139702
+[2025-09-12T21:34:48.990Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:34:48.990Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:34:49.107Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:34:49.570Z] ❌ Error en enviarAsistenteGpt: Truncated incorrect DOUBLE value: 'thread_DHcE9nZ1RtNW45fBrnnAhJIz'
+[2025-09-12T21:34:50.155Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:34:50.272Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:42:47.760Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:42:48.614Z] ✅ Mensaje guardado en DB con ID 139712
+[2025-09-12T21:42:48.730Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:42:48.818Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:42:48.933Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:43:05.542Z] ✅ Respuesta asistente: Actualmente ofrecemos los siguientes productos:
+
+1. **Carro a Control Remoto:**
+   - Precio: $15
+   - Ideal para aquellos que buscan diversión al controlar un vehículo a distancia.
+
+2. **Creatina Monohidratada Optimum Nutrition:**
+   - Precio: $35
+   - Perfecta para quienes desean mejorar su rendimiento en actividades físicas y entrenamiento.
+
+3. **Carro Acrobata:**
+   - Precio: $25
+   - Este carro a control remoto está diseñado para correr, girar y saltar, con características como motor de alto rendimiento, suspensión todoterreno, y batería recargable. Perfecto para niños, jóvenes y adultos amantes de la velocidad y los desafíos.
+
+Si tienes alguna pregunta sobre algún producto o quieres ver más detalles, estoy aquí para ayudarte. ¿Te gustaría añadir alguno más a tu pedido? 🚗💨
+[2025-09-12T21:43:06.665Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSRTMyMEEwQ0YyRUY1M0YyNTA2AA=="}]}
+[2025-09-12T21:43:06.666Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSRTMyMEEwQ0YyRUY1M0YyNTA2AA==
+[2025-09-12T21:43:07.242Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:43:07.655Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:43:07.777Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:49:15.746Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:49:16.192Z] ✅ Mensaje guardado en DB con ID 139726
+[2025-09-12T21:49:16.310Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:49:16.351Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:49:16.468Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:49:49.772Z] ✅ Respuesta asistente: Además de los productos que ya tienes en tu pedido, que son el **Carro a Control Remoto** ($15) y la **Creatina Monohidratada Optimum Nutrition** ($35), también ofrecemos el **Carro Acrobata**. Aquí tienes más detalles:
+
+- **Carro Acrobata:**
+  - **Descripción:** Es un carro a control remoto conocido por su capacidad para correr, girar y realizar saltos, convirtiendo cualquier superficie en una pista de carreras.
+  - **Características:** 
+    - Motor de alto rendimiento.
+    - Suspensión todoterreno.
+    - Control preciso y alcance extendido.
+    - Batería recargable de larga duración.
+  - **Ideal Para:** Niños, jóvenes y adultos que aman la velocidad y los desafíos.
+  - **Precio:** $25.00
+
+Si te interesa alguno de estos productos adicionales o deseas más información, no dudes en decírmelo. Estoy aquí para
+[2025-09-12T21:49:50.728Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNDZDM0Q2QTJENkY3N0NFNkYzAA=="}]}
+[2025-09-12T21:49:50.730Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNDZDM0Q2QTJENkY3N0NFNkYzAA==
+[2025-09-12T21:49:51.308Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:49:51.861Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:49:51.983Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:50:27.289Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:50:27.746Z] ✅ Mensaje guardado en DB con ID 139729
+[2025-09-12T21:50:27.858Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:50:27.859Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:50:27.969Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:50:28.530Z] ❌ Error en enviarAsistenteGpt: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'WHERE thread_id = 'thread_DHcE9nZ1RtNW45fBrnnAhJIz'' at line 3
+[2025-09-12T21:50:28.962Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:50:29.073Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:54:11.584Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:54:12.050Z] ✅ Mensaje guardado en DB con ID 139737
+[2025-09-12T21:54:12.172Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:54:12.239Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:54:12.355Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:54:12.939Z] ❌ Error en enviarAsistenteGpt: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'WHERE thread_id = 'thread_DHcE9nZ1RtNW45fBrnnAhJIz'' at line 3
+[2025-09-12T21:54:13.589Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:54:13.704Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:56:16.902Z] Mensaje procesado:Que productos ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:56:18.559Z] ✅ Mensaje guardado en DB con ID 139739
+[2025-09-12T21:56:18.679Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:56:18.680Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:56:18.793Z] ✅ thread_id: thread_DHcE9nZ1RtNW45fBrnnAhJIz
+[2025-09-12T21:56:51.265Z] ✅ Respuesta asistente: Actualmente, ofrecemos los siguientes productos:
+
+1. **Carro Acrobata:**
+   - **Descripción:** Es un carro a control remoto diseñado para correr, girar y saltar, ofreciendo una experiencia llena de adrenalina.
+   - **Características:**
+     - Motor de alto rendimiento.
+     - Suspensión todoterreno.
+     - Control preciso y alcance extendido.
+     - Batería recargable de larga duración.
+   - **Precio:** $25.00
+   - **Ideal Para:** Niños, jóvenes y adultos que aman la velocidad y los desafíos.
+
+   Aquí tienes la imagen y el video del producto:
+   [producto_imagen_url]: https://chat.imporfactory.app/uploads/productos/ba787bb4-c8e3-4f49-b24e-11482e9cf48a.jpg
+   [producto_video_url]: https://chat.imporfactory.app/uploads/productos/video/fca7d3dc-facc-
+[2025-09-12T21:56:52.415Z] 📎 Envío image - HTTP 200
+{"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQUNFQUFDNTEyQjI1MkU5OTU4AA=="}]}
+[2025-09-12T21:56:52.416Z] ✅ image enviado correctamente. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQUNFQUFDNTEyQjI1MkU5OTU4AA==
+[2025-09-12T21:56:52.992Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:56:53.833Z] 📎 Envío video - HTTP 200
+{"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNkMzM0ZDRUQ3OUVFOTYwNTk4AA=="}]}
+[2025-09-12T21:56:53.833Z] ✅ video enviado correctamente. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNkMzM0ZDRUQ3OUVFOTYwNTk4AA==
+[2025-09-12T21:56:54.292Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:56:55.072Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTk1RTc3MUEwQkIyODlBRkY5AA=="}]}
+[2025-09-12T21:56:55.075Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTk1RTc3MUEwQkIyODlBRkY5AA==
+[2025-09-12T21:56:55.533Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:56:56.071Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:56:56.184Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:58:41.581Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-12T21:58:42.034Z] ✅ Mensaje guardado en DB con ID 139746
+[2025-09-12T21:58:42.149Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:58:42.258Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:58:43.210Z] ✅ thread_id: thread_K4rKTDEBA82OxHWEC3IsRKOW
+[2025-09-12T21:58:49.486Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊 Tenemos pago contra entrega y envío gratis a tu ciudad 🏙, la entrega tarda entre 1 y 4 días hábiles. ¿Deseas conocer nuestros precios?
+[2025-09-12T21:58:50.354Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSM0NFREEzOTIzOUQ2QTFBOEVBAA=="}]}
+[2025-09-12T21:58:50.355Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSM0NFREEzOTIzOUQ2QTFBOEVBAA==
+[2025-09-12T21:58:50.938Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:58:51.673Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:58:51.788Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-12T21:59:07.770Z] Mensaje procesado:Que productos Ofreces? 
+Después de mensaje procesado
+[2025-09-12T21:59:08.217Z] ✅ Mensaje guardado en DB con ID 139748
+[2025-09-12T21:59:08.332Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-12T21:59:08.440Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-12T21:59:08.552Z] ✅ thread_id: thread_K4rKTDEBA82OxHWEC3IsRKOW
+[2025-09-12T21:59:42.794Z] ✅ Respuesta asistente: Ofrecemos una variedad de productos interesantes. Aquí tienes algunas opciones:
+
+1. **Carro Acróbata**: 
+   - Precio: $25.00
+   - Ideal para niños, jóvenes y adultos que aman la velocidad y los desafíos. Diseñado para correr, girar y saltar, convierte cualquier superficie en una pista de carreras.
+   
+   [producto_imagen_url]: https://chat.imporfactory.app/uploads/productos/ba787bb4-c8e3-4f49-b24e-11482e9cf48a.jpg
+
+   [producto_video_url]: https://chat.imporfactory.app/uploads/productos/video/fca7d3dc-facc-4756-8665-6cedd2cf9980.mp4
+
+2. **Creatina Monohidratada Optimum Nutrition**:
+   - Precio: $35.00
+   - Potencia tu fuerza, resistencia y crecimiento muscular. 100% pura y micron
+[2025-09-12T21:59:43.704Z] 📎 Envío image - HTTP 200
+{"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNzgyQjZDMzVBODM3NDgyQjJEAA=="}]}
+[2025-09-12T21:59:43.706Z] ✅ image enviado correctamente. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNzgyQjZDMzVBODM3NDgyQjJEAA==
+[2025-09-12T21:59:44.280Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:59:45.134Z] 📎 Envío video - HTTP 200
+{"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMDI2MTQ2MTE0N0MwMzdFNzU3AA=="}]}
+[2025-09-12T21:59:45.136Z] ✅ video enviado correctamente. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMDI2MTQ2MTE0N0MwMzdFNzU3AA==
+[2025-09-12T21:59:45.610Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:59:46.350Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOTUwRTBEMzNENUFDNEEwN0UwAA=="}]}
+[2025-09-12T21:59:46.352Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOTUwRTBEMzNENUFDNEEwN0UwAA==
+[2025-09-12T21:59:46.829Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-12T21:59:47.165Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-12T21:59:47.282Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T13:53:31.463Z] Mensaje procesado:Que productos Ofreces? 
+Después de mensaje procesado
+[2025-09-15T13:53:31.936Z] ✅ Mensaje guardado en DB con ID 140260
+[2025-09-15T13:53:32.058Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T13:53:32.166Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T13:53:34.600Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T13:53:51.636Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Actualmente ofrecemos dos productos destacados:
+
+1. **Carro acrobata**
+   - Carro a Control Remoto – Velocidad y Diversión sin Límites.
+   - Precio: $25.00
+
+2. **Creatina monohidratada Optimum Nutrition**
+   - Potencia tu fuerza, resistencia y crecimiento muscular.
+   - Precio: $35.00
+
+¿Te gustaría conocer más detalles de alguno de estos productos?
+[2025-09-15T13:53:53.119Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNTJEQkU3NUExQUE3RkJFQkE4AA=="}]}
+[2025-09-15T13:53:53.120Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNTJEQkU3NUExQUE3RkJFQkE4AA==
+[2025-09-15T13:53:53.734Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T13:53:54.414Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T13:53:54.534Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:14:30.590Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:14:31.071Z] ✅ Mensaje guardado en DB con ID 140275
+[2025-09-15T14:14:31.191Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:14:31.303Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:14:31.421Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:14:39.255Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Tenemos pago contra entrega y envío gratis a tu ciudad 🏙, la entrega tarde entre 1 y 4 días hábiles. ¿Deseas conocer nuestros precios o necesitas información sobre algún producto en particular?
+[2025-09-15T14:14:40.160Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSN0FGN0FGRjU5NUI3MjJGMEMyAA=="}]}
+[2025-09-15T14:14:40.160Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSN0FGN0FGRjU5NUI3MjJGMEMyAA==
+[2025-09-15T14:14:40.621Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:14:41.372Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:14:41.488Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:16:50.528Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:16:51.036Z] ✅ Mensaje guardado en DB con ID 140278
+[2025-09-15T14:16:51.179Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:16:51.184Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:16:51.299Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:17:07.300Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Tenemos pago contra entrega y envío gratis a Quito 🏙, la entrega tarda entre 1 y 4 días hábiles. ¿Deseas conocer nuestros precios o necesitas información sobre algún producto en particular?
+Inicio de mensaje
+[2025-09-15T14:17:08.119Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSODBDMUJGNDFGNkNCRDFBMzZGAA=="}]}
+[2025-09-15T14:17:08.120Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSODBDMUJGNDFGNkNCRDFBMzZGAA==
+[2025-09-15T14:17:08.226Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:17:08.920Z] ✅ Mensaje guardado en DB con ID 140279
+[2025-09-15T14:17:08.942Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:17:09.033Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:17:09.035Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:17:09.150Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:17:09.511Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:17:09.652Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+[2025-09-15T14:17:15.257Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con un tiempo de entrega de 1 a 4 días hábiles. ¿Hay algo específico que te gustaría saber sobre nuestros productos o sus precios?
+[2025-09-15T14:17:15.956Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMEMwQ0E4M0NCQkUyNTgwQjQ4AA=="}]}
+[2025-09-15T14:17:15.956Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMEMwQ0E4M0NCQkUyNTgwQjQ4AA==
+[2025-09-15T14:17:16.540Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:17:16.910Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:17:17.030Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:19:41.352Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:19:41.834Z] ✅ Mensaje guardado en DB con ID 140284
+[2025-09-15T14:19:41.951Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:19:41.984Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:19:42.102Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:19:48.426Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con una entrega que tarda entre 1 y 4 días hábiles. ¿En qué puedo ayudarte hoy?
+[2025-09-15T14:19:49.272Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNjI5MUEzQkZFNzU2QkI4MkZGAA=="}]}
+[2025-09-15T14:19:49.272Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNjI5MUEzQkZFNzU2QkI4MkZGAA==
+[2025-09-15T14:19:49.851Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:19:50.437Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:19:50.551Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:23:11.896Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:23:12.347Z] ✅ Mensaje guardado en DB con ID 140288
+[2025-09-15T14:23:12.460Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:23:12.568Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:23:12.694Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:23:20.957Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, la entrega tarda entre 1 y 4 días hábiles. ¿En qué puedo asistirte hoy?
+[2025-09-15T14:23:21.736Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSODNCMEUxNEY2N0MzNTVCOEVCAA=="}]}
+[2025-09-15T14:23:21.737Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSODNCMEUxNEY2N0MzNTVCOEVCAA==
+[2025-09-15T14:23:22.194Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:23:22.780Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:23:22.892Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:37:36.788Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:37:37.288Z] ✅ Mensaje guardado en DB con ID 140295
+[2025-09-15T14:37:37.408Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:37:37.521Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:37:37.645Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:37:49.847Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊 
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con un tiempo de entrega de entre 1 a 4 días hábiles. ¿Hay algo en lo que pueda ayudarte hoy?
+[2025-09-15T14:37:50.982Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOTQ2QzcwM0Q4OURBRTdDQTUwAA=="}]}
+[2025-09-15T14:37:50.983Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOTQ2QzcwM0Q4OURBRTdDQTUwAA==
+[2025-09-15T14:37:51.590Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:37:52.361Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:37:52.478Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T14:48:09.724Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T14:48:10.190Z] ✅ Mensaje guardado en DB con ID 140306
+[2025-09-15T14:48:10.308Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T14:48:10.419Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T14:48:10.535Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T14:48:19.415Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con entrega entre 1 a 4 días hábiles. ¿En qué puedo asistirte hoy?
+[2025-09-15T14:48:20.222Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSREUyRkYwRDIzNjEwMzkxREY0AA=="}]}
+[2025-09-15T14:48:20.223Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSREUyRkYwRDIzNjEwMzkxREY0AA==
+[2025-09-15T14:48:20.676Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T14:48:21.253Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T14:48:21.368Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
