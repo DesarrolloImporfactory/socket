@@ -2,10 +2,48 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const {
   obtenerDatosClienteParaAssistant,
-  informacionProductos,
-  informacionProductosVinculado,
-} = require('../utils/datosClienteAssistant'); // Ajustar según organización
-const { logInfo, logError } = require('../utils/logger'); // Helpers de log
+} = require('../utils/datosClienteAssistant');
+const { logInfo, logError } = require('../utils/logger');
+
+/** Helper para esperar */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Esperar hasta que el run termine */
+async function waitForRun(
+  id_thread,
+  run_id,
+  headers,
+  maxAttempts = 15,
+  intervalMs = 1500
+) {
+  let attempts = 0;
+  while (attempts < maxAttempts) {
+    const { data } = await axios.get(
+      `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+      { headers }
+    );
+    if (['completed', 'failed', 'cancelled', 'expired'].includes(data.status)) {
+      return data.status;
+    }
+    attempts++;
+    await sleep(intervalMs);
+  }
+  return 'timeout';
+}
+
+/** Buscar el mensaje del assistant asociado al run */
+async function getAssistantMessage(id_thread, run_id, headers) {
+  const { data } = await axios.get(
+    `https://api.openai.com/v1/threads/${id_thread}/messages?limit=20&order=desc`,
+    { headers }
+  );
+  const msg = (data.data || []).find(
+    (m) => m.role === 'assistant' && m.run_id === run_id
+  );
+  return msg?.content?.[0]?.text?.value?.trim() || '';
+}
 
 async function procesarAsistenteMensaje(body) {
   const {
@@ -84,17 +122,13 @@ async function procesarAsistenteMensaje(body) {
           '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos anteriores a este mensaje:\n\n';
         bloqueInfo += sales.bloque_productos;
 
-        // Actualizar tabla openai_threads con numero_factura y numero_guia
-        const updateSql = `
-          UPDATE openai_threads
-          SET bloque_productos = ?
-          WHERE thread_id = ?
-        `;
-        /* console.log('thread_id: ' + id_thread); */
-        await db.query(updateSql, {
-          replacements: [sales.bloque_productos, id_thread],
-          type: db.QueryTypes.UPDATE,
-        });
+        await db.query(
+          `UPDATE openai_threads SET bloque_productos = ? WHERE thread_id = ?`,
+          {
+            replacements: [sales.bloque_productos, id_thread],
+            type: db.QueryTypes.UPDATE,
+          }
+        );
       }
     }
   }
@@ -112,7 +146,7 @@ async function procesarAsistenteMensaje(body) {
     'OpenAI-Beta': 'assistants=v2',
   };
 
-  // 2. Enviar contexto y mensaje del usuario
+  // 2. Enviar contexto y mensaje
   if (bloqueInfo) {
     await axios.post(
       `https://api.openai.com/v1/threads/${id_thread}/messages`,
@@ -130,53 +164,36 @@ async function procesarAsistenteMensaje(body) {
   // 3. Ejecutar assistant
   const runRes = await axios.post(
     `https://api.openai.com/v1/threads/${id_thread}/runs`,
-    { assistant_id, max_completion_tokens: 200 },
+    { assistant_id, max_completion_tokens: 250 },
     { headers }
   );
-
   const run_id = runRes.data.id;
+
   if (!run_id) {
     return {
-      status: 400,
-      error: 'No se pudo ejecutar el assistant.',
+      status: 200,
+      respuesta: '',
+      tipo_asistente,
+      bloqueInfo,
     };
   }
 
-  // 4. Esperar respuesta con polling
-  let statusRun = 'queued',
-    attempts = 0;
-  while (statusRun !== 'completed' && statusRun !== 'failed' && attempts < 20) {
-    await new Promise((r) => setTimeout(r, 1000));
-    attempts++;
-    const statusRes = await axios.get(
-      `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-      { headers }
-    );
-    statusRun = statusRes.data.status;
+  // 4. Polling ligero
+  const statusRun = await waitForRun(id_thread, run_id, headers, 15, 1500);
+
+  let respuesta = '';
+  if (statusRun === 'completed') {
+    respuesta = await getAssistantMessage(id_thread, run_id, headers);
   }
 
-  if (statusRun === 'failed') {
-    return {
-      status: 400,
-      error: 'Falló la ejecución del assistant.',
-    };
+  // 5. Si no hay respuesta, fallback seguro
+  if (!respuesta) {
+    respuesta = '';
   }
 
-  const messagesRes = await axios.get(
-    `https://api.openai.com/v1/threads/${id_thread}/messages`,
-    { headers }
-  );
-
-  const mensajes = messagesRes.data.data || [];
-  const respuesta = mensajes
-    .reverse()
-    .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
-    ?.text?.value;
-
-  // 5. Guardar remarketing si aplica
+  // 6. Guardar remarketing si aplica
   if (tiempo_remarketing > 0) {
     const tiempoDisparo = new Date(Date.now() + tiempo_remarketing * 3600000);
-
     const existing = await db.query(
       `SELECT tiempo_disparo FROM remarketing_pendientes
        WHERE telefono = ? AND id_configuracion = ? AND DATE(tiempo_disparo) = DATE(?)
@@ -211,16 +228,14 @@ async function procesarAsistenteMensaje(body) {
     }
   }
 
-  console.log('bloqueInfo: ' + bloqueInfo);
+  logInfo(`bloqueInfo: ${bloqueInfo}`);
 
   return {
     status: 200,
-    respuesta: respuesta || 'No se obtuvo respuesta del assistant.',
+    respuesta,
     tipo_asistente,
     bloqueInfo,
   };
 }
 
-module.exports = {
-  procesarAsistenteMensaje,
-};
+module.exports = { procesarAsistenteMensaje };
