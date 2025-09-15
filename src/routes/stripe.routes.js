@@ -32,6 +32,9 @@ router.post('/crearSesionFreeSetup', stripe_planesController.crearSesionFreeSetu
 router.get('/addons', stripe_planesController.obtenerPreciosAddons);
 router.post('/crearSesionPlanPersonalizado', stripe_planesController.crearSesionPlanPersonalizado);
 router.post('/obtenerPlanPersonalizadoUsuario', stripe_planesController.obtenerPlanPersonalizadoUsuario);
+// routes/stripe.routes.js
+router.get('/miPlanPersonalizado', stripe_planesController.miPlanPersonalizado);
+
 
 
 

@@ -1320,3 +1320,99 @@ exports.obtenerPreciosAddons = async (req, res) => {
   }
 };
 
+
+// controllers/stripe.controller.js
+exports.miPlanPersonalizado = async (req, res) => {
+  try {
+    const id_usuario = req.user?.id || req.body?.id_usuario || req.body?.id_users;
+    if (!id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
+
+    // 1) Config per-user (si existe)
+    const [rows] = await db.query(`
+      SELECT id_usuario, id_plan_base, n_conexiones, max_subusuarios
+      FROM planes_personalizados_stripe
+      WHERE id_usuario = ?
+      LIMIT 1
+    `, { replacements: [id_usuario] });
+
+    const per = rows?.[0] || null;
+
+    // 2) Datos del plan base (nombre/priceId/descripcion/precio_local)
+    let basePlan = null;
+    if (per?.id_plan_base) {
+      const p = await Planes_chat_center.findByPk(per.id_plan_base);
+      if (p) {
+        basePlan = {
+          id_plan: p.id_plan,
+          nombre_plan: p.nombre_plan,
+          descripcion_plan: p.descripcion_plan,
+          precio_plan: Number(p.precio_plan || 0),      // precio local como fallback
+          id_product_stripe: p.id_product_stripe || null
+        };
+      }
+    }
+
+    // 3) Precio base desde Stripe (si existe) + intervalo
+    let base_cents = Math.round(Number(basePlan?.precio_plan || 0) * 100);
+    let intervalo = 'month';
+    if (basePlan?.id_product_stripe) {
+      try {
+        const price = await stripe.prices.retrieve(basePlan.id_product_stripe, { expand: ['product'] });
+        base_cents = typeof price?.unit_amount === 'number' ? price.unit_amount : base_cents;
+        intervalo = price?.recurring?.interval || intervalo;
+      } catch (e) {
+        // si falla Stripe, usamos precio local
+      }
+    }
+
+    // 4) Addons (conexión y subusuario)
+    let conn_addon_cents = 0;
+    let sub_addon_cents  = 0;
+    try {
+      const a1 = await stripe.prices.retrieve(ADDON_PRICE_ID);
+      const a2 = await stripe.prices.retrieve(PRICE_ID_ADDON_SUBUSUARIO);
+      conn_addon_cents = Number(a1?.unit_amount || 0);
+      sub_addon_cents  = Number(a2?.unit_amount || 0);
+    } catch (e) {
+      // si falla Stripe, deja en 0 (o podrías leerlos de otro sitio)
+    }
+
+    // 5) Total calculado
+    const nConn = Number(per?.n_conexiones || 0);
+    const nSubs = Number(per?.max_subusuarios || 0);
+    const total_cents = base_cents + nConn * conn_addon_cents + nSubs * sub_addon_cents;
+
+    // 6) ¿Esa card es la actual?
+    let es_actual = false;
+    if (per?.id_plan_base) {
+      const [urow] = await db.query(
+        `SELECT id_plan FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+        { replacements: [id_usuario] }
+      );
+      const id_plan_usuario = urow?.[0]?.id_plan || null;
+      es_actual = Number(id_plan_usuario) === Number(per.id_plan_base);
+    }
+
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        personalizado: per,            // { id_plan_base, n_conexiones, max_subusuarios }
+        base_plan: basePlan,           // { id_plan, nombre_plan, id_product_stripe, ... }
+        stripe: {
+          base_cents,
+          conn_addon_cents,
+          sub_addon_cents,
+          total_cents,
+          intervalo
+        },
+        es_actual                      // true si esta card debe mostrar “Tienes este plan actualmente”
+      }
+    });
+  } catch (e) {
+    console.error('miPlanPersonalizado:', e);
+    return res.status(500).json({ status: 'fail', message: 'Error al obtener tu plan personalizado' });
+  }
+};
+
