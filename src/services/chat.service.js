@@ -359,6 +359,7 @@ class ChatService {
         tipo_mensaje,
         id_configuracion,
         ruta_archivo = null,
+        nombre_encargado
       } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
       const fromToken = dataAdmin.token;
@@ -433,6 +434,7 @@ class ChatService {
         id_cliente,
         uid_whatsapp: to,
         id_wamid_mensaje: wamid,
+        responsable: nombre_encargado,
         texto_mensaje: mensaje,
         celular_recibe: id_recibe,
         informacion_suficiente: 1,

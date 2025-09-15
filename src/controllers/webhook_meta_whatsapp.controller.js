@@ -542,6 +542,42 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           if (respuesta_asistente?.status === 200) {
             const mensajeGPT = respuesta_asistente.respuesta;
 
+            const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
+              mensajeGPT
+            );
+
+            if (pedidoConfirmado) {
+              // Extraer valores usando regex
+              const nombre =
+                mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+              const telefono =
+                mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+              const provincia =
+                mensajeGPT.match(/📍 Provincia:\s*(.+)/)?.[1]?.trim() || '';
+              const ciudad =
+                mensajeGPT.match(/📍 Ciudad:\s*(.+)/)?.[1]?.trim() || '';
+              const direccion =
+                mensajeGPT.match(/🏡 Dirección:\s*(.+)/)?.[1]?.trim() || '';
+              const producto =
+                mensajeGPT.match(/📦 Producto:\s*(.+)/)?.[1]?.trim() || '';
+              const precio =
+                mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
+
+              // Variables listas
+              console.log('📦 Datos extraídos del pedido:');
+              console.log({
+                nombre,
+                telefono,
+                provincia,
+                ciudad,
+                direccion,
+                producto,
+                precio,
+              });
+
+              // Aquí puedes guardar en BD, enviar a un CRM, etc.
+            }
+
             // Buscar URLs de imágenes y videos usando regex
             const urls_imagenes = (
               mensajeGPT.match(
@@ -598,7 +634,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             // Eliminar las líneas con URLs del mensaje
             let solo_texto = mensajeGPT
               .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '')
-              .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '');
+              .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '')
+              .replace(/\[pedido_confirmado\]:\s*true/gi, '');
 
             solo_texto = solo_texto.trim();
 

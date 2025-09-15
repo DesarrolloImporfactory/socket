@@ -211,7 +211,7 @@ async function procesarAsistenteMensaje(body) {
     }
   }
 
-  /* console.log('bloqueInfo: ' + bloqueInfo); */
+  console.log('bloqueInfo: ' + bloqueInfo);
 
   return {
     status: 200,
