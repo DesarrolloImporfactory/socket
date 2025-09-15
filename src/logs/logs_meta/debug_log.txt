@@ -412,3 +412,138 @@ Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con entre
 [2025-09-15T14:48:21.253Z] Iniciando estadoMensajeEspera para cliente ID 410
 [2025-09-15T14:48:21.368Z] No se encontraron mensajes para el cliente 410
 Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T15:49:53.818Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T15:49:54.389Z] ✅ Mensaje guardado en DB con ID 140326
+[2025-09-15T15:49:54.505Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T15:49:54.630Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T15:49:54.765Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T15:50:02.147Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, la entrega tarda entre 1 y 4 días hábiles. ¿En qué puedo ayudarte hoy?
+[2025-09-15T15:50:03.076Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNzlCRDZDQjE0MTY5Mjg1OTg4AA=="}]}
+[2025-09-15T15:50:03.076Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNzlCRDZDQjE0MTY5Mjg1OTg4AA==
+[2025-09-15T15:50:03.546Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T15:50:04.271Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T15:50:04.391Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T15:52:10.433Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T15:52:10.882Z] ✅ Mensaje guardado en DB con ID 140332
+[2025-09-15T15:52:10.998Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T15:52:11.004Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T15:52:11.130Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T15:52:17.159Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, la entrega toma entre 1 y 4 días hábiles. ¿Hay algo específico en lo que pueda ayudarte hoy?
+[2025-09-15T15:52:18.019Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNkU3NDIzMjJBRUZCRkE0OUVBAA=="}]}
+[2025-09-15T15:52:18.021Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNkU3NDIzMjJBRUZCRkE0OUVBAA==
+[2025-09-15T15:52:18.580Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T15:52:19.153Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T15:52:19.268Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T15:55:02.453Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T15:55:03.066Z] ✅ Mensaje guardado en DB con ID 140334
+[2025-09-15T15:55:03.183Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T15:55:03.183Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T15:55:03.303Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T15:55:10.381Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con entrega de entre 1 y 4 días hábiles. ¿Cómo puedo asistirte hoy?
+[2025-09-15T15:55:11.187Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOEM5N0IzNTMxM0EwODQ0MTU0AA=="}]}
+[2025-09-15T15:55:11.188Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOEM5N0IzNTMxM0EwODQ0MTU0AA==
+[2025-09-15T15:55:11.789Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T15:55:12.351Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T15:55:12.471Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T15:56:00.067Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T15:56:02.044Z] ✅ Mensaje guardado en DB con ID 140336
+[2025-09-15T15:56:02.167Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T15:56:02.173Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T15:56:02.289Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T15:56:10.570Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, con entregas en un plazo de 1 a 4 días hábiles. ¿En qué puedo ayudarte hoy?
+[2025-09-15T15:56:11.376Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMjk0NkIxOEY3ODEzNTQ2NzI5AA=="}]}
+[2025-09-15T15:56:11.377Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMjk0NkIxOEY3ODEzNTQ2NzI5AA==
+[2025-09-15T15:56:11.964Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T15:56:12.503Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T15:56:12.621Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T16:01:50.130Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T16:01:50.582Z] ✅ Mensaje guardado en DB con ID 140340
+[2025-09-15T16:01:50.694Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T16:01:50.804Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T16:01:50.916Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T16:01:58.375Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Recuerda que tenemos pago contra entrega y envío gratis a Quito 🏙, la entrega tarda entre 1 y 4 días hábiles. ¿En qué puedo ayudarte hoy?
+[2025-09-15T16:01:59.222Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMUFBNEY4NzY3QkQ0REJEN0U0AA=="}]}
+[2025-09-15T16:01:59.222Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMUFBNEY4NzY3QkQ0REJEN0U0AA==
+[2025-09-15T16:01:59.675Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T16:02:00.294Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T16:02:00.421Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T16:02:40.714Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T16:02:41.289Z] ✅ Mensaje guardado en DB con ID 140342
+[2025-09-15T16:02:41.410Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T16:02:41.412Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T16:02:41.538Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T16:02:48.148Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Quisiera confirmarte que tu pedido tiene envío gratis a Quito 🏙 y el pago es contra entrega. La entrega tarda entre 1 y 4 días hábiles. ¿Hay algo más en lo que pueda asistirte hoy?
+[2025-09-15T16:02:48.914Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMjg1QUVGOEI4MTYwMzlCOTU2AA=="}]}
+[2025-09-15T16:02:48.916Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMjg1QUVGOEI4MTYwMzlCOTU2AA==
+[2025-09-15T16:02:49.517Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T16:02:49.922Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T16:02:50.038Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T16:03:23.857Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T16:03:24.318Z] ✅ Mensaje guardado en DB con ID 140344
+[2025-09-15T16:03:24.433Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T16:03:24.441Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T16:03:24.549Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+Inicio de mensaje
+[2025-09-15T16:03:31.545Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T16:03:32.022Z] ✅ Mensaje guardado en DB con ID 140345
+[2025-09-15T16:03:32.139Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T16:03:32.139Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T16:03:32.258Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+[2025-09-15T16:03:32.556Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Tu pedido de un Carro a control remoto y Creatina monohidratada Optimum Nutrition tiene envío gratis a Quito 🏙, y puedes pagar contra entrega. La entrega tarda entre 1 y 4 días hábiles. Si necesitas algo más, aquí estoy para ayudarte.
+[2025-09-15T16:03:33.357Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOUQwNUE5QzY4Mzg1M0E4RjdCAA=="}]}
+[2025-09-15T16:03:33.359Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSOUQwNUE5QzY4Mzg1M0E4RjdCAA==
+[2025-09-15T16:03:33.959Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T16:03:34.486Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T16:03:34.608Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+[2025-09-15T16:03:38.513Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊
+
+Tu pedido incluye un Carro a control remoto y Creatina monohidratada Optimum Nutrition, con un envío gratis a Quito 🏙. La entrega tarda entre 1 y 4 días hábiles y podrás pagar contra entrega. ¿Hay algo más en lo que te pueda ayudar?
+[2025-09-15T16:03:39.207Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMzI1MEQzNTAwNkJGOTA0RTI1AA=="}]}
+[2025-09-15T16:03:39.208Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSMzI1MEQzNTAwNkJGOTA0RTI1AA==
+[2025-09-15T16:03:39.681Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-15T16:03:40.030Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-15T16:03:40.144Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-09-15T16:04:23.743Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-15T16:04:24.198Z] ✅ Mensaje guardado en DB con ID 140349
+[2025-09-15T16:04:24.326Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-15T16:04:24.438Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-15T16:04:24.560Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF

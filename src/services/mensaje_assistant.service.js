@@ -29,6 +29,7 @@ async function procesarAsistenteMensaje(body) {
       type: db.QueryTypes.SELECT,
     }
   );
+  const openai_thread = openai_threads[0];
 
   // 1. Obtener assistants activos
   const assistants = await db.query(
@@ -78,10 +79,7 @@ async function procesarAsistenteMensaje(body) {
     tiempo_remarketing = sales?.tiempo_remarketing;
 
     if (sales.bloque_productos) {
-      /* console.log(
-        'openai_threads.bloque_productos: ' + openai_threads.bloque_productos
-      ); */
-      if (openai_threads.bloque_productos != sales.bloque_productos) {
+      if (openai_thread.bloque_productos != sales.bloque_productos) {
         bloqueInfo +=
           '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos anteriores a este mensaje:\n\n';
         bloqueInfo += sales.bloque_productos;
