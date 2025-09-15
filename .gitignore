@@ -1,5 +1,4 @@
 node_modules
 .env
-uploads/audios
-uploads/productos
+uploads/*
 logs/*
