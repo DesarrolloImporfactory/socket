@@ -2137,3 +2137,11 @@
 [2025-09-10T17:25:55.612Z] info: Can't find /Account/v.1.0/PrivacySettings?clientId=135333107684344109 on this server! 🧨
 [2025-09-11T20:58:18.700Z] info: id_cliente_chat_center es requerido
 [2025-09-11T20:58:21.098Z] info: Truncated incorrect DOUBLE value: 'debug'
+[2025-09-12T21:38:47.023Z] info: Can't find /api/v1/messenger/profiles/refresh on this server! 🧨
+[2025-09-12T21:39:20.415Z] info: Can't find /api/v1/messenger/profiles/refresh on this server! 🧨
+[2025-09-15T15:34:26.308Z] info: Can't find /api/v1/messenger/profiles/fetch on this server! 🧨
+[2025-09-15T18:37:09.119Z] info: No se encontró configuración para la plataforma
+[2025-09-15T22:06:25.081Z] info: No se encontró configuración para la plataforma
+[2025-09-15T22:19:03.689Z] info: Can't find /api/v1/messenger/conversations/5 on this server! 🧨
+[2025-09-15T22:19:50.437Z] info: Can't find /api/v1/messenger/conversations/5 on this server! 🧨
+[2025-09-15T22:49:47.904Z] info: Can't find /favicon.ico on this server! 🧨

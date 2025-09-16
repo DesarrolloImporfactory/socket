@@ -1,26 +1,8 @@
 const { db } = require('../database/config');
 
-// Nombre “legible” a partir del PSID
 function prettyNameFromPsid(psid = '') {
   const s = String(psid || '');
   return s ? `Facebook • ${s.slice(-6)}` : 'Facebook';
-}
-
-function mapConvRowToSidebar(r) {
-  return {
-    id: r.id, // conversation_id
-    source: 'ms',
-    mensaje_created_at: r.last_message_at,
-    texto_mensaje: r.preview || '',
-    celular_cliente: r.psid, // usamos PSID como “número”
-    mensajes_pendientes: r.unread_count || 0,
-    visto: 0,
-    nombre_cliente: prettyNameFromPsid(r.psid),
-    etiquetas: [],
-    transporte: null,
-    estado_factura: null,
-    novedad_info: null,
-  };
 }
 
 function mapMsgRowToUI(m) {
@@ -52,8 +34,9 @@ exports.listConversations = async (req, res) => {
     const rows = await db.query(
       `
       SELECT c.id, c.id_configuracion, c.page_id, c.psid,
-             c.last_message_at, c.unread_count,
-             c.id_encargado, c.id_departamento, c.customer_name,
+             c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
+             c.unread_count, c.status,
+             c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
              (SELECT mm.text
                 FROM messenger_messages mm
                WHERE mm.conversation_id = c.id
@@ -79,6 +62,30 @@ exports.listConversations = async (req, res) => {
       .json({ ok: false, message: 'Error listando conversaciones' });
   }
 };
+
+function mapConvRowToSidebar(r) {
+  return {
+    id: r.id,
+    source: 'ms',
+    mensaje_created_at: r.last_message_at,
+    texto_mensaje: r.preview || '',
+    celular_cliente: r.psid,
+    mensajes_pendientes: r.unread_count || 0,
+    visto: 0,
+    nombre_cliente: r.customer_name || `Facebook • ${String(r.psid).slice(-6)}`,
+    profile_pic_url: r.profile_pic_url || null,
+    id_encargado: r.id_encargado ?? null,
+    page_id: r.page_id,
+    psid: r.psid,
+    last_incoming_at: r.last_incoming_at,
+    last_outgoing_at: r.last_outgoing_at,
+    status: r.status,
+    etiquetas: [],
+    transporte: null,
+    estado_factura: null,
+    novedad_info: null,
+  };
+}
 
 exports.listMessages = async (req, res) => {
   try {

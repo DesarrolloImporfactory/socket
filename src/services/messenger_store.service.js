@@ -1,4 +1,3 @@
-// services/messenger_store.service.js
 const { db } = require('../database/config');
 
 async function ensureConversation({
@@ -7,7 +6,6 @@ async function ensureConversation({
   psid,
   customer_name = null,
 }) {
-  // ¿ya existe?
   const [row] = await db.query(
     `SELECT id FROM messenger_conversations
      WHERE id_configuracion = ? AND page_id = ? AND psid = ? LIMIT 1`,
@@ -18,7 +16,6 @@ async function ensureConversation({
   );
   if (row) return row.id;
 
-  // crear
   const [ins] = await db.query(
     `INSERT INTO messenger_conversations
       (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at)
@@ -28,7 +25,10 @@ async function ensureConversation({
       type: db.QueryTypes.INSERT,
     }
   );
-  return ins;
+
+  // compatibilidad por si el driver devuelve el id directo o como insertId
+  const conversationId = ins?.insertId ?? ins;
+  return conversationId;
 }
 
 async function saveIncomingMessage({
@@ -68,10 +68,10 @@ async function saveIncomingMessage({
         sticker_id || null,
         meta ? JSON.stringify(meta) : null,
       ],
+      type: db.QueryTypes.INSERT,
     }
   );
 
-  // actualizar counters/fechas conversación
   await db.query(
     `UPDATE messenger_conversations
      SET last_message_at = NOW(),
@@ -81,7 +81,13 @@ async function saveIncomingMessage({
     { replacements: [conversation_id] }
   );
 
-  return { conversation_id, message_id: ins.insertId };
+  const insertedId = ins?.insertId ?? ins;
+  const [row] = await db.query(
+    `SELECT id, created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
+    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+  );
+
+  return { conversation_id, id: row.id, created_at: row.created_at };
 }
 
 async function saveOutgoingMessage({
@@ -93,6 +99,7 @@ async function saveOutgoingMessage({
   mid = null,
   status = 'sent',
   meta = null,
+  id_encargado = null,
 }) {
   const conversation_id = await ensureConversation({
     id_configuracion,
@@ -103,8 +110,8 @@ async function saveOutgoingMessage({
   const [ins] = await db.query(
     `INSERT INTO messenger_messages
       (conversation_id, id_configuracion, page_id, psid, direction, mid, text, attachments,
-       status, meta, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'out', ?, ?, ?, ?, ?, NOW(), NOW())`,
+       status, meta, created_at, updated_at, id_encargado)
+     VALUES (?, ?, ?, ?, 'out', ?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
     {
       replacements: [
         conversation_id,
@@ -116,7 +123,9 @@ async function saveOutgoingMessage({
         attachments ? JSON.stringify(attachments) : null,
         status,
         meta ? JSON.stringify(meta) : null,
+        id_encargado,
       ],
+      type: db.QueryTypes.INSERT,
     }
   );
 
@@ -128,7 +137,13 @@ async function saveOutgoingMessage({
     { replacements: [conversation_id] }
   );
 
-  return { conversation_id, message_id: ins.insertId };
+  const insertedId = ins?.insertId ?? ins;
+  const [row] = await db.query(
+    `SELECT id, created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
+    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+  );
+
+  return { conversation_id, id: row.id, created_at: row.created_at };
 }
 
 // Llega delivery: { watermark, mids[]? }
@@ -154,24 +169,31 @@ async function markDelivered({ page_id, watermark, mids = [] }) {
 }
 
 // Llega read: { watermark }
-async function markRead({ page_id, watermark }) {
+async function markRead({ id_configuracion, page_id, psid, watermark }) {
+  // 1) Marcar como "read" los OUT enviados a ese PSID antes del watermark
   await db.query(
     `UPDATE messenger_messages
-     SET status = CASE
-         WHEN status IN ('delivered','sent') THEN 'read'
-         ELSE status
-       END,
-       read_watermark = ?
-     WHERE page_id = ? AND direction='out' AND created_at <= FROM_UNIXTIME(?/1000)`,
-    { replacements: [watermark, page_id, watermark] }
+       SET status = CASE
+           WHEN status IN ('delivered','sent') THEN 'read'
+           ELSE status
+         END,
+         read_watermark = ?
+     WHERE id_configuracion = ?
+       AND page_id = ?
+       AND psid = ?
+       AND direction = 'out'
+       AND created_at <= FROM_UNIXTIME(?/1000)`,
+    { replacements: [watermark, id_configuracion, page_id, psid, watermark] }
   );
 
-  // reset de no leídos en conversación
+  // 2) Resetear los no leídos SOLO de esa conversación
   await db.query(
     `UPDATE messenger_conversations
-     SET unread_count = 0
-     WHERE page_id = ?`,
-    { replacements: [page_id] }
+        SET unread_count = 0, updated_at = NOW()
+      WHERE id_configuracion = ?
+        AND page_id = ?
+        AND psid = ?`,
+    { replacements: [id_configuracion, page_id, psid] }
   );
 }
 

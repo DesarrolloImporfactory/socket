@@ -9,7 +9,6 @@ async function callSendAPI(body, pageAccessToken) {
       body,
       { params: { access_token: pageAccessToken } }
     );
-    // Suele traer { recipient_id, message_id }
     console.log('[SEND_API][RESPONSE]', data);
     return data;
   } catch (e) {
@@ -21,8 +20,36 @@ async function callSendAPI(body, pageAccessToken) {
   }
 }
 
-exports.sendText = async (psid, text, pageAccessToken) => {
-  const body = { recipient: { id: psid }, message: { text } };
+function buildMessagingFields(opts = {}) {
+  const out = {};
+  // messaging_type:
+  // - 'RESPONSE' si dentro de 24h
+  // - 'MESSAGE_TAG' con 'tag' válido si fuera de 24h
+  if (opts.messaging_type) {
+    out.messaging_type = opts.messaging_type;
+  } else if (opts.tag) {
+    out.messaging_type = 'MESSAGE_TAG';
+  } else {
+    out.messaging_type = 'RESPONSE';
+  }
+
+  if (opts.tag) out.tag = opts.tag; // e.g. HUMAN_AGENT, ACCOUNT_UPDATE
+  if (opts.metadata) {
+    // Graph acepta metadata (string). Asegúrate de mandarla como string corta.
+    out.metadata =
+      typeof opts.metadata === 'string'
+        ? opts.metadata
+        : JSON.stringify(opts.metadata).slice(0, 900); // por si acaso
+  }
+  return out;
+}
+
+exports.sendText = async (psid, text, pageAccessToken, opts = {}) => {
+  const body = {
+    recipient: { id: psid },
+    message: { text },
+    ...buildMessagingFields(opts),
+  };
   return callSendAPI(body, pageAccessToken);
 };
 

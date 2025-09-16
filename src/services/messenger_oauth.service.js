@@ -69,6 +69,7 @@ class MessengerOAuthService {
     const scope = [
       'pages_messaging',
       'pages_show_list',
+      'pages_read_engagement',
     ].join(',');
     return `${base}?client_id=${encodeURIComponent(
       FB_APP_ID
