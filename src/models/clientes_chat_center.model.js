@@ -107,6 +107,12 @@ const ClientesChatCenter = db.define(
       allowNull: true,
       defaultValue: null,
     },
+
+    pedido_confirmado: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+    },
   },
   {
     tableName: 'clientes_chat_center',

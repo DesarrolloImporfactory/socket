@@ -541,6 +541,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           if (respuesta_asistente?.status === 200) {
             const mensajeGPT = respuesta_asistente.respuesta;
+            const tipoInfo = respuesta_asistente.tipoInfo;
 
             const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
               mensajeGPT
@@ -575,7 +576,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 precio,
               });
 
-              // Aquí puedes guardar en BD, enviar a un CRM, etc.
+              await ClientesChatCenter.update(
+                { pedido_confirmado: 1 },
+                { where: { id: id_cliente } }
+              );
+
+              if (tipoInfo == "datos_pedido"){
+                console.log("entro en condicion datos pedidos")
+              }
             }
 
             // Buscar URLs de imágenes y videos usando regex

@@ -216,6 +216,7 @@ async function procesarAsistenteMensaje(body) {
     respuesta: respuesta || '',
     tipo_asistente,
     bloqueInfo,
+    tipoInfo
   };
 }
 
