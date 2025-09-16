@@ -209,7 +209,6 @@ class MessengerService {
     let incomingSave = null;
     const createdAtNow = new Date().toISOString();
     try {
-      s;
       incomingSave = await Store.saveIncomingMessage({
         id_configuracion,
         page_id: pageId,
