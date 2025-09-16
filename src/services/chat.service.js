@@ -79,6 +79,16 @@ class ChatService {
         }
       }
 
+      if (filtros.selectedPedidos_confirmados) {
+        if (filtros.selectedPedidos_confirmados.value === '1') {
+          whereClause += ` AND pedido_confirmado = 1`;
+        } else if (filtros.selectedPedidos_confirmados.value === '0') {
+          whereClause += ` AND pedido_confirmado = 0`;
+        }
+      } else {
+        console.log('filtros.selectedPedidos_confirmados es null o undefined');
+      }
+
       if (filtros.selectedTab) {
         if (filtros.selectedTab === 'abierto') {
           whereClause += ` AND chat_cerrado = 0`;
@@ -359,7 +369,7 @@ class ChatService {
         tipo_mensaje,
         id_configuracion,
         ruta_archivo = null,
-        nombre_encargado
+        nombre_encargado,
       } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
       const fromToken = dataAdmin.token;

@@ -581,8 +581,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 { where: { id: id_cliente } }
               );
 
-              if (tipoInfo == "datos_pedido"){
-                console.log("entro en condicion datos pedidos")
+              if (tipoInfo == 'datos_pedido') {
+                /* console.log('entro en condicion datos pedidos'); */
               }
             }
 
@@ -615,28 +615,32 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
             // Enviar imágenes
             for (const url_img of urls_imagenes) {
-              await enviarMedioWhatsapp({
-                tipo: 'image',
-                url_archivo: url_img,
-                phone_whatsapp_to: phone_whatsapp_from,
-                business_phone_id,
-                accessToken,
-                id_configuracion,
-                responsable: respuesta_asistente.tipo_asistente,
-              });
+              if (url_img) {
+                await enviarMedioWhatsapp({
+                  tipo: 'image',
+                  url_archivo: url_img,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                });
+              }
             }
 
             // Enviar videos
             for (const url_video of urls_videos) {
-              await enviarMedioWhatsapp({
-                tipo: 'video',
-                url_archivo: url_video,
-                phone_whatsapp_to: phone_whatsapp_from,
-                business_phone_id,
-                accessToken,
-                id_configuracion,
-                responsable: respuesta_asistente.tipo_asistente,
-              });
+              if (url_video) {
+                await enviarMedioWhatsapp({
+                  tipo: 'video',
+                  url_archivo: url_video,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                });
+              }
             }
 
             // Eliminar las líneas con URLs del mensaje
