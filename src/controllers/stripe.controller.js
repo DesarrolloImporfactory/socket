@@ -11,8 +11,9 @@ const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr'; */
 const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
 const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
 
-const ADDON_PRICE_ID_PERS = 'price_1S2tuARwAlJ5h5wg4Tn310E6';
-const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S2tuuRwAlJ5h5wgorfec2Eg';
+const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
+const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
+
 
 
 // CORREGIDO: sin "active" en list() ni en create()
