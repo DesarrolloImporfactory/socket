@@ -6,6 +6,10 @@ function prettyNameFromPsid(psid = '') {
 }
 
 function mapMsgRowToUI(m) {
+  const out = m.direction === 'out';
+  const agentId = m.direction || null;
+  const agentName = m.responsable || null;
+
   return {
     id: m.id,
     rol_mensaje: m.direction === 'out' ? 1 : 0,
@@ -15,7 +19,8 @@ function mapMsgRowToUI(m) {
     mid_mensaje: m.mid || null,
     visto: m.status === 'read' ? 1 : 0,
     created_at: m.created_at,
-    responsable: m.direction === 'out' ? 'Página' : '',
+    agent_id: out ? agentId : null,
+    responsable: out ? agentName || 'Página' : '',
   };
 }
 
