@@ -171,14 +171,14 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
 
   await Openai_assistants.update(
     {
-      productos:null
+      productos: null,
     },
     {
-      where:{
+      where: {
         id_configuracion: id_configuracion,
-      }
+      },
     }
-  )
+  );
 
   res.status(200).json({
     status: 'success',
@@ -188,7 +188,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
 });
 
 exports.newLogin = async (req, res) => {
-  const { token, tienda } = req.body;
+  const { token, tienda, tipo } = req.body;
 
   if (!token || !tienda) {
     return res.status(400).json({ message: 'Token y tienda requeridos' });
@@ -200,38 +200,39 @@ exports.newLogin = async (req, res) => {
     const idPlataformaFromToken = decoded?.data?.id_plataforma;
 
     /* id_call_center */
+    if (tipo == 'call_center') {
+      const [call_centers] = await db.query(
+        `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
+        {
+          replacements: [idPlataformaFromToken],
+          type: db.QueryTypes.SELECT,
+        }
+      );
 
-    const [call_centers] = await db.query(
-      `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
-      {
-        replacements: [idPlataformaFromToken],
-        type: db.QueryTypes.SELECT,
+      if (!call_centers || !call_centers.id_call_center) {
+        return res
+          .status(403)
+          .json({ message: 'La plataforma no es call center' });
       }
-    );
 
-    if (!call_centers || !call_centers.id_call_center) {
-      return res
-        .status(403)
-        .json({ message: 'La plataforma no es call center' });
-    }
+      /* validar si la tienda pertenece al call center */
 
-    /* validar si la tienda pertenece al call center */
+      const [plataformas] = await db.query(
+        `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
+        {
+          replacements: [tienda],
+          type: db.QueryTypes.SELECT,
+        }
+      );
 
-    const [plataformas] = await db.query(
-      `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
-      {
-        replacements: [tienda],
-        type: db.QueryTypes.SELECT,
+      if (
+        !plataformas ||
+        plataformas.id_call_center !== call_centers.id_call_center
+      ) {
+        return res.status(403).json({
+          message: 'El call center no tiene permiso de acceder a esta tienda',
+        });
       }
-    );
-
-    if (
-      !plataformas ||
-      plataformas.id_call_center !== call_centers.id_call_center
-    ) {
-      return res.status(403).json({
-        message: 'El call center no tiene permiso de acceder a esta tienda',
-      });
     }
 
     /* usuario */
@@ -273,7 +274,7 @@ exports.newLogin = async (req, res) => {
       token: sessionToken,
       user: usuarioSinPassword,
       id_plataforma: tienda,
-      id_configuracion: configuracion.id
+      id_configuracion: configuracion.id,
     });
   } catch (err) {
     return res

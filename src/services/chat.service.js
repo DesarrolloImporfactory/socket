@@ -20,6 +20,34 @@ const Productos = require('../models/productos.model');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
+
+async function validarNumeroWhatsApp(numero, phoneNumberId, token) {
+  const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/contacts`;
+
+  const body = {
+    blocking: 'wait',
+    contacts: [numero],
+    force_check: true,
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+
+  try {
+    const response = await axios.post(url, body, { headers });
+
+    const contacto = response.data.contacts?.[0];
+    return contacto?.status === 'valid';
+  } catch (error) {
+    console.error(
+      'Error al validar el número en WhatsApp:',
+      error.response?.data || error.message
+    );
+    return false; // En caso de error asumimos que el número no es válido
+  }
+}
 class ChatService {
   async findChats(
     id_configuracion,
@@ -373,6 +401,19 @@ class ChatService {
       } = data;
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
       const fromToken = dataAdmin.token;
+
+      const numeroValido = await validarNumeroWhatsApp(
+        to,
+        fromTelefono,
+        fromToken
+      );
+
+      if (!numeroValido) {
+        return {
+          error: true,
+          message: `El número ${to} no está registrado en WhatsApp.`,
+        };
+      }
 
       console.log(tipo_mensaje);
       let responseData = {};
