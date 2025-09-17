@@ -112,37 +112,102 @@ if (event.type === 'invoice.payment_succeeded') {
         return res.status(200).json({ received: true });
       }
       
-      // ────────────────────────────────────────────────────────────
-    // C) Plan PERSONALIZADO (NUEVO – guarda en tabla per-user)
-    // ────────────────────────────────────────────────────────────
-    if (metaInv?.tipo === 'personalizado') {
-      const customerId      = invoice.customer;
-      const id_usuario      = Number(metaInv.id_usuario);
-      const id_plan_base    = Number(metaInv.id_plan || 5);
-      const n_conexiones    = Number(metaInv.n_conexiones || 0);
-      const max_subusuarios = Number(metaInv.max_subusuarios || metaInv.n_subusuarios || 0);
+     // ────────────────────────────────────────────────────────────
+// C) Plan PERSONALIZADO — guardar SOLO cuando hubo cobro real (> 0)
+// ────────────────────────────────────────────────────────────
+if (metaInv?.tipo === 'personalizado' || invoice.subscription) {
+  const customerId     = invoice.customer;
+  const subscriptionId = invoice.subscription || null;
+  const amountPaid     = Number(invoice.amount_paid || 0);
 
-      await db.query(`
-        INSERT INTO planes_personalizados_stripe
-          (id_usuario, id_plan_base, n_conexiones, max_subusuarios)
-        VALUES (?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          id_plan_base = VALUES(id_plan_base),
-          n_conexiones = VALUES(n_conexiones),
-          max_subusuarios = VALUES(max_subusuarios),
-          updated_at = CURRENT_TIMESTAMP()
-      `, { replacements: [id_usuario, id_plan_base, n_conexiones, max_subusuarios] });
+  // 1) Partimos del metadata de la factura (tu metaInv actual)
+  let meta = { ...(metaInv || {}) };
+  let subStatus = 'unknown';
+  let current_period_end = null;
 
-      if (customerId && id_usuario) {
-        await db.query(`
-          UPDATE transacciones_stripe_chat
-          SET id_usuario = COALESCE(id_usuario, ?), fecha = NOW()
-          WHERE customer_id = ?
-        `, { replacements: [id_usuario, customerId] });
+  // 2) Completar con metadata + estado desde la SUSCRIPCIÓN (ahí fue donde enviaste subscription_data.metadata)
+  if (subscriptionId) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(subscriptionId);
+      subStatus = sub?.status || subStatus;
+      current_period_end = sub?.current_period_end || null;
+      if (sub?.metadata) {
+        meta = { ...meta, ...sub.metadata }; // merge factura + suscripción
       }
+    } catch (e) {
+      console.warn('[WH][personalizado] No se pudo leer la suscripción:', e?.raw?.message || e.message);
+    }
+  }
+
+  // 3) Solo procesa si realmente es "personalizado"
+  if (meta?.tipo === 'personalizado') {
+    const id_usuario      = Number(meta.id_usuario);
+    const id_plan_base    = Number(meta.id_plan || 5);
+    const n_conexiones    = Number(meta.n_conexiones || 0);
+    const max_subusuarios = Number(meta.max_subusuarios ?? meta.n_subusuarios ?? 0);
+
+    // 3.1) Si el invoice fue de $0 → NO persistir configuración (el usuario no pagó)
+    if (amountPaid <= 0) {
+      await db.query(`
+        UPDATE transacciones_stripe_chat
+        SET id_suscripcion = COALESCE(?, id_suscripcion),
+            id_usuario = COALESCE(id_usuario, ?),
+            estado_suscripcion = ?,
+            fecha = NOW()
+        WHERE customer_id = ?
+      `, { replacements: [subscriptionId || null, id_usuario || null, subStatus, customerId] });
 
       return res.status(200).json({ received: true });
     }
+
+    // 3.2) Pago REAL → guardar/actualizar configuración personalizada
+    await db.query(`
+      INSERT INTO planes_personalizados_stripe
+        (id_usuario, id_plan_base, n_conexiones, max_subusuarios)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        id_plan_base = VALUES(id_plan_base),
+        n_conexiones = VALUES(n_conexiones),
+        max_subusuarios = VALUES(max_subusuarios),
+        updated_at = CURRENT_TIMESTAMP()
+    `, { replacements: [id_usuario, id_plan_base, n_conexiones, max_subusuarios] });
+
+    // 3.3) Activar el plan base en el usuario, alineando fechas al ciclo de Stripe
+    try {
+      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+      const plan    = await Planes_chat_center.findByPk(id_plan_base);
+      if (usuario && plan) {
+        const fechaInicio = new Date();
+        const fechaRenov  = current_period_end
+          ? new Date(current_period_end * 1000)
+          : new Date(fechaInicio.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+        await usuario.update({
+          id_plan: plan.id_plan,
+          fecha_inicio: fechaInicio,
+          fecha_renovacion: fechaRenov,
+          estado: 'activo',
+          id_product_stripe: plan.id_product_stripe
+        });
+      }
+    } catch (e) {
+      console.warn('[WH][personalizado] No se pudo activar el plan del usuario:', e?.message);
+    }
+
+    // 3.4) Persistencia mínima en transacciones
+    await db.query(`
+      UPDATE transacciones_stripe_chat
+      SET id_suscripcion = COALESCE(?, id_suscripcion),
+          id_usuario = COALESCE(id_usuario, ?),
+          estado_suscripcion = ?,
+          fecha = NOW()
+      WHERE customer_id = ?
+    `, { replacements: [subscriptionId || null, id_usuario || null, subStatus, customerId] });
+
+    // ✅ Cortar aquí, no sigas a la rama genérica
+    return res.status(200).json({ received: true });
+  }
+}
 
 
       /* ────────────────────────────────────────────────────────────

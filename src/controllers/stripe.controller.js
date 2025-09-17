@@ -11,8 +11,8 @@ const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr'; */
 const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
 const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
 
-const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
-const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
+const ADDON_PRICE_ID_PERS = 'price_1S2tuARwAlJ5h5wg4Tn310E6';
+const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S2tuuRwAlJ5h5wgorfec2Eg';
 
 
 // CORREGIDO: sin "active" en list() ni en create()
@@ -1157,6 +1157,7 @@ exports.crearSesionFreeSetup = async (req, res) => {
 
 // ========== NUEVO: Crear sesión de Checkout para plan personalizado ==========
 // ========== NUEVO: Crear sesión de Checkout para plan personalizado ==========
+// controllers/stripe.controller.js
 exports.crearSesionPlanPersonalizado = async (req, res) => {
   try {
     const {
@@ -1170,7 +1171,6 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
 
     const userId = id_usuario || id_users || req.user?.id;
 
-    // ───────────────────────── Validaciones básicas
     if (!userId) {
       return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
     }
@@ -1178,29 +1178,18 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
       return res.status(400).json({ status: 'fail', message: 'Faltan success_url y cancel_url' });
     }
 
-    // Fuerza a enteros seguros
     const nConn = Number.isFinite(+n_conexiones) ? Math.max(0, Math.min(10, Math.floor(+n_conexiones))) : 0;
     const nSubs = Number.isFinite(+max_subusuarios) ? Math.max(0, Math.min(10, Math.floor(+max_subusuarios))) : 0;
 
-    // Límites INDEPENDIENTES
-    if (nConn > 10) {
-      return res.status(400).json({ status: 'fail', message: 'Conexiones: máximo 10' });
-    }
-    if (nSubs > 10) {
-      return res.status(400).json({ status: 'fail', message: 'Subusuarios: máximo 10' });
-    }
-
-    // Debe elegir al menos uno (si quieres permitir 0/0, elimina este bloque)
     if (nConn === 0 && nSubs === 0) {
       return res.status(400).json({ status: 'fail', message: 'Selecciona al menos 1 conexión o 1 subusuario' });
     }
 
-    // ───────────────────────── Price del plan base (id_plan = 5) desde tu DB
+    // Plan base personalizado (id 5) desde tu BD
     const planBase = await Planes_chat_center.findOne({
       where: { id_plan: 5 },
       attributes: ['id_plan', 'id_product_stripe', 'nombre_plan'],
     });
-
     if (!planBase?.id_product_stripe) {
       return res.status(404).json({
         status: 'fail',
@@ -1208,14 +1197,11 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
       });
     }
 
-    // ───────────────────────── Construir line_items (base + addons)
-    const line_items = [
-      { price: planBase.id_product_stripe, quantity: 1 },
-    ];
+    // Items de la suscripción (base + addons)
+    const line_items = [{ price: planBase.id_product_stripe, quantity: 1 }];
     if (nConn > 0) line_items.push({ price: ADDON_PRICE_ID_PERS, quantity: nConn });
     if (nSubs > 0) line_items.push({ price: PRICE_ID_ADDON_SUBUSUARIO_PERS, quantity: nSubs });
 
-    // ───────────────────────── Crear sesión de Checkout (suscripción)
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
@@ -1232,7 +1218,6 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
           max_subusuarios: String(nSubs),
         },
       },
-      // metadata a nivel de sesión (por si lees checkout.session.completed)
       metadata: {
         tipo: 'personalizado',
         id_usuario: String(userId),
@@ -1240,15 +1225,7 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
       },
     });
 
-    // (Opcional) Pre-graba la intención del usuario en tu tabla per-user
-    await PlanesPersonalizadosStripe.upsert({
-      id_usuario: userId,
-      id_plan_base: 5,
-      n_conexiones: nConn,
-      max_conexiones: nConn, 
-      max_subusuarios: nSubs,
-    });
-
+    // 👇 IMPORTANTE: aquí NO escribimos en planes_personalizados_stripe
     return res.status(200).json({ status: 'success', url: session.url });
   } catch (error) {
     console.error('crearSesionPlanPersonalizado:', error);
@@ -1258,6 +1235,7 @@ exports.crearSesionPlanPersonalizado = async (req, res) => {
     });
   }
 };
+
 
 
 // ========== OPCIONAL: obtener configuración personalizada actual del usuario ==========
