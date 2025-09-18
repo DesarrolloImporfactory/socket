@@ -6,21 +6,88 @@ function prettyNameFromPsid(psid = '') {
 }
 
 function mapMsgRowToUI(m) {
-  const out = m.direction === 'out';
-  const agentId = m.direction || null;
-  const agentName = m.responsable || null;
+  // 1) Normaliza attachments (puede venir string/obj/array)
+  let a0 = null;
+  if (m.attachments) {
+    try {
+      const atts =
+        typeof m.attachments === 'string'
+          ? JSON.parse(m.attachments)
+          : m.attachments;
+      a0 = Array.isArray(atts) ? atts[0] : atts;
+    } catch (_) {
+      // si no se puede parsear, lo tratamos como documento genérico abajo
+      a0 = null;
+    }
+  }
+
+  // 2) Deducir tipo y ruta_archivo
+  let tipo_mensaje = 'text';
+  let ruta_archivo = null;
+
+  if (a0) {
+    const mime = String(a0.mimeType || '').toLowerCase();
+    const declared = String(a0.type || a0.kind || '').toLowerCase();
+    const url = a0.url || a0.ruta || '';
+    const name = a0.name || a0.nombre || url.split('/').pop() || '';
+    const size = Number(a0.size || 0);
+
+    // prioridad: tipo declarado -> mime -> extensión
+    let tipo = declared;
+    if (!tipo) {
+      if (mime.startsWith('image/')) tipo = 'image';
+      else if (mime.startsWith('video/')) tipo = 'video';
+      else if (mime.startsWith('audio/')) tipo = 'audio';
+      else tipo = 'document';
+    }
+    if (!declared && !mime && url) {
+      const ext = (url.split('.').pop() || '').toLowerCase();
+      if (
+        ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'svg'].includes(
+          ext
+        )
+      )
+        tipo = 'image';
+      else if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext))
+        tipo = 'video';
+      else if (['mp3', 'aac', 'wav', 'm4a', 'ogg', 'oga'].includes(ext))
+        tipo = 'audio';
+      else tipo = 'document';
+    }
+
+    tipo_mensaje = tipo;
+
+    // UI:
+    // - image/video/audio => string (URL directa)
+    // - document => JSON.stringify({ ruta, nombre, size, mimeType })
+    if (tipo === 'document') {
+      ruta_archivo = JSON.stringify({
+        ruta: url,
+        nombre: name,
+        size,
+        mimeType: mime,
+      });
+    } else {
+      ruta_archivo = url;
+    }
+  }
+
+  // 3) Responsable / agente
+  const isOut = m.direction === 'out';
+  const agentId = m.id_encargado ?? null;
+  const responsable = isOut ? m.responsable || 'Página' : '';
 
   return {
     id: m.id,
-    rol_mensaje: m.direction === 'out' ? 1 : 0,
+    rol_mensaje: isOut ? 1 : 0,
     texto_mensaje: m.text || '',
-    tipo_mensaje: m.attachments ? 'attachment' : 'text',
-    ruta_archivo: m.attachments ? JSON.stringify(m.attachments) : null,
+    tipo_mensaje,
+    ruta_archivo,
     mid_mensaje: m.mid || null,
     visto: m.status === 'read' ? 1 : 0,
     created_at: m.created_at,
-    agent_id: out ? agentId : null,
-    responsable: out ? agentName || 'Página' : '',
+    agent_id: isOut ? agentId : null,
+    responsable,
   };
 }
 
@@ -96,6 +163,7 @@ exports.listMessages = async (req, res) => {
   try {
     const conversation_id = Number(req.params.id);
     const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const before_id = req.query.before_id ? Number(req.query.before_id) : null;
 
     if (!conversation_id) {
       return res
@@ -103,23 +171,64 @@ exports.listMessages = async (req, res) => {
         .json({ ok: false, message: 'conversation_id requerido' });
     }
 
-    const rows = await db.query(
-      `
-        SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.psid,
-             m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
-             m.id_encargado,
-             su.usuario AS responsable
-        FROM messenger_messages m
-        LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
-       WHERE m.conversation_id = ?
-       ORDER BY m.created_at ASC
-       LIMIT ?
-      `,
-      { replacements: [conversation_id, limit], type: db.QueryTypes.SELECT }
-    );
+    let rows;
+    if (before_id) {
+      // Busca el timestamp del anchor
+      const [anchor] = await db.query(
+        `SELECT created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
+        { replacements: [before_id], type: db.QueryTypes.SELECT }
+      );
+      const anchorTs = anchor?.created_at;
 
-    const items = rows.map(mapMsgRowToUI);
-    res.json({ ok: true, items, limit });
+      if (!anchorTs) {
+        return res.json({ ok: true, items: [], limit, next_before_id: null });
+      }
+
+      // Trae más antiguos que el anchor (orden DESC para eficiencia), luego invertimos
+      rows = await db.query(
+        `
+         SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.psid,
+                m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
+                m.id_encargado,
+                su.usuario AS responsable
+           FROM messenger_messages m
+         LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
+              WHERE m.conversation_id = ?
+                AND (
+                    m.created_at < ?
+                  OR (m.created_at = ? AND m.id < ?)
+                )
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT ?
+          `,
+        {
+          replacements: [conversation_id, anchorTs, anchorTs, before_id, limit],
+          type: db.QueryTypes.SELECT,
+        }
+      );
+    } else {
+      // Primer “page”: los más recientes
+      rows = await db.query(
+        `
+         SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.psid,
+                m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
+                m.id_encargado,
+                su.usuario AS responsable
+           FROM messenger_messages m
+         LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
+              WHERE m.conversation_id = ?
+         ORDER BY m.created_at DESC, m.id DESC
+        LIMIT ?
+       `,
+        { replacements: [conversation_id, limit], type: db.QueryTypes.SELECT }
+      );
+    }
+
+    // 👇 Invertimos a ASC para la UI y calculamos el cursor
+    const asc = rows.slice().reverse();
+    const items = asc.map(mapMsgRowToUI);
+    const next_before_id = items.length ? items[0].id : null; // el más antiguo del bloque
+    res.json({ ok: true, items, limit, next_before_id });
   } catch (e) {
     console.error('[MS listMessages]', e);
     res.status(500).json({ ok: false, message: 'Error listando mensajes' });
