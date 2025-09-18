@@ -87,6 +87,7 @@ async function procesarAsistenteMensaje(body) {
           '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
         bloqueInfo += sales.bloque_productos;
         }
+        
 
         // Actualizar tabla openai_threads con numero_factura y numero_guia
         const updateSql = `
