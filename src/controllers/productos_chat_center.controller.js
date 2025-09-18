@@ -66,7 +66,7 @@ const dominio = 'https://chat.imporfactory.app';
 
 // ========== AGREGAR ==========
 exports.agregarProducto = catchAsync(async (req, res, next) => {
-  const { id_configuracion, nombre, descripcion, tipo, precio, id_categoria } =
+  const { id_configuracion, nombre, descripcion, tipo, precio, duracion, id_categoria } =
     req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -94,6 +94,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     descripcion,
     tipo,
     precio,
+    duracion,
     id_categoria,
     imagen_url,
     video_url,
@@ -104,7 +105,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
 // ========== ACTUALIZAR ==========
 exports.actualizarProducto = catchAsync(async (req, res, next) => {
-  const { id_producto, nombre, descripcion, tipo, precio, id_categoria } =
+  const { id_producto, nombre, descripcion, tipo, precio, duracion, id_categoria } =
     req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -160,6 +161,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
+  if (typeof precio !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
   producto.fecha_actualizacion = new Date();
 

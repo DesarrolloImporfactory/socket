@@ -31,7 +31,7 @@ async function procesarAsistenteMensaje(body) {
 
   // 1. Obtener assistants activos
   const assistants = await db.query(
-    `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, bloque_productos 
+    `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, bloque_productos, ofrecer 
      FROM openai_assistants 
      WHERE id_configuracion = ? AND activo = 1`,
     {
@@ -78,9 +78,15 @@ async function procesarAsistenteMensaje(body) {
 
     if (sales.bloque_productos) {
       if (openai_thread.bloque_productos != sales.bloque_productos) {
+        if (sales.ofrecer == "productos"){
         bloqueInfo +=
-          '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos anteriores a este mensaje:\n\n';
+          '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
         bloqueInfo += sales.bloque_productos;
+        } else if (sales.ofrecer == "servicios"){
+          bloqueInfo +=
+          '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
+        bloqueInfo += sales.bloque_productos;
+        }
 
         // Actualizar tabla openai_threads con numero_factura y numero_guia
         const updateSql = `

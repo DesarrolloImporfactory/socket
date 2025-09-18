@@ -416,6 +416,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     productos,
     tiempo_remarketing,
     tomar_productos,
+    tipo_venta,
   } = req.body;
 
   try {
@@ -484,15 +485,27 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
         });
 
         if (infoProducto) {
-          bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
-          bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
-          bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
-          /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
-          bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
-          bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
-          bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
-          bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
-          bloqueProductos += `\n`;
+          if (tipo_venta == 'servicios') {
+            bloqueProductos += `🛠️ Servicio: ${infoProducto.nombre_producto}\n`;
+            bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+            bloqueProductos += `💰 Precio: ${infoProducto.precio_producto}\n`;
+            bloqueProductos += `[servicio_imagen_url]: ${infoProducto.image_path}\n\n`;
+            bloqueProductos += `[servicio_video_url]: ${infoProducto.video_path}\n\n`;
+            bloqueProductos += `Duración: ${infoProducto.duracion} horas\n`;
+            bloqueProductos += `Tipo: ${infoProducto.tipo}\n`;
+            bloqueProductos += `Categoría: ${infoProducto.nombre_categoria}\n`;
+            bloqueProductos += `\n`;
+          } else if (tipo_venta == 'productos') {
+            bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
+            bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+            bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
+            /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
+            bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+            bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+            bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
+            bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
+            bloqueProductos += `\n`;
+          }
         }
       }
     }
@@ -502,7 +515,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, ofrecer = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
         , tomar_productos = ? 
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
@@ -510,6 +523,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             nombre_bot,
             assistant_id,
             activo,
+            tipo_venta,
             productosJSON,
             bloqueProductos,
             tiempo_remarketing,
@@ -522,7 +536,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, productos, bloque_productos = ?, tiempo_remarketing, tomar_productos) 
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, ofrecer = ?, productos, bloque_productos = ?, tiempo_remarketing, tomar_productos) 
          VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
@@ -530,6 +544,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             nombre_bot,
             assistant_id,
             activo,
+            tipo_venta,
             productosJSON,
             bloqueProductos,
             tiempo_remarketing,

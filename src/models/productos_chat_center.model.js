@@ -29,6 +29,10 @@ const ProductosChatCenter = db.define(
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
     },
+    duracion: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
     imagen_url: {
       type: DataTypes.STRING(512),
       allowNull: true,
