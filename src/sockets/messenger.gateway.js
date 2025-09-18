@@ -2,21 +2,22 @@ const fb = require('../utils/facebookGraph');
 
 module.exports = function attachMessengerGateway(io, services) {
   io.on('connection', (socket) => {
-    // 1) Rooms
+    // Rooms
     socket.on('MS_JOIN_CONV', ({ conversation_id, id_configuracion }) => {
       socket.join(`ms:conv:${conversation_id}`);
       socket.join(`ms:cfg:${id_configuracion}`);
     });
 
-    // 2) Enviar mensaje (agente -> usuario)
+    // Enviar mensaje (agente -> usuario)
     socket.on(
       'MS_SEND',
       async ({
         conversation_id,
-        text,
+        text, // opcional
+        attachment, // <-- { kind: "image"|"video"|"document", url, name, mimeType, size }
         messaging_type,
         tag,
-        metadata, // opcional para Graph
+        metadata,
         agent_id,
         agent_name,
         client_tmp_id,
@@ -47,59 +48,122 @@ module.exports = function attachMessengerGateway(io, services) {
           // Normaliza campos Graph
           let opts = { messaging_type, tag, metadata };
           if (olderThan24h) {
-            // Fuera de 24h: DEBE ser MESSAGE_TAG con tag válido
             if (!tag) {
               socket.emit('MS_SEND_ERROR', {
                 conversation_id,
                 error:
-                  'Fuera de la ventana de 24h: se requiere Message Tag (p.ej. HUMAN_AGENT / ACCOUNT_UPDATE).',
+                  'Fuera de 24h: se requiere Message Tag (p.ej. HUMAN_AGENT).',
+                client_tmp_id,
               });
               return;
             }
             opts.messaging_type = 'MESSAGE_TAG';
           } else {
-            // Dentro de 24h: RESPONSE por defecto si no vino
             if (!opts.messaging_type) opts.messaging_type = 'RESPONSE';
           }
 
-          // --- Enviar a Graph ---
-          const res = await fb.sendText(conv.psid, text, pageAccessToken, opts);
+          // --- Validación: debe venir texto o attachment ---
+          // --- Validación: debe venir texto o attachment ---
+          const hasText = !!(text && String(text).trim());
+          const hasAttachment = !!(attachment && attachment.url);
+          if (!hasText && !hasAttachment) {
+            socket.emit('MS_SEND_ERROR', {
+              conversation_id,
+              error: { error: { message: 'El mensaje no puede estar vacío' } },
+              client_tmp_id,
+            });
+            return;
+          }
 
-          // --- Persistir (incluye encargado) ---
+          // --- Enviar a Graph ---
+          let fbRes;
+          let messagePreview = hasText ? text.trim() : '';
+
+          if (hasAttachment) {
+            // mapear kind -> type de Messenger
+            const type =
+              attachment.kind === 'image'
+                ? 'image'
+                : attachment.kind === 'video'
+                ? 'video'
+                : 'file'; // "document" => "file"
+
+            fbRes = await fb.sendAttachment(
+              conv.psid,
+              { type, url: attachment.url },
+              pageAccessToken,
+              opts
+            );
+
+            if (!messagePreview) {
+              messagePreview =
+                attachment.kind === 'image'
+                  ? '📷 Imagen'
+                  : attachment.kind === 'video'
+                  ? '🎬 Video'
+                  : '📎 Archivo';
+            }
+          } else {
+            fbRes = await fb.sendText(
+              conv.psid,
+              text.trim(),
+              pageAccessToken,
+              opts
+            );
+          }
+
+          const mid = fbRes?.message_id || fbRes?.messages?.[0]?.id || null;
+
+          // --- Persistir (OJO: aquí attachments es un ARRAY JS; el Store lo serializa) ---
           const saved = await services.Store.saveOutgoingMessage({
             id_configuracion: conv.id_configuracion,
             page_id: conv.page_id,
             psid: conv.psid,
-            text,
-            mid: res?.message_id || null,
+            text: hasText ? text.trim() : null,
+            mid,
             status: 'sent',
+            attachments: hasAttachment
+              ? [
+                  {
+                    type: attachment.kind, // image | video | document
+                    url: attachment.url,
+                    name: attachment.name,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    storage: 's3',
+                  },
+                ]
+              : null,
             meta: {
-              response: res,
+              response: fbRes,
               source: 'socket',
               agent_id,
               agent_name,
               opts,
               client_tmp_id,
             },
-            id_encargado: agent_id,
+            id_encargado: agent_id || null,
           });
 
-          // --- Touch conversación ---
-          await services.Store.touchConversationOnOutgoing({
-            id_configuracion: conv.id_configuracion,
-            page_id: conv.page_id,
-            psid: conv.psid,
-            now: new Date(),
-          });
-
-          // --- Emit tiempo real ---
+          // --- Emitir a los clientes para reemplazar el tmp ---
           io.to(`ms:conv:${conversation_id}`).emit('MS_MESSAGE', {
             conversation_id,
             message: {
               id: saved.id,
               direction: 'out',
-              text,
-              mid: res?.message_id || null,
+              text: hasText ? text.trim() : '',
+              attachments: hasAttachment
+                ? [
+                    {
+                      type: attachment.kind,
+                      url: attachment.url,
+                      name: attachment.name,
+                      mimeType: attachment.mimeType,
+                      size: attachment.size,
+                    },
+                  ]
+                : null,
+              mid,
               status: 'sent',
               created_at: saved.created_at,
               agent_name,
@@ -107,11 +171,12 @@ module.exports = function attachMessengerGateway(io, services) {
             },
           });
 
+          // --- Upsert para el preview del sidebar ---
           io.to(`ms:cfg:${conv.id_configuracion}`).emit('MS_CONV_UPSERT', {
             id: conversation_id,
             last_message_at: new Date().toISOString(),
             last_outgoing_at: new Date().toISOString(),
-            preview: text,
+            preview: messagePreview,
             unread_count: 0,
           });
         } catch (e) {

@@ -53,6 +53,29 @@ exports.sendText = async (psid, text, pageAccessToken, opts = {}) => {
   return callSendAPI(body, pageAccessToken);
 };
 
+exports.sendAttachment = async (
+  psid,
+  attachment,
+  pageAccessToken,
+  opts = {}
+) => {
+  // attachment = { type: 'image' | 'video' | 'file', url: 'https://...' }
+  const body = {
+    recipient: { id: psid },
+    message: {
+      attachment: {
+        type: attachment.type,
+        payload: {
+          url: attachment.url,
+          is_reusable: true,
+        },
+      },
+    },
+    ...buildMessagingFields(opts),
+  };
+  return callSendAPI(body, pageAccessToken);
+};
+
 exports.sendSenderAction = async (psid, action, pageAccessToken) => {
   const body = { recipient: { id: psid }, sender_action: action };
   return callSendAPI(body, pageAccessToken);
