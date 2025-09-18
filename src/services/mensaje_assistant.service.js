@@ -78,7 +78,6 @@ async function procesarAsistenteMensaje(body) {
 
     if (sales.bloque_productos) {
       if (openai_thread.bloque_productos != sales.bloque_productos) {
-        console.log("sales.ofrecer: "+sales.ofrecer)
         if (sales.ofrecer == "productos"){
         bloqueInfo +=
           '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';

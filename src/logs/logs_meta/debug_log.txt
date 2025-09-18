@@ -547,3 +547,17 @@ Después de mensaje procesado
 [2025-09-15T16:04:24.326Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
 [2025-09-15T16:04:24.438Z] ⚠️ No se encontró mensaje interno principal.
 [2025-09-15T16:04:24.560Z] ✅ thread_id: thread_HU0H74AQXt1n2obrG4DZEitF
+Inicio de mensaje
+[2025-09-18T21:31:35.006Z] Mensaje procesado:Hola 
+Después de mensaje procesado
+[2025-09-18T21:31:35.424Z] ✅ Mensaje guardado en DB con ID 142262
+[2025-09-18T21:31:35.525Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-09-18T21:31:35.623Z] ⚠️ No se encontró mensaje interno principal.
+[2025-09-18T21:31:35.724Z] ✅ thread_id: thread_2VWS2H5dPREN83xfC6sIEiEF
+[2025-09-18T21:31:44.382Z] ✅ Respuesta asistente: ¡Hola! Soy Sandra 😊 ¿En qué puedo ayudarte hoy?
+[2025-09-18T21:31:45.509Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNDY0NjBGQjE5MkZGM0M2QUI4AA=="}]}
+[2025-09-18T21:31:45.510Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSNDY0NjBGQjE5MkZGM0M2QUI4AA==
+[2025-09-18T21:31:45.916Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-09-18T21:31:46.463Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-09-18T21:31:46.562Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
