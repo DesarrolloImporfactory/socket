@@ -116,6 +116,56 @@ const obtenerDatosClienteParaAssistant = async (
   };
 };
 
+const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
+  // Consulta combinada para obtener datos con guía o pedido
+  const sql = `
+  SELECT 
+    ap.start_utc AS inicio_cita,
+    ap.end_utc AS fin_cita
+  FROM calendars ca
+  LEFT JOIN appointments ap ON ap.calendar_id = ca.id
+  WHERE 
+    ca.account_id = ? 
+    AND ap.start_utc > NOW()
+    AND ap.status NOT IN ('Completado', 'Cancelado', 'Bloqueado')
+  ORDER BY ap.start_utc DESC 
+`;
+
+  // Ejecutar la consulta SQL
+  const calendario = await db.query(sql, {
+    replacements: [id_configuracion],
+    type: db.QueryTypes.SELECT,
+  });
+
+  // Verificar si no hay datos
+  if (!calendario || calendario.length === 0) {
+    return {
+      bloque: 'No hay citas programadas.',
+      tipo: 'datos_servicio',
+    };
+  }
+
+  // Crear un bloque organizado con las citas
+  let tipoDato = 'datos_servicio';
+  let bloque = `🧾 **Citas ocupadas datos_servicio detectadas:**\n\n`;
+
+  // Formatear y agregar cada cita al bloque
+  calendario.forEach((cita, index) => {
+    // Convertir las fechas a un formato legible
+    const inicioCita = new Date(cita.inicio_cita).toLocaleString();
+    const finCita = new Date(cita.fin_cita).toLocaleString();
+
+    bloque += `Cita ${index + 1}:\n`;
+    bloque += `- **Inicio:** ${inicioCita}\n`;
+    bloque += `- **Fin:** ${finCita}\n\n`;
+  });
+
+  return {
+    bloque,
+    tipo: tipoDato,
+  };
+};
+
 const informacionProductos = async (productos) => {
   let bloqueProductos =
     '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido:\n\n';
@@ -170,9 +220,7 @@ const informacionProductos = async (productos) => {
   return bloqueProductos;
 };
 
-const informacionProductosVinculado = async (
-  productos,
-) => {
+const informacionProductosVinculado = async (productos) => {
   let bloqueProductos =
     '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido:\n\n';
 
@@ -355,6 +403,7 @@ const obtenerDatosClienteParaAssistant_viejo = async (
 
 module.exports = {
   obtenerDatosClienteParaAssistant,
+  obtenerDatosCalendarioParaAssistant,
   informacionProductos,
   informacionProductosVinculado,
 };

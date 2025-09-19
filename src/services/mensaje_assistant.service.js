@@ -2,6 +2,7 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const {
   obtenerDatosClienteParaAssistant,
+  obtenerDatosCalendarioParaAssistant,
 } = require('../utils/datosClienteAssistant'); // Ajustar según organización
 const { logInfo, logError } = require('../utils/logger'); // Helpers de log
 
@@ -50,19 +51,30 @@ async function procesarAsistenteMensaje(body) {
   let bloqueInfo = '';
   let tipoInfo = null;
 
-  if (id_plataforma) {
-    const datosCliente = await obtenerDatosClienteParaAssistant(
-      id_plataforma,
-      telefono,
-      id_thread
-    );
-    bloqueInfo = datosCliente.bloque || '';
-    tipoInfo = datosCliente.tipo || null;
-  }
-
   let assistant_id = null;
   let tipo_asistente = '';
   let tiempo_remarketing = null;
+
+  if (id_plataforma) {
+    // Si tienes IA de ventas y 'ofrecer' es "servicios", omites la consulta de datos del cliente
+    const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
+
+    if (sales && sales.ofrecer == 'productos') {
+      const datosCliente = await obtenerDatosClienteParaAssistant(
+        id_plataforma,
+        telefono,
+        id_thread
+      );
+      bloqueInfo = datosCliente.bloque || '';
+      tipoInfo = datosCliente.tipo || null;
+    } else if (sales && sales.ofrecer == 'servicios') {
+      const datosCliente = await obtenerDatosCalendarioParaAssistant(
+        id_configuracion
+      );
+      bloqueInfo = datosCliente.bloque || '';
+      tipoInfo = datosCliente.tipo || null;
+    }
+  }
 
   if (tipoInfo === 'datos_guia') {
     const logistic = assistants.find(
@@ -78,16 +90,15 @@ async function procesarAsistenteMensaje(body) {
 
     if (sales.bloque_productos) {
       if (openai_thread.bloque_productos != sales.bloque_productos) {
-        if (sales.ofrecer == "productos"){
-        bloqueInfo +=
-          '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
-        bloqueInfo += sales.bloque_productos;
-        } else if (sales.ofrecer == "servicios"){
+        if (sales.ofrecer == 'productos') {
           bloqueInfo +=
-          '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
-        bloqueInfo += sales.bloque_productos;
+            '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
+          bloqueInfo += sales.bloque_productos;
+        } else if (sales.ofrecer == 'servicios') {
+          bloqueInfo +=
+            '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
+          bloqueInfo += sales.bloque_productos;
         }
-        
 
         // Actualizar tabla openai_threads con numero_factura y numero_guia
         const updateSql = `
@@ -223,7 +234,7 @@ async function procesarAsistenteMensaje(body) {
     respuesta: respuesta || '',
     tipo_asistente,
     bloqueInfo,
-    tipoInfo
+    tipoInfo,
   };
 }
 
