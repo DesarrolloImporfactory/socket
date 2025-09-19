@@ -10,6 +10,8 @@ const MensajeCliente = require('../models/mensaje_cliente.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Errores_chat_meta = require('../models/errores_chat_meta.model');
+
+const servicioAppointments = require('../services/appointments.service');
 const {
   descargarAudioWhatsapp,
   descargarImagenWhatsapp,
@@ -600,13 +602,28 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 mensajeGPT
                   .match(/📍 Servicio que desea:\s*(.+)/)?.[1]
                   ?.trim() || '';
-              const fecha_cita =
-                mensajeGPT.match(/🕒 Fecha de cita:\s*(.+)/)?.[1]?.trim() || '';
-              const hora_cita =
-                mensajeGPT.match(/🕒 Hora de cita:\s*(.+)/)?.[1]?.trim() || '';
+              const fecha_hora_inicio =
+                mensajeGPT
+                  .match(/🕒 Fecha y hora de inicio:\s*(.+)/)?.[1]
+                  ?.trim() || '';
+              const fecha_hora_fin =
+                mensajeGPT
+                  .match(/🕒 Fecha y hora de fin:\s*(.+)/)?.[1]
+                  ?.trim() || '';
               const precio =
                 mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
 
+              // Convierte las fechas locales a UTC usando la zona horaria 'America/Guayaquil'
+              const moment = require('moment-timezone');
+
+              const fecha_hora_inicio_utc = moment
+                .tz(fecha_hora_inicio, 'America/Guayaquil')
+                .utc()
+                .format();
+              const fecha_hora_fin_utc = moment
+                .tz(fecha_hora_fin, 'America/Guayaquil')
+                .utc()
+                .format();
               // Variables listas
               console.log('📦 Datos extraídos de la cita:');
               console.log({
@@ -614,10 +631,62 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 telefono,
                 correo,
                 servicio,
-                fecha_cita,
-                hora_cita,
+                fecha_hora_inicio_utc,
+                fecha_hora_fin_utc,
                 precio,
               });
+
+              /* consultar id del calendarios */
+              const calendars = await db.query(
+                `SELECT id
+                  FROM calendars 
+                  WHERE account_id  = ?`,
+                {
+                  replacements: [id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                }
+              );
+              const id_calendars = calendars[0].id;
+              /* consultar id del calendarios */
+
+              /* consultar id del usuario y sub_usuario */
+              const usuario = await db.query(
+                `SELECT sb.id_sub_usuario, sb.id_usuario
+                  FROM configuraciones c
+                  INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
+                  WHERE c.id  = ? AND sb.rol = "administrador" LIMIT 1`,
+                {
+                  replacements: [id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                }
+              );
+              const id_usuarios = usuario[0].id_usuario;
+              const id_sub_usuario = usuario[0].id_sub_usuario;
+              /* consultar id del usuario y sub_usuario */
+
+              const payload = {
+                assigned_user_id: id_sub_usuario,
+                booked_tz: 'America/Guayaquil',
+                calendar_id: id_calendars,
+                create_meet: true,
+                created_by_user_id: id_usuarios,
+                description: '',
+                end: fecha_hora_fin_utc,
+                invites: [
+                  {
+                    name: nombre,
+                    email: correo,
+                    phone: telefono,
+                  },
+                ],
+                location_text: 'online',
+                meeting_url: null,
+                start: fecha_hora_inicio_utc,
+                status: 'Agendado',
+                title: nombre + ' - ' + servicio,
+              };
+
+              servicioAppointments.createAppointment(payload, id_usuarios);
             }
 
             // Buscar URLs de imágenes y videos usando regex
@@ -684,7 +753,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
               .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
               .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
-              .replace(/\[cita_confirmada\]:\s*true/gi, '') // Eliminar confirmación de cita
+              .replace(/\[cita_confirmada\]:\s*true/gi, ''); // Eliminar confirmación de cita
 
             solo_texto = solo_texto.trim();
 
