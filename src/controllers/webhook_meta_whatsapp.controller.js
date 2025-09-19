@@ -608,7 +608,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
 
               // Variables listas
-              console.log('📦 Datos extraídos del pedido:');
+              console.log('📦 Datos extraídos de la cita:');
               console.log({
                 nombre,
                 telefono,
@@ -618,15 +618,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 hora_cita,
                 precio,
               });
-
-              await ClientesChatCenter.update(
-                { pedido_confirmado: 1 },
-                { where: { id: id_cliente } }
-              );
-
-              if (tipoInfo == 'datos_pedido') {
-                /* console.log('entro en condicion datos pedidos'); */
-              }
             }
 
             // Buscar URLs de imágenes y videos usando regex
@@ -692,7 +683,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
               .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
               .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
-              .replace(/\[pedido_confirmado\]:\s*true/gi, ''); // Eliminar confirmación de pedido
+              .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
+              .replace(/\[cita_confirmada\]:\s*true/gi, '') // Eliminar confirmación de cita
 
             solo_texto = solo_texto.trim();
 
