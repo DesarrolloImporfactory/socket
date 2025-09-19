@@ -547,6 +547,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               mensajeGPT
             );
 
+            const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
+              mensajeGPT
+            );
+
             if (pedidoConfirmado) {
               // Extraer valores usando regex
               const nombre =
@@ -573,6 +577,45 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 ciudad,
                 direccion,
                 producto,
+                precio,
+              });
+
+              await ClientesChatCenter.update(
+                { pedido_confirmado: 1 },
+                { where: { id: id_cliente } }
+              );
+
+              if (tipoInfo == 'datos_pedido') {
+                /* console.log('entro en condicion datos pedidos'); */
+              }
+            } else if (citaConfirmada) {
+              // Extraer valores usando regex
+              const nombre =
+                mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+              const telefono =
+                mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+              const correo =
+                mensajeGPT.match(/📍 Correo:\s*(.+)/)?.[1]?.trim() || '';
+              const servicio =
+                mensajeGPT
+                  .match(/📍 Servicio que desea:\s*(.+)/)?.[1]
+                  ?.trim() || '';
+              const fecha_cita =
+                mensajeGPT.match(/🕒 Fecha de cita:\s*(.+)/)?.[1]?.trim() || '';
+              const hora_cita =
+                mensajeGPT.match(/🕒 Hora de cita:\s*(.+)/)?.[1]?.trim() || '';
+              const precio =
+                mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
+
+              // Variables listas
+              console.log('📦 Datos extraídos del pedido:');
+              console.log({
+                nombre,
+                telefono,
+                correo,
+                servicio,
+                fecha_cita,
+                hora_cita,
                 precio,
               });
 
