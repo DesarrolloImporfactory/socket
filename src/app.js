@@ -66,6 +66,8 @@ const pedidosRouter = require('./routes/pedidos.routes');
 
 const webhook_meta_whatsappRouter = require('./routes/webhook_meta_whatsapp.routes');
 
+const instagramRouter = require('./routes/instagram.routes');
+
 const path = require('path');
 
 const app = express();
@@ -107,17 +109,33 @@ app.use(
   })
 );
 
+//Para ig necesitamos el raw body solo en su webhoook
+app.use(
+  './api/v1/instagram/webhook',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
-  const skipPaths = ['/api/v1/stripe_plan/stripeWebhook', '/api/v1/messenger/webhook'];
+  const skipPaths = [
+    '/api/v1/stripe_plan/stripeWebhook',
+    '/api/v1/messenger/webhook',
+  ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
 });
 
 //Sanitizer para TODO lo demás (no tocar webhooks)
 app.use((req, res, next) => {
-  const skipPaths = ['/api/v1/stripe_plan/stripeWebhook', '/api/v1/messenger/webhook'];
+  const skipPaths = [
+    '/api/v1/stripe_plan/stripeWebhook',
+    '/api/v1/messenger/webhook',
+  ];
   if (skipPaths.includes(req.path)) return next();
 
   return sanitizer.clean({
@@ -160,6 +178,7 @@ app.use('/api/v1', googleAuthRoutes);
 app.use('/api/v1/pedidos', pedidosRouter);
 app.use('/api/v1/messenger', messengerRouter);
 app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
+app.use('/api/v1/instagram', instagramRouter);
 
 app.all('*', (req, res, next) => {
   return next(
