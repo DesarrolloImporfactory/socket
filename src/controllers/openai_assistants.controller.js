@@ -470,6 +470,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             pc.descripcion AS descripcion_producto,
             pc.tipo AS tipo,
             pc.precio AS precio_producto,
+            pc.duracion AS duracion,
             pc.imagen_url AS image_path,
             pc.video_url AS video_path,
             cc.nombre AS nombre_categoria
