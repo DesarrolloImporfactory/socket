@@ -188,100 +188,257 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
 });
 
 exports.newLogin = async (req, res) => {
-  const { token, tienda, tipo } = req.body;
+  const { token, tienda, tipo } = req.body; // 'tipo' solo para call_center
 
-  if (!token || !tienda) {
-    return res.status(400).json({ message: 'Token y tienda requeridos' });
+  if (!token) {
+    console.error("[newLogin] Falta token en body");
+    return res.status(400).json({ message: "Token requerido" });
+  }
+  if (tipo === "call_center" && !tienda) {
+    console.error("[newLogin] Falta tienda para call_center");
+    return res.status(400).json({ message: "Para call_center, tienda requerida" });
+  }
+
+  // Log básico del request (sin imprimir el token completo)
+  console.log("[newLogin] request", {
+    hasToken: !!token,
+    tokenPreview: token.slice(0, 24) + "...",
+    tienda,
+    tipo,
+  });
+
+  // Helpers
+  const toNum = (v) => {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (!s || s.toLowerCase() === "null" || s.toLowerCase() === "undefined") return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // 1) DEBUG: decodificar sin verificar (para ver header/payload/exp)
+  const decodedLoose = jwt.decode(token, { complete: true }) || {};
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  console.log("[newLogin] jwt.decode (NO verificado)", {
+    header: decodedLoose.header || null,
+    payloadPreview: decodedLoose.payload
+      ? {
+          sub: decodedLoose.payload.sub || null,
+          dataKeys: decodedLoose.payload.data
+            ? Object.keys(decodedLoose.payload.data)
+            : [],
+          iat: decodedLoose.payload.iat || null,
+          nbf: decodedLoose.payload.nbf || null,
+          exp: decodedLoose.payload.exp || null,
+        }
+      : null,
+    nowEpoch,
+    nowISO: new Date().toISOString(),
+    secretPresent: !!process.env.SECRET_JWT_SEED,
+    secretLen: process.env.SECRET_JWT_SEED
+      ? String(process.env.SECRET_JWT_SEED).length
+      : 0,
+  });
+
+  // 2) Verificar JWT (si falla, devolvemos 401 con motivo real)
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.SECRET_JWT_SEED /* , { algorithms: ["HS256"] } */);
+    console.log("[newLogin] jwt.verify OK", {
+      iat: decoded.iat || null,
+      nbf: decoded.nbf || null,
+      exp: decoded.exp || null,
+      nowEpoch,
+      skewFromIat: decoded.iat ? nowEpoch - decoded.iat : null,
+    });
+  } catch (err) {
+    console.error("[newLogin] jwt.verify FAILED", {
+      name: err.name,
+      message: err.message,
+      expiredAt: err.expiredAt || null,
+      payloadPreview: decodedLoose.payload
+        ? {
+            iat: decodedLoose.payload.iat || null,
+            nbf: decodedLoose.payload.nbf || null,
+            exp: decodedLoose.payload.exp || null,
+          }
+        : null,
+      nowEpoch,
+      nowISO: new Date().toISOString(),
+      secretPresent: !!process.env.SECRET_JWT_SEED,
+    });
+    return res.status(401).json({ message: "Token inválido o expirado", error: err.message });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.SECRET_JWT_SEED);
+    // 3) Derivados desde el token: AQUÍ TOMAMOS id_usuario DEL TOKEN
+    const ownerIdFromToken = toNum(
+      decoded?.data?.id_usuario ?? decoded?.data?.id ?? decoded?.uid
+    );
+    const emailFromToken = String(decoded?.data?.correo ?? decoded?.sub ?? "")
+      .trim()
+      .toLowerCase();
+    const idPlataformaFromToken = toNum(decoded?.data?.id_plataforma ?? decoded?.id_plataforma);
+    const tiendaNum = toNum(tienda);
 
-    const idPlataformaFromToken = decoded?.data?.id_plataforma;
+    console.log("[newLogin] derivados", {
+      ownerIdFromToken,       // <--- ESTE ES EL id_usuario tomado del token
+      emailFromToken,
+      idPlataformaFromToken,
+      tiendaNum,
+      tipo,
+    });
 
-    /* id_call_center */
-    if (tipo == 'call_center') {
-      const [call_centers] = await db.query(
-        `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
-        {
-          replacements: [idPlataformaFromToken],
-          type: db.QueryTypes.SELECT,
-        }
+    // 4) Gate cursos: si podemos identificar al alumno, exigir flags (1) en users
+    let alumno = null;
+
+    if (ownerIdFromToken != null) {
+      const [row] = await db.query(
+        `SELECT id_users, importacion, membresia_ecommerce, ecommerce
+           FROM users
+          WHERE id_users = ?
+          LIMIT 1`,
+        { replacements: [ownerIdFromToken], type: db.QueryTypes.SELECT }
       );
-
-      if (!call_centers || !call_centers.id_call_center) {
-        return res
-          .status(403)
-          .json({ message: 'La plataforma no es call center' });
-      }
-
-      /* validar si la tienda pertenece al call center */
-
-      const [plataformas] = await db.query(
-        `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
-        {
-          replacements: [tienda],
-          type: db.QueryTypes.SELECT,
-        }
+      if (row) alumno = row;
+    }
+    if (!alumno && emailFromToken) {
+      const [rowByEmail] = await db.query(
+        `SELECT id_users, importacion, membresia_ecommerce, ecommerce
+           FROM users
+          WHERE LOWER(email_users) = ?
+             OR LOWER(usuario_users) = ?
+          LIMIT 1`,
+        { replacements: [emailFromToken, emailFromToken], type: db.QueryTypes.SELECT }
       );
+      if (rowByEmail) alumno = rowByEmail;
+    }
 
-      if (
-        !plataformas ||
-        plataformas.id_call_center !== call_centers.id_call_center
-      ) {
+    if (alumno) {
+      const tieneAcceso =
+        Number(alumno.membresia_ecommerce) === 1 ||
+        Number(alumno.ecommerce) === 1 ||
+        Number(alumno.importacion) === 1;
+
+      console.log("[newLogin] alumno encontrado y flags", {
+        id_users: alumno.id_users,
+        importacion: alumno.importacion,
+        membresia_ecommerce: alumno.membresia_ecommerce,
+        ecommerce: alumno.ecommerce,
+        tieneAcceso,
+      });
+
+      if (!tieneAcceso) {
         return res.status(403).json({
-          message: 'El call center no tiene permiso de acceder a esta tienda',
+          code: "NO_COURSE_ACCESS",
+          message: "Esta cuenta no tiene acceso a cursos. Continúe con el login normal.",
+        });
+      }
+    } else {
+      console.log("[newLogin] No se pudo identificar alumno en 'users' (no bloquea).");
+    }
+
+    // 5) Validación call_center (igual que antes)
+    if (tipo === "call_center") {
+      const [cc] = await db.query(
+        `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
+        { replacements: [idPlataformaFromToken], type: db.QueryTypes.SELECT }
+      );
+      console.log("[newLogin] call_center check", { idPlataformaFromToken, cc: !!cc });
+
+      if (!cc || !cc.id_call_center) {
+        return res.status(403).json({ message: "La plataforma no es call center" });
+      }
+      const [pl] = await db.query(
+        `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
+        { replacements: [tiendaNum], type: db.QueryTypes.SELECT }
+      );
+      console.log("[newLogin] call_center tienda check", { tiendaNum, pl: !!pl });
+
+      if (!pl || pl.id_call_center !== cc.id_call_center) {
+        return res.status(403).json({
+          message: "El call center no tiene permiso de acceder a esta tienda",
         });
       }
     }
 
-    /* usuario */
-    // Buscar configuración para obtener el id_usuario (dueño de la tienda)
-    const configuracion = await Configuraciones.findOne({
-      where: { id_plataforma: tienda },
+    // 6) Resolver configuración (tienda → token). OJO: no tocamos 'plataformas.id_usuario'
+    let configuracion = null;
+
+    if (tiendaNum != null) {
+      configuracion = await Configuraciones.findOne({
+        where: { id_plataforma: tiendaNum },
+      });
+      console.log("[newLogin] configuracion by tienda", !!configuracion);
+    }
+
+    if (!configuracion && idPlataformaFromToken != null) {
+      configuracion = await Configuraciones.findOne({
+        where: { id_plataforma: idPlataformaFromToken },
+      });
+      console.log("[newLogin] configuracion by token", !!configuracion);
+    }
+
+    if (!configuracion) {
+      console.error("[newLogin] Sin configuración para tienda/token");
+      return res.status(404).json({ message: "Configuración no encontrada para esta tienda" });
+    }
+
+    console.log("[newLogin] configuracion encontrada", {
+      id: configuracion.id,
+      id_plataforma: configuracion.id_plataforma,
+      id_usuario_en_config: configuracion.id_usuario ?? null,
     });
 
-    if (!configuracion || !configuracion.id_usuario) {
+    
+    
+    
+    
+
+    // 8) Subusuario del ownerId (admin o cualquiera)
+    let sub = await Sub_usuarios_chat_center.findOne({
+      where: { id_usuario: ownerId, rol: "administrador" },
+    });
+    if (!sub) {
+      sub = await Sub_usuarios_chat_center.findOne({
+        where: { id_usuario: ownerId },
+        order: [["id_sub_usuario", "DESC"]],
+      });
+    }
+    if (!sub) {
+      console.error("[newLogin] No existen subusuarios para el ownerId", ownerId);
       return res.status(404).json({
-        message: 'Configuración no encontrada para esta tienda',
+        message: "No existen subusuarios para el dueño de esta plataforma",
       });
     }
 
-    // Buscar subusuario administrador asociado al id_usuario
-    const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
-      where: {
-        id_usuario: configuracion.id_usuario,
-        rol: 'administrador', // Asegúrate de que este valor exista así en tu BD
-      },
-    });
+    // 9) Generar token de sesión para ImporChat y responder
+    const sessionToken = await generarToken(sub.id_sub_usuario);
 
-    if (!usuarioEncontrado) {
-      return res.status(404).json({
-        message: 'Usuario administrador no encontrado para esta tienda',
-      });
-    }
-
-    // Generar token de sesión
-    const sessionToken = await generarToken(usuarioEncontrado.id_sub_usuario);
-
-    // Eliminar campos sensibles
-    const usuarioPlano = usuarioEncontrado.toJSON();
+    const usuarioPlano = sub.toJSON();
     const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
 
-    // Respuesta
-    res.status(200).json({
-      status: 'success',
+    console.log("[newLogin] OK -> emitiendo sesión", {
+      id_plataforma: configuracion.id_plataforma,
+      id_configuracion: configuracion.id,
+      subusuario: sub.id_sub_usuario,
+    });
+
+    return res.status(200).json({
+      status: "success",
       token: sessionToken,
       user: usuarioSinPassword,
-      id_plataforma: tienda,
+      id_plataforma: configuracion.id_plataforma,
       id_configuracion: configuracion.id,
     });
   } catch (err) {
-    return res
-      .status(401)
-      .json({ message: 'Token inválido o expirado', error: err.message });
+    // Cualquier error SQL/lógico entra aquí (ya no diremos "token inválido")
+    console.error("[newLogin] ERROR no controlado", { name: err.name, message: err.message, stack: err.stack });
+    return res.status(500).json({ message: "Error interno", error: err.message });
   }
 };
+
+
 
 exports.updatePassword = catchAsync(async (req, res, next) => {
   const { user } = req;
