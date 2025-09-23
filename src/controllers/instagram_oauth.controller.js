@@ -66,17 +66,14 @@ exports.listUserPages = catchAsync(async (req, res, next) => {
     oauth_session_id
   );
 
-  // Filtrar páginas con IG conectado y mapear datos útiles
-  const mapped = pages
-    .filter((p) => p.connected_instagram_account?.id)
-    .map((p) => ({
-      page_id: p.id,
-      page_name: p.name,
-      ig_id: p.connected_instagram_account.id,
-      ig_username: p.connected_instagram_account.username,
-    }));
+  const withIG = pages.filter((p) => p.has_ig);
+  const withoutIG = pages.filter((p) => !p.has_ig);
 
-  res.json({ ok: true, pages: mapped });
+  res.json({
+    ok: true,
+    pages_with_ig: withIG,
+    pages_without_ig: withoutIG, 
+  });
 });
 
 /**

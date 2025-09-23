@@ -168,7 +168,16 @@ class InstagramOAuthService {
       }
     );
 
-    return data?.data || [];
+    const pages = (data?.data || []).map((p) => ({
+      page_id: p.id,
+      page_name: p.name,
+      page_access_token: p.access_token, 
+      has_ig: !!p.connected_instagram_account?.id,
+      ig_id: p.connected_instagram_account?.id || null,
+      ig_username: p.connected_instagram_account?.username || null,
+    }));
+
+    return pages;
   }
 
   /**
