@@ -2,6 +2,8 @@
 const axios = require('axios');
 const { db } = require('../database/config');
 
+const FB_VERSION = 'v22.0';
+
 module.exports = {
   /**
    * Conecta una Page (con IG) a un id_configuracion:
@@ -11,18 +13,22 @@ module.exports = {
    * - Persiste (upsert) en instagram_pages
    */
   async connect({ oauth_session_id, id_configuracion, page_id }) {
-    // 1) sesión
-    const [[session]] = await db.query(
+    // 1) sesión (usar replacements + type)
+    const sessions = await db.query(
       'SELECT * FROM instagram_oauth_sessions WHERE id_oauth_session = ? AND used = 0 LIMIT 1',
-      [oauth_session_id]
+      {
+        replacements: [oauth_session_id],
+        type: db.QueryTypes.SELECT,
+      }
     );
+    const session = sessions?.[0] || null;
     if (!session) throw new Error('OAuth session no encontrada o ya usada');
 
     const userToken = session.user_token_long;
 
     // 2) obtener pages del usuario
     const pagesResp = await axios.get(
-      'https://graph.facebook.com/v21.0/me/accounts',
+      `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
       {
         params: {
           fields:
@@ -33,11 +39,19 @@ module.exports = {
     );
 
     const pages = pagesResp.data?.data || [];
-    const page = pages.find((p) => p.id === String(page_id));
+    const page = pages.find((p) => String(p.id) === String(page_id));
     if (!page) throw new Error('La página no pertenece al usuario autenticado');
 
     if (!page.connected_instagram_account?.id) {
-      throw new Error('La página no tiene una cuenta de Instagram conectada');
+      throw new Error(
+        `La Página "${page.name}" no tiene una cuenta de Instagram vinculada.
+
+        Para solucionarlo:
+        1) Asegúrate que la cuenta de IG es Profesional (Business/Creator).
+        2) Vincúlala a esta Página desde la app de Instagram o 
+          o desde Meta Business Suite → Configuración → Cuentas vinculadas.
+        3) Repite el flujo de conexión.`
+      );
     }
 
     const pageAccessToken = page.access_token;
@@ -47,12 +61,12 @@ module.exports = {
 
     // 3) suscribir app a la page
     await axios.post(
-      `https://graph.facebook.com/v21.0/${page_id}/subscribed_apps`,
+      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
       null,
       { params: { access_token: pageAccessToken } }
     );
 
-    // 4) upsert en instagram_pages
+    // 4) upsert en instagram_pages (usar replacements + type)
     const upsertSQL = `
       INSERT INTO instagram_pages
         (id_configuracion, page_id, page_name, page_access_token, ig_id, ig_username, subscribed,
@@ -69,21 +83,27 @@ module.exports = {
         status = 'active',
         updated_at = NOW()
     `;
-    await db.query(upsertSQL, [
-      id_configuracion,
-      page_id,
-      pageName,
-      pageAccessToken,
-      igId,
-      igUser,
-      session.fb_user_id || null,
-      session.fb_user_name || null,
-    ]);
+    await db.query(upsertSQL, {
+      replacements: [
+        id_configuracion,
+        page_id,
+        pageName,
+        pageAccessToken,
+        igId,
+        igUser,
+        session.fb_user_id || null,
+        session.fb_user_name || null,
+      ],
+      type: db.QueryTypes.INSERT,
+    });
 
     // 5) marcar sesión como usada (opcional)
     await db.query(
       'UPDATE instagram_oauth_sessions SET used = 1 WHERE id_oauth_session = ?',
-      [oauth_session_id]
+      {
+        replacements: [oauth_session_id],
+        type: db.QueryTypes.UPDATE,
+      }
     );
 
     return {
