@@ -66,8 +66,15 @@ const dominio = 'https://chat.imporfactory.app';
 
 // ========== AGREGAR ==========
 exports.agregarProducto = catchAsync(async (req, res, next) => {
-  const { id_configuracion, nombre, descripcion, tipo, precio, duracion, id_categoria } =
-    req.body;
+  const {
+    id_configuracion,
+    nombre,
+    descripcion,
+    tipo,
+    precio,
+    duracion,
+    id_categoria,
+  } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
     return res.status(400).json({
@@ -105,8 +112,15 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
 // ========== ACTUALIZAR ==========
 exports.actualizarProducto = catchAsync(async (req, res, next) => {
-  const { id_producto, nombre, descripcion, tipo, precio, duracion, id_categoria } =
-    req.body;
+  const {
+    id_producto,
+    nombre,
+    descripcion,
+    tipo,
+    precio,
+    duracion,
+    id_categoria,
+  } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
   if (!producto) {
@@ -187,5 +201,87 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'Producto eliminado correctamente.',
+  });
+});
+
+const xlsx = require('xlsx');
+const mysql = require('mysql2/promise');
+
+exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
+  if (!req.file) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Debe subir un archivo Excel (.xlsx o .xls)',
+    });
+  }
+
+  const { id_configuracion } = req.body;
+
+  // Leer el archivo directamente desde memoria (buffer)
+  const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+  const sheetName = workbook.SheetNames[0];
+  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+  if (!data.length) {
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'El archivo Excel está vacío.' });
+  }
+
+  const resultados = [];
+
+  // Usar la instancia db ya configurada
+  for (const [index, row] of data.entries()) {
+    try {
+      const {
+        nombre,
+        descripcion,
+        tipo,
+        precio,
+        duracion,
+        stock,
+      } = row;
+
+      if (!id_configuracion || !nombre || !tipo || !precio) {
+        resultados.push({ index, error: 'Faltan campos obligatorios' });
+        continue;
+      }
+
+      // Usamos db.query para hacer la inserción de los productos
+      await db.query(
+        `
+        INSERT INTO productos_chat_center (
+          id_configuracion, nombre, descripcion, tipo, precio, duracion, imagen_url,
+          video_url, stock, eliminado, id_categoria, fecha_creacion, fecha_actualizacion
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `,
+        {
+          replacements: [
+            id_configuracion,
+            nombre,
+            descripcion || null,
+            tipo,
+            precio,
+            duracion || 0,
+            null, // Sin imagen_url
+            null, // Sin video_url
+            stock || 0,
+            0, // Valor por defecto de eliminado
+            null,
+          ],
+        }
+      );
+
+      resultados.push({ index, status: 'insertado' });
+    } catch (error) {
+      // Si hay error, lo agregamos al resultado
+      resultados.push({ index, error: error.message });
+    }
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Carga masiva finalizada',
+    resultados,
   });
 });

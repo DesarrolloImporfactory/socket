@@ -8,6 +8,8 @@ const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const { uploadProductoMedia } = require('../middlewares/uploadProductos');
 
+const { uploadExcel } = require('../middlewares/uploadExcel');
+
 router.use(protect);
 
 router.post(
@@ -36,6 +38,13 @@ router.post(
 router.delete(
   '/eliminarProducto',
   productos_chat_centerController.eliminarProducto
+);
+
+// Ruta nueva para carga masiva
+router.post(
+  '/cargaMasivaProductos',
+  uploadExcel,
+  productos_chat_centerController.cargaMasivaProductos
 );
 
 module.exports = router;
