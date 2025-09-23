@@ -111,7 +111,7 @@ app.use(
 
 //Para ig necesitamos el raw body solo en su webhoook
 app.use(
-  './api/v1/instagram/webhook',
+  '/api/v1/instagram/webhook',
   express.json({
     verify: (req, res, buf) => {
       req.rawBody = buf;
@@ -119,12 +119,13 @@ app.use(
   })
 );
 
-// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger
+// Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
   const skipPaths = [
     '/api/v1/stripe_plan/stripeWebhook',
     '/api/v1/messenger/webhook',
+    '/api/v1/instagram/webhook',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -135,6 +136,7 @@ app.use((req, res, next) => {
   const skipPaths = [
     '/api/v1/stripe_plan/stripeWebhook',
     '/api/v1/messenger/webhook',
+    '/api/v1/instagram/webhook',
   ];
   if (skipPaths.includes(req.path)) return next();
 
