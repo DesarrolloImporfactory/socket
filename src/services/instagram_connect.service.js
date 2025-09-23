@@ -13,13 +13,10 @@ module.exports = {
    * - Persiste (upsert) en instagram_pages
    */
   async connect({ oauth_session_id, id_configuracion, page_id }) {
-    // 1) sesión (usar replacements + type)
+    // 1) sesión
     const sessions = await db.query(
       'SELECT * FROM instagram_oauth_sessions WHERE id_oauth_session = ? AND used = 0 LIMIT 1',
-      {
-        replacements: [oauth_session_id],
-        type: db.QueryTypes.SELECT,
-      }
+      { replacements: [oauth_session_id], type: db.QueryTypes.SELECT }
     );
     const session = sessions?.[0] || null;
     if (!session) throw new Error('OAuth session no encontrada o ya usada');
@@ -46,11 +43,9 @@ module.exports = {
       throw new Error(
         `La Página "${page.name}" no tiene una cuenta de Instagram vinculada.
 
-        Para solucionarlo:
-        1) Asegúrate que la cuenta de IG es Profesional (Business/Creator).
-        2) Vincúlala a esta Página desde la app de Instagram o 
-          o desde Meta Business Suite → Configuración → Cuentas vinculadas.
-        3) Repite el flujo de conexión.`
+      1) Asegúrate que la cuenta de IG es Profesional (Business/Creator).
+      2) Vincúlala a esta Página desde la app de Instagram o en Meta Business Suite → Configuración → Cuentas vinculadas.
+      3) Repite el flujo.`
       );
     }
 
@@ -59,14 +54,36 @@ module.exports = {
     const igId = page.connected_instagram_account.id;
     const igUser = page.connected_instagram_account.username;
 
-    // 3) suscribir app a la page
-    await axios.post(
-      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
-      null,
-      { params: { access_token: pageAccessToken } }
-    );
+    // 3) suscribir app a la page (con subscribed_fields)
+    // Para IG Messaging basta "messages".
+    try {
+      const body = new URLSearchParams({
+        subscribed_fields: 'messages',
+      }).toString();
 
-    // 4) upsert en instagram_pages (usar replacements + type)
+      await axios.post(
+        `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
+        body,
+        {
+          params: { access_token: pageAccessToken },
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        }
+      );
+    } catch (err) {
+      const g = err?.response?.data?.error;
+      console.error('[IG subscribe error]', {
+        status: err?.response?.status,
+        code: g?.code,
+        subcode: g?.error_subcode,
+        type: g?.type,
+        message: g?.message,
+      });
+      throw new Error(
+        `No se pudo suscribir la Página a la app. ${g?.message || 'Error 400'}`
+      );
+    }
+
+    // 4) upsert en instagram_pages
     const upsertSQL = `
       INSERT INTO instagram_pages
         (id_configuracion, page_id, page_name, page_access_token, ig_id, ig_username, subscribed,
@@ -97,13 +114,10 @@ module.exports = {
       type: db.QueryTypes.INSERT,
     });
 
-    // 5) marcar sesión como usada (opcional)
+    // 5) marcar sesión como usada
     await db.query(
       'UPDATE instagram_oauth_sessions SET used = 1 WHERE id_oauth_session = ?',
-      {
-        replacements: [oauth_session_id],
-        type: db.QueryTypes.UPDATE,
-      }
+      { replacements: [oauth_session_id], type: db.QueryTypes.UPDATE }
     );
 
     return {
