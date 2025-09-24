@@ -49,7 +49,7 @@ module.exports = {
     // 3) Suscribir app a la Page con campos válidos para IG Messaging
     // Recomendado para IG: messages, messaging_postbacks, message_reactions, message_edit
     const subscribed_fields =
-      'messages,messaging_postbacks,message_reactions,message_edit';
+      'messages,messaging_postbacks,message_reactions,message_edits,message_deliveries,message_reads';
 
     try {
       await axios.post(
