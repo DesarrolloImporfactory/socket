@@ -5,6 +5,8 @@ const igWebhookController = require('../controllers/instagram_webhook.controller
 const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 
+const igController = require('../controllers/instagram.controller');
+const igConversations = require('../controllers/instagram_conversations.controller');
 // ────────────────────────────────────────────────────────────────
 // WEBHOOK (objeto "page", igual que Messenger)
 // GET: verificación (hub.challenge)
@@ -25,4 +27,6 @@ router.post('/facebook/oauth/exchange', igOauthController.exchangeCode);
 router.get('/facebook/pages', igOauthController.listUserPages);
 router.post('/facebook/connect', igOauthController.connectPage);
 
+router.get('/conversations', igConversations.listConversations);
+router.get('/conversations/:id/messages', igConversations.listMessages);
 module.exports = router;

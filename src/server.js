@@ -10,6 +10,10 @@ const MessengerService = require('./services/messenger.service');
 const Store = require('./services/messenger_store.service');
 const fb = require('./utils/facebookGraph');
 
+const attachInstagramGateway = require('./sockets/instagram.gateway');
+const InstagramService = require('./services/instagram.service');
+const IGStore = require('./services/instagram_store.service');
+
 const Sockets = require('./sockets/index');
 
 db.authenticate()
@@ -80,4 +84,11 @@ attachMessengerGateway(io, {
     );
     return row?.id_configuracion || null;
   },
+});
+
+InstagramService.setIO(io);
+attachInstagramGateway(io, {
+  db,
+  IGStore,
+  getIGPageTokenByPageId: InstagramService.getPageTokenByPageId,
 });

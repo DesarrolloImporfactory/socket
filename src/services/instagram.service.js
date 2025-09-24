@@ -1,127 +1,263 @@
+const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
+const Store = require('./instagram_store.service');
 
-function extractText(event) {
-  return event.message?.text || null;
-}
-function extractAttachments(event) {
-  const atts = event.message?.attachments || [];
-  if (!atts.length) return null;
-  return JSON.stringify(
-    atts.map((a) => ({
-      type: a.type,
-      url: a.payload?.url || null,
-      payload: a.payload || null,
-    }))
+let IO = null;
+const roomConv = (conversation_id) => `ig:conv:${conversation_id}`;
+const roomCfg = (id_configuracion) => `ig:cfg:${id_configuracion}`;
+
+async function getPageTokenByPageId(page_id) {
+  const [row] = await db.query(
+    `SELECT page_access_token FROM instagram_pages WHERE page_id=? AND status='active' LIMIT 1`,
+    { replacements: [page_id], type: db.QueryTypes.SELECT }
   );
+  return row?.page_access_token || null;
 }
 
-async function findConnectionByPage(pageId) {
-  const [[row]] = await db.query(
-    'SELECT * FROM instagram_pages WHERE page_id = ? AND status = "active" LIMIT 1',
-    [pageId]
+async function getConfigIdByPageId(page_id) {
+  const [row] = await db.query(
+    `SELECT id_configuracion FROM instagram_pages WHERE page_id=? AND status='active' LIMIT 1`,
+    { replacements: [page_id], type: db.QueryTypes.SELECT }
   );
-  return row || null;
+  return row?.id_configuracion || null;
 }
 
-async function upsertConversation({ id_configuracion, page_id, igsid, now }) {
-  // ¿existe?
-  const [[conv]] = await db.query(
-    'SELECT * FROM instagram_conversations WHERE id_configuracion = ? AND page_id = ? AND igsid = ? LIMIT 1',
-    [id_configuracion, page_id, igsid]
-  );
-  if (conv) return conv;
+const safeMsgId = (dbId, mid) =>
+  dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // crear
-  const insert = `
-    INSERT INTO instagram_conversations
-      (id_configuracion, page_id, igsid, status, unread_count,
-       first_contact_at, last_message_at, last_incoming_at, updated_at)
-    VALUES (?, ?, ?, 'open', 0, ?, ?, ?, NOW())
-  `;
-  const [res] = await db.query(insert, [
-    id_configuracion,
-    page_id,
-    igsid,
-    now,
-    now,
-    now,
-  ]);
-  const [[created]] = await db.query(
-    'SELECT * FROM instagram_conversations WHERE id = ?',
-    [res.insertId]
-  );
-  return created;
-}
+class InstagramService {
+  static setIO(io) {
+    IO = io;
+  }
 
-async function touchConversationOnIncoming(conversation_id, now) {
-  await db.query(
-    `UPDATE instagram_conversations
-     SET last_message_at = ?, last_incoming_at = ?, updated_at = NOW()
-     WHERE id = ?`,
-    [now, now, conversation_id]
-  );
-}
-
-module.exports = {
   /**
-   * Rutea un evento (mensajes entrantes)
-   * body.entry[].messaging[] con:
-   *  - sender.id (IGSID del usuario)
-   *  - recipient.id (PAGE_ID)
-   *  - message.mid, message.text, attachments, is_echo, etc.
+   * Router de eventos Instagram (desde webhook Page, con messaging_product='instagram')
    */
-  async routeEvent(event) {
-    // ignorar echos (mensajes que enviaste tú)
-    if (event.message?.is_echo) return;
+  static async routeEvent(event) {
+    // En IG, el evento llega en entry.messaging[*]
+    // Diferencia clave: el user id es el "IGSID" (page-scoped para IG)
+    const messagingProduct = event.messaging_product; // 'instagram'
+    if (messagingProduct !== 'instagram') return;
 
-    const pageId = event.recipient?.id;
-    const igsid = event.sender?.id;
+    const pageId = event.recipient?.id; // Page ID
+    const igsid = event.sender?.id; // Instagram Scoped User ID
     const mid = event.message?.mid;
-    if (!pageId || !igsid || !mid) return;
+    const text = event.message?.text;
 
-    const conn = await findConnectionByPage(pageId);
-    if (!conn) {
-      // page no conectada en tu plataforma
-      return;
-    }
-
-    const id_configuracion = conn.id_configuracion;
-    const now = new Date();
-
-    // upsert conversación
-    const conv = await upsertConversation({
-      id_configuracion,
-      page_id: pageId,
-      igsid,
-      now,
-    });
-
-    // insertar mensaje
-    const text = extractText(event);
-    const attachments = extractAttachments(event);
-
-    const insertMsg = `
-      INSERT INTO instagram_messages
-        (conversation_id, id_configuracion, page_id, igsid, direction, mid, text,
-         attachments, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'in', ?, ?, ?, 'received', ?, ?)
-    `;
-    await db.query(insertMsg, [
-      conv.id,
-      id_configuracion,
+    console.log('[IG ROUTE_EVENT][IN]', {
       pageId,
       igsid,
       mid,
-      text,
-      attachments,
-      now,
-      now,
-    ]);
+      text: text || '(no-text)',
+      hasDelivery: !!event.delivery,
+      hasRead: !!event.read,
+      hasPostback: !!event.postback,
+      isEcho: !!event.message?.is_echo,
+    });
 
-    // actualizar punteros de la conversación
-    await touchConversationOnIncoming(conv.id, now);
+    const id_configuracion = await getConfigIdByPageId(pageId);
+    if (!id_configuracion) {
+      console.warn('[IG][WARN] No id_configuracion para pageId', pageId);
+      return;
+    }
 
-    // (opcional) emitir a sockets aquí
-    // sockets.emitToConfig(id_configuracion, 'instagram:new-message', {...})
-  },
-};
+    // IG no emite “is_echo” desde la Inbox como Messenger (si llegara, se podría manejar)
+    if (event.message) {
+      if (!igsid) {
+        console.warn('[IG ROUTE_EVENT] message sin igsid; se ignora');
+        return;
+      }
+      const pageAccessToken = await getPageTokenByPageId(pageId);
+      if (!pageAccessToken) {
+        console.warn('[IG] No page_access_token para pageId', pageId);
+        return;
+      }
+      await this.handleMessage(
+        igsid,
+        event.message,
+        pageAccessToken,
+        pageId,
+        id_configuracion
+      );
+      return;
+    }
+
+    // Si quieres soportar postbacks/quick_replies en IG:
+    if (event.postback) {
+      const pageAccessToken = await getPageTokenByPageId(pageId);
+      if (!pageAccessToken) return;
+      await this.handlePostback(
+        igsid,
+        event.postback,
+        pageAccessToken,
+        pageId,
+        id_configuracion
+      );
+      return;
+    }
+
+    // (Opcional) delivery/read si tu app los recibe en IG
+    if (event.read) {
+      await Store.markRead({ id_configuracion, page_id: pageId, igsid });
+      if (IO)
+        IO.to(roomCfg(id_configuracion)).emit('IG_READ', { page_id: pageId });
+      return;
+    }
+  }
+
+  static async handleMessage(
+    igsid,
+    message,
+    pageAccessToken,
+    pageId,
+    id_configuracion
+  ) {
+    const createdAtNow = new Date().toISOString();
+    let savedIn = null;
+    try {
+      savedIn = await Store.saveIncomingMessage({
+        id_configuracion,
+        page_id: pageId,
+        igsid,
+        text: message.text || null,
+        attachments: message.attachments || null,
+        mid: message.mid || null,
+        meta: { raw: message },
+      });
+
+      if (IO && savedIn?.conversation_id) {
+        IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
+          conversation_id: savedIn.conversation_id,
+          message: {
+            id: safeMsgId(savedIn.message_id, message.mid),
+            direction: 'in',
+            mid: message.mid || null,
+            text: message.text || null,
+            attachments: message.attachments || null,
+            status: 'received',
+            created_at: createdAtNow,
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
+          id: savedIn.conversation_id,
+          last_message_at: createdAtNow,
+          last_incoming_at: createdAtNow,
+          preview: message.text || '(adjunto)',
+        });
+      }
+    } catch (e) {
+      console.error('[IG STORE][INCOMING][ERROR]', e.message);
+    }
+
+    // UX feedback: opcional (no siempre soportado en IG)
+    try {
+      await ig.sendSenderAction(igsid, 'mark_seen', pageAccessToken);
+      await ig.sendSenderAction(igsid, 'typing_off', pageAccessToken);
+    } catch (e) {
+      console.warn('[IG SENDER_ACTION][WARN]', e.response?.data || e.message);
+    }
+  }
+
+  static async handlePostback(
+    igsid,
+    postback,
+    pageAccessToken,
+    pageId,
+    id_configuracion
+  ) {
+    const payload = postback.payload || '';
+    const createdAtNow = new Date().toISOString();
+
+    let savedIn = null;
+    try {
+      savedIn = await Store.saveIncomingMessage({
+        id_configuracion,
+        page_id: pageId,
+        igsid,
+        text: null,
+        attachments: null,
+        mid: postback.mid || null,
+        meta: { raw: postback, postback_payload: payload },
+      });
+
+      if (IO && savedIn?.conversation_id) {
+        IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
+          conversation_id: savedIn.conversation_id,
+          message: {
+            id: safeMsgId(savedIn.message_id, postback.mid),
+            direction: 'in',
+            mid: postback.mid || null,
+            text: `Postback: ${payload}`,
+            status: 'received',
+            created_at: createdAtNow,
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
+          id: savedIn.conversation_id,
+          last_message_at: createdAtNow,
+          last_incoming_at: createdAtNow,
+          preview: `Postback: ${payload}`,
+        });
+      }
+    } catch (e) {
+      console.error('[IG STORE][INCOMING_POSTBACK][ERROR]', e.message);
+    }
+
+    // (Opcional) auto-reply simple:
+    try {
+      const res = await ig.sendText(
+        igsid,
+        `Postback: ${payload}`,
+        pageAccessToken
+      );
+      const outSave = await Store.saveOutgoingMessage({
+        id_configuracion,
+        page_id: pageId,
+        igsid,
+        text: `Postback: ${payload}`,
+        mid: res?.message_id || null,
+        status: 'sent',
+        meta: { response: res },
+      });
+      if (IO && savedIn?.conversation_id) {
+        IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
+          conversation_id: savedIn.conversation_id,
+          message: {
+            id: safeMsgId(outSave?.message_id, res?.message_id),
+            direction: 'out',
+            mid: res?.message_id || null,
+            text: `Postback: ${payload}`,
+            status: 'sent',
+            created_at: new Date().toISOString(),
+          },
+        });
+        IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
+          id: savedIn.conversation_id,
+          last_message_at: new Date().toISOString(),
+          last_outgoing_at: new Date().toISOString(),
+          preview: `Postback: ${payload}`,
+          unread_count: 0,
+        });
+      }
+    } catch (e) {
+      console.error(
+        '[IG SEND/STORE][OUTGOING_POSTBACK][ERROR]',
+        e.response?.data || e.message
+      );
+      try {
+        await Store.saveOutgoingMessage({
+          id_configuracion,
+          page_id: pageId,
+          igsid,
+          text: `Postback: ${payload}`,
+          status: 'failed',
+          meta: { error: e.response?.data || e.message },
+        });
+      } catch (_) {}
+    }
+  }
+}
+
+module.exports = InstagramService;
+module.exports.getPageTokenByPageId = getPageTokenByPageId;
+module.exports.getConfigIdByPageId = getConfigIdByPageId;
