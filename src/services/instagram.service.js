@@ -25,6 +25,18 @@ async function getConfigIdByPageId(page_id) {
 const safeMsgId = (dbId, mid) =>
   dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+async function getPageRowByIgId(ig_id) {
+  const [row] = await db.query(
+    `SELECT id_configuracion, page_id, page_access_token
+       FROM instagram_pages
+      WHERE ig_id = ?
+        AND status = 'active'
+      LIMIT 1`,
+    { replacements: [ig_id], type: db.QueryTypes.SELECT }
+  );
+  return row || null;
+}
+
 class InstagramService {
   static setIO(io) {
     IO = io;
@@ -270,3 +282,4 @@ class InstagramService {
 module.exports = InstagramService;
 module.exports.getPageTokenByPageId = getPageTokenByPageId;
 module.exports.getConfigIdByPageId = getConfigIdByPageId;
+module.exports.getPageRowByIgId = getPageRowByIgId;
