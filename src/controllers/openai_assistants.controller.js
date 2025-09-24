@@ -452,12 +452,17 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
           type: db.QueryTypes.SELECT,
         });
 
+        let serverURL = 'https://new.imporsuitpro.com/';
         if (infoProducto) {
           bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
           bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
           bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
           /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
-          bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
+          obtenerURLImagen();
+          bloqueProductos += `[producto_imagen_url]: ${obtenerURLImagen(
+            infoProducto.image_path,
+            serverURL
+          )}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
           bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
           bloqueProductos += `\n`;
         }
@@ -565,3 +570,21 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     return next(new AppError('Error al actualizar asistente ventas', 500));
   }
 });
+
+const obtenerURLImagen = (imagePath, serverURL) => {
+  // Verificar si el imagePath no es null
+  if (imagePath) {
+    // Verificar si el imagePath ya es una URL completa
+    if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+      // Si ya es una URL completa, retornar solo el imagePath
+      return imagePath;
+    } else {
+      // Si no es una URL completa, agregar el serverURL al inicio
+      return `${serverURL}${imagePath}`;
+    }
+  } else {
+    // Manejar el caso cuando imagePath es null
+    console.error('imagePath es null o undefined');
+    return null; // o un valor por defecto si prefieres
+  }
+};
