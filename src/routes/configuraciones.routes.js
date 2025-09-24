@@ -32,6 +32,7 @@ router.post(
 
 router.post(
   '/validar_conexion_usuario',
+  checkPlanActivo,
   configuracionesController.validarConexionUsuario
 );
 

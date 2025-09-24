@@ -233,39 +233,54 @@ exports.newLogin = async (req, res) => {
           message: 'El call center no tiene permiso de acceder a esta tienda',
         });
       }
-    }
 
-    /* usuario */
-    // Buscar configuración para obtener el id_usuario (dueño de la tienda)
-    const configuracion = await Configuraciones.findOne({
-      where: { id_plataforma: tienda },
-    });
-
-    if (!configuracion || !configuracion.id_usuario) {
-      return res.status(404).json({
-        message: 'Configuración no encontrada para esta tienda',
+      /* usuario */
+      // Buscar configuración para obtener el id_usuario (dueño de la tienda)
+      const configuracion = await Configuraciones.findOne({
+        where: { id_plataforma: tienda },
       });
-    }
 
-    // Buscar subusuario administrador asociado al id_usuario
-    const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
-      where: {
-        id_usuario: configuracion.id_usuario,
-        rol: 'administrador', // Asegúrate de que este valor exista así en tu BD
-      },
-    });
+      if (!configuracion || !configuracion.id_usuario) {
+        return res.status(404).json({
+          message: 'Configuración no encontrada para esta tienda',
+        });
+      }
 
-    if (!usuarioEncontrado) {
-      return res.status(404).json({
-        message: 'Usuario administrador no encontrado para esta tienda',
+      // Buscar subusuario administrador asociado al id_usuario
+      const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
+        where: {
+          id_usuario: configuracion.id_usuario,
+          rol: 'administrador', // Asegúrate de que este valor exista así en tu BD
+        },
       });
-    }
 
-    if (tipo == 'cursos_imporsuit') {
+      if (!usuarioEncontrado) {
+        return res.status(404).json({
+          message: 'Usuario administrador no encontrado para esta tienda',
+        });
+      }
+
+      // Generar token de sesión
+      const sessionToken = await generarToken(usuarioEncontrado.id_sub_usuario);
+
+      // Eliminar campos sensibles
+      const usuarioPlano = usuarioEncontrado.toJSON();
+      const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+      // Respuesta
+      res.status(200).json({
+        status: 'success',
+        token: sessionToken,
+        user: usuarioSinPassword,
+        id_plataforma: tienda,
+        id_configuracion: configuracion.id,
+      });
+    } else if (tipo == 'cursos_imporsuit') {
+      let usuarioEncontrado = null;
       const idUsuarioFromToken = decoded?.data?.id;
       /* consultar informacion de usuario imporsuit */
       const [user_imporauit] = await db.query(
-        `SELECT ecommerce, membresia_ecommerce, importacion FROM users WHERE id_users = ? LIMIT 1`,
+        `SELECT ecommerce, membresia_ecommerce, importacion, nombre_users, con_users, usuario_users FROM users WHERE id_users = ? LIMIT 1`,
         {
           replacements: [idUsuarioFromToken],
           type: db.QueryTypes.SELECT,
@@ -281,21 +296,78 @@ exports.newLogin = async (req, res) => {
       let ecommerce = user_imporauit.ecommerce;
       let membresia_ecommerce = user_imporauit.membresia_ecommerce;
       let importacion = user_imporauit.importacion;
+      let nombre_users = user_imporauit.nombre_users;
+      let con_users = user_imporauit.con_users;
+      let usuario_users = user_imporauit.usuario_users;
+
+      let id_plan = null;
+
+      let id_sub_usuario_encontrado = '';
 
       if (ecommerce == 1 || membresia_ecommerce == 1 || importacion == 1) {
-        const usuarios_chat_center = await Usuarios_chat_center.findOne({
-          where: {
-            id_usuario: configuracion.id_usuario,
-          },
+        /* usuario */
+        // Buscar configuración para obtener el id_usuario (dueño de la tienda)
+        const configuracion = await Configuraciones.findOne({
+          where: { id_plataforma: tienda },
         });
 
-        if (!usuarios_chat_center) {
-          return res.status(404).json({
-            message: 'Usuario administrador no encontrado para esta tienda',
+        if (!configuracion || !configuracion.id_usuario) {
+          /* crear usuario y sub_usuario */
+          const crear_usuario = await Usuarios_chat_center.create({
+            nombre: nombre_users,
+            id_plan: null,
+            fecha_inicio: null,
+            fecha_renovacion: null,
+            estado: 'inactivo',
           });
+
+          const crear_sub_usuario = await Sub_usuarios_chat_center.create({
+            id_usuario: crear_usuario.id_usuario,
+            usuario: nombre_users.replace(/\s+/g, ''),
+            password: con_users,
+            email: usuario_users,
+            nombre_encargado: nombre_users,
+            rol: 'administrador',
+          });
+
+          id_sub_usuario_encontrado = crear_sub_usuario.id_sub_usuario;
+
+          usuarioEncontrado = crear_sub_usuario;
+        } else {
+          const usuarios_chat_center = await Usuarios_chat_center.findOne({
+            where: {
+              id_usuario: configuracion.id_usuario,
+            },
+          });
+
+          if (!usuarios_chat_center) {
+            return res.status(404).json({
+              message: 'Usuario administrador no encontrado para esta tienda',
+            });
+          }
+
+          id_plan = usuarios_chat_center.id_plan;
+
+          /* consulta id_subusuarios */
+          const subusuarios_chat_center =
+            await Sub_usuarios_chat_center.findOne({
+              where: {
+                id_usuario: usuarios_chat_center.id_usuario,
+                rol: 'administrador',
+              },
+            });
+
+          if (!subusuarios_chat_center) {
+            return res.status(404).json({
+              message: 'Usuario administrador no encontrado para esta tienda',
+            });
+          }
+
+          id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
+
+          usuarioEncontrado = subusuarios_chat_center;
         }
 
-        let id_plan = usuarios_chat_center.id_plan;
         if (!id_plan) {
           console.log('NO TIENE PLAN ASIGNADO');
         }
@@ -304,23 +376,23 @@ exports.newLogin = async (req, res) => {
           .status(403)
           .json({ message: 'El usuario no tiene tiene cursos habilitados' });
       }
+
+      // Generar token de sesión
+      const sessionToken = await generarToken(id_sub_usuario_encontrado);
+
+      // Eliminar campos sensibles
+      const usuarioPlano = usuarioEncontrado.toJSON();
+      const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+      // Respuesta
+      res.status(200).json({
+        status: 'success',
+        token: sessionToken,
+        user: usuarioSinPassword,
+        id_plataforma: tienda,
+        id_configuracion: null,
+      });
     }
-
-    // Generar token de sesión
-    const sessionToken = await generarToken(usuarioEncontrado.id_sub_usuario);
-
-    // Eliminar campos sensibles
-    const usuarioPlano = usuarioEncontrado.toJSON();
-    const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
-
-    // Respuesta
-    res.status(200).json({
-      status: 'success',
-      token: sessionToken,
-      user: usuarioSinPassword,
-      id_plataforma: tienda,
-      id_configuracion: configuracion.id,
-    });
   } catch (err) {
     return res
       .status(401)
