@@ -36,11 +36,20 @@ class InstagramService {
   static async routeEvent(event) {
     // En IG, el evento llega en entry.messaging[*]
     // Diferencia clave: el user id es el "IGSID" (page-scoped para IG)
-    const messagingProduct = event.messaging_product; // 'instagram'
-    if (messagingProduct !== 'instagram') return;
+    const mp = event.messaging_product;
+    if (mp !== 'instagram') {
+      console.warn(
+        '[IG ROUTE_EVENT] messaging_product distinto o ausente:',
+        mp
+      );
+      // NO return;  // <-- durante pruebas, permite seguir (o mantén el guard si ya ves que llega correcto)
+    }
 
     const pageId = event.recipient?.id; // Page ID
     const igsid = event.sender?.id; // Instagram Scoped User ID
+    if (!pageId) console.warn('[IG ROUTE_EVENT] recipient.id ausente');
+    if (!igsid) console.warn('[IG ROUTE_EVENT] sender.id (IGSID) ausente');
+
     const mid = event.message?.mid;
     const text = event.message?.text;
 
