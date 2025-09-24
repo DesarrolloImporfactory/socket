@@ -27,7 +27,7 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
   //Caso normal de Ig Messasging object === instagram
   if (body.object === 'instagram') {
     for (const entry of body.entry || []) {
-      const event = entry.messaging || entry.standby || [];
+      const events = entry.messaging || entry.standby || [];
       for (const event of events) {
         if (
           event.messaging_product &&
