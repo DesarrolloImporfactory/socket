@@ -8,7 +8,7 @@ const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middle
 const igController = require('../controllers/instagram.controller');
 const igConversations = require('../controllers/instagram_conversations.controller');
 // ────────────────────────────────────────────────────────────────
-// WEBHOOK (objeto "page", igual que Messenger)
+//  WEBHOOK IG (object === "instagram")
 // GET: verificación (hub.challenge)
 // POST: recepción de eventos (validando firma X-Hub-Signature-256)
 // ────────────────────────────────────────────────────────────────

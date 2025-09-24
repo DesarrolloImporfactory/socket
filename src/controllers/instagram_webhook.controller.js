@@ -20,42 +20,55 @@ exports.verifyWebhook = (req, res) => {
 /**
  * POST /api/v1/instagram/webhook
  * Recepción de eventos (firma ya validada por verifyFacebookSignature)
- *
- * Importante: Para IG Messaging, Meta envía eventos como object "page" y
- * dentro de entry.messaging[] (similar a Messenger).
  */
-exports.receiveWebhook = catchAsync(async (req, res, next) => {
-  const body = req.body;
+exports.receiveWebhook = catchAsync(async (req, res) => {
+  const body = req.body || {};
 
-  if (body.object !== 'page') {
-    return next(new AppError('Evento no soportado (object != page)', 400));
+  //Caso normal de Ig Messasging object === instagram
+  if (body.object === 'instagram') {
+    for (const entry of body.entry || []) {
+      const event = entry.messaging || entry.standby || [];
+      for (const event of events) {
+        if (
+          event.messaging_product &&
+          event.messaging_product !== 'instagram'
+        ) {
+          continue;
+        }
+        try {
+          await InstagramService.routeEvent(event);
+        } catch (err) {
+          console.error(
+            '[IG receive Webhook][routerEvent error]',
+            err?.message || err
+          );
+        }
+      }
+    }
+    return res.sendStatus(200);
   }
 
-  await Promise.all(
-    body.entry.map(async (entry) => {
-      // IG y Messenger llegan ambos bajo "entry.messaging"
-      const events = entry.messaging || [];
-
+  // 2) Tolerancia: algunos entornos pueden seguir enviando bajo object=page con messaging_product='instagram'
+  if (body.object === 'page') {
+    for (const entry of body.entry || []) {
+      const events = entry.messaging || entry.standby || [];
       for (const event of events) {
-        const pageId = event.recipient?.id;
-        const senderId = event.sender?.id; // En IG es el IGSID del usuario
-        const mid = event.message?.mid;
-        const text = event.message?.text;
-
-        console.log('[IG_WEBHOOK_IN]', {
-          pageId,
-          senderId,
-          mid,
-          text: text || '(no-text)',
-          isEcho: !!event.message?.is_echo,
-          postback: event.postback?.payload,
-        });
-
-        // Delegar al servicio para enrutar: mensajes, postbacks, etc.
-        await InstagramService.routeEvent(event);
+        if (event.messaging_product === 'instagram') {
+          try {
+            await InstagramService.routeEvent(event);
+          } catch (err) {
+            console.error(
+              '[IG receiveWebhook][routeEvent error(page)]',
+              err?.message || err
+            );
+          }
+        }
       }
-    })
-  );
+    }
+    return res.sendStatus(200);
+  }
 
-  return res.sendStatus(200);
+  // 3) Ignora silenciosamente (pero sin 4xx) para no provocar reintentos
+  console.info('[IG Webhook] Ignorado: object no soportado =>', body.object);
+  return res.status(200).send('ignored');
 });

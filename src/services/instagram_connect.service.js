@@ -1,17 +1,9 @@
-// services/instagram_connect.service.js
 const axios = require('axios');
 const { db } = require('../database/config');
 
-const FB_VERSION = 'v22.0';
+const FB_VERSION = 'v23.0';
 
 module.exports = {
-  /**
-   * Conecta una Page (con IG) a un id_configuracion:
-   * - Lee session → user_long_token
-   * - Busca la page
-   * - Suscribe webhooks
-   * - Persiste (upsert) en instagram_pages
-   */
   async connect({ oauth_session_id, id_configuracion, page_id }) {
     // 1) sesión
     const sessions = await db.query(
@@ -23,7 +15,7 @@ module.exports = {
 
     const userToken = session.user_token_long;
 
-    // 2) obtener pages del usuario
+    // 2) pages del usuario
     const pagesResp = await axios.get(
       `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
       {
@@ -43,9 +35,9 @@ module.exports = {
       throw new Error(
         `La Página "${page.name}" no tiene una cuenta de Instagram vinculada.
 
-      1) Asegúrate que la cuenta de IG es Profesional (Business/Creator).
-      2) Vincúlala a esta Página desde la app de Instagram o en Meta Business Suite → Configuración → Cuentas vinculadas.
-      3) Repite el flujo.`
+        1) Asegúrate que la cuenta IG es Profesional (Business/Creator).
+        2) Vincúlala a esta Página en Instagram app o Business Suite.
+        3) Repite el flujo.`
       );
     }
 
@@ -54,19 +46,20 @@ module.exports = {
     const igId = page.connected_instagram_account.id;
     const igUser = page.connected_instagram_account.username;
 
-    // 3) suscribir app a la page (con subscribed_fields)
-    // Para IG Messaging basta "messages".
-    try {
-      const body = new URLSearchParams({
-        subscribed_fields: 'messages',
-      }).toString();
+    // 3) Suscribir app a la Page con campos válidos para IG Messaging
+    // Recomendado para IG: messages, messaging_postbacks, message_reactions, message_edit
+    const subscribed_fields =
+      'messages,messaging_postbacks,message_reactions,message_edit';
 
+    try {
       await axios.post(
         `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
-        body,
+        {}, // body vacío
         {
-          params: { access_token: pageAccessToken },
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          params: {
+            access_token: pageAccessToken,
+            subscribed_fields,
+          },
         }
       );
     } catch (err) {
@@ -83,7 +76,13 @@ module.exports = {
       );
     }
 
-    // 4) upsert en instagram_pages
+    // 3.1) Verificar estado de suscripción (como en Messenger)
+    const { data: status } = await axios.get(
+      `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
+      { params: { access_token: pageAccessToken } }
+    );
+
+    // 4) Upsert en instagram_pages
     const upsertSQL = `
       INSERT INTO instagram_pages
         (id_configuracion, page_id, page_name, page_access_token, ig_id, ig_username, subscribed,
@@ -114,7 +113,7 @@ module.exports = {
       type: db.QueryTypes.INSERT,
     });
 
-    // 5) marcar sesión como usada
+    // 5) Consumir sesión
     await db.query(
       'UPDATE instagram_oauth_sessions SET used = 1 WHERE id_oauth_session = ?',
       { replacements: [oauth_session_id], type: db.QueryTypes.UPDATE }
@@ -126,6 +125,7 @@ module.exports = {
       ig_id: igId,
       ig_username: igUser,
       connected: true,
+      subscribed_apps: status?.data || [], //Verificamos si suscribimos a la page
     };
   },
 };
