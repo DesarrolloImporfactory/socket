@@ -49,6 +49,42 @@ exports.stripeWebhook = async (req, res) => {
 if (event.type === 'invoice.payment_succeeded') {
   const invoice = event.data.object;
 
+    // ⛔️ Guardar y SALIR si corresponde al plan LITE-FREE oculto
+  try {
+    const li = invoice.lines?.data?.[0] || null;
+    const priceId = li?.price?.id || null;
+
+    // ¿Es el price especial?
+    let hidden = priceId === 'price_1SAb5GRwAlJ5h5wg3dEb69Zs';
+
+    // Si viene desde una suscripción, chequeamos metadata de la sub
+    if (!hidden && invoice.subscription) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+        if (sub?.metadata?.hidden_ui === 'true' || sub?.metadata?.special_plan === 'lite_free') {
+          hidden = true;
+        }
+      } catch (_) {}
+    }
+
+    if (hidden) {
+      // (opcional) registrá la relación mínima en tu tabla de transacciones
+      await db.query(`
+        UPDATE transacciones_stripe_chat
+        SET id_suscripcion = COALESCE(?, id_suscripcion),
+            estado_suscripcion = COALESCE(?, estado_suscripcion),
+            fecha = NOW()
+        WHERE customer_id = ?
+      `, { replacements: [invoice.subscription || null, invoice.status || 'paid', invoice.customer] });
+
+      // 🟢 Cortamos acá: NO seguimos con la lógica que actualiza MiPlan/Planes
+      return res.status(200).json({ received: true });
+    }
+  } catch (e) {
+    console.warn('[WH] lite_free guard (invoice):', e?.message);
+  }
+
+
   try {
       /* ────────────────────────────────────────────────────────────
          A) BRANCH: Upgrades por “delta” (Checkout mode: payment)
@@ -519,6 +555,74 @@ if (event.type === 'checkout.session.completed') {
   try {
     const md = session.metadata || {};
 
+    // 0) FREE TRIAL ESPECIAL: LITE-FREE (plan Lite id 6 con 12 meses)
+    if (session.mode === 'subscription' && md.tipo === 'lite_free') {
+      const id_usuario     = Number(md.id_usuario);
+      const subscriptionId = session.subscription;
+      const customerId     = session.customer;
+
+      if (!id_usuario || !subscriptionId || !customerId) {
+        return res.status(200).json({ received: true });
+      }
+
+      // Leer trial_end / status de la suscripción
+      let trialEnd = null;
+      let subStatus = 'trialing';
+      try {
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        trialEnd  = sub?.trial_end ? new Date(sub.trial_end * 1000) : null;
+        subStatus = sub?.status || subStatus;
+      } catch (_) {}
+
+      // Obtener datos del plan LITE (id=6) para id_product_stripe
+      let planLite = null;
+      try {
+        planLite = await Planes_chat_center.findByPk(6, { attributes: ['id_plan','id_product_stripe'] });
+      } catch (_) {}
+
+      // Actualizar usuario: asignar plan 6 + marcar free_trial_used
+      const hoy = new Date();
+      const fechaRenov = trialEnd || new Date(hoy.getTime() + 365 * 24 * 60 * 60 * 1000);
+
+      await Usuarios_chat_center.update({
+        id_plan: 6,
+        estado: 'activo',
+        fecha_inicio: hoy,
+        fecha_renovacion: fechaRenov,
+        free_trial_used: 1,
+        ...(planLite?.id_product_stripe ? { id_product_stripe: planLite.id_product_stripe } : {})
+      }, { where: { id_usuario } });
+
+      // Vincular/actualizar transacción
+      const [ex] = await db.query(
+        `SELECT id FROM transacciones_stripe_chat WHERE id_suscripcion = ? LIMIT 1`,
+        { replacements: [subscriptionId] }
+      );
+      if (!ex?.length) {
+        await db.query(`
+          INSERT INTO transacciones_stripe_chat
+            (id_usuario, id_suscripcion, customer_id, estado_suscripcion, fecha)
+          VALUES (?, ?, ?, ?, NOW())
+        `, { replacements: [id_usuario, subscriptionId, customerId, subStatus] });
+      } else {
+        await db.query(`
+          UPDATE transacciones_stripe_chat
+             SET id_usuario = COALESCE(id_usuario, ?),
+                 customer_id = COALESCE(customer_id, ?),
+                 estado_suscripcion = ?,
+                 fecha = NOW()
+           WHERE id_suscripcion = ?
+        `, { replacements: [id_usuario, customerId, subStatus, subscriptionId] });
+      }
+
+      return res.status(200).json({ received: true });
+    }
+
+    // 0.5) Si viene marcado hidden_ui pero NO es lite_free → ignorar
+    if (md && md.hidden_ui === 'true') {
+      return res.status(200).json({ received: true });
+    }
+
     // 1) FREE TRIAL vía Checkout (suscripción con trial: no cobra ahora)
     if (session.mode === 'subscription' && md.tipo === 'free_trial') {
       const id_usuario = Number(md.id_usuario);
@@ -546,7 +650,6 @@ if (event.type === 'checkout.session.completed') {
       );
 
       // Guarda/actualiza referencia de suscripción en tu tabla de transacciones
-      // Evitar duplicado si ya existe esa suscripción
       const [ex] = await db.query(
         `SELECT id FROM transacciones_stripe_chat WHERE id_suscripcion = ? LIMIT 1`,
         { replacements: [subscriptionId] }
@@ -558,7 +661,6 @@ if (event.type === 'checkout.session.completed') {
         `, { replacements: [id_usuario, subscriptionId, customerId, sub?.status || 'trialing'] });
       }
       // si ya existe, no hacemos nada
-
 
       return res.status(200).json({ received: true });
     }
@@ -616,6 +718,7 @@ if (event.type === 'checkout.session.completed') {
     return res.status(200).json({ received: true });
   }
 }
+
 
 
 // ➕ ADDON conexión: pago único completado en Checkout

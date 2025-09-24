@@ -14,6 +14,11 @@ const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
 const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
 const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
 
+// ─── Lite Free (oculto a catálogo) ────────────────────────────────────────────
+const LITE_PLAN_ID = 6;
+const LITE_PRICE_ID = 'price_1S8NsNClsPjxVwZw9cXWmJJj';
+
+
 
 
 // CORREGIDO: sin "active" en list() ni en create()
@@ -434,6 +439,18 @@ exports.obtenerSuscripcionActiva = async (req, res) => {
         subId = sub.id;
       }
     }
+
+    // --- Ocultar suscripción si es el plan LITE-FREE especial ---
+    if (sub) {
+      const firstItem = sub.items?.data?.[0] || null;
+      const priceId = firstItem?.price?.id || null;
+      const hideUiMeta = (sub.metadata && (sub.metadata.hidden_ui === 'true' || sub.metadata.special_plan === 'lite_free'));
+      if (hideUiMeta || priceId === 'price_1SAb5GRwAlJ5h5wg3dEb69Zs') {
+        // Como si no hubiera suscripción relevante para la UI
+        sub = null;
+      }
+    }
+
 
     // 4) Armar metadatos Stripe para el front
     const estado_suscripcion = sub?.status || null;                    // p.ej. 'trialing' | 'active' | ...
@@ -1395,3 +1412,101 @@ exports.miPlanPersonalizado = async (req, res) => {
   }
 };
 
+/**
+ * Checkout para el plan LITE con 12 meses de prueba.
+ * - Usa price fijo (LITE_PRICE_ID).
+ * - Marca en metadata el id_usuario y el id del plan (6).
+ * - Respeta la misma validación de elegibilidad que crearFreeTrial.
+ */
+exports.crearSesionLiteFree = async (req, res) => {
+  try {
+    const { id_usuario, success_url, cancel_url, trial_days } = req.body;
+    if (!id_usuario) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
+
+    // 0) Bloqueo por “ya usó free trial” (misma validación que crearFreeTrial)
+    const [rowsUser] = await db.query(
+      `SELECT COALESCE(free_trial_used,0) AS used
+       FROM usuarios_chat_center
+       WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] }
+    );
+    if (Boolean(rowsUser?.[0]?.used)) {
+      return res.status(400).json({ status: 'fail', message: 'Ya usaste tu plan gratuito.' });
+    }
+
+    // 1) Customer Stripe (reusar si existe)
+    let customerId = null;
+    const [txRow] = await db.query(
+      `SELECT customer_id
+         FROM transacciones_stripe_chat
+        WHERE id_usuario = ?
+        ORDER BY fecha DESC
+        LIMIT 1`,
+      { replacements: [id_usuario] }
+    );
+    customerId = txRow?.[0]?.customer_id || null;
+
+    if (!customerId) {
+      const c = await stripe.customers.create({ metadata: { id_usuario: String(id_usuario) } });
+      customerId = c.id;
+      await db.query(
+        `INSERT INTO transacciones_stripe_chat (id_usuario, customer_id, fecha)
+         VALUES (?, ?, NOW())`,
+        { replacements: [id_usuario, customerId] }
+      );
+    }
+
+    // 2) Datos del plan LITE desde tu BD (solo para id_product_stripe “oficial”)
+    const planLite = await Planes_chat_center.findByPk(LITE_PLAN_ID, {
+      attributes: ['id_plan', 'id_product_stripe', 'nombre_plan']
+    });
+    if (!planLite?.id_product_stripe) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Plan Lite (id 6) no configurado con price de Stripe (id_product_stripe)'
+      });
+    }
+
+    // 3) Trial
+    const trialDays = Number.isInteger(trial_days) ? trial_days : 365; // 12 meses aprox
+    const requireCard = true; // igual que crearFreeTrial (puedes cambiar a if_required si quieres)
+
+    // 4) Crear sesión de Checkout (mode: subscription)
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      payment_method_types: ['card'],
+      payment_method_collection: requireCard ? 'always' : 'if_required',
+      allow_promotion_codes: true,
+
+      line_items: [{ price: LITE_PRICE_ID || planLite.id_product_stripe, quantity: 1 }],
+
+      subscription_data: {
+        trial_period_days: trialDays,
+        trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
+        metadata: {
+          tipo: 'lite_free',
+          id_usuario: String(id_usuario),
+          id_plan: String(LITE_PLAN_ID) // ← importante para el webhook
+        }
+      },
+
+      // metadata de la sesión (tu webhook también la revisa)
+      metadata: {
+        tipo: 'lite_free',
+        id_usuario: String(id_usuario),
+        plan_final_id: String(LITE_PLAN_ID)
+      },
+
+      success_url: success_url || `${req.headers.origin || ''}/miplan?trial=ok`,
+      cancel_url: cancel_url || `${req.headers.origin || ''}/landing?trial=cancel`,
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (e) {
+    console.error('crearSesionLiteFree:', e);
+    return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
+  }
+};
