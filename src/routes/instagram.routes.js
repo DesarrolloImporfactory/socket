@@ -5,6 +5,11 @@ const igWebhookController = require('../controllers/instagram_webhook.controller
 const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 
+function useHardcodedIgSecret(req, res, next) {
+  req.fbAppSecretOverride = 'b9015cadee33d57d360fe133812bfce0';
+  next();
+}
+
 const igController = require('../controllers/instagram.controller');
 const igConversations = require('../controllers/instagram_conversations.controller');
 // ────────────────────────────────────────────────────────────────
@@ -13,7 +18,12 @@ const igConversations = require('../controllers/instagram_conversations.controll
 // POST: recepción de eventos (validando firma X-Hub-Signature-256)
 // ────────────────────────────────────────────────────────────────
 router.get('/webhook', igWebhookController.verifyWebhook);
-router.post('/webhook', verifyFBSignature, igWebhookController.receiveWebhook);
+router.post(
+  '/webhook',
+  useHardcodedIgSecret,
+  verifyFBSignature,
+  igWebhookController.receiveWebhook
+);
 
 // ────────────────────────────────────────────────────────────────
 // OAUTH CON FACEBOOK (mismo flujo que Messenger)

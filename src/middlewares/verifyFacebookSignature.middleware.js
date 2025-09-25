@@ -1,8 +1,8 @@
-// middlewares/verifyFacebookSignature.js
 const crypto = require('crypto');
 
 module.exports = function verifyFacebookSignature(req, res, next) {
-  const appSecret = process.env.FB_APP_SECRET;
+  // 👇 Si la ruta puso un override, úsalo; si no, usa FB_APP_SECRET (Messenger/IG Messaging)
+  const appSecret = req.fbAppSecretOverride || process.env.FB_APP_SECRET;
   if (!appSecret) {
     console.error('[FB SIGN] Falta FB_APP_SECRET en el servidor');
     return res.status(500).send('Server misconfigured');
@@ -16,12 +16,16 @@ module.exports = function verifyFacebookSignature(req, res, next) {
     return res.status(401).send('Invalid signature algorithm');
   }
 
-  // ⚠️ Firmar sobre los BYTES crudos tal cual llegaron
-  const hmac = crypto.createHmac('sha256', appSecret);
-  hmac.update(req.rawBody); // <--- NO pases 'utf-8', ya es un Buffer
-  const expectedHash = hmac.digest('hex');
+  if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) {
+    console.error('[FB SIGN] rawBody missing/not Buffer');
+    return res.status(401).send('Invalid signature (no raw body)');
+  }
 
-  // timingSafeEqual lanza si longitudes difieren
+  const expectedHash = crypto
+    .createHmac('sha256', appSecret)
+    .update(req.rawBody)
+    .digest('hex');
+
   const a = Buffer.from(theirHash, 'hex');
   const b = Buffer.from(expectedHash, 'hex');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
