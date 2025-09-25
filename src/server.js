@@ -90,5 +90,5 @@ InstagramService.setIO(io);
 attachInstagramGateway(io, {
   db,
   IGStore,
-  getIGPageTokenByPageId: InstagramService.getPageTokenByPageId,
+  getPageTokenByPageId: InstagramService.getPageTokenByPageId,
 });

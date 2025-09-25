@@ -68,7 +68,7 @@ exports.sendAttachment = async (
   return callSendApi(body, pageAccessToken);
 };
 
-exports.sendSenderAction = async (igsid, useActionState, pageAccesToken) => {
+exports.sendSenderAction = async (igsid, useActionState, pageAccessToken) => {
   const body = { recipient: { id: igsid }, sender_action: true };
-  return callSendApi(body, pageAccesToken);
+  return callSendApi(body, pageAccessToken);
 };
