@@ -7,23 +7,13 @@ const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middle
 const conversationsController = require('../controllers/messenger_conversations.controller');
 const messengerProfiles = require('../controllers/messenger_profiles.controller');
 
-function useHardcodedIgSecret(req, res, next) {
-  req.fbAppSecretOverride = 'b9015cadee33d57d360fe133812bfce0';
-  next();
-}
-
 //No colocamos authMiddleware: Facebook no enviara el JWT.
 
 //Get para verificacion
 router.get('/webhook', messengerController.verifyWebhook);
 
 //POST para recibir eventos (con validacion de firma)
-router.post(
-  '/webhook',
-  useHardcodedIgSecret,
-  verifyFBSignature,
-  messengerController.receiveWebhook
-);
+router.post('/webhook', verifyFBSignature, messengerController.receiveWebhook);
 
 // 1. OAuth de login (construida por server)
 router.get('/facebook/login-url', oauthController.getLoginUrl);
