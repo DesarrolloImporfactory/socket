@@ -5,7 +5,7 @@ const igWebhookController = require('../controllers/instagram_webhook.controller
 const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 
-const SECRET_IG_GRAPH = 'b9015cadee33d57d360fe133812bfce0';
+const SECRET_IG_GRAPH = '9cf575fae8f0516fa727623007cd8044';
 
 const igController = require('../controllers/instagram.controller');
 const igConversations = require('../controllers/instagram_conversations.controller');
