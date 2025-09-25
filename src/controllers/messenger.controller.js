@@ -16,32 +16,32 @@ exports.verifyWebhook = (req, res) => {
   return res.status(403).send('Forbidden');
 };
 
-exports.receiveWebhook = catchAsync(async (req, res, next) => {
+exports.receiveWebhook = catchAsync(async (req, res) => {
   const body = req.body;
-
   if (body.object !== 'page') {
-    // Importante: los DMs IG **no** vienen por object=instagram
     console.log('[PAGE_WEBHOOK] object != page → se ignora', body.object);
     return res.sendStatus(200);
   }
 
-  console.log(
-    '[PAGE_WEBHOOK][RAW] entries=',
-    Array.isArray(body.entry) ? body.entry.length : 0
-  );
-
   await Promise.all(
     (body.entry || []).map(async (entry) => {
-      const messaging = entry.messaging || [];
-      if (!messaging.length) {
-        console.log('[PAGE_WEBHOOK] entry sin messaging[]');
+      // 👇 Unificamos fuentes: messaging y standby
+      const events =
+        entry.messaging && entry.messaging.length
+          ? entry.messaging
+          : entry.standby && entry.standby.length
+          ? entry.standby
+          : [];
+
+      if (!events.length) {
+        console.log('[PAGE_WEBHOOK] entry sin messaging/standby[]');
         return;
       }
-      for (const event of messaging) {
-        const product = event.messaging_product || 'facebook'; // Meta suele setear 'instagram' o 'facebook'
+
+      for (const event of events) {
+        const product = event.messaging_product || 'facebook';
         const isIG = product === 'instagram';
 
-        // Logs útiles
         console.log('[PAGE_WEBHOOK][EVENT]', {
           product,
           page_id: event.recipient?.id,
@@ -50,29 +50,14 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
           hasPostback: !!event.postback,
           hasRead: !!event.read,
           hasDelivery: !!event.delivery,
+          // 👇 útil para diagnosticar handover
+          fromStandby: !!entry.standby && entry.standby.length > 0,
         });
 
-        // Ruteo por producto
         if (isIG) {
-          // 👉 Usa tu InstagramService existente (el que guarda en DB y emite sockets)
-          try {
-            await InstagramService.routeEvent(event);
-          } catch (e) {
-            console.error(
-              '[IG ROUTE_EVENT ERROR]',
-              e?.response?.data || e.message
-            );
-          }
+          await InstagramService.routeEvent(event);
         } else {
-          // Messenger “normal”
-          try {
-            await MessengerService.routeEvent?.(event);
-          } catch (e) {
-            console.error(
-              '[MS ROUTE_EVENT ERROR]',
-              e?.response?.data || e.message
-            );
-          }
+          await MessengerService.routeEvent(event);
         }
       }
     })
