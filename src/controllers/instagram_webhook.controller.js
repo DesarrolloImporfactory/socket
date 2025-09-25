@@ -33,10 +33,16 @@ exports.verifyWebhook = (req, res) => {
   return res.status(403).send('Forbidden');
 };
 
-exports.receiveWebhook = catchAsync(async (req, res, next) => {
-  const body = safeParseJson(req.body);
-  if (!body) {
-    console.warn('[IG_WEBHOOK] body vacío o no JSON');
+exports.receiveWebhook = catchAsync(async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object') {
+    console.warn('[IG_WEBHOOK] body vacío o inválido');
+    return res.sendStatus(200);
+  }
+
+  if (body.object !== 'instagram') {
+    // Este endpoint es SOLO para IG Graph; cualquier otro object se ignora
+    console.log('[IG_WEBHOOK] object != instagram →', body.object);
     return res.sendStatus(200);
   }
 
@@ -44,154 +50,43 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
     '[IG_WEBHOOK][RAW] object=',
     body.object,
     'entries=',
-    body.entry?.length || 0
+    Array.isArray(body.entry) ? body.entry.length : 0
   );
 
-  // ────────────────────────────────────────────────────────────────
-  // B: formato Instagram product (object = 'instagram', entry[].changes[])
-  //   fields típicos: messages, message_reactions, message_edit, comments, mentions, ...
-  //   Para "messages", el payload viene en changes[].value.{from, id, timestamp, text, attachments...}
-  // ────────────────────────────────────────────────────────────────
-  if (body.object === 'instagram') {
-    for (const entry of body.entry || []) {
-      const ig_id = entry.id; // este es el IG Business Account ID (el de tu tabla instagram_pages)
-      const changes = entry.changes || [];
-      console.log(
-        '[IG_WEBHOOK][INSTAGRAM] entry.id (ig_id)=',
-        ig_id,
-        'changes=',
-        changes.length
+  for (const entry of body.entry || []) {
+    const igId = String(entry.id || '');
+    const changes = entry.changes || [];
+
+    console.log(
+      '[IG_WEBHOOK][INSTAGRAM] entry.id (ig_id)=',
+      igId,
+      'changes=',
+      changes.length
+    );
+
+    // Ignora payloads de muestra del panel (ej. igId "0" y sender/recipient de demo)
+    const isSample =
+      igId === '0' ||
+      changes.some(
+        (c) =>
+          c?.field === 'messages' &&
+          c?.value?.sender?.id === '12334' &&
+          c?.value?.recipient?.id === '23245'
       );
 
-      for (const ch of changes) {
-        const field = ch.field; // 'messages', 'message_reactions', etc.
-        const v = ch.value || {}; // payload de valor
-
-        console.log(
-          '[IG_WEBHOOK][INSTAGRAM][CHANGE]',
-          field,
-          JSON.stringify(v)
-        );
-
-        // Sólo procesamos messaging para tu chat (ignora comments/mentions si no te interesan)
-        if (
-          field === 'messages' ||
-          field === 'message_reactions' ||
-          field === 'message_edit'
-        ) {
-          // v.from  => IGSID del usuario
-          // v.id    => mid del mensaje
-          // v.text  => { body: '...' } o string (según variante); manejamos ambas
-          // v.attachments => opcional
-          // v.to    => puede venir el destinatario
-
-          const from = v.from;
-          const mid = v.id;
-          const text =
-            typeof v.text === 'string'
-              ? v.text
-              : typeof v.text?.body === 'string'
-              ? v.text.body
-              : null;
-
-          // Busca page_id + token por ig_id
-          const row = await InstagramService.getPageRowByIgId(ig_id);
-          if (!row) {
-            console.warn(
-              '[IG_WEBHOOK] No se encontró instagram_pages por ig_id=',
-              ig_id
-            );
-            continue;
-          }
-          const page_id = row.page_id;
-
-          // Construimos un "evento estilo Messenger" para tu InstagramService.routeEvent
-          const fakeEvent = {
-            messaging_product: 'instagram',
-            sender: { id: from }, // IGSID del usuario
-            recipient: { id: page_id }, // Page ID (lo usas para buscar config/token)
-            timestamp: Number(v.timestamp) || Date.now(),
-          };
-
-          // message / attachments / reactions / edits
-          if (field === 'messages') {
-            fakeEvent.message = {
-              mid: mid || null,
-              text: text || null,
-              attachments: Array.isArray(v.attachments)
-                ? v.attachments
-                : undefined,
-              // NOTA: IG puede no mandar is_echo aquí; tu service ya es tolerante
-            };
-          } else if (field === 'message_reactions') {
-            fakeEvent.message = {
-              mid: mid || null,
-              text: null,
-              attachments: undefined,
-              reactions: v.reactions || v.reaction || null,
-            };
-          } else if (field === 'message_edit') {
-            fakeEvent.message = {
-              mid: mid || null,
-              text: text || null,
-              edited: true,
-            };
-          }
-
-          try {
-            await InstagramService.routeEvent(fakeEvent);
-          } catch (e) {
-            console.error(
-              '[IG_WEBHOOK][routeEvent][ERROR]',
-              e?.response?.data || e.stack || e.message
-            );
-          }
-        } else {
-          // Opcional: loguea y omite otros campos (comments, mentions, etc.)
-          console.log('[IG_WEBHOOK] Campo IG no manejado:', field);
-        }
-      }
+    if (isSample) {
+      console.log('[IG_WEBHOOK] sample payload ignorado');
+      continue;
     }
-    return res.sendStatus(200);
+
+    // Si en el futuro quieres procesar eventos reales de IG Graph, hazlo aquí.
+    // Nota: Los DMs IG normales ya llegan por /api/v1/messenger/webhook (object: "page").
+    for (const ch of changes) {
+      console.log('[IG_WEBHOOK][CHANGE]', ch.field, JSON.stringify(ch.value));
+      // Ejemplos de fields: 'comments', 'mentions', 'messages', 'message_reactions', etc.
+      // (De momento solo logueamos para no alterar tu flujo actual).
+    }
   }
 
-  // ────────────────────────────────────────────────────────────────
-  // A: formato Page (object = 'page', entry.messaging / entry.standby)
-  // (tu rama original, por si suscribes la Page como Messenger-style)
-  // ────────────────────────────────────────────────────────────────
-  if (body.object === 'page') {
-    for (const entry of body.entry || []) {
-      const events = entry.messaging || entry.standby || [];
-      console.log(
-        '[IG_WEBHOOK][PAGE] entry.id=',
-        entry.id,
-        'events=',
-        events.length
-      );
-
-      for (const event of events) {
-        console.log('[IG_WEBHOOK][PAGE][EVENT]', {
-          messaging_product: event.messaging_product,
-          sender: event.sender?.id,
-          recipient: event.recipient?.id,
-          hasMessage: !!event.message,
-          hasPostback: !!event.postback,
-        });
-
-        try {
-          await InstagramService.routeEvent(event);
-        } catch (e) {
-          console.error(
-            '[IG_WEBHOOK][routeEvent][ERROR]',
-            e?.response?.data || e.stack || e.message
-          );
-        }
-      }
-    }
-    return res.sendStatus(200);
-  }
-
-  // Otro object → ignorar sin romper
-  console.info('[IG_WEBHOOK] object desconocido, se ignora:', body.object);
   return res.sendStatus(200);
 });
