@@ -34,7 +34,7 @@ module.exports = function attachInstagramGateway(io, services) {
           );
           if (!conv) return;
 
-          const pageAccessToken = await services.getIGPageTokenByPageId(
+          const pageAccessToken = await services.getPageTokenByPageId(
             conv.page_id
           );
           if (!pageAccessToken) return;
