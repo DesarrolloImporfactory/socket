@@ -672,7 +672,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 created_by_user_id: id_usuarios,
                 description: '',
                 end: fecha_hora_fin_utc,
-                invites: [
+                invitees: [
                   {
                     name: nombre,
                     email: correo,
