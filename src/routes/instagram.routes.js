@@ -6,8 +6,8 @@ const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 const igConversations = require('../controllers/instagram_conversations.controller');
 
-const SECRET_MESSENGER = '9cf575fae8f0516fa727623007cd8044'; // App IMPORCHAT (Facebook/Messenger)
-const SECRET_IG_GRAPH = 'b9015cadee33d57d360fe133812bfce0'; // App IMPORCHAT-IG (Instagram Graph)
+const SECRET_MESSENGER = '9cf575fae8f0516fa727623007cd8044'; // IMPORCHAT (Messenger)
+const SECRET_IG_GRAPH = 'b9015cadee33d57d360fe133812bfce0'; // IMPORCHAT-IG (Instagram Graph)
 
 router.get('/webhook', igWebhookController.verifyWebhook);
 
@@ -31,24 +31,26 @@ router.post(
       const hmac = (secret) =>
         crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
 
-      const h1 = SECRET_MESSENGER ? hmac(SECRET_MESSENGER) : '';
-      const h2 = SECRET_IG_GRAPH ? hmac(SECRET_IG_GRAPH) : '';
+      const tryMessenger = SECRET_MESSENGER ? hmac(SECRET_MESSENGER) : '';
+      const tryIG = SECRET_IG_GRAPH ? hmac(SECRET_IG_GRAPH) : '';
 
-      if (h1 === theirHash) {
+      if (tryMessenger === theirHash) {
         req.fbAppSecretOverride = SECRET_MESSENGER;
+        req.signatureVerified = true; // 👈 marcar verificado
         console.error('[IG GATE] ✅ MATCH IMPORCHAT (Messenger App)');
         return next();
       }
-      if (h2 === theirHash) {
+      if (tryIG === theirHash) {
         req.fbAppSecretOverride = SECRET_IG_GRAPH;
+        req.signatureVerified = true; // 👈 marcar verificado
         console.error('[IG GATE] ✅ MATCH IMPORCHAT-IG (Instagram App)');
         return next();
       }
 
       console.error('[IG GATE] ❌ NO MATCH', {
         theirHash,
-        tryMessenger: h1.slice(0, 16) + '…',
-        tryIG: h2.slice(0, 16) + '…',
+        tryMessenger: tryMessenger.slice(0, 16) + '…',
+        tryIG: tryIG.slice(0, 16) + '…',
       });
       return res.status(401).send('Invalid signature');
     } catch (e) {
@@ -56,6 +58,7 @@ router.post(
       return res.status(500).send('Gate error');
     }
   },
+  // deja el verify, pero permitirá bypass si ya fue verificado por el gate
   verifyFBSignature,
   igWebhookController.receiveWebhook
 );
