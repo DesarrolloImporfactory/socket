@@ -1,26 +1,4 @@
-const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
-const InstagramService = require('../services/instagram.service');
-
-function safeParseJson(raw) {
-  if (!raw) return null;
-  if (Buffer.isBuffer(raw)) {
-    try {
-      return JSON.parse(raw.toString('utf8'));
-    } catch {
-      return null;
-    }
-  }
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-  if (typeof raw === 'object') return raw;
-  return null;
-}
 
 exports.verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
@@ -41,7 +19,6 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
   }
 
   if (body.object !== 'instagram') {
-    // Este endpoint es SOLO para IG Graph; cualquier otro object se ignora
     console.log('[IG_WEBHOOK] object != instagram →', body.object);
     return res.sendStatus(200);
   }
@@ -50,13 +27,12 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
     '[IG_WEBHOOK][RAW] object=',
     body.object,
     'entries=',
-    Array.isArray(body.entry) ? body.entry.length : 0
+    body.entry?.length || 0
   );
 
   for (const entry of body.entry || []) {
     const igId = String(entry.id || '');
     const changes = entry.changes || [];
-
     console.log(
       '[IG_WEBHOOK][INSTAGRAM] entry.id (ig_id)=',
       igId,
@@ -64,7 +40,7 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
       changes.length
     );
 
-    // Ignora payloads de muestra del panel (ej. igId "0" y sender/recipient de demo)
+    // Ignora el “Enviar a mi servidor” del panel (datos falsos)
     const isSample =
       igId === '0' ||
       changes.some(
@@ -73,18 +49,14 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
           c?.value?.sender?.id === '12334' &&
           c?.value?.recipient?.id === '23245'
       );
-
     if (isSample) {
       console.log('[IG_WEBHOOK] sample payload ignorado');
       continue;
     }
 
-    // Si en el futuro quieres procesar eventos reales de IG Graph, hazlo aquí.
-    // Nota: Los DMs IG normales ya llegan por /api/v1/messenger/webhook (object: "page").
+    // Por ahora solo log; si quieres procesar comments/mentions en el futuro, hazlo aquí.
     for (const ch of changes) {
       console.log('[IG_WEBHOOK][CHANGE]', ch.field, JSON.stringify(ch.value));
-      // Ejemplos de fields: 'comments', 'mentions', 'messages', 'message_reactions', etc.
-      // (De momento solo logueamos para no alterar tu flujo actual).
     }
   }
 
