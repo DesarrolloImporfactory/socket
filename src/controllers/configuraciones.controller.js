@@ -70,44 +70,29 @@ exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
   });
 });
 
-router.post('/configuraciones/listar_conexiones', async (req, res) => {
+exports.listarConexiones = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
-  if (!id_usuario) {
-    return res
-      .status(400)
-      .json({ status: 'error', message: 'Falta id_usuario' });
-  }
 
-  try {
-    const [rows] = await db.query(
-      `
-      SELECT
-        id,
-        id_plataforma,
-        nombre_configuracion,
-        telefono,
-        id_telefono,        
-        id_whatsapp,        
-        webhook_url,
-        metodo_pago,
-        suspendido,
-        CASE
-          WHEN COALESCE(id_telefono,'') <> '' AND COALESCE(id_whatsapp,'') <> '' THEN 1
-          ELSE 0
-        END AS conectado
-      FROM configuraciones
-      WHERE id_usuario = ?
-        AND suspendido = 0
-      ORDER BY id DESC
-      `,
-      { replacements: [id_usuario] }
+  const configuraciones = await db.query(
+    'SELECT id, id_plataforma, nombre_configuracion, telefono, webhook_url, metodo_pago, suspendido, CASE WHEN id_telefono IS NOT NULL AND id_whatsapp IS NOT NULL AND token IS NOT NULL THEN 1 ELSE 0 END AS conectado FROM configuraciones WHERE id_usuario = ? AND suspendido = 0',
+    {
+      replacements: [id_usuario],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+  if (!configuraciones || configuraciones.length === 0) {
+    return next(
+      new AppError(
+        'No se encontro una configuracion con este id_usuario: ' + id_usuario,
+        400
+      )
     );
-
-    return res.json({ status: 'success', data: rows });
-  } catch (e) {
-    console.error('listar_conexiones:', e);
-    return res.status(500).json({ status: 'error', message: 'Error interno' });
   }
+
+  res.status(200).json({
+    status: 'success',
+    data: configuraciones,
+  });
 });
 
 exports.listarConfiguraciones = catchAsync(async (req, res, next) => {
