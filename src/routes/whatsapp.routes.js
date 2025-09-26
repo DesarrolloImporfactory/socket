@@ -1067,7 +1067,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         {
           replacements: [
             key_imporsuit,
-            nombre_configuracion,
             displayNumber,
             phoneNumberId, // id_telefono = PHONE_NUMBER_ID
             wabaId, // id_whatsapp = WABA_ID
