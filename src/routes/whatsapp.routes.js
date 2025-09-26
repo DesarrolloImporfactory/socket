@@ -813,7 +813,7 @@ async function getConfigFromDB(id) {
 }
 
 router.post('/embeddedSignupComplete', async (req, res) => {
-  const { code, id_usuario, redirect_uri } = req.body;
+  const { code, id_usuario, redirect_uri, id_configuracion } = req.body;
 
   if (!code || !id_usuario) {
     return res.status(400).json({
@@ -822,8 +822,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     });
   }
 
-  // Usaremos esto SOLO como "fallback" si el intento sin redirect_uri falla.
-  const REDIRECT_URI =
+  // Usaremos redirect_uri solo como fallback si hace falta
+  const FALLBACK_REDIRECT_URI =
     (typeof redirect_uri === 'string' && redirect_uri.trim()) ||
     process.env.FB_LOGIN_REDIRECT_URI ||
     'https://chatcenter.imporfactory.app/conexionespruebas';
@@ -831,26 +831,19 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   console.log(
     '[EMB][IN] id_usuario=',
     id_usuario,
+    ' id_configuracion(body)=',
+    id_configuracion || '(none)',
     ' redirect_uri(body)=',
     redirect_uri || '(none)',
     ' code.len=',
     (code || '').length
   );
-  console.log(
-    '[EMB][HDR] origin=',
-    req.headers.origin,
-    ' referer=',
-    req.headers.referer,
-    ' host=',
-    req.headers.host
-  );
 
   const DEFAULT_TWOFA_PIN = '123456';
 
-  // === 1) Intercambio code -> business token (clientToken) ===
+  // 1) Intercambiar code -> business token (clientToken)
   let clientToken;
   try {
-    // Intento A: **sin redirect_uri** (recomendado para Embedded Signup)
     console.log('[OAUTH][REQ:A] /oauth/access_token WITHOUT redirect_uri');
     const tokenRespA = await axios.get(
       'https://graph.facebook.com/v22.0/oauth/access_token',
@@ -864,15 +857,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     );
     clientToken = tokenRespA.data?.access_token;
   } catch (eA) {
-    const sub = eA?.response?.data?.error?.error_subcode;
-    const msg = eA?.response?.data || eA.message;
-    console.log('[OAUTH][ERR:A]', msg);
-
-    // Intento B (fallback): con redirect_uri explícito
+    console.log('[OAUTH][ERR:A]', eA?.response?.data || eA.message);
     try {
       console.log(
         '[OAUTH][REQ:B] /oauth/access_token WITH redirect_uri=',
-        REDIRECT_URI
+        FALLBACK_REDIRECT_URI
       );
       const tokenRespB = await axios.get(
         'https://graph.facebook.com/v22.0/oauth/access_token',
@@ -881,22 +870,16 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             client_id: process.env.FB_APP_ID,
             client_secret: process.env.FB_APP_SECRET,
             code,
-            redirect_uri: REDIRECT_URI,
+            redirect_uri: FALLBACK_REDIRECT_URI,
           },
         }
       );
       clientToken = tokenRespB.data?.access_token;
     } catch (eB) {
-      console.log(
-        '[OAUTH][ERR:B]',
-        eB?.response?.data || eB.message,
-        ' redirect_uri_used=',
-        REDIRECT_URI
-      );
+      console.log('[OAUTH][ERR:B]', eB?.response?.data || eB.message);
       return res.status(400).json({
         success: false,
-        message:
-          'No se pudo activar el número automáticamente (intercambio de code).',
+        message: 'No se pudo activar el número (intercambio de code).',
         error: eB?.response?.data || eB.message,
       });
     }
@@ -906,7 +889,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!clientToken)
       throw new Error('No se obtuvo business token a partir del code');
 
-    // === 2) Determinar WABA via debug_token ===
+    // 2) Determinar WABA del onboarding (debug_token)
     const appToken = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
     const dbg = await axios.get(
       'https://graph.facebook.com/v22.0/debug_token',
@@ -929,9 +912,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
     if (!targetIds.length)
       throw new Error('No se pudo determinar el WABA desde debug_token');
-    const wabaId = targetIds[0];
+    const wabaId = targetIds[0]; // <- **WABA_ID** (para `id_whatsapp`)
 
-    // === 3) Obtener phone_numbers del WABA ===
+    // 3) Obtener phone_numbers del WABA (para **phone_number_id**)
     const pn = await axios.get(
       `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
       {
@@ -945,15 +928,19 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!numbers.length)
       throw new Error('El WABA no tiene números cargados todavía');
 
+    // Prioriza un número no conectado; si no hay, toma el primero
     const candidate =
       numbers.find((n) => (n.status || '').toUpperCase() !== 'CONNECTED') ||
       numbers[0];
-    const phoneNumberId = candidate.id;
-    const displayNumber = (candidate.display_phone_number || '')
+    const phoneNumberId = candidate?.id || null; // <- **PHONE_NUMBER_ID** (para `id_telefono`)
+    const displayNumber = (candidate?.display_phone_number || '')
       .replace(/\s+/g, '')
-      .replace('+', '');
+      .replace('+', ''); // <- para `telefono`
 
-    // === 4) Registrar (register) con PIN ===
+    if (!phoneNumberId)
+      throw new Error('phoneNumberId indefinido luego de /phone_numbers');
+
+    // 4) Registrar el número (register) con PIN
     async function register(body) {
       return axios.post(
         `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
@@ -975,23 +962,27 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           pin: DEFAULT_TWOFA_PIN,
         });
       } else {
+        console.log(
+          '[REGISTER][ERR]',
+          e?.response?.status,
+          e?.response?.data || e.message
+        );
         throw e;
       }
     }
 
-    // === 5) Suscribir app al WABA ===
+    // 5) Suscribir app al WABA
     await axios.post(
       `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${clientToken}` } }
     );
 
-    // === 6) Verificar estado del número ===
+    // 6) Verificar estado del número (campos válidos en phone number)
     const check = await axios.get(
       `https://graph.facebook.com/v22.0/${phoneNumberId}`,
       {
         params: {
-          // campos válidos en el phone number
           fields:
             'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
         },
@@ -999,8 +990,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       }
     );
     const info = check.data || {};
-
-    // === 7) Persistir en BD ===
     const nombre_configuracion = `${
       info?.verified_name || 'WhatsApp'
     } - Imporsuit`;
@@ -1009,35 +998,88 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     const permanentPartnerTok = process.env.FB_PROVIDER_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
-    const [cfg] = await db.query(
-      `SELECT id FROM configuraciones WHERE id_usuario = ? AND id_telefono = ? LIMIT 1`,
-      { replacements: [id_usuario, phoneNumberId] }
-    );
+    // =====================================================================
+    // 7) Persistencia — reglas:
+    //    - telefono          = displayNumber (E164 sin +, sin espacios)
+    //    - id_telefono       = phoneNumberId  (PHONE_NUMBER_ID)
+    //    - id_whatsapp       = wabaId         (WABA_ID)
+    //    - token             = FB_PROVIDER_TOKEN (para enviar mensajes)
+    //    Estrategia de "upsert":
+    //    A) Si llega id_configuracion -> actualizar esa fila.
+    //    B) Si NO llega:
+    //       1) Intentar actualizar una fila "pre-creada" del usuario
+    //          con (id_telefono vacío) y (telefono = displayNumber o vacío).
+    //       2) Si no hay, buscar coincidencia exacta por (id_usuario + id_telefono).
+    //       3) Si no hay, INSERT.
+    // =====================================================================
 
-    let id_configuracion;
-    if (cfg.length) {
-      id_configuracion = cfg[0].id;
+    let idConfigToUse = id_configuracion || null;
+
+    if (!idConfigToUse) {
+      // B-1) fila pre-creada (id_telefono vacío) por ese usuario y con telefono = displayNumber (o vacía)
+      const [preRows] = await db.query(
+        `SELECT id
+           FROM configuraciones
+          WHERE id_usuario = ?
+            AND (id_telefono IS NULL OR id_telefono = '')
+            AND (telefono = ? OR telefono IS NULL OR telefono = '')
+          ORDER BY id DESC
+          LIMIT 1`,
+        { replacements: [id_usuario, displayNumber] }
+      );
+      if (Array.isArray(preRows) && preRows.length) {
+        idConfigToUse = preRows[0].id;
+        console.log('[DB] Usando config pre-creada id=', idConfigToUse);
+      }
+    }
+
+    if (!idConfigToUse) {
+      // B-2) coincidencia por (id_usuario + id_telefono) si existiera
+      const [matchRows] = await db.query(
+        `SELECT id
+           FROM configuraciones
+          WHERE id_usuario = ?
+            AND id_telefono = ?
+          LIMIT 1`,
+        { replacements: [id_usuario, phoneNumberId] }
+      );
+      if (Array.isArray(matchRows) && matchRows.length) {
+        idConfigToUse = matchRows[0].id;
+        console.log(
+          '[DB] Usando config existente por id_usuario+id_telefono id=',
+          idConfigToUse
+        );
+      }
+    }
+
+    if (idConfigToUse) {
+      // UPDATE
       await db.query(
         `UPDATE configuraciones SET
+           key_imporsuit        = IFNULL(key_imporsuit, ?),
            nombre_configuracion = ?,
-           telefono            = ?,
-           id_whatsapp         = ?,
-           token               = ?,
-           webhook_url         = ?,
-           updated_at          = NOW()
+           telefono             = ?,
+           id_telefono          = ?,
+           id_whatsapp          = ?,
+           token                = ?,
+           webhook_url          = ?,
+           updated_at           = NOW()
          WHERE id = ?`,
         {
           replacements: [
+            key_imporsuit,
             nombre_configuracion,
             displayNumber,
-            wabaId,
+            phoneNumberId, // id_telefono = PHONE_NUMBER_ID
+            wabaId, // id_whatsapp = WABA_ID
             permanentPartnerTok,
             webhook_url,
-            id_configuracion,
+            idConfigToUse,
           ],
         }
       );
     } else {
+      // INSERT
       const [ins] = await db.query(
         `INSERT INTO configuraciones
            (id_usuario, key_imporsuit, nombre_configuracion,
@@ -1050,23 +1092,25 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             key_imporsuit,
             nombre_configuracion,
             displayNumber,
-            phoneNumberId,
-            wabaId,
+            phoneNumberId, // id_telefono = PHONE_NUMBER_ID
+            wabaId, // id_whatsapp = WABA_ID
             permanentPartnerTok,
             webhook_url,
           ],
         }
       );
-      id_configuracion = ins.insertId;
+      idConfigToUse = ins?.insertId || ins;
+      console.log('[DB] Insertada nueva config id=', idConfigToUse);
     }
 
+    // clientes_chat_center (INSERT IGNORE)
     await db.query(
       `INSERT IGNORE INTO clientes_chat_center
          (id_configuracion, uid_cliente, nombre_cliente, celular_cliente)
        VALUES (?, ?, ?, ?)`,
       {
         replacements: [
-          id_configuracion,
+          idConfigToUse,
           phoneNumberId,
           nombre_configuracion,
           displayNumber,
@@ -1076,9 +1120,10 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     return res.json({
       success: true,
-      id_configuracion,
-      waba_id: wabaId,
-      phone_number_id: phoneNumberId,
+      id_configuracion: idConfigToUse,
+      waba_id: wabaId, // WABA_ID
+      phone_number_id: phoneNumberId, // PHONE_NUMBER_ID
+      telefono: displayNumber,
       status: info?.status || null,
     });
   } catch (err) {
