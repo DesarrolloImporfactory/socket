@@ -313,7 +313,7 @@ exports.newLogin = async (req, res) => {
 
         if (!configuracion || !configuracion.id_usuario) {
           /* crear usuario y sub_usuario */
-          const crear_usuario = await Usuarios_chat_center.create({
+          /* const crear_usuario = await Usuarios_chat_center.create({
             nombre: nombre_users,
             id_plan: null,
             fecha_inicio: null,
@@ -330,9 +330,22 @@ exports.newLogin = async (req, res) => {
             rol: 'administrador',
           });
 
+          const crear_configuracion = await Configuraciones.create({
+            id_usuario: crear_usuario.id_usuario,
+            usuario: nombre_users.replace(/\s+/g, ''),
+            password: con_users,
+            email: usuario_users,
+            nombre_encargado: nombre_users,
+            rol: 'administrador',
+          });
+
           id_sub_usuario_encontrado = crear_sub_usuario.id_sub_usuario;
 
-          usuarioEncontrado = crear_sub_usuario;
+          usuarioEncontrado = crear_sub_usuario; */
+
+          return res
+            .status(403)
+            .json({ message: 'No tienes una configuracion enlazada a esa plataforma' });
         } else {
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
             where: {
