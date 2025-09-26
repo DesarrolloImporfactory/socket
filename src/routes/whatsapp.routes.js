@@ -822,13 +822,12 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     });
   }
 
-  // 1) redirect_uri a usar en el intercambio del code (debe ser idéntico al que lanzó el FB.login)
+  // Usaremos esto SOLO como "fallback" si el intento sin redirect_uri falla.
   const REDIRECT_URI =
     (typeof redirect_uri === 'string' && redirect_uri.trim()) ||
     process.env.FB_LOGIN_REDIRECT_URI ||
     'https://chatcenter.imporfactory.app/conexionespruebas';
 
-  // Logs útiles (sin exponer el code)
   console.log(
     '[EMB][IN] id_usuario=',
     id_usuario,
@@ -845,41 +844,69 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     ' host=',
     req.headers.host
   );
-  console.log(
-    '[EMB][URI] using REDIRECT_URI=',
-    REDIRECT_URI,
-    ' (env.FB_LOGIN_REDIRECT_URI=',
-    process.env.FB_LOGIN_REDIRECT_URI,
-    ')',
-    ' appId=',
-    process.env.FB_APP_ID
-  );
 
   const DEFAULT_TWOFA_PIN = '123456';
 
+  // === 1) Intercambio code -> business token (clientToken) ===
+  let clientToken;
   try {
-    // 2) Intercambio code -> business token (clientToken)
-    console.log('[OAUTH][REQ] GET /oauth/access_token params =', {
-      client_id: process.env.FB_APP_ID,
-      redirect_uri: REDIRECT_URI,
-      code_len: (code || '').length,
-    });
-    const tokenResp = await axios.get(
+    // Intento A: **sin redirect_uri** (recomendado para Embedded Signup)
+    console.log('[OAUTH][REQ:A] /oauth/access_token WITHOUT redirect_uri');
+    const tokenRespA = await axios.get(
       'https://graph.facebook.com/v22.0/oauth/access_token',
       {
         params: {
           client_id: process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
           code,
-          redirect_uri: REDIRECT_URI,
         },
       }
     );
-    const clientToken = tokenResp.data?.access_token;
+    clientToken = tokenRespA.data?.access_token;
+  } catch (eA) {
+    const sub = eA?.response?.data?.error?.error_subcode;
+    const msg = eA?.response?.data || eA.message;
+    console.log('[OAUTH][ERR:A]', msg);
+
+    // Intento B (fallback): con redirect_uri explícito
+    try {
+      console.log(
+        '[OAUTH][REQ:B] /oauth/access_token WITH redirect_uri=',
+        REDIRECT_URI
+      );
+      const tokenRespB = await axios.get(
+        'https://graph.facebook.com/v22.0/oauth/access_token',
+        {
+          params: {
+            client_id: process.env.FB_APP_ID,
+            client_secret: process.env.FB_APP_SECRET,
+            code,
+            redirect_uri: REDIRECT_URI,
+          },
+        }
+      );
+      clientToken = tokenRespB.data?.access_token;
+    } catch (eB) {
+      console.log(
+        '[OAUTH][ERR:B]',
+        eB?.response?.data || eB.message,
+        ' redirect_uri_used=',
+        REDIRECT_URI
+      );
+      return res.status(400).json({
+        success: false,
+        message:
+          'No se pudo activar el número automáticamente (intercambio de code).',
+        error: eB?.response?.data || eB.message,
+      });
+    }
+  }
+
+  try {
     if (!clientToken)
       throw new Error('No se obtuvo business token a partir del code');
 
-    // 3) Determinar WABA del onboarding actual via debug_token
+    // === 2) Determinar WABA via debug_token ===
     const appToken = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
     const dbg = await axios.get(
       'https://graph.facebook.com/v22.0/debug_token',
@@ -887,7 +914,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         params: { input_token: clientToken, access_token: appToken },
       }
     );
-
     const dataDbg = dbg.data?.data || {};
     let targetIds = dataDbg?.target_ids || [];
     if (!targetIds.length && Array.isArray(dataDbg?.granular_scopes)) {
@@ -901,18 +927,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         }
       }
     }
-    console.log(
-      '[DEBUG_TOKEN] target_ids=',
-      targetIds,
-      ' granular_scopes.len=',
-      (dataDbg?.granular_scopes || []).length
-    );
     if (!targetIds.length)
       throw new Error('No se pudo determinar el WABA desde debug_token');
-
     const wabaId = targetIds[0];
 
-    // 4) Obtener phone_numbers del WABA (con el clientToken)
+    // === 3) Obtener phone_numbers del WABA ===
     const pn = await axios.get(
       `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
       {
@@ -926,7 +945,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!numbers.length)
       throw new Error('El WABA no tiene números cargados todavía');
 
-    // tomamos uno no conectado; si no hay, el primero
     const candidate =
       numbers.find((n) => (n.status || '').toUpperCase() !== 'CONNECTED') ||
       numbers[0];
@@ -935,7 +953,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       .replace(/\s+/g, '')
       .replace('+', '');
 
-    // 5) Registrar (register) con PIN (mejora tasa de éxito en 2FA)
+    // === 4) Registrar (register) con PIN ===
     async function register(body) {
       return axios.post(
         `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
@@ -957,23 +975,18 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           pin: DEFAULT_TWOFA_PIN,
         });
       } else {
-        console.log(
-          '[REGISTER][ERR]',
-          e?.response?.status,
-          e?.response?.data || e.message
-        );
         throw e;
       }
     }
 
-    // 6) Suscribir app al WABA
+    // === 5) Suscribir app al WABA ===
     await axios.post(
       `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`,
       { messaging_product: 'whatsapp' },
       { headers: { Authorization: `Bearer ${clientToken}` } }
     );
 
-    // 7) Verificar estado del número
+    // === 6) Verificar estado del número ===
     const check = await axios.get(
       `https://graph.facebook.com/v22.0/${phoneNumberId}`,
       {
@@ -986,13 +999,13 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     );
     const info = check.data || {};
 
-    // 8) Persistencia en su BD
+    // === 7) Persistir en BD ===
     const nombre_configuracion = `${
       info?.verified_name || 'WhatsApp'
     } - Imporsuit`;
     const webhook_url =
       'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54';
-    const permanentPartnerTok = process.env.FB_PROVIDER_TOKEN; // token de envío posterior
+    const permanentPartnerTok = process.env.FB_PROVIDER_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
     const [cfg] = await db.query(
@@ -1036,8 +1049,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             key_imporsuit,
             nombre_configuracion,
             displayNumber,
-            phoneNumberId, // id_telefono
-            wabaId, // id_whatsapp
+            phoneNumberId,
+            wabaId,
             permanentPartnerTok,
             webhook_url,
           ],
@@ -1070,9 +1083,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   } catch (err) {
     console.error(
       '❌ embeddedSignupComplete:',
-      err?.response?.data || err.message,
-      ' redirect_uri_used=',
-      REDIRECT_URI
+      err?.response?.data || err.message
     );
     return res.status(400).json({
       success: false,
