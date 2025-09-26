@@ -991,8 +991,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       `https://graph.facebook.com/v22.0/${phoneNumberId}`,
       {
         params: {
+          // campos válidos en el phone number
           fields:
-            'id,display_phone_number,account_mode,code_verification_status,quality_rating,verification_status,status',
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
         },
         headers: { Authorization: `Bearer ${clientToken}` },
       }
