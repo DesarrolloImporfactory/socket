@@ -1057,7 +1057,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       await db.query(
         `UPDATE configuraciones SET
            key_imporsuit        = IFNULL(key_imporsuit, ?),
-           nombre_configuracion = ?,
            telefono             = ?,
            id_telefono          = ?,
            id_whatsapp          = ?,
