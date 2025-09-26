@@ -462,6 +462,49 @@ router.put('/editarConfiguracion', async (req, res) => {
   }
 });
 
+router.put('/editarConfiguracionCalendario', async (req, res) => {
+  const { id_template_whatsapp, id_configuracion } = req.body;
+
+  if (!id_template_whatsapp || !id_configuracion) {
+    return res.status(400).json({
+      success: false,
+      message: 'Faltan datos requeridos.',
+    });
+  }
+
+  try {
+    const [result] = await db.query(
+      `UPDATE configuraciones SET template_notificar_calendario = ? WHERE id = ?`,
+      {
+        replacements: [id_template_whatsapp, id_configuracion],
+      }
+    );
+
+    if (result.affectedRows > 0) {
+      return res.status(200).json({
+        success: true,
+        status: 200,
+        message: 'Configuración editada correctamente.',
+      });
+    } else {
+      return res.json({
+        status: 200,
+        success: true,
+        modificado: false,
+        message: 'El estado ya estaba asignado.',
+      });
+    }
+  } catch (error) {
+    console.error('Error al editar configuración:', error);
+    return res.status(500).json({
+      success: false,
+      status: 500,
+      message: 'Error interno al editar configuración.',
+      error: error.message,
+    });
+  }
+});
+
 /**
  * PUT /api/v1/whatsapp_managment/actualizarMetodoPago
  * Cambia el metodo de pago de la configuracion de una cuenta.

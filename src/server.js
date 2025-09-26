@@ -38,6 +38,9 @@ db.sync({
 // Aquí ejecutamos el cron de remarketing
 require('./cron/remarketing');
 
+// Aqui ejecutamos el cron de aviso calendario
+require('./cron/aviso_calendarios');
+
 // Se agrega el puerto desde las variables de entorno -😁
 const server = app.listen(process.env.PORT, () => {
   console.log(`Server listening on port ${process.env.PORT}`);
