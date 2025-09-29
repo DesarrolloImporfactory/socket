@@ -300,9 +300,11 @@ exports.newLogin = async (req, res) => {
       let con_users = user_imporauit.con_users;
       let usuario_users = user_imporauit.usuario_users;
 
-      let id_plan = null;
+      let free_trial_used = null;
 
       let id_sub_usuario_encontrado = '';
+
+      let estado_creacion = '';
 
       if (ecommerce == 1 || membresia_ecommerce == 1 || importacion == 1) {
         /* usuario */
@@ -343,9 +345,22 @@ exports.newLogin = async (req, res) => {
 
           usuarioEncontrado = crear_sub_usuario; */
 
-          return res
-            .status(403)
-            .json({ message: 'No tienes una configuracion enlazada a esa plataforma' });
+          estado_creacion = 'nulo';
+
+          let informacion_crear_usuario = {
+            nombre: nombre_users,
+            password: con_users,
+            email: usuario_users,
+          };
+
+          res.status(200).json({
+            status: 'success',
+            estado_creacion: estado_creacion,
+            token: null,
+            user: informacion_crear_usuario,
+            id_plataforma: tienda,
+            id_configuracion: null,
+          });
         } else {
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
             where: {
@@ -359,7 +374,7 @@ exports.newLogin = async (req, res) => {
             });
           }
 
-          id_plan = usuarios_chat_center.id_plan;
+          free_trial_used = usuarios_chat_center.free_trial_used;
 
           /* consulta id_subusuarios */
           const subusuarios_chat_center =
@@ -379,32 +394,35 @@ exports.newLogin = async (req, res) => {
           id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
 
           usuarioEncontrado = subusuarios_chat_center;
-        }
 
-        if (!id_plan) {
-          console.log('NO TIENE PLAN ASIGNADO');
+          if (free_trial_used == 0) {
+            estado_creacion = 'incompleto';
+          } else {
+            estado_creacion = 'completo';
+          }
+
+          // Generar token de sesión
+          const sessionToken = await generarToken(id_sub_usuario_encontrado);
+
+          // Eliminar campos sensibles
+          const usuarioPlano = usuarioEncontrado.toJSON();
+          const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+          // Respuesta
+          res.status(200).json({
+            status: 'success',
+            estado_creacion: estado_creacion,
+            token: sessionToken,
+            user: usuarioSinPassword,
+            id_plataforma: tienda,
+            id_configuracion: null,
+          });
         }
       } else {
         return res
           .status(403)
           .json({ message: 'El usuario no tiene tiene cursos habilitados' });
       }
-
-      // Generar token de sesión
-      const sessionToken = await generarToken(id_sub_usuario_encontrado);
-
-      // Eliminar campos sensibles
-      const usuarioPlano = usuarioEncontrado.toJSON();
-      const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
-
-      // Respuesta
-      res.status(200).json({
-        status: 'success',
-        token: sessionToken,
-        user: usuarioSinPassword,
-        id_plataforma: tienda,
-        id_configuracion: null,
-      });
     }
   } catch (err) {
     return res
