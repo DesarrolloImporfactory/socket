@@ -101,13 +101,6 @@ const ClientesChatCenter = db.define(
       allowNull: true,
       defaultValue: null,
     },
-
-    telefono_limpio: {
-      type: DataTypes.STRING(13),
-      allowNull: true,
-      defaultValue: null,
-    },
-
     pedido_confirmado: {
       type: DataTypes.INTEGER,
       allowNull: true,
