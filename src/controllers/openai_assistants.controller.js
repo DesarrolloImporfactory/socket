@@ -585,15 +585,20 @@ const obtenerURLImagen = (imagePath, serverURL) => {
   } else {
     // Manejar el caso cuando imagePath es null
     console.error('imagePath es null o undefined');
-    
+
     return null; // o un valor por defecto si prefieres
   }
 };
 
-
-
 exports.enviar_mensaje_gpt = async (req, res) => {
-  const { mensaje, id_chat, id_thread_chat, id_plataforma, apiKey, assistantId } = req.body;
+  const {
+    mensaje,
+    id_chat,
+    id_thread_chat,
+    id_plataforma,
+    apiKey,
+    assistantId,
+  } = req.body;
 
   if (!mensaje || !id_chat || !id_thread_chat) {
     return res.status(400).json({
