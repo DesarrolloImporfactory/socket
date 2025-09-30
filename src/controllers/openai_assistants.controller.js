@@ -585,6 +585,7 @@ const obtenerURLImagen = (imagePath, serverURL) => {
   } else {
     // Manejar el caso cuando imagePath es null
     console.error('imagePath es null o undefined');
+    
     return null; // o un valor por defecto si prefieres
   }
 };
