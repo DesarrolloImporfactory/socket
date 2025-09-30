@@ -608,6 +608,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     });
   }
 
+  
   try {
     // Insertar mensaje del usuario (rol_mensaje = 1)
     await db.query(
