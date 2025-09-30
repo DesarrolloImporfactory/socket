@@ -607,7 +607,6 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       message: 'Faltan parámetros',
     });
   }
-
   
   try {
     // Insertar mensaje del usuario (rol_mensaje = 1)
