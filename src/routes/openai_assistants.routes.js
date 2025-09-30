@@ -18,6 +18,11 @@ router.post(
 );
 
 router.post(
+  '/enviar_mensaje_gpt',
+  openai_assistantsController.enviar_mensaje_gpt
+);
+
+router.post(
   '/info_asistentes',
   openai_assistantsController.info_asistentes
 );

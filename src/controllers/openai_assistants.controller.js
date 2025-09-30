@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 
 const { db } = require('../database/config');
 const axios = require('axios');
+const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
 const {
   obtenerDatosClienteParaAssistant,
