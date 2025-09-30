@@ -856,8 +856,7 @@ async function getConfigFromDB(id) {
 }
 
 router.post('/embeddedSignupComplete', async (req, res) => {
-  const { code, id_usuario, redirect_uri, id_configuracion, business_id } =
-    req.body;
+  const { code, id_usuario, redirect_uri, id_configuracion } = req.body;
 
   if (!code || !id_usuario) {
     return res.status(400).json({
@@ -866,26 +865,38 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     });
   }
 
+  // ====== CONSTANTES/ENV OBLIGATORIOS ======
   const EXACT_REDIRECT_URI =
     (typeof redirect_uri === 'string' && redirect_uri.trim()) ||
     process.env.FB_LOGIN_REDIRECT_URI ||
     'https://chatcenter.imporfactory.app/conexiones';
 
   const DEFAULT_TWOFA_PIN = '123456';
-  const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // system user (estable)
+  const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User con permisos WA sobre el Business/WABA
   const APP_TOKEN = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
-  const DEFAULT_BUSINESS_ID = process.env.FB_BUSINESS_ID;
+  const BUSINESS_ID = process.env.FB_BUSINESS_ID; // <<--- EL MISMO QUE USAS A MANO
+
+  if (!SYS_TOKEN || !BUSINESS_ID) {
+    return res.status(400).json({
+      success: false,
+      message: 'Faltan FB_PROVIDER_TOKEN o FB_BUSINESS_ID en el entorno.',
+    });
+  }
 
   console.log('[EMB][IN]', {
     id_usuario,
     id_configuracion: id_configuracion || '(none)',
     redirect_uri: EXACT_REDIRECT_URI,
     code_len: (code || '').length,
-    DEFAULT_BUSINESS_ID: DEFAULT_BUSINESS_ID || '(none)',
+    BUSINESS_ID,
   });
 
-  // ───────────────── helpers ─────────────────
+  // ====== HELPERS ======
   const bearer = (tk) => ({ Authorization: `Bearer ${tk}` });
+  const norm = (s) =>
+    String(s || '')
+      .replace(/\s+/g, '')
+      .replace(/^\+/, '');
 
   async function safeGet(url, params = {}, headers = {}) {
     try {
@@ -914,7 +925,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
   }
 
-  // 1) Intercambiar code → access token (forzar con redirect_uri)
+  // ====== 1) Intercambiar code → access token (formalidad) ======
   let clientToken;
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
@@ -925,7 +936,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           client_id: process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
           code,
-          redirect_uri: EXACT_REDIRECT_URI, // forzado
+          redirect_uri: EXACT_REDIRECT_URI,
         },
       }
     );
@@ -935,7 +946,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       '[OAUTH][ERR with redirect_uri]',
       eWith?.response?.data || eWith.message
     );
-    // último recurso: sin redirect_uri
     try {
       console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
       const r2 = await axios.get(
@@ -962,252 +972,151 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!clientToken)
       throw new Error('No se obtuvo access token a partir del code');
 
-    // ───────── 2) Resolver WABA_ID con varias rutas ─────────
-    async function resolveWabaId(clientToken) {
-      // 2.1) Intento por debug_token (si es user token válido con granular_scopes)
-      try {
-        const dbg = await safeGet(
-          'https://graph.facebook.com/v22.0/debug_token',
-          {
-            input_token: clientToken,
-            access_token: APP_TOKEN,
-          }
-        );
-        const dataDbg = dbg.data?.data || {};
-        let targetIds = dataDbg?.target_ids || [];
+    // ====== 2) Obtener WABA exactamente como tu “manual” ======
+    // Manual: GET /{BUSINESS_ID}/client_whatsapp_business_accounts con SYS_TOKEN → tomar PRIMERO
+    const wabasResp = await safeGet(
+      `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
+      {},
+      bearer(SYS_TOKEN)
+    );
+    const wabas = wabasResp.data?.data || [];
+    if (!wabas.length) {
+      // Por si el WABA fuera "owned" en este business en lugar de "client"
+      const ownedResp = await safeGet(
+        `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
+        {},
+        bearer(SYS_TOKEN)
+      ).catch(() => ({ data: { data: [] } }));
+      const owned = ownedResp?.data?.data || [];
+      wabas.push(...owned);
+    }
+    if (!wabas.length)
+      throw new Error(
+        `El Business ${BUSINESS_ID} no tiene WABAs visibles para el SYS_TOKEN`
+      );
 
-        if (!targetIds.length && Array.isArray(dataDbg?.granular_scopes)) {
-          for (const s of dataDbg.granular_scopes) {
-            if (
-              s?.scope === 'whatsapp_business_management' &&
-              Array.isArray(s?.target_ids)
-            ) {
-              targetIds = s.target_ids;
-              break;
-            }
-          }
-        }
-        if (targetIds.length) {
-          console.log('[WABA] via debug_token:', targetIds[0]);
-          return targetIds[0];
-        }
-        console.log('[WABA] debug_token sin target_ids; seguimos fallback…');
-      } catch (e) {
-        console.log(
-          '[WABA] debug_token falló; seguimos fallback…',
-          e?.response?.data || e.message
-        );
-      }
+    const wabaPicked = wabas[0]; // EXACTO: el primero, como haces a mano (ej: guiaspro)
+    const wabaId = String(wabaPicked.id);
+    console.log('[WABA][PICK]', { wabaId, wabaName: wabaPicked.name });
 
-      // 2.2) Fallback A: /me?fields=businesses (si el token es de usuario real)
-      let businesses = [];
-      try {
-        const me = await safeGet(
-          'https://graph.facebook.com/v22.0/me',
-          { fields: 'id,name,businesses.limit(50){id,name}' },
-          bearer(clientToken)
-        );
-        businesses = me.data?.businesses?.data || [];
-        console.log(
-          '[FALLBACK A] businesses:',
-          businesses.map((b) => b.id)
-        );
-      } catch (e) {
-        console.log(
-          '[FALLBACK A][WARN] /me?businesses no disponible con este token'
-        );
-      }
-
-      // 2.3) Fallback B: usar BUSINESS_ID explícito (body o env)
-      if (!businesses.length && DEFAULT_BUSINESS_ID) {
-        console.log(
-          '[FALLBACK B] usando DEFAULT_BUSINESS_ID=',
-          DEFAULT_BUSINESS_ID
-        );
-        businesses = [
-          { id: DEFAULT_BUSINESS_ID, name: 'Default from env/body' },
-        ];
-      }
-
-      // 2.4) Fallback C: preguntar al dueño del App (owner business)
-      if (!businesses.length) {
-        try {
-          const appInfo = await safeGet(
-            `https://graph.facebook.com/v22.0/${process.env.FB_APP_ID}`,
-            { fields: 'id,name,business' },
-            bearer(APP_TOKEN)
-          );
-          const ownerBiz = appInfo.data?.business?.id || null;
-          if (ownerBiz) {
-            console.log('[FALLBACK C] owner business of APP:', ownerBiz);
-            businesses = [{ id: ownerBiz, name: 'App Owner Business' }];
-          }
-        } catch (e) {
-          console.log(
-            '[FALLBACK C][WARN] No se pudo obtener el business dueño del App'
-          );
-        }
-      }
-
-      if (!businesses.length) {
-        throw new Error(
-          'No se pudo obtener ningún Business (ni /me, ni env/body, ni dueño del App).'
-        );
-      }
-
-      // 2.5) Listar WABA owned/shared en cada business con SYS_TOKEN
-      for (const b of businesses) {
-        const bid = b.id;
-        try {
-          const [owned, shared] = await Promise.all([
-            safeGet(
-              `https://graph.facebook.com/v22.0/${bid}/owned_whatsapp_business_accounts`,
-              {},
-              bearer(SYS_TOKEN)
-            ).catch(() => ({ data: { data: [] } })),
-            safeGet(
-              `https://graph.facebook.com/v22.0/${bid}/client_whatsapp_business_accounts`,
-              {},
-              bearer(SYS_TOKEN)
-            ).catch(() => ({ data: { data: [] } })),
-          ]);
-          const list = [
-            ...(owned?.data?.data || []),
-            ...(shared?.data?.data || []),
-          ];
-          if (list.length) {
-            console.log('[WABA] via business fallback:', bid, '->', list[0].id);
-            return list[0].id;
-          }
-        } catch (e) {
-          console.log('[FALLBACK][WARN] No se listó WABA en business', bid);
-        }
-      }
-
-      throw new Error('No se encontró WABA en los businesses evaluados.');
+    // ====== 3) Listar números del WABA y elegir uno ======
+    // Manual: GET /{wabaId}/phone_numbers → tomar el primero (o no-CONNECTED)
+    let numbers = [];
+    try {
+      const pn = await safeGet(
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
+        { fields: 'id,display_phone_number,status,code_verification_status' },
+        bearer(SYS_TOKEN)
+      );
+      numbers = pn.data?.data || [];
+    } catch (e1) {
+      console.log('[NUMBERS][WARN] SYS_TOKEN falló; reintento con clientToken');
+      const pn2 = await safeGet(
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
+        { fields: 'id,display_phone_number,status,code_verification_status' },
+        bearer(clientToken)
+      );
+      numbers = pn2.data?.data || [];
     }
 
-    const wabaId = await resolveWabaId(clientToken);
-
-    // ───────── 3) Números del WABA (token estable, reintento) ─────────
-    async function listPhoneNumbersStable(wabaId) {
-      try {
-        const pn = await safeGet(
-          `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-          { fields: 'id,display_phone_number,status,code_verification_status' },
-          bearer(SYS_TOKEN)
-        );
-        return pn.data?.data || [];
-      } catch (e1) {
-        console.log(
-          '[NUMBERS][WARN] Con SYS_TOKEN falló; reintento con clientToken'
-        );
-        const pn2 = await safeGet(
-          `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-          { fields: 'id,display_phone_number,status,code_verification_status' },
-          bearer(clientToken)
-        );
-        return pn2.data?.data || [];
-      }
-    }
-
-    const numbers = await listPhoneNumbersStable(wabaId);
     if (!numbers.length)
       throw new Error('El WABA no tiene números cargados todavía');
 
-    const candidate =
+    let candidate =
       numbers.find((n) => (n.status || '').toUpperCase() !== 'CONNECTED') ||
       numbers[0];
 
     const phoneNumberId = candidate?.id || null;
-    const displayNumber = (candidate?.display_phone_number || '')
-      .replace(/\s+/g, '')
-      .replace('+', '');
+    const displayNumber = norm(candidate?.display_phone_number);
+    console.log('[PHONE][PICK]', {
+      phoneNumberId,
+      displayNumber,
+      status: candidate?.status,
+      cvs: candidate?.code_verification_status,
+    });
     if (!phoneNumberId)
       throw new Error('phoneNumberId indefinido luego de /phone_numbers');
 
-    // ───────── 4) Register con PIN (token estable + reintento) ─────────
-    async function register(body) {
-      try {
-        return await safePost(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
-          body,
-          bearer(SYS_TOKEN)
-        );
-      } catch (e1) {
-        console.log(
-          '[REGISTER][WARN] Con SYS_TOKEN falló; reintento con clientToken'
-        );
-        return await safePost(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}/register`,
-          body,
-          bearer(clientToken)
-        );
-      }
-    }
-
-    try {
-      await register({ messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN });
-    } catch (e) {
-      const codeErr = e?.response?.data?.error?.code;
-      if (codeErr === 131070) {
-        console.log('[REGISTER] ya estaba registrado (131070)');
-      } else if (codeErr === 131071 || codeErr === 131047) {
-        await register({
-          messaging_product: 'whatsapp',
-          pin: DEFAULT_TWOFA_PIN,
-        });
-      } else {
-        throw e;
-      }
-    }
-
-    // ───────── 5) Suscribir app ─────────
+    // ====== 4) Registrar el número (REGISTER) ======
+    const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
+    console.log('[POST][REGISTER] ->', regUrl);
     try {
       await safePost(
-        `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`,
+        regUrl,
+        { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
+        bearer(SYS_TOKEN)
+      );
+    } catch (e1) {
+      // reintento con clientToken
+      console.log(
+        '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+      );
+      try {
+        await safePost(
+          regUrl,
+          { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
+          bearer(clientToken)
+        );
+      } catch (e2) {
+        const codeErr = e2?.response?.data?.error?.code;
+        if (codeErr === 131070) {
+          console.log('[REGISTER] ya estaba registrado (131070)');
+        } else if (codeErr === 131071 || codeErr === 131047) {
+          await safePost(
+            regUrl,
+            { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
+            bearer(clientToken)
+          );
+        } else {
+          throw e2;
+        }
+      }
+    }
+
+    // ====== 5) Suscribir app al WABA ======
+    const subUrl = `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`;
+    console.log('[POST][SUBSCRIBE] ->', subUrl);
+    try {
+      await safePost(
+        subUrl,
         { messaging_product: 'whatsapp' },
         bearer(SYS_TOKEN)
       );
     } catch (e1) {
       console.log(
-        '[SUBSCRIBE][WARN] Con SYS_TOKEN falló; reintento con clientToken'
+        '[POST][SUBSCRIBE][WARN] SYS_TOKEN falló; retry con clientToken'
       );
       await safePost(
-        `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`,
+        subUrl,
         { messaging_product: 'whatsapp' },
         bearer(clientToken)
       );
     }
 
-    // ───────── 6) Verificar estado del número ─────────
-    async function getPhoneNumberInfoStable() {
-      try {
-        const r1 = await safeGet(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}`,
-          {
-            fields:
-              'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
-          },
-          bearer(SYS_TOKEN)
-        );
-        return r1.data || {};
-      } catch (e1) {
-        console.log(
-          '[PN-INFO][WARN] Con SYS_TOKEN falló; reintento con clientToken'
-        );
-        const r2 = await safeGet(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}`,
-          {
-            fields:
-              'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
-          },
-          bearer(clientToken)
-        );
-        return r2.data || {};
-      }
+    // ====== 6) Verificar estado del número ======
+    let info = {};
+    try {
+      const r1 = await safeGet(
+        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        {
+          fields:
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+        },
+        bearer(SYS_TOKEN)
+      );
+      info = r1.data || {};
+    } catch (e1) {
+      console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
+      const r2 = await safeGet(
+        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        {
+          fields:
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+        },
+        bearer(clientToken)
+      );
+      info = r2.data || {};
     }
-    const info = await getPhoneNumberInfoStable();
 
     const nombre_configuracion = `${
       info?.verified_name || 'WhatsApp'
@@ -1217,7 +1126,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     const permanentPartnerTok = SYS_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
-    // ───────── 7) Persistencia (idéntica a la suya) ─────────
+    // ====== 7) Persistir (igual que tu lógica) ======
     let idConfigToUse = id_configuracion || null;
 
     if (!idConfigToUse) {
@@ -1270,8 +1179,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           replacements: [
             key_imporsuit,
             displayNumber,
-            phoneNumberId,
-            wabaId,
+            phoneNumberId, // PHONE_NUMBER_ID
+            wabaId, // WABA_ID
             permanentPartnerTok,
             webhook_url,
             idConfigToUse,
