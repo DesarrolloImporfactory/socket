@@ -588,3 +588,129 @@ const obtenerURLImagen = (imagePath, serverURL) => {
     return null; // o un valor por defecto si prefieres
   }
 };
+
+
+
+exports.enviar_mensaje_gpt = async (req, res) => {
+  const { mensaje, id_chat, id_thread_chat, id_plataforma, apiKey, assistantId } = req.body;
+
+  if (!mensaje || !id_chat || !id_thread_chat) {
+    return res.status(400).json({
+      status: 400,
+      title: 'Error',
+      message: 'Faltan parámetros',
+    });
+  }
+
+  try {
+    // Insertar mensaje del usuario (rol_mensaje = 1)
+    await db.query(
+      `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
+       VALUES (?, ?, 1, NOW())`,
+      {
+        replacements: [id_chat, mensaje],
+        type: QueryTypes.INSERT,
+      }
+    );
+
+    const headers = {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'OpenAI-Beta': 'assistants=v2',
+    };
+
+    // Enviar mensaje del usuario
+    await axios.post(
+      `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
+      {
+        role: 'user',
+        content: mensaje,
+      },
+      { headers }
+    );
+
+    // Ejecutar assistant
+    const run = await axios.post(
+      `https://api.openai.com/v1/threads/${id_thread_chat}/runs`,
+      {
+        assistant_id: assistantId,
+        max_completion_tokens: 200,
+      },
+      { headers }
+    );
+
+    const run_id = run.data.id;
+
+    if (!run_id) {
+      return res.status(400).json({
+        status: 400,
+        error: 'No se pudo ejecutar el assistant.',
+      });
+    }
+
+    // Esperar respuesta
+    let status = 'queued';
+    let intentos = 0;
+
+    while (status !== 'completed' && status !== 'failed' && intentos < 20) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      intentos++;
+
+      const statusRes = await axios.get(
+        `https://api.openai.com/v1/threads/${id_thread_chat}/runs/${run_id}`,
+        { headers }
+      );
+
+      status = statusRes.data.status;
+    }
+
+    if (status === 'failed') {
+      return res.status(400).json({
+        status: 400,
+        error: 'Falló la ejecución del assistant.',
+      });
+    }
+
+    // Obtener respuesta final
+    const messagesRes = await axios.get(
+      `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
+      { headers }
+    );
+
+    const mensajes = messagesRes.data.data || [];
+    const respuesta = mensajes
+      .reverse()
+      .find((msg) => msg.role === 'assistant' && msg.run_id === run_id)
+      ?.content?.[0]?.text?.value;
+
+    if (!respuesta) {
+      return res.status(500).json({
+        status: 500,
+        message: 'No se obtuvo respuesta del assistant.',
+      });
+    }
+
+    // Guardar respuesta del assistant (rol_mensaje = 0)
+    await db.query(
+      `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
+       VALUES (?, ?, 0, NOW())`,
+      {
+        replacements: [id_chat, respuesta],
+        type: QueryTypes.INSERT,
+      }
+    );
+
+    res.status(200).json({
+      status: 200,
+      message: 'Mensaje enviado correctamente',
+      assistant_message: respuesta,
+    });
+  } catch (error) {
+    console.error('Error en enviar_mensaje_gpt:', error.message);
+    res.status(500).json({
+      status: 500,
+      message: 'Error interno del servidor',
+      error: error.message,
+    });
+  }
+};
