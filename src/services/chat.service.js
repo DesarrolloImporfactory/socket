@@ -175,7 +175,7 @@ class ChatService {
       }
 
       const sqlQuery = `
-      SELECT * FROM chats_materializada_desco
+      SELECT * FROM chats_4
       ${whereClause}
       ORDER BY mensaje_created_at DESC, id DESC
       LIMIT :limit;
@@ -1012,7 +1012,7 @@ class ChatService {
     try {
       const sql = `
         SELECT *
-        FROM chats_materializada_desco
+        FROM chats_4
         WHERE id_configuracion   = :id_configuracion
           AND celular_cliente = :phone
         ORDER BY mensaje_created_at DESC, id DESC
