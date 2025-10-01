@@ -10,7 +10,6 @@ const sanitizer = require('perfect-express-sanitizer');
 
 const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
-const cloudapiRouter = require('./routes/cloudapi.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
 const etiquetasAsignadasRouter = require('./routes/etiquetas_asignadas.routes');
 
@@ -154,7 +153,6 @@ app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
-app.use('/api/v1/cloudapi', cloudapiRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use('/api/v1/configuraciones', configuracionesRouter);

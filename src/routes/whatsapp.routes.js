@@ -755,7 +755,7 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
   try {
     // Actualizar webhook_url en la tabla configuraciones
     const webhook_url =
-      'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54';
+      'https://chat.imporfactory.app/api/v1/webhook_meta/webhook_whatsapp?webhook=wh_clfgshu99';
     const updateSql = `
     UPDATE configuraciones
     SET 
@@ -1122,7 +1122,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       info?.verified_name || 'WhatsApp'
     } - Imporsuit`;
     const webhook_url =
-      'https://new.imporsuitpro.com/public/webhook_whatsapp/webhook_2.php?webhook=wh_czcv54';
+      'https://chat.imporfactory.app/api/v1/webhook_meta/webhook_whatsapp?webhook=wh_clfgshu99';
     const permanentPartnerTok = SYS_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
