@@ -82,7 +82,7 @@ async function enviarAsistenteGpt({
     });
 
     if (data?.status === 200) {
-      await log(`✅ Respuesta asistente: ${data.respuesta}`);
+      await log(`✅ Respuesta asistente: ${JSON.stringify(data.respuesta)}`);
     } else {
       await log(`⚠️ Error en respuesta del asistente: ${JSON.stringify(data)}`);
     }
