@@ -611,11 +611,11 @@ exports.enviar_mensaje_gpt = async (req, res) => {
   }
 
   // Verificar que los archivos estén presentes
-  if (!archivos || archivos.length !== 4) {
+  if (!archivos || archivos.length !== 2) {
     return res.status(400).json({
       status: 400,
       title: 'Error',
-      message: 'Se necesitan 4 archivos para procesar la solicitud.',
+      message: 'Se necesitan 2 archivos para procesar la solicitud.',
     });
   }
 
