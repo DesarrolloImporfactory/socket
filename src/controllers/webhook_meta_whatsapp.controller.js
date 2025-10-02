@@ -426,6 +426,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           }\n`
         );
 
+        /* enviar notificacion al socket */
+
+        const resultado_api = await enviarConsultaAPI(
+          id_configuracion,
+          id_cliente
+        );
+
         cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
         if (tipo_button == 'template') {
           await enviarMensajeTextoWhatsApp(
@@ -770,13 +777,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           }
         }
         /* validar si el chat ah sido cerrado */
-
-        /* enviar notificacion al socket */
-
-        const resultado_api = await enviarConsultaAPI(
-          id_configuracion,
-          id_cliente
-        );
 
         if (resultado_api) {
           console.log({
