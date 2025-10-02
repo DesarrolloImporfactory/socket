@@ -599,7 +599,6 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     id_plataforma,
     apiKey,
     assistantId,
-    archivos, // Esta nueva propiedad contendrá los enlaces a los archivos
   } = req.body;
 
   if (!mensaje || !id_chat || !id_thread_chat) {
@@ -609,16 +608,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       message: 'Faltan parámetros',
     });
   }
-
-  // Verificar que los archivos estén presentes
-  if (!archivos || archivos.length !== 2) {
-    return res.status(400).json({
-      status: 400,
-      title: 'Error',
-      message: 'Se necesitan 2 archivos para procesar la solicitud.',
-    });
-  }
-
+  
   try {
     // Insertar mensaje del usuario (rol_mensaje = 1)
     await db.query(
@@ -636,19 +626,12 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       'OpenAI-Beta': 'assistants=v2',
     };
 
-    // Aquí le pasas los enlaces de los archivos
-    const archivosLinks = archivos.map((archivo) => ({
-      type: 'file', // Esto indica que es un archivo
-      url: archivo, // Enlace al archivo
-    }));
-
-    // Enviar mensaje del usuario con los archivos adjuntos
+    // Enviar mensaje del usuario
     await axios.post(
       `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
       {
         role: 'user',
         content: mensaje,
-        files: archivosLinks, // Adjuntamos los archivos
       },
       { headers }
     );
