@@ -571,7 +571,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           /* await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */
 
           console.log('phone_whatsapp_from: ' + phone_whatsapp_from);
-          console.log('business_phone_id: ' + phone_whatsapp_from);
+          console.log('business_phone_id: ' + business_phone_id);
           console.log('accessToken: ' + accessToken);
 
           // Enviar mensaje al asistente GPT
