@@ -71,13 +71,13 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
 
     const { size } = await fs.stat(fullPath);
     await logInfo(`✅ Audio guardado: ${fullPath} (${size} bytes)`);
-    console.log(`✅ Audio guardado: ${fullPath} (${size} bytes)`);
+    /* console.log(`✅ Audio guardado: ${fullPath} (${size} bytes)`); */
 
     // Devolver ruta relativa para guardar en DB
     return dominio+`/uploads/webhook_whatsapp/recibidos/audios/${fileName}`;
   } catch (err) {
     await logError(`❌ Error al descargar audio: ${err.message}`);
-    console.log(`❌ Error al descargar audio: ${err.message}`)
+    /* console.log(`❌ Error al descargar audio: ${err.message}`) */
     return null;
   }
 

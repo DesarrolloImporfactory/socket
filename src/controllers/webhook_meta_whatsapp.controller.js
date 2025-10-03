@@ -110,7 +110,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       await ensureDir(logsDir);
 
       const rawBody = JSON.stringify(data);
-     /*  console.log('whatsapp_debug_raw: ' + rawBody);
+      /*  console.log('whatsapp_debug_raw: ' + rawBody);
       console.log('fin'); */
       await fsp.appendFile(
         path.join(logsDir, 'whatsapp_debug_raw.txt'),
@@ -278,7 +278,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           const audioId = mensaje_recibido?.audio?.id;
           texto_mensaje = `Audio recibido con ID: ${audioId}`;
           ruta_archivo = await descargarAudioWhatsapp(audioId, accessToken);
-          console.log("ruta_archivo: "+ruta_archivo)
+          console.log('ruta_archivo: ' + ruta_archivo);
           texto_mensaje += ruta_archivo
             ? `. Archivo guardado en: ${ruta_archivo}`
             : `. Error al descargar el archivo.`;
@@ -427,6 +427,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
             creacion_mensaje.id
           }\n`
+        );
+        console.log(
+          `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
+            creacion_mensaje.id
+          }`
         );
 
         /* enviar notificacion al socket */
