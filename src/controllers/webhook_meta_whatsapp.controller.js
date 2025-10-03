@@ -372,9 +372,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           ` \n`
       );
 
-      console.log("phone_whatsapp_from: "+phone_whatsapp_from)
-      console.log("id_configuracion: "+id_configuracion)
-
       const clienteExiste = await ClientesChatCenter.findOne({
         where: { celular_cliente: phone_whatsapp_from, id_configuracion },
       });
@@ -382,7 +379,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let id_cliente = null;
       let bot_openia = 1;
 
-      console.log("clienteExiste: "+clienteExiste)
       if (!clienteExiste) {
         console.log("entro en 1")
         cliente = await ClientesChatCenter.create({
@@ -424,6 +420,15 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       );
 
       /* Fin obtener id_cliente_configuracion */
+
+      console.log("id_configuracion: "+id_configuracion)
+      console.log("clienteExisteConfiguracion: "+clienteExisteConfiguracion)
+      console.log("business_phone_id: "+business_phone_id)
+      console.log("tipo_mensaje: "+tipo_mensaje)
+      console.log("texto_mensaje: "+texto_mensaje)
+      console.log("ruta_archivo: "+ruta_archivo)
+      console.log("id_cliente: "+id_cliente)
+      console.log("phone_whatsapp_from: "+phone_whatsapp_from)
 
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
