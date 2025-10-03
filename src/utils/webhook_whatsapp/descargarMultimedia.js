@@ -50,19 +50,14 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
     const audioData = audioRes.data;
     const mimeType = audioRes.headers['content-type'];
 
-    const validAudioTypes = [
-      'audio/ogg',
-      'audio/mpeg',
-      'audio/mp4',
-      'audio/aac',
-    ];
-    if (!validAudioTypes.includes(mimeType)) {
+    // Verificar si el tipo MIME es 'audio/ogg'
+    if (mimeType !== 'audio/ogg') {
       await logError(`❌ Tipo de archivo no válido: ${mimeType}`);
       return null;
     }
 
-    // Determinar extensión y nombre del archivo
-    const extension = mime.extension(mimeType) || 'mp3';
+    // Determinar extensión y nombre del archivo, forzando .ogg
+    const extension = 'ogg'; // Forzamos la extensión a .ogg
     const fileName = `${mediaId}.${extension}`;
     const fullPath = path.join(audioDir, fileName);
 
@@ -71,13 +66,11 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
 
     const { size } = await fs.stat(fullPath);
     await logInfo(`✅ Audio guardado: ${fullPath} (${size} bytes)`);
-    /* console.log(`✅ Audio guardado: ${fullPath} (${size} bytes)`); */
 
     // Devolver ruta relativa para guardar en DB
-    return dominio+`/uploads/webhook_whatsapp/recibidos/audios/${fileName}`;
+    return dominio + `/uploads/webhook_whatsapp/recibidos/audios/${fileName}`;
   } catch (err) {
     await logError(`❌ Error al descargar audio: ${err.message}`);
-    /* console.log(`❌ Error al descargar audio: ${err.message}`) */
     return null;
   }
 
@@ -175,7 +168,11 @@ async function descargarImagenWhatsapp(mediaId, accessToken) {
   }
 }
 
-async function descargarDocumentoWhatsapp(mediaId, accessToken, originalFileName = null) {
+async function descargarDocumentoWhatsapp(
+  mediaId,
+  accessToken,
+  originalFileName = null
+) {
   const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
   const docDir = path.join(
     __dirname,
@@ -218,11 +215,18 @@ async function descargarDocumentoWhatsapp(mediaId, accessToken, originalFileName
     const fileData = fileRes.data;
 
     // Paso 3: obtener la extensión del archivo
-    const extensionFromUrl = path.extname(new URL(fileUrl).pathname).replace('.', '') || 'pdf';
-    const extension = mime.extension(fileRes.headers['content-type']) || extensionFromUrl || 'bin';
+    const extensionFromUrl =
+      path.extname(new URL(fileUrl).pathname).replace('.', '') || 'pdf';
+    const extension =
+      mime.extension(fileRes.headers['content-type']) ||
+      extensionFromUrl ||
+      'bin';
 
     // Paso 4: armar el nombre del archivo
-    const fechaHora = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+    const fechaHora = new Date()
+      .toISOString()
+      .replace(/[-:T]/g, '')
+      .slice(0, 15);
     const nombreBase = originalFileName || `${mediaId}.${extension}`;
     const fileName = `${fechaHora}_${nombreBase}`;
     const fullPath = path.join(docDir, fileName);
@@ -421,5 +425,5 @@ module.exports = {
   descargarImagenWhatsapp,
   descargarDocumentoWhatsapp,
   descargarVideoWhatsapp,
-  descargarStickerWhatsapp
+  descargarStickerWhatsapp,
 };
