@@ -366,9 +366,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           texto_mensaje +
           ` \n`
       );
-      console.log(`[${new Date().toISOString()}] Mensaje procesado:` +
+      console.log(
+        `[${new Date().toISOString()}] Mensaje procesado:` +
           texto_mensaje +
-          ` \n`)
+          ` \n`
+      );
 
       const clienteExiste = await ClientesChatCenter.findOne({
         where: { celular_cliente: phone_whatsapp_from, id_configuracion },
@@ -377,9 +379,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let id_cliente = null;
       let bot_openia = 1;
 
-      console.log("clienteExiste: "+clienteExiste)
       if (!clienteExiste) {
-        console.log("entro 1")
         cliente = await ClientesChatCenter.create({
           id_configuracion,
           uid_cliente: business_phone_id,
@@ -390,7 +390,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         id_cliente = cliente.id;
       } else {
-        console.log("entro 2")
         //cliente ya existe
         id_cliente = clienteExiste.id;
         bot_openia = clienteExiste.bot_openia;
@@ -407,12 +406,16 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         path.join(logsDir, 'debug_log.txt'),
         `Después de mensaje procesado\n`
       );
-      console.log(`Después de mensaje procesado\n`)
+      /* console.log(`Después de mensaje procesado\n`) */
 
       /* obtener id_cliente_configuracion */
       const clienteExisteConfiguracion = await ClientesChatCenter.findOne({
         where: { celular_cliente: telefono_configuracion, id_configuracion },
       });
+
+      console.log(
+        'clienteExisteConfiguracion.id: ' + clienteExisteConfiguracion.id
+      );
 
       /* Fin obtener id_cliente_configuracion */
 
@@ -427,6 +430,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
       });
+
+      console.log('creacion_mensaje: ' + JSON.stringify(creacion_mensaje));
+      console.log('creacion_mensaje.id: ' + creacion_mensaje.id);
 
       if (creacion_mensaje && creacion_mensaje.id) {
         await fsp.appendFile(
