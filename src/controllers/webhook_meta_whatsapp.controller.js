@@ -278,7 +278,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           const audioId = mensaje_recibido?.audio?.id;
           texto_mensaje = `Audio recibido con ID: ${audioId}`;
           ruta_archivo = await descargarAudioWhatsapp(audioId, accessToken);
-          console.log('ruta_archivo: ' + ruta_archivo);
+          /* console.log('ruta_archivo: ' + ruta_archivo); */
           texto_mensaje += ruta_archivo
             ? `. Archivo guardado en: ${ruta_archivo}`
             : `. Error al descargar el archivo.`;
@@ -377,7 +377,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let id_cliente = null;
       let bot_openia = 1;
 
+      console.log("clienteExiste: "+clienteExiste)
       if (!clienteExiste) {
+        console.log("entro 1")
         cliente = await ClientesChatCenter.create({
           id_configuracion,
           uid_cliente: business_phone_id,
@@ -388,6 +390,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         id_cliente = cliente.id;
       } else {
+        console.log("entro 2")
         //cliente ya existe
         id_cliente = clienteExiste.id;
         bot_openia = clienteExiste.bot_openia;
