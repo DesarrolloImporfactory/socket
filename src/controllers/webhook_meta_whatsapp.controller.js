@@ -110,8 +110,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       await ensureDir(logsDir);
 
       const rawBody = JSON.stringify(data);
-      console.log('whatsapp_debug_raw: ' + rawBody);
-      console.log('fin');
+     /*  console.log('whatsapp_debug_raw: ' + rawBody);
+      console.log('fin'); */
       await fsp.appendFile(
         path.join(logsDir, 'whatsapp_debug_raw.txt'),
         rawBody + '\n'
@@ -518,8 +518,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           // Si es audio y tienes ruta de archivo, intentar transcribir
           if (tipo_mensaje === 'audio' && ruta_archivo) {
             const ruta_absoluta = `https://new.imporsuitpro.com/${ruta_archivo}`;
-            console.log('tipo audio para conversion');
-            console.log('ruta audio: ' + ruta_absoluta);
+            /* console.log('tipo audio para conversion');
+            console.log('ruta audio: ' + ruta_absoluta); */
             const texto_transcrito =
               await transcribirAudioConWhisperDesdeArchivo(
                 ruta_absoluta,

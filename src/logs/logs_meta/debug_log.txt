@@ -561,3 +561,20 @@ Después de mensaje procesado
 [2025-09-18T21:31:46.463Z] Iniciando estadoMensajeEspera para cliente ID 410
 [2025-09-18T21:31:46.562Z] No se encontraron mensajes para el cliente 410
 Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-03T16:18:47.849Z] ✅ Audio guardado: C:\xampp\htdocs\socket\uploads\webhook_whatsapp\recibidos\audios\1605807753737062.oga (5408 bytes)
+[2025-10-03T16:18:47.850Z] Mensaje procesado:Audio recibido con ID: 1605807753737062. Archivo guardado en: https://chat.imporfactory.appuploads/webhook_whatsapp/recibidos/audios/1605807753737062.oga 
+Después de mensaje procesado
+[2025-10-03T16:18:48.215Z] ✅ Mensaje guardado en DB con ID 146876
+[2025-10-03T16:18:48.960Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-03T16:18:49.048Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-03T16:18:50.527Z] ✅ thread_id: thread_Y55cDyw6HyX4PGgVRs62eBoN
+[2025-10-03T16:18:50.534Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\htdocs\socket\https:\new.imporsuitpro.com\https:\chat.imporfactory.appuploads\webhook_whatsapp\recibidos\audios\1605807753737062.oga'
+[2025-10-03T16:18:50.535Z] ⚠️ No se pudo transcribir el audio
+[2025-10-03T16:19:00.661Z] ✅ Respuesta asistente: "¡Gracias por el audio! Sin embargo, no tengo la capacidad de reproducir o analizar archivos de audio directamente. Si puedes, por favor, proporciona la información o las preguntas en texto para que pueda asistirte mejor. 😊"
+[2025-10-03T16:19:02.014Z] HTTP 200 - Respuesta: {"messaging_product":"whatsapp","contacts":[{"input":"593981702066","wa_id":"593981702066"}],"messages":[{"id":"wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTUyQjI0REY4NDBFOTMxQzcyAA=="}]}
+[2025-10-03T16:19:02.015Z] ✅ Mensaje enviado. ID: wamid.HBgMNTkzOTgxNzAyMDY2FQIAERgSQTUyQjI0REY4NDBFOTMxQzcyAA==
+[2025-10-03T16:19:02.542Z] 💬 Mensaje insertado correctamente para 593981702066
+[2025-10-03T16:19:02.546Z] Iniciando estadoMensajeEspera para cliente ID 17554
+[2025-10-03T16:19:02.651Z] No se encontraron mensajes para el cliente 17554
+Fin Mensaje de mensaje
