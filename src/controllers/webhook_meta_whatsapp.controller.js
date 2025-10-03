@@ -522,6 +522,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 api_key_openai
               );
 
+              console.log("texto_transcrito: "+texto_transcrito)
             if (texto_transcrito) {
               texto_mensaje = texto_transcrito;
               await fsp.appendFile(

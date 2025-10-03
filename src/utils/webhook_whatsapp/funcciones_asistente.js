@@ -86,7 +86,7 @@ async function enviarAsistenteGpt({
     } else {
       await log(`⚠️ Error en respuesta del asistente: ${JSON.stringify(data)}`);
     }
-    console.log('respuesta asistente: ' + JSON.stringify(data));
+    /* console.log('respuesta asistente: ' + JSON.stringify(data)); */
 
     return data;
   } catch (err) {
