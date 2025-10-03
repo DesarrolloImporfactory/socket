@@ -111,6 +111,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       const rawBody = JSON.stringify(data);
       await fsp.appendFile(
+        console.log("whatsapp_debug_raw: "+whatsapp_debug_raw)
+        console.log("fin")
         path.join(logsDir, 'whatsapp_debug_raw.txt'),
         rawBody + '\n'
       );
