@@ -372,6 +372,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           ` \n`
       );
 
+      console.log("phone_whatsapp_from: "+phone_whatsapp_from)
+      console.log("id_configuracion: "+id_configuracion)
+
       const clienteExiste = await ClientesChatCenter.findOne({
         where: { celular_cliente: phone_whatsapp_from, id_configuracion },
       });
