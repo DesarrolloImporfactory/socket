@@ -52,6 +52,11 @@ const {
   estadoMensajeEspera,
 } = require('../utils/webhook_whatsapp/estadoMensajeEspera');
 
+const {
+  enviarEscribiendoWhatsapp,
+  detenerEscribiendoWhatsapp,
+} = require('../utils/webhook_whatsapp/funciones_typing');
+
 async function ensureDir(dir) {
   try {
     await fsp.mkdir(dir, { recursive: true });
@@ -563,6 +568,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             }
           }
 
+          await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken);
+
           // Enviar mensaje al asistente GPT
           const respuesta_asistente = await enviarAsistenteGpt({
             mensaje: texto_mensaje,
@@ -574,6 +581,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             business_phone_id,
             accessToken,
           });
+
+          await detenerEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken);
 
           if (respuesta_asistente?.status === 200) {
             const mensajeGPT = respuesta_asistente.respuesta;
