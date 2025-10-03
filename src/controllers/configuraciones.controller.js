@@ -70,7 +70,6 @@ exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
   });
 });
 
-// POST /configuraciones/listar_conexiones
 exports.listarConexiones = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
   if (!id_usuario) {
@@ -83,23 +82,54 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
     const [rows] = await db.query(
       `
       SELECT
-        id,
-        id_plataforma,
-        nombre_configuracion,
-        telefono,
-        id_telefono,         -- PHONE_NUMBER_ID
-        id_whatsapp,         -- WABA_ID
-        webhook_url,
-        metodo_pago,
-        suspendido,
+        c.id,
+        c.id_plataforma,
+        c.nombre_configuracion,
+        c.telefono,
+        c.id_telefono,       -- PHONE_NUMBER_ID (WPP)
+        c.id_whatsapp,       -- WABA_ID        (WPP)
+        c.webhook_url,
+        c.metodo_pago,
+        c.suspendido,
         CASE
-          WHEN COALESCE(id_telefono,'') <> '' AND COALESCE(id_whatsapp,'') <> '' THEN 1
+          WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
           ELSE 0
-        END AS conectado
-      FROM configuraciones
-      WHERE id_usuario = ?
-        AND suspendido = 0
-      ORDER BY id DESC
+        END AS conectado,
+
+        /* === Estado de Messenger con su tabla messenger_pages === */
+        EXISTS (
+          SELECT 1
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+        ) AS messenger_conectado,
+
+        /* Opcional: nombre e id de la última página conectada (para tooltip/pill) */
+        (
+          SELECT mp.page_name
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+          ORDER BY mp.id_messenger_page DESC
+          LIMIT 1
+        ) AS messenger_page_name,
+
+        (
+          SELECT mp.page_id
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+          ORDER BY mp.id_messenger_page DESC
+          LIMIT 1
+        ) AS messenger_page_id
+
+      FROM configuraciones c
+      WHERE c.id_usuario = ?
+        AND c.suspendido = 0
+      ORDER BY c.id DESC
       `,
       { replacements: [id_usuario] }
     );
