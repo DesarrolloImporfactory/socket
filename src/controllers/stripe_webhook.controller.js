@@ -4,6 +4,9 @@ const Planes_chat_center = require('../models/planes_chat_center.model');
 const PlanesPersonalizadosStripe = require('../models/planes_personalizados_stripe.model');
 const { db } = require('../database/config');
 
+// === NUEVO === id interno de tu plan LITE en la BD
+const LITE_PLAN_ID = 6; // ajusta si en tu BD es otro id
+
 exports.stripeWebhook = async (req, res) => {
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const sig = req.headers['stripe-signature'];
@@ -49,15 +52,15 @@ exports.stripeWebhook = async (req, res) => {
 if (event.type === 'invoice.payment_succeeded') {
   const invoice = event.data.object;
 
-    // ⛔️ Guardar y SALIR si corresponde al plan LITE-FREE oculto
+  // ─────────────────────────────────────────────────────────────
+  // Guard: LITE-FREE oculto (tu lógica existente)
+  // ─────────────────────────────────────────────────────────────
   try {
     const li = invoice.lines?.data?.[0] || null;
     const priceId = li?.price?.id || null;
 
-    // ¿Es el price especial?
     let hidden = priceId === 'price_1SAb5GRwAlJ5h5wg3dEb69Zs';
 
-    // Si viene desde una suscripción, chequeamos metadata de la sub
     if (!hidden && invoice.subscription) {
       try {
         const sub = await stripe.subscriptions.retrieve(invoice.subscription);
@@ -68,7 +71,6 @@ if (event.type === 'invoice.payment_succeeded') {
     }
 
     if (hidden) {
-      // (opcional) registrá la relación mínima en tu tabla de transacciones
       await db.query(`
         UPDATE transacciones_stripe_chat
         SET id_suscripcion = COALESCE(?, id_suscripcion),
@@ -77,378 +79,151 @@ if (event.type === 'invoice.payment_succeeded') {
         WHERE customer_id = ?
       `, { replacements: [invoice.subscription || null, invoice.status || 'paid', invoice.customer] });
 
-      // 🟢 Cortamos acá: NO seguimos con la lógica que actualiza MiPlan/Planes
       return res.status(200).json({ received: true });
     }
   } catch (e) {
     console.warn('[WH] lite_free guard (invoice):', e?.message);
   }
 
-
-  try {
-      /* ────────────────────────────────────────────────────────────
-         A) BRANCH: Upgrades por “delta” (Checkout mode: payment)
-         Detectamos por metadata que enviaste en invoice_creation.invoice_data.metadata
-         ──────────────────────────────────────────────────────────── */
-      const metaInv = invoice?.metadata || {};
-      if (metaInv?.tipo === 'upgrade_delta') {
-        const customerId     = invoice.customer;
-        const subscriptionId = metaInv.subscription_id || null;
-        const toPriceId      = metaInv.to_price_id || null;
-        let   id_usuario     = metaInv.id_usuario || null;
-        const id_plan        = metaInv.id_plan || null;
-
-        // Resolver id_usuario por customerId si no vino en metadata
-        if (!id_usuario && customerId) {
-          const [u] = await db.query(`
-            SELECT id_usuario
-            FROM transacciones_stripe_chat
-            WHERE customer_id = ?
-            ORDER BY fecha DESC
-            LIMIT 1
-          `, { replacements: [customerId] });
-          id_usuario = u?.[0]?.id_usuario || null;
+  // ─────────────────────────────────────────────────────────────
+  // Dispatcher por metadata
+  // ─────────────────────────────────────────────────────────────
+  /* ==========================================================
+   1) LITE (downgrade_fullswitch) — PAGO COMPLETO + SWAP DE SUB
+   ========================================================== */
+    try {
+      // Mezclar metadata desde invoice + payment_intent (sin el puntito 🚫)
+      let metaInv = { ...(invoice?.metadata || {}) };
+      if (
+        (!metaInv?.tipo || !metaInv?.subscription_id || !metaInv?.to_price_id || !metaInv?.id_usuario) &&
+        invoice?.payment_intent
+      ) {
+        try {
+          const pi = await stripe.paymentIntents.retrieve(invoice.payment_intent);
+          if (pi?.metadata) {
+            metaInv = { ...metaInv, ...pi.metadata };
+          }
+        } catch (e) {
+          console.warn('[WH] No se pudo expandir payment_intent para metadata:', e?.raw?.message || e.message);
         }
+      }
 
-        // 1) Actualizar la SUSCRIPCIÓN al nuevo price (sin prorratear de nuevo)
-        if (subscriptionId && toPriceId) {
-          const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data'] });
-          const itemId = sub?.items?.data?.[0]?.id;
-          if (itemId) {
-            await stripe.subscriptions.update(subscriptionId, {
+      if (metaInv?.tipo === 'downgrade_fullswitch') {
+        try {
+          const customerId     = invoice.customer;
+          const subscriptionId = metaInv.subscription_id || null;
+          const toPriceId      = metaInv.to_price_id || null;
+          let   id_usuario     = Number(metaInv.id_usuario || 0) || null;
+          const id_plan        = Number(metaInv.id_plan || LITE_PLAN_ID) || LITE_PLAN_ID;
+
+          console.log('[WH][LITE] invoice.payment_succeeded → downgrade_fullswitch', {
+            invoice_id: invoice.id, customerId, subscriptionId, toPriceId, id_usuario, id_plan
+          });
+
+          // Resolver id_usuario por customer si no vino
+          if (!id_usuario && customerId) {
+            const [u] = await db.query(`
+              SELECT id_usuario
+              FROM transacciones_stripe_chat
+              WHERE customer_id = ?
+              ORDER BY fecha DESC
+              LIMIT 1
+            `, { replacements: [customerId] });
+            id_usuario = u?.[0]?.id_usuario || null;
+            console.log('[WH][LITE] id_usuario resuelto por customer:', id_usuario);
+          }
+
+          if (!subscriptionId || !toPriceId || !id_usuario) {
+            console.warn('[WH][LITE] FALTAN DATOS CRÍTICOS', { subscriptionId, toPriceId, id_usuario, customerId });
+            return res.status(200).json({ received: true });
+          }
+
+          // 1) Obtener item de la suscripción y hacer swap → LITE (idempotente)
+          const subBefore   = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data.price'] });
+          const itemId      = subBefore?.items?.data?.[0]?.id;
+          const beforePrice = subBefore?.items?.data?.[0]?.price?.id;
+
+          if (!itemId) {
+            console.warn('[WH][LITE] NO HAY itemId en la suscripción, no se puede hacer swap');
+            return res.status(200).json({ received: true });
+          }
+
+          let subAfter = subBefore;
+          if (beforePrice !== toPriceId) {
+            subAfter = await stripe.subscriptions.update(subscriptionId, {
               items: [{ id: itemId, price: toPriceId }],
-              proration_behavior: 'none', // ya cobraste la diferencia
+              proration_behavior: 'none',
+              billing_cycle_anchor: 'now',
+              cancel_at_period_end: false
             });
           }
-        }
 
-        // 2) Promover el plan en tu DB (no tocar fechas para conservar el ciclo)
-        if (id_usuario && id_plan) {
-          const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-          const plan = await Planes_chat_center.findByPk(id_plan);
-          if (usuario && plan) {
-            await usuario.update({
-              id_plan: plan.id_plan,
-              id_product_stripe: plan.id_product_stripe,
-              estado: 'activo',
-            });
+          // Fechas alineadas al nuevo ciclo
+          const fechaInicio = new Date();
+          const fechaRenov  = subAfter?.current_period_end
+            ? new Date(subAfter.current_period_end * 1000)
+            : new Date(fechaInicio.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+          // 2) Actualizar usuarios_chat_center (ORM y, si no afecta filas, fallback SQL)
+          try {
+            const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+            const plan    = await Planes_chat_center.findByPk(id_plan, { attributes: ['id_plan','id_product_stripe'] });
+
+            if (usuario) {
+              const [affected] = await Usuarios_chat_center.update({
+                id_plan: id_plan,
+                fecha_inicio: fechaInicio,
+                fecha_renovacion: fechaRenov,
+                estado: 'activo',
+                ...(plan?.id_product_stripe ? { id_product_stripe: plan.id_product_stripe } : {})
+              }, { where: { id_usuario } });
+
+              if (!affected) {
+                await db.query(`
+                  UPDATE usuarios_chat_center
+                  SET id_plan = ?, fecha_inicio = ?, fecha_renovacion = ?, estado = 'activo'
+                  WHERE id_usuario = ?
+                `, { replacements: [id_plan, fechaInicio, fechaRenov, id_usuario] });
+              }
+            } else {
+              console.warn('[WH][LITE] Usuario no encontrado en BD (no ORM update)');
+              await db.query(`
+                UPDATE usuarios_chat_center
+                SET id_plan = ?, fecha_inicio = ?, fecha_renovacion = ?, estado = 'activo'
+                WHERE id_usuario = ?
+              `, { replacements: [id_plan, fechaInicio, fechaRenov, id_usuario] });
+            }
+          } catch (e) {
+            console.warn('[WH][LITE] ORM update falló, hago fallback SQL:', e?.message);
+            await db.query(`
+              UPDATE usuarios_chat_center
+              SET id_plan = ?, fecha_inicio = ?, fecha_renovacion = ?, estado = 'activo'
+              WHERE id_usuario = ?
+            `, { replacements: [id_plan, fechaInicio, fechaRenov, id_usuario] });
           }
+
+          // 3) Persistencia de transacción (rellenar id_usuario si venía nulo)
+          await db.query(`
+            UPDATE transacciones_stripe_chat
+            SET id_suscripcion = COALESCE(?, id_suscripcion),
+                id_usuario = COALESCE(id_usuario, ?),
+                estado_suscripcion = ?,
+                fecha = NOW()
+            WHERE customer_id = ?
+          `, { replacements: [subscriptionId, id_usuario, subAfter?.status || 'active', customerId] });
+
+          console.log('✅ [WH][LITE] COMPLETADO: swap + BD actualizada para usuario:', id_usuario);
+          return res.status(200).json({ received: true });
+        } catch (e) {
+          console.error('❌ [WH][LITE] Error general en downgrade_fullswitch:', e);
+          return res.status(200).json({ received: true }); // evita reintentos agresivos
         }
-
-        // 3) Persistencia mínima en transacciones_stripe_chat
-        await db.query(`
-          UPDATE transacciones_stripe_chat
-          SET id_suscripcion = COALESCE(?, id_suscripcion),
-              estado_suscripcion = 'active',
-              fecha = NOW()
-          WHERE customer_id = ?
-        `, { replacements: [subscriptionId || null, invoice.customer] });
-
-        // Cortamos aquí: no ejecutar la rama de suscripciones normales
-        return res.status(200).json({ received: true });
-      }
-      
-     // ────────────────────────────────────────────────────────────
-// C) Plan PERSONALIZADO — guardar SOLO cuando hubo cobro real (> 0)
-// ────────────────────────────────────────────────────────────
-if (metaInv?.tipo === 'personalizado' || invoice.subscription) {
-  const customerId     = invoice.customer;
-  const subscriptionId = invoice.subscription || null;
-  const amountPaid     = Number(invoice.amount_paid || 0);
-
-  // 1) Partimos del metadata de la factura (tu metaInv actual)
-  let meta = { ...(metaInv || {}) };
-  let subStatus = 'unknown';
-  let current_period_end = null;
-
-  // 2) Completar con metadata + estado desde la SUSCRIPCIÓN (ahí fue donde enviaste subscription_data.metadata)
-  if (subscriptionId) {
-    try {
-      const sub = await stripe.subscriptions.retrieve(subscriptionId);
-      subStatus = sub?.status || subStatus;
-      current_period_end = sub?.current_period_end || null;
-      if (sub?.metadata) {
-        meta = { ...meta, ...sub.metadata }; // merge factura + suscripción
       }
     } catch (e) {
-      console.warn('[WH][personalizado] No se pudo leer la suscripción:', e?.raw?.message || e.message);
+      console.error('❌ Dispatcher downgrade_fullswitch:', e);
     }
+
   }
-
-  // 3) Solo procesa si realmente es "personalizado"
-  if (meta?.tipo === 'personalizado') {
-    const id_usuario      = Number(meta.id_usuario);
-    const id_plan_base    = Number(meta.id_plan || 5);
-    const n_conexiones    = Number(meta.n_conexiones || 0);
-    const max_subusuarios = Number(meta.max_subusuarios ?? meta.n_subusuarios ?? 0);
-
-    // 3.1) Si el invoice fue de $0 → NO persistir configuración (el usuario no pagó)
-    if (amountPaid <= 0) {
-      await db.query(`
-        UPDATE transacciones_stripe_chat
-        SET id_suscripcion = COALESCE(?, id_suscripcion),
-            id_usuario = COALESCE(id_usuario, ?),
-            estado_suscripcion = ?,
-            fecha = NOW()
-        WHERE customer_id = ?
-      `, { replacements: [subscriptionId || null, id_usuario || null, subStatus, customerId] });
-
-      return res.status(200).json({ received: true });
-    }
-
-    // 3.2) Pago REAL → guardar/actualizar configuración personalizada
-    await db.query(`
-      INSERT INTO planes_personalizados_stripe
-        (id_usuario, id_plan_base, n_conexiones, max_subusuarios)
-      VALUES (?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        id_plan_base = VALUES(id_plan_base),
-        n_conexiones = VALUES(n_conexiones),
-        max_subusuarios = VALUES(max_subusuarios),
-        updated_at = CURRENT_TIMESTAMP()
-    `, { replacements: [id_usuario, id_plan_base, n_conexiones, max_subusuarios] });
-
-    // 3.3) Activar el plan base en el usuario, alineando fechas al ciclo de Stripe
-    try {
-      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-      const plan    = await Planes_chat_center.findByPk(id_plan_base);
-      if (usuario && plan) {
-        const fechaInicio = new Date();
-        const fechaRenov  = current_period_end
-          ? new Date(current_period_end * 1000)
-          : new Date(fechaInicio.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-        await usuario.update({
-          id_plan: plan.id_plan,
-          fecha_inicio: fechaInicio,
-          fecha_renovacion: fechaRenov,
-          estado: 'activo',
-          id_product_stripe: plan.id_product_stripe
-        });
-      }
-    } catch (e) {
-      console.warn('[WH][personalizado] No se pudo activar el plan del usuario:', e?.message);
-    }
-
-    // 3.4) Persistencia mínima en transacciones
-    await db.query(`
-      UPDATE transacciones_stripe_chat
-      SET id_suscripcion = COALESCE(?, id_suscripcion),
-          id_usuario = COALESCE(id_usuario, ?),
-          estado_suscripcion = ?,
-          fecha = NOW()
-      WHERE customer_id = ?
-    `, { replacements: [subscriptionId || null, id_usuario || null, subStatus, customerId] });
-
-    // ✅ Cortar aquí, no sigas a la rama genérica
-    return res.status(200).json({ received: true });
-  }
-}
-
-
-      /* ────────────────────────────────────────────────────────────
-         B) BRANCH: Suscripciones normales (mode: subscription)
-         (Tu flujo original)
-         ──────────────────────────────────────────────────────────── */
-      const lineItem = invoice.lines?.data?.[0];
-
-      // 1) Intenta obtener subscriptionId (varios fallbacks)
-      let subscriptionId =
-        lineItem?.parent?.subscription_item_details?.subscription
-        || invoice.subscription
-        || lineItem?.subscription_details?.subscription
-        || lineItem?.subscription
-        || null;
-
-      const customerId = invoice.customer;
-
-      if (!subscriptionId || !customerId) {
-        console.warn('[WH] invoice.payment_succeeded: faltan subscriptionId/customerId', {
-          invoiceId: invoice.id, subscriptionId, customerId
-        });
-        // No cortar el flujo: responde 200 para que Stripe no reintente
-        return res.status(200).json({ received: true });
-      }
-
-      // 2) Intenta leer metadata desde la SUSCRIPCIÓN
-      let id_usuario = undefined;
-      let id_plan = undefined;
-
-      let subStatus = 'sin_suscripcion';
-      try {
-        const sub = await stripe.subscriptions.retrieve(subscriptionId);
-        subStatus = sub?.status || subStatus;
-        if (sub?.metadata) {
-          id_usuario = sub.metadata.id_usuario || id_usuario;
-          id_plan    = sub.metadata.id_plan    || id_plan;
-        }
-      } catch (e) {
-        console.warn('[WH] No se pudo expandir la suscripción para leer metadata:', e?.raw?.message || e.message);
-      }
-
-      // 3) Si la sub sigue en trial o la invoice fue de $0, solo registra y sal
-      if (subStatus === 'trialing' || (invoice.amount_paid || 0) === 0) {
-        await db.query(`
-          UPDATE transacciones_stripe_chat
-          SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
-          WHERE customer_id = ?
-        `, { replacements: [subscriptionId, subStatus, customerId] });
-        return res.status(200).json({ received: true });
-      }
-
-      // 4) Fallback: metadata desde el lineItem (tu flujo actual)
-      if (!id_usuario || !id_plan) {
-        const md = lineItem?.metadata || {};
-        id_usuario = id_usuario || md.id_usuario;
-        id_plan    = id_plan    || md.id_plan;
-      }
-
-      // 5) Último fallback: resolver id_usuario por customer_id en tu tabla
-      if (!id_usuario && customerId) {
-        const [u] = await db.query(`
-          SELECT id_usuario
-          FROM transacciones_stripe_chat
-          WHERE customer_id = ?
-          ORDER BY fecha DESC
-          LIMIT 1
-        `, { replacements: [customerId] });
-        id_usuario = u?.[0]?.id_usuario;
-      }
-
-      // 6) Si aún faltan datos críticos, al menos registra y sal
-      if (!id_usuario || !id_plan) {
-        console.warn('[WH] invoice.payment_succeeded: metadata incompleta', { id_usuario, id_plan, subscriptionId, customerId });
-        await db.query(`
-          UPDATE transacciones_stripe_chat
-          SET id_suscripcion = ?, estado_suscripcion = ?, fecha = NOW()
-          WHERE customer_id = ?
-        `, { replacements: [subscriptionId, subStatus, customerId] });
-        return res.status(200).json({ received: true });
-      }
-
-      // 7) Activar usuario en DB (tu lógica original: setea fechas y estado)
-      const usuario = await Usuarios_chat_center.findByPk(id_usuario);
-      const plan = await Planes_chat_center.findByPk(id_plan);
-      if (!usuario || !plan) {
-        console.warn('[WH] Usuario o plan no encontrado', { id_usuario, id_plan });
-        await db.query(`
-          UPDATE transacciones_stripe_chat
-          SET id_suscripcion = ?, id_usuario = ?, estado_suscripcion = ?, fecha = NOW()
-          WHERE customer_id = ?
-        `, { replacements: [subscriptionId, id_usuario || null, subStatus, customerId] });
-        return res.status(200).json({ received: true });
-      }
-
-      const hoy = new Date();
-      const fechaRenovacion = new Date(hoy);
-      fechaRenovacion.setDate(hoy.getDate() + 30);
-
-      await usuario.update({
-        id_plan,
-        fecha_inicio: hoy,
-        fecha_renovacion: fechaRenovacion,
-        estado: 'activo',
-        id_product_stripe: plan.id_product_stripe
-      });
-
-      // 8) Persistencia en tu tabla de transacciones
-      await db.query(`
-        UPDATE transacciones_stripe_chat 
-        SET id_suscripcion = ?, id_usuario = ?, estado_suscripcion = ?, fecha = NOW()
-        WHERE customer_id = ?
-      `, { replacements: [subscriptionId, id_usuario, subStatus, customerId] });
-
-      console.log(`invoice.payment_succeeded OK -> cust:${customerId} sub:${subscriptionId}`);
-      return res.status(200).json({ received: true });
-
-    } catch (error) {
-      console.error('❌ invoice.payment_succeeded handler:', error);
-      // Importante: responde 200 para evitar reintentos agresivos de Stripe
-      return res.status(200).json({ received: true });
-    }
-  }
-
-
-  // Cuando termina el periodo de una suscripción cancelada
-  if (event.type === 'customer.subscription.deleted') {
-    const subscription = event.data.object;
-
-    try {
-      const subscriptionId = subscription.id;
-
-      // Actualiza en tu base de datos el estado a 'cancelado'
-      await db.query(
-        `UPDATE transacciones_stripe_chat 
-         SET estado_suscripcion = 'canceled'
-         WHERE id_suscripcion = ?`,
-        { replacements: [subscriptionId] }
-      );
-
-      // Opcional: también puedes actualizar el estado del usuario si lo deseas
-      await db.query(
-        `UPDATE usuarios_chat_center
-         SET estado = 'vencido', id_plan = NULL
-         WHERE id_usuario = (
-           SELECT id_usuario 
-           FROM transacciones_stripe_chat 
-           WHERE id_suscripcion = ?
-           ORDER BY fecha DESC 
-           LIMIT 1
-         )`,
-        { replacements: [subscriptionId] }
-      );
-
-      console.log(`✅ Suscripción cancelada definitivamente: ${subscriptionId}`);
-      return res.status(200).json({ received: true });
-
-    } catch (error) {
-      console.error("❌ Error en customer.subscription.deleted:", error);
-      return res.status(500).json({ message: "Error al manejar cancelación final" });
-    }
-  }
-
-
-// Guarda el PM cuando se completa un SetupIntent (Checkout setup o Portal)
-if (event.type === 'setup_intent.succeeded') {
-  const si = event.data.object; // SetupIntent
-  try {
-    const pmId = si.payment_method;
-    const customerId = si.customer;
-
-    // Resuelve id_usuario a partir del customer o metadata
-    let id_usuario = si.metadata?.id_usuario;
-    if (!id_usuario && customerId) {
-      const [u] = await db.query(`
-        SELECT id_usuario
-        FROM transacciones_stripe_chat
-        WHERE customer_id = ?
-        ORDER BY fecha DESC
-        LIMIT 1
-      `, { replacements: [customerId] });
-      id_usuario = u?.[0]?.id_usuario;
-    }
-    if (!pmId || !id_usuario) return res.status(200).json({ received: true });
-
-    const [p] = await db.query(
-      `SELECT COALESCE(MAX(priority),0) AS maxp
-       FROM user_payment_methods
-       WHERE id_usuario = ?`,
-      { replacements: [id_usuario] }
-    );
-    const nextPriority = (p?.[0]?.maxp || 0) + 1;
-
-    await db.query(`
-      INSERT INTO user_payment_methods (id_usuario, pm_id, priority, status)
-      VALUES (?, ?, ?, 'active')
-      ON DUPLICATE KEY UPDATE status = VALUES(status)
-    `, { replacements: [id_usuario, pmId, nextPriority] });
-
-    return res.status(200).json({ received: true });
-  } catch (e) {
-    console.error('❌ setup_intent.succeeded handler:', e);
-    return res.status(500).json({ message: 'Error guardando PM' });
-  }
-}
 
 // También captura cuando Stripe adjunta un PM al customer (por Portal/otros flujos)
 if (event.type === 'payment_method.attached') {
@@ -664,7 +439,87 @@ if (event.type === 'checkout.session.completed') {
 
       return res.status(200).json({ received: true });
     }
+    if (session.mode === 'payment' && md.tipo === 'downgrade_fullswitch') {
+      const customerId     = session.customer;
+      const subscriptionId = md.subscription_id || null;
+      const toPriceId      = md.to_price_id || null;
+      let   id_usuario     = Number(md.id_usuario || 0) || null;
+      const id_plan        = Number(md.id_plan || LITE_PLAN_ID) || LITE_PLAN_ID;
 
+      if (!id_usuario && customerId) {
+        const [u] = await db.query(`
+          SELECT id_usuario
+          FROM transacciones_stripe_chat
+          WHERE customer_id = ?
+          ORDER BY fecha DESC
+          LIMIT 1
+        `, { replacements: [customerId] });
+        id_usuario = u?.[0]?.id_usuario || null;
+      }
+
+      if (!subscriptionId || !toPriceId || !id_usuario) {
+        console.warn('[WH checkout.session.completed][LITE] faltan datos', { subscriptionId, toPriceId, id_usuario });
+        return res.status(200).json({ received: true });
+      }
+
+      // 1) SWAP seguro (idempotente)
+      const subBefore = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['items.data.price'] });
+      const itemId      = subBefore?.items?.data?.[0]?.id;
+      const beforePrice = subBefore?.items?.data?.[0]?.price?.id;
+      if (!itemId) return res.status(200).json({ received: true });
+
+      let subAfter = subBefore;
+      if (beforePrice !== toPriceId) {
+        subAfter = await stripe.subscriptions.update(subscriptionId, {
+          items: [{ id: itemId, price: toPriceId }],
+          proration_behavior: 'none',
+          billing_cycle_anchor: 'now',
+          cancel_at_period_end: false
+        });
+      }
+
+      const fechaInicio = new Date();
+      const fechaRenov  = subAfter?.current_period_end
+        ? new Date(subAfter.current_period_end * 1000)
+        : new Date(fechaInicio.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+      // 2) Actualiza usuarios_chat_center (ORM o fallback SQL)
+      try {
+        const [rows] = await Usuarios_chat_center.update({
+          id_plan: id_plan,
+          fecha_inicio: fechaInicio,
+          fecha_renovacion: fechaRenov,
+          estado: 'activo'
+        }, { where: { id_usuario } });
+
+        if (!rows) {
+          await db.query(`
+            UPDATE usuarios_chat_center
+            SET id_plan = ?, fecha_inicio = ?, fecha_renovacion = ?, estado = 'activo'
+            WHERE id_usuario = ?
+          `, { replacements: [id_plan, fechaInicio, fechaRenov, id_usuario] });
+        }
+      } catch {
+        await db.query(`
+          UPDATE usuarios_chat_center
+          SET id_plan = ?, fecha_inicio = ?, fecha_renovacion = ?, estado = 'activo'
+          WHERE id_usuario = ?
+        `, { replacements: [id_plan, fechaInicio, fechaRenov, id_usuario] });
+      }
+
+      // 3) Persistir transacción
+      await db.query(`
+        UPDATE transacciones_stripe_chat
+        SET id_suscripcion = COALESCE(?, id_suscripcion),
+            id_usuario = COALESCE(id_usuario, ?),
+            estado_suscripcion = ?,
+            fecha = NOW()
+        WHERE customer_id = ?
+      `, { replacements: [subscriptionId, id_usuario, (subAfter?.status || 'active'), customerId] });
+
+      console.log('✅ [WH checkout.session.completed][LITE] COMPLETADO');
+      return res.status(200).json({ received: true });
+    }
     // 2) UPGRADE DELTA (pago único de diferencia) — tu lógica existente
     if (session.mode === 'payment' && md.tipo === 'upgrade_delta') {
       const subscriptionId = md.subscription_id;

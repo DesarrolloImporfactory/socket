@@ -5,18 +5,16 @@ const PlanesPersonalizadosStripe = require('../models/planes_personalizados_stri
 const { db } = require('../database/config');
 
 // Price del addon de conexión y subusuario(fijo, según me diste)
-/* const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
-const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr'; */
 
 const ADDON_PRICE_ID = 'price_1Ryc0gClsPjxVwZwQQwt7YM0';
 const PRICE_ID_ADDON_SUBUSUARIO = 'price_1Ryc5EClsPjxVwZwyApbVKbr';
-
+/* conexion y subusuario para plan personalizado */
 const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
 const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
 
 // ─── Lite Free (oculto a catálogo) ────────────────────────────────────────────
 const LITE_PLAN_ID = 6;
-const LITE_PRICE_ID = 'price_1S8NsNClsPjxVwZw9cXWmJJj';
+const LITE_PRICE_ID = 'price_1S6cVNRwAlJ5h5wg7O1lhdu8';
 
 
 
@@ -1510,3 +1508,128 @@ exports.crearSesionLiteFree = async (req, res) => {
     return res.status(500).json({ status: 'fail', message: e?.raw?.message || e.message });
   }
 };
+
+
+// === NUEVO === Cambio completo a LITE al cancelar (pago completo sin prorrateo)
+exports.crearSesionCambioLiteCompleto = async (req, res) => {
+  try {
+    const { success_url, cancel_url, id_usuario, id_users } = req.body;
+    const userId = id_usuario || id_users;
+
+    if (!userId || !success_url || !cancel_url) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Faltan datos (id_usuario, success_url, cancel_url)",
+      });
+    }
+
+    // 1) Usuario
+    const usuario = await Usuarios_chat_center.findByPk(userId);
+    if (!usuario) {
+      return res.status(404).json({ status: "fail", message: "Usuario no encontrado" });
+    }
+
+    // 2) Resolver customerId e id de suscripción actual desde tu tabla
+    let subscriptionId = null;
+    let customerId = null;
+
+    const [rows] = await db.query(`
+      SELECT id_suscripcion, customer_id
+      FROM transacciones_stripe_chat
+      WHERE id_usuario = ?
+      ORDER BY fecha DESC
+      LIMIT 1
+    `, { replacements: [userId] });
+
+    subscriptionId = rows?.[0]?.id_suscripcion || null;
+    customerId    = rows?.[0]?.customer_id    || null;
+
+    // Si no tienes sub en tu tabla, búscala en Stripe por el customer
+    if (!subscriptionId) {
+      if (!customerId) {
+        const [r2] = await db.query(`
+          SELECT customer_id
+          FROM transacciones_stripe_chat
+          WHERE id_usuario = ? AND customer_id IS NOT NULL
+          ORDER BY fecha DESC LIMIT 1
+        `, { replacements: [userId] });
+        customerId = r2?.[0]?.customer_id || null;
+      }
+      if (!customerId) {
+        return res.status(400).json({ status: "fail", message: "No se pudo resolver el customer del usuario" });
+      }
+      const subs = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
+      const prefer = ["trialing", "active", "past_due", "incomplete", "incomplete_expired"];
+      subs.data.sort((a, b) => prefer.indexOf(a.status) - prefer.indexOf(b.status));
+      subscriptionId = subs.data.find(s => prefer.includes(s.status))?.id || null;
+    }
+
+    if (!subscriptionId) {
+      return res.status(404).json({ status: "fail", message: "No se encontró una suscripción para cambiar a LITE" });
+    }
+
+    // 3) Leer el price del LITE para cobrar el monto completo (moneda y unit_amount)
+    const targetPrice = await stripe.prices.retrieve(LITE_PRICE_ID);
+    const unitAmount  = Number(targetPrice?.unit_amount || 0);
+    const currency    = targetPrice?.currency || "usd";
+    if (unitAmount <= 0) {
+      return res.status(400).json({ status: "fail", message: "Price del LITE inválido" });
+    }
+
+    const detalle = `Cambio total a ${targetPrice?.nickname || 'Plan LITE'} (pago completo)`;
+
+    // 4) Checkout Session en modo PAYMENT (pago único por el monto completo del LITE)
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: ["card"],
+      customer: customerId,
+      line_items: [{
+        price_data: {
+          currency,
+          product_data: { name: detalle },
+          unit_amount: unitAmount,
+        },
+        quantity: 1,
+      }],
+      // Creamos invoice de ese pago (la usaremos en el webhook)
+      invoice_creation: {
+        enabled: true,
+        invoice_data: {
+          description: detalle,
+          metadata: {
+            tipo: "downgrade_fullswitch",
+            id_usuario: String(userId),
+            id_plan: String(LITE_PLAN_ID),
+            subscription_id: subscriptionId,
+            to_price_id: targetPrice.id
+          }
+        }
+      },
+      success_url,
+      cancel_url,
+      payment_intent_data: {
+        description: detalle,
+        metadata: {
+          tipo: "downgrade_fullswitch",
+          id_usuario: String(userId),
+          id_plan: String(LITE_PLAN_ID),
+          subscription_id: subscriptionId,
+          to_price_id: targetPrice.id
+        }
+      },
+      metadata: {
+        tipo: "downgrade_fullswitch",
+        id_usuario: String(userId),
+        id_plan: String(LITE_PLAN_ID),
+        subscription_id: subscriptionId,
+        to_price_id: targetPrice.id
+      }
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (error) {
+    console.error("Error en crearSesionCambioLiteCompleto:", error);
+    return res.status(500).json({ status: "fail", message: error?.raw?.message || error.message });
+  }
+};
+

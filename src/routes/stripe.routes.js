@@ -36,6 +36,9 @@ router.get('/miPlanPersonalizado', stripe_planesController.miPlanPersonalizado);
 
 /*  ruta para plan gratis alumnos */
 router.post('/crearSesionLiteFree', stripe_planesController.crearSesionLiteFree);
+/* ruta para cambiar al plan lite al cancelar plan */
+router.post('/crearSesionCambioLiteCompleto', stripe_planesController.crearSesionCambioLiteCompleto);
+
 
 
 
