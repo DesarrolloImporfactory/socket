@@ -366,6 +366,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           texto_mensaje +
           ` \n`
       );
+      console.log(`[${new Date().toISOString()}] Mensaje procesado:` +
+          texto_mensaje +
+          ` \n`)
 
       const clienteExiste = await ClientesChatCenter.findOne({
         where: { celular_cliente: phone_whatsapp_from, id_configuracion },
@@ -401,6 +404,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         path.join(logsDir, 'debug_log.txt'),
         `Después de mensaje procesado\n`
       );
+      console.log(`Después de mensaje procesado\n`)
 
       /* obtener id_cliente_configuracion */
       const clienteExisteConfiguracion = await ClientesChatCenter.findOne({
