@@ -275,6 +275,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           break;
 
         case 'audio':
+          console.log("entro a caso audio")
           const audioId = mensaje_recibido?.audio?.id;
           texto_mensaje = `Audio recibido con ID: ${audioId}`;
           ruta_archivo = await descargarAudioWhatsapp(audioId, accessToken);
@@ -520,7 +521,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const ruta_absoluta = `https://new.imporsuitpro.com/${ruta_archivo}`;
             /* console.log('tipo audio para conversion');
             console.log('ruta audio: ' + ruta_absoluta); */
-            
+
             const texto_transcrito =
               await transcribirAudioConWhisperDesdeArchivo(
                 ruta_absoluta,
