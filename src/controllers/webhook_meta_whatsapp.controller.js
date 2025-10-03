@@ -385,7 +385,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let bot_openia = 1;
 
       if (!clienteExiste) {
-        console.log("entro en 1")
+        console.log('entro en 1');
         cliente = await ClientesChatCenter.create({
           id_configuracion,
           uid_cliente: business_phone_id,
@@ -396,7 +396,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         id_cliente = cliente.id;
       } else {
-        console.log("entro en 2")
+        console.log('entro en 2');
         //cliente ya existe
         id_cliente = clienteExiste.id;
         bot_openia = clienteExiste.bot_openia;
@@ -568,7 +568,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             }
           }
 
-          await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken);
+          /* await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */
+
+          console.log('phone_whatsapp_from: ' + phone_whatsapp_from);
+          console.log('business_phone_id: ' + phone_whatsapp_from);
+          console.log('accessToken: ' + accessToken);
 
           // Enviar mensaje al asistente GPT
           const respuesta_asistente = await enviarAsistenteGpt({
@@ -582,7 +586,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             accessToken,
           });
 
-          await detenerEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken);
+          /* await detenerEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */
 
           if (respuesta_asistente?.status === 200) {
             const mensajeGPT = respuesta_asistente.respuesta;
