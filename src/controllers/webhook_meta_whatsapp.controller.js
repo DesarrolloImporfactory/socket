@@ -275,10 +275,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           break;
 
         case 'audio':
-          console.log("entro a caso audio")
           const audioId = mensaje_recibido?.audio?.id;
           texto_mensaje = `Audio recibido con ID: ${audioId}`;
           ruta_archivo = await descargarAudioWhatsapp(audioId, accessToken);
+          console.log("ruta_archivo: "+ruta_archivo)
           texto_mensaje += ruta_archivo
             ? `. Archivo guardado en: ${ruta_archivo}`
             : `. Error al descargar el archivo.`;
