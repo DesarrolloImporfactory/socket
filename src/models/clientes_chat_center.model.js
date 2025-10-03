@@ -89,7 +89,7 @@ const ClientesChatCenter = db.define(
     bot_openia: {
       type: DataTypes.INTEGER,
       allowNull: false,
-      defaultValue: 0,
+      defaultValue: 1,
     },
     id_departamento: {
       type: DataTypes.INTEGER,
