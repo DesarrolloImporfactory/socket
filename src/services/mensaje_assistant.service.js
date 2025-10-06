@@ -83,6 +83,7 @@ async function procesarAsistenteMensaje(body) {
     assistant_id = logistic?.assistant_id;
     tipo_asistente = 'IA_logistica';
   } else if (tipoInfo === 'datos_pedido') {
+    console.log("datos_pedido")
     return {
       status: 400,
       error: 'El asistente no respnde a pedidos',
