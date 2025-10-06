@@ -82,7 +82,13 @@ async function procesarAsistenteMensaje(body) {
     );
     assistant_id = logistic?.assistant_id;
     tipo_asistente = 'IA_logistica';
-  } else {
+  } else if (tipoInfo === 'datos_pedido') {
+    return {
+      status: 400,
+      error: 'El asistente no respnde a pedidos',
+    };
+  }
+  {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
     assistant_id = sales?.assistant_id;
     tipo_asistente = 'IA_ventas';
