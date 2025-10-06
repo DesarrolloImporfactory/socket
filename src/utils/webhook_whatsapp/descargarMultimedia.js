@@ -12,7 +12,6 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
     __dirname,
     '..',
     '..',
-    '..',
     'uploads',
     'webhook_whatsapp',
     'recibidos',
@@ -95,7 +94,6 @@ async function descargarImagenWhatsapp(mediaId, accessToken) {
     __dirname,
     '..',
     '..',
-    '..',
     'uploads',
     'webhook_whatsapp',
     'recibidos',
@@ -176,7 +174,6 @@ async function descargarDocumentoWhatsapp(
   const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
   const docDir = path.join(
     __dirname,
-    '..',
     '..',
     '..',
     'uploads',
@@ -268,7 +265,6 @@ async function descargarVideoWhatsapp(mediaId, accessToken) {
     __dirname,
     '..',
     '..',
-    '..',
     'uploads',
     'webhook_whatsapp',
     'recibidos',
@@ -346,7 +342,6 @@ async function descargarStickerWhatsapp(mediaId, accessToken) {
   const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
   const stickerDir = path.join(
     __dirname,
-    '..',
     '..',
     '..',
     'uploads',
