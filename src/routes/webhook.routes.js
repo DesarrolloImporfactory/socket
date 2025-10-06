@@ -2,6 +2,7 @@ const express = require('express');
 const { upload } = require('../utils/multer');
 const { webhook } = require('../controllers/chat.controller');
 const ffmpeg = require('fluent-ffmpeg');
+ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
