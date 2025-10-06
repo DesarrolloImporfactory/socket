@@ -50,7 +50,10 @@ async function transcribirAudioConWhisperDesdeArchivo(
       }
     );
 
-    return response.data?.text || null;
+    // Verifica la respuesta completa para ver cómo está estructurada
+    console.log('Respuesta completa:', response.data);
+
+    return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
   } catch (err) {
     await log(
       `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`
