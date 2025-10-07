@@ -15,7 +15,7 @@ router.post(
   '/webhook',
   (req, res, next) => {
     try {
-      if (req.body.entry?.[0]?.messaging) {
+      if (req.body.entry?.[0]?.messaging.message.text) {
         console.log('[IG]: Getting request for Instagram Webhook');
         console.log(
           '[IG]: mensaje - en instagram',
