@@ -52,7 +52,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
     );
 
     // Verifica la respuesta completa para ver cómo está estructurada
-    console.log('Respuesta completa:', response.data);
+    /* console.log('Respuesta completa:', response.data); */
 
     return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
   } catch (err) {
