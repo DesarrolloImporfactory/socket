@@ -73,7 +73,7 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
   }
 });
 
-router.post('/guardar-audio', async (req, res) => {
+router.post('/guardar_audio', async (req, res) => {
   const { mediaId, accessToken } = req.body; // Datos que deberías recibir en el cuerpo de la solicitud
   const audioDir = path.join(
     __dirname,
