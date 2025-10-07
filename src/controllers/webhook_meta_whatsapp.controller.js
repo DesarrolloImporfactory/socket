@@ -541,7 +541,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           // Si es audio y tienes ruta de archivo, intentar transcribir
           if (tipo_mensaje === 'audio' && ruta_archivo) {
-            const ruta_absoluta = `https://new.imporsuitpro.com/${ruta_archivo}`;
+            const ruta_absoluta = ruta_archivo;
             /* console.log('tipo audio para conversion');
             console.log('ruta audio: ' + ruta_absoluta); */
 

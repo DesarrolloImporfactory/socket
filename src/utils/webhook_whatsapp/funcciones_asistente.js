@@ -35,7 +35,6 @@ async function transcribirAudioConWhisperDesdeArchivo(
   rutaArchivo,
   apiKeyOpenAI
 ) {
-  console.log('transcripcion de audio');
   try {
     const form = new FormData();
     form.append('file', fsSync.createReadStream(rutaArchivo));
