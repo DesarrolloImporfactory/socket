@@ -14,7 +14,7 @@ const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
 
 // ─── Lite Free (oculto a catálogo) ────────────────────────────────────────────
 const LITE_PLAN_ID = 6;
-const LITE_PRICE_ID = 'price_1S6cVNRwAlJ5h5wg7O1lhdu8';
+const LITE_PRICE_ID = 'price_1S8NsNClsPjxVwZw9cXWmJJj';
 
 
 

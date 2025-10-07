@@ -40,27 +40,28 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
       .audioBitrate(128)
       .audioCodec('libopus') // Codec Opus
       .format('ogg')
-      .on('end', () => {
-        fs.unlinkSync(inputFilePath); // Elimina el archivo original después de la conversión si es necesario
+      .on('end', async () => {
+        try {
+          // Elimina el archivo original después de la conversión si es necesario
+          await fs.unlink(inputFilePath);
 
-        // Lee el archivo convertido y envíalo al cliente
-        fs.readFile(outputFilePath, (err, data) => {
-          if (err) {
-            console.error('Error al leer el archivo convertido:', err);
-            return res
-              .status(500)
-              .json({ error: 'Error al leer el archivo convertido' });
-          }
+          // Lee el archivo convertido y envíalo al cliente
+          const data = await fs.readFile(outputFilePath);
 
           // Borra el archivo convertido después de leerlo si es necesario
-          fs.unlinkSync(outputFilePath);
+          await fs.unlink(outputFilePath);
 
           // Devuelve el archivo como respuesta en formato binario
           res.status(200).json({
             message: 'Archivo convertido y listo para enviar',
             file: data.toString('base64'), // Lo convierte a Base64 para enviar en JSON
           });
-        });
+        } catch (err) {
+          console.error('Error al eliminar o leer los archivos:', err);
+          res
+            .status(500)
+            .json({ error: 'Error al eliminar o leer los archivos' });
+        }
       })
       .on('error', (err) => {
         console.error('Error en la conversión:', err);
