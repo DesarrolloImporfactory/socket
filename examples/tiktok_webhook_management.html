@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok Webhooks - Gestión</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .webhook-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .webhook-url {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 14px;
+            border: 1px solid #dee2e6;
+            margin: 10px 0;
+        }
+
+        .button {
+            background: #ff0050;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+
+        .button:hover {
+            background: #e6004a;
+        }
+
+        .button.secondary {
+            background: #6c757d;
+        }
+
+        .button.secondary:hover {
+            background: #5a6268;
+        }
+
+        .button.success {
+            background: #28a745;
+        }
+
+        .button.success:hover {
+            background: #218838;
+        }
+
+        .button.danger {
+            background: #dc3545;
+        }
+
+        .button.danger:hover {
+            background: #c82333;
+        }
+
+        .input-group {
+            margin: 15px 0;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .input-group input,
+        .input-group select,
+        .input-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-active {
+            background: #28a745;
+        }
+
+        .status-inactive {
+            background: #6c757d;
+        }
+
+        .status-error {
+            background: #dc3545;
+        }
+
+        .event-item {
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin: 10px 0;
+            background: #f8f9fa;
+        }
+
+        .event-type {
+            font-weight: bold;
+            color: #495057;
+        }
+
+        .event-time {
+            color: #6c757d;
+            font-size: 12px;
+        }
+
+        .subscription-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+
+        .subscription-info {
+            flex-grow: 1;
+        }
+
+        .subscription-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .event-types-selector {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .event-type-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+
+        .event-type-checkbox input {
+            margin-right: 8px;
+            width: auto;
+        }
+
+        .notification {
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+
+        .notification.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        .notification.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+
+        .notification.warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎵 Gestión de Webhooks de TikTok Business</h1>
+
+    <!-- Configuración URL del Webhook -->
+    <div class="container">
+        <div class="webhook-section">
+            <h2>📡 URL del Webhook</h2>
+            <p>Esta es la URL que debes configurar en TikTok Business Manager:</p>
+
+            <div class="webhook-url" id="webhookUrl">
+                https://tu-dominio.com/api/v1/tiktok/webhook/receive
+            </div>
+
+            <div class="input-group">
+                <label for="configId">ID de Configuración:</label>
+                <input type="number" id="configId" placeholder="123" value="123">
+            </div>
+
+            <button class="button" onclick="updateWebhookUrl()">Actualizar URL</button>
+            <button class="button secondary" onclick="copyWebhookUrl()">Copiar URL</button>
+            <button class="button success" onclick="testWebhook()">Probar Webhook</button>
+        </div>
+    </div>
+
+    <!-- Suscripciones de Webhook -->
+    <div class="container">
+        <div class="webhook-section">
+            <h2>📋 Suscripciones Activas</h2>
+            <div id="subscriptionsList">
+                <p>Cargando suscripciones...</p>
+            </div>
+
+            <button class="button" onclick="loadSubscriptions()">Actualizar Lista</button>
+            <button class="button success" onclick="showSubscribeForm()">Nueva Suscripción</button>
+        </div>
+    </div>
+
+    <!-- Formulario para Nueva Suscripción -->
+    <div class="container" id="subscribeForm" style="display: none;">
+        <div class="webhook-section">
+            <h2>➕ Nueva Suscripción</h2>
+
+            <div class="input-group">
+                <label for="callbackUrl">URL de Callback:</label>
+                <input type="url" id="callbackUrl" placeholder="https://tu-dominio.com/api/v1/tiktok/webhook/receive">
+            </div>
+
+            <div class="input-group">
+                <label>Tipos de Eventos:</label>
+                <div class="event-types-selector">
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="campaign_status" value="CAMPAIGN_STATUS_CHANGE">
+                        <label for="campaign_status">Cambio Estado Campaña</label>
+                    </div>
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="adgroup_status" value="AD_GROUP_STATUS_CHANGE">
+                        <label for="adgroup_status">Cambio Estado Grupo</label>
+                    </div>
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="ad_status" value="AD_STATUS_CHANGE">
+                        <label for="ad_status">Cambio Estado Anuncio</label>
+                    </div>
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="budget_exhausted" value="BUDGET_EXHAUSTED">
+                        <label for="budget_exhausted">Presupuesto Agotado</label>
+                    </div>
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="bid_too_low" value="BID_TOO_LOW">
+                        <label for="bid_too_low">Puja Muy Baja</label>
+                    </div>
+                    <div class="event-type-checkbox">
+                        <input type="checkbox" id="creative_rejected" value="CREATIVE_REJECTED">
+                        <label for="creative_rejected">Creativo Rechazado</label>
+                    </div>
+                </div>
+            </div>
+
+            <button class="button success" onclick="subscribeToWebhook()">Crear Suscripción</button>
+            <button class="button secondary" onclick="hideSubscribeForm()">Cancelar</button>
+        </div>
+    </div>
+
+    <!-- Historial de Eventos -->
+    <div class="container">
+        <div class="webhook-section">
+            <h2>📊 Historial de Eventos</h2>
+
+            <div class="input-group">
+                <label for="eventTypeFilter">Filtrar por Tipo de Evento:</label>
+                <select id="eventTypeFilter">
+                    <option value="">Todos los eventos</option>
+                    <option value="CAMPAIGN_STATUS_CHANGE">Cambio Estado Campaña</option>
+                    <option value="AD_GROUP_STATUS_CHANGE">Cambio Estado Grupo</option>
+                    <option value="AD_STATUS_CHANGE">Cambio Estado Anuncio</option>
+                    <option value="BUDGET_EXHAUSTED">Presupuesto Agotado</option>
+                    <option value="BID_TOO_LOW">Puja Muy Baja</option>
+                    <option value="CREATIVE_REJECTED">Creativo Rechazado</option>
+                </select>
+            </div>
+
+            <div id="eventsList">
+                <p>Cargando eventos...</p>
+            </div>
+
+            <button class="button" onclick="loadEvents()">Actualizar Eventos</button>
+            <button class="button secondary" onclick="loadMoreEvents()">Cargar Más</button>
+        </div>
+    </div>
+
+    <!-- Notificaciones -->
+    <div id="notifications"></div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000/api/v1'; // Ajusta según tu configuración
+        let currentPage = 1;
+
+        // Función para mostrar notificaciones
+        function showNotification(message, type = 'success') {
+            const notificationsContainer = document.getElementById('notifications');
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+
+            notificationsContainer.appendChild(notification);
+
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
+        }
+
+        // Actualizar URL del webhook
+        function updateWebhookUrl() {
+            const domain = window.location.origin;
+            const webhookUrl = `${domain}/api/v1/tiktok/webhook/receive`;
+            document.getElementById('webhookUrl').textContent = webhookUrl;
+            document.getElementById('callbackUrl').value = webhookUrl;
+        }
+
+        // Copiar URL del webhook
+        function copyWebhookUrl() {
+            const webhookUrl = document.getElementById('webhookUrl').textContent;
+            navigator.clipboard.writeText(webhookUrl).then(() => {
+                showNotification('URL copiada al portapapeles');
+            });
+        }
+
+        // Probar webhook
+        async function testWebhook() {
+            const configId = document.getElementById('configId').value;
+            const callbackUrl = document.getElementById('callbackUrl').value || document.getElementById('webhookUrl').textContent;
+
+            if (!configId) {
+                showNotification('Por favor, ingresa un ID de configuración', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/webhook/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_configuracion: configId,
+                        callback_url: callbackUrl
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    showNotification(`Webhook probado: ${data.test_result.success ? 'Exitoso' : 'Falló'}`);
+                } else {
+                    showNotification(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error probando webhook: ${error.message}`, 'error');
+            }
+        }
+
+        // Cargar suscripciones
+        async function loadSubscriptions() {
+            const configId = document.getElementById('configId').value;
+
+            if (!configId) {
+                showNotification('Por favor, ingresa un ID de configuración', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/webhook/subscriptions?id_configuracion=${configId}`);
+                const data = await response.json();
+
+                if (data.ok) {
+                    displaySubscriptions(data.subscriptions);
+                } else {
+                    showNotification(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error cargando suscripciones: ${error.message}`, 'error');
+            }
+        }
+
+        // Mostrar suscripciones
+        function displaySubscriptions(subscriptions) {
+            const container = document.getElementById('subscriptionsList');
+
+            if (subscriptions.length === 0) {
+                container.innerHTML = '<p>No hay suscripciones activas.</p>';
+                return;
+            }
+
+            container.innerHTML = subscriptions.map(sub => `
+                <div class="subscription-item">
+                    <div class="subscription-info">
+                        <div>
+                            <span class="status-indicator status-${sub.status}"></span>
+                            <strong>ID:</strong> ${sub.subscription_id}
+                        </div>
+                        <div><strong>Eventos:</strong> ${sub.event_types.join(', ')}</div>
+                        <div><strong>URL:</strong> ${sub.callback_url}</div>
+                        <div><strong>Creado:</strong> ${new Date(sub.created_at).toLocaleString()}</div>
+                    </div>
+                    <div class="subscription-actions">
+                        <button class="button danger" onclick="unsubscribe('${sub.subscription_id}')">
+                            Cancelar
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Mostrar formulario de suscripción
+        function showSubscribeForm() {
+            document.getElementById('subscribeForm').style.display = 'block';
+            updateWebhookUrl();
+        }
+
+        // Ocultar formulario de suscripción
+        function hideSubscribeForm() {
+            document.getElementById('subscribeForm').style.display = 'none';
+        }
+
+        // Suscribirse a webhook
+        async function subscribeToWebhook() {
+            const configId = document.getElementById('configId').value;
+            const callbackUrl = document.getElementById('callbackUrl').value;
+
+            // Obtener eventos seleccionados
+            const eventTypes = [];
+            document.querySelectorAll('.event-type-checkbox input:checked').forEach(checkbox => {
+                eventTypes.push(checkbox.value);
+            });
+
+            if (!configId || !callbackUrl || eventTypes.length === 0) {
+                showNotification('Por favor, completa todos los campos y selecciona al menos un tipo de evento', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/webhook/subscribe`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_configuracion: configId,
+                        event_types: eventTypes,
+                        callback_url: callbackUrl
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    showNotification('¡Suscripción creada exitosamente!');
+                    hideSubscribeForm();
+                    loadSubscriptions();
+                } else {
+                    showNotification(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error creando suscripción: ${error.message}`, 'error');
+            }
+        }
+
+        // Cancelar suscripción
+        async function unsubscribe(subscriptionId) {
+            const configId = document.getElementById('configId').value;
+
+            if (!confirm('¿Estás seguro de que deseas cancelar esta suscripción?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/webhook/unsubscribe`, {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_configuracion: configId,
+                        subscription_id: subscriptionId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    showNotification('Suscripción cancelada exitosamente');
+                    loadSubscriptions();
+                } else {
+                    showNotification(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error cancelando suscripción: ${error.message}`, 'error');
+            }
+        }
+
+        // Cargar eventos
+        async function loadEvents() {
+            currentPage = 1;
+            await loadEventsPage();
+        }
+
+        // Cargar más eventos
+        async function loadMoreEvents() {
+            currentPage++;
+            await loadEventsPage(true);
+        }
+
+        // Cargar eventos por página
+        async function loadEventsPage(append = false) {
+            const configId = document.getElementById('configId').value;
+            const eventType = document.getElementById('eventTypeFilter').value;
+
+            if (!configId) {
+                showNotification('Por favor, ingresa un ID de configuración', 'error');
+                return;
+            }
+
+            try {
+                const params = new URLSearchParams({
+                    id_configuracion: configId,
+                    page: currentPage,
+                    limit: 10
+                });
+
+                if (eventType) {
+                    params.append('event_type', eventType);
+                }
+
+                const response = await fetch(`${API_BASE_URL}/tiktok/webhook/events?${params}`);
+                const data = await response.json();
+
+                if (data.ok) {
+                    displayEvents(data.events, append);
+                } else {
+                    showNotification(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error cargando eventos: ${error.message}`, 'error');
+            }
+        }
+
+        // Mostrar eventos
+        function displayEvents(events, append = false) {
+            const container = document.getElementById('eventsList');
+
+            if (!append) {
+                container.innerHTML = '';
+            }
+
+            if (events.length === 0 && !append) {
+                container.innerHTML = '<p>No hay eventos disponibles.</p>';
+                return;
+            }
+
+            const eventsHtml = events.map(event => `
+                <div class="event-item">
+                    <div class="event-type">${event.event_type}</div>
+                    <div class="event-time">${new Date(event.received_at).toLocaleString()}</div>
+                    <pre style="margin-top: 10px; font-size: 12px; background: #f1f3f4; padding: 10px; border-radius: 4px; overflow-x: auto;">
+${JSON.stringify(event.event_data, null, 2)}
+                    </pre>
+                </div>
+            `).join('');
+
+            if (append) {
+                container.innerHTML += eventsHtml;
+            } else {
+                container.innerHTML = eventsHtml;
+            }
+        }
+
+        // Inicializar página
+        document.addEventListener('DOMContentLoaded', function () {
+            updateWebhookUrl();
+            loadSubscriptions();
+            loadEvents();
+
+            // Auto-refresh cada 30 segundos
+            setInterval(() => {
+                loadEvents();
+            }, 30000);
+        });
+
+        // Filtrar eventos cuando cambie el selector
+        document.getElementById('eventTypeFilter').addEventListener('change', loadEvents);
+    </script>
+</body>
+
+</html>
