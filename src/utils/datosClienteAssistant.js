@@ -296,7 +296,7 @@ const obtenerDatosClienteParaAssistant_viejo = async (
       TRIM(fc.numero_guia) <> '' AND fc.numero_guia IS NOT NULL AND fc.numero_guia <> '0'
       AND fc.anulada = 0  
       AND (fc.id_plataforma = ? OR fc.id_propietario = ? OR b.id_plataforma = ?)
-      AND fc.telefono = ?
+      AND fc.telefono_limpio = ?
     ORDER BY fc.fecha_guia DESC 
     LIMIT 1
   `;
