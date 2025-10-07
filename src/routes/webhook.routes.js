@@ -138,7 +138,13 @@ router.post('/guardar_audio', async (req, res) => {
       fileUrl: `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${fileName}`,
     });
   } catch (err) {
-    return res.status(500).json({ error: 'Error al guardar el audio enviado' });
+    console.error('Error en la ruta guardar_audio:', err); // Log adicional para ver el error exacto
+    return res
+      .status(500)
+      .json({
+        error: 'Error al guardar el audio enviado',
+        details: err.message,
+      });
   }
 });
 
