@@ -25,6 +25,7 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
     console.log('Otra línea de log para verificar el flujo');
     console.log('Otra línea de log para verificar el flujo');
     console.log('Otra línea de log para verificar el flujo');
+    console.log('Otra línea de log para verificar el flujo');
     return res.sendStatus(200);
   }
 
