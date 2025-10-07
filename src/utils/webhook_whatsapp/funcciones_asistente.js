@@ -57,7 +57,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
 
     return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
   } catch (err) {
-    await console.log(
+    console.log(
       `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`
     );
     await log(
