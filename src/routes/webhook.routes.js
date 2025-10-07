@@ -74,7 +74,7 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
 });
 
 router.post('/guardar_audio', async (req, res) => {
-  const { mediaId, accessToken } = req.body; // Datos que deberías recibir en el cuerpo de la solicitud
+  const { mediaId } = req.body; // Solo necesitamos el mediaId
   const audioDir = path.join(
     __dirname,
     '..',
@@ -89,14 +89,9 @@ router.post('/guardar_audio', async (req, res) => {
     // Crear el directorio si no existe
     await fs.mkdir(audioDir, { recursive: true });
 
-    // Paso 1: Obtener URL de descarga del archivo
+    // Paso 1: Obtener URL de descarga del archivo desde Facebook
     const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
-    const mediaResponse = await axios.get(mediaInfoUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'User-Agent': 'Mozilla/5.0',
-      },
-    });
+    const mediaResponse = await axios.get(mediaInfoUrl);
 
     const fileUrl = mediaResponse?.data?.url;
     if (!fileUrl) {
@@ -108,10 +103,6 @@ router.post('/guardar_audio', async (req, res) => {
     // Paso 2: Descargar el archivo de audio binario
     const audioRes = await axios.get(fileUrl, {
       responseType: 'arraybuffer',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'User-Agent': 'Mozilla/5.0',
-      },
     });
 
     const audioData = audioRes.data;
@@ -127,18 +118,19 @@ router.post('/guardar_audio', async (req, res) => {
     const fileName = `${mediaId}.${extension}`;
     const fullPath = path.join(audioDir, fileName);
 
-    // Paso 3: Guardar el archivo
+    // Paso 3: Guardar el archivo en el servidor
     await fs.writeFile(fullPath, audioData);
 
-    const { size } = await fs.stat(fullPath);
+    // Paso 4: Generar la URL para acceder al archivo
+    const fileUrlOnServer = `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${fileName}`;
 
-    // Devolver la ruta relativa para guardar en la DB
+    // Devolver la URL del archivo guardado en el servidor
     return res.status(200).json({
       message: 'Audio guardado correctamente',
-      fileUrl: `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${fileName}`,
+      fileUrl: fileUrlOnServer,
     });
   } catch (err) {
-    console.error('Error en la ruta guardar_audio:', err); // Log adicional para ver el error exacto
+    console.error('Error al guardar el audio:', err); // Log para depurar
     return res
       .status(500)
       .json({
