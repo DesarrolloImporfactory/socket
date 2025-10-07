@@ -243,3 +243,151 @@ exports.validateTikTokOrigin = (req, res, next) => {
 
   next();
 };
+
+/**
+ * Middleware avanzado para logging detallado de webhooks
+ */
+exports.advancedWebhookLogger = async (req, res, next) => {
+  const startTime = Date.now();
+  const ip = req.ip || req.connection.remoteAddress;
+  const userAgent = req.headers['user-agent'] || 'Unknown';
+  const method = req.method;
+  const timestamp = new Date().toISOString();
+
+  // Detectar si viene de TikTok
+  const isTikTokRequest = exports.detectTikTokRequest(req);
+  const isTestRequest = exports.detectTestRequest(req);
+
+  console.log(
+    `[TIKTOK_WEBHOOK] ${timestamp} - ${method} ${req.originalUrl} - IP: ${ip} - UA: ${userAgent}`
+  );
+
+  if (isTikTokRequest) {
+    console.log(`[TIKTOK_WEBHOOK] ✅ Petición detectada como de TikTok`);
+  }
+
+  if (isTestRequest) {
+    console.log(`[TIKTOK_WEBHOOK] 🧪 Petición de prueba detectada`);
+  }
+
+  if (method === 'POST' && req.body) {
+    const eventTypes = req.body.data
+      ? req.body.data.map((e) => e.event_type).join(', ')
+      : 'Unknown';
+    console.log(`[TIKTOK_WEBHOOK] Eventos recibidos: ${eventTypes}`);
+  }
+
+  // Capturar respuesta para logging
+  const originalSend = res.send;
+  const originalJson = res.json;
+  let responseBody = '';
+
+  res.send = function (body) {
+    responseBody = body;
+    return originalSend.call(this, body);
+  };
+
+  res.json = function (body) {
+    responseBody = JSON.stringify(body);
+    return originalJson.call(this, body);
+  };
+
+  // Continuar con el siguiente middleware
+  res.on('finish', async () => {
+    const processingTime = Date.now() - startTime;
+
+    try {
+      // Guardar log en base de datos
+      await exports.saveWebhookLog({
+        request_method: method,
+        request_url: req.originalUrl,
+        request_headers: JSON.stringify(exports.sanitizeHeaders(req.headers)),
+        request_body: method === 'POST' ? JSON.stringify(req.body) : null,
+        request_query:
+          Object.keys(req.query).length > 0 ? JSON.stringify(req.query) : null,
+        source_ip: ip,
+        user_agent: userAgent,
+        response_status: res.statusCode,
+        response_body: responseBody,
+        processing_time_ms: processingTime,
+        is_tiktok_request: isTikTokRequest,
+        is_test_request: isTestRequest,
+        received_at: new Date(),
+      });
+
+      console.log(
+        `[TIKTOK_WEBHOOK] ✅ Log guardado - Status: ${res.statusCode} - Tiempo: ${processingTime}ms`
+      );
+    } catch (error) {
+      console.error('[TIKTOK_WEBHOOK] ❌ Error guardando log:', error);
+    }
+  });
+
+  next();
+};
+
+/**
+ * Detectar si la petición viene de TikTok
+ */
+exports.detectTikTokRequest = (req) => {
+  const userAgent = req.headers['user-agent'] || '';
+  const tikTokIndicators = ['TikTok', 'ByteDance', 'tiktok', 'bytedance'];
+
+  return tikTokIndicators.some((indicator) =>
+    userAgent.toLowerCase().includes(indicator.toLowerCase())
+  );
+};
+
+/**
+ * Detectar si es una petición de prueba
+ */
+exports.detectTestRequest = (req) => {
+  // Detectar por headers o contenido del body
+  const hasTestHeader =
+    req.headers['x-tiktok-test'] || req.headers['x-test-event'];
+  const hasTestInBody =
+    req.body &&
+    (req.body.test === true ||
+      (req.body.data &&
+        req.body.data.some((event) => event.event_type === 'TEST_EVENT')));
+
+  return !!(hasTestHeader || hasTestInBody);
+};
+
+/**
+ * Sanitizar headers para logging (remover información sensible)
+ */
+exports.sanitizeHeaders = (headers) => {
+  const sanitizedHeaders = { ...headers };
+
+  // Remover headers sensibles
+  const sensitiveHeaders = [
+    'authorization',
+    'cookie',
+    'x-api-key',
+    'x-access-token',
+  ];
+
+  sensitiveHeaders.forEach((header) => {
+    if (sanitizedHeaders[header]) {
+      sanitizedHeaders[header] = '[REDACTED]';
+    }
+  });
+
+  return sanitizedHeaders;
+};
+
+/**
+ * Guardar log en base de datos
+ */
+exports.saveWebhookLog = async (logData) => {
+  try {
+    const { getModels } = require('../models/initModels');
+    const { TikTokWebhookLog } = getModels();
+
+    await TikTokWebhookLog.create(logData);
+  } catch (error) {
+    console.error('[TIKTOK_WEBHOOK] Error guardando en BD:', error);
+    throw error;
+  }
+};

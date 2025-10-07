@@ -22,6 +22,7 @@ const TikTokConnection = require('./tiktok_connection.model');
 const TikTokWebhookEvent = require('./tiktok_webhook_event.model');
 const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model');
 const TikTokNotification = require('./tiktok_notification.model');
+const TikTokWebhookLog = require('./tiktok_webhook_log.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -310,6 +311,7 @@ const getModels = () => {
     TikTokWebhookEvent,
     TikTokWebhookSubscription,
     TikTokNotification,
+    TikTokWebhookLog,
   };
 };
 

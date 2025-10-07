@@ -134,7 +134,7 @@ router.get(
 router.post(
   '/webhook/receive',
   tikTokWebhookMiddleware.webhookRateLimit,
-  tikTokWebhookMiddleware.logWebhookRequest,
+  tikTokWebhookMiddleware.advancedWebhookLogger,
   tikTokWebhookMiddleware.validateTikTokOrigin,
   tikTokWebhookMiddleware.captureRawBody,
   tikTokWebhookMiddleware.validateWebhookStructure,
@@ -182,6 +182,22 @@ router.post(
   '/webhook/test',
   tikTokMiddleware.logTikTokRequest,
   tikTokWebhookController.testWebhook
+);
+
+// 23. Dashboard de logs de webhooks
+// GET /api/v1/tiktok/webhook/logs
+router.get(
+  '/webhook/logs',
+  tikTokMiddleware.logTikTokRequest,
+  tikTokWebhookController.getWebhookLogs
+);
+
+// 24. Estadísticas de webhooks
+// GET /api/v1/tiktok/webhook/stats
+router.get(
+  '/webhook/stats',
+  tikTokMiddleware.logTikTokRequest,
+  tikTokWebhookController.getWebhookStats
 );
 
 // Middleware de manejo de errores específico para webhooks

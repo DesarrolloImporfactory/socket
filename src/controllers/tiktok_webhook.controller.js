@@ -184,3 +184,235 @@ exports.testWebhook = catchAsync(async (req, res, next) => {
     message: 'Evento de prueba enviado',
   });
 });
+
+/**
+ * GET /api/v1/tiktok/webhook/logs
+ * Obtiene logs detallados de webhooks con filtros
+ */
+exports.getWebhookLogs = catchAsync(async (req, res, next) => {
+  const { TikTokWebhookLog } = require('../models/initModels');
+  const {
+    page = 1,
+    limit = 50,
+    hours = 24,
+    isTikTok,
+    isTest,
+    statusCode,
+    method = 'POST',
+  } = req.query;
+
+  const offset = (page - 1) * limit;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const whereConditions = {
+    received_at: {
+      [require('sequelize').Op.gte]: since,
+    },
+    method: method.toUpperCase(),
+  };
+
+  if (isTikTok !== undefined) {
+    whereConditions.is_tiktok_request = isTikTok === 'true';
+  }
+
+  if (isTest !== undefined) {
+    whereConditions.is_test_request = isTest === 'true';
+  }
+
+  if (statusCode) {
+    whereConditions.response_status = parseInt(statusCode);
+  }
+
+  const logs = await TikTokWebhookLog.findAll({
+    where: whereConditions,
+    order: [['received_at', 'DESC']],
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+
+  const total = await TikTokWebhookLog.count({
+    where: whereConditions,
+  });
+
+  res.json({
+    ok: true,
+    data: {
+      logs,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit),
+      },
+      filters: {
+        hours: parseInt(hours),
+        isTikTok,
+        isTest,
+        statusCode,
+        method,
+      },
+    },
+  });
+});
+
+/**
+ * GET /api/v1/tiktok/webhook/stats
+ * Obtiene estadísticas detalladas de webhooks
+ */
+exports.getWebhookStats = catchAsync(async (req, res, next) => {
+  const { TikTokWebhookLog } = require('../models/initModels');
+  const { hours = 24 } = req.query;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const baseWhere = {
+    received_at: {
+      [require('sequelize').Op.gte]: since,
+    },
+  };
+
+  // Estadísticas generales
+  const [
+    totalRequests,
+    tikTokRequests,
+    testRequests,
+    successfulRequests,
+    errorRequests,
+  ] = await Promise.all([
+    TikTokWebhookLog.count({ where: baseWhere }),
+    TikTokWebhookLog.count({
+      where: { ...baseWhere, is_tiktok_request: true },
+    }),
+    TikTokWebhookLog.count({
+      where: { ...baseWhere, is_test_request: true },
+    }),
+    TikTokWebhookLog.count({
+      where: {
+        ...baseWhere,
+        response_status: { [require('sequelize').Op.between]: [200, 299] },
+      },
+    }),
+    TikTokWebhookLog.count({
+      where: {
+        ...baseWhere,
+        response_status: { [require('sequelize').Op.gte]: 400 },
+      },
+    }),
+  ]);
+
+  // Distribución por código de estado
+  const statusDistribution = await TikTokWebhookLog.findAll({
+    where: baseWhere,
+    attributes: [
+      'response_status',
+      [require('sequelize').fn('COUNT', '*'), 'count'],
+    ],
+    group: ['response_status'],
+    order: [['response_status', 'ASC']],
+  });
+
+  // Últimas 10 IPs que hicieron requests
+  const topIPs = await TikTokWebhookLog.findAll({
+    where: baseWhere,
+    attributes: [
+      'client_ip',
+      [require('sequelize').fn('COUNT', '*'), 'count'],
+      [
+        require('sequelize').fn('MAX', require('sequelize').col('received_at')),
+        'last_request',
+      ],
+    ],
+    group: ['client_ip'],
+    order: [[require('sequelize').fn('COUNT', '*'), 'DESC']],
+    limit: 10,
+  });
+
+  // User Agents más comunes
+  const topUserAgents = await TikTokWebhookLog.findAll({
+    where: {
+      ...baseWhere,
+      user_agent: { [require('sequelize').Op.ne]: null },
+    },
+    attributes: [
+      'user_agent',
+      [require('sequelize').fn('COUNT', '*'), 'count'],
+    ],
+    group: ['user_agent'],
+    order: [[require('sequelize').fn('COUNT', '*'), 'DESC']],
+    limit: 5,
+  });
+
+  // Requests por hora (últimas horas)
+  const hourlyStats = await TikTokWebhookLog.findAll({
+    where: baseWhere,
+    attributes: [
+      [
+        require('sequelize').fn(
+          'DATE_FORMAT',
+          require('sequelize').col('received_at'),
+          '%Y-%m-%d %H:00:00'
+        ),
+        'hour',
+      ],
+      [require('sequelize').fn('COUNT', '*'), 'count'],
+      [
+        require('sequelize').fn(
+          'SUM',
+          require('sequelize').cast(
+            require('sequelize').col('is_tiktok_request'),
+            'UNSIGNED'
+          )
+        ),
+        'tiktok_count',
+      ],
+      [
+        require('sequelize').fn(
+          'SUM',
+          require('sequelize').cast(
+            require('sequelize').col('is_test_request'),
+            'UNSIGNED'
+          )
+        ),
+        'test_count',
+      ],
+    ],
+    group: [
+      require('sequelize').fn(
+        'DATE_FORMAT',
+        require('sequelize').col('received_at'),
+        '%Y-%m-%d %H:00:00'
+      ),
+    ],
+    order: [['hour', 'DESC']],
+    limit: parseInt(hours),
+  });
+
+  res.json({
+    ok: true,
+    data: {
+      summary: {
+        total_requests: totalRequests,
+        tiktok_requests: tikTokRequests,
+        test_requests: testRequests,
+        successful_requests: successfulRequests,
+        error_requests: errorRequests,
+        success_rate:
+          totalRequests > 0
+            ? ((successfulRequests / totalRequests) * 100).toFixed(2)
+            : 0,
+        tiktok_detection_rate:
+          totalRequests > 0
+            ? ((tikTokRequests / totalRequests) * 100).toFixed(2)
+            : 0,
+      },
+      status_distribution: statusDistribution,
+      top_ips: topIPs,
+      top_user_agents: topUserAgents,
+      hourly_stats: hourlyStats.reverse(),
+      period: {
+        hours: parseInt(hours),
+        from: since.toISOString(),
+        to: new Date().toISOString(),
+      },
+    },
+  });
+});
