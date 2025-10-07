@@ -115,6 +115,7 @@ async function enviarAsistenteGpt({
 
     return data;
   } catch (err) {
+    console.log(`❌ Error en enviarAsistenteGpt: ${err.message}`)
     await log(`❌ Error en enviarAsistenteGpt: ${err.message}`);
     return false;
   }
