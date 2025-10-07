@@ -1,14 +1,14 @@
 const express = require('express');
 const router = express.Router();
 
-const igWebhookController = require('../controllers/instagram_webhook.controller');
+const igController = require('../controllers/instagram.controller');
 const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 const igConversations = require('../controllers/instagram_conversations.controller');
 
-router.get('/webhook', igWebhookController.verifyWebhook);
-
-// ===== helpers (arriba del archivo, una sola vez) =====
+/* =============================
+   Helpers de gate / debug
+============================= */
 const seen = new Set();
 const seenOnce = (key, ttl = 5 * 60 * 1000) => {
   if (!key) return false;
@@ -18,7 +18,7 @@ const seenOnce = (key, ttl = 5 * 60 * 1000) => {
   return false;
 };
 
-const safeJSON = (obj, max = 4000) => {
+const safeJSON = (obj, max = 3000) => {
   try {
     const s = JSON.stringify(obj, null, 2);
     return s.length > max ? s.slice(0, max) + '…[truncado]' : s;
@@ -57,22 +57,29 @@ const summarize = (m) => {
   };
 };
 
-// ===== ruta =====
+router.get('/webhook', igController.verifyWebhook);
+
 router.post(
   '/webhook',
   (req, res, next) => {
     try {
+      // Debug de entrada
+      console.log('[IG ROUTES][INCOMING BODY]', safeJSON(req.body, 1500));
+
       const entry = req.body?.entry?.[0];
       const messaging = entry?.messaging?.[0];
 
-      // Si no hay "messaging", log corto del body y seguir
       if (!messaging) {
-        console.log('[IG GATE][NO-MESSAGING] body=', safeJSON(req.body, 1500));
+        console.log(
+          '[IG ROUTES][NO-MESSAGING] body=',
+          safeJSON(req.body, 1000)
+        );
         return next();
       }
 
       const isEcho = messaging?.message?.is_echo === true;
       const isEdit = !!messaging?.message_edit;
+
       const mid = messaging?.message?.mid;
       const key =
         mid ||
@@ -80,32 +87,43 @@ router.post(
           isEdit ? 'edit' : 'msg'
         }`;
 
-      // Deduplicación: si ya lo vimos, respondemos 200 y paramos
-      if (seenOnce(key)) return res.sendStatus(200);
+      // Resumen siempre (primera vez)
+      if (!seenOnce(key)) {
+        console.log('[IG ROUTES][SUMMARY]', summarize(messaging));
+        // RAW util para inspección rápida de este evento
+        console.log('[IG ROUTES][RAW messaging]', safeJSON(messaging, 2000));
+      } else {
+        console.log('[IG ROUTES][DUPLICATE]', { key });
+        return res.sendStatus(200);
+      }
 
-      // Siempre logueamos un resumen claro
-      console.log('[IG GATE][SUMMARY]', summarize(messaging));
+      // Silenciar ecos y ediciones (recomendado)
+      if (isEcho || isEdit) {
+        console.log('[IG ROUTES][IGNORED]', {
+          isEcho,
+          isEdit,
+          mid: mid || null,
+        });
+        return res.sendStatus(200);
+      }
 
-      // Y un dump truncado del objeto relevante (lo que usted quiere ver)
-      // - Para mensajes normales: dump de "messaging"
-      // - Para casos raros: si quiere ver TODO, cambie a req.body
-      console.log('[IG GATE][RAW]', safeJSON(messaging, 3000));
-
-      // Silenciar ecos y ediciones tras registrar (no procesar más)
-      if (isEcho || isEdit) return res.sendStatus(200);
-
-      // Para el controller (si le sirve)
-      const text = messaging?.message?.text || null;
-      req.gate = { text, messaging, entry };
+      // Pasa info útil al controller
+      req.gate = {
+        text: messaging?.message?.text || null,
+        mid,
+        sender: messaging?.sender?.id,
+        recipient: messaging?.recipient?.id,
+        timestamp: messaging?.timestamp,
+      };
 
       return next();
     } catch (e) {
-      console.error('[IG GATE][ERROR]', e.message);
+      console.error('[IG ROUTES][GATE ERROR]', e.message);
       return next();
     }
   },
   verifyFBSignature,
-  igWebhookController.receiveWebhook
+  igController.receiveWebhook
 );
 
 // OAuth / conexión
