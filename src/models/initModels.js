@@ -17,6 +17,11 @@ const Planes_chat_center = require('./planes_chat_center.model');
 const Calendar = require('./calendar.model');
 const Appointment = require('./appointment.model');
 const AppointmentInvitee = require('./appointment_invitee.model');
+const TikTokOAuthSession = require('./tiktok_oauth_session.model');
+const TikTokConnection = require('./tiktok_connection.model');
+const TikTokWebhookEvent = require('./tiktok_webhook_event.model');
+const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model');
+const TikTokNotification = require('./tiktok_notification.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -263,5 +268,50 @@ const initModel = () => {
     sourceKey: 'id_users',
     as: 'created_appointments',
   });
+
+  // Asociaciones de TikTok OAuth
+  TikTokOAuthSession.hasMany(TikTokConnection, {
+    foreignKey: 'oauth_session_id',
+    sourceKey: 'id_oauth_session',
+    as: 'connections',
+  });
+
+  TikTokConnection.belongsTo(TikTokOAuthSession, {
+    foreignKey: 'oauth_session_id',
+    targetKey: 'id_oauth_session',
+    as: 'oauth_session',
+  });
 };
+
+// Función para obtener todos los modelos
+const getModels = () => {
+  return {
+    User,
+    Plataforma,
+    UsuarioPlataforma,
+    ClientesChatCenter,
+    MensajesClientes,
+    ErroresChatMeta,
+    EtiquetasChatCenter,
+    FacturasCot,
+    DetalleFactCot,
+    Productos,
+    InventarioBodegas,
+    Usuarios_chat_center,
+    Sub_usuarios_chat_center,
+    Departamentos_chat_center,
+    Sub_usuarios_departamento,
+    Planes_chat_center,
+    Calendar,
+    Appointment,
+    AppointmentInvitee,
+    TikTokOAuthSession,
+    TikTokConnection,
+    TikTokWebhookEvent,
+    TikTokWebhookSubscription,
+    TikTokNotification,
+  };
+};
+
 module.exports = initModel;
+module.exports.getModels = getModels;

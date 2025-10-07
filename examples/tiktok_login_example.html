@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok Business Login Kit - Ejemplo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .login-section {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .platform-selector {
+            margin: 20px 0;
+        }
+
+        .platform-selector select {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        .login-button {
+            background: #ff0050;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px;
+        }
+
+        .login-button:hover {
+            background: #e6004a;
+        }
+
+        .login-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .success {
+            color: #28a745;
+        }
+
+        .error {
+            color: #dc3545;
+        }
+
+        .warning {
+            color: #ffc107;
+        }
+
+        .accounts-list {
+            margin-top: 20px;
+        }
+
+        .account-item {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin: 10px 0;
+            cursor: pointer;
+        }
+
+        .account-item:hover {
+            background: #f0f0f0;
+        }
+
+        .connected-info {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+
+        .redirect-urls {
+            margin-top: 30px;
+            padding: 20px;
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+
+        .url-label {
+            font-weight: bold;
+            color: #333;
+            display: block;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎵 TikTok Business Login Kit</h1>
+
+        <!-- URLs de Redirección (como en la imagen) -->
+        <div class="redirect-urls">
+            <h3>📋 URLs de Redirección Configuradas</h3>
+            <p>Estas son las URLs que debes configurar en tu aplicación de TikTok Developer:</p>
+
+            <label class="url-label">Web *</label>
+            <input type="text" class="url-input" value="https://tu-dominio.com/tiktok/callback" readonly>
+
+            <label class="url-label">Desktop</label>
+            <input type="text" class="url-input" value="http://localhost:3000/tiktok/callback" readonly>
+
+            <label class="url-label">Android</label>
+            <input type="text" class="url-input" value="tu-app://tiktok/callback" readonly>
+
+            <label class="url-label">iOS</label>
+            <input type="text" class="url-input" value="tu-app://tiktok/callback" readonly>
+
+            <small style="color: #666; margin-top: 10px; display: block;">
+                * Campo requerido. Puedes agregar hasta 10 URLs de redirección.
+            </small>
+        </div>
+
+        <!-- Selector de Plataforma -->
+        <div class="login-section">
+            <h3>🚀 Conectar con TikTok Business</h3>
+
+            <div class="platform-selector">
+                <label for="platform">Seleccionar Plataforma:</label>
+                <select id="platform">
+                    <option value="web">Web</option>
+                    <option value="desktop">Desktop</option>
+                    <option value="android">Android</option>
+                    <option value="ios">iOS</option>
+                </select>
+            </div>
+
+            <input type="number" id="configId" placeholder="ID de Configuración"
+                style="padding: 10px; margin: 10px; border: 1px solid #ddd; border-radius: 6px;">
+
+            <br>
+
+            <button class="login-button" onclick="startTikTokLogin()">
+                Conectar con TikTok Business
+            </button>
+
+            <button class="login-button" onclick="checkConnectionStatus()" style="background: #17a2b8;">
+                Verificar Estado
+            </button>
+        </div>
+
+        <!-- Sección de Estado -->
+        <div class="status-section">
+            <h3>📊 Estado de la Conexión</h3>
+            <div id="statusDisplay">
+                <p>No hay información de estado disponible.</p>
+            </div>
+        </div>
+
+        <!-- Lista de Cuentas de Negocio -->
+        <div id="accountsSection" style="display: none;">
+            <h3>🏢 Cuentas de Negocio Disponibles</h3>
+            <div id="accountsList" class="accounts-list"></div>
+        </div>
+    </div>
+
+    <script>
+        // URL base de tu API
+        const API_BASE_URL = 'http://localhost:8000/api/v1'; // Ajusta según tu configuración
+
+        let currentOAuthSessionId = null;
+
+        // Función para iniciar el login con TikTok
+        async function startTikTokLogin() {
+            const configId = document.getElementById('configId').value;
+            const platform = document.getElementById('platform').value;
+
+            if (!configId) {
+                alert('Por favor, ingresa un ID de configuración');
+                return;
+            }
+
+            try {
+                // Obtener URL de login
+                const response = await fetch(`${API_BASE_URL}/tiktok/login-url?` + new URLSearchParams({
+                    id_configuracion: configId,
+                    redirect_uri: getRedirectUri(platform),
+                    platform: platform
+                }));
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    updateStatus(`Redirigiendo a TikTok para autorización (${platform})...`, 'warning');
+
+                    // Guardar datos en localStorage para el callback
+                    localStorage.setItem('tiktok_config_id', configId);
+                    localStorage.setItem('tiktok_platform', platform);
+                    localStorage.setItem('tiktok_redirect_uri', getRedirectUri(platform));
+
+                    // Redirigir al usuario
+                    window.location.href = data.url;
+                } else {
+                    updateStatus(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error de conexión: ${error.message}`, 'error');
+            }
+        }
+
+        // Función para obtener la URI de redirección según la plataforma
+        function getRedirectUri(platform) {
+            const baseUrl = window.location.origin;
+            switch (platform) {
+                case 'web':
+                    return `${baseUrl}/tiktok/callback`;
+                case 'desktop':
+                    return 'http://localhost:3000/tiktok/callback';
+                case 'android':
+                    return 'tu-app://tiktok/callback';
+                case 'ios':
+                    return 'tu-app://tiktok/callback';
+                default:
+                    return `${baseUrl}/tiktok/callback`;
+            }
+        }
+
+        // Función para manejar el callback de OAuth
+        async function handleOAuthCallback() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const state = urlParams.get('state');
+
+            if (code) {
+                const configId = localStorage.getItem('tiktok_config_id');
+                const platform = localStorage.getItem('tiktok_platform');
+                const redirectUri = localStorage.getItem('tiktok_redirect_uri');
+
+                try {
+                    updateStatus('Intercambiando código por token...', 'warning');
+
+                    // Intercambiar código por token
+                    const response = await fetch(`${API_BASE_URL}/tiktok/oauth/exchange`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            code: code,
+                            id_configuracion: configId,
+                            redirect_uri: redirectUri,
+                            platform: platform
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.ok) {
+                        currentOAuthSessionId = data.oauth_session_id;
+                        updateStatus('¡Autenticación exitosa! Obteniendo cuentas de negocio...', 'success');
+
+                        // Limpiar URL
+                        window.history.replaceState({}, document.title, window.location.pathname);
+
+                        // Obtener cuentas de negocio
+                        await getBusinessAccounts();
+                    } else {
+                        updateStatus(`Error en autenticación: ${data.message}`, 'error');
+                    }
+                } catch (error) {
+                    updateStatus(`Error procesando callback: ${error.message}`, 'error');
+                }
+
+                // Limpiar localStorage
+                localStorage.removeItem('tiktok_config_id');
+                localStorage.removeItem('tiktok_platform');
+                localStorage.removeItem('tiktok_redirect_uri');
+            }
+        }
+
+        // Función para obtener cuentas de negocio
+        async function getBusinessAccounts() {
+            if (!currentOAuthSessionId) {
+                updateStatus('No hay sesión OAuth activa', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/business-accounts?` + new URLSearchParams({
+                    oauth_session_id: currentOAuthSessionId
+                }));
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    displayBusinessAccounts(data.accounts);
+                } else {
+                    updateStatus(`Error obteniendo cuentas: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Función para mostrar cuentas de negocio
+        function displayBusinessAccounts(accounts) {
+            const accountsSection = document.getElementById('accountsSection');
+            const accountsList = document.getElementById('accountsList');
+
+            if (accounts.length === 0) {
+                accountsList.innerHTML = '<p>No se encontraron cuentas de negocio.</p>';
+            } else {
+                accountsList.innerHTML = accounts.map(account => `
+                    <div class="account-item" onclick="connectAccount('${account.advertiser_id}', '${account.advertiser_name}')">
+                        <strong>${account.advertiser_name}</strong><br>
+                        <small>ID: ${account.advertiser_id}</small><br>
+                        <small>Estado: ${account.status}</small>
+                    </div>
+                `).join('');
+            }
+
+            accountsSection.style.display = 'block';
+        }
+
+        // Función para conectar una cuenta de negocio
+        async function connectAccount(accountId, accountName) {
+            const configId = document.getElementById('configId').value;
+
+            if (!currentOAuthSessionId || !configId) {
+                updateStatus('Faltan datos para conectar la cuenta', 'error');
+                return;
+            }
+
+            try {
+                updateStatus(`Conectando cuenta: ${accountName}...`, 'warning');
+
+                const response = await fetch(`${API_BASE_URL}/tiktok/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        oauth_session_id: currentOAuthSessionId,
+                        id_configuracion: configId,
+                        business_account_id: accountId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    updateStatus(`¡Cuenta conectada exitosamente!`, 'success');
+                    showConnectedInfo(accountName, accountId);
+                    document.getElementById('accountsSection').style.display = 'none';
+                } else {
+                    updateStatus(`Error conectando cuenta: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Función para mostrar información de cuenta conectada
+        function showConnectedInfo(accountName, accountId) {
+            const statusDisplay = document.getElementById('statusDisplay');
+            statusDisplay.innerHTML = `
+                <div class="connected-info">
+                    <h4>✅ Cuenta Conectada</h4>
+                    <p><strong>Nombre:</strong> ${accountName}</p>
+                    <p><strong>ID:</strong> ${accountId}</p>
+                    <p><strong>Estado:</strong> Activa</p>
+                    <button class="login-button" onclick="syncData()" style="background: #28a745;">
+                        Sincronizar Datos
+                    </button>
+                    <button class="login-button" onclick="disconnectAccount()" style="background: #dc3545;">
+                        Desconectar
+                    </button>
+                </div>
+            `;
+        }
+
+        // Función para verificar estado de conexión
+        async function checkConnectionStatus() {
+            const configId = document.getElementById('configId').value;
+
+            if (!configId) {
+                alert('Por favor, ingresa un ID de configuración');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/tiktok/connection-status?` + new URLSearchParams({
+                    id_configuracion: configId
+                }));
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    const status = data.status;
+                    let statusClass = 'warning';
+
+                    if (status.status === 'active') {
+                        statusClass = 'success';
+                    } else if (status.status === 'error') {
+                        statusClass = 'error';
+                    }
+
+                    updateStatus(`Estado: ${status.message}`, statusClass);
+
+                    if (status.connected && status.status === 'active') {
+                        showConnectedInfo(
+                            status.business_account_name || 'Cuenta TikTok',
+                            status.business_account_id
+                        );
+                    }
+                } else {
+                    updateStatus(`Error: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Función para sincronizar datos
+        async function syncData() {
+            const configId = document.getElementById('configId').value;
+
+            try {
+                updateStatus('Iniciando sincronización de datos...', 'warning');
+
+                const response = await fetch(`${API_BASE_URL}/tiktok/sync-data`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_configuracion: configId,
+                        sync_type: 'all'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.ok) {
+                    updateStatus('¡Sincronización completada exitosamente!', 'success');
+                } else {
+                    updateStatus(`Error en sincronización: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Función para desconectar cuenta
+        async function disconnectAccount() {
+            const configId = document.getElementById('configId').value;
+
+            if (confirm('¿Estás seguro de que deseas desconectar la cuenta de TikTok?')) {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/tiktok/disconnect?` + new URLSearchParams({
+                        id_configuracion: configId
+                    }), {
+                        method: 'DELETE'
+                    });
+
+                    const data = await response.json();
+
+                    if (data.ok) {
+                        updateStatus('Cuenta desconectada exitosamente', 'success');
+                        document.getElementById('statusDisplay').innerHTML = '<p>No hay información de estado disponible.</p>';
+                        currentOAuthSessionId = null;
+                    } else {
+                        updateStatus(`Error: ${data.message}`, 'error');
+                    }
+                } catch (error) {
+                    updateStatus(`Error: ${error.message}`, 'error');
+                }
+            }
+        }
+
+        // Función para actualizar el estado visual
+        function updateStatus(message, type = 'info') {
+            const statusDisplay = document.getElementById('statusDisplay');
+            statusDisplay.innerHTML = `<p class="${type}">${message}</p>`;
+        }
+
+        // Ejecutar al cargar la página
+        document.addEventListener('DOMContentLoaded', function () {
+            // Verificar si hay un callback de OAuth
+            handleOAuthCallback();
+        });
+    </script>
+</body>
+
+</html>

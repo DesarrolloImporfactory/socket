@@ -41,6 +41,8 @@ const planesRouter = require('./routes/planes.routes');
 
 const messengerRouter = require('./routes/messenger.routes');
 
+const tikTokRouter = require('./routes/tiktok.routes');
+
 const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes');
 
 const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
@@ -177,6 +179,7 @@ app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
 app.use('/api/v1/pedidos', pedidosRouter);
 app.use('/api/v1/messenger', messengerRouter);
+app.use('/api/v1/tiktok', tikTokRouter);
 app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
 
