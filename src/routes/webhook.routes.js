@@ -73,8 +73,13 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
   }
 });
 
-router.post('/guardar_audio', async (req, res) => {
-  const { mediaId } = req.body; // Solo necesitamos el mediaId
+router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
+  if (!req.file) {
+    return res
+      .status(400)
+      .json({ error: 'No se ha proporcionado ningún archivo' });
+  }
+
   const audioDir = path.join(
     __dirname,
     '..',
@@ -89,40 +94,10 @@ router.post('/guardar_audio', async (req, res) => {
     // Crear el directorio si no existe
     await fs.mkdir(audioDir, { recursive: true });
 
-    // Paso 1: Obtener URL de descarga del archivo desde Facebook
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
-    const mediaResponse = await axios.get(mediaInfoUrl);
+    const filePath = path.join(audioDir, req.file.filename);
 
-    const fileUrl = mediaResponse?.data?.url;
-    if (!fileUrl) {
-      return res
-        .status(500)
-        .json({ error: 'No se obtuvo la URL del archivo de audio' });
-    }
-
-    // Paso 2: Descargar el archivo de audio binario
-    const audioRes = await axios.get(fileUrl, {
-      responseType: 'arraybuffer',
-    });
-
-    const audioData = audioRes.data;
-    const mimeType = audioRes.headers['content-type'];
-
-    // Verificar si el tipo MIME es 'audio/ogg'
-    if (mimeType !== 'audio/ogg') {
-      return res.status(400).json({ error: 'Tipo de archivo no válido' });
-    }
-
-    // Forzamos la extensión a .ogg
-    const extension = 'ogg';
-    const fileName = `${mediaId}.${extension}`;
-    const fullPath = path.join(audioDir, fileName);
-
-    // Paso 3: Guardar el archivo en el servidor
-    await fs.writeFile(fullPath, audioData);
-
-    // Paso 4: Generar la URL para acceder al archivo
-    const fileUrlOnServer = `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${fileName}`;
+    // Generar la URL para acceder al archivo guardado
+    const fileUrlOnServer = `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${req.file.filename}`;
 
     // Devolver la URL del archivo guardado en el servidor
     return res.status(200).json({
@@ -130,13 +105,11 @@ router.post('/guardar_audio', async (req, res) => {
       fileUrl: fileUrlOnServer,
     });
   } catch (err) {
-    console.error('Error al guardar el audio:', err); // Log para depurar
-    return res
-      .status(500)
-      .json({
-        error: 'Error al guardar el audio enviado',
-        details: err.message,
-      });
+    console.error('Error al guardar el audio:', err);
+    return res.status(500).json({
+      error: 'Error al guardar el audio enviado',
+      details: err.message,
+    });
   }
 });
 
