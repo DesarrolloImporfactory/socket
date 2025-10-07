@@ -2,3 +2,5 @@ node_modules
 .env
 uploads/*
 logs/*
+src/logs/
+src/uploads/*
