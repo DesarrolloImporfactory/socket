@@ -15,6 +15,13 @@ router.post(
   '/webhook',
   (req, res, next) => {
     try {
+      console.log('[IG]: Getting request for Instagram Webhook');
+      console.log('[IG]: Query', req.query);
+      console.log('[IG]: Headers', req.headers);
+      console.log('[IG]: Body', req.body);
+      console.log('[IG]: Raw Body', req.rawBody);
+      console.log('[IG]: Request Object', req);
+      console.table(req);
       const sig = req.get('x-hub-signature-256');
       if (!sig) return res.status(401).send('Missing X-Hub-Signature-256');
 
