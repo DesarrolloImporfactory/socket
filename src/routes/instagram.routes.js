@@ -15,11 +15,15 @@ router.post(
   '/webhook',
   (req, res, next) => {
     try {
-      console.log('[IG]: Getting request for Instagram Webhook');
-      console.log(
-        '[IG]: mensaje - en instagram',
-        req.body.entry?.[0]?.messaging
-      );
+      if (req.body.entry?.[0]?.messaging) {
+        console.log('[IG]: Getting request for Instagram Webhook');
+        console.log(
+          '[IG]: mensaje - en instagram',
+          req.body.entry?.[0]?.messaging
+        );
+      } else {
+        throw new Error('No messaging in body');
+      }
       const sig = req.get('x-hub-signature-256');
       if (!sig) return res.status(401).send('Missing X-Hub-Signature-256');
 
