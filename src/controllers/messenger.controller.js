@@ -20,6 +20,7 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
   const body = req.body;
   if (body.object !== 'page') {
     console.log('[PAGE_WEBHOOK] object != page → se ignora', body.object);
+    console.log('jeimy was here!');
     return res.sendStatus(200);
   }
 
