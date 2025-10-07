@@ -6,6 +6,7 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
+const mime = require('mime-types');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
