@@ -23,44 +23,6 @@ router.post(
       }
 
       console.log('[IG GATE] Incoming request for IG Webhook', { message });
-      const sig = req.get('x-hub-signature-256');
-      if (!sig) return res.status(401).send('Missing X-Hub-Signature-256');
-
-      const [algo, theirHash] = sig.split('=');
-      if (algo !== 'sha256' || !theirHash) {
-        return res.status(401).send('Invalid signature algorithm');
-      }
-      if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) {
-        console.error('[IG GATE] rawBody missing/not Buffer');
-        return res.status(401).send('Invalid signature (no raw body)');
-      }
-
-      const crypto = require('crypto');
-      const hmac = (secret) =>
-        crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
-
-      const tryMessenger = SECRET_MESSENGER ? hmac(SECRET_MESSENGER) : '';
-      const tryIG = SECRET_IG_GRAPH ? hmac(SECRET_IG_GRAPH) : '';
-
-      if (tryMessenger === theirHash) {
-        req.fbAppSecretOverride = SECRET_MESSENGER;
-        req.signatureVerified = true; // 👈 marcar verificado
-        console.error('[IG GATE] ✅ MATCH IMPORCHAT (Messenger App)');
-        return next();
-      }
-      if (tryIG === theirHash) {
-        req.fbAppSecretOverride = SECRET_IG_GRAPH;
-        req.signatureVerified = true; // 👈 marcar verificado
-        console.error('[IG GATE] ✅ MATCH IMPORCHAT-IG (Instagram App)');
-        return next();
-      }
-
-      console.error('[IG GATE] ❌ NO MATCH', {
-        theirHash,
-        tryMessenger: tryMessenger.slice(0, 16) + '…',
-        tryIG: tryIG.slice(0, 16) + '…',
-      });
-      return res.status(401).send('Invalid signature');
     } catch (e) {
       console.error('[IG GATE] error', e.message);
       return res.status(500).send('Gate error');
