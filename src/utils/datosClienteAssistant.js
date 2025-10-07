@@ -48,6 +48,8 @@ const obtenerDatosClienteParaAssistant = async (
     LIMIT 1
   `;
 
+  console.log('sql: ' + sql);
+
   const [factura] = await db.query(sql, {
     replacements: [id_plataforma, id_plataforma, id_plataforma, telefono],
     type: db.QueryTypes.SELECT,
