@@ -91,10 +91,22 @@ router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
   );
 
   try {
+    // Verificar si el tipo MIME del archivo es correcto
+    const mimeType = mime.lookup(req.file.originalname);
+    if (!mimeType || !mimeType.startsWith('audio/')) {
+      return res
+        .status(400)
+        .json({ error: 'El archivo no es un audio válido' });
+    }
+
     // Crear el directorio si no existe
     await fs.mkdir(audioDir, { recursive: true });
 
+    // Definir la ruta del archivo
     const filePath = path.join(audioDir, req.file.filename);
+
+    // Guardar el archivo recibido en la ruta correcta
+    await fs.rename(req.file.path, filePath);
 
     // Generar la URL para acceder al archivo guardado
     const fileUrlOnServer = `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${req.file.filename}`;
