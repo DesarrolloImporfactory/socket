@@ -1,6 +1,7 @@
 const express = require('express');
 const { upload } = require('../utils/multer');
 const { webhook } = require('../controllers/chat.controller');
+const { webhook } = require('../../');
 const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -85,7 +86,6 @@ router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
 
   const audioDir = path.join(
     __dirname,
-    '..',
     '..',
     'uploads',
     'webhook_whatsapp',
