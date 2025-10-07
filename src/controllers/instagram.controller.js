@@ -28,7 +28,6 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
         if (mp === 'instagram') {
           await InstagramService.routeEvent(event);
         }
-        // Si quieres también rotear Messenger aquí, llama a tu MessengerService.routeEvent(event)
       }
     })
   );

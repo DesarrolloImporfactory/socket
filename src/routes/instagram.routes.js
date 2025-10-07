@@ -6,29 +6,40 @@ const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 const igConversations = require('../controllers/instagram_conversations.controller');
 
-const SECRET_MESSENGER = '9cf575fae8f0516fa727623007cd8044'; // IMPORCHAT (Messenger)
-const SECRET_IG_GRAPH = 'b9015cadee33d57d360fe133812bfce0'; // IMPORCHAT-IG (Instagram Graph)
-
 router.get('/webhook', igWebhookController.verifyWebhook);
 
 router.post(
   '/webhook',
   (req, res, next) => {
     try {
-      let message = '';
-      if (req.body.entry?.[0]?.messaging[0]?.message?.text) {
-        message = req.body.entry[0].messaging[0].message.text;
-      } else {
-        throw new Error('No messaging in body');
+      const entry = req.body?.entry?.[0];
+      const messaging = entry?.messaging?.[0];
+
+      if (!messaging) {
+        // Evento válido sin "messaging" (delivery/read/etc.). No es error.
+        console.log('[IG GATE] evento sin "messaging" (ok)');
+        return next();
       }
 
-      console.log('[IG GATE] Incoming request for IG Webhook', { message });
+      const text = messaging?.message?.text;
+      if (text) {
+        console.log('[IG GATE] Incoming IG Webhook', { message: text });
+      } else {
+        // Muchos eventos no traen texto (eco, delivery, read, postback)
+        console.log('[IG GATE] messaging sin texto (ok)', {
+          keys: Object.keys(messaging),
+        });
+      }
+
+      // Si quieres usarlo luego en el controller:
+      req.gate = { text, messaging, entry };
+      return next();
     } catch (e) {
       console.error('[IG GATE] error', e.message);
-      return res.status(500).send('Gate error');
+      // ¡No devuelvas 5xx! Deja seguir para que el controller responda 200.
+      return next();
     }
   },
-  // deja el verify, pero permitirá bypass si ya fue verificado por el gate
   verifyFBSignature,
   igWebhookController.receiveWebhook
 );
