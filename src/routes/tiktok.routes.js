@@ -200,7 +200,8 @@ router.get(
   tikTokWebhookController.getWebhookStats
 );
 
-// Middleware de manejo de errores específico para webhooks
-router.use('/webhook/*', tikTokWebhookMiddleware.handleWebhookError);
+// Middleware de manejo de errores específico solo para endpoints de procesamiento de webhooks
+router.use('/webhook/verify', tikTokWebhookMiddleware.handleWebhookError);
+router.use('/webhook/receive', tikTokWebhookMiddleware.handleWebhookError);
 
 module.exports = router;
