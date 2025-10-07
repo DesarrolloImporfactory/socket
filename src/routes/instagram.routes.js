@@ -8,6 +8,15 @@ const igConversations = require('../controllers/instagram_conversations.controll
 
 router.get('/webhook', igWebhookController.verifyWebhook);
 
+const seen = new Set();
+const seenOnce = (key, ttl = 5 * 60 * 1000) => {
+  if (!key) return false;
+  if (seen.has(key)) return true;
+  seen.add(key);
+  setTimeout(() => seen.delete(key), ttl);
+  return false;
+};
+
 router.post(
   '/webhook',
   (req, res, next) => {
@@ -15,28 +24,26 @@ router.post(
       const entry = req.body?.entry?.[0];
       const messaging = entry?.messaging?.[0];
 
-      if (!messaging) {
-        // Evento válido sin "messaging" (delivery/read/etc.). No es error.
-        console.log('[IG GATE] evento sin "messaging" (ok)');
-        return next();
-      }
+      if (!messaging) return next();
 
-      const text = messaging?.message?.text;
-      if (text) {
-        console.log('[IG GATE] Incoming IG Webhook', { message: text });
-      } else {
-        // Muchos eventos no traen texto (eco, delivery, read, postback)
-        console.log('[IG GATE] messaging sin texto (ok)', {
-          keys: Object.keys(messaging),
-        });
-      }
+      const msg = messaging.message;
+      const isEcho = msg?.is_echo === true;
+      const isEdit = Boolean(messaging?.message_edit);
 
-      // Si quieres usarlo luego en el controller:
+      // 🔇 Silenciar ecos y ediciones
+      if (isEcho || isEdit) return res.sendStatus(200);
+
+      // 🔒 Idempotencia por mid (fallback: sender+timestamp)
+      const mid = msg?.mid;
+      const key = mid || `${messaging?.sender?.id}:${messaging?.timestamp}`;
+      if (seenOnce(key)) return res.sendStatus(200);
+
+      const text = msg?.text;
+      if (text) console.log('[IG GATE] Incoming IG Webhook', { message: text });
+
       req.gate = { text, messaging, entry };
       return next();
     } catch (e) {
-      console.error('[IG GATE] error', e.message);
-      // ¡No devuelvas 5xx! Deja seguir para que el controller responda 200.
       return next();
     }
   },
