@@ -41,6 +41,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
       'https://chat.imporfactory.app',
       ''
     );
+    
 
     /* console.log('__dirname: ' + __dirname); */
     // Aquí usamos path.join() para asegurar que la ruta esté bien construida
