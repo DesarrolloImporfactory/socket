@@ -97,25 +97,21 @@ router.post(
         return res.sendStatus(200);
       }
 
-      // Silenciar ecos y ediciones (recomendado)
-      if (isEcho || isEdit) {
-        console.log('[IG ROUTES][IGNORED]', {
-          isEcho,
-          isEdit,
-          mid: mid || null,
-        });
+      // Edit sigue ignorado, pero el eco pasa al controller
+      if (isEdit) {
+        console.log('[IG ROUTES][IGNORED EDIT]', { mid: mid || null });
         return res.sendStatus(200);
       }
 
-      // Pasa info útil al controller
+      // Pasa info útil al controller (incluye eco)
       req.gate = {
         text: messaging?.message?.text || null,
         mid,
         sender: messaging?.sender?.id,
         recipient: messaging?.recipient?.id,
         timestamp: messaging?.timestamp,
+        is_echo: isEcho,
       };
-
       return next();
     } catch (e) {
       console.error('[IG ROUTES][GATE ERROR]', e.message);

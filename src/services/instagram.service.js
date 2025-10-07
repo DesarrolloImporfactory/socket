@@ -31,6 +31,7 @@ async function getConfigIdByPageId(page_id) {
   return row?.id_configuracion || null;
 }
 
+/** Resuelve por IG Business ID (lo que llega como sender/recipient en IG) */
 async function getPageRowByIgId(ig_id) {
   const [row] = await db.query(
     `SELECT id_configuracion, page_id, page_access_token
@@ -50,8 +51,6 @@ const safeMsgId = (dbId, mid) =>
   dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 function normalizeAttachments(msg) {
-  // FB/IG pueden mandar attachments con structure distinta; guarda tipos y payload
-  // Devuelve null si no hay
   const atts = msg?.attachments;
   if (!Array.isArray(atts) || !atts.length) return null;
   return atts.map((a) => ({
@@ -75,59 +74,87 @@ class InstagramService {
   }
 
   /**
-   * Router de eventos Instagram (desde webhook Page, con messaging_product='instagram')
-   * Filtra y enruta a handlers específicos.
+   * Router de eventos Instagram (webhook object='instagram' via Page)
+   * - Resuelve contexto por IG Business ID (no por page_id del evento)
+   * - Persiste entrantes (in) y ecos como salientes (out)
    */
   static async routeEvent(event) {
     const mp = event.messaging_product; // 'instagram'
     if (mp !== 'instagram') {
       console.warn('[IG ROUTE_EVENT] messaging_product distinto/ausente:', mp);
-      // puedes retornar si quieres ser estricto:
-      // return;
+      // return; // si quieres ser estricto
     }
 
-    const pageId = event.recipient?.id; // Page ID
-    const igsid = event.sender?.id; // Instagram Scoped User ID
-    if (!pageId) console.warn('[IG ROUTE_EVENT] recipient.id ausente');
-    if (!igsid) console.warn('[IG ROUTE_EVENT] sender.id (IGSID) ausente');
+    // Heurística correcta de IDs en IG:
+    // - Entrante (usuario -> negocio): sender.id = IGSID usuario | recipient.id = IG Business ID (negocio)
+    // - Eco (negocio -> usuario):      sender.id = IG Business ID (negocio) | recipient.id = IGSID usuario
+    const isEcho = event.message?.is_echo === true;
+    const businessId = isEcho ? event.sender?.id : event.recipient?.id; // IG Business ID de tu cuenta
+    const userIgsid = isEcho ? event.recipient?.id : event.sender?.id; // IGSID del usuario (cliente)
 
-    const mid = event.message?.mid;
-    const text = event.message?.text;
+    if (!businessId) {
+      console.warn(
+        '[IG ROUTE_EVENT] IG Business ID ausente (sender/recipient)'
+      );
+      return;
+    }
+
+    // Resuelve contexto por IG Business ID
+    const pageRow = await getPageRowByIgId(businessId);
+    if (!pageRow) {
+      console.warn(
+        '[IG ROUTE_EVENT] IG Business no registrado en BD:',
+        businessId
+      );
+      return;
+    }
+    const {
+      id_configuracion,
+      page_id: pageId,
+      page_access_token: pageAccessToken,
+    } = pageRow;
+
+    const mid = event.message?.mid || event.postback?.mid || null;
+    const text = event.message?.text || null;
 
     console.log('[IG ROUTE_EVENT][IN]', {
+      businessId,
       pageId,
-      igsid,
+      igsid: userIgsid,
       mid,
       text: text || '(no-text)',
       hasDelivery: !!event.delivery,
       hasRead: !!event.read,
       hasPostback: !!event.postback,
-      isEcho: !!event.message?.is_echo,
+      isEcho,
     });
 
-    const id_configuracion = await getConfigIdByPageId(pageId);
-    if (!id_configuracion) {
-      console.warn('[IG][WARN] No id_configuracion para pageId', pageId);
+    // 1) ECO → guardar como MENSAJE SALIENTE (out)
+    if (isEcho && event.message) {
+      await this.handleEchoAsOutgoing({
+        id_configuracion,
+        pageId,
+        userIgsid,
+        message: event.message,
+      });
       return;
     }
 
-    // Mensajes entrantes
+    // 2) Mensaje entrante (usuario -> negocio)
     if (event.message) {
-      // Gate de seguridad adicional (el gate de rutas ya filtró echo/edits)
-      if (event.message.is_echo) return;
-
-      if (!igsid) {
-        console.warn('[IG ROUTE_EVENT] message sin igsid; se ignora');
+      if (!userIgsid) {
+        console.warn(
+          '[IG ROUTE_EVENT] message sin igsid de usuario; se ignora'
+        );
         return;
       }
-      const pageAccessToken = await getPageTokenByPageId(pageId);
       if (!pageAccessToken) {
         console.warn('[IG] No page_access_token para pageId', pageId);
         return;
       }
 
       await this.handleMessage(
-        igsid,
+        userIgsid,
         event.message,
         pageAccessToken,
         pageId,
@@ -136,13 +163,11 @@ class InstagramService {
       return;
     }
 
-    // Postbacks (si decides usarlos desde IG)
+    // 3) Postbacks (si decides usarlos desde IG)
     if (event.postback) {
-      const pageAccessToken = await getPageTokenByPageId(pageId);
       if (!pageAccessToken) return;
-
       await this.handlePostback(
-        igsid,
+        userIgsid,
         event.postback,
         pageAccessToken,
         pageId,
@@ -151,14 +176,18 @@ class InstagramService {
       return;
     }
 
-    // Lecturas (opcional)
+    // 4) Lecturas
     if (event.read) {
       try {
-        await Store.markRead({ id_configuracion, page_id: pageId, igsid });
+        await Store.markRead({
+          id_configuracion,
+          page_id: pageId,
+          igsid: userIgsid,
+        });
         if (IO)
           IO.to(roomCfg(id_configuracion)).emit('IG_READ', {
             page_id: pageId,
-            igsid,
+            igsid: userIgsid,
           });
       } catch (e) {
         console.warn('[IG READ][WARN]', e.message);
@@ -166,14 +195,14 @@ class InstagramService {
       return;
     }
 
-    // Delivery (si IG lo enviara para tu app; placeholder)
+    // 5) Delivery (placeholder)
     if (event.delivery) {
-      // Puedes implementar Store.markDelivered si más adelante lo necesitas
-      // await Store.markDelivered(...);
+      // Implementa markDelivered si lo necesitas
       return;
     }
   }
 
+  /** Guarda mensaje ENTRANTE (usuario -> negocio) como direction='in' */
   static async handleMessage(
     igsid,
     message,
@@ -182,7 +211,6 @@ class InstagramService {
     id_configuracion
   ) {
     const createdAtNow = new Date().toISOString();
-
     const normalizedAttachments = normalizeAttachments(message);
     const text = message.text || null;
     const mid = message.mid || null;
@@ -200,7 +228,6 @@ class InstagramService {
       });
 
       if (IO && savedIn?.conversation_id) {
-        // Emitir el mensaje entrante a la sala de la conversación
         IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
           conversation_id: savedIn.conversation_id,
           message: {
@@ -214,7 +241,6 @@ class InstagramService {
           },
         });
 
-        // Upsert para lista de conversaciones (sidebar, etc.)
         IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
           id: savedIn.conversation_id,
           last_message_at: createdAtNow,
@@ -226,12 +252,63 @@ class InstagramService {
       console.error('[IG STORE][INCOMING][ERROR]', e.message);
     }
 
-    // Opcional: feedback UX (siempre silencioso)
+    // Feedback UX (silencioso)
     try {
       await ig.sendSenderAction(igsid, 'mark_seen', pageAccessToken);
       await ig.sendSenderAction(igsid, 'typing_off', pageAccessToken);
     } catch (e) {
       console.warn('[IG SENDER_ACTION][WARN]', e.response?.data || e.message);
+    }
+  }
+
+  /** Guarda ECO (negocio -> usuario) como direction='out' */
+  static async handleEchoAsOutgoing({
+    id_configuracion,
+    pageId,
+    userIgsid,
+    message,
+  }) {
+    const createdAtNow = new Date().toISOString();
+    const normalizedAttachments = normalizeAttachments(message);
+    const text = message.text || null;
+    const mid = message.mid || null;
+
+    try {
+      const outSave = await Store.saveOutgoingMessage({
+        id_configuracion,
+        page_id: pageId,
+        igsid: userIgsid, // IGSID del cliente
+        text,
+        attachments: normalizedAttachments,
+        mid,
+        status: 'sent',
+        meta: { raw: message, via: 'echo' },
+      });
+
+      if (IO && outSave?.conversation_id) {
+        IO.to(roomConv(outSave.conversation_id)).emit('IG_MESSAGE', {
+          conversation_id: outSave.conversation_id,
+          message: {
+            id: safeMsgId(outSave?.message_id, mid),
+            direction: 'out',
+            mid,
+            text,
+            attachments: normalizedAttachments,
+            status: 'sent',
+            created_at: createdAtNow,
+          },
+        });
+
+        IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
+          id: outSave.conversation_id,
+          last_message_at: createdAtNow,
+          last_outgoing_at: createdAtNow,
+          preview: text || '(adjunto)',
+          unread_count: 0,
+        });
+      }
+    } catch (e) {
+      console.error('[IG STORE][OUTGOING_ECHO][ERROR]', e.message);
     }
   }
 
@@ -331,9 +408,7 @@ class InstagramService {
           status: 'failed',
           meta: { error: e.response?.data || e.message },
         });
-      } catch (_) {
-        /* noop */
-      }
+      } catch (_) {}
     }
   }
 }

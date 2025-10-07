@@ -16,10 +16,8 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
   const body = req.body;
   if (!body || typeof body !== 'object') return res.sendStatus(200);
 
-  // IG Messaging llega como object === 'page'
-  if (body.object !== 'page') {
-    // si quieres aceptar 'instagram' (IG Graph changes), aquí podrías normalizar
-    return next(new AppError('Evento no soportado (object != page)', 400));
+  if (body.object !== 'page' && body.object !== 'instagram') {
+    return res.sendStatus(200);
   }
 
   // Procesa entradas

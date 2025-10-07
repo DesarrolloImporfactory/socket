@@ -2,8 +2,8 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
 // Importa tus servicios existentes
-const MessengerService = require('../services/messenger.service'); // tu router de Messenger (si lo tienes)
-const InstagramService = require('../services/instagram.service'); // ya existe en tu proyecto
+const MessengerService = require('../services/messenger.service');
+const InstagramService = require('../services/instagram.service');
 
 exports.verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
