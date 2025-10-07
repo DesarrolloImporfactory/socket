@@ -6,7 +6,6 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
-const mime = require('mime-types');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
@@ -76,10 +75,13 @@ router.post('/upload', upload.single('audio'), async (req, res) => {
 
 router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
   if (!req.file) {
+    console.error('❌ Error: No se ha proporcionado ningún archivo');
     return res
       .status(400)
       .json({ error: 'No se ha proporcionado ningún archivo' });
   }
+
+  console.log('📤 Archivo recibido:', req.file);
 
   const audioDir = path.join(
     __dirname,
@@ -90,27 +92,21 @@ router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
     'enviados',
     'audios'
   );
-
   try {
-    // Verificar si el tipo MIME del archivo es correcto
-    const mimeType = mime.lookup(req.file.originalname);
-    if (!mimeType || !mimeType.startsWith('audio/')) {
-      return res
-        .status(400)
-        .json({ error: 'El archivo no es un audio válido' });
-    }
-
     // Crear el directorio si no existe
+    console.log('🔧 Creando directorio si no existe:', audioDir);
     await fs.mkdir(audioDir, { recursive: true });
 
-    // Definir la ruta del archivo
     const filePath = path.join(audioDir, req.file.filename);
+    console.log('📁 Guardando archivo en:', filePath);
 
-    // Guardar el archivo recibido en la ruta correcta
+    // Mover el archivo desde la ubicación temporal
     await fs.rename(req.file.path, filePath);
+    console.log('✅ Archivo movido correctamente a:', filePath);
 
     // Generar la URL para acceder al archivo guardado
     const fileUrlOnServer = `https://chat.imporfactory.app/uploads/webhook_whatsapp/enviados/audios/${req.file.filename}`;
+    console.log('🌐 URL del archivo guardado:', fileUrlOnServer);
 
     // Devolver la URL del archivo guardado en el servidor
     return res.status(200).json({
@@ -118,7 +114,7 @@ router.post('/guardar_audio', upload.single('audio'), async (req, res) => {
       fileUrl: fileUrlOnServer,
     });
   } catch (err) {
-    console.error('Error al guardar el audio:', err);
+    console.error('❌ Error al guardar el audio:', err);
     return res.status(500).json({
       error: 'Error al guardar el audio enviado',
       details: err.message,
