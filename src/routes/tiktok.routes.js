@@ -184,6 +184,14 @@ router.post(
   tikTokWebhookController.testWebhook
 );
 
+// 25. Generar logs de prueba para testing
+// POST /api/v1/tiktok/webhook/generate-test-logs
+router.post(
+  '/webhook/generate-test-logs',
+  tikTokMiddleware.logTikTokRequest,
+  tikTokWebhookController.generateTestLogs
+);
+
 // 23. Dashboard de logs de webhooks
 // GET /api/v1/tiktok/webhook/logs
 router.get(

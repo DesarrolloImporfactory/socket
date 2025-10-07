@@ -216,7 +216,7 @@ exports.getWebhookLogs = catchAsync(async (req, res, next) => {
   }
 
   if (isTest !== undefined) {
-    whereConditions.is_test_request = isTest === 'true';  
+    whereConditions.is_test_request = isTest === 'true';
   }
 
   if (statusCode) {
@@ -414,5 +414,75 @@ exports.getWebhookStats = catchAsync(async (req, res, next) => {
         to: new Date().toISOString(),
       },
     },
+  });
+});
+
+/**
+ * POST /api/v1/tiktok/webhook/generate-test-logs
+ * Genera logs de prueba para testing del sistema de monitoreo
+ */
+exports.generateTestLogs = catchAsync(async (req, res, next) => {
+  const TikTokWebhookLog = require('../models/tiktok_webhook_log.model');
+
+  const testLogs = [
+    {
+      request_method: 'POST',
+      request_url: '/api/v1/tiktok/webhook/receive',
+      request_headers: JSON.stringify({
+        'content-type': 'application/json',
+        'user-agent': 'TikTok-Webhooks/1.0',
+        'x-tiktok-signature': 'sha256=test123',
+      }),
+      request_body: JSON.stringify({
+        type: 'test',
+        data: { message: 'Hello from TikTok' },
+      }),
+      source_ip: '172.20.10.1',
+      user_agent: 'TikTok-Webhooks/1.0',
+      response_status: 200,
+      processing_time_ms: 45,
+      is_tiktok_request: true,
+      is_test_request: false,
+      received_at: new Date(),
+    },
+    {
+      request_method: 'POST',
+      request_url: '/api/v1/tiktok/webhook/receive',
+      request_headers: JSON.stringify({
+        'content-type': 'application/json',
+        'user-agent': 'curl/7.68.0',
+      }),
+      request_body: JSON.stringify({ test: 'data' }),
+      source_ip: '192.168.1.100',
+      user_agent: 'curl/7.68.0',
+      response_status: 400,
+      processing_time_ms: 12,
+      is_tiktok_request: false,
+      is_test_request: true,
+      received_at: new Date(Date.now() - 60000), // 1 minuto atrás
+    },
+    {
+      request_method: 'GET',
+      request_url:
+        '/api/v1/tiktok/webhook/verify?hub.mode=subscribe&hub.verify_token=test123&hub.challenge=challenge123',
+      request_headers: JSON.stringify({
+        'user-agent': 'TikTokBot/1.0',
+      }),
+      source_ip: '172.20.10.2',
+      user_agent: 'TikTokBot/1.0',
+      response_status: 200,
+      processing_time_ms: 8,
+      is_tiktok_request: true,
+      is_test_request: false,
+      received_at: new Date(Date.now() - 120000), // 2 minutos atrás
+    },
+  ];
+
+  await TikTokWebhookLog.bulkCreate(testLogs);
+
+  res.json({
+    ok: true,
+    message: `${testLogs.length} logs de prueba generados exitosamente`,
+    generated_logs: testLogs.length,
   });
 });
