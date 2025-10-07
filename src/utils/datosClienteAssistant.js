@@ -296,13 +296,13 @@ const obtenerDatosClienteParaAssistant_viejo = async (
       TRIM(fc.numero_guia) <> '' AND fc.numero_guia IS NOT NULL AND fc.numero_guia <> '0'
       AND fc.anulada = 0  
       AND (fc.id_plataforma = ? OR fc.id_propietario = ? OR b.id_plataforma = ?)
-      AND fc.telefono_limpio = ?
+      AND (fc.telefono_limpio = ? OR fc.telefono = ?)
     ORDER BY fc.fecha_guia DESC 
     LIMIT 1
   `;
 
   const [facturaGuia] = await db.query(sqlGuia, {
-    replacements: [id_plataforma, id_plataforma, id_plataforma, telefono],
+    replacements: [id_plataforma, id_plataforma, id_plataforma, telefono, telefono],
     type: db.QueryTypes.SELECT,
   });
 
