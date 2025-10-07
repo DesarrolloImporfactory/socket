@@ -22,7 +22,7 @@ async function callSendApi(body, pageAccessToken) {
 
 function buildMessagingFields(opts = {}) {
   const out = {};
-  // Dentro de 24h usa RESPONSE. Fuera de 24h debes mandar MESSAGE_TAG + tag válido.
+  // Dentro de 24h usa RESPONSE. Fuera de 24h, MESSAGE_TAG + tag válido.
   if (opts.messaging_type) {
     out.messaging_type = opts.messaging_type;
   } else if (opts.tag) {
@@ -68,7 +68,7 @@ exports.sendAttachment = async (
   return callSendApi(body, pageAccessToken);
 };
 
-exports.sendSenderAction = async (igsid, useActionState, pageAccessToken) => {
-  const body = { recipient: { id: igsid }, sender_action: true };
+exports.sendSenderAction = async (igsid, action, pageAccessToken) => {
+  const body = { recipient: { id: igsid }, sender_action: action };
   return callSendApi(body, pageAccessToken);
 };

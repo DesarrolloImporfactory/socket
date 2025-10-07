@@ -6,9 +6,15 @@ let IO = null;
 const roomConv = (conversation_id) => `ig:conv:${conversation_id}`;
 const roomCfg = (id_configuracion) => `ig:cfg:${id_configuracion}`;
 
+/* =============================
+   Helpers de acceso a página
+============================= */
 async function getPageTokenByPageId(page_id) {
   const [row] = await db.query(
-    `SELECT page_access_token FROM instagram_pages WHERE page_id=? AND status='active' LIMIT 1`,
+    `SELECT page_access_token
+       FROM instagram_pages
+      WHERE page_id=? AND status='active'
+      LIMIT 1`,
     { replacements: [page_id], type: db.QueryTypes.SELECT }
   );
   return row?.page_access_token || null;
@@ -16,14 +22,14 @@ async function getPageTokenByPageId(page_id) {
 
 async function getConfigIdByPageId(page_id) {
   const [row] = await db.query(
-    `SELECT id_configuracion FROM instagram_pages WHERE page_id=? AND status='active' LIMIT 1`,
+    `SELECT id_configuracion
+       FROM instagram_pages
+      WHERE page_id=? AND status='active'
+      LIMIT 1`,
     { replacements: [page_id], type: db.QueryTypes.SELECT }
   );
   return row?.id_configuracion || null;
 }
-
-const safeMsgId = (dbId, mid) =>
-  dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 async function getPageRowByIgId(ig_id) {
   const [row] = await db.query(
@@ -37,6 +43,32 @@ async function getPageRowByIgId(ig_id) {
   return row || null;
 }
 
+/* =============================
+   Normalizadores / utilidades
+============================= */
+const safeMsgId = (dbId, mid) =>
+  dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+function normalizeAttachments(msg) {
+  // FB/IG pueden mandar attachments con structure distinta; guarda tipos y payload
+  // Devuelve null si no hay
+  const atts = msg?.attachments;
+  if (!Array.isArray(atts) || !atts.length) return null;
+  return atts.map((a) => ({
+    type: a.type || null,
+    payload: a.payload
+      ? {
+          url: a.payload.url || null,
+          sticker_id: a.payload.sticker_id || null,
+          title: a.payload.title || null,
+        }
+      : null,
+  }));
+}
+
+/* =============================
+   Servicio principal
+============================= */
 class InstagramService {
   static setIO(io) {
     IO = io;
@@ -44,17 +76,14 @@ class InstagramService {
 
   /**
    * Router de eventos Instagram (desde webhook Page, con messaging_product='instagram')
+   * Filtra y enruta a handlers específicos.
    */
   static async routeEvent(event) {
-    // En IG, el evento llega en entry.messaging[*]
-    // Diferencia clave: el user id es el "IGSID" (page-scoped para IG)
-    const mp = event.messaging_product;
+    const mp = event.messaging_product; // 'instagram'
     if (mp !== 'instagram') {
-      console.warn(
-        '[IG ROUTE_EVENT] messaging_product distinto o ausente:',
-        mp
-      );
-      // NO return;  // <-- durante pruebas, permite seguir (o mantén el guard si ya ves que llega correcto)
+      console.warn('[IG ROUTE_EVENT] messaging_product distinto/ausente:', mp);
+      // puedes retornar si quieres ser estricto:
+      // return;
     }
 
     const pageId = event.recipient?.id; // Page ID
@@ -82,8 +111,11 @@ class InstagramService {
       return;
     }
 
-    // IG no emite “is_echo” desde la Inbox como Messenger (si llegara, se podría manejar)
+    // Mensajes entrantes
     if (event.message) {
+      // Gate de seguridad adicional (el gate de rutas ya filtró echo/edits)
+      if (event.message.is_echo) return;
+
       if (!igsid) {
         console.warn('[IG ROUTE_EVENT] message sin igsid; se ignora');
         return;
@@ -93,6 +125,7 @@ class InstagramService {
         console.warn('[IG] No page_access_token para pageId', pageId);
         return;
       }
+
       await this.handleMessage(
         igsid,
         event.message,
@@ -103,10 +136,11 @@ class InstagramService {
       return;
     }
 
-    // Si quieres soportar postbacks/quick_replies en IG:
+    // Postbacks (si decides usarlos desde IG)
     if (event.postback) {
       const pageAccessToken = await getPageTokenByPageId(pageId);
       if (!pageAccessToken) return;
+
       await this.handlePostback(
         igsid,
         event.postback,
@@ -117,11 +151,25 @@ class InstagramService {
       return;
     }
 
-    // (Opcional) delivery/read si tu app los recibe en IG
+    // Lecturas (opcional)
     if (event.read) {
-      await Store.markRead({ id_configuracion, page_id: pageId, igsid });
-      if (IO)
-        IO.to(roomCfg(id_configuracion)).emit('IG_READ', { page_id: pageId });
+      try {
+        await Store.markRead({ id_configuracion, page_id: pageId, igsid });
+        if (IO)
+          IO.to(roomCfg(id_configuracion)).emit('IG_READ', {
+            page_id: pageId,
+            igsid,
+          });
+      } catch (e) {
+        console.warn('[IG READ][WARN]', e.message);
+      }
+      return;
+    }
+
+    // Delivery (si IG lo enviara para tu app; placeholder)
+    if (event.delivery) {
+      // Puedes implementar Store.markDelivered si más adelante lo necesitas
+      // await Store.markDelivered(...);
       return;
     }
   }
@@ -134,43 +182,51 @@ class InstagramService {
     id_configuracion
   ) {
     const createdAtNow = new Date().toISOString();
+
+    const normalizedAttachments = normalizeAttachments(message);
+    const text = message.text || null;
+    const mid = message.mid || null;
+
     let savedIn = null;
     try {
       savedIn = await Store.saveIncomingMessage({
         id_configuracion,
         page_id: pageId,
         igsid,
-        text: message.text || null,
-        attachments: message.attachments || null,
-        mid: message.mid || null,
+        text,
+        attachments: normalizedAttachments,
+        mid,
         meta: { raw: message },
       });
 
       if (IO && savedIn?.conversation_id) {
+        // Emitir el mensaje entrante a la sala de la conversación
         IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
           conversation_id: savedIn.conversation_id,
           message: {
-            id: safeMsgId(savedIn.message_id, message.mid),
+            id: safeMsgId(savedIn.message_id, mid),
             direction: 'in',
-            mid: message.mid || null,
-            text: message.text || null,
-            attachments: message.attachments || null,
+            mid,
+            text,
+            attachments: normalizedAttachments,
             status: 'received',
             created_at: createdAtNow,
           },
         });
+
+        // Upsert para lista de conversaciones (sidebar, etc.)
         IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
           id: savedIn.conversation_id,
           last_message_at: createdAtNow,
           last_incoming_at: createdAtNow,
-          preview: message.text || '(adjunto)',
+          preview: text || '(adjunto)',
         });
       }
     } catch (e) {
       console.error('[IG STORE][INCOMING][ERROR]', e.message);
     }
 
-    // UX feedback: opcional (no siempre soportado en IG)
+    // Opcional: feedback UX (siempre silencioso)
     try {
       await ig.sendSenderAction(igsid, 'mark_seen', pageAccessToken);
       await ig.sendSenderAction(igsid, 'typing_off', pageAccessToken);
@@ -224,7 +280,7 @@ class InstagramService {
       console.error('[IG STORE][INCOMING_POSTBACK][ERROR]', e.message);
     }
 
-    // (Opcional) auto-reply simple:
+    // (Opcional) auto-responder al postback
     try {
       const res = await ig.sendText(
         igsid,
@@ -240,6 +296,7 @@ class InstagramService {
         status: 'sent',
         meta: { response: res },
       });
+
       if (IO && savedIn?.conversation_id) {
         IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
           conversation_id: savedIn.conversation_id,
@@ -274,7 +331,9 @@ class InstagramService {
           status: 'failed',
           meta: { error: e.response?.data || e.message },
         });
-      } catch (_) {}
+      } catch (_) {
+        /* noop */
+      }
     }
   }
 }
