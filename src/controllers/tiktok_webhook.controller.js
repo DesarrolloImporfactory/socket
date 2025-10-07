@@ -190,7 +190,7 @@ exports.testWebhook = catchAsync(async (req, res, next) => {
  * Obtiene logs detallados de webhooks con filtros
  */
 exports.getWebhookLogs = catchAsync(async (req, res, next) => {
-  const { TikTokWebhookLog } = require('../models/initModels');
+  const TikTokWebhookLog = require('../models/tiktok_webhook_log.model');
   const {
     page = 1,
     limit = 50,
@@ -208,7 +208,7 @@ exports.getWebhookLogs = catchAsync(async (req, res, next) => {
     received_at: {
       [require('sequelize').Op.gte]: since,
     },
-    method: method.toUpperCase(),
+    request_method: method.toUpperCase(),
   };
 
   if (isTikTok !== undefined) {
@@ -216,7 +216,7 @@ exports.getWebhookLogs = catchAsync(async (req, res, next) => {
   }
 
   if (isTest !== undefined) {
-    whereConditions.is_test_request = isTest === 'true';
+    whereConditions.is_test_request = isTest === 'true';  
   }
 
   if (statusCode) {
@@ -260,7 +260,7 @@ exports.getWebhookLogs = catchAsync(async (req, res, next) => {
  * Obtiene estadísticas detalladas de webhooks
  */
 exports.getWebhookStats = catchAsync(async (req, res, next) => {
-  const { TikTokWebhookLog } = require('../models/initModels');
+  const TikTokWebhookLog = require('../models/tiktok_webhook_log.model');
   const { hours = 24 } = req.query;
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
@@ -314,14 +314,14 @@ exports.getWebhookStats = catchAsync(async (req, res, next) => {
   const topIPs = await TikTokWebhookLog.findAll({
     where: baseWhere,
     attributes: [
-      'client_ip',
+      'source_ip',
       [require('sequelize').fn('COUNT', '*'), 'count'],
       [
         require('sequelize').fn('MAX', require('sequelize').col('received_at')),
         'last_request',
       ],
     ],
-    group: ['client_ip'],
+    group: ['source_ip'],
     order: [[require('sequelize').fn('COUNT', '*'), 'DESC']],
     limit: 10,
   });
