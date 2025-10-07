@@ -1,7 +1,6 @@
 const express = require('express');
 const { upload } = require('../utils/multer');
 const { webhook } = require('../controllers/chat.controller');
-const { webhook } = require('../../');
 const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const fs = require('fs').promises;
