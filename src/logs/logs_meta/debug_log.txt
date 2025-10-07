@@ -578,3 +578,142 @@ Después de mensaje procesado
 [2025-10-03T16:19:02.546Z] Iniciando estadoMensajeEspera para cliente ID 17554
 [2025-10-03T16:19:02.651Z] No se encontraron mensajes para el cliente 17554
 Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:03:36.166Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:03:36.167Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:03:36.540Z] ✅ Mensaje guardado en DB con ID 147608
+[2025-10-07T14:03:37.185Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:03:37.202Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:03:37.309Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:03:37.318Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\htdocs\socket\https:\chat.imporfactory.app\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:03:37.319Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:03:37.752Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:03:37.755Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:03:37.862Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:06:48.666Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:06:48.667Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:06:49.099Z] ✅ Mensaje guardado en DB con ID 147611
+[2025-10-07T14:06:49.601Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:06:49.615Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:06:49.694Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:06:49.710Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:06:49.712Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:06:50.078Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:06:50.083Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:06:50.176Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:07:04.967Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:07:04.968Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:07:05.371Z] ✅ Mensaje guardado en DB con ID 147612
+[2025-10-07T14:07:05.779Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:07:05.783Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:07:05.881Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:07:05.912Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\htdocs\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:07:05.914Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:07:06.301Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:07:06.306Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:07:06.403Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:07:42.977Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:07:42.978Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:07:43.402Z] ✅ Mensaje guardado en DB con ID 147613
+[2025-10-07T14:07:43.812Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:07:43.910Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:07:44.014Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:07:44.044Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\htdocs\socket\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:07:44.045Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:07:44.457Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:07:44.463Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:07:44.565Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:10:06.470Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:10:06.470Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:10:06.917Z] ✅ Mensaje guardado en DB con ID 147617
+[2025-10-07T14:10:07.423Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:10:07.439Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:10:07.517Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:10:07.530Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:10:07.531Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:10:07.904Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:10:07.905Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:10:07.996Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:10:27.883Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:10:27.884Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:10:28.298Z] ✅ Mensaje guardado en DB con ID 147618
+[2025-10-07T14:10:28.704Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:10:28.709Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:10:28.804Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:10:28.835Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\xampp\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:10:28.838Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:10:29.227Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:10:29.232Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:10:29.327Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:16:14.886Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:16:14.888Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:16:15.326Z] ✅ Mensaje guardado en DB con ID 147628
+[2025-10-07T14:16:15.824Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:16:15.831Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:16:15.920Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:16:15.949Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:16:15.950Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:16:16.328Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:16:16.334Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:16:16.429Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:16:39.936Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:16:39.938Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:16:40.323Z] ✅ Mensaje guardado en DB con ID 147629
+[2025-10-07T14:16:40.768Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:16:40.769Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:16:40.862Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:16:40.891Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:16:40.892Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:16:41.270Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:16:41.275Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:16:41.369Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:17:21.304Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:17:21.305Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:17:21.730Z] ✅ Mensaje guardado en DB con ID 147630
+[2025-10-07T14:17:22.308Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:17:22.311Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:17:22.412Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:17:22.443Z] ❌ Error en transcribirAudioConWhisperDesdeArchivo: ENOENT: no such file or directory, open 'C:\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg'
+[2025-10-07T14:17:22.447Z] ⚠️ No se pudo transcribir el audio
+[2025-10-07T14:17:22.844Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:17:22.848Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:17:22.947Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje
+Inicio de mensaje
+[2025-10-07T14:19:18.250Z] ✅ Audio guardado: C:\xampp\htdocs\socket\src\uploads\webhook_whatsapp\recibidos\audios\25171156959159222.ogg (7225 bytes)
+[2025-10-07T14:19:18.251Z] Mensaje procesado:Audio recibido con ID: 25171156959159222. Archivo guardado en: https://chat.imporfactory.app/uploads/webhook_whatsapp/recibidos/audios/25171156959159222.ogg 
+Después de mensaje procesado
+[2025-10-07T14:19:18.634Z] ✅ Mensaje guardado en DB con ID 147631
+[2025-10-07T14:19:19.329Z] ⚠️ No se encontró mensaje interno principal.
+[2025-10-07T14:19:19.334Z] [Cancelar Remarketing] {"status":200,"success":true,"message":"No había registros para cancelar"}
+[2025-10-07T14:19:19.426Z] ✅ thread_id: thread_YfEHTTioQU37awjb99JDLRNq
+[2025-10-07T14:19:24.263Z] 📝 Transcripción exitosa: ¿Qué productos ofreces?
+[2025-10-07T14:19:24.647Z] ⚠️ Error en respuesta del asistente: {"status":400,"error":"El asistente no respnde a pedidos"}
+[2025-10-07T14:19:24.652Z] Iniciando estadoMensajeEspera para cliente ID 410
+[2025-10-07T14:19:24.752Z] No se encontraron mensajes para el cliente 410
+Fin Mensaje de mensaje

@@ -36,8 +36,26 @@ async function transcribirAudioConWhisperDesdeArchivo(
   apiKeyOpenAI
 ) {
   try {
+    // Elimina la parte de la URL base (https://chat.imporfactory.app) de la rutaArchivo
+    const rutaLocalRelativa = rutaArchivo.replace(
+      'https://chat.imporfactory.app',
+      ''
+    );
+
+    /* console.log('__dirname: ' + __dirname); */
+    // Aquí usamos path.join() para asegurar que la ruta esté bien construida
+    const rutaLocalAbsoluta = path.join(
+      __dirname,
+      '..',
+      '..',
+      rutaLocalRelativa
+    );
+
+    // Asegúrate de que la ruta sea válida y corresponde al archivo en tu servidor
+    /* console.log('Ruta local ajustada:', rutaLocalAbsoluta); */
+
     const form = new FormData();
-    form.append('file', fsSync.createReadStream(rutaArchivo));
+    form.append('file', fsSync.createReadStream(rutaLocalAbsoluta)); // Usa la ruta local absoluta
     form.append('model', 'whisper-1');
 
     const response = await axios.post(
@@ -51,7 +69,6 @@ async function transcribirAudioConWhisperDesdeArchivo(
       }
     );
 
-    // Verifica la respuesta completa para ver cómo está estructurada
     /* console.log('Respuesta completa:', response.data); */
 
     return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
