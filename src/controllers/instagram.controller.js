@@ -24,16 +24,10 @@ exports.receiveWebhook = catchAsync(async (req, res, next) => {
   for (const entry of body.entry || []) {
     const events = entry.messaging || [];
     for (const event of events) {
-      // Solo IG
-      if (event.messaging_product !== 'instagram') continue;
-
-      // Descarta ecos / edits (el gate ya lo hizo, pero por seguridad)
-      if (event.message?.is_echo) continue;
-      if (event.message_edit) continue;
-
-      // Solo routear lo que te interesa (message y/o postback)
-      if (event.message || event.postback || event.read || event.delivery) {
+      try {
         await InstagramService.routeEvent(event);
+      } catch (e) {
+        console.warn('[IG CONTROLLER][routeEvent][WARN]', e.message);
       }
     }
   }

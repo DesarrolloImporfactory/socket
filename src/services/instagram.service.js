@@ -79,12 +79,6 @@ class InstagramService {
    * - Persiste entrantes (in) y ecos como salientes (out)
    */
   static async routeEvent(event) {
-    const mp = event.messaging_product; // 'instagram'
-    if (mp !== 'instagram') {
-      console.warn('[IG ROUTE_EVENT] messaging_product distinto/ausente:', mp);
-      // return; // si quieres ser estricto
-    }
-
     // Heurística correcta de IDs en IG:
     // - Entrante (usuario -> negocio): sender.id = IGSID usuario | recipient.id = IG Business ID (negocio)
     // - Eco (negocio -> usuario):      sender.id = IG Business ID (negocio) | recipient.id = IGSID usuario
