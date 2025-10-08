@@ -221,6 +221,44 @@ class InstagramService {
         meta: { raw: message },
       });
 
+      // === ENRIQUECER PERFIL (si falta) ===
+      try {
+        const [conv] = await db.query(
+          `SELECT id, customer_name, profile_pic_url
+          FROM instagram_conversations
+           WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
+          {
+            replacements: [id_configuracion, pageId, igsid],
+            type: db.QueryTypes.SELECT,
+          }
+        );
+
+        if (conv && (!conv.customer_name || !conv.profile_pic_url)) {
+          const profile = await ig.getUserProfile(igsid, pageAccessToken);
+          if (profile) {
+            await db.query(
+              `UPDATE instagram_conversations
+              SET customer_name   = COALESCE(?, customer_name),
+                  profile_pic_url = COALESCE(?, profile_pic_url),
+                  updated_at      = NOW()
+              WHERE id = ?`,
+              {
+                replacements: [
+                  profile.name || null,
+                  profile.profile_pic || null,
+                  conv.id,
+                ],
+              }
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(
+          '[IG PROFILE ENRICH][WARN]',
+          e.response?.data || e.message
+        );
+      }
+
       if (IO && savedIn?.conversation_id) {
         IO.to(roomConv(savedIn.conversation_id)).emit('IG_MESSAGE', {
           conversation_id: savedIn.conversation_id,

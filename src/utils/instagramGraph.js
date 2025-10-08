@@ -72,3 +72,13 @@ exports.sendSenderAction = async (igsid, action, pageAccessToken) => {
   const body = { recipient: { id: igsid }, sender_action: action };
   return callSendApi(body, pageAccessToken);
 };
+
+exports.getUserProfile = async function (igsid, pageAccessToken) {
+  // IG profile endpoint: https://graph.facebook.com/{version}/{IGSID}?fields=name,profile_pic&access_token=...
+  const url = `https://graph.facebook.com/${FB_VERSION}/${igsid}`;
+  const params = { fields: 'name,profile_pic', access_token: pageAccessToken };
+
+  const { data } = await axios.get(url, { params });
+  // data: { id: '...', name: '...', profile_pic: 'https://...' }
+  return data;
+};
