@@ -304,6 +304,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         case 'location':
           const location = mensaje_recibido?.location;
+
+          console.log("location: "+location);
+
+          console.log("location?.latitude: "+location?.latitude);
+
+          console.log("location?.longitude: "+location?.longitude);
+
           texto_mensaje = JSON.stringify({
             latitude: location?.latitude,
             longitude: location?.longitude,
