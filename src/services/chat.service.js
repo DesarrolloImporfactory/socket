@@ -175,11 +175,12 @@ class ChatService {
       }
 
       const sqlQuery = `
-      SELECT * FROM chats_4
+      SELECT c.*, 'wa' AS source
+      FROM chats_4 c
       ${whereClause}
       ORDER BY mensaje_created_at DESC, id DESC
       LIMIT :limit;
-    `;
+      `;
 
       if (cursorFecha) {
         const fechaUtc = new Date(cursorFecha);

@@ -1,13 +1,11 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
-const fs = require('fs');
-const path = require('path');
-
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const MessengerConversation = require('../models/messenger_conversations.model');
+const InstagramConversation = require('../models/instagram_conversations.model');
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -205,49 +203,65 @@ exports.eliminarDepartamento = catchAsync(async (req, res, next) => {
 
 exports.transferirChat = catchAsync(async (req, res, next) => {
   const {
-    source,
+    source, // 'ms' | 'ig' | 'wa' (o undefined => WhatsApp)
     id_encargado,
     id_departamento,
-    id_cliente_chat_center,
-    id_conversation,
+    id_cliente_chat_center, // para WhatsApp
+    id_conversation, // para Messenger/Instagram
   } = req.body;
 
-  if (source === 'ms') {
-    if (!id_conversation || (!id_encargado && !id_departamento)) {
-      return res.status(400).json({
-        status: 'fail',
-        message:
-          'Faltan datos: id_conversation y al menos id_encargado o id_departamento',
-      });
-    }
-
-    const fields = {};
-    if (id_encargado != null) fields.id_encargado = id_encargado;
-    if (id_departamento != null) fields.id_departamento = id_departamento;
-
-    await MessengerConversation.update(fields, {
-      where: { id: id_conversation },
-    });
-  } else {
-    // WhatsApp
-    if (!id_cliente_chat_center || (!id_encargado && !id_departamento)) {
-      return res.status(400).json({
-        status: 'fail',
-        message:
-          'Faltan datos: id_cliente_chat_center y al menos id_encargado o id_departamento',
-      });
-    }
-
-    const fields = {};
-    if (id_encargado != null) fields.id_encargado = id_encargado;
-    if (id_departamento != null) fields.id_departamento = id_departamento;
-
-    await Clientes_chat_center.update(fields, {
-      where: { id: id_cliente_chat_center },
+  if (id_encargado == null && id_departamento == null) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Debe enviar al menos id_encargado o id_departamento',
     });
   }
 
-  res
+  const fields = {};
+  if (id_encargado != null) fields.id_encargado = id_encargado;
+  if (id_departamento != null) fields.id_departamento = id_departamento;
+
+  switch (source) {
+    case 'ms': {
+      if (!id_conversation) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Falta id_conversation para Messenger',
+        });
+      }
+      await MessengerConversation.update(fields, {
+        where: { id: id_conversation },
+      });
+      break;
+    }
+    case 'ig': {
+      if (!id_conversation) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Falta id_conversation para Instagram',
+        });
+      }
+      await InstagramConversation.update(fields, {
+        where: { id: id_conversation },
+      });
+      break;
+    }
+    // WhatsApp por defecto (o 'wa')
+    default: {
+      if (!id_cliente_chat_center) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Falta id_cliente_chat_center para WhatsApp',
+        });
+      }
+      await Clientes_chat_center.update(fields, {
+        where: { id: id_cliente_chat_center },
+      });
+      break;
+    }
+  }
+
+  return res
     .status(200)
     .json({ status: 'success', message: 'Chat transferido correctamente' });
 });
@@ -257,35 +271,56 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
     req.body;
 
   if (!id_encargado) {
-    return res
-      .status(400)
-      .json({ status: 'fail', message: 'id_encargado es requerido' });
+    return res.status(400).json({
+      status: 'fail',
+      message: 'id_encargado es requerido',
+    });
   }
 
-  if (source === 'ms') {
-    if (!id_conversation) {
-      return res
-        .status(400)
-        .json({ status: 'fail', message: 'id_conversation es requerido' });
+  switch (source) {
+    case 'ms': {
+      if (!id_conversation) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'id_conversation es requerido para Messenger',
+        });
+      }
+      await MessengerConversation.update(
+        { id_encargado },
+        { where: { id: id_conversation } }
+      );
+      break;
     }
-    await MessengerConversation.update(
-      { id_encargado },
-      { where: { id: id_conversation } }
-    );
-  } else {
-    if (!id_cliente_chat_center) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'id_cliente_chat_center es requerido',
-      });
+    case 'ig': {
+      if (!id_conversation) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'id_conversation es requerido para Instagram',
+        });
+      }
+      await InstagramConversation.update(
+        { id_encargado },
+        { where: { id: id_conversation } }
+      );
+      break;
     }
-    await Clientes_chat_center.update(
-      { id_encargado },
-      { where: { id: id_cliente_chat_center } }
-    );
+    // WhatsApp por defecto (o 'wa')
+    default: {
+      if (!id_cliente_chat_center) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'id_cliente_chat_center es requerido para WhatsApp',
+        });
+      }
+      await Clientes_chat_center.update(
+        { id_encargado },
+        { where: { id: id_cliente_chat_center } }
+      );
+      break;
+    }
   }
 
-  res
+  return res
     .status(200)
     .json({ status: 'success', message: 'Chat asignado correctamente' });
 });
