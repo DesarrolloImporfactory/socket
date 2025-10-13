@@ -309,13 +309,25 @@ class InstagramService {
       const outSave = await Store.saveOutgoingMessage({
         id_configuracion,
         page_id: pageId,
-        igsid: userIgsid, // IGSID del cliente
+        igsid: userIgsid,
         text,
         attachments: normalizedAttachments,
         mid,
         status: 'sent',
-        meta: { raw: message, via: 'echo' },
+        meta: { raw: message, via: 'echo' }, // ← se fusiona con meta del envío
       });
+
+      // Recuperar client_tmp_id guardado al ENVIAR
+      const existing = await Store.findOutgoingByMid({
+        conversation_id: outSave.conversation_id,
+        mid,
+      });
+
+      let clientTmpId = null;
+      try {
+        const meta = existing?.meta && JSON.parse(existing.meta);
+        clientTmpId = meta?.client_tmp_id || meta?.opts?.client_tmp_id || null;
+      } catch {}
 
       if (IO && outSave?.conversation_id) {
         IO.to(roomConv(outSave.conversation_id)).emit('IG_MESSAGE', {
@@ -328,6 +340,7 @@ class InstagramService {
             attachments: normalizedAttachments,
             status: 'sent',
             created_at: createdAtNow,
+            client_tmp_id: clientTmpId, // ← CLAVE para reemplazo en el front
           },
         });
 

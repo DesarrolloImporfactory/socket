@@ -90,10 +90,23 @@ async function saveOutgoingMessage({
     igsid,
   });
 
-  const [ins] = await db.query(
-    `INSERT INTO instagram_messages
+  const metaStr = meta ? JSON.stringify(meta) : null;
+  const attStr = attachments ? JSON.stringify(attachments) : null;
+
+  await db.query(
+    `
+    INSERT INTO instagram_messages
       (conversation_id, id_configuracion, page_id, igsid, direction, mid, text, attachments, status, meta, created_at, updated_at, id_encargado)
-     VALUES (?, ?, ?, ?, 'out', ?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
+    VALUES
+      (?,              ?,               ?,       ?,     'out',     ?,   ?,    ?,           ?,     ?,   NOW(),    NOW(),      ?)
+    ON DUPLICATE KEY UPDATE
+      text        = COALESCE(VALUES(text), text),
+      attachments = COALESCE(VALUES(attachments), attachments),
+      status      = VALUES(status),
+      meta        = JSON_MERGE_PATCH(COALESCE(instagram_messages.meta, JSON_OBJECT()),
+                                     COALESCE(VALUES(meta), JSON_OBJECT())),
+      updated_at  = NOW()
+    `,
     {
       replacements: [
         conversation_id,
@@ -102,9 +115,9 @@ async function saveOutgoingMessage({
         igsid,
         mid || null,
         text || null,
-        attachments ? JSON.stringify(attachments) : null,
+        attStr,
         status,
-        meta ? JSON.stringify(meta) : null,
+        metaStr,
         id_encargado,
       ],
       type: db.QueryTypes.INSERT,
@@ -113,15 +126,14 @@ async function saveOutgoingMessage({
 
   await db.query(
     `UPDATE instagram_conversations
-      SET last_message_at = NOW(), last_outgoing_at = NOW()
+       SET last_message_at = NOW(), last_outgoing_at = NOW()
      WHERE id = ?`,
     { replacements: [conversation_id] }
   );
 
-  const insertedId = ins?.insertId ?? ins;
   const [row] = await db.query(
-    `SELECT id, created_at FROM instagram_messages WHERE id=? LIMIT 1`,
-    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+    `SELECT id, created_at FROM instagram_messages WHERE conversation_id=? AND mid=? LIMIT 1`,
+    { replacements: [conversation_id, mid || null], type: db.QueryTypes.SELECT }
   );
 
   return { conversation_id, message_id: row.id, created_at: row.created_at };
@@ -138,10 +150,20 @@ async function markRead({ id_configuracion, page_id, igsid }) {
   );
 }
 
+async function findOutgoingByMid({ conversation_id, mid }) {
+  const [row] = await db.query(
+    `SELECT id, meta FROM instagram_messages
+      WHERE conversation_id=? AND mid=? AND direction='out' LIMIT 1`,
+    { replacements: [conversation_id, mid], type: db.QueryTypes.SELECT }
+  );
+  return row || null;
+}
+
 module.exports = {
   ensureConversation,
   saveIncomingMessage,
   saveOutgoingMessage,
   markDelivered,
   markRead,
+  findOutgoingByMid,
 };
