@@ -48,7 +48,7 @@ async function estadoMensajeEspera(id_cliente) {
     console.log(`Último mensaje del cliente: ID = ${idUltimoMensaje}`, logFile);
 
     // Buscar mensaje en espera
-    const espera = await db.query(
+    const [espera] = await db.query(
       `SELECT id, id_mensajes_clientes FROM mensajes_espera WHERE id_cliente_chat_center = ? LIMIT 1`,
       { replacements: [id_cliente] }
     );
