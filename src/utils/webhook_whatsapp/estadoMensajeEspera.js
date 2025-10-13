@@ -20,7 +20,7 @@ async function estadoMensajeEspera(id_cliente) {
     );
 
     // Obtener ID del último mensaje recibido
-    const mensajes = await db.query(
+    const [mensajes] = await db.query(
       `SELECT id FROM mensajes_clientes WHERE celular_recibe = ? ORDER BY id DESC LIMIT 1`,
       { replacements: [id_cliente] }
     );
