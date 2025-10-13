@@ -14,10 +14,10 @@ async function estadoMensajeEspera(id_cliente) {
       logFile
     );
 
-    console.log(
+    /* console.log(
       `Iniciando estadoMensajeEspera para cliente ID ${id_cliente}`,
       logFile
-    );
+    ); */
 
     // Obtener ID del último mensaje recibido
     const [mensajes] = await db.query(
@@ -26,19 +26,15 @@ async function estadoMensajeEspera(id_cliente) {
     );
 
     const idUltimoMensaje = mensajes[0]?.id;
-    console.log('idUltimoMensaje: ' + idUltimoMensaje);
-    console.log('mensajes?.id: ' + mensajes[0]?.id);
-    console.table(mensajes);
-    console.log("id_cliente: "+id_cliente)
     if (!idUltimoMensaje) {
       await logDebug(
         `No se encontraron mensajes para el cliente ${id_cliente}`,
         logFile
       );
-      console.log(
+      /* console.log(
         `No se encontraron mensajes para el cliente ${id_cliente}`,
         logFile
-      );
+      ); */
       return;
     }
 
@@ -46,7 +42,7 @@ async function estadoMensajeEspera(id_cliente) {
       `Último mensaje del cliente: ID = ${idUltimoMensaje}`,
       logFile
     );
-    console.log(`Último mensaje del cliente: ID = ${idUltimoMensaje}`, logFile);
+    /* console.log(`Último mensaje del cliente: ID = ${idUltimoMensaje}`, logFile); */
 
     // Buscar mensaje en espera
     const [espera] = await db.query(
@@ -59,10 +55,10 @@ async function estadoMensajeEspera(id_cliente) {
         ` No hay mensajes en espera para cliente ID ${id_cliente}`,
         logFile
       );
-      console.log(
+      /* console.log(
         ` No hay mensajes en espera para cliente ID ${id_cliente}`,
         logFile
-      );
+      ); */
       return;
     }
 
@@ -71,10 +67,10 @@ async function estadoMensajeEspera(id_cliente) {
       `Mensaje en espera: ID = ${idWait}, Último mensaje guardado = ${idMensajeEspera}`,
       logFile
     );
-    console.log(
+    /* console.log(
       `Mensaje en espera: ID = ${idWait}, Último mensaje guardado = ${idMensajeEspera}`,
       logFile
-    );
+    ); */
 
     if (idUltimoMensaje !== idMensajeEspera) {
       // Actualizar estado
@@ -85,20 +81,20 @@ async function estadoMensajeEspera(id_cliente) {
         ` Estado actualizado a 1 para mensaje en espera ID = ${idWait}`,
         logFile
       );
-      console.log(
+      /* console.log(
         ` Estado actualizado a 1 para mensaje en espera ID = ${idWait}`,
         logFile
-      );
+      ); */
     } else {
       await logDebug(` No se requiere actualización. IDs coinciden.`, logFile);
-      console.log(` No se requiere actualización. IDs coinciden.`, logFile);
+      /* console.log(` No se requiere actualización. IDs coinciden.`, logFile); */
     }
   } catch (error) {
     await logDebug(
       `❌ Error en estadoMensajeEspera: ${error.message}`,
       logFile
     );
-    console.log(`❌ Error en estadoMensajeEspera: ${error.message}`, logFile);
+    /* console.log(`❌ Error en estadoMensajeEspera: ${error.message}`, logFile); */
   }
 }
 
