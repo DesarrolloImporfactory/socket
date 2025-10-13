@@ -25,9 +25,9 @@ async function estadoMensajeEspera(id_cliente) {
       { replacements: [id_cliente] }
     );
 
-    const idUltimoMensaje = mensajes[0]?.id;
+    const idUltimoMensaje = mensajes[0].id;
     console.log('idUltimoMensaje: ' + idUltimoMensaje);
-    console.log('mensajes?.id: ' + mensajes[0]?.id);
+    console.log('mensajes.id: ' + mensajes[0].id);
     console.table(mensajes);
     console.log("id_cliente: "+id_cliente)
     if (!idUltimoMensaje) {
