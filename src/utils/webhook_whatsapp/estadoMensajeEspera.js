@@ -20,14 +20,14 @@ async function estadoMensajeEspera(id_cliente) {
     );
 
     // Obtener ID del último mensaje recibido
-    const mensajes = await db.query(
+    const [mensajes] = await db.query(
       `SELECT id FROM mensajes_clientes WHERE celular_recibe = ? ORDER BY id DESC LIMIT 1`,
       { replacements: [id_cliente] }
     );
 
-    const idUltimoMensaje = mensajes[0].id;
+    const idUltimoMensaje = mensajes[0]?.id;
     console.log('idUltimoMensaje: ' + idUltimoMensaje);
-    console.log('mensajes.id: ' + mensajes[0].id);
+    console.log('mensajes?.id: ' + mensajes[0]?.id);
     console.table(mensajes);
     console.log("id_cliente: "+id_cliente)
     if (!idUltimoMensaje) {
@@ -49,7 +49,7 @@ async function estadoMensajeEspera(id_cliente) {
     console.log(`Último mensaje del cliente: ID = ${idUltimoMensaje}`, logFile);
 
     // Buscar mensaje en espera
-    const espera = await db.query(
+    const [espera] = await db.query(
       `SELECT id, id_mensajes_clientes FROM mensajes_espera WHERE id_cliente_chat_center = ? LIMIT 1`,
       { replacements: [id_cliente] }
     );
