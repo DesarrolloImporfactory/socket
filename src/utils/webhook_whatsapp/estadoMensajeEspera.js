@@ -14,6 +14,11 @@ async function estadoMensajeEspera(id_cliente) {
       logFile
     );
 
+    console.log(
+      `Iniciando estadoMensajeEspera para cliente ID ${id_cliente}`,
+      logFile
+    );
+
     // Obtener ID del último mensaje recibido
     const mensajes = await db.query(
       `SELECT id FROM mensajes_clientes WHERE celular_recibe = ? ORDER BY id DESC LIMIT 1`,
@@ -26,6 +31,10 @@ async function estadoMensajeEspera(id_cliente) {
         `No se encontraron mensajes para el cliente ${id_cliente}`,
         logFile
       );
+      console.log(
+        `No se encontraron mensajes para el cliente ${id_cliente}`,
+        logFile
+      );
       return;
     }
 
@@ -33,6 +42,7 @@ async function estadoMensajeEspera(id_cliente) {
       `Último mensaje del cliente: ID = ${idUltimoMensaje}`,
       logFile
     );
+    console.log(`Último mensaje del cliente: ID = ${idUltimoMensaje}`, logFile);
 
     // Buscar mensaje en espera
     const espera = await db.query(
@@ -45,11 +55,19 @@ async function estadoMensajeEspera(id_cliente) {
         ` No hay mensajes en espera para cliente ID ${id_cliente}`,
         logFile
       );
+      console.log(
+        ` No hay mensajes en espera para cliente ID ${id_cliente}`,
+        logFile
+      );
       return;
     }
 
     const { id: idWait, id_mensajes_clientes: idMensajeEspera } = espera;
     await logDebug(
+      `Mensaje en espera: ID = ${idWait}, Último mensaje guardado = ${idMensajeEspera}`,
+      logFile
+    );
+    console.log(
       `Mensaje en espera: ID = ${idWait}, Último mensaje guardado = ${idMensajeEspera}`,
       logFile
     );
@@ -63,14 +81,20 @@ async function estadoMensajeEspera(id_cliente) {
         ` Estado actualizado a 1 para mensaje en espera ID = ${idWait}`,
         logFile
       );
+      console.log(
+        ` Estado actualizado a 1 para mensaje en espera ID = ${idWait}`,
+        logFile
+      );
     } else {
       await logDebug(` No se requiere actualización. IDs coinciden.`, logFile);
+      console.log(` No se requiere actualización. IDs coinciden.`, logFile);
     }
   } catch (error) {
     await logDebug(
       `❌ Error en estadoMensajeEspera: ${error.message}`,
       logFile
     );
+    console.log(`❌ Error en estadoMensajeEspera: ${error.message}`, logFile);
   }
 }
 
