@@ -149,7 +149,7 @@ module.exports = function attachMessengerGateway(io, services) {
           io.to(`ms:conv:${conversation_id}`).emit('MS_MESSAGE', {
             conversation_id,
             message: {
-              id: saved.id,
+              id: saved.message_id,
               direction: 'out',
               text: hasText ? text.trim() : '',
               attachments: hasAttachment

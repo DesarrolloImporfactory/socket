@@ -138,7 +138,7 @@ module.exports = function attachInstagramGateway(io, services) {
           io.to(`ig:conv:${conversation_id}`).emit('IG_MESSAGE', {
             conversation_id,
             message: {
-              id: saved.id,
+              id: saved.message_id,
               direction: 'out',
               text: hasText ? text.trim() : '',
               attachments: hasAttachment
