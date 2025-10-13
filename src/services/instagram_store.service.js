@@ -1,5 +1,14 @@
+/**
+ * Instagram Store Service
+ * -----------------------
+ * Capa de persistencia para conversaciones y mensajes de Instagram.
+ * - Evita duplicados en salientes usando ON DUPLICATE KEY (requiere UNIQUE(page_id, igsid, mid, direction) o similar).
+ * - Expone helpers usados por el servicio principal y por sockets (markRead, findOutgoingByMid, getConversationById).
+ */
+
 const { db } = require('../database/config');
 
+/** Garantiza que exista la conversación y retorna su id */
 async function ensureConversation({ id_configuracion, page_id, igsid }) {
   const [row] = await db.query(
     `SELECT id FROM instagram_conversations
@@ -13,8 +22,8 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
 
   const [ins] = await db.query(
     `INSERT INTO instagram_conversations
-       (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at)
-     VALUES (?, ?, ?, 'open', 0, NOW(), NOW())`,
+       (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, created_at, updated_at)
+     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW(), NOW())`,
     {
       replacements: [id_configuracion, page_id, igsid],
       type: db.QueryTypes.INSERT,
@@ -23,6 +32,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
   return ins?.insertId ?? ins;
 }
 
+/** Inserta un mensaje ENTRANTE (direction='in') y actualiza contadores/fechas */
 async function saveIncomingMessage({
   id_configuracion,
   page_id,
@@ -59,7 +69,7 @@ async function saveIncomingMessage({
 
   await db.query(
     `UPDATE instagram_conversations
-      SET last_message_at = NOW(), last_incoming_at = NOW(), unread_count = unread_count + 1
+      SET last_message_at = NOW(), last_incoming_at = NOW(), unread_count = unread_count + 1, updated_at = NOW()
      WHERE id = ?`,
     { replacements: [conversation_id] }
   );
@@ -73,6 +83,11 @@ async function saveIncomingMessage({
   return { conversation_id, message_id: row.id, created_at: row.created_at };
 }
 
+/**
+ * Inserta/actualiza un mensaje SALIENTE (direction='out').
+ * - Si la fila ya existe (por UNIQUE mid/direction), hace upsert:
+ *   * fusiona meta (JSON_MERGE_PATCH) y actualiza status/text/attachments.
+ */
 async function saveOutgoingMessage({
   id_configuracion,
   page_id,
@@ -126,21 +141,20 @@ async function saveOutgoingMessage({
 
   await db.query(
     `UPDATE instagram_conversations
-       SET last_message_at = NOW(), last_outgoing_at = NOW()
+       SET last_message_at = NOW(), last_outgoing_at = NOW(), updated_at = NOW()
      WHERE id = ?`,
     { replacements: [conversation_id] }
   );
 
   const [row] = await db.query(
-    `SELECT id, created_at FROM instagram_messages WHERE conversation_id=? AND mid=? LIMIT 1`,
+    `SELECT id, created_at FROM instagram_messages WHERE conversation_id=? AND mid=? AND direction='out' LIMIT 1`,
     { replacements: [conversation_id, mid || null], type: db.QueryTypes.SELECT }
   );
 
   return { conversation_id, message_id: row.id, created_at: row.created_at };
 }
 
-// Opcionales (IG no envía delivery/read igual que Messenger; puedes extender si lo necesitas)
-async function markDelivered(/* { page_id, watermark, mids=[] } */) {}
+/** Marca conversación como leída (resetea unread_count) */
 async function markRead({ id_configuracion, page_id, igsid }) {
   await db.query(
     `UPDATE instagram_conversations
@@ -150,6 +164,7 @@ async function markRead({ id_configuracion, page_id, igsid }) {
   );
 }
 
+/** Busca un saliente por mid (para unir eco y optimista en el front) */
 async function findOutgoingByMid({ conversation_id, mid }) {
   const [row] = await db.query(
     `SELECT id, meta FROM instagram_messages
@@ -159,11 +174,23 @@ async function findOutgoingByMid({ conversation_id, mid }) {
   return row || null;
 }
 
+/** Obtiene datos básicos de una conversación por id (para sockets) */
+async function getConversationById(id) {
+  const [row] = await db.query(
+    `SELECT id, id_configuracion, page_id, igsid
+       FROM instagram_conversations
+      WHERE id=? LIMIT 1`,
+    { replacements: [id], type: db.QueryTypes.SELECT }
+  );
+  return row || null;
+}
+
 module.exports = {
   ensureConversation,
   saveIncomingMessage,
   saveOutgoingMessage,
-  markDelivered,
+  markDelivered: async () => {},
   markRead,
   findOutgoingByMid,
+  getConversationById,
 };

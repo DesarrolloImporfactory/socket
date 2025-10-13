@@ -1,3 +1,16 @@
+/**
+ * Instagram Service
+ * -----------------
+ * - Enruta eventos de IG (webhook) y emite a Socket.IO.
+ * - Persiste ENTRANTES (in) y ECOS (out) SIN duplicar.
+ * - NO marca "visto" automáticamente; expone eventos socket para:
+ *   * IG_MARK_SEEN  → mark_seen + markRead cuando el asesor abre el chat.
+ *   * IG_TYPING     → typing_on/off mientras el asesor teclea.
+ *
+ * Requiere:
+ *   - Constraint UNIQUE para evitar duplicados en instagram_messages (p.ej. UNIQUE (conversation_id, direction, mid))
+ */
+
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
 const Store = require('./instagram_store.service');
@@ -9,29 +22,8 @@ const roomCfg = (id_configuracion) => `ig:cfg:${id_configuracion}`;
 /* =============================
    Helpers de acceso a página
 ============================= */
-async function getPageTokenByPageId(page_id) {
-  const [row] = await db.query(
-    `SELECT page_access_token
-       FROM instagram_pages
-      WHERE page_id=? AND status='active'
-      LIMIT 1`,
-    { replacements: [page_id], type: db.QueryTypes.SELECT }
-  );
-  return row?.page_access_token || null;
-}
 
-async function getConfigIdByPageId(page_id) {
-  const [row] = await db.query(
-    `SELECT id_configuracion
-       FROM instagram_pages
-      WHERE page_id=? AND status='active'
-      LIMIT 1`,
-    { replacements: [page_id], type: db.QueryTypes.SELECT }
-  );
-  return row?.id_configuracion || null;
-}
-
-/** Resuelve por IG Business ID (lo que llega como sender/recipient en IG) */
+/** Devuelve fila de la página por IG Business ID (sender/recipient en IG) */
 async function getPageRowByIgId(ig_id) {
   const [row] = await db.query(
     `SELECT id_configuracion, page_id, page_access_token
@@ -47,6 +39,7 @@ async function getPageRowByIgId(ig_id) {
 /* =============================
    Normalizadores / utilidades
 ============================= */
+
 const safeMsgId = (dbId, mid) =>
   dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -69,22 +62,79 @@ function normalizeAttachments(msg) {
    Servicio principal
 ============================= */
 class InstagramService {
+  /** Inicializa IO y registra listeners de socket de alto nivel */
   static setIO(io) {
     IO = io;
+
+    io.on('connection', (socket) => {
+      // 1) “Escribiendo…” controlado por el asesor
+      socket.on('IG_TYPING', async ({ conversation_id, on }) => {
+        try {
+          const conv = await Store.getConversationById(conversation_id);
+          if (!conv) return;
+
+          const [pageRow] = await db.query(
+            `SELECT page_access_token FROM instagram_pages
+              WHERE page_id=? AND status='active' LIMIT 1`,
+            { replacements: [conv.page_id], type: db.QueryTypes.SELECT }
+          );
+          const pat = pageRow?.page_access_token;
+          if (!pat) return;
+
+          await ig.sendSenderAction(
+            conv.igsid,
+            on ? 'typing_on' : 'typing_off',
+            pat
+          );
+        } catch (e) {
+          console.warn('[IG_TYPING][WARN]', e.response?.data || e.message);
+        }
+      });
+
+      // 2) Marcar visto solo cuando el asesor abre el chat (no en webhook)
+      socket.on('IG_MARK_SEEN', async ({ conversation_id }) => {
+        try {
+          const conv = await Store.getConversationById(conversation_id);
+          if (!conv) return;
+
+          const [pageRow] = await db.query(
+            `SELECT page_access_token FROM instagram_pages
+              WHERE page_id=? AND status='active' LIMIT 1`,
+            { replacements: [conv.page_id], type: db.QueryTypes.SELECT }
+          );
+          const pat = pageRow?.page_access_token;
+          if (!pat) return;
+
+          // mark_seen hacia IG + reset de unread_count en BD
+          await ig.sendSenderAction(conv.igsid, 'mark_seen', pat);
+          await Store.markRead({
+            id_configuracion: conv.id_configuracion,
+            page_id: conv.page_id,
+            igsid: conv.igsid,
+          });
+
+          // opcional: notificar a paneles (sidebar) que se limpió el contador
+          io.to(roomCfg(conv.id_configuracion)).emit('IG_READ', {
+            page_id: conv.page_id,
+            igsid: conv.igsid,
+          });
+        } catch (e) {
+          console.warn('[IG_MARK_SEEN][WARN]', e.response?.data || e.message);
+        }
+      });
+    });
   }
 
   /**
    * Router de eventos Instagram (webhook object='instagram' via Page)
-   * - Resuelve contexto por IG Business ID (no por page_id del evento)
-   * - Persiste entrantes (in) y ecos como salientes (out)
+   * - Heurística de IG:
+   *   * Entrante (usuario→negocio): sender.id = IGSID usuario | recipient.id = IG Business ID
+   *   * Eco (negocio→usuario):      sender.id = IG Business ID | recipient.id = IGSID usuario
    */
   static async routeEvent(event) {
-    // Heurística correcta de IDs en IG:
-    // - Entrante (usuario -> negocio): sender.id = IGSID usuario | recipient.id = IG Business ID (negocio)
-    // - Eco (negocio -> usuario):      sender.id = IG Business ID (negocio) | recipient.id = IGSID usuario
     const isEcho = event.message?.is_echo === true;
-    const businessId = isEcho ? event.sender?.id : event.recipient?.id; // IG Business ID de tu cuenta
-    const userIgsid = isEcho ? event.recipient?.id : event.sender?.id; // IGSID del usuario (cliente)
+    const businessId = isEcho ? event.sender?.id : event.recipient?.id; // IG Business ID
+    const userIgsid = isEcho ? event.recipient?.id : event.sender?.id; // IGSID del cliente
 
     if (!businessId) {
       console.warn(
@@ -93,7 +143,6 @@ class InstagramService {
       return;
     }
 
-    // Resuelve contexto por IG Business ID
     const pageRow = await getPageRowByIgId(businessId);
     if (!pageRow) {
       console.warn(
@@ -102,12 +151,12 @@ class InstagramService {
       );
       return;
     }
+
     const {
       id_configuracion,
       page_id: pageId,
       page_access_token: pageAccessToken,
     } = pageRow;
-
     const mid = event.message?.mid || event.postback?.mid || null;
     const text = event.message?.text || null;
 
@@ -123,7 +172,7 @@ class InstagramService {
       isEcho,
     });
 
-    // 1) ECO → guardar como MENSAJE SALIENTE (out)
+    // 1) ECO → guardar como SALIENTE (out) y emitir a UI
     if (isEcho && event.message) {
       await this.handleEchoAsOutgoing({
         id_configuracion,
@@ -134,19 +183,13 @@ class InstagramService {
       return;
     }
 
-    // 2) Mensaje entrante (usuario -> negocio)
+    // 2) ENTRANTE (usuario → negocio)
     if (event.message) {
-      if (!userIgsid) {
-        console.warn(
-          '[IG ROUTE_EVENT] message sin igsid de usuario; se ignora'
-        );
-        return;
-      }
+      if (!userIgsid) return;
       if (!pageAccessToken) {
         console.warn('[IG] No page_access_token para pageId', pageId);
         return;
       }
-
       await this.handleMessage(
         userIgsid,
         event.message,
@@ -157,7 +200,7 @@ class InstagramService {
       return;
     }
 
-    // 3) Postbacks (si decides usarlos desde IG)
+    // 3) Postbacks: opcional. Déjalo si lo usas; si no, puedes eliminar este bloque.
     if (event.postback) {
       if (!pageAccessToken) return;
       await this.handlePostback(
@@ -170,33 +213,19 @@ class InstagramService {
       return;
     }
 
-    // 4) Lecturas
+    // 4) Lecturas (IG puede enviar “read”, pero NO marcaremos visto aquí)
     if (event.read) {
-      try {
-        await Store.markRead({
-          id_configuracion,
-          page_id: pageId,
-          igsid: userIgsid,
-        });
-        if (IO)
-          IO.to(roomCfg(id_configuracion)).emit('IG_READ', {
-            page_id: pageId,
-            igsid: userIgsid,
-          });
-      } catch (e) {
-        console.warn('[IG READ][WARN]', e.message);
-      }
+      // Si quisieras reflejar “cliente leyó”, emitirías un evento; de momento ignoramos.
       return;
     }
 
     // 5) Delivery (placeholder)
     if (event.delivery) {
-      // Implementa markDelivered si lo necesitas
       return;
     }
   }
 
-  /** Guarda mensaje ENTRANTE (usuario -> negocio) como direction='in' */
+  /** Persiste ENTRANTE y emite a sockets. (Sin mark_seen automático) */
   static async handleMessage(
     igsid,
     message,
@@ -221,12 +250,12 @@ class InstagramService {
         meta: { raw: message },
       });
 
-      // === ENRIQUECER PERFIL (si falta) ===
+      // Enriquecer perfil si falta
       try {
         const [conv] = await db.query(
           `SELECT id, customer_name, profile_pic_url
-          FROM instagram_conversations
-           WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
+             FROM instagram_conversations
+            WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
           {
             replacements: [id_configuracion, pageId, igsid],
             type: db.QueryTypes.SELECT,
@@ -238,10 +267,10 @@ class InstagramService {
           if (profile) {
             await db.query(
               `UPDATE instagram_conversations
-              SET customer_name   = COALESCE(?, customer_name),
-                  profile_pic_url = COALESCE(?, profile_pic_url),
-                  updated_at      = NOW()
-              WHERE id = ?`,
+                  SET customer_name   = COALESCE(?, customer_name),
+                      profile_pic_url = COALESCE(?, profile_pic_url),
+                      updated_at      = NOW()
+                WHERE id = ?`,
               {
                 replacements: [
                   profile.name || null,
@@ -284,16 +313,13 @@ class InstagramService {
       console.error('[IG STORE][INCOMING][ERROR]', e.message);
     }
 
-    // Feedback UX (silencioso)
-    try {
-      await ig.sendSenderAction(igsid, 'mark_seen', pageAccessToken);
-      await ig.sendSenderAction(igsid, 'typing_off', pageAccessToken);
-    } catch (e) {
-      console.warn('[IG SENDER_ACTION][WARN]', e.response?.data || e.message);
-    }
+    // IMPORTANTE:
+    // Ya NO hacemos mark_seen ni typing_off aquí. Eso se hará por sockets:
+    // - IG_MARK_SEEN cuando el asesor abre el chat
+    // - IG_TYPING (on/off) mientras el asesor escribe
   }
 
-  /** Guarda ECO (negocio -> usuario) como direction='out' */
+  /** Guarda ECO (negocio → usuario) como SALIENTE y emite con client_tmp_id (si existe) */
   static async handleEchoAsOutgoing({
     id_configuracion,
     pageId,
@@ -314,10 +340,10 @@ class InstagramService {
         attachments: normalizedAttachments,
         mid,
         status: 'sent',
-        meta: { raw: message, via: 'echo' }, // ← se fusiona con meta del envío
+        meta: { raw: message, via: 'echo' }, // meta se fusionará si ya existía
       });
 
-      // Recuperar client_tmp_id guardado al ENVIAR
+      // Intentar recuperar client_tmp_id que guardaste al ENVIAR (siempre que insertaras meta con ese dato)
       const existing = await Store.findOutgoingByMid({
         conversation_id: outSave.conversation_id,
         mid,
@@ -340,7 +366,7 @@ class InstagramService {
             attachments: normalizedAttachments,
             status: 'sent',
             created_at: createdAtNow,
-            client_tmp_id: clientTmpId, // ← CLAVE para reemplazo en el front
+            client_tmp_id: clientTmpId, // permite al front sustituir el optimista por el real
           },
         });
 
@@ -357,6 +383,9 @@ class InstagramService {
     }
   }
 
+  /**
+   * Opcional para botones con respuest rapidaa.
+   */
   static async handlePostback(
     igsid,
     postback,
@@ -402,7 +431,7 @@ class InstagramService {
       console.error('[IG STORE][INCOMING_POSTBACK][ERROR]', e.message);
     }
 
-    // (Opcional) auto-responder al postback
+    // Auto-respuesta opcional
     try {
       const res = await ig.sendText(
         igsid,
@@ -459,6 +488,4 @@ class InstagramService {
 }
 
 module.exports = InstagramService;
-module.exports.getPageTokenByPageId = getPageTokenByPageId;
-module.exports.getConfigIdByPageId = getConfigIdByPageId;
 module.exports.getPageRowByIgId = getPageRowByIgId;
