@@ -487,5 +487,30 @@ class InstagramService {
   }
 }
 
+// === Helpers Importantes
+async function getPageTokenByPageId(page_id) {
+  const [row] = await db.query(
+    `SELECT page_access_token
+       FROM instagram_pages
+      WHERE page_id=? AND status='active'
+      LIMIT 1`,
+    { replacements: [page_id], type: db.QueryTypes.SELECT }
+  );
+  return row?.page_access_token || null;
+}
+
+async function getConfigIdByPageId(page_id) {
+  const [row] = await db.query(
+    `SELECT id_configuracion
+       FROM instagram_pages
+      WHERE page_id=? AND status='active'
+      LIMIT 1`,
+    { replacements: [page_id], type: db.QueryTypes.SELECT }
+  );
+  return row?.id_configuracion || null;
+}
+
 module.exports = InstagramService;
 module.exports.getPageRowByIgId = getPageRowByIgId;
+module.exports.getPageTokenByPageId = getPageTokenByPageId; // 👈 nuevo
+module.exports.getConfigIdByPageId = getConfigIdByPageId; // 👈 nuevo
