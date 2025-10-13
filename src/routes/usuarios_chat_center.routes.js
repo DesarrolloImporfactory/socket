@@ -8,6 +8,14 @@ const express = require('express');
 
 const router = express.Router();
 
+
+
+
+/* === Preferencia del tour (sin protect, usando id_usuario en body) === */
+router.post('/tour-conexiones/get', usuarios_chat_centerController.getTourConexionesPrefByBody);
+router.post('/tour-conexiones/set', usuarios_chat_centerController.updateTourConexionesPrefByBody);
+
+
 router.use(protect);
 
 /* seccion administrar sub_usuarios  */

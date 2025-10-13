@@ -318,3 +318,42 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
     });
   }
 });
+/* === Obtener preferencia de tour (por body) === */
+exports.getTourConexionesPrefByBody = catchAsync(async (req, res) => {
+  const { id_usuario } = req.body || {};
+  if (!id_usuario) {
+    return res.status(400).json({ status: 'fail', message: 'id_usuario es requerido' });
+  }
+
+  const row = await Usuarios_chat_center.findOne({
+    where: { id_usuario },
+    attributes: ['tour_conexiones_dismissed'],
+  });
+
+  if (!row) {
+    return res.status(404).json({ status: 'fail', message: 'Usuario no encontrado' });
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    tour_conexiones_dismissed: Number(row.tour_conexiones_dismissed) || 0,
+  });
+});
+
+/* === Actualizar preferencia de tour (por body) === */
+exports.updateTourConexionesPrefByBody = catchAsync(async (req, res) => {
+  const { id_usuario, tour_conexiones_dismissed } = req.body || {};
+  if (!id_usuario) {
+    return res.status(400).json({ status: 'fail', message: 'id_usuario es requerido' });
+  }
+
+  const row = await Usuarios_chat_center.findOne({ where: { id_usuario } });
+  if (!row) {
+    return res.status(404).json({ status: 'fail', message: 'Usuario no encontrado' });
+  }
+
+  row.tour_conexiones_dismissed = Number(tour_conexiones_dismissed) === 1 ? 1 : 0;
+  await row.save();
+
+  return res.status(200).json({ status: 'success' });
+});

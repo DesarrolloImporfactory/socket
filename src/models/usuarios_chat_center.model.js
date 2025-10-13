@@ -51,6 +51,11 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
       defaultValue: 0,
     },
+    tour_conexiones_dismissed: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
   },
   {
     sequelize: db,
