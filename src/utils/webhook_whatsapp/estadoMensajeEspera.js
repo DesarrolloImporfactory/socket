@@ -28,6 +28,7 @@ async function estadoMensajeEspera(id_cliente) {
     const idUltimoMensaje = mensajes?.id;
     console.log('idUltimoMensaje: ' + idUltimoMensaje);
     console.log('mensajes?.id: ' + mensajes?.id);
+    console.log("id_cliente: "+id_cliente)
     if (!idUltimoMensaje) {
       await logDebug(
         `No se encontraron mensajes para el cliente ${id_cliente}`,
