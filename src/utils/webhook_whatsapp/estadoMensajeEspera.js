@@ -25,9 +25,9 @@ async function estadoMensajeEspera(id_cliente) {
       { replacements: [id_cliente] }
     );
 
-    const idUltimoMensaje = mensajes?.id;
+    const idUltimoMensaje = mensajes[0]?.id;
     console.log('idUltimoMensaje: ' + idUltimoMensaje);
-    console.log('mensajes?.id: ' + mensajes?.id);
+    console.log('mensajes?.id: ' + mensajes[0]?.id);
     console.table(mensajes);
     console.log("id_cliente: "+id_cliente)
     if (!idUltimoMensaje) {
@@ -54,7 +54,7 @@ async function estadoMensajeEspera(id_cliente) {
       { replacements: [id_cliente] }
     );
 
-    if (!espera) {
+    if (!espera || !espera[0]) {
       await logDebug(
         ` No hay mensajes en espera para cliente ID ${id_cliente}`,
         logFile
@@ -66,7 +66,7 @@ async function estadoMensajeEspera(id_cliente) {
       return;
     }
 
-    const { id: idWait, id_mensajes_clientes: idMensajeEspera } = espera;
+    const { id: idWait, id_mensajes_clientes: idMensajeEspera } = espera[0];
     await logDebug(
       `Mensaje en espera: ID = ${idWait}, Último mensaje guardado = ${idMensajeEspera}`,
       logFile
