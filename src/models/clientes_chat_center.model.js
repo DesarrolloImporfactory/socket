@@ -12,13 +12,12 @@ const ClientesChatCenter = db.define(
     },
     id_plataforma: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: true, // En la tabla permite NULL
+      allowNull: true,
       references: { model: 'plataformas', key: 'id_plataforma' },
     },
     id_configuracion: {
-      type: DataTypes.BIGINT, // No es UNSIGNED en la tabla
+      type: DataTypes.BIGINT,
       allowNull: true,
-      // references opcional si existe FK real
     },
     id_etiqueta: {
       type: DataTypes.INTEGER,
@@ -105,6 +104,39 @@ const ClientesChatCenter = db.define(
       type: DataTypes.INTEGER,
       allowNull: true,
       defaultValue: 0,
+    },
+    telefono_limpio: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    id_factura: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    fecha_guia: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+    transporte: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    estado_factura: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+    },
+    etiquetas: {
+      type: DataTypes.BLOB,
+      allowNull: true,
+    },
+    novedad_info: {
+      type: DataTypes.BLOB,
+      allowNull: true,
     },
   },
   {

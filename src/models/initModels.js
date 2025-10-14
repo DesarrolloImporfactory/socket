@@ -40,16 +40,6 @@ const initModel = () => {
     as: 'usuarios',
   });
 
-  // Asociación entre Plataforma y ClientesChatCenter
-  Plataforma.hasMany(ClientesChatCenter, {
-    foreignKey: 'id_plataforma',
-    as: 'clientes',
-  });
-  ClientesChatCenter.belongsTo(Plataforma, {
-    foreignKey: 'id_plataforma',
-    as: 'plataforma',
-  });
-
   // Asociación entre ClientesChatCenter y MensajesClientes
   ClientesChatCenter.hasMany(MensajesClientes, {
     foreignKey: 'id_cliente',
@@ -63,16 +53,6 @@ const initModel = () => {
     foreignKey: 'celular_recibe',
     targetKey: 'id',
     as: 'clientePorCelular',
-  });
-
-  // Asociación entre Plataforma y MensajesClientes
-  Plataforma.hasMany(MensajesClientes, {
-    foreignKey: 'id_plataforma',
-    as: 'mensajes',
-  });
-  MensajesClientes.belongsTo(Plataforma, {
-    foreignKey: 'id_plataforma',
-    as: 'plataforma',
   });
 
   // Un error por mensaje (si tu tabla puede tener varios, igual te sirve hasOne para traer 1 fila)

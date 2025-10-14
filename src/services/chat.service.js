@@ -262,6 +262,10 @@ class ChatService {
 
   async getChatsByClient(id_cliente, id_configuracion) {
     try {
+      // Validaciones
+      if (!id_cliente || !id_configuracion) {
+        throw new Error('id_cliente e id_configuracion son obligatorios');
+      }
       const chats = await ClientesChatCenter.findAll({
         include: [
           {
@@ -304,7 +308,7 @@ class ChatService {
         { visto: 1 },
         {
           where: {
-            celular_recibe: id_cliente,
+            celular_recibe: ""+id_cliente,
             id_configuracion: id_configuracion,
             visto: 0,
             rol_mensaje: 0,
@@ -314,7 +318,7 @@ class ChatService {
 
       return chats;
     } catch (error) {
-      console.error('Error al obtener los chats:', error.message);
+      console.error('Error al obtener los chats 1:', error.message);
       throw error;
     }
   }

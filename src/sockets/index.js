@@ -49,7 +49,7 @@ class Sockets {
 
             socket.emit('CHATS', chats);
           } catch (error) {
-            console.error('Error al obtener los chats:', error);
+            console.error('Error al obtener los chats 2:', error);
             socket.emit('ERROR', { message: 'Error al obtener los chats' });
           }
         }
@@ -62,7 +62,7 @@ class Sockets {
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
         } catch (error) {
-          console.error('Error al obtener los chats:', error.message);
+          console.error('Error al obtener los chats 3:', error.message);
 
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
