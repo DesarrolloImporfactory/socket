@@ -1,7 +1,7 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 
 const fs = require('fs');
 const path = require('path');
@@ -32,7 +32,7 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
 exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
   const { id_plataforma } = req.body;
 
-  const productos = await db.query(
+  const productos = await db_2.query(
     `
     SELECT 
       p.nombre_producto AS nombre,
@@ -43,7 +43,7 @@ exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
     `,
     {
       replacements: [id_plataforma],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     }
   );
 

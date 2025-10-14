@@ -10,7 +10,7 @@ const Configuraciones = require('../models/configuraciones.model');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 
 exports.registrarUsuario = catchAsync(async (req, res, next) => {
   const { nombre, usuario, password, email, nombre_encargado } = req.body;
@@ -201,11 +201,11 @@ exports.newLogin = async (req, res) => {
 
     /* id_call_center */
     if (tipo == 'call_center') {
-      const [call_centers] = await db.query(
+      const [call_centers] = await db_2.query(
         `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
         {
           replacements: [idPlataformaFromToken],
-          type: db.QueryTypes.SELECT,
+          type: db_2.QueryTypes.SELECT,
         }
       );
 
@@ -221,7 +221,7 @@ exports.newLogin = async (req, res) => {
         `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
         {
           replacements: [tienda],
-          type: db.QueryTypes.SELECT,
+          type: db_2.QueryTypes.SELECT,
         }
       );
 
@@ -279,11 +279,11 @@ exports.newLogin = async (req, res) => {
       let usuarioEncontrado = null;
       const idUsuarioFromToken = decoded?.data?.id;
       /* consultar informacion de usuario imporsuit */
-      const [user_imporauit] = await db.query(
+      const [user_imporauit] = await db_2.query(
         `SELECT ecommerce, membresia_ecommerce, importacion, nombre_users, con_users, usuario_users FROM users WHERE id_users = ? LIMIT 1`,
         {
           replacements: [idUsuarioFromToken],
-          type: db.QueryTypes.SELECT,
+          type: db_2.QueryTypes.SELECT,
         }
       );
 

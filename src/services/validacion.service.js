@@ -1,10 +1,10 @@
 // services/validacion.service.js
-const { db } = require('../database/config'); // Sequelize instance
+const { db_2 } = require('../database/config'); // Sequelize instance
 
 async function obtenerProductosPrivadosIds(id_plataforma) {
-  const rows = await db.query(
+  const rows = await db_2.query(
     'SELECT id_producto FROM producto_privado WHERE id_plataforma = ?',
-    { replacements: [id_plataforma], type: db.QueryTypes.SELECT }
+    { replacements: [id_plataforma], type: db_2.QueryTypes.SELECT }
   );
   return rows.map((r) => Number(r.id_producto));
 }
@@ -32,7 +32,7 @@ async function validarDisponibilidad({ lista, id_plataforma }) {
   const privadosMap = Object.create(null);
   for (const pid of idsPrivados) privadosMap[pid] = true;
 
-  const filas = await db.query(
+  const filas = await db_2.query(
     `
     SELECT
       ib.id_inventario,
@@ -46,7 +46,7 @@ async function validarDisponibilidad({ lista, id_plataforma }) {
     JOIN productos p ON p.id_producto = ib.id_producto
     WHERE ib.id_inventario IN (:ids)
     `,
-    { replacements: { ids: idsInventario }, type: db.QueryTypes.SELECT }
+    { replacements: { ids: idsInventario }, type: db_2.QueryTypes.SELECT }
   );
 
   // Detectar ids_inventario inexistentes (no devueltos por la consulta)

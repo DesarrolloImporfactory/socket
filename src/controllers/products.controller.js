@@ -2,7 +2,7 @@ const AppError = require('../utils/appError');
 const Productos = require('../models/productos.model');
 const Detalle_fact_cot = require('../models/detalle_fact_cot.model');
 const catchAsync = require('../utils/catchAsync');
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 
 // exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
 //   const { page = 1, limit = 5, searchTerm, id_producto, sku } = req.body;
@@ -22,9 +22,9 @@ const { db } = require('../database/config');
 //     LIMIT 1
 //   `;
 
-//   const datos = await db.query(datosQuery, {
+//   const datos = await db_2.query(datosQuery, {
 //     replacements: { id_producto, sku },
-//     type: db.QueryTypes.SELECT,
+//     type: db_2.QueryTypes.SELECT,
 //   });
 
 //   if (!datos.length) {
@@ -59,9 +59,9 @@ const { db } = require('../database/config');
 //     ${hasSearchTerm ? 'AND p.nombre_producto LIKE :search' : ''}
 //   `;
 
-//   const totalProductos = await db.query(totalProductosQuery, {
+//   const totalProductos = await db_2.query(totalProductosQuery, {
 //     replacements,
-//     type: db.QueryTypes.SELECT,
+//     type: db_2.QueryTypes.SELECT,
 //   });
 
 //   const total = totalProductos[0].total;
@@ -76,9 +76,9 @@ const { db } = require('../database/config');
 //     LIMIT :limit OFFSET :offset
 //   `;
 
-//   const productos = await db.query(productosQuery, {
+//   const productos = await db_2.query(productosQuery, {
 //     replacements,
-//     type: db.QueryTypes.SELECT,
+//     type: db_2.QueryTypes.SELECT,
 //   });
 
 //   const totalPages = Math.ceil(total / limit);
@@ -117,9 +117,9 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     WHERE id_producto = :id_producto AND sku = :sku
     LIMIT 1
   `;
-  const baseRows = await db.query(baseQuery, {
+  const baseRows = await db_2.query(baseQuery, {
     replacements: { id_producto, sku },
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
 
   if (!baseRows.length) {
@@ -138,9 +138,9 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     WHERE id_producto = :id_producto AND id_plataforma = :id_plataforma_usuario
     LIMIT 1
   `;
-  const privadoRows = await db.query(privadoQuery, {
+  const privadoRows = await db_2.query(privadoQuery, {
     replacements: { id_producto, id_plataforma_usuario },
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
   const es_privado = privadoRows.length > 0;
 
@@ -174,9 +174,9 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     INNER JOIN productos p ON p.id_producto = ib.id_producto
     WHERE ${whereClause}
   `;
-  const totalRows = await db.query(totalQuery, {
+  const totalRows = await db_2.query(totalQuery, {
     replacements: replacementsBase,
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
   const total = Number(totalRows?.[0]?.total || 0);
 
@@ -193,9 +193,9 @@ exports.findAllAditionalProducts = catchAsync(async (req, res, next) => {
     ORDER BY p.nombre_producto ASC
     LIMIT :limit OFFSET :offset
   `;
-  const productos = await db.query(productosQuery, {
+  const productos = await db_2.query(productosQuery, {
     replacements: { ...replacementsBase, limit: limitNum, offset: offsetNum },
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
 
   return res.status(200).json({
@@ -221,11 +221,11 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
   try {
     // 1. Verificamos si existe la factura
-    const [factura] = await db.query(
+    const [factura] = await db_2.query(
       'SELECT * FROM facturas_cot WHERE id_factura = ? LIMIT 1',
       {
         replacements: [id_factura],
-        type: db.QueryTypes.SELECT,
+        type: db_2.QueryTypes.SELECT,
       }
     );
 
@@ -265,11 +265,11 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
   const { id_detalle } = req.body;
 
   try {
-    const result = await db.query(
+    const result = await db_2.query(
       'DELETE FROM detalle_fact_cot WHERE id_detalle = ?',
       {
         replacements: [id_detalle],
-        type: db.QueryTypes.BULKDELETE,
+        type: db_2.QueryTypes.BULKDELETE,
       }
     );
 
@@ -293,19 +293,19 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
 
 async function obtenerFull(producto, plataformaSolicitada) {
   // 1) inventario_bodegas (LIMIT 1)
-  const [inv] = await db.query(
+  const [inv] = await db_2.query(
     'SELECT * FROM inventario_bodegas WHERE id_producto = ? LIMIT 1',
     {
       replacements: [producto.id_producto],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     }
   );
   if (!inv) return 0;
 
   // 2) bodega (LIMIT 1)
-  const [bodega] = await db.query('SELECT * FROM bodega WHERE id = ? LIMIT 1', {
+  const [bodega] = await db_2.query('SELECT * FROM bodega WHERE id = ? LIMIT 1', {
     replacements: [inv.bodega],
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
   if (!bodega) return 0;
 
@@ -348,11 +348,11 @@ exports.calcularGuiaDirecta = catchAsync(async (req, res, next) => {
   const idPlat = Number(id_plataforma) || 0;
 
   // 3) Buscar producto
-  const [producto] = await db.query(
+  const [producto] = await db_2.query(
     'SELECT * FROM productos WHERE id_producto = ? LIMIT 1',
     {
       replacements: [id_producto],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     }
   );
   if (!producto) {

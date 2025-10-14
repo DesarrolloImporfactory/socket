@@ -10,10 +10,10 @@ const EtiquetasChatCenter = db.define(
       autoIncrement: true,
       primaryKey: true,
     },
-    id_plataforma: {
+    /* id_plataforma: {
       type: DataTypes.INTEGER,
       allowNull: false,
-    },
+    }, */
     id_configuracion: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false,

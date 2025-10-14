@@ -1,7 +1,7 @@
 const { DataTypes } = require('sequelize');
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 
-const UsuarioPlataforma = db.define(
+const UsuarioPlataforma = db_2.define(
   'usuario_plataforma',
   {
     id: {

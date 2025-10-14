@@ -2,7 +2,7 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const axios = require('axios');
 
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 const FacturasCot = require('../models/facturas_cot.model');
 
 // controllers/detalle_fact_cotController.js
@@ -20,7 +20,7 @@ exports.validarDevolucion = catchAsync(async (req, res, next) => {
     )
     LIMIT 1`;
 
-    const rows = await db.query(sql, { type: db.QueryTypes.SELECT });
+    const rows = await db_2.query(sql, { type: db_2.QueryTypes.SELECT });
 
     const existe = rows.length > 0;
 
@@ -159,9 +159,9 @@ exports.infoCliente = catchAsync(async (req, res, next) => {
     WHERE REPLACE(telefono_limpio, '+', '') LIKE :tel
   `;
 
-  const [stats] = await db.query(sql, {
+  const [stats] = await db_2.query(sql, {
     replacements: { plat: id_plataforma, tel: telLike },
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
 
   /* ────────── semáforo ────────── */

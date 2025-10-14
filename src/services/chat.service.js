@@ -6,7 +6,7 @@ const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const TemplatesChatCenter = require('../models/templates_chat_center.model');
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 const FacturasCot = require('../models/facturas_cot.model');
 const DetalleFactCot = require('../models/detalle_fact_cot.model');
 const ProvinciaLaar = require('../models/provincia_laar.model');
@@ -176,7 +176,7 @@ class ChatService {
 
       const sqlQuery = `
       SELECT c.*, 'wa' AS source
-      FROM chats_4 c
+      FROM vista_chats c
       ${whereClause}
       ORDER BY mensaje_created_at DESC, id DESC
       LIMIT :limit;
@@ -665,7 +665,7 @@ class ChatService {
 
       // Iteramos sobre cada factura para agregar sus productos
       for (const factura of facturas) {
-        const productos = await db.query(
+        const productos = await db_2.query(
           `SELECT * FROM vista_productos_2 WHERE numero_factura = :numero_factura`,
           {
             replacements: { numero_factura: factura.numero_factura },
@@ -678,7 +678,7 @@ class ChatService {
       }
 
       for (const guia of guias) {
-        const productos = await db.query(
+        const productos = await db_2.query(
           `SELECT * FROM vista_productos_2 WHERE numero_factura = :numero_factura`,
           {
             replacements: { numero_factura: guia.numero_factura },
@@ -739,7 +739,7 @@ class ChatService {
       const no_gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 0 AND nvd.terminado = 0)`;
 
       // No gestionadas (sin condición adicional)
-      const no_gestionadas = await db.query(no_gestionadasSQL, {
+      const no_gestionadas = await db_2.query(no_gestionadasSQL, {
         replacements: {
           id_plataforma,
           telefono: telefonoNormalizado,
@@ -750,7 +750,7 @@ class ChatService {
       // Gestionadas (con condición adicional)
       const gestionadasSQL = `${baseSQL} AND (nvd.solucionada = 1 OR nvd.terminado = 1)`;
 
-      const gestionadas = await db.query(gestionadasSQL, {
+      const gestionadas = await db_2.query(gestionadasSQL, {
         replacements: {
           id_plataforma,
           telefono: telefonoNormalizado,
@@ -1013,7 +1013,7 @@ class ChatService {
     try {
       const sql = `
         SELECT *
-        FROM chats_4
+        FROM vista_chats
         WHERE id_configuracion   = :id_configuracion
           AND celular_cliente = :phone
         ORDER BY mensaje_created_at DESC, id DESC

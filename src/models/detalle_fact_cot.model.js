@@ -1,7 +1,7 @@
 const { DataTypes } = require('sequelize');
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 
-const DetalleFactCot = db.define(
+const DetalleFactCot = db_2.define(
   'detalle_fact_cot',
   {
     id_detalle: {
@@ -62,7 +62,7 @@ const DetalleFactCot = db.define(
     },
   },
   {
-    sequelize: db,
+    sequelize: db_2,
     tableName: 'detalle_fact_cot',
     timestamps: false,
   }

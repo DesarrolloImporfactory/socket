@@ -1,7 +1,7 @@
 const { DataTypes } = require('sequelize');
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 
-const ProvinciaLaar = db.define(
+const ProvinciaLaar = db_2.define(
   'provincia_laar',
   {
     id_prov: {
