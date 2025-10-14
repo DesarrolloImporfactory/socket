@@ -22,13 +22,15 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
 
   const [ins] = await db.query(
     `INSERT INTO instagram_conversations
-       (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, created_at, updated_at)
-     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW(), NOW())`,
+       (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, updated_at)
+     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW())`,
     {
       replacements: [id_configuracion, page_id, igsid],
       type: db.QueryTypes.INSERT,
     }
   );
+
+  // insertId en MySQL viene acá
   return ins?.insertId ?? ins;
 }
 
