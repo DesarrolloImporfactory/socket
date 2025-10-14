@@ -20,3 +20,4 @@ jobs:
           username: ${{ secrets.FTP_USER }}
           password: ${{ secrets.FTP_PASS }}
           server-dir: /var/www/devsocket/
+          local-dir: ./
