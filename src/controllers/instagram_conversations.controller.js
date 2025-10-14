@@ -152,6 +152,91 @@ exports.listMessages = async (req, res) => {
         .json({ ok: false, message: 'conversation_id requerido' });
     }
 
+    // --- helpers locales ---
+    const parseAttachments = (attStr) => {
+      if (!attStr) return [];
+      try {
+        const v = typeof attStr === 'string' ? JSON.parse(attStr) : attStr;
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const mapMsgRowToUI = (row) => {
+      // direction: "in" -> 0 (entrante), "out" -> 1 (saliente)
+      const rol_mensaje = row.direction === 'out' ? 1 : 0;
+
+      // texto/fecha/ids
+      const base = {
+        id: row.id,
+        rol_mensaje,
+        texto_mensaje: row.text || '',
+        tipo_mensaje: 'text',
+        ruta_archivo: null,
+        mid_mensaje: row.mid || null,
+        visto: row.status === 'read' ? 1 : 0,
+        created_at: row.created_at, // ya te llega como datetime; si quieres ISO: new Date(row.created_at).toISOString()
+        responsable: rol_mensaje === 1 ? row.responsable || null : '',
+      };
+
+      // attachments (IG/MS) => normalizar PRIMER attachment
+      const atts = parseAttachments(row.attachments);
+      if (atts.length > 0) {
+        const a0 = atts[0] || {};
+        const t = String(a0.type || '').toLowerCase();
+        const payload = a0.payload || {};
+        const url =
+          a0.url || payload.url || payload.preview_url || payload.src || null;
+
+        if (t === 'image') {
+          return { ...base, tipo_mensaje: 'image', ruta_archivo: url || '' };
+        }
+
+        if (t === 'video') {
+          return { ...base, tipo_mensaje: 'video', ruta_archivo: url || '' };
+        }
+
+        if (t === 'audio') {
+          return { ...base, tipo_mensaje: 'audio', ruta_archivo: url || '' };
+        }
+
+        if (t === 'sticker') {
+          return { ...base, tipo_mensaje: 'sticker', ruta_archivo: url || '' };
+        }
+
+        if (t === 'location' && (payload.latitude || payload.lat)) {
+          const latitude = payload.latitude ?? payload.lat;
+          const longitude =
+            payload.longitude ?? payload.lng ?? payload.longitud ?? null;
+          return {
+            ...base,
+            tipo_mensaje: 'location',
+            texto_mensaje: JSON.stringify({ latitude, longitude }),
+            ruta_archivo: null,
+          };
+        }
+
+        // file/document (Messenger suele usar "file")
+        if (t === 'file' || t === 'document' || !t) {
+          return {
+            ...base,
+            tipo_mensaje: 'document',
+            ruta_archivo: JSON.stringify({
+              ruta: url || '',
+              nombre: a0.name || payload.file_name || 'archivo',
+              size: a0.size || payload.size || 0,
+              mimeType: a0.mimeType || payload.mime_type || '',
+            }),
+          };
+        }
+      }
+
+      // Sin attachments → text
+      return base;
+    };
+
+    // --- consulta principal ---
     let rows;
     if (before_id) {
       const [anchor] = await db.query(
@@ -159,8 +244,9 @@ exports.listMessages = async (req, res) => {
         { replacements: [before_id], type: db.QueryTypes.SELECT }
       );
       const anchorTs = anchor?.created_at;
-      if (!anchorTs)
+      if (!anchorTs) {
         return res.json({ ok: true, items: [], limit, next_before_id: null });
+      }
 
       rows = await db.query(
         `
@@ -196,9 +282,15 @@ exports.listMessages = async (req, res) => {
       );
     }
 
+    // De DESC a ASC para la UI
     const asc = rows.slice().reverse();
+
+    // Mapear cada fila al contrato de tu front (tipo_mensaje/ruta_archivo correctos)
     const items = asc.map(mapMsgRowToUI);
+
+    // Cursor para paginar hacia atrás (el más antiguo del batch actual)
     const next_before_id = items.length ? items[0].id : null;
+
     res.json({ ok: true, items, limit, next_before_id });
   } catch (e) {
     console.error('[IG listMessages]', e);

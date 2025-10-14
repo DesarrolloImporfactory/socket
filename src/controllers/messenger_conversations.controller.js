@@ -159,6 +159,8 @@ function mapConvRowToSidebar(r) {
   };
 }
 
+// controllers/messenger.js (o donde definas este handler)
+
 exports.listMessages = async (req, res) => {
   try {
     const conversation_id = Number(req.params.id);
@@ -171,9 +173,93 @@ exports.listMessages = async (req, res) => {
         .json({ ok: false, message: 'conversation_id requerido' });
     }
 
+    // --- helpers locales (mismos que usamos para IG, adaptados a MS) ---
+    const parseAttachments = (attStr) => {
+      if (!attStr) return [];
+      try {
+        const v = typeof attStr === 'string' ? JSON.parse(attStr) : attStr;
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const mapMsgRowToUI = (row) => {
+      // direction: "in" -> 0 (entrante), "out" -> 1 (saliente)
+      const rol_mensaje = row.direction === 'out' ? 1 : 0;
+
+      const base = {
+        id: row.id,
+        rol_mensaje,
+        texto_mensaje: row.text || '',
+        tipo_mensaje: 'text',
+        ruta_archivo: null,
+        mid_mensaje: row.mid || null,
+        visto: row.status === 'read' ? 1 : 0,
+        created_at: row.created_at,
+        responsable: rol_mensaje === 1 ? row.responsable || null : '',
+      };
+
+      // Normalizar el PRIMER attachment
+      const atts = parseAttachments(row.attachments);
+      if (atts.length > 0) {
+        const a0 = atts[0] || {};
+        const t = String(a0.type || '').toLowerCase();
+        const payload = a0.payload || {};
+        const url =
+          a0.url || payload.url || payload.preview_url || payload.src || null;
+
+        if (t === 'image') {
+          return { ...base, tipo_mensaje: 'image', ruta_archivo: url || '' };
+        }
+
+        if (t === 'video') {
+          return { ...base, tipo_mensaje: 'video', ruta_archivo: url || '' };
+        }
+
+        if (t === 'audio') {
+          return { ...base, tipo_mensaje: 'audio', ruta_archivo: url || '' };
+        }
+
+        if (t === 'sticker') {
+          return { ...base, tipo_mensaje: 'sticker', ruta_archivo: url || '' };
+        }
+
+        // Messenger suele mandar archivos genéricos como "file"
+        if (t === 'file' || t === 'document' || !t) {
+          return {
+            ...base,
+            tipo_mensaje: 'document',
+            ruta_archivo: JSON.stringify({
+              ruta: url || '',
+              nombre: a0.name || payload.file_name || 'archivo',
+              size: a0.size || payload.size || 0,
+              mimeType: a0.mimeType || payload.mime_type || '',
+            }),
+          };
+        }
+
+        // Ubicación (si tu backend guarda coordinates en payload)
+        if (t === 'location' && (payload.latitude || payload.lat)) {
+          const latitude = payload.latitude ?? payload.lat;
+          const longitude =
+            payload.longitude ?? payload.lng ?? payload.longitud ?? null;
+          return {
+            ...base,
+            tipo_mensaje: 'location',
+            texto_mensaje: JSON.stringify({ latitude, longitude }),
+            ruta_archivo: null,
+          };
+        }
+      }
+
+      return base;
+    };
+
+    // --- consulta principal ---
     let rows;
     if (before_id) {
-      // Busca el timestamp del anchor
+      // anchor para paginar hacia atrás
       const [anchor] = await db.query(
         `SELECT created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
         { replacements: [before_id], type: db.QueryTypes.SELECT }
@@ -184,50 +270,48 @@ exports.listMessages = async (req, res) => {
         return res.json({ ok: true, items: [], limit, next_before_id: null });
       }
 
-      // Trae más antiguos que el anchor (orden DESC para eficiencia), luego invertimos
       rows = await db.query(
         `
          SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.psid,
                 m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
-                m.id_encargado,
-                su.usuario AS responsable
+                m.id_encargado, su.usuario AS responsable
            FROM messenger_messages m
-         LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
-              WHERE m.conversation_id = ?
-                AND (
-                    m.created_at < ?
-                  OR (m.created_at = ? AND m.id < ?)
-                )
-        ORDER BY m.created_at DESC, m.id DESC
-        LIMIT ?
-          `,
+      LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
+          WHERE m.conversation_id = ?
+            AND (
+              m.created_at < ?
+              OR (m.created_at = ? AND m.id < ?)
+            )
+       ORDER BY m.created_at DESC, m.id DESC
+          LIMIT ?`,
         {
           replacements: [conversation_id, anchorTs, anchorTs, before_id, limit],
           type: db.QueryTypes.SELECT,
         }
       );
     } else {
-      // Primer “page”: los más recientes
+      // primer page (más recientes)
       rows = await db.query(
         `
          SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.psid,
                 m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
-                m.id_encargado,
-                su.usuario AS responsable
+                m.id_encargado, su.usuario AS responsable
            FROM messenger_messages m
-         LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
-              WHERE m.conversation_id = ?
-         ORDER BY m.created_at DESC, m.id DESC
-        LIMIT ?
-       `,
+      LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
+          WHERE m.conversation_id = ?
+       ORDER BY m.created_at DESC, m.id DESC
+          LIMIT ?`,
         { replacements: [conversation_id, limit], type: db.QueryTypes.SELECT }
       );
     }
 
-    // 👇 Invertimos a ASC para la UI y calculamos el cursor
+    // de DESC a ASC para la UI
     const asc = rows.slice().reverse();
     const items = asc.map(mapMsgRowToUI);
-    const next_before_id = items.length ? items[0].id : null; // el más antiguo del bloque
+
+    // cursor = id del más antiguo del batch actual
+    const next_before_id = items.length ? items[0].id : null;
+
     res.json({ ok: true, items, limit, next_before_id });
   } catch (e) {
     console.error('[MS listMessages]', e);
