@@ -1,4 +1,4 @@
-name: Deploy vía FTP
+name: Deploy vía FTP s
 
 on:
   push:
