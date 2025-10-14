@@ -46,16 +46,27 @@ const safeMsgId = (dbId, mid) =>
 function normalizeAttachments(msg) {
   const atts = msg?.attachments;
   if (!Array.isArray(atts) || !atts.length) return null;
-  return atts.map((a) => ({
-    type: a.type || null,
-    payload: a.payload
-      ? {
-          url: a.payload.url || null,
-          sticker_id: a.payload.sticker_id || null,
-          title: a.payload.title || null,
-        }
-      : null,
-  }));
+
+  return atts.map((a) => {
+    const p = a?.payload || {};
+    return {
+      type: a?.type || null, // "image" | "audio" | "video" | "file" | "location" | "sticker"...
+      name: a?.name || p?.file_name || p?.title || null,
+      size: a?.size || p?.size || null,
+      mimeType: a?.mimeType || p?.mime_type || null,
+      payload: {
+        url: p?.url || null,
+        preview_url: p?.preview_url || null,
+        sticker_id: p?.sticker_id || null,
+        title: p?.title || null,
+        latitude: p?.latitude || p?.lat || null,
+        longitude: p?.longitude || p?.lng || null,
+        file_name: p?.file_name || null,
+        size: p?.size || null,
+        mime_type: p?.mime_type || null,
+      },
+    };
+  });
 }
 
 /* =============================
@@ -299,6 +310,7 @@ class InstagramService {
             attachments: normalizedAttachments,
             status: 'received',
             created_at: createdAtNow,
+            is_unsupported: Boolean(message?.is_unsupported),
           },
         });
 

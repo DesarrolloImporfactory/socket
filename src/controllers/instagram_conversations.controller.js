@@ -2,11 +2,84 @@ const { db } = require('../database/config');
 
 function mapConvRowToSidebar(r) {
   const name = r.customer_name || `Instagram • ${String(r.igsid).slice(-6)}`;
+
+  // --- parsea últimos campos ---
+  let lastMeta = {};
+  try {
+    lastMeta =
+      typeof r.last_meta === 'string'
+        ? JSON.parse(r.last_meta)
+        : r.last_meta || {};
+  } catch {}
+  let atts = [];
+  try {
+    const raw =
+      typeof r.last_attachments === 'string'
+        ? JSON.parse(r.last_attachments)
+        : r.last_attachments;
+    atts = Array.isArray(raw) ? raw : [];
+  } catch {
+    atts = [];
+  }
+
+  const text = r.last_text || '';
+  const a0 = atts[0] || null;
+  const isUnsupported = Boolean(lastMeta?.raw?.is_unsupported);
+
+  // --- resolver tipo + preview label + ruta ---
+  let tipo_mensaje = 'text';
+  let ruta_archivo = null;
+  let preview = text || '';
+
+  if (a0) {
+    const t = String(a0.type || '').toLowerCase();
+    const p = a0.payload || {};
+    const url = a0.url || p.url || p.preview_url || p.src || null;
+
+    if (t === 'image') {
+      tipo_mensaje = 'image';
+      preview = '🖼️ Imagen';
+      ruta_archivo = url || '';
+    } else if (t === 'audio') {
+      tipo_mensaje = 'audio';
+      preview = '🎧 Audio';
+      ruta_archivo = url || '';
+    } else if (t === 'video') {
+      tipo_mensaje = 'video';
+      preview = '🎬 Video';
+      ruta_archivo = url || '';
+    } else if (t === 'sticker') {
+      tipo_mensaje = 'sticker';
+      preview = '🖼️ Sticker';
+      ruta_archivo = url || '';
+    } else if (t === 'location' && (p.latitude || p.lat)) {
+      tipo_mensaje = 'location';
+      preview = '📍 Ubicación';
+      ruta_archivo = null;
+    } else {
+      // file/document
+      tipo_mensaje = 'document';
+      preview = '📄 Documento';
+      ruta_archivo = JSON.stringify({
+        ruta: url || '',
+        nombre: a0.name || p.file_name || 'archivo',
+        size: a0.size || p.size || 0,
+        mimeType: a0.mimeType || p.mime_type || '',
+      });
+    }
+  } else if (isUnsupported) {
+    tipo_mensaje = 'unsupported';
+    preview = '📎 Adjunto no soportado';
+  } else if (!preview) {
+    // sin texto ni adjunto
+    preview = '(mensaje)';
+  }
+
   return {
     id: r.id,
     source: 'ig',
     mensaje_created_at: r.last_message_at,
-    texto_mensaje: r.preview || '',
+    texto_mensaje: preview, // 👈 ahora sale “Imagen/Audio/Documento/Ubicación”
     celular_cliente: r.igsid,
     mensajes_pendientes: r.unread_count || 0,
     visto: 0,
@@ -22,78 +95,8 @@ function mapConvRowToSidebar(r) {
     transporte: null,
     estado_factura: null,
     novedad_info: null,
-  };
-}
-
-function mapMsgRowToUI(m) {
-  // Normaliza attachments (igual que Messenger)
-  let a0 = null;
-  if (m.attachments) {
-    try {
-      const atts =
-        typeof m.attachments === 'string'
-          ? JSON.parse(m.attachments)
-          : m.attachments;
-      a0 = Array.isArray(atts) ? atts[0] : atts;
-    } catch (_) {
-      a0 = null;
-    }
-  }
-  let tipo_mensaje = 'text';
-  let ruta_archivo = null;
-
-  if (a0) {
-    const mime = String(a0.mimeType || '').toLowerCase();
-    const declared = String(a0.type || a0.kind || '').toLowerCase();
-    const url = a0.url || a0.ruta || '';
-    const name = a0.name || a0.nombre || url.split('/').pop() || '';
-    const size = Number(a0.size || 0);
-
-    let tipo = declared;
-    if (!tipo) {
-      if (mime.startsWith('image/')) tipo = 'image';
-      else if (mime.startsWith('video/')) tipo = 'video';
-      else if (mime.startsWith('audio/')) tipo = 'audio';
-      else tipo = 'document';
-    }
-
-    if (!declared && !mime && url) {
-      const ext = (url.split('.').pop() || '').toLowerCase();
-      if (
-        ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'svg'].includes(
-          ext
-        )
-      )
-        tipo = 'image';
-      else if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext))
-        tipo = 'video';
-      else if (['mp3', 'aac', 'wav', 'm4a', 'ogg', 'oga'].includes(ext))
-        tipo = 'audio';
-      else tipo = 'document';
-    }
-
-    tipo_mensaje = tipo;
-    ruta_archivo =
-      tipo === 'document'
-        ? JSON.stringify({ ruta: url, nombre: name, size, mimeType: mime })
-        : url;
-  }
-
-  const isOut = m.direction === 'out';
-  const agentId = m.id_encargado ?? null;
-  const responsable = isOut ? m.responsable || 'Página' : '';
-
-  return {
-    id: m.id,
-    rol_mensaje: isOut ? 1 : 0,
-    texto_mensaje: m.text || '',
     tipo_mensaje,
     ruta_archivo,
-    mid_mensaje: m.mid || null,
-    visto: m.status === 'read' ? 1 : 0,
-    created_at: m.created_at,
-    agent_id: isOut ? agentId : null,
-    responsable,
   };
 }
 
@@ -111,18 +114,31 @@ exports.listConversations = async (req, res) => {
     const rows = await db.query(
       `
       SELECT c.id, c.id_configuracion, c.page_id, c.igsid,
-             c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
-             c.unread_count, c.status,
-             c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
-             (SELECT im.text
+            c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
+            c.unread_count, c.status,
+            c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
+
+            -- 👇 nuevos campos para calcular preview
+            (SELECT im.text
                 FROM instagram_messages im
-               WHERE im.conversation_id = c.id
-               ORDER BY im.created_at DESC
-               LIMIT 1) AS preview
+              WHERE im.conversation_id = c.id
+              ORDER BY im.created_at DESC, im.id DESC
+              LIMIT 1) AS last_text,
+            (SELECT im.attachments
+                FROM instagram_messages im
+              WHERE im.conversation_id = c.id
+              ORDER BY im.created_at DESC, im.id DESC
+              LIMIT 1) AS last_attachments,
+            (SELECT im.meta
+                FROM instagram_messages im
+              WHERE im.conversation_id = c.id
+              ORDER BY im.created_at DESC, im.id DESC
+              LIMIT 1) AS last_meta
+
         FROM instagram_conversations c
-       WHERE c.id_configuracion = ?
-       ORDER BY c.last_message_at DESC
-       LIMIT ? OFFSET ?
+      WHERE c.id_configuracion = ?
+      ORDER BY c.last_message_at DESC
+      LIMIT ? OFFSET ?
       `,
       {
         replacements: [id_configuracion, limit, offset],
@@ -164,10 +180,18 @@ exports.listMessages = async (req, res) => {
     };
 
     const mapMsgRowToUI = (row) => {
-      // direction: "in" -> 0 (entrante), "out" -> 1 (saliente)
       const rol_mensaje = row.direction === 'out' ? 1 : 0;
 
-      // texto/fecha/ids
+      // 👇 parsea meta para ver si IG marcó "is_unsupported"
+      let meta = {};
+      try {
+        meta =
+          typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta || {};
+      } catch {
+        meta = {};
+      }
+      const isUnsupported = Boolean(meta?.raw?.is_unsupported);
+
       const base = {
         id: row.id,
         rol_mensaje,
@@ -176,11 +200,10 @@ exports.listMessages = async (req, res) => {
         ruta_archivo: null,
         mid_mensaje: row.mid || null,
         visto: row.status === 'read' ? 1 : 0,
-        created_at: row.created_at, // ya te llega como datetime; si quieres ISO: new Date(row.created_at).toISOString()
+        created_at: row.created_at,
         responsable: rol_mensaje === 1 ? row.responsable || null : '',
       };
 
-      // attachments (IG/MS) => normalizar PRIMER attachment
       const atts = parseAttachments(row.attachments);
       if (atts.length > 0) {
         const a0 = atts[0] || {};
@@ -189,21 +212,14 @@ exports.listMessages = async (req, res) => {
         const url =
           a0.url || payload.url || payload.preview_url || payload.src || null;
 
-        if (t === 'image') {
+        if (t === 'image')
           return { ...base, tipo_mensaje: 'image', ruta_archivo: url || '' };
-        }
-
-        if (t === 'video') {
+        if (t === 'video')
           return { ...base, tipo_mensaje: 'video', ruta_archivo: url || '' };
-        }
-
-        if (t === 'audio') {
+        if (t === 'audio')
           return { ...base, tipo_mensaje: 'audio', ruta_archivo: url || '' };
-        }
-
-        if (t === 'sticker') {
+        if (t === 'sticker')
           return { ...base, tipo_mensaje: 'sticker', ruta_archivo: url || '' };
-        }
 
         if (t === 'location' && (payload.latitude || payload.lat)) {
           const latitude = payload.latitude ?? payload.lat;
@@ -213,11 +229,10 @@ exports.listMessages = async (req, res) => {
             ...base,
             tipo_mensaje: 'location',
             texto_mensaje: JSON.stringify({ latitude, longitude }),
-            ruta_archivo: null,
           };
         }
 
-        // file/document (Messenger suele usar "file")
+        // file/document
         if (t === 'file' || t === 'document' || !t) {
           return {
             ...base,
@@ -232,7 +247,16 @@ exports.listMessages = async (req, res) => {
         }
       }
 
-      // Sin attachments → text
+      // 👇 IG manda PDF/DOC etc como "unsupported": sin attachments y meta.raw.is_unsupported = true
+      if (isUnsupported) {
+        return {
+          ...base,
+          tipo_mensaje: 'unsupported',
+          texto_mensaje:
+            base.texto_mensaje || 'Adjunto no soportado por Instagram.',
+        };
+      }
+
       return base;
     };
 

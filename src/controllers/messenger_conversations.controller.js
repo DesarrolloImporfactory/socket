@@ -106,18 +106,31 @@ exports.listConversations = async (req, res) => {
     const rows = await db.query(
       `
       SELECT c.id, c.id_configuracion, c.page_id, c.psid,
-             c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
-             c.unread_count, c.status,
-             c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
-             (SELECT mm.text
+            c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
+            c.unread_count, c.status,
+            c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
+
+            -- 👇 últimos campos del ÚLTIMO mensaje
+            (SELECT mm.text
                 FROM messenger_messages mm
-               WHERE mm.conversation_id = c.id
-               ORDER BY mm.created_at DESC
-               LIMIT 1) AS preview
+              WHERE mm.conversation_id = c.id
+              ORDER BY mm.created_at DESC, mm.id DESC
+              LIMIT 1) AS last_text,
+            (SELECT mm.attachments
+                FROM messenger_messages mm
+              WHERE mm.conversation_id = c.id
+              ORDER BY mm.created_at DESC, mm.id DESC
+              LIMIT 1) AS last_attachments,
+            (SELECT mm.meta
+                FROM messenger_messages mm
+              WHERE mm.conversation_id = c.id
+              ORDER BY mm.created_at DESC, mm.id DESC
+              LIMIT 1) AS last_meta
+
         FROM messenger_conversations c
-       WHERE c.id_configuracion = ?
-       ORDER BY c.last_message_at DESC
-       LIMIT ? OFFSET ?
+      WHERE c.id_configuracion = ?
+      ORDER BY c.last_message_at DESC
+      LIMIT ? OFFSET ?
       `,
       {
         replacements: [id_configuracion, limit, offset],
@@ -136,11 +149,76 @@ exports.listConversations = async (req, res) => {
 };
 
 function mapConvRowToSidebar(r) {
+  // parse meta y attachments
+  let lastMeta = {};
+  try {
+    lastMeta =
+      typeof r.last_meta === 'string'
+        ? JSON.parse(r.last_meta)
+        : r.last_meta || {};
+  } catch {}
+  let atts = [];
+  try {
+    const raw =
+      typeof r.last_attachments === 'string'
+        ? JSON.parse(r.last_attachments)
+        : r.last_attachments;
+    atts = Array.isArray(raw) ? raw : [];
+  } catch {
+    atts = [];
+  }
+
+  const text = r.last_text || '';
+  const a0 = atts[0] || null;
+
+  let tipo_mensaje = 'text';
+  let ruta_archivo = null;
+  let preview = text || '';
+
+  if (a0) {
+    const t = String(a0.type || '').toLowerCase();
+    const p = a0.payload || {};
+    const url = a0.url || p.url || p.preview_url || p.src || null;
+
+    if (t === 'image') {
+      tipo_mensaje = 'image';
+      preview = '🖼️ Imagen';
+      ruta_archivo = url || '';
+    } else if (t === 'audio') {
+      tipo_mensaje = 'audio';
+      preview = '🎧 Audio';
+      ruta_archivo = url || '';
+    } else if (t === 'video') {
+      tipo_mensaje = 'video';
+      preview = '🎬 Video';
+      ruta_archivo = url || '';
+    } else if (t === 'sticker') {
+      tipo_mensaje = 'sticker';
+      preview = '🖼️ Sticker';
+      ruta_archivo = url || '';
+    } else if (t === 'location' && (p.latitude || p.lat)) {
+      tipo_mensaje = 'location';
+      preview = '📍 Ubicación';
+    } else {
+      // file/document
+      tipo_mensaje = 'document';
+      preview = '📄 Documento';
+      ruta_archivo = JSON.stringify({
+        ruta: url || '',
+        nombre: a0.name || p.file_name || 'archivo',
+        size: a0.size || p.size || 0,
+        mimeType: a0.mimeType || p.mime_type || '',
+      });
+    }
+  } else if (!preview) {
+    preview = '(mensaje)';
+  }
+
   return {
     id: r.id,
     source: 'ms',
     mensaje_created_at: r.last_message_at,
-    texto_mensaje: r.preview || '',
+    texto_mensaje: preview, // 👈 ahora el lateral muestra el tipo
     celular_cliente: r.psid,
     mensajes_pendientes: r.unread_count || 0,
     visto: 0,
@@ -156,10 +234,10 @@ function mapConvRowToSidebar(r) {
     transporte: null,
     estado_factura: null,
     novedad_info: null,
+    tipo_mensaje,
+    ruta_archivo,
   };
 }
-
-// controllers/messenger.js (o donde definas este handler)
 
 exports.listMessages = async (req, res) => {
   try {
