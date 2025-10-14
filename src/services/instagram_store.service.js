@@ -41,6 +41,7 @@ async function saveIncomingMessage({
   attachments = null,
   mid = null,
   meta = null,
+  is_unsupported = false,
 }) {
   const conversation_id = await ensureConversation({
     id_configuracion,
@@ -50,8 +51,16 @@ async function saveIncomingMessage({
 
   const [ins] = await db.query(
     `INSERT INTO instagram_messages
-      (conversation_id, id_configuracion, page_id, igsid, direction, mid, text, attachments, status, meta, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'in', ?, ?, ?, 'received', ?, NOW(), NOW())`,
+      (conversation_id, id_configuracion, page_id, igsid, direction, mid, text, attachments, is_unsupported, status, meta, created_at, updated_at)
+     VALUES
+      (?,              ?,               ?,       ?,     'in',      ?,   ?,    ?,           ?,              'received', ?,   NOW(),    NOW())
+     ON DUPLICATE KEY UPDATE
+      text           = VALUES(text),
+      attachments    = VALUES(attachments),
+      is_unsupported = VALUES(is_unsupported),
+      meta           = COALESCE(VALUES(meta), meta),
+      updated_at     = NOW()
+    `,
     {
       replacements: [
         conversation_id,
@@ -61,6 +70,7 @@ async function saveIncomingMessage({
         mid || null,
         text || null,
         attachments ? JSON.stringify(attachments) : null,
+        is_unsupported ? 1 : 0,
         meta ? JSON.stringify(meta) : null,
       ],
       type: db.QueryTypes.INSERT,

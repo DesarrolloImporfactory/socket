@@ -169,28 +169,29 @@ exports.listMessages = async (req, res) => {
     }
 
     // --- helpers locales ---
-    const parseAttachments = (attStr) => {
-      if (!attStr) return [];
+    const parseJSON = (v, fallback) => {
       try {
-        const v = typeof attStr === 'string' ? JSON.parse(attStr) : attStr;
-        return Array.isArray(v) ? v : [];
+        if (v == null) return fallback;
+        return typeof v === 'string' ? JSON.parse(v) : v;
       } catch {
-        return [];
+        return fallback;
       }
+    };
+
+    const parseAttachments = (attStr) => {
+      const v = parseJSON(attStr, []);
+      return Array.isArray(v) ? v : [];
     };
 
     const mapMsgRowToUI = (row) => {
       const rol_mensaje = row.direction === 'out' ? 1 : 0;
 
-      // 👇 parsea meta para ver si IG marcó "is_unsupported"
-      let meta = {};
-      try {
-        meta =
-          typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta || {};
-      } catch {
-        meta = {};
-      }
-      const isUnsupported = Boolean(meta?.raw?.is_unsupported);
+      // ⚠️ ahora sí llega meta e is_unsupported desde el SELECT
+      const meta = parseJSON(row.meta, {});
+      const isUnsupportedFlag =
+        row.is_unsupported === 1 ||
+        row.is_unsupported === true ||
+        Boolean(meta?.raw?.is_unsupported);
 
       const base = {
         id: row.id,
@@ -205,6 +206,8 @@ exports.listMessages = async (req, res) => {
       };
 
       const atts = parseAttachments(row.attachments);
+
+      // 1) Si hay adjuntos, mapeamos por tipo
       if (atts.length > 0) {
         const a0 = atts[0] || {};
         const t = String(a0.type || '').toLowerCase();
@@ -247,16 +250,18 @@ exports.listMessages = async (req, res) => {
         }
       }
 
-      // 👇 IG manda PDF/DOC etc como "unsupported": sin attachments y meta.raw.is_unsupported = true
-      if (isUnsupported) {
+      // 2) IG “unsupported”: sin adjuntos visibles y flag activo
+      if (isUnsupportedFlag) {
         return {
           ...base,
           tipo_mensaje: 'unsupported',
+          // si hay algún texto, lo mostramos como pista; si no, copy genérico
           texto_mensaje:
             base.texto_mensaje || 'Adjunto no soportado por Instagram.',
         };
       }
 
+      // 3) Texto normal
       return base;
     };
 
@@ -275,7 +280,8 @@ exports.listMessages = async (req, res) => {
       rows = await db.query(
         `
          SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.igsid,
-                m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
+                m.direction, m.mid, m.text, m.attachments, m.is_unsupported, m.meta,
+                m.status, m.created_at,
                 m.id_encargado, su.usuario AS responsable
            FROM instagram_messages m
       LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
@@ -295,7 +301,8 @@ exports.listMessages = async (req, res) => {
       rows = await db.query(
         `
          SELECT m.id, m.conversation_id, m.id_configuracion, m.page_id, m.igsid,
-                m.direction, m.mid, m.text, m.attachments, m.status, m.created_at,
+                m.direction, m.mid, m.text, m.attachments, m.is_unsupported, m.meta,
+                m.status, m.created_at,
                 m.id_encargado, su.usuario AS responsable
            FROM instagram_messages m
       LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = m.id_encargado
@@ -309,7 +316,7 @@ exports.listMessages = async (req, res) => {
     // De DESC a ASC para la UI
     const asc = rows.slice().reverse();
 
-    // Mapear cada fila al contrato de tu front (tipo_mensaje/ruta_archivo correctos)
+    // Mapear cada fila al contrato del front
     const items = asc.map(mapMsgRowToUI);
 
     // Cursor para paginar hacia atrás (el más antiguo del batch actual)

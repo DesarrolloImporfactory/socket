@@ -248,6 +248,7 @@ class InstagramService {
     const normalizedAttachments = normalizeAttachments(message);
     const text = message.text || null;
     const mid = message.mid || null;
+    const isUnsupported = Boolean(message?.is_unsupported);
 
     let savedIn = null;
     try {
@@ -258,6 +259,7 @@ class InstagramService {
         text,
         attachments: normalizedAttachments,
         mid,
+        is_unsupported: isUnsupported,
         meta: { raw: message },
       });
 
@@ -524,5 +526,5 @@ async function getConfigIdByPageId(page_id) {
 
 module.exports = InstagramService;
 module.exports.getPageRowByIgId = getPageRowByIgId;
-module.exports.getPageTokenByPageId = getPageTokenByPageId; // 👈 nuevo
-module.exports.getConfigIdByPageId = getConfigIdByPageId; // 👈 nuevo
+module.exports.getPageTokenByPageId = getPageTokenByPageId;
+module.exports.getConfigIdByPageId = getConfigIdByPageId;
