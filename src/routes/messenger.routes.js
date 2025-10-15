@@ -6,6 +6,7 @@ const oauthController = require('../controllers/messenger_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 const conversationsController = require('../controllers/messenger_conversations.controller');
 const messengerProfiles = require('../controllers/messenger_profiles.controller');
+const messengerPagesController = require('../controllers/messenger_pages.controller');
 
 //No colocamos authMiddleware: Facebook no enviara el JWT.
 
@@ -37,5 +38,7 @@ router.get('/conversations/:id/messages', conversationsController.listMessages);
 router.post('/profiles/fetch', messengerProfiles.fetchAndStoreProfile);
 
 router.post('/profiles/refresh-missing', messengerProfiles.refreshMissing);
+
+router.get('/pages/connections', messengerPagesController.listConnections);
 
 module.exports = router;

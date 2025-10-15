@@ -132,4 +132,7 @@ router.post('/facebook/connect', igOauthController.connectPage);
 router.get('/conversations', igConversations.listConversations);
 router.get('/conversations/:id/messages', igConversations.listMessages);
 
+// listar conexiones IG por id_configuracion
+router.get('/connections', igController.listConnections);
+
 module.exports = router;
