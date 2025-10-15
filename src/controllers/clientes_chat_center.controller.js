@@ -347,3 +347,249 @@ exports.findFullByPhone_desconect = catchAsync(async (req, res, next) => {
 
   res.json({ status: 200, data: chat });
 });
+
+
+
+/* ---------- helpers ---------- */
+function parseSort(sort) {
+  switch (sort) {
+    case 'antiguos':       return 'created_at ASC';
+    case 'actividad_asc':  return 'updated_at ASC';
+    case 'actividad_desc': return 'updated_at DESC';
+    case 'recientes':
+    default:               return 'created_at DESC';
+  }
+}
+function parseEstado(estado) {
+  if (estado === undefined || estado === null || estado === '' || estado === 'todos') return null;
+  if (estado === '1' || estado === 1 || estado === 'activo' || estado === 'nuevo') return 1;
+  if (estado === '0' || estado === 0 || estado === 'inactivo' || estado === 'perdido') return 0;
+  return null;
+}
+
+/* ============================================================
+   GET /api/v1/clientes_chat_center/listar
+   ?page=&limit=&q=&estado=&id_etiqueta=&sort=
+   ============================================================ */
+exports.listarClientes = catchAsync(async (req, res, next) => {
+  const page  = Math.max(1, Number(req.query.page ?? 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
+  const offset = (page - 1) * limit;
+
+  const { q, id_etiqueta } = req.query;
+  const estadoParsed = parseEstado(req.query.estado);
+  const orderBy = parseSort(req.query.sort);
+
+  const whereParts = ['deleted_at IS NULL'];
+  const params = [];
+
+  if (estadoParsed !== null) {
+    whereParts.push('estado_cliente = ?');
+    params.push(estadoParsed);
+  }
+  if (id_etiqueta) {
+    whereParts.push('id_etiqueta = ?');
+    params.push(id_etiqueta);
+  }
+  if (q && q.trim()) {
+    const like = `%${q.trim()}%`;
+    whereParts.push(`(
+      nombre_cliente   LIKE ? OR
+      apellido_cliente LIKE ? OR
+      email_cliente    LIKE ? OR
+      celular_cliente  LIKE ? OR
+      telefono_limpio  LIKE ? OR
+      uid_cliente      LIKE ?
+    )`);
+    params.push(like, like, like, like, like, like);
+  }
+
+  const whereClause = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+
+  // Datos
+  const dataSql = `
+    SELECT
+      id, id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
+      nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
+      imagePath, mensajes_por_dia_cliente, estado_cliente,
+      created_at, updated_at, deleted_at,
+      chat_cerrado, bot_openia, id_departamento, id_encargado,
+      pedido_confirmado, telefono_limpio
+    FROM clientes_chat_center
+    ${whereClause}
+    ORDER BY ${orderBy}
+    LIMIT ? OFFSET ?;
+  `;
+  const dataParams = [...params, limit, offset];
+
+  // Total
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM clientes_chat_center
+    ${whereClause};
+  `;
+
+  const rows = await db.query(dataSql, { replacements: dataParams, type: db.QueryTypes.SELECT });
+  const [{ total }] = await db.query(countSql, { replacements: params, type: db.QueryTypes.SELECT });
+
+  return res.status(200).json({
+    status: 'success',
+    data: rows,
+    total,
+    page,
+    limit,
+  });
+});
+
+/* ============================================================
+   POST /api/v1/clientes_chat_center/agregar
+   body: nombre_cliente | email_cliente | celular_cliente (al menos uno)
+   + demás columnas que quieras setear
+   ============================================================ */
+exports.agregarCliente = catchAsync(async (req, res, next) => {
+  const {
+    id_plataforma,
+    id_configuracion,
+    id_etiqueta,
+    uid_cliente,
+    nombre_cliente,
+    apellido_cliente,
+    email_cliente,
+    celular_cliente,
+    imagePath,
+    mensajes_por_dia_cliente,
+    estado_cliente,
+    chat_cerrado,
+    bot_openia,
+    id_departamento,
+    id_encargado,
+    pedido_confirmado,
+  } = req.body;
+
+  if (!nombre_cliente && !celular_cliente && !email_cliente) {
+    return next(new AppError('Ingrese al menos nombre, teléfono o email', 400));
+  }
+
+  const insertSql = `
+    INSERT INTO clientes_chat_center (
+      id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
+      nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
+      imagePath, mensajes_por_dia_cliente, estado_cliente,
+      created_at, updated_at, chat_cerrado, bot_openia,
+      id_departamento, id_encargado, pedido_confirmado
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, NOW(), NOW(), ?,?,?,?,?)
+  `;
+  const insertParams = [
+    id_plataforma ?? null,
+    id_configuracion ?? null,
+    id_etiqueta ?? null,
+    uid_cliente ?? null,
+    nombre_cliente ?? '',
+    apellido_cliente ?? '',
+    email_cliente ?? '',
+    celular_cliente ?? '',
+    imagePath ?? '',
+    mensajes_por_dia_cliente ?? 0,
+    (estado_cliente ?? 1),
+    (chat_cerrado ?? 0),
+    (bot_openia ?? 1),
+    id_departamento ?? null,
+    id_encargado ?? null,
+    pedido_confirmado ?? 0,
+  ];
+
+  // Ejecutar inserción
+  const result = await db.query(insertSql, { replacements: insertParams, type: db.QueryTypes.INSERT });
+  // `result` en mysql2 suele ser [metadata, _]; recuperamos el último id con otra consulta fiable:
+  const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', { type: db.QueryTypes.SELECT });
+
+  // Devolver fila creada
+  const [created] = await db.query(
+    `SELECT id, id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
+            nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
+            imagePath, mensajes_por_dia_cliente, estado_cliente,
+            created_at, updated_at, deleted_at, chat_cerrado, bot_openia,
+            id_departamento, id_encargado, pedido_confirmado, telefono_limpio
+     FROM clientes_chat_center WHERE id = ?`,
+    { replacements: [lastId], type: db.QueryTypes.SELECT }
+  );
+
+  return res.status(201).json({ status: 'success', data: created });
+});
+
+/* ============================================================
+   PUT /api/v1/clientes_chat_center/actualizar/:id
+   Body: solo los campos que quieras cambiar
+   ============================================================ */
+exports.actualizarCliente = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  // Build SET dinámico seguro
+  const fields = [
+    'id_plataforma','id_configuracion','id_etiqueta','uid_cliente',
+    'nombre_cliente','apellido_cliente','email_cliente','celular_cliente',
+    'imagePath','mensajes_por_dia_cliente','estado_cliente',
+    'chat_cerrado','bot_openia','id_departamento','id_encargado','pedido_confirmado'
+  ];
+  const setParts = [];
+  const params = [];
+
+  for (const f of fields) {
+    if (req.body.hasOwnProperty(f)) {
+      setParts.push(`${f} = ?`);
+      params.push(req.body[f]);
+    }
+  }
+  // nada que actualizar
+  if (setParts.length === 0) return res.status(200).json({ status: 'success', data: null });
+
+  setParts.push('updated_at = NOW()');
+
+  const updateSql = `
+    UPDATE clientes_chat_center
+    SET ${setParts.join(', ')}
+    WHERE id = ? AND deleted_at IS NULL
+  `;
+  params.push(id);
+
+  const upd = await db.query(updateSql, { replacements: params, type: db.QueryTypes.UPDATE });
+
+  // devolver fila actualizada
+  const [row] = await db.query(
+    `SELECT id, id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
+            nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
+            imagePath, mensajes_por_dia_cliente, estado_cliente,
+            created_at, updated_at, deleted_at, chat_cerrado, bot_openia,
+            id_departamento, id_encargado, pedido_confirmado, telefono_limpio
+     FROM clientes_chat_center WHERE id = ?`,
+    { replacements: [id], type: db.QueryTypes.SELECT }
+  );
+  if (!row) return next(new AppError('Cliente no encontrado', 404));
+
+  return res.status(200).json({ status: 'success', data: row });
+});
+
+/* ============================================================
+   DELETE /api/v1/clientes_chat_center/eliminar/:id  (soft-delete)
+   ============================================================ */
+exports.eliminarCliente = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const sql = `UPDATE clientes_chat_center SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`;
+  await db.query(sql, { replacements: [id], type: db.QueryTypes.UPDATE });
+  return res.status(204).json({ status: 'success' });
+});
+
+/* ============================================================
+   POST /api/v1/clientes_chat_center/eliminar   { ids: [] }
+   ============================================================ */
+exports.eliminarClientesBulk = catchAsync(async (req, res, next) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+  if (!ids.length) return next(new AppError('ids es requerido', 400));
+
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `UPDATE clientes_chat_center SET deleted_at = NOW()
+               WHERE deleted_at IS NULL AND id IN (${placeholders})`;
+
+  await db.query(sql, { replacements: ids, type: db.QueryTypes.UPDATE });
+  return res.status(200).json({ status: 'success', deleted: ids.length });
+});

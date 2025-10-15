@@ -48,4 +48,15 @@ router.get(
   clientes_chat_centerController.findFullByPhone
 );
 
+
+
+
+// CRUD limpio (SQL crudo)
+router.get('/listar', clientes_chat_centerController.listarClientes);
+router.post('/agregar', clientes_chat_centerController.agregarCliente);
+router.put('/actualizar/:id', clientes_chat_centerController.actualizarCliente);
+router.delete('/eliminar/:id', clientes_chat_centerController.eliminarCliente);
+router.post('/eliminar', clientes_chat_centerController.eliminarClientesBulk); // bulk
+
+
 module.exports = router;
