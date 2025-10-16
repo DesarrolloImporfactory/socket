@@ -249,7 +249,7 @@ class ChatService {
     }
 
     try {
-      const [results, metadata] = await db.query(sql); // El resultado está en `results`
+      const [results, metadata] = await db_2.query(sql); // El resultado está en `results`
       console.log('Resultado:', results); // Imprime el resultado de forma legible
 
       // Devuelve el primer elemento si esperas solo un resultado
@@ -977,7 +977,7 @@ class ChatService {
 
   async obtenerMatriz(id_plataforma) {
     try {
-      const matriz = await db.query(
+      const matriz = await db_2.query(
         `SELECT id_matriz FROM plataformas WHERE id_plataforma = :id_plataforma`,
         {
           replacements: { id_plataforma },

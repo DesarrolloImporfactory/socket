@@ -1,7 +1,7 @@
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 const Bodega = require('../models/bodega.model');
 
 // controllers/bodegaController.js
@@ -9,11 +9,11 @@ exports.obtener_nombre_bodega = catchAsync(async (req, res, next) => {
   const { id_bodega } = req.body;
 
   try {
-    const [resultado] = await db.query(
+    const [resultado] = await db_2.query(
       'SELECT nombre FROM bodega WHERE id = ?',
       {
         replacements: [id_bodega],
-        type: db.QueryTypes.SELECT,
+        type: db_2.QueryTypes.SELECT,
       }
     );
 

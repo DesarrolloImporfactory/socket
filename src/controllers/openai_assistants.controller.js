@@ -1,7 +1,7 @@
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 const axios = require('axios');
 const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
@@ -448,9 +448,9 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
           LIMIT 1
         `;
 
-        const [infoProducto] = await db.query(sqlProducto, {
+        const [infoProducto] = await db_2.query(sqlProducto, {
           replacements: [id],
-          type: db.QueryTypes.SELECT,
+          type: db_2.QueryTypes.SELECT,
         });
 
         let serverURL = 'https://new.imporsuitpro.com/';
@@ -611,7 +611,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
   
   try {
     // Insertar mensaje del usuario (rol_mensaje = 1)
-    await db.query(
+    await db_2.query(
       `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
        VALUES (?, ?, 1, NOW())`,
       {
@@ -698,7 +698,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     }
 
     // Guardar respuesta del assistant (rol_mensaje = 0)
-    await db.query(
+    await db_2.query(
       `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
        VALUES (?, ?, 0, NOW())`,
       {

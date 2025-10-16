@@ -1,12 +1,12 @@
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
-const { db } = require('../database/config');
+const { db_2 } = require('../database/config');
 const Plataforma = require('../models/plataforma.model');
 const Usuario_plataforma = require('../models/usuario_plataforma.model');
 
 exports.getAllPlataformas = catchAsync(async (req, res, next) => {
-  const plataformas = await db.query(`
+  const plataformas = await db_2.query(`
       SELECT *
       FROM plataformas
   `);
@@ -26,11 +26,11 @@ exports.getPlataformaById = catchAsync(async (req, res, next) => {
     const {id_plataforma} = req.body;
   */
 
-  const plataforma = await db.query(
+  const plataforma = await db_2.query(
     'SELECT * FROM plataformas where id_plataforma = ?',
     {
       replacements: [id_plataforma],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     }
   );
   if (plataforma.length === 0) {

@@ -1,5 +1,5 @@
 // utils/datosClienteAssistant.js
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 const {
   obtenerTrackingGuia,
   obtenerUrlDescargaGuia,
@@ -48,9 +48,9 @@ const obtenerDatosClienteParaAssistant = async (
     LIMIT 1
   `;
 
-  const [factura] = await db.query(sql, {
+  const [factura] = await db_2.query(sql, {
     replacements: [id_plataforma, id_plataforma, id_plataforma, telefono, telefono],
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
 
   if (!factura) {
@@ -240,9 +240,9 @@ const informacionProductosVinculado = async (productos) => {
       LIMIT 1
     `;
 
-    const [infoProducto] = await db.query(sqlProducto, {
+    const [infoProducto] = await db_2.query(sqlProducto, {
       replacements: [id],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     });
 
     if (infoProducto) {
@@ -299,9 +299,9 @@ const obtenerDatosClienteParaAssistant_viejo = async (
     LIMIT 1
   `;
 
-  const [facturaGuia] = await db.query(sqlGuia, {
+  const [facturaGuia] = await db_2.query(sqlGuia, {
     replacements: [id_plataforma, id_plataforma, id_plataforma, telefono],
-    type: db.QueryTypes.SELECT,
+    type: db_2.QueryTypes.SELECT,
   });
 
   let tipoDato = 'datos_guia';
@@ -344,9 +344,9 @@ const obtenerDatosClienteParaAssistant_viejo = async (
       LIMIT 1
     `;
 
-    const [facturaPedido] = await db.query(sqlPedido, {
+    const [facturaPedido] = await db_2.query(sqlPedido, {
       replacements: [id_plataforma, telefono],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     });
 
     datos = facturaPedido;

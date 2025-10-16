@@ -125,7 +125,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
   const { usuario, password, id_configuracion } = req.body;
 
   // Buscar por usuario o email
-  const [usuarioEncontrado] = await db.query(
+  const [usuarioEncontrado] = await db_2.query(
     `SELECT p.id_plataforma, u.id_users, u.nombre_users, u.usuario_users, u.email_users, u.con_users, u.admin_pass FROM users u
       INNER JOIN usuario_plataforma up ON u.id_users = up.id_usuario
       INNER JOIN plataformas p ON p.id_plataforma = up.id_plataforma
@@ -133,7 +133,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
        LIMIT 1`,
     {
       replacements: [usuario],
-      type: db.QueryTypes.SELECT,
+      type: db_2.QueryTypes.SELECT,
     }
   );
 
@@ -217,7 +217,7 @@ exports.newLogin = async (req, res) => {
 
       /* validar si la tienda pertenece al call center */
 
-      const [plataformas] = await db.query(
+      const [plataformas] = await db_2.query(
         `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
         {
           replacements: [tienda],
