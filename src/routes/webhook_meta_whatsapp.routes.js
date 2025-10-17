@@ -1,4 +1,5 @@
 const webhook_meta_whatsappController = require('../controllers/webhook_meta_whatsapp.controller');
+const webhook_meta_whatsapp_masivoController = require('../controllers/webhook_meta_whatsapp_masivo.controller');
 
 const express = require('express');
 
@@ -8,5 +9,7 @@ router
   .route('/webhook_whatsapp')
   .get(webhook_meta_whatsappController.webhook_whatsapp)
   .post(webhook_meta_whatsappController.webhook_whatsapp);
+
+router.post('/webhook_whatsapp_prueba_masiva', webhook_meta_whatsapp_masivoController.prueba_masiva);
 
 module.exports = router;
