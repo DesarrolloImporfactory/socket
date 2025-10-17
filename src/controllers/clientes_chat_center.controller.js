@@ -593,3 +593,91 @@ exports.eliminarClientesBulk = catchAsync(async (req, res, next) => {
   await db.query(sql, { replacements: ids, type: db.QueryTypes.UPDATE });
   return res.status(200).json({ status: 'success', deleted: ids.length });
 });
+
+// GET /api/v1/clientes_chat_center/listar_por_etiqueta?ids=1,2&page=&limit=&q=&estado=&sort=
+exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
+  const page  = Math.max(1, Number(req.query.page ?? 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
+  const offset = (page - 1) * limit;
+
+  const idsParam = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!idsParam.length) {
+    return res.status(200).json({ status: 'success', data: [], total: 0, page, limit });
+  }
+
+  const estadoParsed = (()=>{
+    const v = req.query.estado;
+    if (v === undefined || v === null || v === '' || v === 'todos') return null;
+    if (v === '1' || v === 1 || v === 'activo' || v === 'nuevo') return 1;
+    if (v === '0' || v === 0 || v === 'inactivo' || v === 'perdido') return 0;
+    return null;
+  })();
+
+  function parseSort(sort) {
+    switch (sort) {
+      case 'antiguos':       return 'c.created_at ASC';
+      case 'actividad_asc':  return 'c.updated_at ASC';
+      case 'actividad_desc': return 'c.updated_at DESC';
+      case 'recientes':
+      default:               return 'c.created_at DESC';
+    }
+  }
+  const orderBy = parseSort(req.query.sort);
+
+  const where = ['c.deleted_at IS NULL'];
+  const params = [];
+
+  if (estadoParsed !== null) { where.push('c.estado_cliente = ?'); params.push(estadoParsed); }
+
+  if (req.query.q && String(req.query.q).trim()) {
+    const like = `%${String(req.query.q).trim()}%`;
+    where.push(`(
+      c.nombre_cliente   LIKE ? OR
+      c.apellido_cliente LIKE ? OR
+      c.email_cliente    LIKE ? OR
+      c.celular_cliente  LIKE ? OR
+      c.telefono_limpio  LIKE ? OR
+      c.uid_cliente      LIKE ?
+    )`);
+    params.push(like, like, like, like, like, like);
+  }
+
+  // Armamos IN dinámico para etiquetas
+  const inPlaceholders = idsParam.map(() => '?').join(',');
+  const etiquetaParams = idsParam;
+
+  const baseFromJoin = `
+    FROM clientes_chat_center c
+    INNER JOIN etiquetas_asignadas ea
+      ON ea.id_cliente_chat_center = c.id
+    WHERE ${where.join(' AND ')}
+      AND ea.id_etiqueta IN (${inPlaceholders})
+  `;
+
+  const dataSql = `
+    SELECT
+      c.id, c.id_plataforma, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
+      c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente,
+      c.imagePath, c.mensajes_por_dia_cliente, c.estado_cliente,
+      c.created_at, c.updated_at, c.deleted_at,
+      c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
+      c.pedido_confirmado, c.telefono_limpio
+    ${baseFromJoin}
+    GROUP BY c.id
+    ORDER BY ${orderBy}
+    LIMIT ? OFFSET ?;
+  `;
+
+  const countSql = `
+    SELECT COUNT(DISTINCT c.id) AS total
+    ${baseFromJoin};
+  `;
+
+  const dataParams  = [...params, ...etiquetaParams, limit, offset];
+  const countParams = [...params, ...etiquetaParams];
+
+  const rows = await db.query(dataSql,   { replacements: dataParams,  type: db.QueryTypes.SELECT });
+  const [{ total }] = await db.query(countSql, { replacements: countParams, type: db.QueryTypes.SELECT });
+
+  return res.status(200).json({ status: 'success', data: rows, total, page, limit });
+});

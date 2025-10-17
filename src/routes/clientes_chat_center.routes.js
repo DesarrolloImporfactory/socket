@@ -53,6 +53,11 @@ router.get(
 
 // CRUD limpio (SQL crudo)
 router.get('/listar', clientes_chat_centerController.listarClientes);
+// Nuevo: listar por etiqueta (many-to-many con etiquetas_asignadas)
+router.get(
+  '/listar_por_etiqueta',
+  clientes_chat_centerController.listarClientesPorEtiqueta
+);
 router.post('/agregar', clientes_chat_centerController.agregarCliente);
 router.put('/actualizar/:id', clientes_chat_centerController.actualizarCliente);
 router.delete('/eliminar/:id', clientes_chat_centerController.eliminarCliente);

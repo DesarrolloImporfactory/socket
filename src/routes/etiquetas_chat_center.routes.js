@@ -13,4 +13,6 @@ router.delete('/eliminarEtiqueta/:id', etiquetasController.eliminarEtiqueta);
 router.post('/toggleAsignacionEtiqueta', etiquetasController.toggleAsignacionEtiqueta);
 
 router.post('/obtenerEtiquetas', etiquetasController.obtenerEtiquetas);
+
+router.get('/etiquetas_existentes', etiquetasController.etiquetasExistentes); // <- NUEVA
 module.exports = router;

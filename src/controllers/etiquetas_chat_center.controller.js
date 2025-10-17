@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 
 const EtiquetasChatCenterEntity = require('../entities/etiquetas_chat_center');
 const EtiquetaService = require('../services/etiqueta.service');
+const { db } = require('../database/config');
 
 
 exports.obtenerEtiquetas = catchAsync(async (req, res, next) =>{
@@ -98,3 +99,46 @@ exports.toggleAsignacionEtiqueta = catchAsync(async (req, res, next) =>{
         return next(new AppError(err.message || 'Error al asignar/desasignar etiqueta', 500));
     }
 })
+
+
+// GET /api/v1/etiquetas_chat_center/etiquetas_existentes?id_configuracion=OPCIONAL
+exports.etiquetasExistentes = catchAsync(async (req, res, next) => {
+  const id_configuracion = req.query.id_configuracion ? Number(req.query.id_configuracion) : null;
+
+  // Etiquetas definidas en catálogo que tengan al menos una asignación (conteo>0).
+  // Si pasas id_configuracion, filtra por esa conf; si no, trae global.
+  const where = [];
+  const params = [];
+
+  if (id_configuracion) { where.push('ecc.id_configuracion = ?'); params.push(id_configuracion); }
+
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const sql = `
+    SELECT
+      ecc.id_etiqueta,
+      ecc.nombre_etiqueta,
+      ecc.color_etiqueta,
+      COUNT(ea.id) AS conteo
+    FROM etiquetas_chat_center ecc
+    LEFT JOIN etiquetas_asignadas ea
+      ON ea.id_etiqueta = ecc.id_etiqueta
+      AND ea.id_configuracion = ecc.id_configuracion
+    ${whereClause}
+    GROUP BY ecc.id_etiqueta, ecc.nombre_etiqueta, ecc.color_etiqueta
+    HAVING conteo > 0
+    ORDER BY ecc.nombre_etiqueta ASC;
+  `;
+
+  const filas = await db.query(sql, { replacements: params, type: db.QueryTypes.SELECT });
+
+  return res.status(200).json({
+    status: 'success',
+    etiquetas: filas.map(f => ({
+      id_etiqueta: Number(f.id_etiqueta),
+      nombre_etiqueta: f.nombre_etiqueta,
+      color_etiqueta: f.color_etiqueta,
+      conteo: Number(f.conteo || 0),
+    })),
+  });
+});
