@@ -46,10 +46,12 @@ class EtiquetaService {
     const [asignada] = await db.query(
       `SELECT id FROM etiquetas_asignadas WHERE id_cliente_chat_center = ? AND id_etiqueta = ?`,
       {
-        replacements: [id_cliente_chat_center, id_etiqueta, id_configuracion],
+        replacements: [id_cliente_chat_center, id_etiqueta],
         type: db.QueryTypes.SELECT,
       }
     );
+
+    console.log("asignada:"+ asignada)
 
     if (asignada) {
       //Ya existe => eliminar
@@ -81,6 +83,39 @@ class EtiquetaService {
       response.asignado = true;
     }
 
+    /* seccion de edtiar clientes_chat_center */
+    const etiquetas_asignadas = await db.query(
+      `SELECT ec.id_etiqueta, ec.nombre_etiqueta, ec.color_etiqueta
+     FROM etiquetas_asignadas ea
+     INNER JOIN etiquetas_chat_center ec ON ea.id_etiqueta = ec.id_etiqueta
+     WHERE ea.id_cliente_chat_center = ?`,
+      {
+        replacements: [id_cliente_chat_center],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    // Si no se encontraron etiquetas, inicializamos con el valor por defecto
+    let lista_etiquetas =
+      etiquetas_asignadas.length > 0
+        ? etiquetas_asignadas.map((etiqueta) => ({
+            id: etiqueta.id_etiqueta,
+            color: etiqueta.color_etiqueta,
+            nombre: etiqueta.nombre_etiqueta,
+          }))
+        : [{ id: null, color: null, nombre: null }];
+
+        // Actualizar la columna 'etiquetas' en clientes_chat_center con las etiquetas acumuladas
+    await db.query(
+      `UPDATE clientes_chat_center
+     SET etiquetas = ?
+     WHERE id = ?`,
+      {
+        replacements: [JSON.stringify(lista_etiquetas), id_cliente_chat_center],
+        type: db.QueryTypes.UPDATE,
+      }
+    );
+    /* seccion de edtiar clientes_chat_center */
     return response;
   }
 

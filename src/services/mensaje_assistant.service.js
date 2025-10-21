@@ -1,4 +1,5 @@
 const axios = require('axios');
+const flatted = require('flatted');
 const { db } = require('../database/config');
 const {
   obtenerDatosClienteParaAssistant,
@@ -10,6 +11,23 @@ const FormData = require('form-data');
 const fsSync = require('fs'); // Para `fs.createReadStream`
 
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
+
+// Definición de la función estCosto
+function estCosto(model, inputTokens = 0, outputTokens = 0) {
+  // Precios por millón de tokens, ajusta estos valores según tu modelo y tarifas
+  const PRICES = {
+    'gpt-4-turbo': { inPer1M: 0.3, outPer1M: 1.2 }, // Estos son ejemplos, ajústalos a tus tarifas
+  };
+
+  // Si el modelo no tiene tarifas definidas, retornamos 0 como costo
+  const price = PRICES[model] || { inPer1M: 0, outPer1M: 0 };
+
+  // Calculamos el costo aproximado
+  const inputCost = (inputTokens / 1_000_000) * price.inPer1M;
+  const outputCost = (outputTokens / 1_000_000) * price.outPer1M;
+
+  return (inputCost + outputCost).toFixed(6); // Retornamos el costo aproximado redondeado
+}
 
 async function log(msg) {
   await fs.mkdir(logsDir, { recursive: true });
@@ -116,7 +134,7 @@ async function procesarAsistenteMensaje(body) {
       );
       return {
         status: 400,
-        error: 'El asistente no respnde a pedidos',
+        error: 'El asistente no responde a pedidos',
       };
     }
     {
@@ -220,9 +238,6 @@ async function procesarAsistenteMensaje(body) {
       };
     }
 
-    await log('id_thread antes del bucle: ' + id_thread);
-    let gargar = "";
-
     // 4. Esperar respuesta con polling
     let statusRun = 'queued',
       attempts = 0;
@@ -233,23 +248,115 @@ async function procesarAsistenteMensaje(body) {
     ) {
       await new Promise((r) => setTimeout(r, 1000));
       attempts++;
-      const statusRes = await axios
-        .get(`https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`, {
-          headers,
-        })
-        .catch(async (err) => {
-          await log(
-            `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${
-              err.message
-            }`
-          );
-        });
+      try {
+        const statusRes = await axios.get(
+          `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+          { headers }
+        );
 
-        gargar = statusRes;
-      statusRun = statusRes.data.status;
+        // Aquí podrías inspeccionar el objeto para evitar errores
+        /* await log('Estatus de la respuesta recibida: ' + statusRes.status); */
+
+        // Usar flatted.stringify solo si está seguro de que el objeto no tiene ciclos
+        const objSinCiclos = flatted.stringify(statusRes.data);
+        await log('objSinCiclos: ' + objSinCiclos);
+
+        statusRun = statusRes.data.status;
+
+        /* await log('statusRun: ' + statusRun); */
+
+        // 🔎 Si el backend ya expone usage durante el run, lo registramos
+        if (statusRes.data.usage) {
+          await log(
+            'Respuesta completa de usage: ' +
+              flatted.stringify(statusRes.data.usage)
+          ); // Esto te ayudará a ver la estructura completa
+
+          const {
+            prompt_tokens = 0, // Este es el valor para input_tokens
+            completion_tokens = 0, // Este es el valor para output_tokens
+            total_tokens = 0, // Total de tokens procesados
+          } = statusRes.data.usage;
+          const model = statusRes.data.model || 'gpt-4-turbo';
+          const costo = estCosto(model, prompt_tokens, completion_tokens);
+          await log(
+            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
+          );
+        }
+
+        // Verifica si el estado es 'failed' para procesar el error
+        if (statusRun === 'failed') {
+          // Si hay un error en el campo 'error' de la respuesta
+          if (statusRes.data.error) {
+            await log('statusRes.data.error: ' + statusRes.data.error);
+
+            // Validar si el error es por cuota excedida
+            if (statusRes.data.error.code === 'rate_limit_exceeded') {
+              await log(
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+              );
+              return {
+                status: 400,
+                error:
+                  'Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
+              };
+            } else if (statusRes.data.error.code === '15') {
+              await log(
+                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.'
+              );
+              return {
+                status: 400,
+                error:
+                  'Error de pago: falta de fondos. Por favor, revisa tu método de pago.',
+              };
+            } else {
+              await log(
+                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`
+              );
+            }
+          } else {
+            // Si no se encuentra el campo error, revisa otros posibles campos
+            await log(
+              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.'
+            );
+
+            // Verifica si hay un mensaje sobre cuota excedida
+            if (
+              statusRes.data.last_error &&
+              statusRes.data.last_error.includes(
+                'You exceeded your current quota'
+              )
+            ) {
+              await log(
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+              );
+            }
+
+            // Verifica si 'last_error' contiene información
+            if (statusRes.data.last_error) {
+              await log(
+                `Último error registrado: ${JSON.stringify(
+                  statusRes.data.last_error
+                )}`
+              );
+            }
+
+            // Si hay algún mensaje adicional sobre el fallo
+            if (statusRes.data.message) {
+              await log(`Mensaje adicional: ${statusRes.data.message}`);
+            }
+          }
+        }
+        // Verifica si el estado es 'failed' para procesar el error
+      } catch (err) {
+        await log(
+          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`
+        );
+        break; // Rompe el bucle en caso de error
+      }
     }
 
-    await log('statusRun: ' + statusRun);
+    /* await log('statusRun: ' + statusRun); */
 
     if (statusRun === 'failed') {
       await log(
@@ -321,7 +428,7 @@ async function procesarAsistenteMensaje(body) {
       }
     }
 
-    /* console.log('bloqueInfo: ' + bloqueInfo); */
+    console.log('bloqueInfo: ' + bloqueInfo);
 
     return {
       status: 200,
