@@ -1,6 +1,10 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const TikTokWebhookService = require('../services/tiktok_webhook.service');
+const {
+  upsertTikTokConversation,
+  saveTikTokInbound,
+} = require('../services/tiktok_chat.service');
 
 /**
  * GET /api/v1/tiktok/webhook/verify
@@ -34,94 +38,95 @@ exports.verifyWebhook = (req, res) => {
  * POST /api/v1/tiktok/webhook/receive
  * Recibe eventos del webhook de TikTok
  */
-const {
-  upsertTikTokConversation,
-  saveTikTokInbound,
-} = require('../services/tiktok_chat.service');
-
 exports.receiveWebhook = catchAsync(async (req, res) => {
-  // SIEMPRE responder rápido
-  res.sendStatus(200);
+  // 1) Ack inmediato
+  res.status(200).end();
 
-  const body = req.body || {};
-  console.log(
-    '[TIKTOK_WEBHOOK] Evento recibido:',
-    JSON.stringify(body, null, 2)
-  );
+  // 2) Procesamiento asíncrono seguro
+  setImmediate(async () => {
+    const body = req.body || {};
+    try {
+      console.log('[TIKTOK_WEBHOOK] Body:', JSON.stringify(body, null, 2));
 
-  // Normalizamos una lista de eventos posible
-  const events = Array.isArray(body.data)
-    ? body.data
-    : Array.isArray(body.events)
-    ? body.events
-    : body.event
-    ? [body.event]
-    : [body];
-
-  for (const ev of events) {
-    // 1) Detectar event type de ADS (lo que ya tienes)
-    const eventType = ev.event_type || ev.type;
-
-    // 2) Detectar MENSAJERÍA (nombres tentativos; ajusta al real cuando te activen el producto)
-    const isMessaging =
-      /message/i.test(eventType || '') ||
-      ev.category === 'messaging' ||
-      ev.object === 'conversation' ||
-      ev.message ||
-      ev.conversation_id;
-
-    if (isMessaging) {
-      // Intenta extraer campos clave de distintas variantes
-      const conversationId =
-        ev.conversation_id ||
-        ev.conversation?.id ||
-        ev.chat?.id ||
-        ev.thread_id;
-
-      const senderId =
-        ev.sender_id || ev.sender?.id || ev.from?.id || ev.user_id;
-
-      const text =
-        ev.text ||
-        ev.message?.text ||
-        ev.content?.text ||
-        (typeof ev.message === 'string' ? ev.message : undefined);
-
-      const ts = ev.timestamp || ev.event_time || ev.created_at || Date.now();
-
-      if (!conversationId) {
-        console.log(
-          '[TIKTOK_WEBHOOK] Mensaje sin conversation_id. Evitamos guardar.'
-        );
-        continue;
+      // a) Ping del portal
+      if (body.event === 'tiktok.ping') {
+        console.log('[TIKTOK_WEBHOOK] ping ok');
+        return;
       }
 
-      await upsertTikTokConversation({
-        conversationId,
-        senderId,
-        metadata: ev,
-      });
+      // b) Normaliza eventos a una lista
+      const events = Array.isArray(body.data)
+        ? body.data
+        : Array.isArray(body.events)
+        ? body.events
+        : body.event
+        ? [body.event]
+        : [body];
 
-      await saveTikTokInbound({
-        conversationId,
-        senderId,
-        text,
-        raw: ev,
-        timestamp: ts,
-      });
+      for (const ev of events) {
+        const eventType = ev.event_type || ev.type || '';
 
-      // TODO: emitir a tu UI vía Socket.IO si quieres verlos en tiempo real
-      // io.to(room).emit('new_message', { canal:'tiktok', conversationId, text, ts, senderId });
-      continue;
+        // Heurística para detectar mensajería en cuanto te activen el producto
+        const isMessaging =
+          /message/i.test(eventType) ||
+          ev.category === 'messaging' ||
+          ev.object === 'conversation' ||
+          ev.message ||
+          ev.conversation_id;
+
+        if (isMessaging) {
+          const conversationId =
+            ev.conversation_id ||
+            ev.conversation?.id ||
+            ev.chat?.id ||
+            ev.thread_id;
+
+          const senderId =
+            ev.sender_id || ev.sender?.id || ev.from?.id || ev.user_id;
+
+          const text =
+            ev.text ||
+            ev.message?.text ||
+            ev.content?.text ||
+            (typeof ev.message === 'string' ? ev.message : undefined);
+
+          const ts =
+            ev.timestamp || ev.event_time || ev.created_at || Date.now();
+
+          if (!conversationId) {
+            console.log(
+              '[TIKTOK_WEBHOOK] Mensaje sin conversation_id, se omite'
+            );
+            continue;
+          }
+
+          // upsert conversación + guardar inbound
+          await upsertTikTokConversation({
+            conversationId,
+            senderId,
+            metadata: ev,
+          });
+
+          await saveTikTokInbound({
+            conversationId,
+            senderId,
+            text,
+            raw: ev,
+            timestamp: ts,
+          });
+
+          // Aquí podrías emitir al socket si quieres
+          continue;
+        }
+
+        // c) No es mensajería -> tu flujo actual de Ads/alertas
+        await TikTokWebhookService.processWebhookEvent({ data: [ev] });
+      }
+    } catch (err) {
+      console.error('[TIKTOK_WEBHOOK] Error en procesamiento async:', err);
+      // No relanzar; ya respondimos 200
     }
-
-    // Si no es messaging, sigue tu flujo actual de Ads (ya lo haces en TikTokWebhookService)
-    try {
-      await TikTokWebhookService.processWebhookEvent({ data: [ev] });
-    } catch (e) {
-      console.error('[TIKTOK_WEBHOOK] Error procesando evento Ads:', e);
-    }
-  }
+  });
 });
 
 /**

@@ -2,69 +2,62 @@ const crypto = require('crypto');
 const TikTokWebhookService = require('../services/tiktok_webhook.service');
 const AppError = require('../utils/appError');
 
-/**
- * Middleware para validar la firma del webhook de TikTok
- * Este middleware debe aplicarse ANTES de express.json() para tener acceso al raw body
- */
+// Middleware para validar la firma del webhook de TikTok
 exports.validateTikTokWebhookSignature = (req, res, next) => {
-  // Permite desactivar firma en desarrollo
-  if (
-    process.env.NODE_ENV === 'development' &&
-    process.env.TIKTOK_SIGNATURE_SKIP === '1'
-  ) {
-    return next();
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+  if (!clientSecret) {
+    console.log('[TIKTOK_WEBHOOK] Falta TIKTOK_CLIENT_SECRET');
+    return res.status(500).json({ error: 'Client secret not configured' });
   }
 
-  const secret = process.env.TIKTOK_WEBHOOK_SECRET;
-  if (!secret) {
-    console.log('[TIKTOK_WEBHOOK] No hay TIKTOK_WEBHOOK_SECRET configurado');
-    return res.status(500).json({ error: 'Webhook secret not configured' });
+  // Header correcto en TikTok for Developers
+  const sigHeader =
+    req.headers['tiktok-signature'] ||
+    req.headers['TikTok-Signature'.toLowerCase()];
+  if (!sigHeader) {
+    return res.status(401).json({ error: 'Missing TikTok-Signature header' });
   }
 
-  // Los nombres exactos pueden variar según el producto de TikTok.
-  // Estos son los más comunes:
-  const signature =
-    req.headers['tiktok-signature'] || req.headers['x-tiktok-signature'];
-  const timestamp =
-    req.headers['tiktok-timestamp'] || req.headers['x-tiktok-timestamp'];
-
-  if (!signature || !timestamp) {
-    console.log('[TIKTOK_WEBHOOK] Falta signature o timestamp');
-    return res.status(401).json({ error: 'Missing signature or timestamp' });
+  // Esperado: "t=...,s=..."
+  const parts = sigHeader.split(',').map((p) => p.trim());
+  const tPart = parts.find((p) => p.startsWith('t='));
+  const sPart = parts.find((p) => p.startsWith('s='));
+  if (!tPart || !sPart) {
+    return res.status(401).json({ error: 'Invalid TikTok-Signature format' });
   }
+
+  const timestamp = tPart.split('=')[1];
+  const signature = sPart.split('=')[1]; // <- hex
 
   if (!req.rawBody) {
-    console.log('[TIKTOK_WEBHOOK] rawBody no disponible');
     return res.status(400).json({ error: 'rawBody missing' });
   }
 
   try {
-    // Muchas integraciones piden firmar: `${timestamp}.${rawBody}`
-    const signed = Buffer.concat([
-      Buffer.from(String(timestamp), 'utf8'),
-      Buffer.from('.', 'utf8'),
-      Buffer.isBuffer(req.rawBody)
-        ? req.rawBody
-        : Buffer.from(req.rawBody, 'utf8'),
-    ]);
+    const signedPayload = `${timestamp}.${
+      Buffer.isBuffer(req.rawBody) ? req.rawBody.toString('utf8') : req.rawBody
+    }`;
+    const hmac = require('crypto').createHmac('sha256', clientSecret);
+    hmac.update(signedPayload, 'utf8');
+    const expectedHex = hmac.digest('hex');
 
-    const hmac = require('crypto').createHmac('sha256', secret);
-    hmac.update(signed);
-    const expected = hmac.digest('base64'); // algunas variantes devuelven base64
-
-    const safeEqual = require('crypto').timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected)
+    const ok = crypto.timingSafeEqual(
+      Buffer.from(signature, 'utf8'),
+      Buffer.from(expectedHex, 'utf8')
     );
-
-    if (!safeEqual) {
-      console.log('[TIKTOK_WEBHOOK] Firma inválida');
+    if (!ok) {
       return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    // (Opcional) rechaza replays si el timestamp es viejo, ej. >5 min
+    const ageSec = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+    if (ageSec > 300) {
+      return res.status(408).json({ error: 'Signature too old' });
     }
 
     return next();
   } catch (e) {
-    console.error('[TIKTOK_WEBHOOK] Error en validación de firma:', e);
+    console.error('[TIKTOK_WEBHOOK] Signature validation failed:', e);
     return res.status(500).json({ error: 'Signature validation failed' });
   }
 };
@@ -74,45 +67,45 @@ exports.validateTikTokWebhookSignature = (req, res, next) => {
  */
 exports.validateWebhookStructure = (req, res, next) => {
   const body = req.body;
+
   if (!body || typeof body !== 'object') {
     return res.status(400).json({ error: 'Invalid webhook body' });
   }
-  // No forzamos data como array (ads vs. messaging difieren)
-  next();
 
-  // Para verificación de webhook
+  // 1) Ping del Portal (Test URL) -> pasa directo
+  if (body.event === 'tiktok.ping') {
+    return next();
+  }
+
+  // 2) (Opcional) flujo de verificación tipo hub.* si alguna vez lo usas
   if (req.method === 'GET') {
-    const {
-      'hub.mode': mode,
-      'hub.verify_token': token,
-      'hub.challenge': challenge,
-    } = req.query;
-
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
     if (mode && token && challenge) {
-      // Es una verificación de webhook válida
       return next();
     }
   }
 
-  // Para eventos de webhook
+  // 3) Para eventos "reales": si viene data[], valida mínimamente; si no viene, deja pasar
   if (req.method === 'POST') {
-    if (!body.data || !Array.isArray(body.data)) {
-      console.log(
-        '[TIKTOK_WEBHOOK] Estructura de webhook inválida: data no es array'
-      );
-      return res.status(400).json({ error: 'Invalid webhook data structure' });
-    }
-
-    // Validar que cada evento tenga los campos mínimos
-    for (const event of body.data) {
-      if (!event.event_type) {
-        console.log('[TIKTOK_WEBHOOK] Evento sin event_type');
-        return res.status(400).json({ error: 'Event missing event_type' });
+    if (body.data !== undefined) {
+      if (!Array.isArray(body.data)) {
+        return res
+          .status(400)
+          .json({
+            error: 'Invalid webhook data structure (data must be array)',
+          });
+      }
+      for (const event of body.data) {
+        if (!event.event_type) {
+          return res.status(400).json({ error: 'Event missing event_type' });
+        }
       }
     }
   }
 
-  next();
+  return next();
 };
 
 /**

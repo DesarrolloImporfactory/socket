@@ -136,8 +136,8 @@ router.post(
   tikTokWebhookMiddleware.webhookRateLimit,
   tikTokWebhookMiddleware.advancedWebhookLogger,
   tikTokWebhookMiddleware.validateTikTokOrigin,
+  tikTokWebhookMiddleware.validateTikTokWebhookSignature,
   tikTokWebhookMiddleware.validateWebhookStructure,
-  // tikTokWebhookMiddleware.validateTikTokWebhookSignature, // Descomenta si tienes configurada la validación de firma
   tikTokWebhookController.receiveWebhook
 );
 
