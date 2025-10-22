@@ -120,6 +120,16 @@ app.use(
   })
 );
 
+//Raw body solo para TikTok Webhook(necesario para validar firma)
+app.use(
+  '/api/v1/tiktok/webhook/receive',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
@@ -127,6 +137,7 @@ app.use((req, res, next) => {
     '/api/v1/stripe_plan/stripeWebhook',
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
+    'api/v1/tiktok/webhook/receive',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -138,6 +149,7 @@ app.use((req, res, next) => {
     '/api/v1/stripe_plan/stripeWebhook',
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
+    '/api/v1/tiktok/webhook/receive',
   ];
   if (skipPaths.includes(req.path)) return next();
 

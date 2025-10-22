@@ -7,70 +7,66 @@ const AppError = require('../utils/appError');
  * Este middleware debe aplicarse ANTES de express.json() para tener acceso al raw body
  */
 exports.validateTikTokWebhookSignature = (req, res, next) => {
-  // Solo validar si hay una clave secreta configurada
-  if (!process.env.TIKTOK_WEBHOOK_SECRET) {
-    console.log(
-      '[TIKTOK_WEBHOOK] Advertencia: No hay TIKTOK_WEBHOOK_SECRET configurado'
-    );
+  // Permite desactivar firma en desarrollo
+  if (
+    process.env.NODE_ENV === 'development' &&
+    process.env.TIKTOK_SIGNATURE_SKIP === '1'
+  ) {
     return next();
   }
 
-  const signature = req.headers['x-tiktok-signature'];
-
-  if (!signature) {
-    console.log('[TIKTOK_WEBHOOK] Firma faltante en webhook');
-    return res.status(401).json({ error: 'Signature missing' });
+  const secret = process.env.TIKTOK_WEBHOOK_SECRET;
+  if (!secret) {
+    console.log('[TIKTOK_WEBHOOK] No hay TIKTOK_WEBHOOK_SECRET configurado');
+    return res.status(500).json({ error: 'Webhook secret not configured' });
   }
 
-  let rawBody;
-  if (req.rawBody) {
-    rawBody = req.rawBody;
-  } else if (req.body) {
-    rawBody = JSON.stringify(req.body);
-  } else {
-    console.log('[TIKTOK_WEBHOOK] Body no disponible para validación');
-    return res.status(400).json({ error: 'Body not available for validation' });
+  // Los nombres exactos pueden variar según el producto de TikTok.
+  // Estos son los más comunes:
+  const signature =
+    req.headers['tiktok-signature'] || req.headers['x-tiktok-signature'];
+  const timestamp =
+    req.headers['tiktok-timestamp'] || req.headers['x-tiktok-timestamp'];
+
+  if (!signature || !timestamp) {
+    console.log('[TIKTOK_WEBHOOK] Falta signature o timestamp');
+    return res.status(401).json({ error: 'Missing signature or timestamp' });
+  }
+
+  if (!req.rawBody) {
+    console.log('[TIKTOK_WEBHOOK] rawBody no disponible');
+    return res.status(400).json({ error: 'rawBody missing' });
   }
 
   try {
-    const isValid = TikTokWebhookService.validateWebhookSignature(
-      rawBody,
-      signature,
-      process.env.TIKTOK_WEBHOOK_SECRET
+    // Muchas integraciones piden firmar: `${timestamp}.${rawBody}`
+    const signed = Buffer.concat([
+      Buffer.from(String(timestamp), 'utf8'),
+      Buffer.from('.', 'utf8'),
+      Buffer.isBuffer(req.rawBody)
+        ? req.rawBody
+        : Buffer.from(req.rawBody, 'utf8'),
+    ]);
+
+    const hmac = require('crypto').createHmac('sha256', secret);
+    hmac.update(signed);
+    const expected = hmac.digest('base64'); // algunas variantes devuelven base64
+
+    const safeEqual = require('crypto').timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
     );
 
-    if (!isValid) {
+    if (!safeEqual) {
       console.log('[TIKTOK_WEBHOOK] Firma inválida');
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    console.log('[TIKTOK_WEBHOOK] Firma validada exitosamente');
-    next();
-  } catch (error) {
-    console.error('[TIKTOK_WEBHOOK] Error validando firma:', error);
+    return next();
+  } catch (e) {
+    console.error('[TIKTOK_WEBHOOK] Error en validación de firma:', e);
     return res.status(500).json({ error: 'Signature validation failed' });
   }
-};
-
-/**
- * Middleware para capturar el raw body para validación de firma
- */
-exports.captureRawBody = (req, res, next) => {
-  req.rawBody = '';
-  req.setEncoding('utf8');
-
-  req.on('data', function (chunk) {
-    req.rawBody += chunk;
-  });
-
-  req.on('end', function () {
-    try {
-      req.body = JSON.parse(req.rawBody);
-    } catch (error) {
-      req.body = {};
-    }
-    next();
-  });
 };
 
 /**
@@ -78,14 +74,11 @@ exports.captureRawBody = (req, res, next) => {
  */
 exports.validateWebhookStructure = (req, res, next) => {
   const body = req.body;
-
-  // Validar estructura básica
   if (!body || typeof body !== 'object') {
-    console.log(
-      '[TIKTOK_WEBHOOK] Estructura de webhook inválida: body no es objeto'
-    );
-    return res.status(400).json({ error: 'Invalid webhook structure' });
+    return res.status(400).json({ error: 'Invalid webhook body' });
   }
+  // No forzamos data como array (ads vs. messaging difieren)
+  next();
 
   // Para verificación de webhook
   if (req.method === 'GET') {
