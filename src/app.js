@@ -87,17 +87,17 @@ app.post(
   stripe_webhookController.stripeWebhook
 );
 
-app.use(
-  cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
-  })
-);
 app.use(helmet());
 app.use(hpp());
 
-if (process.env.NODE_ENV === 'development') {
+if (process.env.NODE_ENV === 'dev') {
   app.use(morgan('dev'));
+  app.use(
+    cors({
+      origin: '*',
+      methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
+    })
+  );
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
