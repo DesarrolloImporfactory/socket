@@ -1,6 +1,4 @@
 const crypto = require('crypto');
-const TikTokWebhookService = require('../services/tiktok_webhook.service');
-const AppError = require('../utils/appError');
 
 // Middleware para validar la firma del webhook de TikTok
 exports.validateTikTokWebhookSignature = (req, res, next) => {
@@ -91,11 +89,9 @@ exports.validateWebhookStructure = (req, res, next) => {
   if (req.method === 'POST') {
     if (body.data !== undefined) {
       if (!Array.isArray(body.data)) {
-        return res
-          .status(400)
-          .json({
-            error: 'Invalid webhook data structure (data must be array)',
-          });
+        return res.status(400).json({
+          error: 'Invalid webhook data structure (data must be array)',
+        });
       }
       for (const event of body.data) {
         if (!event.event_type) {
