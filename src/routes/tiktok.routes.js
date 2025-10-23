@@ -6,6 +6,7 @@ const tikTokController = require('../controllers/tiktok.controller');
 const tikTokWebhookController = require('../controllers/tiktok_webhook.controller');
 const tikTokMiddleware = require('../middlewares/tiktok.middleware');
 const tikTokWebhookMiddleware = require('../middlewares/tiktok_webhook.middleware');
+const tiktokDevController = require('../controllers/tiktok_dev_oauth.controller');
 
 // 1. Obtener URL de login de TikTok Business
 // GET /api/v1/tiktok/login-url?id_configuracion=123&redirect_uri=https://tu.front/conexiones&platform=web
@@ -210,5 +211,9 @@ router.get(
 // Middleware de manejo de errores específico solo para endpoints de procesamiento de webhooks
 router.use('/webhook/verify', tikTokWebhookMiddleware.handleWebhookError);
 router.use('/webhook/receive', tikTokWebhookMiddleware.handleWebhookError);
+
+//Login  Kit (Developers)
+router.get('/dev/login-url', tiktokDevController.getDevLoginUrl);
+router.post('/dev/oauth/exchange', tiktokDevController.devExchangeCode);
 
 module.exports = router;
