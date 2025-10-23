@@ -1,5 +1,6 @@
 // utils/datosClienteAssistant.js
 const { db, db_2 } = require('../database/config');
+const moment = require('moment-timezone');
 const {
   obtenerTrackingGuia,
   obtenerUrlDescargaGuia,
@@ -147,7 +148,8 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
 
   // Crear un bloque organizado con las citas
   let tipoDato = 'datos_servicio';
-  let bloque = `🧾 **Citas ocupadas datos_servicio detectadas:**\n\n`;
+  let fechaActual = moment().tz("America/Guayaquil").format('YYYY-MM-DD HH:mm:ss');
+  let bloque = `🧾 **Fecha actual (${fechaActual}), Citas ocupadas datos_servicio detectadas:**\n\n`;
 
   // Formatear y agregar cada cita al bloque
   calendario.forEach((cita, index) => {

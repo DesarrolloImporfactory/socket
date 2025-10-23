@@ -277,7 +277,7 @@ async function procesarAsistenteMensaje(body) {
             completion_tokens = 0, // Este es el valor para output_tokens
             total_tokens = 0, // Total de tokens procesados
           } = statusRes.data.usage;
-          const model = statusRes.data.model || 'gpt-4-turbo';
+          const model = statusRes.data.model || 'gpt-4.1-mini';
           const costo = estCosto(model, prompt_tokens, completion_tokens);
           await log(
             `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
@@ -428,7 +428,7 @@ async function procesarAsistenteMensaje(body) {
       }
     }
 
-    console.log('bloqueInfo: ' + bloqueInfo);
+    /* console.log('bloqueInfo: ' + bloqueInfo); */
 
     return {
       status: 200,

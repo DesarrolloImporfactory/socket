@@ -732,6 +732,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 title: nombre + ' - ' + servicio,
               };
 
+              console.log(JSON.stringify(payload));
+
               servicioAppointments.createAppointment(payload, id_usuarios);
             }
 
