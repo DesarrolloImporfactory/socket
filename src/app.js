@@ -90,14 +90,16 @@ app.post(
 app.use(helmet());
 app.use(hpp());
 
-if (process.env.NODE_ENV === 'dev') {
-  app.use(morgan('dev'));
+if (process.env.NODE_ENV === 'prod') {
+  app.use(morgan('prod'));
   app.use(
     cors({
       origin: '*',
       methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
     })
   );
+} else if (process.env.NODE_ENV === 'dev') {
+  app.use(morgan('dev'));
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
