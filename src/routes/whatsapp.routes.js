@@ -1882,6 +1882,36 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
       ],
     },
     {
+      name: 'confirmacion_de_pedido_rapido',
+      language: 'es',
+      category: 'UTILITY',
+      components: [
+        {
+          type: 'BODY',
+          text: '😃 Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\n Por favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
+          example: {
+            body_text: [
+              [
+                'Daniel',
+                'Precio',
+                'Corrector',
+                'Daniel',
+                '098765473',
+                'Av. Simón Bolívar y Mariscal Sucre',
+              ],
+            ],
+          },
+        },
+        {
+          type: 'BUTTONS',
+          buttons: [
+            { type: 'QUICK_REPLY', text: 'CONFIRMAR PEDIDO' },
+            { type: 'QUICK_REPLY', text: 'ACTUALIZAR INFORMACIÓN' },
+          ],
+        },
+      ],
+    },
+    {
       name: 'confirmacion_de_pedido',
       language: 'es',
       category: 'UTILITY',
@@ -1922,7 +1952,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
       components: [
         {
           type: 'BODY',
-          text: '¡Hola {{1}}, tu envío ha sido procesado con éxito! 👍\nLa entrega se realizará dentro de 24 a 48 horas, el transportista se comunicará contigo para realizar la entrega. Cualquier duda que tengas estoy aquí para ayudarte ✅\nAdicional, tu número de guía es {{2}} y puedes revisar el tracking o descargar tu guía dándole a los botones de aquí abajo. 👇👇',
+          text: '¡Hola {{1}}, tu envío ha sido procesado con éxito! 👍\nLa entrega se realizará dentro de 3 a 4 días, el transportista se comunicará contigo para realizar la entrega. Cualquier duda que tengas estoy aquí para ayudarte ✅\nAdicional, tu número de guía es {{2}} y puedes revisar el tracking o descargar tu guía dándole a los botones de aquí abajo. 👇👇',
           example: {
             body_text: [['Sebastian', '1234567890']],
           },
