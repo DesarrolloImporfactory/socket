@@ -419,9 +419,64 @@ exports.newLogin = async (req, res) => {
           });
         }
       } else {
-        return res
-          .status(403)
-          .json({ message: 'El usuario no tiene tiene cursos habilitados' });
+        const configuracion = await Configuraciones.findOne({
+          where: { id_plataforma: tienda },
+        });
+
+        if (!configuracion || !configuracion.id_usuario) {
+          return res
+            .status(403)
+            .json({ message: 'El usuario no tiene tiene cursos habilitados' });
+        } else {
+          const usuarios_chat_center = await Usuarios_chat_center.findOne({
+            where: {
+              id_usuario: configuracion.id_usuario,
+            },
+          });
+
+          if (!usuarios_chat_center) {
+            return res.status(404).json({
+              message: 'Usuario administrador no encontrado para esta tienda',
+            });
+          }
+
+          /* consulta id_subusuarios */
+          const subusuarios_chat_center =
+            await Sub_usuarios_chat_center.findOne({
+              where: {
+                id_usuario: usuarios_chat_center.id_usuario,
+                rol: 'administrador',
+              },
+            });
+
+          if (!subusuarios_chat_center) {
+            return res.status(404).json({
+              message: 'Usuario administrador no encontrado para esta tienda',
+            });
+          }
+
+          id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
+
+          usuarioEncontrado = subusuarios_chat_center;
+          estado_creacion = 'completo';
+
+          // Generar token de sesión
+          const sessionToken = await generarToken(id_sub_usuario_encontrado);
+
+          // Eliminar campos sensibles
+          const usuarioPlano = usuarioEncontrado.toJSON();
+          const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+          // Respuesta
+          res.status(200).json({
+            status: 'success',
+            estado_creacion: estado_creacion,
+            token: sessionToken,
+            user: usuarioSinPassword,
+            id_plataforma: tienda,
+            id_configuracion: null,
+          });
+        }
       }
     }
   } catch (err) {
