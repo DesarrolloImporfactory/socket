@@ -124,7 +124,23 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
             AND mp.status = 'active'
           ORDER BY mp.id_messenger_page DESC
           LIMIT 1
-        ) AS messenger_page_id
+        ) AS messenger_page_id,
+
+        /* Instagram: solo estado */
+        EXISTS (
+          SELECT 1
+          FROM instagram_pages ip
+          WHERE ip.id_configuracion = c.id
+            AND ip.subscribed = 1
+            AND ip.status = 'active'
+        ) AS instagram_conectado,
+
+        /* TikTok Developers (Login Kit): solo estado */
+        EXISTS (
+          SELECT 1
+          FROM tiktok_devs_connections tdc
+          WHERE tdc.id_configuracion = c.id
+        ) AS tiktok_conectado
 
       FROM configuraciones c
       WHERE c.id_usuario = ?

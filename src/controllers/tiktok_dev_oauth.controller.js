@@ -1,6 +1,6 @@
-const TikTokDevOAuthService = require('../services/tiktok_dev_oauth.service');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
+const TikTokDevOAuthService = require('../services/tiktok_dev_oauth.service');
 
 exports.getDevLoginUrl = catchAsync(async (req, res, next) => {
   const { id_configuracion, redirect_uri } = req.query;
@@ -10,10 +10,10 @@ exports.getDevLoginUrl = catchAsync(async (req, res, next) => {
   const finalRedirect = redirect_uri || process.env.TIKTOK_REDIRECT_URI;
   if (!finalRedirect) return next(new AppError('redirect_uri faltante', 400));
 
-  const { url, state } = TikTokDevOAuthService.buildLoginUrl({
+  const { url, state } = await TikTokDevOAuthService.buildLoginUrl({
     id_configuracion,
     redirect_uri: finalRedirect,
-    scopes: ['user.info.basic'], // agrega más cuando TikTok te los habilite
+    scopes: ['user.info.basic'], // Agregue más scopes cuando TikTok se los habilite
   });
 
   res.json({ ok: true, url, state, redirect_uri: finalRedirect });
@@ -26,40 +26,52 @@ exports.devExchangeCode = catchAsync(async (req, res, next) => {
 
   const finalRedirect = redirect_uri || process.env.TIKTOK_REDIRECT_URI;
 
-  // 1) Canje code -> tokens
+  // 1) Canjear el code → tokens (resuelve id_configuracion desde oauth_states)
   const tokenPayload = await TikTokDevOAuthService.exchangeCode({
     code,
     state,
     redirect_uri: finalRedirect,
   });
-  const { access_token, refresh_token, expires_in, scope, open_id } =
-    tokenPayload;
 
-  // 2) Perfil básico
+  const {
+    access_token,
+    refresh_token,
+    expires_in,
+    scope,
+    token_type,
+    open_id,
+    id_configuracion, // ← viene resuelto desde el state persistido
+  } = tokenPayload;
+
+  // 2) Perfil básico (opcional, no bloquea)
   let profile = null;
   try {
     profile = await TikTokDevOAuthService.getUserInfo({ access_token });
-  } catch (e) {
-    // Si falla, no bloqueamos el flujo
+  } catch {
     profile = { open_id };
   }
 
-  // 3) (Opcional) Persistir en tu BD:
-  // - Mapea "state" -> id_configuracion (decodifica base64url)
-  // - Guarda open_id, access_token, refresh_token, expires_at, scope
-  // - Marca como "conectado"
-  //
-  // Ejemplo (pseudo):
-  // const { id_configuracion } = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
-  // await TikTokDevelopersConnection.upsert({ id_configuracion, open_id, access_token, refresh_token, expires_at: new Date(Date.now()+expires_in*1000), scope });
+  // 3) Persistir/actualizar conexión Developers (Login Kit)
+  const expiresAtISO = await TikTokDevOAuthService.upsertDevelopersConnection({
+    id_configuracion,
+    open_id,
+    access_token,
+    refresh_token,
+    scope,
+    token_type,
+    expires_in,
+  });
 
+  // 4) Respuesta compacta al front
   res.json({
     ok: true,
+    connected: true,
+    id_configuracion,
     connection: {
       open_id,
       scope,
-      expires_at: new Date(Date.now() + (expires_in || 0) * 1000),
       profile,
+      expires_at: expiresAtISO,
     },
     tokens: {
       access_token,
