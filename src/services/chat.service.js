@@ -646,7 +646,7 @@ class ChatService {
           anulada: 0,
           id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
-            telefono: {
+            telefono_limpio: {
               [Op.like]: `%${formato}%`,
             },
           })),
@@ -660,7 +660,7 @@ class ChatService {
 
           id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
-            telefono: {
+            telefono_limpio: {
               [Op.like]: `%${formato}%`,
             },
           })),
