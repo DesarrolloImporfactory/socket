@@ -9,9 +9,19 @@ const path = require('path');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 
 exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
-  const { id_configuracion } = req.body;
+  // ✅ Manejar tanto query params (GET) como body (POST) 
+  const { id_configuracion } = req.method === 'GET' ? req.query : req.body;
 
-  const plataforma = await db_2.query(
+  if (!id_configuracion) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'El parámetro id_configuracion es requerido.',
+    });
+  }
+
+  console.log('🔍 Obteniendo productos para configuración:', id_configuracion);
+
+    const plataforma = await db_2.query(
     `
     SELECT id_plataforma 
     FROM configuracion 
@@ -23,7 +33,7 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
     }
   );
 
-   // Verificar que la plataforma existe
+  // Verificar que la plataforma existe
   if (!plataforma || plataforma.length === 0) {
     return res.status(400).json({
       status: 'error',
@@ -32,6 +42,7 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
   }
 
   const id_plataforma = plataforma[0].id_plataforma;
+  console.log('🏷️ ID Plataforma encontrada:', id_plataforma);
 
   if (id_plataforma === 1206 /* || id_plataforma === 2293 */) {
     // Consulta para la plataforma específica (1206)
@@ -51,6 +62,8 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
         type: db_2.QueryTypes.SELECT,
       }
     );
+
+    console.log('📦 Productos encontrados:', productos.length);
 
     if (!productos || productos.length === 0) {
       return res.status(200).json({
@@ -113,6 +126,8 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
     // Unir los resultados de las tres fuentes de datos
     const response = [...dataShopify, ...dataTiendas, ...dataFunnel];
 
+    console.log('📦 Total productos encontrados:', response.length);
+
     if (!response || response.length === 0) {
       return res.status(200).json({
         status: 'success',
@@ -129,9 +144,19 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
 });
 
 exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
-  const { id_configuracion } = req.body;
+  // ✅ Manejar tanto query params (GET) como body (POST)
+  const { id_configuracion } = req.method === 'GET' ? req.query : req.body;
 
-  const plataforma = await db_2.query(
+  if (!id_configuracion) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'El parámetro id_configuracion es requerido.',
+    });
+  }
+
+  console.log('🔍 Obteniendo categorías para configuración:', id_configuracion);
+
+    const plataforma = await db_2.query(
     `
     SELECT id_plataforma 
     FROM configuracion 
@@ -152,6 +177,7 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
   }
 
   const id_plataforma = plataforma[0].id_plataforma;
+  console.log('🏷️ ID Plataforma encontrada:', id_plataforma);
 
   // Consulta para obtener categorías que pertenecen a la plataforma o son globales
   const categorias = await db_2.query(
@@ -165,6 +191,8 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
       type: db_2.QueryTypes.SELECT,
     }
   );
+
+  console.log('📂 Categorías encontradas:', categorias.length);
 
   if (!categorias || categorias.length === 0) {
     return res.status(200).json({
@@ -181,7 +209,17 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
 });
 
 exports.obtenerTemplatesAutomatizador = catchAsync(async (req, res, next) => {
-  const { id_configuracion } = req.body;
+  // ✅ Manejar tanto query params (GET) como body (POST)
+  const { id_configuracion } = req.method === 'GET' ? req.query : req.body;
+
+  if (!id_configuracion) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'El parámetro id_configuracion es requerido.',
+    });
+  }
+
+  console.log('🔍 Obteniendo templates para configuración:', id_configuracion);
 
   // Consulta para obtener los templates según el id_configuracion
   const templates = await db_2.query(
@@ -204,6 +242,8 @@ exports.obtenerTemplatesAutomatizador = catchAsync(async (req, res, next) => {
     });
   }
 
+  console.log('✅ Templates obtenidos:', templates.length);
+
   return res.status(200).json({
     status: 'success',
     data: templates,
@@ -211,7 +251,17 @@ exports.obtenerTemplatesAutomatizador = catchAsync(async (req, res, next) => {
 });
 
 exports.obtenerEtiquetasAutomatizador = catchAsync(async (req, res, next) => {
-  const { id_configuracion } = req.body;
+  // ✅ Manejar tanto query params (GET) como body (POST)
+  const { id_configuracion } = req.method === 'GET' ? req.query : req.body;
+
+  if (!id_configuracion) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'El parámetro id_configuracion es requerido.',
+    });
+  }
+
+  console.log('🔍 Obteniendo etiquetas para configuración:', id_configuracion);
 
   // Consulta para obtener las etiquetas según el id_plataforma
   const etiquetas = await db_2.query(
@@ -233,6 +283,8 @@ exports.obtenerEtiquetasAutomatizador = catchAsync(async (req, res, next) => {
       message: 'No existen etiquetas para esta plataforma.',
     });
   }
+
+  console.log('✅ Etiquetas obtenidas:', etiquetas.length);
 
   return res.status(200).json({
     status: 'success',
