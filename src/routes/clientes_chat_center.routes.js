@@ -4,8 +4,9 @@ const express = require('express');
 
 const router = express.Router();
 
-const authMiddleware = require('../middlewares/auth.middleware');
-/* router.use(authMiddleware.protect); */
+const { protect } = require('../middlewares/auth.middleware');
+
+router.use(protect);
 
 // routes/clientes_chat_center.routes.js
 router.post(

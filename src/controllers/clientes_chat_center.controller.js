@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 
 const { db } = require('../database/config');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
+const Configuraciones = require('../models/configuraciones.model');
 
 const ChatService = require('../services/chat.service');
 
@@ -348,22 +349,42 @@ exports.findFullByPhone_desconect = catchAsync(async (req, res, next) => {
   res.json({ status: 200, data: chat });
 });
 
-
-
 /* ---------- helpers ---------- */
 function parseSort(sort) {
   switch (sort) {
-    case 'antiguos':       return 'created_at ASC';
-    case 'actividad_asc':  return 'updated_at ASC';
-    case 'actividad_desc': return 'updated_at DESC';
+    case 'antiguos':
+      return 'created_at ASC';
+    case 'actividad_asc':
+      return 'updated_at ASC';
+    case 'actividad_desc':
+      return 'updated_at DESC';
     case 'recientes':
-    default:               return 'created_at DESC';
+    default:
+      return 'created_at DESC';
   }
 }
 function parseEstado(estado) {
-  if (estado === undefined || estado === null || estado === '' || estado === 'todos') return null;
-  if (estado === '1' || estado === 1 || estado === 'activo' || estado === 'nuevo') return 1;
-  if (estado === '0' || estado === 0 || estado === 'inactivo' || estado === 'perdido') return 0;
+  if (
+    estado === undefined ||
+    estado === null ||
+    estado === '' ||
+    estado === 'todos'
+  )
+    return null;
+  if (
+    estado === '1' ||
+    estado === 1 ||
+    estado === 'activo' ||
+    estado === 'nuevo'
+  )
+    return 1;
+  if (
+    estado === '0' ||
+    estado === 0 ||
+    estado === 'inactivo' ||
+    estado === 'perdido'
+  )
+    return 0;
   return null;
 }
 
@@ -372,9 +393,32 @@ function parseEstado(estado) {
    ?page=&limit=&q=&estado=&id_etiqueta=&sort=
    ============================================================ */
 exports.listarClientes = catchAsync(async (req, res, next) => {
-  const page  = Math.max(1, Number(req.query.page ?? 1));
+  const page = Math.max(1, Number(req.query.page ?? 1));
   const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
   const offset = (page - 1) * limit;
+  const id_configuracion = req.query.id_configuracion ?? '';
+
+  const subUsuarioSession = req.sessionUser;
+  if (!subUsuarioSession) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'No estás autenticado como subusuario',
+    });
+  }
+
+  const id_usuario_session = subUsuarioSession.id_usuario;
+
+  let validar_permiso_usuario = await Configuraciones.findOne({
+    where: { id_usuario: id_usuario_session, id: id_configuracion },
+  });
+
+  if (!validar_permiso_usuario) {
+    return res.status(401).json({
+      status: 'fail',
+      message:
+        'Tu usuarion no tiene permiso para acceder a los usuarios de esa configuracion',
+    });
+  }
 
   const { q, id_etiqueta } = req.query;
   const estadoParsed = parseEstado(req.query.estado);
@@ -404,7 +448,9 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
     params.push(like, like, like, like, like, like);
   }
 
-  const whereClause = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+  const whereClause = whereParts.length
+    ? `WHERE ${whereParts.join(' AND ')}`
+    : '';
 
   // Datos
   const dataSql = `
@@ -417,6 +463,7 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
       pedido_confirmado, telefono_limpio
     FROM clientes_chat_center
     ${whereClause}
+    AND id_configuracion = ${id_configuracion}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
   `;
@@ -429,8 +476,14 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
     ${whereClause};
   `;
 
-  const rows = await db.query(dataSql, { replacements: dataParams, type: db.QueryTypes.SELECT });
-  const [{ total }] = await db.query(countSql, { replacements: params, type: db.QueryTypes.SELECT });
+  const rows = await db.query(dataSql, {
+    replacements: dataParams,
+    type: db.QueryTypes.SELECT,
+  });
+  const [{ total }] = await db.query(countSql, {
+    replacements: params,
+    type: db.QueryTypes.SELECT,
+  });
 
   return res.status(200).json({
     status: 'success',
@@ -490,18 +543,23 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
     celular_cliente ?? '',
     imagePath ?? '',
     mensajes_por_dia_cliente ?? 0,
-    (estado_cliente ?? 1),
-    (chat_cerrado ?? 0),
-    (bot_openia ?? 1),
+    estado_cliente ?? 1,
+    chat_cerrado ?? 0,
+    bot_openia ?? 1,
     id_departamento ?? null,
     id_encargado ?? null,
     pedido_confirmado ?? 0,
   ];
 
   // Ejecutar inserción
-  const result = await db.query(insertSql, { replacements: insertParams, type: db.QueryTypes.INSERT });
+  const result = await db.query(insertSql, {
+    replacements: insertParams,
+    type: db.QueryTypes.INSERT,
+  });
   // `result` en mysql2 suele ser [metadata, _]; recuperamos el último id con otra consulta fiable:
-  const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', { type: db.QueryTypes.SELECT });
+  const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
+    type: db.QueryTypes.SELECT,
+  });
 
   // Devolver fila creada
   const [created] = await db.query(
@@ -526,10 +584,22 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
 
   // Build SET dinámico seguro
   const fields = [
-    'id_plataforma','id_configuracion','id_etiqueta','uid_cliente',
-    'nombre_cliente','apellido_cliente','email_cliente','celular_cliente',
-    'imagePath','mensajes_por_dia_cliente','estado_cliente',
-    'chat_cerrado','bot_openia','id_departamento','id_encargado','pedido_confirmado'
+    'id_plataforma',
+    'id_configuracion',
+    'id_etiqueta',
+    'uid_cliente',
+    'nombre_cliente',
+    'apellido_cliente',
+    'email_cliente',
+    'celular_cliente',
+    'imagePath',
+    'mensajes_por_dia_cliente',
+    'estado_cliente',
+    'chat_cerrado',
+    'bot_openia',
+    'id_departamento',
+    'id_encargado',
+    'pedido_confirmado',
   ];
   const setParts = [];
   const params = [];
@@ -541,7 +611,8 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
     }
   }
   // nada que actualizar
-  if (setParts.length === 0) return res.status(200).json({ status: 'success', data: null });
+  if (setParts.length === 0)
+    return res.status(200).json({ status: 'success', data: null });
 
   setParts.push('updated_at = NOW()');
 
@@ -552,7 +623,10 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
   `;
   params.push(id);
 
-  const upd = await db.query(updateSql, { replacements: params, type: db.QueryTypes.UPDATE });
+  const upd = await db.query(updateSql, {
+    replacements: params,
+    type: db.QueryTypes.UPDATE,
+  });
 
   // devolver fila actualizada
   const [row] = await db.query(
@@ -596,16 +670,45 @@ exports.eliminarClientesBulk = catchAsync(async (req, res, next) => {
 
 // GET /api/v1/clientes_chat_center/listar_por_etiqueta?ids=1,2&page=&limit=&q=&estado=&sort=
 exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
-  const page  = Math.max(1, Number(req.query.page ?? 1));
+  const page = Math.max(1, Number(req.query.page ?? 1));
   const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
   const offset = (page - 1) * limit;
 
-  const idsParam = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (!idsParam.length) {
-    return res.status(200).json({ status: 'success', data: [], total: 0, page, limit });
+  const id_configuracion = req.query.id_configuracion ?? '';
+
+  const subUsuarioSession = req.sessionUser;
+  if (!subUsuarioSession) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'No estás autenticado como subusuario',
+    });
   }
 
-  const estadoParsed = (()=>{
+  const id_usuario_session = subUsuarioSession.id_usuario;
+
+  let validar_permiso_usuario = await Configuraciones.findOne({
+    where: { id_usuario: id_usuario_session, id: id_configuracion },
+  });
+
+  if (!validar_permiso_usuario) {
+    return res.status(401).json({
+      status: 'fail',
+      message:
+        'Tu usuarion no tiene permiso para acceder a los usuarios de esa configuracion',
+    });
+  }
+
+  const idsParam = String(req.query.ids || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!idsParam.length) {
+    return res
+      .status(200)
+      .json({ status: 'success', data: [], total: 0, page, limit });
+  }
+
+  const estadoParsed = (() => {
     const v = req.query.estado;
     if (v === undefined || v === null || v === '' || v === 'todos') return null;
     if (v === '1' || v === 1 || v === 'activo' || v === 'nuevo') return 1;
@@ -615,11 +718,15 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
 
   function parseSort(sort) {
     switch (sort) {
-      case 'antiguos':       return 'c.created_at ASC';
-      case 'actividad_asc':  return 'c.updated_at ASC';
-      case 'actividad_desc': return 'c.updated_at DESC';
+      case 'antiguos':
+        return 'c.created_at ASC';
+      case 'actividad_asc':
+        return 'c.updated_at ASC';
+      case 'actividad_desc':
+        return 'c.updated_at DESC';
       case 'recientes':
-      default:               return 'c.created_at DESC';
+      default:
+        return 'c.created_at DESC';
     }
   }
   const orderBy = parseSort(req.query.sort);
@@ -627,7 +734,10 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   const where = ['c.deleted_at IS NULL'];
   const params = [];
 
-  if (estadoParsed !== null) { where.push('c.estado_cliente = ?'); params.push(estadoParsed); }
+  if (estadoParsed !== null) {
+    where.push('c.estado_cliente = ?');
+    params.push(estadoParsed);
+  }
 
   if (req.query.q && String(req.query.q).trim()) {
     const like = `%${String(req.query.q).trim()}%`;
@@ -663,6 +773,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
       c.pedido_confirmado, c.telefono_limpio
     ${baseFromJoin}
+    AND c.id_configuracion = ${id_configuracion}
     GROUP BY c.id
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
@@ -673,11 +784,19 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     ${baseFromJoin};
   `;
 
-  const dataParams  = [...params, ...etiquetaParams, limit, offset];
+  const dataParams = [...params, ...etiquetaParams, limit, offset];
   const countParams = [...params, ...etiquetaParams];
 
-  const rows = await db.query(dataSql,   { replacements: dataParams,  type: db.QueryTypes.SELECT });
-  const [{ total }] = await db.query(countSql, { replacements: countParams, type: db.QueryTypes.SELECT });
+  const rows = await db.query(dataSql, {
+    replacements: dataParams,
+    type: db.QueryTypes.SELECT,
+  });
+  const [{ total }] = await db.query(countSql, {
+    replacements: countParams,
+    type: db.QueryTypes.SELECT,
+  });
 
-  return res.status(200).json({ status: 'success', data: rows, total, page, limit });
+  return res
+    .status(200)
+    .json({ status: 'success', data: rows, total, page, limit });
 });

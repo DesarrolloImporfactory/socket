@@ -14,5 +14,5 @@ router.post('/toggleAsignacionEtiqueta', etiquetasController.toggleAsignacionEti
 
 router.post('/obtenerEtiquetas', etiquetasController.obtenerEtiquetas);
 
-router.get('/etiquetas_existentes', etiquetasController.etiquetasExistentes); // <- NUEVA
+router.post('/etiquetas_existentes', etiquetasController.etiquetasExistentes); // <- NUEVA
 module.exports = router;

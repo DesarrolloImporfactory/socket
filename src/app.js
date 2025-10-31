@@ -55,6 +55,8 @@ const categorias_chat_centerRouter = require('./routes/categorias_chat_center.ro
 
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
 
+const automatizadorRouter = require('./routes/automatizador.routes');
+
 const calendarsRouter = require('./routes/calendars.routes');
 
 const appointmentsRouter = require('./routes/appointments.routes');
@@ -187,6 +189,7 @@ app.use('/api/v1/departamentos_chat_center', departamentos_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
+app.use('/api/v1/automatizador', automatizadorRouter);
 app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);

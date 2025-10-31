@@ -103,7 +103,7 @@ exports.toggleAsignacionEtiqueta = catchAsync(async (req, res, next) =>{
 
 // GET /api/v1/etiquetas_chat_center/etiquetas_existentes?id_configuracion=OPCIONAL
 exports.etiquetasExistentes = catchAsync(async (req, res, next) => {
-  const id_configuracion = req.query.id_configuracion ? Number(req.query.id_configuracion) : null;
+  const { id_configuracion } = req.body;
 
   // Etiquetas definidas en catálogo que tengan al menos una asignación (conteo>0).
   // Si pasas id_configuracion, filtra por esa conf; si no, trae global.
