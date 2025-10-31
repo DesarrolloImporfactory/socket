@@ -93,30 +93,14 @@ app.use(helmet());
 
 app.use(hpp());
 
-const allowedOrigin = 'https://automatizador.imporsuitpro.com';
 if (process.env.NODE_ENV === 'prod') {
   app.use(morgan('prod'));
-  // Middleware CORS para rutas específicas
-  app.use((req, res, next) => {
-    const origin = req.get('Origin'); // Obtén el origen de la solicitud
-    if (origin === allowedOrigin || !origin) {
-      // Si el origen es el permitido o si es una solicitud interna (sin origen)
-      cors({
-        origin: allowedOrigin,
-        methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
-        credentials: true,
-      })(req, res, next); // Aplica CORS solo para esta ruta
-    } else {
-      // Para otras rutas, usar CORS global (permitir todos los orígenes)
-      cors({
-        origin: '*', // Permite todos los orígenes
-        methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
-        credentials: true,
-      })(req, res, next);
-    }
-  });
+  app.use(
+    cors({
+      origin: '*',
+      methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
+    })
+  );
 } else if (process.env.NODE_ENV === 'dev') {
   app.use(morgan('dev'));
 }
