@@ -5,21 +5,24 @@ const { db } = require('../database/config');
 const GRAPH_VERSION = 'v22.0';
 const APP_SECRET = process.env.FB_APP_SECRET;
 
-// Campos “ricos” (solo si hay permiso). Incluye picture con tipo large.
+// Campos extendidos (tipo IG)
 const PAGE_FIELDS = [
   'name',
   'username',
   'about',
+  'description',
   'category',
   'fan_count',
+  'followers_count',
   'link',
+  'website',
+  'verification_status',
   'picture.type(large){url,is_silhouette}',
 ].join(',');
 
 // refresco cada 24h
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 
-/** Genera el appsecret_proof para un access_token dado */
 function buildAppSecretProof(accessToken) {
   return crypto
     .createHmac('sha256', APP_SECRET)
@@ -27,7 +30,6 @@ function buildAppSecretProof(accessToken) {
     .digest('hex');
 }
 
-/** Cliente Axios centralizado para Graph con inyección automática de appsecret_proof */
 const graph = axios.create({
   baseURL: `https://graph.facebook.com/${GRAPH_VERSION}/`,
   timeout: 15000,
@@ -42,7 +44,6 @@ graph.interceptors.request.use((config) => {
   return config;
 });
 
-/** Obtiene información rica de la Page (requiere permisos/tareas correctas) */
 async function fetchPageInfoFromGraph(pageId, pageAccessToken) {
   const { data } = await graph.get(`${pageId}`, {
     params: { fields: PAGE_FIELDS, access_token: pageAccessToken },
@@ -51,30 +52,22 @@ async function fetchPageInfoFromGraph(pageId, pageAccessToken) {
     name: data?.name ?? null,
     username: data?.username ?? null,
     about: data?.about ?? null,
+    description: data?.description ?? null,
     category: data?.category ?? null,
     fan_count: data?.fan_count ?? null,
+    followers_count: data?.followers_count ?? null,
     link: data?.link ?? null,
+    website: data?.website ?? null,
+    verification_status: data?.verification_status ?? null,
     picture_url: data?.picture?.data?.url ?? null,
   };
 }
 
-/** Fallback: solo foto vía edge /picture (devuelve JSON si redirect=0) */
 async function fetchPagePictureOnly(pageId, pageAccessToken) {
   const { data } = await graph.get(`${pageId}/picture`, {
     params: { redirect: 0, type: 'large', access_token: pageAccessToken },
   });
   return data?.data?.url ?? null;
-}
-
-/** Fallback opcional extra: foto vía field picture */
-async function fetchPagePictureViaFields(pageId, pageAccessToken) {
-  const { data } = await graph.get(`${pageId}`, {
-    params: {
-      fields: 'picture.type(large){url,is_silhouette}',
-      access_token: pageAccessToken,
-    },
-  });
-  return data?.picture?.data?.url ?? null;
 }
 
 exports.listConnections = async (req, res) => {
@@ -89,7 +82,6 @@ exports.listConnections = async (req, res) => {
         .json({ success: false, message: 'Falta id_configuracion' });
     }
 
-    // 1) Traer pages (incluye PAT)
     const pages = await db.query(
       `SELECT 
          id_messenger_page,
@@ -100,9 +92,13 @@ exports.listConnections = async (req, res) => {
          profile_picture_url,
          page_username,
          about,
+         description,
          category,
          fan_count,
+         followers_count,
          page_link,
+         website,
+         verification_status,
          subscribed,
          status,
          connected_at,
@@ -111,13 +107,9 @@ exports.listConnections = async (req, res) => {
        FROM messenger_pages
        WHERE id_configuracion = ?
        ORDER BY connected_at DESC`,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      }
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
     );
 
-    // 2) ¿A quién refrescamos?
     const now = Date.now();
     const toRefresh = pages.filter((p) => {
       const last = p.profile_refreshed_at
@@ -128,13 +120,15 @@ exports.listConnections = async (req, res) => {
         !p.profile_picture_url ||
         !p.page_username ||
         p.fan_count == null ||
+        p.followers_count == null ||
         !p.category ||
         !p.page_link ||
-        !p.about;
+        (!p.about && !p.description) ||
+        !p.website ||
+        !p.verification_status;
       return (force || stale || missingAnything) && !!p.page_access_token;
     });
 
-    // 3) Intentar refresco “rico”; si falla, caer a foto-only (y opcionalmente a fields)
     for (const p of toRefresh) {
       try {
         const info = await fetchPageInfoFromGraph(
@@ -148,9 +142,13 @@ exports.listConnections = async (req, res) => {
                  profile_picture_url  = COALESCE(?, profile_picture_url),
                  page_username        = COALESCE(?, page_username),
                  about                = COALESCE(?, about),
+                 description          = COALESCE(?, description),
                  category             = COALESCE(?, category),
                  fan_count            = COALESCE(?, fan_count),
+                 followers_count      = COALESCE(?, followers_count),
                  page_link            = COALESCE(?, page_link),
+                 website              = COALESCE(?, website),
+                 verification_status  = COALESCE(?, verification_status),
                  profile_refreshed_at = NOW(),
                  updated_at           = NOW()
            WHERE id_messenger_page = ?`,
@@ -160,9 +158,13 @@ exports.listConnections = async (req, res) => {
               info.picture_url,
               info.username,
               info.about,
+              info.description,
               info.category,
               info.fan_count,
+              info.followers_count,
               info.link,
+              info.website,
+              info.verification_status,
               p.id_messenger_page,
             ],
           }
@@ -177,16 +179,10 @@ exports.listConnections = async (req, res) => {
         });
 
         try {
-          let pictureUrl = await fetchPagePictureOnly(
+          const pictureUrl = await fetchPagePictureOnly(
             p.page_id,
             p.page_access_token
           );
-
-          // Fallback extra opcional si /picture no trajo nada
-          if (!pictureUrl) {
-            // pictureUrl = await fetchPagePictureViaFields(p.page_id, p.page_access_token);
-          }
-
           if (pictureUrl) {
             await db.query(
               `UPDATE messenger_pages
@@ -197,7 +193,6 @@ exports.listConnections = async (req, res) => {
               { replacements: [pictureUrl, p.id_messenger_page] }
             );
           } else {
-            // al menos marcar refresco para no martillar
             await db.query(
               `UPDATE messenger_pages
                  SET profile_refreshed_at = NOW(),
@@ -218,7 +213,6 @@ exports.listConnections = async (req, res) => {
       }
     }
 
-    // 4) Respuesta final (sin tokens)
     const finalRows = await db.query(
       `SELECT 
          page_id,
@@ -226,9 +220,13 @@ exports.listConnections = async (req, res) => {
          profile_picture_url,
          page_username,
          about,
+         description,
          category,
          fan_count,
+         followers_count,
          page_link,
+         website,
+         verification_status,
          subscribed,
          status,
          connected_at,
@@ -236,10 +234,7 @@ exports.listConnections = async (req, res) => {
        FROM messenger_pages
        WHERE id_configuracion = ?
        ORDER BY connected_at DESC`,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      }
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
     );
 
     return res.json({ success: true, data: finalRows || [] });
