@@ -1,9 +1,11 @@
 const axios = require('axios');
+const crypto = require('crypto');
 const { db } = require('../database/config');
 
 const GRAPH_VERSION = 'v22.0';
+const APP_SECRET = process.env.FB_APP_SECRET;
 
-// Campos “ricos” (solo si hay permiso).
+// Campos “ricos” (solo si hay permiso). Incluye picture con tipo large.
 const PAGE_FIELDS = [
   'name',
   'username',
@@ -11,35 +13,68 @@ const PAGE_FIELDS = [
   'category',
   'fan_count',
   'link',
-  'picture{url}',
+  'picture.type(large){url,is_silhouette}',
 ].join(',');
 
 // refresco cada 24h
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 
+/** Genera el appsecret_proof para un access_token dado */
+function buildAppSecretProof(accessToken) {
+  return crypto
+    .createHmac('sha256', APP_SECRET)
+    .update(accessToken)
+    .digest('hex');
+}
+
+/** Cliente Axios centralizado para Graph con inyección automática de appsecret_proof */
+const graph = axios.create({
+  baseURL: `https://graph.facebook.com/${GRAPH_VERSION}/`,
+  timeout: 15000,
+});
+
+graph.interceptors.request.use((config) => {
+  const token = config?.params?.access_token;
+  if (token && APP_SECRET) {
+    const proof = buildAppSecretProof(token);
+    config.params = { ...(config.params || {}), appsecret_proof: proof };
+  }
+  return config;
+});
+
+/** Obtiene información rica de la Page (requiere permisos/tareas correctas) */
 async function fetchPageInfoFromGraph(pageId, pageAccessToken) {
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${pageId}`;
-  const { data } = await axios.get(url, {
+  const { data } = await graph.get(`${pageId}`, {
     params: { fields: PAGE_FIELDS, access_token: pageAccessToken },
   });
   return {
-    name: data?.name || null,
-    username: data?.username || null,
-    about: data?.about || null,
-    category: data?.category || null,
+    name: data?.name ?? null,
+    username: data?.username ?? null,
+    about: data?.about ?? null,
+    category: data?.category ?? null,
     fan_count: data?.fan_count ?? null,
-    link: data?.link || null,
-    picture_url: data?.picture?.data?.url || null,
+    link: data?.link ?? null,
+    picture_url: data?.picture?.data?.url ?? null,
   };
 }
 
-// ✅ Fallback que no requiere pages_read_engagement (normalmente)
+/** Fallback: solo foto vía edge /picture (devuelve JSON si redirect=0) */
 async function fetchPagePictureOnly(pageId, pageAccessToken) {
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${pageId}/picture`;
-  const { data } = await axios.get(url, {
+  const { data } = await graph.get(`${pageId}/picture`, {
     params: { redirect: 0, type: 'large', access_token: pageAccessToken },
   });
-  return data?.data?.url || null;
+  return data?.data?.url ?? null;
+}
+
+/** Fallback opcional extra: foto vía field picture */
+async function fetchPagePictureViaFields(pageId, pageAccessToken) {
+  const { data } = await graph.get(`${pageId}`, {
+    params: {
+      fields: 'picture.type(large){url,is_silhouette}',
+      access_token: pageAccessToken,
+    },
+  });
+  return data?.picture?.data?.url ?? null;
 }
 
 exports.listConnections = async (req, res) => {
@@ -99,7 +134,7 @@ exports.listConnections = async (req, res) => {
       return (force || stale || missingAnything) && !!p.page_access_token;
     });
 
-    // 3) Intentar refresco “rico”; si falta permiso, caer a foto-only
+    // 3) Intentar refresco “rico”; si falla, caer a foto-only (y opcionalmente a fields)
     for (const p of toRefresh) {
       try {
         const info = await fetchPageInfoFromGraph(
@@ -133,21 +168,24 @@ exports.listConnections = async (req, res) => {
           }
         );
       } catch (e) {
-        // Si hay error de permisos (100/190/etc.), probamos “foto-only”
-        const fbCode = e?.response?.data?.error?.code;
-        const subcode = e?.response?.data?.error?.error_subcode;
-        console.warn(
-          '[MS][connections][rich-refresh][WARN]',
-          p.page_id,
-          fbCode,
-          subcode
-        );
+        const err = e?.response?.data?.error;
+        console.warn('[MS][connections][rich-refresh][WARN]', p.page_id, {
+          code: err?.code,
+          subcode: err?.error_subcode,
+          type: err?.type,
+          msg: err?.message || e.message,
+        });
 
         try {
-          const pictureUrl = await fetchPagePictureOnly(
+          let pictureUrl = await fetchPagePictureOnly(
             p.page_id,
             p.page_access_token
           );
+
+          // Fallback extra opcional si /picture no trajo nada
+          if (!pictureUrl) {
+            // pictureUrl = await fetchPagePictureViaFields(p.page_id, p.page_access_token);
+          }
 
           if (pictureUrl) {
             await db.query(
@@ -159,7 +197,7 @@ exports.listConnections = async (req, res) => {
               { replacements: [pictureUrl, p.id_messenger_page] }
             );
           } else {
-            // al menos marca refresco para no martillar
+            // al menos marcar refresco para no martillar
             await db.query(
               `UPDATE messenger_pages
                  SET profile_refreshed_at = NOW(),
@@ -169,11 +207,13 @@ exports.listConnections = async (req, res) => {
             );
           }
         } catch (e2) {
-          console.warn(
-            '[MS][connections][picture-refresh][WARN]',
-            p.page_id,
-            e2.message
-          );
+          const err2 = e2?.response?.data?.error;
+          console.warn('[MS][connections][picture-refresh][WARN]', p.page_id, {
+            code: err2?.code,
+            subcode: err2?.error_subcode,
+            type: err2?.type,
+            msg: err2?.message || e2.message,
+          });
         }
       }
     }
@@ -204,7 +244,10 @@ exports.listConnections = async (req, res) => {
 
     return res.json({ success: true, data: finalRows || [] });
   } catch (err) {
-    console.error('[MS][listConnections] Error:', err.message);
+    console.error(
+      '[MS][listConnections] Error:',
+      err?.response?.data || err.message
+    );
     return res.status(500).json({
       success: false,
       message: 'Error al obtener conexiones de Messenger',
