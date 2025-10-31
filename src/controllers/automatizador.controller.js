@@ -31,7 +31,7 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
     });
   }
 
-  const id_plataforma = plataforma.id_plataforma;
+  const id_plataforma = plataforma[0].id_plataforma;
 
   if (id_plataforma === 1206 /* || id_plataforma === 2293 */) {
     // Consulta para la plataforma específica (1206)
@@ -151,7 +151,7 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
     });
   }
 
-  const id_plataforma = plataforma.id_plataforma;
+  const id_plataforma = plataforma[0].id_plataforma;
 
   // Consulta para obtener categorías que pertenecen a la plataforma o son globales
   const categorias = await db_2.query(
