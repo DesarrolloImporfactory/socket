@@ -9,7 +9,7 @@ const path = require('path');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 
 exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
-  // ✅ Manejar tanto query params (GET) como body (POST) 
+  // ✅ Manejar tanto query params (GET) como body (POST)
   const { id_configuracion } = req.method === 'GET' ? req.query : req.body;
 
   if (!id_configuracion) {
@@ -21,10 +21,10 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
 
   console.log('🔍 Obteniendo productos para configuración:', id_configuracion);
 
-    const plataforma = await db_2.query(
+  const plataforma = await db_2.query(
     `
     SELECT id_plataforma 
-    FROM configuracion 
+    FROM configuraciones 
     WHERE id = ?
     `,
     {
@@ -156,10 +156,10 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
 
   console.log('🔍 Obteniendo categorías para configuración:', id_configuracion);
 
-    const plataforma = await db_2.query(
+  const plataforma = await db_2.query(
     `
     SELECT id_plataforma 
-    FROM configuracion 
+    FROM configuraciones 
     WHERE id = ?
     `,
     {
