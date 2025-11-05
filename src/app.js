@@ -93,16 +93,94 @@ app.use(helmet());
 
 app.use(hpp());
 
+const allowlist = [
+  'https://automatizador.imporsuitpro.com',
+  'https://chatcenter.imporfactory.app',
+  'https://new.imporsuitpro.com',
+  'https://desarrollo.imporsuitpro.com',
+];
+
+// helper para comprobar si la petición trae cookies/credenciales desde el cliente
+function requestIsCredentialed(req) {
+  // heurística: si el cliente envía una cabecera 'Cookie' o la petición viene con Authorization,
+  // lo tratamos como credentialed. En frontends normalmente será withCredentials: true.
+  return !!(
+    req.get('Cookie') ||
+    req.get('Authorization') ||
+    req.get('X-Requested-With')
+  );
+}
+
 if (process.env.NODE_ENV === 'prod') {
   app.use(morgan('prod'));
-  app.use(
-    cors({
-      origin: '*',
-      methods: ['GET', 'POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH'],
-    })
-  );
+
+  // middleware CORS dinámico
+  app.use((req, res, next) => {
+    const origin = req.get('Origin'); // puede ser undefined si no viene de un navegador (ej: server->server)
+
+    // Si no hay Origin (petición server->server o curl), permitimos todo internamente
+    if (!origin) {
+      // dejamos que otras rutas gestionen headers (o ponemos defaults)
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization'
+      );
+      return next();
+    }
+
+    const isTrusted = allowlist.includes(origin);
+    const isCredentialed = requestIsCredentialed(req);
+
+    if (isTrusted) {
+      // Origen de confianza: permitimos credenciales explícitamente
+      res.setHeader('Access-Control-Allow-Origin', origin); // NO usar '*'
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization'
+      );
+      // Si es OPTIONS responder rápido
+      if (req.method === 'OPTIONS') return res.status(204).end();
+      return next();
+    }
+
+    // Origen NO confiable
+    if (isCredentialed) {
+      // petición con credenciales desde origen no confiable -> rechazar
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: 'CORS: origin no permitido para requests con credenciales',
+        });
+    }
+
+    // petición sin credenciales desde origen no confiable -> permitir con wildcard
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+    );
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization'
+    );
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
 } else if (process.env.NODE_ENV === 'dev') {
   app.use(morgan('dev'));
+  // en dev puedes usar cors abierto pero mejor usar la misma lógica
+  app.use(cors({ origin: true, credentials: true }));
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
