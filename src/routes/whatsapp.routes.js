@@ -708,15 +708,28 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
       });
     }
 
+    //Leer cursores y limite del body
     const { WABA_ID, ACCESS_TOKEN } = rows[0];
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+    const { after, before, limit: limitRaw } = req.body || {};
+    const limit = Math.min(Math.max(parseInt(limitRaw || 50, 10), 1), 100);
+
+    //construir querystring con after/before/limit
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (after) params.set('after', after);
+    if (before) params.set('before', before);
+
+    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates?${params.toString()}`;
 
     const { data } = await axios.get(url, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
       timeout: 15000,
     });
 
-    return res.json({ success: true, ...data, meta: { state: 'OK' } });
+    return res.json({
+      success: true,
+      ...data,
+      meta: { state: 'OK', page_limit: limit },
+    });
   } catch (error) {
     const code = error?.response?.data?.error?.code;
     if (code === 190) {
