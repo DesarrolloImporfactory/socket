@@ -98,7 +98,7 @@ const allowlist = [
   'https://chatcenter.imporfactory.app',
   'https://new.imporsuitpro.com',
   'https://desarrollo.imporsuitpro.com',
-  'http://localhost',
+  'http://localhost:5173',
 ];
 
 // helper para comprobar si la petición trae cookies/credenciales desde el cliente
