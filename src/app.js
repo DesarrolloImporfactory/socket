@@ -116,11 +116,9 @@ if (process.env.NODE_ENV === 'prod') {
 
   // middleware CORS dinámico
   app.use((req, res, next) => {
-    const origin = req.get('Origin'); // puede ser undefined si no viene de un navegador (ej: server->server)
+    const origin = req.get('Origin');
 
-    // Si no hay Origin (petición server->server o curl), permitimos todo internamente
     if (!origin) {
-      // dejamos que otras rutas gestionen headers (o ponemos defaults)
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader(
         'Access-Control-Allow-Methods',
@@ -128,7 +126,7 @@ if (process.env.NODE_ENV === 'prod') {
       );
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, Authorization'
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
       );
       return next();
     }
@@ -137,8 +135,7 @@ if (process.env.NODE_ENV === 'prod') {
     const isCredentialed = requestIsCredentialed(req);
 
     if (isTrusted) {
-      // Origen de confianza: permitimos credenciales explícitamente
-      res.setHeader('Access-Control-Allow-Origin', origin); // NO usar '*'
+      res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader(
         'Access-Control-Allow-Methods',
@@ -146,16 +143,14 @@ if (process.env.NODE_ENV === 'prod') {
       );
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, Authorization'
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
       );
-      // Si es OPTIONS responder rápido
+
       if (req.method === 'OPTIONS') return res.status(204).end();
       return next();
     }
 
-    // Origen NO confiable
     if (isCredentialed) {
-      // petición con credenciales desde origen no confiable -> rechazar
       return res
         .status(403)
         .json({
@@ -164,7 +159,6 @@ if (process.env.NODE_ENV === 'prod') {
         });
     }
 
-    // petición sin credenciales desde origen no confiable -> permitir con wildcard
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader(
       'Access-Control-Allow-Methods',
@@ -172,14 +166,14 @@ if (process.env.NODE_ENV === 'prod') {
     );
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization'
+      'Content-Type, Authorization, X-Timestamp, X-Requested-With'
     );
+
     if (req.method === 'OPTIONS') return res.status(204).end();
     next();
   });
 } else if (process.env.NODE_ENV === 'dev') {
   app.use(morgan('dev'));
-  // en dev puedes usar cors abierto pero mejor usar la misma lógica
   app.use(cors({ origin: true, credentials: true }));
 }
 
