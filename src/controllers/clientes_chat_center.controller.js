@@ -460,7 +460,17 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
       imagePath, mensajes_por_dia_cliente, estado_cliente,
       created_at, updated_at, deleted_at,
       chat_cerrado, bot_openia, id_departamento, id_encargado,
-      pedido_confirmado, telefono_limpio
+      pedido_confirmado, telefono_limpio,
+      -- Aquí es donde agregamos la lógica para determinar el valor de "aprobado"
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 
+            FROM mensajes_clientes m
+            WHERE m.celular_recibe = clientes_chat_center.id
+              AND m.rol_mensaje = 0
+        ) THEN 1
+        ELSE 0
+    END AS aprobado
     FROM clientes_chat_center
     ${whereClause}
     AND id_configuracion = ${id_configuracion}
@@ -473,7 +483,8 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
   const countSql = `
     SELECT COUNT(*) AS total
     FROM clientes_chat_center
-    ${whereClause};
+    ${whereClause}
+    AND id_configuracion = ${id_configuracion};
   `;
 
   const rows = await db.query(dataSql, {
