@@ -416,7 +416,7 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
     return res.status(401).json({
       status: 'fail',
       message:
-        'Tu usuarion no tiene permiso para acceder a los usuarios de esa configuracion',
+        'Tu usuario no tiene permiso para acceder a los usuarios de esa configuracion',
     });
   }
 
@@ -705,7 +705,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     return res.status(401).json({
       status: 'fail',
       message:
-        'Tu usuarion no tiene permiso para acceder a los usuarios de esa configuracion',
+        'Tu usuario no tiene permiso para acceder a los usuarios de esa configuracion',
     });
   }
 
