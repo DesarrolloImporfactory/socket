@@ -482,9 +482,11 @@ class ChatService {
       const telefonos = await ClientesChatCenter.findAll({
         where: {
           id_configuracion,
-          celular_cliente: {
-            [Op.like]: `%${texto}%`,
-          },
+          [Op.or]: [
+          { celular_cliente: { [Op.like]: `%${texto}%` } },
+          { nombre_cliente: { [Op.like]: `%${texto}%` } },
+          { apellido_cliente: { [Op.like]: `%${texto}%` } }
+        ]
         },
         attributes: ['celular_cliente', 'nombre_cliente'],
       });
