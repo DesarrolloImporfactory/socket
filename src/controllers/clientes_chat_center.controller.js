@@ -388,6 +388,95 @@ function parseEstado(estado) {
   return null;
 }
 
+exports.listarContactosEstado = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta el id_configuracion', 400));
+  }
+
+  try {
+    // 1) Consultar todos los contactos de esa configuración
+    const clientes = await db.query(
+      `SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at
+       FROM clientes_chat_center
+       WHERE id_configuracion = ?`,
+      {
+        replacements: [id_configuracion],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    // 2) Si no existen contactos
+    if (!clientes || clientes.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          CONTACTO_INICIAL: [],
+          PLATAFORMAS_Y_CLASES: [],
+          PRODUCTOS_Y_PROVEEDORES: [],
+          VENTAS: [],
+          ASESOR: [],
+        },
+      });
+    }
+
+    // 3) Construir estructura Kanban inicial
+    const data = {
+      CONTACTO_INICIAL: [],
+      PLATAFORMAS_Y_CLASES: [],
+      PRODUCTOS_Y_PROVEEDORES: [],
+      VENTAS: [],
+      ASESOR: [],
+    };
+
+    // 4) Clasificar cada contacto según su estado
+    clientes.forEach((c) => {
+      const estado = (c.estado_contacto || '').toLowerCase();
+
+      switch (estado) {
+        case 'contacto_inicial':
+          data.CONTACTO_INICIAL.push(c);
+          break;
+
+        case 'plataformas_clases':
+          data.PLATAFORMAS_Y_CLASES.push(c);
+          break;
+
+        case 'productos_proveedores':
+          data.PRODUCTOS_Y_PROVEEDORES.push(c);
+          break;
+
+        case 'ventas':
+          data.VENTAS.push(c);
+          break;
+
+        case 'asesor':
+          data.ASESOR.push(c);
+          break;
+
+        default:
+          // Si llega un estado desconocido, lo mando a "CONTACTO INICIAL"
+          data.CONTACTO_INICIAL.push(c);
+          break;
+      }
+    });
+
+    // 5) Respuesta al frontend
+    return res.status(200).json({
+      success: true,
+      data: data,
+    });
+  } catch (error) {
+    console.error('Error al listar contactos:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Ocurrió un error al listar los contactos',
+    });
+  }
+});
+
 /* ============================================================
    GET /api/v1/clientes_chat_center/listar
    ?page=&limit=&q=&estado=&id_etiqueta=&sort=

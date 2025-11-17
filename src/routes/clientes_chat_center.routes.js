@@ -50,6 +50,7 @@ router.get(
 );
 
 
+router.post('/listar_contactos_estado', clientes_chat_centerController.listarContactosEstado);
 
 
 // CRUD limpio (SQL crudo)

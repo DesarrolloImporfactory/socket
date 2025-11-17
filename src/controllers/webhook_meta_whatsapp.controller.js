@@ -28,7 +28,8 @@ const {
   cancelarRemarketingEnNode,
   obtenerThreadId,
   transcribirAudioConWhisperDesdeArchivo,
-  enviarAsistenteGpt,
+  enviarAsistenteGptVentas,
+  enviarAsistenteGptImporfactory,
 } = require('../utils/webhook_whatsapp/funcciones_asistente');
 
 const {
@@ -165,6 +166,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const telefono_configuracion = configuracion.telefono;
       const nombre_configuracion = configuracion.nombre_configuracion;
       const api_key_openai = configuracion.api_key_openai;
+      const tipo_configuracion = configuracion.tipo_configuracion;
       /* buscar id_configuracion */
 
       /* Validar si existen errores */
@@ -305,11 +307,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         case 'location':
           const location = mensaje_recibido?.location;
 
-          console.log("location: "+location);
+          console.log('location: ' + location);
 
-          console.log("location?.latitude: "+location?.latitude);
+          console.log('location?.latitude: ' + location?.latitude);
 
-          console.log("location?.longitude: "+location?.longitude);
+          console.log('location?.longitude: ' + location?.longitude);
 
           texto_mensaje = JSON.stringify({
             latitude: location?.latitude,
@@ -575,17 +577,32 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           /* await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */
 
+          let respuesta_asistente = '';
+
           // Enviar mensaje al asistente GPT
-          const respuesta_asistente = await enviarAsistenteGpt({
-            mensaje: texto_mensaje,
-            id_plataforma,
-            id_configuracion,
-            telefono: phone_whatsapp_from,
-            api_key_openai,
-            id_thread,
-            business_phone_id,
-            accessToken,
-          });
+          if (tipo_configuracion == 'imporfactory') {
+            respuesta_asistente = await enviarAsistenteGptImporfactory({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+            });
+          } else if (tipo_configuracion == 'ventas') {
+            respuesta_asistente = await enviarAsistenteGptVentas({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+            });
+          }
 
           if (respuesta_asistente?.status === 200) {
             const mensajeGPT = respuesta_asistente.respuesta;
