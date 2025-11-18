@@ -549,7 +549,7 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
       imagePath, mensajes_por_dia_cliente, estado_cliente,
       created_at, updated_at, deleted_at,
       chat_cerrado, bot_openia, id_departamento, id_encargado,
-      pedido_confirmado, telefono_limpio,
+      pedido_confirmado, telefono_limpio, direccion, productos,
       -- Aquí es donde agregamos la lógica para determinar el valor de "aprobado"
     CASE 
         WHEN EXISTS (
@@ -871,7 +871,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.imagePath, c.mensajes_por_dia_cliente, c.estado_cliente,
       c.created_at, c.updated_at, c.deleted_at,
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
-      c.pedido_confirmado, c.telefono_limpio
+      c.pedido_confirmado, c.telefono_limpio, c.direccion, c.productos
     ${baseFromJoin}
     AND c.id_configuracion = ${id_configuracion}
     GROUP BY c.id
