@@ -9,7 +9,7 @@ const {
 } = require('../../services/remarketing.service');
 
 const {
-  procesarAsistenteMensajeVentas,
+  procesarAsistenteMensajeVentas, procesarAsistenteMensajeImporfactory
 } = require('../../services/mensaje_assistant.service');
 
 const {
@@ -130,9 +130,10 @@ async function enviarAsistenteGptImporfactory({
   id_thread,
   business_phone_id,
   accessToken,
+  estado_contacto
 }) {
   try {
-    const data = await procesarAsistenteMensaje({
+    const data = await procesarAsistenteMensajeImporfactory({
       mensaje,
       id_plataforma,
       id_configuracion,
@@ -141,6 +142,7 @@ async function enviarAsistenteGptImporfactory({
       id_thread,
       business_phone_id,
       accessToken,
+      estado_contacto
     });
 
     if (data?.status === 200) {

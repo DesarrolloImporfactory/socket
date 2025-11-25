@@ -398,7 +398,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
   try {
     // 1) Consultar todos los contactos de esa configuración
     const clientes = await db.query(
-      `SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at
+      `SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
        FROM clientes_chat_center
        WHERE id_configuracion = ?`,
       {
@@ -417,6 +417,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           PRODUCTOS_Y_PROVEEDORES: [],
           VENTAS: [],
           ASESOR: [],
+          COTIZACIONES: [],
         },
       });
     }
@@ -428,6 +429,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       PRODUCTOS_Y_PROVEEDORES: [],
       VENTAS: [],
       ASESOR: [],
+      COTIZACIONES: [],
     };
 
     // 4) Clasificar cada contacto según su estado
@@ -447,12 +449,16 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           data.PRODUCTOS_Y_PROVEEDORES.push(c);
           break;
 
-        case 'ventas':
+        case 'ventas_imporfactory':
           data.VENTAS.push(c);
           break;
 
         case 'asesor':
           data.ASESOR.push(c);
+          break;
+
+          case 'cotizaciones_imporfactory':
+          data.COTIZACIONES.push(c);
           break;
 
         default:
@@ -466,6 +472,37 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       success: true,
       data: data,
+    });
+  } catch (error) {
+    console.error('Error al listar contactos:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Ocurrió un error al listar los contactos',
+    });
+  }
+});
+
+exports.ultimo_mensaje = catchAsync(async (req, res, next) => {
+  const { id_configuracion, id_cliente } = req.body;
+
+  if (!id_configuracion && !id_cliente) {
+    return next(new AppError('Falta el id_configuracion y telefono', 400));
+  }
+
+  try {
+    // 1) Consultar todos los contactos de esa configuración
+    const clientes = await db.query(
+      `SELECT * FROM mensajes_clientes WHERE celular_recibe = ? AND rol_mensaje = 0 ORDER BY mensajes_clientes.id DESC LIMIT 1;`,
+      {
+        replacements: [id_cliente],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: clientes,
     });
   } catch (error) {
     console.error('Error al listar contactos:', error);

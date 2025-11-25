@@ -392,6 +392,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       let id_cliente = null;
       let bot_openia = 1;
+      let estado_contacto = 'contacto_inicial';
 
       if (!clienteExiste) {
         cliente = await ClientesChatCenter.create({
@@ -407,6 +408,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         //cliente ya existe
         id_cliente = clienteExiste.id;
         bot_openia = clienteExiste.bot_openia;
+        estado_contacto = clienteExiste.estado_contacto;
 
         if (clienteExiste.chat_cerrado === 1) {
           await ClientesChatCenter.update(
@@ -579,6 +581,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           let respuesta_asistente = '';
 
+          console.log('tipo_configuracion:' + tipo_configuracion);
+
           // Enviar mensaje al asistente GPT
           if (tipo_configuracion == 'imporfactory') {
             respuesta_asistente = await enviarAsistenteGptImporfactory({
@@ -590,6 +594,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               id_thread,
               business_phone_id,
               accessToken,
+              estado_contacto,
             });
           } else if (tipo_configuracion == 'ventas') {
             respuesta_asistente = await enviarAsistenteGptVentas({
@@ -605,232 +610,329 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           }
 
           if (respuesta_asistente?.status === 200) {
-            const mensajeGPT = respuesta_asistente.respuesta;
-            const tipoInfo = respuesta_asistente.tipoInfo;
+            if (tipo_configuracion == 'imporfactory') {
+              if (estado_contacto == 'contacto_inicial') {
+                // Mapeo de respuestas → estados en la DB
+                const estadoMap = {
+                  PLATAFORMAS_Y_CLASES: 'plataformas_clases',
+                  PRODUCTOS_Y_PROVEEDORES: 'productos_proveedores',
+                  COTIZACIONES: 'cotizaciones_imporfactory',
+                  VENTAS: 'ventas_imporfactory',
+                  ASESOR: 'asesor',
+                };
 
-            const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
-              mensajeGPT
-            );
+                // Verifica si la respuesta está mapeada
+                const respuesta = respuesta_asistente.respuesta;
 
-            const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
-              mensajeGPT
-            );
+                if (estadoMap[respuesta]) {
+                  //aqui meter filtro para que si dice asesor se reaccion a asesor nuevamente 
+                  // si viene de cualquier otra IA
+                  await ClientesChatCenter.update(
+                    { estado_contacto: estadoMap[respuesta] },
+                    { where: { id: id_cliente } }
+                  );
 
-            if (pedidoConfirmado) {
-              // Extraer valores usando regex
-              const nombre =
-                mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
-              const telefono =
-                mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
-              const provincia =
-                mensajeGPT.match(/📍 Provincia:\s*(.+)/)?.[1]?.trim() || '';
-              const ciudad =
-                mensajeGPT.match(/📍 Ciudad:\s*(.+)/)?.[1]?.trim() || '';
-              const direccion =
-                mensajeGPT.match(/🏡 Dirección:\s*(.+)/)?.[1]?.trim() || '';
-              const producto =
-                mensajeGPT.match(/📦 Producto:\s*(.+)/)?.[1]?.trim() || '';
-              const precio =
-                mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
+                  switch (respuesta) {
+                    case 'PLATAFORMAS_Y_CLASES':
+                    case 'PRODUCTOS_Y_PROVEEDORES':
+                    case 'COTIZACIONES':
+                    case 'VENTAS':
+                      // Reenviar al asistente GPT
+                      nueva_respuesta_asistente =
+                        await enviarAsistenteGptImporfactory({
+                          mensaje: texto_mensaje,
+                          id_plataforma,
+                          id_configuracion,
+                          telefono: phone_whatsapp_from,
+                          api_key_openai,
+                          id_thread,
+                          business_phone_id,
+                          accessToken,
+                          estado_contacto: estadoMap[respuesta],
+                        });
 
-              // Variables listas
-              console.log('📦 Datos extraídos del pedido:');
-              console.log({
-                nombre,
-                telefono,
-                provincia,
-                ciudad,
-                direccion,
-                producto,
-                precio,
-              });
+                      // 2) Detectar si la nueva respuesta menciona 'asesor'
+                      const respuestaNueva =
+                        nueva_respuesta_asistente.respuesta || '';
+                      const mencionaAsesor = /asesor/i.test(respuestaNueva); // detecta asesor / Asesor / ASESOR
 
-              await ClientesChatCenter.update(
-                { pedido_confirmado: 1 },
-                { where: { id: id_cliente } }
+                      if (mencionaAsesor) {
+                        // 3) Cambiar estado a asesor
+                        await ClientesChatCenter.update(
+                          { estado_contacto: 'asesor' },
+                          { where: { id: id_cliente } }
+                        );
+
+                        // 4) Ejecutar acción especial
+                       /*  await realizarAccionEspecialAsesor({
+                          id_cliente,
+                          phone_whatsapp_from,
+                          business_phone_id,
+                          accessToken,
+                        }); */
+
+                      }
+                      await enviarMensajeWhatsapp({
+                        phone_whatsapp_to: phone_whatsapp_from,
+                        texto_mensaje: nueva_respuesta_asistente.respuesta,
+                        business_phone_id,
+                        accessToken,
+                        id_configuracion,
+                        responsable: nueva_respuesta_asistente.tipo_asistente,
+                      });
+                      break;
+
+                    case 'ASESOR':
+                      // 🔥 Aquí metes tu acción especial
+                      /* await realizarAccionEspecialAsesor({
+                        id_cliente,
+                        phone_whatsapp_from,
+                        business_phone_id,
+                        accessToken,
+                      }); */
+                      break;
+                  }
+                }
+              } else if (estado_contacto != 'asesor') {
+                await enviarMensajeWhatsapp({
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  texto_mensaje: respuesta_asistente.respuesta,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                });
+              }
+            } else if (tipo_configuracion == 'ventas') {
+              const mensajeGPT = respuesta_asistente.respuesta;
+              const tipoInfo = respuesta_asistente.tipoInfo;
+
+              const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
+                mensajeGPT
               );
 
-              if (tipoInfo == 'datos_pedido') {
-                /* console.log('entro en condicion datos pedidos'); */
-              }
-            } else if (citaConfirmada) {
-              // Extraer valores usando regex
-              const nombre =
-                mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
-              const telefono =
-                mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
-              const correo =
-                mensajeGPT.match(/📍 Correo:\s*(.+)/)?.[1]?.trim() || '';
-              const servicio =
+              const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
                 mensajeGPT
-                  .match(/📍 Servicio que desea:\s*(.+)/)?.[1]
-                  ?.trim() || '';
-              const fecha_hora_inicio =
-                mensajeGPT
-                  .match(/🕒 Fecha y hora de inicio:\s*(.+)/)?.[1]
-                  ?.trim() || '';
-              const fecha_hora_fin =
-                mensajeGPT
-                  .match(/🕒 Fecha y hora de fin:\s*(.+)/)?.[1]
-                  ?.trim() || '';
-              const precio =
-                mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() || '';
+              );
 
-              // Convierte las fechas locales a UTC usando la zona horaria 'America/Guayaquil'
-              const moment = require('moment-timezone');
+              if (pedidoConfirmado) {
+                // Extraer valores usando regex
+                const nombre =
+                  mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+                const telefono =
+                  mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+                const provincia =
+                  mensajeGPT.match(/📍 Provincia:\s*(.+)/)?.[1]?.trim() || '';
+                const ciudad =
+                  mensajeGPT.match(/📍 Ciudad:\s*(.+)/)?.[1]?.trim() || '';
+                const direccion =
+                  mensajeGPT.match(/🏡 Dirección:\s*(.+)/)?.[1]?.trim() || '';
+                const producto =
+                  mensajeGPT.match(/📦 Producto:\s*(.+)/)?.[1]?.trim() || '';
+                const precio =
+                  mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() ||
+                  '';
 
-              const fecha_hora_inicio_utc = moment
-                .tz(fecha_hora_inicio, 'America/Guayaquil')
-                .utc()
-                .format();
-              const fecha_hora_fin_utc = moment
-                .tz(fecha_hora_fin, 'America/Guayaquil')
-                .utc()
-                .format();
-              // Variables listas
-              console.log('📦 Datos extraídos de la cita:');
-              console.log({
-                nombre,
-                telefono,
-                correo,
-                servicio,
-                fecha_hora_inicio_utc,
-                fecha_hora_fin_utc,
-                precio,
-              });
+                // Variables listas
+                console.log('📦 Datos extraídos del pedido:');
+                console.log({
+                  nombre,
+                  telefono,
+                  provincia,
+                  ciudad,
+                  direccion,
+                  producto,
+                  precio,
+                });
 
-              /* consultar id del calendarios */
-              const calendars = await db.query(
-                `SELECT id
+                await ClientesChatCenter.update(
+                  { pedido_confirmado: 1 },
+                  { where: { id: id_cliente } }
+                );
+
+                if (tipoInfo == 'datos_pedido') {
+                  /* console.log('entro en condicion datos pedidos'); */
+                }
+              } else if (citaConfirmada) {
+                // Extraer valores usando regex
+                const nombre =
+                  mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+                const telefono =
+                  mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+                const correo =
+                  mensajeGPT.match(/📍 Correo:\s*(.+)/)?.[1]?.trim() || '';
+                const servicio =
+                  mensajeGPT
+                    .match(/📍 Servicio que desea:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const fecha_hora_inicio =
+                  mensajeGPT
+                    .match(/🕒 Fecha y hora de inicio:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const fecha_hora_fin =
+                  mensajeGPT
+                    .match(/🕒 Fecha y hora de fin:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const precio =
+                  mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() ||
+                  '';
+
+                // Convierte las fechas locales a UTC usando la zona horaria 'America/Guayaquil'
+                const moment = require('moment-timezone');
+
+                const fecha_hora_inicio_utc = moment
+                  .tz(fecha_hora_inicio, 'America/Guayaquil')
+                  .utc()
+                  .format();
+                const fecha_hora_fin_utc = moment
+                  .tz(fecha_hora_fin, 'America/Guayaquil')
+                  .utc()
+                  .format();
+                // Variables listas
+                console.log('📦 Datos extraídos de la cita:');
+                console.log({
+                  nombre,
+                  telefono,
+                  correo,
+                  servicio,
+                  fecha_hora_inicio_utc,
+                  fecha_hora_fin_utc,
+                  precio,
+                });
+
+                /* consultar id del calendarios */
+                const calendars = await db.query(
+                  `SELECT id
                   FROM calendars 
                   WHERE account_id  = ?`,
-                {
-                  replacements: [id_configuracion],
-                  type: db.QueryTypes.SELECT,
-                }
-              );
-              const id_calendars = calendars[0].id;
-              /* consultar id del calendarios */
+                  {
+                    replacements: [id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  }
+                );
+                const id_calendars = calendars[0].id;
+                /* consultar id del calendarios */
 
-              /* consultar id del usuario y sub_usuario */
-              const usuario = await db.query(
-                `SELECT sb.id_sub_usuario, sb.id_usuario
+                /* consultar id del usuario y sub_usuario */
+                const usuario = await db.query(
+                  `SELECT sb.id_sub_usuario, sb.id_usuario
                   FROM configuraciones c
                   INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
                   WHERE c.id  = ? AND sb.rol = "administrador" LIMIT 1`,
-                {
-                  replacements: [id_configuracion],
-                  type: db.QueryTypes.SELECT,
-                }
-              );
-              const id_usuarios = usuario[0].id_usuario;
-              const id_sub_usuario = usuario[0].id_sub_usuario;
-              /* consultar id del usuario y sub_usuario */
-
-              const payload = {
-                assigned_user_id: id_sub_usuario,
-                booked_tz: 'America/Guayaquil',
-                calendar_id: id_calendars,
-                create_meet: true,
-                created_by_user_id: id_usuarios,
-                description: '',
-                end: fecha_hora_fin_utc,
-                invitees: [
                   {
-                    name: nombre,
-                    email: correo,
-                    phone: telefono,
-                  },
-                ],
-                location_text: 'online',
-                meeting_url: null,
-                start: fecha_hora_inicio_utc,
-                status: 'Agendado',
-                title: nombre + ' - ' + servicio,
-              };
-
-              console.log(JSON.stringify(payload));
-
-              servicioAppointments.createAppointment(payload, id_usuarios);
-            }
-
-            // Buscar URLs de imágenes y videos usando regex
-            const urls_imagenes = (
-              mensajeGPT.match(
-                /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/gi
-              ) || []
-            )
-              .map((s) => {
-                const m = s.match(
-                  /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/i
+                    replacements: [id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  }
                 );
-                return m ? m[1] || m[2] : null;
-              })
-              .filter(Boolean);
+                const id_usuarios = usuario[0].id_usuario;
+                const id_sub_usuario = usuario[0].id_sub_usuario;
+                /* consultar id del usuario y sub_usuario */
 
-            const urls_videos = (
-              mensajeGPT.match(
-                /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi
-              ) || []
-            )
-              .map((s) => {
-                const m = s.match(
-                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i
-                );
-                return m ? m[1] || m[2] : null;
-              })
-              .filter(Boolean);
+                const payload = {
+                  assigned_user_id: id_sub_usuario,
+                  booked_tz: 'America/Guayaquil',
+                  calendar_id: id_calendars,
+                  create_meet: true,
+                  created_by_user_id: id_usuarios,
+                  description: '',
+                  end: fecha_hora_fin_utc,
+                  invitees: [
+                    {
+                      name: nombre,
+                      email: correo,
+                      phone: telefono,
+                    },
+                  ],
+                  location_text: 'online',
+                  meeting_url: null,
+                  start: fecha_hora_inicio_utc,
+                  status: 'Agendado',
+                  title: nombre + ' - ' + servicio,
+                };
 
-            // Enviar imágenes
-            for (const url_img of urls_imagenes) {
-              if (url_img) {
-                await enviarMedioWhatsapp({
-                  tipo: 'image',
-                  url_archivo: url_img,
+                console.log(JSON.stringify(payload));
+
+                servicioAppointments.createAppointment(payload, id_usuarios);
+              }
+
+              // Buscar URLs de imágenes y videos usando regex
+              const urls_imagenes = (
+                mensajeGPT.match(
+                  /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/gi
+                ) || []
+              )
+                .map((s) => {
+                  const m = s.match(
+                    /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/i
+                  );
+                  return m ? m[1] || m[2] : null;
+                })
+                .filter(Boolean);
+
+              const urls_videos = (
+                mensajeGPT.match(
+                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi
+                ) || []
+              )
+                .map((s) => {
+                  const m = s.match(
+                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i
+                  );
+                  return m ? m[1] || m[2] : null;
+                })
+                .filter(Boolean);
+
+              // Enviar imágenes
+              for (const url_img of urls_imagenes) {
+                if (url_img) {
+                  await enviarMedioWhatsapp({
+                    tipo: 'image',
+                    url_archivo: url_img,
+                    phone_whatsapp_to: phone_whatsapp_from,
+                    business_phone_id,
+                    accessToken,
+                    id_configuracion,
+                    responsable: respuesta_asistente.tipo_asistente,
+                  });
+                }
+              }
+
+              // Enviar videos
+              for (const url_video of urls_videos) {
+                if (url_video) {
+                  await enviarMedioWhatsapp({
+                    tipo: 'video',
+                    url_archivo: url_video,
+                    phone_whatsapp_to: phone_whatsapp_from,
+                    business_phone_id,
+                    accessToken,
+                    id_configuracion,
+                    responsable: respuesta_asistente.tipo_asistente,
+                  });
+                }
+              }
+
+              // Eliminar las líneas con URLs del mensaje
+              let solo_texto = mensajeGPT
+                .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
+                .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
+                .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
+                .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
+                .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
+                .replace(/\[cita_confirmada\]:\s*true/gi, ''); // Eliminar confirmación de cita
+
+              solo_texto = solo_texto.trim();
+
+              if (solo_texto !== '') {
+                await enviarMensajeWhatsapp({
                   phone_whatsapp_to: phone_whatsapp_from,
+                  texto_mensaje: solo_texto,
                   business_phone_id,
                   accessToken,
                   id_configuracion,
                   responsable: respuesta_asistente.tipo_asistente,
                 });
               }
-            }
-
-            // Enviar videos
-            for (const url_video of urls_videos) {
-              if (url_video) {
-                await enviarMedioWhatsapp({
-                  tipo: 'video',
-                  url_archivo: url_video,
-                  phone_whatsapp_to: phone_whatsapp_from,
-                  business_phone_id,
-                  accessToken,
-                  id_configuracion,
-                  responsable: respuesta_asistente.tipo_asistente,
-                });
-              }
-            }
-
-            // Eliminar las líneas con URLs del mensaje
-            let solo_texto = mensajeGPT
-              .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
-              .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
-              .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
-              .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
-              .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
-              .replace(/\[cita_confirmada\]:\s*true/gi, ''); // Eliminar confirmación de cita
-
-            solo_texto = solo_texto.trim();
-
-            if (solo_texto !== '') {
-              await enviarMensajeWhatsapp({
-                phone_whatsapp_to: phone_whatsapp_from,
-                texto_mensaje: solo_texto,
-                business_phone_id,
-                accessToken,
-                id_configuracion,
-                responsable: respuesta_asistente.tipo_asistente,
-              });
             }
           }
         }

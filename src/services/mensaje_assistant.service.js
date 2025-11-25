@@ -458,6 +458,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
     api_key_openai,
     business_phone_id,
     accessToken,
+    estado_contacto,
   } = body;
 
   try {
@@ -485,11 +486,10 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     // 1. Obtener assistants activos
     const assistants = await db.query(
-      `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, bloque_productos, ofrecer 
-     FROM openai_assistants 
-     WHERE id_configuracion = ? AND activo = 1`,
+      `SELECT tipo, assistant_id 
+     FROM oia_asistentes 
+     WHERE tipo = '${estado_contacto}'`,
       {
-        
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
@@ -507,80 +507,10 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     let bloqueInfo = '';
     let tipoInfo = null;
-
-    let assistant_id = null;
-    let tipo_asistente = '';
+    console.log('assistants[0].assistant_id: ' + assistants[0].assistant_id);
+    let assistant_id = assistants[0].assistant_id;
+    let tipo_asistente = `IA_${estado_contacto}`;
     let tiempo_remarketing = null;
-
-    if (id_plataforma) {
-      // Si tienes IA de ventas y 'ofrecer' es "servicios", omites la consulta de datos del cliente
-      const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
-
-      if (sales && sales.ofrecer == 'productos') {
-        const datosCliente = await obtenerDatosClienteParaAssistant(
-          id_plataforma,
-          telefono,
-          id_thread
-        );
-        bloqueInfo = datosCliente.bloque || '';
-        tipoInfo = datosCliente.tipo || null;
-      } else if (sales && sales.ofrecer == 'servicios') {
-        const datosCliente = await obtenerDatosCalendarioParaAssistant(
-          id_configuracion
-        );
-        bloqueInfo = datosCliente.bloque || '';
-        tipoInfo = datosCliente.tipo || null;
-      }
-    }
-
-    if (tipoInfo === 'datos_guia') {
-      const logistic = assistants.find(
-        (a) => a.tipo.toLowerCase() === 'logistico'
-      );
-      assistant_id = logistic?.assistant_id;
-      tipo_asistente = 'IA_logistica';
-    } else if (tipoInfo === 'datos_pedido') {
-      console.log('datos_pedido');
-      await log(
-        `⚠️ Intento de procesar un pedido para id_thread: ${id_thread}, pero el asistente no responde a pedidos.`
-      );
-      return {
-        status: 400,
-        error: 'El asistente no responde a pedidos',
-      };
-    }
-    {
-      const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
-      assistant_id = sales?.assistant_id;
-      tipo_asistente = 'IA_ventas';
-      tiempo_remarketing = sales?.tiempo_remarketing;
-
-      if (sales.bloque_productos) {
-        if (openai_thread.bloque_productos != sales.bloque_productos) {
-          if (sales.ofrecer == 'productos') {
-            bloqueInfo +=
-              '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
-            bloqueInfo += sales.bloque_productos;
-          } else if (sales.ofrecer == 'servicios') {
-            bloqueInfo +=
-              '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
-            bloqueInfo += sales.bloque_productos;
-          }
-
-          // Actualizar tabla openai_threads con numero_factura y numero_guia
-          const updateSql = `
-          UPDATE openai_threads
-          SET bloque_productos = ?
-          WHERE thread_id = ?
-        `;
-          /* console.log('thread_id: ' + id_thread); */
-          await db.query(updateSql, {
-            replacements: [sales.bloque_productos, id_thread],
-            type: db.QueryTypes.UPDATE,
-          });
-        }
-      }
-    }
 
     if (!assistant_id) {
       await log(
@@ -796,50 +726,6 @@ async function procesarAsistenteMensajeImporfactory(body) {
       .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
       ?.text?.value;
 
-    // 5. Guardar remarketing si aplica
-    if (tiempo_remarketing > 0) {
-      const tiempoDisparo = new Date(Date.now() + tiempo_remarketing * 3600000);
-
-      const existing = await db.query(
-        `SELECT tiempo_disparo FROM remarketing_pendientes
-       WHERE telefono = ? AND id_configuracion = ? AND DATE(tiempo_disparo) = DATE(?)
-       LIMIT 1`,
-        {
-          replacements: [telefono, id_configuracion, tiempoDisparo],
-          type: db.QueryTypes.SELECT,
-        }
-      );
-
-      if (existing.length === 0) {
-        await db
-          .query(
-            `INSERT INTO remarketing_pendientes
-         (telefono, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            {
-              replacements: [
-                telefono,
-                id_configuracion,
-                business_phone_id,
-                accessToken,
-                api_key_openai,
-                assistant_id,
-                respuesta,
-                tipo_asistente,
-                tiempoDisparo,
-                id_thread,
-              ],
-              type: db.QueryTypes.INSERT,
-            }
-          )
-          .catch(async (err) => {
-            await log(
-              `⚠️ Error al insertar remarketing para telefono: ${telefono}, id_thread: ${id_thread}. Error: ${err.message}`
-            );
-          });
-      }
-    }
-
     /* console.log('bloqueInfo: ' + bloqueInfo); */
 
     return {
@@ -862,5 +748,5 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
 module.exports = {
   procesarAsistenteMensajeVentas,
-  procesarAsistenteMensajeImporfactory
+  procesarAsistenteMensajeImporfactory,
 };

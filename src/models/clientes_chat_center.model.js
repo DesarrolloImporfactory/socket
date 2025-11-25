@@ -138,6 +138,21 @@ const ClientesChatCenter = db.define(
       type: DataTypes.BLOB,
       allowNull: true,
     },
+    estado_contacto : {
+      type: DataTypes.ENUM('contacto_inicial','plataformas_clases','productos_proveedores','ventas_imporfactory','asesor','cotizaciones_imporfactory'),
+      allowNull: true,
+      defaultValue: 'contacto_inicial',
+    },
+    direccion: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    productos: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     tableName: 'clientes_chat_center',

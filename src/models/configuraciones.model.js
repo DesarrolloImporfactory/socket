@@ -11,6 +11,11 @@ const Configuraciones = db.define(
       autoIncrement: true,
       comment: 'Clave Primaria',
     },
+    pais: {
+      type: DataTypes.STRING(2),
+      allowNull: true,
+      defaultValue: "ec",
+    },
     id_plataforma: {
       type: DataTypes.BIGINT,
       allowNull: true,
@@ -80,6 +85,11 @@ const Configuraciones = db.define(
       type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
+    },
+    tipo_configuracion: {
+      type: DataTypes.ENUM('imporfactory', 'ventas'),
+      allowNull: true,
+      defaultValue: 'ventas',
     },
   },
   {

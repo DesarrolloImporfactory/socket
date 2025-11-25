@@ -4,6 +4,7 @@ const AppError = require('../utils/appError');
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
+const Historial_encargados = require('../models/historial_encargados.model');
 const MessengerConversation = require('../models/messenger_conversations.model');
 const InstagramConversation = require('../models/instagram_conversations.model');
 
@@ -207,6 +208,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     id_encargado,
     id_departamento,
     id_cliente_chat_center, // para WhatsApp
+    motivo,
     id_conversation, // para Messenger/Instagram
   } = req.body;
 
@@ -217,10 +219,6 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     });
   }
 
-  const fields = {};
-  if (id_encargado != null) fields.id_encargado = id_encargado;
-  if (id_departamento != null) fields.id_departamento = id_departamento;
-
   switch (source) {
     case 'ms': {
       if (!id_conversation) {
@@ -229,9 +227,12 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
           message: 'Falta id_conversation para Messenger',
         });
       }
-      await MessengerConversation.update(fields, {
-        where: { id: id_conversation },
-      });
+      await MessengerConversation.update(
+        { id_encargado: id_encargado, id_departamento: id_departamento },
+        {
+          where: { id: id_conversation },
+        }
+      );
       break;
     }
     case 'ig': {
@@ -241,9 +242,12 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
           message: 'Falta id_conversation para Instagram',
         });
       }
-      await InstagramConversation.update(fields, {
-        where: { id: id_conversation },
-      });
+      await InstagramConversation.update(
+        { id_encargado: id_encargado, id_departamento: id_departamento },
+        {
+          where: { id: id_conversation },
+        }
+      );
       break;
     }
     // WhatsApp por defecto (o 'wa')
@@ -254,9 +258,36 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
           message: 'Falta id_cliente_chat_center para WhatsApp',
         });
       }
-      await Clientes_chat_center.update(fields, {
+
+      // 1. Obtener el registro actual
+      const clienteActual = await Clientes_chat_center.findOne({
         where: { id: id_cliente_chat_center },
+        attributes: ['id_encargado'], // Solo traemos lo necesario
       });
+
+      if (!clienteActual) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'Cliente no encontrado',
+        });
+      }
+
+      // 2. Guardar el id_encargado actual en variable
+      const id_encargado_anterior = clienteActual.id_encargado;
+
+      await Historial_encargados.create({
+        id_cliente_chat_center,
+        id_encargado_anterior,
+        id_encargado_nuevo: id_encargado,
+        motivo,
+      });
+
+      await Clientes_chat_center.update(
+        { id_encargado: id_encargado, id_departamento: id_departamento },
+        {
+          where: { id: id_cliente_chat_center },
+        }
+      );
       break;
     }
   }
@@ -312,6 +343,13 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
           message: 'id_cliente_chat_center es requerido para WhatsApp',
         });
       }
+
+      await Historial_encargados.create({
+        id_cliente_chat_center,
+        id_encargado_nuevo: id_encargado,
+        motivo: 'Auto-asignacion de chat',
+      });
+
       await Clientes_chat_center.update(
         { id_encargado },
         { where: { id: id_cliente_chat_center } }
