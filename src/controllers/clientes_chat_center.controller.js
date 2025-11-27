@@ -418,6 +418,9 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           VENTAS: [],
           ASESOR: [],
           COTIZACIONES: [],
+          IA_VENTAS: [],
+          GENERAR_GUIA: [],
+          SEGUIMIENTO: [],
         },
       });
     }
@@ -430,6 +433,9 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       VENTAS: [],
       ASESOR: [],
       COTIZACIONES: [],
+      IA_VENTAS: [],
+      GENERAR_GUIA: [],
+      SEGUIMIENTO: [],
     };
 
     // 4) Clasificar cada contacto según su estado
@@ -457,8 +463,20 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           data.ASESOR.push(c);
           break;
 
-          case 'cotizaciones_imporfactory':
+        case 'cotizaciones_imporfactory':
           data.COTIZACIONES.push(c);
+          break;
+
+        case 'ia_ventas':
+          data.IA_VENTAS.push(c);
+          break;
+
+        case 'generar_guia':
+          data.GENERAR_GUIA.push(c);
+          break;
+
+        case 'seguimiento':
+          data.SEGUIMIENTO.push(c);
           break;
 
         default:

@@ -583,7 +583,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           console.log('tipo_configuracion:' + tipo_configuracion);
 
-          // Enviar mensaje al asistente GPT
           if (tipo_configuracion == 'imporfactory') {
             respuesta_asistente = await enviarAsistenteGptImporfactory({
               mensaje: texto_mensaje,
@@ -596,21 +595,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               accessToken,
               estado_contacto,
             });
-          } else if (tipo_configuracion == 'ventas') {
-            respuesta_asistente = await enviarAsistenteGptVentas({
-              mensaje: texto_mensaje,
-              id_plataforma,
-              id_configuracion,
-              telefono: phone_whatsapp_from,
-              api_key_openai,
-              id_thread,
-              business_phone_id,
-              accessToken,
-            });
-          }
 
-          if (respuesta_asistente?.status === 200) {
-            if (tipo_configuracion == 'imporfactory') {
+            if (respuesta_asistente?.status === 200) {
               if (estado_contacto == 'contacto_inicial') {
                 // Mapeo de respuestas → estados en la DB
                 const estadoMap = {
@@ -625,7 +611,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 const respuesta = respuesta_asistente.respuesta;
 
                 if (estadoMap[respuesta]) {
-                  //aqui meter filtro para que si dice asesor se reaccion a asesor nuevamente 
+                  //aqui meter filtro para que si dice asesor se reaccion a asesor nuevamente
                   // si viene de cualquier otra IA
                   await ClientesChatCenter.update(
                     { estado_contacto: estadoMap[respuesta] },
@@ -664,13 +650,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                         );
 
                         // 4) Ejecutar acción especial
-                       /*  await realizarAccionEspecialAsesor({
+                        /*  await realizarAccionEspecialAsesor({
                           id_cliente,
                           phone_whatsapp_from,
                           business_phone_id,
                           accessToken,
                         }); */
-
                       }
                       await enviarMensajeWhatsapp({
                         phone_whatsapp_to: phone_whatsapp_from,
@@ -703,7 +688,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   responsable: respuesta_asistente.tipo_asistente,
                 });
               }
-            } else if (tipo_configuracion == 'ventas') {
+            }
+          } else if (tipo_configuracion == 'ventas') {
+            respuesta_asistente = await enviarAsistenteGptVentas({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+            });
+
+            if (respuesta_asistente?.status === 200) {
               const mensajeGPT = respuesta_asistente.respuesta;
               const tipoInfo = respuesta_asistente.tipoInfo;
 

@@ -50,7 +50,13 @@ const obtenerDatosClienteParaAssistant = async (
   `;
 
   const [factura] = await db_2.query(sql, {
-    replacements: [id_plataforma, id_plataforma, id_plataforma, telefono, telefono],
+    replacements: [
+      id_plataforma,
+      id_plataforma,
+      id_plataforma,
+      telefono,
+      telefono,
+    ],
     type: db_2.QueryTypes.SELECT,
   });
 
@@ -148,7 +154,9 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
 
   // Crear un bloque organizado con las citas
   let tipoDato = 'datos_servicio';
-  let fechaActual = moment().tz("America/Guayaquil").format('YYYY-MM-DD HH:mm:ss');
+  let fechaActual = moment()
+    .tz('America/Guayaquil')
+    .format('YYYY-MM-DD HH:mm:ss');
   let bloque = `🧾 **Fecha actual (${fechaActual}), Citas ocupadas datos_servicio detectadas:**\n\n`;
 
   // Formatear y agregar cada cita al bloque
@@ -160,6 +168,56 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     bloque += `Cita ${index + 1}:\n`;
     bloque += `- **Inicio:** ${inicioCita}\n`;
     bloque += `- **Fin:** ${finCita}\n\n`;
+  });
+
+  return {
+    bloque,
+    tipo: tipoDato,
+  };
+};
+
+const obtenerCalendarioClasImporfactory = async () => {
+  // Consulta combinada para obtener datos con guía o pedido
+  const sql = `
+    SELECT 
+      title, description, event_date, target_url
+    FROM banner_calendar_events 
+    WHERE
+    active = 1 AND
+    event_date > NOW()
+    ORDER BY event_date DESC 
+  `;
+
+  // Ejecutar la consulta SQL
+  const calendario = await db_2.query(sql, {
+    type: db_2.QueryTypes.SELECT,
+  });
+
+  // Verificar si no hay datos
+  if (!calendario || calendario.length === 0) {
+    return {
+      bloque: 'No hay clases programadas.',
+      tipo: 'datos_clases',
+    };
+  }
+
+  // Crear un bloque organizado con las citas
+  let tipoDato = 'datos_clases';
+  let fechaActual = moment()
+    .tz('America/Guayaquil')
+    .format('YYYY-MM-DD HH:mm:ss');
+  let bloque = `🧾 **Fecha actual es decir la fecha de hoy(${fechaActual}), Clases programadas datos_clases detectadas:**\n\n`;
+
+  // Formatear y agregar cada cita al bloque
+  calendario.forEach((cita, index) => {
+    // Convertir las fechas a un formato legible
+    const inicioCita = new Date(cita.event_date).toLocaleString();
+
+    bloque += `Clase ${cita.title}:\n`;
+    bloque += `- **Fecha:** ${inicioCita}\n`;
+    bloque += `- **titulo:** ${cita.title}\n`;
+    bloque += `- **Descripcion:** ${cita.description}\n`;
+    bloque += `- **URL:** ${cita.target_url}\n`;
   });
 
   return {
@@ -408,4 +466,5 @@ module.exports = {
   obtenerDatosCalendarioParaAssistant,
   informacionProductos,
   informacionProductosVinculado,
+  obtenerCalendarioClasImporfactory,
 };

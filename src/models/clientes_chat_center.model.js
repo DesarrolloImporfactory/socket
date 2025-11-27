@@ -139,7 +139,7 @@ const ClientesChatCenter = db.define(
       allowNull: true,
     },
     estado_contacto : {
-      type: DataTypes.ENUM('contacto_inicial','plataformas_clases','productos_proveedores','ventas_imporfactory','asesor','cotizaciones_imporfactory'),
+      type: DataTypes.ENUM('contacto_inicial','plataformas_clases','productos_proveedores','ventas_imporfactory','asesor','cotizaciones_imporfactory', 'ia_ventas', 'generar_guia', 'seguimiento'),
       allowNull: true,
       defaultValue: 'contacto_inicial',
     },

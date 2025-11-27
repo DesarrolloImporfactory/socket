@@ -4,6 +4,7 @@ const { db } = require('../database/config');
 const {
   obtenerDatosClienteParaAssistant,
   obtenerDatosCalendarioParaAssistant,
+  obtenerCalendarioClasImporfactory,
 } = require('../utils/datosClienteAssistant'); // Ajustar según organización
 const fs = require('fs').promises;
 const path = require('path');
@@ -507,10 +508,9 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     let bloqueInfo = '';
     let tipoInfo = null;
-    console.log('assistants[0].assistant_id: ' + assistants[0].assistant_id);
+
     let assistant_id = assistants[0].assistant_id;
     let tipo_asistente = `IA_${estado_contacto}`;
-    let tiempo_remarketing = null;
 
     if (!assistant_id) {
       await log(
@@ -520,6 +520,12 @@ async function procesarAsistenteMensajeImporfactory(body) {
         status: 400,
         error: 'No se encontró un assistant válido para este contexto',
       };
+    }
+
+    console.log("estado_contacto: "+estado_contacto);
+    if (estado_contacto == 'plataformas_clases') {
+      const datosCliente = await obtenerCalendarioClasImporfactory();
+      bloqueInfo = datosCliente.bloque || '';
     }
 
     const headers = {
@@ -535,7 +541,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
           `https://api.openai.com/v1/threads/${id_thread}/messages`,
           {
             role: 'user',
-            content: `🧾 Información del cliente:\n\n${bloqueInfo}`,
+            content: `${bloqueInfo}`,
           },
           { headers }
         )
@@ -726,7 +732,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
       ?.text?.value;
 
-    /* console.log('bloqueInfo: ' + bloqueInfo); */
+    console.log('bloqueInfo: ' + bloqueInfo);
 
     return {
       status: 200,
