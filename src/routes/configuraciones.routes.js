@@ -12,7 +12,10 @@ const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
 const validarReactivarConLimite = (req, res, next) => {
   const raw = req.body?.suspendido;
   const quiereActivar =
-    raw === false || raw === 0 || raw === '0' || String(raw).toLowerCase() === 'false';
+    raw === false ||
+    raw === 0 ||
+    raw === '0' ||
+    String(raw).toLowerCase() === 'false';
 
   // Si es suspender, no validamos cupo
   if (!quiereActivar) return next();
@@ -22,8 +25,6 @@ const validarReactivarConLimite = (req, res, next) => {
 };
 
 router.use(protect);
-
-
 
 router.post(
   '/obtener_template_transportadora',
@@ -43,6 +44,12 @@ router.post(
 );
 
 router.post(
+  '/listar_admin_conexiones',
+  checkPlanActivo,
+  configuracionesController.listarAdminConexiones
+);
+
+router.post(
   '/listar_configuraciones',
   configuracionesController.listarConfiguraciones
 );
@@ -53,10 +60,9 @@ router.post(
   configuracionesController.agregarConfiguracion
 );
 router.post(
-  '/toggle_suspension', 
+  '/toggle_suspension',
   validarReactivarConLimite,
   configuracionesController.toggleSuspension
 );
-
 
 module.exports = router;

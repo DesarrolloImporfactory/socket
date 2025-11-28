@@ -2,8 +2,6 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
 const { db } = require('../database/config');
-const Configuraciones = require('../models/configuraciones.model');
-const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 
 exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
@@ -153,6 +151,84 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
     return res.json({ status: 'success', data: rows });
   } catch (e) {
     console.error('listar_conexiones:', e);
+    return res.status(500).json({ status: 'error', message: 'Error interno' });
+  }
+});
+
+exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT
+        c.id,
+        c.id_plataforma,
+        c.nombre_configuracion,
+        c.telefono,
+        c.id_telefono,       -- PHONE_NUMBER_ID (WPP)
+        c.id_whatsapp,       -- WABA_ID        (WPP)
+        c.webhook_url,
+        c.metodo_pago,
+        c.suspendido,
+        CASE
+          WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
+          ELSE 0
+        END AS conectado,
+
+        /* === Estado de Messenger con su tabla messenger_pages === */
+        EXISTS (
+          SELECT 1
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+        ) AS messenger_conectado,
+
+        /* Opcional: nombre e id de la última página conectada (para tooltip/pill) */
+        (
+          SELECT mp.page_name
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+          ORDER BY mp.id_messenger_page DESC
+          LIMIT 1
+        ) AS messenger_page_name,
+
+        (
+          SELECT mp.page_id
+          FROM messenger_pages mp
+          WHERE mp.id_configuracion = c.id
+            AND mp.subscribed = 1
+            AND mp.status = 'active'
+          ORDER BY mp.id_messenger_page DESC
+          LIMIT 1
+        ) AS messenger_page_id,
+
+        /* Instagram: solo estado */
+        EXISTS (
+          SELECT 1
+          FROM instagram_pages ip
+          WHERE ip.id_configuracion = c.id
+            AND ip.subscribed = 1
+            AND ip.status = 'active'
+        ) AS instagram_conectado,
+
+        /* TikTok Developers (Login Kit): solo estado */
+        EXISTS (
+          SELECT 1
+          FROM tiktok_devs_connections tdc
+          WHERE tdc.id_configuracion = c.id
+        ) AS tiktok_conectado
+
+      FROM configuraciones c
+      WHERE c.suspendido = 0
+      ORDER BY c.id DESC
+      `
+    );
+
+    return res.json({ status: 'success', data: rows });
+  } catch (e) {
+    console.error('listar_admin_conexiones:', e);
     return res.status(500).json({ status: 'error', message: 'Error interno' });
   }
 });
