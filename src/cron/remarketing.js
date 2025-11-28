@@ -3,6 +3,7 @@ const cron = require('node-cron');
 const axios = require('axios');
 const { db } = require('../database/config');
 const { sendWhatsappMessage } = require('../services/whatsapp.service');
+const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
 async function withLock(lockName, fn) {
   // intenta tomar el lock hasta 1s
@@ -95,6 +96,11 @@ cron.schedule('*/5 * * * *', async () => {
               id_configuracion: record.id_configuracion,
               responsable: 'IA_remarketing',
             });
+
+            await ClientesChatCenter.update(
+              { estado_contacto: 'seguimiento' },
+              { where: { id: record.id_cliente_chat_center } }
+            );
 
             await db.query(
               `UPDATE remarketing_pendientes SET enviado = 1 WHERE id = ?`,

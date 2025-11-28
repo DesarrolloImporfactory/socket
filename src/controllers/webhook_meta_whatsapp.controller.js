@@ -690,6 +690,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               }
             }
           } else if (tipo_configuracion == 'ventas') {
+            if (estado_contacto == 'seguimiento') {
+              estado_contacto = 'ia_ventas';
+              await ClientesChatCenter.update(
+                { estado_contacto: 'ia_ventas' },
+                { where: { id: id_cliente } }
+              );
+            }
+
             respuesta_asistente = await enviarAsistenteGptVentas({
               mensaje: texto_mensaje,
               id_plataforma,
@@ -699,9 +707,18 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               id_thread,
               business_phone_id,
               accessToken,
+              estado_contacto,
+              id_cliente,
             });
 
             if (respuesta_asistente?.status === 200) {
+              if (estado_contacto == 'contacto_inicial') {
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'ia_ventas' },
+                  { where: { id: id_cliente } }
+                );
+              }
+
               const mensajeGPT = respuesta_asistente.respuesta;
               const tipoInfo = respuesta_asistente.tipoInfo;
 
@@ -714,7 +731,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               );
 
               if (pedidoConfirmado) {
-                // Extraer valores usando regex
                 const nombre =
                   mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
                 const telefono =
@@ -732,7 +748,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   '';
 
                 // Variables listas
-                console.log('📦 Datos extraídos del pedido:');
+                /* console.log('📦 Datos extraídos del pedido:');
                 console.log({
                   nombre,
                   telefono,
@@ -741,16 +757,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   direccion,
                   producto,
                   precio,
-                });
+                }); */
 
                 await ClientesChatCenter.update(
-                  { pedido_confirmado: 1 },
+                  { estado_contacto: 'generar_guia' },
                   { where: { id: id_cliente } }
                 );
-
-                if (tipoInfo == 'datos_pedido') {
-                  /* console.log('entro en condicion datos pedidos'); */
-                }
               } else if (citaConfirmada) {
                 // Extraer valores usando regex
                 const nombre =

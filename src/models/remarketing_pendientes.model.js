@@ -13,6 +13,10 @@ const RemarketingPendientes = db.define(
       type: DataTypes.STRING(20),
       allowNull: false,
     },
+    id_cliente_chat_center: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
     id_configuracion: {
       type: DataTypes.INTEGER,
       allowNull: false,

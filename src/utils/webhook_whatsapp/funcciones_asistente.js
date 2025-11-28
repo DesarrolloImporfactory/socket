@@ -93,6 +93,8 @@ async function enviarAsistenteGptVentas({
   id_thread,
   business_phone_id,
   accessToken,
+  estado_contacto,
+  id_cliente,
 }) {
   try {
     const data = await procesarAsistenteMensajeVentas({
@@ -104,6 +106,8 @@ async function enviarAsistenteGptVentas({
       id_thread,
       business_phone_id,
       accessToken,
+      estado_contacto,
+      id_cliente,
     });
 
     if (data?.status === 200) {

@@ -48,6 +48,8 @@ async function procesarAsistenteMensajeVentas(body) {
     api_key_openai,
     business_phone_id,
     accessToken,
+    estado_contacto,
+    id_cliente,
   } = body;
 
   try {
@@ -101,49 +103,53 @@ async function procesarAsistenteMensajeVentas(body) {
     let tipo_asistente = '';
     let tiempo_remarketing = null;
 
-    if (id_plataforma) {
-      // Si tienes IA de ventas y 'ofrecer' es "servicios", omites la consulta de datos del cliente
-      const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
+    // Si tienes IA de ventas y 'ofrecer' es "servicios", omites la consulta de datos del cliente
+    const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
 
-      if (sales && sales.ofrecer == 'productos') {
-        const datosCliente = await obtenerDatosClienteParaAssistant(
-          id_plataforma,
-          telefono,
-          id_thread
-        );
-        bloqueInfo = datosCliente.bloque || '';
-        tipoInfo = datosCliente.tipo || null;
-      } else if (sales && sales.ofrecer == 'servicios') {
-        const datosCliente = await obtenerDatosCalendarioParaAssistant(
-          id_configuracion
-        );
-        bloqueInfo = datosCliente.bloque || '';
-        tipoInfo = datosCliente.tipo || null;
+    if (sales && sales.ofrecer == 'servicios') {
+      const datosCliente = await obtenerDatosCalendarioParaAssistant(
+        id_configuracion
+      );
+      bloqueInfo = datosCliente.bloque || '';
+      tipoInfo = datosCliente.tipo || null;
+    }
+
+    let nombre_estado = 'contacto_inicial';
+
+    if (estado_contacto == 'contacto_inicial') {
+      nombre_estado = 'contacto_inicial_ventas';
+      tipo_asistente = 'IA_contacto_ventas';
+    } else if (estado_contacto == 'ia_ventas') {
+      if (sales.ofrecer == 'productos') {
+        nombre_estado = 'ventas_productos';
+        tipo_asistente = 'IA_productos_ventas';
+      } else if (sales.ofrecer == 'servicios') {
+        nombre_estado = 'ventas_servicios';
+        tipo_asistente = 'IA_servicios_ventas';
       }
     }
 
-    if (tipoInfo === 'datos_guia') {
-      const logistic = assistants.find(
-        (a) => a.tipo.toLowerCase() === 'logistico'
-      );
-      assistant_id = logistic?.assistant_id;
-      tipo_asistente = 'IA_logistica';
-    } else if (tipoInfo === 'datos_pedido') {
-      console.log('datos_pedido');
-      await log(
-        `⚠️ Intento de procesar un pedido para id_thread: ${id_thread}, pero el asistente no responde a pedidos.`
-      );
+    const oia_asistentes = await db.query(
+      `SELECT tipo, assistant_id 
+     FROM oia_asistentes 
+     WHERE tipo = '${nombre_estado}'`,
+      {
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!oia_asistentes || oia_asistentes.length === 0) {
+      await log(`⚠️ No se encontró un assistant válido`);
       return {
         status: 400,
-        error: 'El asistente no responde a pedidos',
+        error: 'No se encontró un assistant válido para este contexto',
       };
     }
-    {
-      const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
-      assistant_id = sales?.assistant_id;
-      tipo_asistente = 'IA_ventas';
-      tiempo_remarketing = sales?.tiempo_remarketing;
 
+    assistant_id = oia_asistentes[0].assistant_id;
+    tiempo_remarketing = sales?.tiempo_remarketing;
+
+    if (estado_contacto == 'ia_ventas') {
       if (sales.bloque_productos) {
         if (openai_thread.bloque_productos != sales.bloque_productos) {
           if (sales.ofrecer == 'productos') {
@@ -403,11 +409,12 @@ async function procesarAsistenteMensajeVentas(body) {
         await db
           .query(
             `INSERT INTO remarketing_pendientes
-         (telefono, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (telefono, id_cliente_chat_center, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             {
               replacements: [
                 telefono,
+                id_cliente,
                 id_configuracion,
                 business_phone_id,
                 accessToken,
@@ -522,7 +529,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       };
     }
 
-    console.log("estado_contacto: "+estado_contacto);
+    console.log('estado_contacto: ' + estado_contacto);
     if (estado_contacto == 'plataformas_clases') {
       const datosCliente = await obtenerCalendarioClasImporfactory();
       bloqueInfo = datosCliente.bloque || '';
