@@ -89,6 +89,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
         c.webhook_url,
         c.metodo_pago,
         c.suspendido,
+        c.tipo_configuracion,
         CASE
           WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
           ELSE 0

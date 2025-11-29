@@ -274,6 +274,7 @@ exports.newLogin = async (req, res) => {
         user: usuarioSinPassword,
         id_plataforma: tienda,
         id_configuracion: configuracion.id,
+        tipo_configuracion: configuracion.tipo_configuracion,
       });
     } else if (tipo == 'cursos_imporsuit') {
       let usuarioEncontrado = null;
