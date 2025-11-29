@@ -412,7 +412,6 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
   const {
     id_configuracion,
     nombre_bot,
-    assistant_id,
     activo,
     productos,
     tiempo_remarketing,
@@ -522,13 +521,12 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, ofrecer = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
+        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
         , tomar_productos = ? 
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
           replacements: [
             nombre_bot,
-            assistant_id,
             activo,
             tipo_venta,
             productosJSON,
@@ -543,13 +541,12 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, assistant_id, activo, ofrecer, productos, bloque_productos, tiempo_remarketing, tomar_productos) 
+        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, activo, ofrecer, productos, bloque_productos, tiempo_remarketing, tomar_productos) 
    VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
             nombre_bot,
-            assistant_id,
             activo,
             tipo_venta,
             productosJSON,
