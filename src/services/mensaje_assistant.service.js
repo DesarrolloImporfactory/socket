@@ -741,7 +741,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
       ?.text?.value;
 
-    console.log('bloqueInfo: ' + bloqueInfo);
+    /* console.log('bloqueInfo: ' + bloqueInfo); */
 
     return {
       status: 200,
