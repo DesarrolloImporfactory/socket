@@ -5,6 +5,7 @@ const ClientesChatCenter = require('./clientes_chat_center.model');
 const MensajesClientes = require('./mensaje_cliente.model');
 const ErroresChatMeta = require('./errores_chat_meta.model');
 const EtiquetasChatCenter = require('./etiquetas_chat_center.model');
+const EtiquetasAsignadas = require('./etiquetas_asignadas.model');
 const FacturasCot = require('./facturas_cot.model');
 const DetalleFactCot = require('./detalle_fact_cot.model');
 const Productos = require('./productos.model');
@@ -38,6 +39,19 @@ const initModel = () => {
     foreignKey: 'id_plataforma',
     otherKey: 'id_usuario',
     as: 'usuarios',
+  });
+
+  // ======= Etiquetas (ASIGNACIONES ↔ ETIQUETAS) =======
+  EtiquetasAsignadas.belongsTo(EtiquetasChatCenter, {
+    foreignKey: 'id_etiqueta',
+    targetKey: 'id_etiqueta',
+    as: 'etiqueta',
+  });
+
+  EtiquetasChatCenter.hasMany(EtiquetasAsignadas, {
+    foreignKey: 'id_etiqueta',
+    sourceKey: 'id_etiqueta',
+    as: 'asignaciones',
   });
 
   // Asociación entre ClientesChatCenter y MensajesClientes
@@ -274,6 +288,7 @@ const getModels = () => {
     MensajesClientes,
     ErroresChatMeta,
     EtiquetasChatCenter,
+    EtiquetasAsignadas,
     FacturasCot,
     DetalleFactCot,
     Productos,

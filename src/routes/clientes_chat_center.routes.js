@@ -1,4 +1,5 @@
 const clientes_chat_centerController = require('../controllers/clientes_chat_center.controller');
+const EtiquetasAsignadasController = require('../controllers/etiquetas_asignadas.controller');
 
 const express = require('express');
 
@@ -49,13 +50,23 @@ router.get(
   clientes_chat_centerController.findFullByPhone
 );
 
-
-router.post('/listar_contactos_estado', clientes_chat_centerController.listarContactosEstado);
-router.post('/listar_ultimo_mensaje', clientes_chat_centerController.ultimo_mensaje);
-
+router.post(
+  '/listar_contactos_estado',
+  clientes_chat_centerController.listarContactosEstado
+);
+router.post(
+  '/listar_ultimo_mensaje',
+  clientes_chat_centerController.ultimo_mensaje
+);
 
 // CRUD limpio (SQL crudo)
 router.get('/listar', clientes_chat_centerController.listarClientes);
+
+router.post(
+  '/etiquetas/multiples',
+  EtiquetasAsignadasController.obtenerMultiples
+);
+
 // Nuevo: listar por etiqueta (many-to-many con etiquetas_asignadas)
 router.get(
   '/listar_por_etiqueta',
@@ -65,6 +76,5 @@ router.post('/agregar', clientes_chat_centerController.agregarCliente);
 router.put('/actualizar/:id', clientes_chat_centerController.actualizarCliente);
 router.delete('/eliminar/:id', clientes_chat_centerController.eliminarCliente);
 router.post('/eliminar', clientes_chat_centerController.eliminarClientesBulk); // bulk
-
 
 module.exports = router;
