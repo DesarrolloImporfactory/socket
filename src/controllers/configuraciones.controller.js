@@ -219,7 +219,14 @@ exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
           SELECT 1
           FROM tiktok_devs_connections tdc
           WHERE tdc.id_configuracion = c.id
-        ) AS tiktok_conectado
+        ) AS tiktok_conectado,
+
+        /* Contador de conversaciones */
+        (
+          SELECT count(*)
+          FROM clientes_chat_center ccc
+          WHERE ccc.id_configuracion = c.id AND ccc.telefono_limpio <> c.telefono
+        ) AS cantidad_conversaciones
 
       FROM configuraciones c
       WHERE c.suspendido = 0
