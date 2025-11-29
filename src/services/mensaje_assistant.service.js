@@ -127,6 +127,8 @@ async function procesarAsistenteMensajeVentas(body) {
         nombre_estado = 'ventas_servicios';
         tipo_asistente = 'IA_servicios_ventas';
       }
+    } else {
+      nombre_estado = '';
     }
 
     const oia_asistentes = await db.query(
