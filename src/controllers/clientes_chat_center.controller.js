@@ -12,21 +12,32 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
   const { chatId, nuevoEstado, bot_openia } = req.body;
 
   try {
-    const [result] = await db.query(
-      `UPDATE clientes_chat_center SET chat_cerrado = ?, bot_openia = ? WHERE id = ?`,
-      {
-        replacements: [nuevoEstado, bot_openia, chatId],
-        type: db.QueryTypes.UPDATE,
-      }
-    );
+    // Armamos el query dinámico
+    let query = `UPDATE clientes_chat_center SET chat_cerrado = ?, bot_openia = ?`;
+    const replacements = [nuevoEstado, bot_openia];
 
-    // result en UPDATE devuelve un array (dependiendo de la DB puede ser el número de filas afectadas)
+    // Si bot_openia == 1 → también actualizar estado_contacto
+    if (bot_openia == 1) {
+      query += `, estado_contacto = ?`;
+      replacements.push('contacto_inicial');
+    }
+
+    query += ` WHERE id = ?`;
+    replacements.push(chatId);
+
+    // Ejecutar
+    await db.query(query, {
+      replacements,
+      type: db.QueryTypes.UPDATE,
+    });
+
     res.status(200).json({
       status: '200',
       title: 'Petición exitosa',
       message: 'Chat actualizado correctamente',
     });
   } catch (error) {
+    console.error(error);
     return next(new AppError('Error al actualizar el chat', 500));
   }
 });
