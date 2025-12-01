@@ -230,7 +230,7 @@ exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
 
       FROM configuraciones c
       WHERE c.suspendido = 0
-      ORDER BY c.id DESC
+      ORDER BY cantidad_conversaciones DESC
       `
     );
 
