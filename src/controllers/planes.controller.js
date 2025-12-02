@@ -12,19 +12,28 @@ exports.seleccionarPlan = async (req, res) => {
     const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
 
     if (!id_plan || !id_usuario) {
-      return res.status(400).json({ status: 'fail', message: 'Faltan datos necesarios (id_plan, id_usuario)' });
+      return res
+        .status(400)
+        .json({
+          status: 'fail',
+          message: 'Faltan datos necesarios (id_plan, id_usuario)',
+        });
     }
 
     // Validar que el plan exista
     const plan = await Planes_chat_center.findByPk(id_plan);
     if (!plan) {
-      return res.status(404).json({ status: 'fail', message: 'El plan no existe' });
+      return res
+        .status(404)
+        .json({ status: 'fail', message: 'El plan no existe' });
     }
 
     // Validar que el usuario exista
     const usuario = await Usuarios_chat_center.findByPk(id_usuario);
     if (!usuario) {
-      return res.status(404).json({ status: 'fail', message: 'El usuario no existe' });
+      return res
+        .status(404)
+        .json({ status: 'fail', message: 'El usuario no existe' });
     }
 
     // ✅ Activar directamente el Plan Free (id_plan === 1)
@@ -38,33 +47,44 @@ exports.seleccionarPlan = async (req, res) => {
         fecha_inicio: hoy,
         fecha_renovacion: nuevaFechaRenovacion,
         estado: 'activo',
-        free_trial_used: 1
+        free_trial_used: 1,
       });
 
-
-      return res.status(200).json({ status: 'success', message: 'Plan gratuito activado correctamente' });
+      return res
+        .status(200)
+        .json({
+          status: 'success',
+          message: 'Plan gratuito activado correctamente',
+        });
     }
-    
 
     // 🟣 Otros planes: solo actualizar intención
     await usuario.update({ id_plan });
 
-    return res.status(200).json({ status: 'success', message: 'Plan seleccionado correctamente, pendiente de pago' });
-
+    return res
+      .status(200)
+      .json({
+        status: 'success',
+        message: 'Plan seleccionado correctamente, pendiente de pago',
+      });
   } catch (error) {
     console.error('Error al seleccionar plan:', error);
-    return res.status(500).json({ status: 'fail', message: 'Error interno al seleccionar plan' });
+    return res
+      .status(500)
+      .json({ status: 'fail', message: 'Error interno al seleccionar plan' });
   }
 };
-
-
 
 /**
  * ✅ Lista todos los planes disponibles
  */
 exports.obtenerPlanes = async (req, res) => {
   try {
-    const planes = await Planes_chat_center.findAll();
+    const planes = await Planes_chat_center.findAll({
+      where: {
+        activo: 1,
+      },
+    });
 
     return res.status(200).json({
       status: 'success',
@@ -78,4 +98,3 @@ exports.obtenerPlanes = async (req, res) => {
     });
   }
 };
-

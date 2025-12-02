@@ -10,6 +10,11 @@ const Planes_chat_center = db.define(
       primaryKey: true,
       allowNull: false,
     },
+    activo: {
+      type: DataTypes.INTEGER,
+      defaultValue: 1,
+      allowNull: true,
+    },
     nombre_plan: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -20,6 +25,10 @@ const Planes_chat_center = db.define(
     },
     precio_plan: {
       type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+    },
+    n_conversaciones: {
+      type: DataTypes.INTEGER,
       allowNull: false,
     },
     n_conexiones: {

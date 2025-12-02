@@ -7,6 +7,7 @@ const router = express.Router();
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
+const limiteConversaciones = require('../middlewares/limiteConversaciones.middleware');
 
 // wrapper que llama a tu limiteConexiones solo al reactivar
 const validarReactivarConLimite = (req, res, next) => {
@@ -40,6 +41,7 @@ router.post(
 router.post(
   '/listar_conexiones',
   checkPlanActivo,
+  limiteConversaciones,
   configuracionesController.listarConexiones
 );
 
