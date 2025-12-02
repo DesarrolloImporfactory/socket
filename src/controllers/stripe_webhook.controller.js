@@ -514,6 +514,7 @@ if (event.type === 'checkout.session.completed') {
     // 1) FREE TRIAL vía Checkout (suscripción con trial: no cobra ahora)
     if (session.mode === 'subscription' && md.tipo === 'free_trial') {
       const id_usuario = Number(md.id_usuario);
+      const id_plataforma = Number(md.id_plataforma);
       const planFinalId = Number(md.plan_final_id || md.id_plan); // fallback si usas otra clave
       const subscriptionId = session.subscription;
       const customerId = session.customer;
@@ -530,6 +531,7 @@ if (event.type === 'checkout.session.completed') {
         {
           id_plan: 1,
           estado: 'activo',
+          id_plataforma: id_plataforma,
           fecha_inicio: hoy,
           fecha_renovacion: fechaRenovacion,
           free_trial_used: 1

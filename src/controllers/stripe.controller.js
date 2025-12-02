@@ -13,8 +13,8 @@ const ADDON_PRICE_ID_PERS = 'price_1S30HtClsPjxVwZw8OJlhpyE';
 const PRICE_ID_ADDON_SUBUSUARIO_PERS = 'price_1S30IQClsPjxVwZwRHact8Zd';
 
 // ─── Lite Free (oculto a catálogo) ────────────────────────────────────────────
-const LITE_PLAN_ID = 6;
-const LITE_PRICE_ID = 'price_1S8NsNClsPjxVwZw9cXWmJJj';
+const LITE_PLAN_ID = 1;
+const LITE_PRICE_ID = 'price_1S00zCClsPjxVwZwJjUSd5mW';
 
 
 
@@ -1418,9 +1418,13 @@ exports.miPlanPersonalizado = async (req, res) => {
  */
 exports.crearSesionLiteFree = async (req, res) => {
   try {
-    const { id_usuario, success_url, cancel_url, trial_days } = req.body;
+    const { id_usuario, id_plataforma, success_url, cancel_url, trial_days } = req.body;
     if (!id_usuario) {
       return res.status(400).json({ status: 'fail', message: 'Falta id_usuario' });
+    }
+
+    if (!id_plataforma) {
+      return res.status(400).json({ status: 'fail', message: 'Falta id_plataforma' });
     }
 
     // 0) Bloqueo por “ya usó free trial” (misma validación que crearFreeTrial)
@@ -1468,7 +1472,7 @@ exports.crearSesionLiteFree = async (req, res) => {
     }
 
     // 3) Trial
-    const trialDays = Number.isInteger(trial_days) ? trial_days : 365; // 12 meses aprox
+    const trialDays = Number.isInteger(trial_days) ? trial_days : 30; // 1 mese aprox
     const requireCard = true; // igual que crearFreeTrial (puedes cambiar a if_required si quieres)
 
     // 4) Crear sesión de Checkout (mode: subscription)
@@ -1487,6 +1491,7 @@ exports.crearSesionLiteFree = async (req, res) => {
         metadata: {
           tipo: 'lite_free',
           id_usuario: String(id_usuario),
+          id_plataforma: String(id_plataforma),
           id_plan: String(LITE_PLAN_ID) // ← importante para el webhook
         }
       },
@@ -1495,6 +1500,7 @@ exports.crearSesionLiteFree = async (req, res) => {
       metadata: {
         tipo: 'lite_free',
         id_usuario: String(id_usuario),
+        id_plataforma: String(id_plataforma),
         plan_final_id: String(LITE_PLAN_ID)
       },
 

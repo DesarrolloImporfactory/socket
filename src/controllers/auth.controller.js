@@ -281,7 +281,7 @@ exports.newLogin = async (req, res) => {
       const idUsuarioFromToken = decoded?.data?.id;
       /* consultar informacion de usuario imporsuit */
       const [user_imporauit] = await db_2.query(
-        `SELECT ecommerce, membresia_ecommerce, importacion, nombre_users, con_users, usuario_users FROM users WHERE id_users = ? LIMIT 1`,
+        `SELECT id_rol ,ecommerce, membresia_ecommerce, importacion, nombre_users, con_users, usuario_users FROM users WHERE id_users = ? LIMIT 1`,
         {
           replacements: [idUsuarioFromToken],
           type: db_2.QueryTypes.SELECT,
@@ -300,6 +300,7 @@ exports.newLogin = async (req, res) => {
       let nombre_users = user_imporauit.nombre_users;
       let con_users = user_imporauit.con_users;
       let usuario_users = user_imporauit.usuario_users;
+      let id_rol = user_imporauit.id_rol;
 
       let free_trial_used = null;
 
@@ -307,18 +308,27 @@ exports.newLogin = async (req, res) => {
 
       let estado_creacion = '';
 
-      if (ecommerce == 1 || membresia_ecommerce == 1 || importacion == 1) {
+      if (
+        ecommerce == 1 ||
+        membresia_ecommerce == 1 ||
+        importacion == 1 ||
+        id_rol == 16
+      ) {
         /* usuario */
         // Buscar configuración para obtener el id_usuario (dueño de la tienda)
-        const configuracion = await Configuraciones.findOne({
+        const validar_usuario_plataforma = await Usuarios_chat_center.findOne({
           where: { id_plataforma: tienda },
         });
 
-        if (!configuracion || !configuracion.id_usuario) {
+        if (
+          !validar_usuario_plataforma ||
+          !validar_usuario_plataforma.id_usuario
+        ) {
           /* crear usuario y sub_usuario */
-          /* const crear_usuario = await Usuarios_chat_center.create({
+          const crear_usuario = await Usuarios_chat_center.create({
             nombre: nombre_users,
             id_plan: null,
+            id_plataforma: tienda,
             fecha_inicio: null,
             fecha_renovacion: null,
             estado: 'inactivo',
@@ -333,39 +343,31 @@ exports.newLogin = async (req, res) => {
             rol: 'administrador',
           });
 
-          const crear_configuracion = await Configuraciones.create({
-            id_usuario: crear_usuario.id_usuario,
-            usuario: nombre_users.replace(/\s+/g, ''),
-            password: con_users,
-            email: usuario_users,
-            nombre_encargado: nombre_users,
-            rol: 'administrador',
-          });
-
           id_sub_usuario_encontrado = crear_sub_usuario.id_sub_usuario;
 
-          usuarioEncontrado = crear_sub_usuario; */
+          usuarioEncontrado = crear_sub_usuario;
 
-          estado_creacion = 'nulo';
+          estado_creacion = 'incompleto';
 
-          let informacion_crear_usuario = {
-            nombre: nombre_users,
-            password: con_users,
-            email: usuario_users,
-          };
+          // Generar token de sesión
+          const sessionToken = await generarToken(id_sub_usuario_encontrado);
+
+          // Eliminar campos sensibles
+          const usuarioPlano = usuarioEncontrado.toJSON();
+          const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
 
           res.status(200).json({
             status: 'success',
             estado_creacion: estado_creacion,
-            token: null,
-            user: informacion_crear_usuario,
+            token: sessionToken,
+            user: usuarioSinPassword,
             id_plataforma: tienda,
             id_configuracion: null,
           });
         } else {
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
             where: {
-              id_usuario: configuracion.id_usuario,
+              id_plataforma: tienda,
             },
           });
 
@@ -374,8 +376,6 @@ exports.newLogin = async (req, res) => {
               message: 'Usuario administrador no encontrado para esta tienda',
             });
           }
-
-          free_trial_used = usuarios_chat_center.free_trial_used;
 
           /* consulta id_subusuarios */
           const subusuarios_chat_center =
@@ -396,11 +396,7 @@ exports.newLogin = async (req, res) => {
 
           usuarioEncontrado = subusuarios_chat_center;
 
-          if (free_trial_used == 0) {
-            estado_creacion = 'incompleto';
-          } else {
-            estado_creacion = 'completo';
-          }
+          estado_creacion = 'completo';
 
           // Generar token de sesión
           const sessionToken = await generarToken(id_sub_usuario_encontrado);
@@ -425,9 +421,14 @@ exports.newLogin = async (req, res) => {
         });
 
         if (!configuracion || !configuracion.id_usuario) {
-          return res
-            .status(403)
-            .json({ message: 'El usuario no tiene tiene cursos habilitados' });
+          res.status(200).json({
+            status: 'success',
+            estado_creacion: "nulo",
+            token: null,
+            user: null,
+            id_plataforma: tienda,
+            id_configuracion: null,
+          });
         } else {
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
             where: {

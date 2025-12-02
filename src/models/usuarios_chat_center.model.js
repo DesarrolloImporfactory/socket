@@ -14,6 +14,10 @@ const Usuarios_chat_center = db.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    id_plataforma: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
     permanente: {
       type: DataTypes.TINYINT,
       allowNull: true,
