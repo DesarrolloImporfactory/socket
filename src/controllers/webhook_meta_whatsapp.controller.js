@@ -437,6 +437,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       /* Fin obtener id_cliente_configuracion */
 
+      if (!clienteExisteConfiguracion || !clienteExisteConfiguracion.id) {
+        await fsp.appendFile(
+          path.join(logsDir, 'debug_log.txt'),
+          `[${new Date().toISOString()}] Error numero de configuracion no existe en tabla clientes_chat_center` +
+            texto_mensaje +
+            ` \n`
+        );
+        console.log(
+          `[${new Date().toISOString()}] Error numero de configuracion no existe en tabla clientes_chat_center` +
+            texto_mensaje +
+            ` \n`
+        );
+      }
+
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
         id_cliente: clienteExisteConfiguracion.id,
