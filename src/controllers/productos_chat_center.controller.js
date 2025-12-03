@@ -74,6 +74,9 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     precio,
     duracion,
     id_categoria,
+    nombre_upsell,
+    descripcion_upsell,
+    precio_upsell,
   } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -86,6 +89,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   // Archivos (con .fields())
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
+  const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
 
   const imagen_url = imagenFile
     ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
@@ -93,6 +97,10 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
   const video_url = videoFile
     ? `${dominio}/uploads/productos/video/${videoFile.filename}`
+    : null;
+
+  const imagen_upsell_url = imagen_upsellFile
+    ? `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`
     : null;
 
   const nuevoProducto = await ProductosChatCenter.create({
@@ -105,6 +113,10 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     id_categoria,
     imagen_url,
     video_url,
+    nombre_upsell,
+    descripcion_upsell,
+    precio_upsell,
+    imagen_upsell_url,
   });
 
   return res.status(201).json({ status: 'success', data: nuevoProducto });
@@ -120,6 +132,9 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     precio,
     duracion,
     id_categoria,
+    nombre_upsell,
+    descripcion_upsell,
+    precio_upsell,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -131,6 +146,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
 
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
+  const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
 
   // Si llega NUEVA IMAGEN: borrar anterior y setear nueva URL
   if (imagenFile) {
@@ -170,13 +186,34 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
   }
 
+  if (imagen_upsellFile) {
+    try {
+      if (producto.imagen_upsell_url) {
+        const filename = path.basename(producto.imagen_upsell_url);
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'imagen',
+          filename
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+    producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
+  }
+
   // Actualizar campos básicos (si vienen)
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
   if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
-  if (typeof precio !== 'undefined') producto.duracion = duracion;
+  if (typeof duracion !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
+  if (typeof nombre_upsell !== 'undefined') producto.nombre_upsell = nombre_upsell;
+  if (typeof descripcion_upsell !== 'undefined') producto.descripcion_upsell = descripcion_upsell;
+  if (typeof precio_upsell !== 'undefined') producto.precio_upsell = precio_upsell;
   producto.fecha_actualizacion = new Date();
 
   await producto.save();
@@ -233,14 +270,7 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
   // Usar la instancia db ya configurada
   for (const [index, row] of data.entries()) {
     try {
-      const {
-        nombre,
-        descripcion,
-        tipo,
-        precio,
-        duracion,
-        stock,
-      } = row;
+      const { nombre, descripcion, tipo, precio, duracion, stock } = row;
 
       if (!id_configuracion || !nombre || !tipo || !precio) {
         resultados.push({ index, error: 'Faltan campos obligatorios' });

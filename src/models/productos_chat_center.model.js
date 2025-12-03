@@ -33,6 +33,22 @@ const ProductosChatCenter = db.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    nombre_upsell: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    descripcion_upsell: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    precio_upsell: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: true,
+    },
+    imagen_upsell_url: {
+      type: DataTypes.STRING(512),
+      allowNull: true,
+    },
     imagen_url: {
       type: DataTypes.STRING(512),
       allowNull: true,
