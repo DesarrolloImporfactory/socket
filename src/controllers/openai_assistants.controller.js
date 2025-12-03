@@ -517,7 +517,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             bloqueProductos += ` nombre_upsell: ${infoProducto.nombre_upsell}\n`;
             bloqueProductos += ` descripcion_upsell: ${infoProducto.descripcion_upsell}\n`;
             bloqueProductos += ` precio_upsell: ${infoProducto.precio_upsell}\n`;
-            bloqueProductos += ` upsell_imagen_url: ${infoProducto.imagen_upsell_path}\n`;
+            bloqueProductos += ` [upsell_imagen_url]: ${infoProducto.imagen_upsell_path}\n`;
             bloqueProductos += `\n`;
           }
         }

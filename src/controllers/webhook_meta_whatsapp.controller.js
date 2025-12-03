@@ -425,6 +425,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       /* console.log(`Después de mensaje procesado\n`) */
 
       /* obtener id_cliente_configuracion */
+      console.log('id_configuracion: ' + id_configuracion);
+      console.log('telefono_configuracion: ' + telefono_configuracion);
       const clienteExisteConfiguracion = await ClientesChatCenter.findOne({
         where: { celular_cliente: telefono_configuracion, id_configuracion },
       });
@@ -868,14 +870,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               // Buscar URLs de imágenes y videos usando regex
               const urls_imagenes = (
                 mensajeGPT.match(
-                  /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/gi
+                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi
                 ) || []
               )
                 .map((s) => {
                   const m = s.match(
-                    /\[producto_imagen_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_imagen_url\]:\s*(https?:\/\/[^\s]+)/i
+                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i
                   );
-                  return m ? m[1] || m[2] : null;
+                  return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
                 })
                 .filter(Boolean);
 
@@ -926,6 +928,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               let solo_texto = mensajeGPT
                 .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
                 .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
+                .replace(/\[upsell_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de upsell
                 .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
                 .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
                 .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
@@ -978,13 +981,27 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       try {
         const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
         await ensureDir(logsDir);
-        await fsp.appendFile(
-          path.join(logsDir, 'debug_log.txt'),
-          `[ERROR pos-respuesta] ${new Date().toISOString()} - ${err.message}\n`
-        );
-      } catch (_) {
-        // último recurso: consola
-        console.error('Error registrando log:', err);
+
+        const logPath = path.join(logsDir, 'debug_log.txt');
+
+        const fullError = `
+              ===== ERROR POS-RESPUESTA =====
+              Fecha: ${new Date().toISOString()}
+              Mensaje: ${err.message}
+              Stack:
+              ${err.stack || 'Sin stack disponible'}
+
+              Tipo de error: ${err.name}
+              Objeto recibido: ${JSON.stringify(err, null, 2)}
+
+              ================================
+
+              `;
+
+        await fsp.appendFile(logPath, fullError);
+      } catch (logErr) {
+        console.error('Error registrando log:', logErr);
+        console.error('Error original:', err);
       }
     }
   });
