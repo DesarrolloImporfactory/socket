@@ -478,6 +478,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             pc.duracion AS duracion,
             pc.imagen_url AS image_path,
             pc.video_url AS video_path,
+            pc.nombre_upsell AS nombre_upsell,
+            pc.descripcion_upsell AS descripcion_upsell,
+            pc.precio_upsell AS precio_upsell,
+            pc.imagen_upsell_url AS imagen_upsell_path,
             cc.nombre AS nombre_categoria
           FROM productos_chat_center pc
           INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
@@ -510,6 +514,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
             bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
             bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
+            bloqueProductos += ` nombre_upsell: ${infoProducto.nombre_upsell}\n`;
+            bloqueProductos += ` descripcion_upsell: ${infoProducto.descripcion_upsell}\n`;
+            bloqueProductos += ` precio_upsell: ${infoProducto.precio_upsell}\n`;
+            bloqueProductos += ` upsell_imagen_url: ${infoProducto.imagen_upsell_path}\n`;
             bloqueProductos += `\n`;
           }
         }
