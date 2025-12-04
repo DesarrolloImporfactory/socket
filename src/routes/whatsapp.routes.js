@@ -1404,31 +1404,25 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     'https://chatcenter.imporfactory.app/administrador-canales',
   ]);
 
-  // 2) Normalizador básico: origin + pathname, sin barra final
-  const normalize = (url) => {
-    try {
-      const u = new URL(String(url));
-      return `${u.origin}${u.pathname}`.replace(/\/+$/, '');
-    } catch {
-      return null;
-    }
-  };
-
   // 3) Elegir redirect_uri seguro: si viene del frontend y está en whitelist, úselo;
-  //    si no, caiga al ENV o al default '/conexiones'.
+  // NO modificar, NO normalizar, NO recortar
   const pickRedirect = (input) => {
-    const envDefault = (
-      process.env.FB_LOGIN_REDIRECT_URI ||
-      'https://chatcenter.imporfactory.app/conexiones'
-    ).trim();
+    // si viene del frontend y es EXACTA, se usa
+    if (input && ALLOWED_REDIRECTS.has(input)) {
+      return input;
+    }
 
-    const candidate = normalize(input) || normalize(envDefault);
-    const fallback =
-      normalize(envDefault) || 'https://chatcenter.imporfactory.app/conexiones';
+    // si no, usar el redirect por defecto EXACTO desde env
+    const envRedirect = process.env.FB_LOGIN_REDIRECT_URI;
+    if (envRedirect && ALLOWED_REDIRECTS.has(envRedirect)) {
+      return envRedirect;
+    }
 
-    return ALLOWED_REDIRECTS.has(candidate) ? candidate : fallback;
+    // último fallback EXACTO (sin normalizar)
+    return 'https://chatcenter.imporfactory.app/conexiones';
   };
 
+  
   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
   const DEFAULT_TWOFA_PIN = '123456';
