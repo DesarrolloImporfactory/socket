@@ -982,10 +982,38 @@ async function getConfigFromDB(id) {
 //   }
 
 //   // ====== CONSTANTES/ENV OBLIGATORIOS ======
-//   const EXACT_REDIRECT_URI =
-//     (typeof redirect_uri === 'string' && redirect_uri.trim()) ||
-//     process.env.FB_LOGIN_REDIRECT_URI ||
-//     'https://chatcenter.imporfactory.app/conexiones';
+//   // 1) Declarar lista blanca EXACTA (debe coincidir con lo configurado en Meta)
+//   const ALLOWED_REDIRECTS = new Set([
+//     'https://chatcenter.imporfactory.app/conexiones',
+//     'https://chatcenter.imporfactory.app/administrador-canales',
+//   ]);
+
+//   // 2) Normalizador básico: origin + pathname, sin barra final
+//   const normalize = (url) => {
+//     try {
+//       const u = new URL(String(url));
+//       return `${u.origin}${u.pathname}`.replace(/\/+$/, '');
+//     } catch {
+//       return null;
+//     }
+//   };
+
+//   // 3) Elegir redirect_uri seguro: si viene del frontend y está en whitelist, úselo;
+//   //    si no, caiga al ENV o al default '/conexiones'.
+//   const pickRedirect = (input) => {
+//     const envDefault = (
+//       process.env.FB_LOGIN_REDIRECT_URI ||
+//       'https://chatcenter.imporfactory.app/conexiones'
+//     ).trim();
+
+//     const candidate = normalize(input) || normalize(envDefault);
+//     const fallback =
+//       normalize(envDefault) || 'https://chatcenter.imporfactory.app/conexiones';
+
+//     return ALLOWED_REDIRECTS.has(candidate) ? candidate : fallback;
+//   };
+
+//   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
 //   const DEFAULT_TWOFA_PIN = '123456';
 //   const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User con permisos WA sobre el Business/WABA
@@ -1002,7 +1030,8 @@ async function getConfigFromDB(id) {
 //   console.log('[EMB][IN]', {
 //     id_usuario,
 //     id_configuracion: id_configuracion || '(none)',
-//     redirect_uri: EXACT_REDIRECT_URI,
+//     redirect_uri_in: redirect_uri || '(none)',
+//     redirect_uri_picked: EXACT_REDIRECT_URI,
 //     code_len: (code || '').length,
 //     BUSINESS_ID,
 //   });
@@ -1052,7 +1081,7 @@ async function getConfigFromDB(id) {
 //           client_id: process.env.FB_APP_ID,
 //           client_secret: process.env.FB_APP_SECRET,
 //           code,
-//           redirect_uri: EXACT_REDIRECT_URI,
+//           redirect_uri: EXACT_REDIRECT_URI, // ← usamos el elegido y validado
 //         },
 //       }
 //     );
@@ -1089,7 +1118,6 @@ async function getConfigFromDB(id) {
 //       throw new Error('No se obtuvo access token a partir del code');
 
 //     // ====== 2) Obtener WABA exactamente como tu “manual” ======
-//     // Manual: GET /{BUSINESS_ID}/client_whatsapp_business_accounts con SYS_TOKEN → tomar PRIMERO
 //     const wabasResp = await safeGet(
 //       `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
 //       {},
@@ -1097,7 +1125,6 @@ async function getConfigFromDB(id) {
 //     );
 //     const wabas = wabasResp.data?.data || [];
 //     if (!wabas.length) {
-//       // Por si el WABA fuera "owned" en este business en lugar de "client"
 //       const ownedResp = await safeGet(
 //         `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
 //         {},
@@ -1111,12 +1138,11 @@ async function getConfigFromDB(id) {
 //         `El Business ${BUSINESS_ID} no tiene WABAs visibles para el SYS_TOKEN`
 //       );
 
-//     const wabaPicked = wabas[0]; // EXACTO: el primero, como haces a mano (ej: guiaspro)
+//     const wabaPicked = wabas[0];
 //     const wabaId = String(wabaPicked.id);
 //     console.log('[WABA][PICK]', { wabaId, wabaName: wabaPicked.name });
 
 //     // ====== 3) Listar números del WABA y elegir uno ======
-//     // Manual: GET /{wabaId}/phone_numbers → tomar el primero (o no-CONNECTED)
 //     let numbers = [];
 //     try {
 //       const pn = await safeGet(
@@ -1163,7 +1189,6 @@ async function getConfigFromDB(id) {
 //         bearer(SYS_TOKEN)
 //       );
 //     } catch (e1) {
-//       // reintento con clientToken
 //       console.log(
 //         '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
 //       );
@@ -1463,46 +1488,44 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
   // ====== 1) Intercambiar code → access token (formalidad) ======
   let clientToken;
+
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
     const r = await axios.get(
       'https://graph.facebook.com/v22.0/oauth/access_token',
       {
         params: {
-          client_id: process.env.FB_APP_ID,
-          client_secret: process.env.FB_APP_SECRET,
+          client_id: APP_ID,
+          client_secret: APP_SECRET,
           code,
-          redirect_uri: EXACT_REDIRECT_URI, // ← usamos el elegido y validado
+          redirect_uri: EXACT_REDIRECT_URI,
         },
       }
     );
+
     clientToken = r.data?.access_token;
-  } catch (eWith) {
-    console.log(
-      '[OAUTH][ERR with redirect_uri]',
-      eWith?.response?.data || eWith.message
-    );
-    try {
-      console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
-      const r2 = await axios.get(
-        'https://graph.facebook.com/v22.0/oauth/access_token',
-        {
-          params: {
-            client_id: process.env.FB_APP_ID,
-            client_secret: process.env.FB_APP_SECRET,
-            code,
-          },
-        }
-      );
-      clientToken = r2.data?.access_token;
-    } catch (eNo) {
-      return res.status(400).json({
-        success: false,
-        message: 'No se pudo activar el número (intercambio de code).',
-        error: eNo?.response?.data || eNo.message,
-      });
-    }
+  } catch (err) {
+    console.log('[OAUTH][ERR]', err?.response?.data || err.message);
+
+    // ❌ AQUÍ CORTAMOS — NO HAY FALLBACK — NO ACTIVAMOS NADA
+    return res.status(400).json({
+      success: false,
+      message:
+        'No se pudo activar el número. Vuelve a intentarlo (error de intercambio OAuth).',
+      error: err?.response?.data || err.message,
+    });
   }
+
+  // si no devuelve token → cortamos
+  if (!clientToken) {
+    return res.status(400).json({
+      success: false,
+      message:
+        'Meta no devolvió un access_token válido. Reintente la activación.',
+    });
+  }
+
+  console.log('[OAUTH] clientToken OK');
 
   try {
     if (!clientToken)
