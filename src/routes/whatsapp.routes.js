@@ -1432,8 +1432,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
   const DEFAULT_TWOFA_PIN = '123456';
+  const APP_ID = process.env.FB_APP_ID;
+  const APP_SECRET = process.env.FB_APP_SECRET;
   const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User con permisos WA sobre el Business/WABA
-  const APP_TOKEN = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
   const BUSINESS_ID = process.env.FB_BUSINESS_ID; // <<--- EL MISMO QUE USAS A MANO
 
   if (!SYS_TOKEN || !BUSINESS_ID) {
