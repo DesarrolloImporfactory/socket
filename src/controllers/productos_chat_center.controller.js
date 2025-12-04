@@ -77,6 +77,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     nombre_upsell,
     descripcion_upsell,
     precio_upsell,
+    combos_producto,
   } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -117,6 +118,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     descripcion_upsell,
     precio_upsell,
     imagen_upsell_url,
+    combos_producto,
   });
 
   return res.status(201).json({ status: 'success', data: nuevoProducto });
@@ -135,6 +137,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     nombre_upsell,
     descripcion_upsell,
     precio_upsell,
+    combos_producto,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -211,9 +214,15 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (typeof precio !== 'undefined') producto.precio = precio;
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
-  if (typeof nombre_upsell !== 'undefined') producto.nombre_upsell = nombre_upsell;
-  if (typeof descripcion_upsell !== 'undefined') producto.descripcion_upsell = descripcion_upsell;
-  if (typeof precio_upsell !== 'undefined') producto.precio_upsell = precio_upsell;
+  if (typeof nombre_upsell !== 'undefined')
+    producto.nombre_upsell = nombre_upsell;
+  if (typeof descripcion_upsell !== 'undefined')
+    producto.descripcion_upsell = descripcion_upsell;
+  if (typeof precio_upsell !== 'undefined')
+    producto.precio_upsell = precio_upsell;
+
+  if (typeof combos_producto !== 'undefined')
+    producto.combos_producto = combos_producto;
   producto.fecha_actualizacion = new Date();
 
   await producto.save();

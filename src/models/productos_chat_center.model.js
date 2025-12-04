@@ -61,6 +61,10 @@ const ProductosChatCenter = db.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    combos_producto: {
+      type: DataTypes.BLOB,
+      allowNull: true,
+    },
     eliminado: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

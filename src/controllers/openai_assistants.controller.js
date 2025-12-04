@@ -9,6 +9,7 @@ const {
   obtenerDatosClienteParaAssistant,
   informacionProductos,
   informacionProductosVinculado,
+  procesarCombosParaIA,
 } = require('../utils/datosClienteAssistant');
 
 exports.datosCliente = catchAsync(async (req, res, next) => {
@@ -482,6 +483,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             pc.descripcion_upsell AS descripcion_upsell,
             pc.precio_upsell AS precio_upsell,
             pc.imagen_upsell_url AS imagen_upsell_path,
+            pc.combos_producto AS combos_producto,
             cc.nombre AS nombre_categoria
           FROM productos_chat_center pc
           INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
@@ -506,9 +508,14 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             bloqueProductos += `Categoría: ${infoProducto.nombre_categoria}\n`;
             bloqueProductos += `\n`;
           } else if (tipo_venta == 'productos') {
+            const { combosNormalizados, bloqueCombos } = procesarCombosParaIA(
+              infoProducto.combos_producto
+            );
+
             bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
             bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
             bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
+            bloqueProductos += bloqueCombos;
             /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
             bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
             bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)

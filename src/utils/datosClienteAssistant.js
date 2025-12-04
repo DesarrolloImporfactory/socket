@@ -461,10 +461,65 @@ const obtenerDatosClienteParaAssistant_viejo = async (
   };
 };
 
+const procesarCombosParaIA = (combos_producto) => {
+  let combos = [];
+
+  // -------- 1. Normalizar el valor que viene desde la BD -------- //
+  try {
+    if (!combos_producto) {
+      combos = [];
+    } else if (typeof combos_producto === 'string') {
+      combos = JSON.parse(combos_producto);
+    } else if (Array.isArray(combos_producto)) {
+      combos = combos_producto;
+    } else {
+      combos = [];
+    }
+  } catch (error) {
+    combos = [];
+  }
+
+  // Asegurar que combos sea siempre un array
+  if (!Array.isArray(combos)) combos = [];
+
+  // -------- 2. Filtrar combos válidos (no vacíos) -------- //
+  const combosValidos = combos.filter((c) => {
+    return (
+      c &&
+      (String(c.cantidad || '').trim() !== '' ||
+        String(c.precio || '').trim() !== '')
+    );
+  });
+
+  // -------- 3. Crear bloque legible para IA -------- //
+  let bloqueCombos = '';
+
+  if (combosValidos.length > 0) {
+
+    combosValidos.forEach((c, index) => {
+      const cantidad = c.cantidad || '0';
+      const precio = c.precio || '0.00';
+
+      bloqueCombos += `   • Combo ${
+        index + 1
+      }: ${cantidad} unidades por $${precio}\n`;
+    });
+
+    bloqueCombos += '\n';
+  }
+
+  // -------- 4. Retornar resultado -------- //
+  return {
+    combosNormalizados: combos, // útil si lo quieres loguear, guardar o reutilizar
+    bloqueCombos, // listo para insertar en tu prompt IA
+  };
+};
+
 module.exports = {
   obtenerDatosClienteParaAssistant,
   obtenerDatosCalendarioParaAssistant,
   informacionProductos,
   informacionProductosVinculado,
   obtenerCalendarioClasImporfactory,
+  procesarCombosParaIA,
 };
