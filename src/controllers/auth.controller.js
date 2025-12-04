@@ -396,7 +396,11 @@ exports.newLogin = async (req, res) => {
 
           usuarioEncontrado = subusuarios_chat_center;
 
-          estado_creacion = 'completo';
+          if (usuarios_chat_center.estado == 'activo') {
+            estado_creacion = 'completo';
+          } else {
+            estado_creacion = 'incompleto';
+          }
 
           // Generar token de sesión
           const sessionToken = await generarToken(id_sub_usuario_encontrado);
@@ -423,7 +427,7 @@ exports.newLogin = async (req, res) => {
         if (!configuracion || !configuracion.id_usuario) {
           res.status(200).json({
             status: 'success',
-            estado_creacion: "nulo",
+            estado_creacion: 'nulo',
             token: null,
             user: null,
             id_plataforma: tienda,
