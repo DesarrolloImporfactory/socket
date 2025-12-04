@@ -549,8 +549,9 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     } else {
       // No existe, entonces inserta
       await db.query(
-        `INSERT INTO openai_assistants (id_configuracion, tipo, nombre_bot, activo, ofrecer, productos, bloque_productos, tiempo_remarketing, tomar_productos) 
-   VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO openai_assistants 
+(id_configuracion, tipo, nombre_bot, activo, ofrecer, productos, bloque_productos, tiempo_remarketing, tomar_productos) 
+VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
@@ -613,7 +614,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       message: 'Faltan parámetros',
     });
   }
-  
+
   try {
     // Insertar mensaje del usuario (rol_mensaje = 1)
     await db_2.query(
