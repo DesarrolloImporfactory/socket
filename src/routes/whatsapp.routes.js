@@ -1697,14 +1697,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
 
     if (idConfigToUse) {
-      console.log("key_imporsuit: "+key_imporsuit);
-      console.log("displayNumber: "+displayNumber);
-      console.log("phoneNumberId: "+phoneNumberId);
-      console.log("wabaId: "+wabaId);
-      console.log("permanentPartnerTok: "+permanentPartnerTok);
-      console.log("webhook_url: "+webhook_url);
-      console.log("idConfigToUse: "+idConfigToUse);
-
       await db.query(
         `UPDATE configuraciones SET
            key_imporsuit        = IFNULL(key_imporsuit, ?),
