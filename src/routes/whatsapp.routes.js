@@ -1422,7 +1422,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     return 'https://chatcenter.imporfactory.app/conexiones';
   };
 
-  
   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
   const DEFAULT_TWOFA_PIN = '123456';
@@ -1503,10 +1502,19 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     console.log('[OAUTH][ERR]', err?.response?.data || err.message);
 
     // ❌ AQUÍ CORTAMOS — NO HAY FALLBACK — NO ACTIVAMOS NADA
-    return res.status(400).json({
+    // return res.status(400).json({
+    //   success: false,
+    //   message:
+    //     'No se pudo activar el número. Vuelve a intentarlo (error de intercambio OAuth).',
+    //   error: err?.response?.data || err.message,
+    // });
+    return res.status(200).json({
       success: false,
+      partial: true,
       message:
-        'No se pudo activar el número. Vuelve a intentarlo (error de intercambio OAuth).',
+        'Tu número fue vinculado correctamente al Business Manager, pero no pudimos completar la activación automática.',
+      soporte:
+        'https://wa.me/593998681178?text=Hola%20equipo%20Imporfactory,%20ayúdenme%20a%20finalizar%20mi%20conexión%20de%20WhatsApp%20Business',
       error: err?.response?.data || err.message,
     });
   }
