@@ -273,23 +273,23 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
 
   try {
-    const [configuracion] = await db.query(
+    /* const [configuracion] = await db.query(
       'SELECT api_key_openai FROM configuraciones WHERE id = ?',
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
-    );
+    ); */
 
     let api_key_openai = null;
 
-    if (!configuracion) {
+    /* if (!configuracion) {
       return next(
         new AppError('No se encontró configuración para la plataforma', 400)
       );
     }
 
-    api_key_openai = configuracion.api_key_openai;
+    api_key_openai = configuracion.api_key_openai; */
 
     // Traer ambos tipos de asistentes
     const asistentes = await db.query(
