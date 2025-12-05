@@ -8,16 +8,14 @@ const { db } = require('../database/config');
  */
 exports.seleccionarPlan = async (req, res) => {
   try {
-    const { id_plan } = req.body;
+    const { id_plan, id_plataforma = null } = req.body;
     const id_usuario = req.user?.id || req.body.id_usuario || req.body.id_users;
 
     if (!id_plan || !id_usuario) {
-      return res
-        .status(400)
-        .json({
-          status: 'fail',
-          message: 'Faltan datos necesarios (id_plan, id_usuario)',
-        });
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Faltan datos necesarios (id_plan, id_usuario)',
+      });
     }
 
     // Validar que el plan exista
@@ -40,7 +38,7 @@ exports.seleccionarPlan = async (req, res) => {
     if (parseInt(id_plan) === 1) {
       const hoy = new Date();
       const nuevaFechaRenovacion = new Date(hoy);
-      nuevaFechaRenovacion.setDate(hoy.getDate() + 15);
+      nuevaFechaRenovacion.setDate(hoy.getDate() + 30);
 
       await usuario.update({
         id_plan: 1,
@@ -48,25 +46,22 @@ exports.seleccionarPlan = async (req, res) => {
         fecha_renovacion: nuevaFechaRenovacion,
         estado: 'activo',
         free_trial_used: 1,
+        id_plataforma: id_plataforma,
       });
 
-      return res
-        .status(200)
-        .json({
-          status: 'success',
-          message: 'Plan gratuito activado correctamente',
-        });
+      return res.status(200).json({
+        status: 'success',
+        message: 'Plan gratuito activado correctamente',
+      });
     }
 
     // 🟣 Otros planes: solo actualizar intención
     await usuario.update({ id_plan });
 
-    return res
-      .status(200)
-      .json({
-        status: 'success',
-        message: 'Plan seleccionado correctamente, pendiente de pago',
-      });
+    return res.status(200).json({
+      status: 'success',
+      message: 'Plan seleccionado correctamente, pendiente de pago',
+    });
   } catch (error) {
     console.error('Error al seleccionar plan:', error);
     return res
