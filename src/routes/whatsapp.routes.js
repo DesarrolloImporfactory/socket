@@ -1393,15 +1393,15 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     id_usuario,
     redirect_uri,
     id_configuracion,
-    // 👇 NUEVO: datos que deben venir del onboarding (ideal)
-    phone_number_id_onboarding,
     display_number_onboarding,
   } = req.body;
 
-  if (!code || !id_usuario) {
+  // ==== Validación requerida
+  if (!code || !id_usuario || !display_number_onboarding) {
     return res.status(400).json({
       success: false,
-      message: 'Faltan parámetros requeridos (code o id_usuario).',
+      message:
+        'Faltan parámetros requeridos: code, id_usuario y display_number_onboarding son obligatorios.',
     });
   }
 
@@ -1446,6 +1446,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     });
   }
 
+  // Log limpio
   console.log('[EMB][IN]', {
     id_usuario,
     id_configuracion: id_configuracion || '(none)',
@@ -1453,7 +1454,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     redirect_uri_picked: EXACT_REDIRECT_URI,
     code_len: (code || '').length,
     BUSINESS_ID,
-    phone_number_id_onboarding: phone_number_id_onboarding || '(none)',
     display_number_onboarding: display_number_onboarding || '(none)',
   });
 
@@ -1577,138 +1577,54 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       );
     }
 
-    // ====== 3) Selección del número (prioriza onboarding) ======
+    // ====== 3) Selección del número (SOLO por display_number_onboarding) ======
     let wabaPicked = null;
     let phoneNumberId = null;
     let displayNumber = null;
 
     const displayWanted = norm(display_number_onboarding || '');
-    const idWanted = String(phone_number_id_onboarding || '').trim() || null;
 
-    // 3.1 Buscar por phone_number_id_onboarding
-    if (idWanted) {
-      console.log(
-        '[SELECT][TRY] Buscar por phone_number_id_onboarding:',
-        idWanted
+    async function fetchPhonesOf(wabaId) {
+      const r = await safeGet(
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
+        { fields: 'id,display_phone_number,status,code_verification_status' },
+        bearer(SYS_TOKEN)
       );
-      for (const waba of wabas) {
-        try {
-          const r = await safeGet(
-            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
-            {
-              fields: 'id,display_phone_number,status,code_verification_status',
-            },
-            bearer(SYS_TOKEN)
-          );
-          const phones = r?.data?.data || [];
-          const match = phones.find((p) => String(p.id) === idWanted);
-          if (match) {
-            wabaPicked = waba;
-            phoneNumberId = String(match.id);
-            displayNumber = norm(match.display_phone_number);
-            console.log('[SELECT][MATCH][ID]', {
-              wabaId: waba.id,
-              wabaName: waba.name,
-              phoneNumberId,
-              displayNumber,
-              status: match.status,
-            });
-            break;
-          }
-        } catch (e) {
-          console.log(
-            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
-            e?.response?.data || e.message
-          );
-        }
-      }
+      return r?.data?.data || [];
     }
 
-    // 3.2 Buscar por display_number_onboarding
-    if (!wabaPicked && displayWanted) {
-      console.log(
-        '[SELECT][TRY] Buscar por display_number_onboarding:',
-        displayWanted
-      );
-      for (const waba of wabas) {
-        try {
-          const r = await safeGet(
-            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
-            {
-              fields: 'id,display_phone_number,status,code_verification_status',
-            },
-            bearer(SYS_TOKEN)
-          );
-          const phones = r?.data?.data || [];
-          const match = phones.find(
-            (p) => norm(p.display_phone_number) === displayWanted
-          );
-          if (match) {
-            wabaPicked = waba;
-            phoneNumberId = String(match.id);
-            displayNumber = norm(match.display_phone_number);
-            console.log('[SELECT][MATCH][DISPLAY]', {
-              wabaId: waba.id,
-              wabaName: waba.name,
-              phoneNumberId,
-              displayNumber,
-              status: match.status,
-            });
-            break;
-          }
-        } catch (e) {
-          console.log(
-            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
-            e?.response?.data || e.message
-          );
-        }
-      }
-    }
-
-    // 3.3 Fallback: primer número disponible (no CONNECTED si es posible)
-    if (!wabaPicked) {
-      console.log(
-        '[SELECT][FALLBACK] No llegó/No coincidió número del onboarding. Usar fallback.'
-      );
-      for (const waba of wabas) {
-        try {
-          const r = await safeGet(
-            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
-            {
-              fields: 'id,display_phone_number,status,code_verification_status',
-            },
-            bearer(SYS_TOKEN)
-          );
-          const phones = r?.data?.data || [];
-          if (!phones.length) continue;
-
-          let candidate =
-            phones.find(
-              (n) => (n.status || '').toUpperCase() !== 'CONNECTED'
-            ) || phones[0];
-
+    console.log('[SELECT][TRY] display_number_onboarding:', displayWanted);
+    for (const waba of wabas) {
+      try {
+        const phones = await fetchPhonesOf(waba.id);
+        const match = phones.find(
+          (p) => norm(p.display_phone_number) === displayWanted
+        );
+        if (match) {
           wabaPicked = waba;
-          phoneNumberId = String(candidate.id);
-          displayNumber = norm(candidate.display_phone_number);
-          console.log('[SELECT][FALLBACK_PICK]', {
+          phoneNumberId = String(match.id);
+          displayNumber = norm(match.display_phone_number);
+          console.log('[SELECT][MATCH][DISPLAY]', {
             wabaId: waba.id,
             wabaName: waba.name,
             phoneNumberId,
             displayNumber,
-            status: candidate.status,
+            status: match.status,
           });
           break;
-        } catch (e) {
-          console.log(
-            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
-            e?.response?.data || e.message
-          );
         }
+      } catch (e) {
+        console.log(
+          `[SELECT][WARN] WABA ${waba.id} phones:`,
+          e?.response?.data || e.message
+        );
       }
     }
 
     if (!wabaPicked || !phoneNumberId) {
-      throw new Error('❌ No fue posible seleccionar un número de WhatsApp.');
+      throw new Error(
+        `No se encontró el display_number_onboarding=${displayWanted} en los WABAs visibles.`
+      );
     }
 
     const wabaId = String(wabaPicked.id);
@@ -1808,7 +1724,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     const permanentPartnerTok = SYS_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
-    // ====== 7) Persistencia (igual que tu lógica) ======
+    // ====== 7) Persistencia ======
     let idConfigToUse = id_configuracion || null;
 
     if (!idConfigToUse) {
@@ -1916,11 +1832,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       phone_number_id: phoneNumberId,
       telefono: displayNumber,
       status: info?.status || null,
-      matched_by: idWanted
-        ? 'phone_number_id_onboarding'
-        : displayWanted
-        ? 'display_number_onboarding'
-        : 'fallback',
+      matched_by: 'display_number_onboarding',
     });
   } catch (err) {
     console.error(
