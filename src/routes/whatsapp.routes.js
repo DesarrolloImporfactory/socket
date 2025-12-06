@@ -1388,7 +1388,15 @@ async function getConfigFromDB(id) {
 // });
 
 router.post('/embeddedSignupComplete', async (req, res) => {
-  const { code, id_usuario, redirect_uri, id_configuracion } = req.body;
+  const {
+    code,
+    id_usuario,
+    redirect_uri,
+    id_configuracion,
+    // 👇 NUEVO: datos que deben venir del onboarding (ideal)
+    phone_number_id_onboarding,
+    display_number_onboarding,
+  } = req.body;
 
   if (!code || !id_usuario) {
     return res.status(400).json({
@@ -1398,13 +1406,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   }
 
   // ====== CONSTANTES/ENV OBLIGATORIOS ======
-  // 1) Declarar lista blanca EXACTA (debe coincidir con lo configurado en Meta)
   const ALLOWED_REDIRECTS = new Set([
     'https://chatcenter.imporfactory.app/conexiones',
     'https://chatcenter.imporfactory.app/administrador-canales',
   ]);
 
-  // 2) Normalizador básico: origin + pathname, sin barra final
   const normalize = (url) => {
     try {
       const u = new URL(String(url));
@@ -1414,8 +1420,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
   };
 
-  // 3) Elegir redirect_uri seguro: si viene del frontend y está en whitelist, úselo;
-  //    si no, caiga al ENV o al default '/conexiones'.
   const pickRedirect = (input) => {
     const envDefault = (
       process.env.FB_LOGIN_REDIRECT_URI ||
@@ -1432,9 +1436,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
   const DEFAULT_TWOFA_PIN = '123456';
-  const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User con permisos WA sobre el Business/WABA
+  const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User
   const APP_TOKEN = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
-  const BUSINESS_ID = process.env.FB_BUSINESS_ID; // <<--- EL MISMO QUE USAS A MANO
+  const BUSINESS_ID = process.env.FB_BUSINESS_ID;
 
   if (!SYS_TOKEN || !BUSINESS_ID) {
     return res.status(400).json({
@@ -1450,6 +1454,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     redirect_uri_picked: EXACT_REDIRECT_URI,
     code_len: (code || '').length,
     BUSINESS_ID,
+    phone_number_id_onboarding: phone_number_id_onboarding || '(none)',
+    display_number_onboarding: display_number_onboarding || '(none)',
   });
 
   // ====== HELPERS ======
@@ -1486,7 +1492,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
   }
 
-  // ====== 1) Intercambiar code → access token (formalidad) ======
+  // ====== 1) Intercambiar code → access token ======
   let clientToken;
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
@@ -1497,7 +1503,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           client_id: process.env.FB_APP_ID,
           client_secret: process.env.FB_APP_SECRET,
           code,
-          redirect_uri: EXACT_REDIRECT_URI, // ← usamos el elegido y validado
+          redirect_uri: EXACT_REDIRECT_URI,
         },
       }
     );
@@ -1533,11 +1539,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!clientToken)
       throw new Error('No se obtuvo access token a partir del code');
 
-    // ====== 2) Obtener WABA exactamente como tu “manual” ======
-    // ====== 2) Obtener todos los WABAs conectados a la app (client y owned) ======
-    console.log(
-      '[WABA][FETCH] Obteniendo todos los WABAs conectados a la app…'
-    );
+    // ====== 2) Obtener WABAs visibles ======
+    console.log('[WABA][FETCH] Obteniendo WABAs (client/owned)…');
 
     const wabas = [];
 
@@ -1575,109 +1578,154 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       );
     }
 
-    console.log(
-      `[WABA][INFO] Se encontraron ${wabas.length} WABAs. Buscando el que contiene el número ${displayNumber}...`
-    );
-
-    // ====== 3) Buscar el WABA correcto según el número detectado ======
+    // ====== 3) Selección del número (prioriza onboarding) ======
+    // Variables finales que usará todo el flujo
     let wabaPicked = null;
-    let candidateNumber = null;
+    let phoneNumberId = null;
+    let displayNumber = null;
 
-    for (const waba of wabas) {
-      try {
-        const r = await safeGet(
-          `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
-          { fields: 'id,display_phone_number,status,code_verification_status' },
-          bearer(SYS_TOKEN)
-        );
+    // Normalizar si vino el display del onboarding
+    const displayWanted = norm(display_number_onboarding || '');
+    const idWanted = String(phone_number_id_onboarding || '').trim() || null;
 
-        const phones = r?.data?.data || [];
-        const match = phones.find(
-          (p) => norm(p.display_phone_number) === norm(displayNumber)
-        );
-
-        if (match) {
-          wabaPicked = waba;
-          candidateNumber = match;
-          console.log('[WABA][MATCH] Se encontró el número en WABA:', {
-            wabaId: waba.id,
-            wabaName: waba.name,
-            phoneNumberId: match.id,
-            displayNumber: match.display_phone_number,
-            status: match.status,
-          });
-          break;
+    // --- 3.1 Si viene phone_number_id_onboarding, buscarlo exactamente ---
+    if (idWanted) {
+      console.log(
+        '[SELECT][TRY] Buscar por phone_number_id_onboarding:',
+        idWanted
+      );
+      for (const waba of wabas) {
+        try {
+          const r = await safeGet(
+            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
+            {
+              fields: 'id,display_phone_number,status,code_verification_status',
+            },
+            bearer(SYS_TOKEN)
+          );
+          const phones = r?.data?.data || [];
+          const match = phones.find((p) => String(p.id) === idWanted);
+          if (match) {
+            wabaPicked = waba;
+            phoneNumberId = String(match.id);
+            displayNumber = norm(match.display_phone_number);
+            console.log('[SELECT][MATCH][ID]', {
+              wabaId: waba.id,
+              wabaName: waba.name,
+              phoneNumberId,
+              displayNumber,
+              status: match.status,
+            });
+            break;
+          }
+        } catch (e) {
+          console.log(
+            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
+            e?.response?.data || e.message
+          );
         }
-      } catch (e) {
-        console.log(
-          `[WABA][WARN] Falló la consulta de números para WABA ${waba.id}:`,
-          e?.response?.data || e.message
-        );
       }
     }
 
-    if (!wabaPicked || !candidateNumber) {
-      throw new Error(
-        `❌ No se encontró ningún WABA que contenga el número ${displayNumber}`
+    // --- 3.2 Si no hubo match por ID y vino display_number_onboarding, buscar por display ---
+    if (!wabaPicked && displayWanted) {
+      console.log(
+        '[SELECT][TRY] Buscar por display_number_onboarding:',
+        displayWanted
       );
+      for (const waba of wabas) {
+        try {
+          const r = await safeGet(
+            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
+            {
+              fields: 'id,display_phone_number,status,code_verification_status',
+            },
+            bearer(SYS_TOKEN)
+          );
+          const phones = r?.data?.data || [];
+          const match = phones.find(
+            (p) => norm(p.display_phone_number) === displayWanted
+          );
+          if (match) {
+            wabaPicked = waba;
+            phoneNumberId = String(match.id);
+            displayNumber = norm(match.display_phone_number);
+            console.log('[SELECT][MATCH][DISPLAY]', {
+              wabaId: waba.id,
+              wabaName: waba.name,
+              phoneNumberId,
+              displayNumber,
+              status: match.status,
+            });
+            break;
+          }
+        } catch (e) {
+          console.log(
+            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
+            e?.response?.data || e.message
+          );
+        }
+      }
     }
 
-    let phoneNumberId = String(candidateNumber.id);
-    let displayNumber = norm(candidateNumber.display_phone_number);
-
-    console.log('[WABA][PICKED] WABA final seleccionado:', {
-      wabaId,
-      wabaName: wabaPicked.name,
-      phoneNumberId,
-      displayNumber,
-    });
-
-    // ====== 3) Listar números del WABA y elegir uno ======
-    let numbers = [];
-    try {
-      const pn = await safeGet(
-        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-        { fields: 'id,display_phone_number,status,code_verification_status' },
-        bearer(SYS_TOKEN)
+    // --- 3.3 Fallback: primer número disponible (no CONNECTED si es posible) ---
+    if (!wabaPicked) {
+      console.log(
+        '[SELECT][FALLBACK] No llegó/No coincidió número del onboarding. Usar fallback.'
       );
-      numbers = pn.data?.data || [];
-    } catch (e1) {
-      console.log('[NUMBERS][WARN] SYS_TOKEN falló; reintento con clientToken');
-      const pn2 = await safeGet(
-        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-        { fields: 'id,display_phone_number,status,code_verification_status' },
-        bearer(clientToken)
-      );
-      numbers = pn2.data?.data || [];
+      for (const waba of wabas) {
+        try {
+          const r = await safeGet(
+            `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
+            {
+              fields: 'id,display_phone_number,status,code_verification_status',
+            },
+            bearer(SYS_TOKEN)
+          );
+          const phones = r?.data?.data || [];
+          if (!phones.length) continue;
+
+          let candidate =
+            phones.find(
+              (n) => (n.status || '').toUpperCase() !== 'CONNECTED'
+            ) || phones[0];
+
+          wabaPicked = waba;
+          phoneNumberId = String(candidate.id);
+          displayNumber = norm(candidate.display_phone_number);
+          console.log('[SELECT][FALLBACK_PICK]', {
+            wabaId: waba.id,
+            wabaName: waba.name,
+            phoneNumberId,
+            displayNumber,
+            status: candidate.status,
+          });
+          break;
+        } catch (e) {
+          console.log(
+            `[SELECT][WARN] Consulta números WABA ${waba.id} falló:`,
+            e?.response?.data || e.message
+          );
+        }
+      }
     }
 
-    if (!numbers.length)
-      throw new Error('El WABA no tiene números cargados todavía');
+    if (!wabaPicked || !phoneNumberId) {
+      throw new Error('❌ No fue posible seleccionar un número de WhatsApp.');
+    }
 
-    let candidate =
-      numbers.find((n) => (n.status || '').toUpperCase() !== 'CONNECTED') ||
-      numbers[0];
-
-    phoneNumberId = candidate?.id || null;
-    displayNumber = norm(candidate?.display_phone_number);
-    console.log('[PHONE][PICK]', {
-      phoneNumberId,
-      displayNumber,
-      status: candidate?.status,
-      cvs: candidate?.code_verification_status,
-    });
-    if (!phoneNumberId)
-      throw new Error('phoneNumberId indefinido luego de /phone_numbers');
+    const wabaId = String(wabaPicked.id);
 
     // ====== 4) Registrar el número (REGISTER) ======
     const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
-    console.log('[POST][REGISTER] ->', regUrl);
+    console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
     try {
       await safePost(
         regUrl,
         { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
         bearer(SYS_TOKEN)
       );
+      console.log('[REGISTER][OK] con SYS_TOKEN');
     } catch (e1) {
       console.log(
         '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
@@ -1688,6 +1736,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
           bearer(clientToken)
         );
+        console.log('[REGISTER][OK] con clientToken');
       } catch (e2) {
         const codeErr = e2?.response?.data?.error?.code;
         if (codeErr === 131070) {
@@ -1698,6 +1747,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
             bearer(clientToken)
           );
+          console.log('[REGISTER][RETRY_OK] por estado intermedio');
         } else {
           throw e2;
         }
@@ -1713,6 +1763,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         { messaging_product: 'whatsapp' },
         bearer(SYS_TOKEN)
       );
+      console.log('[SUBSCRIBE][OK] con SYS_TOKEN');
     } catch (e1) {
       console.log(
         '[POST][SUBSCRIBE][WARN] SYS_TOKEN falló; retry con clientToken'
@@ -1722,6 +1773,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         { messaging_product: 'whatsapp' },
         bearer(clientToken)
       );
+      console.log('[SUBSCRIBE][OK] con clientToken');
     }
 
     // ====== 6) Verificar estado del número ======
@@ -1736,6 +1788,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         bearer(SYS_TOKEN)
       );
       info = r1.data || {};
+      console.log('[PN-INFO][OK] con SYS_TOKEN');
     } catch (e1) {
       console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
       const r2 = await safeGet(
@@ -1747,6 +1800,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         bearer(clientToken)
       );
       info = r2.data || {};
+      console.log('[PN-INFO][OK] con clientToken');
     }
 
     const nombre_configuracion = `${
@@ -1757,7 +1811,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     const permanentPartnerTok = SYS_TOKEN;
     const key_imporsuit = generarClaveUnica();
 
-    // ====== 7) Persistir (igual que tu lógica) ======
+    // ====== 7) Persistencia (igual que tu lógica) ======
     let idConfigToUse = id_configuracion || null;
 
     if (!idConfigToUse) {
@@ -1818,6 +1872,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           ],
         }
       );
+      console.log('[DB] UPDATE configuraciones OK');
     } else {
       const [ins] = await db.query(
         `INSERT INTO configuraciones
@@ -1839,7 +1894,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         }
       );
       idConfigToUse = ins?.insertId || ins;
-      console.log('[DB] Insertada nueva config id=', idConfigToUse);
+      console.log('[DB] INSERT configuraciones OK id=', idConfigToUse);
     }
 
     await db.query(
@@ -1855,6 +1910,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         ],
       }
     );
+    console.log('[DB] INSERT IGNORE clientes_chat_center OK');
 
     return res.json({
       success: true,
@@ -1863,6 +1919,11 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       phone_number_id: phoneNumberId,
       telefono: displayNumber,
       status: info?.status || null,
+      matched_by: idWanted
+        ? 'phone_number_id_onboarding'
+        : displayWanted
+        ? 'display_number_onboarding'
+        : 'fallback',
     });
   } catch (err) {
     console.error(
