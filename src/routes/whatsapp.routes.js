@@ -1437,7 +1437,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
   const DEFAULT_TWOFA_PIN = '123456';
   const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User
-  const APP_TOKEN = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
   const BUSINESS_ID = process.env.FB_BUSINESS_ID;
 
   if (!SYS_TOKEN || !BUSINESS_ID) {
@@ -1579,16 +1578,14 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
 
     // ====== 3) Selección del número (prioriza onboarding) ======
-    // Variables finales que usará todo el flujo
     let wabaPicked = null;
     let phoneNumberId = null;
     let displayNumber = null;
 
-    // Normalizar si vino el display del onboarding
     const displayWanted = norm(display_number_onboarding || '');
     const idWanted = String(phone_number_id_onboarding || '').trim() || null;
 
-    // --- 3.1 Si viene phone_number_id_onboarding, buscarlo exactamente ---
+    // 3.1 Buscar por phone_number_id_onboarding
     if (idWanted) {
       console.log(
         '[SELECT][TRY] Buscar por phone_number_id_onboarding:',
@@ -1627,7 +1624,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       }
     }
 
-    // --- 3.2 Si no hubo match por ID y vino display_number_onboarding, buscar por display ---
+    // 3.2 Buscar por display_number_onboarding
     if (!wabaPicked && displayWanted) {
       console.log(
         '[SELECT][TRY] Buscar por display_number_onboarding:',
@@ -1668,7 +1665,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       }
     }
 
-    // --- 3.3 Fallback: primer número disponible (no CONNECTED si es posible) ---
+    // 3.3 Fallback: primer número disponible (no CONNECTED si es posible)
     if (!wabaPicked) {
       console.log(
         '[SELECT][FALLBACK] No llegó/No coincidió número del onboarding. Usar fallback.'
