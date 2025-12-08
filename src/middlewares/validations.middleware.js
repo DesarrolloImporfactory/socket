@@ -48,3 +48,19 @@ exports.loginValidation = [
     .withMessage('La contraseña debe tener al menos 6 caracteres.'),
   validField,
 ];
+
+exports.validCrearProducto = [
+  body('nombre')
+    .notEmpty()
+    .withMessage('El nombre del producto es obligatorio.'),
+  body('precio')
+    .notEmpty()
+    .withMessage('El precio del producto es obligatorio.'),
+  body('descripcion')
+    .notEmpty()
+    .withMessage('La descripción del producto es obligatoria.'),
+  body('tipo_membresia')
+    .notEmpty()
+    .withMessage('El tipo de membresía es obligatorio.'),
+  validField,
+];

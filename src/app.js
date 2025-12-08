@@ -71,6 +71,8 @@ const webhook_meta_whatsappRouter = require('./routes/webhook_meta_whatsapp.rout
 
 const instagramRouter = require('./routes/instagram.routes');
 
+const stripeproRouter = require('./routes/stripepro.routes');
+
 const path = require('path');
 
 const app = express();
@@ -152,12 +154,10 @@ if (process.env.NODE_ENV === 'prod') {
     }
 
     if (isCredentialed) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          message: 'CORS: origin no permitido para requests con credenciales',
-        });
+      return res.status(403).json({
+        success: false,
+        message: 'CORS: origin no permitido para requests con credenciales',
+      });
     }
 
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -273,6 +273,7 @@ app.use('/api/v1/messenger', messengerRouter);
 app.use('/api/v1/tiktok', tikTokRouter);
 app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
+app.use('/api/v1/stripepro', stripeproRouter);
 
 app.all('*', (req, res, next) => {
   return next(
