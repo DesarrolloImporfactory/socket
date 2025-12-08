@@ -432,6 +432,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           IA_VENTAS: [],
           GENERAR_GUIA: [],
           SEGUIMIENTO: [],
+          CANCELADO: [],
         },
       });
     }
@@ -447,6 +448,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       IA_VENTAS: [],
       GENERAR_GUIA: [],
       SEGUIMIENTO: [],
+      CANCELADO: [],
     };
 
     // 4) Clasificar cada contacto según su estado
@@ -490,6 +492,10 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           data.SEGUIMIENTO.push(c);
           break;
 
+        case 'cancelado':
+          data.CANCELADO.push(c);
+          break;
+
         default:
           // Si llega un estado desconocido, lo mando a "CONTACTO INICIAL"
           data.CONTACTO_INICIAL.push(c);
@@ -511,6 +517,72 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
     });
   }
 });
+
+exports.actualizarEstado = async (req, res) => {
+  try {
+    const { id_cliente, nuevo_estado, id_configuracion } = req.body;
+
+    if (!id_cliente || !nuevo_estado || !id_configuracion) {
+      return res.status(400).json({
+        success: false,
+        message: 'Faltan parámetros obligatorios',
+      });
+    }
+
+    // 🟦 MAPEO del estado del FRONT al estado REAL en la BD
+    const estadoMap = {
+      CONTACTO_INICIAL: 'contacto_inicial',
+      PLATAFORMAS_Y_CLASES: 'plataformas_clases',
+      PRODUCTOS_Y_PROVEEDORES: 'productos_proveedores',
+      VENTAS: 'ventas_imporfactory',
+      ASESOR: 'asesor',
+      COTIZACIONES: 'cotizaciones_imporfactory',
+      IA_VENTAS: 'ia_ventas',
+      GENERAR_GUIA: 'generar_guia',
+      SEGUIMIENTO: 'seguimiento',
+      CANCELADO: 'cancelado',
+    };
+
+    const estadoBD = estadoMap[nuevo_estado];
+
+    if (!estadoBD) {
+      return res.status(400).json({
+        success: false,
+        message: `El estado "${nuevo_estado}" no es válido.`,
+      });
+    }
+
+    // Buscar cliente
+    const cliente = await ClientesChatCenter.findOne({
+      where: { id: id_cliente, id_configuracion },
+    });
+
+    if (!cliente) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cliente no encontrado',
+      });
+    }
+
+    // Actualizar
+    await cliente.update({
+      estado_contacto: estadoBD,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Estado de contacto actualizado correctamente',
+      data: cliente,
+    });
+  } catch (error) {
+    console.error('Error al actualizar estado contacto:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+    });
+  }
+};
 
 exports.ultimo_mensaje = catchAsync(async (req, res, next) => {
   const { id_configuracion, id_cliente } = req.body;

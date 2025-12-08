@@ -54,6 +54,11 @@ router.post(
   '/listar_contactos_estado',
   clientes_chat_centerController.listarContactosEstado
 );
+
+router.post(
+  '/actualizar_estado',
+  clientes_chat_centerController.actualizarEstado
+);
 router.post(
   '/listar_ultimo_mensaje',
   clientes_chat_centerController.ultimo_mensaje
