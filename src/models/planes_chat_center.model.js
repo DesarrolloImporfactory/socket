@@ -48,7 +48,11 @@ const Planes_chat_center = db.define(
       allowNull: false,
     },
     id_product_stripe: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    id_price: {
+      type: DataTypes.STRING,
       allowNull: true,
     },
     ahorro: {

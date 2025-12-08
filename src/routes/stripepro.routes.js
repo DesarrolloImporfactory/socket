@@ -9,4 +9,6 @@ router.post(
   stripeproController.crearProducto
 );
 
+router.patch('/editar_producto', stripeproController.editarProducto);
+router.delete('/editar_precio', stripeproController.eliminarPrecio);
 module.exports = router;
