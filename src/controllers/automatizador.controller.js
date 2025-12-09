@@ -25,7 +25,7 @@ exports.obtenerProductosAutomatizador = catchAsync(async (req, res, next) => {
     `
     SELECT id_plataforma 
     FROM configuraciones 
-    WHERE id = ?
+    WHERE id = ? AND suspedido = 0
     `,
     {
       replacements: [id_configuracion],
@@ -160,7 +160,7 @@ exports.obtenerCategoriasAutomatizador = catchAsync(async (req, res, next) => {
     `
     SELECT id_plataforma 
     FROM configuraciones 
-    WHERE id = ?
+    WHERE id = ? AND suspendido = 0
     `,
     {
       replacements: [id_configuracion],

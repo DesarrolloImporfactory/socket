@@ -21,7 +21,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     const [rows] = await db.query(
       `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
        FROM configuraciones
-       WHERE id = ?`,
+       WHERE id = ? AND suspendido = 0`,
       { replacements: [id_configuracion] }
     );
 
@@ -136,7 +136,7 @@ router.post('/estadoConexion', async (req, res) => {
               COALESCE(token,'') token,
               COALESCE(telefono,'') telefono
          FROM configuraciones
-        WHERE id = ? LIMIT 1`,
+        WHERE id = ? AND suspendido = 0 LIMIT 1`,
       { replacements: [id_configuracion] }
     );
     if (!rows.length)
@@ -695,7 +695,7 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
     const [rows] = await db.query(
       `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
          FROM configuraciones
-        WHERE id = ?`,
+        WHERE id = ? AND suspendido = 0`,
       { replacements: [id_configuracion] }
     );
 
@@ -774,7 +774,7 @@ router.post('/obtenerConfiguracion', async (req, res) => {
     const [rows] = await db.query(
       `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia 
        FROM configuraciones 
-       WHERE id = ?`,
+       WHERE id = ? AND suspendido = 0`,
       { replacements: [id_configuracion] }
     );
 
@@ -819,7 +819,7 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM configuraciones WHERE id_configuracion =?`,
+      `SELECT * FROM configuraciones WHERE id =? AND suspendido = 0`,
       { replacements: [id_configuracion] }
     );
 
@@ -956,7 +956,7 @@ async function getConfigFromDB(id) {
       `
       SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
       FROM configuraciones
-      WHERE id = :id
+      WHERE suspendido = 0 AND id = :id
       LIMIT 1
     `,
       {
@@ -1732,7 +1732,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       const [preRows] = await db.query(
         `SELECT id
            FROM configuraciones
-          WHERE id_usuario = ?
+          WHERE suspendido = 0 AND id_usuario = ?
             AND (id_telefono IS NULL OR id_telefono = '')
             AND (telefono = ? OR telefono IS NULL OR telefono = '')
           ORDER BY id DESC
@@ -1751,6 +1751,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
            FROM configuraciones
           WHERE id_usuario = ?
             AND id_telefono = ?
+            AND suspendido = 0
           LIMIT 1`,
         { replacements: [id_usuario, phoneNumberId] }
       );

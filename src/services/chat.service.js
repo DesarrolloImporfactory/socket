@@ -31,7 +31,7 @@ class ChatService {
       console.log('Filtros:', filtros);
 
       const configuraciones = await Configuraciones.findOne({
-        where: { id: id_configuracion },
+        where: { id: id_configuracion, suspendido: 0 },
         attributes: ['telefono'],
       });
 
@@ -308,7 +308,7 @@ class ChatService {
         { visto: 1 },
         {
           where: {
-            celular_recibe: ""+id_cliente,
+            celular_recibe: '' + id_cliente,
             id_configuracion: id_configuracion,
             visto: 0,
             rol_mensaje: 0,
@@ -347,6 +347,7 @@ class ChatService {
       const configuraciones = await Configuraciones.findOne({
         where: {
           id: id_configuracion,
+          suspendido: 0,
         },
         attributes: [
           'id',
@@ -483,10 +484,10 @@ class ChatService {
         where: {
           id_configuracion,
           [Op.or]: [
-          { celular_cliente: { [Op.like]: `%${texto}%` } },
-          { nombre_cliente: { [Op.like]: `%${texto}%` } },
-          { apellido_cliente: { [Op.like]: `%${texto}%` } }
-        ]
+            { celular_cliente: { [Op.like]: `%${texto}%` } },
+            { nombre_cliente: { [Op.like]: `%${texto}%` } },
+            { apellido_cliente: { [Op.like]: `%${texto}%` } },
+          ],
         },
         attributes: ['celular_cliente', 'nombre_cliente'],
       });

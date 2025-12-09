@@ -55,7 +55,12 @@ async function enviarMedioWhatsapp({
 
       // Si hay id_configuracion, procesamos el mensaje en la base de datos
       if (id_configuracion) {
-        const config = await Configuraciones.findByPk(id_configuracion);
+        const config = await Configuraciones.findOne({
+          where: {
+            id: id_configuracion,
+            suspendido: 0,
+          },
+        });
         if (config) {
           await procesarMensajeTexto({
             id_configuracion,

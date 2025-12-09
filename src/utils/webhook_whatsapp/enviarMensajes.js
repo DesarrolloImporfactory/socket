@@ -64,7 +64,12 @@ async function enviarMensajeTextoWhatsApp(
     }
 
     // Obtener configuración para registrar mensaje
-    const config = await Configuraciones.findByPk(id_configuracion);
+    const config = await Configuraciones.findOne({
+      where: {
+        id: id_configuracion,
+        suspendido: 0,
+      },
+    });
     if (!config) {
       await logError(
         `❌ No se encontró configuración con ID ${id_configuracion}`
@@ -129,7 +134,12 @@ async function enviarMensajeWhatsapp({
       await logInfo(`✅ Mensaje enviado. ID: ${mensajeId}`);
 
       // Obtener configuración para procesar el mensaje
-      const config = await Configuraciones.findByPk(id_configuracion);
+      const config = await Configuraciones.findOne({
+        where: {
+          id: id_configuracion,
+          suspendido: 0,
+        },
+      });
       if (!config) {
         return;
       }

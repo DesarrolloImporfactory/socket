@@ -237,7 +237,7 @@ exports.newLogin = async (req, res) => {
       /* usuario */
       // Buscar configuración para obtener el id_usuario (dueño de la tienda)
       const configuracion = await Configuraciones.findOne({
-        where: { id_plataforma: tienda },
+        where: { id_plataforma: tienda, suspendido: 0 },
       });
 
       if (!configuracion || !configuracion.id_usuario) {
@@ -421,7 +421,7 @@ exports.newLogin = async (req, res) => {
         }
       } else {
         const configuracion = await Configuraciones.findOne({
-          where: { id_plataforma: tienda },
+          where: { id_plataforma: tienda, suspendido: 0 },
         });
 
         if (!configuracion || !configuracion.id_usuario) {

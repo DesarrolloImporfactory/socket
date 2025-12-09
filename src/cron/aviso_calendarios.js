@@ -74,7 +74,7 @@ cron.schedule('*/30 * * * *', async () => {
         /* tomar la fecha y hora de la reunion y sacar solo la hora */
 
         const configuraciones = await db.query(
-          `SELECT token, id_whatsapp, id_telefono, template_notificar_calendario, telefono FROM configuraciones WHERE id = ?`,
+          `SELECT token, id_whatsapp, id_telefono, template_notificar_calendario, telefono FROM configuraciones WHERE id = ? AND supendido = 0`,
           {
             replacements: [id_configuracion],
             type: db.QueryTypes.SELECT,

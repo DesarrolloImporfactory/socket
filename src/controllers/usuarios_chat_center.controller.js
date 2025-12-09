@@ -167,7 +167,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
 
     /* validar si existe una configuracion con ese id_plataforma */
     const configuraciones = await Configuraciones.findOne({
-      where: { id_plataforma },
+      where: { id_plataforma, suspendido: 0 },
     });
     if (!configuraciones) {
       return res.status(400).json({
@@ -216,9 +216,9 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
       const crear_usuario = await Usuarios_chat_center.create({
         nombre: nombre_configuracion,
         id_plan: 2,
-        fecha_inicio:"2025-08-13",
-        fecha_renovacion: "2025-09-13",
-        estado: "activo",
+        fecha_inicio: '2025-08-13',
+        fecha_renovacion: '2025-09-13',
+        estado: 'activo',
       });
 
       const crear_sub_usuario = await Sub_usuarios_chat_center.create({
@@ -322,7 +322,9 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
 exports.getTourConexionesPrefByBody = catchAsync(async (req, res) => {
   const { id_usuario } = req.body || {};
   if (!id_usuario) {
-    return res.status(400).json({ status: 'fail', message: 'id_usuario es requerido' });
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_usuario es requerido' });
   }
 
   const row = await Usuarios_chat_center.findOne({
@@ -331,7 +333,9 @@ exports.getTourConexionesPrefByBody = catchAsync(async (req, res) => {
   });
 
   if (!row) {
-    return res.status(404).json({ status: 'fail', message: 'Usuario no encontrado' });
+    return res
+      .status(404)
+      .json({ status: 'fail', message: 'Usuario no encontrado' });
   }
 
   return res.status(200).json({
@@ -344,15 +348,20 @@ exports.getTourConexionesPrefByBody = catchAsync(async (req, res) => {
 exports.updateTourConexionesPrefByBody = catchAsync(async (req, res) => {
   const { id_usuario, tour_conexiones_dismissed } = req.body || {};
   if (!id_usuario) {
-    return res.status(400).json({ status: 'fail', message: 'id_usuario es requerido' });
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_usuario es requerido' });
   }
 
   const row = await Usuarios_chat_center.findOne({ where: { id_usuario } });
   if (!row) {
-    return res.status(404).json({ status: 'fail', message: 'Usuario no encontrado' });
+    return res
+      .status(404)
+      .json({ status: 'fail', message: 'Usuario no encontrado' });
   }
 
-  row.tour_conexiones_dismissed = Number(tour_conexiones_dismissed) === 1 ? 1 : 0;
+  row.tour_conexiones_dismissed =
+    Number(tour_conexiones_dismissed) === 1 ? 1 : 0;
   await row.save();
 
   return res.status(200).json({ status: 'success' });

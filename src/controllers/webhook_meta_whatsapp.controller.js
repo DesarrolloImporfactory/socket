@@ -146,7 +146,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       /* buscar id_configuracion */
       const configuracion = await Configuraciones.findOne({
-        where: { id_telefono: business_phone_id },
+        where: { id_telefono: business_phone_id, suspendido: 0},
       });
 
       if (!configuracion) {
@@ -844,7 +844,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   `SELECT sb.id_sub_usuario, sb.id_usuario
                   FROM configuraciones c
                   INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
-                  WHERE c.id  = ? AND sb.rol = "administrador" LIMIT 1`,
+                  WHERE c.id  = ? AND c.suspendido = 0 AND sb.rol = "administrador" LIMIT 1`,
                   {
                     replacements: [id_configuracion],
                     type: db.QueryTypes.SELECT,

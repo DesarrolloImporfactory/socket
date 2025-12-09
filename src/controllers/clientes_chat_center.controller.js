@@ -69,7 +69,7 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
   try {
     // 1. Obtener id_telefono desde configuraciones
     const [configuracion] = await db.query(
-      'SELECT id_telefono FROM configuraciones WHERE id = ?',
+      'SELECT id_telefono FROM configuraciones WHERE id = ? AND suspendido = 0',
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
@@ -197,7 +197,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     if (!clienteExistente) {
       // 2. Obtener datos desde configuraciones
       const [config] = await db.query(
-        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ?',
+        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ? AND suspendido = 0',
         {
           replacements: [id_configuracion],
           type: db.QueryTypes.SELECT,
@@ -637,7 +637,11 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
   const id_usuario_session = subUsuarioSession.id_usuario;
 
   let validar_permiso_usuario = await Configuraciones.findOne({
-    where: { id_usuario: id_usuario_session, id: id_configuracion },
+    where: {
+      id_usuario: id_usuario_session,
+      id: id_configuracion,
+      suspendido: 0,
+    },
   });
 
   if (!validar_permiso_usuario) {
@@ -926,7 +930,11 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   const id_usuario_session = subUsuarioSession.id_usuario;
 
   let validar_permiso_usuario = await Configuraciones.findOne({
-    where: { id_usuario: id_usuario_session, id: id_configuracion },
+    where: {
+      id_usuario: id_usuario_session,
+      id: id_configuracion,
+      suspendido: 0,
+    },
   });
 
   if (!validar_permiso_usuario) {

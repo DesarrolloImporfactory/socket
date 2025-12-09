@@ -7,7 +7,7 @@ exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
 
   const configuraciones = await db.query(
-    'SELECT id_usuario FROM configuraciones WHERE id = ?',
+    'SELECT id_usuario FROM configuraciones WHERE id = ? AND suspendido = 0',
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
@@ -46,7 +46,7 @@ exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
   const { id_plataforma } = req.body;
 
   const [configuraciones] = await db.query(
-    'SELECT template_generar_guia FROM configuraciones WHERE id_plataforma = ?',
+    'SELECT template_generar_guia FROM configuraciones WHERE id_plataforma = ? AND suspendido = 0',
     {
       replacements: [id_plataforma],
       type: db.QueryTypes.SELECT,
@@ -324,7 +324,7 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
 
   // 1) Validar pertenencia de la config al usuario
   const rows = await db.query(
-    'SELECT id, id_usuario FROM configuraciones WHERE id = ?',
+    'SELECT id, id_usuario FROM configuraciones WHERE id = ? AND suspendido = 0',
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
   );
   if (!rows || rows.length === 0) {
