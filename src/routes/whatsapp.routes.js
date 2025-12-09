@@ -902,8 +902,8 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
     // Insertar cliente en clientes_chat_center
     const insertClienteSql = `
     INSERT INTO clientes_chat_center
-      (id_configuracion, uid_cliente, nombre_cliente, celular_cliente)
-    VALUES (?, ?, ?, ?)
+      (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
+    VALUES (?, ?, ?, ?, ?)
   `;
     const [insertClienteRes] = await db.query(insertClienteSql, {
       replacements: [
@@ -911,6 +911,7 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
         id_telefono,
         nombre_configuracion,
         telefono,
+        1
       ],
     });
 
@@ -1812,7 +1813,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     await db.query(
       `INSERT IGNORE INTO clientes_chat_center
-         (id_configuracion, uid_cliente, nombre_cliente, celular_cliente)
+         (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
        VALUES (?, ?, ?, ?)`,
       {
         replacements: [
@@ -1820,6 +1821,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           phoneNumberId,
           nombre_configuracion,
           displayNumber,
+          1
         ],
       }
     );

@@ -211,8 +211,8 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       // 3. Insertar nuevo cliente
       await db.query(
         `INSERT INTO clientes_chat_center 
-        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
+        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at, propietario)
+        VALUES (?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
         {
           replacements: [
             id_configuracion,
@@ -220,6 +220,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
             nombre_cliente,
             apellido_cliente,
             telefono_configuracion,
+            1,
           ],
           type: db.QueryTypes.INSERT,
         }

@@ -37,6 +37,7 @@ async function procesarMensajeTexto({
         nombre_cliente,
         apellido_cliente,
         celular_cliente: telefono_configuracion,
+        propietario: 1
       });
     }
 

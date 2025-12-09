@@ -154,6 +154,11 @@ const ClientesChatCenter = db.define(
       allowNull: true,
       defaultValue: 'contacto_inicial',
     },
+    propietario: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+    },
     direccion: {
       type: DataTypes.STRING(255),
       allowNull: true,
