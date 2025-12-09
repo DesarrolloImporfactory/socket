@@ -12,6 +12,7 @@ const intervalMapping = {
   personalizado_14_dias: { interval: 'day', interval_count: 14, dias: 14 },
   personalizado_2_semanas: { interval: 'week', interval_count: 2, dias: 14 },
 };
+
 exports.crearProducto = catchAsync(async (req, res, next) => {
   const {
     nombre,
@@ -128,6 +129,56 @@ exports.editarProducto = catchAsync(async (req, res, next) => {
       plan_db: planActualizado,
     },
     message: 'Producto actualizado exitosamente',
+  });
+});
+
+exports.eliminarProducto = catchAsync(async (req, res, next) => {
+  const { id_producto } = req.body;
+
+  // Archivar el producto en Stripe
+  const productoArchivado = await stripe.products.update(id_producto, {
+    active: false,
+  });
+
+  // Desactivar el plan en la base de datos
+  await planes_chat_center.update(
+    { activo: false },
+    { where: { id_product_stripe: id_producto } }
+  );
+
+  res.json({
+    status: true,
+    data: productoArchivado,
+    message: 'Producto eliminado exitosamente',
+  });
+});
+
+exports.activarProducto = catchAsync(async (req, res, next) => {
+  const { id_producto } = req.body;
+
+  // Activar el producto en Stripe
+  const productoActivado = await stripe.products.update(id_producto, {
+    active: true,
+  });
+  // Activar el plan en la base de datos
+  await planes_chat_center.update(
+    { activo: true },
+    { where: { id_product_stripe: id_producto } }
+  );
+  res.json({
+    status: true,
+    data: productoActivado,
+    message: 'Producto activado exitosamente',
+  });
+});
+
+exports.listarProductos = catchAsync(async (req, res, next) => {
+  const productos = await planes_chat_center.findAll();
+
+  res.json({
+    status: true,
+    data: productos,
+    message: 'Productos obtenidos exitosamente',
   });
 });
 
