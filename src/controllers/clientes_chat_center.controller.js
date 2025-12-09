@@ -412,7 +412,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
     const clientes = await db.query(
       `SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
        FROM clientes_chat_center
-       WHERE id_configuracion = ?`,
+       WHERE id_configuracion = ? AND propietario <> 1;`,
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
