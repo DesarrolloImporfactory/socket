@@ -59,6 +59,10 @@ const Planes_chat_center = db.define(
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
     },
+    link_pago: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     sequelize: db,

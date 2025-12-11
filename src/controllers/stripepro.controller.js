@@ -47,6 +47,17 @@ exports.crearProducto = catchAsync(async (req, res, next) => {
     },
   });
 
+  const buylink = await stripe.paymentLinks.create({
+    line_items: [
+      {
+        price: price.id,
+        quantity: 1,
+      },
+    ],
+  });
+
+  console.log('Link de pago creado:', buylink.url);
+
   const nuevoPlan = await planes_chat_center.create({
     nombre_plan: nombre,
     descripcion_plan: descripcion,
@@ -59,6 +70,7 @@ exports.crearProducto = catchAsync(async (req, res, next) => {
     ahorro,
     id_product_stripe: producto.id,
     id_price: price.id,
+    link_pago: buylink.url,
   });
 
   res.json({
