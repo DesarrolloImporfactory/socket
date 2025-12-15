@@ -149,7 +149,9 @@ const ClientesChatCenter = db.define(
         'ia_ventas',
         'generar_guia',
         'seguimiento',
-        'cancelado'
+        'cancelado',
+        'ia_ventas_imporshop',
+        'atencion_urgente'
       ),
       allowNull: true,
       defaultValue: 'contacto_inicial',

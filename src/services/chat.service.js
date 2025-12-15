@@ -952,7 +952,8 @@ class ChatService {
 
       // Formato de los valores de tarifas a 2 decimales
       tarifas.laar = parseFloat(tarifas.laar.toFixed(2));
-      tarifas.servientrega = parseFloat(tarifas.servientrega.toFixed(2));
+      /* tarifas.servientrega = parseFloat(tarifas.servientrega.toFixed(2)); */
+      tarifas.servientrega = 0;
       tarifas.gintracom = parseFloat(tarifas.gintracom.toFixed(2));
 
       return tarifas;

@@ -5,7 +5,9 @@ const {
   obtenerDatosClienteParaAssistant,
   obtenerDatosCalendarioParaAssistant,
   obtenerCalendarioClasImporfactory,
+  procesarCombosParaIA,
 } = require('../utils/datosClienteAssistant'); // Ajustar según organización
+
 const fs = require('fs').promises;
 const path = require('path');
 const FormData = require('form-data');
@@ -50,34 +52,101 @@ async function procesarAsistenteMensajeVentas(body) {
     accessToken,
     estado_contacto,
     id_cliente,
+    lista_productos = null,
   } = body;
 
   try {
-    /* buscar informacion del thread */
-    const openai_threads = await db.query(
-      `SELECT numero_factura, numero_guia, bloque_productos
-     FROM openai_threads 
-     WHERE thread_id = ?`,
-      {
-        replacements: [id_thread],
-        type: db.QueryTypes.SELECT,
-      }
-    );
-    const openai_thread = openai_threads[0];
+    /* consulta de productos */
+    // Si lista_productos es un array, procesamos la consulta
+    let bloqueProductos = '';
+    let lista_productos_depurada = '';
 
-    if (!openai_thread) {
-      await log(
-        `⚠️ No se encontró información del thread para id_thread: ${id_thread}`
-      );
-      return {
-        status: 400,
-        error: 'No se encontró información del thread.',
-      };
+    if (typeof lista_productos === 'string') {
+      try {
+        lista_productos_depurada = JSON.parse(lista_productos);
+      } catch (e) {
+        // si no era JSON válido, lo tratamos como un solo producto
+        lista_productos_depurada = [lista_productos];
+      }
     }
+
+    if (
+      Array.isArray(lista_productos_depurada) &&
+      lista_productos_depurada.length > 0
+    ) {
+      // Variable para almacenar el bloque de productos
+
+      // Iterar sobre cada producto en lista_productos
+      for (let producto of lista_productos_depurada) {
+        // Consultar la tabla productos_chat_center usando LIKE
+        const productosEncontrados = await db.query(
+          `SELECT 
+        pc.nombre AS nombre_producto,
+            pc.descripcion AS descripcion_producto,
+            pc.tipo AS tipo,
+            pc.precio AS precio_producto,
+            pc.duracion AS duracion,
+            pc.imagen_url AS image_path,
+            pc.video_url AS video_path,
+            pc.stock AS stock,
+            pc.nombre_upsell AS nombre_upsell,
+            pc.descripcion_upsell AS descripcion_upsell,
+            pc.precio_upsell AS precio_upsell,
+            pc.imagen_upsell_url AS imagen_upsell_path,
+            pc.combos_producto AS combos_producto,
+        cc.nombre AS nombre_categoria
+      FROM productos_chat_center pc
+      INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
+      WHERE pc.nombre LIKE :producto
+      AND pc.id_configuracion = :id_configuracion`,
+          {
+            replacements: {
+              producto: `%${producto}%`,
+              id_configuracion: id_configuracion,
+            },
+            type: db.QueryTypes.SELECT,
+          }
+        );
+
+        // Si encontramos productos, agregarlos al bloqueProductos
+        if (productosEncontrados && productosEncontrados.length > 0) {
+          for (let infoProducto of productosEncontrados) {
+            const { combosNormalizados, bloqueCombos } = procesarCombosParaIA(
+              infoProducto.combos_producto
+            );
+
+            bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
+            bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
+            bloqueProductos += `Precio: ${infoProducto.precio_producto}\n`;
+            /* bloqueProductos += `Stock: ${infoProducto.stock}\n`; */
+            bloqueProductos += bloqueCombos;
+            bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; // Recurso para el asistente
+            bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; // Recurso para el asistente
+            bloqueProductos += `Tipo: ${infoProducto.tipo}\n`;
+            bloqueProductos += `Categoría: ${infoProducto.nombre_categoria}\n`;
+            bloqueProductos += `Nombre_upsell: ${infoProducto.nombre_upsell}\n`;
+            bloqueProductos += `Descripcion_upsell: ${infoProducto.descripcion_upsell}\n`;
+            bloqueProductos += `Precio_upsell: ${infoProducto.precio_upsell}\n`;
+            bloqueProductos += ` [upsell_imagen_url]: ${infoProducto.imagen_upsell_path}\n`;
+            bloqueProductos += `\n`;
+          }
+        }
+      }
+
+      // Si encontramos productos, los registramos en el log
+      if (bloqueProductos) {
+        await log(`✅ Productos encontrados:\n${bloqueProductos}`);
+      } else {
+        await log(
+          '⚠️ No se encontraron productos con los nombres proporcionados.'
+        );
+      }
+    }
+    /* consulta de productos */
 
     // 1. Obtener assistants activos
     const assistants = await db.query(
-      `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, bloque_productos, ofrecer 
+      `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, ofrecer 
      FROM openai_assistants 
      WHERE id_configuracion = ? AND activo = 1`,
       {
@@ -116,6 +185,8 @@ async function procesarAsistenteMensajeVentas(body) {
 
     let nombre_estado = 'contacto_inicial';
 
+    /* console.log('estado_contacto: ' + estado_contacto); */
+
     if (estado_contacto == 'contacto_inicial') {
       nombre_estado = 'contacto_inicial_ventas';
       tipo_asistente = 'IA_contacto_ventas';
@@ -127,6 +198,14 @@ async function procesarAsistenteMensajeVentas(body) {
         nombre_estado = 'ventas_servicios';
         tipo_asistente = 'IA_servicios_ventas';
       }
+    } else if (estado_contacto == 'ia_ventas_imporshop') {
+      if (sales.ofrecer == 'productos') {
+        nombre_estado = 'ventas_productos_imporshop';
+        tipo_asistente = 'IA_productos_ventas_imporshop';
+      } /*  else if (sales.ofrecer == 'servicios') {
+        nombre_estado = 'ventas_servicios';
+        tipo_asistente = 'IA_servicios_ventas';
+      } */
     } else {
       nombre_estado = '';
     }
@@ -151,30 +230,19 @@ async function procesarAsistenteMensajeVentas(body) {
     assistant_id = oia_asistentes[0].assistant_id;
     tiempo_remarketing = sales?.tiempo_remarketing;
 
-    if (estado_contacto == 'ia_ventas') {
-      if (sales.bloque_productos) {
-        if (openai_thread.bloque_productos != sales.bloque_productos) {
-          if (sales.ofrecer == 'productos') {
-            bloqueInfo +=
-              '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
-            bloqueInfo += sales.bloque_productos;
-          } else if (sales.ofrecer == 'servicios') {
-            bloqueInfo +=
-              '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
-            bloqueInfo += sales.bloque_productos;
-          }
-
-          // Actualizar tabla openai_threads con numero_factura y numero_guia
-          const updateSql = `
-          UPDATE openai_threads
-          SET bloque_productos = ?
-          WHERE thread_id = ?
-        `;
-          /* console.log('thread_id: ' + id_thread); */
-          await db.query(updateSql, {
-            replacements: [sales.bloque_productos, id_thread],
-            type: db.QueryTypes.UPDATE,
-          });
+    if (
+      estado_contacto == 'ia_ventas' ||
+      estado_contacto == 'ia_ventas_imporshop'
+    ) {
+      if (bloqueProductos) {
+        if (sales.ofrecer == 'productos') {
+          bloqueInfo +=
+            '📦 Información de todos los productos que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los productos o servicios anteriores a este mensaje:\n\n';
+          bloqueInfo += bloqueProductos;
+        } else if (sales.ofrecer == 'servicios') {
+          bloqueInfo +=
+            '📦 Información de todos los servicios que ofrecemos pero que no necesariamente estan en el pedido. Olvidearse de los servicios o productos anteriores a este mensaje:\n\n';
+          bloqueInfo += bloqueProductos;
         }
       }
     }
@@ -472,28 +540,6 @@ async function procesarAsistenteMensajeImporfactory(body) {
   } = body;
 
   try {
-    /* buscar informacion del thread */
-    const openai_threads = await db.query(
-      `SELECT numero_factura, numero_guia, bloque_productos
-     FROM openai_threads 
-     WHERE thread_id = ?`,
-      {
-        replacements: [id_thread],
-        type: db.QueryTypes.SELECT,
-      }
-    );
-    const openai_thread = openai_threads[0];
-
-    if (!openai_thread) {
-      await log(
-        `⚠️ No se encontró información del thread para id_thread: ${id_thread}`
-      );
-      return {
-        status: 400,
-        error: 'No se encontró información del thread.',
-      };
-    }
-
     // 1. Obtener assistants activos
     const assistants = await db.query(
       `SELECT tipo, assistant_id 
@@ -531,7 +577,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       };
     }
 
-    console.log('estado_contacto: ' + estado_contacto);
+    /* console.log('estado_contacto: ' + estado_contacto); */
     if (estado_contacto == 'plataformas_clases') {
       const datosCliente = await obtenerCalendarioClasImporfactory();
       bloqueInfo = datosCliente.bloque || '';
@@ -761,7 +807,138 @@ async function procesarAsistenteMensajeImporfactory(body) {
   }
 }
 
+async function separadorProductos({
+  mensaje,
+  id_plataforma,
+  id_configuracion,
+  telefono,
+  api_key_openai,
+  id_thread,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+  id_cliente,
+}) {
+  try {
+    // Obtener el tipo de asistente para separador_productos
+    const oia_asistentes = await db.query(
+      `SELECT tipo, assistant_id 
+       FROM oia_asistentes 
+       WHERE tipo = 'separador_productos'`,
+      {
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!oia_asistentes || oia_asistentes.length === 0) {
+      await log(
+        '⚠️ No se encontró un assistant válido para separador_productos'
+      );
+      return {
+        status: 400,
+        error: 'No se encontró un assistant válido para separador_productos',
+      };
+    }
+
+    const assistant_id = oia_asistentes[0].assistant_id;
+
+    const headers = {
+      Authorization: `Bearer ${api_key_openai}`,
+      'Content-Type': 'application/json',
+      'OpenAI-Beta': 'assistants=v2',
+    };
+
+    // Paso 1: Enviar el mensaje del usuario al thread
+    await axios.post(
+      `https://api.openai.com/v1/threads/${id_thread}/messages`,
+      { role: 'user', content: mensaje },
+      { headers }
+    );
+
+    // Paso 2: Ejecutar el run
+    const runRes = await axios.post(
+      `https://api.openai.com/v1/threads/${id_thread}/runs`,
+      { assistant_id, max_completion_tokens: 200 },
+      { headers }
+    );
+
+    const run_id = runRes.data.id;
+    if (!run_id) {
+      await log(`⚠️ No se pudo obtener run_id para separador_productos.`);
+      return {
+        status: 400,
+        error: 'No se pudo ejecutar el assistant separador_productos.',
+      };
+    }
+
+    // Paso 3: Esperar la respuesta con polling
+    let statusRun = 'queued',
+      attempts = 0;
+    let respuestaSeparador = '';
+    while (
+      statusRun !== 'completed' &&
+      statusRun !== 'failed' &&
+      attempts < 20
+    ) {
+      await new Promise((r) => setTimeout(r, 1000));
+      attempts++;
+
+      try {
+        const statusRes = await axios.get(
+          `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+          { headers }
+        );
+
+        statusRun = statusRes.data.status;
+
+        if (statusRun === 'completed') {
+          const messagesRes = await axios.get(
+            `https://api.openai.com/v1/threads/${id_thread}/messages`,
+            { headers }
+          );
+
+          const mensajes = messagesRes.data.data || [];
+          respuestaSeparador =
+            mensajes
+              .reverse()
+              .find((m) => m.role === 'assistant' && m.run_id === run_id)
+              ?.content?.[0]?.text?.value || '';
+        }
+      } catch (err) {
+        await log(
+          `⚠️ Error al consultar el estado del assistant separador_productos: ${err.message}`
+        );
+        break; // Romper el bucle en caso de error
+      }
+    }
+
+    if (statusRun === 'failed') {
+      await log(
+        `⚠️ La ejecución del assistant separador_productos falló para id_thread: ${id_thread}`
+      );
+      return {
+        status: 400,
+        error: 'Falló la ejecución del assistant separador_productos.',
+      };
+    }
+
+    return {
+      status: 200,
+      respuesta: respuestaSeparador,
+    };
+  } catch (err) {
+    await log(
+      `⚠️ Error en la función separadorProductos. Error: ${err.message}`
+    );
+    return {
+      status: 500,
+      error: 'Hubo un error interno en el servidor.',
+    };
+  }
+}
+
 module.exports = {
   procesarAsistenteMensajeVentas,
   procesarAsistenteMensajeImporfactory,
+  separadorProductos,
 };

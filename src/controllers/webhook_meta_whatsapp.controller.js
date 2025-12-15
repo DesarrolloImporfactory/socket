@@ -29,6 +29,7 @@ const {
   obtenerThreadId,
   transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
+  separador_productos,
   enviarAsistenteGptImporfactory,
 } = require('../utils/webhook_whatsapp/funcciones_asistente');
 
@@ -146,7 +147,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       /* buscar id_configuracion */
       const configuracion = await Configuraciones.findOne({
-        where: { id_telefono: business_phone_id, suspendido: 0},
+        where: { id_telefono: business_phone_id, suspendido: 0 },
       });
 
       if (!configuracion) {
@@ -427,7 +428,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       /* obtener id_cliente_configuracion */
       console.log('id_configuracion: ' + id_configuracion);
       console.log('telefono_configuracion: ' + telefono_configuracion);
-      const clienteExisteConfiguracion = await ClientesChatCenter.findOne({
+      let clienteExisteConfiguracion = await ClientesChatCenter.findOne({
         where: { celular_cliente: telefono_configuracion, id_configuracion },
       });
 
@@ -449,6 +450,15 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             texto_mensaje +
             ` \n`
         );
+
+        clienteExisteConfiguracion = await ClientesChatCenter.create({
+          id_configuracion,
+          uid_cliente: business_phone_id,
+          nombre_cliente: nombre_configuracion,
+          apellido_cliente: '',
+          celular_cliente: telefono_configuracion,
+          propietario: 1,
+        });
       }
 
       const creacion_mensaje = await MensajeCliente.create({
@@ -714,6 +724,26 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               );
             }
 
+            // Llamar a separador_productos antes de enviarAsistenteGptVentas
+            const separadorRespuesta = await separador_productos({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+              id_cliente,
+            });
+            let lista_productos = '';
+
+            if (separadorRespuesta.status === 200) {
+              // Usar la respuesta del separador como prefijo antes de enviar el mensaje al asistente de ventas
+              lista_productos = separadorRespuesta.respuesta;
+            }
+
             respuesta_asistente = await enviarAsistenteGptVentas({
               mensaje: texto_mensaje,
               id_plataforma,
@@ -725,6 +755,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               accessToken,
               estado_contacto,
               id_cliente,
+              lista_productos,
             });
 
             if (respuesta_asistente?.status === 200) {
@@ -876,7 +907,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   title: nombre + ' - ' + servicio,
                 };
 
-                console.log(JSON.stringify(payload));
+                /* console.log(JSON.stringify(payload)); */
 
                 servicioAppointments.createAppointment(payload, id_usuarios);
               }
@@ -947,6 +978,302 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
                 .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
                 .replace(/\[cita_confirmada\]:\s*true/gi, ''); // Eliminar confirmación de cita
+
+              solo_texto = solo_texto.trim();
+
+              if (solo_texto !== '') {
+                await enviarMensajeWhatsapp({
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  texto_mensaje: solo_texto,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                });
+              }
+            }
+          } else if (tipo_configuracion == 'imporshop') {
+            if (
+              estado_contacto == 'contacto_inicial' ||
+              estado_contacto == 'seguimiento'
+            ) {
+              estado_contacto = 'ia_ventas_imporshop';
+            }
+
+            // Llamar a separador_productos antes de enviarAsistenteGptVentas
+            const separadorRespuesta = await separador_productos({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+              id_cliente,
+            });
+            let lista_productos = '';
+
+            if (separadorRespuesta.status === 200) {
+              // Usar la respuesta del separador como prefijo antes de enviar el mensaje al asistente de ventas
+              lista_productos = separadorRespuesta.respuesta;
+            }
+
+            respuesta_asistente = await enviarAsistenteGptVentas({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+              id_cliente,
+              lista_productos,
+            });
+
+            if (respuesta_asistente?.status === 200) {
+              if (estado_contacto == 'contacto_inicial') {
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'ia_ventas_imporshop' },
+                  { where: { id: id_cliente } }
+                );
+              }
+
+              const mensajeGPT = respuesta_asistente.respuesta;
+              const tipoInfo = respuesta_asistente.tipoInfo;
+
+              const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
+                mensajeGPT
+              );
+
+              const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
+                mensajeGPT
+              );
+
+              const asesoronfirmado = /\[asesor_confirmado\]:\s*true/i.test(
+                mensajeGPT
+              );
+
+              const atencionUrgente = /\[atencion_urgente\]:\s*true/i.test(
+                mensajeGPT
+              );
+
+              if (pedidoConfirmado) {
+                const nombre =
+                  mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+                const telefono =
+                  mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+                const provincia =
+                  mensajeGPT.match(/📍 Provincia:\s*(.+)/)?.[1]?.trim() || '';
+                const ciudad =
+                  mensajeGPT.match(/📍 Ciudad:\s*(.+)/)?.[1]?.trim() || '';
+                const direccion =
+                  mensajeGPT.match(/🏡 Dirección:\s*(.+)/)?.[1]?.trim() || '';
+                const producto =
+                  mensajeGPT.match(/📦 Producto:\s*(.+)/)?.[1]?.trim() || '';
+                const precio =
+                  mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() ||
+                  '';
+
+                // Variables listas
+                /* console.log('📦 Datos extraídos del pedido:');
+                console.log({
+                  nombre,
+                  telefono,
+                  provincia,
+                  ciudad,
+                  direccion,
+                  producto,
+                  precio,
+                }); */
+
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'generar_guia' },
+                  { where: { id: id_cliente } }
+                );
+              } else if (citaConfirmada) {
+                // Extraer valores usando regex
+                const nombre =
+                  mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
+                const telefono =
+                  mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
+                const correo =
+                  mensajeGPT.match(/📍 Correo:\s*(.+)/)?.[1]?.trim() || '';
+                const servicio =
+                  mensajeGPT
+                    .match(/📍 Servicio que desea:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const fecha_hora_inicio =
+                  mensajeGPT
+                    .match(/🕒 Fecha y hora de inicio:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const fecha_hora_fin =
+                  mensajeGPT
+                    .match(/🕒 Fecha y hora de fin:\s*(.+)/)?.[1]
+                    ?.trim() || '';
+                const precio =
+                  mensajeGPT.match(/💰 Precio total:\s*(.+)/)?.[1]?.trim() ||
+                  '';
+
+                // Convierte las fechas locales a UTC usando la zona horaria 'America/Guayaquil'
+                const moment = require('moment-timezone');
+
+                const fecha_hora_inicio_utc = moment
+                  .tz(fecha_hora_inicio, 'America/Guayaquil')
+                  .utc()
+                  .format();
+                const fecha_hora_fin_utc = moment
+                  .tz(fecha_hora_fin, 'America/Guayaquil')
+                  .utc()
+                  .format();
+                // Variables listas
+                console.log('📦 Datos extraídos de la cita:');
+                console.log({
+                  nombre,
+                  telefono,
+                  correo,
+                  servicio,
+                  fecha_hora_inicio_utc,
+                  fecha_hora_fin_utc,
+                  precio,
+                });
+
+                /* consultar id del calendarios */
+                const calendars = await db.query(
+                  `SELECT id
+                  FROM calendars 
+                  WHERE account_id  = ?`,
+                  {
+                    replacements: [id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  }
+                );
+                const id_calendars = calendars[0].id;
+                /* consultar id del calendarios */
+
+                /* consultar id del usuario y sub_usuario */
+                const usuario = await db.query(
+                  `SELECT sb.id_sub_usuario, sb.id_usuario
+                  FROM configuraciones c
+                  INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
+                  WHERE c.id  = ? AND c.suspendido = 0 AND sb.rol = "administrador" LIMIT 1`,
+                  {
+                    replacements: [id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  }
+                );
+                const id_usuarios = usuario[0].id_usuario;
+                const id_sub_usuario = usuario[0].id_sub_usuario;
+                /* consultar id del usuario y sub_usuario */
+
+                const payload = {
+                  assigned_user_id: id_sub_usuario,
+                  booked_tz: 'America/Guayaquil',
+                  calendar_id: id_calendars,
+                  create_meet: true,
+                  created_by_user_id: id_usuarios,
+                  description: '',
+                  end: fecha_hora_fin_utc,
+                  invitees: [
+                    {
+                      name: nombre,
+                      email: correo,
+                      phone: telefono,
+                    },
+                  ],
+                  location_text: 'online',
+                  meeting_url: null,
+                  start: fecha_hora_inicio_utc,
+                  status: 'Agendado',
+                  title: nombre + ' - ' + servicio,
+                };
+
+                /* console.log(JSON.stringify(payload)); */
+
+                servicioAppointments.createAppointment(payload, id_usuarios);
+              } else if (asesoronfirmado) {
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'asesor' },
+                  { where: { id: id_cliente } }
+                );
+              } else if (atencionUrgente) {
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'atencion_urgente' },
+                  { where: { id: id_cliente } }
+                );
+              }
+
+              // Buscar URLs de imágenes y videos usando regex
+              const urls_imagenes = (
+                mensajeGPT.match(
+                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi
+                ) || []
+              )
+                .map((s) => {
+                  const m = s.match(
+                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i
+                  );
+                  return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
+                })
+                .filter(Boolean);
+
+              const urls_videos = (
+                mensajeGPT.match(
+                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi
+                ) || []
+              )
+                .map((s) => {
+                  const m = s.match(
+                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i
+                  );
+                  return m ? m[1] || m[2] : null;
+                })
+                .filter(Boolean);
+
+              // Enviar imágenes
+              for (const url_img of urls_imagenes) {
+                if (url_img) {
+                  await enviarMedioWhatsapp({
+                    tipo: 'image',
+                    url_archivo: url_img,
+                    phone_whatsapp_to: phone_whatsapp_from,
+                    business_phone_id,
+                    accessToken,
+                    id_configuracion,
+                    responsable: respuesta_asistente.tipo_asistente,
+                  });
+                }
+              }
+
+              // Enviar videos
+              for (const url_video of urls_videos) {
+                if (url_video) {
+                  await enviarMedioWhatsapp({
+                    tipo: 'video',
+                    url_archivo: url_video,
+                    phone_whatsapp_to: phone_whatsapp_from,
+                    business_phone_id,
+                    accessToken,
+                    id_configuracion,
+                    responsable: respuesta_asistente.tipo_asistente,
+                  });
+                }
+              }
+
+              // Eliminar las líneas con URLs del mensaje
+              let solo_texto = mensajeGPT
+                .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
+                .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
+                .replace(/\[upsell_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de upsell
+                .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
+                .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
+                .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
+                .replace(/\[cita_confirmada\]:\s*true/gi, '') // Eliminar confirmación de cita
+                .replace(/\[asesor_confirmado\]:\s*true/gi, '') // Eliminar asesor_confirmado
+                .replace(/\[atencion_urgente\]:\s*true/gi, ''); // Eliminar atencion_urgente
 
               solo_texto = solo_texto.trim();
 

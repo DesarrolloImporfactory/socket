@@ -9,7 +9,9 @@ const {
 } = require('../../services/remarketing.service');
 
 const {
-  procesarAsistenteMensajeVentas, procesarAsistenteMensajeImporfactory
+  procesarAsistenteMensajeVentas,
+  procesarAsistenteMensajeImporfactory,
+  separadorProductos,
 } = require('../../services/mensaje_assistant.service');
 
 const {
@@ -41,7 +43,6 @@ async function transcribirAudioConWhisperDesdeArchivo(
       'https://chat.imporfactory.app',
       ''
     );
-    
 
     /* console.log('__dirname: ' + __dirname); */
     // Aquí usamos path.join() para asegurar que la ruta esté bien construida
@@ -95,6 +96,7 @@ async function enviarAsistenteGptVentas({
   accessToken,
   estado_contacto,
   id_cliente,
+  lista_productos = null
 }) {
   try {
     const data = await procesarAsistenteMensajeVentas({
@@ -108,6 +110,7 @@ async function enviarAsistenteGptVentas({
       accessToken,
       estado_contacto,
       id_cliente,
+      lista_productos,
     });
 
     if (data?.status === 200) {
@@ -119,7 +122,7 @@ async function enviarAsistenteGptVentas({
 
     return data;
   } catch (err) {
-    console.log(`❌ Error en enviarAsistenteGptVentas: ${err.message}`)
+    console.log(`❌ Error en enviarAsistenteGptVentas: ${err.message}`);
     await log(`❌ Error en enviarAsistenteGptVentas: ${err.message}`);
     return false;
   }
@@ -134,7 +137,7 @@ async function enviarAsistenteGptImporfactory({
   id_thread,
   business_phone_id,
   accessToken,
-  estado_contacto
+  estado_contacto,
 }) {
   try {
     const data = await procesarAsistenteMensajeImporfactory({
@@ -146,7 +149,7 @@ async function enviarAsistenteGptImporfactory({
       id_thread,
       business_phone_id,
       accessToken,
-      estado_contacto
+      estado_contacto,
     });
 
     if (data?.status === 200) {
@@ -158,9 +161,58 @@ async function enviarAsistenteGptImporfactory({
 
     return data;
   } catch (err) {
-    console.log(`❌ Error en enviarAsistenteGptImporfactory: ${err.message}`)
+    console.log(`❌ Error en enviarAsistenteGptImporfactory: ${err.message}`);
     await log(`❌ Error en enviarAsistenteGptImporfactory: ${err.message}`);
     return false;
+  }
+}
+
+async function separador_productos({
+  mensaje,
+  id_plataforma,
+  id_configuracion,
+  telefono,
+  api_key_openai,
+  id_thread,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+  id_cliente,
+}) {
+  try {
+    // Llamada a la función separadorProductos, que es la lógica principal
+    const data = await separadorProductos({
+      mensaje,
+      id_plataforma,
+      id_configuracion,
+      telefono,
+      api_key_openai,
+      id_thread,
+      business_phone_id,
+      accessToken,
+      estado_contacto,
+      id_cliente,
+    });
+
+    if (data?.status === 200) {
+      await log(
+        `✅ Respuesta separador de productos: ${JSON.stringify(data.respuesta)}`
+      );
+      return data; // Devuelve la respuesta exitosa
+    } else {
+      // Si hubo un error, registramos el error con la respuesta
+      await log(
+        `⚠️ Error en respuesta del separador de productos: ${JSON.stringify(
+          data
+        )}`
+      );
+      return data; // Devuelve la respuesta de error (con status !== 200)
+    }
+  } catch (err) {
+    // Captura errores en el proceso y los loguea
+    console.log(`❌ Error en separador_productos: ${err.message}`);
+    await log(`❌ Error en separador_productos: ${err.message}`);
+    return { status: 500, error: 'Error en la función separador_productos' }; // Devuelve un error general
   }
 }
 
@@ -196,6 +248,7 @@ module.exports = {
   cancelarRemarketingEnNode,
   transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
+  separador_productos,
   obtenerThreadId,
-  enviarAsistenteGptImporfactory
+  enviarAsistenteGptImporfactory,
 };

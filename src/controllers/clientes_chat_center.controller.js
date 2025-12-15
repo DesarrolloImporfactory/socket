@@ -434,6 +434,8 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           GENERAR_GUIA: [],
           SEGUIMIENTO: [],
           CANCELADO: [],
+          IA_VENTAS_IMPORSHOP: [],
+          ATENCION_URGENTE: [],
         },
       });
     }
@@ -450,6 +452,8 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       GENERAR_GUIA: [],
       SEGUIMIENTO: [],
       CANCELADO: [],
+      IA_VENTAS_IMPORSHOP: [],
+      ATENCION_URGENTE: [],
     };
 
     // 4) Clasificar cada contacto según su estado
@@ -497,6 +501,14 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
           data.CANCELADO.push(c);
           break;
 
+        case 'ia_ventas_imporshop':
+          data.IA_VENTAS_IMPORSHOP.push(c);
+          break;
+
+        case 'atencion_urgente':
+          data.ATENCION_URGENTE.push(c);
+          break;
+
         default:
           // Si llega un estado desconocido, lo mando a "CONTACTO INICIAL"
           data.CONTACTO_INICIAL.push(c);
@@ -542,6 +554,8 @@ exports.actualizarEstado = async (req, res) => {
       GENERAR_GUIA: 'generar_guia',
       SEGUIMIENTO: 'seguimiento',
       CANCELADO: 'cancelado',
+      ATENCION_URGENTE: 'atencion_urgente',
+      IA_VENTAS_IMPORSHOP: 'ia_ventas_imporshop',
     };
 
     const estadoBD = estadoMap[nuevo_estado];
