@@ -60,6 +60,20 @@ const Usuarios_chat_center = db.define(
       allowNull: false,
       defaultValue: 0,
     },
+    tipo_plan: {
+      type: DataTypes.ENUM('mensual', 'conversaciones'),
+      allowNull: true,
+      defaultValue: 'mensual',
+    },
+    email_propietario: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      unique: true
+    },
+    id_costumer: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     sequelize: db,

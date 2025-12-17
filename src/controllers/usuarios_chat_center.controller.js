@@ -8,6 +8,8 @@ const Mensaje_cliente = require('../models/mensaje_cliente.model');
 const Etiquetas_asignadas = require('../models/etiquetas_asignadas.model');
 const Etiquetas_chat_center = require('../models/etiquetas_chat_center.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
+
+const { obtenerOCrearStripeCustomer } = require('./../utils/stripe/crear_customer');
 const { Op } = require('sequelize');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
@@ -163,152 +165,83 @@ exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
 
 exports.importacion_chat_center = catchAsync(async (req, res, next) => {
   try {
-    const { id_plataforma } = req.body;
+    const { id_usuario } = req.body;
 
-    /* validar si existe una configuracion con ese id_plataforma */
-    const configuraciones = await Configuraciones.findOne({
-      where: { id_plataforma, suspendido: 0 },
+    /* obtener usuarios con email_propietario null */
+    const usuarios = await Usuarios_chat_center.findAll({
+      where: {
+        email_propietario: { [Op.is]: null },
+        id_usuario: id_usuario
+      },
     });
-    if (!configuraciones) {
+
+    if (usuarios.length === 0) {
       return res.status(400).json({
         status: 'fail',
-        message: 'No existe ninguna configuracion con ese id_plataforma',
+        message: 'No existe ningún usuario con email_propietario null',
       });
     }
 
-    let id_configuracion = configuraciones.id;
-    let nombre_configuracion = configuraciones.nombre_configuracion;
-    /* validar si existe una configuracion con ese id_plataforma */
+    const resultados = [];
 
-    /* validar si existe usuario */
-    const usuario_plataforma = await Usuario_plataforma.findOne({
-      where: { id_plataforma },
-    });
-    if (!usuario_plataforma) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'No existe ningun usuario_plataforma',
-      });
+    for (const usuario of usuarios) {
+      try {
+        const sub_usuario = await Sub_usuarios_chat_center.findOne({
+          where: { id_usuario: usuario.id_usuario, rol: 'administrador' },
+          order: [['id', 'ASC']],
+        });
+
+        if (!sub_usuario) {
+          resultados.push({
+            id_usuario: usuario.id_usuario,
+            status: 'fail',
+            mensaje: 'No existe subusuario administrador',
+          });
+          continue;
+        }
+
+        const stripe_customer_id = await obtenerOCrearStripeCustomer({
+          nombre: usuario.nombre,
+          email: sub_usuario.email,
+          id_usuario: usuario.id_usuario,
+        });
+
+        if (
+          !stripe_customer_id ||
+          typeof stripe_customer_id !== 'string' ||
+          !stripe_customer_id.startsWith('cus_')
+        ) {
+          resultados.push({
+            id_usuario: usuario.id_usuario,
+            status: 'fail',
+            mensaje: 'No se pudo crear el cliente en Stripe',
+          });
+          continue;
+        }
+
+        await usuario.update({
+          email_propietario: sub_usuario.email,
+          id_costumer: stripe_customer_id,
+        });
+
+        resultados.push({
+          id_usuario: usuario.id_usuario,
+          status: 'success',
+        });
+      } catch (errorUser) {
+        console.error('❌ Error con usuario específico:', errorUser);
+        resultados.push({
+          id_usuario: usuario.id_usuario,
+          status: 'error',
+          mensaje: 'Error inesperado actualizando este usuario',
+        });
+      }
     }
 
-    const users = await Users.findOne({
-      where: { id_users: usuario_plataforma.id_usuario },
-    });
-    if (!users) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'No existe ningun usuario',
-      });
-    }
-
-    /* validar si existe usuario */
-
-    let usuario_users = users.usuario_users;
-    let nombre_users = users.nombre_users;
-    let con_users = users.con_users;
-
-    let id_usuario_chat_center = '';
-
-    const sub_usuarios_chat_center = await Sub_usuarios_chat_center.findOne({
-      where: { email: usuario_users },
-    });
-    if (!sub_usuarios_chat_center) {
-      const crear_usuario = await Usuarios_chat_center.create({
-        nombre: nombre_configuracion,
-        id_plan: 2,
-        fecha_inicio: '2025-08-13',
-        fecha_renovacion: '2025-09-13',
-        estado: 'activo',
-      });
-
-      const crear_sub_usuario = await Sub_usuarios_chat_center.create({
-        id_usuario: crear_usuario.id_usuario,
-        usuario: nombre_users.replace(/\s+/g, ''),
-        password: con_users,
-        email: usuario_users,
-        nombre_encargado: nombre_users,
-        rol: 'administrador',
-      });
-
-      id_usuario_chat_center = crear_sub_usuario.id_usuario;
-    } else {
-      id_usuario_chat_center = sub_usuarios_chat_center.id_usuario;
-    }
-
-    /* editar id_usuario a configuraciones */
-    await configuraciones.update({
-      id_usuario: id_usuario_chat_center,
-    });
-    /* editar id_usuario a configuraciones */
-
-    /* editar id_configuraciones a clientes_chat_center */
-    await Clientes_chat_center.update(
-      {
-        id_configuracion,
-      },
-      {
-        where: {
-          id_plataforma,
-        },
-      }
-    );
-    /* editar id_configuraciones a clientes_chat_center */
-
-    /* editar id_configuraciones a mensajes_clientes */
-    await Mensaje_cliente.update(
-      {
-        id_configuracion,
-      },
-      {
-        where: {
-          id_plataforma,
-        },
-      }
-    );
-    /* editar id_configuraciones a mensajes_clientes */
-
-    /* editar id_configuraciones a etiquetas_asignadas */
-    await Etiquetas_asignadas.update(
-      {
-        id_configuracion,
-      },
-      {
-        where: {
-          id_plataforma,
-        },
-      }
-    );
-    /* editar id_configuraciones a etiquetas_asignadas */
-
-    /* editar id_configuraciones a etiquetas_chat_center  */
-    await Etiquetas_chat_center.update(
-      {
-        id_configuracion,
-      },
-      {
-        where: {
-          id_plataforma,
-        },
-      }
-    );
-    /* editar id_configuraciones a etiquetas_chat_center  */
-
-    /* editar id_configuraciones a templates_chat_center  */
-    await Templates_chat_center.update(
-      {
-        id_configuracion,
-      },
-      {
-        where: {
-          id_plataforma,
-        },
-      }
-    );
-    /* editar id_configuraciones a templates_chat_center  */
-
-    res.status(200).json({
+    return res.status(200).json({
       status: 'success',
-      message: 'Importacion de chat completada',
+      message: 'Proceso finalizado',
+      resultados,
     });
   } catch (err) {
     console.error('❌ Error en importacion_chat_center:', err);
@@ -318,6 +251,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
     });
   }
 });
+
 /* === Obtener preferencia de tour (por body) === */
 exports.getTourConexionesPrefByBody = catchAsync(async (req, res) => {
   const { id_usuario } = req.body || {};

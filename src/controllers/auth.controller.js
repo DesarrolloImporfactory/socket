@@ -2,6 +2,7 @@ const User = require('../models/user.model');
 const catchAsync = require('../utils/catchAsync');
 const bcrypt = require('bcryptjs');
 const { generarToken } = require('./../utils/jwt');
+const { crearStripeCustomer } = require('./../utils/stripe/crear_customer');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
@@ -48,7 +49,47 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
   }
 
   // Crear usuario principal
-  const nuevoUsuario = await Usuarios_chat_center.create({ nombre });
+  const nuevoUsuario = await Usuarios_chat_center.create({
+    nombre,
+    email_propietario: email,
+  });
+
+  const resultado = await crearStripeCustomer({
+    nombre,
+    email,
+    id_usuario: nuevoUsuario.id_usuario,
+  });
+
+  if (!resultado?.ok) {
+    // Caso específico: ya existe
+    if (resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS') {
+      return res.status(409).json({
+        status: 'fail',
+        message: resultado.message,
+      });
+    }
+
+    // Otros errores de validación/stripe
+    return res.status(502).json({
+      status: 'fail',
+      message: resultado.message || 'No se pudo crear el cliente en Stripe',
+    });
+  }
+
+  const stripe_customer_id = resultado.id_customer;
+
+  if (
+    !stripe_customer_id ||
+    typeof stripe_customer_id !== 'string' ||
+    !stripe_customer_id.startsWith('cus_')
+  ) {
+    return res.status(502).json({
+      status: 'fail',
+      message: 'No se pudo crear el cliente en Stripe',
+    });
+  }
+
+  await nuevoUsuario.update({ id_costumer: stripe_customer_id });
 
   // Crear subusuario administrador
   const nuevoSubUsuario = await crearSubUsuario({
@@ -332,7 +373,46 @@ exports.newLogin = async (req, res) => {
             fecha_inicio: null,
             fecha_renovacion: null,
             estado: 'inactivo',
+            email_propietario: usuario_users,
           });
+
+          const resultado = await crearStripeCustomer({
+            nombre,
+            email,
+            id_usuario: nuevoUsuario.id_usuario,
+          });
+
+          if (!resultado?.ok) {
+            // Caso específico: ya existe
+            if (resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS') {
+              return res.status(409).json({
+                status: 'fail',
+                message: resultado.message,
+              });
+            }
+
+            // Otros errores de validación/stripe
+            return res.status(502).json({
+              status: 'fail',
+              message:
+                resultado.message || 'No se pudo crear el cliente en Stripe',
+            });
+          }
+
+          const stripe_customer_id = resultado.id_customer;
+
+          if (
+            !stripe_customer_id ||
+            typeof stripe_customer_id !== 'string' ||
+            !stripe_customer_id.startsWith('cus_')
+          ) {
+            return res.status(502).json({
+              status: 'fail',
+              message: 'No se pudo crear el cliente en Stripe',
+            });
+          }
+
+          await crear_usuario.update({ id_costumer: stripe_customer_id });
 
           const crear_sub_usuario = await Sub_usuarios_chat_center.create({
             id_usuario: crear_usuario.id_usuario,
