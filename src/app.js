@@ -114,8 +114,8 @@ function requestIsCredentialed(req) {
   );
 }
 
-if (process.env.NODE_ENV === 'prod') {
-  app.use(morgan('prod'));
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('production'));
 
   // middleware CORS dinámico
   app.use((req, res, next) => {

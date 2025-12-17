@@ -20,7 +20,7 @@ export async function crearStripeCustomer({ nombre, email, id_usuario }) {
     return {
       ok: false,
       code: 'STRIPE_CUSTOMER_EMAIL_EXISTS',
-      message: `Ya existe un cliente en Stripe con el email: ${email}`,
+      message: `Ya existe un cliente con el email: ${email}`,
     };
   }
 

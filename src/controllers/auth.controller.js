@@ -16,30 +16,23 @@ const { db, db_2 } = require('../database/config');
 exports.registrarUsuario = catchAsync(async (req, res, next) => {
   const { nombre, usuario, password, email, nombre_encargado } = req.body;
 
-  // Validar campos obligatorios
   if (!nombre || !usuario || !password || !email || !nombre_encargado) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'Todos los campos son obligatorios',
-    });
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'Todos los campos son obligatorios' });
   }
 
-  // Validar existencia de nombre de usuario principal
   const existeUsuario = await Usuarios_chat_center.findOne({
     where: { nombre },
   });
   if (existeUsuario) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'Ya existe un usuario con ese nombre',
-    });
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'Ya existe un usuario con ese nombre' });
   }
 
-  // Validar usuario o email de subusuario
   const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
-    where: {
-      [Op.or]: [{ usuario }, { email }],
-    },
+    where: { [Op.or]: [{ usuario }, { email }] },
   });
   if (existeSubUsuario) {
     return res.status(400).json({
@@ -48,72 +41,85 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Crear usuario principal
-  const nuevoUsuario = await Usuarios_chat_center.create({
-    nombre,
-    email_propietario: email,
-  });
+  const sequelize = Usuarios_chat_center.sequelize;
 
-  const resultado = await crearStripeCustomer({
-    nombre,
-    email,
-    id_usuario: nuevoUsuario.id_usuario,
-  });
+  try {
+    const { nuevoUsuario, nuevoSubUsuario, id_sub_usuario } =
+      await sequelize.transaction(async (t) => {
+        const nuevoUsuarioInst = await Usuarios_chat_center.create(
+          { nombre, email_propietario: email },
+          { transaction: t }
+        );
 
-  if (!resultado?.ok) {
-    // Caso específico: ya existe
-    if (resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS') {
-      return res.status(409).json({
-        status: 'fail',
-        message: resultado.message,
+        const resultado = await crearStripeCustomer({
+          nombre,
+          email,
+          id_usuario: nuevoUsuarioInst.id_usuario,
+        });
+
+        if (!resultado?.ok) {
+          const err = new Error(
+            resultado.message || 'No se pudo crear el cliente en Stripe'
+          );
+          err.httpStatus =
+            resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS' ? 409 : 502;
+          err.code = resultado.code;
+          throw err; // rollback
+        }
+
+        const stripe_customer_id = resultado.id_customer;
+
+        if (!stripe_customer_id?.startsWith('cus_')) {
+          const err = new Error('No se pudo crear el cliente en Stripe');
+          err.httpStatus = 502;
+          err.code = 'STRIPE_CUSTOMER_ID_INVALID';
+          throw err; // rollback
+        }
+
+        await nuevoUsuarioInst.update(
+          { id_costumer: stripe_customer_id },
+          { transaction: t }
+        );
+
+        const nuevoSubUsuario = await crearSubUsuario(
+          {
+            id_usuario: nuevoUsuarioInst.id_usuario,
+            usuario,
+            password,
+            email,
+            nombre_encargado,
+            rol: 'administrador',
+          },
+          { transaction: t }
+        );
+
+        return {
+          nuevoUsuario: nuevoUsuarioInst.toJSON(),
+          nuevoSubUsuario,
+          id_sub_usuario: nuevoSubUsuario.id_sub_usuario,
+        };
       });
-    }
 
-    // Otros errores de validación/stripe
-    return res.status(502).json({
+    // ✅ fuera de la transacción (ya hay commit)
+    const token = await generarToken(id_sub_usuario);
+
+    return res.status(201).json({
+      status: 'success',
+      message: 'Cuenta y usuario administrador creados correctamente 🎉',
+      token,
+      user: {
+        id_usuario: nuevoUsuario.id_usuario,
+        nombre: nuevoUsuario.nombre,
+        administrador: nuevoSubUsuario,
+      },
+    });
+  } catch (err) {
+    return res.status(err.httpStatus || 500).json({
       status: 'fail',
-      message: resultado.message || 'No se pudo crear el cliente en Stripe',
+      message: err.message || 'Error inesperado',
+      code: err.code,
     });
   }
-
-  const stripe_customer_id = resultado.id_customer;
-
-  if (
-    !stripe_customer_id ||
-    typeof stripe_customer_id !== 'string' ||
-    !stripe_customer_id.startsWith('cus_')
-  ) {
-    return res.status(502).json({
-      status: 'fail',
-      message: 'No se pudo crear el cliente en Stripe',
-    });
-  }
-
-  await nuevoUsuario.update({ id_costumer: stripe_customer_id });
-
-  // Crear subusuario administrador
-  const nuevoSubUsuario = await crearSubUsuario({
-    id_usuario: nuevoUsuario.id_usuario,
-    usuario,
-    password: password,
-    email,
-    nombre_encargado,
-    rol: 'administrador',
-  });
-
-  // Generar token JWT
-  const token = await generarToken(nuevoSubUsuario.id_sub_usuario);
-
-  res.status(201).json({
-    status: 'success',
-    message: 'Cuenta y usuario administrador creados correctamente 🎉',
-    token,
-    user: {
-      id_usuario: nuevoUsuario.id_usuario,
-      nombre: nuevoUsuario.nombre,
-      administrador: nuevoSubUsuario,
-    },
-  });
 });
 
 exports.login = catchAsync(async (req, res, next) => {
@@ -365,85 +371,106 @@ exports.newLogin = async (req, res) => {
           !validar_usuario_plataforma ||
           !validar_usuario_plataforma.id_usuario
         ) {
-          /* crear usuario y sub_usuario */
-          const crear_usuario = await Usuarios_chat_center.create({
-            nombre: nombre_users,
-            id_plan: null,
-            id_plataforma: tienda,
-            fecha_inicio: null,
-            fecha_renovacion: null,
-            estado: 'inactivo',
-            email_propietario: usuario_users,
-          });
+          const sequelize = Usuarios_chat_center.sequelize;
 
-          const resultado = await crearStripeCustomer({
-            nombre,
-            email,
-            id_usuario: nuevoUsuario.id_usuario,
-          });
+          try {
+            const { usuarioCreado, subUsuarioCreado, id_sub_usuario } =
+              await sequelize.transaction(async (t) => {
+                // 1) Crear usuario principal (BD)
+                const crear_usuario = await Usuarios_chat_center.create(
+                  {
+                    nombre: nombre_users,
+                    id_plan: null,
+                    id_plataforma: tienda,
+                    fecha_inicio: null,
+                    fecha_renovacion: null,
+                    estado: 'inactivo',
+                    email_propietario: usuario_users, // email
+                  },
+                  { transaction: t }
+                );
 
-          if (!resultado?.ok) {
-            // Caso específico: ya existe
-            if (resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS') {
-              return res.status(409).json({
-                status: 'fail',
-                message: resultado.message,
+                // 2) Stripe (si falla => throw => rollback BD)
+                const resultado = await crearStripeCustomer({
+                  nombre: nombre_users,
+                  email: usuario_users,
+                  id_usuario: crear_usuario.id_usuario,
+                });
+
+                if (!resultado?.ok) {
+                  const err = new Error(
+                    resultado.message || 'No se pudo crear el cliente en Stripe'
+                  );
+                  err.httpStatus =
+                    resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS'
+                      ? 409
+                      : 502;
+                  err.code = resultado.code;
+                  throw err;
+                }
+
+                const stripe_customer_id = resultado.id_customer;
+
+                if (
+                  !stripe_customer_id ||
+                  typeof stripe_customer_id !== 'string' ||
+                  !stripe_customer_id.startsWith('cus_')
+                ) {
+                  const err = new Error(
+                    'No se pudo crear el cliente en Stripe'
+                  );
+                  err.httpStatus = 502;
+                  err.code = 'STRIPE_CUSTOMER_ID_INVALID';
+                  throw err;
+                }
+
+                // 3) Guardar stripe id (BD)
+                await crear_usuario.update(
+                  { id_costumer: stripe_customer_id },
+                  { transaction: t }
+                );
+
+                // 4) Crear subusuario (BD)
+                const crear_sub_usuario = await crearSubUsuario(
+                  {
+                    id_usuario: crear_usuario.id_usuario,
+                    usuario: nombre_users.replace(/\s+/g, ''),
+                    password: con_users,
+                    email: usuario_users,
+                    nombre_encargado: nombre_users,
+                    rol: 'administrador',
+                  },
+                  { transaction: t }
+                );
+
+                return {
+                  usuarioCreado: crear_usuario.toJSON(),
+                  subUsuarioCreado: crear_sub_usuario, // ya viene sin password si usas tu helper
+                  id_sub_usuario: crear_sub_usuario.id_sub_usuario,
+                };
               });
-            }
 
-            // Otros errores de validación/stripe
-            return res.status(502).json({
+            // ✅ 5) Token fuera (ya hay commit, ahora sí existe en BD)
+            const sessionToken = await generarToken(id_sub_usuario);
+
+            // estado_creacion
+            const estado_creacion = 'incompleto';
+
+            return res.status(200).json({
+              status: 'success',
+              estado_creacion,
+              token: sessionToken,
+              user: subUsuarioCreado, // si usas helper ya viene sin password
+              id_plataforma: tienda,
+              id_configuracion: null,
+            });
+          } catch (err) {
+            return res.status(err.httpStatus || 500).json({
               status: 'fail',
-              message:
-                resultado.message || 'No se pudo crear el cliente en Stripe',
+              message: err.message || 'Error inesperado',
+              code: err.code,
             });
           }
-
-          const stripe_customer_id = resultado.id_customer;
-
-          if (
-            !stripe_customer_id ||
-            typeof stripe_customer_id !== 'string' ||
-            !stripe_customer_id.startsWith('cus_')
-          ) {
-            return res.status(502).json({
-              status: 'fail',
-              message: 'No se pudo crear el cliente en Stripe',
-            });
-          }
-
-          await crear_usuario.update({ id_costumer: stripe_customer_id });
-
-          const crear_sub_usuario = await Sub_usuarios_chat_center.create({
-            id_usuario: crear_usuario.id_usuario,
-            usuario: nombre_users.replace(/\s+/g, ''),
-            password: con_users,
-            email: usuario_users,
-            nombre_encargado: nombre_users,
-            rol: 'administrador',
-          });
-
-          id_sub_usuario_encontrado = crear_sub_usuario.id_sub_usuario;
-
-          usuarioEncontrado = crear_sub_usuario;
-
-          estado_creacion = 'incompleto';
-
-          // Generar token de sesión
-          const sessionToken = await generarToken(id_sub_usuario_encontrado);
-
-          // Eliminar campos sensibles
-          const usuarioPlano = usuarioEncontrado.toJSON();
-          const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
-
-          res.status(200).json({
-            status: 'success',
-            estado_creacion: estado_creacion,
-            token: sessionToken,
-            user: usuarioSinPassword,
-            id_plataforma: tienda,
-            id_configuracion: null,
-          });
         } else {
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
             where: {
