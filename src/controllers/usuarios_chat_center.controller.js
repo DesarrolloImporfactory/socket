@@ -173,7 +173,6 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
     const usuarios = await Usuarios_chat_center.findAll({
       where: {
         email_propietario: { [Op.is]: null },
-        id_usuario: id_usuario,
       },
     });
 

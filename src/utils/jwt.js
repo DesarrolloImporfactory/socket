@@ -28,6 +28,8 @@ const generarToken = async (id_sub_usuario) => {
     rol: subUsuario.rol,
     nombre_encargado: subUsuario.nombre_encargado,
     estado: usuario.estado,
+    email_propietario: usuario.email_propietario,
+    id_costumer: usuario.id_costumer,
   };
 
   console.log('Payload del token:', payload);
