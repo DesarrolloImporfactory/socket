@@ -188,7 +188,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
       try {
         const sub_usuario = await Sub_usuarios_chat_center.findOne({
           where: { id_usuario: usuario.id_usuario, rol: 'administrador' },
-          order: [['id', 'ASC']],
+          order: [['id_sub_usuario ', 'ASC']],
         });
 
         if (!sub_usuario) {
