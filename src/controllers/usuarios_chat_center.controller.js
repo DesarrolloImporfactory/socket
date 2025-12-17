@@ -9,7 +9,9 @@ const Etiquetas_asignadas = require('../models/etiquetas_asignadas.model');
 const Etiquetas_chat_center = require('../models/etiquetas_chat_center.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
 
-const { obtenerOCrearStripeCustomer } = require('./../utils/stripe/crear_customer');
+const {
+  obtenerOCrearStripeCustomer,
+} = require('./../utils/stripe/crear_customer');
 const { Op } = require('sequelize');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
@@ -171,7 +173,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
     const usuarios = await Usuarios_chat_center.findAll({
       where: {
         email_propietario: { [Op.is]: null },
-        id_usuario: id_usuario
+        id_usuario: id_usuario,
       },
     });
 
@@ -188,7 +190,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
       try {
         const sub_usuario = await Sub_usuarios_chat_center.findOne({
           where: { id_usuario: usuario.id_usuario, rol: 'administrador' },
-          order: [['id_sub_usuario ', 'ASC']],
+          order: [['id_sub_usuario', 'ASC']],
         });
 
         if (!sub_usuario) {
@@ -233,7 +235,7 @@ exports.importacion_chat_center = catchAsync(async (req, res, next) => {
         resultados.push({
           id_usuario: usuario.id_usuario,
           status: 'error',
-          mensaje: 'Error inesperado actualizando este usuario',
+          mensaje: 'Error inesperado actualizando este usuario: ' + errorUser,
         });
       }
     }
