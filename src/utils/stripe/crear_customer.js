@@ -1,10 +1,9 @@
-import Stripe from 'stripe';
-
+const Stripe = require('stripe');
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: '2024-06-20',
 });
 
-export async function crearStripeCustomer({ nombre, email, id_usuario }) {
+async function crearStripeCustomer({ nombre, email, id_usuario }) {
   if (!email) {
     return {
       ok: false,
@@ -34,11 +33,7 @@ export async function crearStripeCustomer({ nombre, email, id_usuario }) {
   return { ok: true, id_customer: customer.id };
 }
 
-export async function obtenerOCrearStripeCustomer({
-  nombre,
-  email,
-  id_usuario,
-}) {
+async function obtenerOCrearStripeCustomer({ nombre, email, id_usuario }) {
   if (!email) throw new Error('email es requerido');
 
   // 1) Buscar customers por email
@@ -71,3 +66,8 @@ export async function obtenerOCrearStripeCustomer({
 
   return nuevo.id;
 }
+
+module.exports = {
+  crearStripeCustomer,
+  obtenerOCrearStripeCustomer,
+};

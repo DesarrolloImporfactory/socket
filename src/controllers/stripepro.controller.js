@@ -56,8 +56,6 @@ exports.crearProducto = catchAsync(async (req, res, next) => {
     ],
   });
 
-  console.log('Link de pago creado:', buylink.url);
-
   const nuevoPlan = await planes_chat_center.create({
     nombre_plan: nombre,
     descripcion_plan: descripcion,
@@ -260,5 +258,12 @@ exports.eliminarPrecio = catchAsync(async (req, res, next) => {
       duracion_dias: selected.dias,
     },
     message: 'Precio actualizado exitosamente',
+  });
+});
+
+exports.eliminarActualizar = catchAsync(async (req, res, next) => {
+  let { id_price } = req.body;
+  const price = await stripe.prices.update(id_price, {
+    active: false,
   });
 });
