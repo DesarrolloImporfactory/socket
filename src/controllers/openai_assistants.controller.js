@@ -414,14 +414,11 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     id_configuracion,
     nombre_bot,
     activo,
-    productos,
     tiempo_remarketing,
-    tomar_productos,
     tipo_venta,
   } = req.body;
 
   try {
-    const productosJSON = JSON.stringify(productos);
     const [existe] = await db.query(
       `SELECT id FROM openai_assistants WHERE id_configuracion = ? AND tipo = "ventas"`,
       {
@@ -430,124 +427,17 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       }
     );
 
-    /* hacer promt productos */
-    let bloqueProductos = '';
-    if (tomar_productos == 'imporsuit') {
-      for (const id of productos) {
-        const sqlProducto = `
-          SELECT 
-            p.nombre_producto AS nombre_producto,
-            p.descripcion_producto AS descripcion_producto,
-            ib.pvp AS precio_producto,
-            p.image_path AS image_path,
-            l.nombre_linea AS nombre_categoria
-          FROM inventario_bodegas ib
-          INNER JOIN productos p ON ib.id_producto = p.id_producto 
-          INNER JOIN lineas l ON l.id_linea = p.id_linea_producto
-          WHERE ib.id_inventario = ?
-          LIMIT 1
-        `;
-
-        const [infoProducto] = await db_2.query(sqlProducto, {
-          replacements: [id],
-          type: db_2.QueryTypes.SELECT,
-        });
-
-        let serverURL = 'https://new.imporsuitpro.com/';
-        if (infoProducto) {
-          bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
-          bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
-          bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
-          /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
-          obtenerURLImagen();
-          bloqueProductos += `[producto_imagen_url]: ${obtenerURLImagen(
-            infoProducto.image_path,
-            serverURL
-          )}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
-          bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
-          bloqueProductos += `\n`;
-        }
-      }
-    } else if (tomar_productos == 'chat_center') {
-      for (const id of productos) {
-        const sqlProducto = `
-          SELECT 
-            pc.nombre AS nombre_producto,
-            pc.descripcion AS descripcion_producto,
-            pc.tipo AS tipo,
-            pc.precio AS precio_producto,
-            pc.duracion AS duracion,
-            pc.imagen_url AS image_path,
-            pc.video_url AS video_path,
-            pc.nombre_upsell AS nombre_upsell,
-            pc.descripcion_upsell AS descripcion_upsell,
-            pc.precio_upsell AS precio_upsell,
-            pc.imagen_upsell_url AS imagen_upsell_path,
-            pc.combos_producto AS combos_producto,
-            cc.nombre AS nombre_categoria
-          FROM productos_chat_center pc
-          INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
-          WHERE pc.id = ?
-          LIMIT 1
-        `;
-
-        const [infoProducto] = await db.query(sqlProducto, {
-          replacements: [id],
-          type: db.QueryTypes.SELECT,
-        });
-
-        if (infoProducto) {
-          if (tipo_venta == 'servicios') {
-            bloqueProductos += `🛠️ Servicio: ${infoProducto.nombre_producto}\n`;
-            bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
-            bloqueProductos += `💰 Precio: ${infoProducto.precio_producto}\n`;
-            bloqueProductos += `[servicio_imagen_url]: ${infoProducto.image_path}\n\n`;
-            bloqueProductos += `[servicio_video_url]: ${infoProducto.video_path}\n\n`;
-            bloqueProductos += `Duración: ${infoProducto.duracion} horas\n`;
-            bloqueProductos += `Tipo: ${infoProducto.tipo}\n`;
-            bloqueProductos += `Categoría: ${infoProducto.nombre_categoria}\n`;
-            bloqueProductos += `\n`;
-          } else if (tipo_venta == 'productos') {
-            const { combosNormalizados, bloqueCombos } = procesarCombosParaIA(
-              infoProducto.combos_producto
-            );
-
-            bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
-            bloqueProductos += `📃 Descripción: ${infoProducto.descripcion_producto}\n`;
-            bloqueProductos += ` Precio: ${infoProducto.precio_producto}\n`;
-            bloqueProductos += bloqueCombos;
-            /* bloqueProductos += `🖼️ Imagen: ${infoProducto.image_path}\n\n`; */ // esta forma la incluye la url de la imagen como texto solido
-            bloqueProductos += `[producto_imagen_url]: ${infoProducto.image_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
-            bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; //esta forma sirve como recurso para el asistente (no visible para el cliente en el bloque)
-            bloqueProductos += ` tipo: ${infoProducto.tipo}\n`;
-            bloqueProductos += ` Categoría: ${infoProducto.nombre_categoria}\n`;
-            bloqueProductos += ` nombre_upsell: ${infoProducto.nombre_upsell}\n`;
-            bloqueProductos += ` descripcion_upsell: ${infoProducto.descripcion_upsell}\n`;
-            bloqueProductos += ` precio_upsell: ${infoProducto.precio_upsell}\n`;
-            bloqueProductos += ` [upsell_imagen_url]: ${infoProducto.imagen_upsell_path}\n`;
-            bloqueProductos += `\n`;
-          }
-        }
-      }
-    }
-
-    /* hacer promt productos */
-
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ?, productos = ?, bloque_productos = ?, tiempo_remarketing = ?
-        , tomar_productos = ? 
+        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ?, tiempo_remarketing = ?
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
           replacements: [
             nombre_bot,
             activo,
             tipo_venta,
-            productosJSON,
-            bloqueProductos,
             tiempo_remarketing,
-            tomar_productos,
             id_configuracion,
           ],
           type: db.QueryTypes.UPDATE,
@@ -557,7 +447,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       // No existe, entonces inserta
       await db.query(
         `INSERT INTO openai_assistants 
-(id_configuracion, tipo, nombre_bot, activo, ofrecer, productos, bloque_productos, tiempo_remarketing, tomar_productos) 
+(id_configuracion, tipo, nombre_bot, activo, ofrecer, tiempo_remarketing) 
 VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
@@ -565,10 +455,7 @@ VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
             nombre_bot,
             activo,
             tipo_venta,
-            productosJSON,
-            bloqueProductos,
             tiempo_remarketing,
-            tomar_productos,
           ],
           type: db.QueryTypes.INSERT,
         }
