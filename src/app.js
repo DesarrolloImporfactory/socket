@@ -51,6 +51,8 @@ const stripeRouter = require('./routes/stripe.routes');
 
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
 
+const stripe_pago_webhookController = require('./controllers/stripe_pago_webhook.controller');
+
 const categorias_chat_centerRouter = require('./routes/categorias_chat_center.routes');
 
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
@@ -73,6 +75,8 @@ const instagramRouter = require('./routes/instagram.routes');
 
 const stripeproRouter = require('./routes/stripepro.routes');
 
+const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
+
 const path = require('path');
 
 const app = express();
@@ -89,6 +93,12 @@ app.post(
   '/api/v1/stripe_plan/stripeWebhook',
   express.raw({ type: 'application/json' }),
   stripe_webhookController.stripeWebhook
+);
+
+app.post(
+  '/api/v1/stripe_plan_pago/webhook',
+  express.raw({ type: 'application/json' }),
+  stripe_pago_webhookController.stripeWebhook
 );
 
 app.use(helmet());
@@ -216,6 +226,7 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
+    '/api/v1/stripe_plan_pago/webhook',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -228,6 +239,7 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
+    '/api/v1/stripe_plan_pago/webhook',
   ];
   if (skipPaths.includes(req.path)) return next();
 
@@ -274,6 +286,7 @@ app.use('/api/v1/tiktok', tikTokRouter);
 app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
 app.use('/api/v1/stripepro', stripeproRouter);
+app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 
 app.all('*', (req, res, next) => {
   return next(
