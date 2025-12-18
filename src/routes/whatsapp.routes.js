@@ -911,7 +911,7 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
         id_telefono,
         nombre_configuracion,
         telefono,
-        1
+        1,
       ],
     });
 
@@ -1815,14 +1815,14 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     await db.query(
       `INSERT IGNORE INTO clientes_chat_center
          (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
-       VALUES (?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?)`,
       {
         replacements: [
           idConfigToUse,
           phoneNumberId,
           nombre_configuracion,
           displayNumber,
-          1
+          1,
         ],
       }
     );
