@@ -13,7 +13,7 @@ const checkPlanActivo = async (req, res, next) => {
 
   const ahora = new Date();
 
-  if (usuario.permanente == 0) {
+  /* if (usuario.permanente == 0) {
     // Verificar si el plan está vencido
     if (usuario.fecha_renovacion && ahora > usuario.fecha_renovacion) {
       if (usuario.estado !== 'vencido') {
@@ -33,7 +33,7 @@ const checkPlanActivo = async (req, res, next) => {
         message: 'El plan del usuario está inactivo',
       });
     }
-  }
+  } */
 
   next();
 };
