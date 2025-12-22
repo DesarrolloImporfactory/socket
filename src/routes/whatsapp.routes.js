@@ -973,23 +973,29 @@ async function getConfigFromDB(id) {
 }
 
 // router.post('/embeddedSignupComplete', async (req, res) => {
-//   const { code, id_usuario, redirect_uri, id_configuracion } = req.body;
+//   const {
+//     code,
+//     id_usuario,
+//     redirect_uri,
+//     id_configuracion,
+//     display_number_onboarding,
+//   } = req.body;
 
-//   if (!code || !id_usuario) {
+//   // ==== Validación requerida
+//   if (!code || !id_usuario || !display_number_onboarding) {
 //     return res.status(400).json({
 //       success: false,
-//       message: 'Faltan parámetros requeridos (code o id_usuario).',
+//       message:
+//         'Faltan parámetros requeridos: code, id_usuario y display_number_onboarding son obligatorios.',
 //     });
 //   }
 
 //   // ====== CONSTANTES/ENV OBLIGATORIOS ======
-//   // 1) Declarar lista blanca EXACTA (debe coincidir con lo configurado en Meta)
 //   const ALLOWED_REDIRECTS = new Set([
 //     'https://chatcenter.imporfactory.app/conexiones',
 //     'https://chatcenter.imporfactory.app/administrador-canales',
 //   ]);
 
-//   // 2) Normalizador básico: origin + pathname, sin barra final
 //   const normalize = (url) => {
 //     try {
 //       const u = new URL(String(url));
@@ -999,8 +1005,6 @@ async function getConfigFromDB(id) {
 //     }
 //   };
 
-//   // 3) Elegir redirect_uri seguro: si viene del frontend y está en whitelist, úselo;
-//   //    si no, caiga al ENV o al default '/conexiones'.
 //   const pickRedirect = (input) => {
 //     const envDefault = (
 //       process.env.FB_LOGIN_REDIRECT_URI ||
@@ -1017,9 +1021,8 @@ async function getConfigFromDB(id) {
 //   const EXACT_REDIRECT_URI = pickRedirect(redirect_uri);
 
 //   const DEFAULT_TWOFA_PIN = '123456';
-//   const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User con permisos WA sobre el Business/WABA
-//   const APP_TOKEN = `${process.env.FB_APP_ID}|${process.env.FB_APP_SECRET}`;
-//   const BUSINESS_ID = process.env.FB_BUSINESS_ID; // <<--- EL MISMO QUE USAS A MANO
+//   const SYS_TOKEN = process.env.FB_PROVIDER_TOKEN; // System User
+//   const BUSINESS_ID = process.env.FB_BUSINESS_ID;
 
 //   if (!SYS_TOKEN || !BUSINESS_ID) {
 //     return res.status(400).json({
@@ -1028,6 +1031,7 @@ async function getConfigFromDB(id) {
 //     });
 //   }
 
+//   // Log limpio
 //   console.log('[EMB][IN]', {
 //     id_usuario,
 //     id_configuracion: id_configuracion || '(none)',
@@ -1035,6 +1039,7 @@ async function getConfigFromDB(id) {
 //     redirect_uri_picked: EXACT_REDIRECT_URI,
 //     code_len: (code || '').length,
 //     BUSINESS_ID,
+//     display_number_onboarding: display_number_onboarding || '(none)',
 //   });
 
 //   // ====== HELPERS ======
@@ -1071,7 +1076,7 @@ async function getConfigFromDB(id) {
 //     }
 //   }
 
-//   // ====== 1) Intercambiar code → access token (formalidad) ======
+//   // ====== 1) Intercambiar code → access token ======
 //   let clientToken;
 //   try {
 //     console.log('[OAUTH] exchange WITH redirect_uri');
@@ -1082,7 +1087,7 @@ async function getConfigFromDB(id) {
 //           client_id: process.env.FB_APP_ID,
 //           client_secret: process.env.FB_APP_SECRET,
 //           code,
-//           redirect_uri: EXACT_REDIRECT_URI, // ← usamos el elegido y validado
+//           redirect_uri: EXACT_REDIRECT_URI,
 //         },
 //       }
 //     );
@@ -1118,77 +1123,107 @@ async function getConfigFromDB(id) {
 //     if (!clientToken)
 //       throw new Error('No se obtuvo access token a partir del code');
 
-//     // ====== 2) Obtener WABA exactamente como tu “manual” ======
-//     const wabasResp = await safeGet(
-//       `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
-//       {},
-//       bearer(SYS_TOKEN)
-//     );
-//     const wabas = wabasResp.data?.data || [];
-//     if (!wabas.length) {
+//     // ====== 2) Obtener WABAs visibles ======
+//     console.log('[WABA][FETCH] Obteniendo WABAs (client/owned)…');
+
+//     const wabas = [];
+
+//     try {
+//       const clientResp = await safeGet(
+//         `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
+//         {},
+//         bearer(SYS_TOKEN)
+//       );
+//       wabas.push(...(clientResp.data?.data || []));
+//     } catch (e) {
+//       console.log(
+//         '[WABA][WARN] No se pudieron obtener client_wabas:',
+//         e?.response?.data || e.message
+//       );
+//     }
+
+//     try {
 //       const ownedResp = await safeGet(
 //         `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
 //         {},
 //         bearer(SYS_TOKEN)
-//       ).catch(() => ({ data: { data: [] } }));
-//       const owned = ownedResp?.data?.data || [];
-//       wabas.push(...owned);
-//     }
-//     if (!wabas.length)
-//       throw new Error(
-//         `El Business ${BUSINESS_ID} no tiene WABAs visibles para el SYS_TOKEN`
 //       );
+//       wabas.push(...(ownedResp.data?.data || []));
+//     } catch (e) {
+//       console.log(
+//         '[WABA][WARN] No se pudieron obtener owned_wabas:',
+//         e?.response?.data || e.message
+//       );
+//     }
 
-//     const wabaPicked = wabas[0];
-//     const wabaId = String(wabaPicked.id);
-//     console.log('[WABA][PICK]', { wabaId, wabaName: wabaPicked.name });
+//     if (!wabas.length) {
+//       throw new Error(
+//         `❌ No se encontraron WABAs visibles para el BUSINESS_ID: ${BUSINESS_ID}`
+//       );
+//     }
 
-//     // ====== 3) Listar números del WABA y elegir uno ======
-//     let numbers = [];
-//     try {
-//       const pn = await safeGet(
+//     // ====== 3) Selección del número (SOLO por display_number_onboarding) ======
+//     let wabaPicked = null;
+//     let phoneNumberId = null;
+//     let displayNumber = null;
+
+//     const displayWanted = norm(display_number_onboarding || '');
+
+//     async function fetchPhonesOf(wabaId) {
+//       const r = await safeGet(
 //         `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
 //         { fields: 'id,display_phone_number,status,code_verification_status' },
 //         bearer(SYS_TOKEN)
 //       );
-//       numbers = pn.data?.data || [];
-//     } catch (e1) {
-//       console.log('[NUMBERS][WARN] SYS_TOKEN falló; reintento con clientToken');
-//       const pn2 = await safeGet(
-//         `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
-//         { fields: 'id,display_phone_number,status,code_verification_status' },
-//         bearer(clientToken)
-//       );
-//       numbers = pn2.data?.data || [];
+//       return r?.data?.data || [];
 //     }
 
-//     if (!numbers.length)
-//       throw new Error('El WABA no tiene números cargados todavía');
+//     console.log('[SELECT][TRY] display_number_onboarding:', displayWanted);
+//     for (const waba of wabas) {
+//       try {
+//         const phones = await fetchPhonesOf(waba.id);
+//         const match = phones.find(
+//           (p) => norm(p.display_phone_number) === displayWanted
+//         );
+//         if (match) {
+//           wabaPicked = waba;
+//           phoneNumberId = String(match.id);
+//           displayNumber = norm(match.display_phone_number);
+//           console.log('[SELECT][MATCH][DISPLAY]', {
+//             wabaId: waba.id,
+//             wabaName: waba.name,
+//             phoneNumberId,
+//             displayNumber,
+//             status: match.status,
+//           });
+//           break;
+//         }
+//       } catch (e) {
+//         console.log(
+//           `[SELECT][WARN] WABA ${waba.id} phones:`,
+//           e?.response?.data || e.message
+//         );
+//       }
+//     }
 
-//     let candidate =
-//       numbers.find((n) => (n.status || '').toUpperCase() !== 'CONNECTED') ||
-//       numbers[0];
+//     if (!wabaPicked || !phoneNumberId) {
+//       throw new Error(
+//         `No se encontró el display_number_onboarding=${displayWanted} en los WABAs visibles.`
+//       );
+//     }
 
-//     const phoneNumberId = candidate?.id || null;
-//     const displayNumber = norm(candidate?.display_phone_number);
-//     console.log('[PHONE][PICK]', {
-//       phoneNumberId,
-//       displayNumber,
-//       status: candidate?.status,
-//       cvs: candidate?.code_verification_status,
-//     });
-//     if (!phoneNumberId)
-//       throw new Error('phoneNumberId indefinido luego de /phone_numbers');
+//     const wabaId = String(wabaPicked.id);
 
 //     // ====== 4) Registrar el número (REGISTER) ======
 //     const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
-//     console.log('[POST][REGISTER] ->', regUrl);
+//     console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
 //     try {
 //       await safePost(
 //         regUrl,
 //         { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
 //         bearer(SYS_TOKEN)
 //       );
+//       console.log('[REGISTER][OK] con SYS_TOKEN');
 //     } catch (e1) {
 //       console.log(
 //         '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
@@ -1199,6 +1234,7 @@ async function getConfigFromDB(id) {
 //           { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
 //           bearer(clientToken)
 //         );
+//         console.log('[REGISTER][OK] con clientToken');
 //       } catch (e2) {
 //         const codeErr = e2?.response?.data?.error?.code;
 //         if (codeErr === 131070) {
@@ -1209,6 +1245,7 @@ async function getConfigFromDB(id) {
 //             { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
 //             bearer(clientToken)
 //           );
+//           console.log('[REGISTER][RETRY_OK] por estado intermedio');
 //         } else {
 //           throw e2;
 //         }
@@ -1224,6 +1261,7 @@ async function getConfigFromDB(id) {
 //         { messaging_product: 'whatsapp' },
 //         bearer(SYS_TOKEN)
 //       );
+//       console.log('[SUBSCRIBE][OK] con SYS_TOKEN');
 //     } catch (e1) {
 //       console.log(
 //         '[POST][SUBSCRIBE][WARN] SYS_TOKEN falló; retry con clientToken'
@@ -1233,6 +1271,7 @@ async function getConfigFromDB(id) {
 //         { messaging_product: 'whatsapp' },
 //         bearer(clientToken)
 //       );
+//       console.log('[SUBSCRIBE][OK] con clientToken');
 //     }
 
 //     // ====== 6) Verificar estado del número ======
@@ -1247,6 +1286,7 @@ async function getConfigFromDB(id) {
 //         bearer(SYS_TOKEN)
 //       );
 //       info = r1.data || {};
+//       console.log('[PN-INFO][OK] con SYS_TOKEN');
 //     } catch (e1) {
 //       console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
 //       const r2 = await safeGet(
@@ -1258,6 +1298,7 @@ async function getConfigFromDB(id) {
 //         bearer(clientToken)
 //       );
 //       info = r2.data || {};
+//       console.log('[PN-INFO][OK] con clientToken');
 //     }
 
 //     const nombre_configuracion = `${
@@ -1268,14 +1309,14 @@ async function getConfigFromDB(id) {
 //     const permanentPartnerTok = SYS_TOKEN;
 //     const key_imporsuit = generarClaveUnica();
 
-//     // ====== 7) Persistir (igual que tu lógica) ======
+//     // ====== 7) Persistencia ======
 //     let idConfigToUse = id_configuracion || null;
 
 //     if (!idConfigToUse) {
 //       const [preRows] = await db.query(
 //         `SELECT id
 //            FROM configuraciones
-//           WHERE id_usuario = ?
+//           WHERE suspendido = 0 AND id_usuario = ?
 //             AND (id_telefono IS NULL OR id_telefono = '')
 //             AND (telefono = ? OR telefono IS NULL OR telefono = '')
 //           ORDER BY id DESC
@@ -1294,6 +1335,7 @@ async function getConfigFromDB(id) {
 //            FROM configuraciones
 //           WHERE id_usuario = ?
 //             AND id_telefono = ?
+//             AND suspendido = 0
 //           LIMIT 1`,
 //         { replacements: [id_usuario, phoneNumberId] }
 //       );
@@ -1329,6 +1371,7 @@ async function getConfigFromDB(id) {
 //           ],
 //         }
 //       );
+//       console.log('[DB] UPDATE configuraciones OK');
 //     } else {
 //       const [ins] = await db.query(
 //         `INSERT INTO configuraciones
@@ -1350,22 +1393,24 @@ async function getConfigFromDB(id) {
 //         }
 //       );
 //       idConfigToUse = ins?.insertId || ins;
-//       console.log('[DB] Insertada nueva config id=', idConfigToUse);
+//       console.log('[DB] INSERT configuraciones OK id=', idConfigToUse);
 //     }
 
 //     await db.query(
 //       `INSERT IGNORE INTO clientes_chat_center
-//          (id_configuracion, uid_cliente, nombre_cliente, celular_cliente)
-//        VALUES (?, ?, ?, ?)`,
+//          (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
+//        VALUES (?, ?, ?, ?, ?)`,
 //       {
 //         replacements: [
 //           idConfigToUse,
 //           phoneNumberId,
 //           nombre_configuracion,
 //           displayNumber,
+//           1,
 //         ],
 //       }
 //     );
+//     console.log('[DB] INSERT IGNORE clientes_chat_center OK');
 
 //     return res.json({
 //       success: true,
@@ -1374,6 +1419,7 @@ async function getConfigFromDB(id) {
 //       phone_number_id: phoneNumberId,
 //       telefono: displayNumber,
 //       status: info?.status || null,
+//       matched_by: 'display_number_onboarding',
 //     });
 //   } catch (err) {
 //     console.error(
@@ -1583,6 +1629,9 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     let phoneNumberId = null;
     let displayNumber = null;
 
+    // ✅ NUEVO: guardamos el phone match para saber su status (CONNECTED/PENDING/etc.)
+    let matchedPhone = null;
+
     const displayWanted = norm(display_number_onboarding || '');
 
     async function fetchPhonesOf(wabaId) {
@@ -1602,6 +1651,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           (p) => norm(p.display_phone_number) === displayWanted
         );
         if (match) {
+          matchedPhone = match; // ✅ aquí guardamos el match
           wabaPicked = waba;
           phoneNumberId = String(match.id);
           displayNumber = norm(match.display_phone_number);
@@ -1631,39 +1681,48 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     const wabaId = String(wabaPicked.id);
 
     // ====== 4) Registrar el número (REGISTER) ======
+    // ✅ REGLA: Si el número ya está CONNECTED (coexistencia), NO hacemos register y seguimos.
     const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
-    console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
-    try {
-      await safePost(
-        regUrl,
-        { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-        bearer(SYS_TOKEN)
-      );
-      console.log('[REGISTER][OK] con SYS_TOKEN');
-    } catch (e1) {
+    const matchedStatus = String(matchedPhone?.status || '').toUpperCase();
+
+    if (matchedStatus === 'CONNECTED') {
       console.log(
-        '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+        '[REGISTER][SKIP] Número ya CONNECTED (coexistencia). No se ejecuta /register.'
       );
+    } else {
+      console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
       try {
         await safePost(
           regUrl,
           { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-          bearer(clientToken)
+          bearer(SYS_TOKEN)
         );
-        console.log('[REGISTER][OK] con clientToken');
-      } catch (e2) {
-        const codeErr = e2?.response?.data?.error?.code;
-        if (codeErr === 131070) {
-          console.log('[REGISTER] ya estaba registrado (131070)');
-        } else if (codeErr === 131071 || codeErr === 131047) {
+        console.log('[REGISTER][OK] con SYS_TOKEN');
+      } catch (e1) {
+        console.log(
+          '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+        );
+        try {
           await safePost(
             regUrl,
             { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
             bearer(clientToken)
           );
-          console.log('[REGISTER][RETRY_OK] por estado intermedio');
-        } else {
-          throw e2;
+          console.log('[REGISTER][OK] con clientToken');
+        } catch (e2) {
+          const codeErr = e2?.response?.data?.error?.code;
+          if (codeErr === 131070) {
+            console.log('[REGISTER] ya estaba registrado (131070)');
+          } else if (codeErr === 131071 || codeErr === 131047) {
+            await safePost(
+              regUrl,
+              { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
+              bearer(clientToken)
+            );
+            console.log('[REGISTER][RETRY_OK] por estado intermedio');
+          } else {
+            throw e2;
+          }
         }
       }
     }
