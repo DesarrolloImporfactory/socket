@@ -7,12 +7,21 @@ const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const Historial_encargados = require('../models/historial_encargados.model');
 const MessengerConversation = require('../models/messenger_conversations.model');
 const InstagramConversation = require('../models/instagram_conversations.model');
+const Configuraciones = require('../models/configuraciones.model')
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
   const departamentos = await DepartamentosChatCenter.findAll({
     where: { id_usuario },
+    include: [
+      {
+        model: Configuraciones,
+        as: 'configuracion',
+        attributes: ['nombre_configuracion'],
+        required: false,
+      },
+    ],
   });
 
   if (!departamentos || departamentos.length === 0) {
@@ -30,9 +39,15 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
         attributes: ['id_sub_usuario'],
       });
 
+      const depJson = dep.toJSON();
+
       return {
-        ...dep.toJSON(),
+        ...depJson,
+        nombre_configuracion:
+          depJson.configuracion?.nombre_configuracion ?? null,
         usuarios_asignados: asignaciones.map((a) => a.id_sub_usuario),
+        // opcional: si no quieres devolver el objeto configuracion anidado:
+        // configuracion: undefined,
       };
     })
   );
@@ -49,6 +64,7 @@ exports.agregarDepartamento = catchAsync(async (req, res, next) => {
     nombre_departamento,
     color,
     mensaje_saludo,
+    id_configuracion,
     usuarios_asignados = [], // Array de id_sub_usuario
   } = req.body;
 
@@ -70,6 +86,7 @@ exports.agregarDepartamento = catchAsync(async (req, res, next) => {
     nombre_departamento,
     color,
     mensaje_saludo,
+    id_configuracion,
   });
 
   const id_departamento = nuevoDepartamento.id_departamento;
@@ -104,6 +121,7 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     nombre_departamento,
     color,
     mensaje_saludo,
+    id_configuracion,
     usuarios_asignados = [],
   } = req.body;
 
@@ -133,7 +151,7 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
   try {
     // 1) Actualizar datos del departamento
     await departamento.update(
-      { nombre_departamento, color, mensaje_saludo },
+      { nombre_departamento, color, mensaje_saludo, id_configuracion },
       { transaction: t }
     );
 

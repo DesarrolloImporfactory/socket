@@ -1,6 +1,7 @@
 const User = require('./user.model');
 const Plataforma = require('./plataforma.model');
 const UsuarioPlataforma = require('./usuario_plataforma.model');
+const Configuraciones = require('./configuraciones.model');
 const ClientesChatCenter = require('./clientes_chat_center.model');
 const MensajesClientes = require('./mensaje_cliente.model');
 const ErroresChatMeta = require('./errores_chat_meta.model');
@@ -205,6 +206,19 @@ const initModel = () => {
     foreignKey: 'id_departamento',
     targetKey: 'id_departamento',
     as: 'departamento',
+  });
+
+  // relacion: departamentos y configuraciones
+  Departamentos_chat_center.belongsTo(Configuraciones, {
+    foreignKey: 'id_configuracion', // columna en departamentos_chat_center
+    targetKey: 'id', // PK en configuraciones (opcional, pero claro)
+    as: 'configuracion',
+  });
+
+  Configuraciones.hasMany(Departamentos_chat_center, {
+    foreignKey: 'id_configuracion',
+    sourceKey: 'id',
+    as: 'departamentos_chat_center',
   });
 
   //Relación: Un subusuario puede estar en muchos departamentos
