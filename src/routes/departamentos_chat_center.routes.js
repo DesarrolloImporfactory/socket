@@ -16,6 +16,12 @@ router.post(
 );
 
 router.post(
+  '/listar_por_usuario',
+  checkPlanActivo,
+  departamentos_chat_center.listar_por_usuario
+);
+
+router.post(
   '/agregarDepartamento',
   departamentos_chat_center.agregarDepartamento
 );

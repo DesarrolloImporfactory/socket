@@ -10,6 +10,7 @@ const MensajeCliente = require('../models/mensaje_cliente.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Errores_chat_meta = require('../models/errores_chat_meta.model');
+const logger = require('../utils/logger');
 
 const servicioAppointments = require('../services/appointments.service');
 const {
@@ -67,6 +68,8 @@ async function ensureDir(dir) {
 
 // controllers/clientes_chat_centerController.js
 exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
+  logger.info('entro en el webhook');
+  
   /* Recepción de eventos (GET) */
   /* Verificar del webhook para el desafío de validación */
   if (req.method === 'GET') {

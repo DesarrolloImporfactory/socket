@@ -1,13 +1,15 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
+const { db } = require('../database/config');
+
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const Historial_encargados = require('../models/historial_encargados.model');
 const MessengerConversation = require('../models/messenger_conversations.model');
 const InstagramConversation = require('../models/instagram_conversations.model');
-const Configuraciones = require('../models/configuraciones.model')
+const Configuraciones = require('../models/configuraciones.model');
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -55,6 +57,29 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     data: departamentosConUsuarios,
+  });
+});
+
+exports.listar_por_usuario = catchAsync(async (req, res, next) => {
+  const { id_sub_usuario } = req.body;
+
+  const departamentos = await db.query(
+    'SELECT dcc.id_departamento, dcc.nombre_departamento, dcc.color FROM departamentos_chat_center dcc INNER JOIN sub_usuarios_departamento sud ON dcc.id_departamento = sud.id_departamento WHERE sud.id_sub_usuario = ?;',
+    {
+      replacements: [id_sub_usuario],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+  if (!departamentos || departamentos.length === 0) {
+    res.status(201).json({
+      status: 'success',
+      data: 'No se encontro departamento',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: departamentos,
   });
 });
 
@@ -295,13 +320,14 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
       await Historial_encargados.create({
         id_cliente_chat_center,
+        id_departamento_asginado: id_departamento,
         id_encargado_anterior,
         id_encargado_nuevo: id_encargado,
         motivo,
       });
 
       await Clientes_chat_center.update(
-        { id_encargado: id_encargado, id_departamento: id_departamento },
+        { id_encargado: id_encargado },
         {
           where: { id: id_cliente_chat_center },
         }

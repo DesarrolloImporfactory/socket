@@ -14,6 +14,10 @@ const HistorialEncargados = db.define(
       type: DataTypes.BIGINT,
       allowNull: false,
     },
+    id_departamento_asginado: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+    },
     id_encargado_anterior: {
       type: DataTypes.INTEGER,
       allowNull: true,
