@@ -69,7 +69,7 @@ async function ensureDir(dir) {
 // controllers/clientes_chat_centerController.js
 exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
   logger.info('entro en el webhook');
-  
+
   /* Recepción de eventos (GET) */
   /* Verificar del webhook para el desafío de validación */
   if (req.method === 'GET') {
@@ -96,6 +96,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
   /* Recepción de eventos (POST) */
   // Aquí recibes el JSON enviado por Meta
   const data = req.body;
+  logger.info('Es post y este es el data: ' + data);
+  logger.info('Es post y este es el data2: ' + JSON.stringify(data));
 
   // Si vino vacío, 400 y cortamos
   if (!data || Object.keys(data).length === 0) {
