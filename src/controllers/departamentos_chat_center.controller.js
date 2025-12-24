@@ -342,8 +342,13 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 });
 
 exports.asignar_encargado = catchAsync(async (req, res, next) => {
-  const { source, id_encargado, id_cliente_chat_center, id_conversation } =
-    req.body;
+  const {
+    source,
+    id_encargado,
+    id_cliente_chat_center,
+    id_conversation,
+    id_configuracion = null,
+  } = req.body;
 
   if (!id_encargado) {
     return res.status(400).json({
@@ -381,17 +386,25 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
     }
     // WhatsApp por defecto (o 'wa')
     default: {
-      if (!id_cliente_chat_center) {
+      if (!id_cliente_chat_center || !id_configuracion) {
         return res.status(400).json({
           status: 'fail',
-          message: 'id_cliente_chat_center es requerido para WhatsApp',
+          message:
+            'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
         });
       }
+
+      const Departamento = await DepartamentosChatCenter.findOne({
+        where: { id_configuracion },
+      });
+
+      const id_departamento = Departamento?.id_departamento ?? null;
 
       await Historial_encargados.create({
         id_cliente_chat_center,
         id_encargado_nuevo: id_encargado,
         motivo: 'Auto-asignacion de chat',
+        id_departamento_asginado: id_departamento,
       });
 
       await Clientes_chat_center.update(
