@@ -147,6 +147,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       }
       // --- parseo mínimo recomendado ---
 
+      const change = data?.entry?.[0]?.changes?.[0];
+      const field = change?.field;
+
+      // ✅ Coexistence: mensajes enviados desde la app/linked device
+      const isSMBEcho =
+        field === 'smb_message_echoes' || Array.isArray(value?.message_echoes); // por si no viene field
+
+      // normaliza a un arreglo de mensajes
+      const inboundMessages = value?.messages ?? [];
+      const echoMessages = value?.message_echoes ?? [];
+      const normalizedMessages = isSMBEcho ? echoMessages : inboundMessages;
+
+      if (!normalizedMessages.length) return;
+
       const business_phone_id = value?.metadata?.phone_number_id || ''; // Obtenemos el phone_number_id para buscar la configuracion
 
       /* buscar id_configuracion */
@@ -239,9 +253,22 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       /* Validar si existen errores */
 
       // === Extraer datos del mensaje entrante ===
-      const phone_whatsapp_from = value?.messages?.[0]?.from || ''; // Obtenemos el remitente
+      /* const phone_whatsapp_from = value?.messages?.[0]?.from || ''; */ // Obtenemos el remitente
+      /* obtenemos el remitente */
+      const msg0 = normalizedMessages[0];
+      const tipo_mensaje = msg0?.type || ''; // Tipo de mensaje
+
+      // ✅ “peer” = el número del cliente (el remoto del chat)
+      const peer_phone = isSMBEcho
+        ? msg0?.to || '' // si es echo, "to" es el cliente
+        : msg0?.from || ''; // si es inbound, "from" es el cliente
+
+      // por si lo usas con tu mismo nombre de variable:
+      const phone_whatsapp_from = peer_phone;
+
+      /* obtenemos el remitente */
+
       const name_whatsapp_from = value?.contacts?.[0]?.profile?.name || ''; // Nombre del remitente
-      const tipo_mensaje = value?.messages?.[0]?.type || ''; // Tipo de mensaje
 
       // === Separar nombre y apellido ===
       const nombre_completo = name_whatsapp_from.trim().split(' ');
@@ -263,7 +290,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let tipo_button = '';
 
       // Obtener el objeto de mensaje completo (por si se necesita)
-      const mensaje_recibido = value?.messages?.[0] || {};
+      const mensaje_recibido = msg0 || {};
 
       switch (tipo_mensaje) {
         case 'text':
@@ -472,7 +499,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         tipo_mensaje,
         texto_mensaje,
         ruta_archivo,
-        rol_mensaje: 0,
+        rol_mensaje: isSMBEcho ? 1 : 0,
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
       });
@@ -481,6 +508,22 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       console.log('creacion_mensaje.id: ' + creacion_mensaje.id); */
 
       if (creacion_mensaje && creacion_mensaje.id) {
+        // ✅ si es echo: NO correr bots/IA
+        if (isSMBEcho) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ✅ Mensaje guardado en DB como smb_message_echoes con ID ${
+              creacion_mensaje.id
+            }\n`
+          );
+          console.log(
+            `[${new Date().toISOString()}] ✅ Mensaje guardado en DB como smb_message_echoes con ID ${
+              creacion_mensaje.id
+            }`
+          );
+          return;
+        }
+
         await fsp.appendFile(
           path.join(logsDir, 'debug_log.txt'),
           `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
