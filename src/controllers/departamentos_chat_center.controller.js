@@ -375,7 +375,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             id_cliente: cliente_configuracion.id,
             mid_mensaje: configuracion_transferida.id_telefono,
             tipo_mensaje: 'notificacion',
-            texto_mensaje: motivo,
+            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: validar_cliente_new_conf.id,
             uid_whatsapp: validar_cliente_new_conf.celular_cliente,
@@ -398,7 +398,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             id_cliente: cliente_configuracion.id,
             mid_mensaje: cliente_configuracion.uid_cliente,
             tipo_mensaje: 'notificacion',
-            texto_mensaje: motivo,
+            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
             uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente
