@@ -10,6 +10,7 @@ const Historial_encargados = require('../models/historial_encargados.model');
 const MessengerConversation = require('../models/messenger_conversations.model');
 const InstagramConversation = require('../models/instagram_conversations.model');
 const Configuraciones = require('../models/configuraciones.model');
+const MensajesClientes = require('../models/mensaje_cliente.model');
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -253,6 +254,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     id_cliente_chat_center, // para WhatsApp
     motivo,
     id_conversation, // para Messenger/Instagram
+    id_configuracion,
   } = req.body;
 
   if (id_encargado == null && id_departamento == null) {
@@ -305,7 +307,6 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       // 1. Obtener el registro actual
       const clienteActual = await Clientes_chat_center.findOne({
         where: { id: id_cliente_chat_center },
-        attributes: ['id_encargado'], // Solo traemos lo necesario
       });
 
       if (!clienteActual) {
@@ -326,12 +327,84 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         motivo,
       });
 
-      await Clientes_chat_center.update(
-        { id_encargado: id_encargado },
-        {
-          where: { id: id_cliente_chat_center },
+      const configuracion_transferida = await DepartamentosChatCenter.findOne({
+        where: { id_departamento },
+      });
+
+      if (configuracion_transferida.id_configuracion == id_configuracion) {
+        await Clientes_chat_center.update(
+          { id_encargado: id_encargado },
+          {
+            where: { id: id_cliente_chat_center },
+          }
+        );
+      } else {
+        /* validar si existe un cliente ya en esa otra configuracion */
+        const validar_cliente_new_conf = await Clientes_chat_center.findOne({
+          where: {
+            id_configuracion: configuracion_transferida.id_configuracion,
+            celular_cliente: clienteActual.celular_cliente,
+          },
+        });
+
+        // Buscar el cliente propietario de esa configuración (igual que arriba)
+        const cliente_configuracion = await Clientes_chat_center.findOne({
+          where: {
+            id_configuracion: configuracion_transferida.id_configuracion,
+            propietario: 1,
+          },
+        });
+
+        // (opcional pero recomendado) si no existe propietario, evita crashear:
+        if (!cliente_configuracion) {
+          throw new Error(
+            `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`
+          );
         }
-      );
+
+        if (validar_cliente_new_conf) {
+          await Clientes_chat_center.update(
+            { id_encargado: id_encargado },
+            {
+              where: { id: validar_cliente_new_conf.id },
+            }
+          );
+
+          await MensajesClientes.create({
+            id_configuracion: configuracion_transferida.id_configuracion,
+            id_cliente: cliente_configuracion.id,
+            mid_mensaje: configuracion_transferida.id_telefono,
+            tipo_mensaje: 'notificacion',
+            texto_mensaje: motivo,
+            rol_mensaje: 3,
+            celular_recibe: validar_cliente_new_conf.id,
+            uid_whatsapp: validar_cliente_new_conf.celular_cliente,
+          });
+        } else {
+          // 1) Crear el cliente porque no existe en la nueva configuración
+          const nuevo_cliente = await Clientes_chat_center.create({
+            id_configuracion: configuracion_transferida.id_configuracion,
+            nombre_cliente: clienteActual.nombre_cliente,
+            apellido_cliente: clienteActual.apellido_cliente,
+            celular_cliente: clienteActual.celular_cliente,
+            id_encargado: id_encargado,
+            propietario: 0,
+            uid_cliente: cliente_configuracion.uid_cliente,
+          });
+
+          // 2) Crear el mensaje usando el nuevo cliente
+          await MensajesClientes.create({
+            id_configuracion: configuracion_transferida.id_configuracion,
+            id_cliente: cliente_configuracion.id,
+            mid_mensaje: cliente_configuracion.uid_cliente,
+            tipo_mensaje: 'notificacion',
+            texto_mensaje: motivo,
+            rol_mensaje: 3,
+            celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
+            uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente
+          });
+        }
+      }
       break;
     }
   }

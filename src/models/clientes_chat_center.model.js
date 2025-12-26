@@ -68,12 +68,12 @@ const ClientesChatCenter = db.define(
     created_at: {
       type: DataTypes.DATE,
       allowNull: true,
-      defaultValue: null,
+      defaultValue: DataTypes.NOW, // CURRENT_TIMESTAMP
     },
     updated_at: {
       type: DataTypes.DATE,
       allowNull: true,
-      defaultValue: null,
+      defaultValue: DataTypes.NOW, // CURRENT_TIMESTAMP
     },
     deleted_at: {
       type: DataTypes.DATE,
