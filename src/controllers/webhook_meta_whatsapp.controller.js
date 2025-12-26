@@ -502,7 +502,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         rol_mensaje: isSMBEcho ? 1 : 0,
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
-        responsable: isSMBEcho ? 'Whatsapp Business ' : null,
+        responsable: isSMBEcho ? 'Whatsapp Business' : null,
       });
 
       /* console.log('creacion_mensaje: ' + JSON.stringify(creacion_mensaje));
