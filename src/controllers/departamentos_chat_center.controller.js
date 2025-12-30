@@ -12,6 +12,10 @@ const InstagramConversation = require('../models/instagram_conversations.model')
 const Configuraciones = require('../models/configuraciones.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 
+const {
+  enviarConsultaAPI,
+} = require('../utils/webhook_whatsapp/enviar_consulta_socket');
+
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
@@ -381,6 +385,11 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             celular_recibe: validar_cliente_new_conf.id,
             uid_whatsapp: validar_cliente_new_conf.celular_cliente,
           });
+
+          enviarConsultaAPI(
+            configuracion_transferida.id_configuracion,
+            validar_cliente_new_conf.id
+          );
         } else {
           // 1) Crear el cliente porque no existe en la nueva configuración
           const nuevo_cliente = await Clientes_chat_center.create({
@@ -405,6 +414,11 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
             uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente
           });
+
+          enviarConsultaAPI(
+            configuracion_transferida.id_configuracion,
+            nuevo_cliente.id
+          );
         }
       }
       break;
