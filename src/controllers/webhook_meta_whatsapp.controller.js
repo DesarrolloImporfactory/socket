@@ -150,6 +150,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const change = data?.entry?.[0]?.changes?.[0];
       const field = change?.field;
 
+      /* detector para mensajes de sincronizacion */
+      const isHistory = field === 'history';
+
+      /* detector para lista de contactos sicronizador */
+      const isStateSync =
+        field === 'smb_app_state_sync' && Array.isArray(value?.state_sync);
+
       // ✅ Coexistence: mensajes enviados desde la app/linked device
       const isSMBEcho =
         field === 'smb_message_echoes' || Array.isArray(value?.message_echoes); // por si no viene field
@@ -157,6 +164,76 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       // normaliza a un arreglo de mensajes
       const inboundMessages = value?.messages ?? [];
       const echoMessages = value?.message_echoes ?? [];
+
+      /* si recibo lista de contacto los crea y actualiza */
+      if (isStateSync) {
+        const business_phone_id = value?.metadata?.phone_number_id || '';
+        const configuracion = await Configuraciones.findOne({
+          where: { id_telefono: business_phone_id, suspendido: 0 },
+        });
+
+        if (!configuracion) return;
+
+        const id_configuracion = configuracion.id;
+
+        for (const ev of value.state_sync) {
+          if (ev?.type !== 'contact') continue;
+
+          const phone = (ev?.contact?.phone_number || '').trim();
+          const fullName = (
+            ev?.contact?.full_name ||
+            ev?.contact?.first_name ||
+            ''
+          ).trim();
+
+          if (!phone) continue;
+
+          // timestamp viene en MILISEGUNDOS
+          const tsMs = Number(ev?.metadata?.timestamp || 0);
+          const fechaContacto = tsMs ? new Date(tsMs) : new Date();
+
+          // 1) buscar si ya existe el cliente
+          const existe = await ClientesChatCenter.findOne({
+            where: { celular_cliente: phone, id_configuracion },
+          });
+
+          if (!existe) {
+            // crear con nombre (si viene) y fecha del state sync (opcional)
+            await ClientesChatCenter.create({
+              id_configuracion,
+              uid_cliente: business_phone_id,
+              nombre_cliente: fullName || '',
+              apellido_cliente: '',
+              celular_cliente: phone,
+
+              ...(fullName ? {} : {}), // aquí no pasa nada, solo placeholder
+              // si su modelo mapea timestamps:
+              ...(tsMs
+                ? { createdAt: fechaContacto, updatedAt: fechaContacto }
+                : {}),
+            });
+          } else {
+            // si existe y NO tiene nombre, actualícelo
+            if (
+              fullName &&
+              (!existe.nombre_cliente || existe.nombre_cliente.trim() === '')
+            ) {
+              await ClientesChatCenter.update(
+                {
+                  nombre_cliente: fullName,
+                  updatedAt: fechaContacto,
+                },
+                { where: { id: existe.id } }
+              );
+            }
+          }
+        }
+
+        // ✅ IMPORTANTE: no continúe al flujo de mensajes
+        return;
+      }
+      /* si recibo lista de contacto los crea y actualiza */
+
       const normalizedMessages = isSMBEcho ? echoMessages : inboundMessages;
 
       if (!normalizedMessages.length) return;
@@ -257,6 +334,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       /* obtenemos el remitente */
       const msg0 = normalizedMessages[0];
       const tipo_mensaje = msg0?.type || ''; // Tipo de mensaje
+
+      // ✅ timestamp UNIX (segundos) -> Date (ms)
+      let fechaMensaje = null;
+
+      if (isHistory) {
+        const tsSeconds = Number(msg0?.timestamp || 0);
+        fechaMensaje = tsSeconds ? new Date(tsSeconds * 1000) : new Date();
+      }
 
       // ✅ “peer” = el número del cliente (el remoto del chat)
       const peer_phone = isSMBEcho
@@ -426,6 +511,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let bot_openia = 1;
       let estado_contacto = 'contacto_inicial';
 
+      const metaClienteTimestamps =
+        isHistory && fechaMensaje
+          ? { created_at: fechaMensaje, updated_at: fechaMensaje }
+          : {};
+
       if (!clienteExiste) {
         cliente = await ClientesChatCenter.create({
           id_configuracion,
@@ -433,6 +523,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           nombre_cliente,
           apellido_cliente,
           celular_cliente: phone_whatsapp_from,
+
+          // ✅ solo si field === 'history'
+          ...metaClienteTimestamps,
         });
 
         id_cliente = cliente.id;
@@ -492,6 +585,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         });
       }
 
+      const metaTimestamps =
+        isHistory && fechaMensaje
+          ? { created_at: fechaMensaje, updated_at: fechaMensaje }
+          : {};
+
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
         id_cliente: clienteExisteConfiguracion.id,
@@ -503,6 +601,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
         responsable: isSMBEcho ? 'Whatsapp Business' : null,
+
+        // ✅ solo si field === 'history'
+        ...metaTimestamps,
       });
 
       /* console.log('creacion_mensaje: ' + JSON.stringify(creacion_mensaje));
