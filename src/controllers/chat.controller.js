@@ -24,7 +24,7 @@ exports.webhook = catchAsync(async (req, res, next) => {
         {
           model: ClientesChatCenter,
           as: 'clientePorCelular',
-          attributes: ['celular_cliente','nombre_cliente'],
+          attributes: ['celular_cliente','nombre_cliente','id_encargado'],
         },
       ],
       order: [['created_at', 'DESC']],
