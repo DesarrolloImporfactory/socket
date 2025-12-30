@@ -375,6 +375,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             id_cliente: cliente_configuracion.id,
             mid_mensaje: configuracion_transferida.id_telefono,
             tipo_mensaje: 'notificacion',
+            visto: 0,
             texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: validar_cliente_new_conf.id,
@@ -398,6 +399,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             id_cliente: cliente_configuracion.id,
             mid_mensaje: cliente_configuracion.uid_cliente,
             tipo_mensaje: 'notificacion',
+            visto: 0,
             texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)

@@ -448,7 +448,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       await db.query(
         `INSERT INTO openai_assistants 
 (id_configuracion, tipo, nombre_bot, activo, ofrecer, tiempo_remarketing) 
-VALUES (?, "ventas", ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, "ventas", ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
