@@ -64,6 +64,13 @@ const limiteConversaciones = async (req, res, next) => {
     //calcular el limite de conversaciones por plan
     const maxPlanConversaciones = Number(usuario.plan?.n_conversaciones || 0);
 
+    const configuraciones = await ConfiguracionesModel.findAll({
+      where: { id_usuario: usuario.id_usuario },
+      attributes: ['id'],
+    });
+
+    const configIds = configuraciones.map((c) => c.id);
+
     // Conversaciones actuales
 
     // Obtener mes y año actual
@@ -75,20 +82,20 @@ const limiteConversaciones = async (req, res, next) => {
     const inicio = new Date(año, mes, 1);
     const fin = new Date(año, mes + 1, 1);
 
-    const totalActualConversaciones = await Clientes_chat_centerModel.count({
-      where: {
-        created_at: {
-          [Op.gte]: inicio,
-          [Op.lt]: fin,
-        },
-      },
-    });
+    const totalActualConversaciones = configIds.length
+      ? await Clientes_chat_centerModel.count({
+          where: {
+            id_configuracion: { [Op.in]: configIds },
+            created_at: { [Op.gte]: inicio, [Op.lt]: fin },
+          },
+        })
+      : 0;
 
-    console.log("inicio: "+inicio);
-    console.log("fin: "+fin);
+    console.log('inicio: ' + inicio);
+    console.log('fin: ' + fin);
 
-    console.log("totalActualConversaciones: "+totalActualConversaciones);
-    console.log("maxPlanConversaciones: "+maxPlanConversaciones);
+    console.log('totalActualConversaciones: ' + totalActualConversaciones);
+    console.log('maxPlanConversaciones: ' + maxPlanConversaciones);
 
     // 8) Validación de cupo
     if (totalActualConversaciones > maxPlanConversaciones) {
