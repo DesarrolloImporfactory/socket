@@ -1,6 +1,7 @@
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
+const EtiquetasAsignadas = require('../models/etiquetas_asignadas.model');
 const EtiquetaService = require('../services/etiqueta.service');
 
 exports.obtenerEtiquetasAsignadas = catchAsync(async (req, res, next) => {

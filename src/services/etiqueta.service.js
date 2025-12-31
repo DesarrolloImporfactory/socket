@@ -51,7 +51,7 @@ class EtiquetaService {
       }
     );
 
-    console.log("asignada:"+ asignada)
+    console.log('asignada:' + asignada);
 
     if (asignada) {
       //Ya existe => eliminar
@@ -105,7 +105,7 @@ class EtiquetaService {
           }))
         : [{ id: null, color: null, nombre: null }];
 
-        // Actualizar la columna 'etiquetas' en clientes_chat_center con las etiquetas acumuladas
+    // Actualizar la columna 'etiquetas' en clientes_chat_center con las etiquetas acumuladas
     await db.query(
       `UPDATE clientes_chat_center
      SET etiquetas = ?
