@@ -336,12 +336,54 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       });
 
       if (configuracion_transferida.id_configuracion == id_configuracion) {
-        await Clientes_chat_center.update(
-          { id_encargado: id_encargado },
-          {
-            where: { id: id_cliente_chat_center },
+        /* validar si existe un cliente ya en esa otra configuracion */
+        const validar_cliente_new_conf = await Clientes_chat_center.findOne({
+          where: {
+            id_configuracion: configuracion_transferida.id_configuracion,
+            celular_cliente: clienteActual.celular_cliente,
+          },
+        });
+        
+        if (validar_cliente_new_conf) {
+          await Clientes_chat_center.update(
+            { id_encargado: id_encargado },
+            {
+              where: { id: id_cliente_chat_center },
+            }
+          );
+
+          // Buscar el cliente propietario de esa configuración (igual que arriba)
+          const cliente_configuracion = await Clientes_chat_center.findOne({
+            where: {
+              id_configuracion: configuracion_transferida.id_configuracion,
+              propietario: 1,
+            },
+          });
+
+          // (opcional pero recomendado) si no existe propietario, evita crashear:
+          if (!cliente_configuracion) {
+            throw new Error(
+              `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`
+            );
           }
-        );
+
+          await MensajesClientes.create({
+            id_configuracion: configuracion_transferida.id_configuracion,
+            id_cliente: cliente_configuracion.id,
+            mid_mensaje: configuracion_transferida.id_telefono,
+            tipo_mensaje: 'notificacion',
+            visto: 0,
+            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
+            rol_mensaje: 3,
+            celular_recibe: validar_cliente_new_conf.id,
+            uid_whatsapp: validar_cliente_new_conf.celular_cliente,
+          });
+
+          enviarConsultaAPI(
+            configuracion_transferida.id_configuracion,
+            validar_cliente_new_conf.id
+          );
+        }
       } else {
         /* validar si existe un cliente ya en esa otra configuracion */
         const validar_cliente_new_conf = await Clientes_chat_center.findOne({
