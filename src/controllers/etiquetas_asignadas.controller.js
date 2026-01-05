@@ -1,8 +1,10 @@
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
+const { Op } = require('sequelize');
 const EtiquetasAsignadas = require('../models/etiquetas_asignadas.model');
 const EtiquetaService = require('../services/etiqueta.service');
+const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 
 exports.obtenerEtiquetasAsignadas = catchAsync(async (req, res, next) => {
   const id_cliente_chat_center = parseInt(req.body.id_cliente_chat_center, 10);
@@ -25,17 +27,22 @@ exports.obtenerEtiquetasAsignadas = catchAsync(async (req, res, next) => {
 
 exports.obtenerMultiples = catchAsync(async (req, res, next) => {
   const ids = req.body.ids;
+  const id_configuracion = Number(req.body.id_configuracion);
 
   if (!Array.isArray(ids) || ids.length === 0) {
     return next(new AppError('ids es requerido y debe ser un array', 400));
   }
+  if (!Number.isFinite(id_configuracion) || id_configuracion <= 0) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
 
   // ====================================================
-  // 1) OBTENER ASIGNACIONES LIGERAS (RÁPIDO POR ÍNDICES)
+  // 1) OBTENER ASIGNACIONES (FILTRADAS POR CONFIGURACION)
   // ====================================================
   const asignaciones = await EtiquetasAsignadas.findAll({
     where: {
       id_cliente_chat_center: { [Op.in]: ids },
+      id_configuracion: id_configuracion, // ✅ CLAVE
     },
     attributes: ['id_cliente_chat_center', 'id_etiqueta'],
     raw: true,
@@ -43,11 +50,8 @@ exports.obtenerMultiples = catchAsync(async (req, res, next) => {
 
   // Crear estructura vacía para cada id solicitado
   const result = {};
-  for (const id of ids) {
-    result[id] = [];
-  }
+  for (const id of ids) result[id] = [];
 
-  // Si no hay asignaciones, retornar vacío
   if (asignaciones.length === 0) {
     return res.status(200).json({
       status: '200',
@@ -57,30 +61,30 @@ exports.obtenerMultiples = catchAsync(async (req, res, next) => {
   }
 
   // ====================================================
-  // 2) OBTENER SOLO LOS IDs ÚNICOS DE ETIQUETAS
+  // 2) IDS ÚNICOS DE ETIQUETAS
   // ====================================================
   const uniqueEtiquetaIds = [
     ...new Set(asignaciones.map((a) => a.id_etiqueta)),
   ];
 
   // ====================================================
-  // 3) CONSULTA DE ETIQUETAS UNA SOLA VEZ
+  // 3) CONSULTA DE ETIQUETAS (TAMBIÉN POR CONFIGURACION)
   // ====================================================
   const etiquetas = await EtiquetasChatCenter.findAll({
     where: {
+      id_configuracion: id_configuracion, // ✅ CLAVE
       id_etiqueta: { [Op.in]: uniqueEtiquetaIds },
     },
     attributes: ['id_etiqueta', 'nombre_etiqueta', 'color_etiqueta'],
     raw: true,
   });
 
-  // Crear diccionario de etiquetas para acceso instantáneo
   const dictEtiquetas = Object.fromEntries(
     etiquetas.map((e) => [e.id_etiqueta, e])
   );
 
   // ====================================================
-  // 4) ARMAR RESULTADO FINAL
+  // 4) ARMAR RESULTADO
   // ====================================================
   for (const row of asignaciones) {
     const etq = dictEtiquetas[row.id_etiqueta];
@@ -93,10 +97,7 @@ exports.obtenerMultiples = catchAsync(async (req, res, next) => {
     }
   }
 
-  // ====================================================
-  // RESPUESTA
-  // ====================================================
-  res.status(200).json({
+  return res.status(200).json({
     status: '200',
     message: 'Etiquetas cargadas correctamente',
     etiquetas: result,

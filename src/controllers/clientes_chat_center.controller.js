@@ -925,13 +925,16 @@ exports.eliminarClientesBulk = catchAsync(async (req, res, next) => {
   return res.status(200).json({ status: 'success', deleted: ids.length });
 });
 
-// GET /api/v1/clientes_chat_center/listar_por_etiqueta?ids=1,2&page=&limit=&q=&estado=&sort=
+// GET /api/v1/clientes_chat_center/listar_por_etiqueta?ids=1,2&page=&limit=&q=&estado=&sort=&id_configuracion=10
 exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
   const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
   const offset = (page - 1) * limit;
 
-  const id_configuracion = req.query.id_configuracion ?? '';
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!Number.isFinite(id_configuracion) || id_configuracion <= 0) {
+    return next(new AppError('id_configuracion inválido', 400));
+  }
 
   const subUsuarioSession = req.sessionUser;
   if (!subUsuarioSession) {
@@ -943,7 +946,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
 
   const id_usuario_session = subUsuarioSession.id_usuario;
 
-  let validar_permiso_usuario = await Configuraciones.findOne({
+  const validar_permiso_usuario = await Configuraciones.findOne({
     where: {
       id_usuario: id_usuario_session,
       id: id_configuracion,
@@ -963,6 +966,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
   if (!idsParam.length) {
     return res
       .status(200)
@@ -992,8 +996,8 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   }
   const orderBy = parseSort(req.query.sort);
 
-  const where = ['c.deleted_at IS NULL'];
-  const params = [];
+  const where = ['c.deleted_at IS NULL', 'c.id_configuracion = ?'];
+  const params = [id_configuracion];
 
   if (estadoParsed !== null) {
     where.push('c.estado_cliente = ?');
@@ -1013,14 +1017,24 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     params.push(like, like, like, like, like, like);
   }
 
-  // Armamos IN dinámico para etiquetas
+  // IN dinámico para etiquetas
   const inPlaceholders = idsParam.map(() => '?').join(',');
-  const etiquetaParams = idsParam;
+  const etiquetaParams = idsParam
+    .map((x) => Number(x))
+    .filter((x) => Number.isFinite(x));
 
+  if (!etiquetaParams.length) {
+    return res
+      .status(200)
+      .json({ status: 'success', data: [], total: 0, page, limit });
+  }
+
+  // ✅ CLAVE: filtrar también etiquetas_asignadas por id_configuracion
   const baseFromJoin = `
     FROM clientes_chat_center c
     INNER JOIN etiquetas_asignadas ea
       ON ea.id_cliente_chat_center = c.id
+     AND ea.id_configuracion = c.id_configuracion
     WHERE ${where.join(' AND ')}
       AND ea.id_etiqueta IN (${inPlaceholders})
   `;
@@ -1034,7 +1048,6 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
       c.pedido_confirmado, c.telefono_limpio, c.direccion, c.productos
     ${baseFromJoin}
-    AND c.id_configuracion = ${id_configuracion}
     GROUP BY c.id
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
@@ -1052,6 +1065,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     replacements: dataParams,
     type: db.QueryTypes.SELECT,
   });
+
   const [{ total }] = await db.query(countSql, {
     replacements: countParams,
     type: db.QueryTypes.SELECT,
