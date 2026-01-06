@@ -77,6 +77,8 @@ const stripeproRouter = require('./routes/stripepro.routes');
 
 const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
 
+const droppiIntegrationsRouter = require('./routes/dropi_integrations.routes');
+
 const path = require('path');
 
 const app = express();
@@ -287,6 +289,7 @@ app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
 app.use('/api/v1/stripepro', stripeproRouter);
 app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
+app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 
 app.all('*', (req, res, next) => {
   return next(
