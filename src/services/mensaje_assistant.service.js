@@ -315,6 +315,9 @@ async function procesarAsistenteMensajeVentas(body) {
       };
     }
 
+    let prompt_tokens = 0;
+    let completion_tokens = 0;
+    let total_tokens = 0;
     // 4. Esperar respuesta con polling
     let statusRun = 'queued',
       attempts = 0;
@@ -343,17 +346,19 @@ async function procesarAsistenteMensajeVentas(body) {
         /* await log('statusRun: ' + statusRun); */
 
         // 🔎 Si el backend ya expone usage durante el run, lo registramos
+
         if (statusRes.data.usage) {
           await log(
             'Respuesta completa de usage: ' +
               flatted.stringify(statusRes.data.usage)
           ); // Esto te ayudará a ver la estructura completa
 
-          const {
+          ({
             prompt_tokens = 0, // Este es el valor para input_tokens
             completion_tokens = 0, // Este es el valor para output_tokens
             total_tokens = 0, // Total de tokens procesados
-          } = statusRes.data.usage;
+          } = statusRes.data.usage);
+
           const model = statusRes.data.model || 'gpt-4.1-mini';
           const costo = estCosto(model, prompt_tokens, completion_tokens);
           await log(
@@ -514,6 +519,7 @@ async function procesarAsistenteMensajeVentas(body) {
       tipo_asistente,
       bloqueInfo,
       tipoInfo,
+      total_tokens,
     };
   } catch (err) {
     await log(
@@ -641,6 +647,10 @@ async function procesarAsistenteMensajeImporfactory(body) {
       };
     }
 
+    let prompt_tokens = 0;
+    let completion_tokens = 0;
+    let total_tokens = 0;
+
     // 4. Esperar respuesta con polling
     let statusRun = 'queued',
       attempts = 0;
@@ -669,17 +679,18 @@ async function procesarAsistenteMensajeImporfactory(body) {
         /* await log('statusRun: ' + statusRun); */
 
         // 🔎 Si el backend ya expone usage durante el run, lo registramos
+
         if (statusRes.data.usage) {
           await log(
             'Respuesta completa de usage: ' +
               flatted.stringify(statusRes.data.usage)
           ); // Esto te ayudará a ver la estructura completa
 
-          const {
+          ({
             prompt_tokens = 0, // Este es el valor para input_tokens
             completion_tokens = 0, // Este es el valor para output_tokens
             total_tokens = 0, // Total de tokens procesados
-          } = statusRes.data.usage;
+          } = statusRes.data.usage);
           const model = statusRes.data.model || 'gpt-4.1-mini';
           const costo = estCosto(model, prompt_tokens, completion_tokens);
           await log(
@@ -795,6 +806,8 @@ async function procesarAsistenteMensajeImporfactory(body) {
       tipo_asistente,
       bloqueInfo,
       tipoInfo,
+      total_tokens,
+      costo_tokens: costo,
     };
   } catch (err) {
     await log(
@@ -871,6 +884,10 @@ async function separadorProductos({
       };
     }
 
+    let prompt_tokens = 0;
+    let completion_tokens = 0;
+    let total_tokens = 0;
+
     // Paso 3: Esperar la respuesta con polling
     let statusRun = 'queued',
       attempts = 0;
@@ -896,6 +913,24 @@ async function separadorProductos({
             `https://api.openai.com/v1/threads/${id_thread}/messages`,
             { headers }
           );
+
+          if (statusRes.data.usage) {
+            await log(
+              'Respuesta completa de usage: ' +
+                flatted.stringify(statusRes.data.usage)
+            ); // Esto te ayudará a ver la estructura completa
+
+            ({
+              prompt_tokens = 0, // Este es el valor para input_tokens
+              completion_tokens = 0, // Este es el valor para output_tokens
+              total_tokens = 0, // Total de tokens procesados
+            } = statusRes.data.usage);
+            const model = statusRes.data.model || 'gpt-4.1-mini';
+            const costo = estCosto(model, prompt_tokens, completion_tokens);
+            await log(
+              `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
+            );
+          }
 
           const mensajes = messagesRes.data.data || [];
           respuestaSeparador =
@@ -925,6 +960,7 @@ async function separadorProductos({
     return {
       status: 200,
       respuesta: respuestaSeparador,
+      total_tokens,
     };
   } catch (err) {
     await log(

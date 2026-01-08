@@ -105,6 +105,7 @@ async function enviarMensajeWhatsapp({
   accessToken,
   id_configuracion,
   responsable = '',
+  total_tokens = 0,
 }) {
   await fs.mkdir(logsDir, { recursive: true });
 
@@ -157,6 +158,7 @@ async function enviarMensajeWhatsapp({
         ruta_archivo: null,
         responsable,
         wamid: mensajeId,
+        total_tokens,
       });
     } else {
       const errorMsg = respData.error

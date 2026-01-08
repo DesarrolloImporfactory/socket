@@ -18,6 +18,7 @@ async function procesarMensajeTexto({
   ruta_archivo = null,
   responsable = 'sistema',
   wamid,
+  total_tokens = 0,
 }) {
   try {
     await fs.mkdir(logsDir, { recursive: true });
@@ -37,7 +38,7 @@ async function procesarMensajeTexto({
         nombre_cliente,
         apellido_cliente,
         celular_cliente: telefono_configuracion,
-        propietario: 1
+        propietario: 1,
       });
     }
 
@@ -66,6 +67,7 @@ async function procesarMensajeTexto({
       celular_recibe: id_cliente_recibe,
       uid_whatsapp: phone_whatsapp_to,
       id_wamid_mensaje: wamid,
+      total_tokens_openai_mensaje: total_tokens,
     });
 
     await logInfo(

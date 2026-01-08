@@ -408,18 +408,25 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             : `. Error al descargar el archivo.`;
           break;
 
-        case 'document':
+        case 'document': {
           const docId = mensaje_recibido?.document?.id;
-          const filename = mensaje_recibido?.document?.filename;
+          const filename =
+            mensaje_recibido?.document?.filename ||
+            `documento_${docId || 'sin_id'}.pdf`;
+
           ruta_archivo = await descargarDocumentoWhatsapp(
             docId,
             accessToken,
             filename
           );
-          texto_mensaje = mensaje_recibido?.document?.caption || '';
+
+          // En smb_message_echoes normalmente NO viene caption, entonces guardamos al menos el filename
+          texto_mensaje = mensaje_recibido?.document?.caption || filename;
+
           if (!ruta_archivo)
             texto_mensaje += '\nError al descargar el documento.';
           break;
+        }
 
         case 'location':
           const location = mensaje_recibido?.location;
@@ -590,16 +597,22 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           ? { created_at: fechaMensaje, updated_at: fechaMensaje }
           : {};
 
+      // ✅ Asegurar que ruta_archivo se guarde como STRING JSON (como ya lo tenía en la BD)
+      if (ruta_archivo && typeof ruta_archivo === 'object') {
+        ruta_archivo = JSON.stringify(ruta_archivo);
+      }
+
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
         id_cliente: clienteExisteConfiguracion.id,
-        mid_mensaje: business_phone_id,
+        mid_mensaje: msg0?.id || business_phone_id,
         tipo_mensaje,
         texto_mensaje,
         ruta_archivo,
         rol_mensaje: isSMBEcho ? 1 : 0,
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
+        visto: 0,
         responsable: isSMBEcho ? 'Whatsapp Business' : null,
 
         // ✅ solo si field === 'history'
@@ -722,6 +735,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         /* validar si el chat ah sido cerrado */
         if (bot_openia === 1) {
+          let total_tokens = 0;
+
           // Obtener thread
           const id_thread = await obtenerThreadId(id_cliente, api_key_openai);
 
@@ -772,6 +787,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             });
 
             if (respuesta_asistente?.status === 200) {
+              total_tokens += Number(respuesta_asistente?.total_tokens ?? 0);
+
               if (estado_contacto == 'contacto_inicial') {
                 // Mapeo de respuestas → estados en la DB
                 const estadoMap = {
@@ -832,6 +849,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                           accessToken,
                         }); */
                       }
+
+                      total_tokens += Number(
+                        nueva_respuesta_asistente?.total_tokens ?? 0
+                      );
+
                       await enviarMensajeWhatsapp({
                         phone_whatsapp_to: phone_whatsapp_from,
                         texto_mensaje: nueva_respuesta_asistente.respuesta,
@@ -839,6 +861,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                         accessToken,
                         id_configuracion,
                         responsable: nueva_respuesta_asistente.tipo_asistente,
+                        total_tokens,
                       });
                       break;
 
@@ -861,6 +884,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   accessToken,
                   id_configuracion,
                   responsable: respuesta_asistente.tipo_asistente,
+                  total_tokens,
                 });
               }
             }
@@ -891,6 +915,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             if (separadorRespuesta.status === 200) {
               // Usar la respuesta del separador como prefijo antes de enviar el mensaje al asistente de ventas
               lista_productos = separadorRespuesta.respuesta;
+
+              total_tokens += Number(separadorRespuesta?.total_tokens ?? 0);
             }
 
             respuesta_asistente = await enviarAsistenteGptVentas({
@@ -908,6 +934,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             });
 
             if (respuesta_asistente?.status === 200) {
+              total_tokens += Number(respuesta_asistente?.total_tokens ?? 0);
+
               if (estado_contacto == 'contacto_inicial') {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'ia_ventas' },
@@ -1138,6 +1166,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   accessToken,
                   id_configuracion,
                   responsable: respuesta_asistente.tipo_asistente,
+                  total_tokens,
                 });
               }
             }
@@ -1167,6 +1196,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             if (separadorRespuesta.status === 200) {
               // Usar la respuesta del separador como prefijo antes de enviar el mensaje al asistente de ventas
               lista_productos = separadorRespuesta.respuesta;
+
+              total_tokens += Number(separadorRespuesta?.total_tokens ?? 0);
             }
 
             respuesta_asistente = await enviarAsistenteGptVentas({
@@ -1184,6 +1215,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             });
 
             if (respuesta_asistente?.status === 200) {
+              total_tokens += Number(respuesta_asistente?.total_tokens ?? 0);
+
               if (estado_contacto == 'contacto_inicial') {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'ia_ventas_imporshop' },
@@ -1434,6 +1467,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   accessToken,
                   id_configuracion,
                   responsable: respuesta_asistente.tipo_asistente,
+                  total_tokens,
                 });
               }
             }
