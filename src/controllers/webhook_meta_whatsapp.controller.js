@@ -493,6 +493,18 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           texto_mensaje = `Sticker recibido y guardado con ID: ${stickerId}`;
           break;
 
+        case 'revoke': {
+          const originalId =
+            mensaje_recibido?.revoke?.original_message_id || '';
+          // Texto “humano” opcional para logs
+          texto_mensaje = '🚫 Mensaje eliminado por el usuario';
+          // Si quieres guardar referencia (opcional)
+          ruta_archivo = originalId
+            ? JSON.stringify({ original_message_id: originalId })
+            : null;
+          break;
+        }
+        
         default:
           texto_mensaje = 'Tipo de mensaje no reconocido.';
       }
