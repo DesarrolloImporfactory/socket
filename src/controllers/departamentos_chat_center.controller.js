@@ -259,6 +259,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     motivo,
     id_conversation, // para Messenger/Instagram
     id_configuracion,
+    emisor,
   } = req.body;
 
   if (id_encargado == null && id_departamento == null) {
@@ -343,7 +344,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             celular_cliente: clienteActual.celular_cliente,
           },
         });
-        
+
         if (validar_cliente_new_conf) {
           await Clientes_chat_center.update(
             { id_encargado: id_encargado },
@@ -373,7 +374,8 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             mid_mensaje: configuracion_transferida.id_telefono,
             tipo_mensaje: 'notificacion',
             visto: 0,
-            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
+            texto_mensaje:
+              emisor + ' te transfirió este chat. Motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: validar_cliente_new_conf.id,
             uid_whatsapp: validar_cliente_new_conf.celular_cliente,
@@ -422,7 +424,8 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             mid_mensaje: configuracion_transferida.id_telefono,
             tipo_mensaje: 'notificacion',
             visto: 0,
-            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
+            texto_mensaje:
+              emisor + ' te transfirió este chat. Motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: validar_cliente_new_conf.id,
             uid_whatsapp: validar_cliente_new_conf.celular_cliente,
@@ -451,7 +454,8 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             mid_mensaje: cliente_configuracion.uid_cliente,
             tipo_mensaje: 'notificacion',
             visto: 0,
-            texto_mensaje: 'Te han transferido este chat, motivo: ' + motivo,
+            texto_mensaje:
+              emisor + ' te transfirió este chat. Motivo: ' + motivo,
             rol_mensaje: 3,
             celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
             uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente

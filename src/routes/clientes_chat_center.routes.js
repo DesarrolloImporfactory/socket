@@ -82,4 +82,14 @@ router.put('/actualizar/:id', clientes_chat_centerController.actualizarCliente);
 router.delete('/eliminar/:id', clientes_chat_centerController.eliminarCliente);
 router.post('/eliminar', clientes_chat_centerController.eliminarClientesBulk); // bulk
 
+router.get(
+  '/total_clientes_ultimo_mes',
+  clientes_chat_centerController.totalClientesUltimoMes
+);
+
+router.get(
+  '/total_clientes_ultimo_mes_todos',
+  clientes_chat_centerController.totalClientesUltimoMesTodos
+);
+
 module.exports = router;

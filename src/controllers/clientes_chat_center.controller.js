@@ -5,7 +5,13 @@ const { db } = require('../database/config');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 
+const Planes_chat_centerModel = require('../models/planes_chat_center.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
+
 const ChatService = require('../services/chat.service');
+
+const { Op, fn, col } = require('sequelize');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -1075,3 +1081,186 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     .status(200)
     .json({ status: 'success', data: rows, total, page, limit });
 });
+
+exports.totalClientesUltimoMes = async (req, res) => {
+  try {
+    // 1) Verificar sesión
+    const subUsuarioSession = req.sessionUser;
+    if (!subUsuarioSession) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No estás autenticado como subusuario',
+      });
+    }
+
+    // 2) Cargar subusuario
+    const subUsuarioDB = await Sub_usuarios_chat_center.findByPk(
+      subUsuarioSession.id_sub_usuario
+    );
+
+    if (!subUsuarioDB) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No se encontró el subusuario en la base de datos',
+      });
+    }
+
+    // 3) Cargar usuario + plan
+    const usuario = await Usuarios_chat_centerModel.findByPk(
+      subUsuarioDB.id_usuario,
+      { include: [{ model: Planes_chat_centerModel, as: 'plan' }] }
+    );
+
+    if (!usuario) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Usuario no encontrado',
+      });
+    }
+
+    if (!usuario.plan) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'El usuario no tiene plan asignado',
+      });
+    }
+
+    // 4) Límite por plan
+    const maxPlanConversaciones = Number(usuario.plan?.n_conversaciones || 0);
+
+    // 5) Configuraciones del usuario
+    const configuraciones = await Configuraciones.findAll({
+      where: { id_usuario: usuario.id_usuario },
+      attributes: ['id'],
+    });
+
+    const configIds = configuraciones.map((c) => c.id);
+
+    // 6) Rango mes actual
+    const ahora = new Date();
+    const año = ahora.getFullYear();
+    const mes = ahora.getMonth(); // 0=enero
+
+    const inicio = new Date(año, mes, 1);
+    const fin = new Date(año, mes + 1, 1);
+
+    // 7) Conteo conversaciones (clientes) del mes actual
+    const totalActualConversaciones = configIds.length
+      ? await ClientesChatCenter.count({
+          where: {
+            id_configuracion: { [Op.in]: configIds },
+            created_at: { [Op.gte]: inicio, [Op.lt]: fin },
+          },
+        })
+      : 0;
+
+    // 8) Respuesta (solo los 2 campos)
+    return res.status(200).json({
+      totalActualConversaciones,
+      maxPlanConversaciones,
+    });
+  } catch (err) {
+    console.error('Error en totalConversacionesUltimoMes:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Error interno del servidor',
+    });
+  }
+};
+
+exports.totalClientesUltimoMesTodos = async (req, res) => {
+  try {
+    const ahora = new Date();
+    const año = ahora.getFullYear();
+    const mes = ahora.getMonth();
+
+    const inicio = new Date(año, mes, 1);
+    const fin = new Date(año, mes + 1, 1);
+
+    const usuarios = await Usuarios_chat_centerModel.findAll({
+      attributes: ['id_usuario', 'nombre'],
+      include: [
+        {
+          model: Planes_chat_centerModel,
+          as: 'plan',
+          attributes: ['n_conversaciones'],
+          required: false,
+        },
+      ],
+    });
+
+    const configuraciones = await Configuraciones.findAll({
+      attributes: ['id', 'id_usuario'],
+      raw: true,
+    });
+
+    const configIds = configuraciones.map((c) => c.id);
+
+    const countsPorConfig = configIds.length
+      ? await ClientesChatCenter.findAll({
+          attributes: [
+            'id_configuracion',
+            [fn('COUNT', col('id_configuracion')), 'total'],
+          ],
+          where: {
+            id_configuracion: { [Op.in]: configIds },
+            created_at: { [Op.gte]: inicio, [Op.lt]: fin },
+          },
+          group: ['id_configuracion'],
+          raw: true,
+        })
+      : [];
+
+    const totalPorConfigMap = new Map();
+    for (const row of countsPorConfig) {
+      totalPorConfigMap.set(
+        Number(row.id_configuracion),
+        Number(row.total || 0)
+      );
+    }
+
+    const configsPorUsuarioMap = new Map();
+    for (const c of configuraciones) {
+      const userId = Number(c.id_usuario);
+      if (!configsPorUsuarioMap.has(userId))
+        configsPorUsuarioMap.set(userId, []);
+      configsPorUsuarioMap.get(userId).push(Number(c.id));
+    }
+
+    const data = usuarios.map((u) => {
+      const userId = Number(u.id_usuario);
+      const maxPlanConversaciones = Number(u.plan?.n_conversaciones || 0);
+
+      const misConfigs = configsPorUsuarioMap.get(userId) || [];
+      const totalActualConversaciones = misConfigs.reduce((acc, cfgId) => {
+        return acc + (totalPorConfigMap.get(cfgId) || 0);
+      }, 0);
+
+      return {
+        nombre: u.nombre,
+        id_usuario: userId,
+        totalActualConversaciones,
+        maxPlanConversaciones,
+      };
+    });
+
+    // ✅ TOTAL GENERAL ACUMULADO
+    const totalGeneralConversaciones = data.reduce(
+      (acc, u) => acc + Number(u.totalActualConversaciones || 0),
+      0
+    );
+
+    return res.status(200).json({
+      inicio,
+      fin,
+      totalGeneralConversaciones,
+      data,
+    });
+  } catch (err) {
+    console.error('Error en totalConversacionesUltimoMesTodos:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Error interno del servidor',
+    });
+  }
+};
