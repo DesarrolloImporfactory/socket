@@ -10,7 +10,6 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
 
 const ChatService = require('../services/chat.service');
-
 const { Op, fn, col } = require('sequelize');
 
 // controllers/clientes_chat_centerController.js
@@ -90,42 +89,40 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
 
     const uid_cliente = configuracion.id_telefono;
 
-    await db.query(
-      `INSERT INTO clientes_chat_center 
-      (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente)
-      VALUES (?, ?, ?, ?, ?)`,
-      {
-        replacements: [
-          id_configuracion,
-          nombre,
-          apellido,
-          telefono,
-          uid_cliente,
-        ],
-        type: db.QueryTypes.INSERT,
-      }
-    );
+    // 2) UPSERT (si existe por UNIQUE, no falla y devuelve el id existente)
+    const upsertSql = `
+      INSERT INTO clientes_chat_center
+        (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+      ON DUPLICATE KEY UPDATE
+        nombre_cliente   = VALUES(nombre_cliente),
+        apellido_cliente = VALUES(apellido_cliente),
+        celular_cliente  = VALUES(celular_cliente),
+        uid_cliente      = VALUES(uid_cliente),
+        updated_at       = NOW(),
+        id              = LAST_INSERT_ID(id)
+    `;
 
-    const [resultado] = await db.query(
-      `SELECT id FROM clientes_chat_center 
-       WHERE celular_cliente = ? AND id_configuracion = ?
-       ORDER BY id DESC LIMIT 1`,
-      {
-        replacements: [telefono, id_configuracion],
-        type: db.QueryTypes.SELECT,
-      }
-    );
+    await db.query(upsertSql, {
+      replacements: [
+        id_configuracion,
+        nombre ?? '',
+        apellido ?? '',
+        telefono ?? '',
+        uid_cliente,
+      ],
+      type: db.QueryTypes.INSERT,
+    });
 
-    if (!resultado) {
-      return next(new AppError('No se pudo recuperar el ID del registro', 400));
-    }
-
-    const lastId = resultado.id;
+    // 3) Recuperar ID (funciona tanto para insert como para duplicado)
+    const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
+      type: db.QueryTypes.SELECT,
+    });
 
     return res.status(200).json({
       status: 200,
       title: 'Petición exitosa',
-      message: 'Número agregado correctamente',
+      message: 'Número agregado/actualizado correctamente',
       id: lastId,
     });
   } catch (error) {
@@ -189,66 +186,56 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
   } = req.body;
 
   try {
-    // 1. Verificar si ya existe cliente con el teléfono de configuración
-    const [clienteExistente] = await db.query(
-      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ?',
+    // 1) Obtener datos desde configuraciones (para armar el "cliente propietario")
+    const [config] = await db.query(
+      'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ? AND suspendido = 0',
       {
-        replacements: [telefono_configuracion, id_configuracion],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
     );
 
-    let id_cliente_configuracion;
-
-    if (!clienteExistente) {
-      // 2. Obtener datos desde configuraciones
-      const [config] = await db.query(
-        'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ? AND suspendido = 0',
-        {
-          replacements: [id_configuracion],
-          type: db.QueryTypes.SELECT,
-        }
-      );
-
-      const id_telefono = config.id_telefono;
-      const nombre_cliente = config.nombre_configuracion;
-      const apellido_cliente = '';
-
-      // 3. Insertar nuevo cliente
-      await db.query(
-        `INSERT INTO clientes_chat_center 
-        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, created_at, updated_at, propietario)
-        VALUES (?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
-        {
-          replacements: [
-            id_configuracion,
-            id_telefono,
-            nombre_cliente,
-            apellido_cliente,
-            telefono_configuracion,
-            1,
-          ],
-          type: db.QueryTypes.INSERT,
-        }
-      );
-
-      // 4. Obtener ID insertado
-      const [insertado] = await db.query(
-        `SELECT id FROM clientes_chat_center 
-         WHERE celular_cliente = ? AND id_configuracion = ?
-         ORDER BY id DESC LIMIT 1`,
-        {
-          replacements: [telefono_configuracion, id_configuracion],
-          type: db.QueryTypes.SELECT,
-        }
-      );
-
-      id_cliente_configuracion = insertado.id;
-    } else {
-      id_cliente_configuracion = clienteExistente.id;
+    if (!config) {
+      return next(new AppError('No se encontró configuración', 400));
     }
 
-    // 5. Insertar mensaje en mensajes_clientes
+    const uid_cliente = config.id_telefono;
+    const nombre_cliente = config.nombre_configuracion;
+    const apellido_cliente = '';
+
+    // 2) UPSERT cliente propietario (evita duplicados y carreras)
+    const upsertClienteSql = `
+      INSERT INTO clientes_chat_center
+        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, propietario, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
+      ON DUPLICATE KEY UPDATE
+        uid_cliente      = VALUES(uid_cliente),
+        nombre_cliente   = VALUES(nombre_cliente),
+        apellido_cliente = VALUES(apellido_cliente),
+        celular_cliente  = VALUES(celular_cliente),
+        propietario      = VALUES(propietario),
+        updated_at       = NOW(),
+        id              = LAST_INSERT_ID(id)
+    `;
+
+    await db.query(upsertClienteSql, {
+      replacements: [
+        id_configuracion,
+        uid_cliente,
+        nombre_cliente,
+        apellido_cliente,
+        telefono_configuracion,
+        1,
+      ],
+      type: db.QueryTypes.INSERT,
+    });
+
+    const [{ id: id_cliente_configuracion }] = await db.query(
+      'SELECT LAST_INSERT_ID() AS id',
+      { type: db.QueryTypes.SELECT }
+    );
+
+    // 3) Insertar mensaje (aquí NO toqué su lógica; si quiere anti-duplicado aquí también, se hace con UNIQUE + IGNORE/UPSERT)
     await db.query(
       `INSERT INTO mensajes_clientes 
         (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp, id_wamid_mensaje, template_name, language_code)
@@ -259,12 +246,12 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           id_cliente_configuracion,
           mid_mensaje,
           tipo_mensaje,
-          1, // rol_mensaje fijo en 1
+          1,
           id_recibe,
           responsable,
           texto_mensaje,
           ruta_archivo,
-          1, // visto por defecto en 1
+          1,
           telefono_recibe,
           id_wamid_mensaje,
           template_name,
@@ -786,52 +773,67 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
     return next(new AppError('Ingrese al menos nombre, teléfono o email', 400));
   }
 
-  const insertSql = `
+  // ✅ UPSERT: si existe, actualiza y no falla por duplicado
+  // ✅ Además devuelve el id REAL (nuevo o existente) usando LAST_INSERT_ID
+  const upsertSql = `
     INSERT INTO clientes_chat_center (
       id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
       nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
       imagePath, mensajes_por_dia_cliente, estado_cliente,
-      created_at, updated_at, chat_cerrado, bot_openia,
-      id_departamento, id_encargado, pedido_confirmado
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, NOW(), NOW(), ?,?,?,?,?)
+      chat_cerrado, bot_openia, id_departamento, id_encargado, pedido_confirmado,
+      created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, NOW(), NOW())
+    ON DUPLICATE KEY UPDATE
+      id_plataforma            = VALUES(id_plataforma),
+      id_etiqueta              = VALUES(id_etiqueta),
+      uid_cliente              = VALUES(uid_cliente),
+      nombre_cliente           = VALUES(nombre_cliente),
+      apellido_cliente         = VALUES(apellido_cliente),
+      email_cliente            = VALUES(email_cliente),
+      celular_cliente          = VALUES(celular_cliente),
+      imagePath                = VALUES(imagePath),
+      mensajes_por_dia_cliente  = VALUES(mensajes_por_dia_cliente),
+      estado_cliente           = VALUES(estado_cliente),
+      chat_cerrado             = VALUES(chat_cerrado),
+      bot_openia               = VALUES(bot_openia),
+      id_departamento          = VALUES(id_departamento),
+      id_encargado             = VALUES(id_encargado),
+      pedido_confirmado        = VALUES(pedido_confirmado),
+      updated_at               = NOW(),
+      id                       = LAST_INSERT_ID(id)
   `;
-  const insertParams = [
-    id_plataforma ?? null,
-    id_configuracion ?? null,
-    id_etiqueta ?? null,
-    uid_cliente ?? null,
-    nombre_cliente ?? '',
-    apellido_cliente ?? '',
-    email_cliente ?? '',
-    celular_cliente ?? '',
-    imagePath ?? '',
-    mensajes_por_dia_cliente ?? 0,
-    estado_cliente ?? 1,
-    chat_cerrado ?? 0,
-    bot_openia ?? 1,
-    id_departamento ?? null,
-    id_encargado ?? null,
-    pedido_confirmado ?? 0,
-  ];
 
-  // Ejecutar inserción
-  const result = await db.query(insertSql, {
-    replacements: insertParams,
+  await db.query(upsertSql, {
+    replacements: [
+      id_plataforma ?? null,
+      id_configuracion ?? null,
+      id_etiqueta ?? null,
+      uid_cliente ?? null,
+      nombre_cliente ?? '',
+      apellido_cliente ?? '',
+      email_cliente ?? '',
+      celular_cliente ?? '',
+      imagePath ?? '',
+      mensajes_por_dia_cliente ?? 0,
+      estado_cliente ?? 1,
+      chat_cerrado ?? 0,
+      bot_openia ?? 1,
+      id_departamento ?? null,
+      id_encargado ?? null,
+      pedido_confirmado ?? 0,
+    ],
     type: db.QueryTypes.INSERT,
   });
-  // `result` en mysql2 suele ser [metadata, _]; recuperamos el último id con otra consulta fiable:
+
+  // ✅ id (nuevo o existente)
   const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
     type: db.QueryTypes.SELECT,
   });
 
-  // Devolver fila creada
   const [created] = await db.query(
-    `SELECT id, id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
-            nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
-            imagePath, mensajes_por_dia_cliente, estado_cliente,
-            created_at, updated_at, deleted_at, chat_cerrado, bot_openia,
-            id_departamento, id_encargado, pedido_confirmado, telefono_limpio
-     FROM clientes_chat_center WHERE id = ?`,
+    `SELECT *
+     FROM clientes_chat_center
+     WHERE id = ?`,
     { replacements: [lastId], type: db.QueryTypes.SELECT }
   );
 

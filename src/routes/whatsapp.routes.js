@@ -842,7 +842,7 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
   }
 });
 
-//Segundo paso
+//Segundo paso si el caso es manualmente.
 router.post('/actualizarConfiguracionMeta', async (req, res) => {
   const {
     id_configuracion,
@@ -872,16 +872,18 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
     // Actualizar webhook_url en la tabla configuraciones
     const webhook_url =
       'https://chat.imporfactory.app/api/v1/webhook_meta/webhook_whatsapp?webhook=wh_clfgshu99';
+
     const updateSql = `
-    UPDATE configuraciones
-    SET 
-      id_telefono = ?,
-      id_whatsapp = ?,
-      webhook_url = ?,
-      token = ?,
-      updated_at = NOW()
-    WHERE id = ? 
-  `;
+      UPDATE configuraciones
+      SET 
+        id_telefono = ?,
+        id_whatsapp = ?,
+        webhook_url = ?,
+        token = ?,
+        updated_at = NOW()
+      WHERE id = ? 
+    `;
+
     const [updateResult] = await db.query(updateSql, {
       replacements: [
         id_telefono,
@@ -899,13 +901,21 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
       });
     }
 
-    // Insertar cliente en clientes_chat_center
-    const insertClienteSql = `
-    INSERT INTO clientes_chat_center
-      (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
-    VALUES (?, ?, ?, ?, ?)
-  `;
-    const [insertClienteRes] = await db.query(insertClienteSql, {
+    // ✅ UPSERT cliente en clientes_chat_center (evita Duplicate entry)
+    const upsertClienteSql = `
+      INSERT INTO clientes_chat_center
+        (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+      ON DUPLICATE KEY UPDATE
+        uid_cliente     = VALUES(uid_cliente),
+        nombre_cliente  = VALUES(nombre_cliente),
+        celular_cliente = VALUES(celular_cliente),
+        propietario     = VALUES(propietario),
+        updated_at      = NOW(),
+        id             = LAST_INSERT_ID(id)
+    `;
+
+    await db.query(upsertClienteSql, {
       replacements: [
         id_configuracion,
         id_telefono,
@@ -915,14 +925,16 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
       ],
     });
 
-    console.log('Resultado de la inserción del cliente:', insertClienteRes); // Verifica el resultado de la inserción
+    // Si en algún momento necesita el ID del cliente:
+    // const [{ id: idCliente }] = await db.query('SELECT LAST_INSERT_ID() AS id');
 
     return res.status(200).json({
       status: 200,
-      message: 'Configuración actualizada y cliente insertado correctamente.',
+      message:
+        'Configuración actualizada y cliente insertado/actualizado correctamente.',
     });
   } catch (error) {
-    console.error('Error al actualizar configuración Meta:', error); // Agregar el error completo en los logs
+    console.error('Error al actualizar configuración Meta:', error);
     return res.status(500).json({
       status: 500,
       message: 'Hubo un problema al actualizar la configuración.',
@@ -1167,6 +1179,9 @@ async function getConfigFromDB(id) {
 //     let phoneNumberId = null;
 //     let displayNumber = null;
 
+//     // ✅ NUEVO: guardamos el phone match para saber su status (CONNECTED/PENDING/etc.)
+//     let matchedPhone = null;
+
 //     const displayWanted = norm(display_number_onboarding || '');
 
 //     async function fetchPhonesOf(wabaId) {
@@ -1186,6 +1201,7 @@ async function getConfigFromDB(id) {
 //           (p) => norm(p.display_phone_number) === displayWanted
 //         );
 //         if (match) {
+//           matchedPhone = match; // ✅ aquí guardamos el match
 //           wabaPicked = waba;
 //           phoneNumberId = String(match.id);
 //           displayNumber = norm(match.display_phone_number);
@@ -1215,39 +1231,48 @@ async function getConfigFromDB(id) {
 //     const wabaId = String(wabaPicked.id);
 
 //     // ====== 4) Registrar el número (REGISTER) ======
+//     // ✅ REGLA: Si el número ya está CONNECTED (coexistencia), NO hacemos register y seguimos.
 //     const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
-//     console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
-//     try {
-//       await safePost(
-//         regUrl,
-//         { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-//         bearer(SYS_TOKEN)
-//       );
-//       console.log('[REGISTER][OK] con SYS_TOKEN');
-//     } catch (e1) {
+//     const matchedStatus = String(matchedPhone?.status || '').toUpperCase();
+
+//     if (matchedStatus === 'CONNECTED') {
 //       console.log(
-//         '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+//         '[REGISTER][SKIP] Número ya CONNECTED (coexistencia). No se ejecuta /register.'
 //       );
+//     } else {
+//       console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
 //       try {
 //         await safePost(
 //           regUrl,
 //           { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-//           bearer(clientToken)
+//           bearer(SYS_TOKEN)
 //         );
-//         console.log('[REGISTER][OK] con clientToken');
-//       } catch (e2) {
-//         const codeErr = e2?.response?.data?.error?.code;
-//         if (codeErr === 131070) {
-//           console.log('[REGISTER] ya estaba registrado (131070)');
-//         } else if (codeErr === 131071 || codeErr === 131047) {
+//         console.log('[REGISTER][OK] con SYS_TOKEN');
+//       } catch (e1) {
+//         console.log(
+//           '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+//         );
+//         try {
 //           await safePost(
 //             regUrl,
 //             { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
 //             bearer(clientToken)
 //           );
-//           console.log('[REGISTER][RETRY_OK] por estado intermedio');
-//         } else {
-//           throw e2;
+//           console.log('[REGISTER][OK] con clientToken');
+//         } catch (e2) {
+//           const codeErr = e2?.response?.data?.error?.code;
+//           if (codeErr === 131070) {
+//             console.log('[REGISTER] ya estaba registrado (131070)');
+//           } else if (codeErr === 131071 || codeErr === 131047) {
+//             await safePost(
+//               regUrl,
+//               { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
+//               bearer(clientToken)
+//             );
+//             console.log('[REGISTER][RETRY_OK] por estado intermedio');
+//           } else {
+//             throw e2;
+//           }
 //         }
 //       }
 //     }
@@ -1433,7 +1458,6 @@ async function getConfigFromDB(id) {
 //     });
 //   }
 // });
-
 router.post('/embeddedSignupComplete', async (req, res) => {
   const {
     code,
@@ -1628,8 +1652,6 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     let wabaPicked = null;
     let phoneNumberId = null;
     let displayNumber = null;
-
-    // ✅ NUEVO: guardamos el phone match para saber su status (CONNECTED/PENDING/etc.)
     let matchedPhone = null;
 
     const displayWanted = norm(display_number_onboarding || '');
@@ -1651,7 +1673,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           (p) => norm(p.display_phone_number) === displayWanted
         );
         if (match) {
-          matchedPhone = match; // ✅ aquí guardamos el match
+          matchedPhone = match;
           wabaPicked = waba;
           phoneNumberId = String(match.id);
           displayNumber = norm(match.display_phone_number);
@@ -1687,7 +1709,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     if (matchedStatus === 'CONNECTED') {
       console.log(
-        '[REGISTER][SKIP] Número ya CONNECTED (coexistencia). No se ejecuta /register.'
+        '[REGISTER][SKIP] Número ya CONNECTED. No se ejecuta /register.'
       );
     } else {
       console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
@@ -1838,8 +1860,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           replacements: [
             key_imporsuit,
             displayNumber,
-            phoneNumberId, // PHONE_NUMBER_ID
-            wabaId, // WABA_ID
+            phoneNumberId,
+            wabaId,
             permanentPartnerTok,
             webhook_url,
             idConfigToUse,
@@ -1871,10 +1893,18 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       console.log('[DB] INSERT configuraciones OK id=', idConfigToUse);
     }
 
+    // ✅ CAMBIO: UPSERT en vez de INSERT IGNORE
     await db.query(
-      `INSERT IGNORE INTO clientes_chat_center
-         (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO clientes_chat_center
+         (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE
+         uid_cliente     = VALUES(uid_cliente),
+         nombre_cliente  = VALUES(nombre_cliente),
+         celular_cliente = VALUES(celular_cliente),
+         propietario     = VALUES(propietario),
+         updated_at      = NOW(),
+         id             = LAST_INSERT_ID(id)`,
       {
         replacements: [
           idConfigToUse,
@@ -1885,7 +1915,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         ],
       }
     );
-    console.log('[DB] INSERT IGNORE clientes_chat_center OK');
+    console.log('[DB] UPSERT clientes_chat_center OK');
 
     return res.json({
       success: true,
