@@ -56,6 +56,10 @@ const {
 } = require('../utils/webhook_whatsapp/estadoMensajeEspera');
 
 const {
+  crearClienteConRoundRobinUnDepto,
+} = require('../utils/webhook_whatsapp/round_robin');
+
+const {
   enviarEscribiendoWhatsapp,
   detenerEscribiendoWhatsapp,
 } = require('../utils/webhook_whatsapp/funciones_typing');
@@ -504,7 +508,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             : null;
           break;
         }
-        
+
         default:
           texto_mensaje = 'Tipo de mensaje no reconocido.';
       }
@@ -536,17 +540,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           : {};
 
       if (!clienteExiste) {
-        cliente = await ClientesChatCenter.create({
+        const id_usuario_dueno = configuracion.id_usuario; // <- debe existir en configuraciones
+
+        const rr = await crearClienteConRoundRobinUnDepto({
           id_configuracion,
-          uid_cliente: business_phone_id,
+          business_phone_id,
           nombre_cliente,
           apellido_cliente,
-          celular_cliente: phone_whatsapp_from,
-
-          // ✅ solo si field === 'history'
-          ...metaClienteTimestamps,
+          phone_whatsapp_from,
+          metaClienteTimestamps,
+          id_usuario_dueno,
         });
 
+        cliente = rr.cliente;
         id_cliente = cliente.id;
       } else {
         //cliente ya existe
