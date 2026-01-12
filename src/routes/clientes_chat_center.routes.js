@@ -7,6 +7,8 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 
+const { uploadExcel } = require('../middlewares/uploadExcel');
+
 router.use(protect);
 
 // routes/clientes_chat_center.routes.js
@@ -90,6 +92,12 @@ router.get(
 router.get(
   '/total_clientes_ultimo_mes_todos',
   clientes_chat_centerController.totalClientesUltimoMesTodos
+);
+
+router.post(
+  '/importacion_masiva',
+  uploadExcel,
+  clientes_chat_centerController.importacionMasiva
 );
 
 module.exports = router;

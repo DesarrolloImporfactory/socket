@@ -1,3 +1,5 @@
+const XLSX = require('xlsx');
+
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -206,7 +208,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     // 2) UPSERT cliente propietario (evita duplicados y carreras)
     const upsertClienteSql = `
       INSERT INTO clientes_chat_center
-        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, celular_cliente, propietario, created_at, updated_at)
+        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
       ON DUPLICATE KEY UPDATE
         uid_cliente      = VALUES(uid_cliente),
@@ -1266,3 +1268,552 @@ exports.totalClientesUltimoMesTodos = async (req, res) => {
     });
   }
 };
+
+// ✅ Normaliza EXACTO a lógica de telefono_limpio:
+// - deja solo dígitos
+// - si ya viene 593 y >= 12, lo deja
+// - si no, toma últimos 9 y prefija 593
+function normalizePhone593(raw) {
+  const digits = String(raw || '')
+    .trim()
+    .replace(/[^\d]/g, '');
+  if (!digits) return '';
+
+  if (digits.startsWith('593') && digits.length >= 12) return digits;
+
+  const last9 = digits.slice(-9);
+  if (last9.length !== 9) return '';
+  return `593${last9}`;
+}
+
+function splitTags(rawTags) {
+  return String(rawTags || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function normalizeTagName(tag) {
+  return String(tag || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function pickDefaultColor() {
+  return '#0075FF';
+}
+
+function chunkArray(arr, size = 500) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function toBoolean(value, defaultVal = true) {
+  if (value === undefined || value === null || value === '') return defaultVal;
+  if (typeof value === 'boolean') return value;
+  const v = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(v)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(v)) return false;
+  return defaultVal;
+}
+
+// ✅ Parse XLSX buffer -> filas [{nombre, apellido, telefono, email, etiquetas}, ...]
+function parseXlsxBufferToFilas(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = wb.SheetNames?.[0];
+  if (!sheetName) return [];
+
+  const sheet = wb.Sheets[sheetName];
+  if (!sheet) return [];
+
+  // defval: '' evita undefined
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  // Normalizamos keys típicas sin obligar headers exactos
+  return rows
+    .map((r) => {
+      const telefono =
+        r.Telefono ||
+        r.telefono ||
+        r.Teléfono ||
+        r.Celular ||
+        r.celular ||
+        r.celular_cliente ||
+        r.telefono_cliente ||
+        '';
+
+      const nombre =
+        r.Nombre || r.nombre || r['Nombre'] || r.nombre_cliente || '';
+
+      const apellido =
+        r.Apellido || r.apellido || r['Apellido'] || r.apellido_cliente || '';
+
+      const email =
+        r.email || r.email || r.EMAIL || r['Email'] || r['Correo'] || '';
+
+      const etiquetas =
+        r.Etiquetas || r.etiquetas || r.Tags || r.tags || r['Etiquetas'] || '';
+
+      return {
+        telefono,
+        nombre,
+        apellido,
+        email,
+        etiquetas,
+      };
+    })
+    .filter((x) => {
+      // al menos uno de estos para considerar fila
+      return (
+        String(x.telefono || '').trim() ||
+        String(x.nombre || '').trim() ||
+        String(x.apellido || '').trim() ||
+        String(x.email || '').trim() ||
+        String(x.etiquetas || '').trim()
+      );
+    });
+}
+
+exports.importacionMasiva = catchAsync(async (req, res, next) => {
+  // multipart: viene como string
+  const id_configuracion = req.body.id_configuracion;
+  const actualizar_cache_etiquetas = toBoolean(
+    req.body.actualizar_cache_etiquetas,
+    true
+  );
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta id_configuracion', 400));
+  }
+
+  // ✅ 1) Tomar filas desde el XLSX
+  if (!req.file?.buffer) {
+    return next(
+      new AppError(
+        'Debe subir un archivo Excel (.xlsx) en el campo "archivoExcel".',
+        400
+      )
+    );
+  }
+
+  const filas = parseXlsxBufferToFilas(req.file.buffer);
+
+  if (!Array.isArray(filas) || filas.length === 0) {
+    return next(
+      new AppError('El Excel no contiene filas válidas o está vacío.', 400)
+    );
+  }
+
+  // ✅ 2) Su validación original (ahora ya tenemos filas)
+  // Necesitamos uid_cliente (id_telefono) para insertar clientes correctamente
+  const [configRow] = await db.query(
+    'SELECT id_telefono FROM configuraciones WHERE id = ? AND suspendido = 0 LIMIT 1',
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
+  if (!configRow) {
+    return next(
+      new AppError('No se encontró la configuración o está suspendida.', 400)
+    );
+  }
+
+  const uid_cliente_config = configRow.id_telefono || null;
+
+  // ========= 1) Normalizar y deduplicar por teléfono (por configuración) =========
+  const mapByPhone = new Map();
+  const errores = [];
+  let filas_validas = 0;
+
+  for (let i = 0; i < filas.length; i++) {
+    const row = filas[i] || {};
+
+    const tel = normalizePhone593(
+      row.telefono || row.celular_cliente || row.celular || ''
+    );
+
+    if (!tel) {
+      errores.push({ index: i, error: 'Teléfono vacío o inválido', row });
+      continue;
+    }
+
+    const nombre = String(row.nombre || row.nombre_cliente || '').trim();
+    const apellido = String(row.apellido || row.apellido_cliente || '').trim();
+
+    // ✅ email: su plantilla es "email"
+    const email = String(
+      row.email || row.email || row.email_cliente || ''
+    ).trim();
+
+    const tagsRaw = row.etiquetas || row.tags || '';
+    const tags = splitTags(tagsRaw).map(normalizeTagName).filter(Boolean);
+
+    if (!mapByPhone.has(tel)) {
+      mapByPhone.set(tel, {
+        phone: tel,
+        celular_cliente: tel,
+        nombre,
+        apellido,
+        email_cliente: email, // ✅ nuevo
+        tags: new Set(tags),
+      });
+    } else {
+      const existing = mapByPhone.get(tel);
+      if (!existing.nombre && nombre) existing.nombre = nombre;
+      if (!existing.apellido && apellido) existing.apellido = apellido;
+      if (!existing.email_cliente && email) existing.email_cliente = email; // ✅ merge email
+      tags.forEach((t) => existing.tags.add(t));
+    }
+
+    filas_validas++;
+  }
+
+  if (mapByPhone.size === 0) {
+    return res.status(200).json({
+      status: 'success',
+      message: 'No hubo filas válidas para procesar.',
+      filas_recibidas: filas.length,
+      filas_validas,
+      errores,
+    });
+  }
+
+  const MAX_UNICOS = 3000;
+  if (mapByPhone.size > MAX_UNICOS) {
+    return next(
+      new AppError(
+        `Importación demasiado grande: ${mapByPhone.size} teléfonos únicos. Máximo permitido: ${MAX_UNICOS}. Importa en lotes.`,
+        413
+      )
+    );
+  }
+
+  // ========= 2) Transacción: clientes + etiquetas + asignaciones =========
+  const resultado = await db.transaction(async (t) => {
+    // ---- 2.1 Upsert masivo de clientes_chat_center (✅ incluye email_cliente)
+    // ⚠️ NO incluimos telefono_limpio porque es GENERATED ALWAYS
+    const clientesArray = Array.from(mapByPhone.values());
+    const clientChunks = chunkArray(clientesArray, 300);
+
+    let clientes_upsert_intentos = 0;
+
+    for (const chunk of clientChunks) {
+      // ✅ 7 placeholders ahora
+      const valuesSql = chunk
+        .map(() => '(?,?,?,?,?,?,?,NOW(),NOW())')
+        .join(',');
+
+      const params = [];
+      chunk.forEach((c) => {
+        params.push(
+          id_configuracion,
+          uid_cliente_config,
+          c.nombre || '',
+          c.apellido || '',
+          c.email_cliente || '', // ✅ nuevo
+          c.celular_cliente || '',
+          0 // propietario
+        );
+      });
+
+      const upsertSql = `
+        INSERT INTO clientes_chat_center
+          (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
+        VALUES ${valuesSql}
+        ON DUPLICATE KEY UPDATE
+          uid_cliente      = COALESCE(VALUES(uid_cliente), uid_cliente),
+          nombre_cliente   = COALESCE(NULLIF(VALUES(nombre_cliente), ''), nombre_cliente),
+          apellido_cliente = COALESCE(NULLIF(VALUES(apellido_cliente), ''), apellido_cliente),
+          email_cliente    = COALESCE(NULLIF(VALUES(email_cliente), ''), email_cliente),
+          celular_cliente  = COALESCE(NULLIF(VALUES(celular_cliente), ''), celular_cliente),
+          updated_at       = NOW()
+      `;
+
+      await db.query(upsertSql, {
+        replacements: params,
+        type: db.QueryTypes.INSERT,
+        transaction: t,
+      });
+
+      clientes_upsert_intentos += chunk.length;
+    }
+
+    // ---- 2.2 Obtener IDs de clientes por teléfono_limpio (mapeo phone -> id)
+    const phones = clientesArray.map((c) => c.phone);
+    const phoneChunks = chunkArray(phones, 800);
+
+    const clientIdByPhone = new Map();
+    for (const pchunk of phoneChunks) {
+      const placeholders = pchunk.map(() => '?').join(',');
+      const selectSql = `
+        SELECT id, telefono_limpio
+        FROM clientes_chat_center
+        WHERE id_configuracion = ?
+          AND telefono_limpio IN (${placeholders})
+      `;
+      const rows = await db.query(selectSql, {
+        replacements: [id_configuracion, ...pchunk],
+        type: db.QueryTypes.SELECT,
+        transaction: t,
+      });
+
+      rows.forEach((r) => clientIdByPhone.set(String(r.telefono_limpio), r.id));
+    }
+
+    // ---- 2.3 Crear/Upsert etiquetas por configuración (UNIQUE: id_configuracion + nombre_etiqueta)
+    const allTagsSet = new Set();
+    clientesArray.forEach((c) => {
+      c.tags.forEach((tg) => allTagsSet.add(normalizeTagName(tg)));
+    });
+
+    const allTags = Array.from(allTagsSet).filter(Boolean);
+    const tagIdByName = new Map();
+
+    if (allTags.length > 0) {
+      const tagChunks = chunkArray(allTags, 400);
+
+      for (const tgChunk of tagChunks) {
+        const valuesSql = tgChunk.map(() => '(?,?,?,NOW(),NOW())').join(',');
+        const params = [];
+        tgChunk.forEach((tg) => {
+          params.push(id_configuracion, tg, pickDefaultColor());
+        });
+
+        const upsertTagsSql = `
+          INSERT INTO etiquetas_chat_center
+            (id_configuracion, nombre_etiqueta, color_etiqueta, created_at, updated_at)
+          VALUES ${valuesSql}
+          ON DUPLICATE KEY UPDATE
+            updated_at = NOW()
+        `;
+
+        await db.query(upsertTagsSql, {
+          replacements: params,
+          type: db.QueryTypes.INSERT,
+          transaction: t,
+        });
+      }
+
+      // Mapear ids de etiquetas
+      const tagSelectChunks = chunkArray(allTags, 800);
+      for (const tgSel of tagSelectChunks) {
+        const placeholders = tgSel.map(() => '?').join(',');
+        const selSql = `
+          SELECT id_etiqueta, nombre_etiqueta
+          FROM etiquetas_chat_center
+          WHERE id_configuracion = ?
+            AND nombre_etiqueta IN (${placeholders})
+        `;
+        const rows = await db.query(selSql, {
+          replacements: [id_configuracion, ...tgSel],
+          type: db.QueryTypes.SELECT,
+          transaction: t,
+        });
+
+        rows.forEach((r) =>
+          tagIdByName.set(String(r.nombre_etiqueta), r.id_etiqueta)
+        );
+      }
+    }
+
+    // ✅ ---- 2.4-bis SINCRONIZAR etiquetas (quitar las que ya no vienen)
+    // desiredTagIdsByClient: clientId -> Set(tagId) (estado final según el Excel)
+    const desiredTagIdsByClient = new Map();
+
+    clientesArray.forEach((c) => {
+      const clientId = clientIdByPhone.get(String(c.phone));
+      if (!clientId) return;
+
+      const set = new Set();
+      c.tags.forEach((tg) => {
+        const tagId = tagIdByName.get(normalizeTagName(tg));
+        if (tagId) set.add(tagId);
+      });
+
+      desiredTagIdsByClient.set(clientId, set);
+    });
+
+    const affectedClientIdsForSync = Array.from(desiredTagIdsByClient.keys());
+    const affectedChunks = chunkArray(affectedClientIdsForSync, 300);
+
+    for (const idChunk of affectedChunks) {
+      const placeholders = idChunk.map(() => '?').join(',');
+
+      const currentRows = await db.query(
+        `
+        SELECT id_cliente_chat_center AS clientId, id_etiqueta AS tagId
+        FROM etiquetas_asignadas
+        WHERE id_configuracion = ?
+          AND id_cliente_chat_center IN (${placeholders})
+        `,
+        {
+          replacements: [id_configuracion, ...idChunk],
+          type: db.QueryTypes.SELECT,
+          transaction: t,
+        }
+      );
+
+      const toDelete = [];
+      currentRows.forEach((r) => {
+        const desiredSet = desiredTagIdsByClient.get(r.clientId) || new Set();
+        if (!desiredSet.has(r.tagId)) {
+          toDelete.push({ clientId: r.clientId, tagId: r.tagId });
+        }
+      });
+
+      if (toDelete.length) {
+        const delValues = toDelete.map(() => '(?,?)').join(',');
+        const delParams = [];
+        toDelete.forEach((x) => delParams.push(x.clientId, x.tagId));
+
+        await db.query(
+          `
+          DELETE FROM etiquetas_asignadas
+          WHERE id_configuracion = ?
+            AND (id_cliente_chat_center, id_etiqueta) IN (${delValues})
+          `,
+          {
+            replacements: [id_configuracion, ...delParams],
+            type: db.QueryTypes.DELETE,
+            transaction: t,
+          }
+        );
+      }
+    }
+
+    // ---- 2.5 Insertar asignaciones deseadas (UNIQUE: id_cliente_chat_center + id_etiqueta)
+    // Pares únicos para evitar inserts repetidos
+    const pairs = [];
+    const pairKey = new Set();
+
+    clientesArray.forEach((c) => {
+      const clientId = clientIdByPhone.get(String(c.phone));
+      if (!clientId) return;
+
+      c.tags.forEach((tg) => {
+        const tagId = tagIdByName.get(normalizeTagName(tg));
+        if (!tagId) return;
+
+        const key = `${clientId}-${tagId}`;
+        if (pairKey.has(key)) return;
+        pairKey.add(key);
+
+        pairs.push({ clientId, tagId });
+      });
+    });
+
+    const pairChunks = chunkArray(pairs, 800);
+    let asignaciones_intentos = 0;
+
+    for (const pchunk of pairChunks) {
+      const valuesSql = pchunk.map(() => '(?,?,?,NOW(),NOW())').join(',');
+      const params = [];
+
+      pchunk.forEach((p) => {
+        params.push(p.tagId, p.clientId, id_configuracion);
+      });
+
+      const insertAsigSql = `
+        INSERT INTO etiquetas_asignadas
+          (id_etiqueta, id_cliente_chat_center, id_configuracion, created_at, updated_at)
+        VALUES ${valuesSql}
+        ON DUPLICATE KEY UPDATE
+          updated_at = NOW(),
+          id_configuracion = VALUES(id_configuracion)
+      `;
+
+      await db.query(insertAsigSql, {
+        replacements: params,
+        type: db.QueryTypes.INSERT,
+        transaction: t,
+      });
+
+      asignaciones_intentos += pchunk.length;
+    }
+
+    // ---- 2.6 (Opcional) Actualizar cache JSON clientes_chat_center.etiquetas
+    if (actualizar_cache_etiquetas) {
+      // ✅ Clientes afectados: usamos los que vienen en el archivo (no solo pairs)
+      const affectedClientIds = affectedClientIdsForSync;
+
+      const clientIdChunks = chunkArray(affectedClientIds, 300);
+
+      for (const idChunk of clientIdChunks) {
+        const placeholders = idChunk.map(() => '?').join(',');
+
+        const rows = await db.query(
+          `
+          SELECT
+            ea.id_cliente_chat_center AS id_cliente,
+            ec.id_etiqueta,
+            ec.nombre_etiqueta,
+            ec.color_etiqueta
+          FROM etiquetas_asignadas ea
+          INNER JOIN etiquetas_chat_center ec
+            ON ec.id_etiqueta = ea.id_etiqueta
+           AND ec.id_configuracion = ea.id_configuracion
+          WHERE ea.id_configuracion = ?
+            AND ea.id_cliente_chat_center IN (${placeholders})
+          ORDER BY ea.id_cliente_chat_center, ec.id_etiqueta
+        `,
+          {
+            replacements: [id_configuracion, ...idChunk],
+            type: db.QueryTypes.SELECT,
+            transaction: t,
+          }
+        );
+
+        const map = new Map();
+        rows.forEach((r) => {
+          const cid = r.id_cliente;
+          if (!map.has(cid)) map.set(cid, []);
+          map.get(cid).push({
+            id: r.id_etiqueta,
+            color: r.color_etiqueta,
+            nombre: r.nombre_etiqueta,
+          });
+        });
+
+        for (const cid of idChunk) {
+          // ✅ si no tiene etiquetas, guardamos []
+          const lista = map.get(cid) || [];
+
+          await db.query(
+            `
+            UPDATE clientes_chat_center
+            SET etiquetas = ?, updated_at = NOW()
+            WHERE id = ? AND id_configuracion = ?
+          `,
+            {
+              replacements: [JSON.stringify(lista), cid, id_configuracion],
+              type: db.QueryTypes.UPDATE,
+              transaction: t,
+            }
+          );
+        }
+      }
+    }
+
+    return {
+      clientes_procesados: clientesArray.length,
+      clientes_upsert_intentos,
+      etiquetas_unicas: allTags.length,
+      asignaciones_unicas: pairs.length,
+      asignaciones_intentos,
+    };
+  });
+
+  return res.status(200).json({
+    status: 'success',
+    message: 'Importación masiva ejecutada correctamente.',
+    resumen: resultado,
+    filas_recibidas: filas.length,
+    filas_validas,
+    telefonos_unicos: mapByPhone.size,
+    errores,
+  });
+});
