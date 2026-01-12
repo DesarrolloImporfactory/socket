@@ -27,6 +27,7 @@ const generarToken = async (id_sub_usuario) => {
     id_plan: usuario.id_plan,
     rol: subUsuario.rol,
     nombre_encargado: subUsuario.nombre_encargado,
+    activar_cotizacion: subUsuario.activar_cotizacion,
     estado: usuario.estado,
     email_propietario: usuario.email_propietario,
     id_costumer: usuario.id_costumer,

@@ -40,6 +40,11 @@ const Sub_usuarios_chat_center = db.define(
       type: DataTypes.STRING,
       allowNull: false,
     },
+    activar_cotizacion: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
   },
   {
     sequelize: db,
