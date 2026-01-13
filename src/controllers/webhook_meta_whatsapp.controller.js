@@ -203,18 +203,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           if (!existe) {
             // crear con nombre (si viene) y fecha del state sync (opcional)
-            await ClientesChatCenter.create({
+            const rr = await crearClienteConRoundRobinUnDepto({
               id_configuracion,
-              uid_cliente: business_phone_id,
+              business_phone_id,
               nombre_cliente: fullName || '',
               apellido_cliente: '',
-              celular_cliente: phone,
-
-              ...(fullName ? {} : {}), // aquí no pasa nada, solo placeholder
-              // si su modelo mapea timestamps:
-              ...(tsMs
-                ? { createdAt: fechaContacto, updatedAt: fechaContacto }
-                : {}),
+              phone_whatsapp_from: phone,
+              id_usuario_dueno: configuracion.id_usuario,
+              motivo: 'auto_round_robin_state_sync',
+              metaClienteTimestamps: tsMs
+                ? { created_at: fechaContacto, updated_at: fechaContacto }
+                : {},
             });
           } else {
             // si existe y NO tiene nombre, actualícelo
