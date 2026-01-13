@@ -1239,23 +1239,6 @@ exports.totalClientesUltimoMesTodos = async (req, res) => {
   }
 };
 
-// ✅ Normaliza EXACTO a lógica de telefono_limpio:
-// - deja solo dígitos
-// - si ya viene 593 y >= 12, lo deja
-// - si no, toma últimos 9 y prefija 593
-function normalizePhone593(raw) {
-  const digits = String(raw || '')
-    .trim()
-    .replace(/[^\d]/g, '');
-  if (!digits) return '';
-
-  if (digits.startsWith('593') && digits.length >= 12) return digits;
-
-  const last9 = digits.slice(-9);
-  if (last9.length !== 9) return '';
-  return `593${last9}`;
-}
-
 function splitTags(rawTags) {
   return String(rawTags || '')
     .split(',')
@@ -1402,9 +1385,9 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
   for (let i = 0; i < filas.length; i++) {
     const row = filas[i] || {};
 
-    const tel = normalizePhone593(
+    const tel = String(
       row.telefono || row.celular_cliente || row.celular || ''
-    );
+    ).trim();
 
     if (!tel) {
       errores.push({ index: i, error: 'Teléfono vacío o inválido', row });
@@ -1520,10 +1503,10 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     for (const pchunk of phoneChunks) {
       const placeholders = pchunk.map(() => '?').join(',');
       const selectSql = `
-        SELECT id, telefono_limpio
+        SELECT id, celular_cliente
         FROM clientes_chat_center
         WHERE id_configuracion = ?
-          AND telefono_limpio IN (${placeholders})
+          AND celular_cliente IN (${placeholders})
       `;
       const rows = await db.query(selectSql, {
         replacements: [id_configuracion, ...pchunk],
@@ -1531,7 +1514,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         transaction: t,
       });
 
-      rows.forEach((r) => clientIdByPhone.set(String(r.telefono_limpio), r.id));
+      rows.forEach((r) => clientIdByPhone.set(String(r.celular_cliente), r.id));
     }
 
     // ---- 2.3 Crear/Upsert etiquetas por configuración (UNIQUE: id_configuracion + nombre_etiqueta)
