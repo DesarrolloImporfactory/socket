@@ -79,6 +79,8 @@ const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
 
 const droppiIntegrationsRouter = require('./routes/dropi_integrations.routes');
 
+const cotizacionesRouter = require('./routes/cotizaciones.routes');
+
 const path = require('path');
 
 const app = express();
@@ -290,6 +292,7 @@ app.use('/api/v1/instagram', instagramRouter);
 app.use('/api/v1/stripepro', stripeproRouter);
 app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
+app.use("/api/v1/cotizaciones", cotizacionesRouter);
 
 app.all('*', (req, res, next) => {
   return next(
