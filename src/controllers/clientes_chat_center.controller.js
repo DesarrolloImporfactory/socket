@@ -631,51 +631,38 @@ exports.ultimo_mensaje = catchAsync(async (req, res, next) => {
    ============================================================ */
 exports.listarClientes = catchAsync(async (req, res, next) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
-  const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 25)));
+
+  // ✅ Suba el máximo según lo que necesite
+  const MAX_LIMIT = 2000;
+  const limit = Math.max(1, Math.min(MAX_LIMIT, Number(req.query.limit ?? 25)));
   const offset = (page - 1) * limit;
-  const id_configuracion = req.query.id_configuracion ?? '';
 
-  const subUsuarioSession = req.sessionUser;
-  if (!subUsuarioSession) {
-    return res.status(401).json({
+  const id_configuracion = Number(req.query.id_configuracion ?? 0);
+  if (!id_configuracion) {
+    return res.status(400).json({
       status: 'fail',
-      message: 'No estás autenticado como subusuario',
-    });
-  }
-
-  const id_usuario_session = subUsuarioSession.id_usuario;
-
-  let validar_permiso_usuario = await Configuraciones.findOne({
-    where: {
-      id_usuario: id_usuario_session,
-      id: id_configuracion,
-      suspendido: 0,
-    },
-  });
-
-  if (!validar_permiso_usuario) {
-    return res.status(401).json({
-      status: 'fail',
-      message:
-        'Tu usuario no tiene permiso para acceder a los usuarios de esa configuracion',
+      message: 'id_configuracion es requerido',
     });
   }
 
   const { q, id_etiqueta } = req.query;
   const estadoParsed = parseEstado(req.query.estado);
-  const orderBy = parseSort(req.query.sort);
+  const orderBy = parseSort(req.query.sort); // ✅ Asegúrese que sea whitelist
 
-  const whereParts = ['deleted_at IS NULL'];
-  const params = [];
+  // ✅ Siempre incluya id_configuracion dentro del WHERE con replacements
+  const whereParts = ['deleted_at IS NULL', 'id_configuracion = ?'];
+  const params = [id_configuracion];
 
   if (estadoParsed !== null) {
     whereParts.push('estado_cliente = ?');
     params.push(estadoParsed);
   }
+
   if (id_etiqueta) {
     whereParts.push('id_etiqueta = ?');
-    params.push(id_etiqueta);
+    params.push(Number(id_etiqueta));
   }
+
   if (q && q.trim()) {
     const like = `%${q.trim()}%`;
     whereParts.push(`(
@@ -683,55 +670,38 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
       apellido_cliente LIKE ? OR
       email_cliente    LIKE ? OR
       celular_cliente  LIKE ? OR
-      telefono_limpio  LIKE ? OR
-      uid_cliente      LIKE ?
+      telefono_limpio  LIKE ? 
     )`);
-    params.push(like, like, like, like, like, like);
+    params.push(like, like, like, like, like);
   }
 
-  const whereClause = whereParts.length
-    ? `WHERE ${whereParts.join(' AND ')}`
-    : '';
+  const whereClause = `WHERE ${whereParts.join(' AND ')}`;
 
-  // Datos
   const dataSql = `
     SELECT
-      id, id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
+      id, id_configuracion, id_etiqueta, uid_cliente,
       nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
-      imagePath, mensajes_por_dia_cliente, estado_cliente,
-      created_at, updated_at, deleted_at,
-      chat_cerrado, bot_openia, id_departamento, id_encargado,
-      pedido_confirmado, telefono_limpio, direccion, productos,
-      -- Aquí es donde agregamos la lógica para determinar el valor de "aprobado"
-    CASE 
-        WHEN EXISTS (
-            SELECT 1 
-            FROM mensajes_clientes m
-            WHERE m.celular_recibe = clientes_chat_center.id
-              AND m.rol_mensaje = 0
-        ) THEN 1
-        ELSE 0
-    END AS aprobado
+      estado_cliente,
+      created_at, updated_at,
+      chat_cerrado, telefono_limpio, direccion
+
     FROM clientes_chat_center
     ${whereClause}
-    AND id_configuracion = ${id_configuracion}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
   `;
-  const dataParams = [...params, limit, offset];
 
-  // Total
   const countSql = `
     SELECT COUNT(*) AS total
     FROM clientes_chat_center
-    ${whereClause}
-    AND id_configuracion = ${id_configuracion};
+    ${whereClause};
   `;
 
   const rows = await db.query(dataSql, {
-    replacements: dataParams,
+    replacements: [...params, limit, offset],
     type: db.QueryTypes.SELECT,
   });
+
   const [{ total }] = await db.query(countSql, {
     replacements: params,
     type: db.QueryTypes.SELECT,
