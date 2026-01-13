@@ -25,7 +25,13 @@ class ChatService {
     id_configuracion,
     id_sub_usuario,
     rol,
-    { cursorFecha = null, cursorId = null, limit = 10, filtros = {} }
+    {
+      cursorFecha = null,
+      cursorId = null,
+      limit = 10,
+      filtros = {},
+      scopeChats = 'mine',
+    }
   ) {
     try {
       console.log('Filtros:', filtros);
@@ -47,8 +53,18 @@ class ChatService {
 
       if (rol == 'administrador') {
         whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+
+        if (scopeChats != 'mine') {
+          whereClause += ` AND id_encargado IS NULL`;
+        }
       } else {
-        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+
+        if (scopeChats == 'mine') {
+          whereClause += ` AND id_encargado = :id_sub_usuario `;
+        } else {
+          whereClause += ` AND id_encargado IS NULL`;
+        }
       }
 
       if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
@@ -209,7 +225,9 @@ class ChatService {
 
       // Solo agregar id_sub_usuario si el rol no es 'administrador'
       if (rol !== 'administrador') {
-        replacements.id_sub_usuario = id_sub_usuario;
+        if (scopeChats == 'mine') {
+          replacements.id_sub_usuario = id_sub_usuario;
+        }
       }
 
       // Construir e imprimir la SQL final con valores reales (solo para debug)

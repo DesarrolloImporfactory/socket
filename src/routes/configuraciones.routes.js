@@ -41,7 +41,7 @@ router.post(
 router.post(
   '/listar_conexiones',
   checkPlanActivo,
-  limiteConversaciones,
+  /* limiteConversaciones, */
   configuracionesController.listarConexiones
 );
 

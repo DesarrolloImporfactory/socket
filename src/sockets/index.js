@@ -35,17 +35,23 @@ class Sockets {
           id_configuracion,
           id_sub_usuario,
           rol,
-          { cursorFecha, cursorId, limit = 10, filtros = {} }
+          { cursorFecha, cursorId, limit = 10, filtros = {}, scopeChats }
         ) => {
           try {
             const chatService = new ChatService();
 
-            const chats = await chatService.findChats(id_configuracion, id_sub_usuario, rol, {
-              cursorFecha,
-              cursorId,
-              limit,
-              filtros
-            });
+            const chats = await chatService.findChats(
+              id_configuracion,
+              id_sub_usuario,
+              rol,
+              {
+                cursorFecha,
+                cursorId,
+                limit,
+                filtros,
+                scopeChats,
+              }
+            );
 
             socket.emit('CHATS', chats);
           } catch (error) {
@@ -58,7 +64,10 @@ class Sockets {
       socket.on('GET_CHATS_BOX', async ({ chatId, id_configuracion }) => {
         try {
           const chatService = new ChatService();
-          const chat = await chatService.getChatsByClient(chatId, id_configuracion);
+          const chat = await chatService.getChatsByClient(
+            chatId,
+            id_configuracion
+          );
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
         } catch (error) {
@@ -100,7 +109,10 @@ class Sockets {
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_ADMIN_RESPONSE', data);
         } catch (error) {
-          console.error('Error al obtener los datos del admin GET_DATA_ADMIN:', error.message);
+          console.error(
+            'Error al obtener los datos del admin GET_DATA_ADMIN:',
+            error.message
+          );
 
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
@@ -119,7 +131,10 @@ class Sockets {
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_CELLPHONE_RESPONSE', data);
         } catch (error) {
-          console.error('Error al obtener los datos del admin GET_CELLPHONES:', error.message);
+          console.error(
+            'Error al obtener los datos del admin GET_CELLPHONES:',
+            error.message
+          );
 
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
@@ -173,7 +188,10 @@ class Sockets {
             // Enviar los datos al cliente que hizo la solicitud
             socket.emit('DATA_TARIFAS_RESPONSE', data);
           } catch (error) {
-            console.error('Error al obtener los datos DATA_TARIFAS_RESPONSE:', error.message);
+            console.error(
+              'Error al obtener los datos DATA_TARIFAS_RESPONSE:',
+              error.message
+            );
 
             // Enviar mensaje de error al cliente en caso de fallo
             socket.emit('ERROR_RESPONSE', {
@@ -196,7 +214,10 @@ class Sockets {
           socket.emit('DATA_FACTURA_RESPONSE', data);
           socket.emit('DATA_NOVEDADES', dataNovedades);
         } catch (error) {
-          console.error('Error al obtener los datos del admin DATA_NOVEDADES:', error.message);
+          console.error(
+            'Error al obtener los datos del admin DATA_NOVEDADES:',
+            error.message
+          );
 
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
@@ -214,7 +235,10 @@ class Sockets {
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_PROVINCIAS_RESPONSE', data);
         } catch (error) {
-          console.error('Error al obtener los datos del admin DATA_PROVINCIAS_RESPONSE:', error.message);
+          console.error(
+            'Error al obtener los datos del admin DATA_PROVINCIAS_RESPONSE:',
+            error.message
+          );
 
           // Enviar mensaje de error al cliente en caso de fallo
           socket.emit('ERROR_RESPONSE', {
@@ -232,7 +256,10 @@ class Sockets {
           // Enviar los datos al cliente que hizo la solicitud
           socket.emit('DATA_CIUDADES_RESPONSE', data);
         } catch (error) {
-          console.error('Error al obtener los datos del admin DATA_CIUDADES_RESPONSE:', error.message);
+          console.error(
+            'Error al obtener los datos del admin DATA_CIUDADES_RESPONSE:',
+            error.message
+          );
         }
       });
 
