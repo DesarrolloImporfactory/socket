@@ -25,6 +25,7 @@ const TikTokWebhookEvent = require('./tiktok_webhook_event.model');
 const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model');
 const TikTokNotification = require('./tiktok_notification.model');
 const TikTokWebhookLog = require('./tiktok_webhook_log.model');
+const DropiIntegrations = require('./dropi_integrations.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -290,6 +291,19 @@ const initModel = () => {
     targetKey: 'id_oauth_session',
     as: 'oauth_session',
   });
+
+  //Configuraciones -> DropiIntegrations
+  Configuraciones.hasOne(DropiIntegrations, {
+    foreignKey: 'id_configuracion',
+    sourceKey: 'id',
+    as: 'dropi_integration',
+  });
+
+  DropiIntegrations.belongsTo(Configuraciones, {
+    foreignKey: 'id_configuracion',
+    targetKey: 'id',
+    as: 'configuracion',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -297,6 +311,7 @@ const getModels = () => {
   return {
     User,
     Plataforma,
+    Configuraciones,
     UsuarioPlataforma,
     ClientesChatCenter,
     MensajesClientes,
@@ -321,6 +336,7 @@ const getModels = () => {
     TikTokWebhookSubscription,
     TikTokNotification,
     TikTokWebhookLog,
+    DropiIntegrations,
   };
 };
 
