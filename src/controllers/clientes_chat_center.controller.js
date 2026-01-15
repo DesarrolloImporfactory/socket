@@ -209,7 +209,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     const upsertClienteSql = `
       INSERT INTO clientes_chat_center
         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       ON DUPLICATE KEY UPDATE
         uid_cliente      = VALUES(uid_cliente),
         nombre_cliente   = VALUES(nombre_cliente),
@@ -226,6 +226,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
         uid_cliente,
         nombre_cliente,
         apellido_cliente,
+        "",
         telefono_configuracion,
         1,
       ],

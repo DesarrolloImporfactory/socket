@@ -7,8 +7,14 @@ const DepartamentosChatCenter = require('../models/departamentos_chat_center.mod
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const Historial_encargados = require('../models/historial_encargados.model');
+const HistorialEncargadosFacebook = require('../models/historial_encargados_messenger.model');
+
 const MessengerConversation = require('../models/messenger_conversations.model');
+const MessengerMessage = require('../models/messenger_messages.model');
 const InstagramConversation = require('../models/instagram_conversations.model');
+const InstagramMessage = require('../models/instagram_messages.model');
+const HistorialEncargadosInstagram = require('../models/historial_encargados_instagram.model');
+
 const Configuraciones = require('../models/configuraciones.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 
@@ -69,7 +75,7 @@ exports.listar_por_usuario = catchAsync(async (req, res, next) => {
   const { id_sub_usuario } = req.body;
 
   const departamentos = await db.query(
-    'SELECT dcc.id_departamento, dcc.nombre_departamento, dcc.color FROM departamentos_chat_center dcc INNER JOIN sub_usuarios_departamento sud ON dcc.id_departamento = sud.id_departamento WHERE sud.id_sub_usuario = ?;',
+    'SELECT dcc.id_departamento, dcc.nombre_departamento, dcc.color, dcc.id_configuracion FROM departamentos_chat_center dcc INNER JOIN sub_usuarios_departamento sud ON dcc.id_departamento = sud.id_departamento WHERE sud.id_sub_usuario = ?;',
     {
       replacements: [id_sub_usuario],
       type: db.QueryTypes.SELECT,
@@ -257,7 +263,6 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     id_departamento,
     id_cliente_chat_center, // para WhatsApp
     motivo,
-    id_conversation, // para Messenger/Instagram
     id_configuracion,
     emisor,
   } = req.body;
@@ -271,33 +276,156 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
   switch (source) {
     case 'ms': {
-      if (!id_conversation) {
+      if (!id_cliente_chat_center) {
         return res.status(400).json({
           status: 'fail',
           message: 'Falta id_conversation para Messenger',
         });
       }
+
+      const conversacionActual = await MessengerConversation.findOne({
+        where: { id: id_cliente_chat_center },
+      });
+
+      if (!conversacionActual) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'Conversación no encontrada',
+        });
+      }
+
+      // 2) Guardar encargado anterior
+      const id_encargado_anterior = conversacionActual.id_encargado;
+
+      // 3) Historial
+      await HistorialEncargadosFacebook.create({
+        id_messenger_conversation: id_cliente_chat_center,
+        id_departamento_asginado: id_departamento ?? null,
+        id_encargado_anterior: id_encargado_anterior ?? null,
+        id_encargado_nuevo: id_encargado,
+        motivo: motivo ?? null,
+      });
+
+      // 4) Actualizar conversación
       await MessengerConversation.update(
         { id_encargado: id_encargado, id_departamento: id_departamento },
         {
-          where: { id: id_conversation },
+          where: { id: id_cliente_chat_center },
         }
       );
+
+      // 5) Crear messenger_messages (notificación)
+      await MessengerMessage.create({
+        conversation_id: conversacionActual.id,
+        id_configuracion: conversacionActual.id_configuracion,
+        page_id: conversacionActual.page_id,
+        psid: conversacionActual.psid,
+
+        direction: 'out',
+        mid: null,
+        text: `${emisor || 'Sistema'} te transfirió este chat. Motivo: ${
+          motivo || 'No especificado'
+        }`,
+        attachments: null,
+        postback_payload: null,
+        quick_reply_payload: null,
+        sticker_id: null,
+
+        status: 'notification',
+
+        meta: {
+          system_notification: true,
+          type: 'transfer',
+          from_id_encargado: id_encargado_anterior ?? null,
+          to_id_encargado: id_encargado ?? null,
+          id_departamento: id_departamento ?? null,
+          emisor: emisor ?? null,
+          motivo: motivo ?? null,
+        },
+
+        // si quiere registrar quién ejecutó la transferencia (humano):
+        // id_encargado: id_encargado,
+        id_encargado: null,
+      });
+
       break;
     }
     case 'ig': {
-      if (!id_conversation) {
+      if (!id_cliente_chat_center) {
         return res.status(400).json({
           status: 'fail',
           message: 'Falta id_conversation para Instagram',
         });
       }
+
+      const conversacionActual = await InstagramConversation.findOne({
+        where: { id: id_cliente_chat_center },
+      });
+
+      if (!conversacionActual) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'Conversación no encontrada',
+        });
+      }
+
+      // 2) Guardar encargado anterior
+      const id_encargado_anterior = conversacionActual.id_encargado;
+
+      // 3) Historial
+      await HistorialEncargadosInstagram.create({
+        id_instagram_conversation: id_cliente_chat_center,
+        id_departamento_asginado: id_departamento ?? null,
+        id_encargado_anterior: id_encargado_anterior ?? null,
+        id_encargado_nuevo: id_encargado,
+        motivo: motivo ?? null,
+      });
+
+      // 4) Actualizar conversación
       await InstagramConversation.update(
         { id_encargado: id_encargado, id_departamento: id_departamento },
-        {
-          where: { id: id_conversation },
-        }
+        { where: { id: id_cliente_chat_center } }
       );
+
+      // 5) Crear instagram_messages (notificación)
+      await InstagramMessage.create({
+        conversation_id: conversacionActual.id,
+        id_configuracion: conversacionActual.id_configuracion,
+        page_id: conversacionActual.page_id,
+        igsid: conversacionActual.igsid,
+
+        direction: 'out',
+        mid: null,
+        text: `${emisor || 'Sistema'} te transfirió este chat. Motivo: ${
+          motivo || 'No especificado'
+        }`,
+
+        // En su modelo es TEXT('long'), puede ir null o string
+        attachments: null,
+
+        status: 'notification',
+
+        delivery_watermark: null,
+        read_watermark: null,
+        error_code: null,
+        error_subcode: null,
+        error_message: null,
+
+        // En su modelo meta es TEXT('long'), así que guárdelo como string JSON
+        meta: JSON.stringify({
+          system_notification: true,
+          type: 'transfer',
+          from_id_encargado: id_encargado_anterior ?? null,
+          to_id_encargado: id_encargado ?? null,
+          id_departamento: id_departamento ?? null,
+          emisor: emisor ?? null,
+          motivo: motivo ?? null,
+        }),
+
+        id_encargado: null,
+        is_unsupported: 0,
+      });
+
       break;
     }
     // WhatsApp por defecto (o 'wa')

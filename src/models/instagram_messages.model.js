@@ -1,8 +1,8 @@
 const { DataTypes } = require('sequelize');
 const { db } = require('../database/config');
 
-const MessengerMessage = db.define(
-  'messenger_messages',
+const InstagramMessage = db.define(
+  'instagram_messages',
   {
     id: {
       type: DataTypes.BIGINT.UNSIGNED,
@@ -26,7 +26,7 @@ const MessengerMessage = db.define(
       allowNull: false,
     },
 
-    psid: {
+    igsid: {
       type: DataTypes.STRING(32),
       allowNull: false,
     },
@@ -37,7 +37,7 @@ const MessengerMessage = db.define(
     },
 
     mid: {
-      type: DataTypes.STRING(100),
+      type: DataTypes.STRING(250),
       allowNull: true,
       defaultValue: null,
     },
@@ -48,31 +48,15 @@ const MessengerMessage = db.define(
       defaultValue: null,
     },
 
+    // En BD: longtext con collation utf8mb4_bin (normalmente es JSON/string)
     attachments: {
-      type: DataTypes.JSON,
-      allowNull: true,
-      defaultValue: null,
-    },
-
-    postback_payload: {
-      type: DataTypes.TEXT,
-      allowNull: true,
-      defaultValue: null,
-    },
-
-    quick_reply_payload: {
-      type: DataTypes.TEXT,
-      allowNull: true,
-      defaultValue: null,
-    },
-
-    sticker_id: {
-      type: DataTypes.STRING(64),
+      type: DataTypes.TEXT('long'),
       allowNull: true,
       defaultValue: null,
     },
 
     status: {
+      // Ajusta EXACTO a tu enum en MySQL si difiere
       type: DataTypes.ENUM(
         'received',
         'queued',
@@ -80,7 +64,7 @@ const MessengerMessage = db.define(
         'delivered',
         'read',
         'failed',
-        'notification'
+        'notification',
       ),
       allowNull: false,
     },
@@ -115,8 +99,9 @@ const MessengerMessage = db.define(
       defaultValue: null,
     },
 
+    // En BD: longtext utf8mb4_bin (suele ser JSON/string con metadata)
     meta: {
-      type: DataTypes.JSON,
+      type: DataTypes.TEXT('long'),
       allowNull: true,
       defaultValue: null,
     },
@@ -130,6 +115,7 @@ const MessengerMessage = db.define(
     updated_at: {
       type: DataTypes.DATE,
       allowNull: false,
+      // En BD: current_timestamp() + ON UPDATE CURRENT_TIMESTAMP()
       defaultValue: db.literal('CURRENT_TIMESTAMP'),
     },
 
@@ -137,23 +123,25 @@ const MessengerMessage = db.define(
       type: DataTypes.BIGINT,
       allowNull: true,
       defaultValue: null,
-      comment:
-        'sub_usuarios.id_sub_usuario que envió el mensaje (si fue humano)',
+    },
+
+    is_unsupported: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
     },
   },
   {
-    tableName: 'messenger_messages',
-    timestamps: false, // usamos las columnas definidas arriba
+    tableName: 'instagram_messages',
+    timestamps: false,
     freezeTableName: true,
-    indexes: [
-      { name: 'ix_conv_time', fields: ['conversation_id', 'created_at'] },
-      {
-        name: 'ix_cfg_page_psid_time',
-        fields: ['id_configuracion', 'page_id', 'psid', 'created_at'],
-      },
-      { name: 'ix_mid', fields: ['mid'] },
-    ],
+
+    // Si luego me pasas los índices reales (SHOW INDEX), los dejo idénticos a tu BD.
+    // indexes: [
+    //   { name: 'ix_conv', fields: ['conversation_id'] },
+    //   { name: 'ix_cfg_page_igsid', fields: ['id_configuracion', 'page_id', 'igsid'] },
+    // ],
   }
 );
 
-module.exports = MessengerMessage;
+module.exports = InstagramMessage;
