@@ -7,31 +7,129 @@
  */
 
 const { db } = require('../database/config');
+const {
+  rrInstagramUnDepto,
+} = require('../utils/instagram/round_robin_instagram');
 
 /** Garantiza que exista la conversación y retorna su id */
+// async function ensureConversation({ id_configuracion, page_id, igsid }) {
+//   const [row] = await db.query(
+//     `SELECT id FROM instagram_conversations
+//       WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
+//     {
+//       replacements: [id_configuracion, page_id, igsid],
+//       type: db.QueryTypes.SELECT,
+//     }
+//   );
+//   if (row) return row.id;
+
+//   const [ins] = await db.query(
+//     `INSERT INTO instagram_conversations
+//        (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, updated_at)
+//      VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW())`,
+//     {
+//       replacements: [id_configuracion, page_id, igsid],
+//       type: db.QueryTypes.INSERT,
+//     }
+//   );
+
+//   // insertId en MySQL viene acá
+//   return ins?.insertId ?? ins;
+// }
+
 async function ensureConversation({ id_configuracion, page_id, igsid }) {
   const [row] = await db.query(
-    `SELECT id FROM instagram_conversations
-      WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
+    `SELECT id, id_encargado, id_departamento
+       FROM instagram_conversations
+      WHERE id_configuracion=? AND page_id=? AND igsid=?
+      LIMIT 1`,
     {
       replacements: [id_configuracion, page_id, igsid],
       type: db.QueryTypes.SELECT,
     }
   );
-  if (row) return row.id;
+
+  // ✅ existe: si está sin asignación -> asignar 1 vez
+  if (row) {
+    if (row.id_encargado == null || row.id_departamento == null) {
+      const rr = await rrInstagramUnDepto({
+        id_configuracion,
+        motivo: 'auto_round_robin_instagram',
+      });
+
+      await db.query(
+        `UPDATE instagram_conversations
+            SET id_encargado = ?, id_departamento = ?, updated_at = NOW()
+          WHERE id = ?`,
+        {
+          replacements: [
+            rr.id_encargado_nuevo ?? null,
+            rr.id_departamento_asginado ?? null,
+            row.id,
+          ],
+        }
+      );
+
+      await db.query(
+        `INSERT INTO historial_encargados_instagram
+          (id_instagram_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+         VALUES (?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            row.id,
+            rr.id_departamento_asginado ?? null,
+            row.id_encargado ?? null,
+            rr.id_encargado_nuevo ?? null,
+            'auto_round_robin_instagram_fix',
+          ],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+    }
+    return row.id;
+  }
+
+  // ✅ no existe: crear con RR
+  const rr = await rrInstagramUnDepto({
+    id_configuracion,
+    motivo: 'auto_round_robin_instagram',
+  });
 
   const [ins] = await db.query(
     `INSERT INTO instagram_conversations
-       (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, updated_at)
-     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW())`,
+      (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, updated_at, id_encargado, id_departamento)
+     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW(), ?, ?)`,
     {
-      replacements: [id_configuracion, page_id, igsid],
+      replacements: [
+        id_configuracion,
+        page_id,
+        igsid,
+        rr.id_encargado_nuevo ?? null,
+        rr.id_departamento_asginado ?? null,
+      ],
       type: db.QueryTypes.INSERT,
     }
   );
 
-  // insertId en MySQL viene acá
-  return ins?.insertId ?? ins;
+  const conversationId = ins?.insertId ?? ins;
+
+  await db.query(
+    `INSERT INTO historial_encargados_instagram
+      (id_instagram_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+     VALUES (?, ?, ?, ?, ?)`,
+    {
+      replacements: [
+        conversationId,
+        rr.id_departamento_asginado ?? null,
+        null,
+        rr.id_encargado_nuevo ?? null,
+        'auto_round_robin_instagram',
+      ],
+      type: db.QueryTypes.INSERT,
+    }
+  );
+
+  return conversationId;
 }
 
 /** Inserta un mensaje ENTRANTE (direction='in') y actualiza contadores/fechas */

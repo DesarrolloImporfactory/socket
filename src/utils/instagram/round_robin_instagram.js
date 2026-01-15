@@ -3,27 +3,27 @@ const { db } = require('../../database/config');
 async function obtenerOwnerIdPorConfiguracion(id_configuracion) {
   const [row] = await db.query(
     `SELECT id_usuario
-     FROM configuraciones
-     WHERE id = ? AND suspendido = 0
-     LIMIT 1`,
+       FROM configuraciones
+      WHERE id = ? AND suspendido = 0
+      LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
   );
   return row?.id_usuario || null;
 }
 
 /**
- * Round robin para MESSENGER:
+ * Round robin para INSTAGRAM:
  * - Usa 1 solo depto (el primero por config)
  * - Lista agentes (sub_usuarios_chat_center) excluyendo admin/super_admin
  * - Fallback a admin si no hay agentes
- * - Puntero: historial_encargados_messenger (último id_encargado_nuevo)
+ * - Puntero: historial_encargados_instagram (filtrado por id_configuracion)
  * - Lock para concurrencia
  */
-async function rrMessengerUnDepto({
+async function rrInstagramUnDepto({
   id_configuracion,
-  motivo = 'auto_round_robin_messenger',
+  motivo = 'auto_round_robin_instagram',
 }) {
-  const lockKey = `rr:ms:${id_configuracion}`;
+  const lockKey = `rr:ig:${id_configuracion}`;
 
   // Lock
   const [lockRow] = await db.query(`SELECT GET_LOCK(?, 5) AS got`, {
@@ -39,25 +39,25 @@ async function rrMessengerUnDepto({
       return { id_encargado_nuevo: null, id_departamento_asginado: null };
     }
 
-    // 1) depto único
+    // 1) depto único (MISMA tabla que Messenger: departamentos_chat_center)
     const dept = await db.query(
       `SELECT id_departamento
-       FROM departamentos_chat_center
-       WHERE id_configuracion = ?
-       ORDER BY id_departamento ASC
-       LIMIT 1`,
+         FROM departamentos_chat_center
+        WHERE id_configuracion = ?
+        ORDER BY id_departamento ASC
+        LIMIT 1`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
     );
 
     const id_departamento_asginado = dept?.[0]?.id_departamento ?? null;
 
-    // 2) candidatos
+    // 2) candidatos (MISMA tabla que Messenger: sub_usuarios_chat_center)
     const encargados = await db.query(
       `SELECT id_sub_usuario
-       FROM sub_usuarios_chat_center
-       WHERE id_usuario = ?
-         AND rol NOT IN ('administrador', 'super_administrador')
-       ORDER BY id_sub_usuario ASC`,
+         FROM sub_usuarios_chat_center
+        WHERE id_usuario = ?
+          AND rol NOT IN ('administrador', 'super_administrador')
+        ORDER BY id_sub_usuario ASC`,
       { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT }
     );
 
@@ -69,16 +69,18 @@ async function rrMessengerUnDepto({
     if (!lista.length) {
       const admin = await db.query(
         `SELECT id_sub_usuario
-         FROM sub_usuarios_chat_center
-         WHERE id_usuario = ?
-           AND rol = 'administrador'
-         ORDER BY id_sub_usuario ASC
-         LIMIT 1`,
+           FROM sub_usuarios_chat_center
+          WHERE id_usuario = ?
+            AND rol = 'administrador'
+          ORDER BY id_sub_usuario ASC
+          LIMIT 1`,
         { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT }
       );
+
       const adminId = admin?.[0]?.id_sub_usuario
         ? Number(admin[0].id_sub_usuario)
         : null;
+
       lista = adminId ? [adminId] : [];
     }
 
@@ -86,23 +88,17 @@ async function rrMessengerUnDepto({
       return { id_encargado_nuevo: null, id_departamento_asginado };
     }
 
-    // 3) puntero: último asignado en historial
+    // 3) puntero (✅ AISLADO por id_configuracion)
     const last = await db.query(
-      `
-      SELECT he.id_encargado_nuevo
-        FROM historial_encargados_messenger he
-        INNER JOIN messenger_conversations mc
-          ON mc.id = he.id_messenger_conversation
-       WHERE mc.id_configuracion = ?
-         AND he.id_encargado_nuevo IS NOT NULL
-         AND he.motivo IN ('auto_round_robin_messenger')
-       ORDER BY he.id DESC
-       LIMIT 1
-      `,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      }
+      `SELECT h.id_encargado_nuevo
+     FROM historial_encargados_instagram h
+     JOIN instagram_conversations c ON c.id = h.id_instagram_conversation
+    WHERE c.id_configuracion = ?
+      AND h.id_encargado_nuevo IS NOT NULL
+      AND h.motivo IN ('auto_round_robin_instagram')
+    ORDER BY h.id DESC
+    LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
     );
 
     const lastAssigned = last?.[0]?.id_encargado_nuevo
@@ -121,7 +117,6 @@ async function rrMessengerUnDepto({
 
     return { id_encargado_nuevo, id_departamento_asginado };
   } finally {
-    // liberar lock aunque no lo haya obtenido
     await db.query(`SELECT RELEASE_LOCK(?) AS released`, {
       replacements: [lockKey],
       type: db.QueryTypes.SELECT,
@@ -129,4 +124,4 @@ async function rrMessengerUnDepto({
   }
 }
 
-module.exports = { rrMessengerUnDepto };
+module.exports = { rrInstagramUnDepto };
