@@ -40,7 +40,7 @@ function cleanPhoneNumber(phone) {
  */
 function detectCountryCode(phone) {
     const cleaned = cleanPhoneNumber(phone);
-    
+
     // Intentar con códigos de 3 dígitos primero (ej: 593, 507)
     const threeDigitCode = cleaned.substring(0, 3);
     if (COUNTRY_CODES[threeDigitCode]) {
@@ -128,6 +128,10 @@ function generatePhoneVariations(phone, defaultCountryCode = '593') {
     
     return Array.from(variations).filter(v => v.length > 0);
 }
+
+console.log('phoneUtils.js cargado correctamente.');
+console.log('COUNTRY_CODES disponibles:', Object.keys(COUNTRY_CODES).length);
+console.log( normalizePhoneNumber('5212214287262') );
 
 module.exports = {
     COUNTRY_CODES,
