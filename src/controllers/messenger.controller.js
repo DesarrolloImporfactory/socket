@@ -22,10 +22,6 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
     console.log('[PAGE_WEBHOOK] object != page → se ignora', body.object);
     console.log('jeimy was here!');
     console.log('Otra línea de log para verificar el flujo');
-    console.log('Otra línea de log para verificar el flujo');
-    console.log('Otra línea de log para verificar el flujo');
-    console.log('Otra línea de log para verificar el flujo');
-    console.log('Otra línea de log para verificar el flujo');
     return res.sendStatus(200);
   }
 

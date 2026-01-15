@@ -1,4 +1,38 @@
 const { db } = require('../database/config');
+const {
+  rrMessengerUnDepto,
+} = require('../utils/messenger/round_robin_messenger');
+
+// async function ensureConversation({
+//   id_configuracion,
+//   page_id,
+//   psid,
+//   customer_name = null,
+// }) {
+//   const [row] = await db.query(
+//     `SELECT id FROM messenger_conversations
+//      WHERE id_configuracion = ? AND page_id = ? AND psid = ? LIMIT 1`,
+//     {
+//       replacements: [id_configuracion, page_id, psid],
+//       type: db.QueryTypes.SELECT,
+//     }
+//   );
+//   if (row) return row.id;
+
+//   const [ins] = await db.query(
+//     `INSERT INTO messenger_conversations
+//       (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at)
+//      VALUES (?, ?, ?, 'open', 0, NOW(), NOW())`,
+//     {
+//       replacements: [id_configuracion, page_id, psid],
+//       type: db.QueryTypes.INSERT,
+//     }
+//   );
+
+//   // compatibilidad por si el driver devuelve el id directo o como insertId
+//   const conversationId = ins?.insertId ?? ins;
+//   return conversationId;
+// }
 
 async function ensureConversation({
   id_configuracion,
@@ -7,27 +41,104 @@ async function ensureConversation({
   customer_name = null,
 }) {
   const [row] = await db.query(
-    `SELECT id FROM messenger_conversations
-     WHERE id_configuracion = ? AND page_id = ? AND psid = ? LIMIT 1`,
+    `SELECT id, id_encargado, id_departamento
+     FROM messenger_conversations
+     WHERE id_configuracion = ? AND page_id = ? AND psid = ?
+     LIMIT 1`,
     {
       replacements: [id_configuracion, page_id, psid],
       type: db.QueryTypes.SELECT,
     }
   );
-  if (row) return row.id;
+
+  // ✅ Si existe, pero está sin asignación, asignar una sola vez
+  if (row) {
+    if (row.id_encargado == null || row.id_departamento == null) {
+      const rr = await rrMessengerUnDepto({
+        id_configuracion,
+        motivo: 'auto_round_robin_messenger',
+      });
+
+      // actualizar conversación
+      await db.query(
+        `UPDATE messenger_conversations
+         SET id_encargado = ?, id_departamento = ?, updated_at = NOW()
+         WHERE id = ?`,
+        {
+          replacements: [
+            rr.id_encargado_nuevo ?? null,
+            rr.id_departamento_asginado ?? null,
+            row.id,
+          ],
+        }
+      );
+
+      // historial (ya admite NULL ✅)
+      await db.query(
+        `INSERT INTO historial_encargados_messenger
+          (id_messenger_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+         VALUES (?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            row.id,
+            rr.id_departamento_asginado ?? null,
+            row.id_encargado ?? null,
+            rr.id_encargado_nuevo ?? null,
+            'auto_round_robin_messenger_fix',
+          ],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+    }
+
+    return row.id;
+  }
+
+  // ✅ No existe: crear con RR
+  const rr = await rrMessengerUnDepto({
+    id_configuracion,
+    motivo: 'auto_round_robin_messenger',
+  });
+
+  const id_encargado = rr.id_encargado_nuevo ?? null;
+  const id_departamento = rr.id_departamento_asginado ?? null;
 
   const [ins] = await db.query(
     `INSERT INTO messenger_conversations
-      (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at)
-     VALUES (?, ?, ?, 'open', 0, NOW(), NOW())`,
+      (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at, customer_name, id_encargado, id_departamento)
+     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), ?, ?, ?)`,
     {
-      replacements: [id_configuracion, page_id, psid],
+      replacements: [
+        id_configuracion,
+        page_id,
+        psid,
+        customer_name,
+        id_encargado,
+        id_departamento,
+      ],
       type: db.QueryTypes.INSERT,
     }
   );
 
-  // compatibilidad por si el driver devuelve el id directo o como insertId
   const conversationId = ins?.insertId ?? ins;
+
+  // historial (cliente nuevo => anterior NULL) (ya admite NULL ✅)
+  await db.query(
+    `INSERT INTO historial_encargados_messenger
+      (id_messenger_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+     VALUES (?, ?, ?, ?, ?)`,
+    {
+      replacements: [
+        conversationId,
+        id_departamento ?? null,
+        null,
+        id_encargado ?? null,
+        'auto_round_robin_messenger',
+      ],
+      type: db.QueryTypes.INSERT,
+    }
+  );
+
   return conversationId;
 }
 
