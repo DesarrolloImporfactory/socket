@@ -110,6 +110,8 @@ exports.listConversations = async (req, res) => {
             c.unread_count, c.status,
             c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
 
+            su.nombre_encargado,
+
             -- 👇 últimos campos del ÚLTIMO mensaje
             (SELECT mm.text
                 FROM messenger_messages mm
@@ -128,9 +130,12 @@ exports.listConversations = async (req, res) => {
               LIMIT 1) AS last_meta
 
         FROM messenger_conversations c
-      WHERE c.id_configuracion = ?
-      ORDER BY c.last_message_at DESC
-      LIMIT ? OFFSET ?
+        LEFT JOIN sub_usuarios_chat_center su
+            ON su.id_sub_usuario = c.id_encargado
+            
+        WHERE c.id_configuracion = ?
+        ORDER BY c.last_message_at DESC
+        LIMIT ? OFFSET ?
       `,
       {
         replacements: [id_configuracion, limit, offset],
@@ -225,6 +230,7 @@ function mapConvRowToSidebar(r) {
     nombre_cliente: r.customer_name || `Facebook • ${String(r.psid).slice(-6)}`,
     profile_pic_url: r.profile_pic_url || null,
     id_encargado: r.id_encargado ?? null,
+    nombre_encargado: r.nombre_encargado ?? null,
     page_id: r.page_id,
     psid: r.psid,
     last_incoming_at: r.last_incoming_at,

@@ -86,6 +86,7 @@ function mapConvRowToSidebar(r) {
     nombre_cliente: name,
     profile_pic_url: r.profile_pic_url || null,
     id_encargado: r.id_encargado ?? null,
+    nombre_encargado: r.nombre_encargado ?? null,
     page_id: r.page_id,
     igsid: r.igsid,
     last_incoming_at: r.last_incoming_at,
@@ -117,6 +118,7 @@ exports.listConversations = async (req, res) => {
             c.last_message_at, c.last_incoming_at, c.last_outgoing_at,
             c.unread_count, c.status,
             c.id_encargado, c.id_departamento, c.customer_name, c.profile_pic_url,
+            su.nombre_encargado,
 
             -- 👇 nuevos campos para calcular preview
             (SELECT im.text
@@ -136,6 +138,9 @@ exports.listConversations = async (req, res) => {
               LIMIT 1) AS last_meta
 
         FROM instagram_conversations c
+        LEFT JOIN sub_usuarios_chat_center su
+        ON su.id_sub_usuario = c.id_encargado
+
       WHERE c.id_configuracion = ?
       ORDER BY c.last_message_at DESC
       LIMIT ? OFFSET ?
