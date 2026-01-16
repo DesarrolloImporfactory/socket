@@ -621,3 +621,193 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     });
   }
 };
+
+/* sicronizacion de plantillas */
+// ✅ API key QUEMADA solo para uso puntual (una vez)
+const MASTER_OPENAI_KEY = 'PON_AQUI_TU_API_KEY_MAESTRA';
+
+// Helper: headers para Assistants v2
+function getOpenAIHeaders() {
+  return {
+    Authorization: `Bearer ${MASTER_OPENAI_KEY}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
+}
+
+// GET assistant desde su cuenta (maestra)
+async function fetchAssistant(assistant_id) {
+  const headers = getOpenAIHeaders();
+  const url = `https://api.openai.com/v1/assistants/${assistant_id}`;
+  const res = await axios.get(url, { headers });
+  return res.data;
+}
+
+// UPSERT a oia_assistant_templates
+async function upsertTemplate({
+  template_key,
+  nombre,
+  assistantData,
+  force = true,
+}) {
+  const model = assistantData.model || 'gpt-4.1-mini';
+  const instructions = assistantData.instructions || '';
+  const tools = Array.isArray(assistantData.tools) ? assistantData.tools : [];
+  const metadata = assistantData.metadata || null;
+
+  const temperature = assistantData.temperature ?? null;
+  const top_p = assistantData.top_p ?? null;
+  const response_format = assistantData.response_format ?? null;
+
+  // Si force=false y ya hay instructions, no las pisa
+  let finalInstructions = instructions;
+
+  if (!force) {
+    const existing = await db.query(
+      `SELECT instructions FROM oia_assistant_templates WHERE template_key = ? LIMIT 1`,
+      { replacements: [template_key], type: db.QueryTypes.SELECT }
+    );
+    const existingInstructions = existing?.[0]?.instructions || '';
+    if (existingInstructions.trim().length > 0) {
+      finalInstructions = existingInstructions;
+    }
+  }
+
+  // ✅ Guardar JSON como string. Si es null => null
+  const toolsJson = tools ? JSON.stringify(tools) : null;
+  const metadataJson = metadata ? JSON.stringify(metadata) : null;
+
+  // response_format puede venir como string "auto" o como objeto; guardémoslo siempre como JSON válido.
+  // - si es string, lo convertimos a JSON string (incluye comillas)
+  // - si es objeto, JSON.stringify normal
+  const responseFormatJson =
+    response_format == null
+      ? null
+      : typeof response_format === 'string'
+      ? JSON.stringify(response_format)
+      : JSON.stringify(response_format);
+
+  await db.query(
+    `
+    INSERT INTO oia_assistant_templates
+      (template_key, nombre, model, instructions, tools_json, metadata_json, temperature, top_p, response_format_json, activo)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ON DUPLICATE KEY UPDATE
+      nombre = VALUES(nombre),
+      model = VALUES(model),
+      instructions = VALUES(instructions),
+      tools_json = VALUES(tools_json),
+      metadata_json = VALUES(metadata_json),
+      temperature = VALUES(temperature),
+      top_p = VALUES(top_p),
+      response_format_json = VALUES(response_format_json),
+      activo = 1
+    `,
+    {
+      replacements: [
+        template_key,
+        nombre,
+        model,
+        finalInstructions,
+        toolsJson,
+        metadataJson,
+        temperature,
+        top_p,
+        responseFormatJson,
+      ],
+      type: db.QueryTypes.INSERT,
+    }
+  );
+}
+
+/**
+ * POST /openai_assistants/sync_templates_from_oia_asistentes
+ * Body opcional:
+ * {
+ *   "solo_tipo": "ventas_productos",
+ *   "force": true
+ * }
+ */
+exports.sync_templates_from_oia_asistentes = async (req, res) => {
+  try {
+    if (!MASTER_OPENAI_KEY || MASTER_OPENAI_KEY.includes('PON_AQUI')) {
+      return res.status(500).json({
+        status: 'fail',
+        message: 'Falta configurar MASTER_OPENAI_KEY en el controller.',
+      });
+    }
+
+    const { solo_tipo = null, force = true } = req.body || {};
+
+    // 1) Leer tabla vieja
+    const where = solo_tipo ? 'WHERE tipo = ?' : '';
+    const asistRows = await db.query(
+      `SELECT tipo, nombre_bot, assistant_id FROM oia_asistentes ${where}`,
+      {
+        replacements: solo_tipo ? [solo_tipo] : [],
+        type: db.QueryTypes.SELECT,
+      }
+    );
+
+    if (!asistRows || asistRows.length === 0) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'No se encontraron registros en oia_asistentes.',
+      });
+    }
+
+    const results = [];
+    for (const row of asistRows) {
+      const template_key = row.tipo; // mapeo directo
+      const nombre = row.nombre_bot || row.tipo;
+      const assistant_id = row.assistant_id;
+
+      try {
+        // 2) Traer assistant real desde OpenAI
+        const assistantData = await fetchAssistant(assistant_id);
+
+        // 3) Upsert template
+        await upsertTemplate({
+          template_key,
+          nombre,
+          assistantData,
+          force: !!force,
+        });
+
+        results.push({
+          template_key,
+          ok: true,
+          model: assistantData.model || null,
+          tools_count: Array.isArray(assistantData.tools)
+            ? assistantData.tools.length
+            : 0,
+        });
+      } catch (err) {
+        results.push({
+          template_key,
+          ok: false,
+          error:
+            err?.response?.data?.error?.message ||
+            err?.response?.data ||
+            err.message,
+        });
+      }
+    }
+
+    return res.json({
+      status: 'success',
+      total: results.length,
+      ok: results.filter((x) => x.ok).length,
+      fail: results.filter((x) => !x.ok).length,
+      results,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: 'fail',
+      message: 'Error interno.',
+      error: err.message,
+    });
+  }
+};
+/* sicronizacion de plantillas */

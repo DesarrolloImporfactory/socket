@@ -212,8 +212,8 @@ async function procesarAsistenteMensajeVentas(body) {
 
     const oia_asistentes = await db.query(
       `SELECT tipo, assistant_id 
-     FROM oia_asistentes 
-     WHERE tipo = '${nombre_estado}'`,
+     FROM oia_assistants_cliente 
+     WHERE tipo = '${nombre_estado}' AND id_configuracion = '${id_configuracion}'`,
       {
         type: db.QueryTypes.SELECT,
       }
