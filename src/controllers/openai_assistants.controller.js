@@ -273,23 +273,23 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
 
   try {
-    /* const [configuracion] = await db.query(
+    const [configuracion] = await db.query(
       'SELECT api_key_openai FROM configuraciones WHERE id = ?',
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       }
-    ); */
+    );
 
     let api_key_openai = null;
 
-    /* if (!configuracion) {
+    if (!configuracion) {
       return next(
         new AppError('No se encontró configuración para la plataforma', 400)
       );
     }
 
-    api_key_openai = configuracion.api_key_openai; */
+    api_key_openai = configuracion.api_key_openai;
 
     // Traer ambos tipos de asistentes
     const asistentes = await db.query(
@@ -344,25 +344,245 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
   }
 });
 
-exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
-  const { id_configuracion, api_key } = req.body;
+// ============== Helpers OpenAI ==============
+function getClientHeaders(api_key) {
+  return {
+    Authorization: `Bearer ${api_key}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
+}
 
+function toNumberOrUndefined(v) {
+  if (v === null || v === undefined) return undefined;
+  // si viene como string "1" o "0.7"
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return undefined;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  // si ya viene number
+  if (typeof v === 'number') {
+    return Number.isFinite(v) ? v : undefined;
+  }
+  return undefined;
+}
+
+// Valida que la API key funcione (llamada barata)
+async function validarApiKeyOpenAI(api_key) {
+  const headers = getClientHeaders(api_key);
+  // Un GET simple a /models suele funcionar para validar credenciales
+  // (también puede usar /v1/me si existiera, pero /models es común)
+  await axios.get('https://api.openai.com/v1/models', { headers });
+  return true;
+}
+
+// Crea assistant en la cuenta del cliente según la plantilla
+async function crearAssistantEnCuentaCliente(templateRow, api_key) {
+  const headers = getClientHeaders(api_key);
+
+  const temperature = toNumberOrUndefined(templateRow.temperature);
+  const top_p = toNumberOrUndefined(templateRow.top_p);
+
+  let tools = [];
   try {
-    const [result] = await db.query(
-      `UPDATE configuraciones SET api_key_openai = ? WHERE id = ?`,
+    tools = templateRow.tools_json ? JSON.parse(templateRow.tools_json) : [];
+  } catch {
+    tools = [];
+  }
+
+  let metadata = undefined;
+  try {
+    metadata = templateRow.metadata_json
+      ? JSON.parse(templateRow.metadata_json)
+      : undefined;
+  } catch {
+    metadata = undefined;
+  }
+
+  let response_format = undefined;
+  try {
+    response_format = templateRow.response_format_json
+      ? JSON.parse(templateRow.response_format_json)
+      : undefined;
+  } catch {
+    response_format = undefined;
+  }
+
+  const payload = {
+    name: templateRow.nombre,
+    model: templateRow.model || 'gpt-4.1-mini',
+    instructions: templateRow.instructions || '',
+    tools,
+    metadata,
+    temperature, // ✅ number o undefined (NO string)
+    top_p, // ✅ number o undefined (NO string)
+    response_format,
+  };
+
+  // limpiar undefined
+  Object.keys(payload).forEach(
+    (k) => payload[k] === undefined && delete payload[k]
+  );
+
+  const res = await axios.post(
+    'https://api.openai.com/v1/assistants',
+    payload,
+    { headers }
+  );
+  return res.data;
+}
+
+// Bootstrap idempotente
+async function bootstrapAssistantsForClient(
+  id_configuracion,
+  api_key,
+  tipo_configuracion
+) {
+  const permitidos = templatesPermitidosPorTipo(tipo_configuracion);
+
+  // 1) Traer templates activos SOLO de esos keys
+  const placeholders = permitidos.map(() => '?').join(',');
+  const templates = await db.query(
+    `SELECT template_key, nombre, model, instructions, tools_json, metadata_json, temperature, top_p, response_format_json
+     FROM oia_assistant_templates
+     WHERE activo = 1 AND template_key IN (${placeholders})`,
+    { replacements: permitidos, type: db.QueryTypes.SELECT }
+  );
+
+  const results = { created: [], skipped: [], failed: [] };
+
+  for (const t of templates) {
+    const template_key = t.template_key;
+
+    const existing = await db.query(
+      `SELECT assistant_id FROM oia_assistants_cliente
+       WHERE id_configuracion = ? AND template_key = ?
+       LIMIT 1`,
       {
-        replacements: [api_key, id_configuracion],
-        type: db.QueryTypes.UPDATE,
+        replacements: [id_configuracion, template_key],
+        type: db.QueryTypes.SELECT,
       }
     );
 
-    res.status(200).json({
-      status: '200',
-      message: 'api key actualizado correctamente',
-    });
-  } catch (error) {
-    return next(new AppError('Error al actualizar api_key_openai', 500));
+    if (existing && existing.length > 0 && existing[0].assistant_id) {
+      results.skipped.push({
+        template_key,
+        assistant_id: existing[0].assistant_id,
+      });
+      continue;
+    }
+
+    try {
+      const created = await crearAssistantEnCuentaCliente(t, api_key);
+
+      await db.query(
+        `INSERT INTO oia_assistants_cliente (id_configuracion, template_key, assistant_id, model)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE assistant_id = VALUES(assistant_id), model = VALUES(model)`,
+        {
+          replacements: [
+            id_configuracion,
+            template_key,
+            created.id,
+            created.model || t.model || 'gpt-4.1-mini',
+          ],
+          type: db.QueryTypes.INSERT,
+        }
+      );
+
+      results.created.push({
+        template_key,
+        assistant_id: created.id,
+        model: created.model,
+      });
+    } catch (err) {
+      results.failed.push({
+        template_key,
+        error: err?.response?.data?.error?.message || err.message,
+      });
+    }
   }
+
+  // (Opcional) si faltan templates permitidos porque no están en templates table
+  const encontrados = new Set(templates.map((x) => x.template_key));
+  const faltantes = permitidos.filter((k) => !encontrados.has(k));
+  if (faltantes.length) results.missing_templates = faltantes;
+
+  return results;
+}
+
+function templatesPermitidosPorTipo(tipo_configuracion) {
+  const t = (tipo_configuracion || '').toLowerCase().trim();
+
+  const map = {
+    imporshop: [
+      'contacto_inicial_ventas',
+      'ventas_productos_imporshop',
+      'separador_productos',
+    ],
+    ventas: [
+      'contacto_inicial_ventas',
+      'ventas_productos',
+      'ventas_servicios',
+      'separador_productos',
+    ],
+    imporfactory: [
+      'contacto_inicial',
+      'plataformas_clases',
+      'productos_proveedores',
+      'ventas_imporfactory',
+      'cotizaciones_imporfactory',
+      'separador_productos',
+    ],
+  };
+
+  // Si el tipo no existe, por defecto "ventas"
+  return map[t] || map.ventas;
+}
+
+// ============== Controller ==============
+exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
+  const { id_configuracion, api_key, tipo_configuracion } = req.body;
+
+  if (!id_configuracion || !api_key || !tipo_configuracion) {
+    return next(
+      new AppError(
+        'Faltan campos: id_configuracion, api_key, tipo_configuracion',
+        400
+      )
+    );
+  }
+
+  // 1) Validar key antes de guardar (recomendado)
+  try {
+    await validarApiKeyOpenAI(api_key);
+  } catch (e) {
+    return next(
+      new AppError('API Key de OpenAI inválida o sin permisos.', 400)
+    );
+  }
+
+  // 2) Guardar key
+  await db.query(`UPDATE configuraciones SET api_key_openai = ? WHERE id = ?`, {
+    replacements: [api_key, id_configuracion],
+    type: db.QueryTypes.UPDATE,
+  });
+
+  // 3) Bootstrap assistants (crear clones en la cuenta del cliente)
+  const bootstrap = await bootstrapAssistantsForClient(
+    id_configuracion,
+    api_key,
+    tipo_configuracion
+  );
+
+  return res.status(200).json({
+    status: '200',
+    message:
+      'API key actualizada y assistants creados/asegurados correctamente',
+    bootstrap, // created / skipped / failed
+  });
 });
 
 exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
