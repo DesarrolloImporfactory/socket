@@ -223,7 +223,6 @@ class MessengerService {
   ) {
     const createdAtNow = new Date().toISOString();
 
-    // DEBUG: payload base
     console.log('[MS][HANDLE_MESSAGE][PAYLOAD]', {
       id_configuracion,
       pageId,
@@ -240,7 +239,7 @@ class MessengerService {
         source: 'ms',
         page_id: pageId,
         external_id: senderPsid,
-        customer_name: '', // (si luego trae perfil, aquí lo mete)
+        customer_name: '',
       });
 
       console.log('[MS][ENSURE_UNI][OK]', uni);
@@ -260,8 +259,16 @@ class MessengerService {
       return;
     }
 
-    if (!uni?.id_cliente) {
-      console.warn('[MS][ENSURE_UNI][NO_ID_CLIENTE]', uni);
+    // ✅ id_cliente = dueño
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
+
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[MS][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
       return;
     }
 
@@ -270,7 +277,10 @@ class MessengerService {
       saved = await Store.saveIncomingMessageUnified({
         id_configuracion,
         id_plataforma: null,
-        id_cliente: uni.id_cliente,
+
+        id_cliente: idClienteDueno, // ✅ dueño
+        celular_recibe: idClienteContacto, // ✅ contacto
+
         source: 'ms',
         page_id: pageId,
         external_id: senderPsid,
@@ -301,8 +311,9 @@ class MessengerService {
     }
 
     if (IO) {
-      IO.to(roomConv(uni.id_cliente)).emit('MS_MESSAGE', {
-        conversation_id: uni.id_cliente,
+      // ✅ room por dueño (conversación)
+      IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
+        conversation_id: idClienteDueno,
         message: {
           id: saved?.message_id || message.mid,
           direction: 'in',
@@ -315,7 +326,7 @@ class MessengerService {
       });
 
       IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
-        id: uni.id_cliente,
+        id: idClienteDueno,
         last_message_at: createdAtNow,
         last_incoming_at: createdAtNow,
         preview: message.text || '(adjunto)',
@@ -374,14 +385,27 @@ class MessengerService {
       return;
     }
 
-    if (!uni?.id_cliente) return;
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
+
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[MS][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
+      return;
+    }
 
     let inSaved = null;
     try {
       inSaved = await Store.saveIncomingMessageUnified({
         id_configuracion,
         id_plataforma: null,
-        id_cliente: uni.id_cliente,
+
+        id_cliente: idClienteDueno, // ✅ dueño
+        celular_recibe: idClienteContacto, // ✅ contacto
+
         source: 'ms',
         page_id: pageId,
         external_id: senderPsid,
@@ -411,8 +435,8 @@ class MessengerService {
     }
 
     if (IO) {
-      IO.to(roomConv(uni.id_cliente)).emit('MS_MESSAGE', {
-        conversation_id: uni.id_cliente,
+      IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
+        conversation_id: idClienteDueno,
         message: {
           id: inSaved?.message_id || postback.mid,
           direction: 'in',
@@ -464,13 +488,26 @@ class MessengerService {
       return;
     }
 
-    if (!uni?.id_cliente) return;
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
+
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[MS][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
+      return;
+    }
 
     try {
       const saved = await Store.saveOutgoingMessageUnified({
         id_configuracion,
         id_plataforma: null,
-        id_cliente: uni.id_cliente,
+
+        id_cliente: idClienteDueno, // ✅ dueño
+        celular_recibe: idClienteContacto, // ✅ contacto
+
         source: 'ms',
         page_id: pageId,
         external_id: psid,
@@ -487,8 +524,8 @@ class MessengerService {
       console.log('[MS][SAVE_ECHO_OUT][OK]', saved);
 
       if (IO) {
-        IO.to(roomConv(uni.id_cliente)).emit('MS_MESSAGE', {
-          conversation_id: uni.id_cliente,
+        IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
+          conversation_id: idClienteDueno,
           message: {
             id: saved?.message_id || message.mid,
             direction: 'out',

@@ -1,15 +1,6 @@
-/**
- * Instagram Service (UNIFICADO)
- * ----------------------------
- * Guarda TODO en:
- *  - clientes_chat_center  (source='ig', page_id, external_id)
- *  - mensajes_clientes     (source='ig')
- * Usa Round Robin PRINCIPAL (crearClienteConRoundRobinUnDepto) via ensureUnifiedConversation.
- */
-
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
-const Store = require('./messenger_store.service'); // ✅ STORE UNIFICADO
+const Store = require('./messenger_store.service'); // ✅ STORE UNIFICADO (dueño único)
 
 let IO = null;
 
@@ -143,8 +134,8 @@ class InstagramService {
   }
 
   /**
-   * Router de eventos Instagram (webhook object='instagram' via Page)
-   * Heurística IG:
+   * Router de eventos Instagram
+   * Heurística:
    *  - Entrante: sender.id = IGSID usuario | recipient.id = IG Business ID
    *  - Echo:     sender.id = IG Business ID | recipient.id = IGSID usuario
    */
@@ -223,15 +214,13 @@ class InstagramService {
       );
       return;
     }
-
-    // (read/delivery: en IG suelen ser inconsistentes; si luego los quiere, los conectamos a markDeliveredUnified/markReadUnified)
   }
 
   static async handleMessage(userIgsid, message, pageId, id_configuracion) {
     const createdAtNow = new Date().toISOString();
     const normalizedAttachments = normalizeAttachments(message);
 
-    // ✅ 1) asegurar conversación UNIFICADA (clientes_chat_center) + RR principal
+    // ✅ Asegura conversación unificada: devuelve dueño + contacto
     const uni = await Store.ensureUnifiedConversation({
       id_configuracion,
       source: 'ig',
@@ -240,13 +229,27 @@ class InstagramService {
       customer_name: '',
     });
 
-    if (!uni?.id_cliente) return;
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
 
-    // ✅ 2) guardar mensaje entrante en mensajes_clientes (unificado)
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[IG][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
+      return;
+    }
+
+    // ✅ Guardar mensaje entrante:
+    // id_cliente = dueño
+    // celular_recibe = contacto
     const saved = await Store.saveIncomingMessageUnified({
       id_configuracion,
       id_plataforma: null,
-      id_cliente: uni.id_cliente,
+      id_cliente: idClienteDueno,
+      celular_recibe: idClienteContacto,
+
       source: 'ig',
       page_id: pageId,
       external_id: userIgsid,
@@ -259,10 +262,10 @@ class InstagramService {
       meta: { raw: message },
     });
 
-    // ✅ 3) emitir a sockets
+    // ✅ sockets (room por dueño)
     if (IO) {
-      IO.to(roomConv(uni.id_cliente)).emit('IG_MESSAGE', {
-        id_cliente: uni.id_cliente,
+      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
+        id_cliente: idClienteDueno,
         message: {
           id: safeMsgId(saved?.message_id, message.mid),
           direction: 'in',
@@ -275,14 +278,12 @@ class InstagramService {
       });
 
       IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
-        id: uni.id_cliente,
+        id: idClienteDueno,
         last_message_at: createdAtNow,
         last_incoming_at: createdAtNow,
         preview: message.text || '(adjunto)',
       });
     }
-
-    // ✅ NO hacemos mark_seen aquí (como usted ya lo tiene: lo hace el asesor cuando abre el chat)
   }
 
   static async handleEchoAsOutgoing({
@@ -302,12 +303,24 @@ class InstagramService {
       customer_name: '',
     });
 
-    if (!uni?.id_cliente) return;
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
+
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[IG][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
+      return;
+    }
 
     const saved = await Store.saveOutgoingMessageUnified({
       id_configuracion,
       id_plataforma: null,
-      id_cliente: uni.id_cliente,
+      id_cliente: idClienteDueno,
+      celular_recibe: idClienteContacto,
+
       source: 'ig',
       page_id: pageId,
       external_id: userIgsid,
@@ -323,8 +336,8 @@ class InstagramService {
     });
 
     if (IO) {
-      IO.to(roomConv(uni.id_cliente)).emit('IG_MESSAGE', {
-        id_cliente: uni.id_cliente,
+      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
+        id_cliente: idClienteDueno,
         message: {
           id: safeMsgId(saved?.message_id, message.mid),
           direction: 'out',
@@ -338,7 +351,7 @@ class InstagramService {
       });
 
       IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
-        id: uni.id_cliente,
+        id: idClienteDueno,
         last_message_at: createdAtNow,
         last_outgoing_at: createdAtNow,
         preview: message.text || '(adjunto)',
@@ -357,12 +370,25 @@ class InstagramService {
       external_id: userIgsid,
       customer_name: '',
     });
-    if (!uni?.id_cliente) return;
+
+    const idClienteDueno = uni?.id_cliente ?? uni?.id_cliente_dueno ?? null;
+    const idClienteContacto = uni?.id_cliente_contacto ?? null;
+
+    if (!idClienteDueno || !idClienteContacto) {
+      console.warn('[IG][ENSURE_UNI][NO_IDS]', {
+        uni,
+        idClienteDueno,
+        idClienteContacto,
+      });
+      return;
+    }
 
     const saved = await Store.saveIncomingMessageUnified({
       id_configuracion,
       id_plataforma: null,
-      id_cliente: uni.id_cliente,
+      id_cliente: idClienteDueno,
+      celular_recibe: idClienteContacto,
+
       source: 'ig',
       page_id: pageId,
       external_id: userIgsid,
@@ -375,8 +401,8 @@ class InstagramService {
     });
 
     if (IO) {
-      IO.to(roomConv(uni.id_cliente)).emit('IG_MESSAGE', {
-        id_cliente: uni.id_cliente,
+      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
+        id_cliente: idClienteDueno,
         message: {
           id: safeMsgId(saved?.message_id, postback.mid),
           direction: 'in',

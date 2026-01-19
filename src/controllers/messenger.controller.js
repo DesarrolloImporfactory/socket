@@ -32,8 +32,8 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
         entry.messaging && entry.messaging.length
           ? entry.messaging
           : entry.standby && entry.standby.length
-          ? entry.standby
-          : [];
+            ? entry.standby
+            : [];
 
       if (!events.length) {
         console.log('[PAGE_WEBHOOK] entry sin messaging/standby[]');
@@ -62,7 +62,7 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
           await MessengerService.routeEvent(event);
         }
       }
-    })
+    }),
   );
 
   return res.sendStatus(200);

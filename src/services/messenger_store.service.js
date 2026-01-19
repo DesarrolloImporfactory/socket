@@ -1,9 +1,13 @@
 const { db } = require('../database/config');
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
 
+/** -----------------------------
+ * Helpers
+ * ------------------------------*/
+
 async function getConfigOwner(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id_usuario, id_plataforma
+    `SELECT id_usuario, id_plataforma, nombre_configuracion
      FROM configuraciones
      WHERE id = ? AND suspendido = 0
      LIMIT 1`,
@@ -13,25 +17,142 @@ async function getConfigOwner(id_configuracion) {
 }
 
 /**
- * Asegura cliente unificado en clientes_chat_center
- * - source: 'ms' | 'ig'
- * - page_id: page id
- * - external_id: PSID/IGSID
+ * Nombre “bonito” del propietario:
+ * 1) Para MS/IG: page_name desde messenger_pages si existe
+ * 2) nombre_configuracion desde configuraciones si existe
+ * 3) 'NEGOCIO'
+ */
+async function resolveOwnerDisplayName({ id_configuracion, page_id }) {
+  // 1) Nombre real de la página (MS/IG)
+  if (page_id) {
+    const [p] = await db.query(
+      `SELECT page_name
+       FROM messenger_pages
+       WHERE page_id = ? AND status='active'
+       LIMIT 1`,
+      { replacements: [String(page_id)], type: db.QueryTypes.SELECT },
+    );
+    if (p?.page_name && String(p.page_name).trim()) {
+      return String(p.page_name).trim();
+    }
+  }
+
+  // 2) Nombre de configuración
+  const [c] = await db.query(
+    `SELECT nombre_configuracion
+     FROM configuraciones
+     WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (c?.nombre_configuracion && String(c.nombre_configuracion).trim()) {
+    return String(c.nombre_configuracion).trim();
+  }
+
+  return 'NEGOCIO';
+}
+
+/**
+ * ✅ DUEÑO ÚNICO por configuración:
+ * - Busca por (id_configuracion, propietario=1) SIN depender de source/page_id
+ * - Si no existe, lo crea una sola vez.
+ */
+async function getOwnerClientId({ id_configuracion, id_plataforma, page_id }) {
+  // 1) Buscar dueño global por configuración
+  const [owner] = await db.query(
+    `SELECT id, id_encargado, id_departamento, nombre_cliente
+     FROM clientes_chat_center
+     WHERE id_configuracion = ?
+       AND propietario = 1
+       AND deleted_at IS NULL
+     LIMIT 1`,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  // 2) Si existe, actualizar nombre si está vacío/NEGOCIO
+  if (owner?.id) {
+    const current = (owner.nombre_cliente || '').trim();
+    if (!current || current.toUpperCase() === 'NEGOCIO') {
+      const displayName = await resolveOwnerDisplayName({
+        id_configuracion,
+        page_id,
+      });
+
+      await db.query(
+        `UPDATE clientes_chat_center
+         SET nombre_cliente = ?, updated_at = NOW()
+         WHERE id = ?`,
+        { replacements: [displayName, owner.id] },
+      );
+
+      owner.nombre_cliente = displayName;
+    }
+    return owner;
+  }
+
+  // 3) Crear dueño único
+  const displayName = await resolveOwnerDisplayName({
+    id_configuracion,
+    page_id,
+  });
+
+  const [ins] = await db.query(
+    `INSERT INTO clientes_chat_center
+      (id_configuracion, id_plataforma, propietario,
+       nombre_cliente, apellido_cliente, source,
+       created_at, updated_at)
+     VALUES
+      (?, ?, 1, ?, '', 'owner', NOW(), NOW())`,
+    {
+      replacements: [id_configuracion, id_plataforma ?? null, displayName],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  const insertedId = ins?.insertId ?? ins;
+
+  const [finalOwner] = await db.query(
+    `SELECT id, id_encargado, id_departamento, nombre_cliente
+     FROM clientes_chat_center
+     WHERE id = ? LIMIT 1`,
+    { replacements: [insertedId], type: db.QueryTypes.SELECT },
+  );
+
+  return finalOwner || null;
+}
+
+/** -----------------------------
+ * Core: ensureUnifiedConversation
+ * ------------------------------*/
+
+/**
+ * ✅ Conversación unificada:
+ * - contacto (propietario=0) por canal:
+ *    - WA: ensureUnifiedClient por celular_cliente (internamente)
+ *    - MS/IG: ensureUnifiedClient por (source, page_id, external_id)
+ * - dueño (propietario=1) global por id_configuracion
  *
- * Devuelve: { id_cliente, id_encargado, id_departamento }
+ * Devuelve:
+ *  - id_cliente = dueño (alias compatible)
+ *  - id_cliente_dueno
+ *  - id_cliente_contacto
+ *  - id_encargado / id_departamento (del contacto por RR)
  */
 async function ensureUnifiedConversation({
   id_configuracion,
-  source = 'ms',
-  page_id,
-  external_id,
+  source = 'ms', // 'wa' | 'ms' | 'ig'
+  page_id = null, // ms/ig page id
+  external_id = null, // ms/ig psid/igsid, wa: phone
   customer_name = '',
 }) {
   const cfgOwner = await getConfigOwner(id_configuracion);
   if (!cfgOwner) return null;
 
-  // ✅ 1) crear/obtener cliente unificado (incluye RR unificado dentro)
-  const cliente = await ensureUnifiedClient({
+  // 1) CONTACTO (propietario=0)
+  const contacto = await ensureUnifiedClient({
     id_configuracion,
     id_usuario_dueno: cfgOwner.id_usuario,
     id_plataforma: cfgOwner.id_plataforma,
@@ -41,41 +162,49 @@ async function ensureUnifiedConversation({
     page_id,
     external_id,
 
-    // para WA se usa phone real; aquí no aplica, pero no rompe
-    phone: external_id,
+    // Para WA el ensureUnifiedClient usa celular real (phone)
+    phone: source === 'wa' ? String(external_id || '') : external_id,
 
     nombre_cliente: customer_name || '',
     apellido_cliente: '',
-
     motivo: `auto_round_robin_${source}`,
   });
 
-  if (!cliente?.id) return null;
+  if (!contacto?.id) return null;
 
-  // ✅ 2) NO volver a hacer RR aquí (evita pisar id_encargado)
+  // 2) DUEÑO ÚNICO por configuración
+  const owner = await getOwnerClientId({
+    id_configuracion,
+    id_plataforma: cfgOwner.id_plataforma,
+    page_id, // solo para nombre bonito si aplica
+  });
 
-  // Releer asignación final
-  const [finalRow] = await db.query(
-    `SELECT id, id_encargado, id_departamento
-     FROM clientes_chat_center
-     WHERE id = ? LIMIT 1`,
-    { replacements: [cliente.id], type: db.QueryTypes.SELECT },
-  );
+  if (!owner?.id) return null;
 
+  // 3) Devolver IDs consistentes
   return {
-    id_cliente: finalRow.id,
-    id_encargado: finalRow.id_encargado ?? null,
-    id_departamento: finalRow.id_departamento ?? null,
+    id_cliente: owner.id, // ✅ alias compatible con code viejo
+    id_cliente_dueno: owner.id,
+    id_cliente_contacto: contacto.id,
+    id_encargado: contacto.id_encargado ?? null,
+    id_departamento: contacto.id_departamento ?? null,
   };
 }
 
+/** -----------------------------
+ * Save messages
+ * ------------------------------*/
+
 /**
- * Guardar mensaje ENTRANTE (user -> page)
+ * Guardar mensaje ENTRANTE (user -> negocio)
+ * id_cliente = dueño
+ * celular_recibe = contacto
  */
 async function saveIncomingMessageUnified({
   id_configuracion,
   id_plataforma = null,
-  id_cliente,
+  id_cliente, // dueño
+  celular_recibe = null, // contacto
   source = 'ms',
   page_id = null,
   external_id = null,
@@ -84,7 +213,7 @@ async function saveIncomingMessageUnified({
   text = null,
   attachments = null,
   postback_payload = null,
-  quick_reply_payload = null,
+  quick_reply_payload = null, // (no usado en insert, pero lo dejamos por compatibilidad)
   sticker_id = null,
 
   meta = null,
@@ -107,17 +236,16 @@ async function saveIncomingMessageUnified({
   const attachments_unificado = attachments
     ? JSON.stringify(attachments)
     : null;
-
   const meta_unificado = meta ? JSON.stringify(meta) : null;
 
   const [ins] = await db.query(
     `INSERT INTO mensajes_clientes
-      (id_plataforma, id_configuracion, id_cliente, source, page_id,
+      (id_plataforma, id_configuracion, id_cliente, celular_recibe, source, page_id,
        mid_mensaje, external_mid, tipo_mensaje, rol_mensaje, direction,
        status_unificado, texto_mensaje, uid_whatsapp,
        attachments_unificado, meta_unificado, created_at, updated_at, visto)
      VALUES
-      (?, ?, ?, ?, ?,
+      (?, ?, ?, ?, ?, ?,
        ?, ?, ?, 0, 'in',
        ?, ?, ?,
        ?, ?, NOW(), NOW(), 0)`,
@@ -126,6 +254,7 @@ async function saveIncomingMessageUnified({
         id_plataforma,
         id_configuracion,
         id_cliente,
+        celular_recibe,
         source,
         page_id,
 
@@ -135,7 +264,7 @@ async function saveIncomingMessageUnified({
 
         status_unificado,
         texto_mensaje,
-        external_id, // PSID/IGSID
+        external_id, // PSID/IGSID o phone WA
 
         attachments_unificado,
         meta_unificado,
@@ -145,6 +274,7 @@ async function saveIncomingMessageUnified({
   );
 
   const insertedId = ins?.insertId ?? ins;
+
   const [row] = await db.query(
     `SELECT id, created_at FROM mensajes_clientes WHERE id = ? LIMIT 1`,
     { replacements: [insertedId], type: db.QueryTypes.SELECT },
@@ -154,12 +284,15 @@ async function saveIncomingMessageUnified({
 }
 
 /**
- * Guardar mensaje SALIENTE (page -> user)
+ * Guardar mensaje SALIENTE (negocio -> user)
+ * id_cliente = dueño
+ * celular_recibe = contacto
  */
 async function saveOutgoingMessageUnified({
   id_configuracion,
   id_plataforma = null,
-  id_cliente,
+  id_cliente, // dueño
+  celular_recibe = null, // contacto
   source = 'ms',
   page_id = null,
   external_id = null,
@@ -181,25 +314,26 @@ async function saveOutgoingMessageUnified({
   const attachments_unificado = attachments
     ? JSON.stringify(attachments)
     : null;
-
   const meta_unificado = meta ? JSON.stringify(meta) : null;
 
   const [ins] = await db.query(
     `INSERT INTO mensajes_clientes
-      (id_plataforma, id_configuracion, id_cliente, source, page_id,
+      (id_plataforma, id_configuracion, id_cliente, celular_recibe, source, page_id,
        mid_mensaje, external_mid, tipo_mensaje, rol_mensaje, direction,
        status_unificado, texto_mensaje, uid_whatsapp, responsable,
        attachments_unificado, meta_unificado, created_at, updated_at, visto)
      VALUES
-      (?, ?, ?, ?, ?,
+      (?, ?, ?, ?, ?, ?,
        ?, ?, ?, 1, 'out',
        ?, ?, ?, ?,
        ?, ?, NOW(), NOW(), 1)`,
     {
+      // ✅ FIX: replacements en orden correcto (incluye celular_recibe)
       replacements: [
         id_plataforma,
         id_configuracion,
         id_cliente,
+        celular_recibe,
         source,
         page_id,
 
@@ -220,6 +354,7 @@ async function saveOutgoingMessageUnified({
   );
 
   const insertedId = ins?.insertId ?? ins;
+
   const [row] = await db.query(
     `SELECT id, created_at FROM mensajes_clientes WHERE id = ? LIMIT 1`,
     { replacements: [insertedId], type: db.QueryTypes.SELECT },
@@ -228,9 +363,10 @@ async function saveOutgoingMessageUnified({
   return { message_id: row?.id, created_at: row?.created_at };
 }
 
-/**
- * DELIVERY
- */
+/** -----------------------------
+ * Delivery / Read
+ * ------------------------------*/
+
 async function markDeliveredUnified({
   id_configuracion,
   source = 'ms',
@@ -272,9 +408,6 @@ async function markDeliveredUnified({
   }
 }
 
-/**
- * READ (por conversación/cliente)
- */
 async function markReadUnified({
   id_configuracion,
   source = 'ms',
@@ -283,7 +416,7 @@ async function markReadUnified({
   watermark,
   id_cliente,
 }) {
-  // 1) marcar OUT a read
+  // 1) marcar OUT como read
   await db.query(
     `UPDATE mensajes_clientes
      SET status_unificado = CASE
@@ -324,9 +457,19 @@ async function markReadUnified({
 }
 
 module.exports = {
+  // helpers
+  getConfigOwner,
+  resolveOwnerDisplayName,
+  getOwnerClientId,
+
+  // core
   ensureUnifiedConversation,
+
+  // messages
   saveIncomingMessageUnified,
   saveOutgoingMessageUnified,
+
+  // states
   markDeliveredUnified,
   markReadUnified,
 };

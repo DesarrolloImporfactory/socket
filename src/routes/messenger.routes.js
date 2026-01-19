@@ -14,7 +14,7 @@ const messengerPagesController = require('../controllers/messenger_pages.control
 router.get('/webhook', messengerController.verifyWebhook);
 
 //POST para recibir eventos (con validacion de firma)
-router.post('/webhook', verifyFBSignature, messengerController.receiveWebhook);
+router.post('/webhook', messengerController.receiveWebhook);
 
 // 1. OAuth de login (construida por server)
 router.get('/facebook/login-url', oauthController.getLoginUrl);

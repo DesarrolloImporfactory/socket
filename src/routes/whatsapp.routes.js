@@ -22,7 +22,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
       `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
        FROM configuraciones
        WHERE id = ? AND suspendido = 0`,
-      { replacements: [id_configuracion] }
+      { replacements: [id_configuracion] },
     );
 
     // si no hay registro de configuración, no es error
@@ -96,7 +96,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
                 'profile_picture_url',
               ].join(','),
             },
-          }
+          },
         );
 
         let profile = null;
@@ -106,7 +106,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
         }
         // si 401/403/otros -> dejamos profile=null y seguimos
         return { ...n, profile };
-      })
+      }),
     );
 
     return res.json({ success: true, data: merged });
@@ -137,7 +137,7 @@ router.post('/estadoConexion', async (req, res) => {
               COALESCE(telefono,'') telefono
          FROM configuraciones
         WHERE id = ? AND suspendido = 0 LIMIT 1`,
-      { replacements: [id_configuracion] }
+      { replacements: [id_configuracion] },
     );
     if (!rows.length)
       return res
@@ -202,7 +202,7 @@ router.post('/CrearPlantilla', async (req, res) => {
   } catch (error) {
     console.error(
       'Error al crear plantilla:',
-      error?.response?.data || error.message
+      error?.response?.data || error.message,
     );
     return res.status(500).json({
       success: false,
@@ -232,7 +232,7 @@ router.post('/obtenerPlantillasPlataforma', async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM templates_chat_center WHERE id_configuracion = ${id_configuracion}`
+      `SELECT * FROM templates_chat_center WHERE id_configuracion = ${id_configuracion}`,
     );
 
     return res.json(rows); // o { success: true, data: rows } si deseas uniformar
@@ -272,7 +272,7 @@ router.post('/crearPlantillaRapida', async (req, res) => {
       {
         replacements: [atajo, mensaje, id_configuracion],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
 
     return res.json({
@@ -330,7 +330,7 @@ router.put('/cambiarEstado', async (req, res) => {
       `UPDATE templates_chat_center SET principal = ? WHERE id_template = ?`,
       {
         replacements: [estado, id_template],
-      }
+      },
     );
 
     //Depurando porque no se recibia un mensaje de un cambio realmente hecho.
@@ -418,7 +418,7 @@ router.delete('/eliminarPlantilla', async (req, res) => {
       `DELETE FROM templates_chat_center WHERE id_template = ?`,
       {
         replacements: [id_template],
-      }
+      },
     );
 
     // Validamos si se eliminó al menos una fila
@@ -482,7 +482,7 @@ router.put('/EditarPlantilla', async (req, res) => {
       `UPDATE templates_chat_center SET atajo = ?, mensaje = ? WHERE id_template = ?`,
       {
         replacements: [atajo, mensaje, id_template],
-      }
+      },
     );
 
     if (result.changedRows > 0) {
@@ -542,7 +542,7 @@ router.put('/editarConfiguracion', async (req, res) => {
       `UPDATE configuraciones SET template_generar_guia = ? WHERE id = ?`,
       {
         replacements: [id_template_whatsapp, id_configuracion],
-      }
+      },
     );
 
     if (result.affectedRows > 0) {
@@ -585,7 +585,7 @@ router.put('/editarConfiguracionCalendario', async (req, res) => {
       `UPDATE configuraciones SET template_notificar_calendario = ? WHERE id = ?`,
       {
         replacements: [id_template_whatsapp, id_configuracion],
-      }
+      },
     );
 
     if (result.affectedRows > 0) {
@@ -650,7 +650,7 @@ router.put('/actualizarMetodoPago', async (req, res) => {
       `UPDATE configuraciones SET metodo_pago = ? WHERE id = ?`,
       {
         replacements: [metodo_pago, id],
-      }
+      },
     );
 
     if (result.changedRows > 0) {
@@ -696,7 +696,7 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
       `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
          FROM configuraciones
         WHERE id = ? AND suspendido = 0`,
-      { replacements: [id_configuracion] }
+      { replacements: [id_configuracion] },
     );
 
     if (!rows.length || !rows[0].WABA_ID || !rows[0].ACCESS_TOKEN) {
@@ -775,7 +775,7 @@ router.post('/obtenerConfiguracion', async (req, res) => {
       `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia 
        FROM configuraciones 
        WHERE id = ? AND suspendido = 0`,
-      { replacements: [id_configuracion] }
+      { replacements: [id_configuracion] },
     );
 
     if (rows.length === 0) {
@@ -820,7 +820,7 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT * FROM configuraciones WHERE id =? AND suspendido = 0`,
-      { replacements: [id_configuracion] }
+      { replacements: [id_configuracion] },
     );
 
     if (rows.length === 0) {
@@ -842,6 +842,82 @@ router.post('/configuracionesAutomatizador', async (req, res) => {
   }
 });
 
+async function upsertOwnerByConfig({
+  id_configuracion,
+  uid_cliente = null,
+  nombre_cliente = null,
+  celular_cliente = null,
+  source = 'owner',
+  page_id = null,
+  external_id = null,
+  id_plataforma = null,
+}) {
+  // 1) Buscar propietario existente (único por config)
+  const [owner] = await db.query(
+    `SELECT id
+       FROM clientes_chat_center
+      WHERE id_configuracion = ?
+        AND propietario = 1
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  // 2) Si existe -> actualizar
+  if (owner?.id) {
+    await db.query(
+      `UPDATE clientes_chat_center
+          SET uid_cliente     = COALESCE(?, uid_cliente),
+              nombre_cliente  = COALESCE(?, nombre_cliente),
+              celular_cliente = COALESCE(?, celular_cliente),
+              source          = COALESCE(?, source),
+              page_id         = COALESCE(?, page_id),
+              external_id     = COALESCE(?, external_id),
+              id_plataforma   = COALESCE(?, id_plataforma),
+              updated_at      = NOW()
+        WHERE id = ?`,
+      {
+        replacements: [
+          uid_cliente,
+          nombre_cliente,
+          celular_cliente,
+          source,
+          page_id,
+          external_id,
+          id_plataforma,
+          owner.id,
+        ],
+      },
+    );
+
+    return owner.id;
+  }
+
+  // 3) Si no existe -> crear
+  const [ins] = await db.query(
+    `INSERT INTO clientes_chat_center
+      (id_configuracion, id_plataforma, uid_cliente, nombre_cliente, celular_cliente,
+       propietario, source, page_id, external_id, created_at, updated_at)
+     VALUES
+      (?, ?, ?, ?, ?, 1, ?, ?, ?, NOW(), NOW())`,
+    {
+      replacements: [
+        id_configuracion,
+        id_plataforma,
+        uid_cliente,
+        nombre_cliente,
+        celular_cliente,
+        source,
+        page_id,
+        external_id,
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  return ins?.insertId ?? ins;
+}
+
 //Segundo paso si el caso es manualmente.
 router.post('/actualizarConfiguracionMeta', async (req, res) => {
   const {
@@ -853,7 +929,6 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
     telefono,
   } = req.body;
 
-  // Validar que los datos existen y son correctos
   if (
     !id_configuracion ||
     !id_telefono ||
@@ -869,7 +944,6 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
   }
 
   try {
-    // Actualizar webhook_url en la tabla configuraciones
     const webhook_url =
       'https://chat.imporfactory.app/api/v1/webhook_meta/webhook_whatsapp?webhook=wh_clfgshu99';
 
@@ -901,37 +975,23 @@ router.post('/actualizarConfiguracionMeta', async (req, res) => {
       });
     }
 
-    // ✅ UPSERT cliente en clientes_chat_center (evita Duplicate entry)
-    const upsertClienteSql = `
-      INSERT INTO clientes_chat_center
-        (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
-      ON DUPLICATE KEY UPDATE
-        uid_cliente     = VALUES(uid_cliente),
-        nombre_cliente  = VALUES(nombre_cliente),
-        celular_cliente = VALUES(celular_cliente),
-        propietario     = VALUES(propietario),
-        updated_at      = NOW(),
-        id             = LAST_INSERT_ID(id)
-    `;
-
-    await db.query(upsertClienteSql, {
-      replacements: [
-        id_configuracion,
-        id_telefono,
-        nombre_configuracion,
-        telefono,
-        1,
-      ],
+    // ✅ PROPIETARIO ÚNICO POR CONFIG: si existe -> UPDATE, si no -> INSERT
+    const ownerId = await upsertOwnerByConfig({
+      id_configuracion,
+      uid_cliente: id_telefono, // WA phone_number_id
+      nombre_cliente: nombre_configuracion,
+      celular_cliente: telefono, // display
+      source: 'owner', // o 'wa_owner' si quiere
+      page_id: null,
+      external_id: null,
+      id_plataforma: null,
     });
-
-    // Si en algún momento necesita el ID del cliente:
-    // const [{ id: idCliente }] = await db.query('SELECT LAST_INSERT_ID() AS id');
 
     return res.status(200).json({
       status: 200,
+      owner_id: ownerId,
       message:
-        'Configuración actualizada y cliente insertado/actualizado correctamente.',
+        'Configuración actualizada y cliente propietario insertado/actualizado correctamente.',
     });
   } catch (error) {
     console.error('Error al actualizar configuración Meta:', error);
@@ -974,7 +1034,7 @@ async function getConfigFromDB(id) {
       {
         replacements: { id: idNum },
         type: db.QueryTypes.SELECT, // devuelve array de filas
-      }
+      },
     );
 
     return rows[0] || null;
@@ -1543,7 +1603,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         '[GET][ERR]',
         url,
         e?.response?.status,
-        e?.response?.data || e.message
+        e?.response?.data || e.message,
       );
       throw e;
     }
@@ -1556,7 +1616,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         '[POST][ERR]',
         url,
         e?.response?.status,
-        e?.response?.data || e.message
+        e?.response?.data || e.message,
       );
       throw e;
     }
@@ -1575,13 +1635,13 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           code,
           redirect_uri: EXACT_REDIRECT_URI,
         },
-      }
+      },
     );
     clientToken = r.data?.access_token;
   } catch (eWith) {
     console.log(
       '[OAUTH][ERR with redirect_uri]',
-      eWith?.response?.data || eWith.message
+      eWith?.response?.data || eWith.message,
     );
     try {
       console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
@@ -1593,7 +1653,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             client_secret: process.env.FB_APP_SECRET,
             code,
           },
-        }
+        },
       );
       clientToken = r2.data?.access_token;
     } catch (eNo) {
@@ -1618,13 +1678,13 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       const clientResp = await safeGet(
         `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
         {},
-        bearer(SYS_TOKEN)
+        bearer(SYS_TOKEN),
       );
       wabas.push(...(clientResp.data?.data || []));
     } catch (e) {
       console.log(
         '[WABA][WARN] No se pudieron obtener client_wabas:',
-        e?.response?.data || e.message
+        e?.response?.data || e.message,
       );
     }
 
@@ -1632,19 +1692,19 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       const ownedResp = await safeGet(
         `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
         {},
-        bearer(SYS_TOKEN)
+        bearer(SYS_TOKEN),
       );
       wabas.push(...(ownedResp.data?.data || []));
     } catch (e) {
       console.log(
         '[WABA][WARN] No se pudieron obtener owned_wabas:',
-        e?.response?.data || e.message
+        e?.response?.data || e.message,
       );
     }
 
     if (!wabas.length) {
       throw new Error(
-        `❌ No se encontraron WABAs visibles para el BUSINESS_ID: ${BUSINESS_ID}`
+        `❌ No se encontraron WABAs visibles para el BUSINESS_ID: ${BUSINESS_ID}`,
       );
     }
 
@@ -1660,7 +1720,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       const r = await safeGet(
         `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
         { fields: 'id,display_phone_number,status,code_verification_status' },
-        bearer(SYS_TOKEN)
+        bearer(SYS_TOKEN),
       );
       return r?.data?.data || [];
     }
@@ -1670,7 +1730,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       try {
         const phones = await fetchPhonesOf(waba.id);
         const match = phones.find(
-          (p) => norm(p.display_phone_number) === displayWanted
+          (p) => norm(p.display_phone_number) === displayWanted,
         );
         if (match) {
           matchedPhone = match;
@@ -1689,14 +1749,14 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       } catch (e) {
         console.log(
           `[SELECT][WARN] WABA ${waba.id} phones:`,
-          e?.response?.data || e.message
+          e?.response?.data || e.message,
         );
       }
     }
 
     if (!wabaPicked || !phoneNumberId) {
       throw new Error(
-        `No se encontró el display_number_onboarding=${displayWanted} en los WABAs visibles.`
+        `No se encontró el display_number_onboarding=${displayWanted} en los WABAs visibles.`,
       );
     }
 
@@ -1709,7 +1769,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     if (matchedStatus === 'CONNECTED') {
       console.log(
-        '[REGISTER][SKIP] Número ya CONNECTED. No se ejecuta /register.'
+        '[REGISTER][SKIP] Número ya CONNECTED. No se ejecuta /register.',
       );
     } else {
       console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
@@ -1717,18 +1777,18 @@ router.post('/embeddedSignupComplete', async (req, res) => {
         await safePost(
           regUrl,
           { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-          bearer(SYS_TOKEN)
+          bearer(SYS_TOKEN),
         );
         console.log('[REGISTER][OK] con SYS_TOKEN');
       } catch (e1) {
         console.log(
-          '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken'
+          '[POST][REGISTER][WARN] SYS_TOKEN falló; retry con clientToken',
         );
         try {
           await safePost(
             regUrl,
             { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-            bearer(clientToken)
+            bearer(clientToken),
           );
           console.log('[REGISTER][OK] con clientToken');
         } catch (e2) {
@@ -1739,7 +1799,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             await safePost(
               regUrl,
               { messaging_product: 'whatsapp', pin: DEFAULT_TWOFA_PIN },
-              bearer(clientToken)
+              bearer(clientToken),
             );
             console.log('[REGISTER][RETRY_OK] por estado intermedio');
           } else {
@@ -1756,17 +1816,17 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       await safePost(
         subUrl,
         { messaging_product: 'whatsapp' },
-        bearer(SYS_TOKEN)
+        bearer(SYS_TOKEN),
       );
       console.log('[SUBSCRIBE][OK] con SYS_TOKEN');
     } catch (e1) {
       console.log(
-        '[POST][SUBSCRIBE][WARN] SYS_TOKEN falló; retry con clientToken'
+        '[POST][SUBSCRIBE][WARN] SYS_TOKEN falló; retry con clientToken',
       );
       await safePost(
         subUrl,
         { messaging_product: 'whatsapp' },
-        bearer(clientToken)
+        bearer(clientToken),
       );
       console.log('[SUBSCRIBE][OK] con clientToken');
     }
@@ -1780,7 +1840,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           fields:
             'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
         },
-        bearer(SYS_TOKEN)
+        bearer(SYS_TOKEN),
       );
       info = r1.data || {};
       console.log('[PN-INFO][OK] con SYS_TOKEN');
@@ -1792,7 +1852,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
           fields:
             'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
         },
-        bearer(clientToken)
+        bearer(clientToken),
       );
       info = r2.data || {};
       console.log('[PN-INFO][OK] con clientToken');
@@ -1818,7 +1878,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             AND (telefono = ? OR telefono IS NULL OR telefono = '')
           ORDER BY id DESC
           LIMIT 1`,
-        { replacements: [id_usuario, displayNumber] }
+        { replacements: [id_usuario, displayNumber] },
       );
       if (Array.isArray(preRows) && preRows.length) {
         idConfigToUse = preRows[0].id;
@@ -1834,13 +1894,13 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             AND id_telefono = ?
             AND suspendido = 0
           LIMIT 1`,
-        { replacements: [id_usuario, phoneNumberId] }
+        { replacements: [id_usuario, phoneNumberId] },
       );
       if (Array.isArray(matchRows) && matchRows.length) {
         idConfigToUse = matchRows[0].id;
         console.log(
           '[DB] Usando config existente por id_usuario+id_telefono id=',
-          idConfigToUse
+          idConfigToUse,
         );
       }
     }
@@ -1866,7 +1926,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             webhook_url,
             idConfigToUse,
           ],
-        }
+        },
       );
       console.log('[DB] UPDATE configuraciones OK');
     } else {
@@ -1887,35 +1947,26 @@ router.post('/embeddedSignupComplete', async (req, res) => {
             permanentPartnerTok,
             webhook_url,
           ],
-        }
+        },
       );
       idConfigToUse = ins?.insertId || ins;
       console.log('[DB] INSERT configuraciones OK id=', idConfigToUse);
     }
 
     // ✅ CAMBIO: UPSERT en vez de INSERT IGNORE
-    await db.query(
-      `INSERT INTO clientes_chat_center
-         (id_configuracion, uid_cliente, nombre_cliente, celular_cliente, propietario, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NOW(), NOW())
-       ON DUPLICATE KEY UPDATE
-         uid_cliente     = VALUES(uid_cliente),
-         nombre_cliente  = VALUES(nombre_cliente),
-         celular_cliente = VALUES(celular_cliente),
-         propietario     = VALUES(propietario),
-         updated_at      = NOW(),
-         id             = LAST_INSERT_ID(id)`,
-      {
-        replacements: [
-          idConfigToUse,
-          phoneNumberId,
-          nombre_configuracion,
-          displayNumber,
-          1,
-        ],
-      }
-    );
-    console.log('[DB] UPSERT clientes_chat_center OK');
+    // ✅ PROPIETARIO ÚNICO POR CONFIG: si existe -> UPDATE, si no -> INSERT
+    const ownerId = await upsertOwnerByConfig({
+      id_configuracion: idConfigToUse,
+      uid_cliente: phoneNumberId, // phone_number_id
+      nombre_cliente: nombre_configuracion,
+      celular_cliente: displayNumber, // display_phone_number
+      source: 'owner', // o 'wa_owner'
+      page_id: null,
+      external_id: null,
+      id_plataforma: null,
+    });
+
+    console.log('[DB] OWNER UPSERT (by config) OK. ownerId=', ownerId);
 
     return res.json({
       success: true,
@@ -1929,7 +1980,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   } catch (err) {
     console.error(
       '❌ embeddedSignupComplete:',
-      err?.response?.data || err.message
+      err?.response?.data || err.message,
     );
     return res.status(400).json({
       success: false,
@@ -2231,7 +2282,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
   } catch (error) {
     console.error(
       'Error general al crear plantillas:',
-      error?.response?.data || error.message
+      error?.response?.data || error.message,
     );
     res.status(500).json({ error: error.message });
   }
