@@ -52,13 +52,13 @@ class ChatService {
       let whereClause = '';
 
       if (rol == 'administrador') {
-        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+        whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
 
         if (scopeChats != 'mine') {
           whereClause += ` AND id_encargado IS NULL`;
         }
       } else {
-        whereClause = `WHERE id_configuracion = :id_configuracion AND celular_cliente != :numero`;
+        whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
 
         if (scopeChats == 'mine') {
           whereClause += ` AND id_encargado = :id_sub_usuario `;
@@ -191,7 +191,7 @@ class ChatService {
       }
 
       const sqlQuery = `
-      SELECT c.*, 'wa' AS source
+      SELECT c.*
       FROM vista_chats c
       ${whereClause}
       ORDER BY mensaje_created_at DESC, id DESC
@@ -208,7 +208,6 @@ class ChatService {
       // Armar los replacements
       const replacements = {
         id_configuracion,
-        numero,
         searchTerm: filtros.searchTerm
           ? `%${filtros.searchTerm.toLowerCase()}%`
           : null,

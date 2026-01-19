@@ -36,7 +36,7 @@ async function log(msg) {
   await fs.mkdir(logsDir, { recursive: true });
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
-    `[${new Date().toISOString()}] ${msg}\n`
+    `[${new Date().toISOString()}] ${msg}\n`,
   );
 }
 
@@ -105,14 +105,14 @@ async function procesarAsistenteMensajeVentas(body) {
               id_configuracion: id_configuracion,
             },
             type: db.QueryTypes.SELECT,
-          }
+          },
         );
 
         // Si encontramos productos, agregarlos al bloqueProductos
         if (productosEncontrados && productosEncontrados.length > 0) {
           for (let infoProducto of productosEncontrados) {
             const { combosNormalizados, bloqueCombos } = procesarCombosParaIA(
-              infoProducto.combos_producto
+              infoProducto.combos_producto,
             );
 
             bloqueProductos += `🛒 Producto: ${infoProducto.nombre_producto}\n`;
@@ -138,7 +138,7 @@ async function procesarAsistenteMensajeVentas(body) {
         await log(`✅ Productos encontrados:\n${bloqueProductos}`);
       } else {
         await log(
-          '⚠️ No se encontraron productos con los nombres proporcionados.'
+          '⚠️ No se encontraron productos con los nombres proporcionados.',
         );
       }
     }
@@ -152,12 +152,12 @@ async function procesarAsistenteMensajeVentas(body) {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!assistants || assistants.length === 0) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`
+        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`,
       );
       return {
         status: 400,
@@ -176,9 +176,8 @@ async function procesarAsistenteMensajeVentas(body) {
     const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
 
     if (sales && sales.ofrecer == 'servicios') {
-      const datosCliente = await obtenerDatosCalendarioParaAssistant(
-        id_configuracion
-      );
+      const datosCliente =
+        await obtenerDatosCalendarioParaAssistant(id_configuracion);
       bloqueInfo = datosCliente.bloque || '';
       tipoInfo = datosCliente.tipo || null;
     }
@@ -210,13 +209,15 @@ async function procesarAsistenteMensajeVentas(body) {
       nombre_estado = '';
     }
 
+    /* console.log('nombre_estado: ' + nombre_estado); */
+
     const oia_asistentes = await db.query(
-      `SELECT tipo, assistant_id 
+      `SELECT template_key, assistant_id 
      FROM oia_assistants_cliente 
-     WHERE tipo = '${nombre_estado}' AND id_configuracion = '${id_configuracion}'`,
+     WHERE template_key = '${nombre_estado}' AND id_configuracion = '${id_configuracion}'`,
       {
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!oia_asistentes || oia_asistentes.length === 0) {
@@ -249,7 +250,7 @@ async function procesarAsistenteMensajeVentas(body) {
 
     if (!assistant_id) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`
+        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -272,11 +273,11 @@ async function procesarAsistenteMensajeVentas(body) {
             role: 'user',
             content: `🧾 Información del cliente:\n\n${bloqueInfo}`,
           },
-          { headers }
+          { headers },
         )
         .catch(async (err) => {
           await log(
-            `⚠️ Error al enviar mensaje del cliente a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+            `⚠️ Error al enviar mensaje del cliente a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
           );
         });
     }
@@ -285,11 +286,11 @@ async function procesarAsistenteMensajeVentas(body) {
       .post(
         `https://api.openai.com/v1/threads/${id_thread}/messages`,
         { role: 'user', content: mensaje },
-        { headers }
+        { headers },
       )
       .catch(async (err) => {
         await log(
-          `⚠️ Error al enviar mensaje de usuario a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al enviar mensaje de usuario a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -298,11 +299,11 @@ async function procesarAsistenteMensajeVentas(body) {
       .post(
         `https://api.openai.com/v1/threads/${id_thread}/runs`,
         { assistant_id, max_completion_tokens: 200 },
-        { headers }
+        { headers },
       )
       .catch(async (err) => {
         await log(
-          `⚠️ Error al ejecutar assistant para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al ejecutar assistant para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -331,7 +332,7 @@ async function procesarAsistenteMensajeVentas(body) {
       try {
         const statusRes = await axios.get(
           `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-          { headers }
+          { headers },
         );
 
         // Aquí podrías inspeccionar el objeto para evitar errores
@@ -350,7 +351,7 @@ async function procesarAsistenteMensajeVentas(body) {
         if (statusRes.data.usage) {
           await log(
             'Respuesta completa de usage: ' +
-              flatted.stringify(statusRes.data.usage)
+              flatted.stringify(statusRes.data.usage),
           ); // Esto te ayudará a ver la estructura completa
 
           ({
@@ -362,7 +363,7 @@ async function procesarAsistenteMensajeVentas(body) {
           const model = statusRes.data.model || 'gpt-4.1-mini';
           const costo = estCosto(model, prompt_tokens, completion_tokens);
           await log(
-            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
+            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`,
           );
         }
 
@@ -375,7 +376,7 @@ async function procesarAsistenteMensajeVentas(body) {
             // Validar si el error es por cuota excedida
             if (statusRes.data.error.code === 'rate_limit_exceeded') {
               await log(
-                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
               );
               return {
                 status: 400,
@@ -384,7 +385,7 @@ async function procesarAsistenteMensajeVentas(body) {
               };
             } else if (statusRes.data.error.code === '15') {
               await log(
-                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.'
+                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.',
               );
               return {
                 status: 400,
@@ -393,24 +394,24 @@ async function procesarAsistenteMensajeVentas(body) {
               };
             } else {
               await log(
-                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`
+                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`,
               );
             }
           } else {
             // Si no se encuentra el campo error, revisa otros posibles campos
             await log(
-              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.'
+              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.',
             );
 
             // Verifica si hay un mensaje sobre cuota excedida
             if (
               statusRes.data.last_error &&
               statusRes.data.last_error.includes(
-                'You exceeded your current quota'
+                'You exceeded your current quota',
               )
             ) {
               await log(
-                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
               );
             }
 
@@ -418,8 +419,8 @@ async function procesarAsistenteMensajeVentas(body) {
             if (statusRes.data.last_error) {
               await log(
                 `Último error registrado: ${JSON.stringify(
-                  statusRes.data.last_error
-                )}`
+                  statusRes.data.last_error,
+                )}`,
               );
             }
 
@@ -432,7 +433,7 @@ async function procesarAsistenteMensajeVentas(body) {
         // Verifica si el estado es 'failed' para procesar el error
       } catch (err) {
         await log(
-          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`,
         );
         break; // Rompe el bucle en caso de error
       }
@@ -442,7 +443,7 @@ async function procesarAsistenteMensajeVentas(body) {
 
     if (statusRun === 'failed') {
       await log(
-        `⚠️ La ejecución del assistant falló para id_thread: ${id_thread}`
+        `⚠️ La ejecución del assistant falló para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -456,7 +457,7 @@ async function procesarAsistenteMensajeVentas(body) {
       })
       .catch(async (err) => {
         await log(
-          `⚠️ Error al obtener mensajes de OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al obtener mensajes de OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -477,7 +478,7 @@ async function procesarAsistenteMensajeVentas(body) {
         {
           replacements: [telefono, id_configuracion, tiempoDisparo],
           type: db.QueryTypes.SELECT,
-        }
+        },
       );
 
       if (existing.length === 0) {
@@ -501,11 +502,11 @@ async function procesarAsistenteMensajeVentas(body) {
                 id_thread,
               ],
               type: db.QueryTypes.INSERT,
-            }
+            },
           )
           .catch(async (err) => {
             await log(
-              `⚠️ Error al insertar remarketing para telefono: ${telefono}, id_thread: ${id_thread}. Error: ${err.message}`
+              `⚠️ Error al insertar remarketing para telefono: ${telefono}, id_thread: ${id_thread}. Error: ${err.message}`,
             );
           });
       }
@@ -523,7 +524,7 @@ async function procesarAsistenteMensajeVentas(body) {
     };
   } catch (err) {
     await log(
-      `⚠️ Error en la función procesarAsistenteMensajeVentas. Error: ${err.message}`
+      `⚠️ Error en la función procesarAsistenteMensajeVentas. Error: ${err.message}`,
     );
     return {
       status: 500,
@@ -548,18 +549,18 @@ async function procesarAsistenteMensajeImporfactory(body) {
   try {
     // 1. Obtener assistants activos
     const assistants = await db.query(
-      `SELECT tipo, assistant_id 
-     FROM oia_asistentes 
-     WHERE tipo = '${estado_contacto}'`,
+      `SELECT template_key, assistant_id 
+     FROM oia_assistants_cliente 
+     WHERE template_key = '${estado_contacto}'`,
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!assistants || assistants.length === 0) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`
+        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`,
       );
       return {
         status: 400,
@@ -575,7 +576,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     if (!assistant_id) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`
+        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -604,11 +605,11 @@ async function procesarAsistenteMensajeImporfactory(body) {
             role: 'user',
             content: `${bloqueInfo}`,
           },
-          { headers }
+          { headers },
         )
         .catch(async (err) => {
           await log(
-            `⚠️ Error al enviar mensaje del cliente a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+            `⚠️ Error al enviar mensaje del cliente a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
           );
         });
     }
@@ -617,11 +618,11 @@ async function procesarAsistenteMensajeImporfactory(body) {
       .post(
         `https://api.openai.com/v1/threads/${id_thread}/messages`,
         { role: 'user', content: mensaje },
-        { headers }
+        { headers },
       )
       .catch(async (err) => {
         await log(
-          `⚠️ Error al enviar mensaje de usuario a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al enviar mensaje de usuario a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -630,11 +631,11 @@ async function procesarAsistenteMensajeImporfactory(body) {
       .post(
         `https://api.openai.com/v1/threads/${id_thread}/runs`,
         { assistant_id, max_completion_tokens: 200 },
-        { headers }
+        { headers },
       )
       .catch(async (err) => {
         await log(
-          `⚠️ Error al ejecutar assistant para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al ejecutar assistant para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -664,7 +665,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       try {
         const statusRes = await axios.get(
           `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-          { headers }
+          { headers },
         );
 
         // Aquí podrías inspeccionar el objeto para evitar errores
@@ -683,7 +684,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
         if (statusRes.data.usage) {
           await log(
             'Respuesta completa de usage: ' +
-              flatted.stringify(statusRes.data.usage)
+              flatted.stringify(statusRes.data.usage),
           ); // Esto te ayudará a ver la estructura completa
 
           ({
@@ -694,7 +695,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
           const model = statusRes.data.model || 'gpt-4.1-mini';
           const costo = estCosto(model, prompt_tokens, completion_tokens);
           await log(
-            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
+            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`,
           );
         }
 
@@ -707,7 +708,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
             // Validar si el error es por cuota excedida
             if (statusRes.data.error.code === 'rate_limit_exceeded') {
               await log(
-                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
               );
               return {
                 status: 400,
@@ -716,7 +717,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
               };
             } else if (statusRes.data.error.code === '15') {
               await log(
-                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.'
+                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.',
               );
               return {
                 status: 400,
@@ -725,24 +726,24 @@ async function procesarAsistenteMensajeImporfactory(body) {
               };
             } else {
               await log(
-                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`
+                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`,
               );
             }
           } else {
             // Si no se encuentra el campo error, revisa otros posibles campos
             await log(
-              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.'
+              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.',
             );
 
             // Verifica si hay un mensaje sobre cuota excedida
             if (
               statusRes.data.last_error &&
               statusRes.data.last_error.includes(
-                'You exceeded your current quota'
+                'You exceeded your current quota',
               )
             ) {
               await log(
-                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.'
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
               );
             }
 
@@ -750,8 +751,8 @@ async function procesarAsistenteMensajeImporfactory(body) {
             if (statusRes.data.last_error) {
               await log(
                 `Último error registrado: ${JSON.stringify(
-                  statusRes.data.last_error
-                )}`
+                  statusRes.data.last_error,
+                )}`,
               );
             }
 
@@ -764,7 +765,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
         // Verifica si el estado es 'failed' para procesar el error
       } catch (err) {
         await log(
-          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`,
         );
         break; // Rompe el bucle en caso de error
       }
@@ -774,7 +775,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     if (statusRun === 'failed') {
       await log(
-        `⚠️ La ejecución del assistant falló para id_thread: ${id_thread}`
+        `⚠️ La ejecución del assistant falló para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -788,7 +789,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
       })
       .catch(async (err) => {
         await log(
-          `⚠️ Error al obtener mensajes de OpenAI para id_thread: ${id_thread}. Error: ${err.message}`
+          `⚠️ Error al obtener mensajes de OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
         );
       });
 
@@ -811,7 +812,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
     };
   } catch (err) {
     await log(
-      `⚠️ Error en la función procesarAsistenteMensajeImporfactory. Error: ${err.message}`
+      `⚠️ Error en la función procesarAsistenteMensajeImporfactory. Error: ${err.message}`,
     );
     return {
       status: 500,
@@ -835,17 +836,17 @@ async function separadorProductos({
   try {
     // Obtener el tipo de asistente para separador_productos
     const oia_asistentes = await db.query(
-      `SELECT tipo, assistant_id 
-       FROM oia_asistentes 
-       WHERE tipo = 'separador_productos'`,
+      `SELECT template_key, assistant_id 
+       FROM oia_assistants_cliente 
+       WHERE template_key = 'separador_productos'`,
       {
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!oia_asistentes || oia_asistentes.length === 0) {
       await log(
-        '⚠️ No se encontró un assistant válido para separador_productos'
+        '⚠️ No se encontró un assistant válido para separador_productos',
       );
       return {
         status: 400,
@@ -865,14 +866,14 @@ async function separadorProductos({
     await axios.post(
       `https://api.openai.com/v1/threads/${id_thread}/messages`,
       { role: 'user', content: mensaje },
-      { headers }
+      { headers },
     );
 
     // Paso 2: Ejecutar el run
     const runRes = await axios.post(
       `https://api.openai.com/v1/threads/${id_thread}/runs`,
       { assistant_id, max_completion_tokens: 200 },
-      { headers }
+      { headers },
     );
 
     const run_id = runRes.data.id;
@@ -903,7 +904,7 @@ async function separadorProductos({
       try {
         const statusRes = await axios.get(
           `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-          { headers }
+          { headers },
         );
 
         statusRun = statusRes.data.status;
@@ -911,13 +912,13 @@ async function separadorProductos({
         if (statusRun === 'completed') {
           const messagesRes = await axios.get(
             `https://api.openai.com/v1/threads/${id_thread}/messages`,
-            { headers }
+            { headers },
           );
 
           if (statusRes.data.usage) {
             await log(
               'Respuesta completa de usage: ' +
-                flatted.stringify(statusRes.data.usage)
+                flatted.stringify(statusRes.data.usage),
             ); // Esto te ayudará a ver la estructura completa
 
             ({
@@ -928,7 +929,7 @@ async function separadorProductos({
             const model = statusRes.data.model || 'gpt-4.1-mini';
             const costo = estCosto(model, prompt_tokens, completion_tokens);
             await log(
-              `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`
+              `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`,
             );
           }
 
@@ -941,7 +942,7 @@ async function separadorProductos({
         }
       } catch (err) {
         await log(
-          `⚠️ Error al consultar el estado del assistant separador_productos: ${err.message}`
+          `⚠️ Error al consultar el estado del assistant separador_productos: ${err.message}`,
         );
         break; // Romper el bucle en caso de error
       }
@@ -949,7 +950,7 @@ async function separadorProductos({
 
     if (statusRun === 'failed') {
       await log(
-        `⚠️ La ejecución del assistant separador_productos falló para id_thread: ${id_thread}`
+        `⚠️ La ejecución del assistant separador_productos falló para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -964,7 +965,7 @@ async function separadorProductos({
     };
   } catch (err) {
     await log(
-      `⚠️ Error en la función separadorProductos. Error: ${err.message}`
+      `⚠️ Error en la función separadorProductos. Error: ${err.message}`,
     );
     return {
       status: 500,
