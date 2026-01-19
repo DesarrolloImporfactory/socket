@@ -118,7 +118,7 @@ router.post(
       return next();
     }
   },
-
+  verifyFBSignature,
   igController.receiveWebhook,
 );
 
