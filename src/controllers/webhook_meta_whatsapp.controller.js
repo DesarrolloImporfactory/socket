@@ -222,8 +222,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       const normalizedMessages = isSMBEcho ? echoMessages : inboundMessages;
 
-      if (!normalizedMessages.length) return;
-
       const business_phone_id = value?.metadata?.phone_number_id || ''; // Obtenemos el phone_number_id para buscar la configuracion
 
       /* buscar id_configuracion */
@@ -314,6 +312,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         }
       }
       /* Validar si existen errores */
+
+      if (!normalizedMessages.length) return;
 
       // === Extraer datos del mensaje entrante ===
       /* const phone_whatsapp_from = value?.messages?.[0]?.from || ''; */ // Obtenemos el remitente
