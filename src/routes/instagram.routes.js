@@ -32,16 +32,16 @@ const summarize = (m) => {
   const kind = msg.text
     ? 'message_text'
     : m.message_edit
-    ? 'message_edit'
-    : m.delivery
-    ? 'delivery'
-    : m.read
-    ? 'read'
-    : m.postback
-    ? 'postback'
-    : m.reaction
-    ? 'reaction'
-    : 'unknown';
+      ? 'message_edit'
+      : m.delivery
+        ? 'delivery'
+        : m.read
+          ? 'read'
+          : m.postback
+            ? 'postback'
+            : m.reaction
+              ? 'reaction'
+              : 'unknown';
 
   return {
     kind,
@@ -72,7 +72,7 @@ router.post(
       if (!messaging) {
         console.log(
           '[IG ROUTES][NO-MESSAGING] body=',
-          safeJSON(req.body, 1000)
+          safeJSON(req.body, 1000),
         );
         return next();
       }
@@ -119,7 +119,7 @@ router.post(
     }
   },
   verifyFBSignature,
-  igController.receiveWebhook
+  igController.receiveWebhook,
 );
 
 // OAuth / conexión

@@ -1,334 +1,332 @@
 const { db } = require('../database/config');
-const {
-  rrMessengerUnDepto,
-} = require('../utils/messenger/round_robin_messenger');
+const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
 
-// async function ensureConversation({
-//   id_configuracion,
-//   page_id,
-//   psid,
-//   customer_name = null,
-// }) {
-//   const [row] = await db.query(
-//     `SELECT id FROM messenger_conversations
-//      WHERE id_configuracion = ? AND page_id = ? AND psid = ? LIMIT 1`,
-//     {
-//       replacements: [id_configuracion, page_id, psid],
-//       type: db.QueryTypes.SELECT,
-//     }
-//   );
-//   if (row) return row.id;
-
-//   const [ins] = await db.query(
-//     `INSERT INTO messenger_conversations
-//       (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at)
-//      VALUES (?, ?, ?, 'open', 0, NOW(), NOW())`,
-//     {
-//       replacements: [id_configuracion, page_id, psid],
-//       type: db.QueryTypes.INSERT,
-//     }
-//   );
-
-//   // compatibilidad por si el driver devuelve el id directo o como insertId
-//   const conversationId = ins?.insertId ?? ins;
-//   return conversationId;
-// }
-
-async function ensureConversation({
-  id_configuracion,
-  page_id,
-  psid,
-  customer_name = null,
-}) {
+async function getConfigOwner(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id, id_encargado, id_departamento
-     FROM messenger_conversations
-     WHERE id_configuracion = ? AND page_id = ? AND psid = ?
+    `SELECT id_usuario, id_plataforma
+     FROM configuraciones
+     WHERE id = ? AND suspendido = 0
      LIMIT 1`,
-    {
-      replacements: [id_configuracion, page_id, psid],
-      type: db.QueryTypes.SELECT,
-    }
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-
-  // ✅ Si existe, pero está sin asignación, asignar una sola vez
-  if (row) {
-    if (row.id_encargado == null || row.id_departamento == null) {
-      const rr = await rrMessengerUnDepto({
-        id_configuracion,
-        motivo: 'auto_round_robin_messenger',
-      });
-
-      // actualizar conversación
-      await db.query(
-        `UPDATE messenger_conversations
-         SET id_encargado = ?, id_departamento = ?, updated_at = NOW()
-         WHERE id = ?`,
-        {
-          replacements: [
-            rr.id_encargado_nuevo ?? null,
-            rr.id_departamento_asginado ?? null,
-            row.id,
-          ],
-        }
-      );
-
-      // historial (ya admite NULL ✅)
-      await db.query(
-        `INSERT INTO historial_encargados_messenger
-          (id_messenger_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
-         VALUES (?, ?, ?, ?, ?)`,
-        {
-          replacements: [
-            row.id,
-            rr.id_departamento_asginado ?? null,
-            row.id_encargado ?? null,
-            rr.id_encargado_nuevo ?? null,
-            'auto_round_robin_messenger_fix',
-          ],
-          type: db.QueryTypes.INSERT,
-        }
-      );
-    }
-
-    return row.id;
-  }
-
-  // ✅ No existe: crear con RR
-  const rr = await rrMessengerUnDepto({
-    id_configuracion,
-    motivo: 'auto_round_robin_messenger',
-  });
-
-  const id_encargado = rr.id_encargado_nuevo ?? null;
-  const id_departamento = rr.id_departamento_asginado ?? null;
-
-  const [ins] = await db.query(
-    `INSERT INTO messenger_conversations
-      (id_configuracion, page_id, psid, status, unread_count, first_contact_at, last_message_at, customer_name, id_encargado, id_departamento)
-     VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), ?, ?, ?)`,
-    {
-      replacements: [
-        id_configuracion,
-        page_id,
-        psid,
-        customer_name,
-        id_encargado,
-        id_departamento,
-      ],
-      type: db.QueryTypes.INSERT,
-    }
-  );
-
-  const conversationId = ins?.insertId ?? ins;
-
-  // historial (cliente nuevo => anterior NULL) (ya admite NULL ✅)
-  await db.query(
-    `INSERT INTO historial_encargados_messenger
-      (id_messenger_conversation, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
-     VALUES (?, ?, ?, ?, ?)`,
-    {
-      replacements: [
-        conversationId,
-        id_departamento ?? null,
-        null,
-        id_encargado ?? null,
-        'auto_round_robin_messenger',
-      ],
-      type: db.QueryTypes.INSERT,
-    }
-  );
-
-  return conversationId;
+  return row || null;
 }
 
-async function saveIncomingMessage({
+/**
+ * Asegura cliente unificado en clientes_chat_center
+ * - source: 'ms' | 'ig'
+ * - page_id: page id
+ * - external_id: PSID/IGSID
+ *
+ * Devuelve: { id_cliente, id_encargado, id_departamento }
+ */
+async function ensureUnifiedConversation({
   id_configuracion,
+  source = 'ms',
   page_id,
-  psid,
-  text,
+  external_id,
+  customer_name = '',
+}) {
+  const cfgOwner = await getConfigOwner(id_configuracion);
+  if (!cfgOwner) return null;
+
+  // ✅ 1) crear/obtener cliente unificado (incluye RR unificado dentro)
+  const cliente = await ensureUnifiedClient({
+    id_configuracion,
+    id_usuario_dueno: cfgOwner.id_usuario,
+    id_plataforma: cfgOwner.id_plataforma,
+
+    source,
+    business_phone_id: page_id,
+    page_id,
+    external_id,
+
+    // para WA se usa phone real; aquí no aplica, pero no rompe
+    phone: external_id,
+
+    nombre_cliente: customer_name || '',
+    apellido_cliente: '',
+
+    motivo: `auto_round_robin_${source}`,
+  });
+
+  if (!cliente?.id) return null;
+
+  // ✅ 2) NO volver a hacer RR aquí (evita pisar id_encargado)
+
+  // Releer asignación final
+  const [finalRow] = await db.query(
+    `SELECT id, id_encargado, id_departamento
+     FROM clientes_chat_center
+     WHERE id = ? LIMIT 1`,
+    { replacements: [cliente.id], type: db.QueryTypes.SELECT },
+  );
+
+  return {
+    id_cliente: finalRow.id,
+    id_encargado: finalRow.id_encargado ?? null,
+    id_departamento: finalRow.id_departamento ?? null,
+  };
+}
+
+/**
+ * Guardar mensaje ENTRANTE (user -> page)
+ */
+async function saveIncomingMessageUnified({
+  id_configuracion,
+  id_plataforma = null,
+  id_cliente,
+  source = 'ms',
+  page_id = null,
+  external_id = null,
+
+  mid = null,
+  text = null,
   attachments = null,
   postback_payload = null,
   quick_reply_payload = null,
   sticker_id = null,
-  mid = null,
+
   meta = null,
+  status_unificado = 'received',
 }) {
-  const conversation_id = await ensureConversation({
-    id_configuracion,
-    page_id,
-    psid,
-  });
+  const external_mid = mid || null;
+
+  const tipo_mensaje = postback_payload
+    ? 'postback'
+    : attachments?.length
+      ? 'attachment'
+      : sticker_id
+        ? 'sticker'
+        : 'text';
+
+  const texto_mensaje = postback_payload
+    ? `Postback: ${postback_payload}`
+    : text || null;
+
+  const attachments_unificado = attachments
+    ? JSON.stringify(attachments)
+    : null;
+
+  const meta_unificado = meta ? JSON.stringify(meta) : null;
 
   const [ins] = await db.query(
-    `INSERT INTO messenger_messages
-      (conversation_id, id_configuracion, page_id, psid, direction, mid, text, attachments,
-       postback_payload, quick_reply_payload, sticker_id, status, meta, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'in', ?, ?, ?, ?, ?, ?, 'received', ?, NOW(), NOW())`,
+    `INSERT INTO mensajes_clientes
+      (id_plataforma, id_configuracion, id_cliente, source, page_id,
+       mid_mensaje, external_mid, tipo_mensaje, rol_mensaje, direction,
+       status_unificado, texto_mensaje, uid_whatsapp,
+       attachments_unificado, meta_unificado, created_at, updated_at, visto)
+     VALUES
+      (?, ?, ?, ?, ?,
+       ?, ?, ?, 0, 'in',
+       ?, ?, ?,
+       ?, ?, NOW(), NOW(), 0)`,
     {
       replacements: [
-        conversation_id,
+        id_plataforma,
         id_configuracion,
+        id_cliente,
+        source,
         page_id,
-        psid,
-        mid || null,
-        text || null,
-        attachments ? JSON.stringify(attachments) : null,
-        postback_payload || null,
-        quick_reply_payload || null,
-        sticker_id || null,
-        meta ? JSON.stringify(meta) : null,
+
+        mid,
+        external_mid,
+        tipo_mensaje,
+
+        status_unificado,
+        texto_mensaje,
+        external_id, // PSID/IGSID
+
+        attachments_unificado,
+        meta_unificado,
       ],
       type: db.QueryTypes.INSERT,
-    }
-  );
-
-  await db.query(
-    `UPDATE messenger_conversations
-     SET last_message_at = NOW(),
-         last_incoming_at = NOW(),
-         unread_count = unread_count + 1
-     WHERE id = ?`,
-    { replacements: [conversation_id] }
+    },
   );
 
   const insertedId = ins?.insertId ?? ins;
   const [row] = await db.query(
-    `SELECT id, created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
-    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+    `SELECT id, created_at FROM mensajes_clientes WHERE id = ? LIMIT 1`,
+    { replacements: [insertedId], type: db.QueryTypes.SELECT },
   );
 
-  return { conversation_id, id: row.id, created_at: row.created_at };
+  return { message_id: row?.id, created_at: row?.created_at };
 }
 
-async function saveOutgoingMessage({
+/**
+ * Guardar mensaje SALIENTE (page -> user)
+ */
+async function saveOutgoingMessageUnified({
   id_configuracion,
-  page_id,
-  psid,
-  text,
-  attachments = null,
+  id_plataforma = null,
+  id_cliente,
+  source = 'ms',
+  page_id = null,
+  external_id = null,
+
   mid = null,
-  status = 'sent',
+  text = null,
+  attachments = null,
+
+  status_unificado = 'sent',
   meta = null,
+  responsable = null,
   id_encargado = null,
 }) {
-  const conversation_id = await ensureConversation({
-    id_configuracion,
-    page_id,
-    psid,
-  });
+  const external_mid = mid || null;
+
+  const tipo_mensaje = attachments?.length ? 'attachment' : 'text';
+  const texto_mensaje = text || null;
+
+  const attachments_unificado = attachments
+    ? JSON.stringify(attachments)
+    : null;
+
+  const meta_unificado = meta ? JSON.stringify(meta) : null;
 
   const [ins] = await db.query(
-    `INSERT INTO messenger_messages
-      (conversation_id, id_configuracion, page_id, psid, direction, mid, text, attachments,
-       status, meta, created_at, updated_at, id_encargado)
-     VALUES (?, ?, ?, ?, 'out', ?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
+    `INSERT INTO mensajes_clientes
+      (id_plataforma, id_configuracion, id_cliente, source, page_id,
+       mid_mensaje, external_mid, tipo_mensaje, rol_mensaje, direction,
+       status_unificado, texto_mensaje, uid_whatsapp, responsable,
+       attachments_unificado, meta_unificado, created_at, updated_at, visto)
+     VALUES
+      (?, ?, ?, ?, ?,
+       ?, ?, ?, 1, 'out',
+       ?, ?, ?, ?,
+       ?, ?, NOW(), NOW(), 1)`,
     {
       replacements: [
-        conversation_id,
+        id_plataforma,
         id_configuracion,
+        id_cliente,
+        source,
         page_id,
-        psid,
-        mid || null,
-        text || null,
-        attachments ? JSON.stringify(attachments) : null,
-        status,
-        meta ? JSON.stringify(meta) : null,
-        id_encargado,
+
+        mid,
+        external_mid,
+        tipo_mensaje,
+
+        status_unificado,
+        texto_mensaje,
+        external_id,
+        responsable || (id_encargado ? String(id_encargado) : null),
+
+        attachments_unificado,
+        meta_unificado,
       ],
       type: db.QueryTypes.INSERT,
-    }
-  );
-
-  await db.query(
-    `UPDATE messenger_conversations
-     SET last_message_at = NOW(),
-         last_outgoing_at = NOW()
-     WHERE id = ?`,
-    { replacements: [conversation_id] }
+    },
   );
 
   const insertedId = ins?.insertId ?? ins;
   const [row] = await db.query(
-    `SELECT id, created_at FROM messenger_messages WHERE id = ? LIMIT 1`,
-    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+    `SELECT id, created_at FROM mensajes_clientes WHERE id = ? LIMIT 1`,
+    { replacements: [insertedId], type: db.QueryTypes.SELECT },
   );
 
-  return { conversation_id, id: row.id, created_at: row.created_at };
+  return { message_id: row?.id, created_at: row?.created_at };
 }
 
-// Llega delivery: { watermark, mids[]? }
-async function markDelivered({ page_id, watermark, mids = [] }) {
-  if (mids && mids.length) {
+/**
+ * DELIVERY
+ */
+async function markDeliveredUnified({
+  id_configuracion,
+  source = 'ms',
+  page_id,
+  watermark,
+  mids = [],
+}) {
+  if (mids?.length) {
     await db.query(
-      `UPDATE messenger_messages
-       SET status = CASE WHEN status IN ('sent','queued') THEN 'delivered' ELSE status END,
-           delivery_watermark = ?
-       WHERE page_id = ? AND mid IN (${mids.map(() => '?').join(',')})`,
-      { replacements: [watermark, page_id, ...mids] }
+      `UPDATE mensajes_clientes
+       SET status_unificado = CASE
+          WHEN status_unificado IN ('queued','sent') THEN 'delivered'
+          ELSE status_unificado
+       END,
+       delivery_watermark = ?
+       WHERE id_configuracion = ?
+         AND source = ?
+         AND page_id = ?
+         AND external_mid IN (${mids.map(() => '?').join(',')})`,
+      { replacements: [watermark, id_configuracion, source, page_id, ...mids] },
     );
   } else {
-    // Sin mids: marcar por watermark (todo lo anterior como delivered)
     await db.query(
-      `UPDATE messenger_messages
-       SET status = CASE WHEN status IN ('sent','queued') THEN 'delivered' ELSE status END,
-           delivery_watermark = ?
-       WHERE page_id = ? AND direction='out' AND created_at <= FROM_UNIXTIME(?/1000)`,
-      { replacements: [watermark, page_id, watermark] }
+      `UPDATE mensajes_clientes
+       SET status_unificado = CASE
+          WHEN status_unificado IN ('queued','sent') THEN 'delivered'
+          ELSE status_unificado
+       END,
+       delivery_watermark = ?
+       WHERE id_configuracion = ?
+         AND source = ?
+         AND page_id = ?
+         AND direction = 'out'
+         AND created_at <= FROM_UNIXTIME(?/1000)`,
+      {
+        replacements: [watermark, id_configuracion, source, page_id, watermark],
+      },
     );
   }
 }
 
-// Llega read: { watermark }
-async function markRead({ id_configuracion, page_id, psid, watermark }) {
-  // 1) Marcar como "read" los OUT enviados a ese PSID antes del watermark
+/**
+ * READ (por conversación/cliente)
+ */
+async function markReadUnified({
+  id_configuracion,
+  source = 'ms',
+  page_id,
+  external_id,
+  watermark,
+  id_cliente,
+}) {
+  // 1) marcar OUT a read
   await db.query(
-    `UPDATE messenger_messages
-       SET status = CASE
-           WHEN status IN ('delivered','sent') THEN 'read'
-           ELSE status
-         END,
-         read_watermark = ?
+    `UPDATE mensajes_clientes
+     SET status_unificado = CASE
+        WHEN status_unificado IN ('delivered','sent') THEN 'read'
+        ELSE status_unificado
+     END,
+     read_watermark = ?
      WHERE id_configuracion = ?
+       AND source = ?
        AND page_id = ?
-       AND psid = ?
+       AND uid_whatsapp = ?
        AND direction = 'out'
        AND created_at <= FROM_UNIXTIME(?/1000)`,
-    { replacements: [watermark, id_configuracion, page_id, psid, watermark] }
-  );
-
-  // 2) Resetear los no leídos SOLO de esa conversación
-  await db.query(
-    `UPDATE messenger_conversations
-        SET unread_count = 0, updated_at = NOW()
-      WHERE id_configuracion = ?
-        AND page_id = ?
-        AND psid = ?`,
-    { replacements: [id_configuracion, page_id, psid] }
-  );
-}
-
-async function touchConversationOnOutgoing({
-  id_configuracion,
-  page_id,
-  psid,
-  now = new Date(),
-}) {
-  await db.query(
-    `UPDATE messenger_conversations
-     SET last_message_at = ?, last_outgoing_at = ?, updated_at = ?
-     WHERE id_configuracion = ? AND page_id = ? AND psid = ?`,
     {
-      replacements: [now, now, now, id_configuracion, page_id, psid],
-    }
+      replacements: [
+        watermark,
+        id_configuracion,
+        source,
+        page_id,
+        external_id,
+        watermark,
+      ],
+    },
   );
+
+  // 2) marcar IN como visto
+  if (id_cliente) {
+    await db.query(
+      `UPDATE mensajes_clientes
+       SET visto = 1
+       WHERE id_cliente = ?
+         AND source = ?
+         AND direction = 'in'
+         AND visto = 0`,
+      { replacements: [id_cliente, source] },
+    );
+  }
 }
 
 module.exports = {
-  ensureConversation,
-  saveIncomingMessage,
-  saveOutgoingMessage,
-  markDelivered,
-  markRead,
-  touchConversationOnOutgoing,
+  ensureUnifiedConversation,
+  saveIncomingMessageUnified,
+  saveOutgoingMessageUnified,
+  markDeliveredUnified,
+  markReadUnified,
 };

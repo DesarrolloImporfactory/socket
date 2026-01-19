@@ -64,6 +64,8 @@ const {
   detenerEscribiendoWhatsapp,
 } = require('../utils/webhook_whatsapp/funciones_typing');
 
+const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
+
 async function ensureDir(dir) {
   try {
     await fsp.mkdir(dir, { recursive: true });
@@ -129,7 +131,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       console.log('fin'); */
       await fsp.appendFile(
         path.join(logsDir, 'whatsapp_debug_raw.txt'),
-        rawBody + '\n'
+        rawBody + '\n',
       );
 
       // Log legible en consola
@@ -137,7 +139,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       await fsp.appendFile(
         path.join(logsDir, 'debug_log.txt'),
-        'Inicio de mensaje\n'
+        'Inicio de mensaje\n',
       );
 
       // --- parseo mínimo recomendado ---
@@ -145,7 +147,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       if (!value) {
         await fsp.appendFile(
           path.join(logsDir, 'debug_log.txt'),
-          'Estructura inválida: falta value en entry[0].changes[0]\n'
+          'Estructura inválida: falta value en entry[0].changes[0]\n',
         );
         return;
       }
@@ -196,40 +198,21 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           const tsMs = Number(ev?.metadata?.timestamp || 0);
           const fechaContacto = tsMs ? new Date(tsMs) : new Date();
 
-          // 1) buscar si ya existe el cliente
-          const existe = await ClientesChatCenter.findOne({
-            where: { celular_cliente: phone, id_configuracion },
-          });
+          await ensureUnifiedClient({
+            id_configuracion,
+            id_usuario_dueno: configuracion.id_usuario,
 
-          if (!existe) {
-            // crear con nombre (si viene) y fecha del state sync (opcional)
-            const rr = await crearClienteConRoundRobinUnDepto({
-              id_configuracion,
-              business_phone_id,
-              nombre_cliente: fullName || '',
-              apellido_cliente: '',
-              phone_whatsapp_from: phone,
-              id_usuario_dueno: configuracion.id_usuario,
-              motivo: 'auto_round_robin_state_sync',
-              metaClienteTimestamps: tsMs
-                ? { created_at: fechaContacto, updated_at: fechaContacto }
-                : {},
-            });
-          } else {
-            // si existe y NO tiene nombre, actualícelo
-            if (
-              fullName &&
-              (!existe.nombre_cliente || existe.nombre_cliente.trim() === '')
-            ) {
-              await ClientesChatCenter.update(
-                {
-                  nombre_cliente: fullName,
-                  updatedAt: fechaContacto,
-                },
-                { where: { id: existe.id } }
-              );
-            }
-          }
+            source: 'wa',
+            business_phone_id,
+            phone, // peer phone
+            nombre_cliente: fullName || '',
+            apellido_cliente: '',
+
+            motivo: 'auto_round_robin_state_sync',
+            metaClienteTimestamps: tsMs
+              ? { created_at: fechaContacto, updated_at: fechaContacto }
+              : {},
+          });
         }
 
         // ✅ IMPORTANTE: no continúe al flujo de mensajes
@@ -253,7 +236,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           path.join(logsDir, 'debug_log.txt'),
           'Error: No se encontró configuración con id_telefono: ' +
             business_phone_id +
-            '\n'
+            '\n',
         );
         return;
       }
@@ -296,7 +279,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             // Método de pago
             await Configuraciones.update(
               { metodo_pago: 0 },
-              { where: { id: id_configuracion } }
+              { where: { id: id_configuracion } },
             );
             break;
 
@@ -326,7 +309,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         if (debugLogMsg) {
           await fsp.appendFile(
             path.join(logsDir, 'debug_log.txt'),
-            `[${new Date().toISOString()}] ${debugLogMsg}\n`
+            `[${new Date().toISOString()}] ${debugLogMsg}\n`,
           );
         }
       }
@@ -367,7 +350,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       if (!phone_whatsapp_from || !business_phone_id) {
         await fsp.appendFile(
           path.join(logsDir, 'debug_log.txt'),
-          `[${new Date().toISOString()}] ❌ Datos del mensaje incompletos\n`
+          `[${new Date().toISOString()}] ❌ Datos del mensaje incompletos\n`,
         );
         return;
       }
@@ -420,7 +403,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           ruta_archivo = await descargarDocumentoWhatsapp(
             docId,
             accessToken,
-            filename
+            filename,
           );
 
           // En smb_message_echoes normalmente NO viene caption, entonces guardamos al menos el filename
@@ -472,7 +455,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           const resultado_automatizador = await validarAutomatizador(
             payload,
-            id_configuracion
+            id_configuracion,
           );
           const id_template = resultado_automatizador?.id_template ?? null;
           const id_etiquetas = resultado_automatizador?.id_etiquetas ?? null;
@@ -484,7 +467,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           } else {
             await fsp.appendFile(
               path.join(logsDir, 'debug_log.txt'),
-              `[${new Date().toISOString()}] ❌ No se encontraron los datos necesarios para enviar el mensaje template.\n`
+              `[${new Date().toISOString()}] ❌ No se encontraron los datos necesarios para enviar el mensaje template.\n`,
             );
           }
 
@@ -517,17 +500,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         path.join(logsDir, 'debug_log.txt'),
         `[${new Date().toISOString()}] Mensaje procesado:` +
           texto_mensaje +
-          ` \n`
+          ` \n`,
       );
       console.log(
         `[${new Date().toISOString()}] Mensaje procesado:` +
           texto_mensaje +
-          ` \n`
+          ` \n`,
       );
-
-      const clienteExiste = await ClientesChatCenter.findOne({
-        where: { celular_cliente: phone_whatsapp_from, id_configuracion },
-      });
 
       let id_cliente = null;
       let bot_openia = 1;
@@ -538,38 +517,44 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           ? { created_at: fechaMensaje, updated_at: fechaMensaje }
           : {};
 
-      if (!clienteExiste) {
-        const id_usuario_dueno = configuracion.id_usuario; // <- debe existir en configuraciones
+      const cliente = await ensureUnifiedClient({
+        id_configuracion,
+        id_usuario_dueno: configuracion.id_usuario,
 
-        const rr = await crearClienteConRoundRobinUnDepto({
-          id_configuracion,
-          business_phone_id,
-          nombre_cliente,
-          apellido_cliente,
-          phone_whatsapp_from,
-          metaClienteTimestamps,
-          id_usuario_dueno,
-        });
+        source: 'wa',
+        business_phone_id,
 
-        cliente = rr.cliente;
-        id_cliente = cliente.id;
-      } else {
-        //cliente ya existe
-        id_cliente = clienteExiste.id;
-        bot_openia = clienteExiste.bot_openia;
-        estado_contacto = clienteExiste.estado_contacto;
+        phone: phone_whatsapp_from,
+        nombre_cliente,
+        apellido_cliente,
 
-        if (clienteExiste.chat_cerrado === 1) {
-          await ClientesChatCenter.update(
-            { chat_cerrado: 0 },
-            { where: { id: id_cliente } }
-          );
-        }
+        motivo: 'auto_round_robin',
+        metaClienteTimestamps,
+      });
+
+      if (!cliente) {
+        await fsp.appendFile(
+          path.join(logsDir, 'debug_log.txt'),
+          `[${new Date().toISOString()}] ❌ No se pudo crear/obtener cliente unificado\n`,
+        );
+        return;
+      }
+
+      id_cliente = cliente.id;
+      bot_openia = cliente.bot_openia ?? 1;
+      estado_contacto = cliente.estado_contacto ?? 'contacto_inicial';
+
+      // ✅ si el chat estaba cerrado, reabrir
+      if (cliente.chat_cerrado === 1) {
+        await ClientesChatCenter.update(
+          { chat_cerrado: 0 },
+          { where: { id: id_cliente } },
+        );
       }
 
       await fsp.appendFile(
         path.join(logsDir, 'debug_log.txt'),
-        `Después de mensaje procesado\n`
+        `Después de mensaje procesado\n`,
       );
       /* console.log(`Después de mensaje procesado\n`) */
 
@@ -591,12 +576,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           path.join(logsDir, 'debug_log.txt'),
           `[${new Date().toISOString()}] Error numero de configuracion no existe en tabla clientes_chat_center` +
             texto_mensaje +
-            ` \n`
+            ` \n`,
         );
         console.log(
           `[${new Date().toISOString()}] Error numero de configuracion no existe en tabla clientes_chat_center` +
             texto_mensaje +
-            ` \n`
+            ` \n`,
         );
 
         clienteExisteConfiguracion = await ClientesChatCenter.create({
@@ -646,12 +631,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             path.join(logsDir, 'debug_log.txt'),
             `[${new Date().toISOString()}] ✅ Mensaje guardado en DB como smb_message_echoes con ID ${
               creacion_mensaje.id
-            }\n`
+            }\n`,
           );
           console.log(
             `[${new Date().toISOString()}] ✅ Mensaje guardado en DB como smb_message_echoes con ID ${
               creacion_mensaje.id
-            }`
+            }`,
           );
           return;
         }
@@ -660,19 +645,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           path.join(logsDir, 'debug_log.txt'),
           `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
             creacion_mensaje.id
-          }\n`
+          }\n`,
         );
         console.log(
           `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
             creacion_mensaje.id
-          }`
+          }`,
         );
 
         /* enviar notificacion al socket */
 
         const resultado_api = await enviarConsultaAPI(
           id_configuracion,
-          id_cliente
+          id_cliente,
         );
 
         cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
@@ -683,7 +668,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             phone_whatsapp_from,
             id_configuracion,
             id_template,
-            'webhook'
+            'webhook',
           );
         } else if (tipo_button == 'etiquetas') {
           await asignarEtiquetas(id_etiquetas, id_configuracion, id_cliente);
@@ -706,14 +691,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           if (!templatePrincipal) {
             await fsp.appendFile(
               path.join(logsDir, 'debug_log.txt'),
-              `[${new Date().toISOString()}] ⚠️ No se encontró mensaje interno principal.\n`
+              `[${new Date().toISOString()}] ⚠️ No se encontró mensaje interno principal.\n`,
             );
           } else {
             mensaje_interno = templatePrincipal.id_template;
             // Puedes loguear
             await fsp.appendFile(
               path.join(logsDir, 'debug_log.txt'),
-              `[${new Date().toISOString()}] ✅ mensaje_interno obtenido: ${mensaje_interno}\n`
+              `[${new Date().toISOString()}] ✅ mensaje_interno obtenido: ${mensaje_interno}\n`,
             );
 
             // Contar cuántos mensajes tiene ese cliente con esa configuración
@@ -726,7 +711,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
             await fsp.appendFile(
               path.join(logsDir, 'debug_log.txt'),
-              `[${new Date().toISOString()}] count_mensajes_clientes: ${countMensajes}\n`
+              `[${new Date().toISOString()}] count_mensajes_clientes: ${countMensajes}\n`,
             );
 
             if (countMensajes === 1) {
@@ -737,7 +722,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 phone_whatsapp_from,
                 id_configuracion,
                 mensaje_interno,
-                'webhook' // responsable u otro parámetro según tu implementación
+                'webhook', // responsable u otro parámetro según tu implementación
               );
             }
           }
@@ -746,7 +731,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             path.join(logsDir, 'debug_log.txt'),
             `[${new Date().toISOString()}] ❌ Error en validar mensaje interno principal: ${
               err.message
-            }\n`
+            }\n`,
           );
         }
 
@@ -766,7 +751,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const texto_transcrito =
               await transcribirAudioConWhisperDesdeArchivo(
                 ruta_absoluta,
-                api_key_openai
+                api_key_openai,
               );
 
             console.log('texto_transcrito: ' + texto_transcrito);
@@ -774,12 +759,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               texto_mensaje = texto_transcrito;
               await fsp.appendFile(
                 path.join(logsDir, 'debug_log.txt'),
-                `[${new Date().toISOString()}] 📝 Transcripción exitosa: ${texto_mensaje}\n`
+                `[${new Date().toISOString()}] 📝 Transcripción exitosa: ${texto_mensaje}\n`,
               );
             } else {
               await fsp.appendFile(
                 path.join(logsDir, 'debug_log.txt'),
-                `[${new Date().toISOString()}] ⚠️ No se pudo transcribir el audio\n`
+                `[${new Date().toISOString()}] ⚠️ No se pudo transcribir el audio\n`,
               );
             }
           }
@@ -824,7 +809,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   // si viene de cualquier otra IA
                   await ClientesChatCenter.update(
                     { estado_contacto: estadoMap[respuesta] },
-                    { where: { id: id_cliente } }
+                    { where: { id: id_cliente } },
                   );
 
                   switch (respuesta) {
@@ -855,7 +840,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                         // 3) Cambiar estado a asesor
                         await ClientesChatCenter.update(
                           { estado_contacto: 'asesor' },
-                          { where: { id: id_cliente } }
+                          { where: { id: id_cliente } },
                         );
 
                         // 4) Ejecutar acción especial
@@ -868,7 +853,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                       }
 
                       total_tokens += Number(
-                        nueva_respuesta_asistente?.total_tokens ?? 0
+                        nueva_respuesta_asistente?.total_tokens ?? 0,
                       );
 
                       await enviarMensajeWhatsapp({
@@ -910,7 +895,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               estado_contacto = 'ia_ventas';
               await ClientesChatCenter.update(
                 { estado_contacto: 'ia_ventas' },
-                { where: { id: id_cliente } }
+                { where: { id: id_cliente } },
               );
             }
 
@@ -956,7 +941,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               if (estado_contacto == 'contacto_inicial') {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'ia_ventas' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               }
 
@@ -964,11 +949,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               const tipoInfo = respuesta_asistente.tipoInfo;
 
               const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               if (pedidoConfirmado) {
@@ -1002,7 +987,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
                 await ClientesChatCenter.update(
                   { estado_contacto: 'generar_guia' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               } else if (citaConfirmada) {
                 // Extraer valores usando regex
@@ -1059,7 +1044,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   {
                     replacements: [id_configuracion],
                     type: db.QueryTypes.SELECT,
-                  }
+                  },
                 );
                 const id_calendars = calendars[0].id;
                 /* consultar id del calendarios */
@@ -1073,7 +1058,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   {
                     replacements: [id_configuracion],
                     type: db.QueryTypes.SELECT,
-                  }
+                  },
                 );
                 const id_usuarios = usuario[0].id_usuario;
                 const id_sub_usuario = usuario[0].id_sub_usuario;
@@ -1109,12 +1094,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               // Buscar URLs de imágenes y videos usando regex
               const urls_imagenes = (
                 mensajeGPT.match(
-                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi
+                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi,
                 ) || []
               )
                 .map((s) => {
                   const m = s.match(
-                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i
+                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i,
                   );
                   return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
                 })
@@ -1122,12 +1107,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
               const urls_videos = (
                 mensajeGPT.match(
-                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi
+                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi,
                 ) || []
               )
                 .map((s) => {
                   const m = s.match(
-                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i
+                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i,
                   );
                   return m ? m[1] || m[2] : null;
                 })
@@ -1237,7 +1222,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               if (estado_contacto == 'contacto_inicial') {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'ia_ventas_imporshop' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               }
 
@@ -1245,19 +1230,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               const tipoInfo = respuesta_asistente.tipoInfo;
 
               const pedidoConfirmado = /\[pedido_confirmado\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               const citaConfirmada = /\[cita_confirmada\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               const asesoronfirmado = /\[asesor_confirmado\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               const atencionUrgente = /\[atencion_urgente\]:\s*true/i.test(
-                mensajeGPT
+                mensajeGPT,
               );
 
               if (pedidoConfirmado) {
@@ -1291,7 +1276,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
                 await ClientesChatCenter.update(
                   { estado_contacto: 'generar_guia' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               } else if (citaConfirmada) {
                 // Extraer valores usando regex
@@ -1348,7 +1333,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   {
                     replacements: [id_configuracion],
                     type: db.QueryTypes.SELECT,
-                  }
+                  },
                 );
                 const id_calendars = calendars[0].id;
                 /* consultar id del calendarios */
@@ -1362,7 +1347,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   {
                     replacements: [id_configuracion],
                     type: db.QueryTypes.SELECT,
-                  }
+                  },
                 );
                 const id_usuarios = usuario[0].id_usuario;
                 const id_sub_usuario = usuario[0].id_sub_usuario;
@@ -1396,24 +1381,24 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               } else if (asesoronfirmado) {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'asesor' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               } else if (atencionUrgente) {
                 await ClientesChatCenter.update(
                   { estado_contacto: 'atencion_urgente' },
-                  { where: { id: id_cliente } }
+                  { where: { id: id_cliente } },
                 );
               }
 
               // Buscar URLs de imágenes y videos usando regex
               const urls_imagenes = (
                 mensajeGPT.match(
-                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi
+                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi,
                 ) || []
               )
                 .map((s) => {
                   const m = s.match(
-                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i
+                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i,
                   );
                   return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
                 })
@@ -1421,12 +1406,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
               const urls_videos = (
                 mensajeGPT.match(
-                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi
+                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi,
                 ) || []
               )
                 .map((s) => {
                   const m = s.match(
-                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i
+                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i,
                   );
                   return m ? m[1] || m[2] : null;
                 })
@@ -1506,7 +1491,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       } else {
         await fsp.appendFile(
           path.join(logsDir, 'debug_log.txt'),
-          `[${new Date().toISOString()}] ❌ Error al guardar el mensaje en la base de datos.\n`
+          `[${new Date().toISOString()}] ❌ Error al guardar el mensaje en la base de datos.\n`,
         );
       }
 
@@ -1516,7 +1501,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       await fsp.appendFile(
         path.join(logsDir, 'debug_log.txt'),
-        'Fin Mensaje de mensaje\n'
+        'Fin Mensaje de mensaje\n',
       );
     } catch (err) {
       try {

@@ -15,7 +15,7 @@ async function log(msg) {
   await ensureDir(logsDir);
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
-    `[${new Date().toISOString()}] ${msg}\n`
+    `[${new Date().toISOString()}] ${msg}\n`,
   );
 }
 
@@ -28,6 +28,11 @@ async function crearClienteConRoundRobinUnDepto({
   metaClienteTimestamps = {},
   motivo = 'auto_round_robin',
   id_usuario_dueno, // configuracion.id_usuario
+
+  // ✅ Unificación multi-canal
+  source = 'wa', // 'wa' | 'ms' | 'ig'
+  page_id = null, // ms/ig page id
+  external_id = null, // ms/ig PSID/IGSID
 }) {
   const lockKey = `rr:${id_configuracion}`;
 
@@ -39,7 +44,7 @@ async function crearClienteConRoundRobinUnDepto({
 
   if (!lockRow || Number(lockRow.got) !== 1) {
     await log(
-      `⚠️ No se pudo obtener GET_LOCK para ${lockKey}. Continuando sin lock.`
+      `⚠️ No se pudo obtener GET_LOCK para ${lockKey}. Continuando sin lock.`,
     );
   }
 
@@ -53,21 +58,21 @@ async function crearClienteConRoundRobinUnDepto({
       ORDER BY id_departamento ASC
       LIMIT 1
       `,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
 
     const id_departamento_asginado = dept?.[0]?.id_departamento ?? null;
 
-    // 2) Candidatos a asignar (sub-usuarios del dueño)
+    // 2) Candidatos (sub-usuarios del dueño) excluyendo admin/super_admin
     const encargados = await db.query(
       `
-  SELECT id_sub_usuario
-  FROM sub_usuarios_chat_center
-  WHERE id_usuario = ?
-    AND rol NOT IN ('administrador', 'super_administrador')
-  ORDER BY id_sub_usuario ASC
-  `,
-      { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT }
+      SELECT id_sub_usuario
+      FROM sub_usuarios_chat_center
+      WHERE id_usuario = ?
+        AND rol NOT IN ('administrador', 'super_administrador')
+      ORDER BY id_sub_usuario ASC
+      `,
+      { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT },
     );
 
     let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
@@ -83,7 +88,7 @@ async function crearClienteConRoundRobinUnDepto({
         ORDER BY id_sub_usuario ASC
         LIMIT 1
         `,
-        { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT }
+        { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT },
       );
 
       const adminId = admin?.[0]?.id_sub_usuario
@@ -98,9 +103,21 @@ async function crearClienteConRoundRobinUnDepto({
       const cliente = await ClientesChatCenter.create({
         id_configuracion,
         uid_cliente: business_phone_id,
+
         nombre_cliente,
         apellido_cliente,
-        celular_cliente: phone_whatsapp_from,
+
+        // WA usa celular_cliente, MS/IG queda null
+        celular_cliente: source === 'wa' ? phone_whatsapp_from : null,
+
+        // identidad del canal
+        source,
+        page_id: source === 'wa' ? null : String(page_id || null),
+        external_id: source === 'wa' ? null : String(external_id || null),
+
+        // ✅ GUARDAR DEPARTAMENTO
+        id_departamento: id_departamento_asginado,
+
         id_encargado: null,
         ...metaClienteTimestamps,
       });
@@ -109,28 +126,31 @@ async function crearClienteConRoundRobinUnDepto({
       return { cliente, id_encargado_nuevo: null, id_departamento_asginado };
     }
 
-    // 3) Obtener "puntero" round-robin: último encargado asignado (global por config+depto)
+    // 3) Obtener el último encargado asignado (puntero) — ✅ soporte multi motivo
     const last = await db.query(
       `
       SELECT he.id_encargado_nuevo
-  FROM historial_encargados he
-  INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
-  WHERE cc.id_configuracion = ?
-    AND he.motivo = 'auto_round_robin'
-  ORDER BY he.id DESC
-  LIMIT 1
+      FROM historial_encargados he
+      INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
+      WHERE cc.id_configuracion = ?
+        AND (
+          he.motivo = 'auto_round_robin'
+          OR he.motivo LIKE 'auto_round_robin_%'
+        )
+      ORDER BY he.id DESC
+      LIMIT 1
       `,
       {
-        replacements: [id_configuracion, id_departamento_asginado],
+        replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     const lastAssigned = last?.[0]?.id_encargado_nuevo
       ? Number(last[0].id_encargado_nuevo)
       : null;
 
-    // 4) Elegir siguiente (round-robin)
+    // 4) Elegir siguiente
     let id_encargado_nuevo = null;
 
     if (!lastAssigned) {
@@ -145,9 +165,19 @@ async function crearClienteConRoundRobinUnDepto({
     const cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
+
       nombre_cliente,
       apellido_cliente,
-      celular_cliente: phone_whatsapp_from,
+
+      celular_cliente: source === 'wa' ? phone_whatsapp_from : null,
+
+      source,
+      page_id: source === 'wa' ? null : String(page_id || null),
+      external_id: source === 'wa' ? null : String(external_id || null),
+
+      // ✅ GUARDAR DEPARTAMENTO
+      id_departamento: id_departamento_asginado,
+
       id_encargado: id_encargado_nuevo,
       ...metaClienteTimestamps,
     });
@@ -164,20 +194,20 @@ async function crearClienteConRoundRobinUnDepto({
         replacements: [
           cliente.id,
           id_departamento_asginado,
-          null, // ✅ primer movimiento del cliente
+          null,
           id_encargado_nuevo,
           motivo,
         ],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
 
     await log(
-      `✅ Cliente creado. id_cliente=${cliente.id} id_encargado=${id_encargado_nuevo}`
+      `✅ Cliente creado. id_cliente=${cliente.id} id_encargado=${id_encargado_nuevo} motivo=${motivo}`,
     );
 
     console.log(
-      `✅ Cliente creado. id_cliente=${cliente.id} id_encargado=${id_encargado_nuevo}`
+      `✅ Cliente creado. id_cliente=${cliente.id} id_encargado=${id_encargado_nuevo} motivo=${motivo}`,
     );
 
     return { cliente, id_encargado_nuevo, id_departamento_asginado };
