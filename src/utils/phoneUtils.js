@@ -129,6 +129,41 @@ function generatePhoneVariations(phone, defaultCountryCode = '593') {
     return Array.from(variations).filter(v => v.length > 0);
 }
 
+/**
+ * Formatea un número de teléfono para WhatsApp (con código de país)
+ * Si el número ya tiene código, lo retorna limpio
+ * Si NO tiene código, le agrega el código de país por defecto
+ * @param {string} phone - Número de teléfono
+ * @param {string} defaultCountryCode - Código de país por defecto (ej: '593' para Ecuador)
+ * @returns {string} - Número con código de país listo para WhatsApp
+ */
+function formatPhoneForWhatsApp(phone, defaultCountryCode = '593') {
+    const cleaned = cleanPhoneNumber(phone);
+    
+    if (!cleaned) {
+        return '';
+    }
+    
+    // Detectar si ya tiene código de país
+    const detectedCountry = detectCountryCode(cleaned);
+    
+    if (detectedCountry) {
+        // Ya tiene código de país, retornar el número limpio
+        return cleaned;
+    }
+    
+    // NO tiene código de país, procesarlo
+    let localNumber = cleaned;
+    
+    // Para Ecuador: eliminar el 0 inicial si existe
+    if (defaultCountryCode === '593' && localNumber.startsWith('0')) {
+        localNumber = localNumber.substring(1);
+    }
+    
+    // Agregar código de país
+    return defaultCountryCode + localNumber;
+}
+
 console.log('phoneUtils.js cargado correctamente.');
 console.log('COUNTRY_CODES disponibles:', Object.keys(COUNTRY_CODES).length);
 console.log( normalizePhoneNumber('5212214287262') );
@@ -138,5 +173,6 @@ module.exports = {
     cleanPhoneNumber,
     detectCountryCode,
     normalizePhoneNumber,
-    generatePhoneVariations
+    generatePhoneVariations,
+    formatPhoneForWhatsApp
 };

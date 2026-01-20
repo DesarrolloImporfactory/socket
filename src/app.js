@@ -187,7 +187,7 @@ if (process.env.NODE_ENV === 'production') {
     if (req.method === 'OPTIONS') return res.status(204).end();
     next();
   });
-} else if (process.env.NODE_ENV === 'dev') {
+} else if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
   app.use(cors({ origin: true, credentials: true }));
 }
