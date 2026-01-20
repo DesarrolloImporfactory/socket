@@ -115,6 +115,7 @@ const allowlist = [
   'https://new.imporsuitpro.com',
   'https://desarrollo.imporsuitpro.com',
   'http://localhost:5173',
+  'https://dev.imporfactory.app',
 ];
 
 // helper para comprobar si la petición trae cookies/credenciales desde el cliente
@@ -163,7 +164,6 @@ if (process.env.NODE_ENV === 'production') {
         'Content-Type, Authorization, X-Timestamp, X-Requested-With'
       );
 
-      if (req.method === 'OPTIONS') return res.status(204).end();
       return next();
     }
 
@@ -184,7 +184,6 @@ if (process.env.NODE_ENV === 'production') {
       'Content-Type, Authorization, X-Timestamp, X-Requested-With'
     );
 
-    if (req.method === 'OPTIONS') return res.status(204).end();
     next();
   });
 } else if (process.env.NODE_ENV === 'development') {
