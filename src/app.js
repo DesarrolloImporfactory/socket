@@ -146,6 +146,12 @@ if (process.env.NODE_ENV === 'production') {
         'Access-Control-Allow-Headers',
         'Content-Type, Authorization, X-Timestamp, X-Requested-With'
       );
+      
+      // Responder a preflight
+      if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+      }
+      
       return next();
     }
 
@@ -163,6 +169,11 @@ if (process.env.NODE_ENV === 'production') {
         'Access-Control-Allow-Headers',
         'Content-Type, Authorization, X-Timestamp, X-Requested-With'
       );
+
+      // Responder a preflight
+      if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+      }
 
       return next();
     }
@@ -183,6 +194,11 @@ if (process.env.NODE_ENV === 'production') {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-Timestamp, X-Requested-With'
     );
+
+    // Responder a preflight
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
 
     next();
   });
