@@ -91,6 +91,11 @@ const Configuraciones = db.define(
       allowNull: true,
       defaultValue: 'ventas',
     },
+    permiso_round_robin: {
+      type: DataTypes.TINYINT, // o DataTypes.BOOLEAN, pero TINYINT mapea 0/1
+      allowNull: false,
+      defaultValue: 0,
+    },
   },
   {
     tableName: 'configuraciones',

@@ -15,6 +15,7 @@ async function ensureUnifiedClient({
   apellido_cliente = '',
   motivo = 'auto_round_robin',
   metaClienteTimestamps = {},
+  permiso_round_robin,
 }) {
   // 1) WHERE por canal
   let where = null;
@@ -50,6 +51,7 @@ async function ensureUnifiedClient({
       source,
       page_id: source === 'wa' ? null : page_id,
       external_id: source === 'wa' ? null : external_id,
+      permiso_round_robin,
     });
 
     cliente = rr?.cliente || null;
@@ -65,7 +67,7 @@ async function ensureUnifiedClient({
           nombre_cliente: n,
           apellido_cliente: (apellido_cliente || '').trim(),
         },
-        { where: { id: cliente.id } }
+        { where: { id: cliente.id } },
       );
       cliente.nombre_cliente = n;
       cliente.apellido_cliente = (apellido_cliente || '').trim();

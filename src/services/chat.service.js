@@ -31,7 +31,7 @@ class ChatService {
       limit = 10,
       filtros = {},
       scopeChats = 'mine',
-    }
+    },
   ) {
     try {
       console.log('Filtros:', filtros);
@@ -46,7 +46,7 @@ class ChatService {
       if (!numero) {
         throw new AppError(
           'El número de teléfono para excluir no se encontró.',
-          500
+          500,
         );
       }
       let whereClause = '';
@@ -56,6 +56,8 @@ class ChatService {
 
         if (scopeChats != 'mine') {
           whereClause += ` AND id_encargado IS NULL`;
+        } else {
+          whereClause += ` AND id_encargado IS NOT NULL `;
         }
       } else {
         whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
@@ -75,7 +77,7 @@ class ChatService {
         whereClause += ` AND (${filtros.selectedEtiquetas
           .map(
             (etiqueta) =>
-              `JSON_CONTAINS(etiquetas, '{"id": ${etiqueta.value}}', '$')`
+              `JSON_CONTAINS(etiquetas, '{"id": ${etiqueta.value}}', '$')`,
           )
           .join(' AND ')})`;
       }
@@ -154,7 +156,7 @@ class ChatService {
 
         if (Array.isArray(estadosPermitidos)) {
           whereClause += ` AND estado_factura IN (${estadosPermitidos.join(
-            ', '
+            ', ',
           )})`;
         } else if (typeof estadosPermitidos === 'function') {
           const estado = filtros.selectedEstado.value;
@@ -237,8 +239,8 @@ class ChatService {
           typeof value === 'string'
             ? `'${value}'`
             : value === null
-            ? 'NULL'
-            : value;
+              ? 'NULL'
+              : value;
         sqlFinal = sqlFinal.replace(new RegExp(`:${key}`, 'g'), replacedValue);
       });
 
@@ -330,7 +332,7 @@ class ChatService {
             visto: 0,
             rol_mensaje: 0,
           },
-        }
+        },
       );
 
       return chats;
@@ -561,7 +563,7 @@ class ChatService {
 
       // Detectar dinámicamente los prefijos
       const envelopeKey = Object.keys(parsed).find((key) =>
-        key.includes('Envelope')
+        key.includes('Envelope'),
       );
       const bodyKey = envelopeKey
         ? Object.keys(parsed[envelopeKey]).find((key) => key.includes('Body'))
@@ -608,11 +610,11 @@ class ChatService {
         flete: parseFloat(resultData.ConsultarResult.flete || 0).toFixed(2),
         seguro: parseFloat(resultData.ConsultarResult.seguro || 0).toFixed(2),
         comision: parseFloat(
-          resultData.ConsultarResult.valor_comision || 0
+          resultData.ConsultarResult.valor_comision || 0,
         ).toFixed(2),
         otros: parseFloat(resultData.ConsultarResult.otros || 0).toFixed(2),
         impuestos: parseFloat(resultData.ConsultarResult.impuesto || 0).toFixed(
-          2
+          2,
         ),
       };
 
@@ -694,7 +696,7 @@ class ChatService {
           {
             replacements: { numero_factura: factura.numero_factura },
             type: Sequelize.QueryTypes.SELECT,
-          }
+          },
         );
 
         // Añadimos los productos al objeto de la factura
@@ -707,7 +709,7 @@ class ChatService {
           {
             replacements: { numero_factura: guia.numero_factura },
             type: Sequelize.QueryTypes.SELECT,
-          }
+          },
         );
 
         // Añadimos los productos al objeto de la factura
@@ -828,7 +830,7 @@ class ChatService {
             id_plataforma,
             visto: 0,
           },
-        }
+        },
       );
 
       return mensajes;
@@ -1003,7 +1005,7 @@ class ChatService {
         {
           replacements: { id_plataforma },
           type: Sequelize.QueryTypes.SELECT,
-        }
+        },
       );
 
       return matriz;

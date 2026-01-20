@@ -212,6 +212,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             metaClienteTimestamps: tsMs
               ? { created_at: fechaContacto, updated_at: fechaContacto }
               : {},
+            permiso_round_robin: configuracion.permiso_round_robin,
           });
         }
 
@@ -367,6 +368,48 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         case 'text':
           texto_mensaje = mensaje_recibido?.text?.body || '';
           break;
+
+        case 'edit': {
+          // WhatsApp "edit": el nuevo contenido viene dentro de edit.message
+          const editedMsg = mensaje_recibido?.edit?.message;
+
+          // Normaliza como "texto" si el edit es de tipo text
+          if (editedMsg?.type === 'text') {
+            texto_mensaje = editedMsg?.text?.body || '';
+          } else if (editedMsg?.type === 'reaction') {
+            texto_mensaje = editedMsg?.reaction?.emoji || '';
+          } else if (editedMsg?.type === 'image') {
+            texto_mensaje = editedMsg?.image?.caption || '';
+            // Si algún día Meta manda id aquí y quieres bajar el archivo:
+            // const imageId = editedMsg?.image?.id;
+            // ruta_archivo = imageId ? await descargarImagenWhatsapp(imageId, accessToken) : null;
+          } else if (editedMsg?.type === 'video') {
+            texto_mensaje = editedMsg?.video?.caption || '';
+            // const videoId = editedMsg?.video?.id;
+            // ruta_archivo = videoId ? await descargarVideoWhatsapp(videoId, accessToken) : null;
+          } else if (editedMsg?.type === 'document') {
+            texto_mensaje =
+              editedMsg?.document?.caption ||
+              editedMsg?.document?.filename ||
+              'Documento editado';
+          } else {
+            // fallback: guardas algo legible
+            texto_mensaje =
+              editedMsg?.text?.body ||
+              JSON.stringify(editedMsg || {}) ||
+              'Mensaje editado';
+          }
+
+          // (Opcional) guardar referencia del mensaje original editado
+          // Si quieres guardarlo en ruta_archivo (como ya haces con revoke):
+          const originalId =
+            mensaje_recibido?.edit?.original_message_id || null;
+          if (originalId) {
+            ruta_archivo = JSON.stringify({ original_message_id: originalId });
+          }
+
+          break;
+        }
 
         case 'reaction':
           texto_mensaje = mensaje_recibido?.reaction?.emoji || '';
@@ -530,6 +573,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         motivo: 'auto_round_robin',
         metaClienteTimestamps,
+        permiso_round_robin: configuracion.permiso_round_robin,
       });
 
       if (!cliente) {
@@ -607,7 +651,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
         id_cliente: clienteExisteConfiguracion.id,
-        mid_mensaje: msg0?.id || business_phone_id,
+        mid_mensaje: business_phone_id,
         tipo_mensaje,
         texto_mensaje,
         ruta_archivo,
@@ -616,6 +660,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         uid_whatsapp: phone_whatsapp_from,
         visto: 0,
         responsable: isSMBEcho ? 'Whatsapp Business' : null,
+        id_wamid_mensaje: msg0?.id,
 
         // ✅ solo si field === 'history'
         ...metaTimestamps,

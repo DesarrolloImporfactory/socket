@@ -33,6 +33,7 @@ async function crearClienteConRoundRobinUnDepto({
   source = 'wa', // 'wa' | 'ms' | 'ig'
   page_id = null, // ms/ig page id
   external_id = null, // ms/ig PSID/IGSID
+  permiso_round_robin,
 }) {
   const lockKey = `rr:${id_configuracion}`;
 
@@ -49,6 +50,48 @@ async function crearClienteConRoundRobinUnDepto({
   }
 
   try {
+    // ✅ helper: interpreta 0, "0", false como deshabilitado
+    const rrDisabled =
+      permiso_round_robin === 0 ||
+      permiso_round_robin === '0' ||
+      permiso_round_robin === false;
+
+    // ✅ Si NO tiene permiso, crear cliente SIN round robin, SIN historial
+    if (rrDisabled) {
+      const cliente = await ClientesChatCenter.create({
+        id_configuracion,
+        uid_cliente: business_phone_id,
+
+        nombre_cliente,
+        apellido_cliente,
+
+        // WA usa celular_cliente, MS/IG queda null
+        celular_cliente: source === 'wa' ? phone_whatsapp_from : null,
+
+        // identidad del canal
+        source,
+        page_id: source === 'wa' ? null : String(page_id || null),
+        external_id: source === 'wa' ? null : String(external_id || null),
+
+        // ✅ SIN depto / SIN encargado
+        id_departamento: null,
+        id_encargado: null,
+
+        ...metaClienteTimestamps,
+      });
+
+      await log(
+        `✅ Cliente creado SIN RR (permiso_round_robin=0). id_cliente=${cliente.id}`,
+      );
+
+      return {
+        cliente,
+        id_encargado_nuevo: null,
+        id_departamento_asginado: null,
+        rr_aplicado: false,
+      };
+    }
+
     // 1) Obtener el único departamento de la configuración
     const dept = await db.query(
       `
