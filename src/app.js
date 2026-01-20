@@ -96,13 +96,13 @@ const limiter = rateLimit({
 app.post(
   '/api/v1/stripe_plan/stripeWebhook',
   express.raw({ type: 'application/json' }),
-  stripe_webhookController.stripeWebhook
+  stripe_webhookController.stripeWebhook,
 );
 
 app.post(
   '/api/v1/stripe_plan_pago/webhook',
   express.raw({ type: 'application/json' }),
-  stripe_pago_webhookController.stripeWebhook
+  stripe_pago_webhookController.stripeWebhook,
 );
 
 app.use(helmet());
@@ -141,11 +141,11 @@ if (process.env.NODE_ENV === 'production') {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader(
         'Access-Control-Allow-Methods',
-        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
       );
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
       );
       return next();
     }
@@ -158,15 +158,28 @@ if (process.env.NODE_ENV === 'production') {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader(
         'Access-Control-Allow-Methods',
-        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
       );
       res.setHeader(
         'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
       );
 
       if (req.method === 'OPTIONS') return res.status(204).end();
       return next();
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
+      );
+
+      if (req.method === 'OPTIONS') return res.status(204).end();
+      next();
     }
 
     if (isCredentialed) {
@@ -175,19 +188,6 @@ if (process.env.NODE_ENV === 'production') {
         message: 'CORS: origin no permitido para requests con credenciales',
       });
     }
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET, POST, PUT, OPTIONS, DELETE, PATCH'
-    );
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Timestamp, X-Requested-With'
-    );
-
-    if (req.method === 'OPTIONS') return res.status(204).end();
-    next();
   });
 } else if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
@@ -201,7 +201,7 @@ app.use(
     verify: (req, res, buf) => {
       req.rawBody = buf; // <- guardamos el cuerpo crudo
     },
-  })
+  }),
 );
 
 //Para ig necesitamos el raw body solo en su webhoook
@@ -211,7 +211,7 @@ app.use(
     verify: (req, res, buf) => {
       req.rawBody = buf;
     },
-  })
+  }),
 );
 
 //Raw body solo para TikTok Webhook(necesario para validar firma)
@@ -221,7 +221,7 @@ app.use(
     verify: (req, res, buf) => {
       req.rawBody = buf;
     },
-  })
+  }),
 );
 
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
@@ -294,11 +294,11 @@ app.use('/api/v1/instagram', instagramRouter);
 app.use('/api/v1/stripepro', stripeproRouter);
 app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
-app.use("/api/v1/cotizaciones", cotizacionesRouter);
+app.use('/api/v1/cotizaciones', cotizacionesRouter);
 
 app.all('*', (req, res, next) => {
   return next(
-    new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404)
+    new AppError(`Can't find ${req.originalUrl} on this server! 🧨`, 404),
   );
 });
 
