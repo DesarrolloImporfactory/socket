@@ -109,57 +109,87 @@ app.use(helmet());
 
 app.use(hpp());
 
-const allowlist = new Set([
+const allowlist = [
   'https://automatizador.imporsuitpro.com',
   'https://chatcenter.imporfactory.app',
   'https://new.imporsuitpro.com',
   'https://desarrollo.imporsuitpro.com',
   'http://localhost:5173',
+  'http://localhost:3000',
   'https://dev.imporfactory.app',
-]);
+];
 
-function setCorsHeaders(res, origin) {
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin'); // IMPORTANTÍSIMO para caches/proxy
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+// helper para comprobar si la petición trae cookies/credenciales desde el cliente
+function requestIsCredentialed(req) {
+  // heurística: si el cliente envía una cabecera 'Cookie' o la petición viene con Authorization,
+  // lo tratamos como credentialed. En frontends normalmente será withCredentials: true.
+  return !!(
+    req.get('Cookie') ||
+    req.get('Authorization') ||
+    req.get('X-Requested-With')
   );
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Timestamp, X-Requested-With'
-  );
-  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
 if (process.env.NODE_ENV === 'production') {
   app.use(morgan('production'));
 
+  // middleware CORS dinámico
   app.use((req, res, next) => {
     const origin = req.get('Origin');
 
-    // Si no hay Origin, NO es CORS (curl/server-to-server). No invente "*".
     if (!origin) {
-      if (req.method === 'OPTIONS') return res.sendStatus(204);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
+      );
       return next();
     }
 
-    // Si hay Origin, valida allowlist
-    if (allowlist.has(origin)) {
-      setCorsHeaders(res, origin);
-      if (req.method === 'OPTIONS') return res.sendStatus(204);
+    const isTrusted = allowlist.includes(origin);
+    const isCredentialed = requestIsCredentialed(req);
+
+    if (isTrusted) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Timestamp, X-Requested-With'
+      );
+
+      if (req.method === 'OPTIONS') return res.status(204).end();
       return next();
     }
 
-    // Origin no permitido
-    if (req.method === 'OPTIONS') return res.sendStatus(403);
-    return res.status(403).json({
-      success: false,
-      message: `CORS: origin no permitido (${origin})`,
-    });
+    if (isCredentialed) {
+      return res.status(403).json({
+        success: false,
+        message: 'CORS: origin no permitido para requests con credenciales',
+      });
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, OPTIONS, DELETE, PATCH'
+    );
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Timestamp, X-Requested-With'
+    );
+
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
   });
-} else {
+} else if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
   app.use(cors({ origin: true, credentials: true }));
 }
