@@ -106,16 +106,51 @@ async function crearClienteConRoundRobinUnDepto({
 
     const id_departamento_asginado = dept?.[0]?.id_departamento ?? null;
 
+    // ✅ Si NO hay departamento, crear cliente SIN encargado y SIN historial (como rrDisabled)
+    if (!id_departamento_asginado) {
+      const cliente = await ClientesChatCenter.create({
+        id_configuracion,
+        uid_cliente: business_phone_id,
+
+        nombre_cliente,
+        apellido_cliente,
+
+        celular_cliente: source === 'wa' ? phone_whatsapp_from : null,
+
+        source,
+        page_id: source === 'wa' ? null : String(page_id || null),
+        external_id: source === 'wa' ? null : String(external_id || null),
+
+        id_departamento: null,
+        id_encargado: null,
+
+        ...metaClienteTimestamps,
+      });
+
+      await log(
+        `✅ Cliente creado SIN depto (id_departamento null) => SIN RR. id_cliente=${cliente.id}`,
+      );
+
+      return {
+        cliente,
+        id_encargado_nuevo: null,
+        id_departamento_asginado: null,
+        rr_aplicado: false,
+      };
+    }
+
     // 2) Candidatos (sub-usuarios del dueño) excluyendo admin/super_admin
     const encargados = await db.query(
       `
-      SELECT id_sub_usuario
-      FROM sub_usuarios_chat_center
-      WHERE id_usuario = ?
-        AND rol NOT IN ('administrador', 'super_administrador')
-      ORDER BY id_sub_usuario ASC
+      SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc 
+      INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario 
+      WHERE suc.id_usuario = ? AND sud.id_departamento = ? 
+      AND suc.rol NOT IN ('administrador', 'super_administrador') ORDER BY suc.id_sub_usuario ASC;
       `,
-      { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT },
+      {
+        replacements: [id_usuario_dueno, id_departamento_asginado],
+        type: db.QueryTypes.SELECT,
+      },
     );
 
     let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
