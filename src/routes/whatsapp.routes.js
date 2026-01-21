@@ -2318,6 +2318,67 @@ async function updateConfigSyncFlag(id_configuracion, value) {
   return result;
 }
 
+function parseMetaError(metaData) {
+  const err = metaData?.error;
+  if (!err) return null;
+
+  const code = err?.code;
+  const subcode = err?.error_subcode;
+  const message = String(err?.message || '');
+
+  // 131000: no es número de WhatsApp Business App (coexistencia)
+  if (code === 131000 || message.includes('(#131000)')) {
+    return {
+      http: 400,
+      status: 'not_coexistence_number',
+      mensaje:
+        'Este número no es compatible con Coexistencia. La sincronización solo aplica a números vinculados desde WhatsApp Business App.',
+    };
+  }
+
+  // Token inválido / expirado
+  if (code === 190) {
+    return {
+      http: 401,
+      status: 'token_invalid',
+      mensaje:
+        'La sesión con Meta expiró o el token es inválido. Vuelva a vincular el número e intente nuevamente.',
+    };
+  }
+
+  // Permisos / app no autorizada
+  if (
+    code === 10 ||
+    code === 200 ||
+    message.toLowerCase().includes('permission')
+  ) {
+    return {
+      http: 403,
+      status: 'permission_denied',
+      mensaje:
+        'Meta rechazó la solicitud por permisos. Verifique que el número esté correctamente vinculado y que la app tenga permisos de WhatsApp.',
+    };
+  }
+
+  // Rate limit / “Application request limit reached”
+  if (code === 4 || message.toLowerCase().includes('rate')) {
+    return {
+      http: 429,
+      status: 'rate_limited',
+      mensaje:
+        'Meta está limitando solicitudes en este momento. Intente nuevamente en unos minutos.',
+    };
+  }
+
+  // Fallback genérico
+  return {
+    http: 400,
+    status: 'cannot_sync',
+    mensaje:
+      'No fue posible realizar la sincronización en este momento. Por favor, vuelva a vincular el número e intente nuevamente.',
+  };
+}
+
 router.post('/coexistencia/sync', async (req, res) => {
   const { id_configuracion } = req.body;
 
@@ -2392,16 +2453,18 @@ router.post('/coexistencia/sync', async (req, res) => {
       });
     }
 
-    // Si falla por otro motivo
+    // Si falla por cualquier motivo (resp1)
     if (
       !(resp1.status >= 200 && resp1.status < 300) ||
       resp1.data?.success !== true
     ) {
-      return res.status(400).json({
+      const mapped = parseMetaError(resp1.data);
+
+      return res.status(mapped?.http || 400).json({
         success: false,
-        status: 'cannot_sync',
+        status: mapped?.status || 'cannot_sync',
         mensaje:
-          'No fue posible realizar la sincronización en este momento. Por favor, vuelva a vincular el número e intente nuevamente.',
+          mapped?.mensaje || 'No fue posible realizar la sincronización.',
         meta: resp1.data,
       });
     }
@@ -2425,11 +2488,13 @@ router.post('/coexistencia/sync', async (req, res) => {
       !(resp2.status >= 200 && resp2.status < 300) ||
       resp2.data?.success !== true
     ) {
-      return res.status(400).json({
+      const mapped = parseMetaError(resp2.data);
+
+      return res.status(mapped?.http || 400).json({
         success: false,
-        status: 'cannot_sync',
+        status: mapped?.status || 'cannot_sync',
         mensaje:
-          'No fue posible completar la sincronización. Por favor, vuelva a vincular el número e intente nuevamente.',
+          mapped?.mensaje || 'No fue posible completar la sincronización.',
         meta: resp2.data,
       });
     }

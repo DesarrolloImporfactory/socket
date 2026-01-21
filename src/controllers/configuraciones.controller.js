@@ -11,7 +11,7 @@ exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!configuraciones || configuraciones.length === 0) {
@@ -19,8 +19,8 @@ exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
       new AppError(
         'No se encontró una configuración con este id_configuracion: ' +
           id_configuracion,
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -50,11 +50,14 @@ exports.obtener_template_transportadora = catchAsync(async (req, res, next) => {
     {
       replacements: [id_plataforma],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
   if (configuraciones.length === 0) {
     return next(
-      new AppError('No se encontro una plataforma con dicho ID_PLATAFORMA', 400)
+      new AppError(
+        'No se encontro una plataforma con dicho ID_PLATAFORMA',
+        400,
+      ),
     );
   }
 
@@ -90,6 +93,8 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
         c.metodo_pago,
         c.suspendido,
         c.tipo_configuracion,
+        c.sincronizo_coexistencia,
+
         CASE
           WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
           ELSE 0
@@ -146,7 +151,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
         AND c.suspendido = 0
       ORDER BY c.id DESC
       `,
-      { replacements: [id_usuario] }
+      { replacements: [id_usuario] },
     );
 
     return res.json({ status: 'success', data: rows });
@@ -231,7 +236,7 @@ exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
       FROM configuraciones c
       WHERE c.suspendido = 0
       ORDER BY cantidad_conversaciones DESC
-      `
+      `,
     );
 
     return res.json({ status: 'success', data: rows });
@@ -249,11 +254,11 @@ exports.listarConfiguraciones = catchAsync(async (req, res, next) => {
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
   if (!configuraciones || configuraciones.length === 0) {
     return next(
-      new AppError('No se encontro configuracion: ' + id_usuario, 400)
+      new AppError('No se encontro configuracion: ' + id_usuario, 400),
     );
   }
 
@@ -325,7 +330,7 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
   // 1) Validar pertenencia de la config al usuario
   const rows = await db.query(
     'SELECT id, id_usuario FROM configuraciones WHERE id = ? AND suspendido = 0',
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   if (!rows || rows.length === 0) {
     return res.status(404).json({
@@ -348,7 +353,7 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
            suspended_at = CASE WHEN ? = 1 THEN NOW() ELSE NULL END,
            updated_at = NOW()
      WHERE id = ?`,
-    { replacements: [setSusp, setSusp, id_configuracion] }
+    { replacements: [setSusp, setSusp, id_configuracion] },
   );
 
   return res.status(200).json({
