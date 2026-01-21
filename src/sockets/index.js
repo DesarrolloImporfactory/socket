@@ -276,29 +276,6 @@ class Sockets {
         console.log(err.context);
       });
 
-      // socket.on('SEND_MESSAGE', async (data) => {
-      //   try {
-      //     const chatService = new ChatService();
-      //     const message = await chatService.sendMessage(data);
-
-      //     // Enviar el mensaje al cliente que hizo la solicitud
-      //     socket.emit('MESSAGE_RESPONSE', message);
-
-      //     // Emitir evento para actualizar el chat en tiempo real
-      //     this.io.emit('UPDATE_CHAT', {
-      //       chatId: data.to, // Asume que `data.to` tiene el identificador del receptor
-      //       message,
-      //     });
-      //   } catch (error) {
-      //     console.error('Error al enviar el mensaje:', error.message);
-
-      //     // Enviar mensaje de error al cliente en caso de fallo
-      //     socket.emit('ERROR_RESPONSE', {
-      //       message: 'Error al enviar el mensaje. Intenta de nuevo más tarde.',
-      //     });
-      //   }
-      // });
-
       socket.on('SEEN_MESSAGE', async ({ celular_recibe, plataforma }) => {
         try {
           const chatService = new ChatService();
@@ -308,9 +285,21 @@ class Sockets {
           );
 
           // Emitir evento para actualizar el chat en tiempo real
-          this.io.emit('RECEIVED_MESSAGE', {
-            celular_recibe,
-            message,
+          // cuando se recibe un mensaje o se marca visto o se inserta en BD:
+          this.io.emit('UPDATE_CHAT', {
+            id_configuracion,
+            chatId, // <= el id real del chat (clientes_chat_center.id o conversation_id)
+            source, // 'wa'|'ig'|'ms'
+            message: {
+              id: lastMessage.id,
+              created_at: lastMessage.created_at,
+              texto_mensaje: lastMessage.texto_mensaje,
+              tipo_mensaje: lastMessage.tipo_mensaje,
+              ruta_archivo: lastMessage.ruta_archivo,
+              rol_mensaje: lastMessage.rol_mensaje,
+              direction: lastMessage.direction,
+              status_unificado: lastMessage.status_unificado,
+            },
           });
         } catch (error) {
           console.error(

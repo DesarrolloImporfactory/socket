@@ -145,33 +145,6 @@ class MessengerService {
       return;
     }
 
-    // --- 3) Estados (delivery/read) ---
-    // DELIVERY
-    if (event.delivery) {
-      const watermark = event.delivery.watermark;
-      const mids = event.delivery.mids || [];
-
-      const cfg = id_configuracion || (await getConfigIdByPageId(pageId));
-      if (!cfg) return;
-
-      await Store.markDeliveredUnified({
-        id_configuracion: cfg,
-        source: 'ms',
-        page_id: pageId,
-        watermark,
-        mids,
-      });
-
-      if (IO) {
-        IO.to(roomCfg(cfg)).emit('MS_DELIVERED', {
-          page_id: pageId,
-          watermark,
-          mids,
-        });
-      }
-      return;
-    }
-
     // READ
     if (event.read) {
       const watermark = event.read.watermark;
@@ -309,36 +282,6 @@ class MessengerService {
       });
       return;
     }
-
-    if (IO) {
-      // ✅ room por dueño (conversación)
-      IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
-        conversation_id: idClienteDueno,
-        message: {
-          id: saved?.message_id || message.mid,
-          direction: 'in',
-          mid: message.mid || null,
-          text: message.text || null,
-          attachments: message.attachments || null,
-          status: 'received',
-          created_at: createdAtNow,
-        },
-      });
-
-      IO.to(roomCfg(id_configuracion)).emit('MS_CONV_UPSERT', {
-        id: idClienteDueno,
-        last_message_at: createdAtNow,
-        last_incoming_at: createdAtNow,
-        preview: message.text || '(adjunto)',
-      });
-    }
-
-    try {
-      await fb.sendSenderAction(senderPsid, 'mark_seen', pageAccessToken);
-      await fb.sendSenderAction(senderPsid, 'typing_off', pageAccessToken);
-    } catch (e) {
-      console.warn('[MS][SENDER_ACTION][WARN]', e?.message);
-    }
   }
 
   static async handlePostback(
@@ -433,21 +376,6 @@ class MessengerService {
       });
       return;
     }
-
-    if (IO) {
-      IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
-        conversation_id: idClienteDueno,
-        message: {
-          id: inSaved?.message_id || postback.mid,
-          direction: 'in',
-          mid: postback.mid || null,
-          text: null,
-          postback_payload: payload,
-          status: 'received',
-          created_at: createdAtNow,
-        },
-      });
-    }
   }
 
   static async handleEcho({ pageId, psid, message, id_configuracion }) {
@@ -522,22 +450,6 @@ class MessengerService {
       });
 
       console.log('[MS][SAVE_ECHO_OUT][OK]', saved);
-
-      if (IO) {
-        IO.to(roomConv(idClienteDueno)).emit('MS_MESSAGE', {
-          conversation_id: idClienteDueno,
-          message: {
-            id: saved?.message_id || message.mid,
-            direction: 'out',
-            mid: message.mid || null,
-            text: message.text || null,
-            attachments: message.attachments || null,
-            status: 'sent',
-            created_at: createdAtNow,
-            echo: true,
-          },
-        });
-      }
     } catch (err) {
       console.error('[MS][SAVE_ECHO_OUT][ERROR]', {
         name: err?.name,
