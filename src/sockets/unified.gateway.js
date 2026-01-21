@@ -30,45 +30,56 @@ module.exports = function attachUnifiedGateway(io, services) {
     return row || null;
   }
 
-  /**
-   * ✅ Propietario del canal (el que recibe los IN)
-   * Regla: clientes_chat_center.propietario = 1
-   */
-  async function getOwnerClientId({ id_configuracion, source, page_id }) {
+  // ✅ Busca chatId por teléfono (para alias SEND_MESSAGE -> unified)
+  async function getChatIdByPhone({ id_configuracion, to }) {
+    const phone = norm(to);
+
     const [row] = await db.query(
       `SELECT id
-         FROM clientes_chat_center
+         FROM vista_chats
         WHERE id_configuracion = :id_configuracion
-          AND propietario = 1
-          AND source = :source
-          AND (
-            (:page_id IS NULL AND page_id IS NULL)
-            OR (page_id = :page_id)
-          )
-        ORDER BY id ASC
+          AND REPLACE(REPLACE(celular_cliente,' ',''),'+','') = :phone
+        ORDER BY id DESC
         LIMIT 1`,
       {
-        replacements: { id_configuracion, source, page_id: page_id || null },
+        replacements: { id_configuracion, phone },
         type: db.QueryTypes.SELECT,
       },
     );
+
     return row?.id ? Number(row.id) : null;
   }
 
   /**
-   * ✅ Último mensaje ENTRANTE para ventana 24h
-   * Su regla real:
-   * IN: id_cliente = persona (chatRow.id)
-   *     celular_recibe = ownerId (propietario)
+   * ✅ Propietario del canal (el que recibe los IN)
+   * Regla: clientes_chat_center.propietario = 1
    */
+  async function getOwnerClientId({ id_configuracion }) {
+    const [row] = await db.query(
+      `SELECT id
+       FROM clientes_chat_center
+      WHERE id_configuracion = :id_configuracion
+        AND propietario = 1
+        AND deleted_at IS NULL
+      LIMIT 1`,
+      {
+        replacements: { id_configuracion },
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    return row?.id ? Number(row.id) : null;
+  }
+
   async function getLastIncomingAt({ chatId, ownerId }) {
     const [row] = await db.query(
       `SELECT MAX(created_at) AS last_incoming_at
-         FROM mensajes_clientes
-        WHERE id_cliente = :chatId
-          AND celular_recibe = :ownerId
+        FROM mensajes_clientes
+        WHERE id_cliente = :ownerId
+          AND celular_recibe = :chatId
           AND direction = 'in'
-          AND deleted_at IS NULL`,
+          AND deleted_at IS NULL
+        `,
       {
         replacements: { chatId, ownerId: String(ownerId) },
         type: db.QueryTypes.SELECT,
@@ -160,14 +171,20 @@ module.exports = function attachUnifiedGateway(io, services) {
         replacements: {
           id_plataforma: chatRow.id_plataforma || null,
           id_configuracion: chatRow.id_configuracion || null,
-          id_cliente: Number(ownerId), // ✅ propietario escribe
+
+          // ✅ propietario escribe
+          id_cliente: Number(ownerId),
+
           source,
           page_id: page_id || null,
           external_mid: external_mid || null,
           mid_mensaje: external_mid || null,
           tipo_mensaje: tipo_mensaje || 'text',
           rol_mensaje: finalRol,
-          celular_recibe: String(chatRow.id), // ✅ persona recibe
+
+          // ✅ persona recibe (chatId)
+          celular_recibe: String(chatRow.id),
+
           responsable: agent_name || null,
           status_unificado: status_unificado || 'sent',
           texto_mensaje: text || null,
@@ -254,6 +271,7 @@ module.exports = function attachUnifiedGateway(io, services) {
     const m = resp?.mensajeNuevo;
 
     return {
+      // ✅ devolvemos lo que ya genera su WA backend
       id: m?.id,
       direction: 'out',
       text: m?.texto_mensaje || text || '',
@@ -287,8 +305,6 @@ module.exports = function attachUnifiedGateway(io, services) {
 
     const ownerId = await getOwnerClientId({
       id_configuracion: chatRow.id_configuracion,
-      source: 'ms',
-      page_id,
     });
     if (!ownerId)
       throw new Error(
@@ -389,8 +405,6 @@ module.exports = function attachUnifiedGateway(io, services) {
 
     const ownerId = await getOwnerClientId({
       id_configuracion: chatRow.id_configuracion,
-      source: 'ig',
-      page_id,
     });
     if (!ownerId)
       throw new Error(
@@ -481,7 +495,7 @@ module.exports = function attachUnifiedGateway(io, services) {
       if (chatId) socket.join(roomChat(chatId));
     });
 
-    socket.on('CHAT_SEND', async (payload) => {
+    const handleUnifiedSend = async (payload) => {
       const {
         id_configuracion,
         chatId,
@@ -497,73 +511,155 @@ module.exports = function attachUnifiedGateway(io, services) {
         rol_mensaje,
       } = payload || {};
 
-      try {
-        if (!id_configuracion || !chatId) {
-          socket.emit('CHAT_SEND_ERROR', {
-            chatId,
-            error: 'Falta id_configuracion o chatId',
-            client_tmp_id,
-          });
-          return;
-        }
-
-        const chatRow = await getChatRowById({ chatId, id_configuracion });
-        if (!chatRow) {
-          socket.emit('CHAT_SEND_ERROR', {
-            chatId,
-            error: 'No se encontró el chat en vista_chats',
-            client_tmp_id,
-          });
-          return;
-        }
-
-        const source = String(chatRow.source || 'wa').toLowerCase();
-
-        let msg;
-        if (source === 'wa') {
-          msg = await sendWA({
-            chatRow,
-            text,
-            tipo_mensaje,
-            ruta_archivo,
-            agent_name,
-          });
-        } else if (source === 'ms') {
-          msg = await sendMS({
-            chatRow,
-            text,
-            attachment,
-            agent_name,
-            client_tmp_id,
-            messaging_type,
-            tag,
-            metadata,
-            rol_mensaje,
-          });
-        } else if (source === 'ig') {
-          msg = await sendIG({
-            chatRow,
-            text,
-            attachment,
-            agent_name,
-            client_tmp_id,
-            messaging_type,
-            tag,
-            metadata,
-            rol_mensaje,
-          });
-        } else {
-          throw new Error(`source no soportado: ${source}`);
-        }
-
-        emitUnifiedMessage({ id_configuracion, chatId, source, message: msg });
-        socket.emit('CHAT_SEND_OK', { chatId, client_tmp_id, message: msg });
-      } catch (e) {
-        console.error('[CHAT_SEND][ERROR]', e?.response?.data || e.message);
+      if (!id_configuracion || !chatId) {
         socket.emit('CHAT_SEND_ERROR', {
           chatId,
-          error: e?.response?.data || e.message,
+          error: 'Falta id_configuracion o chatId',
           client_tmp_id,
+        });
+        return { ok: false, error: 'Falta id_configuracion o chatId' };
+      }
+
+      const chatRow = await getChatRowById({ chatId, id_configuracion });
+      if (!chatRow) {
+        socket.emit('CHAT_SEND_ERROR', {
+          chatId,
+          error: 'No se encontró el chat en vista_chats',
+          client_tmp_id,
+        });
+        return { ok: false, error: 'No se encontró el chat en vista_chats' };
+      }
+
+      const source = String(chatRow.source || 'wa').toLowerCase();
+
+      let msg;
+      if (source === 'wa') {
+        msg = await sendWA({
+          chatRow,
+          text,
+          tipo_mensaje,
+          ruta_archivo,
+          agent_name,
+        });
+      } else if (source === 'ms') {
+        msg = await sendMS({
+          chatRow,
+          text,
+          attachment,
+          agent_name,
+          client_tmp_id,
+          messaging_type,
+          tag,
+          metadata,
+          rol_mensaje,
+        });
+      } else if (source === 'ig') {
+        msg = await sendIG({
+          chatRow,
+          text,
+          attachment,
+          agent_name,
+          client_tmp_id,
+          messaging_type,
+          tag,
+          metadata,
+          rol_mensaje,
+        });
+      } else {
+        throw new Error(`source no soportado: ${source}`);
+      }
+
+      emitUnifiedMessage({ id_configuracion, chatId, source, message: msg });
+      socket.emit('CHAT_SEND_OK', { chatId, client_tmp_id, message: msg });
+
+      return { ok: true, message: msg, source, chatId };
+    };
+
+    // ✅ nuevo evento unificado (ideal)
+    socket.on('CHAT_SEND', async (payload) => {
+      try {
+        await handleUnifiedSend(payload);
+      } catch (e) {
+        socket.emit('CHAT_SEND_ERROR', {
+          chatId: payload?.chatId,
+          error: e?.response?.data || e.message,
+          client_tmp_id: payload?.client_tmp_id,
+        });
+      }
+    });
+
+    /**
+     * ✅ ALIAS para front actual: SEND_MESSAGE (WA legacy)
+     * Recibe: { mensaje, tipo_mensaje, to, id_configuracion, nombre_encargado, ... }
+     * Convierte a: CHAT_SEND { id_configuracion, chatId, text, ... }
+     */
+    socket.on('SEND_MESSAGE', async (data) => {
+      try {
+        const id_configuracion = data?.id_configuracion;
+
+        // 1) Intentar usar chatId directo (si el front lo manda)
+        let chatId = data?.chatId ? Number(data.chatId) : null;
+
+        // 2) Si no hay chatId, modo WA por teléfono
+        if (!chatId && data?.to) {
+          chatId = await getChatIdByPhone({ id_configuracion, to: data.to });
+        }
+
+        // 3) Si no hay chatId, modo IG/MS por external_id + page_id + source
+        if (!chatId && data?.external_id && data?.page_id && data?.source) {
+          chatId = await getChatIdByExternal({
+            id_configuracion,
+            source: String(data.source).toLowerCase(), // 'ig' | 'ms'
+            page_id: data.page_id,
+            external_id: data.external_id,
+          });
+        }
+
+        // 4) Si aún no hay chatId, intentar inferir desde selectedChat (si lo manda)
+        if (!chatId && data?.selectedChat?.id) {
+          chatId = Number(data.selectedChat.id);
+        }
+
+        if (!chatId) {
+          socket.emit('MESSAGE_RESPONSE', {
+            error:
+              'No se encontró chatId. En WA envíe to; en IG/MS envíe chatId o (source,page_id,external_id).',
+          });
+          return;
+        }
+
+        // Normalizar payload unificado
+        const unifiedPayload = {
+          id_configuracion,
+          chatId,
+          text: data?.mensaje || data?.text || '',
+          tipo_mensaje: data?.tipo_mensaje || 'text',
+          ruta_archivo: data?.ruta_archivo || null,
+          agent_name: data?.nombre_encargado || data?.agent_name || null,
+
+          // ✅ Para IG/MS adjuntos + ventana 24h si se desea
+          attachment: data?.attachment || null,
+          messaging_type: data?.messaging_type,
+          tag: data?.tag,
+          metadata: data?.metadata,
+          rol_mensaje: data?.rol_mensaje,
+          client_tmp_id: data?.client_tmp_id,
+        };
+
+        const result = await handleUnifiedSend(unifiedPayload);
+
+        if (result.ok) {
+          // Mantener compatibilidad con  front
+          socket.emit('MESSAGE_RESPONSE', {
+            ok: true,
+            mensajeNuevo: result.message,
+          });
+        } else {
+          socket.emit('MESSAGE_RESPONSE', { error: result.error });
+        }
+      } catch (e) {
+        socket.emit('MESSAGE_RESPONSE', {
+          error: e?.response?.data || e.message,
         });
       }
     });

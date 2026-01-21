@@ -2288,4 +2288,137 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
   }
 });
 
+router.post('/coexistencia/sync', async (req, res) => {
+  const { id_configuracion } = req.body;
+
+  if (!id_configuracion) {
+    return res.status(400).json({ error: 'Falta el id_configuracion.' });
+  }
+
+  try {
+    const cfg = await getConfigFromDB(id_configuracion);
+    if (!cfg)
+      return res.status(404).json({ error: 'Configuración no encontrada.' });
+
+    // Si ya está marcado, no llame a Meta
+    if (Number(cfg.sincronizo_coexistencia) === 1) {
+      return res.json({
+        success: true,
+        status: 'already_synced',
+        mensaje:
+          'La sincronización ya fue realizada previamente para este número.',
+      });
+    }
+
+    const phoneNumberId = cfg.id_telefono;
+    const ACCESS_TOKEN = cfg.token;
+
+    if (!phoneNumberId || !ACCESS_TOKEN) {
+      return res
+        .status(400)
+        .json({ error: 'Falta id_telefono o token en la configuración.' });
+    }
+
+    const endpoint = `https://graph.facebook.com/v22.0/${phoneNumberId}/smb_app_data`;
+
+    const callSync = async (sync_type) => {
+      const { data } = await axios.post(
+        endpoint,
+        { messaging_product: 'whatsapp', sync_type },
+        {
+          headers: {
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      return data; // esperado: { messaging_product, request_id, success:true }
+    };
+
+    // 1) smb_app_state_sync
+    let r1;
+    try {
+      r1 = await callSync('smb_app_state_sync');
+    } catch (e) {
+      const err = e.response?.data || e.message;
+
+      // ✅ Caso: ya lo hizo (límite superado)
+      if (err?.error?.code === 4) {
+        return res.status(200).json({
+          success: true,
+          status: 'already_done_by_meta',
+          mensaje:
+            'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
+          meta: err,
+        });
+      }
+
+      // ✅ Caso: otro error (ej: expiró ventana, debe repetir vinculación)
+      return res.status(400).json({
+        success: false,
+        status: 'cannot_sync',
+        mensaje:
+          'No fue posible realizar la sincronización en este momento. Por favor, vuelva a vincular el número e intente nuevamente.',
+        meta: err,
+      });
+    }
+
+    // 2) history
+    let r2;
+    try {
+      r2 = await callSync('history');
+    } catch (e) {
+      const err = e.response?.data || e.message;
+
+      if (err?.error?.code === 4) {
+        return res.status(200).json({
+          success: true,
+          status: 'already_done_by_meta',
+          mensaje:
+            'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
+          meta: err,
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        status: 'cannot_sync',
+        mensaje:
+          'No fue posible completar la sincronización. Por favor, vuelva a vincular el número e intente nuevamente.',
+        meta: err,
+      });
+    }
+
+    // ✅ Si ambas salieron success true, marcamos en BD
+    const ok1 = r1?.success === true;
+    const ok2 = r2?.success === true;
+
+    if (ok1 && ok2) {
+      await updateConfig(id_configuracion, { sincronizo_coexistencia: 1 });
+
+      return res.json({
+        success: true,
+        status: 'synced',
+        mensaje: 'Sincronización realizada correctamente.',
+        meta: { smb_app_state_sync: r1, history: r2 },
+      });
+    }
+
+    // Raro: 200 pero sin success true
+    return res.status(400).json({
+      success: false,
+      status: 'unexpected',
+      mensaje:
+        'La sincronización no pudo confirmarse. Por favor, intente nuevamente o vuelva a vincular el número.',
+      meta: { smb_app_state_sync: r1, history: r2 },
+    });
+  } catch (error) {
+    console.error(
+      'Error en coexistencia/sync:',
+      error?.response?.data || error.message,
+    );
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

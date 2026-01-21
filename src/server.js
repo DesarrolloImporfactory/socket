@@ -8,20 +8,16 @@ const { Server } = require('socket.io');
 const Sockets = require('./sockets/index');
 
 // Gateways
-// const attachMessengerGateway = require('./sockets/messenger.gateway');
-// const attachInstagramGateway = require('./sockets/instagram.gateway');
 const attachUnifiedGateway = require('./sockets/unified.gateway');
 
 // Services / utils
 const ChatService = require('./services/chat.service');
 
 const MessengerService = require('./services/messenger.service');
-const Store = require('./services/messenger_store.service');
 const fb = require('./utils/facebookGraph');
 
 const InstagramService = require('./services/instagram.service');
-const IGStore = require('./services/instagram_store.service');
-const ig = require('./utils/instagramGraph'); // ✅ IMPORTANTE
+const ig = require('./utils/instagramGraph');
 
 db.authenticate()
   .then(() => console.log('Database connected 😀'))
@@ -53,47 +49,14 @@ const io = new Server(server, {
 // Controller socket reference
 chatController.setSocketIo(io);
 
-// Sockets base (WA y otros eventos existentes)
+// Sockets base (GET_CHATS, etc.)
 new Sockets(io);
 
 // Inyectar io a servicios que emiten desde webhooks
 MessengerService.setIO(io);
 InstagramService.setIO(io);
 
-// ✅ Gateway Messenger (legacy / actual)
-// attachMessengerGateway(io, {
-//   Store,
-//   fb,
-//   db,
-//   getPageTokenByPageId: async (page_id) => {
-//     const [row] = await db.query(
-//       `SELECT page_access_token
-//          FROM messenger_pages
-//         WHERE page_id = ? AND status = 'active'
-//         LIMIT 1`,
-//       { replacements: [page_id], type: db.QueryTypes.SELECT },
-//     );
-//     return row?.page_access_token || null;
-//   },
-//   getConfigIdByPageId: async (page_id) => {
-//     const [row] = await db.query(
-//       `SELECT id_configuracion
-//          FROM messenger_pages
-//         WHERE page_id = ? AND status='active'
-//         LIMIT 1`,
-//       { replacements: [page_id], type: db.QueryTypes.SELECT },
-//     );
-//     return row?.id_configuracion || null;
-//   },
-// });
-
-// ✅ Gateway Instagram (legacy / actual)
-// attachInstagramGateway(io, {
-//   db,
-//   IGStore,
-//   getPageTokenByPageId: InstagramService.getPageTokenByPageId,
-// });
-
+// ✅ Unified gateway (envío WA/MS/IG por un solo lugar)
 attachUnifiedGateway(io, {
   db,
   fb,

@@ -1,4 +1,6 @@
 const ChatService = require('../services/chat.service');
+const fb = require('../utils/facebookGraph');
+const ig = require('../utils/instagramGraph');
 
 const onlineUsers = [];
 
@@ -35,7 +37,7 @@ class Sockets {
           id_configuracion,
           id_sub_usuario,
           rol,
-          { cursorFecha, cursorId, limit = 10, filtros = {}, scopeChats }
+          { cursorFecha, cursorId, limit = 10, filtros = {}, scopeChats },
         ) => {
           try {
             const chatService = new ChatService();
@@ -50,7 +52,7 @@ class Sockets {
                 limit,
                 filtros,
                 scopeChats,
-              }
+              },
             );
 
             socket.emit('CHATS', chats);
@@ -58,7 +60,7 @@ class Sockets {
             console.error('Error al obtener los chats 2:', error);
             socket.emit('ERROR', { message: 'Error al obtener los chats' });
           }
-        }
+        },
       );
 
       socket.on('GET_CHATS_BOX', async ({ chatId, id_configuracion }) => {
@@ -66,7 +68,7 @@ class Sockets {
           const chatService = new ChatService();
           const chat = await chatService.getChatsByClient(
             chatId,
-            id_configuracion
+            id_configuracion,
           );
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
@@ -85,7 +87,7 @@ class Sockets {
           const chatService = new ChatService();
           const templates = await chatService.getTemplates(
             id_configuracion,
-            palabraClave
+            palabraClave,
           );
 
           // Enviar los templates al cliente que hizo la solicitud
@@ -111,7 +113,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al obtener los datos del admin GET_DATA_ADMIN:',
-            error.message
+            error.message,
           );
 
           // Enviar mensaje de error al cliente en caso de fallo
@@ -133,7 +135,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al obtener los datos del admin GET_CELLPHONES:',
-            error.message
+            error.message,
           );
 
           // Enviar mensaje de error al cliente en caso de fallo
@@ -157,7 +159,7 @@ class Sockets {
               ciudadO.ciudad,
               ciudadD.ciudad,
               provinciaD.provincia,
-              monto_factura
+              monto_factura,
             );
 
             // Enviar los datos al cliente que hizo la solicitud
@@ -165,7 +167,7 @@ class Sockets {
           } catch (error) {
             console.log('Error al solicitar la petición servi: ' + error);
           }
-        }
+        },
       );
 
       socket.on(
@@ -183,14 +185,14 @@ class Sockets {
               ciudad,
               monto_factura,
               recaudo,
-              id_plataforma
+              id_plataforma,
             );
             // Enviar los datos al cliente que hizo la solicitud
             socket.emit('DATA_TARIFAS_RESPONSE', data);
           } catch (error) {
             console.error(
               'Error al obtener los datos DATA_TARIFAS_RESPONSE:',
-              error.message
+              error.message,
             );
 
             // Enviar mensaje de error al cliente en caso de fallo
@@ -198,7 +200,7 @@ class Sockets {
               message: 'Error al obtener los datos del admin. ' + error.message,
             });
           }
-        }
+        },
       );
 
       socket.on('GET_FACTURAS', async ({ id_plataforma, telefono }) => {
@@ -207,7 +209,7 @@ class Sockets {
           const data = await chatService.getFacturas(id_plataforma, telefono);
           const dataNovedades = await chatService.getNovedades(
             id_plataforma,
-            telefono
+            telefono,
           );
 
           // Enviar los datos al cliente que hizo la solicitud
@@ -216,7 +218,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al obtener los datos del admin DATA_NOVEDADES:',
-            error.message
+            error.message,
           );
 
           // Enviar mensaje de error al cliente en caso de fallo
@@ -237,7 +239,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al obtener los datos del admin DATA_PROVINCIAS_RESPONSE:',
-            error.message
+            error.message,
           );
 
           // Enviar mensaje de error al cliente en caso de fallo
@@ -258,7 +260,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al obtener los datos del admin DATA_CIUDADES_RESPONSE:',
-            error.message
+            error.message,
           );
         }
       });
@@ -274,35 +276,35 @@ class Sockets {
         console.log(err.context);
       });
 
-      socket.on('SEND_MESSAGE', async (data) => {
-        try {
-          const chatService = new ChatService();
-          const message = await chatService.sendMessage(data);
+      // socket.on('SEND_MESSAGE', async (data) => {
+      //   try {
+      //     const chatService = new ChatService();
+      //     const message = await chatService.sendMessage(data);
 
-          // Enviar el mensaje al cliente que hizo la solicitud
-          socket.emit('MESSAGE_RESPONSE', message);
+      //     // Enviar el mensaje al cliente que hizo la solicitud
+      //     socket.emit('MESSAGE_RESPONSE', message);
 
-          // Emitir evento para actualizar el chat en tiempo real
-          this.io.emit('UPDATE_CHAT', {
-            chatId: data.to, // Asume que `data.to` tiene el identificador del receptor
-            message,
-          });
-        } catch (error) {
-          console.error('Error al enviar el mensaje:', error.message);
+      //     // Emitir evento para actualizar el chat en tiempo real
+      //     this.io.emit('UPDATE_CHAT', {
+      //       chatId: data.to, // Asume que `data.to` tiene el identificador del receptor
+      //       message,
+      //     });
+      //   } catch (error) {
+      //     console.error('Error al enviar el mensaje:', error.message);
 
-          // Enviar mensaje de error al cliente en caso de fallo
-          socket.emit('ERROR_RESPONSE', {
-            message: 'Error al enviar el mensaje. Intenta de nuevo más tarde.',
-          });
-        }
-      });
+      //     // Enviar mensaje de error al cliente en caso de fallo
+      //     socket.emit('ERROR_RESPONSE', {
+      //       message: 'Error al enviar el mensaje. Intenta de nuevo más tarde.',
+      //     });
+      //   }
+      // });
 
       socket.on('SEEN_MESSAGE', async ({ celular_recibe, plataforma }) => {
         try {
           const chatService = new ChatService();
           const message = await chatService.seenMessage(
             celular_recibe,
-            plataforma
+            plataforma,
           );
 
           // Emitir evento para actualizar el chat en tiempo real
@@ -313,7 +315,7 @@ class Sockets {
         } catch (error) {
           console.error(
             'Error al marcar el mensaje como visto:',
-            error.message
+            error.message,
           );
 
           // Enviar mensaje de error al cliente en caso de fallo
