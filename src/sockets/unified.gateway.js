@@ -7,8 +7,8 @@ module.exports = function attachUnifiedGateway(io, services) {
   const roomCfg = (id_configuracion) => `cfg:${id_configuracion}`;
   const roomChat = (chatId) => `chat:${chatId}`;
 
-  // ⚠️ Ajuste a su valor real si no es 2
-  const ROL_ASESOR_DEFAULT = 2;
+  //mensaje saliente siempre somos rol 1
+  const ROL_ASESOR_DEFAULT = 1;
 
   const norm = (s) =>
     String(s || '')
