@@ -14,6 +14,10 @@ const Departamentos_chat_center = db.define(
       type: DataTypes.BIGINT,
       allowNull: false,
     },
+    id_configuracion: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+    },
     nombre_departamento: {
       type: DataTypes.STRING(250),
       allowNull: false,
