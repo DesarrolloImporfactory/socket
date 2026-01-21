@@ -2288,6 +2288,36 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
   }
 });
 
+async function getConfigForCoex(id_configuracion) {
+  const [rows] = await db.query(
+    `SELECT 
+        id AS id_configuracion,
+        id_telefono,
+        token,
+        sincronizo_coexistencia
+     FROM configuraciones
+     WHERE id = ? AND suspendido = 0
+     LIMIT 1`,
+    { replacements: [id_configuracion] },
+  );
+
+  return rows?.[0] || null;
+}
+
+async function updateConfigSyncFlag(id_configuracion, value) {
+  const v = value ? 1 : 0;
+
+  const [result] = await db.query(
+    `UPDATE configuraciones
+     SET sincronizo_coexistencia = ?, updated_at = NOW()
+     WHERE id = ?
+     LIMIT 1`,
+    { replacements: [v, id_configuracion] },
+  );
+
+  return result;
+}
+
 router.post('/coexistencia/sync', async (req, res) => {
   const { id_configuracion } = req.body;
 
@@ -2296,11 +2326,15 @@ router.post('/coexistencia/sync', async (req, res) => {
   }
 
   try {
-    const cfg = await getConfigFromDB(id_configuracion);
-    if (!cfg)
-      return res.status(404).json({ error: 'Configuración no encontrada.' });
+    const cfg = await getConfigForCoex(id_configuracion);
 
-    // Si ya está marcado, no llame a Meta
+    if (!cfg) {
+      return res
+        .status(404)
+        .json({ error: 'Configuración no encontrada o suspendida.' });
+    }
+
+    // ✅ Si ya está marcado, NO llamar a Meta
     if (Number(cfg.sincronizo_coexistencia) === 1) {
       return res.json({
         success: true,
@@ -2314,110 +2348,116 @@ router.post('/coexistencia/sync', async (req, res) => {
     const ACCESS_TOKEN = cfg.token;
 
     if (!phoneNumberId || !ACCESS_TOKEN) {
-      return res
-        .status(400)
-        .json({ error: 'Falta id_telefono o token en la configuración.' });
+      return res.status(400).json({
+        success: false,
+        status: 'missing_data',
+        mensaje: 'Falta id_telefono o token en la configuración.',
+      });
     }
 
     const endpoint = `https://graph.facebook.com/v22.0/${phoneNumberId}/smb_app_data`;
 
+    const ax = axios.create({
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+
     const callSync = async (sync_type) => {
-      const { data } = await axios.post(
-        endpoint,
-        { messaging_product: 'whatsapp', sync_type },
-        {
-          headers: {
-            Authorization: `Bearer ${ACCESS_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-      return data; // esperado: { messaging_product, request_id, success:true }
+      const resp = await ax.post(endpoint, {
+        messaging_product: 'whatsapp',
+        sync_type,
+      });
+
+      // resp.data puede ser success o error
+      return resp;
     };
 
+    // Helper para detectar el code 4 en cualquier respuesta
+    const isCode4 = (data) => data?.error?.code === 4;
+
     // 1) smb_app_state_sync
-    let r1;
-    try {
-      r1 = await callSync('smb_app_state_sync');
-    } catch (e) {
-      const err = e.response?.data || e.message;
+    const resp1 = await callSync('smb_app_state_sync');
 
-      // ✅ Caso: ya lo hizo (límite superado)
-      if (err?.error?.code === 4) {
-        return res.status(200).json({
-          success: true,
-          status: 'already_done_by_meta',
-          mensaje:
-            'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
-          meta: err,
-        });
-      }
+    // Si Meta dice "ya lo hiciste" -> marcar 1 y responder sutil
+    if (isCode4(resp1.data)) {
+      await updateConfigSyncFlag(id_configuracion, 1);
 
-      // ✅ Caso: otro error (ej: expiró ventana, debe repetir vinculación)
+      return res.status(200).json({
+        success: true,
+        status: 'already_done_by_meta',
+        mensaje:
+          'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
+        meta: resp1.data,
+      });
+    }
+
+    // Si falla por otro motivo
+    if (
+      !(resp1.status >= 200 && resp1.status < 300) ||
+      resp1.data?.success !== true
+    ) {
       return res.status(400).json({
         success: false,
         status: 'cannot_sync',
         mensaje:
           'No fue posible realizar la sincronización en este momento. Por favor, vuelva a vincular el número e intente nuevamente.',
-        meta: err,
+        meta: resp1.data,
       });
     }
 
     // 2) history
-    let r2;
-    try {
-      r2 = await callSync('history');
-    } catch (e) {
-      const err = e.response?.data || e.message;
+    const resp2 = await callSync('history');
 
-      if (err?.error?.code === 4) {
-        return res.status(200).json({
-          success: true,
-          status: 'already_done_by_meta',
-          mensaje:
-            'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
-          meta: err,
-        });
-      }
+    if (isCode4(resp2.data)) {
+      await updateConfigSyncFlag(id_configuracion, 1);
 
+      return res.status(200).json({
+        success: true,
+        status: 'already_done_by_meta',
+        mensaje:
+          'Este número ya realizó la sincronización. No es necesario repetir el proceso.',
+        meta: resp2.data,
+      });
+    }
+
+    if (
+      !(resp2.status >= 200 && resp2.status < 300) ||
+      resp2.data?.success !== true
+    ) {
       return res.status(400).json({
         success: false,
         status: 'cannot_sync',
         mensaje:
           'No fue posible completar la sincronización. Por favor, vuelva a vincular el número e intente nuevamente.',
-        meta: err,
+        meta: resp2.data,
       });
     }
 
-    // ✅ Si ambas salieron success true, marcamos en BD
-    const ok1 = r1?.success === true;
-    const ok2 = r2?.success === true;
+    // ✅ Si ambas OK -> marcar 1
+    await updateConfigSyncFlag(id_configuracion, 1);
 
-    if (ok1 && ok2) {
-      await updateConfig(id_configuracion, { sincronizo_coexistencia: 1 });
-
-      return res.json({
-        success: true,
-        status: 'synced',
-        mensaje: 'Sincronización realizada correctamente.',
-        meta: { smb_app_state_sync: r1, history: r2 },
-      });
-    }
-
-    // Raro: 200 pero sin success true
-    return res.status(400).json({
-      success: false,
-      status: 'unexpected',
-      mensaje:
-        'La sincronización no pudo confirmarse. Por favor, intente nuevamente o vuelva a vincular el número.',
-      meta: { smb_app_state_sync: r1, history: r2 },
+    return res.json({
+      success: true,
+      status: 'synced',
+      mensaje: 'Sincronización realizada correctamente.',
+      meta: {
+        smb_app_state_sync: resp1.data,
+        history: resp2.data,
+      },
     });
   } catch (error) {
     console.error(
       'Error en coexistencia/sync:',
       error?.response?.data || error.message,
     );
-    return res.status(500).json({ error: error.message });
+
+    return res.status(500).json({
+      success: false,
+      status: 'server_error',
+      mensaje: 'Error interno al procesar la sincronización.',
+      error: error.message,
+    });
   }
 });
 
