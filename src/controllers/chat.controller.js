@@ -24,22 +24,33 @@ exports.webhook = catchAsync(async (req, res, next) => {
         {
           model: ClientesChatCenter,
           as: 'clientePorCelular',
-          attributes: ['celular_cliente','nombre_cliente','id_encargado'],
+          attributes: ['celular_cliente', 'nombre_cliente', 'id_encargado'],
         },
       ],
       order: [['created_at', 'DESC']],
     });
 
     // Emitir el mensaje recibido a través del socket
-    if (io) {
-      io.emit('RECEIVED_MESSAGE', {
-        id_configuracion,
-        celular_recibe,
-        ultimoMensaje,
-      });
-    }
+    // if (io) {
+    //   io.emit('RECEIVED_MESSAGE', {
+    //     id_configuracion,
+    //     celular_recibe,
+    //     ultimoMensaje,
+    //   });
+    // }
+
+    io.emit('UPDATE_CHAT', {
+      id_configuracion,
+      chatId: celular_recibe, // que en su caso es el id del chat (ccc.id)
+      source: ultimoMensaje.source || 'wa',
+      message: ultimoMensaje,
+    });
+
     // Enviar una respuesta al Webhook
-    return res.status(200).json({ message: 'Mensaje recibido y emitido', ultimoMensaje: ultimoMensaje });
+    return res.status(200).json({
+      message: 'Mensaje recibido y emitido',
+      ultimoMensaje: ultimoMensaje,
+    });
   } catch (error) {
     console.error('Error completo:', error); // Muestra todo el stack
     return res.status(500).json({ message: 'Error al procesar el mensaje' });
