@@ -62,7 +62,7 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
         // opcional: si no quieres devolver el objeto configuracion anidado:
         // configuracion: undefined,
       };
-    })
+    }),
   );
 
   res.status(200).json({
@@ -79,7 +79,7 @@ exports.listar_por_usuario = catchAsync(async (req, res, next) => {
     {
       replacements: [id_sub_usuario],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
   if (!departamentos || departamentos.length === 0) {
     res.status(201).json({
@@ -178,8 +178,8 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
 
   const incoming = Array.from(
     new Set(
-      (Array.isArray(usuarios_asignados) ? usuarios_asignados : []).map(Number)
-    )
+      (Array.isArray(usuarios_asignados) ? usuarios_asignados : []).map(Number),
+    ),
   );
 
   // ✅ instancia tomada del modelo
@@ -188,7 +188,7 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     // 1) Actualizar datos del departamento
     await departamento.update(
       { nombre_departamento, color, mensaje_saludo, id_configuracion },
-      { transaction: t }
+      { transaction: t },
     );
 
     // 2) Obtener asignaciones actuales
@@ -279,74 +279,83 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       if (!id_cliente_chat_center) {
         return res.status(400).json({
           status: 'fail',
-          message: 'Falta id_conversation para Messenger',
+          message: 'Falta id_cliente_chat_center para WhatsApp',
         });
       }
 
-      const conversacionActual = await MessengerConversation.findOne({
+      // 1. Obtener el registro actual
+      const clienteActual = await Clientes_chat_center.findOne({
         where: { id: id_cliente_chat_center },
       });
 
-      if (!conversacionActual) {
+      if (!clienteActual) {
         return res.status(404).json({
           status: 'fail',
-          message: 'Conversación no encontrada',
+          message: 'Cliente no encontrado',
         });
       }
 
-      // 2) Guardar encargado anterior
-      const id_encargado_anterior = conversacionActual.id_encargado;
+      // 2. Guardar el id_encargado actual en variable
+      const id_encargado_anterior = clienteActual.id_encargado;
 
-      // 3) Historial
-      await HistorialEncargadosFacebook.create({
-        id_messenger_conversation: id_cliente_chat_center,
-        id_departamento_asginado: id_departamento ?? null,
-        id_encargado_anterior: id_encargado_anterior ?? null,
+      await Historial_encargados.create({
+        id_cliente_chat_center,
+        id_departamento_asginado: id_departamento,
+        id_encargado_anterior,
         id_encargado_nuevo: id_encargado,
-        motivo: motivo ?? null,
+        motivo,
       });
 
-      // 4) Actualizar conversación
-      await MessengerConversation.update(
-        { id_encargado: id_encargado, id_departamento: id_departamento },
+      const configuracion_transferida = await DepartamentosChatCenter.findOne({
+        where: { id_departamento },
+        include: [
+          {
+            model: Configuraciones,
+            as: 'configuracion',
+            required: true, // required:true => INNER JOIN
+            attributes: ['id_telefono'], // trae solo lo que necesitas
+          },
+        ],
+      });
+
+      await Clientes_chat_center.update(
+        { id_encargado: id_encargado },
         {
-          where: { id: id_cliente_chat_center },
-        }
+          where: { id: clienteActual.id },
+        },
       );
 
-      // 5) Crear messenger_messages (notificación)
-      await MessengerMessage.create({
-        conversation_id: conversacionActual.id,
-        id_configuracion: conversacionActual.id_configuracion,
-        page_id: conversacionActual.page_id,
-        psid: conversacionActual.psid,
-
-        direction: 'out',
-        mid: null,
-        text: `${emisor || 'Sistema'} te transfirió este chat. Motivo: ${
-          motivo || 'No especificado'
-        }`,
-        attachments: null,
-        postback_payload: null,
-        quick_reply_payload: null,
-        sticker_id: null,
-
-        status: 'notification',
-
-        meta: {
-          system_notification: true,
-          type: 'transfer',
-          from_id_encargado: id_encargado_anterior ?? null,
-          to_id_encargado: id_encargado ?? null,
-          id_departamento: id_departamento ?? null,
-          emisor: emisor ?? null,
-          motivo: motivo ?? null,
+      // Buscar el cliente propietario de esa configuración (igual que arriba)
+      const cliente_configuracion = await Clientes_chat_center.findOne({
+        where: {
+          id_configuracion: configuracion_transferida.id_configuracion,
+          propietario: 1,
         },
-
-        // si quiere registrar quién ejecutó la transferencia (humano):
-        // id_encargado: id_encargado,
-        id_encargado: null,
       });
+
+      // (opcional pero recomendado) si no existe propietario, evita crashear:
+      if (!cliente_configuracion) {
+        throw new Error(
+          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+        );
+      }
+
+      await MensajesClientes.create({
+        id_configuracion: configuracion_transferida.id_configuracion,
+        id_cliente: cliente_configuracion.id,
+        mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+        tipo_mensaje: 'notificacion',
+        visto: 0,
+        texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
+        rol_mensaje: 3,
+        celular_recibe: clienteActual.id,
+        uid_whatsapp: clienteActual.celular_cliente,
+      });
+
+      enviarConsultaAPI(
+        configuracion_transferida.id_configuracion,
+        clienteActual.id,
+      );
 
       break;
     }
@@ -354,77 +363,83 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       if (!id_cliente_chat_center) {
         return res.status(400).json({
           status: 'fail',
-          message: 'Falta id_conversation para Instagram',
+          message: 'Falta id_cliente_chat_center para WhatsApp',
         });
       }
 
-      const conversacionActual = await InstagramConversation.findOne({
+      // 1. Obtener el registro actual
+      const clienteActual = await Clientes_chat_center.findOne({
         where: { id: id_cliente_chat_center },
       });
 
-      if (!conversacionActual) {
+      if (!clienteActual) {
         return res.status(404).json({
           status: 'fail',
-          message: 'Conversación no encontrada',
+          message: 'Cliente no encontrado',
         });
       }
 
-      // 2) Guardar encargado anterior
-      const id_encargado_anterior = conversacionActual.id_encargado;
+      // 2. Guardar el id_encargado actual en variable
+      const id_encargado_anterior = clienteActual.id_encargado;
 
-      // 3) Historial
-      await HistorialEncargadosInstagram.create({
-        id_instagram_conversation: id_cliente_chat_center,
-        id_departamento_asginado: id_departamento ?? null,
-        id_encargado_anterior: id_encargado_anterior ?? null,
+      await Historial_encargados.create({
+        id_cliente_chat_center,
+        id_departamento_asginado: id_departamento,
+        id_encargado_anterior,
         id_encargado_nuevo: id_encargado,
-        motivo: motivo ?? null,
+        motivo,
       });
 
-      // 4) Actualizar conversación
-      await InstagramConversation.update(
-        { id_encargado: id_encargado, id_departamento: id_departamento },
-        { where: { id: id_cliente_chat_center } }
+      const configuracion_transferida = await DepartamentosChatCenter.findOne({
+        where: { id_departamento },
+        include: [
+          {
+            model: Configuraciones,
+            as: 'configuracion',
+            required: true, // required:true => INNER JOIN
+            attributes: ['id_telefono'], // trae solo lo que necesitas
+          },
+        ],
+      });
+
+      await Clientes_chat_center.update(
+        { id_encargado: id_encargado },
+        {
+          where: { id: clienteActual.id },
+        },
       );
 
-      // 5) Crear instagram_messages (notificación)
-      await InstagramMessage.create({
-        conversation_id: conversacionActual.id,
-        id_configuracion: conversacionActual.id_configuracion,
-        page_id: conversacionActual.page_id,
-        igsid: conversacionActual.igsid,
-
-        direction: 'out',
-        mid: null,
-        text: `${emisor || 'Sistema'} te transfirió este chat. Motivo: ${
-          motivo || 'No especificado'
-        }`,
-
-        // En su modelo es TEXT('long'), puede ir null o string
-        attachments: null,
-
-        status: 'notification',
-
-        delivery_watermark: null,
-        read_watermark: null,
-        error_code: null,
-        error_subcode: null,
-        error_message: null,
-
-        // En su modelo meta es TEXT('long'), así que guárdelo como string JSON
-        meta: JSON.stringify({
-          system_notification: true,
-          type: 'transfer',
-          from_id_encargado: id_encargado_anterior ?? null,
-          to_id_encargado: id_encargado ?? null,
-          id_departamento: id_departamento ?? null,
-          emisor: emisor ?? null,
-          motivo: motivo ?? null,
-        }),
-
-        id_encargado: null,
-        is_unsupported: 0,
+      // Buscar el cliente propietario de esa configuración (igual que arriba)
+      const cliente_configuracion = await Clientes_chat_center.findOne({
+        where: {
+          id_configuracion: configuracion_transferida.id_configuracion,
+          propietario: 1,
+        },
       });
+
+      // (opcional pero recomendado) si no existe propietario, evita crashear:
+      if (!cliente_configuracion) {
+        throw new Error(
+          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+        );
+      }
+
+      await MensajesClientes.create({
+        id_configuracion: configuracion_transferida.id_configuracion,
+        id_cliente: cliente_configuracion.id,
+        mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+        tipo_mensaje: 'notificacion',
+        visto: 0,
+        texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
+        rol_mensaje: 3,
+        celular_recibe: clienteActual.id,
+        uid_whatsapp: clienteActual.celular_cliente,
+      });
+
+      enviarConsultaAPI(
+        configuracion_transferida.id_configuracion,
+        clienteActual.id,
+      );
 
       break;
     }
@@ -462,6 +477,14 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
       const configuracion_transferida = await DepartamentosChatCenter.findOne({
         where: { id_departamento },
+        include: [
+          {
+            model: Configuraciones,
+            as: 'configuracion',
+            required: true, // required:true => INNER JOIN
+            attributes: ['id_telefono'], // trae solo lo que necesitas
+          },
+        ],
       });
 
       if (configuracion_transferida.id_configuracion == id_configuracion) {
@@ -478,7 +501,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             { id_encargado: id_encargado },
             {
               where: { id: id_cliente_chat_center },
-            }
+            },
           );
 
           // Buscar el cliente propietario de esa configuración (igual que arriba)
@@ -492,14 +515,14 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
           // (opcional pero recomendado) si no existe propietario, evita crashear:
           if (!cliente_configuracion) {
             throw new Error(
-              `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`
+              `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
             );
           }
 
           await MensajesClientes.create({
             id_configuracion: configuracion_transferida.id_configuracion,
             id_cliente: cliente_configuracion.id,
-            mid_mensaje: configuracion_transferida.id_telefono,
+            mid_mensaje: configuracion_transferida.configuracion.id_telefono,
             tipo_mensaje: 'notificacion',
             visto: 0,
             texto_mensaje:
@@ -511,7 +534,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
           enviarConsultaAPI(
             configuracion_transferida.id_configuracion,
-            validar_cliente_new_conf.id
+            validar_cliente_new_conf.id,
           );
         }
       } else {
@@ -534,7 +557,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         // (opcional pero recomendado) si no existe propietario, evita crashear:
         if (!cliente_configuracion) {
           throw new Error(
-            `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`
+            `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
           );
         }
 
@@ -543,7 +566,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             { id_encargado: id_encargado },
             {
               where: { id: validar_cliente_new_conf.id },
-            }
+            },
           );
 
           await MensajesClientes.create({
@@ -561,7 +584,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
           enviarConsultaAPI(
             configuracion_transferida.id_configuracion,
-            validar_cliente_new_conf.id
+            validar_cliente_new_conf.id,
           );
         } else {
           // 1) Crear el cliente porque no existe en la nueva configuración
@@ -591,7 +614,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
           enviarConsultaAPI(
             configuracion_transferida.id_configuracion,
-            nuevo_cliente.id
+            nuevo_cliente.id,
           );
         }
       }
@@ -630,7 +653,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
       }
       await MessengerConversation.update(
         { id_encargado },
-        { where: { id: id_conversation } }
+        { where: { id: id_conversation } },
       );
       break;
     }
@@ -643,7 +666,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
       }
       await InstagramConversation.update(
         { id_encargado },
-        { where: { id: id_conversation } }
+        { where: { id: id_conversation } },
       );
       break;
     }
@@ -672,7 +695,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
 
       await Clientes_chat_center.update(
         { id_encargado },
-        { where: { id: id_cliente_chat_center } }
+        { where: { id: id_cliente_chat_center } },
       );
       break;
     }
