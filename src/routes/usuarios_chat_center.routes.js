@@ -21,7 +21,6 @@ router.use(protect);
 /* seccion administrar sub_usuarios  */
 router.post(
   '/listarUsuarios',
-  restrictToRoles('administrador'),
   usuarios_chat_centerController.listarUsuarios
 );
 
