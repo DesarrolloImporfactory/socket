@@ -161,6 +161,136 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
   }
 });
 
+exports.listarConexionesSubUser = catchAsync(async (req, res) => {
+  const { id_usuario, id_sub_usuario } = req.body;
+
+  if (!id_usuario) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Falta id_usuario' });
+  }
+
+  // Si no mandan subusuario, se asume "dueño" o modo legacy (devuelve todo del usuario)
+  // (si usted quiere exigirlo, cambie esto a 400)
+  let esAdmin = true;
+
+  if (id_sub_usuario) {
+    const subRow = await db.query(
+      `
+      SELECT rol
+      FROM sub_usuarios_chat_center
+      WHERE id_sub_usuario = ?
+        AND id_usuario = ?
+      LIMIT 1
+      `,
+      {
+        replacements: [id_sub_usuario, id_usuario],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const rol = subRow?.[0]?.rol || null;
+
+    if (!rol) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Subusuario inválido o no pertenece al usuario.',
+      });
+    }
+
+    esAdmin = rol === 'administrador' || rol === 'super_administrador';
+  }
+
+  const [rows] = await db.query(
+    `
+    SELECT
+      c.id,
+      c.id_plataforma,
+      c.nombre_configuracion,
+      c.telefono,
+      c.id_telefono,
+      c.id_whatsapp,
+      c.webhook_url,
+      c.metodo_pago,
+      c.suspendido,
+      c.tipo_configuracion,
+      c.sincronizo_coexistencia,
+
+      CASE
+        WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
+        ELSE 0
+      END AS conectado,
+
+      EXISTS (
+        SELECT 1
+        FROM messenger_pages mp
+        WHERE mp.id_configuracion = c.id
+          AND mp.subscribed = 1
+          AND mp.status = 'active'
+      ) AS messenger_conectado,
+
+      (
+        SELECT mp.page_name
+        FROM messenger_pages mp
+        WHERE mp.id_configuracion = c.id
+          AND mp.subscribed = 1
+          AND mp.status = 'active'
+        ORDER BY mp.id_messenger_page DESC
+        LIMIT 1
+      ) AS messenger_page_name,
+
+      (
+        SELECT mp.page_id
+        FROM messenger_pages mp
+        WHERE mp.id_configuracion = c.id
+          AND mp.subscribed = 1
+          AND mp.status = 'active'
+        ORDER BY mp.id_messenger_page DESC
+        LIMIT 1
+      ) AS messenger_page_id,
+
+      EXISTS (
+        SELECT 1
+        FROM instagram_pages ip
+        WHERE ip.id_configuracion = c.id
+          AND ip.subscribed = 1
+          AND ip.status = 'active'
+      ) AS instagram_conectado,
+
+      EXISTS (
+        SELECT 1
+        FROM tiktok_devs_connections tdc
+        WHERE tdc.id_configuracion = c.id
+      ) AS tiktok_conectado
+
+    FROM configuraciones c
+    WHERE c.id_usuario = ?
+      AND c.suspendido = 0
+      AND (
+        ? = 1
+        OR EXISTS (
+          SELECT 1
+          FROM departamentos_chat_center dcc
+          INNER JOIN sub_usuarios_departamento sud
+            ON sud.id_departamento = dcc.id_departamento
+          WHERE dcc.id_configuracion = c.id
+            AND sud.id_sub_usuario = ?
+        )
+      )
+    ORDER BY c.id DESC
+    `,
+    {
+      replacements: [
+        id_usuario,
+        esAdmin ? 1 : 0,
+        id_sub_usuario || 0, // si no viene, da igual porque esAdmin=true
+      ],
+    },
+  );
+
+  return res.json({ status: 'success', data: rows });
+});
+
 exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
   try {
     const [rows] = await db.query(

@@ -46,6 +46,13 @@ router.post(
 );
 
 router.post(
+  '/listar_conexiones_sub_user',
+  checkPlanActivo,
+  /* limiteConversaciones, */
+  configuracionesController.listarConexionesSubUser
+);
+
+router.post(
   '/listar_admin_conexiones',
   checkPlanActivo,
   configuracionesController.listarAdminConexiones
