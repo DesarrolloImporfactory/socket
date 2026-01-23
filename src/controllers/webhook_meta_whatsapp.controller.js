@@ -298,6 +298,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           case 131051:
             debugLogMsg = '⚠️ Tipo de mensaje no soportado.';
             break;
+          case 131053:
+            debugLogMsg = '⚠️ Error al enviar el audio.';
+            break;
 
           default:
             debugLogMsg = `Error Meta ${codigo_error}: ${statusTitle} - ${statusMsg}`;
