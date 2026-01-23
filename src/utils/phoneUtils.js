@@ -163,11 +163,6 @@ function formatPhoneForWhatsApp(phone, defaultCountryCode = '593') {
     // Agregar código de país
     return defaultCountryCode + localNumber;
 }
-
-console.log('phoneUtils.js cargado correctamente.');
-console.log('COUNTRY_CODES disponibles:', Object.keys(COUNTRY_CODES).length);
-console.log( normalizePhoneNumber('5212214287262') );
-
 module.exports = {
     COUNTRY_CODES,
     cleanPhoneNumber,

@@ -177,6 +177,51 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     },
   };
 
+  const plantilla_respuestas = {
+    messaging_product: 'whatsapp',
+    to: celularFormateado,
+    type: 'template',
+    template: {
+      name: 'confirmacion_cotizacion_carga_pro',
+      language: {
+        code: 'es',
+      },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            {
+              type: 'text',
+              text: cotizacionInfo.cliente,
+            },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'url',
+          index: '0',
+          parameters: [
+            {
+              type: 'text',
+              text: id_cotizacion,
+            },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'url',
+          index: '1',
+          parameters: [
+            {
+              type: 'text',
+              text: id_cotizacion,
+            },
+          ],
+        },
+      ],
+    },
+  };
+
   const request = await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.CONFIGURACION_WS}/messages`,
     plantillas,
@@ -187,6 +232,22 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
       },
     },
   );
+  const request2 = await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.CONFIGURACION_WS}/messages`,
+    plantilla_respuestas,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
+      },
+    },
+  );
+
+  console.log("Respuesta api 2:  ", request2.data);
+
+
+
+
   if (request.data && request.data.messages[0].message_status === "accepted") {
 
     const generado = await db_2.query(
@@ -201,7 +262,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
       },
     );
 
-    console.log('generado:', generado);
 
     res.status(200).json({
       status: 200,

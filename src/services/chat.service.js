@@ -20,6 +20,12 @@ const Productos = require('../models/productos.model');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
+const {
+  normalizePhoneNumber,
+  generatePhoneVariations,
+} = require('../utils/phoneUtils');
+const UsuarioPlataforma = require('../models/usuario_plataforma.model');
+const { logging } = require('googleapis/build/src/apis/logging');
 class ChatService {
   async findChats(
     id_configuracion,
@@ -322,6 +328,58 @@ class ChatService {
         ],
       });
 
+      const celular_cliente =
+        chats.length > 0 ? chats[0].telefono_limpio : null;
+      //  console.log("Chats: ", chats);
+
+      const phoneVariants = generatePhoneVariations(celular_cliente, 593);
+
+      const plataforma = await Plataforma.findAll({
+        where: {
+          [Op.or]: phoneVariants.map((variant) => ({
+            whatsapp: { [Op.like]: `%${variant}%` },
+          })),
+        },
+        order: [['id_plataforma', 'ASC']],
+      });
+
+      const plataformaIds = plataforma.map((p) => p.id_plataforma);
+
+      const usuarioIds = await UsuarioPlataforma.findAll({
+        where: {
+          id_plataforma: {
+            [Op.in]: plataformaIds,
+          },
+        },
+        attributes: ['id_usuario'],
+      }).then((results) => results.map((up) => up.id_usuario));
+
+      // priorizar estado 1 en cada paquete si tiene 1 en cualquiera de sus usuarios poner 1
+      const paquetesConEstado = await db_2.query(
+        `
+        SELECT importacion, membresia_ecommerce, ecommerce, productos from users where id_users IN (${usuarioIds.join(',')}) 
+      `,
+        {
+          type: db_2.QueryTypes.SELECT,
+        },
+      );
+
+      // OR por campo (si existe un 1 en cualquiera -> queda 1)
+      const paquetes = paquetesConEstado.reduce(
+        (acc, row) => {
+          acc.importacion =
+            acc.importacion || Number(row.importacion) === 1 ? 1 : 0;
+
+          acc.productos = acc.productos || Number(row.productos) === 1 ? 1 : 0;
+          acc.ecommerce = acc.ecommerce || Number(row.ecommerce) === 1 ? 1 : 0;
+          return acc;
+        },
+        { importacion: 0,  productos: 0, ecommerce: 0 },
+      );
+      const chatsPlain = chats.map((c) => c.toJSON());
+      chatsPlain.forEach((c) => {
+        c.paquetes = paquetes;
+      });
       // marcar vistos
       await MensajesClientes.update(
         { visto: 1 },
@@ -335,7 +393,7 @@ class ChatService {
         },
       );
 
-      return chats;
+      return chatsPlain;
     } catch (error) {
       console.error('Error al obtener los chats 1:', error.message);
       throw error;

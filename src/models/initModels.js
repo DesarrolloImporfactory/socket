@@ -58,11 +58,11 @@ const initModel = () => {
 
   // Asociación entre ClientesChatCenter y MensajesClientes
   ClientesChatCenter.hasMany(MensajesClientes, {
-    foreignKey: 'id_cliente',
+    foreignKey: 'celular_recibe',
     as: 'mensajes',
   });
   MensajesClientes.belongsTo(ClientesChatCenter, {
-    foreignKey: 'id_cliente',
+    foreignKey: 'celular_recibe',
     as: 'cliente',
   });
   MensajesClientes.belongsTo(ClientesChatCenter, {
