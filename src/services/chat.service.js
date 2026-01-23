@@ -341,7 +341,6 @@ class ChatService {
         },
         order: [['id_plataforma', 'ASC']],
       });
-      console.log('Phone Variants:', plataforma);
 
       const plataformaIds = plataforma.map((p) => p.id_plataforma);
 
@@ -358,7 +357,6 @@ class ChatService {
           attributes: ['id_usuario'],
         }).then((results) => results.map((up) => up.id_usuario));
 
-        console.log('Usuario IDs:', usuarioIds);
 
         if (usuarioIds.length > 0) {
           // Priorizar estado 1 en cada paquete si tiene 1 en cualquiera de sus usuarios
@@ -472,11 +470,9 @@ class ChatService {
       const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
       const fromToken = dataAdmin.token;
 
-      console.log(tipo_mensaje);
       let responseData = {};
       if (tipo_mensaje !== 'image') {
         // Construcción de la URL de la API
-        console.log('entre');
         const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
 
         // Datos de la petición
