@@ -1,41 +1,7 @@
-/**
- * Instagram Store Service
- * -----------------------
- * Capa de persistencia para conversaciones y mensajes de Instagram.
- * - Evita duplicados en salientes usando ON DUPLICATE KEY (requiere UNIQUE(page_id, igsid, mid, direction) o similar).
- * - Expone helpers usados por el servicio principal y por sockets (markRead, findOutgoingByMid, getConversationById).
- */
-
 const { db } = require('../database/config');
 const {
   rrInstagramUnDepto,
 } = require('../utils/instagram/round_robin_instagram');
-
-/** Garantiza que exista la conversación y retorna su id */
-// async function ensureConversation({ id_configuracion, page_id, igsid }) {
-//   const [row] = await db.query(
-//     `SELECT id FROM instagram_conversations
-//       WHERE id_configuracion=? AND page_id=? AND igsid=? LIMIT 1`,
-//     {
-//       replacements: [id_configuracion, page_id, igsid],
-//       type: db.QueryTypes.SELECT,
-//     }
-//   );
-//   if (row) return row.id;
-
-//   const [ins] = await db.query(
-//     `INSERT INTO instagram_conversations
-//        (id_configuracion, page_id, igsid, status, unread_count, first_contact_at, last_message_at, updated_at)
-//      VALUES (?, ?, ?, 'open', 0, NOW(), NOW(), NOW())`,
-//     {
-//       replacements: [id_configuracion, page_id, igsid],
-//       type: db.QueryTypes.INSERT,
-//     }
-//   );
-
-//   // insertId en MySQL viene acá
-//   return ins?.insertId ?? ins;
-// }
 
 async function ensureConversation({ id_configuracion, page_id, igsid }) {
   const [row] = await db.query(
@@ -46,7 +12,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
     {
       replacements: [id_configuracion, page_id, igsid],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
 
   // ✅ existe: si está sin asignación -> asignar 1 vez
@@ -67,7 +33,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
             rr.id_departamento_asginado ?? null,
             row.id,
           ],
-        }
+        },
       );
 
       await db.query(
@@ -83,7 +49,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
             'auto_round_robin_instagram_fix',
           ],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
     }
     return row.id;
@@ -108,7 +74,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
         rr.id_departamento_asginado ?? null,
       ],
       type: db.QueryTypes.INSERT,
-    }
+    },
   );
 
   const conversationId = ins?.insertId ?? ins;
@@ -126,7 +92,7 @@ async function ensureConversation({ id_configuracion, page_id, igsid }) {
         'auto_round_robin_instagram',
       ],
       type: db.QueryTypes.INSERT,
-    }
+    },
   );
 
   return conversationId;
@@ -174,20 +140,20 @@ async function saveIncomingMessage({
         meta ? JSON.stringify(meta) : null,
       ],
       type: db.QueryTypes.INSERT,
-    }
+    },
   );
 
   await db.query(
     `UPDATE instagram_conversations
       SET last_message_at = NOW(), last_incoming_at = NOW(), unread_count = unread_count + 1, updated_at = NOW()
      WHERE id = ?`,
-    { replacements: [conversation_id] }
+    { replacements: [conversation_id] },
   );
 
   const insertedId = ins?.insertId ?? ins;
   const [row] = await db.query(
     `SELECT id, created_at FROM instagram_messages WHERE id = ? LIMIT 1`,
-    { replacements: [insertedId], type: db.QueryTypes.SELECT }
+    { replacements: [insertedId], type: db.QueryTypes.SELECT },
   );
 
   return { conversation_id, message_id: row.id, created_at: row.created_at };
@@ -246,19 +212,22 @@ async function saveOutgoingMessage({
         id_encargado,
       ],
       type: db.QueryTypes.INSERT,
-    }
+    },
   );
 
   await db.query(
     `UPDATE instagram_conversations
        SET last_message_at = NOW(), last_outgoing_at = NOW(), updated_at = NOW()
      WHERE id = ?`,
-    { replacements: [conversation_id] }
+    { replacements: [conversation_id] },
   );
 
   const [row] = await db.query(
     `SELECT id, created_at FROM instagram_messages WHERE conversation_id=? AND mid=? AND direction='out' LIMIT 1`,
-    { replacements: [conversation_id, mid || null], type: db.QueryTypes.SELECT }
+    {
+      replacements: [conversation_id, mid || null],
+      type: db.QueryTypes.SELECT,
+    },
   );
 
   return { conversation_id, message_id: row.id, created_at: row.created_at };
@@ -270,7 +239,7 @@ async function markRead({ id_configuracion, page_id, igsid }) {
     `UPDATE instagram_conversations
         SET unread_count = 0, updated_at = NOW()
       WHERE id_configuracion=? AND page_id=? AND igsid=?`,
-    { replacements: [id_configuracion, page_id, igsid] }
+    { replacements: [id_configuracion, page_id, igsid] },
   );
 }
 
@@ -279,7 +248,7 @@ async function findOutgoingByMid({ conversation_id, mid }) {
   const [row] = await db.query(
     `SELECT id, meta FROM instagram_messages
       WHERE conversation_id=? AND mid=? AND direction='out' LIMIT 1`,
-    { replacements: [conversation_id, mid], type: db.QueryTypes.SELECT }
+    { replacements: [conversation_id, mid], type: db.QueryTypes.SELECT },
   );
   return row || null;
 }
@@ -290,7 +259,7 @@ async function getConversationById(id) {
     `SELECT id, id_configuracion, page_id, igsid
        FROM instagram_conversations
       WHERE id=? LIMIT 1`,
-    { replacements: [id], type: db.QueryTypes.SELECT }
+    { replacements: [id], type: db.QueryTypes.SELECT },
   );
   return row || null;
 }

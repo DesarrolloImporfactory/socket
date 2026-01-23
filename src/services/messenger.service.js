@@ -24,6 +24,77 @@ async function getPageTokenByPageId(page_id) {
   return row?.page_access_token || null;
 }
 
+function emitUpdateChatMS({
+  id_configuracion,
+  chatId,
+  pageId,
+  external_id,
+  uni,
+  saved,
+  rawMessage,
+  kind,
+}) {
+  if (!IO) return;
+
+  // kind: 'in' | 'postback' | 'out-echo'
+  const isIncoming = kind === 'in' || kind === 'postback';
+  const tipo_mensaje =
+    kind === 'postback'
+      ? 'postback'
+      : rawMessage?.attachments?.length
+        ? 'attachment'
+        : 'text';
+
+  const texto =
+    kind === 'postback'
+      ? `Postback: ${rawMessage?.payload || ''}`
+      : rawMessage?.text || null;
+
+  const messageForFront = {
+    // ✅ si ya guardó en DB, este id es el real
+    id: saved?.message_id || null,
+
+    created_at: saved?.created_at || new Date().toISOString(),
+
+    // ✅ compat front
+    texto_mensaje: texto,
+    text: texto,
+
+    tipo_mensaje,
+    rol_mensaje: isIncoming ? 0 : 1,
+    direction: isIncoming ? 'in' : 'out',
+
+    source: 'ms',
+    page_id: String(pageId),
+    uid_whatsapp: String(external_id || ''),
+
+    mid_mensaje: rawMessage?.mid || null,
+    external_mid: rawMessage?.mid || null,
+
+    attachments_unificado: rawMessage?.attachments || null,
+    status_unificado: isIncoming ? 'received' : 'sent',
+  };
+
+  // ✅ chat mínimo pero útil para permisos y render
+  const chatForFront = {
+    id: chatId,
+    id_configuracion,
+    source: 'ms',
+    page_id: String(pageId),
+    external_id: String(external_id || ''),
+    id_encargado: uni?.id_encargado ?? null,
+    id_departamento: uni?.id_departamento ?? null,
+  };
+
+  IO.emit('UPDATE_CHAT', {
+    id_configuracion,
+    chatId: String(chatId),
+    source: 'ms',
+    message: messageForFront,
+    chat: chatForFront,
+  });
+}
+
 async function getConfigIdByPageId(page_id) {
   const [row] = await db.query(
     `SELECT id_configuracion FROM messenger_pages WHERE page_id = ? AND status='active' LIMIT 1`,
@@ -267,6 +338,18 @@ class MessengerService {
       });
 
       console.log('[MS][SAVE_INCOMING][OK]', saved);
+
+      // ✅ emitir UPDATE_CHAT para ver en tiempo real (MS IN)
+      emitUpdateChatMS({
+        id_configuracion,
+        chatId: idClienteContacto,
+        pageId,
+        external_id: senderPsid,
+        uni,
+        saved,
+        rawMessage: message,
+        kind: 'in',
+      });
     } catch (err) {
       console.error('[MS][SAVE_INCOMING][ERROR]', {
         name: err?.name,
@@ -361,6 +444,22 @@ class MessengerService {
       });
 
       console.log('[MS][SAVE_POSTBACK_IN][OK]', inSaved);
+      // ✅ emitir UPDATE_CHAT para ver en tiempo real (MS POSTBACK IN)
+      emitUpdateChatMS({
+        id_configuracion,
+        chatId: idClienteContacto,
+        pageId,
+        external_id: senderPsid,
+        uni,
+        saved: inSaved,
+        rawMessage: {
+          payload,
+          mid: postback?.mid || null,
+          text: null,
+          attachments: null,
+        },
+        kind: 'postback',
+      });
     } catch (err) {
       console.error('[MS][SAVE_POSTBACK_IN][ERROR]', {
         name: err?.name,
@@ -450,6 +549,18 @@ class MessengerService {
       });
 
       console.log('[MS][SAVE_ECHO_OUT][OK]', saved);
+
+      // ✅ emitir UPDATE_CHAT para ver en tiempo real (MS OUT echo)
+      emitUpdateChatMS({
+        id_configuracion,
+        chatId: idClienteContacto,
+        pageId,
+        external_id: psid,
+        uni,
+        saved,
+        rawMessage: message,
+        kind: 'out-echo',
+      });
     } catch (err) {
       console.error('[MS][SAVE_ECHO_OUT][ERROR]', {
         name: err?.name,

@@ -1,11 +1,8 @@
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
-const Store = require('./messenger_store.service'); // ✅ STORE UNIFICADO (dueño único)
+const Store = require('./messenger_store.service');
 
 let IO = null;
-
-const roomConv = (id_cliente) => `ig:conv:${id_cliente}`;
-const roomCfg = (id_configuracion) => `ig:cfg:${id_configuracion}`;
 
 /** Busca conexión IG activa por IG Business ID */
 async function getPageRowByIgId(ig_id) {
@@ -32,9 +29,6 @@ async function getUnifiedConversationById(id_cliente) {
   return row || null;
 }
 
-const safeMsgId = (dbId, mid) =>
-  dbId || mid || `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
 function normalizeAttachments(msg) {
   const atts = msg?.attachments;
   if (!Array.isArray(atts) || !atts.length) return null;
@@ -58,6 +52,75 @@ function normalizeAttachments(msg) {
         mime_type: p?.mime_type || null,
       },
     };
+  });
+}
+
+function emitUpdateChatIG({
+  id_configuracion,
+  chatId,
+  pageId,
+  external_id,
+  uni,
+  saved,
+  rawMessage,
+  kind, // 'in' | 'postback' | 'out-echo'
+}) {
+  if (!IO) return;
+
+  const isIncoming = kind === 'in' || kind === 'postback';
+
+  const tipo_mensaje =
+    kind === 'postback'
+      ? 'postback'
+      : rawMessage?.attachments?.length
+        ? 'attachment'
+        : rawMessage?.text
+          ? 'text'
+          : 'text';
+
+  const texto =
+    kind === 'postback'
+      ? `Postback: ${rawMessage?.payload || ''}`
+      : rawMessage?.text || null;
+
+  const messageForFront = {
+    id: saved?.message_id || null,
+    created_at: saved?.created_at || new Date().toISOString(),
+
+    texto_mensaje: texto,
+    text: texto,
+
+    tipo_mensaje,
+    rol_mensaje: isIncoming ? 0 : 1,
+    direction: isIncoming ? 'in' : 'out',
+
+    source: 'ig',
+    page_id: String(pageId),
+    uid_whatsapp: String(external_id || ''), // en su tabla se usa uid_whatsapp como external_id
+
+    mid_mensaje: rawMessage?.mid || null,
+    external_mid: rawMessage?.mid || null,
+
+    attachments_unificado: rawMessage?.attachments || null,
+    status_unificado: isIncoming ? 'received' : 'sent',
+  };
+
+  const chatForFront = {
+    id: chatId,
+    id_configuracion,
+    source: 'ig',
+    page_id: String(pageId),
+    external_id: String(external_id || ''),
+    id_encargado: uni?.id_encargado ?? null,
+    id_departamento: uni?.id_departamento ?? null,
+  };
+
+  IO.emit('UPDATE_CHAT', {
+    id_configuracion,
+    chatId: String(chatId),
+    source: 'ig',
+    message: messageForFront,
+    chat: chatForFront,
   });
 }
 
@@ -118,12 +181,6 @@ class InstagramService {
             page_id: conv.page_id,
             external_id: conv.external_id,
             watermark: Date.now(),
-            id_cliente: conv.id_cliente,
-          });
-
-          IO.to(roomCfg(conv.id_configuracion)).emit('IG_READ', {
-            page_id: conv.page_id,
-            external_id: conv.external_id,
             id_cliente: conv.id_cliente,
           });
         } catch (e) {
@@ -217,7 +274,6 @@ class InstagramService {
   }
 
   static async handleMessage(userIgsid, message, pageId, id_configuracion) {
-    const createdAtNow = new Date().toISOString();
     const normalizedAttachments = normalizeAttachments(message);
 
     // ✅ Asegura conversación unificada: devuelve dueño + contacto
@@ -262,28 +318,21 @@ class InstagramService {
       meta: { raw: message },
     });
 
-    // ✅ sockets (room por dueño)
-    if (IO) {
-      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
-        id_cliente: idClienteDueno,
-        message: {
-          id: safeMsgId(saved?.message_id, message.mid),
-          direction: 'in',
-          mid: message.mid || null,
-          text: message.text || null,
-          attachments: normalizedAttachments || null,
-          status: 'received',
-          created_at: createdAtNow,
-        },
-      });
-
-      IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
-        id: idClienteDueno,
-        last_message_at: createdAtNow,
-        last_incoming_at: createdAtNow,
-        preview: message.text || '(adjunto)',
-      });
-    }
+    // ✅ UPDATE_CHAT (IG IN)
+    emitUpdateChatIG({
+      id_configuracion,
+      chatId: idClienteContacto, // ✅ contacto
+      pageId,
+      external_id: userIgsid,
+      uni,
+      saved,
+      rawMessage: {
+        mid: message.mid || null,
+        text: message.text || null,
+        attachments: normalizedAttachments || null,
+      },
+      kind: 'in',
+    });
   }
 
   static async handleEchoAsOutgoing({
@@ -292,7 +341,6 @@ class InstagramService {
     userIgsid,
     message,
   }) {
-    const createdAtNow = new Date().toISOString();
     const normalizedAttachments = normalizeAttachments(message);
 
     const uni = await Store.ensureUnifiedConversation({
@@ -335,32 +383,24 @@ class InstagramService {
       id_encargado: uni.id_encargado,
     });
 
-    if (IO) {
-      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
-        id_cliente: idClienteDueno,
-        message: {
-          id: safeMsgId(saved?.message_id, message.mid),
-          direction: 'out',
-          mid: message.mid || null,
-          text: message.text || null,
-          attachments: normalizedAttachments || null,
-          status: 'sent',
-          created_at: createdAtNow,
-          echo: true,
-        },
-      });
-
-      IO.to(roomCfg(id_configuracion)).emit('IG_CONV_UPSERT', {
-        id: idClienteDueno,
-        last_message_at: createdAtNow,
-        last_outgoing_at: createdAtNow,
-        preview: message.text || '(adjunto)',
-      });
-    }
+    // ✅ UPDATE_CHAT (IG OUT echo)
+    emitUpdateChatIG({
+      id_configuracion,
+      chatId: idClienteContacto,
+      pageId,
+      external_id: userIgsid,
+      uni,
+      saved,
+      rawMessage: {
+        mid: message.mid || null,
+        text: message.text || null,
+        attachments: normalizedAttachments || null,
+      },
+      kind: 'out-echo',
+    });
   }
 
   static async handlePostback(userIgsid, postback, pageId, id_configuracion) {
-    const createdAtNow = new Date().toISOString();
     const payload = postback.payload || '';
 
     const uni = await Store.ensureUnifiedConversation({
@@ -400,19 +440,22 @@ class InstagramService {
       meta: { raw: postback },
     });
 
-    if (IO) {
-      IO.to(roomConv(idClienteDueno)).emit('IG_MESSAGE', {
-        id_cliente: idClienteDueno,
-        message: {
-          id: safeMsgId(saved?.message_id, postback.mid),
-          direction: 'in',
-          mid: postback.mid || null,
-          text: `Postback: ${payload}`,
-          status: 'received',
-          created_at: createdAtNow,
-        },
-      });
-    }
+    // ✅ UPDATE_CHAT (IG POSTBACK IN)
+    emitUpdateChatIG({
+      id_configuracion,
+      chatId: idClienteContacto,
+      pageId,
+      external_id: userIgsid,
+      uni,
+      saved,
+      rawMessage: {
+        mid: postback.mid || null,
+        payload,
+        text: null,
+        attachments: null,
+      },
+      kind: 'postback',
+    });
   }
 }
 

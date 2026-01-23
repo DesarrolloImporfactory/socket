@@ -219,15 +219,43 @@ module.exports = function attachUnifiedGateway(io, services) {
 
     return {
       id: idRow?.id || null,
+
       direction: 'out',
+      rol_mensaje: finalRol, // <— importante
+      tipo_mensaje: tipo_mensaje || 'text',
+
+      // ✅ el front viejo/nuevo
+      texto_mensaje: text || '',
       text: text || '',
+
       created_at: now.toISOString(),
-      status: status_unificado || 'sent',
+      status_unificado: status_unificado || 'sent',
+
       mid: external_mid || null,
+      external_mid: external_mid || null,
+      page_id: page_id || null,
+      source,
+
       preview: buildPreview({ text, tipo_mensaje }),
       ruta_archivo: ruta_archivo || null,
       attachments: attachments || null,
     };
+  }
+
+  function emitUpdateChatUnified({
+    id_configuracion,
+    chatId,
+    source,
+    message,
+    chat,
+  }) {
+    io.emit('UPDATE_CHAT', {
+      id_configuracion,
+      chatId,
+      source, // 'wa' | 'ms' | 'ig'
+      message, // mensaje (con created_at, texto_mensaje, tipo_mensaje, rol_mensaje/direction)
+      chat, // opcional pero recomendado (para id_encargado, nombre_cliente, etc)
+    });
   }
 
   function emitUnifiedMessage({ id_configuracion, chatId, source, message }) {
@@ -569,7 +597,16 @@ module.exports = function attachUnifiedGateway(io, services) {
         throw new Error(`source no soportado: ${source}`);
       }
 
-      emitUnifiedMessage({ id_configuracion, chatId, source, message: msg });
+      //emitir evento que escucha el FRONT NUEVO (UPDATE_CHAT)
+      emitUpdateChatUnified({
+        id_configuracion,
+        chatId,
+        source,
+        message: msg,
+        chat: chatRow, // ✅ trae id_encargado, nombre_cliente, etc (lo usa el front para filtrar)
+      });
+
+      // 2) ack al emisor
       socket.emit('CHAT_SEND_OK', { chatId, client_tmp_id, message: msg });
 
       return { ok: true, message: msg, source, chatId };
