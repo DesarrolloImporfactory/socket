@@ -334,7 +334,6 @@ class ChatService {
 
       const phoneVariants = generatePhoneVariations(celular_cliente, 593);
       const plataforma = await Plataforma.findAll({
-        logging: console.log,
         where: {
           [Op.or]: phoneVariants.map((variant) => ({
             whatsapp: { [Op.like]: `%${variant}%` },
