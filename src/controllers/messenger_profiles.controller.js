@@ -43,27 +43,28 @@ async function getPageAccessTokenByConfigAndPage(id_configuracion, page_id) {
   return row?.[0]?.token || null;
 }
 
-async function getUnifiedMsClient(
+async function getUnifiedMetaClient(
   id_configuracion,
-  psid,
+  external_id,
+  source,
   page_id_optional = null,
 ) {
-  // si viene page_id opcional, filtramos con el también (mas estricto)
   if (page_id_optional) {
     const rows = await db.query(
-      `SELECT id, page_id, nombre_cliente, apellido_cliente, imagePath
-         FROM clientes_chat_center
-        WHERE id_configuracion = ?
-          AND source = 'ms'
-          AND page_id = ?
-          AND external_id = ?
-          AND deleted_at IS NULL
-        LIMIT 1`,
+      `SELECT id, page_id, source, nombre_cliente, apellido_cliente, imagePath
+       FROM clientes_chat_center
+       WHERE id_configuracion = ?
+         AND source = ?
+         AND page_id = ?
+         AND external_id = ?
+         AND deleted_at IS NULL
+       LIMIT 1`,
       {
         replacements: [
           id_configuracion,
+          source,
           String(page_id_optional),
-          String(psid),
+          String(external_id),
         ],
         type: db.QueryTypes.SELECT,
       },
@@ -71,18 +72,17 @@ async function getUnifiedMsClient(
     return rows?.[0] || null;
   }
 
-  // si no viene page_id, tomamos el mas reciente por psid en esa config
   const rows = await db.query(
-    `SELECT id, page_id, nombre_cliente, apellido_cliente, imagePath
-       FROM clientes_chat_center
-      WHERE id_configuracion = ?
-        AND source = 'ms'
-        AND external_id = ?
-        AND deleted_at IS NULL
-      ORDER BY updated_at DESC
-      LIMIT 1`,
+    `SELECT id, page_id, source, nombre_cliente, apellido_cliente, imagePath
+     FROM clientes_chat_center
+     WHERE id_configuracion = ?
+       AND source = ?
+       AND external_id = ?
+       AND deleted_at IS NULL
+     ORDER BY updated_at DESC
+     LIMIT 1`,
     {
-      replacements: [id_configuracion, String(psid)],
+      replacements: [id_configuracion, source, String(external_id)],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -91,22 +91,24 @@ async function getUnifiedMsClient(
 
 exports.fetchAndStoreProfile = async (req, res) => {
   try {
-    const { id_configuracion, psid, force, page_id } = req.body;
+    const { id_configuracion, external_id, page_id, force, source } = req.body;
 
-    if (!id_configuracion || !psid) {
+    if (!id_configuracion || !external_id) {
       return res.status(400).json({ ok: false, message: 'Faltan parámetros' });
     }
 
-    const client = await getUnifiedMsClient(
+    const client = await getUnifiedMetaClient(
       id_configuracion,
-      psid,
+      external_id,
+      source,
       page_id || null,
     );
+
     if (!client) {
       return res.status(404).json({
         ok: false,
         message:
-          'Cliente no encontrado en clientes_chat_center (MS). Primero debe llegar al webhook.',
+          'Cliente no encontrado en clientes_chat_center. Primero debe llegar al webhook.',
       });
     }
 
@@ -140,27 +142,56 @@ exports.fetchAndStoreProfile = async (req, res) => {
       });
     }
 
-    // Graph API (Page-Scoped ID)
-    const url = `https://graph.facebook.com/v21.0/${encodeURIComponent(
-      psid,
-    )}?fields=first_name,last_name,profile_pic&access_token=${encodeURIComponent(token)}`;
+    // ✅ Detectar fuente real (prioriza body.source, si no, client.source)
+    const realSource = (source || client.source || '').toLowerCase();
 
-    const resp = await fetch(url);
-    const data = await resp.json();
+    let nombre = '';
+    let apellido = '';
+    let pic = null;
 
-    if (!resp.ok || data.error) {
-      return res.status(502).json({
-        ok: false,
-        message: 'Error Graph',
-        error: data.error || data,
-      });
+    if (realSource === 'ig') {
+      // ✅ Instagram: name, profile_picture_url
+      const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
+        external_id,
+      )}?fields=name,profile_pic&access_token=${encodeURIComponent(token)}`;
+
+      const resp = await fetch(url);
+      const ig = await resp.json();
+
+      if (!resp.ok || ig.error) {
+        return res.status(502).json({
+          ok: false,
+          message: 'Error Graph IG',
+          error: ig.error || ig,
+        });
+      }
+
+      nombre = toTitleCaseEs((ig.name || '').trim()) || '';
+      apellido = '';
+      pic = ig.profile_pic || null;
+    } else {
+      // ✅ Messenger (ms): first_name, last_name, picture
+      const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
+        external_id,
+      )}?fields=first_name,last_name,picture&access_token=${encodeURIComponent(
+        token,
+      )}`;
+
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (!resp.ok || data.error) {
+        return res.status(502).json({
+          ok: false,
+          message: 'Error Graph',
+          error: data.error || data,
+        });
+      }
+
+      nombre = toTitleCaseEs((data.first_name || '').trim()) || '';
+      apellido = toTitleCaseEs((data.last_name || '').trim()) || '';
+      pic = data?.picture?.data?.url || null;
     }
-
-    const first = data.first_name || '';
-    const last = data.last_name || '';
-    const nombre = toTitleCaseEs(first.trim()) || '';
-    const apellido = toTitleCaseEs(last.trim()) || '';
-    const pic = data.profile_pic || null;
 
     await db.query(
       `UPDATE clientes_chat_center
@@ -229,9 +260,11 @@ exports.refreshMissing = async (req, res) => {
         );
         if (!token) continue;
 
-        const url = `https://graph.facebook.com/v21.0/${encodeURIComponent(
+        const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
           psid,
-        )}?fields=first_name,last_name,profile_pic&access_token=${encodeURIComponent(token)}`;
+        )}?fields=first_name,last_name,picture&access_token=${encodeURIComponent(
+          token,
+        )}`;
 
         const resp = await fetch(url);
         const data = await resp.json();
@@ -239,7 +272,7 @@ exports.refreshMissing = async (req, res) => {
 
         const nombre = toTitleCaseEs((data.first_name || '').trim()) || '';
         const apellido = toTitleCaseEs((data.last_name || '').trim()) || '';
-        const pic = data.profile_pic || null;
+        const pic = data?.picture?.data?.url || null;
 
         await db.query(
           `UPDATE clientes_chat_center

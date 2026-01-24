@@ -34,6 +34,9 @@ router.get('/conversations', conversationsController.listConversations);
 // Listar mensajes de una conversación
 router.get('/conversations/:id/messages', conversationsController.listMessages);
 
+//Info y nombre de ms o ig para realizar upsert
+router.post('/profiles/fetch-store', messengerProfiles.fetchAndStoreProfile);
+
 //Obtener informacion del perfil del usuario
 router.post('/profiles/fetch', messengerProfiles.fetchAndStoreProfile);
 

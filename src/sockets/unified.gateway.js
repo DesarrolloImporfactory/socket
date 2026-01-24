@@ -221,7 +221,7 @@ module.exports = function attachUnifiedGateway(io, services) {
       id: idRow?.id || null,
 
       direction: 'out',
-      rol_mensaje: finalRol, // <— importante
+      rol_mensaje: finalRol,
       tipo_mensaje: tipo_mensaje || 'text',
 
       // ✅ el front viejo/nuevo
