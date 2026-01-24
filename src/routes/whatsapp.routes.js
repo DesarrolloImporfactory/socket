@@ -2,8 +2,16 @@ const express = require('express');
 const axios = require('axios');
 const { db } = require('../database/config');
 const { error } = require('winston');
-
+const multer = require('multer');
+const path = require('path');
 const router = express.Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+const FB_APP_ID = process.env.FB_APP_ID;
 
 /**
  * POST /api/v1/whatsapp_managment/ObtenerNumeros
@@ -161,55 +169,221 @@ router.post('/estadoConexion', async (req, res) => {
 });
 
 /**
- * POST /api/v1/whatsapp_managment/CrearPlantilla
- * - Recibe: id_configuracion y datos de la plantilla (name, language, category, components)
- * - Envía una solicitud a la Cloud API para crear una plantilla.
+ * Flujo basado en ejemplos públicos donde la respuesta devuelve "h" y eso se usa en header_handle. :contentReference[oaicite:5]{index=5}
  */
-router.post('/CrearPlantilla', async (req, res) => {
-  try {
-    const { id_configuracion, name, language, category, components } = req.body;
-
-    if (!id_configuracion || !name || !language || !category || !components) {
-      return res.status(400).json({ error: 'Faltan campos obligatorios.' });
-    }
-
-    const wabaConfig = await getConfigFromDB(id_configuracion);
-    if (!wabaConfig) {
-      return res.status(404).json({ error: 'No se encontró configuración.' });
-    }
-
-    const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
-    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates`;
-
-    const payload = {
-      name,
-      language,
-      category,
-      components,
-    };
-
-    const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    return res.json({
-      success: true,
-      data: response.data,
-    });
-  } catch (error) {
-    console.error(
-      'Error al crear plantilla:',
-      error?.response?.data || error.message,
-    );
-    return res.status(500).json({
-      success: false,
-      error: error?.response?.data || error.message,
-    });
+async function uploadResumableAndGetHandle({
+  accessToken,
+  fileBuffer,
+  mimeType,
+  fileName,
+}) {
+  if (!FB_APP_ID) {
+    throw new Error('Falta FB_APP_ID');
   }
-});
+
+  const ax = axios.create({
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  // 1) Crear sesión de subida (upload session)
+  const startUrl = `https://graph.facebook.com/v22.0/${FB_APP_ID}/uploads`;
+  const startResp = await ax.post(startUrl, null, {
+    params: {
+      file_length: fileBuffer.length,
+      file_type: mimeType,
+      file_name: fileName,
+    },
+  });
+
+  if (startResp.status < 200 || startResp.status >= 300) {
+    throw new Error(
+      `No se pudo iniciar upload session: ${startResp.status} ${JSON.stringify(startResp.data)}`,
+    );
+  }
+
+  const uploadSessionId = startResp.data?.id;
+  if (!uploadSessionId) {
+    throw new Error(`Upload session sin id: ${JSON.stringify(startResp.data)}`);
+  }
+
+  // 2) Subir binario
+  const uploadUrl = `https://graph.facebook.com/v22.0/${uploadSessionId}`;
+  const uploadResp = await axios.post(uploadUrl, fileBuffer, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/octet-stream',
+      file_offset: '0',
+    },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (uploadResp.status < 200 || uploadResp.status >= 300) {
+    throw new Error(
+      `No se pudo subir archivo: ${uploadResp.status} ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  // En ejemplos, se usa "h" como handle para header_handle. :contentReference[oaicite:6]{index=6}
+  const handle = uploadResp.data?.h;
+  if (!handle) {
+    throw new Error(
+      `Respuesta sin handle (h): ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  return handle;
+}
+
+/**
+ * POST /api/v1/whatsapp_managment/CrearPlantilla
+ * Acepta:
+ * - JSON normal (sin archivo)
+ * - multipart/form-data (con headerFile)
+ */
+router.post(
+  '/CrearPlantilla',
+  upload.single('headerFile'),
+  async (req, res) => {
+    try {
+      // multipart => todo viene como string
+      const id_configuracion = req.body.id_configuracion;
+      const name = req.body.name;
+      const language = req.body.language;
+      const category = req.body.category;
+
+      let components = req.body.components;
+      if (typeof components === 'string') {
+        components = JSON.parse(components);
+      }
+
+      if (!id_configuracion || !name || !language || !category || !components) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Faltan campos obligatorios.' });
+      }
+
+      const wabaConfig = await getConfigFromDB(id_configuracion);
+      if (!wabaConfig) {
+        return res
+          .status(404)
+          .json({ success: false, error: 'No se encontró configuración.' });
+      }
+
+      const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+
+      // Si viene archivo, subimos y lo convertimos en header_handle
+      if (req.file) {
+        const mimeType = req.file.mimetype || 'application/octet-stream';
+        const fileName =
+          req.file.originalname ||
+          `header${path.extname(req.file.originalname || '')}`;
+
+        const handle = await uploadResumableAndGetHandle({
+          accessToken: ACCESS_TOKEN,
+          fileBuffer: req.file.buffer,
+          mimeType,
+          fileName,
+        });
+
+        // Injectar example.header_handle en el HEADER de media
+        components = components.map((c) => {
+          if (
+            c?.type === 'HEADER' &&
+            ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(c?.format)
+          ) {
+            return {
+              ...c,
+              example: { header_handle: [handle] },
+            };
+          }
+          return c;
+        });
+      }
+
+      const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+
+      const payload = { name, language, category, components };
+
+      const response = await axios.post(url, payload, {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+        validateStatus: () => true,
+      });
+
+      if (response.status < 200 || response.status >= 300) {
+        return res.status(200).json({
+          success: false,
+          meta_status: response.status,
+          error: response.data,
+        });
+      }
+
+      return res.json({ success: true, data: response.data });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error?.message || 'Error interno',
+      });
+    }
+  },
+);
+
+// /**
+//  * POST /api/v1/whatsapp_managment/CrearPlantilla
+//  * - Recibe: id_configuracion y datos de la plantilla (name, language, category, components)
+//  * - Envía una solicitud a la Cloud API para crear una plantilla.
+//  */
+// router.post('/CrearPlantilla', async (req, res) => {
+//   try {
+//     const { id_configuracion, name, language, category, components } = req.body;
+
+//     if (!id_configuracion || !name || !language || !category || !components) {
+//       return res.status(400).json({ error: 'Faltan campos obligatorios.' });
+//     }
+
+//     const wabaConfig = await getConfigFromDB(id_configuracion);
+//     if (!wabaConfig) {
+//       return res.status(404).json({ error: 'No se encontró configuración.' });
+//     }
+
+//     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+//     const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates`;
+
+//     const payload = {
+//       name,
+//       language,
+//       category,
+//       components,
+//     };
+
+//     const response = await axios.post(url, payload, {
+//       headers: {
+//         Authorization: `Bearer ${ACCESS_TOKEN}`,
+//         'Content-Type': 'application/json',
+//       },
+//     });
+
+//     return res.json({
+//       success: true,
+//       data: response.data,
+//     });
+//   } catch (error) {
+//     console.error(
+//       'Error al crear plantilla:',
+//       error?.response?.data || error.message,
+//     );
+//     return res.status(500).json({
+//       success: false,
+//       error: error?.response?.data || error.message,
+//     });
+//   }
+// });
 
 /**
  * Ruta: POST /api/v1/whatsapp_managment/obtenerPlantillasPlataforma
