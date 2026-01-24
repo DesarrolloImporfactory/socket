@@ -31,16 +31,41 @@ function toTitleCaseEs(str = '') {
     .join(' ');
 }
 
-// token de la pagina por config + page_id
-async function getPageAccessTokenByConfigAndPage(id_configuracion, page_id) {
-  const row = await db.query(
+// token de la pagina por config + page_id (soporta ms e ig)
+async function getPageAccessTokenByConfigAndPage(
+  id_configuracion,
+  page_id,
+  source = 'ms',
+) {
+  const src = String(source || 'ms').toLowerCase();
+  const pid = String(page_id || '').trim();
+
+  if (!id_configuracion || !pid) return null;
+
+  if (src === 'ig') {
+    const rows = await db.query(
+      `SELECT page_access_token AS token
+         FROM instagram_pages
+        WHERE id_configuracion = ?
+          AND page_id = ?
+          AND status = 'active'
+        LIMIT 1`,
+      { replacements: [id_configuracion, pid], type: db.QueryTypes.SELECT },
+    );
+    return rows?.[0]?.token || null;
+  }
+
+  // Messenger/FB
+  const rows = await db.query(
     `SELECT page_access_token AS token
        FROM messenger_pages
-      WHERE id_configuracion = ? AND page_id = ? AND status = 'active'
+      WHERE id_configuracion = ?
+        AND page_id = ?
+        AND status = 'active'
       LIMIT 1`,
-    { replacements: [id_configuracion, page_id], type: db.QueryTypes.SELECT },
+    { replacements: [id_configuracion, pid], type: db.QueryTypes.SELECT },
   );
-  return row?.[0]?.token || null;
+  return rows?.[0]?.token || null;
 }
 
 async function getUnifiedMetaClient(
@@ -130,10 +155,15 @@ exports.fetchAndStoreProfile = async (req, res) => {
       });
     }
 
+    // ✅ Detectar fuente real (prioriza body.source, si no, client.source)
+    const realSource = (source || client.source || '').toLowerCase();
+
     const token = await getPageAccessTokenByConfigAndPage(
       id_configuracion,
       client.page_id,
+      realSource,
     );
+
     if (!token) {
       return res.status(500).json({
         ok: false,
@@ -141,9 +171,6 @@ exports.fetchAndStoreProfile = async (req, res) => {
           'No se encontró access token activo para esa página/configuración',
       });
     }
-
-    // ✅ Detectar fuente real (prioriza body.source, si no, client.source)
-    const realSource = (source || client.source || '').toLowerCase();
 
     let nombre = '';
     let apellido = '';
