@@ -633,7 +633,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
     id_encargado,
     id_cliente_chat_center,
     id_conversation,
-    id_configuracion = null,
+    id_configuracion,
   } = req.body;
 
   if (!id_encargado) {
