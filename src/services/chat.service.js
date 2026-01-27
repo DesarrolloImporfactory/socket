@@ -357,7 +357,6 @@ class ChatService {
           attributes: ['id_usuario'],
         }).then((results) => results.map((up) => up.id_usuario));
 
-
         if (usuarioIds.length > 0) {
           // Priorizar estado 1 en cada paquete si tiene 1 en cualquiera de sus usuarios
           const paquetesConEstado = await db_2.query(
@@ -1105,23 +1104,53 @@ class ChatService {
     }
   }
 
-  async findChatByPhone_desconect(id_configuracion, phone) {
+  async findChatByIdentifier(id_configuracion, identifier) {
     try {
-      const sql = `
-        SELECT *
-        FROM vista_chats
-        WHERE id_configuracion   = :id_configuracion
-          AND celular_cliente = :phone
-        ORDER BY mensaje_created_at DESC, id DESC
-        LIMIT 1
-      `;
+      const raw = String(identifier || '').trim();
 
-      const [chat] = await db.query(sql, {
-        replacements: { id_configuracion, phone },
+      // Detectar si viene un ID numérico (chatId)
+      const isNumericId = /^\d+$/.test(raw);
+
+      // Si viene como "ext:xxxxx" (opcional)
+      const isExternal = /^ext:/i.test(raw);
+      const externalId = isExternal ? raw.replace(/^ext:/i, '').trim() : null;
+
+      // Normalizar teléfono: dejar solo dígitos (por si viene +593...)
+      const phoneDigits = raw.replace(/\D/g, '');
+
+      let where = '';
+      const replacements = { id_configuracion };
+
+      if (isNumericId) {
+        // ✅ PRIORIDAD: buscar por ID de cliente chat center
+        where = 'AND id = :chatId';
+        replacements.chatId = Number(raw);
+      } else if (externalId) {
+        // ✅ opcional: buscar por external_id si su vista lo tiene
+        where = 'AND external_id = :external_id';
+        replacements.external_id = externalId;
+      } else {
+        // ✅ fallback: buscar por celular_cliente (teléfono)
+        where = 'AND celular_cliente = :phone';
+        replacements.phone = phoneDigits || raw;
+      }
+
+      const sql = `
+      SELECT *
+      FROM vista_chats
+      WHERE id_configuracion = :id_configuracion
+      ${where}
+      ORDER BY mensaje_created_at DESC, id DESC
+      LIMIT 1
+    `;
+
+      const chat = await db.query(sql, {
+        replacements,
         type: Sequelize.QueryTypes.SELECT,
       });
 
-      return chat || null; // null si no existe
+      // OJO: QueryTypes.SELECT devuelve array
+      return (Array.isArray(chat) ? chat[0] : chat) || null;
     } catch (err) {
       throw new AppError(err.message, 500);
     }

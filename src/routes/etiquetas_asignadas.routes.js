@@ -6,5 +6,12 @@ const router = express.Router();
 const authMiddleware = require('../middlewares/auth.middleware');
 router.use(authMiddleware.protect);
 
-router.post('/obtenerEtiquetasAsignadas', EtiquetasAsignadas.obtenerEtiquetasAsignadas);
+router.post(
+  '/obtenerEtiquetasAsignadas',
+  EtiquetasAsignadas.obtenerEtiquetasAsignadas,
+);
+router.get(
+  '/obtenerEtiquetasAsignadas',
+  EtiquetasAsignadas.obtenerEtiquetasAsignadas,
+);
 module.exports = router;

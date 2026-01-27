@@ -7,14 +7,16 @@ const EtiquetaService = require('../services/etiqueta.service');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 
 exports.obtenerEtiquetasAsignadas = catchAsync(async (req, res, next) => {
-  const id_cliente_chat_center = parseInt(req.body.id_cliente_chat_center, 10);
+  const id_cliente_chat_center =
+    parseInt(req.body?.id_cliente_chat_center, 10) ||
+    parseInt(req.query?.id_cliente_chat_center, 10);
 
   if (!id_cliente_chat_center) {
     return next(new AppError('id_cliente_chat_center es requerido', 400));
   }
 
   const etiquetasAsignadas = await EtiquetaService.obtenerEtiquetasAsignadas(
-    id_cliente_chat_center
+    id_cliente_chat_center,
   );
 
   res.status(200).json({
@@ -80,7 +82,7 @@ exports.obtenerMultiples = catchAsync(async (req, res, next) => {
   });
 
   const dictEtiquetas = Object.fromEntries(
-    etiquetas.map((e) => [e.id_etiqueta, e])
+    etiquetas.map((e) => [e.id_etiqueta, e]),
   );
 
   // ====================================================

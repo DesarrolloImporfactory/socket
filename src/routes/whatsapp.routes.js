@@ -334,57 +334,6 @@ router.post(
   },
 );
 
-// /**
-//  * POST /api/v1/whatsapp_managment/CrearPlantilla
-//  * - Recibe: id_configuracion y datos de la plantilla (name, language, category, components)
-//  * - Envía una solicitud a la Cloud API para crear una plantilla.
-//  */
-// router.post('/CrearPlantilla', async (req, res) => {
-//   try {
-//     const { id_configuracion, name, language, category, components } = req.body;
-
-//     if (!id_configuracion || !name || !language || !category || !components) {
-//       return res.status(400).json({ error: 'Faltan campos obligatorios.' });
-//     }
-
-//     const wabaConfig = await getConfigFromDB(id_configuracion);
-//     if (!wabaConfig) {
-//       return res.status(404).json({ error: 'No se encontró configuración.' });
-//     }
-
-//     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
-//     const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates`;
-
-//     const payload = {
-//       name,
-//       language,
-//       category,
-//       components,
-//     };
-
-//     const response = await axios.post(url, payload, {
-//       headers: {
-//         Authorization: `Bearer ${ACCESS_TOKEN}`,
-//         'Content-Type': 'application/json',
-//       },
-//     });
-
-//     return res.json({
-//       success: true,
-//       data: response.data,
-//     });
-//   } catch (error) {
-//     console.error(
-//       'Error al crear plantilla:',
-//       error?.response?.data || error.message,
-//     );
-//     return res.status(500).json({
-//       success: false,
-//       error: error?.response?.data || error.message,
-//     });
-//   }
-// });
-
 /**
  * Ruta: POST /api/v1/whatsapp_managment/obtenerPlantillasPlataforma
  *
@@ -433,7 +382,7 @@ router.post('/crearPlantillaRapida', async (req, res) => {
   const { atajo, mensaje, id_configuracion } = req.body;
 
   try {
-    if ((!id_configuracion, !atajo)) {
+    if (!id_configuracion || !atajo) {
       return res.status(400).json({
         success: false,
         message: 'Faltan datos requeridos.',
@@ -1200,7 +1149,10 @@ async function getConfigFromDB(id) {
 
     const rows = await db.query(
       `
-      SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
+      SELECT 
+            id_whatsapp AS WABA_ID, 
+            token AS ACCESS_TOKEN,
+            id_telefono AS PHONE_NUMBER_ID
       FROM configuraciones
       WHERE suspendido = 0 AND id = :id
       LIMIT 1
@@ -1217,6 +1169,176 @@ async function getConfigFromDB(id) {
     throw error;
   }
 }
+
+function onlyDigits(s = '') {
+  return String(s).replace(/\D/g, '');
+}
+
+router.post('/enviar_template_masivo', async (req, res) => {
+  try {
+    // Soporte de payload anidado:
+    // frontend manda: { id_configuracion, body: { to, template: { name, language, components }, ... }, ... }
+    const graphBody =
+      req.body?.body && typeof req.body.body === 'object'
+        ? req.body.body
+        : null;
+
+    // 1) id_configuracion (raíz)
+    const id_configuracion = req.body?.id_configuracion;
+
+    // 2) to: raíz o body.to
+    const to = req.body?.to ?? graphBody?.to;
+
+    // 3) template_name: raíz o body.template.name
+    const template_name = req.body?.template_name ?? graphBody?.template?.name;
+
+    // 4) language_code: raíz o body.template.language.code
+    const language_code =
+      req.body?.language_code ?? graphBody?.template?.language?.code ?? 'es';
+
+    // 5) components: si viene completo desde el front, úselo
+    // - raíz: components
+    // - body: template.components
+    const components = req.body?.components ?? graphBody?.template?.components;
+
+    // 6) parameters: raíz o si el front manda parámetros sueltos
+    const parameters = req.body?.parameters ?? [];
+
+    // Validación
+    const faltan = [];
+    if (!id_configuracion) faltan.push('id_configuracion');
+    if (!to) faltan.push('to');
+    if (!template_name) faltan.push('template_name');
+
+    if (faltan.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Faltan campos: ${faltan.join(', ')}`,
+      });
+    }
+
+    const cfg = await getConfigFromDB(Number(id_configuracion));
+    if (!cfg) {
+      return res.status(200).json({
+        success: false,
+        message: 'Configuración inválida o sin token/phone_number_id',
+      });
+    }
+
+    const toClean = onlyDigits(to);
+    if (!toClean || toClean.length < 8) {
+      return res.status(200).json({
+        success: false,
+        message: 'Número destino inválido',
+      });
+    }
+
+    // Si el front ya mandó el body completo listo para Graph, úselo
+    // pero forzando:
+    // - to limpio
+    // - messaging_product / type correctos
+    // - template.name correcto
+    // - template.language.code correcto
+    let payload;
+
+    if (graphBody) {
+      payload = {
+        messaging_product: graphBody.messaging_product || 'whatsapp',
+        to: toClean,
+        type: graphBody.type || 'template',
+        template: {
+          ...(graphBody.template || {}),
+          name: template_name,
+          language: { code: language_code || 'es' },
+        },
+      };
+
+      // Si no vienen components, construya uno estándar con parameters
+      if (
+        !Array.isArray(payload.template.components) ||
+        !payload.template.components.length
+      ) {
+        payload.template.components = [
+          {
+            type: 'body',
+            parameters: (Array.isArray(parameters) ? parameters : []).map(
+              (t) => ({
+                type: 'text',
+                text: String(t ?? ''),
+              }),
+            ),
+          },
+        ];
+      }
+    } else {
+      // Construcción clásica (su lógica original)
+      const template = {
+        name: template_name,
+        language: { code: language_code || 'es' },
+      };
+
+      if (Array.isArray(components) && components.length) {
+        template.components = components;
+      } else {
+        template.components = [
+          {
+            type: 'body',
+            parameters: (Array.isArray(parameters) ? parameters : []).map(
+              (t) => ({
+                type: 'text',
+                text: String(t ?? ''),
+              }),
+            ),
+          },
+        ];
+      }
+
+      payload = {
+        messaging_product: 'whatsapp',
+        to: toClean,
+        type: 'template',
+        template,
+      };
+    }
+
+    const ax = axios.create({
+      headers: {
+        Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+
+    const url = `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`;
+    const resp = await ax.post(url, payload);
+
+    if (resp.status < 200 || resp.status >= 300) {
+      return res.status(200).json({
+        success: false,
+        meta_status: resp.status,
+        error: resp.data,
+        message: 'Meta rechazó el envío',
+        // esto ayuda a debuggear rápido
+        sent_payload: payload,
+      });
+    }
+
+    const wamid = resp.data?.messages?.[0]?.id || null;
+
+    return res.json({
+      success: true,
+      wamid,
+      data: resp.data,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno enviando template',
+      error: e.message,
+    });
+  }
+});
 
 // router.post('/embeddedSignupComplete', async (req, res) => {
 //   const {

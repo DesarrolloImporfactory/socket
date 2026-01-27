@@ -10,7 +10,7 @@ const Configuraciones = require('../models/configuraciones.model');
 const Planes_chat_centerModel = require('../models/planes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
-
+const { QueryTypes } = require('sequelize');
 const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
 
@@ -58,7 +58,7 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
       {
         replacements: [nuevoEstado, chatId],
         type: db.QueryTypes.UPDATE,
-      }
+      },
     );
 
     res.status(200).json({
@@ -80,12 +80,12 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!configuracion) {
       return next(
-        new AppError('No se encontró configuración para la plataforma', 400)
+        new AppError('No se encontró configuración para la plataforma', 400),
       );
     }
 
@@ -146,12 +146,12 @@ exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
       {
         replacements: [telefono, id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!clientes_chat_center) {
       return next(
-        new AppError('No se encontró configuración para la plataforma', 400)
+        new AppError('No se encontró configuración para la plataforma', 400),
       );
     }
 
@@ -194,7 +194,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!config) {
@@ -226,7 +226,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
         uid_cliente,
         nombre_cliente,
         apellido_cliente,
-        "",
+        '',
         telefono_configuracion,
         1,
       ],
@@ -235,7 +235,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
 
     const [{ id: id_cliente_configuracion }] = await db.query(
       'SELECT LAST_INSERT_ID() AS id',
-      { type: db.QueryTypes.SELECT }
+      { type: db.QueryTypes.SELECT },
     );
 
     // 3) Insertar mensaje (aquí NO toqué su lógica; si quiere anti-duplicado aquí también, se hace con UNIQUE + IGNORE/UPSERT)
@@ -261,7 +261,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           language_code,
         ],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
 
     return res.status(200).json({
@@ -291,7 +291,7 @@ exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
       {
         replacements: [new_wamid, id_mensaje],
         type: db.QueryTypes.UPDATE,
-      }
+      },
     );
 
     // Después eliminamos de la tabla errores_chat_meta
@@ -301,7 +301,7 @@ exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
       {
         replacements: [id_wamid_mensaje],
         type: db.QueryTypes.DELETE,
-      }
+      },
     );
 
     return res.status(200).json({
@@ -312,7 +312,7 @@ exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
   } catch (error) {
     console.error(
       'Error al actualizar mensaje reenviado o eliminar error:',
-      error
+      error,
     );
     return res.status(500).json({
       status: 500,
@@ -338,63 +338,30 @@ exports.findFullByPhone = catchAsync(async (req, res, next) => {
   res.json({ status: 200, data: chat });
 });
 
-exports.findFullByPhone_desconect = catchAsync(async (req, res, next) => {
-  const phone = req.params.phone.trim();
+exports.findFullByPhone = catchAsync(async (req, res, next) => {
+  const identifier = String(req.params.phone || '').trim(); // puede ser phone o chatId
   const id_configuracion = req.query.id_configuracion;
 
-  if (!id_configuracion)
+  if (!id_configuracion) {
     return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  if (!identifier) {
+    return next(new AppError('identificador es requerido', 400));
+  }
 
   const chatService = new ChatService();
-  const chat = await chatService.findChatByPhone_desconect(
-    id_configuracion,
-    phone
+  const chat = await chatService.findChatByIdentifier(
+    Number(id_configuracion),
+    identifier,
   );
 
-  if (!chat)
+  if (!chat) {
     return res.status(404).json({ status: 404, message: 'Chat no encontrado' });
-
-  res.json({ status: 200, data: chat });
-});
-
-/* ---------- helpers ---------- */
-function parseSort(sort) {
-  switch (sort) {
-    case 'antiguos':
-      return 'created_at ASC';
-    case 'actividad_asc':
-      return 'updated_at ASC';
-    case 'actividad_desc':
-      return 'updated_at DESC';
-    case 'recientes':
-    default:
-      return 'created_at DESC';
   }
-}
-function parseEstado(estado) {
-  if (
-    estado === undefined ||
-    estado === null ||
-    estado === '' ||
-    estado === 'todos'
-  )
-    return null;
-  if (
-    estado === '1' ||
-    estado === 1 ||
-    estado === 'activo' ||
-    estado === 'nuevo'
-  )
-    return 1;
-  if (
-    estado === '0' ||
-    estado === 0 ||
-    estado === 'inactivo' ||
-    estado === 'perdido'
-  )
-    return 0;
-  return null;
-}
+
+  return res.json({ status: 200, data: chat });
+});
 
 exports.listarContactosEstado = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
@@ -412,7 +379,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     // 2) Si no existen contactos
@@ -609,7 +576,7 @@ exports.ultimo_mensaje = catchAsync(async (req, res, next) => {
       {
         replacements: [id_cliente],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     return res.status(200).json({
@@ -626,14 +593,51 @@ exports.ultimo_mensaje = catchAsync(async (req, res, next) => {
   }
 });
 
+// ✅ Whitelist segura para ORDER BY (incluye último mensaje)
+function parseSort(sortRaw) {
+  const allowed = new Set([
+    'id',
+    'created_at',
+    'updated_at',
+    'nombre_cliente',
+    'apellido_cliente',
+    'estado_cliente',
+    'ultimo_mensaje_at',
+    'ultimo_msg_id',
+  ]);
+
+  let col = 'ultimo_mensaje_at';
+  let dir = 'DESC';
+
+  if (sortRaw && String(sortRaw).trim()) {
+    const [c, d] = String(sortRaw).trim().split(':');
+    if (c && allowed.has(c)) col = c;
+
+    const dd = (d || '').toUpperCase();
+    if (dd === 'ASC' || dd === 'DESC') dir = dd;
+  }
+
+  // Empujar nulos al final cuando ordena por ultimo_mensaje_at
+  if (col === 'ultimo_mensaje_at') {
+    return `(${col} IS NULL) ASC, ${col} ${dir}, ultimo_msg_id ${dir}`;
+  }
+
+  return `${col} ${dir}`;
+}
+
+function parseEstado(raw) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
 /* ============================================================
    GET /api/v1/clientes_chat_center/listar
-   ?page=&limit=&q=&estado=&id_etiqueta=&sort=
+   ?page=&limit=&q=&estado=&id_etiqueta=&sort=&id_configuracion=
    ============================================================ */
-exports.listarClientes = catchAsync(async (req, res, next) => {
+exports.listarClientes = catchAsync(async (req, res) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
-
-  // ✅ Suba el máximo según lo que necesite
   const MAX_LIMIT = 2000;
   const limit = Math.max(1, Math.min(MAX_LIMIT, Number(req.query.limit ?? 25)));
   const offset = (page - 1) * limit;
@@ -646,47 +650,112 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
     });
   }
 
-  const { q, id_etiqueta } = req.query;
+  const q = String(req.query.q ?? '').trim();
   const estadoParsed = parseEstado(req.query.estado);
-  const orderBy = parseSort(req.query.sort); // ✅ Asegúrese que sea whitelist
+  const orderBy = parseSort(req.query.sort);
 
-  // ✅ Siempre incluya id_configuracion dentro del WHERE con replacements
-  const whereParts = ['deleted_at IS NULL', 'id_configuracion = ?'];
+  const idEtiquetaNum = Number(req.query.id_etiqueta ?? 0);
+  const hasEtiqueta = Number.isFinite(idEtiquetaNum) && idEtiquetaNum > 0;
+
+  // WHERE del cliente (solo columnas de clientes_chat_center aquí)
+  const whereParts = ['c.deleted_at IS NULL', 'c.id_configuracion = ?'];
   const params = [id_configuracion];
 
   if (estadoParsed !== null) {
-    whereParts.push('estado_cliente = ?');
+    whereParts.push('c.estado_cliente = ?');
     params.push(estadoParsed);
   }
 
-  if (id_etiqueta) {
-    whereParts.push('id_etiqueta = ?');
-    params.push(Number(id_etiqueta));
+  if (hasEtiqueta) {
+    whereParts.push('c.id_etiqueta = ?');
+    params.push(idEtiquetaNum);
   }
 
-  if (q && q.trim()) {
-    const like = `%${q.trim()}%`;
+  if (q) {
+    const like = `%${q}%`;
     whereParts.push(`(
-      nombre_cliente   LIKE ? OR
-      apellido_cliente LIKE ? OR
-      email_cliente    LIKE ? OR
-      celular_cliente  LIKE ? OR
-      telefono_limpio  LIKE ? 
+      c.nombre_cliente   LIKE ? OR
+      c.apellido_cliente LIKE ? OR
+      c.email_cliente    LIKE ? OR
+      c.celular_cliente  LIKE ? OR
+      c.telefono_limpio  LIKE ?
     )`);
     params.push(like, like, like, like, like);
   }
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
 
+  // ✅ Subquery: “último mensaje por chat_id”
+  // chat_id = id de clientes_chat_center
   const dataSql = `
     SELECT
-      id, id_configuracion, id_etiqueta, uid_cliente,
-      nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
-      estado_cliente,
-      created_at, updated_at,
-      chat_cerrado, telefono_limpio, direccion
+      c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
+      c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente,
+      c.estado_cliente,
+      c.created_at, c.updated_at,
+      c.chat_cerrado, c.telefono_limpio, c.direccion,
 
-    FROM clientes_chat_center
+      lm.ultimo_mensaje_at,
+      lm.ultimo_texto,
+      lm.ultimo_tipo_mensaje,
+      lm.ultimo_rol_mensaje,
+      lm.ultimo_msg_id
+
+    FROM clientes_chat_center c
+    LEFT JOIN (
+      SELECT
+        t.chat_id,
+        t.id_configuracion,
+        t.created_at AS ultimo_mensaje_at,
+        t.texto_mensaje AS ultimo_texto,
+        t.tipo_mensaje AS ultimo_tipo_mensaje,
+        t.rol_mensaje  AS ultimo_rol_mensaje,
+        t.id           AS ultimo_msg_id
+      FROM (
+        SELECT
+          u.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY u.id_configuracion, u.chat_id
+            ORDER BY u.created_at DESC, u.id DESC
+          ) AS rn
+        FROM (
+          -- mensajes donde el cliente fue el EMISOR
+          SELECT
+            m.id,
+            m.id_configuracion,
+            m.id_cliente AS chat_id,
+            m.created_at,
+            m.texto_mensaje,
+            m.tipo_mensaje,
+            m.rol_mensaje
+          FROM mensajes_clientes m
+          WHERE m.deleted_at IS NULL
+            AND m.id_configuracion = ?
+
+          UNION ALL
+
+          -- mensajes donde el cliente fue el RECEPTOR
+          SELECT
+            m.id,
+            m.id_configuracion,
+            CAST(m.celular_recibe AS UNSIGNED) AS chat_id,
+            m.created_at,
+            m.texto_mensaje,
+            m.tipo_mensaje,
+            m.rol_mensaje
+          FROM mensajes_clientes m
+          WHERE m.deleted_at IS NULL
+            AND m.id_configuracion = ?
+            AND m.celular_recibe IS NOT NULL
+            AND m.celular_recibe <> ''
+        ) u
+      ) t
+      WHERE t.rn = 1
+    ) lm
+      ON lm.id_configuracion = c.id_configuracion
+     AND lm.chat_id = c.id
+     AND c.propietario = 0
+
     ${whereClause}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
@@ -694,19 +763,29 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
 
   const countSql = `
     SELECT COUNT(*) AS total
-    FROM clientes_chat_center
+    FROM clientes_chat_center c
     ${whereClause};
   `;
 
+  // OJO: el subquery lm usa dos veces id_configuracion (?)
   const rows = await db.query(dataSql, {
-    replacements: [...params, limit, offset],
+    replacements: [
+      id_configuracion,
+      id_configuracion,
+      ...params,
+      limit,
+      offset,
+    ],
     type: db.QueryTypes.SELECT,
   });
 
-  const [{ total }] = await db.query(countSql, {
+  const countRows = await db.query(countSql, {
     replacements: params,
     type: db.QueryTypes.SELECT,
   });
+
+  const total = Number(countRows?.[0]?.total ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return res.status(200).json({
     status: 'success',
@@ -714,6 +793,7 @@ exports.listarClientes = catchAsync(async (req, res, next) => {
     total,
     page,
     limit,
+    totalPages,
   });
 });
 
@@ -807,7 +887,7 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
     `SELECT *
      FROM clientes_chat_center
      WHERE id = ?`,
-    { replacements: [lastId], type: db.QueryTypes.SELECT }
+    { replacements: [lastId], type: db.QueryTypes.SELECT },
   );
 
   return res.status(201).json({ status: 'success', data: created });
@@ -874,7 +954,7 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
             created_at, updated_at, deleted_at, chat_cerrado, bot_openia,
             id_departamento, id_encargado, pedido_confirmado, telefono_limpio
      FROM clientes_chat_center WHERE id = ?`,
-    { replacements: [id], type: db.QueryTypes.SELECT }
+    { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!row) return next(new AppError('Cliente no encontrado', 404));
 
@@ -1070,7 +1150,7 @@ exports.totalClientesUltimoMes = async (req, res) => {
 
     // 2) Cargar subusuario
     const subUsuarioDB = await Sub_usuarios_chat_center.findByPk(
-      subUsuarioSession.id_sub_usuario
+      subUsuarioSession.id_sub_usuario,
     );
 
     if (!subUsuarioDB) {
@@ -1083,7 +1163,7 @@ exports.totalClientesUltimoMes = async (req, res) => {
     // 3) Cargar usuario + plan
     const usuario = await Usuarios_chat_centerModel.findByPk(
       subUsuarioDB.id_usuario,
-      { include: [{ model: Planes_chat_centerModel, as: 'plan' }] }
+      { include: [{ model: Planes_chat_centerModel, as: 'plan' }] },
     );
 
     if (!usuario) {
@@ -1190,7 +1270,7 @@ exports.totalClientesUltimoMesTodos = async (req, res) => {
     for (const row of countsPorConfig) {
       totalPorConfigMap.set(
         Number(row.id_configuracion),
-        Number(row.total || 0)
+        Number(row.total || 0),
       );
     }
 
@@ -1222,7 +1302,7 @@ exports.totalClientesUltimoMesTodos = async (req, res) => {
     // ✅ TOTAL GENERAL ACUMULADO
     const totalGeneralConversaciones = data.reduce(
       (acc, u) => acc + Number(u.totalActualConversaciones || 0),
-      0
+      0,
     );
 
     return res.status(200).json({
@@ -1335,7 +1415,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
   const id_configuracion = req.body.id_configuracion;
   const actualizar_cache_etiquetas = toBoolean(
     req.body.actualizar_cache_etiquetas,
-    true
+    true,
   );
 
   if (!id_configuracion) {
@@ -1347,8 +1427,8 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         'Debe subir un archivo Excel (.xlsx) en el campo "archivoExcel".',
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -1356,7 +1436,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
 
   if (!Array.isArray(filas) || filas.length === 0) {
     return next(
-      new AppError('El Excel no contiene filas válidas o está vacío.', 400)
+      new AppError('El Excel no contiene filas válidas o está vacío.', 400),
     );
   }
 
@@ -1367,12 +1447,12 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!configRow) {
     return next(
-      new AppError('No se encontró la configuración o está suspendida.', 400)
+      new AppError('No se encontró la configuración o está suspendida.', 400),
     );
   }
 
@@ -1387,7 +1467,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     const row = filas[i] || {};
 
     const tel = String(
-      row.telefono || row.celular_cliente || row.celular || ''
+      row.telefono || row.celular_cliente || row.celular || '',
     ).trim();
 
     if (!tel) {
@@ -1400,7 +1480,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
 
     // ✅ email: su plantilla es "email"
     const email = String(
-      row.email || row.email || row.email_cliente || ''
+      row.email || row.email || row.email_cliente || '',
     ).trim();
 
     const tagsRaw = row.etiquetas || row.tags || '';
@@ -1441,8 +1521,8 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Importación demasiado grande: ${mapByPhone.size} teléfonos únicos. Máximo permitido: ${MAX_UNICOS}. Importa en lotes.`,
-        413
-      )
+        413,
+      ),
     );
   }
 
@@ -1470,7 +1550,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
           c.apellido || '',
           c.email_cliente || '', // ✅ nuevo
           c.celular_cliente || '',
-          0 // propietario
+          0, // propietario
         );
       });
 
@@ -1569,7 +1649,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         });
 
         rows.forEach((r) =>
-          tagIdByName.set(String(r.nombre_etiqueta), r.id_etiqueta)
+          tagIdByName.set(String(r.nombre_etiqueta), r.id_etiqueta),
         );
       }
     }
@@ -1608,7 +1688,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
           replacements: [id_configuracion, ...idChunk],
           type: db.QueryTypes.SELECT,
           transaction: t,
-        }
+        },
       );
 
       const toDelete = [];
@@ -1634,7 +1714,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
             replacements: [id_configuracion, ...delParams],
             type: db.QueryTypes.DELETE,
             transaction: t,
-          }
+          },
         );
       }
     }
@@ -1718,7 +1798,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
             replacements: [id_configuracion, ...idChunk],
             type: db.QueryTypes.SELECT,
             transaction: t,
-          }
+          },
         );
 
         const map = new Map();
@@ -1746,7 +1826,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
               replacements: [JSON.stringify(lista), cid, id_configuracion],
               type: db.QueryTypes.UPDATE,
               transaction: t,
-            }
+            },
           );
         }
       }
