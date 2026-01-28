@@ -643,63 +643,33 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
     });
   }
 
-  switch (source) {
-    case 'ms': {
-      if (!id_conversation) {
-        return res.status(400).json({
-          status: 'fail',
-          message: 'id_conversation es requerido para Messenger',
-        });
-      }
-      await MessengerConversation.update(
-        { id_encargado },
-        { where: { id: id_conversation } },
-      );
-      break;
-    }
-    case 'ig': {
-      if (!id_conversation) {
-        return res.status(400).json({
-          status: 'fail',
-          message: 'id_conversation es requerido para Instagram',
-        });
-      }
-      await InstagramConversation.update(
-        { id_encargado },
-        { where: { id: id_conversation } },
-      );
-      break;
-    }
-    // WhatsApp por defecto (o 'wa')
-    default: {
-      if (!id_cliente_chat_center || !id_configuracion) {
-        return res.status(400).json({
-          status: 'fail',
-          message:
-            'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
-        });
-      }
-
-      const Departamento = await DepartamentosChatCenter.findOne({
-        where: { id_configuracion },
-      });
-
-      const id_departamento = Departamento?.id_departamento ?? null;
-
-      await Historial_encargados.create({
-        id_cliente_chat_center,
-        id_encargado_nuevo: id_encargado,
-        motivo: 'Auto-asignacion de chat',
-        id_departamento_asginado: id_departamento,
-      });
-
-      await Clientes_chat_center.update(
-        { id_encargado },
-        { where: { id: id_cliente_chat_center } },
-      );
-      break;
-    }
+  if (!id_cliente_chat_center || !id_configuracion) {
+    return res.status(400).json({
+      status: 'fail',
+      message:
+        'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
+    });
   }
+
+  const Departamento = await DepartamentosChatCenter.findOne({
+    where: { id_configuracion },
+  });
+
+  const id_departamento = Departamento?.id_departamento ?? null;
+
+  await Historial_encargados.create({
+    id_cliente_chat_center,
+    id_encargado_nuevo: id_encargado,
+    motivo: 'Auto-asignacion de chat',
+    id_departamento_asginado: id_departamento,
+  });
+
+  await Clientes_chat_center.update(
+    { id_encargado },
+    { where: { id: id_cliente_chat_center } },
+  );
+
+  enviarConsultaAPI(id_configuracion, id_cliente_chat_center);
 
   return res
     .status(200)
