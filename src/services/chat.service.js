@@ -79,6 +79,13 @@ class ChatService {
         whereClause += ` AND (LOWER(nombre_cliente) LIKE :searchTerm OR LOWER(celular_cliente) LIKE :searchTerm)`;
       }
 
+      if (filtros.source && filtros.source !== 'all') {
+        const allowed = new Set(['wa', 'ig', 'ms']);
+        if (allowed.has(String(filtros.source))) {
+          whereClause += ` AND source = :source`;
+        }
+      }
+
       if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
         whereClause += ` AND (${filtros.selectedEtiquetas
           .map(
@@ -228,6 +235,10 @@ class ChatService {
         cursorFecha,
         cursorId,
         limit,
+        source:
+          filtros.source && filtros.source !== 'all'
+            ? String(filtros.source)
+            : null,
       };
 
       // Solo agregar id_sub_usuario si el rol no es 'administrador'
