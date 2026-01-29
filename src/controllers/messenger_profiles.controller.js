@@ -186,10 +186,12 @@ exports.fetchAndStoreProfile = async (req, res) => {
       const ig = await resp.json();
 
       if (!resp.ok || ig.error) {
-        return res.status(502).json({
+        console.warn('[Graph IG]', ig.error || ig);
+
+        return res.json({
           ok: false,
-          message: 'Error Graph IG',
-          error: ig.error || ig,
+          skipped: true,
+          reason: 'graph_ig_error',
         });
       }
 
@@ -208,10 +210,12 @@ exports.fetchAndStoreProfile = async (req, res) => {
       const data = await resp.json();
 
       if (!resp.ok || data.error) {
-        return res.status(502).json({
+        console.warn('[Graph MS]', data.error || data);
+
+        return res.json({
           ok: false,
-          message: 'Error Graph',
-          error: data.error || data,
+          skipped: true,
+          reason: 'graph_ms_error',
         });
       }
 
@@ -241,8 +245,13 @@ exports.fetchAndStoreProfile = async (req, res) => {
       },
     });
   } catch (e) {
-    console.error('[fetchAndStoreProfile]', e);
-    res.status(500).json({ ok: false, message: 'Error interno' });
+    console.warn('[fetchAndStoreProfile silent]', e);
+
+    return res.json({
+      ok: false,
+      skipped: true,
+      reason: 'exception',
+    });
   }
 };
 

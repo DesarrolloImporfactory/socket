@@ -51,7 +51,7 @@ const MensajesClientes = db.define(
         'delivered',
         'read',
         'failed',
-        'notification'
+        'notification',
       ),
       allowNull: true,
     },
@@ -114,7 +114,7 @@ const MensajesClientes = db.define(
     tableName: 'mensajes_clientes',
     timestamps: false,
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = MensajesClientes;

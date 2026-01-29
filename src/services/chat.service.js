@@ -314,6 +314,9 @@ class ChatService {
               'id_wamid_mensaje',
               'template_name',
               'language_code',
+              'attachments_unificado',
+              'meta_unificado',
+              'json_mensaje',
             ],
             include: [
               {
