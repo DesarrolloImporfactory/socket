@@ -334,6 +334,51 @@ class Sockets {
 
       socket.on('SEND_IMAGE', async (data) => {});
 
+      socket.on(
+        'QUITAR_MENSAJE',
+        async ({ id_configuracion, celular_recibe }) => {
+          const chatService = new ChatService();
+
+          const data = await chatService.getDataAsignar(
+            id_configuracion,
+            celular_recibe,
+          );
+
+          this.io.emit('QUITAR_MENSAJE_RESPONSE', data);
+        },
+      );
+
+      socket.on(
+        'ASIGNAR_ENCARGADO',
+        async ({ id_encargado, id_cliente_chat_center, id_configuracion }) => {
+          try {
+            const chatService = new ChatService();
+
+            const result = await chatService.setDataAsignar(
+              id_encargado,
+              id_cliente_chat_center,
+              id_configuracion,
+            );
+
+            // respuesta al que lo pidió
+            socket.emit('ASIGNAR_ENCARGADO_RESPONSE', result);
+
+            if (result.status !== 'success') return;
+
+            const payload = result.data; // ultimoMensaje + clientePorCelular + nombre_encargado
+
+            // opción simple:
+            this.io.emit('ENCARGADO_CHAT_ACTUALIZADO', payload);
+            
+          } catch (err) {
+            socket.emit('ASIGNAR_ENCARGADO_RESPONSE', {
+              status: 'error',
+              message: err.message ?? 'Error inesperado al asignar',
+            });
+          }
+        },
+      );
+
       socket.on('disconnect', () => {
         this.removeUser(socket.id);
         this.io.emit('USER_ADDED', onlineUsers); // Actualizar lista

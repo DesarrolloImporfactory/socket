@@ -629,10 +629,8 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
 exports.asignar_encargado = catchAsync(async (req, res, next) => {
   const {
-    source,
     id_encargado,
     id_cliente_chat_center,
-    id_conversation,
     id_configuracion,
   } = req.body;
 

@@ -9,7 +9,7 @@ async function enviarConsultaAPI(id_configuracion, celular_recibe) {
 
   try {
     const response = await axios.post(
-      'https://chat.imporfactory.app/api/v1/whatsapp/webhook',
+      'http://localhost:3000/api/v1/whatsapp/webhook',
       {
         id_configuracion,
         celular_recibe,

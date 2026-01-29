@@ -3,6 +3,11 @@ const AppError = require('../utils/appError');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ErroresChatMeta = require('../models/errores_chat_meta.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
+const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
+const Clientes_chat_center = require('../models/clientes_chat_center.model');
+const Historial_encargados = require('../models/historial_encargados.model');
 const EtiquetasChatCenter = require('../models/etiquetas_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const TemplatesChatCenter = require('../models/templates_chat_center.model');
@@ -1167,6 +1172,104 @@ class ChatService {
       return (Array.isArray(chat) ? chat[0] : chat) || null;
     } catch (err) {
       throw new AppError(err.message, 500);
+    }
+  }
+
+  async getDataAsignar(id_configuracion, celular_recibe) {
+    try {
+      const ultimoMensaje = await MensajesClientes.findOne({
+        where: { id_configuracion, celular_recibe },
+        include: [
+          {
+            model: ClientesChatCenter,
+            as: 'clientePorCelular',
+            attributes: ['celular_cliente', 'nombre_cliente', 'id_encargado'],
+          },
+        ],
+        order: [['created_at', 'DESC']],
+      });
+
+      // Si existe el cliente relacionado y tiene id_encargado, buscamos el subusuario
+      const idEncargado = ultimoMensaje?.clientePorCelular?.id_encargado;
+
+      let nombreEncargado = null;
+
+      if (idEncargado) {
+        const subUsuarioDB = await Sub_usuarios_chat_center.findByPk(
+          idEncargado,
+          {
+            attributes: ['nombre_encargado'],
+          },
+        );
+
+        nombreEncargado = subUsuarioDB?.nombre_encargado ?? null; // ajusta el campo
+      }
+
+      // Adjuntarlo al mismo nivel dentro de clientePorCelular (junto a id_encargado)
+      if (ultimoMensaje?.clientePorCelular) {
+        // OJO: si es instancia Sequelize, usa setDataValue para que quede "bien"
+        ultimoMensaje.clientePorCelular.setDataValue(
+          'nombre_encargado',
+          nombreEncargado,
+        );
+        // alternativa simple (también suele funcionar al enviar JSON):
+        // ultimoMensaje.clientePorCelular.nombre_encargado = nombreEncargado;
+      }
+
+      return ultimoMensaje;
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  async setDataAsignar(
+    id_encargado,
+    id_cliente_chat_center,
+    id_configuracion,
+  ) {
+    try {
+      if (!id_encargado) {
+        return { status: 'fail', message: 'id_encargado es requerido' };
+      }
+
+      if (!id_cliente_chat_center || !id_configuracion) {
+        return {
+          status: 'fail',
+          message:
+            'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
+        };
+      }
+
+      const Departamento = await DepartamentosChatCenter.findOne({
+        where: { id_configuracion },
+      });
+
+      const id_departamento = Departamento?.id_departamento ?? null;
+
+      await Historial_encargados.create({
+        id_cliente_chat_center,
+        id_encargado_nuevo: id_encargado,
+        motivo: 'Auto-asignacion de chat',
+        id_departamento_asginado: id_departamento,
+      });
+
+      await Clientes_chat_center.update(
+        { id_encargado },
+        { where: { id: id_cliente_chat_center } },
+      );
+
+      const ultimoMensaje = await this.getDataAsignar(
+        id_configuracion,
+        id_cliente_chat_center,
+      );
+
+      return {
+        status: 'success',
+        message: 'Chat asignado correctamente',
+        data: ultimoMensaje,
+      };
+    } catch (error) {
+      throw new AppError(error.message, 500);
     }
   }
 }
