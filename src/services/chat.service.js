@@ -1222,11 +1222,7 @@ class ChatService {
     }
   }
 
-  async setDataAsignar(
-    id_encargado,
-    id_cliente_chat_center,
-    id_configuracion,
-  ) {
+  async setDataAsignar(id_encargado, id_cliente_chat_center, id_configuracion) {
     try {
       if (!id_encargado) {
         return { status: 'fail', message: 'id_encargado es requerido' };
@@ -1257,6 +1253,32 @@ class ChatService {
         { id_encargado },
         { where: { id: id_cliente_chat_center } },
       );
+
+      // Buscar el cliente propietario de esa configuración (igual que arriba)
+      const cliente_configuracion = await Clientes_chat_center.findOne({
+        where: {
+          id_configuracion: id_configuracion,
+          propietario: 1,
+        },
+      });
+
+      // (opcional pero recomendado) si no existe propietario, evita crashear:
+      if (!cliente_configuracion) {
+        throw new Error(
+          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+        );
+      }
+
+      await MensajesClientes.create({
+        id_configuracion: id_configuracion,
+        id_cliente: cliente_configuracion.id,
+        mid_mensaje: cliente_configuracion.id_telefono,
+        tipo_mensaje: 'notificacion',
+        visto: 0,
+        texto_mensaje: 'Te has asignado este chat',
+        rol_mensaje: 3,
+        celular_recibe: id_cliente_chat_center,
+      });
 
       const ultimoMensaje = await this.getDataAsignar(
         id_configuracion,
