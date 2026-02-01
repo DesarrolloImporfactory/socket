@@ -39,7 +39,7 @@ function normalizeDropiError(err) {
  */
 exports.createOrderMyOrders = async ({ integrationKey, payload }) => {
   try {
-    const { data } = await dropiHttp.post('/orders/myorders', payload, {
+    const { data } = await dropiHttp.post('orders/myorders', payload, {
       headers: dropiHeaders(integrationKey),
     });
     return data;
@@ -49,12 +49,15 @@ exports.createOrderMyOrders = async ({ integrationKey, payload }) => {
 };
 
 /**
- * Helper genérico por si luego mete más endpoints.
+ * GET /orders/myorders  (Listar órdenes en Dropi)
+ * params se envía como query string:
+ *  { result_number, filter_date_by, from, until, status, textToSearch, ... }
  */
-exports.post = async ({ integrationKey, path, payload }) => {
+exports.listMyOrders = async ({ integrationKey, params }) => {
   try {
-    const { data } = await dropiHttp.post(path, payload, {
+    const { data } = await dropiHttp.get('/orders/myorders', {
       headers: dropiHeaders(integrationKey),
+      params,
     });
     return data;
   } catch (err) {

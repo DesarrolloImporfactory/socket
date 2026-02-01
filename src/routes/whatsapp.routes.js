@@ -335,15 +335,10 @@ router.post(
 );
 
 /**
- * Ruta: POST /api/v1/whatsapp_managment/obtenerPlantillasPlataforma
- *
- * Me permite obtener todos los datos de la tabla templates_chat_center
- * relacionados a una plataforma específica.
- *
- * @param {number} req.body.id_plataforma - ID de la plataforma.
- * @return {Array<Object>} - Lista de plantillas rápidas disponibles.
+ * Ruta: POST /api/v1/whatsapp_managment/obtenerRespuestasRapidas
+ * @param {number} req.body.id_configuracion
  */
-router.post('/obtenerPlantillasPlataforma', async (req, res) => {
+router.post('/obtenerRespuestasRapidas', async (req, res) => {
   const { id_configuracion } = req.body;
 
   if (!id_configuracion) {
@@ -354,11 +349,22 @@ router.post('/obtenerPlantillasPlataforma', async (req, res) => {
   }
 
   try {
-    const [rows] = await db.query(
-      `SELECT * FROM templates_chat_center WHERE id_configuracion = ${id_configuracion}`,
+    const rows = await db.query(
+      `SELECT *
+       FROM templates_chat_center
+       WHERE id_configuracion = ?
+       ORDER BY id_template DESC`,
+      {
+        replacements: [id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
     );
 
-    return res.json(rows); // o { success: true, data: rows } si deseas uniformar
+    // rows YA ES UN ARRAY
+    return res.json({
+      success: true,
+      data: rows,
+    });
   } catch (error) {
     console.error('Error al obtener plantillas rápidas:', error);
     return res.status(500).json({
@@ -371,15 +377,25 @@ router.post('/obtenerPlantillasPlataforma', async (req, res) => {
 
 /**
  * POST /api/v1/whatsapp_managment/crearPlantillaRapida
- * Permite registrar una plantilla de respuesta rápida para el chat center
- * @param {string} atajo - Comando corto (atajo) para usar la plantilla
- * @param {string} mensaje - Contenido del mensaje de la plantilla
- * @param {int} id_configuracion - id_configuracion a la que pertenece la plantilla
- * @param {int} id_plataforma - id_plataforma en caso de que la tienda realize dropshiping, caso contrario null
- * @return {object} status 200 | 500
+ * Permite registrar una plantilla de respuesta rápida
+ * @param {string} atajo
+ * @param {string} mensaje
+ * @param {int} id_configuracion
+ * @param {string} tipo_mensaje  (text|audio|image|video|document)  [opcional]
+ * @param {string} ruta_archivo  [opcional - obligatorio si tipo != text]
+ * @param {string} mime_type     [opcional]
+ * @param {string} file_name     [opcional]
  */
 router.post('/crearPlantillaRapida', async (req, res) => {
-  const { atajo, mensaje, id_configuracion } = req.body;
+  const {
+    atajo,
+    mensaje,
+    id_configuracion,
+    tipo_mensaje = 'text',
+    ruta_archivo = null,
+    mime_type = null,
+    file_name = null,
+  } = req.body;
 
   try {
     if (!id_configuracion || !atajo) {
@@ -389,11 +405,43 @@ router.post('/crearPlantillaRapida', async (req, res) => {
       });
     }
 
+    const tipo = String(tipo_mensaje || 'text')
+      .toLowerCase()
+      .trim();
+    const tiposOk = ['text', 'audio', 'image', 'video', 'document'];
+
+    if (!tiposOk.includes(tipo)) {
+      return res.status(400).json({
+        success: false,
+        message: 'tipo_mensaje inválido. Use: text|audio|image|video|document',
+      });
+    }
+
+    // Si NO es texto, debe venir ruta_archivo
+    if (tipo !== 'text' && (!ruta_archivo || !String(ruta_archivo).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'ruta_archivo es obligatorio cuando tipo_mensaje no es text.',
+      });
+    }
+
+    // Si es texto, asegure ruta_archivo null (limpieza)
+    const rutaFinal = tipo === 'text' ? null : String(ruta_archivo).trim();
+
     const [result] = await db.query(
-      `INSERT INTO templates_chat_center (atajo, mensaje, id_configuracion)
-       VALUES (?, ?, ?)`,
+      `INSERT INTO templates_chat_center
+        (atajo, mensaje, id_configuracion, tipo_mensaje, ruta_archivo, mime_type, file_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       {
-        replacements: [atajo, mensaje, id_configuracion],
+        replacements: [
+          atajo,
+          mensaje ?? '',
+          id_configuracion,
+          tipo,
+          rutaFinal,
+          mime_type,
+          file_name,
+        ],
         type: db.QueryTypes.INSERT,
       },
     );

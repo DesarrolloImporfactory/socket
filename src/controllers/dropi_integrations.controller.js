@@ -3,6 +3,9 @@ const AppError = require('../utils/appError');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const Configuraciones = require('../models/configuraciones.model');
+const ClientesChatCenter = require('../models/clientes_chat_center.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const { Op } = require('sequelize');
 
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
@@ -37,7 +40,7 @@ async function assertConfigBelongsToOwner(req, id_configuracion) {
   if (!cfg) {
     throw new AppError(
       'Configuración no válida o no pertenece a esta cuenta',
-      403
+      403,
     );
   }
 
@@ -112,9 +115,9 @@ function buildDropiOrderPayload(body = {}) {
   if (missing.length) {
     throw new AppError(
       `Faltan campos requeridos para crear la orden en Dropi: ${missing.join(
-        ', '
+        ', ',
       )}`,
-      400
+      400,
     );
   }
 
@@ -208,6 +211,42 @@ function buildDropiOrderPayload(body = {}) {
   };
 }
 
+function toIntOrDefault(v, def) {
+  const n = toInt(v);
+  return n === null ? def : n;
+}
+
+function buildDropiOrdersListParams(body = {}) {
+  const result_number = toIntOrDefault(body.result_number, 10);
+
+  const filter_date_by = strOrNull(body.filter_date_by) || 'FECHA DE CREADO';
+  const from = strOrNull(body.from);
+  const until = strOrNull(body.until);
+  const status = strOrNull(body.status);
+  const textToSearch = strOrNull(body.textToSearch);
+
+  // Validación mínima exigida x Dropi
+  if (!result_number || !result_number) {
+    throw new AppError(
+      'Filter_date_by y result_number son obligatorios para consultar órdenes',
+      400,
+    );
+  }
+
+  // Esto será query params para Dropi GET
+  const params = {
+    result_number,
+    filter_date_by,
+    from,
+    until,
+  };
+
+  if (status) params.status = status;
+  if (textToSearch) params.textToSearch = textToSearch;
+
+  return params;
+}
+
 /* =========================
    CRUD Integrations
 ========================= */
@@ -219,8 +258,8 @@ exports.create = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         'id_configuracion, store_name, country_code y token son obligatorios',
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -317,8 +356,8 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         'No existe una integración Dropi activa para esta configuración',
-        404
-      )
+        404,
+      ),
     );
   }
 
@@ -348,5 +387,222 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     isSuccess: true,
     message: 'Orden enviada a Dropi correctamente',
     data: dropiResponse,
+  });
+});
+
+// =========================
+// Helpers para matching teléfono
+// =========================
+function digitsOnly(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
+function phoneKeys(v) {
+  const d = digitsOnly(v);
+  if (!d) return [];
+  const keys = [];
+
+  // guardamos varias llaves para soportar:
+  // - Dropi (9 dígitos)
+  // - celulares con prefijo país (593XXXXXXXXX)
+  // - países con 10 dígitos
+  if (d.length >= 9) keys.push(d.slice(-9));
+  if (d.length >= 10) keys.push(d.slice(-10));
+
+  // opcional: si usted maneja otros países con 11+ y quiere más tolerancia
+  // if (d.length >= 11) keys.push(d.slice(-11));
+
+  // unique
+  return Array.from(new Set(keys));
+}
+
+// =========================
+// Enriquecer órdenes (bulk, 1 query clientes + 1 query subusuarios)
+// =========================
+async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
+  if (!Array.isArray(objects) || objects.length === 0) return objects;
+
+  // 1) recolectar phones desde Dropi
+  const allPhoneKeys = [];
+  const phoneKeysByOrderId = new Map();
+
+  for (const o of objects) {
+    const ks = phoneKeys(o?.phone);
+    if (ks.length) {
+      ks.forEach((k) => allPhoneKeys.push(k));
+      phoneKeysByOrderId.set(String(o?.id), ks);
+    }
+  }
+
+  const uniqueKeys = Array.from(new Set(allPhoneKeys));
+  if (uniqueKeys.length === 0) {
+    return objects.map((o) => ({
+      ...o,
+      has_chat: false,
+      tray: o?.phone ? String(o.phone) : 'Sin conversación',
+      agent_assigned: 'Sin agente',
+    }));
+  }
+
+  // 2) Buscar clientes_chat_center que coincidan con esos keys
+  const orConditions = [];
+  for (const k of uniqueKeys) {
+    orConditions.push(
+      { celular_cliente: { [Op.like]: `%${k}` } },
+      { telefono_limpio: { [Op.like]: `%${k}` } },
+    );
+  }
+
+  const clientes = await ClientesChatCenter.findAll({
+    where: {
+      id_configuracion,
+      deleted_at: null,
+      [Op.or]: orConditions,
+    },
+    attributes: [
+      'id',
+      'celular_cliente',
+      'telefono_limpio',
+      'id_encargado',
+      'estado_contacto',
+    ],
+    raw: true,
+  });
+
+  // 3) índice por llaves
+  const clientByKey = new Map();
+  for (const c of clientes) {
+    const ks1 = phoneKeys(c?.celular_cliente);
+    const ks2 = phoneKeys(c?.telefono_limpio);
+
+    [...ks1, ...ks2].forEach((k) => {
+      if (k && !clientByKey.has(k)) clientByKey.set(k, c);
+    });
+  }
+
+  // 4) encargados únicos
+  const encargadoIds = Array.from(
+    new Set(
+      clientes
+        .map((c) => c?.id_encargado)
+        .filter((x) => x !== null && x !== undefined && String(x).trim() !== '')
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x)),
+    ),
+  );
+
+  let subusersById = new Map();
+  if (encargadoIds.length) {
+    const subs = await Sub_usuarios_chat_center.findAll({
+      where: { id_sub_usuario: { [Op.in]: encargadoIds } },
+      attributes: ['id_sub_usuario', 'nombre_encargado'],
+      raw: true,
+    });
+
+    subusersById = new Map(
+      subs.map((s) => [String(s.id_sub_usuario), s.nombre_encargado]),
+    );
+  }
+
+  // 5) Enriquecer cada orden
+  const enriched = objects.map((o) => {
+    const ks = phoneKeysByOrderId.get(String(o?.id)) || [];
+    let client = null;
+
+    for (const k of ks) {
+      const found = clientByKey.get(k);
+      if (found) {
+        client = found;
+        break;
+      }
+    }
+
+    const has_chat = !!client;
+
+    const tray = has_chat
+      ? client?.estado_contacto
+        ? String(client.estado_contacto)
+        : 'contacto_inicial'
+      : 'No hay conversación';
+
+    const agentName = has_chat
+      ? client?.id_encargado
+        ? subusersById.get(String(client.id_encargado)) || 'Sin agente'
+        : 'Sin agente'
+      : 'Sin agente';
+
+    return {
+      ...o,
+      has_chat,
+      tray,
+      agent_assigned: agentName,
+      chat_id_cliente: client?.id || null,
+      chat_id_encargado: client?.id_encargado || null,
+    };
+  });
+
+  return enriched;
+}
+
+// =========================
+// Controller: listMyOrders (actualizado)
+// =========================
+exports.listMyOrders = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  await assertConfigBelongsToOwner(req, id_configuracion);
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    return next(
+      new AppError(
+        'No existe una integración Dropi activa para esta configuración',
+        404,
+      ),
+    );
+  }
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey || !String(integrationKey).trim()) {
+    return next(new AppError('Dropi key inválida o no disponible', 400));
+  }
+
+  // params (sin id_configuracion)
+  const raw = { ...req.body };
+  delete raw.id_configuracion;
+
+  let params;
+  try {
+    params = buildDropiOrdersListParams(raw);
+  } catch (e) {
+    return next(e);
+  }
+
+  // GET hacia Dropi
+  const dropiResponse = await dropiService.listMyOrders({
+    integrationKey,
+    params,
+  });
+
+  // ✅ Enriquecer aquí
+  // Dropi suele devolver { objects: [...] } o su estructura puede variar: ajústelo si hace falta.
+  const objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
+  const enrichedObjects = await enrichOrdersWithChatAndAgent({
+    id_configuracion,
+    objects,
+  });
+
+  // devolvemos misma respuesta pero reemplazando objects enriquecidos
+  const final = {
+    ...dropiResponse,
+    objects: enrichedObjects,
+  };
+
+  return res.json({
+    isSuccess: true,
+    data: final,
   });
 });
