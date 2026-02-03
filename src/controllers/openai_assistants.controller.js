@@ -726,6 +726,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('Missing OPENAI_API_KEY env var');
     }
+    
 
     const apiKey = process.env.OPENAI_API_KEY;
     const assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
