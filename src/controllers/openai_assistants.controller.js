@@ -18,7 +18,7 @@ exports.datosCliente = catchAsync(async (req, res, next) => {
   try {
     const datosCliente = await obtenerDatosClienteParaAssistant(
       id_plataforma,
-      telefono
+      telefono,
     );
 
     res.status(200).json({
@@ -27,7 +27,7 @@ exports.datosCliente = catchAsync(async (req, res, next) => {
     });
   } catch (error) {
     return next(
-      new AppError('Error al obtener datos del cliente para el assistant', 500)
+      new AppError('Error al obtener datos del cliente para el assistant', 500),
     );
   }
 });
@@ -49,7 +49,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     {
       replacements: [id_configuracion],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!assistants || assistants.length === 0) {
@@ -65,7 +65,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   if (id_plataforma) {
     const datosCliente = await obtenerDatosClienteParaAssistant(
       id_plataforma,
-      telefono
+      telefono,
     );
     bloqueInfo = datosCliente.bloque || '';
     tipoInfo = datosCliente.tipo || null;
@@ -77,7 +77,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
   if (tipoInfo === 'datos_guia') {
     const logistic = assistants.find(
-      (a) => a.tipo.toLowerCase() === 'logistico'
+      (a) => a.tipo.toLowerCase() === 'logistico',
     );
     assistant_id = logistic?.assistant_id;
     tipo_asistente = 'IA_logistica';
@@ -136,7 +136,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
         role: 'user',
         content: `🧾 Información del cliente para usar como contexto:\n\n${bloqueInfo}`,
       },
-      { headers }
+      { headers },
     );
   }
 
@@ -147,7 +147,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       role: 'user',
       content: mensaje,
     },
-    { headers }
+    { headers },
   );
 
   // Ejecutar assistant
@@ -157,7 +157,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       assistant_id,
       max_completion_tokens: 200,
     },
-    { headers }
+    { headers },
   );
 
   const run_id = run.data.id;
@@ -178,7 +178,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
     const statusRes = await axios.get(
       `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-      { headers }
+      { headers },
     );
 
     status = statusRes.data.status;
@@ -194,7 +194,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   // Obtener respuesta final
   const messagesRes = await axios.get(
     `https://api.openai.com/v1/threads/${id_thread}/messages`,
-    { headers }
+    { headers },
   );
 
   const mensajes = messagesRes.data.data || [];
@@ -205,7 +205,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
 
   if (tiempo_remarketing && tiempo_remarketing > 0) {
     const tiempoDisparo = new Date(
-      Date.now() + tiempo_remarketing * 60 * 60 * 1000
+      Date.now() + tiempo_remarketing * 60 * 60 * 1000,
     );
 
     let existe = false;
@@ -223,7 +223,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
       {
         replacements: [telefono, id_configuracion, tiempoDisparo],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     // 2. Si ya existe, no insertamos
@@ -255,7 +255,7 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
             id_thread,
           ],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
     }
   }
@@ -278,14 +278,14 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     let api_key_openai = null;
 
     if (!configuracion) {
       return next(
-        new AppError('No se encontró configuración para la plataforma', 400)
+        new AppError('No se encontró configuración para la plataforma', 400),
       );
     }
 
@@ -297,7 +297,7 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     let logistico = null;
@@ -423,13 +423,13 @@ async function crearAssistantEnCuentaCliente(templateRow, api_key) {
 
   // limpiar undefined
   Object.keys(payload).forEach(
-    (k) => payload[k] === undefined && delete payload[k]
+    (k) => payload[k] === undefined && delete payload[k],
   );
 
   const res = await axios.post(
     'https://api.openai.com/v1/assistants',
     payload,
-    { headers }
+    { headers },
   );
   return res.data;
 }
@@ -438,7 +438,7 @@ async function crearAssistantEnCuentaCliente(templateRow, api_key) {
 async function bootstrapAssistantsForClient(
   id_configuracion,
   api_key,
-  tipo_configuracion
+  tipo_configuracion,
 ) {
   const permitidos = templatesPermitidosPorTipo(tipo_configuracion);
 
@@ -448,7 +448,7 @@ async function bootstrapAssistantsForClient(
     `SELECT template_key, nombre, model, instructions, tools_json, metadata_json, temperature, top_p, response_format_json
      FROM oia_assistant_templates
      WHERE activo = 1 AND template_key IN (${placeholders})`,
-    { replacements: permitidos, type: db.QueryTypes.SELECT }
+    { replacements: permitidos, type: db.QueryTypes.SELECT },
   );
 
   const results = { created: [], skipped: [], failed: [] };
@@ -463,7 +463,7 @@ async function bootstrapAssistantsForClient(
       {
         replacements: [id_configuracion, template_key],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (existing && existing.length > 0 && existing[0].assistant_id) {
@@ -489,7 +489,7 @@ async function bootstrapAssistantsForClient(
             created.model || t.model || 'gpt-4.1-mini',
           ],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
 
       results.created.push({
@@ -550,8 +550,8 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         'Faltan campos: id_configuracion, api_key, tipo_configuracion',
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -560,7 +560,7 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     await validarApiKeyOpenAI(api_key);
   } catch (e) {
     return next(
-      new AppError('API Key de OpenAI inválida o sin permisos.', 400)
+      new AppError('API Key de OpenAI inválida o sin permisos.', 400),
     );
   }
 
@@ -574,7 +574,7 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
   const bootstrap = await bootstrapAssistantsForClient(
     id_configuracion,
     api_key,
-    tipo_configuracion
+    tipo_configuracion,
   );
 
   return res.status(200).json({
@@ -594,7 +594,7 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (existe) {
@@ -605,7 +605,7 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
         {
           replacements: [nombre_bot, assistant_id, activo, id_configuracion],
           type: db.QueryTypes.UPDATE,
-        }
+        },
       );
     } else {
       // No existe, entonces inserta
@@ -615,7 +615,7 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
         {
           replacements: [id_configuracion, nombre_bot, assistant_id, activo],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
     }
 
@@ -644,7 +644,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (existe) {
@@ -661,7 +661,7 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
             id_configuracion,
           ],
           type: db.QueryTypes.UPDATE,
-        }
+        },
       );
     } else {
       // No existe, entonces inserta
@@ -678,7 +678,7 @@ VALUES (?, "ventas", ?, ?, ?, ?)`,
             tiempo_remarketing,
           ],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
     }
 
@@ -712,14 +712,7 @@ const obtenerURLImagen = (imagePath, serverURL) => {
 };
 
 exports.enviar_mensaje_gpt = async (req, res) => {
-  const {
-    mensaje,
-    id_chat,
-    id_thread_chat,
-    id_plataforma,
-    apiKey,
-    assistantId,
-  } = req.body;
+  const { mensaje, id_chat, id_thread_chat, id_plataforma } = req.body;
 
   if (!mensaje || !id_chat || !id_thread_chat) {
     return res.status(400).json({
@@ -730,6 +723,13 @@ exports.enviar_mensaje_gpt = async (req, res) => {
   }
 
   try {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('Missing OPENAI_API_KEY env var');
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    const assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
+
     // Insertar mensaje del usuario (rol_mensaje = 1)
     await db_2.query(
       `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
@@ -737,7 +737,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       {
         replacements: [id_chat, mensaje],
         type: QueryTypes.INSERT,
-      }
+      },
     );
 
     const headers = {
@@ -753,7 +753,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
         role: 'user',
         content: mensaje,
       },
-      { headers }
+      { headers },
     );
 
     // Ejecutar assistant
@@ -763,7 +763,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
         assistant_id: assistantId,
         max_completion_tokens: 200,
       },
-      { headers }
+      { headers },
     );
 
     const run_id = run.data.id;
@@ -785,7 +785,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
 
       const statusRes = await axios.get(
         `https://api.openai.com/v1/threads/${id_thread_chat}/runs/${run_id}`,
-        { headers }
+        { headers },
       );
 
       status = statusRes.data.status;
@@ -801,7 +801,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     // Obtener respuesta final
     const messagesRes = await axios.get(
       `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
-      { headers }
+      { headers },
     );
 
     const mensajes = messagesRes.data.data || [];
@@ -824,7 +824,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       {
         replacements: [id_chat, respuesta],
         type: QueryTypes.INSERT,
-      }
+      },
     );
 
     res.status(200).json({
@@ -885,7 +885,7 @@ async function upsertTemplate({
   if (!force) {
     const existing = await db.query(
       `SELECT instructions FROM oia_assistant_templates WHERE template_key = ? LIMIT 1`,
-      { replacements: [template_key], type: db.QueryTypes.SELECT }
+      { replacements: [template_key], type: db.QueryTypes.SELECT },
     );
     const existingInstructions = existing?.[0]?.instructions || '';
     if (existingInstructions.trim().length > 0) {
@@ -904,8 +904,8 @@ async function upsertTemplate({
     response_format == null
       ? null
       : typeof response_format === 'string'
-      ? JSON.stringify(response_format)
-      : JSON.stringify(response_format);
+        ? JSON.stringify(response_format)
+        : JSON.stringify(response_format);
 
   await db.query(
     `
@@ -937,7 +937,7 @@ async function upsertTemplate({
         responseFormatJson,
       ],
       type: db.QueryTypes.INSERT,
-    }
+    },
   );
 }
 
@@ -967,7 +967,7 @@ exports.sync_templates_from_oia_asistentes = async (req, res) => {
       {
         replacements: solo_tipo ? [solo_tipo] : [],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
 
     if (!asistRows || asistRows.length === 0) {
