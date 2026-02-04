@@ -545,7 +545,7 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
 }
 
 // =========================
-// Controller: listMyOrders (actualizado)
+// Controller: listMyOrders
 // =========================
 exports.listMyOrders = catchAsync(async (req, res, next) => {
   const id_configuracion = toInt(req.body?.id_configuracion);

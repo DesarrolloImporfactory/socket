@@ -1,6 +1,7 @@
 const ChatService = require('../services/chat.service');
 const fb = require('../utils/facebookGraph');
 const ig = require('../utils/instagramGraph');
+const { listOrdersForClient } = require('../services/dropiOrders.service');
 
 const onlineUsers = [];
 
@@ -203,28 +204,25 @@ class Sockets {
         },
       );
 
-      socket.on('GET_FACTURAS', async ({ id_plataforma, telefono }) => {
+      socket.on('GET_DROPI_ORDERS_BY_CLIENT', async (payload) => {
         try {
-          const chatService = new ChatService();
-          const data = await chatService.getFacturas(id_plataforma, telefono);
-          const dataNovedades = await chatService.getNovedades(
-            id_plataforma,
-            telefono,
-          );
+          const { id_configuracion, phone, ...rest } = payload || {};
 
-          // Enviar los datos al cliente que hizo la solicitud
-          socket.emit('DATA_FACTURA_RESPONSE', data);
-          socket.emit('DATA_NOVEDADES', dataNovedades);
-        } catch (error) {
-          console.error(
-            'Error al obtener los datos del admin DATA_NOVEDADES:',
-            error.message,
-          );
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!phone) throw new AppError('phone es requerido', 400);
 
-          // Enviar mensaje de error al cliente en caso de fallo
-          socket.emit('ERROR_RESPONSE', {
-            message:
-              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          const data = await listOrdersForClient({
+            id_configuracion: Number(id_configuracion),
+            phone,
+            body: rest, // { result_number, filter_date_by, from, until, status... }
+          });
+
+          socket.emit('DROPI_ORDERS_BY_CLIENT', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_ORDERS_BY_CLIENT_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error consultando órdenes',
           });
         }
       });
@@ -369,7 +367,6 @@ class Sockets {
 
             // opción simple:
             this.io.emit('ENCARGADO_CHAT_ACTUALIZADO', payload);
-            
           } catch (err) {
             socket.emit('ASIGNAR_ENCARGADO_RESPONSE', {
               status: 'error',
