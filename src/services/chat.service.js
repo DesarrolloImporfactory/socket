@@ -595,7 +595,7 @@ class ChatService {
             { apellido_cliente: { [Op.like]: `%${texto}%` } },
           ],
         },
-        attributes: ['celular_cliente', 'nombre_cliente'],
+        attributes: ['celular_cliente', 'nombre_cliente','id_encargado'],
       });
 
       return telefonos;
