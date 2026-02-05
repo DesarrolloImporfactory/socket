@@ -73,10 +73,44 @@ router.post('/ObtenerNumeros', async (req, res) => {
 
     // otros 4xx/5xx de Meta: lo tratamos como “sin números”, no como error fatal
     if (numbersResp.status < 200 || numbersResp.status >= 300) {
-      return res.json({
+      const metaErr = numbersResp.data?.error || null;
+
+      // si es rate limit específico de WhatsApp (80008), lo marcamos
+      const isRateLimit = metaErr?.code === 80008;
+
+      return res.status(200).json({
         success: true,
         data: [],
-        hint: 'meta_error_' + numbersResp.status,
+        hint: isRateLimit
+          ? 'meta_rate_limited'
+          : `meta_error_${numbersResp.status}`,
+
+        // motivo
+        meta_error: metaErr
+          ? {
+              http_status: numbersResp.status,
+              code: metaErr.code,
+              type: metaErr.type,
+              message: metaErr.message,
+              fbtrace_id: metaErr.fbtrace_id,
+
+              // opcional: ayuda mucho para debugging (si existen)
+              error_subcode: metaErr.error_subcode,
+              error_user_title: metaErr.error_user_title,
+              error_user_msg: metaErr.error_user_msg,
+            }
+          : {
+              http_status: numbersResp.status,
+              message: 'Meta devolvió un error sin cuerpo estándar',
+            },
+
+        // opcional: headers útiles para rate limit / diagnóstico
+        meta_headers: {
+          'x-app-usage': numbersResp.headers?.['x-app-usage'],
+          'x-business-use-case-usage':
+            numbersResp.headers?.['x-business-use-case-usage'],
+          'retry-after': numbersResp.headers?.['retry-after'],
+        },
       });
     }
 
