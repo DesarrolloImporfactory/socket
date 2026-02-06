@@ -109,6 +109,7 @@ const MensajesClientes = db.define(
 
     template_name: { type: DataTypes.STRING(250), allowNull: true },
     language_code: { type: DataTypes.STRING(20), allowNull: true },
+    meta_media_id: { type: DataTypes.STRING(64), allowNull: true },
   },
   {
     tableName: 'mensajes_clientes',

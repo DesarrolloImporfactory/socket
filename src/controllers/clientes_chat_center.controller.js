@@ -185,6 +185,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     id_wamid_mensaje,
     template_name,
     language_code,
+    meta_media_id,
   } = req.body;
 
   try {
@@ -238,11 +239,11 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
       { type: db.QueryTypes.SELECT },
     );
 
-    // 3) Insertar mensaje (aquí NO toqué su lógica; si quiere anti-duplicado aquí también, se hace con UNIQUE + IGNORE/UPSERT)
+    // 3) Insertar mensaje
     await db.query(
       `INSERT INTO mensajes_clientes 
-        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp, id_wamid_mensaje, template_name, language_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp, id_wamid_mensaje, template_name, language_code, meta_media_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -259,6 +260,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           id_wamid_mensaje,
           template_name,
           language_code,
+          meta_media_id,
         ],
         type: db.QueryTypes.INSERT,
       },
