@@ -594,7 +594,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       // ✅ si el chat estaba cerrado, reabrir
       if (cliente.chat_cerrado === 1) {
         await ClientesChatCenter.update(
-          { chat_cerrado: 0 },
+          { chat_cerrado: 0, id_encargado: null, id_departamento: null },
           { where: { id: id_cliente } },
         );
       }
