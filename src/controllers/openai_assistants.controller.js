@@ -712,7 +712,7 @@ const obtenerURLImagen = (imagePath, serverURL) => {
 };
 
 exports.enviar_mensaje_gpt = async (req, res) => {
-  const { mensaje, id_chat, id_thread_chat, id_plataforma } = req.body;
+  const { mensaje, id_chat, id_thread_chat, id_plataforma, pais } = req.body;
 
   if (!mensaje || !id_chat || !id_thread_chat) {
     return res.status(400).json({
@@ -726,10 +726,15 @@ exports.enviar_mensaje_gpt = async (req, res) => {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('Missing OPENAI_API_KEY env var');
     }
-    
 
     const apiKey = process.env.OPENAI_API_KEY;
-    const assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
+    let assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
+
+    if (pais == 'EC') {
+      assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
+    } else if (pais == 'MX') {
+      assistantId = 'asst_shnGt8Pr5raINBP5oDktNhuT';
+    }
 
     // Insertar mensaje del usuario (rol_mensaje = 1)
     await db_2.query(
