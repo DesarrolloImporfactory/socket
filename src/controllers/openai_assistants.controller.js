@@ -767,7 +767,7 @@ exports.enviar_mensaje_gpt = async (req, res) => {
       `https://api.openai.com/v1/threads/${id_thread_chat}/runs`,
       {
         assistant_id: assistantId,
-        max_completion_tokens: 200,
+        max_completion_tokens: 800,
       },
       { headers },
     );
