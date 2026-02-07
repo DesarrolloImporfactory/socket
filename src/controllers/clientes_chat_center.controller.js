@@ -242,26 +242,31 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     // 3) Insertar mensaje
     await db.query(
       `INSERT INTO mensajes_clientes 
-        (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje, celular_recibe, responsable, texto_mensaje, ruta_archivo, visto, uid_whatsapp, id_wamid_mensaje, template_name, language_code, meta_media_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje,
+    celular_recibe, responsable, texto_mensaje, ruta_archivo, visto,
+    uid_whatsapp, id_wamid_mensaje, template_name, language_code, meta_media_id)
+   VALUES
+   (:id_config, :id_cliente, :mid, :tipo, :rol,
+    :cel_recibe, :resp, :texto, :ruta, :visto,
+    :uid_whatsapp, :wamid, :template, :lang, :metaMediaId)`,
       {
-        replacements: [
-          id_configuracion,
-          id_cliente_configuracion,
-          mid_mensaje,
-          tipo_mensaje,
-          1,
-          id_recibe,
-          responsable,
-          texto_mensaje,
-          ruta_archivo,
-          1,
-          telefono_recibe,
-          id_wamid_mensaje,
-          template_name,
-          language_code,
-          meta_media_id,
-        ],
+        replacements: {
+          id_config: id_configuracion,
+          id_cliente: id_cliente_configuracion,
+          mid: mid_mensaje,
+          tipo: tipo_mensaje,
+          rol: 1,
+          cel_recibe: id_recibe,
+          resp: responsable ?? '',
+          texto: texto_mensaje ?? '',
+          ruta: ruta_archivo ?? null,
+          visto: 1,
+          uid_whatsapp: telefono_recibe,
+          wamid: id_wamid_mensaje ?? null,
+          template: template_name ?? '',
+          lang: language_code ?? '',
+          metaMediaId: meta_media_id ?? null,
+        },
         type: db.QueryTypes.INSERT,
       },
     );
