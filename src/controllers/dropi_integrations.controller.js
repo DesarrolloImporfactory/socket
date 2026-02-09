@@ -263,8 +263,6 @@ exports.create = catchAsync(async (req, res, next) => {
     );
   }
 
-  await assertConfigBelongsToOwner(req, id_configuracion);
-
   const created = await DropiIntegrations.create({
     id_configuracion,
     store_name: String(store_name).trim(),
@@ -282,8 +280,6 @@ exports.list = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.query.id_configuracion || 0);
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
-
-  await assertConfigBelongsToOwner(req, id_configuracion);
 
   const rows = await DropiIntegrations.findAll({
     where: { id_configuracion, deleted_at: null, is_active: 1 },
@@ -348,8 +344,6 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
   if (!id_configuracion) {
     return next(new AppError('id_configuracion es requerido', 400));
   }
-
-  await assertConfigBelongsToOwner(req, id_configuracion);
 
   const integration = await getActiveIntegration(id_configuracion);
   if (!integration) {
@@ -544,16 +538,11 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   return enriched;
 }
 
-// =========================
-// Controller: listMyOrders
-// =========================
 exports.listMyOrders = catchAsync(async (req, res, next) => {
   const id_configuracion = toInt(req.body?.id_configuracion);
   if (!id_configuracion) {
     return next(new AppError('id_configuracion es requerido', 400));
   }
-
-  await assertConfigBelongsToOwner(req, id_configuracion);
 
   const integration = await getActiveIntegration(id_configuracion);
   if (!integration) {
@@ -605,4 +594,93 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     isSuccess: true,
     data: final,
   });
+});
+
+exports.listProductsIndex = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  // payload recomendado por doc
+  const payload = {
+    pageSize: toInt(req.body?.pageSize) || 50,
+    startData: toInt(req.body?.startData) ?? 0,
+    no_count: req.body?.no_count === false ? false : true,
+    order_by: strOrNull(req.body?.order_by) || 'id',
+    order_type: strOrNull(req.body?.order_type) || 'asc',
+    keywords: str(req.body?.keywords || ''),
+  };
+
+  // filtros opcionales (solo si vienen)
+  if (Array.isArray(req.body?.category) && req.body.category.length) {
+    payload.category = req.body.category;
+  }
+  if (typeof req.body?.favorite === 'boolean')
+    payload.favorite = req.body.favorite;
+  if (typeof req.body?.privated_product === 'boolean')
+    payload.privated_product = req.body.privated_product;
+
+  const dropiResponse = await dropiService.listProductsIndex({
+    integrationKey,
+    payload,
+  });
+
+  return res.json({ isSuccess: true, data: dropiResponse });
+});
+
+exports.listStates = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.query?.id_configuracion);
+  const country_id = toInt(req.query?.country_id) ?? 1; // default 1 de momento
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const dropiResponse = await dropiService.listStates({
+    integrationKey,
+    country_id,
+  });
+
+  return res.json({ isSuccess: true, data: dropiResponse });
+});
+
+exports.listCities = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const department_id = toInt(req.body?.department_id);
+  const rate_type = strOrNull(req.body?.rate_type); // "CON RECAUDO" "SIN RECAUDO"
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!department_id)
+    return next(new AppError('department_id es requerido', 400));
+  if (!rate_type) return next(new AppError('COD es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const payload = { department_id, rate_type };
+
+  const dropiResponse = await dropiService.listCities({
+    integrationKey,
+    payload,
+  });
+
+  return res.json({ isSuccess: true, data: dropiResponse });
 });

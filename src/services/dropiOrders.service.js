@@ -1,4 +1,3 @@
-// services/dropi.orders.logic.js
 const AppError = require('../utils/appError');
 const { decryptToken } = require('../utils/cryptoToken');
 

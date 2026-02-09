@@ -1,4 +1,3 @@
-// services/dropi.service.js
 const axios = require('axios');
 const AppError = require('../utils/appError');
 
@@ -58,6 +57,41 @@ exports.listMyOrders = async ({ integrationKey, params }) => {
     const { data } = await dropiHttp.get('/orders/myorders', {
       headers: dropiHeaders(integrationKey),
       params,
+    });
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
+// POST /products/index
+exports.listProductsIndex = async ({ integrationKey, payload }) => {
+  try {
+    const { data } = await dropiHttp.post('/products/index', payload, {
+      headers: dropiHeaders(integrationKey),
+    });
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
+exports.listStates = async ({ integrationKey, country_id }) => {
+  try {
+    const { data } = await dropiHttp.get('/department', {
+      headers: dropiHeaders(integrationKey),
+      params: { country_id },
+    });
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
+exports.listCities = async ({ integrationKey, payload }) => {
+  try {
+    const { data } = await dropiHttp.post('/trajectory/bycity', payload, {
+      headers: dropiHeaders(integrationKey),
     });
     return data;
   } catch (err) {

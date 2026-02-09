@@ -1,9 +1,30 @@
 const ChatService = require('../services/chat.service');
-const fb = require('../utils/facebookGraph');
-const ig = require('../utils/instagramGraph');
 const { listOrdersForClient } = require('../services/dropiOrders.service');
+const AppError = require('../utils/appError');
+const dropiService = require('../services/dropi.service');
+const DropiIntegrations = require('../models/dropi_integrations.model');
+const { decryptToken } = require('../utils/cryptoToken');
 
 const onlineUsers = [];
+
+async function getActiveIntegration(id_configuracion) {
+  return DropiIntegrations.findOne({
+    where: { id_configuracion, deleted_at: null, is_active: 1 },
+    order: [['id', 'DESC']],
+  });
+}
+
+function toInt(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function strOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v);
+  return s.trim().length ? s.trim() : null;
+}
 
 class Sockets {
   constructor(io) {
@@ -227,39 +248,110 @@ class Sockets {
         }
       });
 
-      socket.on('GET_PROVINCIAS', async () => {
+      socket.on('GET_DROPI_PRODUCTS', async (payload) => {
         try {
-          const chatService = new ChatService();
-          const data = await chatService.getProvincias();
+          const id_configuracion = toInt(payload?.id_configuracion);
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
 
-          // Enviar los datos al cliente que hizo la solicitud
-          socket.emit('DATA_PROVINCIAS_RESPONSE', data);
-        } catch (error) {
-          console.error(
-            'Error al obtener los datos del admin DATA_PROVINCIAS_RESPONSE:',
-            error.message,
-          );
+          const integration = await getActiveIntegration(id_configuracion);
+          if (!integration)
+            throw new AppError('No existe una integración Dropi activa', 404);
 
-          // Enviar mensaje de error al cliente en caso de fallo
-          socket.emit('ERROR_RESPONSE', {
-            message:
-              'Error al obtener los datos del admin. Intenta de nuevo más tarde.',
+          const integrationKey = decryptToken(integration.integration_key_enc);
+          if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+          const body = payload || {};
+
+          const dropiPayload = {
+            pageSize: toInt(body.pageSize) || 50,
+            startData: toInt(body.startData) ?? 0,
+            no_count: body.no_count === false ? false : true,
+            order_by: strOrNull(body.order_by) || 'id',
+            order_type: strOrNull(body.order_type) || 'asc',
+            keywords: String(body.keywords || ''),
+          };
+
+          if (Array.isArray(body.category) && body.category.length)
+            dropiPayload.category = body.category;
+          if (typeof body.favorite === 'boolean')
+            dropiPayload.favorite = body.favorite;
+          if (typeof body.privated_product === 'boolean')
+            dropiPayload.privated_product = body.privated_product;
+
+          const data = await dropiService.listProductsIndex({
+            integrationKey,
+            payload: dropiPayload,
+          });
+
+          socket.emit('DROPI_PRODUCTS_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_PRODUCTS_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error obteniendo productos',
           });
         }
       });
 
-      socket.on('GET_CIUDADES', async (id_provincia) => {
+      socket.on('GET_DROPI_STATES', async (payload) => {
         try {
-          const chatService = new ChatService();
-          const data = await chatService.getCiudades(id_provincia);
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const country_id = toInt(payload?.country_id) ?? 1;
 
-          // Enviar los datos al cliente que hizo la solicitud
-          socket.emit('DATA_CIUDADES_RESPONSE', data);
-        } catch (error) {
-          console.error(
-            'Error al obtener los datos del admin DATA_CIUDADES_RESPONSE:',
-            error.message,
-          );
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+
+          const integration = await getActiveIntegration(id_configuracion);
+          if (!integration)
+            throw new AppError('No existe una integración Dropi activa', 404);
+
+          const integrationKey = decryptToken(integration.integration_key_enc);
+          if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+          const data = await dropiService.listStates({
+            integrationKey,
+            country_id,
+          });
+
+          socket.emit('DROPI_STATES_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_STATES_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cargando departamentos',
+          });
+        }
+      });
+
+      socket.on('GET_DROPI_CITIES', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const department_id = toInt(payload?.department_id);
+          const rate_type = strOrNull(payload?.rate_type);
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!department_id)
+            throw new AppError('department_id es requerido', 400);
+          if (!rate_type) throw new AppError('rate_type es requerido', 400);
+
+          const integration = await getActiveIntegration(id_configuracion);
+          if (!integration)
+            throw new AppError('No existe una integración Dropi activa', 404);
+
+          const integrationKey = decryptToken(integration.integration_key_enc);
+          if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+          const data = await dropiService.listCities({
+            integrationKey,
+            payload: { department_id, rate_type },
+          });
+
+          socket.emit('DROPI_CITIES_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_CITIES_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cargando ciudades',
+          });
         }
       });
 
