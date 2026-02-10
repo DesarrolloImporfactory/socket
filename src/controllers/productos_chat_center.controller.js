@@ -8,6 +8,17 @@ const path = require('path');
 
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 
+const DropiIntegrations = require('../models/dropi_integrations.model');
+const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
+const dropiService = require('../services/dropi.service');
+
+async function getActiveIntegration(id_configuracion) {
+  return DropiIntegrations.findOne({
+    where: { id_configuracion, deleted_at: null, is_active: 1 },
+    order: [['id', 'DESC']],
+  });
+}
+
 exports.listarProductos = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
 
@@ -44,7 +55,7 @@ exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
     {
       replacements: [id_plataforma],
       type: db_2.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!productos || productos.length === 0) {
@@ -162,7 +173,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
           'uploads',
           'productos',
           'imagen',
-          filename
+          filename,
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
@@ -181,7 +192,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
           'uploads',
           'productos',
           'video',
-          filename
+          filename,
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
@@ -199,7 +210,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
           'uploads',
           'productos',
           'imagen',
-          filename
+          filename,
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
@@ -308,7 +319,7 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
             0, // Valor por defecto de eliminado
             null,
           ],
-        }
+        },
       );
 
       resultados.push({ index, status: 'insertado' });
@@ -323,4 +334,39 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
     message: 'Carga masiva finalizada',
     resultados,
   });
+});
+
+// helpers
+const toInt = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const str = (v) => (v == null ? '' : String(v));
+
+exports.listarProductosDropi = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const payload = {
+    pageSize: toInt(req.body?.pageSize) || 50,
+    startData: toInt(req.body?.startData) ?? 0,
+    no_count: req.body?.no_count === false ? false : true,
+    order_by: str(req.body?.order_by || 'id'),
+    order_type: str(req.body?.order_type || 'asc'),
+    keywords: str(req.body?.keywords || ''),
+  };
+
+  const dropiResponse = await dropiService.listProductsIndex({
+    integrationKey,
+    payload,
+  });
+  return res.json({ isSuccess: true, data: dropiResponse });
 });

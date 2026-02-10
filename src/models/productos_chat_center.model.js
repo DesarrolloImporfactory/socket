@@ -57,6 +57,14 @@ const ProductosChatCenter = db.define(
       type: DataTypes.STRING(512),
       allowNull: true,
     },
+    external_source: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+    },
+    external_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
     stock: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
@@ -91,7 +99,7 @@ const ProductosChatCenter = db.define(
   {
     tableName: 'productos_chat_center',
     timestamps: false,
-  }
+  },
 );
 
 module.exports = ProductosChatCenter;

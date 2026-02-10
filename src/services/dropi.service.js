@@ -98,3 +98,33 @@ exports.listCities = async ({ integrationKey, payload }) => {
     throw normalizeDropiError(err);
   }
 };
+
+exports.cotizaEnvioTransportadora = async ({ integrationKey, payload }) => {
+  try {
+    const { data } = await dropiHttp.post(
+      '/orders/cotizaEnvioTransportadoraV2',
+      payload,
+      {
+        headers: dropiHeaders(integrationKey),
+      },
+    );
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
+exports.updateMyOrder = async ({ integrationKey, orderId, payload }) => {
+  try {
+    const { data } = await dropiHttp.put(
+      `/orders/myorders/${orderId}`,
+      payload,
+      {
+        headers: dropiHeaders(integrationKey),
+      },
+    );
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};

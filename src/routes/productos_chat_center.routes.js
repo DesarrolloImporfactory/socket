@@ -15,36 +15,46 @@ router.use(protect);
 router.post(
   '/listarProductos',
   checkPlanActivo,
-  productos_chat_centerController.listarProductos
+  productos_chat_centerController.listarProductos,
 );
 
 router.post(
   '/listarProductosImporsuit',
   checkPlanActivo,
-  productos_chat_centerController.listarProductosImporsuit
+  productos_chat_centerController.listarProductosImporsuit,
 );
 
 router.post(
   '/agregarProducto',
   uploadProductoMedia,
-  productos_chat_centerController.agregarProducto
+  productos_chat_centerController.agregarProducto,
 );
 router.post(
   '/actualizarProducto',
   uploadProductoMedia,
-  productos_chat_centerController.actualizarProducto
+  productos_chat_centerController.actualizarProducto,
 );
 
 router.delete(
   '/eliminarProducto',
-  productos_chat_centerController.eliminarProducto
+  productos_chat_centerController.eliminarProducto,
 );
 
 // Ruta nueva para carga masiva
 router.post(
   '/cargaMasivaProductos',
   uploadExcel,
-  productos_chat_centerController.cargaMasivaProductos
+  productos_chat_centerController.cargaMasivaProductos,
 );
+
+// router.post(
+//   '/listarProductosDropi',
+//   productos_chat_centerController.listarProductosDropi,
+// );
+
+// router.post(
+//   '/importarProductoDropi',
+//   productos_chat_centerController.importarProductoDropi,
+// );
 
 module.exports = router;

@@ -89,9 +89,9 @@ function buildDropiOrderPayload(body = {}) {
     shipping_amount: toInt(body.shipping_amount),
     payment_method_id: toInt(body.payment_method_id),
 
-    supplier_id: toInt(body.supplier_id),
-    shop_id: toInt(body.shop_id),
-    warehouses_selected_id: toInt(body.warehouses_selected_id),
+    // supplier_id: toInt(body.supplier_id),
+    // shop_id: toInt(body.shop_id),
+    // warehouses_selected_id: toInt(body.warehouses_selected_id),
 
     name: strOrNull(body.name),
     surname: strOrNull(body.surname),
@@ -183,9 +183,9 @@ function buildDropiOrderPayload(body = {}) {
 
     notes: body.notes ?? '',
 
-    supplier_id: required.supplier_id,
-    shop_id: required.shop_id,
-    warehouses_selected_id: required.warehouses_selected_id,
+    // supplier_id: required.supplier_id,
+    // shop_id: required.shop_id,
+    // warehouses_selected_id: required.warehouses_selected_id,
 
     name: required.name,
     surname: required.surname,

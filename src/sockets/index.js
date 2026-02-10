@@ -1,5 +1,9 @@
 const ChatService = require('../services/chat.service');
-const { listOrdersForClient } = require('../services/dropiOrders.service');
+const {
+  listOrdersForClient,
+  createOrderForClient,
+  updateOrderForClient,
+} = require('../services/dropiOrders.service');
 const AppError = require('../utils/appError');
 const dropiService = require('../services/dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
@@ -351,6 +355,147 @@ class Sockets {
           socket.emit('DROPI_CITIES_ERROR', {
             isSuccess: false,
             message: e?.message || 'Error cargando ciudades',
+          });
+        }
+      });
+
+      socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const EnvioConCobroRaw = payload?.EnvioConCobro; // bool o string
+
+          const ciudad_destino_cod_dane = strOrNull(
+            payload?.ciudad_destino_cod_dane,
+          );
+          const ciudad_remitente_cod_dane = strOrNull(
+            payload?.ciudad_remitente_cod_dane,
+          );
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!ciudad_destino_cod_dane)
+            throw new AppError('ciudad_destino_cod_dane es requerido', 400);
+          if (!ciudad_remitente_cod_dane)
+            throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
+
+          const integration = await getActiveIntegration(id_configuracion);
+          if (!integration)
+            throw new AppError('No existe una integración Dropi activa', 404);
+
+          const integrationKey = decryptToken(integration.integration_key_enc);
+          if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+          // Dropi lo quiere como string "true"/"false"
+          const EnvioConCobro =
+            String(EnvioConCobroRaw).toLowerCase() === 'true'
+              ? 'true'
+              : 'false';
+
+          const dropiPayload = {
+            EnvioConCobro,
+            ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
+            ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
+          };
+
+          const data = await dropiService.cotizaEnvioTransportadora({
+            integrationKey,
+            payload: dropiPayload,
+          });
+
+          socket.emit('DROPI_COTIZA_ENVIO_V2_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_COTIZA_ENVIO_V2_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cotizando transportadoras',
+          });
+        }
+      });
+
+      socket.on('DROPI_CREATE_ORDER', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+
+          const data = await createOrderForClient({
+            id_configuracion,
+            body: payload,
+          });
+
+          socket.emit('DROPI_CREATE_ORDER_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('DROPI_CREATE_ORDER_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error creando orden en Dropi',
+          });
+        }
+      });
+
+      socket.on('DROPI_UPDATE_ORDER', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const orderId = toInt(payload?.orderId);
+          const body = payload?.body || {};
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!orderId) throw new AppError('orderId es requerido', 400);
+
+          const data = await updateOrderForClient({
+            id_configuracion,
+            orderId,
+            body,
+          });
+
+          socket.emit('DROPI_UPDATE_ORDER_OK', {
+            isSuccess: true,
+            data,
+            orderId,
+          });
+        } catch (e) {
+          socket.emit('DROPI_UPDATE_ORDER_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error actualizando orden',
+          });
+        }
+      });
+
+      // Confirmar / Cancelar (atajo)
+      socket.on('DROPI_SET_ORDER_STATUS', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const orderId = toInt(payload?.orderId);
+          const status = String(payload?.status || '')
+            .trim()
+            .toUpperCase();
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!orderId) throw new AppError('orderId es requerido', 400);
+          if (!status) throw new AppError('status es requerido', 400);
+
+          // ✅ solo los que usted quiere permitir desde UI
+          const allowedStatuses = new Set(['PENDIENTE', 'CANCELADO']);
+          if (!allowedStatuses.has(status)) {
+            throw new AppError(`status no permitido: ${status}`, 400);
+          }
+
+          const data = await updateOrderForClient({
+            id_configuracion,
+            orderId,
+            body: { status },
+          });
+
+          socket.emit('DROPI_SET_ORDER_STATUS_OK', {
+            isSuccess: true,
+            data,
+            orderId,
+            status,
+          });
+        } catch (e) {
+          socket.emit('DROPI_SET_ORDER_STATUS_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cambiando estado de orden',
           });
         }
       });

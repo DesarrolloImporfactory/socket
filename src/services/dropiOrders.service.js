@@ -49,6 +49,18 @@ function cleanParams(obj) {
   return out;
 }
 
+function normalizeDropiResult(raw) {
+  const dropi = raw?.data ?? raw ?? {};
+
+  const status = Number(dropi?.status ?? 200);
+  const ok = dropi?.isSuccess === true && status >= 200 && status < 300;
+
+  const message =
+    dropi?.message || (ok ? 'OK' : 'Error en Dropi') || 'Respuesta sin mensaje';
+
+  return { ok, status, message, data: dropi };
+}
+
 function buildDropiOrdersListParams(body = {}) {
   const result_number = toIntOrDefault(body.result_number, 10);
 
@@ -77,6 +89,149 @@ function buildDropiOrdersListParams(body = {}) {
 
   // ✅ importante: limpiar nulos antes de enviarlos
   return cleanParams(params);
+}
+
+function buildDropiCreateOrderPayload(body = {}) {
+  // ====== básicos ======
+  const type = strOrNull(body.type) || 'FINAL_ORDER';
+  const type_service = strOrNull(body.type_service) || 'normal';
+  const rate_type = strOrNull(body.rate_type) || 'CON RECAUDO';
+
+  const total_order = Number(body.total_order || 0);
+  const shipping_amount = Number(body.shipping_amount || 0);
+  const payment_method_id = toInt(body.payment_method_id) ?? 1;
+
+  const notes = strOrNull(body.notes) || '';
+
+  // const supplier_id = toInt(body.supplier_id);
+  // const shop_id = toInt(body.shop_id);
+  // const warehouses_selected_id = toInt(body.warehouses_selected_id);
+
+  const name = strOrNull(body.name);
+  const surname = strOrNull(body.surname);
+  const phone = digitsOnly(body.phone);
+  const client_email = strOrNull(body.client_email) || '';
+
+  const country = strOrNull(body.country) || 'ECUADOR';
+  const state = strOrNull(body.state);
+  const city = strOrNull(body.city);
+  const dir = strOrNull(body.dir);
+  const zip_code = body.zip_code ?? null;
+  const colonia = strOrNull(body.colonia) || '';
+
+  const dni = strOrNull(body.dni) || '';
+  const dni_type = strOrNull(body.dni_type) || '';
+
+  const insurance = body.insurance ?? null;
+  const shalom_data = body.shalom_data ?? null;
+
+  // ====== distributionCompany (OBLIGATORIO según su Postman) ======
+  const dcId = toInt(
+    body?.distributionCompany?.id ?? body?.distributionCompanyId,
+  );
+  const dcName = strOrNull(
+    body?.distributionCompany?.name ?? body?.distributionCompanyName,
+  );
+
+  if (!dcId || !dcName) {
+    throw new AppError('distributionCompany es requerido: { id, name }', 400);
+  }
+
+  // ====== products (OBLIGATORIO según su Postman) ======
+  const productsRaw = Array.isArray(body.products) ? body.products : [];
+  if (!productsRaw.length) throw new AppError('products es requerido', 400);
+
+  const products = productsRaw.map((p) => {
+    const id = toInt(p.id);
+    const name = strOrNull(p.name) || 'Producto';
+    const type = strOrNull(p.type) || 'SIMPLE';
+
+    const quantity = Math.max(1, toInt(p.quantity) || 1);
+    const price = Number(p.price || 0);
+
+    // En Postman van como string (ej: "10500.00"), pero Dropi suele aceptar string/number.
+    const sale_price = p.sale_price ?? null;
+    const suggested_price = p.suggested_price ?? null;
+
+    // Variaciones
+    const variation_id = p.variation_id ?? null;
+    const variations = Array.isArray(p.variations) ? p.variations : [];
+
+    if (!id) throw new AppError('Producto inválido: id es requerido', 400);
+    if (!price || price <= 0) {
+      // en su ejemplo price = 50000, o sea el valor final a cobrar por ese ítem
+      throw new AppError(
+        `Producto inválido: price debe ser > 0 (id=${id})`,
+        400,
+      );
+    }
+
+    return {
+      id,
+      name,
+      type,
+      variation_id,
+      variations,
+      quantity,
+      price,
+      sale_price,
+      suggested_price,
+    };
+  });
+
+  // if (!supplier_id) throw new AppError('supplier_id es requerido', 400);
+  // if (!shop_id) throw new AppError('shop_id es requerido', 400);
+  // if (!warehouses_selected_id)
+  //   throw new AppError('warehouses_selected_id es requerido', 400);
+
+  if (!name) throw new AppError('name es requerido', 400);
+  if (!surname) throw new AppError('surname es requerido', 400);
+  if (!phone) throw new AppError('phone es requerido', 400);
+
+  if (!state) throw new AppError('state es requerido', 400);
+  if (!city) throw new AppError('city es requerido', 400);
+  if (!dir) throw new AppError('dir es requerido', 400);
+
+  if (!total_order || total_order <= 0)
+    throw new AppError('total_order es requerido y debe ser > 0', 400);
+
+  return {
+    type,
+    type_service,
+    rate_type,
+
+    total_order,
+    shipping_amount,
+    payment_method_id,
+
+    notes,
+
+    // supplier_id,
+    // shop_id,
+    // warehouses_selected_id,
+
+    name,
+    surname,
+    phone,
+    client_email,
+
+    country,
+    state,
+    city,
+    dir,
+    zip_code,
+    colonia,
+
+    dni,
+    dni_type,
+
+    insurance,
+    shalom_data,
+
+    distributionCompany: { id: dcId, name: dcName },
+
+    products,
+  };
 }
 
 // =========================
@@ -233,9 +388,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   });
 }
 
-// =========================
-// ✅ Exportable para Socket y Controller
-// =========================
 async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
   const integration = await getActiveIntegration(id_configuracion);
   if (!integration) {
@@ -285,4 +437,135 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
   return { ...(dropiResponse || {}), objects: enrichedObjects };
 }
 
-module.exports = { listOrdersForClient };
+async function createOrderForClient({ id_configuracion, body = {} }) {
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    throw new AppError(
+      'No existe una integración Dropi activa para esta configuración',
+      404,
+    );
+  }
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey || !String(integrationKey).trim()) {
+    throw new AppError('Dropi key inválida o no disponible', 400);
+  }
+
+  const payload = buildDropiCreateOrderPayload(body);
+
+  const dropiResponse = await dropiService.createOrderMyOrders({
+    integrationKey,
+    payload,
+  });
+
+  const norm = normalizeDropiResult(dropiResponse);
+
+  if (!norm.ok) {
+    // lanza error con el mensaje real de Dropi
+    throw new AppError(norm.message, norm.status || 400);
+  }
+
+  return norm.data; // devuelve solo la data limpia
+}
+
+/**
+ * UPDATE (PUT) order in Dropi
+ * orderId: number
+ * body: allowed fields + status changes
+ */
+async function updateOrderForClient({ id_configuracion, orderId, body }) {
+  const idCfg = toInt(id_configuracion);
+  const oid = toInt(orderId);
+
+  if (!idCfg) throw new AppError('id_configuracion es requerido', 400);
+  if (!oid) throw new AppError('orderId es requerido', 400);
+
+  const integration = await getActiveIntegration(idCfg);
+  if (!integration)
+    throw new AppError('No existe una integración Dropi activa', 404);
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+  //  Whitelist de campos editables (para no mandar basura)
+  const allowed = new Set([
+    'name',
+    'surname',
+    'phone',
+    'client_email',
+    'dir',
+    'country',
+    'state',
+    'city',
+    'colonia',
+    'zip_code',
+    'notes',
+    'dni',
+    'dni_type',
+
+    // en su caso, si Dropi lo permite:
+    'coordinates',
+    'sticker',
+
+    // status (para confirmar/cancelar)
+    'status',
+  ]);
+
+  const payload = {};
+  for (const [k, v] of Object.entries(body || {})) {
+    if (!allowed.has(k)) continue;
+    // normalización simple
+    if (
+      [
+        'name',
+        'surname',
+        'dir',
+        'country',
+        'state',
+        'city',
+        'colonia',
+        'notes',
+        'dni',
+        'dni_type',
+        'client_email',
+      ].includes(k)
+    ) {
+      const s = strOrNull(v);
+      if (s !== null) payload[k] = s;
+      continue;
+    }
+    if (k === 'zip_code') {
+      payload[k] = v === null ? null : String(v);
+      continue;
+    }
+    if (k === 'phone') {
+      // Dropi le está devolviendo sin prefijo, ejemplo "962803007"
+      // acá solo limpiamos caracteres
+      payload[k] = String(v || '').replace(/\D/g, '');
+      continue;
+    }
+    if (k === 'status') {
+      payload[k] = String(v || '')
+        .trim()
+        .toUpperCase();
+      continue;
+    }
+    payload[k] = v;
+  }
+
+  if (!Object.keys(payload).length) {
+    throw new AppError('No hay campos válidos para actualizar', 400);
+  }
+
+  return dropiService.updateMyOrder({
+    integrationKey,
+    orderId: oid,
+    payload,
+  });
+}
+
+module.exports = {
+  listOrdersForClient,
+  createOrderForClient,
+  updateOrderForClient,
+};
