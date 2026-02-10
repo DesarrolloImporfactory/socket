@@ -35,6 +35,8 @@ const userRouter = require('./routes/user.routes');
 
 const webhookRouter = require('./routes/webhook.routes');
 
+const dropiWebhookRouter = require('./routes/dropi_webhook.routes');
+
 const chat_serviceRouter = require('./routes/chat_service.routes');
 
 const planesRouter = require('./routes/planes.routes');
@@ -295,6 +297,7 @@ app.use('/api/v1/stripepro', stripeproRouter);
 app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
+app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 
 app.all('*', (req, res, next) => {
   return next(
