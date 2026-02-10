@@ -3,6 +3,8 @@ const path = require('path');
 const { db } = require('../../database/config');
 const ClientesChatCenter = require('../../models/clientes_chat_center.model');
 
+const presenceStore = require('../../sockets/presence/presenceStore');
+
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 
 async function ensureDir(dir) {
@@ -153,28 +155,21 @@ async function crearClienteConRoundRobinUnDepto({
       },
     );
 
+    
+
     let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
 
-    // Fallback: si no hay agentes, usar administrador
-    if (!lista.length) {
-      const admin = await db.query(
-        `
-        SELECT id_sub_usuario
-        FROM sub_usuarios_chat_center
-        WHERE id_usuario = ?
-          AND rol = 'administrador'
-        ORDER BY id_sub_usuario ASC
-        LIMIT 1
-        `,
-        { replacements: [id_usuario_dueno], type: db.QueryTypes.SELECT },
-      );
+    console.log("lista encargados sin filtrar: "+ JSON.stringify(lista));
 
-      const adminId = admin?.[0]?.id_sub_usuario
-        ? Number(admin[0].id_sub_usuario)
-        : null;
+    // ✅ Filtrar SOLO conectados
+    const listaOnline = lista.filter((id) => {
+      const p = presenceStore.getPresence(id); // { online, socket_count, ... }
+      return p?.online === true; // (si quiere más estricto, también p.socket_count > 0)
+    });
 
-      lista = adminId ? [adminId] : [];
-    }
+    lista = listaOnline;
+
+    console.log("lista encargados con filtrar: "+ JSON.stringify(lista));
 
     // Si no hay nadie, crear sin encargado
     if (!lista.length) {
