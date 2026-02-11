@@ -5,8 +5,10 @@ const { db, db_2 } = require('../database/config');
 
 const fs = require('fs');
 const path = require('path');
+const { htmlToText } = require('html-to-text');
 
 const ProductosChatCenter = require('../models/productos_chat_center.model');
+const CategoriasChatCenter = require('../models/categorias_chat_center.model');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
@@ -369,4 +371,193 @@ exports.listarProductosDropi = catchAsync(async (req, res, next) => {
     payload,
   });
   return res.json({ isSuccess: true, data: dropiResponse });
+});
+
+const DROPI_SOURCE = 'DROPI';
+
+const buildDropiImageUrl = (galleryItem) => {
+  if (!galleryItem) return null;
+
+  // Si Dropi trae url absoluto
+  if (galleryItem.url) return galleryItem.url;
+
+  // Si trae urlS3 (ruta relativa)
+  if (galleryItem.urlS3) {
+    const base = process.env.DROPI_MEDIA_BASE_URL || '';
+    if (base)
+      return `${base.replace(/\/$/, '')}/${galleryItem.urlS3.replace(/^\//, '')}`;
+    // fallback: guardar urlS3 tal cual
+    return galleryItem.urlS3;
+  }
+
+  return null;
+};
+
+const sanitizeText = (html) => {
+  if (!html) return '';
+  const text = htmlToText(String(html), {
+    wordwrap: false,
+    // evita basura de links e imágenes
+    selectors: [
+      { selector: 'a', options: { hideLinkHrefIfSameAsText: true } },
+      { selector: 'img', format: 'skip' },
+    ],
+  });
+
+  // normalizar espacios/saltos
+  return text
+    .replace(/\u00A0/g, ' ') // nbsp
+    .replace(/[ \t]+\n/g, '\n') // espacios antes de salto
+    .replace(/\n{3,}/g, '\n\n') // demasiados saltos
+    .trim();
+};
+
+async function getOrCreateCategoria({
+  id_configuracion,
+  nombre,
+  descripcion = null,
+}) {
+  if (!nombre) return null;
+
+  // 1) Buscar si existe
+  let cat = await CategoriasChatCenter.findOne({
+    where: { id_configuracion, nombre: String(nombre).trim() },
+  });
+
+  // 2) Crear si no existe
+  if (!cat) {
+    cat = await CategoriasChatCenter.create({
+      id_configuracion,
+      nombre: String(nombre).trim(),
+      descripcion: descripcion || null,
+    });
+  }
+
+  return cat;
+}
+
+exports.importarProductoDropi = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const dropi_product_id = toInt(req.body?.dropi_product_id);
+
+  //por defecto = suggested_price
+  const precio_override =
+    req.body?.precio != null ? Number(req.body.precio) : null;
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!dropi_product_id)
+    return next(new AppError('dropi_product_id es requerido', 400));
+
+  // 1) evitar duplicado
+  const existente = await ProductosChatCenter.findOne({
+    where: {
+      id_configuracion,
+      external_source: DROPI_SOURCE,
+      external_id: dropi_product_id,
+      eliminado: 0,
+    },
+  });
+
+  if (existente) {
+    return res.status(200).json({
+      status: 'success',
+      alreadyImported: true,
+      data: existente,
+      message: 'Este producto de Dropi ya fue importado anteriormente.',
+    });
+  }
+
+  // 2) obtener integración Dropi
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  // 3) traer detalle del producto (FUENTE OFICIAL)
+  const dropiDetail = await dropiService.getProductDetail({
+    integrationKey,
+    productId: dropi_product_id,
+  });
+
+  const prod = dropiDetail?.objects;
+  if (!prod)
+    return next(
+      new AppError('No se encontró el detalle del producto en Dropi', 404),
+    );
+
+  // 4) imágenes: en detalle viene como photos (según su ejemplo), pero en otros puede venir gallery.
+  const photos = Array.isArray(prod.photos) ? prod.photos : [];
+  const gallery = Array.isArray(prod.gallery) ? prod.gallery : [];
+  const imgs = photos.length ? photos : gallery;
+
+  const mainImg = imgs.find((g) => g.main) || imgs[0] || null;
+
+  const imagen_url = buildDropiImageUrl(mainImg);
+
+  // 5) precio: SIEMPRE suggested_price (salvo override)
+  const precio_sugerido = Number(prod.suggested_price || 0);
+  const precio_final = Number.isFinite(precio_override)
+    ? precio_override
+    : precio_sugerido;
+
+  // 6) descripción: usar la del detalle
+  const descripcion_final = sanitizeText(prod.description);
+
+  // 7) categorías: crear si no existen y asignar una principal al producto
+  const categoriasDropi = Array.isArray(prod.categories) ? prod.categories : [];
+
+  let id_categoria_asignada = null;
+
+  if (categoriasDropi.length) {
+    // Si Dropi manda varias, tomamos la primera como principal.
+    // (Luego usted puede extender su tabla productos para guardar múltiples si lo desea)
+    const principal = categoriasDropi[0];
+    const catCreada = await getOrCreateCategoria({
+      id_configuracion,
+      nombre: principal?.name,
+      descripcion: null,
+    });
+    id_categoria_asignada = catCreada?.id || null;
+
+    // Opcional: crear también las demás categorías aunque no se asignen
+    for (let i = 1; i < categoriasDropi.length; i++) {
+      await getOrCreateCategoria({
+        id_configuracion,
+        nombre: categoriasDropi[i]?.name,
+        descripcion: null,
+      });
+    }
+  }
+
+  // 8) crear producto en su tabla
+  const nuevo = await ProductosChatCenter.create({
+    id_configuracion,
+    nombre: prod.name || 'Producto Dropi',
+    descripcion: descripcion_final,
+    tipo: 'producto',
+    precio: precio_final,
+    duracion: 0,
+    id_categoria: id_categoria_asignada,
+    imagen_url,
+    video_url: null,
+    nombre_upsell: null,
+    descripcion_upsell: null,
+    precio_upsell: null,
+    imagen_upsell_url: null,
+    combos_producto: null,
+    stock: 0,
+
+    external_source: DROPI_SOURCE,
+    external_id: dropi_product_id,
+  });
+
+  return res.status(201).json({
+    status: 'success',
+    data: nuevo,
+    message:
+      'Producto importado desde Dropi correctamente (detalle + categorías sincronizadas).',
+  });
 });

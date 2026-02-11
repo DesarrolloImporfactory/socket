@@ -128,3 +128,14 @@ exports.updateMyOrder = async ({ integrationKey, orderId, payload }) => {
     throw normalizeDropiError(err);
   }
 };
+
+exports.getProductDetail = async ({ integrationKey, productId }) => {
+  try {
+    const { data } = await dropiHttp.get(`/products/v2/${productId}`, {
+      headers: dropiHeaders(integrationKey),
+    });
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};

@@ -47,14 +47,14 @@ router.post(
   productos_chat_centerController.cargaMasivaProductos,
 );
 
-// router.post(
-//   '/listarProductosDropi',
-//   productos_chat_centerController.listarProductosDropi,
-// );
+router.post(
+  '/listarProductosDropi',
+  productos_chat_centerController.listarProductosDropi,
+);
 
-// router.post(
-//   '/importarProductoDropi',
-//   productos_chat_centerController.importarProductoDropi,
-// );
+router.post(
+  '/importarProductoDropi',
+  productos_chat_centerController.importarProductoDropi,
+);
 
 module.exports = router;
