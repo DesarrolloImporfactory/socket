@@ -49,7 +49,8 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
     departamentos.map(async (dep) => {
       const asignaciones = await Sub_usuarios_departamento.findAll({
         where: { id_departamento: dep.id_departamento },
-        attributes: ['id_sub_usuario'],
+        attributes: ['id_sub_usuario', 'asignacion_auto'],
+        raw: true,
       });
 
       const depJson = dep.toJSON();
@@ -58,7 +59,10 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
         ...depJson,
         nombre_configuracion:
           depJson.configuracion?.nombre_configuracion ?? null,
-        usuarios_asignados: asignaciones.map((a) => a.id_sub_usuario),
+        usuarios_asignados: asignaciones.map((a) => ({
+          id_sub_usuario: Number(a.id_sub_usuario),
+          asignacion_auto: Number(a.asignacion_auto) ? 1 : 0,
+        })),
         // opcional: si no quieres devolver el objeto configuracion anidado:
         // configuracion: undefined,
       };
@@ -129,13 +133,12 @@ exports.agregarDepartamento = catchAsync(async (req, res, next) => {
 
   // 2) Insertar asignaciones (si llegan)
   if (Array.isArray(usuarios_asignados) && usuarios_asignados.length > 0) {
-    const filas = usuarios_asignados.map((id_sub_usuario) => ({
+    const filas = usuarios_asignados.map((u) => ({
       id_departamento,
-      id_sub_usuario,
+      id_sub_usuario: Number(u.id_sub_usuario),
+      asignacion_auto: Number(u.asignacion_auto) ? 1 : 0,
     }));
 
-    // Si tienes un índice único (id_departamento, id_sub_usuario),
-    // puedes usar ignoreDuplicates para evitar error si se repite algún ID:
     await Sub_usuarios_departamento.bulkCreate(filas, {
       ignoreDuplicates: true,
     });
@@ -158,8 +161,15 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     color,
     mensaje_saludo,
     id_configuracion,
-    usuarios_asignados = [],
+    usuarios_asignados = [], // [{ id_sub_usuario, asignacion_auto }]
   } = req.body;
+
+  if (!id_departamento) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Falta id_departamento',
+    });
+  }
 
   if (!nombre_departamento || !color) {
     return res.status(400).json({
@@ -176,13 +186,22 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     });
   }
 
-  const incoming = Array.from(
-    new Set(
-      (Array.isArray(usuarios_asignados) ? usuarios_asignados : []).map(Number),
-    ),
-  );
+  // Normaliza incoming a Map<id_sub_usuario, asignacion_auto(0|1)>
+  const incomingArr = Array.isArray(usuarios_asignados)
+    ? usuarios_asignados
+    : [];
+  const incomingMap = new Map();
 
-  // ✅ instancia tomada del modelo
+  for (const u of incomingArr) {
+    const id = Number(u?.id_sub_usuario);
+    if (!id) continue;
+
+    const auto = Number(u?.asignacion_auto) ? 1 : 0;
+    incomingMap.set(id, auto); // si viene repetido, el último gana
+  }
+
+  const incomingIds = [...incomingMap.keys()];
+
   const t = await DepartamentosChatCenter.sequelize.transaction();
   try {
     // 1) Actualizar datos del departamento
@@ -191,18 +210,27 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
       { transaction: t },
     );
 
-    // 2) Obtener asignaciones actuales
+    // 2) Obtener asignaciones actuales (incluye asignacion_auto)
     const actuales = await Sub_usuarios_departamento.findAll({
       where: { id_departamento },
-      attributes: ['id_sub_usuario'],
+      attributes: ['id_sub_usuario', 'asignacion_auto'],
       raw: true,
       transaction: t,
     });
-    const actualesIds = new Set(actuales.map((a) => Number(a.id_sub_usuario)));
+
+    const actualesMap = new Map(
+      actuales.map((a) => [
+        Number(a.id_sub_usuario),
+        Number(a.asignacion_auto) ? 1 : 0,
+      ]),
+    );
+
+    const actualesIdsSet = new Set([...actualesMap.keys()]);
 
     // 3) Diff
-    const toAdd = incoming.filter((id) => !actualesIds.has(id));
-    const toRemove = [...actualesIds].filter((id) => !incoming.includes(id));
+    const toAdd = incomingIds.filter((id) => !actualesIdsSet.has(id));
+    const toRemove = [...actualesIdsSet].filter((id) => !incomingMap.has(id));
+    const toMaybeUpdate = incomingIds.filter((id) => actualesIdsSet.has(id));
 
     // 4) Eliminar los no seleccionados
     if (toRemove.length > 0) {
@@ -212,23 +240,51 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
       });
     }
 
-    // 5) Insertar nuevos
+    // 5) Insertar nuevos (con asignacion_auto)
     if (toAdd.length > 0) {
       const filas = toAdd.map((id_sub_usuario) => ({
         id_departamento,
         id_sub_usuario,
+        asignacion_auto: incomingMap.get(id_sub_usuario) ?? 0,
       }));
+
       await Sub_usuarios_departamento.bulkCreate(filas, {
-        ignoreDuplicates: true, // requiere índice único compuesto recomendado
+        ignoreDuplicates: true, // recomendado: índice único (id_departamento, id_sub_usuario)
         transaction: t,
       });
     }
 
+    // 6) Actualizar asignacion_auto si cambió (solo para los que ya existen)
+    // Nota: esto hace updates individuales; si quieres optimizar, se puede hacer con bulk upsert.
+    for (const id_sub_usuario of toMaybeUpdate) {
+      const nuevoAuto = incomingMap.get(id_sub_usuario) ?? 0;
+      const actualAuto = actualesMap.get(id_sub_usuario) ?? 0;
+
+      if (nuevoAuto !== actualAuto) {
+        await Sub_usuarios_departamento.update(
+          { asignacion_auto: nuevoAuto },
+          {
+            where: { id_departamento, id_sub_usuario },
+            transaction: t,
+          },
+        );
+      }
+    }
+
     await t.commit();
+
+    // 7) Respuesta con el formato nuevo
+    const usuariosAsignadosResp = incomingIds.map((id) => ({
+      id_sub_usuario: id,
+      asignacion_auto: incomingMap.get(id) ?? 0,
+    }));
 
     return res.status(200).json({
       status: 'success',
-      data: { ...departamento.toJSON(), usuarios_asignados: incoming },
+      data: {
+        ...departamento.toJSON(),
+        usuarios_asignados: usuariosAsignadosResp,
+      },
     });
   } catch (err) {
     await t.rollback();
@@ -628,11 +684,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 });
 
 exports.asignar_encargado = catchAsync(async (req, res, next) => {
-  const {
-    id_encargado,
-    id_cliente_chat_center,
-    id_configuracion,
-  } = req.body;
+  const { id_encargado, id_cliente_chat_center, id_configuracion } = req.body;
 
   if (!id_encargado) {
     return res.status(400).json({

@@ -18,6 +18,11 @@ const Sub_usuarios_departamento = db.define(
       type: DataTypes.BIGINT,
       allowNull: false,
     },
+    asignacion_auto: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0
+    },
   },
   {
     sequelize: db,

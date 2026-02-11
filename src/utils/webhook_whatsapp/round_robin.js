@@ -146,7 +146,7 @@ async function crearClienteConRoundRobinUnDepto({
       `
       SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc 
       INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario 
-      WHERE suc.id_usuario = ? AND sud.id_departamento = ? 
+      WHERE suc.id_usuario = ? AND sud.id_departamento = ? AND sud.asignacion_auto = 1
       AND suc.rol NOT IN ('administrador', 'super_administrador') ORDER BY suc.id_sub_usuario ASC;
       `,
       {
