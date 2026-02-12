@@ -96,7 +96,7 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
   const { id_sub_usuario, usuario, password, email, nombre_encargado, rol } =
     req.body;
 
-  // Validar campos obligatorios
+  // Validar campos obligatorios (password NO es obligatorio)
   if (!id_sub_usuario || !usuario || !email || !nombre_encargado || !rol) {
     return res.status(400).json({
       status: 'fail',
@@ -108,9 +108,7 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
   const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
     where: {
       [Op.or]: [{ usuario }, { email }],
-      id_sub_usuario: {
-        [Op.ne]: id_sub_usuario, // Excluir el mismo subusuario
-      },
+      id_sub_usuario: { [Op.ne]: id_sub_usuario },
     },
   });
 
@@ -121,17 +119,23 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Actualizar subusuario
-  const nuevoSubUsuario = await actualizarSubUsuario({
+  // ✅ Armar payload de actualización
+  const dataToUpdate = {
     id_sub_usuario,
     usuario,
-    password,
     email,
     nombre_encargado,
     rol,
-  });
+  };
 
-  res.status(201).json({
+  // ✅ Solo incluir password si viene con contenido
+  if (typeof password === 'string' && password.trim().length > 0) {
+    dataToUpdate.password = password.trim();
+  }
+
+  const nuevoSubUsuario = await actualizarSubUsuario(dataToUpdate);
+
+  return res.status(200).json({
     status: 'success',
     message: 'Cuenta y usuario actualizados correctamente 🎉',
     user: nuevoSubUsuario,
