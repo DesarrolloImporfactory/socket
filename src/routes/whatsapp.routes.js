@@ -9,10 +9,225 @@ const FormData = require('form-data');
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 110 * 1024 * 1024 }, // 110MB para margen (doc 100MB)
 });
 
 const FB_APP_ID = process.env.FB_APP_ID;
+
+//Helper Upload Media to Meta!
+
+function bytesMB(n) {
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function inferHeaderFormatFromMime(mime = '') {
+  const m = String(mime).toLowerCase();
+  if (m.startsWith('image/')) return 'IMAGE';
+  if (m.startsWith('video/')) return 'VIDEO';
+  if (m.startsWith('audio/')) return 'AUDIO';
+  return 'DOCUMENT';
+}
+
+function metaLimitsByFormat(format) {
+  const KB = 1024;
+  const MB = 1024 * 1024;
+
+  const f = String(format || '').toUpperCase();
+
+  // Según su documentación
+  if (f === 'IMAGE')
+    return { max: 5 * MB, allowed: ['image/jpeg', 'image/png'] };
+
+  if (f === 'VIDEO')
+    return { max: 16 * MB, allowed: ['video/mp4', 'video/3gpp'] };
+
+  if (f === 'AUDIO')
+    return {
+      max: 16 * MB,
+      allowed: [
+        'audio/aac',
+        'audio/amr',
+        'audio/mpeg',
+        'audio/mp4',
+        'audio/ogg', // (opus mono) - esto se valida mejor por conversión, no por mime
+      ],
+    };
+
+  if (f === 'STICKER')
+    return {
+      max: 500 * KB, // animado 500KB (estático 100KB)
+      allowed: ['image/webp'],
+    };
+
+  // DOCUMENT
+  return {
+    max: 100 * MB,
+    allowed: [
+      'text/plain',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/pdf',
+      // si quiere permitir "application/octet-stream" cuando el navegador no manda bien:
+      // "application/octet-stream",
+    ],
+  };
+}
+
+function validateMetaMediaOrThrow({ file, format }) {
+  if (!file?.buffer?.length) {
+    const err = new Error('Archivo vacío o inválido.');
+    err.statusCode = 400;
+    err.code = 'EMPTY_FILE';
+    throw err;
+  }
+
+  const f = String(format || '').toUpperCase();
+  const { max, allowed } = metaLimitsByFormat(f);
+
+  // tamaño
+  if (file.buffer.length > max) {
+    const err = new Error(
+      `Meta rechazará el archivo: supera el límite para ${f}. ` +
+        `Tamaño: ${bytesMB(file.buffer.length)}. Máximo: ${bytesMB(max)}.`,
+    );
+    err.statusCode = 400;
+    err.code = 'META_SIZE_LIMIT';
+    throw err;
+  }
+
+  // MIME (si su front manda bien mimetype). Si viene raro, puede flexibilizar.
+  const mime = String(file.mimetype || '').toLowerCase();
+  const allowedLower = allowed.map((x) => x.toLowerCase());
+
+  if (mime && allowedLower.length && !allowedLower.includes(mime)) {
+    const err = new Error(
+      `Tipo MIME no permitido para ${f}. Recibido: "${file.mimetype}". Permitidos: ${allowed.join(', ')}`,
+    );
+    err.statusCode = 400;
+    err.code = 'META_MIME_NOT_ALLOWED';
+    throw err;
+  }
+}
+
+async function uploadToUploader({
+  buffer,
+  originalname,
+  mimetype,
+  folder = 'media',
+}) {
+  const form = new FormData();
+
+  const safeName = (originalname || `file-${Date.now()}`).replace(
+    /[^\w.\-() ]+/g,
+    '_',
+  );
+
+  form.append('file', buffer, {
+    filename: `${folder}/${Date.now()}-${safeName}`,
+    contentType: mimetype || 'application/octet-stream',
+  });
+
+  const uploaderResp = await axios.post(
+    'https://uploader.imporfactory.app/api/files/upload',
+    form,
+    { headers: form.getHeaders(), timeout: 30000, validateStatus: () => true },
+  );
+
+  if (uploaderResp.status < 200 || uploaderResp.status >= 300) {
+    const err = new Error(`Uploader HTTP ${uploaderResp.status}`);
+    err.statusCode = 502;
+    err.raw = uploaderResp.data;
+    throw err;
+  }
+
+  const json = uploaderResp.data;
+
+  if (!json?.success || !json?.data?.url) {
+    const err = new Error(json?.message || 'Uploader no devolvió URL');
+    err.statusCode = 502;
+    err.raw = json;
+    throw err;
+  }
+
+  return { fileUrl: json.data.url, data: json.data };
+}
+
+async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
+  const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
+
+  const mimeType = file.mimetype || 'application/octet-stream';
+  const fileName = file.originalname || `file-${Date.now()}`;
+
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mimeType);
+  form.append('file', file.buffer, {
+    filename: fileName,
+    contentType: mimeType,
+  });
+
+  const mediaResp = await axios.post(mediaUrl, form, {
+    headers: {
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
+      ...form.getHeaders(),
+    },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (
+    mediaResp.status < 200 ||
+    mediaResp.status >= 300 ||
+    mediaResp.data?.error
+  ) {
+    return {
+      ok: false,
+      meta_status: mediaResp.status,
+      error: mediaResp.data?.error || mediaResp.data,
+    };
+  }
+
+  const mediaId = mediaResp.data?.id;
+  if (!mediaId) {
+    return {
+      ok: false,
+      meta_status: mediaResp.status,
+      error: 'Meta no devolvió media_id',
+      raw: mediaResp.data,
+    };
+  }
+
+  return { ok: true, mediaId, raw: mediaResp.data };
+}
+
+//Inyeccion de MEDIAID en header del template.
+function injectHeaderMediaId(components = [], headerFormat, mediaId) {
+  const format = String(headerFormat || '').toUpperCase();
+
+  const typeLower =
+    format === 'IMAGE' ? 'image' : format === 'VIDEO' ? 'video' : 'document'; // DOCUMENT
+
+  const idx = components.findIndex((c) => c?.type === 'header');
+
+  const newHeader = {
+    type: 'header',
+    parameters: [
+      {
+        type: typeLower,
+        [typeLower]: { id: String(mediaId) }, // ✅ AQUÍ LA CLAVE
+      },
+    ],
+  };
+
+  if (idx >= 0) components[idx] = newHeader;
+  else components.unshift(newHeader);
+
+  return components;
+}
 
 /**
  * POST /api/v1/whatsapp_managment/ObtenerNumeros
@@ -1257,171 +1472,252 @@ function onlyDigits(s = '') {
   return String(s).replace(/\D/g, '');
 }
 
-router.post('/enviar_template_masivo', async (req, res) => {
-  try {
-    // Soporte de payload anidado:
-    // frontend manda: { id_configuracion, body: { to, template: { name, language, components }, ... }, ... }
-    const graphBody =
-      req.body?.body && typeof req.body.body === 'object'
-        ? req.body.body
-        : null;
+router.post(
+  '/enviar_template_masivo',
+  upload.single('header_file'),
+  async (req, res) => {
+    try {
+      // 1) id_configuracion
+      const id_configuracion = req.body?.id_configuracion;
 
-    // 1) id_configuracion (raíz)
-    const id_configuracion = req.body?.id_configuracion;
+      // 2) graphBody puede venir:
+      // - JSON normal: req.body.body (cuando no hay archivo)
+      // - multipart: req.body.body_json (string)
+      let graphBody = null;
 
-    // 2) to: raíz o body.to
-    const to = req.body?.to ?? graphBody?.to;
-
-    // 3) template_name: raíz o body.template.name
-    const template_name = req.body?.template_name ?? graphBody?.template?.name;
-
-    // 4) language_code: raíz o body.template.language.code
-    const language_code =
-      req.body?.language_code ?? graphBody?.template?.language?.code ?? 'es';
-
-    // 5) components: si viene completo desde el front, úselo
-    // - raíz: components
-    // - body: template.components
-    const components = req.body?.components ?? graphBody?.template?.components;
-
-    // 6) parameters: raíz o si el front manda parámetros sueltos
-    const parameters = req.body?.parameters ?? [];
-
-    // Validación
-    const faltan = [];
-    if (!id_configuracion) faltan.push('id_configuracion');
-    if (!to) faltan.push('to');
-    if (!template_name) faltan.push('template_name');
-
-    if (faltan.length) {
-      return res.status(400).json({
-        success: false,
-        message: `Faltan campos: ${faltan.join(', ')}`,
-      });
-    }
-
-    const cfg = await getConfigFromDB(Number(id_configuracion));
-    if (!cfg) {
-      return res.status(200).json({
-        success: false,
-        message: 'Configuración inválida o sin token/phone_number_id',
-      });
-    }
-
-    const toClean = onlyDigits(to);
-    if (!toClean || toClean.length < 8) {
-      return res.status(200).json({
-        success: false,
-        message: 'Número destino inválido',
-      });
-    }
-
-    // Si el front ya mandó el body completo listo para Graph, úselo
-    // pero forzando:
-    // - to limpio
-    // - messaging_product / type correctos
-    // - template.name correcto
-    // - template.language.code correcto
-    let payload;
-
-    if (graphBody) {
-      payload = {
-        messaging_product: graphBody.messaging_product || 'whatsapp',
-        to: toClean,
-        type: graphBody.type || 'template',
-        template: {
-          ...(graphBody.template || {}),
-          name: template_name,
-          language: { code: language_code || 'es' },
-        },
-      };
-
-      // Si no vienen components, construya uno estándar con parameters
-      if (
-        !Array.isArray(payload.template.components) ||
-        !payload.template.components.length
-      ) {
-        payload.template.components = [
-          {
-            type: 'body',
-            parameters: (Array.isArray(parameters) ? parameters : []).map(
-              (t) => ({
-                type: 'text',
-                text: String(t ?? ''),
-              }),
-            ),
-          },
-        ];
+      if (req.body?.body && typeof req.body.body === 'object') {
+        graphBody = req.body.body;
+      } else if (req.body?.body_json) {
+        try {
+          graphBody = JSON.parse(req.body.body_json);
+        } catch (e) {
+          return res.status(400).json({
+            success: false,
+            message: 'body_json inválido (JSON mal formado)',
+          });
+        }
       }
-    } else {
-      // Construcción clásica (su lógica original)
-      const template = {
-        name: template_name,
-        language: { code: language_code || 'es' },
-      };
 
-      if (Array.isArray(components) && components.length) {
-        template.components = components;
+      // Fallbacks
+      const to = req.body?.to ?? graphBody?.to;
+      const template_name =
+        req.body?.template_name ?? graphBody?.template?.name;
+      const language_code =
+        req.body?.language_code ?? graphBody?.template?.language?.code ?? 'es';
+      const componentsFromReq =
+        req.body?.components ?? graphBody?.template?.components;
+
+      const faltan = [];
+      if (!id_configuracion) faltan.push('id_configuracion');
+      if (!to) faltan.push('to');
+      if (!template_name) faltan.push('template_name');
+
+      if (faltan.length) {
+        return res.status(400).json({
+          success: false,
+          message: `Faltan campos: ${faltan.join(', ')}`,
+        });
+      }
+
+      const cfg = await getConfigFromDB(Number(id_configuracion));
+      if (!cfg) {
+        return res.status(200).json({
+          success: false,
+          message: 'Configuración inválida o sin token/phone_number_id',
+        });
+      }
+
+      const toClean = onlyDigits(to);
+      if (!toClean || toClean.length < 8) {
+        return res
+          .status(200)
+          .json({ success: false, message: 'Número destino inválido' });
+      }
+
+      // ===== construir payload base =====
+      let payload;
+
+      if (graphBody) {
+        payload = {
+          messaging_product: graphBody.messaging_product || 'whatsapp',
+          to: toClean,
+          type: graphBody.type || 'template',
+          template: {
+            ...(graphBody.template || {}),
+            name: template_name,
+            language: { code: language_code || 'es' },
+          },
+        };
+
+        // si no hay components, deje el body estándar
+        if (
+          !Array.isArray(payload.template.components) ||
+          !payload.template.components.length
+        ) {
+          payload.template.components = [{ type: 'body', parameters: [] }];
+        }
       } else {
-        template.components = [
-          {
-            type: 'body',
-            parameters: (Array.isArray(parameters) ? parameters : []).map(
-              (t) => ({
-                type: 'text',
-                text: String(t ?? ''),
-              }),
-            ),
+        // Modo clásico
+        payload = {
+          messaging_product: 'whatsapp',
+          to: toClean,
+          type: 'template',
+          template: {
+            name: template_name,
+            language: { code: language_code || 'es' },
+            components: Array.isArray(componentsFromReq)
+              ? componentsFromReq
+              : [{ type: 'body', parameters: [] }],
           },
-        ];
+        };
       }
 
-      payload = {
-        messaging_product: 'whatsapp',
-        to: toClean,
-        type: 'template',
-        template,
-      };
-    }
+      // ===== 2) Si vino archivo, validar + subir a S3 (uploader) + subir a Meta + inject header =====
+      // Del front viene header_format = IMAGE|VIDEO|DOCUMENT (cuando headerIsMedia)
+      let header_format = req.body?.header_format ?? null;
 
-    const ax = axios.create({
-      headers: {
-        Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-      validateStatus: () => true,
-    });
+      let fileUrl = null; // URL S3/histórico (vía uploader)
+      let meta_media_id = null; // mediaId devuelto por Meta
 
-    const url = `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`;
-    const resp = await ax.post(url, payload);
+      if (req.file) {
+        // fallback por si el front no manda header_format (aunque usted ya lo manda)
+        if (!header_format)
+          header_format = inferHeaderFormatFromMime(req.file.mimetype);
 
-    if (resp.status < 200 || resp.status >= 300) {
-      return res.status(200).json({
+        const fmt = String(header_format || '').toUpperCase();
+
+        // seguridad: este endpoint solo inyecta media en HEADER para IMAGE/VIDEO/DOCUMENT
+        if (!['IMAGE', 'VIDEO', 'DOCUMENT'].includes(fmt)) {
+          return res.status(400).json({
+            success: false,
+            message:
+              'Vino header_file pero header_format no es válido para HEADER (IMAGE|VIDEO|DOCUMENT)',
+          });
+        }
+
+        // 2.1) Validar contra límites oficiales (usa su helper)
+        try {
+          validateMetaMediaOrThrow({ file: req.file, format: fmt });
+        } catch (err) {
+          return res.status(err.statusCode || 400).json({
+            success: false,
+            step: 'validate_media',
+            code: err.code || null,
+            message: err.message || 'Archivo inválido',
+          });
+        }
+
+        // 2.2) Subir a S3 (histórico) usando su uploader (usa su helper)
+        // folder sugerido según tipo
+        const folder =
+          fmt === 'IMAGE'
+            ? 'whatsapp/templates/header/images'
+            : fmt === 'VIDEO'
+              ? 'whatsapp/templates/header/videos'
+              : 'whatsapp/templates/header/documents';
+
+        try {
+          const upHist = await uploadToUploader({
+            buffer: req.file.buffer,
+            originalname: req.file.originalname,
+            mimetype: req.file.mimetype,
+            folder,
+          });
+
+          fileUrl = upHist?.fileUrl || null;
+        } catch (err) {
+          return res.status(err.statusCode || 502).json({
+            success: false,
+            step: 'upload_history_s3',
+            message: err.message || 'No se pudo subir a histórico (S3)',
+            raw: err.raw || null,
+          });
+        }
+
+        // 2.3) Subir a Meta para obtener media_id (usa su helper)
+        const upMeta = await uploadMediaToMeta(
+          {
+            ACCESS_TOKEN: cfg.ACCESS_TOKEN,
+            PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
+          },
+          req.file,
+        );
+
+        if (!upMeta.ok) {
+          return res.status(200).json({
+            success: false,
+            step: 'upload_media_meta',
+            meta_status: upMeta.meta_status,
+            error: upMeta.error,
+            fileUrl, // histórico ya quedó
+          });
+        }
+
+        meta_media_id = upMeta.mediaId;
+
+        // 2.4) Inyectar mediaId en HEADER del template (usa SU injectHeaderMediaId, no el de link)
+        const comps = Array.isArray(payload.template.components)
+          ? payload.template.components
+          : [];
+        payload.template.components = injectHeaderMediaId(
+          comps,
+          fmt,
+          meta_media_id,
+        );
+      }
+
+      // ===== 3) Enviar template a Meta =====
+      const ax = axios.create({
+        headers: {
+          Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+        validateStatus: () => true,
+      });
+
+      const url = `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`;
+      const resp = await ax.post(url, payload);
+
+      if (resp.status < 200 || resp.status >= 300) {
+        return res.status(200).json({
+          success: false,
+          meta_status: resp.status,
+          error: resp.data,
+          message: 'Meta rechazó el envío',
+          sent_payload: payload,
+          fileUrl,
+          meta_media_id,
+        });
+      }
+
+      const wamid = resp.data?.messages?.[0]?.id || null;
+
+      return res.json({
+        success: true,
+        wamid,
+        data: resp.data,
+        //extras para que el FRONT guarde histórico en su BD
+        fileUrl,
+        meta_media_id,
+        file_info: req.file
+          ? {
+              name: req.file.originalname,
+              mime: req.file.mimetype,
+              size: req.file.size,
+              header_format: String(header_format || '').toUpperCase(),
+            }
+          : null,
+      });
+    } catch (e) {
+      return res.status(500).json({
         success: false,
-        meta_status: resp.status,
-        error: resp.data,
-        message: 'Meta rechazó el envío',
-        // esto ayuda a debuggear rápido
-        sent_payload: payload,
+        message: 'Error interno enviando template',
+        error: e.message,
       });
     }
-
-    const wamid = resp.data?.messages?.[0]?.id || null;
-
-    return res.json({
-      success: true,
-      wamid,
-      data: resp.data,
-    });
-  } catch (e) {
-    return res.status(500).json({
-      success: false,
-      message: 'Error interno enviando template',
-      error: e.message,
-    });
-  }
-});
+  },
+);
 
 router.post('/embeddedSignupComplete', async (req, res) => {
   const {
