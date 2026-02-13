@@ -6,6 +6,11 @@ const multer = require('multer');
 const path = require('path');
 const router = express.Router();
 const FormData = require('form-data');
+const { promisify } = require('util');
+const { exec } = require('child_process');
+const execAsync = promisify(exec);
+const fs = require('fs').promises;
+const os = require('os');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -202,6 +207,75 @@ async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
   }
 
   return { ok: true, mediaId, raw: mediaResp.data };
+}
+
+/**
+ * Convierte cualquier video al formato compatible con WhatsApp
+ * - Codec: H.264 (libx264)
+ * - Audio: AAC
+ * - Contenedor: MP4
+ * - Bitrate limitado a 1Mbps para evitar archivos muy grandes
+ * 
+ * @returns {Buffer} Buffer del video convertido
+ */
+async function convertVideoForWhatsApp(fileBuffer, originalName) {
+  const tempDir = os.tmpdir();
+  const inputPath = path.join(tempDir, `input-${Date.now()}-${originalName}`);
+  const outputPath = path.join(tempDir, `output-${Date.now()}.mp4`);
+
+  try {
+    // 1. Escribir archivo temporal de entrada
+    await fs.writeFile(inputPath, fileBuffer);
+    console.log('[VIDEO_CONVERT] Archivo temporal creado:', inputPath);
+
+    // 2. Verificar si FFmpeg está disponible
+    try {
+      await execAsync('ffmpeg -version');
+    } catch (e) {
+      console.warn('[VIDEO_CONVERT] FFmpeg no disponible. Usando video original.');
+      throw new Error('FFmpeg no está instalado en el servidor');
+    }
+
+    // 3. Convertir video con FFmpeg
+    // - libx264: codec de video H.264 (OBLIGATORIO para WhatsApp)
+    // - aac: codec de audio AAC
+    // - preset fast: balance entre velocidad y compresión
+    // - crf 23: calidad (18=mejor, 28=menor calidad)
+    // - maxrate/bufsize: limitar bitrate para no exceder 16MB
+    // - movflags +faststart: optimizar para streaming
+    const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -maxrate 1M -bufsize 2M -movflags +faststart -y "${outputPath}"`;
+    
+    console.log('[VIDEO_CONVERT] Ejecutando conversión...');
+    const startTime = Date.now();
+    
+    const { stdout, stderr } = await execAsync(ffmpegCmd, {
+      maxBuffer: 50 * 1024 * 1024, // 50MB buffer
+    });
+    
+    const duration = Date.now() - startTime;
+    console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
+
+    // 4. Leer archivo convertido
+    const convertedBuffer = await fs.readFile(outputPath);
+    
+    console.log('[VIDEO_CONVERT] Tamaños:', {
+      original: (fileBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
+      convertido: (convertedBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
+    });
+
+    // 5. Limpiar archivos temporales
+    await fs.unlink(inputPath).catch(() => {});
+    await fs.unlink(outputPath).catch(() => {});
+
+    return convertedBuffer;
+  } catch (err) {
+    // Limpiar en caso de error
+    await fs.unlink(inputPath).catch(() => {});
+    await fs.unlink(outputPath).catch(() => {});
+
+    console.error('[VIDEO_CONVERT] Error:', err.message);
+    throw err;
+  }
 }
 
 //Inyeccion de MEDIAID en header del template.
@@ -1578,13 +1652,17 @@ router.post(
 
       let fileUrl = null; // URL S3/histórico (vía uploader)
       let meta_media_id = null; // mediaId devuelto por Meta
+      let processedBuffer = null; // Buffer procesado (convertido si es video)
+      let processedMimetype = null; // Mimetype procesado
+      let processedFilename = null; // Nombre procesado
+      let fmt = null; // Formato del archivo (IMAGE|VIDEO|DOCUMENT)
 
       if (req.file) {
         // fallback por si el front no manda header_format (aunque usted ya lo manda)
         if (!header_format)
           header_format = inferHeaderFormatFromMime(req.file.mimetype);
 
-        const fmt = String(header_format || '').toUpperCase();
+        fmt = String(header_format || '').toUpperCase();
 
         // seguridad: este endpoint solo inyecta media en HEADER para IMAGE/VIDEO/DOCUMENT
         if (!['IMAGE', 'VIDEO', 'DOCUMENT'].includes(fmt)) {
@@ -1607,6 +1685,28 @@ router.post(
           });
         }
 
+        // 2.1.1) Si es VIDEO, convertir a formato WhatsApp compatible
+        processedBuffer = req.file.buffer;
+        processedMimetype = req.file.mimetype;
+        processedFilename = req.file.originalname;
+
+        if (fmt === 'VIDEO') {
+          console.log('[VIDEO] Iniciando conversión a formato WhatsApp...');
+          try {
+            processedBuffer = await convertVideoForWhatsApp(
+              req.file.buffer,
+              req.file.originalname
+            );
+            processedMimetype = 'video/mp4'; // Forzar MP4
+            processedFilename = req.file.originalname.replace(/\.[^.]+$/, '.mp4');
+            console.log('[VIDEO] Conversión exitosa. Nuevo tamaño:', 
+              (processedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+          } catch (convErr) {
+            console.warn('[VIDEO] No se pudo convertir. Usando original:', convErr.message);
+            // Si falla la conversión, usar el video original y esperar que Meta lo procese
+          }
+        }
+
         // 2.2) Subir a S3 (histórico) usando su uploader (usa su helper)
         // folder sugerido según tipo
         const folder =
@@ -1618,9 +1718,9 @@ router.post(
 
         try {
           const upHist = await uploadToUploader({
-            buffer: req.file.buffer,
-            originalname: req.file.originalname,
-            mimetype: req.file.mimetype,
+            buffer: processedBuffer,  // Usar buffer procesado (convertido si es video)
+            originalname: processedFilename,  // Nombre actualizado
+            mimetype: processedMimetype,  // Mimetype actualizado
             folder,
           });
 
@@ -1640,7 +1740,11 @@ router.post(
             ACCESS_TOKEN: cfg.ACCESS_TOKEN,
             PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
           },
-          req.file,
+          {
+            buffer: processedBuffer,  // Buffer procesado
+            mimetype: processedMimetype,  // Mimetype actualizado
+            originalname: processedFilename,  // Nombre actualizado
+          },
         );
 
         if (!upMeta.ok) {
@@ -1655,6 +1759,36 @@ router.post(
 
         meta_media_id = upMeta.mediaId;
 
+        // 2.3.1) Para videos: verificar que Meta haya procesado el media antes de enviarlo
+        if (fmt === 'VIDEO') {
+          console.log('[VIDEO] Esperando procesamiento de Meta (mediaId:', meta_media_id, ')...');
+          
+          // Dar un tiempo prudencial para que Meta procese el video
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Verificar el estado del media
+          try {
+            const mediaCheckUrl = `https://graph.facebook.com/v22.0/${meta_media_id}`;
+            const mediaCheck = await axios.get(mediaCheckUrl, {
+              headers: { Authorization: `Bearer ${cfg.ACCESS_TOKEN}` },
+              timeout: 10000,
+              validateStatus: () => true,
+            });
+            
+            console.log('[VIDEO] Estado del media:', {
+              status: mediaCheck.status,
+              data: mediaCheck.data,
+            });
+            
+            if (mediaCheck.status !== 200) {
+              console.warn('[VIDEO] Advertencia: No se pudo verificar el estado del media');
+            }
+          } catch (checkErr) {
+            console.warn('[VIDEO] Advertencia al verificar media:', checkErr.message);
+            // No fallar, solo advertir
+          }
+        }
+
         // 2.4) Inyectar mediaId en HEADER del template (usa SU injectHeaderMediaId, no el de link)
         const comps = Array.isArray(payload.template.components)
           ? payload.template.components
@@ -1667,6 +1801,8 @@ router.post(
       }
 
       // ===== 3) Enviar template a Meta =====
+      console.log('[SEND_TEMPLATE] Enviando a:', to, 'Template:', template_name, 'MediaId:', meta_media_id || 'N/A');
+      
       const ax = axios.create({
         headers: {
           Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
@@ -1678,6 +1814,11 @@ router.post(
 
       const url = `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`;
       const resp = await ax.post(url, payload);
+
+      console.log('[SEND_TEMPLATE] Respuesta de Meta:', {
+        status: resp.status,
+        data: resp.data,
+      });
 
       if (resp.status < 200 || resp.status >= 300) {
         return res.status(200).json({
@@ -1692,6 +1833,7 @@ router.post(
       }
 
       const wamid = resp.data?.messages?.[0]?.id || null;
+      console.log('[SEND_TEMPLATE] Enviado exitosamente. WAMID:', wamid);
 
       return res.json({
         success: true,
@@ -1702,10 +1844,11 @@ router.post(
         meta_media_id,
         file_info: req.file
           ? {
-              name: req.file.originalname,
-              mime: req.file.mimetype,
-              size: req.file.size,
+              name: processedFilename || req.file.originalname,
+              mime: processedMimetype || req.file.mimetype,
+              size: processedBuffer ? processedBuffer.length : req.file.size,
               header_format: String(header_format || '').toUpperCase(),
+              converted: fmt === 'VIDEO' && processedBuffer !== req.file.buffer, // Indica si se convirtió
             }
           : null,
       });

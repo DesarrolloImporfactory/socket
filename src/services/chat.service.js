@@ -376,11 +376,12 @@ class ChatService {
           attributes: ['id_usuario'],
         }).then((results) => results.map((up) => up.id_usuario));
 
+        console.log('IDs de usuarios asociados a las plataformas:', plataformaIds, usuarioIds);
         if (usuarioIds.length > 0) {
           // Priorizar estado 1 en cada paquete si tiene 1 en cualquiera de sus usuarios
           const paquetesConEstado = await db_2.query(
             `
-            SELECT importacion, membresia_ecommerce, ecommerce, productos 
+            SELECT importacion, membresia_ecommerce, ecommerce, productos, fecha_suscripcion 
             FROM users 
             WHERE id_users IN (${usuarioIds.join(',')})
           `,
@@ -388,6 +389,8 @@ class ChatService {
               type: db_2.QueryTypes.SELECT,
             },
           );
+
+          console.log('Paquetes con estado:', paquetesConEstado);
 
           // OR por campo (si existe un 1 en cualquiera -> queda 1)
           paquetes = paquetesConEstado.reduce(
@@ -398,9 +401,10 @@ class ChatService {
                 acc.productos || Number(row.productos) === 1 ? 1 : 0;
               acc.ecommerce =
                 acc.ecommerce || Number(row.ecommerce) === 1 ? 1 : 0;
+              acc.fecha_suscripcion = row.fecha_suscripcion; // Puedes ajustar esto si quieres la fecha más reciente o alguna lógica específica
               return acc;
             },
-            { importacion: 0, productos: 0, ecommerce: 0 },
+            { importacion: 0, productos: 0, ecommerce: 0, fecha_suscripcion: null },
           );
         }
       }
