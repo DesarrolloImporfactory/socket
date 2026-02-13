@@ -82,6 +82,7 @@ const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
 const droppiIntegrationsRouter = require('./routes/dropi_integrations.routes');
 
 const cotizacionesRouter = require('./routes/cotizaciones.routes');
+const mediaRouter = require('./routes/media.routes');
 
 const path = require('path');
 
@@ -298,6 +299,7 @@ app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
+app.use('/api/v1/media', mediaRouter);
 
 app.all('*', (req, res, next) => {
   return next(

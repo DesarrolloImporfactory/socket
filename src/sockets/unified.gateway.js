@@ -1,5 +1,12 @@
 const ChatService = require('../services/chat.service');
 
+const {
+  normPhone,
+  pickAttachmentFromPayload,
+  normalizeAttachment,
+  isValidPublicUrl,
+} = require('../utils/media.helpers');
+
 module.exports = function attachUnifiedGateway(io, services) {
   const { db, fb, ig, getPageTokenByPageId } = services;
   const chatService = services.chatService || new ChatService();
@@ -362,8 +369,11 @@ module.exports = function attachUnifiedGateway(io, services) {
       if (!opts.messaging_type) opts.messaging_type = 'RESPONSE';
     }
 
+    let picked = attachment;
+    if (!picked) picked = pickAttachmentFromPayload({ attachment });
+
     const hasText = !!(text && String(text).trim());
-    const hasAttachment = !!(attachment && attachment.url);
+    const hasAttachment = !!(picked && picked.url);
     if (!hasText && !hasAttachment)
       throw new Error('El mensaje no puede estar vacío');
 
@@ -374,20 +384,26 @@ module.exports = function attachUnifiedGateway(io, services) {
     let attachments = null;
 
     if (hasAttachment) {
+      const att = normalizeAttachment(picked);
+
+      if (!isValidPublicUrl(att.url)) {
+        throw new Error('Adjunto inválido: la URL no es pública/HTTP(S).');
+      }
+
       const type =
-        attachment.kind === 'image'
+        att.kind === 'image'
           ? 'image'
-          : attachment.kind === 'video'
+          : att.kind === 'video'
             ? 'video'
             : 'file';
 
       tipo_mensaje = type === 'file' ? 'file' : type;
-      ruta_archivo = attachment.url;
-      attachments = [attachment];
+      ruta_archivo = att.url;
+      attachments = [att];
 
       fbRes = await fb.sendAttachment(
         psid,
-        { type, url: attachment.url },
+        { type, url: att.url },
         pageAccessToken,
         opts,
       );
@@ -460,8 +476,12 @@ module.exports = function attachUnifiedGateway(io, services) {
       if (!opts.messaging_type) opts.messaging_type = 'RESPONSE';
     }
 
+    // aceptar attachment de varias formas (front nuevo/legacy)
+    let picked = attachment;
+    if (!picked) picked = pickAttachmentFromPayload({ attachment });
+
     const hasText = !!(text && String(text).trim());
-    const hasAttachment = !!(attachment && attachment.url);
+    const hasAttachment = !!(picked && picked.url);
     if (!hasText && !hasAttachment)
       throw new Error('El mensaje no puede estar vacío');
 
@@ -472,20 +492,26 @@ module.exports = function attachUnifiedGateway(io, services) {
     let attachments = null;
 
     if (hasAttachment) {
+      const att = normalizeAttachment(picked);
+
+      if (!isValidPublicUrl(att.url)) {
+        throw new Error('Adjunto inválido: la URL no es pública/HTTP(S).');
+      }
+
       const type =
-        attachment.kind === 'image'
+        att.kind === 'image'
           ? 'image'
-          : attachment.kind === 'video'
+          : att.kind === 'video'
             ? 'video'
             : 'file';
 
       tipo_mensaje = type === 'file' ? 'file' : type;
-      ruta_archivo = attachment.url;
-      attachments = [attachment];
+      ruta_archivo = att.url;
+      attachments = [att];
 
       igRes = await ig.sendAttachment(
         igsid,
-        { type, url: attachment.url },
+        { type, url: att.url },
         pageAccessToken,
         opts,
       );
@@ -537,6 +563,15 @@ module.exports = function attachUnifiedGateway(io, services) {
         tag,
         metadata,
         rol_mensaje,
+
+        //si el front manda attachments también
+        attachments,
+        mime_type,
+        file_name,
+        size,
+
+        // ✅ nuevo (front)
+        attachment_url,
       } = payload || {};
 
       if (!id_configuracion || !chatId) {
@@ -560,6 +595,18 @@ module.exports = function attachUnifiedGateway(io, services) {
 
       const source = String(chatRow.source || 'wa').toLowerCase();
 
+      // normalizar adjunto desde cualquier formato del front
+      const picked = pickAttachmentFromPayload({
+        attachment,
+        attachments,
+        attachment_url, // ✅ nuevo
+        ruta_archivo,
+        tipo_mensaje,
+        mime_type,
+        file_name,
+        size,
+      });
+
       let msg;
       if (source === 'wa') {
         msg = await sendWA({
@@ -573,7 +620,7 @@ module.exports = function attachUnifiedGateway(io, services) {
         msg = await sendMS({
           chatRow,
           text,
-          attachment,
+          attachment: picked,
           agent_name,
           client_tmp_id,
           messaging_type,
@@ -585,7 +632,7 @@ module.exports = function attachUnifiedGateway(io, services) {
         msg = await sendIG({
           chatRow,
           text,
-          attachment,
+          attachment: picked,
           agent_name,
           client_tmp_id,
           messaging_type,
@@ -674,13 +721,20 @@ module.exports = function attachUnifiedGateway(io, services) {
           ruta_archivo: data?.ruta_archivo || null,
           agent_name: data?.nombre_encargado || data?.agent_name || null,
 
-          // ✅ Para IG/MS adjuntos + ventana 24h si se desea
+          // Para IG/MS adjuntos + ventana 24h si se desea
           attachment: data?.attachment || null,
+          attachments: data?.attachments || null, //(por si el front manda array)
+          attachment_url: data?.attachment_url || null, // ✅ nuevo (front)
           messaging_type: data?.messaging_type,
           tag: data?.tag,
           metadata: data?.metadata,
           rol_mensaje: data?.rol_mensaje,
           client_tmp_id: data?.client_tmp_id,
+
+          //  (si el front manda metadata del archivo)
+          mime_type: data?.mime_type,
+          file_name: data?.file_name,
+          size: data?.size,
         };
 
         const result = await handleUnifiedSend(unifiedPayload);

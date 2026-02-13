@@ -25,12 +25,16 @@ const TemplatesChatCenter = db.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    ruta_archivo: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: 'templates_chat_center',
     timestamps: false,
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = TemplatesChatCenter;
