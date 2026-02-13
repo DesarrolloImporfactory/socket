@@ -608,12 +608,24 @@ module.exports = function attachUnifiedGateway(io, services) {
       });
 
       let msg;
+
       if (source === 'wa') {
+        // ✅ Si viene adjunto, forzar tipo + ruta para WA
+        let finalTipo = tipo_mensaje || 'text';
+        let finalRuta = ruta_archivo || null;
+
+        if (picked?.url) {
+          const k = String(picked.kind || '').toLowerCase();
+          finalTipo =
+            k === 'image' ? 'image' : k === 'video' ? 'video' : 'document';
+          finalRuta = picked.url;
+        }
+
         msg = await sendWA({
           chatRow,
-          text,
-          tipo_mensaje,
-          ruta_archivo,
+          text, // será caption si hay media
+          tipo_mensaje: finalTipo,
+          ruta_archivo: finalRuta,
           agent_name,
         });
       } else if (source === 'ms') {
@@ -645,13 +657,13 @@ module.exports = function attachUnifiedGateway(io, services) {
       }
 
       //emitir evento que escucha el FRONT NUEVO (UPDATE_CHAT)
-      emitUpdateChatUnified({
-        id_configuracion,
-        chatId,
-        source,
-        message: msg,
-        chat: chatRow, // ✅ trae id_encargado, nombre_cliente, etc (lo usa el front para filtrar)
-      });
+      // emitUpdateChatUnified({
+      //   id_configuracion,
+      //   chatId,
+      //   source,
+      //   message: msg,
+      //   chat: chatRow, // ✅ trae id_encargado, nombre_cliente, etc (lo usa el front para filtrar)
+      // });
 
       // 2) ack al emisor
       socket.emit('CHAT_SEND_OK', { chatId, client_tmp_id, message: msg });

@@ -376,7 +376,11 @@ class ChatService {
           attributes: ['id_usuario'],
         }).then((results) => results.map((up) => up.id_usuario));
 
-        console.log('IDs de usuarios asociados a las plataformas:', plataformaIds, usuarioIds);
+        console.log(
+          'IDs de usuarios asociados a las plataformas:',
+          plataformaIds,
+          usuarioIds,
+        );
         if (usuarioIds.length > 0) {
           // Priorizar estado 1 en cada paquete si tiene 1 en cualquiera de sus usuarios
           const paquetesConEstado = await db_2.query(
@@ -404,7 +408,12 @@ class ChatService {
               acc.fecha_suscripcion = row.fecha_suscripcion; // Puedes ajustar esto si quieres la fecha más reciente o alguna lógica específica
               return acc;
             },
-            { importacion: 0, productos: 0, ecommerce: 0, fecha_suscripcion: null },
+            {
+              importacion: 0,
+              productos: 0,
+              ecommerce: 0,
+              fecha_suscripcion: null,
+            },
           );
         }
       }
@@ -484,84 +493,118 @@ class ChatService {
         mensaje,
         to,
         dataAdmin,
-        tipo_mensaje,
+        tipo_mensaje = 'text',
         id_configuracion,
         ruta_archivo = null,
         nombre_encargado,
       } = data;
-      const fromTelefono = dataAdmin.id_telefono; // Debe ser el ID del número de teléfono en WhatsApp
+
+      const fromTelefono = dataAdmin.id_telefono;
       const fromToken = dataAdmin.token;
 
-      let responseData = {};
-      if (tipo_mensaje !== 'image') {
-        // Construcción de la URL de la API
-        const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
+      const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
 
-        // Datos de la petición
-        const requestData = {
+      //  Construir requestData según tipo
+      let requestData;
+
+      const tipo = String(tipo_mensaje || 'text').toLowerCase();
+
+      if (tipo === 'text') {
+        requestData = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: to,
+          to,
           type: 'text',
-          text: {
-            preview_url: true,
-            body: mensaje, // Mensaje a enviar
+          text: { preview_url: true, body: mensaje || '' },
+        };
+      } else if (tipo === 'image') {
+        if (!ruta_archivo) throw new Error('Falta ruta_archivo para image');
+        requestData = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'image',
+          image: {
+            link: ruta_archivo, //  URL pública
+            caption: mensaje || '', // caption
           },
         };
-
-        // Encabezados de la petición
-        const headers = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${fromToken}`,
+      } else if (tipo === 'video') {
+        if (!ruta_archivo) throw new Error('Falta ruta_archivo para video');
+        requestData = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'video',
+          video: {
+            link: ruta_archivo,
+            caption: mensaje || '',
+          },
         };
+      } else if (tipo === 'document' || tipo === 'file') {
+        if (!ruta_archivo) throw new Error('Falta ruta_archivo para document');
+        requestData = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'document',
+          document: {
+            link: ruta_archivo,
+            caption: mensaje || '',
+            // filename: 'archivo.pdf' // opcional si lo tiene
+          },
+        };
+      } else {
+        // fallback seguro
+        requestData = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'text',
+          text: { preview_url: true, body: mensaje || '' },
+        };
+      }
 
-        // Realiza la petición para enviar el mensaje
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify(requestData),
-        });
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${fromToken}`,
+      };
 
-        // Parsear la respuesta de la API
-        responseData = await response.json();
+      // Enviar SIEMPRE (texto o media)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestData),
+      });
 
-        // Manejo de errores en la respuestas
-        if (responseData.error) {
-          console.error('Error al enviar el mensaje:', responseData.error);
-          throw new Error(responseData.error.message);
-        }
+      const responseData = await response.json();
+
+      if (responseData.error) {
+        console.error('Error al enviar el mensaje:', responseData.error);
+        throw new Error(responseData.error.message);
       }
 
       const wamid = responseData?.messages?.[0]?.id || null;
 
+      // ---- su guardado en BD queda igual ----
       const cliente = await ClientesChatCenter.findOne({
-        where: {
-          uid_cliente: fromTelefono,
-          id_configuracion: id_configuracion,
-        },
+        where: { uid_cliente: fromTelefono, id_configuracion },
       });
 
       const receptor = await ClientesChatCenter.findOne({
-        where: {
-          celular_cliente: to,
-          id_configuracion: id_configuracion,
-        },
+        where: { celular_cliente: to, id_configuracion },
       });
 
       const id_cliente = cliente ? cliente.id : null;
       const id_recibe = receptor ? receptor.id : null;
 
-      // Armar para guardar en la base de datos
       const mensajeCliente = {
         id_configuracion: dataAdmin.id,
         mid_mensaje: fromTelefono,
-        tipo_mensaje: tipo_mensaje,
+        tipo_mensaje: tipo === 'file' ? 'document' : tipo,
         rol_mensaje: 1,
         id_cliente,
         uid_whatsapp: to,
         id_wamid_mensaje: wamid,
         responsable: nombre_encargado,
-        texto_mensaje: mensaje,
+        texto_mensaje: mensaje || '',
         celular_recibe: id_recibe,
         informacion_suficiente: 1,
         visto: 0,
@@ -569,18 +612,12 @@ class ChatService {
         updated_at: new Date(),
       };
 
-      if (ruta_archivo !== null) {
-        mensajeCliente.ruta_archivo = ruta_archivo;
-      }
+      if (ruta_archivo) mensajeCliente.ruta_archivo = ruta_archivo;
 
-      // Guardar el mensaje en la base de datos
       const mensajeAgregado = await MensajesClientes.create(mensajeCliente);
+      if (!mensajeAgregado) throw new Error('Error al guardar en BD');
 
-      if (!mensajeAgregado) {
-        throw new Error('Error al guardar el mensaje en la base de datos');
-      }
       responseData.mensajeNuevo = mensajeAgregado;
-      // Retorna la respuesta exitosa
       return responseData;
     } catch (error) {
       console.error('Error en la solicitud:', error);
@@ -599,7 +636,7 @@ class ChatService {
             { apellido_cliente: { [Op.like]: `%${texto}%` } },
           ],
         },
-        attributes: ['celular_cliente', 'nombre_cliente','id_encargado'],
+        attributes: ['celular_cliente', 'nombre_cliente', 'id_encargado'],
       });
 
       return telefonos;
