@@ -68,10 +68,23 @@ const Usuarios_chat_center = db.define(
     email_propietario: {
       type: DataTypes.STRING,
       allowNull: true,
-      unique: true
+      unique: true,
     },
     id_costumer: {
       type: DataTypes.STRING,
+      allowNull: true,
+    },
+    cant_conversaciones_mes: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+    },
+    stripe_subscription_id: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    trial_end: {
+      type: DataTypes.DATE,
       allowNull: true,
     },
   },
@@ -80,7 +93,7 @@ const Usuarios_chat_center = db.define(
     tableName: 'usuarios_chat_center',
     timestamps: false,
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = Usuarios_chat_center;

@@ -1,7 +1,6 @@
-// ✅ REFACTORIZADO: planes.controller.js
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
-const { db } = require('../database/config');
+
 /**
  * ✅ Asigna un plan al usuario sin activarlo
  * Este paso solo marca la intención de pago, no cambia el estado.
@@ -69,22 +68,10 @@ exports.seleccionarPlan = async (req, res) => {
       .json({ status: 'fail', message: 'Error interno al seleccionar plan' });
   }
 };
-
-/**
- * ✅ Lista todos los planes disponibles
- */
 exports.obtenerPlanes = async (req, res) => {
   try {
-    const planes = await Planes_chat_center.findAll({
-      where: {
-        activo: 1,
-      },
-    });
-
-    return res.status(200).json({
-      status: 'success',
-      data: planes,
-    });
+    const planes = await Planes_chat_center.findAll({ where: { activo: 1 } });
+    return res.status(200).json({ status: 'success', data: planes });
   } catch (error) {
     console.error('Error al obtener planes:', error);
     return res.status(500).json({

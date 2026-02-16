@@ -53,13 +53,12 @@ const registerPresenceHandlers = require('./sockets/presence/registerPresenceHan
 // Namespace dedicado para presencia (NO interfiere con chat center)
 const presenceNs = io.of('/presence');
 
-
 // Auth SOLO para presence
 presenceNs.use(socketAuth());
 
 // Handlers de presence
 presenceNs.on('connection', (socket) => {
-  console.log("[PRESENCE] CONNECT", socket.user?.id_sub_usuario, socket.id);
+  console.log('[PRESENCE] CONNECT', socket.user?.id_sub_usuario, socket.id);
   registerPresenceHandlers(presenceNs, socket);
 });
 

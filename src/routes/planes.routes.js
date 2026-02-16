@@ -1,16 +1,12 @@
-const planesController = require('../controllers/planes.controller');
-
 const express = require('express');
-const router = express.Router();
-
+const planesController = require('../controllers/planes.controller');
 const { protect } = require('../middlewares/auth.middleware');
 
+const router = express.Router();
 router.use(protect);
-
-router.post('/seleccionarPlan', planesController.seleccionarPlan);
 
 router.get('/listarPlanes', planesController.obtenerPlanes);
 
-/*router.get('/listarPlanes', planesController.listarPlanes); x */
+router.post('/seleccionarPlan', planesController.seleccionarPlan);
 
 module.exports = router;

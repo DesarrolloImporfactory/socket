@@ -49,7 +49,7 @@ const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes
 
 const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
 
-const stripeRouter = require('./routes/stripe.routes');
+const stripeRouter = require('./routes/stripe_plan.routes');
 
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
 
