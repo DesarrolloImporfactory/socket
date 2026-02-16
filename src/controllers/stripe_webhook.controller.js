@@ -7,6 +7,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
+
+  console.log('--- STRIPE WEBHOOK HIT ---');
+  console.log('sig exists?', !!sig);
+  console.log('secret exists?', !!process.env.STRIPE_WEBHOOK_SECRET_PLAN);
+  console.log('body is buffer?', Buffer.isBuffer(req.body));
+  console.log('content-type:', req.headers['content-type']);
   let event;
 
   try {
