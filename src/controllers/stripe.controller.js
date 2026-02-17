@@ -16,6 +16,7 @@ const getUserById = async (id_usuario) => {
         id_usuario,
         email_propietario,
         free_trial_used,
+        promo_plan2_used
         id_costumer,
         stripe_subscription_id,
         id_plan,
@@ -67,36 +68,30 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
-  // Trial elegible (por BD)
-  const eligibleTrial = Number(user.free_trial_used) === 0;
+  const CONEXION_PLAN_ID = Number(process.env.STRIPE_PLAN_CONEXION_ID || 2);
 
-  /**
-   *  OPCIÓN ACTIVA (SU CASO): Trial SOLO para Plan Conexión
-   * - Si el usuario ya usó trial => no aplica
-   * - Si el plan NO es Conexión (plan_id:2) => no aplica
-   */
-  const CONEXION_PLAN_ID = 2;
+  // Trial elegible
+  const eligibleTrial = Number(user.free_trial_used) === 0;
   const shouldApplyTrial =
     eligibleTrial && Number(id_plan) === CONEXION_PLAN_ID;
-
-  /**
-   *  OPCIÓN ALTERNATIVA : Trial para CUALQUIER plan de pago
-   */
-  // const shouldApplyTrial = eligibleTrial;
-
   const trialDays = shouldApplyTrial ? 15 : undefined;
+
+  // Promo cupón (solo plan 2 y solo si el usuario no lo ha usado)
+  const couponId = process.env.STRIPE_COUPON_PLAN2_FIRST_MONTH || 'MK4ojy0N';
+  const canApplyPromo =
+    Number(id_plan) === CONEXION_PLAN_ID &&
+    Number(user.promo_plan2_used || 0) === 0 &&
+    Boolean(couponId);
 
   const successUrl = `${process.env.FRONT_SUCCESS_URL}`;
   const cancelUrl = process.env.FRONT_CANCEL_URL;
 
-  //Si ya existe customer, úselo SIEMPRE
   const customerParam = user.id_costumer
     ? { customer: user.id_costumer }
     : { customer_email: user.email_propietario || undefined };
 
-  // Si quiere garantizar que Stripe no cambie customer, fuerce update:
   const customerUpdateParam = user.id_costumer
-    ? { customer_update: { address: 'auto', name: 'auto' } } // opcional
+    ? { customer_update: { address: 'auto', name: 'auto' } }
     : {};
 
   const session = await stripe.checkout.sessions.create({
@@ -108,14 +103,14 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     ...customerUpdateParam,
 
     client_reference_id: String(id_usuario),
-
     payment_method_collection: 'always',
-
     metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
+
+    // Aplica cupón “una vez” (primer cobro) SIN tocar trial
+    ...(canApplyPromo ? { discounts: [{ coupon: couponId }] } : {}),
 
     subscription_data: {
       ...(trialDays ? { trial_period_days: trialDays } : {}),
-      //  metadata EN LA SUSCRIPCIÓN
       metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
     },
 
@@ -128,6 +123,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     url: session.url,
     sessionId: session.id,
     trialApplied: !!trialDays,
+    promoApplied: !!canApplyPromo,
   });
 });
 

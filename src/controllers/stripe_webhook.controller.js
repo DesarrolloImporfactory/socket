@@ -196,6 +196,40 @@ exports.stripeWebhook = async (req, res) => {
           break;
         }
 
+        // Marcar promo del plan 2 SOLO si realmente hubo descuento en esta invoice
+        const CONEXION_PLAN_ID = Number(
+          process.env.STRIPE_PLAN_CONEXION_ID || 2,
+        );
+
+        const totalDiscount = (invoice.total_discount_amounts || []).reduce(
+          (acc, d) => acc + (d.amount || 0),
+          0,
+        );
+
+        const usedCoupon = totalDiscount > 0;
+
+        // si es primer pago luego del trial, el billing_reason suele ser subscription_cycle
+        // igual funciona: usedCoupon detecta descuento real.
+        const shouldMarkPromoUsed =
+          Number(id_plan) === CONEXION_PLAN_ID && usedCoupon;
+
+        if (shouldMarkPromoUsed) {
+          try {
+            await db.query(
+              `UPDATE usuarios_chat_center
+              SET promo_plan2_used = 1
+              WHERE id_usuario = ?`,
+              { replacements: [id_usuario] },
+            );
+            console.log(
+              '[stripe] promo_plan2_used marked for user:',
+              id_usuario,
+            );
+          } catch (e) {
+            console.log('[stripe] promo_plan2_used update failed:', e?.message);
+          }
+        }
+
         // 3) Update usuario: aquí dejamos TODO sincronizado
         const [updateResult] = await db.query(
           `UPDATE usuarios_chat_center
