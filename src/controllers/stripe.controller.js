@@ -12,12 +12,28 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
  */
 const getUserById = async (id_usuario) => {
   const [[u]] = await db.query(
-    `SELECT id_usuario, email_propietario, free_trial_used, id_costumer, stripe_subscription_id, id_plan, estado, fecha_renovacion, trial_end
+    `SELECT
+        id_usuario,
+        email_propietario,
+        free_trial_used,
+        id_costumer,
+        stripe_subscription_id,
+        id_plan,
+        estado,
+        fecha_renovacion,
+        trial_end,
+        tipo_plan,
+        permanente,
+        stripe_subscription_status,
+        cancel_at_period_end,
+        cancel_at,
+        canceled_at
      FROM usuarios_chat_center
      WHERE id_usuario = ?
      LIMIT 1`,
     { replacements: [id_usuario] },
   );
+
   return u || null;
 };
 
@@ -25,7 +41,7 @@ const getPlanById = async (id_plan) => {
   const [[p]] = await db.query(
     `SELECT id_plan, nombre_plan, descripcion_plan, id_price, duracion_plan, precio_plan
      FROM planes_chat_center
-     WHERE id_plan = ? AND activo = 1
+     WHERE id_plan = ?
      LIMIT 1`,
     { replacements: [id_plan] },
   );
@@ -116,8 +132,8 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
 });
 
 /**
- *  Obtener suscripción activa (para MiPlan)
- * Retorna plan mezclando BD + estado Stripe si existe subscription_id
+ * Obtener suscripción activa (para MiPlan)
+ * Retorna plan mezclando BD + (opcional) estado Stripe si existe subscription_id
  */
 exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -126,7 +142,6 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Si no tiene plan en BD, retornamos null para que el front muestre “sin plan”
   if (!user.id_plan) {
     return res.status(200).json({ success: true, plan: null });
   }
@@ -134,10 +149,16 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const planDb = await getPlanById(user.id_plan);
 
   // Estado base desde BD
-  let estadoFinal = user.estado || 'inactivo';
+  let estadoFinal = (user.estado || 'inactivo').toLowerCase();
   let fechaRenovacion = user.fecha_renovacion || null;
 
-  // Si existe subscription, consultamos Stripe para mayor exactitud
+  // Flags base desde BD (ya vienen del webhook)
+  let stripeStatus = user.stripe_subscription_status || null;
+  let cancelAtPeriodEnd = user.cancel_at_period_end ? 1 : 0;
+  let cancelAt = user.cancel_at || null;
+  let canceledAt = user.canceled_at || null;
+
+  // Si existe subscription, consultamos Stripe para exactitud (opcional, pero usted lo tenía)
   if (user.stripe_subscription_id) {
     try {
       const sub = await stripe.subscriptions.retrieve(
@@ -146,23 +167,30 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
 
       // status: active, trialing, past_due, canceled, unpaid...
       if (sub?.status) {
-        if (sub.status === 'trialing')
-          estadoFinal = 'activo'; // o "trial" si quiere
+        stripeStatus = sub.status;
+
+        if (sub.status === 'trialing') estadoFinal = 'activo';
         else if (sub.status === 'active') estadoFinal = 'activo';
-        else if (sub.status === 'canceled') estadoFinal = 'inactivo';
-        else if (sub.status === 'past_due') estadoFinal = 'suspendido';
-        else estadoFinal = user.estado || 'inactivo';
+        else if (sub.status === 'canceled') estadoFinal = 'cancelado';
+        else if (sub.status === 'past_due' || sub.status === 'unpaid')
+          estadoFinal = 'suspendido';
+        else estadoFinal = (user.estado || 'inactivo').toLowerCase();
       }
 
-      // current_period_end en segundos
-      if (sub?.current_period_end) {
+      // flags
+      cancelAtPeriodEnd = sub?.cancel_at_period_end ? 1 : 0;
+      cancelAt = sub?.cancel_at ? new Date(sub.cancel_at * 1000) : cancelAt;
+      canceledAt = sub?.canceled_at
+        ? new Date(sub.canceled_at * 1000)
+        : canceledAt;
+
+      // current_period_end / trial_end
+      if (sub?.current_period_end)
         fechaRenovacion = new Date(sub.current_period_end * 1000);
-      } else if (sub?.trial_end) {
-        fechaRenovacion = new Date(sub.trial_end * 1000);
-      }
+      else if (sub?.trial_end) fechaRenovacion = new Date(sub.trial_end * 1000);
     } catch (e) {
-      // si Stripe falla, no rompemos la pantalla
       console.warn('Stripe sub retrieve fail:', e?.message);
+      // Si Stripe falla, usamos BD sin romper pantalla
     }
   }
 
@@ -172,8 +200,16 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       id_plan: user.id_plan,
       nombre_plan: planDb?.nombre_plan || 'Plan',
       descripcion_plan: planDb?.descripcion_plan || '',
-      estado: estadoFinal,
+      estado: estadoFinal, // activo | suspendido | cancelado | vencido | inactivo
       fecha_renovacion: fechaRenovacion,
+
+      // nuevos flags para frontend
+      stripe_subscription_status: stripeStatus,
+      cancel_at_period_end: cancelAtPeriodEnd,
+      cancel_at: cancelAt,
+      canceled_at: canceledAt,
+
+      // extras
       tipo_plan: user.tipo_plan,
       permanente: user.permanente,
     },

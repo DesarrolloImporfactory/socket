@@ -36,7 +36,13 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
     },
     estado: {
-      type: DataTypes.STRING,
+      type: DataTypes.ENUM(
+        'activo',
+        'inactivo',
+        'suspendido',
+        'vencido',
+        'cancelado',
+      ),
       allowNull: true,
       defaultValue: 'inactivo',
     },
@@ -84,6 +90,23 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
     },
     trial_end: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    stripe_subscription_status: {
+      type: DataTypes.STRING(30),
+      allowNull: true,
+    },
+    cancel_at_period_end: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    cancel_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    canceled_at: {
       type: DataTypes.DATE,
       allowNull: true,
     },

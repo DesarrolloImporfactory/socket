@@ -31,24 +31,23 @@ exports.stripeWebhook = async (req, res) => {
 
     switch (event.type) {
       /**
-       * opcional
-       * Cuando completa checkout, actualizamos datos del usuario
-       * PERO no insertamos en transacciones (porque el pago real llega en invoice.*)
+       *  Opcional
+       * Checkout completado: guardamos ids básicos (NO es el pago real)
        */
       case 'checkout.session.completed': {
         console.log('[stripe] checkout.session.completed');
 
         const session = event.data.object;
 
-        const id_usuario = Number(
-          session.client_reference_id || session.metadata?.id_usuario,
-        );
+        const id_usuario =
+          Number(session.client_reference_id || session.metadata?.id_usuario) ||
+          null;
 
         const customerId = session.customer || null;
         const subscriptionId = session.subscription || null;
 
         console.log('[stripe] session.id:', session.id);
-        console.log('[stripe] id_usuario:', id_usuario || null);
+        console.log('[stripe] id_usuario:', id_usuario);
         console.log('[stripe] customerId:', customerId);
         console.log('[stripe] subscriptionId:', subscriptionId);
 
@@ -56,8 +55,8 @@ exports.stripeWebhook = async (req, res) => {
 
         await db.query(
           `UPDATE usuarios_chat_center
-           SET id_costumer = IFNULL(id_costumer, ?),
-               stripe_subscription_id = IFNULL(stripe_subscription_id, ?)
+           SET id_costumer = COALESCE(?, id_costumer),
+               stripe_subscription_id = COALESCE(?, stripe_subscription_id)
            WHERE id_usuario = ?`,
           {
             replacements: [customerId, subscriptionId, id_usuario],
@@ -68,9 +67,11 @@ exports.stripeWebhook = async (req, res) => {
       }
 
       /**
-       * Pago exitoso (evento más importante)
-       * - Actualiza plan/estado/fechas en usuarios_chat_center
-       * - Inserta transacción (idempotente con INSERT IGNORE + UNIQUE(id_pago))
+       *  Pago exitoso (FUENTE DE VERDAD)
+       * - Activa usuario
+       * - Actualiza plan/fechas
+       * - Sincroniza status/flags de Stripe en columnas nuevas
+       * - Inserta transacción idempotente
        */
       case 'invoice.payment_succeeded': {
         console.log('[stripe] invoice.payment_succeeded');
@@ -78,10 +79,8 @@ exports.stripeWebhook = async (req, res) => {
         const invoice = event.data.object;
 
         const customerId = invoice.customer || null;
-
         const firstLine = invoice.lines?.data?.[0] || null;
 
-        // Fallbacks EXACTOS para su payload
         const subscriptionId =
           invoice.subscription ||
           invoice.parent?.subscription_details?.subscription ||
@@ -89,7 +88,6 @@ exports.stripeWebhook = async (req, res) => {
           firstLine?.subscription ||
           null;
 
-        // Fallbacks de metadata para id_usuario / id_plan desde el invoice
         const metaFromParent =
           invoice.parent?.subscription_details?.metadata || {};
         const metaFromLine = firstLine?.metadata || {};
@@ -98,18 +96,10 @@ exports.stripeWebhook = async (req, res) => {
         console.log('[stripe] billing_reason:', invoice.billing_reason || null);
         console.log('[stripe] customerId:', customerId);
         console.log('[stripe] subscriptionId:', subscriptionId);
-        console.log(
-          '[stripe] line.period.start:',
-          firstLine?.period?.start || null,
-        );
-        console.log(
-          '[stripe] line.period.end:',
-          firstLine?.period?.end || null,
-        );
         console.log('[stripe] meta(parent):', metaFromParent);
         console.log('[stripe] meta(line):', metaFromLine);
 
-        // Siempre insertar transacción (aunque subscriptionId sea null)
+        // 1) Insertar transacción (idempotente)
         try {
           await db.query(
             `INSERT IGNORE INTO transacciones_stripe_chat
@@ -119,27 +109,21 @@ exports.stripeWebhook = async (req, res) => {
               replacements: [
                 invoice.id,
                 subscriptionId || null,
-                null, // luego lo actualizamos si logramos resolver id_usuario
+                null,
                 'payment_succeeded',
                 customerId || null,
               ],
             },
           );
-          console.log(
-            '[stripe] transacciones inserted/ignored for invoice:',
-            invoice.id,
-          );
+          console.log('[stripe] transacciones inserted/ignored:', invoice.id);
         } catch (e) {
           console.log('[stripe] transacciones insert failed:', e?.message);
         }
 
-        //  Resolver id_usuario / id_plan:
-        // 1) intentamos desde la suscripción (metadata fuerte)
-        // 2) si falla, usamos metadata del invoice (parent/line)
+        // 2) Resolver id_usuario / id_plan + fechas + flags Stripe
         let id_usuario = null;
         let id_plan = null;
 
-        // Fechas por defecto desde el invoice line.period (payload lo trae)
         let start = firstLine?.period?.start
           ? new Date(firstLine.period.start * 1000)
           : null;
@@ -148,56 +132,63 @@ exports.stripeWebhook = async (req, res) => {
           : null;
         let trialEnd = null;
 
+        let subStatus = null;
+        let cancelAtPeriodEnd = 0;
+        let cancelAt = null;
+        let canceledAt = null;
+
         if (subscriptionId) {
           try {
             const subscription =
               await stripe.subscriptions.retrieve(subscriptionId);
-
             const metaSub = subscription.metadata || {};
 
             id_usuario = Number(metaSub?.id_usuario) || null;
             id_plan = Number(metaSub?.id_plan) || null;
 
-            // Si Stripe trae periodos, preferimos Stripe
-            if (subscription.current_period_start) {
+            if (subscription.current_period_start)
               start = new Date(subscription.current_period_start * 1000);
-            }
-            if (subscription.current_period_end) {
+            if (subscription.current_period_end)
               end = new Date(subscription.current_period_end * 1000);
-            }
-            if (subscription.trial_end) {
+            if (subscription.trial_end)
               trialEnd = new Date(subscription.trial_end * 1000);
-            }
 
-            console.log('[stripe] subscription.id:', subscriptionId);
+            //  Flags/status reales
+            subStatus = subscription.status || null;
+            cancelAtPeriodEnd = subscription.cancel_at_period_end ? 1 : 0;
+            cancelAt = subscription.cancel_at
+              ? new Date(subscription.cancel_at * 1000)
+              : null;
+            canceledAt = subscription.canceled_at
+              ? new Date(subscription.canceled_at * 1000)
+              : null;
+
             console.log('[stripe] meta(subscription):', metaSub);
-            console.log('[stripe] id_usuario(from subscription):', id_usuario);
-            console.log('[stripe] id_plan(from subscription):', id_plan);
-            console.log('[stripe] start(from subscription or line):', start);
-            console.log('[stripe] end(from subscription or line):', end);
-            console.log('[stripe] trialEnd(from subscription):', trialEnd);
+            console.log('[stripe] id_usuario(sub):', id_usuario);
+            console.log('[stripe] id_plan(sub):', id_plan);
+            console.log('[stripe] sub.status:', subStatus);
+            console.log('[stripe] cancel_at_period_end:', cancelAtPeriodEnd);
           } catch (e) {
             console.log('[stripe] subscriptions.retrieve failed:', e?.message);
           }
         }
 
-        // Fallback a metadata del invoice si no salió desde subscription
+        // Fallback metadata invoice si no vino desde subscription
         if (!id_usuario) {
           id_usuario =
             Number(metaFromParent?.id_usuario || metaFromLine?.id_usuario) ||
             null;
           console.log(
-            '[stripe] id_usuario fallback (invoice metadata):',
+            '[stripe] id_usuario fallback(invoice meta):',
             id_usuario,
           );
         }
         if (!id_plan) {
           id_plan =
             Number(metaFromParent?.id_plan || metaFromLine?.id_plan) || null;
-          console.log('[stripe] id_plan fallback (invoice metadata):', id_plan);
+          console.log('[stripe] id_plan fallback(invoice meta):', id_plan);
         }
 
-        // Si no tenemos id_usuario, no podemos actualizar BD, pero la transacción ya quedó registrada
         if (!id_usuario) {
           console.log(
             '[stripe] WARNING: id_usuario not found. Skipping usuarios_chat_center update.',
@@ -205,17 +196,21 @@ exports.stripeWebhook = async (req, res) => {
           break;
         }
 
-        //  Actualizar usuario con fechas/plan
+        // 3) Update usuario: aquí dejamos TODO sincronizado
         const [updateResult] = await db.query(
           `UPDATE usuarios_chat_center
            SET id_plan = ?,
                estado = 'activo',
-               fecha_inicio = IFNULL(fecha_inicio, ?),
+               fecha_inicio = COALESCE(fecha_inicio, ?),
                fecha_renovacion = ?,
                free_trial_used = 1,
-               id_costumer = IFNULL(id_costumer, ?),
-               stripe_subscription_id = IFNULL(stripe_subscription_id, ?),
-               trial_end = ?
+               id_costumer = COALESCE(?, id_costumer),
+               stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+               trial_end = ?,
+               stripe_subscription_status = COALESCE(?, stripe_subscription_status),
+               cancel_at_period_end = COALESCE(?, cancel_at_period_end),
+               cancel_at = COALESCE(?, cancel_at),
+               canceled_at = COALESCE(?, canceled_at)
            WHERE id_usuario = ?`,
           {
             replacements: [
@@ -225,6 +220,10 @@ exports.stripeWebhook = async (req, res) => {
               customerId || null,
               subscriptionId || null,
               trialEnd,
+              subStatus || null,
+              cancelAtPeriodEnd,
+              cancelAt,
+              canceledAt,
               id_usuario,
             ],
           },
@@ -235,13 +234,13 @@ exports.stripeWebhook = async (req, res) => {
           updateResult,
         );
 
-        // Completar id_usuario en transacciones (porque arriba lo insertamos con null)
+        // 4) Completar id_usuario en transacciones
         try {
           await db.query(
             `UPDATE transacciones_stripe_chat
-             SET id_usuario = IFNULL(id_usuario, ?),
-                 id_suscripcion = IFNULL(id_suscripcion, ?),
-                 customer_id = IFNULL(customer_id, ?)
+             SET id_usuario = COALESCE(id_usuario, ?),
+                 id_suscripcion = COALESCE(id_suscripcion, ?),
+                 customer_id = COALESCE(customer_id, ?)
              WHERE id_pago = ?`,
             {
               replacements: [
@@ -253,7 +252,7 @@ exports.stripeWebhook = async (req, res) => {
             },
           );
           console.log(
-            '[stripe] transacciones updated with id_usuario for invoice:',
+            '[stripe] transacciones updated with id_usuario:',
             invoice.id,
           );
         } catch (e) {
@@ -266,7 +265,8 @@ exports.stripeWebhook = async (req, res) => {
       /**
        * ❌ Pago fallido
        * - Suspende usuario
-       * - Inserta transacción
+       * - Sincroniza status/flags de Stripe
+       * - Inserta transacción idempotente
        */
       case 'invoice.payment_failed': {
         console.log('[stripe] invoice.payment_failed');
@@ -289,15 +289,28 @@ exports.stripeWebhook = async (req, res) => {
 
         let id_usuario = null;
 
+        let subStatus = null;
+        let cancelAtPeriodEnd = 0;
+        let cancelAt = null;
+        let canceledAt = null;
+
         if (subscriptionId) {
           try {
             const subscription =
               await stripe.subscriptions.retrieve(subscriptionId);
             id_usuario = Number(subscription.metadata?.id_usuario) || null;
-            console.log(
-              '[stripe] id_usuario (subscription.metadata):',
-              id_usuario,
-            );
+
+            subStatus = subscription.status || null;
+            cancelAtPeriodEnd = subscription.cancel_at_period_end ? 1 : 0;
+            cancelAt = subscription.cancel_at
+              ? new Date(subscription.cancel_at * 1000)
+              : null;
+            canceledAt = subscription.canceled_at
+              ? new Date(subscription.canceled_at * 1000)
+              : null;
+
+            console.log('[stripe] id_usuario(subscription.meta):', id_usuario);
+            console.log('[stripe] sub.status:', subStatus);
           } catch (e) {
             console.log('[stripe] subscriptions.retrieve failed:', e?.message);
           }
@@ -306,9 +319,21 @@ exports.stripeWebhook = async (req, res) => {
         if (id_usuario) {
           await db.query(
             `UPDATE usuarios_chat_center
-             SET estado = 'suspendido'
+             SET estado = 'suspendido',
+                 stripe_subscription_status = COALESCE(?, stripe_subscription_status),
+                 cancel_at_period_end = COALESCE(?, cancel_at_period_end),
+                 cancel_at = COALESCE(?, cancel_at),
+                 canceled_at = COALESCE(?, canceled_at)
              WHERE id_usuario = ?`,
-            { replacements: [id_usuario] },
+            {
+              replacements: [
+                subStatus,
+                cancelAtPeriodEnd,
+                cancelAt,
+                canceledAt,
+                id_usuario,
+              ],
+            },
           );
         }
 
@@ -322,6 +347,113 @@ exports.stripeWebhook = async (req, res) => {
               subscriptionId || null,
               id_usuario || null,
               'payment_failed',
+              customerId || null,
+            ],
+          },
+        );
+
+        break;
+      }
+
+      /**
+       *  Cambios en la suscripción (cancelación programada / cancelación efectiva)
+       * - Actualiza flags/status
+       * - Si ya terminó realmente: estado = 'cancelado'
+       * - Inserta auditoría idempotente
+       */
+      case 'customer.subscription.updated': {
+        console.log('[stripe] customer.subscription.updated');
+
+        const sub = event.data.object;
+
+        const subscriptionId = sub.id || null;
+        const customerId = sub.customer || null;
+
+        const id_usuario = Number(sub.metadata?.id_usuario) || null;
+        const id_plan = Number(sub.metadata?.id_plan) || null;
+
+        const cancelAtPeriodEnd = sub.cancel_at_period_end ? 1 : 0;
+
+        const cancelAt = sub.cancel_at ? new Date(sub.cancel_at * 1000) : null;
+        const canceledAt = sub.canceled_at
+          ? new Date(sub.canceled_at * 1000)
+          : null;
+
+        const currentPeriodEnd = sub.current_period_end
+          ? new Date(sub.current_period_end * 1000)
+          : null;
+
+        const status = sub.status || null;
+
+        console.log('[stripe] subscriptionId:', subscriptionId);
+        console.log('[stripe] customerId:', customerId);
+        console.log('[stripe] id_usuario:', id_usuario);
+        console.log('[stripe] id_plan:', id_plan);
+        console.log('[stripe] cancel_at_period_end:', cancelAtPeriodEnd);
+        console.log('[stripe] cancel_at:', cancelAt);
+        console.log('[stripe] canceled_at:', canceledAt);
+        console.log('[stripe] current_period_end:', currentPeriodEnd);
+        console.log('[stripe] status:', status);
+
+        // 1) Actualizar flags del usuario
+        if (id_usuario) {
+          await db.query(
+            `UPDATE usuarios_chat_center
+             SET id_plan = COALESCE(?, id_plan),
+                 id_costumer = COALESCE(?, id_costumer),
+                 stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+                 fecha_renovacion = COALESCE(?, fecha_renovacion),
+                 stripe_subscription_status = ?,
+                 cancel_at_period_end = ?,
+                 cancel_at = ?,
+                 canceled_at = ?
+             WHERE id_usuario = ?`,
+            {
+              replacements: [
+                id_plan || null,
+                customerId || null,
+                subscriptionId || null,
+                currentPeriodEnd,
+                status,
+                cancelAtPeriodEnd,
+                cancelAt,
+                canceledAt,
+                id_usuario,
+              ],
+            },
+          );
+
+          //  Si ya terminó realmente: cancelar en su BD
+          if (status === 'canceled' || sub.ended_at) {
+            await db.query(
+              `UPDATE usuarios_chat_center
+               SET estado = 'cancelado'
+               WHERE id_usuario = ?`,
+              { replacements: [id_usuario] },
+            );
+          }
+        }
+
+        // 2) Auditoría idempotente
+        const estadoTx =
+          status === 'canceled' || sub.ended_at
+            ? 'subscription_canceled'
+            : cancelAtPeriodEnd
+              ? 'cancel_scheduled'
+              : 'subscription_updated';
+
+        const idPago = `subupd_${subscriptionId}_${estadoTx}_${sub.canceled_at || 'na'}_${sub.cancel_at || 'na'}`;
+
+        await db.query(
+          `INSERT IGNORE INTO transacciones_stripe_chat
+           (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+           VALUES (?, ?, ?, ?, NOW(), ?)`,
+          {
+            replacements: [
+              idPago,
+              subscriptionId || null,
+              id_usuario || null,
+              estadoTx,
               customerId || null,
             ],
           },
