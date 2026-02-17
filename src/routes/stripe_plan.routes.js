@@ -9,6 +9,9 @@ router.use(protect);
 // Checkout Subscription (trial lo decide backend)
 router.post('/crearSesionPago', stripeController.crearSesionPago);
 
+// Cambiar Plan- upgrade, downgrade
+router.post('/cambiarPlan', stripeController.cambiarPlan);
+
 //  Suscripción activa (para MiPlan.jsx)
 router.post(
   '/obtenerSuscripcionActiva',

@@ -16,7 +16,7 @@ const getUserById = async (id_usuario) => {
         id_usuario,
         email_propietario,
         free_trial_used,
-        promo_plan2_used
+        promo_plan2_used,
         id_costumer,
         stripe_subscription_id,
         id_plan,
@@ -336,4 +336,209 @@ exports.portalAddPaymentMethod = catchAsync(async (req, res, next) => {
   });
 
   return res.status(200).json({ success: true, url: session.url });
+});
+
+exports.cambiarPlan = catchAsync(async (req, res, next) => {
+  const { id_usuario, id_plan_nuevo } = req.body;
+
+  if (!id_usuario || !id_plan_nuevo) {
+    return next(new AppError('Faltan id_usuario o id_plan_nuevo.', 400));
+  }
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  if (!user.stripe_subscription_id) {
+    return next(new AppError('Usuario no tiene stripe_subscription_id.', 400));
+  }
+
+  const planActual = user.id_plan ? await getPlanById(user.id_plan) : null;
+  const planNuevo = await getPlanById(id_plan_nuevo);
+
+  if (!planNuevo?.id_price) {
+    return next(new AppError('Plan nuevo inválido o sin id_price.', 400));
+  }
+
+  // Si ya está en ese plan, no hacer nada
+  if (Number(user.id_plan) === Number(id_plan_nuevo)) {
+    return res
+      .status(200)
+      .json({ success: true, message: 'Ya está en ese plan.' });
+  }
+
+  // Cargar suscripción real para tomar itemId y period_end
+  const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+    expand: ['items.data.price'],
+  });
+
+  const subItem = sub.items?.data?.[0];
+  if (!subItem?.id) {
+    return next(new AppError('Suscripción sin subscription item.', 400));
+  }
+
+  const precioActual = Number(planActual?.precio_plan || 0);
+  const precioNuevo = Number(planNuevo?.precio_plan || 0);
+
+  const esUpgrade = precioNuevo > precioActual;
+  const esDowngrade = precioNuevo < precioActual;
+
+  if (!esUpgrade && !esDowngrade) {
+    // MISMO PRECIO: no cobrar nada, no prorratear, cambiar inmediatamente.
+
+    // 1) Stripe: cambiar el price SIN prorrateo (no crea cobro)
+    await stripe.subscriptions.update(sub.id, {
+      items: [{ id: subItem.id, price: planNuevo.id_price }],
+      proration_behavior: 'none',
+      payment_behavior: 'allow_incomplete',
+      metadata: {
+        ...(sub.metadata || {}),
+        id_plan: String(id_plan_nuevo), // como no hay cobro, ya puede quedar definitivo
+        pending_plan_id: '',
+        pending_change: '',
+      },
+    });
+
+    // 2) BD: actualizar plan ya (y limpiar pending porque ya se aplicó)
+    await db.query(
+      `UPDATE usuarios_chat_center
+     SET id_plan = ?,
+         pending_plan_id = NULL,
+         pending_change = NULL,
+         pending_effective_at = NULL
+     WHERE id_usuario = ?`,
+      { replacements: [id_plan_nuevo, id_usuario] },
+    );
+
+    // 3) HISTÓRICO: registrar auditoría en transacciones_stripe_chat (idempotente)
+    const idPagoAudit = `plan_same_${user.stripe_subscription_id}_${Date.now()}_${id_usuario}_${user.id_plan}_${id_plan_nuevo}`;
+
+    await db.query(
+      `INSERT IGNORE INTO transacciones_stripe_chat
+     (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+     VALUES (?, ?, ?, ?, NOW(), ?)`,
+      {
+        replacements: [
+          idPagoAudit,
+          user.stripe_subscription_id,
+          id_usuario,
+          `plan_changed_same_price:${user.id_plan}->${id_plan_nuevo}`,
+          user.id_costumer || null,
+        ],
+      },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Plan cambiado (mismo precio). No hubo cobro.',
+    });
+  }
+
+  // Guardar "pending" en BD (para trazabilidad)
+  await db.query(
+    `UPDATE usuarios_chat_center
+     SET pending_plan_id = ?,
+         pending_change = ?,
+         pending_effective_at = ?
+     WHERE id_usuario = ?`,
+    {
+      replacements: [
+        id_plan_nuevo,
+        esUpgrade ? 'upgrade' : 'downgrade',
+        esUpgrade ? new Date() : new Date(sub.current_period_end * 1000),
+        id_usuario,
+      ],
+    },
+  );
+
+  // ===========
+  // UPGRADE: cobrar YA (prorrateo)
+  // ===========
+  if (esUpgrade) {
+    // NOTA: NO cambie metadata.id_plan todavía. Deje su id_plan actual y guarde "pending_plan_id".
+    // Así no se le actualiza la BD por customer.subscription.updated antes del pago.
+    const updated = await stripe.subscriptions.update(sub.id, {
+      items: [{ id: subItem.id, price: planNuevo.id_price }],
+      proration_behavior: 'create_prorations',
+      payment_behavior: 'default_incomplete', // crea invoice+payment_intent si hace falta
+      // Mantenga su metadata actual y añada pending:
+      metadata: {
+        ...(sub.metadata || {}),
+        pending_plan_id: String(id_plan_nuevo),
+        pending_change: 'upgrade',
+      },
+      expand: ['latest_invoice.payment_intent'],
+    });
+
+    const pi = updated.latest_invoice?.payment_intent;
+
+    // Si Stripe requiere acción (3DS/SCA), el front debe confirmar:
+    if (
+      pi &&
+      ['requires_action', 'requires_payment_method'].includes(pi.status)
+    ) {
+      return res.status(200).json({
+        success: true,
+        actionRequired: true,
+        payment_intent_client_secret: pi.client_secret,
+        message: 'Requiere confirmación de pago (3DS).',
+      });
+    }
+
+    // Si no requiere acción, el pago puede quedar ya “paid” o pendiente de webhook.
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      message:
+        'Upgrade solicitado. Se confirmará con el webhook al completar el pago.',
+    });
+  }
+
+  // ===========
+  // DOWNGRADE: aplicar al CORTE (mantiene beneficios hasta el corte)
+  // ===========
+  if (esDowngrade) {
+    // La manera correcta de “cambiar al final” sin perder beneficios HOY:
+    // Usar Subscription Schedule con 2 fases.
+    //
+    // 1) Crear schedule desde la suscripción
+    const schedule = await stripe.subscriptionSchedules.create({
+      from_subscription: sub.id,
+    });
+
+    const periodEnd = sub.current_period_end; // unix
+    const currentPriceId = subItem.price?.id;
+
+    await stripe.subscriptionSchedules.update(schedule.id, {
+      end_behavior: 'release', // al final libera la suscripción (normalmente no se usa porque es continuo, pero ok)
+      phases: [
+        {
+          start_date: sub.current_period_start,
+          end_date: periodEnd,
+          items: [{ price: currentPriceId, quantity: 1 }],
+        },
+        {
+          start_date: periodEnd,
+          items: [{ price: planNuevo.id_price, quantity: 1 }],
+          // Aquí ya estaría el precio nuevo desde el siguiente ciclo
+        },
+      ],
+      metadata: {
+        ...(schedule.metadata || {}),
+        pending_plan_id: String(id_plan_nuevo),
+        pending_change: 'downgrade',
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'Downgrade programado para el próximo corte. Se mantendrá el plan actual hasta esa fecha.',
+      effective_at: new Date(periodEnd * 1000),
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: 'Cambio solicitado.',
+  });
 });
