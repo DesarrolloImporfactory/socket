@@ -35,7 +35,6 @@ const getPlanById = async (id_plan) => {
 /**
  *  Checkout Session - subscription
  * - Trial: 15 días SOLO si el usuario no lo ha usado (free_trial_used=0)
- * - Usted puede forzar trial SOLO para plan Conexión si desea (abajo le dejo cómo)
  */
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan } = req.body;
@@ -74,20 +73,33 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const successUrl = `${process.env.FRONT_SUCCESS_URL}`;
   const cancelUrl = process.env.FRONT_CANCEL_URL;
 
+  //Si ya existe customer, úselo SIEMPRE
+  const customerParam = user.id_costumer
+    ? { customer: user.id_costumer }
+    : { customer_email: user.email_propietario || undefined };
+
+  // Si quiere garantizar que Stripe no cambie customer, fuerce update:
+  const customerUpdateParam = user.id_costumer
+    ? { customer_update: { address: 'auto', name: 'auto' } } // opcional
+    : {};
+
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     payment_method_types: ['card'],
     line_items: [{ price: plan.id_price, quantity: 1 }],
 
-    customer_email: user.email_propietario || undefined,
+    ...customerParam,
+    ...customerUpdateParam,
+
     client_reference_id: String(id_usuario),
 
-    //  Obligar tarjeta aunque haya trial
     payment_method_collection: 'always',
 
     metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
+
     subscription_data: {
-      trial_period_days: trialDays,
+      ...(trialDays ? { trial_period_days: trialDays } : {}),
+      //  metadata EN LA SUSCRIPCIÓN
       metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
     },
 
