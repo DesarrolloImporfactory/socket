@@ -454,42 +454,116 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   // UPGRADE: cobrar YA (prorrateo)
   // ===========
   if (esUpgrade) {
-    // NOTA: NO cambie metadata.id_plan todavía. Deje su id_plan actual y guarde "pending_plan_id".
-    // Así no se le actualiza la BD por customer.subscription.updated antes del pago.
+    // Si está en trial y hace upgrade: cortamos trial ya
+    // (Si no está en trial, no afecta)
+    const cortarTrial = sub.status === 'trialing';
+
+    // 1) Update subscription con prorrateo
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
       proration_behavior: 'create_prorations',
-      payment_behavior: 'default_incomplete', // crea invoice+payment_intent si hace falta
-      // Mantenga su metadata actual y añada pending:
+
+      // Importante: esto permite que Stripe cree PI si hace falta
+      payment_behavior: 'default_incomplete',
+
+      // Si está en trial y quiere cobrar ya, fuerce fin del trial:
+      ...(cortarTrial ? { trial_end: 'now' } : {}),
+
       metadata: {
         ...(sub.metadata || {}),
         pending_plan_id: String(id_plan_nuevo),
         pending_change: 'upgrade',
+        // pending_invoice_id lo seteamos luego
       },
+
       expand: ['latest_invoice.payment_intent'],
     });
 
-    const pi = updated.latest_invoice?.payment_intent;
+    // 2) Crear invoice AHORA para que los prorrateos se cobren hoy
+    // Nota: en algunos casos Stripe ya crea latest_invoice, pero no siempre queda cobrada.
+    // Esta invoice asegura cobro inmediato.
+    const inv = await stripe.invoices.create({
+      customer: updated.customer,
+      subscription: updated.id,
+      auto_advance: true,
+      metadata: {
+        id_usuario: String(id_usuario),
+        pending_change: 'upgrade',
+        pending_plan_id: String(id_plan_nuevo),
+      },
+    });
 
-    // Si Stripe requiere acción (3DS/SCA), el front debe confirmar:
+    // 3) Finalizar invoice
+    const finalized = await stripe.invoices.finalizeInvoice(inv.id, {
+      expand: ['payment_intent'],
+    });
+
+    // 4) Guardar pending_invoice_id en Stripe metadata (y en BD si quiere)
+    try {
+      await stripe.subscriptions.update(updated.id, {
+        metadata: {
+          ...(updated.metadata || {}),
+          pending_invoice_id: finalized.id,
+        },
+      });
+    } catch (e) {
+      console.log(
+        '[cambiarPlan] metadata pending_invoice_id failed:',
+        e?.message,
+      );
+    }
+
+    // 5) Intentar pagar la invoice YA
+    let paid = null;
+    try {
+      paid = await stripe.invoices.pay(finalized.id, {
+        expand: ['payment_intent'],
+      });
+    } catch (e) {
+      // Si requiere 3DS/SCA, Stripe lanzará error o dejará PI en requires_action
+      // No rompa aquí
+    }
+
+    const pi = paid?.payment_intent || finalized?.payment_intent || null;
+
+    // Si quedó pagada de inmediato
+    if (paid && paid.status === 'paid') {
+      return res.status(200).json({
+        success: true,
+        actionRequired: false,
+        subscription_id: updated.id,
+        invoice_id: paid.id,
+        message: 'Upgrade cobrado y aplicado. Se confirmará por webhook.',
+      });
+    }
+
+    // Si requiere acción (3DS)
     if (
       pi &&
+      pi.client_secret &&
       ['requires_action', 'requires_payment_method'].includes(pi.status)
     ) {
       return res.status(200).json({
         success: true,
         actionRequired: true,
         payment_intent_client_secret: pi.client_secret,
-        message: 'Requiere confirmación de pago (3DS).',
+        payment_intent_status: pi.status,
+        subscription_id: updated.id,
+        invoice_id: finalized.id,
+        message:
+          'Requiere confirmación bancaria (3DS) para completar el upgrade.',
       });
     }
 
-    // Si no requiere acción, el pago puede quedar ya “paid” o pendiente de webhook.
+    // Caso raro: no pagó, no dio PI; devuelva hosted_invoice_url para que el cliente lo complete en Stripe
+    const refreshedInvoice = await stripe.invoices.retrieve(finalized.id);
     return res.status(200).json({
       success: true,
-      actionRequired: false,
-      message:
-        'Upgrade solicitado. Se confirmará con el webhook al completar el pago.',
+      actionRequired: true,
+      subscription_id: updated.id,
+      invoice_id: finalized.id,
+      hosted_invoice_url: refreshedInvoice.hosted_invoice_url,
+      message: 'Debe completar el pago para finalizar el upgrade.',
     });
   }
 

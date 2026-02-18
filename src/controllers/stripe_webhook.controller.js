@@ -5,6 +5,20 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: '2024-06-20',
 });
 
+const getPlanByPriceId = async (priceId) => {
+  if (!priceId) return null;
+
+  const [[p]] = await db.query(
+    `SELECT id_plan, nombre_plan, id_price, precio_plan
+     FROM planes_chat_center
+     WHERE id_price = ?
+     LIMIT 1`,
+    { replacements: [priceId] },
+  );
+
+  return p || null;
+};
+
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
@@ -59,7 +73,7 @@ exports.stripeWebhook = async (req, res) => {
        * - Actualiza plan/fechas
        * - Sincroniza status/flags de Stripe en columnas nuevas
        * - Inserta transacción idempotente
-       * - Aplica UPGRADE solo cuando el prorrateo realmente se pagó
+       * - Aplica UPGRADE solo cuando el prorrateo realmente se pagó (pending_invoice_id)
        * - Marca promo_plan2_used solo si hubo descuento real en la invoice
        */
       case 'invoice.payment_succeeded': {
@@ -127,6 +141,7 @@ exports.stripeWebhook = async (req, res) => {
         let metaSub = {};
         let pendingPlanId = null;
         let pendingChange = null;
+        let pendingInvoiceId = null;
 
         if (subscriptionId) {
           try {
@@ -150,6 +165,9 @@ exports.stripeWebhook = async (req, res) => {
             // Pending (upgrade/downgrade) en metadata
             pendingPlanId = Number(metaSub?.pending_plan_id || 0) || null;
             pendingChange = metaSub?.pending_change || null;
+
+            //  NUEVO: invoice exacta que debe gatillar el upgrade
+            pendingInvoiceId = metaSub?.pending_invoice_id || null;
 
             // Fechas más confiables desde subscription
             if (subscription.current_period_start)
@@ -193,17 +211,14 @@ exports.stripeWebhook = async (req, res) => {
 
         // =========
         // Determinar plan a aplicar en BD
-        // - UPGRADE: solo aplicar pending cuando el invoice corresponde al update (prorrateo)
+        // - UPGRADE: solo aplicar pending cuando invoice.id === pending_invoice_id
         // - Normal: usar plan REAL por priceId
         // =========
-        const billingReason = invoice.billing_reason || null;
-
         const isUpgradeInvoice =
           pendingChange === 'upgrade' &&
           !!pendingPlanId &&
-          (billingReason === 'subscription_update' ||
-            billingReason === 'manual' ||
-            billingReason === 'upcoming');
+          !!pendingInvoiceId &&
+          invoice.id === pendingInvoiceId;
 
         // plan final
         let planToApply = null;
@@ -211,7 +226,7 @@ exports.stripeWebhook = async (req, res) => {
         if (isUpgradeInvoice) {
           planToApply = pendingPlanId;
           console.log(
-            '[stripe] applying UPGRADE pending_plan_id:',
+            '[stripe] applying UPGRADE pending_plan_id (by pending_invoice_id):',
             planToApply,
           );
 
@@ -223,6 +238,7 @@ exports.stripeWebhook = async (req, res) => {
                 id_plan: String(pendingPlanId),
                 pending_plan_id: '',
                 pending_change: '',
+                pending_invoice_id: '', // ✅ limpiar para que no se re-aplique
               },
             });
           } catch (e) {
