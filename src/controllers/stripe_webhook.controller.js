@@ -5,6 +5,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: '2024-06-20',
 });
 
+/* =========================
+   Helpers
+========================= */
 const getPlanByPriceId = async (priceId) => {
   if (!priceId) return null;
 
@@ -21,7 +24,6 @@ const getPlanByPriceId = async (priceId) => {
 
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
-
   let event;
 
   try {
@@ -49,20 +51,28 @@ exports.stripeWebhook = async (req, res) => {
           Number(session.client_reference_id || session.metadata?.id_usuario) ||
           null;
 
+        // 👇 Puede venir o no
+        const id_plataforma = Number(session.metadata?.id_plataforma) || null;
+
         const customerId = session.customer || null;
         const subscriptionId = session.subscription || null;
 
         if (!id_usuario) break;
 
-        await db.query(
-          `UPDATE usuarios_chat_center
-           SET id_costumer = COALESCE(?, id_costumer),
-               stripe_subscription_id = COALESCE(?, stripe_subscription_id)
-           WHERE id_usuario = ?`,
-          {
-            replacements: [customerId, subscriptionId, id_usuario],
-          },
-        );
+        //  Solo setear id_plataforma si viene (no tocar si no viene)
+        const sql = `
+          UPDATE usuarios_chat_center
+          SET id_costumer = COALESCE(?, id_costumer),
+              stripe_subscription_id = COALESCE(?, stripe_subscription_id)
+              ${id_plataforma ? ', id_plataforma = COALESCE(?, id_plataforma)' : ''}
+          WHERE id_usuario = ?
+        `;
+
+        const replacements = id_plataforma
+          ? [customerId, subscriptionId, id_plataforma, id_usuario]
+          : [customerId, subscriptionId, id_usuario];
+
+        await db.query(sql, { replacements });
 
         break;
       }
@@ -143,6 +153,9 @@ exports.stripeWebhook = async (req, res) => {
         let pendingChange = null;
         let pendingInvoiceId = null;
 
+        // id_plataforma puede venir o no
+        let id_plataforma = null;
+
         if (subscriptionId) {
           try {
             const subscription = await stripe.subscriptions.retrieve(
@@ -153,6 +166,9 @@ exports.stripeWebhook = async (req, res) => {
             metaSub = subscription.metadata || {};
 
             id_usuario = Number(metaSub?.id_usuario) || null;
+
+            // id_plataforma (si viene)
+            id_plataforma = Number(metaSub?.id_plataforma) || null;
 
             // Plan REAL por priceId
             const item0 = subscription.items?.data?.[0] || null;
@@ -166,7 +182,7 @@ exports.stripeWebhook = async (req, res) => {
             pendingPlanId = Number(metaSub?.pending_plan_id || 0) || null;
             pendingChange = metaSub?.pending_change || null;
 
-            //  NUEVO: invoice exacta que debe gatillar el upgrade
+            // NUEVO: invoice exacta que debe gatillar el upgrade
             pendingInvoiceId = metaSub?.pending_invoice_id || null;
 
             // Fechas más confiables desde subscription
@@ -202,6 +218,20 @@ exports.stripeWebhook = async (req, res) => {
           );
         }
 
+        // ✅ Fallback id_plataforma por metadata invoice si no vino desde subscription
+        if (!id_plataforma) {
+          id_plataforma =
+            Number(
+              metaFromParent?.id_plataforma || metaFromLine?.id_plataforma,
+            ) || null;
+          if (id_plataforma) {
+            console.log(
+              '[stripe] id_plataforma fallback(invoice meta):',
+              id_plataforma,
+            );
+          }
+        }
+
         if (!id_usuario) {
           console.log(
             '[stripe] WARNING: id_usuario not found. Skipping usuarios_chat_center update.',
@@ -220,7 +250,6 @@ exports.stripeWebhook = async (req, res) => {
           !!pendingInvoiceId &&
           invoice.id === pendingInvoiceId;
 
-        // plan final
         let planToApply = null;
 
         if (isUpgradeInvoice) {
@@ -238,19 +267,17 @@ exports.stripeWebhook = async (req, res) => {
                 id_plan: String(pendingPlanId),
                 pending_plan_id: '',
                 pending_change: '',
-                pending_invoice_id: '', // ✅ limpiar para que no se re-aplique
+                pending_invoice_id: '',
               },
             });
           } catch (e) {
             console.log('[stripe] sub metadata finalize failed:', e?.message);
           }
         } else {
-          // Normal: plan REAL por priceId (más confiable que metadata)
           planToApply = Number(planRealByPrice?.id_plan || 0) || null;
           console.log('[stripe] applying plan by priceId:', planToApply);
         }
 
-        // Fallback final (por si no hubo priceId o falla DB)
         if (!planToApply) {
           const fallbackPlan =
             Number(
@@ -294,27 +321,47 @@ exports.stripeWebhook = async (req, res) => {
 
         // =========
         // 3) Update usuario: sincronización total
+        //    id_plataforma SOLO si existe (no tocar si no viene)
         // =========
-        const [updateResult] = await db.query(
-          `UPDATE usuarios_chat_center
-           SET id_plan = ?,
-               estado = 'activo',
-               fecha_inicio = COALESCE(fecha_inicio, ?),
-               fecha_renovacion = ?,
-               free_trial_used = 1,
-               id_costumer = COALESCE(?, id_costumer),
-               stripe_subscription_id = COALESCE(?, stripe_subscription_id),
-               trial_end = ?,
-               stripe_subscription_status = COALESCE(?, stripe_subscription_status),
-               cancel_at_period_end = COALESCE(?, cancel_at_period_end),
-               cancel_at = COALESCE(?, cancel_at),
-               canceled_at = COALESCE(?, canceled_at)
-           WHERE id_usuario = ?`,
-          {
-            replacements: [
+        const sqlUserUpdate = `
+          UPDATE usuarios_chat_center
+          SET id_plan = ?,
+              estado = 'activo',
+              fecha_inicio = COALESCE(fecha_inicio, ?),
+              fecha_renovacion = ?,
+              free_trial_used = 1
+              ${id_plataforma ? ', id_plataforma = COALESCE(?, id_plataforma)' : ''},
+              id_costumer = COALESCE(?, id_costumer),
+              stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+              trial_end = ?,
+              stripe_subscription_status = COALESCE(?, stripe_subscription_status),
+              cancel_at_period_end = COALESCE(?, cancel_at_period_end),
+              cancel_at = COALESCE(?, cancel_at),
+              canceled_at = COALESCE(?, canceled_at)
+          WHERE id_usuario = ?
+        `;
+
+        const userReplBase = [
+          planToApply || null,
+          start,
+          end,
+          // aquí podría ir id_plataforma si existe
+          customerId || null,
+          subscriptionId || null,
+          trialEnd,
+          subStatus || null,
+          cancelAtPeriodEnd,
+          cancelAt,
+          canceledAt,
+          id_usuario,
+        ];
+
+        const userReplacements = id_plataforma
+          ? [
               planToApply || null,
               start,
               end,
+              id_plataforma, // insertado SOLO si existe
               customerId || null,
               subscriptionId || null,
               trialEnd,
@@ -323,9 +370,12 @@ exports.stripeWebhook = async (req, res) => {
               cancelAt,
               canceledAt,
               id_usuario,
-            ],
-          },
-        );
+            ]
+          : userReplBase;
+
+        const [updateResult] = await db.query(sqlUserUpdate, {
+          replacements: userReplacements,
+        });
 
         console.log(
           '[stripe] usuarios_chat_center update result:',
@@ -507,7 +557,6 @@ exports.stripeWebhook = async (req, res) => {
 
         const id_usuario = Number(sub.metadata?.id_usuario) || null;
 
-        // Estado / flags
         const cancelAtPeriodEnd = sub.cancel_at_period_end ? 1 : 0;
         const cancelAt = sub.cancel_at ? new Date(sub.cancel_at * 1000) : null;
         const canceledAt = sub.canceled_at
@@ -520,7 +569,6 @@ exports.stripeWebhook = async (req, res) => {
 
         const status = sub.status || null;
 
-        // Plan REAL por priceId (lo que Stripe está cobrando en ESTE momento)
         const currentPriceId = sub.items?.data?.[0]?.price?.id || null;
         let planRealByPrice = null;
         if (currentPriceId) {
@@ -532,7 +580,6 @@ exports.stripeWebhook = async (req, res) => {
         }
         const planRealId = Number(planRealByPrice?.id_plan || 0) || null;
 
-        // Pending desde metadata (downgrade programado)
         const pendingPlanId =
           Number(sub.metadata?.pending_plan_id || 0) || null;
         const pendingChange = sub.metadata?.pending_change || null;
@@ -543,7 +590,6 @@ exports.stripeWebhook = async (req, res) => {
           !!planRealId &&
           planRealId === pendingPlanId;
 
-        // Si downgrade está pending pero aún NO cambió el price, NO toque id_plan (mantiene beneficios)
         const isDowngradePending =
           pendingChange === 'downgrade' && !!pendingPlanId;
 
@@ -552,7 +598,6 @@ exports.stripeWebhook = async (req, res) => {
             ? null
             : planRealId || Number(sub.metadata?.id_plan) || null;
 
-        // 1) Actualizar flags del usuario
         if (id_usuario) {
           await db.query(
             `UPDATE usuarios_chat_center
@@ -580,7 +625,6 @@ exports.stripeWebhook = async (req, res) => {
             },
           );
 
-          // Si ya terminó realmente: cancelar en BD
           if (status === 'canceled' || sub.ended_at) {
             await db.query(
               `UPDATE usuarios_chat_center
@@ -591,9 +635,7 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
-        // 2) Si corresponde: aplicar DOWNGRADE ahora (ya cambió el price)
         if (shouldApplyDowngradeNow && id_usuario) {
-          // Limpieza pending en BD
           try {
             await db.query(
               `UPDATE usuarios_chat_center
@@ -611,7 +653,6 @@ exports.stripeWebhook = async (req, res) => {
             );
           }
 
-          // Finalizar metadata en Stripe
           try {
             await stripe.subscriptions.update(subscriptionId, {
               metadata: {
@@ -628,7 +669,6 @@ exports.stripeWebhook = async (req, res) => {
             );
           }
 
-          // Auditoría
           try {
             const idPagoAudit = `downgrade_applied_${subscriptionId}_${Date.now()}`;
             await db.query(
@@ -650,7 +690,6 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
-        // 3) Auditoría idempotente general
         const estadoTx =
           status === 'canceled' || sub.ended_at
             ? 'subscription_canceled'

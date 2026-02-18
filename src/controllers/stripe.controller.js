@@ -54,7 +54,7 @@ const getPlanById = async (id_plan) => {
  * - Trial: 15 días SOLO si el usuario no lo ha usado (free_trial_used=0)
  */
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
-  const { id_usuario, id_plan } = req.body;
+  const { id_usuario, id_plan, id_plataforma = null } = req.body;
 
   if (!id_usuario || !id_plan) {
     return next(new AppError('Faltan id_usuario o id_plan.', 400));
@@ -95,6 +95,13 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     ? { customer_update: { address: 'auto', name: 'auto' } }
     : {};
 
+  // metadata común (simple y consistente)
+  const meta = {
+    id_usuario: String(id_usuario),
+    id_plan: String(id_plan),
+    id_plataforma: id_plataforma ? String(id_plataforma) : '',
+  };
+
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     payment_method_types: ['card'],
@@ -105,14 +112,18 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
 
     client_reference_id: String(id_usuario),
     payment_method_collection: 'always',
-    metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
+
+    //
+    metadata: meta,
 
     // Aplica cupón “una vez” (primer cobro) SIN tocar trial
     ...(canApplyPromo ? { discounts: [{ coupon: couponId }] } : {}),
 
     subscription_data: {
       ...(trialDays ? { trial_period_days: trialDays } : {}),
-      metadata: { id_usuario: String(id_usuario), id_plan: String(id_plan) },
+
+      //  meter id_plataforma también en subscription metadata
+      metadata: meta,
     },
 
     success_url: successUrl,
