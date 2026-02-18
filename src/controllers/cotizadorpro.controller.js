@@ -23,6 +23,37 @@ const path = require('path');
 const { formatPhoneForWhatsApp } = require('../utils/phoneUtils');
 const { text } = require('express');
 const { language } = require('googleapis/build/src/apis/language');
+const CotizadorproCotizaciones = require('../models/cotizadorpro/cotizadorpro_cotizaciones.model');
+
+// Helper: Formatear fecha a dd/mm/yyyy
+const formatearFecha = (fecha) => {
+  try {
+    let date;
+
+    // Si es un timestamp Unix (número o string numérico)
+    if (!isNaN(fecha) && String(fecha).length === 10) {
+      date = new Date(Number(fecha) * 1000);
+    } else if (!isNaN(fecha) && String(fecha).length === 13) {
+      date = new Date(Number(fecha));
+    } else {
+      // Intentar parsear como fecha
+      date = new Date(fecha);
+    }
+
+    if (isNaN(date.getTime())) {
+      return fecha; // Retornar original si no se puede parsear
+    }
+
+    const dia = String(date.getDate()).padStart(2, '0');
+    const mes = String(date.getMonth() + 1).padStart(2, '0');
+    const anio = date.getFullYear();
+
+    return `${dia}/${mes}/${anio}`;
+  } catch (error) {
+    console.error('[FORMAT_FECHA] Error al formatear:', error);
+    return fecha; // Retornar original si hay error
+  }
+};
 
 // Constantes para Cotizador Pro
 const COTIZADOR_CONFIG = {
@@ -126,7 +157,7 @@ const generarDatosMensaje = (templateName, nombreCliente, idCotizacion) => {
 Por favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
     },
-    confirmacion_cotizacion_carga_pro: {
+    confirmacion_cotizacion: {
       texto: `Hola Importador {{1}}.
 Para continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.
 
@@ -161,34 +192,36 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
 
   try {
     await fs.writeFile(inputPath, fileBuffer);
-    console.log('[VIDEO_CONVERT] Archivo temporal creado:', inputPath);
+    // console.log('[VIDEO_CONVERT] Archivo temporal creado:', inputPath);
 
     try {
       await execAsync('ffmpeg -version');
     } catch (e) {
-      console.warn('[VIDEO_CONVERT] FFmpeg no disponible. Usando video original.');
+      console.warn(
+        '[VIDEO_CONVERT] FFmpeg no disponible. Usando video original.',
+      );
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
     const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -maxrate 1M -bufsize 2M -movflags +faststart -y "${outputPath}"`;
-    
-    console.log('[VIDEO_CONVERT] Ejecutando conversión...');
+
+    // console.log('[VIDEO_CONVERT] Ejecutando conversión...');
     const startTime = Date.now();
-    
+
     await execAsync(ffmpegCmd, {
       maxBuffer: 50 * 1024 * 1024,
     });
-    
+
     const duration = Date.now() - startTime;
-    console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
+    // console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
 
     const convertedBuffer = await fs.readFile(outputPath);
-    
-    console.log('[VIDEO_CONVERT] Tamaños:', {
+
+    /*  // console.log('[VIDEO_CONVERT] Tamaños:', {
       original: (fileBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
       convertido: (convertedBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
     });
-
+ */
     await fs.unlink(inputPath).catch(() => {});
     await fs.unlink(outputPath).catch(() => {});
 
@@ -205,13 +238,13 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
 // Helper: Subir video a Meta
 const uploadVideoToMeta = async (fileBuffer, fileName) => {
   const mediaUrl = `https://graph.facebook.com/v22.0/${process.env.CONFIGURACION_WS}/media`;
-  
-  console.log('[UPLOAD_META] Iniciando subida:', {
+
+  /*  // console.log('[UPLOAD_META] Iniciando subida:', {
     fileName,
     size: fileBuffer.length,
     sizeMB: (fileBuffer.length / (1024 * 1024)).toFixed(2),
   });
-
+ */
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('type', 'video/mp4');
@@ -244,7 +277,7 @@ const uploadVideoToMeta = async (fileBuffer, fileName) => {
     throw new Error('Respuesta de Meta sin mediaId');
   }
 
-  console.log('[UPLOAD_META] Éxito. MediaId:', mediaId);
+  // console.log('[UPLOAD_META] Éxito. MediaId:', mediaId);
 
   return mediaId;
 };
@@ -268,7 +301,7 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 
   // Normalizar el número de teléfono
   const phoneInfo = normalizePhoneNumber(celular, '593'); // '593' es Ecuador por defecto
-  console.log('Información del teléfono:', phoneInfo);
+  // console.log('Información del teléfono:', phoneInfo);
   // { normalizedPhone: '987654321', countryCode: '593', country: 'Ecuador', hasCountryCode: true/false }
 
   // Generar variaciones del número para búsqueda flexible
@@ -286,7 +319,7 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 
   // poner todos los id_plataforma en un array
   const plataformaIds = plataforma.map((p) => p.id_plataforma);
-  console.log('IDs de plataformas:', plataformaIds);
+  // console.log('IDs de plataformas:', plataformaIds);
 
   const usuarioPlataformas = await UsuarioPlataforma.findAll({
     where: {
@@ -306,6 +339,8 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
                     c.id_cotizacion,
                     c.fecha_creacion,
                     c.estado,
+                    c.subestado,
+                    c.fecha_recibida,
                     d.pais_origen,
                     d.pais_destino,
                     COUNT(pc.id_producto_cot) AS total_productos,
@@ -325,9 +360,9 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
     { type: db_2.QueryTypes.SELECT },
   );
 
-  console.log('Cotizaciones encontradas:', cotizaciones.length);
+  // console.log('Cotizaciones encontradas:', cotizaciones.length);
 
-  console.log('Query ejecutada:', cotizaciones);
+  // console.log('Query ejecutada:', cotizaciones);
   res.status(200).json({
     status: '200',
     title: 'Petición exitosa',
@@ -338,7 +373,7 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 
 exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   const { id_cotizacion } = req.body;
-  
+
   if (!id_cotizacion) {
     return next(new AppError('id_cotizacion es requerido', 400));
   }
@@ -386,28 +421,28 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   const plantilla2 = crearPlantillaWhatsApp(
     celularFormateado,
-    'confirmacion_cotizacion_carga_pro',
+    'confirmacion_cotizacion',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
 
   // Enviar las plantillas
   const response1 = await enviarTemplateWhatsApp(plantilla1);
-  console.log('Respuesta al enviar plantilla 1:', response1);
+  // console.log('Respuesta al enviar plantilla 1:', response1);
 
   const response2 = await enviarTemplateWhatsApp(plantilla2);
-  console.log('Respuesta al enviar plantilla 2:', response2);
+  // console.log('Respuesta al enviar plantilla 2:', response2);
 
   // Extraer IDs de mensajes
-  const midMensaje1 =
-    response1?.messages?.[0]?.id || null;
-  const midMensaje2 =
-    response2?.messages?.[0]?.id || null;
+  const midMensaje1 = response1?.messages?.[0]?.id || null;
+  const midMensaje2 = response2?.messages?.[0]?.id || null;
 
   // Verificar si el primer mensaje fue aceptado
-  if (!response1?.messages?.[0]?.message_status || 
-      response1.messages[0].message_status !== 'accepted') {
-    console.log('Error al enviar la cotización:', response1);
+  if (
+    !response1?.messages?.[0]?.message_status ||
+    response1.messages[0].message_status !== 'accepted'
+  ) {
+    // console.log('Error al enviar la cotización:', response1);
     return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
   }
 
@@ -423,7 +458,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   });
 
   if (foundChat) {
-    console.log('Chat encontrado con ID:', foundChat.id);
+    // console.log('Chat encontrado con ID:', foundChat.id);
     chatId = foundChat.id;
   } else {
     // Crear nuevo chat
@@ -437,7 +472,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
       chat_cerrado: false,
     });
 
-    console.log('Nuevo chat creado con ID:', nuevoChat.id);
+    // console.log('Nuevo chat creado con ID:', nuevoChat.id);
     chatId = nuevoChat.id;
   }
 
@@ -456,10 +491,10 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     mensaje1Data.rutaArchivo,
     'cotizacion_carga_enviada',
   );
-  console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
+  // console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
 
   const mensaje2Data = generarDatosMensaje(
-    'confirmacion_cotizacion_carga_pro',
+    'confirmacion_cotizacion',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -470,9 +505,9 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje2,
     mensaje2Data.texto,
     mensaje2Data.rutaArchivo,
-    'confirmacion_cotizacion_carga_pro',
+    'confirmacion_cotizacion',
   );
-  console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
+  // console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
 
   // Actualizar estado de la cotización
   await db_2.query(
@@ -495,6 +530,165 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
+  const { id_cotizacion, fecha_estimada } = req.body;
+
+  if (!id_cotizacion) {
+    return next(new AppError('id_cotizacion es requerido', 400));
+  }
+
+  if (!fecha_estimada) {
+    return next(new AppError('fecha_estimada es requerida', 400));
+  }
+
+  // Obtener información del cliente desde la cotización
+  const resultado = await db_2.query(
+    `
+    SELECT 
+      u.nombre_users AS cliente,
+      p.whatsapp AS celular_cliente,
+      p.email AS email_cliente
+    FROM cotizadorpro_cotizaciones c
+    JOIN cotizadorpro_detalle_cot d ON c.id_cotizacion = d.id_cotizacion
+    JOIN users u ON d.id_users = u.id_users
+    JOIN usuario_plataforma up ON u.id_users = up.id_usuario
+    JOIN plataformas p ON up.id_plataforma = p.id_plataforma
+    WHERE c.id_cotizacion = ?
+    LIMIT 1
+    `,
+    {
+      replacements: [id_cotizacion],
+      type: db_2.QueryTypes.SELECT,
+    },
+  );
+
+  if (resultado.length === 0) {
+    return next(new AppError('Cotización no encontrada', 404));
+  }
+
+  const clienteInfo = resultado[0];
+  const celularFormateado = formatPhoneForWhatsApp(
+    clienteInfo.celular_cliente,
+    '593',
+  );
+
+  // Formatear la fecha a dd/mm/yyyy
+  const fechaFormateada = formatearFecha(fecha_estimada);
+  console.log(
+    `[FECHA_EST] Fecha original: ${fecha_estimada}, Fecha formateada: ${fechaFormateada}`,
+  );
+
+  // Crear template con nombre y fecha
+  const templateFecha = {
+    messaging_product: 'whatsapp',
+    to: celularFormateado,
+    type: 'template',
+    template: {
+      name: 'fecha_estimada_de_llegada',
+      language: {
+        code: 'es',
+      },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            {
+              type: 'text',
+              text: clienteInfo.cliente,
+            },
+            {
+              type: 'text',
+              text: fechaFormateada,
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  // Enviar template
+  let response;
+  try {
+    response = await enviarTemplateWhatsApp(templateFecha);
+  } catch (err) {
+    console.error('[FECHA_EST] Error al enviar template:', err.message);
+    return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
+  }
+
+  const midMensaje = response?.messages?.[0]?.id || null;
+
+  if (
+    !response?.messages?.[0]?.message_status ||
+    response.messages[0].message_status !== 'accepted'
+  ) {
+    return next(new AppError('WhatsApp no aceptó el mensaje', 500));
+  }
+
+  // Buscar o crear chat
+  let chatId = null;
+  const foundChat = await Clientes_chat_center.findOne({
+    where: {
+      celular_cliente: {
+        [Op.like]: `%${celularFormateado}%`,
+      },
+      id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+    },
+  });
+
+  if (foundChat) {
+    chatId = foundChat.id;
+  } else {
+    const nuevoChat = await Clientes_chat_center.create({
+      id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+      nombre_cliente: clienteInfo.cliente,
+      celular_cliente: celularFormateado,
+      uid_cliente: COTIZADOR_CONFIG.UID_CLIENTE,
+      email_cliente: clienteInfo.email_cliente,
+      estado_cliente: 1,
+      chat_cerrado: false,
+    });
+    chatId = nuevoChat.id;
+  }
+
+  // Registrar mensaje en BD
+  const rutaArchivo = JSON.stringify({
+    placeholders: {
+      1: clienteInfo.cliente,
+      2: fechaFormateada,
+    },
+    header: null,
+    template_name: 'fecha_estimada_de_llegada',
+    language: 'es',
+    id_cotizacion: id_cotizacion,
+  });
+
+  const textoMensaje = `Hola {{1}}, le informamos que la fecha estimada de llegada de su pedido es: {{2}}`;
+
+  const mensajeRegistrado = await crearMensajeBD(
+    chatId,
+    celularFormateado,
+    midMensaje,
+    textoMensaje,
+    rutaArchivo,
+    'fecha_estimada_de_llegada',
+  );
+
+  res.status(200).json({
+    status: 200,
+    success: true,
+    title: 'Fecha enviada',
+    message: 'Fecha estimada enviada correctamente',
+    data: {
+      wamid: midMensaje,
+      chatId: chatId,
+      celular: celularFormateado,
+      nombreCliente: clienteInfo.cliente,
+      fecha_estimada: fecha_estimada,
+      mensaje_id: mensajeRegistrado.id,
+    },
+  });
+});
+
 exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   const { telefono, video_url, id_cotizacion } = req.body;
 
@@ -506,15 +700,10 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     return next(new AppError('video_url es requerido', 400));
   }
 
-  console.log('[VIDEO_COT] Iniciando envío de video:', {
-    telefono,
-    video_url,
-    id_cotizacion,
-  });
+
 
   // Formatear celular
   const celularFormateado = formatPhoneForWhatsApp(telefono, '593');
-  console.log('[VIDEO_COT] Celular formateado:', celularFormateado);
 
   // Obtener nombre del cliente si viene id_cotizacion
   let nombreCliente = 'Estimado cliente';
@@ -534,18 +723,19 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
           type: db_2.QueryTypes.SELECT,
         },
       );
-      
+
       if (resultado.length > 0) {
         nombreCliente = resultado[0].cliente;
-        console.log('[VIDEO_COT] Cliente encontrado:', nombreCliente);
+        // console.log('[VIDEO_COT] Cliente encontrado:', nombreCliente);
       }
     } catch (err) {
-      console.warn('[VIDEO_COT] No se pudo obtener nombre del cliente:', err.message);
+      console.warn(
+        '[VIDEO_COT] No se pudo obtener nombre del cliente:',
+        err.message,
+      );
     }
   }
 
-  // 1. Descargar el video desde la URL
-  console.log('[VIDEO_COT] Descargando video desde:', video_url);
   let videoBuffer;
   try {
     const videoResponse = await axios.get(video_url, {
@@ -553,33 +743,28 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       timeout: 60000,
     });
     videoBuffer = Buffer.from(videoResponse.data);
-    console.log('[VIDEO_COT] Video descargado. Tamaño:', 
-      (videoBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+  
   } catch (err) {
     console.error('[VIDEO_COT] Error al descargar video:', err.message);
     return next(new AppError('No se pudo descargar el video', 500));
   }
 
-  // 2. Convertir video a formato WhatsApp compatible (H.264)
-  console.log('[VIDEO_COT] Iniciando conversión a formato WhatsApp...');
   let convertedBuffer = videoBuffer;
   let videoFileName = 'video.mp4';
 
   try {
     convertedBuffer = await convertVideoForWhatsApp(
       videoBuffer,
-      'cotizacion-video.mp4'
+      'cotizacion-video.mp4',
     );
     videoFileName = 'cotizacion-video-converted.mp4';
-    console.log('[VIDEO_COT] Conversión exitosa. Nuevo tamaño:', 
-      (convertedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
   } catch (convErr) {
-    console.warn('[VIDEO_COT] No se pudo convertir. Usando original:', convErr.message);
-    // Si falla la conversión, usar el video original
+    console.warn(
+      '[VIDEO_COT] No se pudo convertir. Usando original:',
+      convErr.message,
+    );
   }
 
-  // 3. Subir video a Meta
-  console.log('[VIDEO_COT] Subiendo video a Meta...');
   let mediaId;
   try {
     mediaId = await uploadVideoToMeta(convertedBuffer, videoFileName);
@@ -588,9 +773,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     return next(new AppError('Error al subir video a WhatsApp', 500));
   }
 
-  // 4. Esperar procesamiento de Meta
-  console.log('[VIDEO_COT] Esperando procesamiento de Meta (mediaId:', mediaId, ')...');
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 
   // 5. Verificar estado del media
   try {
@@ -600,17 +783,14 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       timeout: 10000,
       validateStatus: () => true,
     });
-    
-    console.log('[VIDEO_COT] Estado del media:', {
-      status: mediaCheck.status,
-      data: mediaCheck.data,
-    });
+
   } catch (checkErr) {
-    console.warn('[VIDEO_COT] Advertencia al verificar media:', checkErr.message);
+    console.warn(
+      '[VIDEO_COT] Advertencia al verificar media:',
+      checkErr.message,
+    )
   }
 
-  // 6. Enviar template con el video
-  console.log('[VIDEO_COT] Enviando template con video...');
   const templateVideo = {
     messaging_product: 'whatsapp',
     to: celularFormateado,
@@ -657,17 +837,22 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
         },
       },
     );
-    console.log('[VIDEO_COT] Respuesta de Meta:', response.data);
+    //console.log('[VIDEO_COT] Respuesta de Meta:', response.data);
   } catch (sendErr) {
-    console.error('[VIDEO_COT] Error al enviar mensaje:', sendErr.response?.data || sendErr.message);
+    console.error(
+      '[VIDEO_COT] Error al enviar mensaje:',
+      sendErr.response?.data || sendErr.message,
+    );
     return next(new AppError('Error al enviar video por WhatsApp', 500));
   }
 
   const midMensaje = response.data?.messages?.[0]?.id || null;
 
-  if (!response.data?.messages?.[0]?.message_status || 
-      response.data.messages[0].message_status !== 'accepted') {
-    console.log('[VIDEO_COT] Mensaje no aceptado:', response.data);
+  if (
+    !response.data?.messages?.[0]?.message_status ||
+    response.data.messages[0].message_status !== 'accepted'
+  ) {
+    //('[VIDEO_COT] Mensaje no aceptado:', response.data);
     return next(new AppError('WhatsApp no aceptó el mensaje', 500));
   }
 
@@ -683,7 +868,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   });
 
   if (foundChat) {
-    console.log('[VIDEO_COT] Chat encontrado con ID:', foundChat.id);
+    //console.log('[VIDEO_COT] Chat encontrado con ID:', foundChat.id);
     chatId = foundChat.id;
   } else {
     const nuevoChat = await Clientes_chat_center.create({
@@ -695,7 +880,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       chat_cerrado: false,
     });
 
-    console.log('[VIDEO_COT] Nuevo chat creado con ID:', nuevoChat.id);
+    //console.log('[VIDEO_COT] Nuevo chat creado con ID:', nuevoChat.id);
     chatId = nuevoChat.id;
   }
 
@@ -738,7 +923,21 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     template_name: 'masfotos',
   });
 
-  console.log('[VIDEO_COT] Mensaje registrado en BD con ID:', mensajeRegistrado.id);
+  // Actualizar subestado
+  const [rowsAffected] = await CotizadorproCotizaciones.update(
+    { subestado: 'recibida', fecha_recibida: new Date() },
+    { where: { id_cotizacion: id_cotizacion } },
+  );
+
+  console.log("[SUBESTADO] Filas afectadas:", rowsAffected);
+
+  // Verificar que se guardó correctamente
+  const cotizacionActualizada = await CotizadorproCotizaciones.findOne({
+    where: { id_cotizacion: id_cotizacion },
+    attributes: ['id_cotizacion', 'subestado', 'fecha_recibida', 'estado'],
+  });
+
+  console.log("[SUBESTADO] Verificación después del update:", cotizacionActualizada?.dataValues);
 
   res.status(200).json({
     status: 200,
@@ -756,4 +955,3 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     },
   });
 });
-
