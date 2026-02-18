@@ -81,6 +81,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const canApplyPromo =
     Number(id_plan) === CONEXION_PLAN_ID &&
     Number(user.promo_plan2_used || 0) === 0 &&
+    Number(user.free_trial_used || 0) === 0 &&
     Boolean(couponId);
 
   const successUrl = `${process.env.FRONT_SUCCESS_URL}`;
@@ -139,7 +140,15 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
   if (!user.id_plan) {
-    return res.status(200).json({ success: true, plan: null });
+    return res.status(200).json({
+      success: true,
+      plan: null,
+      user_flags: {
+        trial_eligible: Number(user.free_trial_used || 0) === 0,
+        promo_plan2_used: Number(user.promo_plan2_used || 0),
+        promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+      },
+    });
   }
 
   const planDb = await getPlanById(user.id_plan);
@@ -208,6 +217,10 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       // extras
       tipo_plan: user.tipo_plan,
       permanente: user.permanente,
+      free_trial_used: Number(user.free_trial_used || 0),
+      trial_eligible: Number(user.free_trial_used || 0) === 0,
+      promo_plan2_used: Number(user.promo_plan2_used || 0),
+      promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
     },
   });
 });
@@ -367,7 +380,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   }
 
   // Cargar suscripción real para tomar itemId y period_end
-  const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+  let sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
     expand: ['items.data.price'],
   });
 
@@ -382,40 +395,56 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   const esUpgrade = precioNuevo > precioActual;
   const esDowngrade = precioNuevo < precioActual;
 
-  if (!esUpgrade && !esDowngrade) {
-    // MISMO PRECIO: no cobrar nada, no prorratear, cambiar inmediatamente.
+  // ===========================
+  // si es UPGRADE y existe schedule por downgrade anterior,
+  // libérelo para evitar "cambios fantasma" o conflictos futuros.
+  // ===========================
+  if (esUpgrade && sub.schedule) {
+    try {
+      await stripe.subscriptionSchedules.release(sub.schedule);
 
-    // 1) Stripe: cambiar el price SIN prorrateo (no crea cobro)
+      // Releer suscripción ya sin schedule
+      sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+        expand: ['items.data.price'],
+      });
+    } catch (e) {
+      console.log('[cambiarPlan] schedule release failed:', e?.message);
+      // no rompemos, pero idealmente se libera
+    }
+  }
+
+  // ===========================
+  // MISMO PRECIO: cambio inmediato sin cobro
+  // ===========================
+  if (!esUpgrade && !esDowngrade) {
     await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
       proration_behavior: 'none',
       payment_behavior: 'allow_incomplete',
       metadata: {
         ...(sub.metadata || {}),
-        id_plan: String(id_plan_nuevo), // como no hay cobro, ya puede quedar definitivo
+        id_plan: String(id_plan_nuevo),
         pending_plan_id: '',
         pending_change: '',
       },
     });
 
-    // 2) BD: actualizar plan ya (y limpiar pending porque ya se aplicó)
     await db.query(
       `UPDATE usuarios_chat_center
-     SET id_plan = ?,
-         pending_plan_id = NULL,
-         pending_change = NULL,
-         pending_effective_at = NULL
-     WHERE id_usuario = ?`,
+       SET id_plan = ?,
+           pending_plan_id = NULL,
+           pending_change = NULL,
+           pending_effective_at = NULL
+       WHERE id_usuario = ?`,
       { replacements: [id_plan_nuevo, id_usuario] },
     );
 
-    // 3) HISTÓRICO: registrar auditoría en transacciones_stripe_chat (idempotente)
     const idPagoAudit = `plan_same_${user.stripe_subscription_id}_${Date.now()}_${id_usuario}_${user.id_plan}_${id_plan_nuevo}`;
 
     await db.query(
       `INSERT IGNORE INTO transacciones_stripe_chat
-     (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
-     VALUES (?, ?, ?, ?, NOW(), ?)`,
+       (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+       VALUES (?, ?, ?, ?, NOW(), ?)`,
       {
         replacements: [
           idPagoAudit,
@@ -450,38 +479,25 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     },
   );
 
-  // ===========
+  // ===========================
   // UPGRADE: cobrar YA (prorrateo)
-  // ===========
+  // ===========================
   if (esUpgrade) {
-    // Si está en trial y hace upgrade: cortamos trial ya
-    // (Si no está en trial, no afecta)
     const cortarTrial = sub.status === 'trialing';
 
-    // 1) Update subscription con prorrateo
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
       proration_behavior: 'create_prorations',
-
-      // Importante: esto permite que Stripe cree PI si hace falta
       payment_behavior: 'default_incomplete',
-
-      // Si está en trial y quiere cobrar ya, fuerce fin del trial:
       ...(cortarTrial ? { trial_end: 'now' } : {}),
-
       metadata: {
         ...(sub.metadata || {}),
         pending_plan_id: String(id_plan_nuevo),
         pending_change: 'upgrade',
-        // pending_invoice_id lo seteamos luego
       },
-
       expand: ['latest_invoice.payment_intent'],
     });
 
-    // 2) Crear invoice AHORA para que los prorrateos se cobren hoy
-    // Nota: en algunos casos Stripe ya crea latest_invoice, pero no siempre queda cobrada.
-    // Esta invoice asegura cobro inmediato.
     const inv = await stripe.invoices.create({
       customer: updated.customer,
       subscription: updated.id,
@@ -493,12 +509,10 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       },
     });
 
-    // 3) Finalizar invoice
     const finalized = await stripe.invoices.finalizeInvoice(inv.id, {
       expand: ['payment_intent'],
     });
 
-    // 4) Guardar pending_invoice_id en Stripe metadata (y en BD si quiere)
     try {
       await stripe.subscriptions.update(updated.id, {
         metadata: {
@@ -513,20 +527,17 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       );
     }
 
-    // 5) Intentar pagar la invoice YA
     let paid = null;
     try {
       paid = await stripe.invoices.pay(finalized.id, {
         expand: ['payment_intent'],
       });
     } catch (e) {
-      // Si requiere 3DS/SCA, Stripe lanzará error o dejará PI en requires_action
-      // No rompa aquí
+      // si requiere SCA, no rompemos
     }
 
     const pi = paid?.payment_intent || finalized?.payment_intent || null;
 
-    // Si quedó pagada de inmediato
     if (paid && paid.status === 'paid') {
       return res.status(200).json({
         success: true,
@@ -537,7 +548,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       });
     }
 
-    // Si requiere acción (3DS)
     if (
       pi &&
       pi.client_secret &&
@@ -555,7 +565,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       });
     }
 
-    // Caso raro: no pagó, no dio PI; devuelva hosted_invoice_url para que el cliente lo complete en Stripe
     const refreshedInvoice = await stripe.invoices.retrieve(finalized.id);
     return res.status(200).json({
       success: true,
@@ -567,23 +576,26 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     });
   }
 
-  // ===========
-  // DOWNGRADE: aplicar al CORTE (mantiene beneficios hasta el corte)
-  // ===========
+  // ===========================
+  // DOWNGRADE: aplicar al CORTE usando Schedule
+  // ===========================
   if (esDowngrade) {
-    // La manera correcta de “cambiar al final” sin perder beneficios HOY:
-    // Usar Subscription Schedule con 2 fases.
-    //
-    // 1) Crear schedule desde la suscripción
-    const schedule = await stripe.subscriptionSchedules.create({
-      from_subscription: sub.id,
-    });
-
-    const periodEnd = sub.current_period_end; // unix
+    const periodEnd = sub.current_period_end;
     const currentPriceId = subItem.price?.id;
 
-    await stripe.subscriptionSchedules.update(schedule.id, {
-      end_behavior: 'release', // al final libera la suscripción (normalmente no se usa porque es continuo, pero ok)
+    // 1) Si ya tiene schedule, úselo. Si no, créelo.
+    let scheduleId = sub.schedule;
+
+    if (!scheduleId) {
+      const schedule = await stripe.subscriptionSchedules.create({
+        from_subscription: sub.id,
+      });
+      scheduleId = schedule.id;
+    }
+
+    // 2) Actualizar el schedule (2 fases)
+    await stripe.subscriptionSchedules.update(scheduleId, {
+      end_behavior: 'release',
       phases: [
         {
           start_date: sub.current_period_start,
@@ -593,13 +605,12 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         {
           start_date: periodEnd,
           items: [{ price: planNuevo.id_price, quantity: 1 }],
-          // Aquí ya estaría el precio nuevo desde el siguiente ciclo
         },
       ],
       metadata: {
-        ...(schedule.metadata || {}),
         pending_plan_id: String(id_plan_nuevo),
         pending_change: 'downgrade',
+        id_usuario: String(id_usuario),
       },
     });
 
