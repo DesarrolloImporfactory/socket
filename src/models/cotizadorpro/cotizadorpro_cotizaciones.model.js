@@ -27,22 +27,32 @@ const CotizadorproCotizaciones = db_2.define(
       defaultValue: 'borrador',
     },
     fecha_creacion: {
-      type: DataTypes.TIMESTAMP,
+      type: DataTypes.DATE,
       allowNull: false,
       defaultValue: db_2.literal('CURRENT_TIMESTAMP'),
     },
     fecha_modificacion: {
-      type: DataTypes.TIMESTAMP,
+      type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
     },
     fecha_anulacion: {
-      type: DataTypes.TIMESTAMP,
+      type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
     },
     fecha_aprobacion: {
-      type: DataTypes.TIMESTAMP,
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
+    subestado: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+      defaultValue: null,
+    },
+    fecha_recibida: {
+      type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
     },
