@@ -658,7 +658,7 @@ exports.stripeWebhook = async (req, res) => {
               ? 'cancel_scheduled'
               : 'subscription_updated';
 
-        const idPago = `subupd_${subscriptionId}_${estadoTx}_${sub.canceled_at || 'na'}_${sub.cancel_at || 'na'}`;
+        const idPago = event.id;
 
         await db.query(
           `INSERT IGNORE INTO transacciones_stripe_chat

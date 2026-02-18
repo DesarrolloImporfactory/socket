@@ -533,7 +533,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         actionRequired: false,
         subscription_id: updated.id,
         invoice_id: paid.id,
-        message: 'Upgrade cobrado y aplicado. Se confirmará por webhook.',
+        message: 'Upgrade cobrado y aplicado exitósamente.',
       });
     }
 
