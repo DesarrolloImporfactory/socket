@@ -22,6 +22,19 @@ const getPlanByPriceId = async (priceId) => {
   return p || null;
 };
 
+//  Helper: obtener la suscripción activa guardada en BD para el usuario
+const getActiveSubscriptionIdByUser = async (id_usuario) => {
+  if (!id_usuario) return null;
+  const [[u]] = await db.query(
+    `SELECT stripe_subscription_id
+     FROM usuarios_chat_center
+     WHERE id_usuario = ?
+     LIMIT 1`,
+    { replacements: [id_usuario] },
+  );
+  return u?.stripe_subscription_id || null;
+};
+
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -41,6 +54,7 @@ exports.stripeWebhook = async (req, res) => {
       /**
        *  Opcional
        * Checkout completado: guardamos ids básicos (NO es el pago real)
+       * Nota: se deja con COALESCE para no pisar una suscripción activa válida.
        */
       case 'checkout.session.completed': {
         console.log('[stripe] checkout.session.completed');
@@ -337,8 +351,7 @@ exports.stripeWebhook = async (req, res) => {
 
         // =========
         // 3) Update usuario: sincronización total
-        //    id_plataforma SOLO si existe (no tocar si no viene)
-        //    free_trial_used: se marca solo si corresponde (GREATEST)
+        // ✅ id_costumer / stripe_subscription_id deben SOBRESCRIBIRSE en payment_succeeded (fuente de verdad)
         // =========
         const sqlUserUpdate = `
           UPDATE usuarios_chat_center
@@ -348,8 +361,8 @@ exports.stripeWebhook = async (req, res) => {
               fecha_renovacion = ?,
               free_trial_used = GREATEST(free_trial_used, ?)
               ${id_plataforma ? ', id_plataforma = COALESCE(?, id_plataforma)' : ''},
-              id_costumer = COALESCE(?, id_costumer),
-              stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+              id_costumer = ?,                -- ✅ SET directo
+              stripe_subscription_id = ?,     -- ✅ SET directo
               trial_end = ?,
               stripe_subscription_status = COALESCE(?, stripe_subscription_status),
               cancel_at_period_end = COALESCE(?, cancel_at_period_end),
@@ -357,21 +370,6 @@ exports.stripeWebhook = async (req, res) => {
               canceled_at = COALESCE(?, canceled_at)
           WHERE id_usuario = ?
         `;
-
-        const userReplBase = [
-          planToApply || null,
-          start,
-          end,
-          markTrialUsed,
-          customerId || null,
-          subscriptionId || null,
-          trialEnd,
-          subStatus || null,
-          cancelAtPeriodEnd,
-          cancelAt,
-          canceledAt,
-          id_usuario,
-        ];
 
         const userReplacements = id_plataforma
           ? [
@@ -389,7 +387,20 @@ exports.stripeWebhook = async (req, res) => {
               canceledAt,
               id_usuario,
             ]
-          : userReplBase;
+          : [
+              planToApply || null,
+              start,
+              end,
+              markTrialUsed,
+              customerId || null,
+              subscriptionId || null,
+              trialEnd,
+              subStatus || null,
+              cancelAtPeriodEnd,
+              cancelAt,
+              canceledAt,
+              id_usuario,
+            ];
 
         const [updateResult] = await db.query(sqlUserUpdate, {
           replacements: userReplacements,
@@ -470,7 +481,7 @@ exports.stripeWebhook = async (req, res) => {
 
       /**
        * ❌ Pago fallido
-       * - Suspende usuario
+       * - Suspende usuario SOLO si el fallo es de la suscripción activa en BD
        * - Sincroniza status/flags de Stripe
        * - Inserta transacción idempotente
        */
@@ -522,7 +533,41 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
+        //  Blindaje: solo suspender si es la suscripción activa del usuario
         if (id_usuario) {
+          const activeSubId = await getActiveSubscriptionIdByUser(id_usuario);
+          const isActiveSub = !!activeSubId && activeSubId === subscriptionId;
+
+          if (!isActiveSub) {
+            console.log(
+              '[stripe] IGNORE payment_failed (non-active subscription):',
+              {
+                id_usuario,
+                subscriptionId,
+                activeSubId,
+              },
+            );
+
+            // Igual auditamos la transacción, pero no tocamos estado del usuario
+            await db.query(
+              `INSERT IGNORE INTO transacciones_stripe_chat
+               (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+               VALUES (?, ?, ?, ?, NOW(), ?)`,
+              {
+                replacements: [
+                  invoice.id,
+                  subscriptionId || null,
+                  id_usuario || null,
+                  'payment_failed_ignored_non_active_sub',
+                  customerId || null,
+                ],
+              },
+            );
+
+            break;
+          }
+
+          // Si ES la activa, suspendemos
           await db.query(
             `UPDATE usuarios_chat_center
              SET estado = 'suspendido',
@@ -566,6 +611,7 @@ exports.stripeWebhook = async (req, res) => {
        * - Sirve para:
        *   - Cancelación programada / efectiva
        *   - DOWNGRADE: aplicar cuando Stripe ya cambió el price (inicio de la nueva fase)
+       * ✅ Blindaje: NO cancelar usuario si el evento corresponde a una suscripción que NO es la activa en BD.
        */
       case 'customer.subscription.updated': {
         const sub = event.data.object;
@@ -616,7 +662,17 @@ exports.stripeWebhook = async (req, res) => {
             ? null
             : planRealId || Number(sub.metadata?.id_plan) || null;
 
+        // Leer la sub activa guardada (blindaje)
+        let activeSubId = null;
+        let isActiveSub = false;
         if (id_usuario) {
+          activeSubId = await getActiveSubscriptionIdByUser(id_usuario);
+          isActiveSub = !!activeSubId && activeSubId === subscriptionId;
+        }
+
+        if (id_usuario) {
+          // Mantener sync de flags/fechas, pero NO pisar stripe_subscription_id con COALESCE si ya hay una activa distinta.
+          // Aquí se mantiene COALESCE (porque la fuente de verdad de la suscripción activa es invoice.payment_succeeded).
           await db.query(
             `UPDATE usuarios_chat_center
              SET id_plan = COALESCE(?, id_plan),
@@ -643,13 +699,26 @@ exports.stripeWebhook = async (req, res) => {
             },
           );
 
+          //  Solo cancelar usuario si el evento es de SU suscripción activa
           if (status === 'canceled' || sub.ended_at) {
-            await db.query(
-              `UPDATE usuarios_chat_center
-               SET estado = 'cancelado'
-               WHERE id_usuario = ?`,
-              { replacements: [id_usuario] },
-            );
+            if (!isActiveSub) {
+              console.log(
+                '[stripe] IGNORE subscription_canceled (non-active subscription):',
+                {
+                  id_usuario,
+                  subscriptionId,
+                  activeSubId,
+                  status,
+                },
+              );
+            } else {
+              await db.query(
+                `UPDATE usuarios_chat_center
+                 SET estado = 'cancelado'
+                 WHERE id_usuario = ?`,
+                { replacements: [id_usuario] },
+              );
+            }
           }
         }
 
@@ -710,7 +779,9 @@ exports.stripeWebhook = async (req, res) => {
 
         const estadoTx =
           status === 'canceled' || sub.ended_at
-            ? 'subscription_canceled'
+            ? isActiveSub
+              ? 'subscription_canceled'
+              : 'subscription_canceled_ignored_non_active_sub'
             : cancelAtPeriodEnd
               ? 'cancel_scheduled'
               : 'subscription_updated';
