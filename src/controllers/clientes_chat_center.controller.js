@@ -371,135 +371,146 @@ exports.findFullByPhone = catchAsync(async (req, res, next) => {
 });
 
 exports.listarContactosEstado = catchAsync(async (req, res, next) => {
-  const { id_configuracion } = req.body;
+  const {
+    id_configuracion,
+    columnKeys = [],
+    limit = 20,
+    cursors = {},
+    search = {},
+  } = req.body;
 
-  if (!id_configuracion) {
+  console.log('cursors incoming:', req.body.cursors);
+  console.log('search incoming:', req.body.search);
+
+  if (!id_configuracion)
     return next(new AppError('Falta el id_configuracion', 400));
-  }
 
-  try {
-    // 1) Consultar todos los contactos de esa configuración
-    const clientes = await db.query(
-      `SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
-       FROM clientes_chat_center
-       WHERE id_configuracion = ? AND propietario <> 1;`,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      },
-    );
+  // Si no mandan columnas, devuelvo todas las conocidas (fallback)
+  const keys =
+    Array.isArray(columnKeys) && columnKeys.length
+      ? columnKeys
+      : Object.keys(ESTADO_DB_MAP);
 
-    // 2) Si no existen contactos
-    if (!clientes || clientes.length === 0) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          CONTACTO_INICIAL: [],
-          PLATAFORMAS_Y_CLASES: [],
-          PRODUCTOS_Y_PROVEEDORES: [],
-          VENTAS: [],
-          ASESOR: [],
-          COTIZACIONES: [],
-          IA_VENTAS: [],
-          GENERAR_GUIA: [],
-          SEGUIMIENTO: [],
-          CANCELADO: [],
-          IA_VENTAS_IMPORSHOP: [],
-          ATENCION_URGENTE: [],
-        },
-      });
-    }
+  const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 
-    // 3) Construir estructura Kanban inicial
-    const data = {
-      CONTACTO_INICIAL: [],
-      PLATAFORMAS_Y_CLASES: [],
-      PRODUCTOS_Y_PROVEEDORES: [],
-      VENTAS: [],
-      ASESOR: [],
-      COTIZACIONES: [],
-      IA_VENTAS: [],
-      GENERAR_GUIA: [],
-      SEGUIMIENTO: [],
-      CANCELADO: [],
-      IA_VENTAS_IMPORSHOP: [],
-      ATENCION_URGENTE: [],
+  // Función que resuelve una columna
+  const fetchColumn = async (colKey) => {
+  const estado_db = ESTADO_DB_MAP[colKey];
+  if (!estado_db) {
+    return {
+      key: colKey,
+      items: [],
+      page: { has_more: false, next_cursor: null, limit: pageSize },
     };
-
-    // 4) Clasificar cada contacto según su estado
-    clientes.forEach((c) => {
-      const estado = (c.estado_contacto || '').toLowerCase();
-
-      switch (estado) {
-        case 'contacto_inicial':
-          data.CONTACTO_INICIAL.push(c);
-          break;
-
-        case 'plataformas_clases':
-          data.PLATAFORMAS_Y_CLASES.push(c);
-          break;
-
-        case 'productos_proveedores':
-          data.PRODUCTOS_Y_PROVEEDORES.push(c);
-          break;
-
-        case 'ventas_imporfactory':
-          data.VENTAS.push(c);
-          break;
-
-        case 'asesor':
-          data.ASESOR.push(c);
-          break;
-
-        case 'cotizaciones_imporfactory':
-          data.COTIZACIONES.push(c);
-          break;
-
-        case 'ia_ventas':
-          data.IA_VENTAS.push(c);
-          break;
-
-        case 'generar_guia':
-          data.GENERAR_GUIA.push(c);
-          break;
-
-        case 'seguimiento':
-          data.SEGUIMIENTO.push(c);
-          break;
-
-        case 'cancelado':
-          data.CANCELADO.push(c);
-          break;
-
-        case 'ia_ventas_imporshop':
-          data.IA_VENTAS_IMPORSHOP.push(c);
-          break;
-
-        case 'atencion_urgente':
-          data.ATENCION_URGENTE.push(c);
-          break;
-
-        default:
-          // Si llega un estado desconocido, lo mando a "CONTACTO INICIAL"
-          data.CONTACTO_INICIAL.push(c);
-          break;
-      }
-    });
-
-    // 5) Respuesta al frontend
-    return res.status(200).json({
-      success: true,
-      data: data,
-    });
-  } catch (error) {
-    console.error('Error al listar contactos:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Ocurrió un error al listar los contactos',
-    });
   }
+
+  const cursorRaw = cursors?.[colKey] || null;
+  const decoded = cursorRaw ? decodeCursor(cursorRaw) : null;
+  const cursorId = decoded?.id || null;
+
+  const term = (search?.[colKey] || "").trim().toLowerCase();
+
+  const where = [];
+  const replacements = [];
+
+  where.push("id_configuracion = ?");
+  replacements.push(id_configuracion);
+
+  where.push("propietario <> 1");
+
+  where.push("LOWER(estado_contacto) = ?");
+  replacements.push(estado_db);
+
+  if (term) {
+    where.push(`(
+      LOWER(nombre_cliente) LIKE ? OR
+      LOWER(apellido_cliente) LIKE ? OR
+      telefono_limpio LIKE ?
+    )`);
+    const like = `%${term}%`;
+    replacements.push(like, like, `%${search[colKey] || ""}%`);
+  }
+
+  // ✅ Cursor SOLO por id (estable)
+  if (cursorId) {
+    where.push("id < ?");
+    replacements.push(cursorId);
+  }
+
+  const whereSql = `WHERE ${where.join(" AND ")}`;
+
+  const rows = await db.query(
+    `
+      SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
+      FROM clientes_chat_center
+      ${whereSql}
+      ORDER BY id DESC
+      LIMIT ?
+    `,
+    {
+      replacements: [...replacements, pageSize + 1],
+      type: db.QueryTypes.SELECT,
+    }
+  );
+
+  const has_more = rows.length > pageSize;
+  const items = has_more ? rows.slice(0, pageSize) : rows;
+
+  const last = items[items.length - 1];
+  const next_cursor = last ? encodeCursor({ id: last.id }) : null;
+
+  return {
+    key: colKey,
+    items,
+    page: { has_more, next_cursor, limit: pageSize },
+  };
+};
+
+
+  // Traer todas las columnas solicitadas (en paralelo)
+  const results = await Promise.all(keys.map(fetchColumn));
+
+  // Armar respuesta generalizada (misma forma para todos los kanban)
+  const data = {};
+  results.forEach((r) => {
+    data[r.key] = {
+      items: r.items,
+      page: r.page,
+    };
+  });
+
+  return res.status(200).json({
+    success: true,
+    data,
+  });
 });
+
+function encodeCursor(obj) {
+  return Buffer.from(JSON.stringify(obj)).toString('base64');
+}
+
+function decodeCursor(cursor) {
+  try {
+    return JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const ESTADO_DB_MAP = {
+  CONTACTO_INICIAL: 'contacto_inicial',
+  PLATAFORMAS_Y_CLASES: 'plataformas_clases',
+  PRODUCTOS_Y_PROVEEDORES: 'productos_proveedores',
+  VENTAS: 'ventas_imporfactory',
+  ASESOR: 'asesor',
+  COTIZACIONES: 'cotizaciones_imporfactory',
+  IA_VENTAS: 'ia_ventas',
+  GENERAR_GUIA: 'generar_guia',
+  SEGUIMIENTO: 'seguimiento',
+  CANCELADO: 'cancelado',
+  IA_VENTAS_IMPORSHOP: 'ia_ventas_imporshop',
+  ATENCION_URGENTE: 'atencion_urgente',
+};
 
 exports.actualizarEstado = async (req, res) => {
   try {
