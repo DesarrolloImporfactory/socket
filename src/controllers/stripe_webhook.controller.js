@@ -51,7 +51,7 @@ exports.stripeWebhook = async (req, res) => {
           Number(session.client_reference_id || session.metadata?.id_usuario) ||
           null;
 
-        // 👇 Puede venir o no
+        // Puede venir o no
         const id_plataforma = Number(session.metadata?.id_plataforma) || null;
 
         const customerId = session.customer || null;
@@ -59,7 +59,7 @@ exports.stripeWebhook = async (req, res) => {
 
         if (!id_usuario) break;
 
-        //  Solo setear id_plataforma si viene (no tocar si no viene)
+        // Solo setear id_plataforma si viene (no tocar si no viene)
         const sql = `
           UPDATE usuarios_chat_center
           SET id_costumer = COALESCE(?, id_costumer),
@@ -84,7 +84,8 @@ exports.stripeWebhook = async (req, res) => {
        * - Sincroniza status/flags de Stripe en columnas nuevas
        * - Inserta transacción idempotente
        * - Aplica UPGRADE solo cuando el prorrateo realmente se pagó (pending_invoice_id)
-       * - Marca promo_plan2_used solo si hubo descuento real en la invoice
+       * - Marca promo_plan2_used (promo $5) si hubo descuento real (planes 2/3/4) — 1 vez global
+       * - Marca free_trial_used SOLO si el plan aplicado es el 2 y realmente hubo trial
        */
       case 'invoice.payment_succeeded': {
         console.log('[stripe] invoice.payment_succeeded');
@@ -136,6 +137,7 @@ exports.stripeWebhook = async (req, res) => {
         let end = firstLine?.period?.end
           ? new Date(firstLine.period.end * 1000)
           : null;
+
         let trialEnd = null;
 
         let subStatus = null;
@@ -182,7 +184,7 @@ exports.stripeWebhook = async (req, res) => {
             pendingPlanId = Number(metaSub?.pending_plan_id || 0) || null;
             pendingChange = metaSub?.pending_change || null;
 
-            // NUEVO: invoice exacta que debe gatillar el upgrade
+            // invoice exacta que debe gatillar el upgrade
             pendingInvoiceId = metaSub?.pending_invoice_id || null;
 
             // Fechas más confiables desde subscription
@@ -218,12 +220,13 @@ exports.stripeWebhook = async (req, res) => {
           );
         }
 
-        // ✅ Fallback id_plataforma por metadata invoice si no vino desde subscription
+        // Fallback id_plataforma por metadata invoice si no vino desde subscription
         if (!id_plataforma) {
           id_plataforma =
             Number(
               metaFromParent?.id_plataforma || metaFromLine?.id_plataforma,
             ) || null;
+
           if (id_plataforma) {
             console.log(
               '[stripe] id_plataforma fallback(invoice meta):',
@@ -290,11 +293,9 @@ exports.stripeWebhook = async (req, res) => {
         }
 
         // =========
-        // Promo: marcar promo_plan2_used SOLO si hubo descuento real en esta invoice
+        // Promo $5: marcar promo_plan2_used SOLO si hubo descuento real (planes 2/3/4)
         // =========
-        const CONEXION_PLAN_ID = Number(
-          process.env.STRIPE_PLAN_CONEXION_ID || 2,
-        );
+        const PROMO_PLANS = new Set([2, 3, 4]);
 
         const totalDiscount = (invoice.total_discount_amounts || []).reduce(
           (acc, d) => acc + (d.amount || 0),
@@ -303,7 +304,7 @@ exports.stripeWebhook = async (req, res) => {
 
         const usedCoupon = totalDiscount > 0;
         const shouldMarkPromoUsed =
-          Number(planToApply) === CONEXION_PLAN_ID && usedCoupon;
+          PROMO_PLANS.has(Number(planToApply)) && usedCoupon;
 
         if (shouldMarkPromoUsed) {
           try {
@@ -313,15 +314,31 @@ exports.stripeWebhook = async (req, res) => {
                WHERE id_usuario = ?`,
               { replacements: [id_usuario] },
             );
-            console.log('[stripe] promo_plan2_used marked:', id_usuario);
+            console.log(
+              '[stripe] promo_plan2_used (promo $5) marked:',
+              id_usuario,
+            );
           } catch (e) {
             console.log('[stripe] promo_plan2_used update failed:', e?.message);
           }
         }
 
         // =========
+        // Trial: marcar free_trial_used SOLO si:
+        // - plan aplicado es 2
+        // - y realmente hubo trial en Stripe
+        // =========
+        const CONEXION_PLAN_ID = Number(
+          process.env.STRIPE_PLAN_CONEXION_ID || 2,
+        );
+        const hadTrial = subStatus === 'trialing' || !!trialEnd;
+        const markTrialUsed =
+          Number(planToApply) === CONEXION_PLAN_ID && hadTrial ? 1 : 0;
+
+        // =========
         // 3) Update usuario: sincronización total
         //    id_plataforma SOLO si existe (no tocar si no viene)
+        //    free_trial_used: se marca solo si corresponde (GREATEST)
         // =========
         const sqlUserUpdate = `
           UPDATE usuarios_chat_center
@@ -329,7 +346,7 @@ exports.stripeWebhook = async (req, res) => {
               estado = 'activo',
               fecha_inicio = COALESCE(fecha_inicio, ?),
               fecha_renovacion = ?,
-              free_trial_used = 1
+              free_trial_used = GREATEST(free_trial_used, ?)
               ${id_plataforma ? ', id_plataforma = COALESCE(?, id_plataforma)' : ''},
               id_costumer = COALESCE(?, id_costumer),
               stripe_subscription_id = COALESCE(?, stripe_subscription_id),
@@ -345,7 +362,7 @@ exports.stripeWebhook = async (req, res) => {
           planToApply || null,
           start,
           end,
-          // aquí podría ir id_plataforma si existe
+          markTrialUsed,
           customerId || null,
           subscriptionId || null,
           trialEnd,
@@ -361,7 +378,8 @@ exports.stripeWebhook = async (req, res) => {
               planToApply || null,
               start,
               end,
-              id_plataforma, // insertado SOLO si existe
+              markTrialUsed,
+              id_plataforma,
               customerId || null,
               subscriptionId || null,
               trialEnd,

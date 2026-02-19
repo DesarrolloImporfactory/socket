@@ -51,7 +51,8 @@ const getPlanById = async (id_plan) => {
 
 /**
  *  Checkout Session - subscription
- * - Trial: 15 días SOLO si el usuario no lo ha usado (free_trial_used=0)
+ * - Trial: 15 días SOLO si el usuario no lo ha usado (free_trial_used=0) en el id_plan 2
+ * - Cupon de descuento: $5 por el primer mes en cualquier plan, solo se puede utilizar 1 vez.
  */
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan, id_plataforma = null } = req.body;
@@ -70,20 +71,35 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
 
   const CONEXION_PLAN_ID = Number(process.env.STRIPE_PLAN_CONEXION_ID || 2);
 
-  // Trial elegible
-  const eligibleTrial = Number(user.free_trial_used) === 0;
+  // =========================
+  // 1) TRIAL (solo Plan 2)
+  // =========================
+  const eligibleTrial = Number(user.free_trial_used || 0) === 0;
   const shouldApplyTrial =
     eligibleTrial && Number(id_plan) === CONEXION_PLAN_ID;
   const trialDays = shouldApplyTrial ? 15 : undefined;
 
-  // Promo cupón (solo plan 2 y solo si el usuario no lo ha usado)
-  const couponId = process.env.STRIPE_COUPON_PLAN2_FIRST_MONTH || 'MK4ojy0N';
-  const canApplyPromo =
-    Number(id_plan) === CONEXION_PLAN_ID &&
-    Number(user.promo_plan2_used || 0) === 0 &&
-    Number(user.free_trial_used || 0) === 0 &&
-    Boolean(couponId);
+  // =========================
+  // 2) PROMO $5 PRIMER MES (planes 2,3,4) UNA SOLA VEZ TOTAL
+  //    - Se controla con promo_plan2_used como "promo_5_used"
+  // =========================
+  const PROMO_PLANS = new Set([2, 3, 4]);
 
+  const couponByPlan = {
+    2: process.env.STRIPE_COUPON_PLAN2_FIRST_MONTH, // Tx2FZa3W
+    3: process.env.STRIPE_COUPON_PLAN3_FIRST_MONTH, // h7Pb275G
+    4: process.env.STRIPE_COUPON_PLAN4_FIRST_MONTH, // N29KpkLa
+  };
+
+  const isPromoPlan = PROMO_PLANS.has(Number(id_plan));
+  const couponId = couponByPlan[Number(id_plan)] || null;
+
+  const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0; // <-- bandera global
+  const canApplyPromo = isPromoPlan && promoNotUsedYet && Boolean(couponId);
+
+  // =========================
+  // URLs + customer params
+  // =========================
   const successUrl = `${process.env.FRONT_SUCCESS_URL}`;
   const cancelUrl = process.env.FRONT_CANCEL_URL;
 
@@ -95,7 +111,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     ? { customer_update: { address: 'auto', name: 'auto' } }
     : {};
 
-  // metadata común (simple y consistente)
+  // metadata común
   const meta = {
     id_usuario: String(id_usuario),
     id_plan: String(id_plan),
@@ -113,16 +129,15 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     client_reference_id: String(id_usuario),
     payment_method_collection: 'always',
 
-    //
     metadata: meta,
 
-    // Aplica cupón “una vez” (primer cobro) SIN tocar trial
+    // Promo $5 (cupón "once") — se aplica si está habilitado para el usuario
     ...(canApplyPromo ? { discounts: [{ coupon: couponId }] } : {}),
 
     subscription_data: {
+      // Trial solo si aplica (Plan 2 y elegible)
       ...(trialDays ? { trial_period_days: trialDays } : {}),
 
-      //  meter id_plataforma también en subscription metadata
       metadata: meta,
     },
 
