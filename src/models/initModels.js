@@ -26,6 +26,10 @@ const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model')
 const TikTokNotification = require('./tiktok_notification.model');
 const TikTokWebhookLog = require('./tiktok_webhook_log.model');
 const DropiIntegrations = require('./dropi_integrations.model');
+const ImporsuitApi = require('./imporsuit/api.model');
+const ImporsuitCursos = require('./imporsuit/cursos.model');
+const ImporsuitApiCursos = require('./imporsuit/api_cursos.model');
+
 
 const initModel = () => {
   // Asociaciones existentes
@@ -304,6 +308,69 @@ const initModel = () => {
     targetKey: 'id',
     as: 'configuracion',
   });
+
+  // ===== APIs e Imporsuit =====
+  // API pertenece a un usuario (creador)
+  ImporsuitApi.belongsTo(User, {
+    foreignKey: 'id_users',
+    targetKey: 'id_users',
+    as: 'usuario',
+  });
+
+  User.hasMany(ImporsuitApi, {
+    foreignKey: 'id_users',
+    sourceKey: 'id_users',
+    as: 'apis',
+  });
+
+  // Curso pertenece a un instructor (usuario)
+  ImporsuitCursos.belongsTo(User, {
+    foreignKey: 'instructor',
+    targetKey: 'id_users',
+    as: 'instructor_usuario',
+  });
+
+  User.hasMany(ImporsuitCursos, {
+    foreignKey: 'instructor',
+    sourceKey: 'id_users',
+    as: 'cursos_instructor',
+  });
+
+  // Relación muchos a muchos: API ↔ Cursos
+  ImporsuitApi.belongsToMany(ImporsuitCursos, {
+    through: ImporsuitApiCursos,
+    foreignKey: 'id_api',
+    otherKey: 'id_curso',
+    as: 'cursos',
+  });
+
+  ImporsuitCursos.belongsToMany(ImporsuitApi, {
+    through: ImporsuitApiCursos,
+    foreignKey: 'id_curso',
+    otherKey: 'id_api',
+    as: 'apis',
+  });
+
+  // Relación directa con la tabla intermedia
+  ImporsuitApi.hasMany(ImporsuitApiCursos, {
+    foreignKey: 'id_api',
+    as: 'api_cursos',
+  });
+
+  ImporsuitApiCursos.belongsTo(ImporsuitApi, {
+    foreignKey: 'id_api',
+    as: 'api',
+  });
+
+  ImporsuitCursos.hasMany(ImporsuitApiCursos, {
+    foreignKey: 'id_curso',
+    as: 'curso_apis',
+  });
+
+  ImporsuitApiCursos.belongsTo(ImporsuitCursos, {
+    foreignKey: 'id_curso',
+    as: 'curso',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -337,6 +404,9 @@ const getModels = () => {
     TikTokNotification,
     TikTokWebhookLog,
     DropiIntegrations,
+    ImporsuitApi,
+    ImporsuitCursos,
+    ImporsuitApiCursos,
   };
 };
 

@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { db } = require('./database/config');
+const { db, db_2 } = require('./database/config');
 const chatController = require('./controllers/chat.controller');
 const app = require('./app');
 const initModel = require('./models/initModels');
@@ -23,11 +23,19 @@ db.authenticate()
   .then(() => console.log('Database connected 😀'))
   .catch((err) => console.log('Error connecting to database 😞', err));
 
+db_2.authenticate()
+  .then(() => console.log('Database 2 connected 😀'))
+  .catch((err) => console.log('Error connecting to database 2 😞', err));
+
 initModel();
 
 db.sync({ force: false })
   .then(() => console.log('Database synced 😁'))
   .catch((err) => console.log('Error syncing database 😞', err));
+
+db_2.sync({ force: false })
+  .then(() => console.log('Database 2 synced 😁 (API & Cursos tables created)'))
+  .catch((err) => console.log('Error syncing database 2 😞', err));
 
 // Cron
 require('./cron/remarketing');

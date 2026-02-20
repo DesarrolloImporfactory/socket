@@ -10,7 +10,6 @@ const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
-ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
@@ -52,11 +51,17 @@ router.post('/upload', uploadMemory.single('audio'), async (req, res) => {
         .json({ error: 'Error generando el audio convertido' });
     });
 
-    //Convierte el archivo
+    //Convierte el archivo con configuración optimizada para WhatsApp
     ffmpeg(inputStream)
-      .audioBitrate(128)
       .audioCodec('libopus')
+      .audioBitrate('128k')
+      .audioFrequency(48000)
+      .audioChannels(1)
       .format('ogg')
+      .outputOptions([
+        '-vbr on',
+        '-compression_level 10',
+      ])
       .on('error', (err) => {
         console.error('Error en la conversión:', err);
         return res
