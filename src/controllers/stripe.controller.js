@@ -154,9 +154,41 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   });
 });
 
+// Helper: escoger la suscripción "vigente" de Stripe para este customer
+const pickCurrentStripeSubscription = async (customerId) => {
+  if (!customerId) return null;
+
+  // Traemos varias para poder elegir correctamente
+  const list = await stripe.subscriptions.list({
+    customer: customerId,
+    status: 'all',
+    limit: 20,
+  });
+
+  const subs = list?.data || [];
+  if (!subs.length) return null;
+
+  // Priorización:
+  // 1) active/trialing
+  // 2) si no hay, past_due (por si quiere mostrar suspendido)
+  // 3) si no hay, la más reciente
+  const preferredStatuses = ['active', 'trialing', 'past_due'];
+  for (const st of preferredStatuses) {
+    const found = subs
+      .filter((s) => s.status === st)
+      .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+    if (found) return found;
+  }
+
+  return subs.sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
+};
+
+/**
 /**
  * Obtener suscripción activa (para MiPlan)
- * Retorna plan mezclando BD + (opcional) estado Stripe si existe subscription_id
+ * Retorna plan mezclando BD + estado Stripe.
+ * Robustez: si en BD quedó una suscripción cancelada/incorrecta y el customer tiene otra activa,
+ * se elige automáticamente la vigente (active/trialing/past_due) y se sincroniza a BD.
  */
 exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -165,6 +197,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
+  // Si el usuario no tiene plan, devolvemos null + flags
   if (!user.id_plan) {
     return res.status(200).json({
       success: true,
@@ -183,45 +216,109 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   let estadoFinal = (user.estado || 'inactivo').toLowerCase();
   let fechaRenovacion = user.fecha_renovacion || null;
 
-  // Flags base desde BD (ya vienen del webhook)
+  // Flags base desde BD (vienen del webhook o BD)
   let stripeStatus = user.stripe_subscription_status || null;
   let cancelAtPeriodEnd = user.cancel_at_period_end ? 1 : 0;
   let cancelAt = user.cancel_at || null;
   let canceledAt = user.canceled_at || null;
 
-  // Si existe subscription, consultamos Stripe para exactitud (opcional, pero usted lo tenía)
+  /**
+   * Stripe Resolution:
+   * - Si existe stripe_subscription_id, intentamos retrieve.
+   * - Si está cancelada/no existe y tenemos customer, buscamos la "vigente" (helper del usuario).
+   * - Si encontramos una distinta, sincronizamos BD para evitar futuros errores.
+   */
+  let sub = null;
+
+  // 1) Retrieve por el id guardado en BD (si existe)
   if (user.stripe_subscription_id) {
     try {
-      const sub = await stripe.subscriptions.retrieve(
-        user.stripe_subscription_id,
-      );
-
-      // status: active, trialing, past_due, canceled, unpaid...
-      if (sub?.status) {
-        stripeStatus = sub.status;
-
-        if (sub.status === 'trialing') estadoFinal = 'activo';
-        else if (sub.status === 'active') estadoFinal = 'activo';
-        else if (sub.status === 'canceled') estadoFinal = 'cancelado';
-        else if (sub.status === 'past_due' || sub.status === 'unpaid')
-          estadoFinal = 'suspendido';
-        else estadoFinal = (user.estado || 'inactivo').toLowerCase();
-      }
-
-      // flags
-      cancelAtPeriodEnd = sub?.cancel_at_period_end ? 1 : 0;
-      cancelAt = sub?.cancel_at ? new Date(sub.cancel_at * 1000) : cancelAt;
-      canceledAt = sub?.canceled_at
-        ? new Date(sub.canceled_at * 1000)
-        : canceledAt;
-
-      // current_period_end / trial_end
-      if (sub?.current_period_end)
-        fechaRenovacion = new Date(sub.current_period_end * 1000);
-      else if (sub?.trial_end) fechaRenovacion = new Date(sub.trial_end * 1000);
+      sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
     } catch (e) {
       console.warn('Stripe sub retrieve fail:', e?.message);
-      // Si Stripe falla, usamos BD sin romper pantalla
+      sub = null;
+    }
+  }
+
+  // 2) Si la suscripción recuperada es mala/incorrecta, resolvemos por customer (si existe)
+  const statusBad =
+    !sub ||
+    ['canceled', 'unpaid'].includes(String(sub.status || '').toLowerCase());
+
+  if (statusBad && user.id_costumer) {
+    try {
+      // Helper (ya lo creó usted): debe devolver la suscripción vigente del customer
+      // Ej: active/trialing; si no existe, puede devolver past_due o la más reciente.
+      const picked = await pickCurrentStripeSubscription(user.id_costumer);
+
+      if (picked) {
+        sub = picked;
+
+        // Sincronizar BD si difiere (para que la próxima consulta ya sea correcta)
+        if (
+          user.stripe_subscription_id !== sub.id ||
+          user.stripe_subscription_status !== sub.status
+        ) {
+          try {
+            await db.query(
+              `UPDATE users
+               SET stripe_subscription_id = ?,
+                   stripe_subscription_status = ?,
+                   cancel_at_period_end = ?,
+                   cancel_at = ?,
+                   canceled_at = ?
+               WHERE id_usuario = ?
+               LIMIT 1`,
+              {
+                replacements: [
+                  sub.id,
+                  sub.status,
+                  sub.cancel_at_period_end ? 1 : 0,
+                  sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
+                  sub.canceled_at ? new Date(sub.canceled_at * 1000) : null,
+                  id_usuario,
+                ],
+              },
+            );
+          } catch (e) {
+            console.warn(
+              'DB sync stripe_subscription_id/status fail:',
+              e?.message,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Stripe pick current subscription fail:', e?.message);
+    }
+  }
+
+  // 3) Si tenemos sub válida, ajustamos estado/fechas/flags desde Stripe
+  if (sub?.status) {
+    stripeStatus = sub.status;
+
+    // status: active, trialing, past_due, canceled, unpaid, incomplete, incomplete_expired, paused...
+    if (sub.status === 'trialing' || sub.status === 'active')
+      estadoFinal = 'activo';
+    else if (sub.status === 'canceled') estadoFinal = 'cancelado';
+    else if (sub.status === 'past_due' || sub.status === 'unpaid')
+      estadoFinal = 'suspendido';
+    else estadoFinal = (user.estado || 'inactivo').toLowerCase();
+
+    // flags
+    cancelAtPeriodEnd = sub?.cancel_at_period_end ? 1 : 0;
+    cancelAt = sub?.cancel_at ? new Date(sub.cancel_at * 1000) : null;
+    canceledAt = sub?.canceled_at ? new Date(sub.canceled_at * 1000) : null;
+
+    // Fechas (period_end o trial_end)
+    if (sub?.current_period_end)
+      fechaRenovacion = new Date(sub.current_period_end * 1000);
+    else if (sub?.trial_end) fechaRenovacion = new Date(sub.trial_end * 1000);
+
+    // Si está cancelada de forma inmediata (no al final del periodo), no tiene sentido mostrar "renovación"
+    // (evita confusiones en frontend)
+    if (sub.status === 'canceled' && !sub.cancel_at_period_end) {
+      fechaRenovacion = null;
     }
   }
 
@@ -234,7 +331,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       estado: estadoFinal, // activo | suspendido | cancelado | vencido | inactivo
       fecha_renovacion: fechaRenovacion,
 
-      // nuevos flags para frontend
+      // flags para frontend
       stripe_subscription_status: stripeStatus,
       cancel_at_period_end: cancelAtPeriodEnd,
       cancel_at: cancelAt,
