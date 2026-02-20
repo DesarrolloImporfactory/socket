@@ -31,7 +31,7 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
       {
         model: Configuraciones,
         as: 'configuracion',
-        attributes: ['nombre_configuracion'],
+        attributes: ['nombre_configuracion', 'id', 'permiso_round_robin'],
         required: false,
       },
     ],
@@ -59,12 +59,13 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
         ...depJson,
         nombre_configuracion:
           depJson.configuracion?.nombre_configuracion ?? null,
+        permiso_round_robin: Number(depJson.configuracion?.permiso_round_robin)
+          ? 1
+          : 0, // ✅ NUEVO
         usuarios_asignados: asignaciones.map((a) => ({
           id_sub_usuario: Number(a.id_sub_usuario),
           asignacion_auto: Number(a.asignacion_auto) ? 1 : 0,
         })),
-        // opcional: si no quieres devolver el objeto configuracion anidado:
-        // configuracion: undefined,
       };
     }),
   );
@@ -72,6 +73,42 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     data: departamentosConUsuarios,
+  });
+});
+
+exports.togglePermisoRoundRobin = catchAsync(async (req, res) => {
+  const { id_configuracion, permiso_round_robin } = req.body;
+
+  if (!id_configuracion) {
+    return res.status(400).json({
+      status: "error",
+      message: "Faltan parámetros (id_configuracion).",
+    });
+  }
+
+  const valor = Number(permiso_round_robin) ? 1 : 0;
+
+  // Validar pertenencia (seguridad)
+  const config = await Configuraciones.findOne({
+    where: { id: id_configuracion },
+  });
+
+  if (!config) {
+    return res.status(404).json({
+      status: "error",
+      message: "Configuración no encontrada para este usuario.",
+    });
+  }
+
+  await Configuraciones.update(
+    { permiso_round_robin: valor },
+    { where: { id: id_configuracion } }
+  );
+
+  return res.status(200).json({
+    status: "success",
+    message: "Autoasignación actualizada.",
+    data: { id_configuracion, permiso_round_robin: valor },
   });
 });
 

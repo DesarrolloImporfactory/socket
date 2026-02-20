@@ -16,6 +16,12 @@ router.post(
 );
 
 router.post(
+  "/toggle_permiso_round_robin",
+  checkPlanActivo,
+  departamentos_chat_center.togglePermisoRoundRobin
+);
+
+router.post(
   '/listar_por_usuario',
   checkPlanActivo,
   departamentos_chat_center.listar_por_usuario
