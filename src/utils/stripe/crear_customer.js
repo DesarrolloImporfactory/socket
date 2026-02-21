@@ -1,22 +1,7 @@
 const Stripe = require('stripe');
-
-/* =========================
-   Selección automática de variables por entorno (production vs test)
-========================= */
-const isProd =
-  String(process.env.NODE_ENV || '').toLowerCase() === 'production';
-
-// En producción => PROD; en no-prod => TEST (si no existe, cae a PROD)
-const envPick = (prodKey, testKey, fallback = '') => {
-  const prodVal = process.env[prodKey];
-  const testVal = process.env[testKey];
-  if (isProd) return prodVal ?? fallback;
-  return testVal ?? prodVal ?? fallback;
-};
-
-const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
-
-const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-06-20',
+});
 
 async function crearStripeCustomer({ nombre, email, id_usuario }) {
   if (!email) {
