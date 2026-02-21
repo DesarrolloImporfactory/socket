@@ -1,9 +1,30 @@
 const Stripe = require('stripe');
 const { db } = require('../database/config');
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2024-06-20',
-});
+/* =========================
+   Selección automática de variables por entorno (production vs test)
+========================= */
+const isProd =
+  String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+
+// En producción => PROD; en no-prod => TEST (si no existe, cae a PROD)
+const envPick = (prodKey, testKey, fallback = '') => {
+  const prodVal = process.env[prodKey];
+  const testVal = process.env[testKey];
+  if (isProd) return prodVal ?? fallback;
+  return testVal ?? prodVal ?? fallback;
+};
+
+// Stripe keys por entorno
+const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
+
+// Webhook secret por entorno
+const STRIPE_WEBHOOK_SECRET_PLAN = envPick(
+  'STRIPE_WEBHOOK_SECRET_PLAN',
+  'STRIPE_WEBHOOK_SECRET_PLAN_TEST',
+);
+
+const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
 /* =========================
    Helpers
@@ -43,7 +64,7 @@ exports.stripeWebhook = async (req, res) => {
     event = stripe.webhooks.constructEvent(
       req.body, // raw buffer
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET_PLAN,
+      STRIPE_WEBHOOK_SECRET_PLAN,
     );
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -106,6 +127,18 @@ exports.stripeWebhook = async (req, res) => {
 
         const invoice = event.data.object;
 
+        const invoiceTotal = Number(invoice.total || 0); // centavos
+        const invoiceAmountPaid = Number(invoice.amount_paid || 0);
+        const hasRealCharge = invoiceTotal > 0 && invoiceAmountPaid > 0;
+
+        console.log('[stripe] invoice totals:', {
+          id: invoice.id,
+          total: invoice.total,
+          amount_paid: invoice.amount_paid,
+          paid: invoice.paid,
+          status: invoice.status,
+        });
+
         const customerId = invoice.customer || null;
         const firstLine = invoice.lines?.data?.[0] || null;
 
@@ -124,8 +157,8 @@ exports.stripeWebhook = async (req, res) => {
         try {
           await db.query(
             `INSERT IGNORE INTO transacciones_stripe_chat
-             (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
-             VALUES (?, ?, ?, ?, NOW(), ?)`,
+              (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+              VALUES (?, ?, ?, ?, NOW(), ?)`,
             {
               replacements: [
                 invoice.id,
@@ -144,7 +177,6 @@ exports.stripeWebhook = async (req, res) => {
         // 2) Resolver id_usuario / plan + fechas + flags Stripe
         let id_usuario = null;
 
-        // Base: fechas desde line item (fallback)
         let start = firstLine?.period?.start
           ? new Date(firstLine.period.start * 1000)
           : null;
@@ -159,17 +191,14 @@ exports.stripeWebhook = async (req, res) => {
         let cancelAt = null;
         let canceledAt = null;
 
-        // Plan real por priceId
         let currentPriceId = null;
         let planRealByPrice = null;
 
-        // Metadata subscription
         let metaSub = {};
         let pendingPlanId = null;
         let pendingChange = null;
         let pendingInvoiceId = null;
 
-        // id_plataforma puede venir o no
         let id_plataforma = null;
 
         if (subscriptionId) {
@@ -180,13 +209,10 @@ exports.stripeWebhook = async (req, res) => {
             );
 
             metaSub = subscription.metadata || {};
-
             id_usuario = Number(metaSub?.id_usuario) || null;
 
-            // id_plataforma (si viene)
             id_plataforma = Number(metaSub?.id_plataforma) || null;
 
-            // Plan REAL por priceId
             const item0 = subscription.items?.data?.[0] || null;
             currentPriceId = item0?.price?.id || null;
 
@@ -194,14 +220,10 @@ exports.stripeWebhook = async (req, res) => {
               planRealByPrice = await getPlanByPriceId(currentPriceId);
             }
 
-            // Pending (upgrade/downgrade) en metadata
             pendingPlanId = Number(metaSub?.pending_plan_id || 0) || null;
             pendingChange = metaSub?.pending_change || null;
-
-            // invoice exacta que debe gatillar el upgrade
             pendingInvoiceId = metaSub?.pending_invoice_id || null;
 
-            // Fechas más confiables desde subscription
             if (subscription.current_period_start)
               start = new Date(subscription.current_period_start * 1000);
             if (subscription.current_period_end)
@@ -209,7 +231,6 @@ exports.stripeWebhook = async (req, res) => {
             if (subscription.trial_end)
               trialEnd = new Date(subscription.trial_end * 1000);
 
-            // Flags/status reales
             subStatus = subscription.status || null;
             cancelAtPeriodEnd = subscription.cancel_at_period_end ? 1 : 0;
             cancelAt = subscription.cancel_at
@@ -223,7 +244,6 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
-        // Fallback id_usuario por metadata invoice si no vino desde subscription
         if (!id_usuario) {
           id_usuario =
             Number(metaFromParent?.id_usuario || metaFromLine?.id_usuario) ||
@@ -234,7 +254,6 @@ exports.stripeWebhook = async (req, res) => {
           );
         }
 
-        // Fallback id_plataforma por metadata invoice si no vino desde subscription
         if (!id_plataforma) {
           id_plataforma =
             Number(
@@ -256,16 +275,54 @@ exports.stripeWebhook = async (req, res) => {
           break;
         }
 
+        /**
+         * ✅ CAMBIO SOLICITADO (blindaje extra):
+         * Si existe UPGRADE pendiente (pending_change + pending_plan_id),
+         * pero NO hubo cobro real, NO aplicar el plan por priceId.
+         * Esto cubre la carrera donde todavía no existe pending_invoice_id.
+         */
+        if (pendingChange === 'upgrade' && !!pendingPlanId && !hasRealCharge) {
+          console.log(
+            '[stripe] IGNORE upgrade without real charge (pending):',
+            {
+              invoiceId: invoice.id,
+              pendingPlanId,
+              pendingInvoiceId,
+              total: invoice.total,
+              amount_paid: invoice.amount_paid,
+            },
+          );
+          break;
+        }
+
+        /**
+         * ✅ Su guard anterior (se mantiene tal cual)
+         */
+        if (
+          pendingChange === 'upgrade' &&
+          !!pendingPlanId &&
+          !!pendingInvoiceId &&
+          invoice.id === pendingInvoiceId &&
+          !hasRealCharge
+        ) {
+          console.log('[stripe] IGNORE upgrade invoice without real charge:', {
+            invoiceId: invoice.id,
+            pendingPlanId,
+            pendingInvoiceId,
+            amount_paid: invoice.amount_paid,
+          });
+          break;
+        }
+
         // =========
-        // Determinar plan a aplicar en BD
-        // - UPGRADE: solo aplicar pending cuando invoice.id === pending_invoice_id
-        // - Normal: usar plan REAL por priceId
+        // Determinar plan a aplicar en BD (igual que usted lo tenía)
         // =========
         const isUpgradeInvoice =
           pendingChange === 'upgrade' &&
           !!pendingPlanId &&
           !!pendingInvoiceId &&
-          invoice.id === pendingInvoiceId;
+          invoice.id === pendingInvoiceId &&
+          hasRealCharge;
 
         let planToApply = null;
 
@@ -276,7 +333,6 @@ exports.stripeWebhook = async (req, res) => {
             planToApply,
           );
 
-          // Finalizar metadata en Stripe: id_plan definitivo y limpiar pending
           try {
             await stripe.subscriptions.update(subscriptionId, {
               metadata: {
@@ -670,34 +726,72 @@ exports.stripeWebhook = async (req, res) => {
           isActiveSub = !!activeSubId && activeSubId === subscriptionId;
         }
 
+        const isUpgradePending = pendingChange === 'upgrade' && !!pendingPlanId;
+
         if (id_usuario) {
-          // Mantener sync de flags/fechas, pero NO pisar stripe_subscription_id con COALESCE si ya hay una activa distinta.
-          // Aquí se mantiene COALESCE (porque la fuente de verdad de la suscripción activa es invoice.payment_succeeded).
-          await db.query(
-            `UPDATE usuarios_chat_center
-             SET id_plan = COALESCE(?, id_plan),
-                 id_costumer = COALESCE(?, id_costumer),
-                 stripe_subscription_id = COALESCE(?, stripe_subscription_id),
-                 fecha_renovacion = COALESCE(?, fecha_renovacion),
-                 stripe_subscription_status = ?,
-                 cancel_at_period_end = ?,
-                 cancel_at = ?,
-                 canceled_at = ?
-             WHERE id_usuario = ?`,
-            {
-              replacements: [
-                idPlanToWrite,
-                customerId || null,
-                subscriptionId || null,
-                currentPeriodEnd,
-                status,
-                cancelAtPeriodEnd,
-                cancelAt,
-                canceledAt,
-                id_usuario,
-              ],
-            },
-          );
+          /**
+           * Si hay UPGRADE pendiente, NO escribir id_plan aquí (customer.subscription.updated),
+           * porque Stripe dispara este evento al cambiar el price aunque aún no se haya pagado.
+           * Se siguen sincronizando flags/fechas/status normalmente.
+           */
+          if (isUpgradePending) {
+            await db.query(
+              `UPDATE usuarios_chat_center
+               SET id_costumer = COALESCE(?, id_costumer),
+                   stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+                   fecha_renovacion = COALESCE(?, fecha_renovacion),
+                   stripe_subscription_status = ?,
+                   cancel_at_period_end = ?,
+                   cancel_at = ?,
+                   canceled_at = ?
+               WHERE id_usuario = ?`,
+              {
+                replacements: [
+                  customerId || null,
+                  subscriptionId || null,
+                  currentPeriodEnd,
+                  status,
+                  cancelAtPeriodEnd,
+                  cancelAt,
+                  canceledAt,
+                  id_usuario,
+                ],
+              },
+            );
+
+            console.log('[stripe] IGNORE id_plan update (upgrade pending):', {
+              id_usuario,
+              subscriptionId,
+              pendingPlanId,
+            });
+          } else {
+            // Mantener  UPDATE original cuando NO es upgrade pendiente
+            await db.query(
+              `UPDATE usuarios_chat_center
+               SET id_plan = COALESCE(?, id_plan),
+                   id_costumer = COALESCE(?, id_costumer),
+                   stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+                   fecha_renovacion = COALESCE(?, fecha_renovacion),
+                   stripe_subscription_status = ?,
+                   cancel_at_period_end = ?,
+                   cancel_at = ?,
+                   canceled_at = ?
+               WHERE id_usuario = ?`,
+              {
+                replacements: [
+                  idPlanToWrite,
+                  customerId || null,
+                  subscriptionId || null,
+                  currentPeriodEnd,
+                  status,
+                  cancelAtPeriodEnd,
+                  cancelAt,
+                  canceledAt,
+                  id_usuario,
+                ],
+              },
+            );
+          }
 
           //  Solo cancelar usuario si el evento es de SU suscripción activa
           if (status === 'canceled' || sub.ended_at) {
