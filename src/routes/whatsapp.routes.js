@@ -220,7 +220,7 @@ async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
  * - Audio: AAC
  * - Contenedor: MP4
  * - Bitrate limitado a 1Mbps para evitar archivos muy grandes
- * 
+ *
  * @returns {Buffer} Buffer del video convertido
  */
 async function convertVideoForWhatsApp(fileBuffer, originalName) {
@@ -237,7 +237,9 @@ async function convertVideoForWhatsApp(fileBuffer, originalName) {
     try {
       await execAsync('ffmpeg -version');
     } catch (e) {
-      console.warn('[VIDEO_CONVERT] FFmpeg no disponible. Usando video original.');
+      console.warn(
+        '[VIDEO_CONVERT] FFmpeg no disponible. Usando video original.',
+      );
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
@@ -249,20 +251,20 @@ async function convertVideoForWhatsApp(fileBuffer, originalName) {
     // - maxrate/bufsize: limitar bitrate para no exceder 16MB
     // - movflags +faststart: optimizar para streaming
     const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -maxrate 1M -bufsize 2M -movflags +faststart -y "${outputPath}"`;
-    
+
     console.log('[VIDEO_CONVERT] Ejecutando conversión...');
     const startTime = Date.now();
-    
+
     const { stdout, stderr } = await execAsync(ffmpegCmd, {
       maxBuffer: 50 * 1024 * 1024, // 50MB buffer
     });
-    
+
     const duration = Date.now() - startTime;
     console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
 
     // 4. Leer archivo convertido
     const convertedBuffer = await fs.readFile(outputPath);
-    
+
     console.log('[VIDEO_CONVERT] Tamaños:', {
       original: (fileBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
       convertido: (convertedBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
@@ -1662,8 +1664,24 @@ router.post(
       let processedFilename = null; // Nombre procesado
       let fmt = null; // Formato del archivo (IMAGE|VIDEO|DOCUMENT)
 
+      const headerDefaultAssetRaw = req.body?.header_default_asset;
+
+      // Puede venir como objeto (JSON) o como string (si algún cliente lo manda stringificado)
+      let header_default_asset = null;
+      if (headerDefaultAssetRaw) {
+        if (typeof headerDefaultAssetRaw === 'object') {
+          header_default_asset = headerDefaultAssetRaw;
+        } else if (typeof headerDefaultAssetRaw === 'string') {
+          try {
+            header_default_asset = JSON.parse(headerDefaultAssetRaw);
+          } catch (_) {
+            header_default_asset = null;
+          }
+        }
+      }
+
       if (req.file) {
-        // fallback por si el front no manda header_format (aunque usted ya lo manda)
+        // fallback por si el front no manda header_format
         if (!header_format)
           header_format = inferHeaderFormatFromMime(req.file.mimetype);
 
@@ -1678,7 +1696,7 @@ router.post(
           });
         }
 
-        // 2.1) Validar contra límites oficiales (usa su helper)
+        // 2.1) Validar contra límites oficiales
         try {
           validateMetaMediaOrThrow({ file: req.file, format: fmt });
         } catch (err) {
@@ -1700,14 +1718,23 @@ router.post(
           try {
             processedBuffer = await convertVideoForWhatsApp(
               req.file.buffer,
-              req.file.originalname
+              req.file.originalname,
             );
             processedMimetype = 'video/mp4'; // Forzar MP4
-            processedFilename = req.file.originalname.replace(/\.[^.]+$/, '.mp4');
-            console.log('[VIDEO] Conversión exitosa. Nuevo tamaño:', 
-              (processedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+            processedFilename = req.file.originalname.replace(
+              /\.[^.]+$/,
+              '.mp4',
+            );
+            console.log(
+              '[VIDEO] Conversión exitosa. Nuevo tamaño:',
+              (processedBuffer.length / (1024 * 1024)).toFixed(2),
+              'MB',
+            );
           } catch (convErr) {
-            console.warn('[VIDEO] No se pudo convertir. Usando original:', convErr.message);
+            console.warn(
+              '[VIDEO] No se pudo convertir. Usando original:',
+              convErr.message,
+            );
             // Si falla la conversión, usar el video original y esperar que Meta lo procese
           }
         }
@@ -1723,9 +1750,9 @@ router.post(
 
         try {
           const upHist = await uploadToUploader({
-            buffer: processedBuffer,  // Usar buffer procesado (convertido si es video)
-            originalname: processedFilename,  // Nombre actualizado
-            mimetype: processedMimetype,  // Mimetype actualizado
+            buffer: processedBuffer, // Usar buffer procesado (convertido si es video)
+            originalname: processedFilename, // Nombre actualizado
+            mimetype: processedMimetype, // Mimetype actualizado
             folder,
           });
 
@@ -1746,9 +1773,9 @@ router.post(
             PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
           },
           {
-            buffer: processedBuffer,  // Buffer procesado
-            mimetype: processedMimetype,  // Mimetype actualizado
-            originalname: processedFilename,  // Nombre actualizado
+            buffer: processedBuffer, // Buffer procesado
+            mimetype: processedMimetype, // Mimetype actualizado
+            originalname: processedFilename, // Nombre actualizado
           },
         );
 
@@ -1766,11 +1793,15 @@ router.post(
 
         // 2.3.1) Para videos: verificar que Meta haya procesado el media antes de enviarlo
         if (fmt === 'VIDEO') {
-          console.log('[VIDEO] Esperando procesamiento de Meta (mediaId:', meta_media_id, ')...');
-          
+          console.log(
+            '[VIDEO] Esperando procesamiento de Meta (mediaId:',
+            meta_media_id,
+            ')...',
+          );
+
           // Dar un tiempo prudencial para que Meta procese el video
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+
           // Verificar el estado del media
           try {
             const mediaCheckUrl = `https://graph.facebook.com/v22.0/${meta_media_id}`;
@@ -1779,17 +1810,22 @@ router.post(
               timeout: 10000,
               validateStatus: () => true,
             });
-            
+
             console.log('[VIDEO] Estado del media:', {
               status: mediaCheck.status,
               data: mediaCheck.data,
             });
-            
+
             if (mediaCheck.status !== 200) {
-              console.warn('[VIDEO] Advertencia: No se pudo verificar el estado del media');
+              console.warn(
+                '[VIDEO] Advertencia: No se pudo verificar el estado del media',
+              );
             }
           } catch (checkErr) {
-            console.warn('[VIDEO] Advertencia al verificar media:', checkErr.message);
+            console.warn(
+              '[VIDEO] Advertencia al verificar media:',
+              checkErr.message,
+            );
             // No fallar, solo advertir
           }
         }
@@ -1803,11 +1839,178 @@ router.post(
           fmt,
           meta_media_id,
         );
+      } else if (
+        header_default_asset?.enabled === true &&
+        header_default_asset?.url &&
+        ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
+          String(header_default_asset?.format || '').toUpperCase(),
+        )
+      ) {
+        const fmtDefault = String(
+          header_default_asset.format || '',
+        ).toUpperCase();
+
+        try {
+          // 1) Descargar archivo desde URL predeterminada
+          const rawDefaultUrl = String(header_default_asset.url || '').trim();
+          const decodedDefaultUrl = rawDefaultUrl
+            .replace(/&amp;/g, '&')
+            .replace(/&#38;/g, '&');
+
+          console.log('[DEFAULT_HEADER] raw URL:', rawDefaultUrl);
+          console.log('[DEFAULT_HEADER] decoded URL:', decodedDefaultUrl);
+
+          const dl = await axios.get(decodedDefaultUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            validateStatus: () => true,
+          });
+
+          if (dl.status < 200 || dl.status >= 300 || !dl.data) {
+            return res.status(200).json({
+              success: false,
+              step: 'download_default_header_asset',
+              message:
+                'No se pudo descargar el adjunto predeterminado del template',
+              http_status: dl.status,
+              url: decodedDefaultUrl,
+              raw_url: rawDefaultUrl,
+            });
+          }
+
+          const downloadedBuffer = Buffer.from(dl.data);
+
+          // Detectar mimetype (primero header, luego fallback por formato)
+          const responseMime = String(dl.headers?.['content-type'] || '')
+            .split(';')[0]
+            .trim();
+
+          let defaultMime = responseMime;
+          if (!defaultMime) {
+            if (fmtDefault === 'IMAGE') defaultMime = 'image/jpeg';
+            if (fmtDefault === 'VIDEO') defaultMime = 'video/mp4';
+            if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
+          }
+
+          // Nombre archivo fallback
+          const extByFmt =
+            fmtDefault === 'IMAGE'
+              ? 'jpg'
+              : fmtDefault === 'VIDEO'
+                ? 'mp4'
+                : 'pdf';
+
+          const defaultFilename =
+            (header_default_asset?.name &&
+              String(header_default_asset.name).trim()) ||
+            `template_header_default.${extByFmt}`;
+
+          // 2) (Opcional pero recomendado) validar límites con su helper
+          try {
+            validateMetaMediaOrThrow({
+              file: {
+                buffer: downloadedBuffer,
+                mimetype: defaultMime,
+                originalname: defaultFilename,
+                size: downloadedBuffer.length,
+              },
+              format: fmtDefault,
+            });
+          } catch (err) {
+            return res.status(err.statusCode || 400).json({
+              success: false,
+              step: 'validate_default_header_asset',
+              code: err.code || null,
+              message: err.message || 'Adjunto predeterminado inválido',
+            });
+          }
+
+          // 3) Guardar histórico en S3
+          const folder =
+            fmtDefault === 'IMAGE'
+              ? 'whatsapp/templates/header/images'
+              : fmtDefault === 'VIDEO'
+                ? 'whatsapp/templates/header/videos'
+                : 'whatsapp/templates/header/documents';
+
+          try {
+            const upHist = await uploadToUploader({
+              buffer: downloadedBuffer,
+              originalname: defaultFilename,
+              mimetype: defaultMime,
+              folder,
+            });
+
+            fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
+          } catch (err) {
+            // Si quiere tolerancia, puede NO cortar aquí y seguir con la URL original.
+            // Si quiere estricto, mantenga return.
+            return res.status(err.statusCode || 502).json({
+              success: false,
+              step: 'upload_history_s3_default_asset',
+              message:
+                err.message ||
+                'No se pudo subir a histórico (S3) el asset predeterminado',
+              raw: err.raw || null,
+            });
+          }
+
+          // 4) Subir a Meta y obtener media_id
+          const upMeta = await uploadMediaToMeta(
+            {
+              ACCESS_TOKEN: cfg.ACCESS_TOKEN,
+              PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
+            },
+            {
+              buffer: downloadedBuffer,
+              mimetype: defaultMime,
+              originalname: defaultFilename,
+            },
+          );
+
+          if (!upMeta.ok) {
+            return res.status(200).json({
+              success: false,
+              step: 'upload_media_meta_default_asset',
+              meta_status: upMeta.meta_status,
+              error: upMeta.error,
+              fileUrl,
+            });
+          }
+
+          meta_media_id = upMeta.mediaId;
+          fmt = fmtDefault; // reutiliza la variable global para logs / respuesta
+
+          // 5) Inyectar HEADER media en payload
+          const comps = Array.isArray(payload.template.components)
+            ? payload.template.components
+            : [];
+
+          payload.template.components = injectHeaderMediaId(
+            comps,
+            fmtDefault,
+            meta_media_id,
+          );
+        } catch (err) {
+          return res.status(500).json({
+            success: false,
+            step: 'process_default_header_asset',
+            message: 'Error procesando adjunto predeterminado del template',
+            error: err.message,
+          });
+        }
       }
 
       // ===== 3) Enviar template a Meta =====
-      console.log('[SEND_TEMPLATE] Enviando a:', to, 'Template:', template_name, 'MediaId:', meta_media_id || 'N/A');
-      
+      console.log(
+        '[SEND_TEMPLATE] Enviando a:',
+        to,
+        'Template:',
+        template_name,
+        'MediaId:',
+        meta_media_id || 'N/A',
+      );
+
       const ax = axios.create({
         headers: {
           Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
@@ -3005,252 +3208,266 @@ router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
 
 /**
  * POST /enviarAudioCompleto
- * 
+ *
  * Endpoint unificado que:
  * 1. Recibe audio en cualquier formato desde el front
  * 2. Convierte a OGG OPUS (formato WhatsApp)
  * 3. Sube a Meta y obtiene media_id
  * 4. Envía el mensaje de audio por WhatsApp
  * 5. Guarda en AWS (uploader) y retorna la URL
- * 
+ *
  * Body:
  *  - id_configuracion: ID de configuración WhatsApp
  *  - to: destinatario del mensaje
  * Form-data:
  *  - audio: archivo de audio (cualquier formato)
  */
-router.post('/enviarAudioCompleto', upload.single('audio'), async (req, res) => {
-  try {
-    const { id_configuracion, to } = req.body;
+router.post(
+  '/enviarAudioCompleto',
+  upload.single('audio'),
+  async (req, res) => {
+    try {
+      const { id_configuracion, to } = req.body;
 
-    // Validaciones
-    if (!id_configuracion) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Falta id_configuracion' 
-      });
-    }
-    if (!to) {
-      return res.status(400).json({
-        success: false,
-        message: 'Falta el campo to (destinatario)',
-      });
-    }
-    if (!req.file?.buffer) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Falta el archivo audio' 
-      });
-    }
+      // Validaciones
+      if (!id_configuracion) {
+        return res.status(400).json({
+          success: false,
+          message: 'Falta id_configuracion',
+        });
+      }
+      if (!to) {
+        return res.status(400).json({
+          success: false,
+          message: 'Falta el campo to (destinatario)',
+        });
+      }
+      if (!req.file?.buffer) {
+        return res.status(400).json({
+          success: false,
+          message: 'Falta el archivo audio',
+        });
+      }
 
-    // Obtener config de WhatsApp
-    const cfg = await getConfigFromDB(id_configuracion);
-    if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID) {
-      return res.status(404).json({
-        success: false,
-        message: 'Config no encontrada o incompleta',
-      });
-    }
+      // Obtener config de WhatsApp
+      const cfg = await getConfigFromDB(id_configuracion);
+      if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID) {
+        return res.status(404).json({
+          success: false,
+          message: 'Config no encontrada o incompleta',
+        });
+      }
 
-    const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
+      const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
 
-    // ========= PASO 1: Convertir audio a OGG OPUS =========
-    console.log('🎵 Paso 1: Convirtiendo audio a OGG OPUS...');
-    
-    const inputStream = new PassThrough();
-    inputStream.end(req.file.buffer);
+      // ========= PASO 1: Convertir audio a OGG OPUS =========
+      console.log('🎵 Paso 1: Convirtiendo audio a OGG OPUS...');
 
-    const outputStream = new PassThrough();
-    const chunks = [];
+      const inputStream = new PassThrough();
+      inputStream.end(req.file.buffer);
 
-    const conversionPromise = new Promise((resolve, reject) => {
-      let ffmpegProcess;
-      let resolved = false;
+      const outputStream = new PassThrough();
+      const chunks = [];
 
-      outputStream.on('data', (chunk) => chunks.push(chunk));
-      
-      outputStream.on('end', () => {
-        if (!resolved) {
-          resolved = true;
-          const convertedBuffer = Buffer.concat(chunks);
-          console.log(`✅ Audio convertido: ${(convertedBuffer.length / 1024).toFixed(2)} KB`);
-          resolve(convertedBuffer);
-        }
-      });
+      const conversionPromise = new Promise((resolve, reject) => {
+        let ffmpegProcess;
+        let resolved = false;
 
-      outputStream.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
-          reject(err);
-        }
-      });
+        outputStream.on('data', (chunk) => chunks.push(chunk));
 
-      ffmpegProcess = ffmpeg(inputStream)
-        .audioCodec('libopus')
-        .audioBitrate('128k') // Bitrate estable y compatible
-        .audioFrequency(48000) // 48kHz es óptimo para Opus
-        .audioChannels(1) // Mono
-        .format('ogg')
-        .outputOptions([
-          '-vbr on', // Variable bitrate
-          '-compression_level 10', // Máxima calidad
-        ])
-        .on('start', (cmdline) => {
-          console.log('🔧 FFmpeg command:', cmdline);
-        })
-        .on('error', (err) => {
+        outputStream.on('end', () => {
           if (!resolved) {
             resolved = true;
-            console.error('❌ Error en conversión ffmpeg:', err);
-            reject(err);
+            const convertedBuffer = Buffer.concat(chunks);
+            console.log(
+              `✅ Audio convertido: ${(convertedBuffer.length / 1024).toFixed(2)} KB`,
+            );
+            resolve(convertedBuffer);
           }
-        })
-        .on('end', () => {
-          console.log('🎵 FFmpeg finalizó la conversión');
         });
 
-      ffmpegProcess.pipe(outputStream, { end: true });
-    });
+        outputStream.on('error', (err) => {
+          if (!resolved) {
+            resolved = true;
+            reject(err);
+          }
+        });
 
-    const convertedAudioBuffer = await conversionPromise;
+        ffmpegProcess = ffmpeg(inputStream)
+          .audioCodec('libopus')
+          .audioBitrate('128k') // Bitrate estable y compatible
+          .audioFrequency(48000) // 48kHz es óptimo para Opus
+          .audioChannels(1) // Mono
+          .format('ogg')
+          .outputOptions([
+            '-vbr on', // Variable bitrate
+            '-compression_level 10', // Máxima calidad
+          ])
+          .on('start', (cmdline) => {
+            console.log('🔧 FFmpeg command:', cmdline);
+          })
+          .on('error', (err) => {
+            if (!resolved) {
+              resolved = true;
+              console.error('❌ Error en conversión ffmpeg:', err);
+              reject(err);
+            }
+          })
+          .on('end', () => {
+            console.log('🎵 FFmpeg finalizó la conversión');
+          });
 
-    // ========= PASO 2: Subir a Meta =========
-    console.log('📤 Paso 2: Subiendo audio a Meta...');
-    
-    const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
-    const mimeType = 'audio/ogg';
-    const fileName = `audio-${Date.now()}.ogg`;
-
-    const metaForm = new FormData();
-    metaForm.append('messaging_product', 'whatsapp');
-    metaForm.append('type', mimeType);
-    metaForm.append('file', convertedAudioBuffer, {
-      filename: fileName,
-      contentType: mimeType,
-    });
-
-    const mediaResp = await axios.post(mediaUrl, metaForm, {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        ...metaForm.getHeaders(),
-      },
-      timeout: 30000,
-      validateStatus: () => true,
-    });
-
-    if (
-      mediaResp.status < 200 ||
-      mediaResp.status >= 300 ||
-      mediaResp.data?.error
-    ) {
-      console.error('❌ Error subiendo a Meta:', mediaResp.data);
-      return res.status(200).json({
-        success: false,
-        step: 'upload_media_to_meta',
-        meta_status: mediaResp.status,
-        error: mediaResp.data?.error || mediaResp.data,
+        ffmpegProcess.pipe(outputStream, { end: true });
       });
-    }
 
-    const mediaId = mediaResp.data?.id;
-    if (!mediaId) {
-      return res.status(200).json({
-        success: false,
-        step: 'upload_media_to_meta',
-        error: 'Meta no devolvió media_id',
-        raw: mediaResp.data,
+      const convertedAudioBuffer = await conversionPromise;
+
+      // ========= PASO 2: Subir a Meta =========
+      console.log('📤 Paso 2: Subiendo audio a Meta...');
+
+      const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
+      const mimeType = 'audio/ogg';
+      const fileName = `audio-${Date.now()}.ogg`;
+
+      const metaForm = new FormData();
+      metaForm.append('messaging_product', 'whatsapp');
+      metaForm.append('type', mimeType);
+      metaForm.append('file', convertedAudioBuffer, {
+        filename: fileName,
+        contentType: mimeType,
       });
-    }
 
-    console.log(`✅ Audio subido a Meta. Media ID: ${mediaId}`);
-
-    // ========= PASO 3: Enviar mensaje de audio =========
-    console.log('💬 Paso 3: Enviando mensaje de audio...');
-    
-    const msgUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'audio',
-      audio: { id: mediaId },
-    };
-
-    const msgResp = await axios.post(msgUrl, payload, {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-      validateStatus: () => true,
-    });
-
-    if (msgResp.status < 200 || msgResp.status >= 300 || msgResp.data?.error) {
-      console.error('❌ Error enviando mensaje:', msgResp.data);
-      return res.status(200).json({
-        success: false,
-        step: 'send_message',
-        meta_status: msgResp.status,
-        mediaId,
-        error: msgResp.data?.error || msgResp.data,
-      });
-    }
-
-    const wamid = msgResp.data?.messages?.[0]?.id || null;
-    console.log(`✅ Mensaje enviado. WAMID: ${wamid}`);
-
-    // ========= PASO 4: Guardar en AWS (Uploader) =========
-    console.log('☁️  Paso 4: Guardando en AWS...');
-    
-    const awsForm = new FormData();
-    awsForm.append('file', convertedAudioBuffer, {
-      filename: fileName,
-      contentType: mimeType,
-    });
-
-    const uploaderResp = await axios.post(
-      'https://uploader.imporfactory.app/api/files/upload',
-      awsForm,
-      { 
-        headers: awsForm.getHeaders(), 
+      const mediaResp = await axios.post(mediaUrl, metaForm, {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          ...metaForm.getHeaders(),
+        },
         timeout: 30000,
-        validateStatus: () => true 
-      },
-    );
+        validateStatus: () => true,
+      });
 
-    let awsUrl = null;
-    if (uploaderResp.status >= 200 && uploaderResp.status < 300 && uploaderResp.data?.success) {
-      awsUrl = uploaderResp.data.data?.url || null;
-      console.log(`✅ Audio guardado en AWS: ${awsUrl}`);
-    } else {
-      console.warn('⚠️  No se pudo guardar en AWS:', uploaderResp.data);
+      if (
+        mediaResp.status < 200 ||
+        mediaResp.status >= 300 ||
+        mediaResp.data?.error
+      ) {
+        console.error('❌ Error subiendo a Meta:', mediaResp.data);
+        return res.status(200).json({
+          success: false,
+          step: 'upload_media_to_meta',
+          meta_status: mediaResp.status,
+          error: mediaResp.data?.error || mediaResp.data,
+        });
+      }
+
+      const mediaId = mediaResp.data?.id;
+      if (!mediaId) {
+        return res.status(200).json({
+          success: false,
+          step: 'upload_media_to_meta',
+          error: 'Meta no devolvió media_id',
+          raw: mediaResp.data,
+        });
+      }
+
+      console.log(`✅ Audio subido a Meta. Media ID: ${mediaId}`);
+
+      // ========= PASO 3: Enviar mensaje de audio =========
+      console.log('💬 Paso 3: Enviando mensaje de audio...');
+
+      const msgUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
+      const payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'audio',
+        audio: { id: mediaId },
+      };
+
+      const msgResp = await axios.post(msgUrl, payload, {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+        validateStatus: () => true,
+      });
+
+      if (
+        msgResp.status < 200 ||
+        msgResp.status >= 300 ||
+        msgResp.data?.error
+      ) {
+        console.error('❌ Error enviando mensaje:', msgResp.data);
+        return res.status(200).json({
+          success: false,
+          step: 'send_message',
+          meta_status: msgResp.status,
+          mediaId,
+          error: msgResp.data?.error || msgResp.data,
+        });
+      }
+
+      const wamid = msgResp.data?.messages?.[0]?.id || null;
+      console.log(`✅ Mensaje enviado. WAMID: ${wamid}`);
+
+      // ========= PASO 4: Guardar en AWS (Uploader) =========
+      console.log('☁️  Paso 4: Guardando en AWS...');
+
+      const awsForm = new FormData();
+      awsForm.append('file', convertedAudioBuffer, {
+        filename: fileName,
+        contentType: mimeType,
+      });
+
+      const uploaderResp = await axios.post(
+        'https://uploader.imporfactory.app/api/files/upload',
+        awsForm,
+        {
+          headers: awsForm.getHeaders(),
+          timeout: 30000,
+          validateStatus: () => true,
+        },
+      );
+
+      let awsUrl = null;
+      if (
+        uploaderResp.status >= 200 &&
+        uploaderResp.status < 300 &&
+        uploaderResp.data?.success
+      ) {
+        awsUrl = uploaderResp.data.data?.url || null;
+        console.log(`✅ Audio guardado en AWS: ${awsUrl}`);
+      } else {
+        console.warn('⚠️  No se pudo guardar en AWS:', uploaderResp.data);
+      }
+
+      // ========= Respuesta final =========
+      return res.json({
+        success: true,
+        message: 'Audio procesado, enviado y guardado correctamente',
+        data: {
+          mediaId,
+          wamid,
+          awsUrl,
+        },
+        details: {
+          meta_upload: mediaResp.data,
+          meta_send: msgResp.data,
+          aws_upload: uploaderResp.data,
+        },
+      });
+    } catch (error) {
+      console.error('❌ Error en /enviarAudioCompleto:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Error interno procesando el audio',
+        error: error?.message,
+        stack:
+          process.env.NODE_ENV === 'development' ? error?.stack : undefined,
+      });
     }
-
-    // ========= Respuesta final =========
-    return res.json({
-      success: true,
-      message: 'Audio procesado, enviado y guardado correctamente',
-      data: {
-        mediaId,
-        wamid,
-        awsUrl,
-      },
-      details: {
-        meta_upload: mediaResp.data,
-        meta_send: msgResp.data,
-        aws_upload: uploaderResp.data,
-      },
-    });
-
-  } catch (error) {
-    console.error('❌ Error en /enviarAudioCompleto:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Error interno procesando el audio',
-      error: error?.message,
-      stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined,
-    });
-  }
-});
+  },
+);
 
 module.exports = router;
