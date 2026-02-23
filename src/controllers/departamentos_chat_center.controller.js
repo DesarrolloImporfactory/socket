@@ -412,7 +412,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       });
 
       await Clientes_chat_center.update(
-        { id_encargado: id_encargado },
+        { id_encargado: id_encargado, chat_cerrado: 0 },
         {
           where: { id: clienteActual.id },
         },
@@ -496,7 +496,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       });
 
       await Clientes_chat_center.update(
-        { id_encargado: id_encargado },
+        { id_encargado: id_encargado, chat_cerrado: 0 },
         {
           where: { id: clienteActual.id },
         },
@@ -591,7 +591,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
         if (validar_cliente_new_conf) {
           await Clientes_chat_center.update(
-            { id_encargado: id_encargado },
+            { id_encargado: id_encargado, chat_cerrado: 0 },
             {
               where: { id: id_cliente_chat_center },
             },
@@ -656,7 +656,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
 
         if (validar_cliente_new_conf) {
           await Clientes_chat_center.update(
-            { id_encargado: id_encargado },
+            { id_encargado: id_encargado, chat_cerrado: 0 },
             {
               where: { id: validar_cliente_new_conf.id },
             },
