@@ -135,7 +135,14 @@ function requestIsCredentialed(req) {
 
 if (process.env.NODE_ENV === 'prod') {
   app.use(morgan('production'));
-
+ // prelight para OPTIONS (CORS preflight)
+  app.options('*', (req, res) => {
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS, DELETE, PATCH');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Timestamp, X-Requested-With');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    return res.status(204).end();
+  });
   // middleware CORS dinámico
   app.use((req, res, next) => {
     const origin = req.get('Origin');
