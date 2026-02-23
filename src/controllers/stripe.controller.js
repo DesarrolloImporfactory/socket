@@ -185,7 +185,6 @@ const logStripeEnvHealth = ({
   const errors = checks.flatMap((c) => c.errors || []);
   const ok = errors.length === 0;
 
-  // Log seguro (no imprime llaves completas)
   console.log('[stripe-env] env:', {
     isProd,
     NODE_ENV: process.env.NODE_ENV,
