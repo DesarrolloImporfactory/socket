@@ -45,7 +45,13 @@ router.post('/ObtenerNumeros', async (req, res) => {
 
     // si no hay registro de configuración, no es error
     if (!rows.length) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        waba_info: null,
+        portfolio_owner: null,
+        on_behalf_of: null,
+      });
     }
 
     const { WABA_ID, ACCESS_TOKEN } = rows[0];
@@ -56,6 +62,46 @@ router.post('/ObtenerNumeros', async (req, res) => {
       timeout: 15000,
       validateStatus: () => true, // <- importantísimo: no lance throw por 4xx/5xx
     });
+
+    // =========================
+    // 0) Info de la WABA (dueño real del portafolio)
+    // =========================
+    const wabaInfoResp = await ax.get(
+      `https://graph.facebook.com/v22.0/${WABA_ID}`,
+      {
+        params: {
+          fields: 'id,name,owner_business_info,on_behalf_of_business_info',
+        },
+      },
+    );
+
+    let wabaInfo = null;
+    let portfolioOwner = null;
+    let onBehalfOf = null;
+
+    // si falla esta parte por permisos, NO tumbamos todo el endpoint
+    if (wabaInfoResp.status >= 200 && wabaInfoResp.status < 300) {
+      wabaInfo = wabaInfoResp.data || null;
+
+      portfolioOwner = wabaInfo?.owner_business_info
+        ? {
+            id: wabaInfo.owner_business_info.id || null,
+            name: wabaInfo.owner_business_info.name || null,
+            marketing_messages_onboarding_status:
+              wabaInfo.owner_business_info.marketing_messages_onboarding_status
+                ?.status || null,
+          }
+        : null;
+
+      onBehalfOf = wabaInfo?.on_behalf_of_business_info
+        ? {
+            id: wabaInfo.on_behalf_of_business_info.id || null,
+            name: wabaInfo.on_behalf_of_business_info.name || null,
+            status: wabaInfo.on_behalf_of_business_info.status || null,
+            type: wabaInfo.on_behalf_of_business_info.type || null, // SELF / OBO
+          }
+        : null;
+    }
 
     // 1) Números
     const numbersUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/phone_numbers`;
@@ -77,15 +123,16 @@ router.post('/ObtenerNumeros', async (req, res) => {
       return res.json({
         success: true,
         data: [],
-        hint: 'meta_unauthorized', // opcional por si quieres mostrar algo suave en UI
+        hint: 'meta_unauthorized',
+        waba_info: wabaInfo,
+        portfolio_owner: portfolioOwner,
+        on_behalf_of: onBehalfOf,
       });
     }
 
     // otros 4xx/5xx de Meta: lo tratamos como “sin números”, no como error fatal
     if (numbersResp.status < 200 || numbersResp.status >= 300) {
       const metaErr = numbersResp.data?.error || null;
-
-      // si es rate limit específico de WhatsApp (80008), lo marcamos
       const isRateLimit = metaErr?.code === 80008;
 
       return res.status(200).json({
@@ -95,7 +142,11 @@ router.post('/ObtenerNumeros', async (req, res) => {
           ? 'meta_rate_limited'
           : `meta_error_${numbersResp.status}`,
 
-        // motivo
+        // agregado útil
+        waba_info: wabaInfo,
+        portfolio_owner: portfolioOwner,
+        on_behalf_of: onBehalfOf,
+
         meta_error: metaErr
           ? {
               http_status: numbersResp.status,
@@ -103,8 +154,6 @@ router.post('/ObtenerNumeros', async (req, res) => {
               type: metaErr.type,
               message: metaErr.message,
               fbtrace_id: metaErr.fbtrace_id,
-
-              // opcional: ayuda mucho para debugging (si existen)
               error_subcode: metaErr.error_subcode,
               error_user_title: metaErr.error_user_title,
               error_user_msg: metaErr.error_user_msg,
@@ -114,7 +163,6 @@ router.post('/ObtenerNumeros', async (req, res) => {
               message: 'Meta devolvió un error sin cuerpo estándar',
             },
 
-        // opcional: headers útiles para rate limit / diagnóstico
         meta_headers: {
           'x-app-usage': numbersResp.headers?.['x-app-usage'],
           'x-business-use-case-usage':
@@ -127,8 +175,15 @@ router.post('/ObtenerNumeros', async (req, res) => {
     const numbers = Array.isArray(numbersResp.data?.data)
       ? numbersResp.data.data
       : [];
+
     if (numbers.length === 0) {
-      return res.json({ success: true, data: [] });
+      return res.json({
+        success: true,
+        data: [],
+        waba_info: wabaInfo,
+        portfolio_owner: portfolioOwner,
+        on_behalf_of: onBehalfOf,
+      });
     }
 
     // 2) Perfiles por número en paralelo (cada 401/403 se ignora y se deja profile:null)
@@ -153,20 +208,45 @@ router.post('/ObtenerNumeros', async (req, res) => {
 
         let profile = null;
         if (profileResp.status >= 200 && profileResp.status < 300) {
-          // algunos endpoints devuelven { data: [...] } y otros el objeto directo; cubrimos ambos
           profile = profileResp.data?.data ?? profileResp.data ?? null;
         }
-        // si 401/403/otros -> dejamos profile=null y seguimos
-        return { ...n, profile };
+
+        return {
+          ...n,
+          profile,
+          // opcional: si quiere repetir el dueño en cada número (útil en frontend)
+          portfolio_owner_id: portfolioOwner?.id || null,
+          portfolio_owner_name: portfolioOwner?.name || null,
+        };
       }),
     );
 
-    return res.json({ success: true, data: merged });
+    return res.json({
+      success: true,
+      data: merged,
+
+      // info general de la WABA
+      waba_info: wabaInfo
+        ? {
+            id: wabaInfo.id || WABA_ID,
+            name: wabaInfo.name || null, // nombre de la WABA, no del portfolio
+          }
+        : { id: WABA_ID, name: null },
+
+      // ESTE ES EL DUEÑO REAL DEL PORTAFOLIO
+      portfolio_owner: portfolioOwner,
+
+      // relación OBO / SELF (opcional)
+      on_behalf_of: onBehalfOf,
+    });
   } catch (error) {
     // errores de red/DNS/timeout de nuestro servidor
     return res.status(200).json({
       success: true,
       data: [],
+      waba_info: null,
+      portfolio_owner: null,
+      on_behalf_of: null,
       hint: 'network_error',
       message: 'No se pudo consultar Meta en este momento',
     });
