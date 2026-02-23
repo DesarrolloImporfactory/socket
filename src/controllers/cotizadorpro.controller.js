@@ -374,6 +374,8 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   const { id_cotizacion } = req.body;
 
+  console.log('ID de cotización recibida:', id_cotizacion);
+
   if (!id_cotizacion) {
     return next(new AppError('id_cotizacion es requerido', 400));
   }
