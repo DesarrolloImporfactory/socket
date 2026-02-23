@@ -118,24 +118,8 @@ const allowlist = [
   'https://dev.imporfactory.app',
 ];
 
-// CORS ANTES de helmet y cualquier otro middleware
-const corsOptions = {
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowlist.includes(origin)) return callback(null, origin);
-    return callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Timestamp', 'X-Requested-With'],
-  optionsSuccessStatus: 204,
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-
 app.use(helmet({
-  crossOriginResourcePolicy: false, // No bloquear recursos cross-origin
+  crossOriginResourcePolicy: false,
 }));
 
 app.use(hpp());
