@@ -108,10 +108,6 @@ app.post(
   stripe_pago_webhookController.stripeWebhook,
 );
 
-app.use(helmet());
-
-app.use(hpp());
-
 const allowlist = [
   'https://automatizador.imporsuitpro.com',
   'https://chatcenter.imporfactory.app',
@@ -122,14 +118,11 @@ const allowlist = [
   'https://dev.imporfactory.app',
 ];
 
-// CORS unificado para todos los entornos - antes de rutas y body parsers
+// CORS ANTES de helmet y cualquier otro middleware
 const corsOptions = {
   origin: (origin, callback) => {
-    // Sin origin (Postman, server-to-server, webhooks) → permitir
     if (!origin) return callback(null, true);
-    // Origins conocidos → permitir con credentials
     if (allowlist.includes(origin)) return callback(null, origin);
-    // Otros → permitir sin credentials
     return callback(null, true);
   },
   credentials: true,
@@ -139,7 +132,13 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Preflight para todas las rutas
+app.options('*', cors(corsOptions));
+
+app.use(helmet({
+  crossOriginResourcePolicy: false, // No bloquear recursos cross-origin
+}));
+
+app.use(hpp());
 
 if (process.env.NODE_ENV === 'production') {
   app.use(morgan('production'));
