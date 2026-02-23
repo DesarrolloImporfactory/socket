@@ -122,86 +122,29 @@ const allowlist = [
   'https://dev.imporfactory.app',
 ];
 
-// helper para comprobar si la petición trae cookies/credenciales desde el cliente
-function requestIsCredentialed(req) {
-  // heurística: si el cliente envía una cabecera 'Cookie' o la petición viene con Authorization,
-  // lo tratamos como credentialed. En frontends normalmente será withCredentials: true.
-  return !!(
-    req.get('Cookie') ||
-    req.get('Authorization') ||
-    req.get('X-Requested-With')
-  );
-}
+// CORS unificado para todos los entornos - antes de rutas y body parsers
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Sin origin (Postman, server-to-server, webhooks) → permitir
+    if (!origin) return callback(null, true);
+    // Origins conocidos → permitir con credentials
+    if (allowlist.includes(origin)) return callback(null, origin);
+    // Otros → permitir sin credentials
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Timestamp', 'X-Requested-With'],
+  optionsSuccessStatus: 204,
+};
 
-if (process.env.NODE_ENV === 'prod') {
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Preflight para todas las rutas
+
+if (process.env.NODE_ENV === 'production') {
   app.use(morgan('production'));
- // prelight para OPTIONS (CORS preflight)
-  app.options('*', (req, res) => {
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS, DELETE, PATCH');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Timestamp, X-Requested-With');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    return res.status(204).end();
-  });
-  // middleware CORS dinámico
-  app.use((req, res, next) => {
-    const origin = req.get('Origin');
-
-    if (!origin) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader(
-        'Access-Control-Allow-Methods',
-        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
-      );
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
-      );
-      return next();
-    }
-
-    const isTrusted = allowlist.includes(origin);
-    const isCredentialed = requestIsCredentialed(req);
-
-    if (isTrusted) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader(
-        'Access-Control-Allow-Methods',
-        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
-      );
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
-      );
-
-      if (req.method === 'OPTIONS') return res.status(204).end();
-      return next();
-    } else {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader(
-        'Access-Control-Allow-Methods',
-        'GET, POST, PUT, OPTIONS, DELETE, PATCH',
-      );
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Timestamp, X-Requested-With',
-      );
-
-      if (req.method === 'OPTIONS') return res.status(204).end();
-      next();
-    }
-
-    if (isCredentialed) {
-      return res.status(403).json({
-        success: false,
-        message: 'CORS: origin no permitido para requests con credenciales',
-      });
-    }
-  });
-} else if (process.env.NODE_ENV === 'development') {
+} else {
   app.use(morgan('dev'));
-  app.use(cors({ origin: true, credentials: true }));
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
