@@ -2754,4 +2754,6 @@ router.post(
   whatsappCtrl.programarTemplateMasivo,
 );
 
+router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
+
 module.exports = router;

@@ -958,3 +958,82 @@ exports.programarTemplateMasivo = async (req, res) => {
     });
   }
 };
+
+exports.listarProgramadosPorChat = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query?.id_configuracion || 0) || null;
+    const id_cliente_chat_center =
+      Number(req.query?.id_cliente_chat_center || 0) || null;
+
+    const limit = Math.min(Number(req.query?.limit || 50) || 50, 200);
+
+    if (!id_configuracion || !id_cliente_chat_center) {
+      return res.status(400).json({
+        ok: false,
+        msg: 'Faltan parámetros: id_configuracion, id_cliente_chat_center',
+      });
+    }
+
+    const rows = await db.query(
+      `
+      SELECT
+        id,
+        uuid_lote,
+        id_configuracion,
+        id_usuario,
+        id_cliente_chat_center,
+        telefono,
+        telefono_configuracion,
+        business_phone_id,
+        waba_id,
+        nombre_template,
+        language_code,
+        template_parameters_json,
+        header_format,
+        header_parameters_json,
+        header_media_url,
+        header_media_name,
+        fecha_programada,
+        fecha_programada_utc,
+        timezone,
+        estado,
+        intentos,
+        max_intentos,
+        error_message,
+        meta_json,
+        id_wamid_mensaje,
+        enviado_en,
+        creado_en,
+        actualizado_en
+      FROM template_envios_programados
+      WHERE id_configuracion = ?
+        AND id_cliente_chat_center = ?
+      ORDER BY creado_en DESC
+      LIMIT ?
+      `,
+      {
+        replacements: [id_configuracion, id_cliente_chat_center, limit],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const data = rows.map((r) => ({
+      ...r,
+      template_parameters_json: parseMaybeJSON(r.template_parameters_json, []),
+      header_parameters_json: parseMaybeJSON(r.header_parameters_json, null),
+      meta_json: parseMaybeJSON(r.meta_json, null),
+    }));
+
+    return res.json({
+      ok: true,
+      data: data.reverse(), // opcional: dejar ascendente para render timeline
+    });
+  } catch (error) {
+    console.error('❌ listarProgramadosPorChat:', error);
+    return res.status(500).json({
+      ok: false,
+      msg: 'Error al listar mensajes programados del chat.',
+      error: error.message,
+    });
+  }
+};
