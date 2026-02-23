@@ -13,6 +13,7 @@ const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model'
 const { QueryTypes } = require('sequelize');
 const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
+const crypto = require('crypto');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -395,77 +396,76 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
 
   // Función que resuelve una columna
   const fetchColumn = async (colKey) => {
-  const estado_db = ESTADO_DB_MAP[colKey];
-  if (!estado_db) {
-    return {
-      key: colKey,
-      items: [],
-      page: { has_more: false, next_cursor: null, limit: pageSize },
-    };
-  }
+    const estado_db = ESTADO_DB_MAP[colKey];
+    if (!estado_db) {
+      return {
+        key: colKey,
+        items: [],
+        page: { has_more: false, next_cursor: null, limit: pageSize },
+      };
+    }
 
-  const cursorRaw = cursors?.[colKey] || null;
-  const decoded = cursorRaw ? decodeCursor(cursorRaw) : null;
-  const cursorId = decoded?.id || null;
+    const cursorRaw = cursors?.[colKey] || null;
+    const decoded = cursorRaw ? decodeCursor(cursorRaw) : null;
+    const cursorId = decoded?.id || null;
 
-  const term = (search?.[colKey] || "").trim().toLowerCase();
+    const term = (search?.[colKey] || '').trim().toLowerCase();
 
-  const where = [];
-  const replacements = [];
+    const where = [];
+    const replacements = [];
 
-  where.push("id_configuracion = ?");
-  replacements.push(id_configuracion);
+    where.push('id_configuracion = ?');
+    replacements.push(id_configuracion);
 
-  where.push("propietario <> 1");
+    where.push('propietario <> 1');
 
-  where.push("LOWER(estado_contacto) = ?");
-  replacements.push(estado_db);
+    where.push('LOWER(estado_contacto) = ?');
+    replacements.push(estado_db);
 
-  if (term) {
-    where.push(`(
+    if (term) {
+      where.push(`(
       LOWER(nombre_cliente) LIKE ? OR
       LOWER(apellido_cliente) LIKE ? OR
       telefono_limpio LIKE ?
     )`);
-    const like = `%${term}%`;
-    replacements.push(like, like, `%${search[colKey] || ""}%`);
-  }
+      const like = `%${term}%`;
+      replacements.push(like, like, `%${search[colKey] || ''}%`);
+    }
 
-  // ✅ Cursor SOLO por id (estable)
-  if (cursorId) {
-    where.push("id < ?");
-    replacements.push(cursorId);
-  }
+    // ✅ Cursor SOLO por id (estable)
+    if (cursorId) {
+      where.push('id < ?');
+      replacements.push(cursorId);
+    }
 
-  const whereSql = `WHERE ${where.join(" AND ")}`;
+    const whereSql = `WHERE ${where.join(' AND ')}`;
 
-  const rows = await db.query(
-    `
+    const rows = await db.query(
+      `
       SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
       FROM clientes_chat_center
       ${whereSql}
       ORDER BY id DESC
       LIMIT ?
     `,
-    {
-      replacements: [...replacements, pageSize + 1],
-      type: db.QueryTypes.SELECT,
-    }
-  );
+      {
+        replacements: [...replacements, pageSize + 1],
+        type: db.QueryTypes.SELECT,
+      },
+    );
 
-  const has_more = rows.length > pageSize;
-  const items = has_more ? rows.slice(0, pageSize) : rows;
+    const has_more = rows.length > pageSize;
+    const items = has_more ? rows.slice(0, pageSize) : rows;
 
-  const last = items[items.length - 1];
-  const next_cursor = last ? encodeCursor({ id: last.id }) : null;
+    const last = items[items.length - 1];
+    const next_cursor = last ? encodeCursor({ id: last.id }) : null;
 
-  return {
-    key: colKey,
-    items,
-    page: { has_more, next_cursor, limit: pageSize },
+    return {
+      key: colKey,
+      items,
+      page: { has_more, next_cursor, limit: pageSize },
+    };
   };
-};
-
 
   // Traer todas las columnas solicitadas (en paralelo)
   const results = await Promise.all(keys.map(fetchColumn));

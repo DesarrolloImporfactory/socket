@@ -3,9 +3,52 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2024-06-20',
-});
+//Selección automática de variables por entorno (production vs test)
+const isProd =
+  String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+
+// Helper: lee la variable PROD si existe, si no usa TEST; en no-prod prioriza TEST.
+const envPick = (prodKey, testKey, fallback = '') => {
+  const prodVal = process.env[prodKey];
+  const testVal = process.env[testKey];
+
+  if (isProd) return prodVal ?? fallback; // prod => PROD
+  return testVal ?? prodVal ?? fallback; // dev/test => TEST (si no, PROD)
+};
+
+/**
+ * Variables Stripe según entorno
+ * - En producción: STRIPE_SECRET_KEY
+ * - En no-producción: STRIPE_SECRET_KEY_TEST (y si falta, cae a STRIPE_SECRET_KEY)
+ */
+const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
+
+//Cupones por entorno
+const COUPON_PLAN2 = envPick(
+  'STRIPE_COUPON_PLAN2_FIRST_MONTH',
+  'STRIPE_COUPON_PLAN2_FIRST_MONTH_TEST',
+);
+const COUPON_PLAN3 = envPick(
+  'STRIPE_COUPON_PLAN3_FIRST_MONTH',
+  'STRIPE_COUPON_PLAN3_FIRST_MONTH_TEST',
+);
+const COUPON_PLAN4 = envPick(
+  'STRIPE_COUPON_PLAN4_FIRST_MONTH',
+  'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
+);
+
+// URLs por entorno
+const FRONT_SUCCESS_URL = envPick(
+  'FRONT_SUCCESS_URL',
+  'FRONT_SUCCESS_URL_TEST',
+);
+const FRONT_CANCEL_URL = envPick('FRONT_CANCEL_URL', 'FRONT_CANCEL_URL_TEST');
+
+const STRIPE_PLAN_CONEXION_ID = Number(
+  envPick('STRIPE_PLAN_CONEXION_ID', 'STRIPE_PLAN_CONEXION_ID_TEST'),
+);
+
+const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
 /**
  * Helpers
@@ -69,8 +112,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
-  const CONEXION_PLAN_ID = Number(process.env.STRIPE_PLAN_CONEXION_ID || 2);
-
+  const CONEXION_PLAN_ID = STRIPE_PLAN_CONEXION_ID;
   // =========================
   // 1) TRIAL (solo Plan 2)
   // =========================
@@ -86,9 +128,9 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const PROMO_PLANS = new Set([2, 3, 4]);
 
   const couponByPlan = {
-    2: process.env.STRIPE_COUPON_PLAN2_FIRST_MONTH, // Tx2FZa3W
-    3: process.env.STRIPE_COUPON_PLAN3_FIRST_MONTH, // h7Pb275G
-    4: process.env.STRIPE_COUPON_PLAN4_FIRST_MONTH, // N29KpkLa
+    2: COUPON_PLAN2,
+    3: COUPON_PLAN3,
+    4: COUPON_PLAN4,
   };
 
   const isPromoPlan = PROMO_PLANS.has(Number(id_plan));
@@ -100,8 +142,8 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   // =========================
   // URLs + customer params
   // =========================
-  const successUrl = `${process.env.FRONT_SUCCESS_URL}`;
-  const cancelUrl = process.env.FRONT_CANCEL_URL;
+  const successUrl = `${FRONT_SUCCESS_URL}`;
+  const cancelUrl = FRONT_CANCEL_URL;
 
   const customerParam = user.id_costumer
     ? { customer: user.id_costumer }
@@ -261,7 +303,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
         ) {
           try {
             await db.query(
-              `UPDATE users
+              `UPDATE usuarios_chat_center
                SET stripe_subscription_id = ?,
                    stripe_subscription_status = ?,
                    cancel_at_period_end = ?,
@@ -405,7 +447,7 @@ exports.portalCliente = catchAsync(async (req, res, next) => {
 
   const session = await stripe.billingPortal.sessions.create({
     customer,
-    return_url: return_url || process.env.FRONT_PORTAL_RETURN_URL,
+    return_url: return_url || FRONT_SUCCESS_URL,
   });
 
   return res.status(200).json({ success: true, url: session.url });
@@ -452,7 +494,7 @@ exports.portalGestionMetodos = catchAsync(async (req, res, next) => {
 
   const session = await stripe.billingPortal.sessions.create({
     customer: user.id_costumer,
-    return_url: process.env.FRONT_PORTAL_RETURN_URL,
+    return_url: FRONT_SUCCESS_URL,
   });
 
   return res.status(200).json({ success: true, url: session.url });
@@ -468,7 +510,7 @@ exports.portalAddPaymentMethod = catchAsync(async (req, res, next) => {
 
   const session = await stripe.billingPortal.sessions.create({
     customer: user.id_costumer,
-    return_url: process.env.FRONT_PORTAL_RETURN_URL,
+    return_url: FRONT_SUCCESS_URL,
   });
 
   return res.status(200).json({ success: true, url: session.url });
@@ -608,6 +650,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   if (esUpgrade) {
     const cortarTrial = sub.status === 'trialing';
 
+    // 1) Actualiza la suscripción y pide que expanda latest_invoice + payment_intent
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
       proration_behavior: 'create_prorations',
@@ -621,26 +664,81 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       expand: ['latest_invoice.payment_intent'],
     });
 
-    const inv = await stripe.invoices.create({
-      customer: updated.customer,
-      subscription: updated.id,
-      auto_advance: true,
-      metadata: {
-        id_usuario: String(id_usuario),
-        pending_change: 'upgrade',
-        pending_plan_id: String(id_plan_nuevo),
-      },
-    });
+    const latestInvoice = updated.latest_invoice;
 
-    const finalized = await stripe.invoices.finalizeInvoice(inv.id, {
+    if (!latestInvoice || !latestInvoice.id) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'No se pudo generar la factura de prorrateo para el upgrade. Intente nuevamente.',
+      });
+    }
+
+    // 2) Verifique monto (su regla: debe haber cobro real)
+    const invoiceTotal = Number(latestInvoice.total || 0);
+    const invoiceAmountDue = Number(latestInvoice.amount_due || 0);
+
+    // Si Stripe todavía no calculó totales en el objeto expandido, recargue
+    const invFresh = await stripe.invoices.retrieve(latestInvoice.id, {
       expand: ['payment_intent'],
     });
 
+    console.log('[upgrade] invoice debug:', {
+      id: invFresh.id,
+      total: invFresh.total,
+      amount_due: invFresh.amount_due,
+      amount_paid: invFresh.amount_paid,
+      starting_balance: invFresh.starting_balance,
+      ending_balance: invFresh.ending_balance,
+      customer_balance: invFresh.customer_balance,
+      lines: (invFresh.lines?.data || []).map((l) => ({
+        amount: l.amount,
+        proration: l.proration,
+        description: l.description,
+        price: l.price?.id,
+      })),
+    });
+
+    const totalFresh = Number(invFresh.total || 0);
+    const dueFresh = Number(invFresh.amount_due || 0);
+
+    if (totalFresh <= 0 || dueFresh <= 0) {
+      // Regla de negocio: no hay cobro => NO se permite upgrade
+      // (Opcional) revertir el price al anterior para no dejarlo “medio aplicado”
+      await stripe.subscriptions.update(sub.id, {
+        items: [{ id: subItem.id, price: subItem.price.id }],
+        proration_behavior: 'none',
+        payment_behavior: 'allow_incomplete',
+        metadata: {
+          ...(sub.metadata || {}),
+          pending_plan_id: '',
+          pending_change: '',
+          pending_invoice_id: '',
+        },
+      });
+
+      await db.query(
+        `UPDATE usuarios_chat_center
+       SET pending_plan_id = NULL,
+           pending_change = NULL,
+           pending_effective_at = NULL
+       WHERE id_usuario = ?`,
+        { replacements: [id_usuario] },
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          'No se pudo generar un cobro inmediato para el upgrade (importe $0). Revise saldo/créditos del cliente o intente nuevamente.',
+      });
+    }
+
+    // 3) Guardar la invoice que DEBE gatillar el upgrade en el webhook
     try {
       await stripe.subscriptions.update(updated.id, {
         metadata: {
           ...(updated.metadata || {}),
-          pending_invoice_id: finalized.id,
+          pending_invoice_id: invFresh.id,
         },
       });
     } catch (e) {
@@ -650,16 +748,17 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       );
     }
 
+    // 4) Intentar cobrar
     let paid = null;
     try {
-      paid = await stripe.invoices.pay(finalized.id, {
+      paid = await stripe.invoices.pay(invFresh.id, {
         expand: ['payment_intent'],
       });
     } catch (e) {
-      // si requiere SCA, no rompemos
+      // requiere SCA, no rompemos
     }
 
-    const pi = paid?.payment_intent || finalized?.payment_intent || null;
+    const pi = paid?.payment_intent || invFresh?.payment_intent || null;
 
     if (paid && paid.status === 'paid') {
       return res.status(200).json({
@@ -667,7 +766,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         actionRequired: false,
         subscription_id: updated.id,
         invoice_id: paid.id,
-        message: 'Upgrade cobrado y aplicado exitósamente.',
+        message: 'Upgrade cobrado y aplicado exitosamente.',
       });
     }
 
@@ -682,19 +781,20 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         payment_intent_client_secret: pi.client_secret,
         payment_intent_status: pi.status,
         subscription_id: updated.id,
-        invoice_id: finalized.id,
+        invoice_id: invFresh.id,
         message:
           'Requiere confirmación bancaria (3DS) para completar el upgrade.',
       });
     }
 
-    const refreshedInvoice = await stripe.invoices.retrieve(finalized.id);
+    // Fallback: hosted_invoice_url
+    const invForUrl = await stripe.invoices.retrieve(invFresh.id);
     return res.status(200).json({
       success: true,
       actionRequired: true,
       subscription_id: updated.id,
-      invoice_id: finalized.id,
-      hosted_invoice_url: refreshedInvoice.hosted_invoice_url,
+      invoice_id: invFresh.id,
+      hosted_invoice_url: invForUrl.hosted_invoice_url,
       message: 'Debe completar el pago para finalizar el upgrade.',
     });
   }

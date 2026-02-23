@@ -2,6 +2,10 @@ const axios = require('axios');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const { db } = require('../database/config');
+const {
+  getConfigFromDB,
+  onlyDigits,
+} = require('../utils/whatsappTemplate.helpers');
 
 exports.sendWhatsappMessage = async ({
   telefono,
@@ -62,7 +66,7 @@ exports.sendWhatsappMessage = async ({
     texto_mensaje: mensaje,
     ruta_archivo: null,
     rol_mensaje: 1,
-    celular_recibe: cliente.id, // o 0 si aplica distinto
+    celular_recibe: cliente.id,
     uid_whatsapp,
     id_wamid_mensaje: wamid,
   });
@@ -76,8 +80,8 @@ exports.sendWhatsappMessageTemplate = async ({
   accessToken,
   id_configuracion,
   responsable,
-  nombre_template, // Nombre de la plantilla
-  template_parameters, // Array con los valores para los placeholders
+  nombre_template,
+  template_parameters,
 }) => {
   const { text: templateText, language: LANGUAGE_CODE } =
     await obtenerTextoPlantilla(nombre_template, accessToken, waba_id);
@@ -92,21 +96,18 @@ exports.sendWhatsappMessageTemplate = async ({
 
   const url = `https://graph.facebook.com/v20.0/${business_phone_id}/messages`;
 
-  // Verificar que template_parameters sea un array y tenga los datos necesarios
   if (!Array.isArray(template_parameters)) {
     throw new Error('template_parameters debe ser un array');
   }
 
-  // Crear los parámetros para el template
   const components = template_parameters.map((param) => ({
     type: 'text',
     text: param,
   }));
 
-  // Crear el objeto `ruta_archivo` con los parámetros del template
   let ruta_archivo = {};
   template_parameters.forEach((param, index) => {
-    ruta_archivo[index + 1] = param; // Asigna los valores a las claves 1, 2, 3, etc.
+    ruta_archivo[index + 1] = param;
   });
 
   const data = {
@@ -114,14 +115,14 @@ exports.sendWhatsappMessageTemplate = async ({
     to: telefono,
     type: 'template',
     template: {
-      name: nombre_template, // Nombre del template de Meta
+      name: nombre_template,
       language: {
-        code: LANGUAGE_CODE, // Lengua que corresponde
+        code: LANGUAGE_CODE,
       },
       components: [
         {
           type: 'body',
-          parameters: components, // Aquí los placeholders serán reemplazados con los valores del array
+          parameters: components,
         },
       ],
     },
@@ -137,11 +138,8 @@ exports.sendWhatsappMessageTemplate = async ({
   console.log('✅ Mensaje de plantilla enviado:', response.data);
 
   const uid_whatsapp = telefono;
-
-  // Extraer wamid del response
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  // Buscar cliente emisor o crearlo si no existe
   let cliente = await ClientesChatCenter.findOne({
     where: {
       celular_cliente: telefono,
@@ -166,7 +164,7 @@ exports.sendWhatsappMessageTemplate = async ({
     {
       replacements: [telefono_configuracion, id_configuracion],
       type: db.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!clienteConfiguracionExistente) {
@@ -175,7 +173,6 @@ exports.sendWhatsappMessageTemplate = async ({
     id_cliente_configuracion = clienteConfiguracionExistente.id;
   }
 
-  // Insertar el mensaje
   await MensajesClientes.create({
     id_configuracion,
     id_cliente: id_cliente_configuracion,
@@ -184,8 +181,8 @@ exports.sendWhatsappMessageTemplate = async ({
     rol_mensaje: 1,
     celular_recibe: cliente.id,
     responsable,
-    texto_mensaje: templateText, // Se mantiene el mensaje de texto
-    ruta_archivo: JSON.stringify(ruta_archivo), // Convertir el objeto en string
+    texto_mensaje: templateText,
+    ruta_archivo: JSON.stringify(ruta_archivo),
     visto: 1,
     uid_whatsapp,
     id_wamid_mensaje: wamid,
@@ -195,48 +192,443 @@ exports.sendWhatsappMessageTemplate = async ({
 };
 
 const obtenerTextoPlantilla = async (templateName, accessToken, waba_id) => {
+  const startedAt = Date.now();
+
   try {
+    console.log('🔎 [obtenerTextoPlantilla] inicio', {
+      templateName,
+      waba_id,
+      at: new Date().toISOString(),
+    });
+
     const ACCESS_TOKEN = accessToken;
 
-    const response = await fetch(
-      `https://graph.facebook.com/v17.0/${waba_id}/message_templates`,
+    // Usamos axios (con timeout) para evitar fetch colgado
+    const response = await axios.get(
+      `https://graph.facebook.com/v22.0/${waba_id}/message_templates`,
       {
-        method: 'GET',
         headers: {
           Authorization: `Bearer ${ACCESS_TOKEN}`,
         },
-      }
+        timeout: 20000,
+        validateStatus: () => true,
+      },
     );
 
-    const data = await response.json();
+    console.log('📥 [obtenerTextoPlantilla] respuesta Meta', {
+      status: response.status,
+      hasData: !!response.data,
+      keys: response.data ? Object.keys(response.data) : [],
+      ms: Date.now() - startedAt,
+    });
 
-    if (!data.data) {
-      console.error('No se encontraron plantillas en la API.');
+    if (
+      response.status < 200 ||
+      response.status >= 300 ||
+      response.data?.error
+    ) {
+      const metaErr =
+        response.data?.error?.message ||
+        response.data?.message ||
+        `Meta HTTP ${response.status}`;
+
+      const err = new Error(`[Meta Templates List] ${metaErr}`);
+      err.meta_status = response.status;
+      err.meta_error = response.data?.error || response.data || null;
+      throw err;
+    }
+
+    const data = response.data;
+
+    if (!data.data || !Array.isArray(data.data)) {
+      console.error(
+        '❌ [obtenerTextoPlantilla] No se encontraron plantillas en la API.',
+      );
       return { text: null, language: null };
     }
 
-    // Buscar la plantilla por nombre
+    console.log('📚 [obtenerTextoPlantilla] plantillas recibidas', {
+      count: data.data.length,
+      templateName,
+    });
+
     const plantilla = data.data.find((tpl) => tpl.name === templateName);
 
     if (!plantilla) {
-      console.error(`No se encontró la plantilla con nombre: ${templateName}`);
+      console.error(
+        `❌ [obtenerTextoPlantilla] No se encontró la plantilla: ${templateName}`,
+      );
       return { text: null, language: null };
     }
 
-    // Extraer el texto del body de la plantilla
-    const body = plantilla.components.find((comp) => comp.type === 'BODY');
+    const body = plantilla.components?.find((comp) => comp.type === 'BODY');
 
     if (!body || !body.text) {
-      console.error('La plantilla no tiene un cuerpo de texto.');
+      console.error(
+        '❌ [obtenerTextoPlantilla] La plantilla no tiene BODY.text',
+      );
       return { text: null, language: null };
     }
 
-    // Extraer el idioma de la plantilla
-    const languageCode = plantilla.language || 'es'; // Si no tiene, por defecto "es"
+    const languageCode = plantilla.language || 'es';
+
+    console.log('✅ [obtenerTextoPlantilla] plantilla resuelta', {
+      templateName,
+      languageCode,
+      bodyPreview: String(body.text).slice(0, 120),
+      ms: Date.now() - startedAt,
+    });
 
     return { text: body.text, language: languageCode };
   } catch (error) {
-    console.error('Error al obtener la plantilla:', error);
+    console.error('❌ Error al obtener la plantilla:', {
+      message: error.message,
+      meta_status: error.meta_status || null,
+      meta_error: error.meta_error || null,
+      ms: Date.now() - startedAt,
+    });
+
     return { text: null, language: null };
   }
+};
+
+/**
+ * Envío de template para CRON programado.
+ * - NO depende del access_token almacenado en template_envios_programados
+ * - Toma credenciales frescas desde configuraciones (id_configuracion)
+ * - Soporta header TEXT / IMAGE / VIDEO / DOCUMENT
+ */
+exports.sendWhatsappMessageTemplateScheduled = async ({
+  telefono,
+  telefono_configuracion,
+  id_configuracion,
+  responsable = 'cron_template_programado',
+
+  nombre_template,
+  language_code = null,
+  template_parameters = [],
+
+  header_format = null,
+  header_parameters = null,
+  header_media_url = null,
+  header_media_name = null,
+}) => {
+  const startedAt = Date.now();
+
+  console.log('🚀 [CRON SEND] inicio', {
+    telefono,
+    telefono_configuracion,
+    id_configuracion,
+    responsable,
+    nombre_template,
+    language_code,
+    header_format,
+    has_header_media_url: !!header_media_url,
+    at: new Date().toISOString(),
+  });
+
+  if (!id_configuracion) {
+    throw new Error('id_configuracion es requerido');
+  }
+
+  if (!nombre_template) {
+    throw new Error('nombre_template es requerido');
+  }
+
+  const telefonoLimpio = onlyDigits(telefono || '');
+  if (!telefonoLimpio || telefonoLimpio.length < 8) {
+    throw new Error('Teléfono destino inválido');
+  }
+
+  if (!Array.isArray(template_parameters)) {
+    throw new Error('template_parameters debe ser un array');
+  }
+
+  const headerFormatNorm = String(header_format || '').toUpperCase() || null;
+
+  if (
+    headerFormatNorm === 'TEXT' &&
+    header_parameters != null &&
+    !Array.isArray(header_parameters)
+  ) {
+    throw new Error(
+      'header_parameters debe ser un array cuando header_format=TEXT',
+    );
+  }
+
+  if (
+    ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm) &&
+    !header_media_url
+  ) {
+    throw new Error(
+      `header_media_url es requerido cuando header_format=${headerFormatNorm}`,
+    );
+  }
+
+  console.log('🧹 [CRON SEND] validaciones ok', {
+    telefonoLimpio,
+    bodyParamsCount: template_parameters.length,
+    headerFormatNorm,
+    headerParamsCount: Array.isArray(header_parameters)
+      ? header_parameters.length
+      : 0,
+  });
+
+  // 1) Config fresca desde BD
+  console.log('🗄️ [CRON SEND] consultando configuración...');
+  const cfg = await getConfigFromDB(Number(id_configuracion));
+
+  if (!cfg) {
+    throw new Error('Configuración inválida/suspendida o no encontrada');
+  }
+
+  const business_phone_id = cfg.PHONE_NUMBER_ID;
+  const accessToken = cfg.ACCESS_TOKEN;
+  const waba_id = cfg.WABA_ID;
+
+  console.log('✅ [CRON SEND] config cargada', {
+    id_configuracion,
+    hasPhoneId: !!business_phone_id,
+    hasToken: !!accessToken,
+    hasWaba: !!waba_id,
+  });
+
+  if (!business_phone_id || !accessToken || !waba_id) {
+    throw new Error(
+      'Configuración incompleta (PHONE_NUMBER_ID / ACCESS_TOKEN / WABA_ID)',
+    );
+  }
+
+  // 2) Obtener texto e idioma de plantilla (trazabilidad local)
+  console.log('🔎 [CRON SEND] obteniendo texto plantilla en Meta', {
+    nombre_template,
+    waba_id,
+  });
+
+  const { text: templateText, language: languageFromMeta } =
+    await obtenerTextoPlantilla(nombre_template, accessToken, waba_id);
+
+  console.log('📄 [CRON SEND] resultado plantilla', {
+    hasTemplateText: !!templateText,
+    languageFromMeta,
+  });
+
+  if (!templateText) {
+    throw new Error('No se encontró el contenido de la plantilla en Meta');
+  }
+
+  const LANGUAGE_CODE = language_code || languageFromMeta || 'es';
+
+  // 3) Construir components dinámicamente
+  const componentsPayload = [];
+
+  if (headerFormatNorm === 'TEXT') {
+    if (Array.isArray(header_parameters) && header_parameters.length > 0) {
+      componentsPayload.push({
+        type: 'header',
+        parameters: header_parameters.map((param) => ({
+          type: 'text',
+          text: String(param ?? ''),
+        })),
+      });
+    }
+  }
+
+  if (
+    ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm) &&
+    header_media_url
+  ) {
+    const mediaType =
+      headerFormatNorm === 'IMAGE'
+        ? 'image'
+        : headerFormatNorm === 'VIDEO'
+          ? 'video'
+          : 'document';
+
+    const mediaObj = {
+      link: String(header_media_url).trim(),
+    };
+
+    if (mediaType === 'document' && header_media_name) {
+      mediaObj.filename = String(header_media_name);
+    }
+
+    componentsPayload.push({
+      type: 'header',
+      parameters: [
+        {
+          type: mediaType,
+          [mediaType]: mediaObj,
+        },
+      ],
+    });
+  }
+
+  if (template_parameters.length > 0) {
+    componentsPayload.push({
+      type: 'body',
+      parameters: template_parameters.map((param) => ({
+        type: 'text',
+        text: String(param ?? ''),
+      })),
+    });
+  }
+
+  console.log(' [CRON SEND] components construidos', {
+    componentsCount: componentsPayload.length,
+    componentsTypes: componentsPayload.map((c) => c.type),
+    LANGUAGE_CODE,
+  });
+
+  // 4) Payload a Meta
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: telefonoLimpio,
+    type: 'template',
+    template: {
+      name: nombre_template,
+      language: {
+        code: LANGUAGE_CODE,
+      },
+      components: componentsPayload,
+    },
+  };
+
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+  };
+
+  const url = `https://graph.facebook.com/v22.0/${business_phone_id}/messages`;
+
+  console.log(' [CRON SEND] enviando a Meta', {
+    url,
+    to: telefonoLimpio,
+    template: nombre_template,
+    language: LANGUAGE_CODE,
+    componentsCount: componentsPayload.length,
+  });
+
+  const response = await axios.post(url, payload, {
+    headers,
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  console.log(' [CRON SEND] respuesta Meta', {
+    status: response.status,
+    data: response.data,
+    ms: Date.now() - startedAt,
+  });
+
+  if (response.status < 200 || response.status >= 300 || response.data?.error) {
+    const metaErr =
+      response.data?.error?.message ||
+      response.data?.message ||
+      `Meta HTTP ${response.status}`;
+
+    const error = new Error(`[Meta Template] ${metaErr}`);
+    error.meta_status = response.status;
+    error.meta_error = response.data?.error || response.data || null;
+    error.meta_payload = payload;
+    throw error;
+  }
+
+  console.log(' [CRON SEND] Template enviado a Meta OK');
+
+  const uid_whatsapp = telefonoLimpio;
+  const wamid = response.data?.messages?.[0]?.id || null;
+
+  // 5) Buscar/crear cliente destino
+  console.log('[CRON SEND] buscando/creando cliente destino...');
+  let cliente = await ClientesChatCenter.findOne({
+    where: {
+      celular_cliente: telefonoLimpio,
+      id_configuracion,
+    },
+  });
+
+  if (!cliente) {
+    console.log('[CRON SEND] cliente destino no existe, creando...');
+    cliente = await ClientesChatCenter.create({
+      id_configuracion,
+      uid_cliente: business_phone_id,
+      nombre_cliente: '',
+      apellido_cliente: '',
+      celular_cliente: telefonoLimpio,
+    });
+  }
+
+  // 6) Buscar cliente del número de configuración
+  let id_cliente_configuracion = null;
+
+  if (telefono_configuracion) {
+    const telCfgLimpio = onlyDigits(telefono_configuracion);
+
+    if (telCfgLimpio) {
+      const [clienteConfiguracionExistente] = await db.query(
+        `SELECT id
+         FROM clientes_chat_center
+         WHERE celular_cliente = ?
+           AND id_configuracion = ?
+         LIMIT 1`,
+        {
+          replacements: [telCfgLimpio, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      if (clienteConfiguracionExistente?.id) {
+        id_cliente_configuracion = clienteConfiguracionExistente.id;
+      } else {
+        console.warn(
+          '[CRON TEMPLATE] No existe cliente_chat_center del número de configuración:',
+          telefono_configuracion,
+        );
+      }
+    }
+  }
+
+  // 7) Guardar trazabilidad local
+  const ruta_archivo = {
+    body_parameters: template_parameters || [],
+    header: {
+      format: headerFormatNorm || null,
+      parameters: Array.isArray(header_parameters) ? header_parameters : null,
+      media_url: header_media_url || null,
+      media_name: header_media_name || null,
+    },
+    source: 'cron_programado',
+  };
+
+  await MensajesClientes.create({
+    id_configuracion,
+    id_cliente: id_cliente_configuracion,
+    mid_mensaje: business_phone_id,
+    tipo_mensaje: 'template',
+    rol_mensaje: 1,
+    celular_recibe: cliente.id,
+    responsable,
+    texto_mensaje: templateText,
+    ruta_archivo: JSON.stringify(ruta_archivo),
+    visto: 1,
+    uid_whatsapp,
+    id_wamid_mensaje: wamid,
+    template_name: nombre_template,
+    language_code: LANGUAGE_CODE,
+  });
+
+  console.log('✅ [CRON SEND] fin ok', {
+    telefono: telefonoLimpio,
+    wamid,
+    ms: Date.now() - startedAt,
+  });
+
+  return {
+    success: true,
+    wamid,
+    language_code: LANGUAGE_CODE,
+    template_text: templateText,
+    response: response.data,
+  };
 };

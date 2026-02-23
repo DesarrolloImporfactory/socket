@@ -23,7 +23,8 @@ db.authenticate()
   .then(() => console.log('Database connected 😀'))
   .catch((err) => console.log('Error connecting to database 😞', err));
 
-db_2.authenticate()
+db_2
+  .authenticate()
   .then(() => console.log('Database 2 connected 😀'))
   .catch((err) => console.log('Error connecting to database 2 😞', err));
 
@@ -33,13 +34,15 @@ db.sync({ force: false })
   .then(() => console.log('Database synced 😁'))
   .catch((err) => console.log('Error syncing database 😞', err));
 
-db_2.sync({ force: false })
+db_2
+  .sync({ force: false })
   .then(() => console.log('Database 2 synced 😁 (API & Cursos tables created)'))
   .catch((err) => console.log('Error syncing database 2 😞', err));
 
 // Cron
 require('./cron/remarketing');
 require('./cron/aviso_calendarios');
+require('./cron/templateProgramadoMasivo.js');
 
 // Server HTTP
 const server = app.listen(process.env.PORT, () => {
