@@ -128,6 +128,9 @@ if (process.env.NODE_ENV === 'production') {
   app.use(morgan('production'));
 } else {
   app.use(morgan('dev'));
+  // CORS abierto total para desarrollo
+  app.use(cors({ origin: true, credentials: true, methods: '*', allowedHeaders: '*' }));
+  app.options('*', cors({ origin: true, credentials: true, methods: '*', allowedHeaders: '*' }));
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
