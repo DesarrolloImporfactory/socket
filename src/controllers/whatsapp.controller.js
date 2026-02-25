@@ -926,6 +926,89 @@ exports.programarTemplateMasivo = async (req, res) => {
 
     await t.commit();
 
+    // ==========================================
+    // 8) Emitir evento socket en tiempo real (preview programado en chat)
+    // ==========================================
+    try {
+      const io = global.io;
+
+      if (io) {
+        const nowIso = new Date().toISOString();
+
+        for (const r of rows) {
+          const room = `chat_programados:${Number(r.id_configuracion)}:${Number(r.id_cliente_chat_center)}`;
+
+          io.to(room).emit('PROGRAMADO_ESTADO', {
+            id: null, // aún no lo tenemos por INSERT masivo
+            ui_key: `${r.uuid_lote}:${r.id_cliente_chat_center}:${r.telefono}:${r.fecha_programada}`,
+            uuid_lote: r.uuid_lote,
+
+            id_configuracion: Number(r.id_configuracion),
+            id_usuario: r.id_usuario != null ? Number(r.id_usuario) : null,
+            id_cliente_chat_center: Number(r.id_cliente_chat_center),
+
+            telefono: r.telefono,
+            telefono_configuracion: r.telefono_configuracion,
+            business_phone_id: r.business_phone_id,
+            waba_id: r.waba_id,
+
+            nombre_template: r.nombre_template,
+            language_code: r.language_code,
+
+            template_parameters_json: (() => {
+              try {
+                return JSON.parse(r.template_parameters_json || '[]');
+              } catch {
+                return [];
+              }
+            })(),
+
+            header_format: r.header_format || null,
+
+            header_parameters_json: (() => {
+              try {
+                return r.header_parameters_json
+                  ? JSON.parse(r.header_parameters_json)
+                  : null;
+              } catch {
+                return null;
+              }
+            })(),
+
+            header_media_url: r.header_media_url || null,
+            header_media_name: r.header_media_name || null,
+
+            fecha_programada: r.fecha_programada,
+            fecha_programada_utc: r.fecha_programada_utc,
+            timezone: r.timezone,
+
+            estado: 'pendiente',
+            intentos: 0,
+            max_intentos: 3,
+            error_message: null,
+
+            meta_json: (() => {
+              try {
+                return r.meta_json ? JSON.parse(r.meta_json) : null;
+              } catch {
+                return null;
+              }
+            })(),
+
+            id_wamid_mensaje: null,
+            enviado_en: null,
+
+            creado_en: nowIso,
+            actualizado_en: nowIso,
+
+            source: 'programacion_creada',
+          });
+        }
+      }
+    } catch (emitErr) {
+      console.warn('⚠️ Error emitiendo PROGRAMADO_ESTADO:', emitErr.message);
+    }
+
     return res.json({
       ok: true,
       msg: 'Envío programado correctamente.',
@@ -1013,6 +1096,90 @@ exports.listarProgramadosPorChat = async (req, res) => {
       `,
       {
         replacements: [id_configuracion, id_cliente_chat_center, limit],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const data = rows.map((r) => ({
+      ...r,
+      template_parameters_json: parseMaybeJSON(r.template_parameters_json, []),
+      header_parameters_json: parseMaybeJSON(r.header_parameters_json, null),
+      meta_json: parseMaybeJSON(r.meta_json, null),
+    }));
+
+    return res.json({
+      ok: true,
+      data: data.reverse(), // opcional: dejar ascendente para render timeline
+    });
+  } catch (error) {
+    console.error('❌ listarProgramadosPorChat:', error);
+    return res.status(500).json({
+      ok: false,
+      msg: 'Error al listar mensajes programados del chat.',
+      error: error.message,
+    });
+  }
+};
+
+exports.listarProgramadosPorConfig = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query?.id_configuracion || 0) || null;
+
+    const limit = Math.min(Number(req.query?.limit || 50) || 50, 200);
+
+    if (!id_configuracion) {
+      return res.status(400).json({
+        ok: false,
+        msg: 'Faltan parámetros: id_configuracion',
+      });
+    }
+
+    const rows = await db.query(
+      `
+      SELECT
+        tep.id,
+        tep.uuid_lote,
+        tep.id_configuracion,
+        tep.id_usuario,
+        tep.id_cliente_chat_center,
+        tep.telefono,
+        tep.telefono_configuracion,
+        tep.business_phone_id,
+        tep.waba_id,
+        tep.nombre_template,
+        tep.language_code,
+        tep.template_parameters_json,
+        tep.header_format,
+        tep.header_parameters_json,
+        tep.header_media_url,
+        tep.header_media_name,
+        tep.fecha_programada,
+        tep.fecha_programada_utc,
+        tep.timezone,
+        tep.estado,
+        tep.intentos,
+        tep.max_intentos,
+        tep.error_message,
+        tep.meta_json,
+        tep.id_wamid_mensaje,
+        tep.enviado_en,
+        tep.creado_en,
+        tep.actualizado_en,
+
+        ccc.nombre_cliente,
+        ccc.apellido_cliente,
+        ccc.email_cliente
+
+      FROM template_envios_programados tep
+      LEFT JOIN clientes_chat_center ccc
+        ON ccc.id = tep.id_cliente_chat_center
+
+      WHERE tep.id_configuracion = ?
+      ORDER BY tep.creado_en DESC
+      LIMIT ?
+      `,
+      {
+        replacements: [id_configuracion, limit],
         type: db.QueryTypes.SELECT,
       },
     );

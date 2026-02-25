@@ -555,6 +555,41 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
   }
 
   const integrationKey = decryptToken(integration.integration_key_enc);
+
+  const integrationKeyEnc = integration.integration_key_enc;
+
+  console.log('==========================================');
+  console.log(
+    '[dropi][DEBUG] integration_key_enc (DB) first120:',
+    String(integrationKeyEnc || '').slice(0, 120),
+  );
+  console.log(
+    '[dropi][DEBUG] integration_key_enc (DB) len:',
+    String(integrationKeyEnc || '').length,
+  );
+
+  console.log(
+    '[dropi][DEBUG] integrationKey DECRYPTED (FULL):',
+    integrationKey,
+  );
+  console.log(
+    '[dropi][DEBUG] integrationKey DECRYPTED JSON:',
+    JSON.stringify(integrationKey),
+  );
+  console.log(
+    '[dropi][DEBUG] integrationKey DECRYPTED len:',
+    String(integrationKey || '').length,
+  );
+  console.log(
+    '[dropi][DEBUG] integrationKey DECRYPTED first20:',
+    String(integrationKey || '').slice(0, 20),
+  );
+  console.log(
+    '[dropi][DEBUG] integrationKey DECRYPTED last20:',
+    String(integrationKey || '').slice(-20),
+  );
+  console.log('==========================================');
+
   if (!integrationKey || !String(integrationKey).trim()) {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }

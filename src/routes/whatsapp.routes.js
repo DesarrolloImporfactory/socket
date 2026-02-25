@@ -2756,4 +2756,6 @@ router.post(
 
 router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 
+router.get('/programados_por_config', whatsappCtrl.listarProgramadosPorConfig);
+
 module.exports = router;

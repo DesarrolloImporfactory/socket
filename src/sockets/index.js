@@ -33,6 +33,7 @@ function strOrNull(v) {
 class Sockets {
   constructor(io) {
     this.io = io;
+    global.io = io;
     this.socketEvents();
   }
 
@@ -47,6 +48,29 @@ class Sockets {
     const index = onlineUsers.findIndex((user) => user.socketId === socketId);
     if (index !== -1) {
       onlineUsers.splice(index, 1); // Eliminar usuario desconectado
+    }
+  }
+
+  getProgramadosRoom(id_configuracion, id_cliente_chat_center) {
+    const idCfg = Number(id_configuracion);
+    const idCli = Number(id_cliente_chat_center);
+
+    if (!idCfg || !idCli) return null;
+    return `chat_programados:${idCfg}:${idCli}`;
+  }
+
+  emitProgramadoEstadoToRoom(payload = {}) {
+    try {
+      const room = this.getProgramadosRoom(
+        payload.id_configuracion,
+        payload.id_cliente_chat_center,
+      );
+
+      if (!room) return;
+
+      this.io.to(room).emit('PROGRAMADO_ESTADO', payload);
+    } catch (e) {
+      console.warn('emitProgramadoEstadoToRoom error:', e.message);
     }
   }
 
@@ -224,6 +248,62 @@ class Sockets {
             // Enviar mensaje de error al cliente en caso de fallo
             socket.emit('ERROR_RESPONSE', {
               message: 'Error al obtener los datos del admin. ' + error.message,
+            });
+          }
+        },
+      );
+
+      socket.on(
+        'JOIN_PROGRAMADOS_CHAT',
+        ({ id_configuracion, id_cliente_chat_center }) => {
+          try {
+            const room = this.getProgramadosRoom(
+              id_configuracion,
+              id_cliente_chat_center,
+            );
+
+            if (!room) {
+              return socket.emit('ERROR_RESPONSE', {
+                message: 'JOIN_PROGRAMADOS_CHAT: parámetros inválidos',
+              });
+            }
+
+            socket.join(room);
+
+            socket.emit('JOIN_PROGRAMADOS_CHAT_OK', {
+              ok: true,
+              room,
+              id_configuracion: Number(id_configuracion),
+              id_cliente_chat_center: Number(id_cliente_chat_center),
+            });
+          } catch (e) {
+            socket.emit('ERROR_RESPONSE', {
+              message: `Error al unirse al room de programados: ${e.message}`,
+            });
+          }
+        },
+      );
+
+      socket.on(
+        'LEAVE_PROGRAMADOS_CHAT',
+        ({ id_configuracion, id_cliente_chat_center }) => {
+          try {
+            const room = this.getProgramadosRoom(
+              id_configuracion,
+              id_cliente_chat_center,
+            );
+
+            if (!room) return;
+
+            socket.leave(room);
+
+            socket.emit('LEAVE_PROGRAMADOS_CHAT_OK', {
+              ok: true,
+              room,
+            });
+          } catch (e) {
+            socket.emit('ERROR_RESPONSE', {
+              message: `Error al salir del room de programados: ${e.message}`,
             });
           }
         },

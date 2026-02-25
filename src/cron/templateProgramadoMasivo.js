@@ -127,10 +127,17 @@ cron.schedule('* * * * *', async () => {
         `📋 [CRON templateProgramadoMasivo] Pendientes encontrados: ${pendientes.length}`,
       );
 
-      for (const item of pendientes) {
+      // 2) Enviar los mensajes con retraso entre cada uno para evitar bloqueo por spam
+      for (const [index, item] of pendientes.entries()) {
         const itemStart = Date.now();
 
         try {
+          // **Retraso entre cada mensaje (5 segundos por cada mensaje)**
+          const delay = index * 5000; // 5 segundos de retraso entre cada mensaje
+
+          // Esperar el retraso antes de enviar el siguiente mensaje
+          await new Promise((resolve) => setTimeout(resolve, delay));
+
           // 2) Toma atómica del registro
           const affectedRows = await execUpdateAndRowCount(
             `
@@ -187,12 +194,12 @@ cron.schedule('* * * * *', async () => {
 
           const wamid = resp?.wamid || null;
 
-          // 5) Marcar éxito
+          // 5) Marcar éxito y registrar la fecha de envío correctamente después del retraso
           await db.query(
             `
             UPDATE template_envios_programados
             SET estado = 'enviado',
-                enviado_en = NOW(),
+                enviado_en = NOW(), 
                 id_wamid_mensaje = ?,
                 error_message = NULL,
                 actualizado_en = NOW()
