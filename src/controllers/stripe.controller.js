@@ -124,6 +124,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   // =========================
   // 2) PROMO $5 PRIMER MES (planes 2,3,4) UNA SOLA VEZ TOTAL
   //    - Se controla con promo_plan2_used como "promo_5_used"
+  //// IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18)
   // =========================
   const PROMO_PLANS = new Set([2, 3, 4]);
 

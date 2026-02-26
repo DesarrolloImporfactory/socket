@@ -364,7 +364,7 @@ exports.stripeWebhook = async (req, res) => {
 
         // =========
         // Promo $5: marcar promo_plan2_used SOLO si hubo descuento real (planes 2/3/4)
-        // Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18)
+        // IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18)
         // =========
         const PROMO_PLANS = new Set([2, 3, 4]);
 
