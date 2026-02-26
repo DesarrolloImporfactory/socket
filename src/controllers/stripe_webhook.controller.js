@@ -186,7 +186,7 @@ exports.stripeWebhook = async (req, res) => {
 
         let trialEnd = null;
 
-        let subStatus = nobtener_usuario_plataformaull;
+        let subStatus = null;
         let cancelAtPeriodEnd = 0;
         let cancelAt = null;
         let canceledAt = null;
