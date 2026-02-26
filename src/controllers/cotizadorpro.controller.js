@@ -152,12 +152,12 @@ const crearMensajeBD = async (
 // Helper: Generar datos del mensaje
 const generarDatosMensaje = (templateName, nombreCliente, idCotizacion) => {
   const templates = {
-    cotizacion_carga_enviada: {
+    cotizacion_carga_enviadav2: {
       texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊
 Por favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
     },
-    confirmacion_cotizacion: {
+    confirmacion_cotizacionv2: {
       texto: `Hola Importador {{1}}.
 Para continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.
 
@@ -416,14 +416,14 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   // Crear y enviar las dos plantillas de WhatsApp
   const plantilla1 = crearPlantillaWhatsApp(
     celularFormateado,
-    'cotizacion_carga_enviada',
+    'cotizacion_carga_enviadav2',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
 
   const plantilla2 = crearPlantillaWhatsApp(
     celularFormateado,
-    'confirmacion_cotizacion',
+    'confirmacion_cotizacionv2',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -480,7 +480,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   // Crear mensajes en la base de datos usando helpers
   const mensaje1Data = generarDatosMensaje(
-    'cotizacion_carga_enviada',
+    'cotizacion_carga_enviadav2',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -491,12 +491,12 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje1,
     mensaje1Data.texto,
     mensaje1Data.rutaArchivo,
-    'cotizacion_carga_enviada',
+    'cotizacion_carga_enviadav2',
   );
   // console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
 
   const mensaje2Data = generarDatosMensaje(
-    'confirmacion_cotizacion',
+    'confirmacion_cotizacionv2',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -507,7 +507,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje2,
     mensaje2Data.texto,
     mensaje2Data.rutaArchivo,
-    'confirmacion_cotizacion',
+    'confirmacion_cotizacionv2',
   );
   // console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
 
