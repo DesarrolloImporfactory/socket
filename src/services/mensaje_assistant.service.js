@@ -56,6 +56,19 @@ async function procesarAsistenteMensajeVentas(body) {
   } = body;
 
   try {
+    await db.query(
+      `UPDATE remarketing_pendientes
+        SET cancelado = 1
+        WHERE telefono = ?
+        AND id_configuracion = ?
+        AND enviado = 0
+        AND cancelado = 0`,
+      {
+        replacements: [telefono, id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
     /* consulta de productos */
     // Si lista_productos es un array, procesamos la consulta
     let bloqueProductos = '';
@@ -467,49 +480,49 @@ async function procesarAsistenteMensajeVentas(body) {
       .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
       ?.text?.value;
 
-    // 5. Guardar remarketing si aplica
-    if (tiempo_remarketing > 0) {
-      const tiempoDisparo = new Date(Date.now() + tiempo_remarketing * 3600000);
+    // 5. Programar remarketing basado en configuración por estado
+    const [configRemarketing] = await db.query(
+      `SELECT *
+   FROM configuracion_remarketing
+   WHERE id_configuracion = ?
+     AND estado_contacto = ?
+     AND activo = 1
+   LIMIT 1`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.SELECT,
+      },
+    );
 
-      const existing = await db.query(
-        `SELECT tiempo_disparo FROM remarketing_pendientes
-       WHERE telefono = ? AND id_configuracion = ? AND DATE(tiempo_disparo) = DATE(?)
-       LIMIT 1`,
+    if (configRemarketing) {
+      const tiempoHoras = configRemarketing.tiempo_espera_horas;
+      const tiempoDisparo = new Date(Date.now() + tiempoHoras * 3600000);
+
+      await db.query(
+        `INSERT INTO remarketing_pendientes
+     (telefono,
+      id_cliente_chat_center,
+      id_configuracion,
+      estado_contacto_origen,
+      nombre_template,
+      language_code,
+      tiempo_disparo,
+      enviado,
+      cancelado)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
         {
-          replacements: [telefono, id_configuracion, tiempoDisparo],
-          type: db.QueryTypes.SELECT,
+          replacements: [
+            telefono,
+            id_cliente,
+            id_configuracion,
+            estado_contacto,
+            configRemarketing.nombre_template,
+            configRemarketing.language_code,
+            tiempoDisparo,
+          ],
+          type: db.QueryTypes.INSERT,
         },
       );
-
-      if (existing.length === 0) {
-        await db
-          .query(
-            `INSERT INTO remarketing_pendientes
-         (telefono, id_cliente_chat_center, id_configuracion, business_phone_id, access_token, openai_token, assistant_id, mensaje, tipo_asistente, tiempo_disparo, id_thread)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            {
-              replacements: [
-                telefono,
-                id_cliente,
-                id_configuracion,
-                business_phone_id,
-                accessToken,
-                api_key_openai,
-                assistant_id,
-                respuesta,
-                tipo_asistente,
-                tiempoDisparo,
-                id_thread,
-              ],
-              type: db.QueryTypes.INSERT,
-            },
-          )
-          .catch(async (err) => {
-            await log(
-              `⚠️ Error al insertar remarketing para telefono: ${telefono}, id_thread: ${id_thread}. Error: ${err.message}`,
-            );
-          });
-      }
     }
 
     /* console.log('bloqueInfo: ' + bloqueInfo); */
@@ -549,7 +562,6 @@ async function procesarAsistenteMensajeEventos(body) {
   } = body;
 
   try {
-
     // 1. Obtener assistants activos
     const assistants = await db.query(
       `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos, ofrecer 

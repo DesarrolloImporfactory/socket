@@ -48,7 +48,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
       await sequelize.transaction(async (t) => {
         const nuevoUsuarioInst = await Usuarios_chat_center.create(
           { nombre, email_propietario: email },
-          { transaction: t }
+          { transaction: t },
         );
 
         const resultado = await crearStripeCustomer({
@@ -59,7 +59,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
 
         if (!resultado?.ok) {
           const err = new Error(
-            resultado.message || 'No se pudo crear el cliente en Stripe'
+            resultado.message || 'No se pudo crear el cliente en Stripe',
           );
           err.httpStatus =
             resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS' ? 409 : 502;
@@ -78,7 +78,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
 
         await nuevoUsuarioInst.update(
           { id_costumer: stripe_customer_id },
-          { transaction: t }
+          { transaction: t },
         );
 
         const nuevoSubUsuario = await crearSubUsuario(
@@ -90,7 +90,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
             nombre_encargado,
             rol: 'administrador',
           },
-          { transaction: t }
+          { transaction: t },
         );
 
         return {
@@ -125,7 +125,6 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
 exports.login = catchAsync(async (req, res, next) => {
   const { usuario, password } = req.body;
 
-  // Buscar por usuario o email
   const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
     where: {
       [Op.or]: [{ usuario }, { email: usuario }],
@@ -133,38 +132,52 @@ exports.login = catchAsync(async (req, res, next) => {
   });
 
   if (!usuarioEncontrado) {
-    return res.status(401).json({
-      status: 'fail',
-      message: 'Credenciales inválidas',
-    });
+    return res
+      .status(401)
+      .json({ status: 'fail', message: 'Credenciales inválidas' });
   }
 
-  // Verificar password principal o admin_pass
   let autenticado = await bcrypt.compare(password, usuarioEncontrado.password);
-
   if (!autenticado && usuarioEncontrado.admin_pass) {
     autenticado = await bcrypt.compare(password, usuarioEncontrado.admin_pass);
   }
-
   if (!autenticado) {
-    return res.status(401).json({
-      status: 'fail',
-      message: 'Credenciales inválidas',
-    });
+    return res
+      .status(401)
+      .json({ status: 'fail', message: 'Credenciales inválidas' });
   }
 
-  // Generar token
   const token = await generarToken(usuarioEncontrado.id_sub_usuario);
 
-  // Eliminar campos sensibles
   const usuarioPlano = usuarioEncontrado.toJSON();
   const { password: _, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+  // Consultar datos del plan del usuario principal
+  let planData = {};
+  if (usuarioSinPassword.id_usuario) {
+    const usuarioPrincipal = await Usuarios_chat_center.findOne({
+      where: { id_usuario: usuarioSinPassword.id_usuario },
+      attributes: [
+        'estado',
+        'trial_end',
+        'id_plan',
+        'fecha_renovacion',
+        'permanente',
+      ],
+    });
+    if (usuarioPrincipal) {
+      planData = usuarioPrincipal.toJSON();
+    }
+  }
 
   res.status(200).json({
     status: 'success',
     message: 'Login exitoso',
     token,
-    data: usuarioSinPassword,
+    data: {
+      ...usuarioSinPassword,
+      ...planData, // estado, trial_end, id_plan, fecha_renovacion, permanente
+    },
   });
 });
 
@@ -181,7 +194,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
     {
       replacements: [usuario],
       type: db_2.QueryTypes.SELECT,
-    }
+    },
   );
 
   if (!usuarioEncontrado) {
@@ -213,7 +226,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
       where: {
         id: id_configuracion,
       },
-    }
+    },
   );
 
   await Openai_assistants.update(
@@ -224,7 +237,7 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
       where: {
         id_configuracion: id_configuracion,
       },
-    }
+    },
   );
 
   res.status(200).json({
@@ -253,7 +266,7 @@ exports.newLogin = async (req, res) => {
         {
           replacements: [idPlataformaFromToken],
           type: db_2.QueryTypes.SELECT,
-        }
+        },
       );
 
       if (!call_centers || !call_centers.id_call_center) {
@@ -269,7 +282,7 @@ exports.newLogin = async (req, res) => {
         {
           replacements: [tienda],
           type: db_2.QueryTypes.SELECT,
-        }
+        },
       );
 
       if (
@@ -332,7 +345,7 @@ exports.newLogin = async (req, res) => {
         {
           replacements: [idUsuarioFromToken],
           type: db_2.QueryTypes.SELECT,
-        }
+        },
       );
 
       if (!user_imporauit) {
@@ -387,7 +400,7 @@ exports.newLogin = async (req, res) => {
                     estado: 'inactivo',
                     email_propietario: usuario_users, // email
                   },
-                  { transaction: t }
+                  { transaction: t },
                 );
 
                 // 2) Stripe (si falla => throw => rollback BD)
@@ -399,7 +412,8 @@ exports.newLogin = async (req, res) => {
 
                 if (!resultado?.ok) {
                   const err = new Error(
-                    resultado.message || 'No se pudo crear el cliente en Stripe'
+                    resultado.message ||
+                      'No se pudo crear el cliente en Stripe',
                   );
                   err.httpStatus =
                     resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS'
@@ -417,7 +431,7 @@ exports.newLogin = async (req, res) => {
                   !stripe_customer_id.startsWith('cus_')
                 ) {
                   const err = new Error(
-                    'No se pudo crear el cliente en Stripe'
+                    'No se pudo crear el cliente en Stripe',
                   );
                   err.httpStatus = 502;
                   err.code = 'STRIPE_CUSTOMER_ID_INVALID';
@@ -427,7 +441,7 @@ exports.newLogin = async (req, res) => {
                 // 3) Guardar stripe id (BD)
                 await crear_usuario.update(
                   { id_costumer: stripe_customer_id },
-                  { transaction: t }
+                  { transaction: t },
                 );
 
                 // 4) Crear subusuario (BD)
@@ -440,7 +454,7 @@ exports.newLogin = async (req, res) => {
                     nombre_encargado: nombre_users,
                     rol: 'administrador',
                   },
-                  { transaction: t }
+                  { transaction: t },
                 );
 
                 return {

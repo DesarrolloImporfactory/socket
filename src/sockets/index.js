@@ -366,6 +366,7 @@ class Sockets {
           const data = await dropiService.listProductsIndex({
             integrationKey,
             payload: dropiPayload,
+            country_code: integration.country_code,
           });
 
           socket.emit('DROPI_PRODUCTS_OK', { isSuccess: true, data });
@@ -395,6 +396,7 @@ class Sockets {
           const data = await dropiService.listStates({
             integrationKey,
             country_id,
+            country_code: integration.country_code,
           });
 
           socket.emit('DROPI_STATES_OK', { isSuccess: true, data });
@@ -428,6 +430,7 @@ class Sockets {
           const data = await dropiService.listCities({
             integrationKey,
             payload: { department_id, rate_type },
+            country_code: integration.country_code,
           });
 
           socket.emit('DROPI_CITIES_OK', { isSuccess: true, data });
@@ -480,6 +483,7 @@ class Sockets {
           const data = await dropiService.cotizaEnvioTransportadora({
             integrationKey,
             payload: dropiPayload,
+            country_code: integration.country_code,
           });
 
           socket.emit('DROPI_COTIZA_ENVIO_V2_OK', { isSuccess: true, data });

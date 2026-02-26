@@ -423,6 +423,7 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
     dropiResponse = await dropiService.listMyOrders({
       integrationKey,
       params,
+      country_code: integration.country_code,
     });
 
     objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
@@ -456,6 +457,7 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
   const dropiResponse = await dropiService.createOrderMyOrders({
     integrationKey,
     payload,
+    country_code: integration.country_code,
   });
 
   const norm = normalizeDropiResult(dropiResponse);
@@ -561,6 +563,7 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
     integrationKey,
     orderId: oid,
     payload,
+    country_code: integration.country_code,
   });
 }
 

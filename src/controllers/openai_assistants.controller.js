@@ -635,13 +635,7 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
-  const {
-    id_configuracion,
-    nombre_bot,
-    activo,
-    tiempo_remarketing,
-    tipo_venta,
-  } = req.body;
+  const { id_configuracion, nombre_bot, activo, tipo_venta } = req.body;
 
   try {
     const [existe] = await db.query(
@@ -655,16 +649,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     if (existe) {
       // Ya existe, entonces actualiza
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ?, tiempo_remarketing = ?
+        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ? 
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
-          replacements: [
-            nombre_bot,
-            activo,
-            tipo_venta,
-            tiempo_remarketing,
-            id_configuracion,
-          ],
+          replacements: [nombre_bot, activo, tipo_venta, id_configuracion],
           type: db.QueryTypes.UPDATE,
         },
       );
@@ -672,16 +660,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
       // No existe, entonces inserta
       await db.query(
         `INSERT INTO openai_assistants 
-(id_configuracion, tipo, nombre_bot, activo, ofrecer, tiempo_remarketing) 
-VALUES (?, "ventas", ?, ?, ?, ?)`,
+          (id_configuracion, tipo, nombre_bot, activo, ofrecer) 
+          VALUES (?, "ventas", ?, ?, ?)`,
         {
-          replacements: [
-            id_configuracion,
-            nombre_bot,
-            activo,
-            tipo_venta,
-            tiempo_remarketing,
-          ],
+          replacements: [id_configuracion, nombre_bot, activo, tipo_venta],
           type: db.QueryTypes.INSERT,
         },
       );
@@ -1042,3 +1024,74 @@ exports.sync_templates_from_oia_asistentes = async (req, res) => {
   }
 };
 /* sicronizacion de plantillas */
+
+exports.configurar_remarketing = catchAsync(async (req, res, next) => {
+  const {
+    id_configuracion,
+    estado_contacto,
+    tiempo_espera_horas,
+    nombre_template,
+    language_code,
+  } = req.body;
+
+  try {
+    const [existe] = await db.query(
+      `SELECT id FROM configuracion_remarketing
+       WHERE id_configuracion = ?
+       AND estado_contacto = ?
+       LIMIT 1`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    if (existe) {
+      await db.query(
+        `UPDATE configuracion_remarketing
+         SET tiempo_espera_horas = ?,
+             nombre_template = ?,
+             language_code = ?,
+             activo = 1
+         WHERE id_configuracion = ?
+         AND estado_contacto = ?`,
+        {
+          replacements: [
+            tiempo_espera_horas,
+            nombre_template,
+            language_code,
+            id_configuracion,
+            estado_contacto,
+          ],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+    } else {
+      await db.query(
+        `INSERT INTO configuracion_remarketing
+         (id_configuracion, estado_contacto,
+          tiempo_espera_horas, nombre_template,
+          language_code, activo)
+         VALUES (?, ?, ?, ?, ?, 1)`,
+        {
+          replacements: [
+            id_configuracion,
+            estado_contacto,
+            tiempo_espera_horas,
+            nombre_template,
+            language_code,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    }
+
+    res.status(200).json({
+      status: '200',
+      message: 'Remarketing configurado correctamente',
+    });
+  } catch (error) {
+    console.error(error);
+    return next(new AppError('Error configurando remarketing', 500));
+  }
+});

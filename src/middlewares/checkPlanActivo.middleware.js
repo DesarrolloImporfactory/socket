@@ -23,7 +23,7 @@ const checkPlanActivo = async (req, res, next) => {
       });
     }
 
-    // Bloqueos duros por estado (usted decide si permanente ignora suspendido/cancelado)
+    // Bloqueos duros por estado
     if (usuario.estado === 'suspendido' || usuario.estado === 'cancelado') {
       return res.status(403).json({
         status: 'fail',
@@ -41,8 +41,12 @@ const checkPlanActivo = async (req, res, next) => {
 
     const ahora = new Date();
 
-    // Trial vigente => permitir
-    if (usuario.trial_end && ahora <= new Date(usuario.trial_end)) {
+    // Trial vigente y estadp es activo => permitir
+    if (
+      usuario.trial_end &&
+      ahora <= new Date(usuario.trial_end) &&
+      usuario.estado === 'activo'
+    ) {
       req.planInfo = { trial: true, trial_end: usuario.trial_end };
       return next();
     }

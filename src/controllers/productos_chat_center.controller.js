@@ -268,13 +268,7 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
-  const idConfigSync = producto.id_configuracion;
-
   await producto.destroy();
-
-  syncCatalogoAsistentesPorConfiguracion(idConfigSync).catch((e) => {
-    console.error(`⚠️ Error sync catálogo: ${e.message}`);
-  });
 
   res.status(200).json({
     status: 'success',
@@ -388,6 +382,7 @@ exports.listarProductosDropi = catchAsync(async (req, res, next) => {
   const dropiResponse = await dropiService.listProductsIndex({
     integrationKey,
     payload,
+    country_code: integration.country_code,
   });
   return res.json({ isSuccess: true, data: dropiResponse });
 });
@@ -499,6 +494,7 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
   const dropiDetail = await dropiService.getProductDetail({
     integrationKey,
     productId: dropi_product_id,
+    country_code: integration.country_code,
   });
 
   const prod = dropiDetail?.objects;

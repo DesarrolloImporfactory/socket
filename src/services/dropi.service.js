@@ -1,10 +1,34 @@
 const axios = require('axios');
 const AppError = require('../utils/appError');
 
-const dropiHttp = axios.create({
-  baseURL: process.env.DROPI_BASE_URL,
-  timeout: Number(process.env.DROPI_TIMEOUT_MS || 20000),
-});
+// Map de baseURL por country_code
+const DROPI_BASE_URLS = {
+  EC: process.env.DROPI_BASE_URL_EC,
+  CO: process.env.DROPI_BASE_URL_CO,
+  GT: process.env.DROPI_BASE_URL_GT,
+  MX: process.env.DROPI_BASE_URL_MX,
+};
+
+// Crea o reutiliza un axios instance por país
+const httpInstances = {};
+
+function getDropiHttp(country_code) {
+  const code = String(country_code || '').toUpperCase();
+  const baseURL = DROPI_BASE_URLS[code];
+
+  if (!baseURL) {
+    throw new AppError(`Dropi: país no soportado (${code})`, 400);
+  }
+
+  if (!httpInstances[code]) {
+    httpInstances[code] = axios.create({
+      baseURL,
+      timeout: 20000,
+    });
+  }
+
+  return httpInstances[code];
+}
 
 function dropiHeaders(integrationKey) {
   const keyHeader = process.env.DROPI_KEY_HEADER;
@@ -24,7 +48,6 @@ function normalizeDropiError(err) {
   const status = err?.response?.status || 500;
   const data = err?.response?.data;
 
-  // Mensaje “más probable” que devuelven APIs
   const msg =
     (data && (data.message || data.msg || data.error)) ||
     err?.message ||
@@ -36,9 +59,14 @@ function normalizeDropiError(err) {
 /**
  * POST /orders/myorders
  */
-exports.createOrderMyOrders = async ({ integrationKey, payload }) => {
+exports.createOrderMyOrders = async ({
+  integrationKey,
+  payload,
+  country_code,
+}) => {
   try {
-    const { data } = await dropiHttp.post('orders/myorders', payload, {
+    const dropiHttp = getDropiHttp(country_code);
+    const { data } = await dropiHttp.post('/orders/myorders', payload, {
       headers: dropiHeaders(integrationKey),
     });
     return data;
@@ -52,69 +80,32 @@ exports.createOrderMyOrders = async ({ integrationKey, payload }) => {
  * params se envía como query string:
  *  { result_number, filter_date_by, from, until, status, textToSearch, ... }
  */
-exports.listMyOrders = async ({ integrationKey, params }) => {
+exports.listMyOrders = async ({ integrationKey, params, country_code }) => {
   try {
-    // ⚠️ DEBUG: mostrar token completo (solo en local / pruebas)
-    console.log('==========================================');
-    console.log('[dropi][DEBUG] baseURL:', dropiHttp.defaults.baseURL);
-    console.log('[dropi][DEBUG] url:', 'orders/myorders');
-    console.log(
-      '[dropi][DEBUG] keyHeader (.env):',
-      process.env.DROPI_KEY_HEADER,
-    );
-
-    console.log('[dropi][DEBUG] integrationKey RAW (FULL):', integrationKey);
-    console.log(
-      '[dropi][DEBUG] integrationKey RAW JSON:',
-      JSON.stringify(integrationKey),
-    );
-    console.log(
-      '[dropi][DEBUG] integrationKey RAW len:',
-      String(integrationKey ?? '').length,
-    );
-    console.log(
-      '[dropi][DEBUG] integrationKey RAW first20:',
-      String(integrationKey ?? '').slice(0, 20),
-    );
-    console.log(
-      '[dropi][DEBUG] integrationKey RAW last20:',
-      String(integrationKey ?? '').slice(-20),
-    );
-    console.log('[dropi][DEBUG] params:', params);
-    console.log('==========================================');
-
+    const dropiHttp = getDropiHttp(country_code);
     const headers = dropiHeaders(integrationKey);
 
-    // ⚠️ DEBUG: confirmar headers finales
-    console.log('[dropi][DEBUG] headers OUT (FULL):', headers);
-    console.log('[dropi][DEBUG] headers OUT keys:', Object.keys(headers || {}));
-    console.log(
-      '[dropi][DEBUG] header value len:',
-      String(headers?.[process.env.DROPI_KEY_HEADER] ?? '').length,
-    );
-
-    const { data } = await dropiHttp.get('orders/myorders', {
+    const { data } = await dropiHttp.get('/orders/myorders', {
       headers,
       params,
     });
 
     return data;
   } catch (err) {
-    console.log('[dropi][DEBUG] status:', err?.response?.status);
-    console.log('[dropi][DEBUG] response:', err?.response?.data);
-    console.log(
-      '[dropi][DEBUG] finalURL:',
-      err?.config?.baseURL,
-      err?.config?.url,
-    );
-    console.log('[dropi][DEBUG] sent headers:', err?.config?.headers);
-
     throw normalizeDropiError(err);
   }
 };
-// POST /products/index
-exports.listProductsIndex = async ({ integrationKey, payload }) => {
+
+/**
+ * POST /products/index
+ */
+exports.listProductsIndex = async ({
+  integrationKey,
+  payload,
+  country_code,
+}) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.post('/products/index', payload, {
       headers: dropiHeaders(integrationKey),
     });
@@ -124,8 +115,9 @@ exports.listProductsIndex = async ({ integrationKey, payload }) => {
   }
 };
 
-exports.listStates = async ({ integrationKey, country_id }) => {
+exports.listStates = async ({ integrationKey, country_id, country_code }) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.get('/department', {
       headers: dropiHeaders(integrationKey),
       params: { country_id },
@@ -136,8 +128,9 @@ exports.listStates = async ({ integrationKey, country_id }) => {
   }
 };
 
-exports.listCities = async ({ integrationKey, payload }) => {
+exports.listCities = async ({ integrationKey, payload, country_code }) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.post('/trajectory/bycity', payload, {
       headers: dropiHeaders(integrationKey),
     });
@@ -147,8 +140,13 @@ exports.listCities = async ({ integrationKey, payload }) => {
   }
 };
 
-exports.cotizaEnvioTransportadora = async ({ integrationKey, payload }) => {
+exports.cotizaEnvioTransportadora = async ({
+  integrationKey,
+  payload,
+  country_code,
+}) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.post(
       '/orders/cotizaEnvioTransportadoraV2',
       payload,
@@ -162,8 +160,14 @@ exports.cotizaEnvioTransportadora = async ({ integrationKey, payload }) => {
   }
 };
 
-exports.updateMyOrder = async ({ integrationKey, orderId, payload }) => {
+exports.updateMyOrder = async ({
+  integrationKey,
+  orderId,
+  payload,
+  country_code,
+}) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.put(
       `/orders/myorders/${orderId}`,
       payload,
@@ -177,8 +181,13 @@ exports.updateMyOrder = async ({ integrationKey, orderId, payload }) => {
   }
 };
 
-exports.getProductDetail = async ({ integrationKey, productId }) => {
+exports.getProductDetail = async ({
+  integrationKey,
+  productId,
+  country_code,
+}) => {
   try {
+    const dropiHttp = getDropiHttp(country_code);
     const { data } = await dropiHttp.get(`/products/v2/${productId}`, {
       headers: dropiHeaders(integrationKey),
     });
