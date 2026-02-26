@@ -30,6 +30,7 @@ const {
   obtenerThreadId,
   transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
+  enviarAsistenteGptEventos,
   separador_productos,
   enviarAsistenteGptImporfactory,
 } = require('../utils/webhook_whatsapp/funcciones_asistente');
@@ -937,6 +938,59 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   total_tokens,
                 });
               }
+            }
+          } else if (tipo_configuracion == 'eventos') {
+            respuesta_asistente = await enviarAsistenteGptEventos({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+            });
+
+            if (respuesta_asistente?.status === 200) {
+              total_tokens += Number(respuesta_asistente?.total_tokens ?? 0);
+
+              if (estado_contacto == 'contacto_inicial') {
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'ia_ventas' },
+                  { where: { id: id_cliente } },
+                );
+              }
+
+              const mencionaAsesor = /asesor/i.test(
+                respuesta_asistente.respuesta || '',
+              ); // detecta asesor / Asesor / ASESOR
+
+              if (mencionaAsesor) {
+                // 3) Cambiar estado a asesor
+                await ClientesChatCenter.update(
+                  { estado_contacto: 'asesor' },
+                  { where: { id: id_cliente } },
+                );
+
+                // 4) Ejecutar acción especial
+                /*  await realizarAccionEspecialAsesor({
+                          id_cliente,
+                          phone_whatsapp_from,
+                          business_phone_id,
+                          accessToken,
+                        }); */
+              }
+
+              await enviarMensajeWhatsapp({
+                phone_whatsapp_to: phone_whatsapp_from,
+                texto_mensaje: respuesta_asistente.respuesta,
+                business_phone_id,
+                accessToken,
+                id_configuracion,
+                responsable: respuesta_asistente.tipo_asistente,
+                total_tokens,
+              });
             }
           } else if (tipo_configuracion == 'ventas') {
             if (estado_contacto == 'seguimiento') {

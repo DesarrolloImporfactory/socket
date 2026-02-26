@@ -536,6 +536,11 @@ function templatesPermitidosPorTipo(tipo_configuracion) {
       'cotizaciones_imporfactory',
       'separador_productos',
     ],
+    eventos: [
+      'contacto_inicial_eventos',
+      'ventas_eventos',
+      'separador_productos',
+    ],
   };
 
   // Si el tipo no existe, por defecto "ventas"

@@ -10,6 +10,7 @@ const {
 
 const {
   procesarAsistenteMensajeVentas,
+  procesarAsistenteMensajeEventos,
   procesarAsistenteMensajeImporfactory,
   separadorProductos,
 } = require('../../services/mensaje_assistant.service');
@@ -124,6 +125,49 @@ async function enviarAsistenteGptVentas({
   } catch (err) {
     console.log(`❌ Error en enviarAsistenteGptVentas: ${err.message}`);
     await log(`❌ Error en enviarAsistenteGptVentas: ${err.message}`);
+    return false;
+  }
+}
+
+async function enviarAsistenteGptEventos({
+  mensaje,
+  id_plataforma,
+  id_configuracion,
+  telefono,
+  api_key_openai,
+  id_thread,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+  id_cliente,
+  lista_productos = null
+}) {
+  try {
+    const data = await procesarAsistenteMensajeEventos({
+      mensaje,
+      id_plataforma,
+      id_configuracion,
+      telefono,
+      api_key_openai,
+      id_thread,
+      business_phone_id,
+      accessToken,
+      estado_contacto,
+      id_cliente,
+      lista_productos,
+    });
+
+    if (data?.status === 200) {
+      await log(`✅ Respuesta asistente: ${JSON.stringify(data.respuesta)}`);
+    } else {
+      await log(`⚠️ Error en respuesta del asistente: ${JSON.stringify(data)}`);
+    }
+    /* console.log('respuesta asistente: ' + JSON.stringify(data)); */
+
+    return data;
+  } catch (err) {
+    console.log(`❌ Error en enviarAsistenteGptEventos: ${err.message}`);
+    await log(`❌ Error en enviarAsistenteGptEventos: ${err.message}`);
     return false;
   }
 }
@@ -248,6 +292,7 @@ module.exports = {
   cancelarRemarketingEnNode,
   transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
+  enviarAsistenteGptEventos,
   separador_productos,
   obtenerThreadId,
   enviarAsistenteGptImporfactory,

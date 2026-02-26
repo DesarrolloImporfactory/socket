@@ -12,6 +12,9 @@ const CategoriasChatCenter = require('../models/categorias_chat_center.model');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
+const {
+  syncCatalogoAsistentesPorConfiguracion,
+} = require('../utils/openia/carga_file_productos');
 const dropiService = require('../services/dropi.service');
 
 async function getActiveIntegration(id_configuracion) {
@@ -134,6 +137,10 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     combos_producto,
   });
 
+  syncCatalogoAsistentesPorConfiguracion(id_configuracion).catch((e) => {
+    console.error(`⚠️ Error sync catálogo: ${e.message}`);
+  });
+
   return res.status(201).json({ status: 'success', data: nuevoProducto });
 });
 
@@ -238,7 +245,13 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.combos_producto = combos_producto;
   producto.fecha_actualizacion = new Date();
 
+  const idConfigSync = producto.id_configuracion;
+
   await producto.save();
+
+  syncCatalogoAsistentesPorConfiguracion(idConfigSync).catch((e) => {
+    console.error(`⚠️ Error sync catálogo: ${e.message}`);
+  });
 
   return res.status(200).json({ status: 'success', data: producto });
 });
@@ -255,7 +268,13 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
+  const idConfigSync = producto.id_configuracion;
+
   await producto.destroy();
+
+  syncCatalogoAsistentesPorConfiguracion(idConfigSync).catch((e) => {
+    console.error(`⚠️ Error sync catálogo: ${e.message}`);
+  });
 
   res.status(200).json({
     status: 'success',
