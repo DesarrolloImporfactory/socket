@@ -520,7 +520,7 @@ async function procesarAsistenteMensajeVentas(body) {
       await db.query(
         `INSERT INTO remarketing_pendientes
      (telefono,
-     telefono_configuracion
+     telefono_configuracion,
       id_cliente_chat_center,
       id_configuracion,
       estado_contacto_origen,
@@ -529,7 +529,7 @@ async function procesarAsistenteMensajeVentas(body) {
       tiempo_disparo,
       enviado,
       cancelado)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
         {
           replacements: [
             telefono,

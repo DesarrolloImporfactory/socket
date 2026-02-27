@@ -47,4 +47,9 @@ router.post(
   openai_assistantsController.configurar_remarketing,
 );
 
+router.post(
+  '/obtener_remarketing',
+  openai_assistantsController.obtener_remarketing,
+);
+
 module.exports = router;

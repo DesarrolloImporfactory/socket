@@ -1095,3 +1095,31 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     return next(new AppError('Error configurando remarketing', 500));
   }
 });
+
+exports.obtener_remarketing = catchAsync(async (req, res, next) => {
+  const { id_configuracion, estado_contacto } = req.body;
+
+  try {
+    const [config] = await db.query(
+      `SELECT tiempo_espera_horas, nombre_template, language_code, activo
+       FROM configuracion_remarketing
+       WHERE id_configuracion = ?
+         AND estado_contacto = ?
+       LIMIT 1`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    res.status(200).json({
+      status: '200',
+      data: config || null,
+    });
+  } catch (error) {
+    console.error(error);
+    return next(
+      new AppError('Error obteniendo configuración de remarketing', 500),
+    );
+  }
+});
