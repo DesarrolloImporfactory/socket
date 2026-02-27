@@ -28,7 +28,7 @@ async function withLock(lockName, fn) {
   }
 }
 
-cron.schedule('*/5 * * * *', async () => {
+cron.schedule('*/1 * * * *', async () => {
   await withLock('remarketing_cron_lock', async () => {
     /* console.log('⏱️ Ejecutando tarea de remarketing'); */
 

@@ -7,6 +7,10 @@ const {
   obtenerCalendarioClasImporfactory,
   procesarCombosParaIA,
 } = require('../utils/datosClienteAssistant'); // Ajustar según organización
+const {
+  getConfigFromDB,
+  onlyDigits,
+} = require('../utils/whatsappTemplate.helpers');
 
 const fs = require('fs').promises;
 const path = require('path');
@@ -494,6 +498,21 @@ async function procesarAsistenteMensajeVentas(body) {
       },
     );
 
+    const cfg = await getConfigFromDB(Number(id_configuracion));
+    const telefono_configuracion = cfg?.telefono_configuracion
+      ? String(cfg.telefono_configuracion)
+      : null;
+
+    console.log('xd:' + telefono_configuracion);
+    console.log('xd2:', telefono_configuracion);
+
+    if (!telefono_configuracion) {
+      await log(
+        `❌ No pude resolver telefono_configuracion desde cfg (id_configuracion=${id_configuracion})`,
+      );
+      throw new Error('No se pudo resolver telefono_configuracion');
+    }
+
     if (configRemarketing) {
       const tiempoHoras = configRemarketing.tiempo_espera_horas;
       const tiempoDisparo = new Date(Date.now() + tiempoHoras * 3600000);
@@ -501,6 +520,7 @@ async function procesarAsistenteMensajeVentas(body) {
       await db.query(
         `INSERT INTO remarketing_pendientes
      (telefono,
+     telefono_configuracion
       id_cliente_chat_center,
       id_configuracion,
       estado_contacto_origen,
@@ -513,6 +533,7 @@ async function procesarAsistenteMensajeVentas(body) {
         {
           replacements: [
             telefono,
+            telefono_configuracion,
             id_cliente,
             id_configuracion,
             estado_contacto,

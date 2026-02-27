@@ -21,6 +21,7 @@ async function getConfigFromDB(id) {
     const rows = await db.query(
       `
       SELECT 
+      telefono AS telefono_configuracion,
         id_whatsapp AS WABA_ID, 
         token AS ACCESS_TOKEN,
         id_telefono AS PHONE_NUMBER_ID

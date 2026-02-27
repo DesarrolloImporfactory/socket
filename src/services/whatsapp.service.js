@@ -339,6 +339,14 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   console.log('🗄️ [CRON SEND] consultando configuración...');
   const cfg = await getConfigFromDB(Number(id_configuracion));
 
+  if (!telefono_configuracion) {
+    telefono_configuracion = cfg.telefono;
+  }
+
+  console.log('[CRON SEND] telefono_configuracion resuelta', {
+    telefono_configuracion,
+  });
+
   if (!cfg)
     throw new Error('Configuración inválida/suspendida o no encontrada');
 
