@@ -170,7 +170,7 @@ async function procesarAsistenteMensajeVentas(body) {
 
     if (!assistants || assistants.length === 0) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`,
+        `⚠️ No se encontró un assistant válido ventas para id_configuracion: ${id_configuracion}`,
       );
       return {
         status: 400,
@@ -234,7 +234,7 @@ async function procesarAsistenteMensajeVentas(body) {
     );
 
     if (!oia_asistentes || oia_asistentes.length === 0) {
-      await log(`⚠️ No se encontró un assistant válido`);
+      await log(`⚠️ No se encontró un assistant válido ventas`);
       return {
         status: 400,
         error: 'No se encontró un assistant válido para este contexto',
@@ -263,7 +263,7 @@ async function procesarAsistenteMensajeVentas(body) {
 
     if (!assistant_id) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`,
+        `⚠️ No se encontró un assistant válido ventas para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -575,7 +575,7 @@ async function procesarAsistenteMensajeEventos(body) {
 
     if (!assistants || assistants.length === 0) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`,
+        `⚠️ No se encontró un assistant válido eventos para id_configuracion: ${id_configuracion}`,
       );
       return {
         status: 400,
@@ -639,7 +639,7 @@ async function procesarAsistenteMensajeEventos(body) {
     );
 
     if (!oia_asistentes || oia_asistentes.length === 0) {
-      await log(`⚠️ No se encontró un assistant válido`);
+      await log(`⚠️ No se encontró un assistant válido eventos`);
       return {
         status: 400,
         error: 'No se encontró un assistant válido para este contexto',
@@ -651,7 +651,7 @@ async function procesarAsistenteMensajeEventos(body) {
 
     if (!assistant_id) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`,
+        `⚠️ No se encontró un assistant válido eventos para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -961,7 +961,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     if (!assistants || assistants.length === 0) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_configuracion: ${id_configuracion}`,
+        `⚠️ No se encontró un assistant válido imporfactory para id_configuracion: ${id_configuracion}`,
       );
       return {
         status: 400,
@@ -977,7 +977,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
 
     if (!assistant_id) {
       await log(
-        `⚠️ No se encontró un assistant válido para id_thread: ${id_thread}`,
+        `⚠️ No se encontró un assistant válido imporfactory para id_thread: ${id_thread}`,
       );
       return {
         status: 400,
@@ -1239,7 +1239,7 @@ async function separadorProductos({
     const oia_asistentes = await db.query(
       `SELECT template_key, assistant_id 
        FROM oia_assistants_cliente 
-       WHERE template_key = 'separador_productos'`,
+       WHERE template_key = 'separador_productos' AND id_configuracion = '${id_configuracion}'`,
       {
         type: db.QueryTypes.SELECT,
       },
