@@ -82,7 +82,10 @@ const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
 const droppiIntegrationsRouter = require('./routes/dropi_integrations.routes');
 
 const cotizacionesRouter = require('./routes/cotizaciones.routes');
+
 const mediaRouter = require('./routes/media.routes');
+
+const dashboardRouter = require('./routes/dashboard.routes');
 
 const path = require('path');
 
@@ -118,9 +121,11 @@ const allowlist = [
   'https://dev.imporfactory.app',
 ];
 
-app.use(helmet({
-  crossOriginResourcePolicy: false,
-}));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  }),
+);
 
 app.use(hpp());
 
@@ -129,8 +134,23 @@ if (process.env.NODE_ENV === 'production') {
 } else {
   app.use(morgan('dev'));
   // CORS abierto total para desarrollo
-  app.use(cors({ origin: true, credentials: true, methods: '*', allowedHeaders: '*' }));
-  app.options('*', cors({ origin: true, credentials: true, methods: '*', allowedHeaders: '*' }));
+  app.use(
+    cors({
+      origin: true,
+      credentials: true,
+      methods: '*',
+      allowedHeaders: '*',
+    }),
+  );
+  app.options(
+    '*',
+    cors({
+      origin: true,
+      credentials: true,
+      methods: '*',
+      allowedHeaders: '*',
+    }),
+  );
 }
 
 // ⚠️ Para validar la firma necesitamos el raw body SOLO en el endpoint de Messenger
@@ -236,6 +256,7 @@ app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
+app.use('/api/v1/dashboard', dashboardRouter);
 
 app.all('*', (req, res, next) => {
   return next(
