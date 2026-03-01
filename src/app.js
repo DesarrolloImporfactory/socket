@@ -87,6 +87,8 @@ const mediaRouter = require('./routes/media.routes');
 
 const dashboardRouter = require('./routes/dashboard.routes');
 
+const geminiRouter = require('./routes/gemini.routes');
+
 const path = require('path');
 
 const app = express();
@@ -257,6 +259,7 @@ app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
+app.use('/api/v1/gemini', geminiRouter);
 
 app.all('*', (req, res, next) => {
   return next(

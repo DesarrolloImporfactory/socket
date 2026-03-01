@@ -14,7 +14,7 @@ const Configuraciones = db.define(
     pais: {
       type: DataTypes.STRING(2),
       allowNull: true,
-      defaultValue: "ec",
+      defaultValue: 'ec',
     },
     id_plataforma: {
       type: DataTypes.BIGINT,
@@ -96,13 +96,17 @@ const Configuraciones = db.define(
       allowNull: false,
       defaultValue: 0,
     },
+    api_key_gemini: {
+      type: DataTypes.STRING(1000),
+      allowNull: true,
+    },
   },
   {
     tableName: 'configuraciones',
     timestamps: false,
     comment: 'Tabla de configuraciones',
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = Configuraciones;
