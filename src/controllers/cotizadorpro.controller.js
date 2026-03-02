@@ -908,7 +908,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       mediaId: mediaId,
       fileUrl: video_url,
     },
-    template_name: 'productos_en_bodega',
+    template_name: 'productos_en_bodegav2',
     language: 'es',
     id_cotizacion: id_cotizacion || null,
     converted: convertedBuffer !== videoBuffer,
@@ -934,7 +934,7 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     meta_media_id: mediaId,
     visto: false,
     language: 'es',
-    template_name: 'productos_en_bodega',
+    template_name: 'productos_en_bodegav2',
   });
 
   // Actualizar subestado
@@ -967,7 +967,7 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
       chatId: chatId,
       celular: celularFormateado,
       nombreCliente: nombreCliente,
-      templateName: 'productos_en_bodega',
+      templateName: 'productos_en_bodegav2',
       converted: convertedBuffer !== videoBuffer,
     },
   });
