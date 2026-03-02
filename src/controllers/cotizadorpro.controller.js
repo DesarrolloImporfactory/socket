@@ -586,7 +586,7 @@ exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
     to: celularFormateado,
     type: 'template',
     template: {
-      name: 'fecha_estimada_de_llegada',
+      name: 'fecha_de_llegada_a_bodega',
       language: {
         code: 'es',
       },
@@ -659,12 +659,13 @@ exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
       2: fechaFormateada,
     },
     header: null,
-    template_name: 'fecha_estimada_de_llegada',
+    template_name: 'fecha_de_llegada_a_bodega',
     language: 'es',
     id_cotizacion: id_cotizacion,
   });
 
-  const textoMensaje = `Hola {{1}}, le informamos que la fecha estimada de llegada de su pedido es: {{2}}`;
+  const textoMensaje = `🎉 ¡Hola {{1}}! Según la actualización logística disponible, la fecha estimada de llegada de tu carga a nuestra bodega es: {{2}}
+Al momento de la recepción, compartiremos un video de verificación.`;
 
   const mensajeRegistrado = await crearMensajeBD(
     chatId,
@@ -692,7 +693,7 @@ exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
 });
 
 exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
-  const { telefono, video_url, id_cotizacion } = req.body;
+  const { telefono, video_url, id_cotizacion, drive_url } = req.body;
 
   if (!telefono) {
     return next(new AppError('telefono es requerido', 400));
@@ -702,7 +703,9 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     return next(new AppError('video_url es requerido', 400));
   }
 
-
+  if (!drive_url) {
+    return next(new AppError('drive_url es requerido', 400));
+  }
 
   // Formatear celular
   const celularFormateado = formatPhoneForWhatsApp(telefono, '593');
@@ -745,7 +748,6 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       timeout: 60000,
     });
     videoBuffer = Buffer.from(videoResponse.data);
-  
   } catch (err) {
     console.error('[VIDEO_COT] Error al descargar video:', err.message);
     return next(new AppError('No se pudo descargar el video', 500));
@@ -785,12 +787,11 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       timeout: 10000,
       validateStatus: () => true,
     });
-
   } catch (checkErr) {
     console.warn(
       '[VIDEO_COT] Advertencia al verificar media:',
       checkErr.message,
-    )
+    );
   }
 
   const templateVideo = {
@@ -798,7 +799,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     to: celularFormateado,
     type: 'template',
     template: {
-      name: 'masfotos',
+      name: 'productos_en_bodega_v2',
       language: {
         code: 'es',
       },
@@ -820,6 +821,17 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
             {
               type: 'text',
               text: nombreCliente,
+            },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'url',
+          index: '0',
+          parameters: [
+            {
+              type: 'text',
+              text: drive_url,
             },
           ],
         },
@@ -896,7 +908,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       mediaId: mediaId,
       fileUrl: video_url,
     },
-    template_name: 'masfotos',
+    template_name: 'productos_en_bodega_v2',
     language: 'es',
     id_cotizacion: id_cotizacion || null,
     converted: convertedBuffer !== videoBuffer,
@@ -922,7 +934,7 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     meta_media_id: mediaId,
     visto: false,
     language: 'es',
-    template_name: 'masfotos',
+    template_name: 'productos_en_bodega_v2',
   });
 
   // Actualizar subestado
@@ -931,7 +943,7 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     { where: { id_cotizacion: id_cotizacion } },
   );
 
-  console.log("[SUBESTADO] Filas afectadas:", rowsAffected);
+  console.log('[SUBESTADO] Filas afectadas:', rowsAffected);
 
   // Verificar que se guardó correctamente
   const cotizacionActualizada = await CotizadorproCotizaciones.findOne({
@@ -939,7 +951,10 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     attributes: ['id_cotizacion', 'subestado', 'fecha_recibida', 'estado'],
   });
 
-  console.log("[SUBESTADO] Verificación después del update:", cotizacionActualizada?.dataValues);
+  console.log(
+    '[SUBESTADO] Verificación después del update:',
+    cotizacionActualizada?.dataValues,
+  );
 
   res.status(200).json({
     status: 200,
@@ -952,7 +967,7 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
       chatId: chatId,
       celular: celularFormateado,
       nombreCliente: nombreCliente,
-      templateName: 'masfotos',
+      templateName: 'productos_en_bodega_v2',
       converted: convertedBuffer !== videoBuffer,
     },
   });
