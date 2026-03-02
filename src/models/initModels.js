@@ -31,9 +31,11 @@ const ImporsuitCursos = require('./imporsuit/cursos.model');
 const ImporsuitApiCursos = require('./imporsuit/api_cursos.model');
 const ProductosChatCenter = require('./productos_chat_center.model');
 const CategoriasChatCenter = require('./categorias_chat_center.model');
-
 const CatalogosChatCenter = require('./catalogos_chat_center.model');
 const CatalogosItemsChatCenter = require('./catalogos_items_chat_center.model');
+const EtapasLanding = require('./etapas_landing.model');
+const TemplatesIA = require('./templates_ia.model');
+const GeneracionesIA = require('./generaciones_ia.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -413,6 +415,44 @@ const initModel = () => {
     sourceKey: 'id',
     as: 'catalogos_items',
   });
+
+  // ===== GeneracionesIA ↔ EtapasLanding =====
+  GeneracionesIA.belongsTo(EtapasLanding, {
+    foreignKey: 'id_etapa',
+    targetKey: 'id',
+    as: 'etapa',
+  });
+
+  EtapasLanding.hasMany(GeneracionesIA, {
+    foreignKey: 'id_etapa',
+    sourceKey: 'id',
+    as: 'generaciones',
+  });
+
+  // ===== GeneracionesIA ↔ Usuarios_chat_center =====
+  GeneracionesIA.belongsTo(Usuarios_chat_center, {
+    foreignKey: 'id_usuario',
+    targetKey: 'id_usuario',
+    as: 'usuario',
+  });
+
+  Usuarios_chat_center.hasMany(GeneracionesIA, {
+    foreignKey: 'id_usuario',
+    sourceKey: 'id_usuario',
+    as: 'generaciones_ia',
+  });
+
+  TemplatesIA.belongsTo(EtapasLanding, {
+    foreignKey: 'id_etapa',
+    targetKey: 'id',
+    as: 'etapa',
+  });
+
+  EtapasLanding.hasMany(TemplatesIA, {
+    foreignKey: 'id_etapa',
+    sourceKey: 'id',
+    as: 'templates',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -453,6 +493,9 @@ const getModels = () => {
     CategoriasChatCenter,
     CatalogosChatCenter,
     CatalogosItemsChatCenter,
+    EtapasLanding,
+    TemplatesIA,
+    GeneracionesIA,
   };
 };
 

@@ -1,15 +1,21 @@
 const axios = require('axios');
+const FormDataLib = require('form-data');
+const { Op } = require('sequelize');
 
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
 const Configuraciones = require('../models/configuraciones.model');
+const Usuarios = require('../models/usuarios_chat_center.model');
+const Planes = require('../models/planes_chat_center.model');
+const GeneracionesIA = require('../models/generaciones_ia.model');
+const EtapasLanding = require('../models/etapas_landing.model');
+const TemplatesIA = require('../models/templates_ia.model');
 
-const { encryptToken, decryptToken } = require('../utils/cryptoToken');
+const { decryptToken } = require('../utils/cryptoToken');
 
-/**
- * Descarga una imagen remota y la convierte a inlineData para Gemini
- */
+// ─── helpers ────────────────────────────────────────────────────────────────
+
 async function downloadToInlineData(url) {
   const resp = await axios.get(url, { responseType: 'arraybuffer' });
   const mimeType = resp.headers?.['content-type'] || 'image/jpeg';
@@ -17,72 +23,14 @@ async function downloadToInlineData(url) {
   return { mimeType, data: base64 };
 }
 
-/**
- * Extrae el base64 de la imagen desde la respuesta de Gemini
- * candidates[0].content.parts[*].inlineData.data
- */
 function pickImageBase64(geminiResp) {
   const parts = geminiResp?.data?.candidates?.[0]?.content?.parts || [];
   const imgPart = parts.find((p) => p?.inlineData?.data);
   return imgPart?.inlineData?.data || null;
 }
 
-exports.obtener_api_key = catchAsync(async (req, res, next) => {
-  const id_configuracion = Number(req.body?.id_configuracion || 0);
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-
-  const cfg = await Configuraciones.findOne({
-    where: { id: id_configuracion },
-    attributes: ['id', 'api_key_gemini'],
-  });
-
-  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-
-  const hasKey = Boolean(
-    cfg.api_key_gemini && String(cfg.api_key_gemini).trim(),
-  );
-  return res.json({ isSuccess: true, api_key: hasKey });
-});
-
-exports.guardar_api_key = catchAsync(async (req, res, next) => {
-  const id_configuracion = Number(req.body?.id_configuracion || 0);
-  const api_key = String(req.body?.api_key || '').trim();
-
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-  if (!api_key) return next(new AppError('api_key es requerida', 400));
-
-  // misma validación que tu modal
-  if (!api_key.startsWith('AIza')) {
-    return next(new AppError('La clave debe empezar con AIza...', 400));
-  }
-
-  const cfg = await Configuraciones.findOne({
-    where: { id: id_configuracion },
-    attributes: ['id'],
-  });
-
-  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-
-  // cifrar con tu misma librería AES-256-GCM
-  const enc = encryptToken(api_key);
-
-  await Configuraciones.update(
-    { api_key_gemini: enc },
-    { where: { id: id_configuracion } },
-  );
-
-  return res.json({
-    isSuccess: true,
-    message: 'API Key guardada correctamente',
-  });
-});
-
 function mapGeminiQuotaMessage(rawMsg = '') {
   const msg = String(rawMsg);
-
-  // Casos típicos de cuota / billing
   const isQuota =
     msg.includes('exceeded your current quota') ||
     msg.includes('Quota exceeded') ||
@@ -91,61 +39,395 @@ function mapGeminiQuotaMessage(rawMsg = '') {
 
   if (isQuota) {
     return {
-      statusCode: 402, // Payment Required (útil para el front)
+      statusCode: 402,
       message:
-        'Tu API Key de Gemini no tiene cuota disponible o no tiene facturación activada. ' +
-        'Activa Billing (Paid tier) en Google AI Studio para poder generar imágenes.',
+        'La API Key de Gemini no tiene cuota disponible o no tiene facturación activada. ' +
+        'Activa Billing (Paid tier) en Google AI Studio.',
     };
   }
-
-  // fallback genérico
   return {
     statusCode: 500,
-    message:
-      'Ocurrió un error al generar la imagen con Gemini. Intenta nuevamente.',
+    message: 'Error al generar la imagen con Gemini. Intenta nuevamente.',
   };
 }
 
-exports.generar_multipart = catchAsync(async (req, res, next) => {
-  const id_configuracion = Number(req.body?.id_configuracion || 0);
-  const template_url = String(req.body?.template_url || '').trim();
-  const description = String(req.body?.description || '').trim();
-  const aspect_ratio = String(req.body?.aspect_ratio || '1:1').trim();
+async function uploadImageToS3(base64Data, userId, suffix = '') {
+  try {
+    const buffer = Buffer.from(base64Data, 'base64');
+    const fileName = `ia-gen-${userId}-${Date.now()}${suffix}.png`;
 
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-  if (!template_url)
-    return next(new AppError('template_url es requerido', 400));
+    const form = new FormDataLib();
+    form.append('file', buffer, {
+      filename: `generaciones-ia/${fileName}`,
+      contentType: 'image/png',
+    });
 
-  //  multer pone los archivos en req.files
-  const files = Array.isArray(req.files) ? req.files : [];
-  if (!files.length)
-    return next(
-      new AppError('Debes subir al menos una imagen (user_images)', 400),
+    const resp = await axios.post(
+      'https://uploader.imporfactory.app/api/files/upload',
+      form,
+      {
+        headers: form.getHeaders(),
+        timeout: 30000,
+        validateStatus: () => true,
+      },
     );
 
-  const cfg = await Configuraciones.findOne({
-    where: { id: id_configuracion },
-    attributes: ['id', 'api_key_gemini'],
+    if (
+      resp.status >= 200 &&
+      resp.status < 300 &&
+      resp.data?.success &&
+      resp.data?.data?.url
+    ) {
+      return resp.data.data.url;
+    }
+    console.error('[Gemini] S3 upload failed:', resp.status, resp.data);
+    return null;
+  } catch (err) {
+    console.error('[Gemini] S3 upload error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Sube un archivo (buffer) a S3 para templates
+ */
+async function uploadTemplateToS3(fileBuffer, originalName) {
+  try {
+    const ext = originalName.split('.').pop() || 'png';
+    const fileName = `templates-ia/template-${Date.now()}.${ext}`;
+
+    const form = new FormDataLib();
+    form.append('file', fileBuffer, {
+      filename: fileName,
+      contentType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+    });
+
+    const resp = await axios.post(
+      'https://uploader.imporfactory.app/api/files/upload',
+      form,
+      {
+        headers: form.getHeaders(),
+        timeout: 30000,
+        validateStatus: () => true,
+      },
+    );
+
+    if (
+      resp.status >= 200 &&
+      resp.status < 300 &&
+      resp.data?.success &&
+      resp.data?.data?.url
+    ) {
+      return resp.data.data.url;
+    }
+    return null;
+  } catch (err) {
+    console.error('[Templates] S3 upload error:', err.message);
+    return null;
+  }
+}
+
+async function getMonthlyCount(id_usuario) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  return GeneracionesIA.count({
+    where: { id_usuario, created_at: { [Op.gte]: startOfMonth } },
+  });
+}
+
+async function validateUserQuota(id_usuario, next) {
+  const usuario = await Usuarios.findOne({
+    where: { id_usuario },
+    attributes: ['id_usuario', 'id_plan', 'estado'],
+    include: [
+      {
+        model: Planes,
+        as: 'plan',
+        attributes: ['id_plan', 'nombre_plan', 'max_imagenes_ia'],
+      },
+    ],
   });
 
-  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-  if (!cfg.api_key_gemini)
-    return next(new AppError('No hay API Key de Gemini guardada', 400));
+  if (!usuario) {
+    next(new AppError('Usuario no encontrado', 404));
+    return null;
+  }
+  if (!usuario.plan) {
+    next(new AppError('No tienes un plan asignado.', 403));
+    return null;
+  }
 
-  let apiKey;
+  const maxImagenes = usuario.plan.max_imagenes_ia || 0;
+  if (maxImagenes <= 0) {
+    next(
+      new AppError('Tu plan no incluye generación de imágenes con IA.', 403),
+    );
+    return null;
+  }
+
+  const usedThisMonth = await getMonthlyCount(id_usuario);
+  return { usuario, maxImagenes, usedThisMonth };
+}
+
+async function getGeminiApiKey(next) {
+  const cfg = await Configuraciones.findOne({
+    where: {
+      api_key_gemini: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] },
+    },
+    attributes: ['id', 'api_key_gemini'],
+    order: [['id', 'ASC']],
+  });
+
+  if (!cfg || !cfg.api_key_gemini) {
+    next(
+      new AppError('No hay API Key de Gemini configurada en el sistema', 500),
+    );
+    return null;
+  }
+
   try {
-    apiKey = decryptToken(cfg.api_key_gemini);
-  } catch (e) {
+    return decryptToken(cfg.api_key_gemini);
+  } catch {
+    next(new AppError('API Key de Gemini inválida', 500));
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATÁLOGOS PÚBLICOS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /gemini/etapas
+ */
+exports.get_etapas = catchAsync(async (req, res) => {
+  const etapas = await EtapasLanding.findAll({
+    where: { activo: 1 },
+    attributes: [
+      'id',
+      'nombre',
+      'slug',
+      'descripcion',
+      'es_obligatoria',
+      'orden',
+    ],
+    order: [['orden', 'ASC']],
+  });
+  return res.json({ isSuccess: true, data: etapas });
+});
+
+/**
+ * GET /gemini/templates
+ * Devuelve templates agrupados por etapa
+ */
+exports.get_templates = catchAsync(async (req, res) => {
+  const templates = await TemplatesIA.findAll({
+    where: { activo: 1 },
+    attributes: [
+      'id',
+      'nombre',
+      'src_url',
+      'descripcion',
+      'categoria',
+      'id_etapa',
+      'orden',
+    ],
+    order: [['orden', 'ASC']],
+    include: [
+      {
+        model: EtapasLanding,
+        as: 'etapa',
+        attributes: ['id', 'nombre', 'slug'],
+        required: false,
+      },
+    ],
+  });
+
+  return res.json({ isSuccess: true, data: templates });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN: CRUD TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /gemini/admin/templates
+ * Lista TODOS los templates (activos e inactivos) para el admin
+ */
+exports.admin_list_templates = catchAsync(async (req, res) => {
+  const templates = await TemplatesIA.findAll({
+    order: [
+      ['id_etapa', 'ASC'],
+      ['orden', 'ASC'],
+    ],
+    include: [
+      {
+        model: EtapasLanding,
+        as: 'etapa',
+        attributes: ['id', 'nombre', 'slug'],
+        required: false,
+      },
+    ],
+  });
+
+  const etapas = await EtapasLanding.findAll({
+    where: { activo: 1 },
+    attributes: [
+      'id',
+      'nombre',
+      'slug',
+      'descripcion',
+      'es_obligatoria',
+      'orden',
+    ],
+    order: [['orden', 'ASC']],
+  });
+
+  return res.json({ isSuccess: true, data: { templates, etapas } });
+});
+
+/**
+ * POST /gemini/admin/templates
+ * Crear un template. Sube imagen a S3.
+ * Body (multipart): imagen (file), nombre, id_etapa, descripcion?, orden?
+ */
+exports.admin_create_template = catchAsync(async (req, res, next) => {
+  const { nombre, id_etapa, descripcion, orden } = req.body;
+
+  if (!nombre) return next(new AppError('El nombre es requerido', 400));
+
+  let src_url = '';
+
+  // Si viene archivo, subir a S3
+  if (req.file) {
+    src_url = await uploadTemplateToS3(req.file.buffer, req.file.originalname);
+    if (!src_url) return next(new AppError('Error al subir la imagen', 500));
+  } else if (req.body.src_url) {
+    // O aceptar URL directa
+    src_url = req.body.src_url;
+  } else {
     return next(
-      new AppError('API Key de Gemini inválida o no se pudo descifrar', 400),
+      new AppError('Debes subir una imagen o proporcionar una URL', 400),
     );
   }
 
-  // 1) template referencia
-  const templateInline = await downloadToInlineData(template_url);
+  const template = await TemplatesIA.create({
+    nombre,
+    src_url,
+    descripcion: descripcion || null,
+    id_etapa: id_etapa ? Number(id_etapa) : null,
+    orden: orden ? Number(orden) : 0,
+    activo: 1,
+  });
 
-  // 2) archivos del usuario a inline_data
+  return res.status(201).json({ isSuccess: true, data: template });
+});
+
+/**
+ * PUT /gemini/admin/templates/:id
+ * Actualizar template. Si viene imagen nueva, sube a S3.
+ */
+exports.admin_update_template = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const template = await TemplatesIA.findByPk(id);
+  if (!template) return next(new AppError('Template no encontrado', 404));
+
+  const updates = {};
+
+  if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
+  if (req.body.descripcion !== undefined)
+    updates.descripcion = req.body.descripcion;
+  if (req.body.id_etapa !== undefined)
+    updates.id_etapa = req.body.id_etapa ? Number(req.body.id_etapa) : null;
+  if (req.body.orden !== undefined) updates.orden = Number(req.body.orden);
+  if (req.body.activo !== undefined) updates.activo = Number(req.body.activo);
+
+  // Nueva imagen
+  if (req.file) {
+    const newUrl = await uploadTemplateToS3(
+      req.file.buffer,
+      req.file.originalname,
+    );
+    if (newUrl) updates.src_url = newUrl;
+  } else if (req.body.src_url) {
+    updates.src_url = req.body.src_url;
+  }
+
+  await template.update(updates);
+
+  // Recargar con etapa
+  const updated = await TemplatesIA.findByPk(id, {
+    include: [
+      {
+        model: EtapasLanding,
+        as: 'etapa',
+        attributes: ['id', 'nombre', 'slug'],
+        required: false,
+      },
+    ],
+  });
+
+  return res.json({ isSuccess: true, data: updated });
+});
+
+/**
+ * DELETE /gemini/admin/templates/:id
+ */
+exports.admin_delete_template = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const template = await TemplatesIA.findByPk(id);
+  if (!template) return next(new AppError('Template no encontrado', 404));
+
+  await template.destroy();
+  return res.json({ isSuccess: true, message: 'Template eliminado' });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERACIÓN POR ETAPA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /gemini/generar-etapa
+ */
+exports.generar_etapa = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const template_url = String(req.body?.template_url || '').trim();
+  const template_id = Number(req.body?.template_id || 0);
+  const etapa_id = Number(req.body?.etapa_id || 0);
+  const description = String(req.body?.description || '').trim();
+  const aspect_ratio = String(req.body?.aspect_ratio || '16:9').trim();
+
+  if (!template_url)
+    return next(new AppError('template_url es requerido', 400));
+  if (!etapa_id) return next(new AppError('etapa_id es requerido', 400));
+
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length)
+    return next(new AppError('Debes subir al menos una imagen', 400));
+
+  const etapa = await EtapasLanding.findOne({
+    where: { id: etapa_id, activo: 1 },
+    attributes: ['id', 'nombre', 'slug', 'prompt'],
+  });
+  if (!etapa) return next(new AppError('Etapa no encontrada o inactiva', 404));
+
+  const quota = await validateUserQuota(id_usuario, next);
+  if (!quota) return;
+
+  const { maxImagenes, usedThisMonth } = quota;
+  if (usedThisMonth >= maxImagenes) {
+    return next(
+      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
+    );
+  }
+
+  const apiKey = await getGeminiApiKey(next);
+  if (!apiKey) return;
+
+  const templateInline = await downloadToInlineData(template_url);
   const userParts = files.map((f) => ({
     inline_data: {
       mime_type: f.mimetype || 'image/jpeg',
@@ -153,21 +435,24 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
     },
   }));
 
-  // Prompt
   const prompt = [
-    'Eres un diseñador experto en creatividades para anuncios.',
-    'Replica el estilo del TEMPLATE (layout, tipografías, colores y jerarquía visual).',
-    'Usa las imágenes del producto como referencia para insertar el producto en el diseño.',
-    'Genera UNA sola imagen publicitaria final, lista para publicar.',
-    'Evita texto ilegible. Si agregas texto, que sea corto y muy claro.',
-    description ? `Detalles del producto/marca: ${description}` : '',
+    etapa.prompt,
+    description
+      ? `\nDetalles del producto/marca proporcionados por el usuario: ${description}`
+      : '',
+    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
+    'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
+    'DEBES replicar EXACTAMENTE: la paleta de colores, tipografía, estilo de fondos, bordes, iconografía y jerarquía visual del TEMPLATE.',
+    'NO inventes colores nuevos. Usa los mismos tonos, degradados y contrastes del TEMPLATE.',
+    'Integra las fotos del producto del usuario dentro del diseño manteniendo la coherencia visual del TEMPLATE.',
+    'Genera UNA sola imagen final, profesional, lista para publicar.',
   ]
     .filter(Boolean)
     .join('\n');
 
   const model =
     process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const payload = {
     contents: [
@@ -192,30 +477,298 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 
   let geminiResp;
   try {
-    geminiResp = await axios.post(url, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+    geminiResp = await axios.post(geminiUrl, payload, {
+      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       timeout: 120000,
     });
   } catch (err) {
-    const rawMsg =
-      err?.response?.data?.error?.message || err?.message || 'Gemini error';
-
+    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
     const mapped = mapGeminiQuotaMessage(rawMsg);
-
     return next(new AppError(mapped.message, mapped.statusCode));
   }
 
   const image_base64 = pickImageBase64(geminiResp);
   if (!image_base64)
-    return next(new AppError('Gemini no devolvió imagen en la respuesta', 500));
+    return next(new AppError('Gemini no devolvió imagen', 500));
+
+  const image_url = await uploadImageToS3(
+    image_base64,
+    id_usuario,
+    `-${etapa.slug}`,
+  );
+
+  await GeneracionesIA.create({
+    id_usuario,
+    id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    template_id: template_id || null,
+    id_etapa: etapa_id,
+    aspect_ratio,
+    description: description || null,
+    prompt,
+    model,
+    image_url,
+  });
+
+  const newUsed = usedThisMonth + 1;
+
+  return res.json({
+    isSuccess: true,
+    etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+    image_base64,
+    image_url,
+    model,
+    usage: {
+      used: newUsed,
+      limit: maxImagenes,
+      remaining: Math.max(maxImagenes - newUsed, 0),
+    },
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERACIÓN SIMPLE (legacy)
+// ═══════════════════════════════════════════════════════════════════════════
+
+exports.generar_multipart = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const template_url = String(req.body?.template_url || '').trim();
+  const template_id = Number(req.body?.template_id || 0);
+  const description = String(req.body?.description || '').trim();
+  const aspect_ratio = String(req.body?.aspect_ratio || '1:1').trim();
+
+  if (!template_url)
+    return next(new AppError('template_url es requerido', 400));
+
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length)
+    return next(new AppError('Debes subir al menos una imagen', 400));
+
+  const quota = await validateUserQuota(id_usuario, next);
+  if (!quota) return;
+
+  const { maxImagenes, usedThisMonth } = quota;
+  if (usedThisMonth >= maxImagenes) {
+    return next(
+      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
+    );
+  }
+
+  const apiKey = await getGeminiApiKey(next);
+  if (!apiKey) return;
+
+  const templateInline = await downloadToInlineData(template_url);
+  const userParts = files.map((f) => ({
+    inline_data: {
+      mime_type: f.mimetype || 'image/jpeg',
+      data: f.buffer.toString('base64'),
+    },
+  }));
+
+  const prompt = [
+    'Eres un diseñador experto en creatividades para anuncios.',
+    'Replica el estilo del TEMPLATE (layout, tipografías, colores y jerarquía visual).',
+    'Usa las imágenes del producto como referencia para insertar el producto en el diseño.',
+    'Genera UNA sola imagen publicitaria final, lista para publicar.',
+    description ? `Detalles del producto/marca: ${description}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const model =
+    process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  let geminiResp;
+  try {
+    geminiResp = await axios.post(
+      geminiUrl,
+      {
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: templateInline.mimeType,
+                  data: templateInline.data,
+                },
+              },
+              ...userParts,
+            ],
+          },
+        ],
+        generationConfig: {
+          responseModalities: ['IMAGE'],
+          imageConfig: { aspectRatio: aspect_ratio },
+        },
+      },
+      {
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        timeout: 120000,
+      },
+    );
+  } catch (err) {
+    const mapped = mapGeminiQuotaMessage(
+      err?.response?.data?.error?.message || err?.message || '',
+    );
+    return next(new AppError(mapped.message, mapped.statusCode));
+  }
+
+  const image_base64 = pickImageBase64(geminiResp);
+  if (!image_base64)
+    return next(new AppError('Gemini no devolvió imagen', 500));
+
+  const image_url = await uploadImageToS3(image_base64, id_usuario);
+
+  await GeneracionesIA.create({
+    id_usuario,
+    id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    template_id: template_id || null,
+    aspect_ratio,
+    description: description || null,
+    prompt,
+    model,
+    image_url,
+  });
 
   return res.json({
     isSuccess: true,
     image_base64,
+    image_url,
     prompt,
     model,
+    usage: {
+      used: usedThisMonth + 1,
+      limit: maxImagenes,
+      remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+    },
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONSULTAS
+// ═══════════════════════════════════════════════════════════════════════════
+
+exports.get_usage = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const usuario = await Usuarios.findOne({
+    where: { id_usuario },
+    attributes: ['id_usuario', 'id_plan'],
+    include: [
+      {
+        model: Planes,
+        as: 'plan',
+        attributes: ['id_plan', 'nombre_plan', 'max_imagenes_ia'],
+      },
+    ],
+  });
+  if (!usuario) return next(new AppError('Usuario no encontrado', 404));
+
+  const maxImagenes = usuario.plan?.max_imagenes_ia || 0;
+  const usedThisMonth = await getMonthlyCount(id_usuario);
+
+  return res.json({
+    isSuccess: true,
+    usage: {
+      used: usedThisMonth,
+      limit: maxImagenes,
+      remaining: Math.max(maxImagenes - usedThisMonth, 0),
+      plan: usuario.plan?.nombre_plan || 'Sin plan',
+    },
+  });
+});
+
+exports.get_historial = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+  const offset = (page - 1) * limit;
+
+  const { count, rows } = await GeneracionesIA.findAndCountAll({
+    where: { id_usuario },
+    order: [['created_at', 'DESC']],
+    limit,
+    offset,
+    attributes: [
+      'id',
+      'template_id',
+      'id_etapa',
+      'aspect_ratio',
+      'description',
+      'model',
+      'image_url',
+      'created_at',
+    ],
+    include: [
+      {
+        model: EtapasLanding,
+        as: 'etapa',
+        attributes: ['id', 'nombre', 'slug'],
+        required: false,
+      },
+    ],
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: rows,
+    pagination: { total: count, page, limit, pages: Math.ceil(count / limit) },
+  });
+});
+
+// ─── LEGACY ─────────────────────────────────────────────────────────────────
+
+exports.obtener_api_key = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion || 0);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const cfg = await Configuraciones.findOne({
+    where: { id: id_configuracion },
+    attributes: ['id', 'api_key_gemini'],
+  });
+  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
+
+  return res.json({
+    isSuccess: true,
+    api_key: Boolean(cfg.api_key_gemini && String(cfg.api_key_gemini).trim()),
+  });
+});
+
+exports.guardar_api_key = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion || 0);
+  const api_key = String(req.body?.api_key || '').trim();
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!api_key) return next(new AppError('api_key es requerida', 400));
+
+  const cfg = await Configuraciones.findOne({
+    where: { id: id_configuracion },
+    attributes: ['id'],
+  });
+  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
+
+  const { encryptToken } = require('../utils/cryptoToken');
+  await Configuraciones.update(
+    { api_key_gemini: encryptToken(api_key) },
+    { where: { id: id_configuracion } },
+  );
+
+  return res.json({
+    isSuccess: true,
+    message: 'API Key guardada correctamente',
   });
 });

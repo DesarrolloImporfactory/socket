@@ -63,13 +63,19 @@ const Planes_chat_center = db.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    max_imagenes_ia: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Máximo de imágenes IA por mes (0 = sin acceso)',
+    },
   },
   {
     sequelize: db,
     tableName: 'planes_chat_center',
     timestamps: false,
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = Planes_chat_center;

@@ -2436,7 +2436,7 @@ router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
       recipient_type: 'individual',
       to,
       type: 'audio',
-      audio: { id: mediaId },
+      audio: { id: mediaId, voice: true },
     };
 
     const msgResp = await axios.post(msgUrl, payload, {
