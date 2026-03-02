@@ -2566,15 +2566,11 @@ router.post(
         });
 
         ffmpegProcess = ffmpeg(inputStream)
-          .audioCodec('libopus')
-          .audioBitrate('128k') // Bitrate estable y compatible
-          .audioFrequency(48000) // 48kHz es óptimo para Opus
-          .audioChannels(1) // Mono
-          .format('ogg')
-          .outputOptions([
-            '-vbr on', // Variable bitrate
-            '-compression_level 10', // Máxima calidad
-          ])
+          .audioCodec('libmp3lame')
+          .audioBitrate('128k')
+          .audioFrequency(44100)
+          .audioChannels(1)
+          .format('mp3')
           .on('start', (cmdline) => {
             console.log('🔧 FFmpeg command:', cmdline);
           })
@@ -2598,8 +2594,8 @@ router.post(
       console.log('📤 Paso 2: Subiendo audio a Meta...');
 
       const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
-      const mimeType = 'audio/ogg';
-      const fileName = `audio-${Date.now()}.ogg`;
+      const mimeType = 'audio/mpeg';
+      const fileName = `AUD-${Date.now()}.mp3`;
 
       const metaForm = new FormData();
       metaForm.append('messaging_product', 'whatsapp');
