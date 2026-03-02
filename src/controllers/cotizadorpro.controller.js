@@ -799,7 +799,7 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     to: celularFormateado,
     type: 'template',
     template: {
-      name: 'productos_en_bodega',
+      name: 'productos_en_bodegav2',
       language: {
         code: 'es',
       },
