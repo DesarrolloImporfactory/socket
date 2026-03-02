@@ -2652,11 +2652,8 @@ router.post(
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
         to,
-        type: 'document',
-        document: {
-          id: mediaId,
-          filename: fileName,
-        },
+        type: 'audio',
+        audio: { id: mediaId },
       };
 
       const msgResp = await axios.post(msgUrl, payload, {
