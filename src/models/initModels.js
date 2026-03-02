@@ -29,7 +29,11 @@ const DropiIntegrations = require('./dropi_integrations.model');
 const ImporsuitApi = require('./imporsuit/api.model');
 const ImporsuitCursos = require('./imporsuit/cursos.model');
 const ImporsuitApiCursos = require('./imporsuit/api_cursos.model');
+const ProductosChatCenter = require('./productos_chat_center.model');
+const CategoriasChatCenter = require('./categorias_chat_center.model');
 
+const CatalogosChatCenter = require('./catalogos_chat_center.model');
+const CatalogosItemsChatCenter = require('./catalogos_items_chat_center.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -371,6 +375,44 @@ const initModel = () => {
     foreignKey: 'id_curso',
     as: 'curso',
   });
+  // ===== ProductosChatCenter ↔ CategoriasChatCenter =====
+  ProductosChatCenter.belongsTo(CategoriasChatCenter, {
+    foreignKey: 'id_categoria',
+    targetKey: 'id',
+    as: 'categoria',
+  });
+
+  CategoriasChatCenter.hasMany(ProductosChatCenter, {
+    foreignKey: 'id_categoria',
+    sourceKey: 'id',
+    as: 'productos',
+  });
+
+  // ===== CatalogosChatCenter ↔ CatalogosItemsChatCenter =====
+  CatalogosChatCenter.hasMany(CatalogosItemsChatCenter, {
+    foreignKey: 'id_catalogo',
+    sourceKey: 'id',
+    as: 'items',
+  });
+
+  CatalogosItemsChatCenter.belongsTo(CatalogosChatCenter, {
+    foreignKey: 'id_catalogo',
+    targetKey: 'id',
+    as: 'catalogo',
+  });
+
+  // ===== CatalogosItemsChatCenter ↔ ProductosChatCenter =====
+  CatalogosItemsChatCenter.belongsTo(ProductosChatCenter, {
+    foreignKey: 'id_producto',
+    targetKey: 'id',
+    as: 'producto',
+  });
+
+  ProductosChatCenter.hasMany(CatalogosItemsChatCenter, {
+    foreignKey: 'id_producto',
+    sourceKey: 'id',
+    as: 'catalogos_items',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -407,6 +449,10 @@ const getModels = () => {
     ImporsuitApi,
     ImporsuitCursos,
     ImporsuitApiCursos,
+    ProductosChatCenter,
+    CategoriasChatCenter,
+    CatalogosChatCenter,
+    CatalogosItemsChatCenter,
   };
 };
 

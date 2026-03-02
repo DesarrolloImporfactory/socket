@@ -21,6 +21,13 @@ const ProductosChatCenter = db.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+
+    // ===== nuevos =====
+    material: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+
     tipo: {
       type: DataTypes.STRING(50),
       allowNull: false,
@@ -57,6 +64,13 @@ const ProductosChatCenter = db.define(
       type: DataTypes.STRING(512),
       allowNull: true,
     },
+
+    // ===== nuevos =====
+    landing_url: {
+      type: DataTypes.STRING(512),
+      allowNull: true,
+    },
+
     external_source: {
       type: DataTypes.STRING(20),
       allowNull: true,
@@ -65,10 +79,24 @@ const ProductosChatCenter = db.define(
       type: DataTypes.BIGINT,
       allowNull: true,
     },
+
+    // ===== nuevos =====
+    id_dropi: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
+
     stock: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+
+    // ===== nuevos =====
+    es_privado: {
+      type: DataTypes.TINYINT,
+      allowNull: true,
+    },
+
     combos_producto: {
       type: DataTypes.BLOB,
       allowNull: true,

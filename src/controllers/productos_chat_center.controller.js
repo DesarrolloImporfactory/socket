@@ -94,6 +94,11 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     descripcion_upsell,
     precio_upsell,
     combos_producto,
+
+    material,
+    landing_url,
+    id_dropi,
+    es_privado,
   } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -103,7 +108,17 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Archivos (con .fields())
+  // Normalizaciones seguras
+  const idDropiParsed =
+    id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
+  const esPrivadoParsed =
+    es_privado === '' || es_privado == null
+      ? null
+      : Number(es_privado) === 1
+        ? 1
+        : 0;
+
+  // Archivos
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
@@ -124,12 +139,18 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     id_configuracion,
     nombre,
     descripcion,
+    material: material || null,
     tipo,
     precio,
     duracion,
     id_categoria,
     imagen_url,
     video_url,
+    landing_url: landing_url || null,
+
+    es_privado: esPrivadoParsed,
+    id_dropi: Number.isFinite(idDropiParsed) ? idDropiParsed : null,
+
     nombre_upsell,
     descripcion_upsell,
     precio_upsell,
@@ -158,6 +179,11 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     descripcion_upsell,
     precio_upsell,
     combos_producto,
+
+    material,
+    landing_url,
+    id_dropi,
+    es_privado,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -227,22 +253,60 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
   }
 
-  // Actualizar campos básicos (si vienen)
+  // ========= Actualizar campos básicos (si vienen) =========
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
   if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
+
   if (typeof nombre_upsell !== 'undefined')
     producto.nombre_upsell = nombre_upsell;
+
   if (typeof descripcion_upsell !== 'undefined')
     producto.descripcion_upsell = descripcion_upsell;
+
   if (typeof precio_upsell !== 'undefined')
     producto.precio_upsell = precio_upsell;
 
   if (typeof combos_producto !== 'undefined')
     producto.combos_producto = combos_producto;
+
+  // ========= Nuevos campos (si vienen) =========
+  if (typeof material !== 'undefined') {
+    producto.material = material || null;
+  }
+
+  if (typeof landing_url !== 'undefined') {
+    producto.landing_url = landing_url || null;
+  }
+
+  if (typeof id_dropi !== 'undefined') {
+    const idDropiParsed =
+      id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
+    producto.id_dropi = Number.isFinite(idDropiParsed) ? idDropiParsed : null;
+  }
+
+  if (typeof es_privado !== 'undefined') {
+    // Acepta: 1/0, "1"/"0", true/false, "true"/"false", "" -> null
+    let parsed = null;
+
+    if (es_privado === '' || es_privado == null) {
+      parsed = null;
+    } else if (typeof es_privado === 'boolean') {
+      parsed = es_privado ? 1 : 0;
+    } else if (String(es_privado).toLowerCase() === 'true') {
+      parsed = 1;
+    } else if (String(es_privado).toLowerCase() === 'false') {
+      parsed = 0;
+    } else {
+      parsed = Number(es_privado) === 1 ? 1 : 0;
+    }
+
+    producto.es_privado = parsed;
+  }
+
   producto.fecha_actualizacion = new Date();
 
   const idConfigSync = producto.id_configuracion;
