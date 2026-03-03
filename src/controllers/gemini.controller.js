@@ -388,6 +388,7 @@ exports.admin_delete_template = catchAsync(async (req, res, next) => {
 
 /**
  * POST /gemini/generar-etapa
+ * Ahora acepta: angulo_venta, pricing (JSON string)
  */
 exports.generar_etapa = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
@@ -399,6 +400,13 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   const etapa_id = Number(req.body?.etapa_id || 0);
   const description = String(req.body?.description || '').trim();
   const aspect_ratio = String(req.body?.aspect_ratio || '16:9').trim();
+  const angulo_venta = String(req.body?.angulo_venta || '').trim();
+  const marca = String(req.body?.marca || '').trim();
+
+  let pricing = null;
+  try {
+    if (req.body?.pricing) pricing = JSON.parse(req.body.pricing);
+  } catch {}
 
   if (!template_url)
     return next(new AppError('template_url es requerido', 400));
@@ -435,10 +443,32 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     },
   }));
 
+  // Construir pricing context
+  let pricingText = '';
+  if (pricing) {
+    if (pricing.precio_unitario)
+      pricingText += `\nPrecio del producto: $${pricing.precio_unitario}`;
+    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
+      pricingText += '\nOfertas por combo:';
+      pricing.combos.forEach((c) => {
+        pricingText += ` ${c.cantidad}x por $${c.precio} |`;
+      });
+    }
+  }
+
   const prompt = [
     etapa.prompt,
     description
       ? `\nDetalles del producto/marca proporcionados por el usuario: ${description}`
+      : '',
+    marca
+      ? `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`
+      : '',
+    angulo_venta
+      ? `\nÁNGULO DE VENTA SELECCIONADO POR EL USUARIO: ${angulo_venta}\nUSA este ángulo como base para los textos, títulos y enfoque persuasivo de la imagen.`
+      : '',
+    pricingText
+      ? `\n--- PRECIOS (usar EXACTAMENTE estos valores en la imagen si la sección lo requiere) ---${pricingText}`
       : '',
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
     'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
@@ -478,7 +508,10 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
       timeout: 120000,
     });
   } catch (err) {
@@ -725,6 +758,309 @@ exports.get_historial = catchAsync(async (req, res, next) => {
     isSuccess: true,
     data: rows,
     pagination: { total: count, page, limit, pages: Math.ceil(count / limit) },
+  });
+});
+
+/**
+ * POST /gemini/generar-angulos
+ * Genera 3 ángulos de venta usando Gemini texto basándose en la descripción
+ * del producto, precios y las imágenes del usuario.
+ *
+ * Body JSON:
+ *  - description: string (descripción del producto/marca)
+ *  - pricing: { precio_unitario: string, combos: [{ cantidad: number, precio: string }] }
+ */
+exports.generar_angulos = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const description = String(req.body?.description || '').trim();
+  const pricing = req.body?.pricing || null;
+
+  if (!description)
+    return next(new AppError('La descripción del producto es requerida', 400));
+
+  const apiKey = await getGeminiApiKey(next);
+  if (!apiKey) return;
+
+  // Construir contexto de precios
+  let pricingContext = '';
+  if (pricing) {
+    if (pricing.precio_unitario) {
+      pricingContext += `\nPrecio unitario: $${pricing.precio_unitario}`;
+    }
+    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
+      pricingContext += '\nCombos/ofertas disponibles:';
+      pricing.combos.forEach((c) => {
+        pricingContext += `\n  - ${c.cantidad}x por $${c.precio}`;
+      });
+    }
+  }
+
+  const prompt = `Eres un experto en copywriting, neuroventas y marketing digital especializado en e-commerce para Latinoamérica.
+
+PRODUCTO/MARCA: ${description}
+${pricingContext}
+
+Tu tarea: Genera EXACTAMENTE 3 ángulos de venta DIFERENTES y CREATIVOS para este producto.
+Cada ángulo debe atacar una emoción/necesidad diferente del comprador.
+
+Reglas:
+- Cada ángulo debe ser único y diferenciado de los otros
+- Deben ser aplicables a una landing page de producto
+- Incluye cómo se usaría el precio/oferta en el ángulo si aplica
+- Escribe en español latinoamericano
+- Sé específico, no genérico
+
+Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este formato exacto:
+[
+  {
+    "titulo": "Título corto y llamativo (máx 8 palabras)",
+    "descripcion": "Explicación del enfoque de venta y qué emociones ataca (máx 40 palabras)",
+    "tono": "El tono emocional principal en 2-3 palabras",
+    "ejemplo_headline": "Un headline de ejemplo para la landing (máx 12 palabras)"
+  },
+  {
+    "titulo": "...",
+    "descripcion": "...",
+    "tono": "...",
+    "ejemplo_headline": "..."
+  },
+  {
+    "titulo": "...",
+    "descripcion": "...",
+    "tono": "...",
+    "ejemplo_headline": "..."
+  }
+]`;
+
+  const textModel = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent`;
+
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.9,
+    },
+  };
+
+  let geminiResp;
+  try {
+    geminiResp = await axios.post(geminiUrl, payload, {
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
+  } catch (err) {
+    console.log('[Angulos] Gemini error:', err?.response?.data || err.message);
+    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
+    const mapped = mapGeminiQuotaMessage(rawMsg);
+    return next(new AppError(mapped.message, mapped.statusCode));
+  }
+
+  // Extraer texto de la respuesta
+  const parts = geminiResp?.data?.candidates?.[0]?.content?.parts || [];
+  const textPart = parts.find((p) => p?.text);
+  if (!textPart?.text) {
+    return next(new AppError('Gemini no devolvió ángulos de venta', 500));
+  }
+
+  let angulos;
+  try {
+    const cleaned = textPart.text
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
+    angulos = JSON.parse(cleaned);
+  } catch {
+    return next(new AppError('Error al procesar los ángulos de venta', 500));
+  }
+
+  if (!Array.isArray(angulos) || angulos.length < 1) {
+    return next(new AppError('Gemini no generó ángulos válidos', 500));
+  }
+
+  return res.json({
+    isSuccess: true,
+    data: angulos.slice(0, 3),
+  });
+});
+
+/**
+ * POST /gemini/regenerar-etapa
+ * Regenera UNA sola etapa con un prompt editado por el usuario.
+ * Igual que generar-etapa pero acepta prompt_extra para ajustes.
+ *
+ */
+exports.regenerar_etapa = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const template_url = String(req.body?.template_url || '').trim();
+  const template_id = Number(req.body?.template_id || 0);
+  const etapa_id = Number(req.body?.etapa_id || 0);
+  const description = String(req.body?.description || '').trim();
+  const aspect_ratio = String(req.body?.aspect_ratio || '16:9').trim();
+  const angulo_venta = String(req.body?.angulo_venta || '').trim();
+  const prompt_extra = String(req.body?.prompt_extra || '').trim();
+  const marca = String(req.body?.marca || '').trim();
+
+  let pricing = null;
+  try {
+    if (req.body?.pricing) pricing = JSON.parse(req.body.pricing);
+  } catch {}
+
+  if (!template_url)
+    return next(new AppError('template_url es requerido', 400));
+  if (!etapa_id) return next(new AppError('etapa_id es requerido', 400));
+  if (!prompt_extra)
+    return next(new AppError('prompt_extra es requerido para regenerar', 400));
+
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length)
+    return next(new AppError('Debes subir al menos una imagen', 400));
+
+  const etapa = await EtapasLanding.findOne({
+    where: { id: etapa_id, activo: 1 },
+    attributes: ['id', 'nombre', 'slug', 'prompt'],
+  });
+  if (!etapa) return next(new AppError('Etapa no encontrada o inactiva', 404));
+
+  const quota = await validateUserQuota(id_usuario, next);
+  if (!quota) return;
+
+  const { maxImagenes, usedThisMonth } = quota;
+  if (usedThisMonth >= maxImagenes) {
+    return next(
+      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
+    );
+  }
+
+  const apiKey = await getGeminiApiKey(next);
+  if (!apiKey) return;
+
+  const templateInline = await downloadToInlineData(template_url);
+  const userParts = files.map((f) => ({
+    inline_data: {
+      mime_type: f.mimetype || 'image/jpeg',
+      data: f.buffer.toString('base64'),
+    },
+  }));
+
+  // Construir pricing context
+  let pricingText = '';
+  if (pricing) {
+    if (pricing.precio_unitario)
+      pricingText += `\nPrecio del producto: $${pricing.precio_unitario}`;
+    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
+      pricingText += '\nOfertas por combo:';
+      pricing.combos.forEach((c) => {
+        pricingText += ` ${c.cantidad}x por $${c.precio} |`;
+      });
+    }
+  }
+
+  const prompt = [
+    etapa.prompt,
+    description ? `\nDetalles del producto/marca: ${description}` : '',
+    marca
+      ? `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`
+      : '',
+    angulo_venta ? `\nÁNGULO DE VENTA SELECCIONADO: ${angulo_venta}` : '',
+    pricingText,
+    `\n--- CORRECCIONES DEL USUARIO ---`,
+    `El usuario ha pedido los siguientes cambios específicos: ${prompt_extra}`,
+    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
+    'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
+    'DEBES replicar EXACTAMENTE: la paleta de colores, tipografía, estilo de fondos, bordes, iconografía y jerarquía visual del TEMPLATE.',
+    'NO inventes colores nuevos. Usa los mismos tonos, degradados y contrastes del TEMPLATE.',
+    'Integra las fotos del producto del usuario dentro del diseño manteniendo la coherencia visual del TEMPLATE.',
+    'Genera UNA sola imagen final, profesional, lista para publicar.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const model =
+    process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: templateInline.mimeType,
+              data: templateInline.data,
+            },
+          },
+          ...userParts,
+        ],
+      },
+    ],
+    generationConfig: {
+      responseModalities: ['IMAGE'],
+      imageConfig: { aspectRatio: aspect_ratio },
+    },
+  };
+
+  let geminiResp;
+  try {
+    geminiResp = await axios.post(geminiUrl, payload, {
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      timeout: 120000,
+    });
+  } catch (err) {
+    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
+    const mapped = mapGeminiQuotaMessage(rawMsg);
+    return next(new AppError(mapped.message, mapped.statusCode));
+  }
+
+  const image_base64 = pickImageBase64(geminiResp);
+  if (!image_base64)
+    return next(new AppError('Gemini no devolvió imagen', 500));
+
+  const image_url = await uploadImageToS3(
+    image_base64,
+    id_usuario,
+    `-${etapa.slug}-edit`,
+  );
+
+  await GeneracionesIA.create({
+    id_usuario,
+    id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    template_id: template_id || null,
+    id_etapa: etapa_id,
+    aspect_ratio,
+    description: description || null,
+    prompt,
+    model,
+    image_url,
+  });
+
+  const newUsed = usedThisMonth + 1;
+
+  return res.json({
+    isSuccess: true,
+    etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+    image_base64,
+    image_url,
+    model,
+    usage: {
+      used: newUsed,
+      limit: maxImagenes,
+      remaining: Math.max(maxImagenes - newUsed, 0),
+    },
   });
 });
 

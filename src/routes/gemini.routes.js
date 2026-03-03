@@ -26,6 +26,13 @@ router.get('/templates', geminiController.get_templates);
 router.get('/usage', checkPlanActivo, geminiController.get_usage);
 router.get('/historial', checkPlanActivo, geminiController.get_historial);
 
+// ─── Ángulos de venta (IA texto) ─────────────────────────────────────────────
+router.post(
+  '/generar-angulos',
+  checkPlanActivo,
+  geminiController.generar_angulos,
+);
+
 // ─── Generación ──────────────────────────────────────────────────────────────
 router.post(
   '/generar',
@@ -40,8 +47,15 @@ router.post(
   geminiController.generar_etapa,
 );
 
+// ─── Regeneración (editar prompt por etapa) ──────────────────────────────────
+router.post(
+  '/regenerar-etapa',
+  checkPlanActivo,
+  upload.array('user_images', 6),
+  geminiController.regenerar_etapa,
+);
+
 // ─── Admin: CRUD Templates ──────────────────────────────────────────────────
-// TODO: agregar middleware de rol admin si lo tienes (ej: checkAdmin)
 router.get('/admin/templates', geminiController.admin_list_templates);
 router.post(
   '/admin/templates',
