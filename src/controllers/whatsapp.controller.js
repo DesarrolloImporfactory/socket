@@ -14,8 +14,10 @@ const {
   validateMetaMediaOrThrow,
   convertVideoForWhatsApp,
   uploadToUploader,
+  uploadVideoToVideoAPI,
   uploadMediaToMeta,
   injectHeaderMediaId,
+  extractBearerToken,
 } = require('../utils/whatsappTemplate.helpers');
 
 /**
@@ -24,6 +26,9 @@ const {
  * - JSON normal
  * - multipart/form-data (header_file)
  * - header_default_asset
+ *
+ * Para VIDEO → sube a Video API (/Videos/*) en vez de S3.
+ *         Para IMAGE / DOCUMENT → sigue usando S3 (uploadToUploader).
  */
 exports.enviarTemplateMasivo = async (req, res) => {
   try {
@@ -102,7 +107,6 @@ exports.enviarTemplateMasivo = async (req, res) => {
         payload.template.components = [{ type: 'body', parameters: [] }];
       }
     } else {
-      // Modo clásico
       payload = {
         messaging_product: 'whatsapp',
         to: toClean,
@@ -117,19 +121,19 @@ exports.enviarTemplateMasivo = async (req, res) => {
       };
     }
 
-    // ===== 2) Si vino archivo, validar + subir a S3 + subir a Meta + inject header =====
+    // ===== 2) Si vino archivo, validar + subir histórico + subir a Meta + inject header =====
     let header_format = req.body?.header_format ?? null;
 
-    let fileUrl = null; // URL S3/histórico
+    let fileUrl = null; // URL histórico (S3 o Video API stream_url)
     let meta_media_id = null; // mediaId de Meta
     let processedBuffer = null;
     let processedMimetype = null;
     let processedFilename = null;
     let fmt = null;
+    let videoApiResult = null; // datos de Video API si aplica
 
     const headerDefaultAssetRaw = req.body?.header_default_asset;
 
-    // Puede venir objeto o string JSON
     let header_default_asset = null;
     if (headerDefaultAssetRaw) {
       if (typeof headerDefaultAssetRaw === 'object') {
@@ -144,7 +148,6 @@ exports.enviarTemplateMasivo = async (req, res) => {
     }
 
     if (req.file) {
-      // fallback por si el front no manda header_format
       if (!header_format) {
         header_format = inferHeaderFormatFromMime(req.file.mimetype);
       }
@@ -199,33 +202,63 @@ exports.enviarTemplateMasivo = async (req, res) => {
         }
       }
 
-      // 2.2) Subir a S3 (histórico)
-      const folder =
-        fmt === 'IMAGE'
-          ? 'whatsapp/templates/header/images'
-          : fmt === 'VIDEO'
-            ? 'whatsapp/templates/header/videos'
+      // 2.2) Subir histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3
+      if (fmt === 'VIDEO') {
+        // ── VIDEO → Video API chunked ──
+        const jwtToken = extractBearerToken(req);
+
+        if (!jwtToken) {
+          return res.status(401).json({
+            success: false,
+            step: 'upload_video_api',
+            message: 'Se requiere JWT para subir video a la Video API.',
+          });
+        }
+
+        try {
+          videoApiResult = await uploadVideoToVideoAPI({
+            buffer: processedBuffer,
+            originalname: processedFilename,
+            mimetype: processedMimetype,
+            jwtToken,
+          });
+
+          fileUrl = videoApiResult.fileUrl; // stream_url
+        } catch (err) {
+          return res.status(err.statusCode || 502).json({
+            success: false,
+            step: 'upload_video_api',
+            code: err.code || null,
+            message: err.message || 'No se pudo subir video a la Video API',
+          });
+        }
+      } else {
+        // ── IMAGE / DOCUMENT → S3 como antes ──
+        const folder =
+          fmt === 'IMAGE'
+            ? 'whatsapp/templates/header/images'
             : 'whatsapp/templates/header/documents';
 
-      try {
-        const upHist = await uploadToUploader({
-          buffer: processedBuffer,
-          originalname: processedFilename,
-          mimetype: processedMimetype,
-          folder,
-        });
+        try {
+          const upHist = await uploadToUploader({
+            buffer: processedBuffer,
+            originalname: processedFilename,
+            mimetype: processedMimetype,
+            folder,
+          });
 
-        fileUrl = upHist?.fileUrl || null;
-      } catch (err) {
-        return res.status(err.statusCode || 502).json({
-          success: false,
-          step: 'upload_history_s3',
-          message: err.message || 'No se pudo subir a histórico (S3)',
-          raw: err.raw || null,
-        });
+          fileUrl = upHist?.fileUrl || null;
+        } catch (err) {
+          return res.status(err.statusCode || 502).json({
+            success: false,
+            step: 'upload_history_s3',
+            message: err.message || 'No se pudo subir a histórico (S3)',
+            raw: err.raw || null,
+          });
+        }
       }
 
-      // 2.3) Subir a Meta para obtener media_id
+      // 2.3) Subir a Meta para obtener media_id (esto NO cambia — Meta siempre necesita su propio upload)
       const upMeta = await uploadMediaToMeta(
         {
           ACCESS_TOKEN: cfg.ACCESS_TOKEN,
@@ -337,7 +370,6 @@ exports.enviarTemplateMasivo = async (req, res) => {
 
         const downloadedBuffer = Buffer.from(dl.data);
 
-        // Detectar mimetype
         const responseMime = String(dl.headers?.['content-type'] || '')
           .split(';')[0]
           .trim();
@@ -349,7 +381,6 @@ exports.enviarTemplateMasivo = async (req, res) => {
           if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
         }
 
-        // Nombre fallback
         const extByFmt =
           fmtDefault === 'IMAGE'
             ? 'jpg'
@@ -382,32 +413,64 @@ exports.enviarTemplateMasivo = async (req, res) => {
           });
         }
 
-        // 3) Guardar histórico en S3
-        const folder =
-          fmtDefault === 'IMAGE'
-            ? 'whatsapp/templates/header/images'
-            : fmtDefault === 'VIDEO'
-              ? 'whatsapp/templates/header/videos'
+        // 3) Guardar histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3
+        if (fmtDefault === 'VIDEO') {
+          // ── VIDEO → Video API chunked ──
+          const jwtToken = extractBearerToken(req);
+
+          if (!jwtToken) {
+            return res.status(401).json({
+              success: false,
+              step: 'upload_video_api_default_asset',
+              message: 'Se requiere JWT para subir video a la Video API.',
+            });
+          }
+
+          try {
+            videoApiResult = await uploadVideoToVideoAPI({
+              buffer: downloadedBuffer,
+              originalname: defaultFilename,
+              mimetype: defaultMime,
+              jwtToken,
+            });
+
+            fileUrl = videoApiResult.fileUrl;
+          } catch (err) {
+            return res.status(err.statusCode || 502).json({
+              success: false,
+              step: 'upload_video_api_default_asset',
+              code: err.code || null,
+              message:
+                err.message ||
+                'No se pudo subir video del default asset a la Video API',
+            });
+          }
+        } else {
+          // ── IMAGE / DOCUMENT → S3 como antes ──
+          const folder =
+            fmtDefault === 'IMAGE'
+              ? 'whatsapp/templates/header/images'
               : 'whatsapp/templates/header/documents';
 
-        try {
-          const upHist = await uploadToUploader({
-            buffer: downloadedBuffer,
-            originalname: defaultFilename,
-            mimetype: defaultMime,
-            folder,
-          });
+          try {
+            const upHist = await uploadToUploader({
+              buffer: downloadedBuffer,
+              originalname: defaultFilename,
+              mimetype: defaultMime,
+              folder,
+            });
 
-          fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
-        } catch (err) {
-          return res.status(err.statusCode || 502).json({
-            success: false,
-            step: 'upload_history_s3_default_asset',
-            message:
-              err.message ||
-              'No se pudo subir a histórico (S3) el asset predeterminado',
-            raw: err.raw || null,
-          });
+            fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
+          } catch (err) {
+            return res.status(err.statusCode || 502).json({
+              success: false,
+              step: 'upload_history_s3_default_asset',
+              message:
+                err.message ||
+                'No se pudo subir a histórico (S3) el asset predeterminado',
+              raw: err.raw || null,
+            });
+          }
         }
 
         // 4) Subir a Meta y obtener media_id
@@ -504,6 +567,12 @@ exports.enviarTemplateMasivo = async (req, res) => {
       data: resp.data,
       fileUrl,
       meta_media_id,
+      video_api: videoApiResult
+        ? {
+            video_id: videoApiResult.video_id,
+            stream_url: videoApiResult.stream_url,
+          }
+        : null,
       file_info: req.file
         ? {
             name: processedFilename || req.file.originalname,
@@ -532,26 +601,22 @@ exports.programarTemplateMasivo = async (req, res) => {
     // ==========================================
     const graphBody = extractGraphBodyFromRequest(req);
 
-    // selected puede venir como array real o JSON string
     let selected = req.body?.selected ?? [];
     if (!Array.isArray(selected)) {
       const parsedSelected = parseMaybeJSON(selected, []);
       selected = Array.isArray(parsedSelected) ? parsedSelected : [];
     }
 
-    // IDs / datos base
     const id_configuracion = Number(req.body?.id_configuracion || 0) || null;
     const id_usuario =
       req.body?.id_usuario != null && req.body?.id_usuario !== ''
         ? Number(req.body.id_usuario)
         : null;
 
-    // Datos opcionales del número/config (algunos vienen del front)
     let telefono_configuracion = req.body?.telefono_configuracion || null;
     let business_phone_id = req.body?.business_phone_id || null;
     let waba_id = req.body?.waba_id || null;
 
-    // Datos template (fallback a graphBody)
     let nombre_template =
       req.body?.nombre_template ??
       req.body?.template_name ??
@@ -571,11 +636,9 @@ exports.programarTemplateMasivo = async (req, res) => {
     let header_media_url = req.body?.header_media_url || null;
     let header_media_name = req.body?.header_media_name || null;
 
-    // Fecha/hora
     const fecha_programada = req.body?.fecha_programada || null;
     const timezone = req.body?.timezone || 'America/Guayaquil';
 
-    // Meta extra (opcional)
     const meta = parseMaybeJSON(req.body?.meta, null);
 
     // ==========================================
@@ -618,7 +681,6 @@ exports.programarTemplateMasivo = async (req, res) => {
     // ==========================================
     const tz = String(timezone || 'America/Guayaquil').trim();
 
-    // Soporta formato "YYYY-MM-DD HH:mm:ss"
     const dtLocal = DateTime.fromSQL(String(fecha_programada), { zone: tz });
 
     if (!dtLocal.isValid) {
@@ -646,11 +708,9 @@ exports.programarTemplateMasivo = async (req, res) => {
       });
     }
 
-    // Priorizar lo de BD (más seguro y actualizado)
     waba_id = cfg.WABA_ID || waba_id;
     business_phone_id = cfg.PHONE_NUMBER_ID || business_phone_id;
 
-    // Aunque ya no guarde access_token, sí validamos que exista en la config
     if (!business_phone_id || !waba_id || !cfg.ACCESS_TOKEN) {
       await t.rollback();
       return res.status(400).json({
@@ -706,7 +766,8 @@ exports.programarTemplateMasivo = async (req, res) => {
     }
 
     // ==========================================
-    // 5) Procesar header media para PROGRAMACIÓN (solo S3/URL)
+    // 5) Procesar header media para PROGRAMACIÓN
+    //    VIDEO → Video API | IMAGE/DOCUMENT → S3
     // ==========================================
     let scheduledHeaderInfo = {
       header_format: header_format || null,
@@ -720,6 +781,7 @@ exports.programarTemplateMasivo = async (req, res) => {
         const prepared = await prepareHeaderAssetForScheduling({
           req,
           preferVideoConversion: true,
+          jwtToken: extractBearerToken(req), // ← pasa el JWT para Video API
         });
 
         scheduledHeaderInfo = {
@@ -770,7 +832,6 @@ exports.programarTemplateMasivo = async (req, res) => {
         'TEXT' &&
       (!Array.isArray(header_parameters) || !header_parameters.length)
     ) {
-      // No bloqueamos duro si el template tiene header fijo sin variables
       header_parameters = Array.isArray(header_parameters)
         ? header_parameters
         : [];
@@ -857,7 +918,7 @@ exports.programarTemplateMasivo = async (req, res) => {
         : null,
       header_media_url: scheduledHeaderInfo.header_media_url || null,
       header_media_name: scheduledHeaderInfo.header_media_name || null,
-      fecha_programada: dtLocal.toFormat('yyyy-LL-dd HH:mm:ss'), // normalizada
+      fecha_programada: dtLocal.toFormat('yyyy-LL-dd HH:mm:ss'),
       fecha_programada_utc,
       timezone: tz,
       meta_json: meta ? JSON.stringify(meta) : null,
@@ -927,7 +988,7 @@ exports.programarTemplateMasivo = async (req, res) => {
     await t.commit();
 
     // ==========================================
-    // 8) Emitir evento socket en tiempo real (preview programado en chat)
+    // 8) Emitir evento socket en tiempo real
     // ==========================================
     try {
       const io = global.io;
@@ -939,7 +1000,7 @@ exports.programarTemplateMasivo = async (req, res) => {
           const room = `chat_programados:${Number(r.id_configuracion)}:${Number(r.id_cliente_chat_center)}`;
 
           io.to(room).emit('PROGRAMADO_ESTADO', {
-            id: null, // aún no lo tenemos por INSERT masivo
+            id: null,
             ui_key: `${r.uuid_lote}:${r.id_cliente_chat_center}:${r.telefono}:${r.fecha_programada}`,
             uuid_lote: r.uuid_lote,
 

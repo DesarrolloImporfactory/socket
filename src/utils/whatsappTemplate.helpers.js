@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const axios = require('axios');
 const { db } = require('../database/config');
 const FormData = require('form-data');
@@ -180,6 +181,170 @@ async function uploadToUploader({
   return { fileUrl: json.data.url, data: json.data };
 }
 
+/* ================================================================
+ *  uploadVideoToVideoAPI — Sube video a la Video API chunked
+ *  Reemplaza uploadToUploader SOLO para formato VIDEO.
+ *  Flujo: /Videos/init → /Videos/chunk ×N → /Videos/complete
+ * ================================================================ */
+async function uploadVideoToVideoAPI({
+  buffer,
+  originalname,
+  mimetype,
+  jwtToken,
+}) {
+  const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
+  const CONCURRENCY = 8;
+  const BASE = 'https://new.imporsuitpro.com/';
+
+  const fileSize = buffer.length;
+  const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+  const ext = (originalname || 'video.mp4').split('.').pop().toLowerCase();
+
+  // Fingerprint: md5(nombre + "_" + tamaño + "_" + timestamp)
+  const fingerprint = crypto
+    .createHash('md5')
+    .update(`${originalname || 'video.mp4'}_${fileSize}_${Date.now()}`)
+    .digest('hex');
+
+  console.log(
+    `[VIDEO_API] Iniciando upload chunked: ${originalname} (${bytesMB(fileSize)}, ${totalChunks} chunks)`,
+  );
+
+  // ── 1. Init ───────────────────────────────────────────────────────
+  const initRes = await axios.post(
+    BASE + 'Videos/init',
+    {
+      fingerprint,
+      original_name: originalname || 'video.mp4',
+      file_size: fileSize,
+      total_chunks: totalChunks,
+      chunk_size: CHUNK_SIZE,
+      extension: ext,
+      mime_type: mimetype || `video/${ext}`,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    },
+  );
+
+  const init = initRes.data;
+  if (init.status !== 200) {
+    const err = new Error(
+      init.message || 'Error inicializando upload de video en Video API',
+    );
+    err.statusCode = 502;
+    err.code = 'VIDEO_API_INIT_FAILED';
+    throw err;
+  }
+
+  const { upload_id } = init;
+  const received = new Set(init.received_chunks || []);
+
+  console.log(
+    `[VIDEO_API] upload_id: ${upload_id} | resuming: ${init.resuming} | ya recibidos: ${received.size}`,
+  );
+
+  // ── 2. Subir chunks con ventana deslizante ────────────────────────
+  const pending = [];
+  for (let i = 0; i < totalChunks; i++) {
+    if (!received.has(i)) pending.push(i);
+  }
+
+  if (pending.length > 0) {
+    await new Promise((resolve, reject) => {
+      let active = 0;
+      let pi = 0;
+      let errored = false;
+
+      const next = () => {
+        while (active < CONCURRENCY && pi < pending.length && !errored) {
+          const chunkIndex = pending[pi++];
+          active++;
+
+          const start = chunkIndex * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, fileSize);
+          const chunkBuffer = buffer.slice(start, end);
+
+          const form = new FormData();
+          form.append('upload_id', upload_id);
+          form.append('chunk_index', String(chunkIndex));
+          form.append('total_chunks', String(totalChunks));
+          form.append('chunk', chunkBuffer, {
+            filename: `chunk_${chunkIndex}`,
+            contentType: 'application/octet-stream',
+          });
+
+          // ⚠️ No enviar Authorization en /Videos/chunk (según la doc)
+          axios
+            .post(BASE + 'Videos/chunk', form, {
+              headers: form.getHeaders(),
+              timeout: 60000,
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+            })
+            .then((res) => {
+              if (res.data?.status !== 200) {
+                throw new Error(
+                  res.data?.message || `Error en chunk ${chunkIndex}`,
+                );
+              }
+              console.log(
+                `[VIDEO_API] Chunk ${chunkIndex + 1}/${totalChunks} ✓`,
+              );
+              active--;
+              next();
+            })
+            .catch((err) => {
+              if (!errored) {
+                errored = true;
+                reject(err);
+              }
+            });
+        }
+
+        if (active === 0 && pi >= pending.length && !errored) resolve();
+      };
+
+      next();
+    });
+  }
+
+  // ── 3. Complete ───────────────────────────────────────────────────
+  const completeRes = await axios.post(
+    BASE + 'Videos/complete',
+    { upload_id },
+    {
+      headers: {
+        Authorization: `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 120000, // puede demorar si el archivo es grande
+    },
+  );
+
+  const complete = completeRes.data;
+  if (complete.status !== 200) {
+    const err = new Error(
+      complete.message || 'Error completando upload de video en Video API',
+    );
+    err.statusCode = 502;
+    err.code = 'VIDEO_API_COMPLETE_FAILED';
+    throw err;
+  }
+
+  console.log(`[VIDEO_API] ✅ Video listo: ${complete.stream_url}`);
+
+  return {
+    video_id: complete.video_id,
+    stream_url: complete.stream_url,
+    fileUrl: complete.stream_url, // compatible con el campo que ya usa el resto del código
+  };
+}
+
 async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
   const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
 
@@ -264,7 +429,6 @@ async function convertVideoForWhatsApp(fileBuffer, originalName) {
 
 /**
  * Inyecta media_id en header del template (para envío a Meta).
- * (Lo usa el endpoint inmediato o el cron al ejecutar programados)
  */
 function injectHeaderMediaId(components = [], headerFormat, mediaId) {
   const format = String(headerFormat || '').toUpperCase();
@@ -321,7 +485,6 @@ function parseArrayField(value, fallback = []) {
 
 /**
  * Construye payload base a partir de graphBody o modo clásico.
- * OJO: para programado NO se envía aún; esto sirve para extraer/normalizar.
  */
 function buildTemplatePayloadBase({
   graphBody = null,
@@ -392,17 +555,16 @@ function extractGraphBodyFromRequest(req) {
 
 /**
  * Procesa header para PROGRAMACIÓN (solo guarda histórico / URL; NO sube a Meta).
- * Devuelve:
- * {
- *   header_format,
- *   header_media_url,
- *   header_media_name,
- *   file_info
- * }
+ *
+ * CAMBIO: Para VIDEO → sube a Video API (/Videos/*) en vez de S3.
+ *         Para IMAGE / DOCUMENT → sigue usando S3 (uploadToUploader).
+ *
+ * Requiere `jwtToken` en las opciones para autenticar contra la Video API.
  */
 async function prepareHeaderAssetForScheduling({
   req,
   preferVideoConversion = true,
+  jwtToken = null,
 }) {
   let header_format = req.body?.header_format ?? null;
 
@@ -411,6 +573,7 @@ async function prepareHeaderAssetForScheduling({
   let processedMimetype = null;
   let processedFilename = null;
   let fmt = null;
+  let videoApiResult = null;
 
   const headerDefaultAssetRaw = req.body?.header_default_asset;
   let header_default_asset = null;
@@ -427,6 +590,7 @@ async function prepareHeaderAssetForScheduling({
     }
   }
 
+  // ── Caso A: Vino archivo en req.file ──────────────────────────────
   if (req.file) {
     if (!header_format) {
       header_format = inferHeaderFormatFromMime(req.file.mimetype);
@@ -449,6 +613,7 @@ async function prepareHeaderAssetForScheduling({
     processedMimetype = req.file.mimetype;
     processedFilename = req.file.originalname;
 
+    // Convertir video si aplica
     if (fmt === 'VIDEO' && preferVideoConversion) {
       try {
         processedBuffer = await convertVideoForWhatsApp(
@@ -465,21 +630,44 @@ async function prepareHeaderAssetForScheduling({
       }
     }
 
-    const folder =
-      fmt === 'IMAGE'
-        ? 'whatsapp/templates/header/images'
-        : fmt === 'VIDEO'
-          ? 'whatsapp/templates/header/videos'
+    // ── VIDEO → Video API | IMAGE/DOCUMENT → S3 ──
+    if (fmt === 'VIDEO') {
+      // Extraer JWT del request si no viene explícito
+      const token = jwtToken || extractBearerToken(req);
+
+      if (!token) {
+        const err = new Error(
+          'Se requiere JWT para subir video a la Video API.',
+        );
+        err.statusCode = 401;
+        err.code = 'VIDEO_API_NO_TOKEN';
+        throw err;
+      }
+
+      videoApiResult = await uploadVideoToVideoAPI({
+        buffer: processedBuffer,
+        originalname: processedFilename,
+        mimetype: processedMimetype,
+        jwtToken: token,
+      });
+
+      fileUrl = videoApiResult.fileUrl; // stream_url
+    } else {
+      // IMAGE / DOCUMENT → S3 como antes
+      const folder =
+        fmt === 'IMAGE'
+          ? 'whatsapp/templates/header/images'
           : 'whatsapp/templates/header/documents';
 
-    const upHist = await uploadToUploader({
-      buffer: processedBuffer,
-      originalname: processedFilename,
-      mimetype: processedMimetype,
-      folder,
-    });
+      const upHist = await uploadToUploader({
+        buffer: processedBuffer,
+        originalname: processedFilename,
+        mimetype: processedMimetype,
+        folder,
+      });
 
-    fileUrl = upHist?.fileUrl || null;
+      fileUrl = upHist?.fileUrl || null;
+    }
 
     return {
       header_format: fmt,
@@ -491,10 +679,17 @@ async function prepareHeaderAssetForScheduling({
         size: processedBuffer ? processedBuffer.length : req.file.size,
         header_format: fmt,
         converted: fmt === 'VIDEO' && processedBuffer !== req.file.buffer,
+        video_api: videoApiResult
+          ? {
+              video_id: videoApiResult.video_id,
+              stream_url: videoApiResult.stream_url,
+            }
+          : null,
       },
     };
   }
 
+  // ── Caso B: header_default_asset (URL predeterminada) ─────────────
   if (
     header_default_asset?.enabled === true &&
     header_default_asset?.url &&
@@ -509,65 +704,83 @@ async function prepareHeaderAssetForScheduling({
       .replace(/&amp;/g, '&')
       .replace(/&#38;/g, '&');
 
-    // Opcional: guardar copia en S3 de una vez (recomendado)
-    try {
-      const dl = await axios.get(decodedDefaultUrl, {
-        responseType: 'arraybuffer',
-        timeout: 30000,
-        validateStatus: () => true,
-      });
+    const dl = await axios.get(decodedDefaultUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      validateStatus: () => true,
+    });
 
-      if (dl.status < 200 || dl.status >= 300 || !dl.data) {
+    if (dl.status < 200 || dl.status >= 300 || !dl.data) {
+      const err = new Error(
+        'No se pudo descargar el adjunto predeterminado del template',
+      );
+      err.statusCode = 400;
+      err.code = 'DOWNLOAD_DEFAULT_ASSET_FAILED';
+      err.extra = {
+        http_status: dl.status,
+        url: decodedDefaultUrl,
+        raw_url: rawDefaultUrl,
+      };
+      throw err;
+    }
+
+    const downloadedBuffer = Buffer.from(dl.data);
+
+    const responseMime = String(dl.headers?.['content-type'] || '')
+      .split(';')[0]
+      .trim();
+
+    let defaultMime = responseMime;
+    if (!defaultMime) {
+      if (fmtDefault === 'IMAGE') defaultMime = 'image/jpeg';
+      if (fmtDefault === 'VIDEO') defaultMime = 'video/mp4';
+      if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
+    }
+
+    const extByFmt =
+      fmtDefault === 'IMAGE' ? 'jpg' : fmtDefault === 'VIDEO' ? 'mp4' : 'pdf';
+
+    const defaultFilename =
+      (header_default_asset?.name &&
+        String(header_default_asset.name).trim()) ||
+      `template_header_default.${extByFmt}`;
+
+    validateMetaMediaOrThrow({
+      file: {
+        buffer: downloadedBuffer,
+        mimetype: defaultMime,
+        originalname: defaultFilename,
+        size: downloadedBuffer.length,
+      },
+      format: fmtDefault,
+    });
+
+    // ── VIDEO → Video API | IMAGE/DOCUMENT → S3 ──
+    if (fmtDefault === 'VIDEO') {
+      const token = jwtToken || extractBearerToken(req);
+
+      if (!token) {
         const err = new Error(
-          'No se pudo descargar el adjunto predeterminado del template',
+          'Se requiere JWT para subir video a la Video API.',
         );
-        err.statusCode = 400;
-        err.code = 'DOWNLOAD_DEFAULT_ASSET_FAILED';
-        err.extra = {
-          http_status: dl.status,
-          url: decodedDefaultUrl,
-          raw_url: rawDefaultUrl,
-        };
+        err.statusCode = 401;
+        err.code = 'VIDEO_API_NO_TOKEN';
         throw err;
       }
 
-      const downloadedBuffer = Buffer.from(dl.data);
-
-      const responseMime = String(dl.headers?.['content-type'] || '')
-        .split(';')[0]
-        .trim();
-
-      let defaultMime = responseMime;
-      if (!defaultMime) {
-        if (fmtDefault === 'IMAGE') defaultMime = 'image/jpeg';
-        if (fmtDefault === 'VIDEO') defaultMime = 'video/mp4';
-        if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
-      }
-
-      const extByFmt =
-        fmtDefault === 'IMAGE' ? 'jpg' : fmtDefault === 'VIDEO' ? 'mp4' : 'pdf';
-
-      const defaultFilename =
-        (header_default_asset?.name &&
-          String(header_default_asset.name).trim()) ||
-        `template_header_default.${extByFmt}`;
-
-      validateMetaMediaOrThrow({
-        file: {
-          buffer: downloadedBuffer,
-          mimetype: defaultMime,
-          originalname: defaultFilename,
-          size: downloadedBuffer.length,
-        },
-        format: fmtDefault,
+      videoApiResult = await uploadVideoToVideoAPI({
+        buffer: downloadedBuffer,
+        originalname: defaultFilename,
+        mimetype: defaultMime,
+        jwtToken: token,
       });
 
+      fileUrl = videoApiResult.fileUrl;
+    } else {
       const folder =
         fmtDefault === 'IMAGE'
           ? 'whatsapp/templates/header/images'
-          : fmtDefault === 'VIDEO'
-            ? 'whatsapp/templates/header/videos'
-            : 'whatsapp/templates/header/documents';
+          : 'whatsapp/templates/header/documents';
 
       const upHist = await uploadToUploader({
         buffer: downloadedBuffer,
@@ -577,23 +790,27 @@ async function prepareHeaderAssetForScheduling({
       });
 
       fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
-
-      return {
-        header_format: fmtDefault,
-        header_media_url: fileUrl,
-        header_media_name: defaultFilename,
-        file_info: {
-          name: defaultFilename,
-          mime: defaultMime,
-          size: downloadedBuffer.length,
-          header_format: fmtDefault,
-          converted: false,
-          default_asset: true,
-        },
-      };
-    } catch (e) {
-      throw e;
     }
+
+    return {
+      header_format: fmtDefault,
+      header_media_url: fileUrl,
+      header_media_name: defaultFilename,
+      file_info: {
+        name: defaultFilename,
+        mime: defaultMime,
+        size: downloadedBuffer.length,
+        header_format: fmtDefault,
+        converted: false,
+        default_asset: true,
+        video_api: videoApiResult
+          ? {
+              video_id: videoApiResult.video_id,
+              stream_url: videoApiResult.stream_url,
+            }
+          : null,
+      },
+    };
   }
 
   return {
@@ -604,6 +821,17 @@ async function prepareHeaderAssetForScheduling({
   };
 }
 
+/**
+ * Extrae el Bearer token del header Authorization del request.
+ */
+function extractBearerToken(req) {
+  const auth = req?.headers?.authorization || req?.headers?.Authorization || '';
+  if (auth.startsWith('Bearer ')) {
+    return auth.slice(7).trim();
+  }
+  return null;
+}
+
 module.exports = {
   getConfigFromDB,
   onlyDigits,
@@ -612,6 +840,7 @@ module.exports = {
   metaLimitsByFormat,
   validateMetaMediaOrThrow,
   uploadToUploader,
+  uploadVideoToVideoAPI,
   uploadMediaToMeta,
   convertVideoForWhatsApp,
   injectHeaderMediaId,
@@ -620,4 +849,5 @@ module.exports = {
   buildTemplatePayloadBase,
   extractGraphBodyFromRequest,
   prepareHeaderAssetForScheduling,
+  extractBearerToken,
 };
