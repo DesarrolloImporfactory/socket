@@ -653,6 +653,7 @@ function parseEstado(raw) {
 /* ============================================================
    GET /api/v1/clientes_chat_center/listar
    ?page=&limit=&q=&estado=&id_etiqueta=&sort=&id_configuracion=
+   &id_etiqueta_asesor=&id_etiqueta_ciclo=
    ============================================================ */
 exports.listarClientes = catchAsync(async (req, res) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
@@ -689,6 +690,17 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(idEtiquetaNum);
   }
 
+  // filtros por asesor y ciclo
+  if (req.query.id_etiqueta_asesor) {
+    whereParts.push('c.id_etiqueta_asesor = ?');
+    params.push(Number(req.query.id_etiqueta_asesor));
+  }
+
+  if (req.query.id_etiqueta_ciclo) {
+    whereParts.push('c.id_etiqueta_ciclo = ?');
+    params.push(Number(req.query.id_etiqueta_ciclo));
+  }
+
   if (q) {
     const like = `%${q}%`;
     whereParts.push(`(
@@ -703,8 +715,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
 
-  // ✅ Subquery: “último mensaje por chat_id”
-  // chat_id = id de clientes_chat_center
+  // LEFT JOIN para asesor y ciclo + columnas nuevas en SELECT
   const dataSql = `
     SELECT
       c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
@@ -713,6 +724,11 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.created_at, c.updated_at,
       c.chat_cerrado, c.telefono_limpio, c.direccion,
 
+      c.id_etiqueta_asesor,
+      c.id_etiqueta_ciclo,
+      eca.nombre AS asesor_nombre,
+      ecc.nombre AS ciclo_nombre,
+
       lm.ultimo_mensaje_at,
       lm.ultimo_texto,
       lm.ultimo_tipo_mensaje,
@@ -720,6 +736,12 @@ exports.listarClientes = catchAsync(async (req, res) => {
       lm.ultimo_msg_id
 
     FROM clientes_chat_center c
+
+    LEFT JOIN etiquetas_custom_chat_center eca
+      ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
+    LEFT JOIN etiquetas_custom_chat_center ecc
+      ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
+
     LEFT JOIN (
       SELECT
         t.chat_id,
@@ -1096,6 +1118,17 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
     params.push(like, like, like, like, like, like);
   }
 
+  // ★ NUEVO: filtros por asesor y ciclo
+  if (req.query.id_etiqueta_asesor) {
+    where.push('c.id_etiqueta_asesor = ?');
+    params.push(Number(req.query.id_etiqueta_asesor));
+  }
+
+  if (req.query.id_etiqueta_ciclo) {
+    where.push('c.id_etiqueta_ciclo = ?');
+    params.push(Number(req.query.id_etiqueta_ciclo));
+  }
+
   // IN dinámico para etiquetas
   const inPlaceholders = idsParam.map(() => '?').join(',');
   const etiquetaParams = idsParam
@@ -1108,16 +1141,21 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       .json({ status: 'success', data: [], total: 0, page, limit });
   }
 
-  // ✅ CLAVE: filtrar también etiquetas_asignadas por id_configuracion
+  // ★ CAMBIO: LEFT JOIN para asesor y ciclo
   const baseFromJoin = `
     FROM clientes_chat_center c
     INNER JOIN etiquetas_asignadas ea
       ON ea.id_cliente_chat_center = c.id
      AND ea.id_configuracion = c.id_configuracion
+    LEFT JOIN etiquetas_custom_chat_center eca
+      ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
+    LEFT JOIN etiquetas_custom_chat_center ecc
+      ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
     WHERE ${where.join(' AND ')}
       AND ea.id_etiqueta IN (${inPlaceholders})
   `;
 
+  // ★ CAMBIO: columnas asesor/ciclo en SELECT
   const dataSql = `
     SELECT
       c.id, c.id_plataforma, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
@@ -1125,7 +1163,11 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.imagePath, c.mensajes_por_dia_cliente, c.estado_cliente,
       c.created_at, c.updated_at, c.deleted_at,
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
-      c.pedido_confirmado, c.telefono_limpio, c.direccion, c.productos
+      c.pedido_confirmado, c.telefono_limpio, c.direccion, c.productos,
+      c.id_etiqueta_asesor,
+      c.id_etiqueta_ciclo,
+      eca.nombre AS asesor_nombre,
+      ecc.nombre AS ciclo_nombre
     ${baseFromJoin}
     GROUP BY c.id
     ORDER BY ${orderBy}
@@ -1370,7 +1412,6 @@ function toBoolean(value, defaultVal = true) {
   return defaultVal;
 }
 
-// ✅ Parse XLSX buffer -> filas [{nombre, apellido, telefono, email, etiquetas}, ...]
 function parseXlsxBufferToFilas(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = wb.SheetNames?.[0];
@@ -1379,17 +1420,15 @@ function parseXlsxBufferToFilas(buffer) {
   const sheet = wb.Sheets[sheetName];
   if (!sheet) return [];
 
-  // defval: '' evita undefined
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
-  // Normalizamos keys típicas sin obligar headers exactos
   return rows
     .map((r) => {
       const telefono =
         r.Telefono ||
         r.telefono ||
-        r.Teléfono ||
+        r['Teléfono'] ||
         r.Celular ||
         r.celular ||
         r.celular_cliente ||
@@ -1403,21 +1442,18 @@ function parseXlsxBufferToFilas(buffer) {
         r.Apellido || r.apellido || r['Apellido'] || r.apellido_cliente || '';
 
       const email =
-        r.email || r.email || r.EMAIL || r['Email'] || r['Correo'] || '';
+        r.email || r.Email || r.EMAIL || r['Email'] || r['Correo'] || '';
 
       const etiquetas =
         r.Etiquetas || r.etiquetas || r.Tags || r.tags || r['Etiquetas'] || '';
 
-      return {
-        telefono,
-        nombre,
-        apellido,
-        email,
-        etiquetas,
-      };
+      // ★ NUEVOS CAMPOS OPCIONALES
+      const asesor = String(r.Asesor || r.asesor || r.ASESOR || '').trim();
+      const ciclo = String(r.Ciclo || r.ciclo || r.CICLO || '').trim();
+
+      return { telefono, nombre, apellido, email, etiquetas, asesor, ciclo };
     })
     .filter((x) => {
-      // al menos uno de estos para considerar fila
       return (
         String(x.telefono || '').trim() ||
         String(x.nombre || '').trim() ||
@@ -1429,7 +1465,6 @@ function parseXlsxBufferToFilas(buffer) {
 }
 
 exports.importacionMasiva = catchAsync(async (req, res, next) => {
-  // multipart: viene como string
   const id_configuracion = req.body.id_configuracion;
   const actualizar_cache_etiquetas = toBoolean(
     req.body.actualizar_cache_etiquetas,
@@ -1440,7 +1475,6 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     return next(new AppError('Falta id_configuracion', 400));
   }
 
-  // ✅ 1) Tomar filas desde el XLSX
   if (!req.file?.buffer) {
     return next(
       new AppError(
@@ -1458,8 +1492,6 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     );
   }
 
-  // ✅ 2) Su validación original (ahora ya tenemos filas)
-  // Necesitamos uid_cliente (id_telefono) para insertar clientes correctamente
   const [configRow] = await db.query(
     'SELECT id_telefono FROM configuraciones WHERE id = ? AND suspendido = 0 LIMIT 1',
     {
@@ -1476,7 +1508,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
 
   const uid_cliente_config = configRow.id_telefono || null;
 
-  // ========= 1) Normalizar y deduplicar por teléfono (por configuración) =========
+  // ========= 1) Normalizar y deduplicar por teléfono =========
   const mapByPhone = new Map();
   const errores = [];
   let filas_validas = 0;
@@ -1495,14 +1527,14 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
 
     const nombre = String(row.nombre || row.nombre_cliente || '').trim();
     const apellido = String(row.apellido || row.apellido_cliente || '').trim();
-
-    // ✅ email: su plantilla es "email"
-    const email = String(
-      row.email || row.email || row.email_cliente || '',
-    ).trim();
+    const email = String(row.email || row.email_cliente || '').trim();
 
     const tagsRaw = row.etiquetas || row.tags || '';
     const tags = splitTags(tagsRaw).map(normalizeTagName).filter(Boolean);
+
+    //  Asesor y Ciclo
+    const asesor = String(row.asesor || '').trim();
+    const ciclo = String(row.ciclo || '').trim();
 
     if (!mapByPhone.has(tel)) {
       mapByPhone.set(tel, {
@@ -1510,14 +1542,18 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         celular_cliente: tel,
         nombre,
         apellido,
-        email_cliente: email, // ✅ nuevo
+        email_cliente: email,
         tags: new Set(tags),
+        asesor,
+        ciclo,
       });
     } else {
       const existing = mapByPhone.get(tel);
       if (!existing.nombre && nombre) existing.nombre = nombre;
       if (!existing.apellido && apellido) existing.apellido = apellido;
-      if (!existing.email_cliente && email) existing.email_cliente = email; // ✅ merge email
+      if (!existing.email_cliente && email) existing.email_cliente = email;
+      if (!existing.asesor && asesor) existing.asesor = asesor;
+      if (!existing.ciclo && ciclo) existing.ciclo = ciclo;
       tags.forEach((t) => existing.tags.add(t));
     }
 
@@ -1544,45 +1580,134 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     );
   }
 
-  // ========= 2) Transacción: clientes + etiquetas + asignaciones =========
+  // ========= 2) Transacción =========
   const resultado = await db.transaction(async (t) => {
-    // ---- 2.1 Upsert masivo de clientes_chat_center (✅ incluye email_cliente)
-    // ⚠️ NO incluimos telefono_limpio porque es GENERATED ALWAYS
     const clientesArray = Array.from(mapByPhone.values());
-    const clientChunks = chunkArray(clientesArray, 300);
 
+    // ──────────────────────────────────────────────────────────
+    /// UPSERT etiquetas custom
+    // ──────────────────────────────────────────────────────────
+    const uniqueAsesores = new Set();
+    const uniqueCiclos = new Set();
+
+    clientesArray.forEach((c) => {
+      if (c.asesor) uniqueAsesores.add(c.asesor);
+      if (c.ciclo) uniqueCiclos.add(c.ciclo);
+    });
+
+    /**
+     * Crea las opciones en etiquetas_custom_chat_center si no existen
+     * (o reactiva soft-deleted) y devuelve Map<nombre, id>
+     */
+    const upsertCustomLabels = async (tipo, namesSet) => {
+      const names = Array.from(namesSet).filter(Boolean);
+      if (names.length === 0) return new Map();
+
+      for (const nombre of names) {
+        // ¿Existe soft-deleted? → reactivar
+        const [softDeleted] = await db.query(
+          `SELECT id FROM etiquetas_custom_chat_center
+           WHERE id_configuracion = ? AND tipo = ? AND nombre = ? AND deleted_at IS NOT NULL
+           LIMIT 1`,
+          {
+            replacements: [id_configuracion, tipo, nombre],
+            type: db.QueryTypes.SELECT,
+            transaction: t,
+          },
+        );
+
+        if (softDeleted) {
+          await db.query(
+            `UPDATE etiquetas_custom_chat_center SET deleted_at = NULL WHERE id = ?`,
+            {
+              replacements: [softDeleted.id],
+              type: db.QueryTypes.UPDATE,
+              transaction: t,
+            },
+          );
+          continue;
+        }
+
+        // Insertar si no existe (IGNORE para evitar duplicados activos)
+        await db.query(
+          `INSERT IGNORE INTO etiquetas_custom_chat_center
+             (id_configuracion, tipo, nombre, created_at)
+           VALUES (?, ?, ?, NOW())`,
+          {
+            replacements: [id_configuracion, tipo, nombre],
+            type: db.QueryTypes.INSERT,
+            transaction: t,
+          },
+        );
+      }
+
+      // Mapear nombre → id
+      const placeholders = names.map(() => '?').join(',');
+      const rows = await db.query(
+        `SELECT id, nombre FROM etiquetas_custom_chat_center
+         WHERE id_configuracion = ? AND tipo = ? AND nombre IN (${placeholders})
+           AND deleted_at IS NULL`,
+        {
+          replacements: [id_configuracion, tipo, ...names],
+          type: db.QueryTypes.SELECT,
+          transaction: t,
+        },
+      );
+
+      const map = new Map();
+      rows.forEach((r) => map.set(r.nombre, r.id));
+      return map;
+    };
+
+    const asesorIdByName = await upsertCustomLabels('asesor', uniqueAsesores);
+    const cicloIdByName = await upsertCustomLabels('ciclo', uniqueCiclos);
+
+    // ──────────────────────────────────────────────────────────
+    // 2.1  Upsert masivo clientes
+    // ──────────────────────────────────────────────────────────
+    const clientChunks = chunkArray(clientesArray, 300);
     let clientes_upsert_intentos = 0;
 
     for (const chunk of clientChunks) {
-      // ✅ 7 placeholders ahora
+      // 9 campos de datos + 2 timestamps = 11 placeholders
       const valuesSql = chunk
-        .map(() => '(?,?,?,?,?,?,?,NOW(),NOW())')
+        .map(() => '(?,?,?,?,?,?,?,?,?,NOW(),NOW())')
         .join(',');
 
       const params = [];
       chunk.forEach((c) => {
+        const idAsesor = c.asesor ? asesorIdByName.get(c.asesor) || null : null;
+        const idCiclo = c.ciclo ? cicloIdByName.get(c.ciclo) || null : null;
+
         params.push(
           id_configuracion,
           uid_cliente_config,
           c.nombre || '',
           c.apellido || '',
-          c.email_cliente || '', // ✅ nuevo
+          c.email_cliente || '',
           c.celular_cliente || '',
           0, // propietario
+          idAsesor,
+          idCiclo,
         );
       });
 
       const upsertSql = `
         INSERT INTO clientes_chat_center
-          (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
+          (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
+           email_cliente, celular_cliente, propietario,
+           id_etiqueta_asesor, id_etiqueta_ciclo,
+           created_at, updated_at)
         VALUES ${valuesSql}
         ON DUPLICATE KEY UPDATE
-          uid_cliente      = COALESCE(VALUES(uid_cliente), uid_cliente),
-          nombre_cliente   = COALESCE(NULLIF(VALUES(nombre_cliente), ''), nombre_cliente),
-          apellido_cliente = COALESCE(NULLIF(VALUES(apellido_cliente), ''), apellido_cliente),
-          email_cliente    = COALESCE(NULLIF(VALUES(email_cliente), ''), email_cliente),
-          celular_cliente  = COALESCE(NULLIF(VALUES(celular_cliente), ''), celular_cliente),
-          updated_at       = NOW()
+          uid_cliente        = COALESCE(VALUES(uid_cliente), uid_cliente),
+          nombre_cliente     = COALESCE(NULLIF(VALUES(nombre_cliente), ''), nombre_cliente),
+          apellido_cliente   = COALESCE(NULLIF(VALUES(apellido_cliente), ''), apellido_cliente),
+          email_cliente      = COALESCE(NULLIF(VALUES(email_cliente), ''), email_cliente),
+          celular_cliente    = COALESCE(NULLIF(VALUES(celular_cliente), ''), celular_cliente),
+          id_etiqueta_asesor = COALESCE(VALUES(id_etiqueta_asesor), id_etiqueta_asesor),
+          id_etiqueta_ciclo  = COALESCE(VALUES(id_etiqueta_ciclo), id_etiqueta_ciclo),
+          updated_at         = NOW()
       `;
 
       await db.query(upsertSql, {
@@ -1594,7 +1719,9 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       clientes_upsert_intentos += chunk.length;
     }
 
-    // ---- 2.2 Obtener IDs de clientes por teléfono_limpio (mapeo phone -> id)
+    // ──────────────────────────────────────────────────────────
+    // 2.2  Obtener IDs de clientes por teléfono (mapeo phone → id)
+    // ──────────────────────────────────────────────────────────
     const phones = clientesArray.map((c) => c.phone);
     const phoneChunks = chunkArray(phones, 800);
 
@@ -1616,7 +1743,9 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       rows.forEach((r) => clientIdByPhone.set(String(r.celular_cliente), r.id));
     }
 
-    // ---- 2.3 Crear/Upsert etiquetas por configuración (UNIQUE: id_configuracion + nombre_etiqueta)
+    // ──────────────────────────────────────────────────────────
+    // 2.3  Crear/Upsert etiquetas normales (columna "Etiquetas")
+    // ──────────────────────────────────────────────────────────
     const allTagsSet = new Set();
     clientesArray.forEach((c) => {
       c.tags.forEach((tg) => allTagsSet.add(normalizeTagName(tg)));
@@ -1650,7 +1779,6 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         });
       }
 
-      // Mapear ids de etiquetas
       const tagSelectChunks = chunkArray(allTags, 800);
       for (const tgSel of tagSelectChunks) {
         const placeholders = tgSel.map(() => '?').join(',');
@@ -1672,11 +1800,15 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       }
     }
 
-    // ✅ ---- 2.4-bis SINCRONIZAR etiquetas (quitar las que ya no vienen)
-    // desiredTagIdsByClient: clientId -> Set(tagId) (estado final según el Excel)
+    // ──────────────────────────────────────────────────────────
+    // 2.4  Sincronizar etiquetas normales (quitar las que no vienen)
+    // ──────────────────────────────────────────────────────────
     const desiredTagIdsByClient = new Map();
 
     clientesArray.forEach((c) => {
+      // FIX: Si el Excel no trae etiquetas para este cliente, NO tocar sus tags existentes
+      if (c.tags.size === 0) return;
+
       const clientId = clientIdByPhone.get(String(c.phone));
       if (!clientId) return;
 
@@ -1737,8 +1869,9 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       }
     }
 
-    // ---- 2.5 Insertar asignaciones deseadas (UNIQUE: id_cliente_chat_center + id_etiqueta)
-    // Pares únicos para evitar inserts repetidos
+    // ──────────────────────────────────────────────────────────
+    // 2.5  Insertar asignaciones etiquetas normales
+    // ──────────────────────────────────────────────────────────
     const pairs = [];
     const pairKey = new Set();
 
@@ -1787,11 +1920,11 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       asignaciones_intentos += pchunk.length;
     }
 
-    // ---- 2.6 (Opcional) Actualizar cache JSON clientes_chat_center.etiquetas
+    // ──────────────────────────────────────────────────────────
+    // 2.6  Actualizar cache JSON etiquetas normales
+    // ──────────────────────────────────────────────────────────
     if (actualizar_cache_etiquetas) {
-      // ✅ Clientes afectados: usamos los que vienen en el archivo (no solo pairs)
       const affectedClientIds = affectedClientIdsForSync;
-
       const clientIdChunks = chunkArray(affectedClientIds, 300);
 
       for (const idChunk of clientIdChunks) {
@@ -1831,7 +1964,6 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         });
 
         for (const cid of idChunk) {
-          // ✅ si no tiene etiquetas, guardamos []
           const lista = map.get(cid) || [];
 
           await db.query(
@@ -1856,6 +1988,10 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
       etiquetas_unicas: allTags.length,
       asignaciones_unicas: pairs.length,
       asignaciones_intentos,
+      etiquetas_custom: {
+        asesores_creados: uniqueAsesores.size,
+        ciclos_creados: uniqueCiclos.size,
+      },
     };
   });
 

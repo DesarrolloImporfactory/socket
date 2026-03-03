@@ -12,38 +12,43 @@ router.use(protect);
 router.post(
   '/listarDepartamentos',
   checkPlanActivo,
-  departamentos_chat_center.listarDepartamentos
+  departamentos_chat_center.listarDepartamentos,
 );
 
 router.post(
-  "/toggle_permiso_round_robin",
+  '/toggle_permiso_round_robin',
   checkPlanActivo,
-  departamentos_chat_center.togglePermisoRoundRobin
+  departamentos_chat_center.togglePermisoRoundRobin,
 );
 
 router.post(
   '/listar_por_usuario',
   checkPlanActivo,
-  departamentos_chat_center.listar_por_usuario
+  departamentos_chat_center.listar_por_usuario,
 );
 
 router.post(
   '/agregarDepartamento',
-  departamentos_chat_center.agregarDepartamento
+  departamentos_chat_center.agregarDepartamento,
 );
 
 router.post(
   '/actualizarDepartamento',
-  departamentos_chat_center.actualizarDepartamento
+  departamentos_chat_center.actualizarDepartamento,
 );
 
 router.delete(
   '/eliminarDepartamento',
-  departamentos_chat_center.eliminarDepartamento
+  departamentos_chat_center.eliminarDepartamento,
 );
 
 router.post('/transferirChat', departamentos_chat_center.transferirChat);
 
 router.post('/asignar_encargado', departamentos_chat_center.asignar_encargado);
+
+router.get(
+  '/historial-encargados/:id_cliente_chat_center',
+  departamentos_chat_center.obtenerHistorialEncargados,
+);
 
 module.exports = router;

@@ -17,6 +17,8 @@ const plataformaRouter = require('./routes/plataformas.routes');
 
 const clientes_chat_centerRouter = require('./routes/clientes_chat_center.routes');
 
+const etiquetas_custom_chat_centerRouter = require('./routes/etiquetas_custom_chat_center.routes');
+
 const configuracionesRouter = require('./routes/configuraciones.routes');
 
 const detalle_fact_cotRouter = require('./routes/detalle_fact_cot.routes');
@@ -230,6 +232,10 @@ app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
+app.use(
+  '/api/v1/etiquetas_custom_chat_center',
+  etiquetas_custom_chat_centerRouter,
+);
 app.use('/api/v1/configuraciones', configuracionesRouter);
 app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
 app.use('/api/v1/facturas_cot', facturas_cotRouter);

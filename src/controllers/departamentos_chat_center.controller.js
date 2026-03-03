@@ -8,6 +8,7 @@ const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.m
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const Historial_encargados = require('../models/historial_encargados.model');
 const HistorialEncargadosFacebook = require('../models/historial_encargados_messenger.model');
+const { QueryTypes } = require('sequelize');
 
 const MessengerConversation = require('../models/messenger_conversations.model');
 const MessengerMessage = require('../models/messenger_messages.model');
@@ -81,8 +82,8 @@ exports.togglePermisoRoundRobin = catchAsync(async (req, res) => {
 
   if (!id_configuracion) {
     return res.status(400).json({
-      status: "error",
-      message: "Faltan parámetros (id_configuracion).",
+      status: 'error',
+      message: 'Faltan parámetros (id_configuracion).',
     });
   }
 
@@ -95,19 +96,19 @@ exports.togglePermisoRoundRobin = catchAsync(async (req, res) => {
 
   if (!config) {
     return res.status(404).json({
-      status: "error",
-      message: "Configuración no encontrada para este usuario.",
+      status: 'error',
+      message: 'Configuración no encontrada para este usuario.',
     });
   }
 
   await Configuraciones.update(
     { permiso_round_robin: valor },
-    { where: { id: id_configuracion } }
+    { where: { id: id_configuracion } },
   );
 
   return res.status(200).json({
-    status: "success",
-    message: "Autoasignación actualizada.",
+    status: 'success',
+    message: 'Autoasignación actualizada.',
     data: { id_configuracion, permiso_round_robin: valor },
   });
 });
@@ -761,4 +762,50 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
   return res
     .status(200)
     .json({ status: 'success', message: 'Chat asignado correctamente' });
+});
+
+// GET /historial-encargados/:id_cliente_chat_center
+exports.obtenerHistorialEncargados = catchAsync(async (req, res, next) => {
+  const { id_cliente_chat_center } = req.params;
+
+  if (!id_cliente_chat_center) {
+    return next(new AppError('Falta id_cliente_chat_center', 400));
+  }
+
+  const rows = await db.query(
+    `SELECT
+        h.id,
+        h.id_cliente_chat_center,
+        h.id_departamento_asginado,
+        h.id_encargado_anterior,
+        h.id_encargado_nuevo,
+        h.motivo,
+        h.fecha_registro,
+
+        d.nombre_departamento,
+        d.color AS color_departamento,
+
+        sa.nombre_encargado AS nombre_anterior,
+        sn.nombre_encargado AS nombre_nuevo
+
+      FROM historial_encargados h
+
+      LEFT JOIN departamentos_chat_center d
+        ON d.id_departamento = h.id_departamento_asginado
+
+      LEFT JOIN sub_usuarios_chat_center sa
+        ON sa.id_sub_usuario = h.id_encargado_anterior
+
+      LEFT JOIN sub_usuarios_chat_center sn
+        ON sn.id_sub_usuario = h.id_encargado_nuevo
+
+      WHERE h.id_cliente_chat_center = :id_cliente_chat_center
+      ORDER BY h.fecha_registro ASC`,
+    {
+      replacements: { id_cliente_chat_center },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  res.status(200).json({ status: 200, data: rows });
 });
