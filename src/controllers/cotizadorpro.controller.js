@@ -24,6 +24,7 @@ const { formatPhoneForWhatsApp } = require('../utils/phoneUtils');
 const { text } = require('express');
 const { language } = require('googleapis/build/src/apis/language');
 const CotizadorproCotizaciones = require('../models/cotizadorpro/cotizadorpro_cotizaciones.model');
+const { extraerTokenDeCabecera } = require('../utils/jwt');
 
 // Helper: Formatear fecha a dd/mm/yyyy
 const formatearFecha = (fecha) => {
@@ -65,12 +66,59 @@ const COTIZADOR_CONFIG = {
 };
 
 // Helper: Crear plantilla de WhatsApp
+// headerMedia: { type: 'video'|'image'|'audio'|'document', link?: string, id?: string } | null
 const crearPlantillaWhatsApp = (
   celularFormateado,
   templateName,
   nombreCliente,
   idCotizacion,
+  headerMedia = null,
 ) => {
+  const components = [];
+
+  // Header con media (video, imagen, audio, documento)
+  if (headerMedia) {
+    const mediaPayload = headerMedia.id
+      ? { id: headerMedia.id }
+      : { link: headerMedia.link };
+
+    components.push({
+      type: 'header',
+      parameters: [
+        {
+          type: headerMedia.type,
+          [headerMedia.type]: mediaPayload,
+        },
+      ],
+    });
+  }
+
+  // Body: nombre del cliente (opcional — si es null no se mandan parámetros)
+  if (nombreCliente) {
+    components.push({
+      type: 'body',
+      parameters: [
+        {
+          type: 'text',
+          text: nombreCliente,
+        },
+      ],
+    });
+  }
+
+  // Botón URL con id_cotizacion
+  components.push({
+    type: 'button',
+    sub_type: 'url',
+    index: '0',
+    parameters: [
+      {
+        type: 'text',
+        text: idCotizacion,
+      },
+    ],
+  });
+
   return {
     messaging_product: 'whatsapp',
     to: celularFormateado,
@@ -80,28 +128,7 @@ const crearPlantillaWhatsApp = (
       language: {
         code: 'es',
       },
-      components: [
-        {
-          type: 'body',
-          parameters: [
-            {
-              type: 'text',
-              text: nombreCliente,
-            },
-          ],
-        },
-        {
-          type: 'button',
-          sub_type: 'url',
-          index: '0',
-          parameters: [
-            {
-              type: 'text',
-              text: idCotizacion,
-            },
-          ],
-        },
-      ],
+      components,
     },
   };
 };
@@ -116,8 +143,25 @@ const enviarTemplateWhatsApp = async (plantilla) => {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
       },
+      validateStatus: () => true, // no lanzar excepcion, manejar todos los status
     },
   );
+
+  if (response.status < 200 || response.status >= 300) {
+    console.error(
+      '[WA_TEMPLATE] Error de Meta %d | template: %s | payload: %s | respuesta: %s',
+      response.status,
+      plantilla?.template?.name,
+      JSON.stringify(plantilla, null, 2),
+      JSON.stringify(response.data, null, 2),
+    );
+    const metaMsg = response.data?.error?.message || JSON.stringify(response.data);
+    const err = new Error(`Meta ${response.status}: ${metaMsg}`);
+    err.metaError = response.data?.error;
+    err.statusCode = response.status;
+    throw err;
+  }
+
   return response.data;
 };
 
@@ -150,7 +194,8 @@ const crearMensajeBD = async (
 };
 
 // Helper: Generar datos del mensaje
-const generarDatosMensaje = (templateName, nombreCliente, idCotizacion) => {
+// headerMedia: { type, link?, id? } | null — se almacena en ruta_archivo para el historial
+const generarDatosMensaje = (templateName, nombreCliente, idCotizacion, headerMedia = null) => {
   const templates = {
     cotizacion_carga_enviadav2: {
       texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊
@@ -173,7 +218,12 @@ Si tiene algunas dudas estoy aqui para resolverlas. 😊`,
       url_0_1: idCotizacion,
       url_full_0_1: template.url,
     },
-    header: null,
+    header: headerMedia
+      ? {
+          format: headerMedia.type,
+          ...(headerMedia.id ? { mediaId: headerMedia.id } : { link: headerMedia.link }),
+        }
+      : null,
     template_name: templateName,
     language: 'es',
   });
@@ -372,6 +422,9 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 });
 
 exports.enviarCotizacion = catchAsync(async (req, res, next) => {
+ const token = extraerTokenDeCabecera(req);
+
+
   const { id_cotizacion } = req.body;
 
   console.log('ID de cotización recibida:', id_cotizacion);
@@ -414,23 +467,65 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   );
 
   // Crear y enviar las dos plantillas de WhatsApp
+  // plantilla1: descargar video predeterminado → convertir → subir a Meta → header con mediaId
+  const VIDEO_DEFAULT_URL = 'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
+
+  let videoMediaId = null;
+  try {
+    console.log('[COTIZACION_VIDEO] Descargando video predeterminado...');
+    const videoResp = await axios.get(VIDEO_DEFAULT_URL, {
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+      },
+    });
+    let videoBuffer = Buffer.from(videoResp.data);
+
+    try {
+      videoBuffer = await convertVideoForWhatsApp(videoBuffer, 'cotizacion-header.mp4');
+      console.log('[COTIZACION_VIDEO] Video convertido correctamente');
+    } catch (convErr) {
+      console.warn('[COTIZACION_VIDEO] Conversión fallida, usando original:', convErr.message);
+    }
+
+    videoMediaId = await uploadVideoToMeta(videoBuffer, 'cotizacion-header.mp4');
+    console.log('[COTIZACION_VIDEO] Video subido a Meta. mediaId:', videoMediaId);
+  } catch (videoErr) {
+    console.error('[COTIZACION_VIDEO] Error procesando video:', videoErr.message);
+    return next(new AppError('Error al preparar el video de la cotización', 500));
+  }
+
+  const VIDEO_COTIZACION_HEADER = {
+    type: 'video',
+    id: videoMediaId,
+  };
+
   const plantilla1 = crearPlantillaWhatsApp(
     celularFormateado,
-    'cotizacion_carga_enviadav2',
+    'cotizacion_carga_enviada_pro',
     cotizacionInfo.cliente,
     id_cotizacion,
+    VIDEO_COTIZACION_HEADER,
   );
 
   const plantilla2 = crearPlantillaWhatsApp(
     celularFormateado,
-    'confirmacion_cotizacionv2',
-    cotizacionInfo.cliente,
+    'confirmacion_cotizacion_pro',
+    null, // sin body, solo botón
     id_cotizacion,
   );
 
   // Enviar las plantillas
-  const response1 = await enviarTemplateWhatsApp(plantilla1);
-  // console.log('Respuesta al enviar plantilla 1:', response1);
+  console.log('[COTIZACION_P1] Payload plantilla1:', JSON.stringify(plantilla1, null, 2));
+  let response1;
+  try {
+    response1 = await enviarTemplateWhatsApp(plantilla1);
+    console.log('[COTIZACION_P1] Respuesta Meta:', JSON.stringify(response1));
+  } catch (p1Err) {
+    console.error('[COTIZACION_P1] Fallo:', p1Err.message, '| Meta error:', JSON.stringify(p1Err.metaError));
+    return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
+  }
 
   const response2 = await enviarTemplateWhatsApp(plantilla2);
   // console.log('Respuesta al enviar plantilla 2:', response2);
@@ -483,6 +578,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     'cotizacion_carga_enviadav2',
     cotizacionInfo.cliente,
     id_cotizacion,
+    VIDEO_COTIZACION_HEADER,
   );
 
   const mensaje1 = await crearMensajeBD(
