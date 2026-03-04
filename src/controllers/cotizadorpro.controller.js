@@ -263,17 +263,19 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
-    const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -maxrate 1M -bufsize 2M -movflags +faststart -y "${outputPath}"`;
+    const remuxCmd = `ffmpeg -i "${inputPath}" -c copy -movflags +faststart -y "${outputPath}"`;
+    let remuxOk = false;
+    try {
+      await execAsync(remuxCmd, { maxBuffer: 50 * 1024 * 1024 });
+      remuxOk = true;
+    } catch (_) {
+      // no era compatible, necesita re-encode
+    }
 
-    // console.log('[VIDEO_CONVERT] Ejecutando conversión...');
-    const startTime = Date.now();
-
-    await execAsync(ffmpegCmd, {
-      maxBuffer: 50 * 1024 * 1024,
-    });
-
-    const duration = Date.now() - startTime;
-    // console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
+    if (!remuxOk) {
+      const encodeCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 96k -movflags +faststart -y "${outputPath}"`;
+      await execAsync(encodeCmd, { maxBuffer: 50 * 1024 * 1024 });
+    }
 
     const convertedBuffer = await fs.readFile(outputPath);
 
