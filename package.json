@@ -46,6 +46,7 @@
     "sequelize": "^6.32.0",
     "socket.io": "^4.7.0",
     "stripe": "^18.5.0",
+    "tmp-promise": "^3.0.3",
     "uuid": "^11.1.0",
     "winston": "^3.9.0",
     "xlsx": "^0.18.5",

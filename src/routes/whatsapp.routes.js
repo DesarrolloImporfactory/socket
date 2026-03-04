@@ -2754,4 +2754,6 @@ router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 
 router.get('/programados_por_config', whatsappCtrl.listarProgramadosPorConfig);
 
+router.post('/enviar-video', whatsappCtrl.enviarVideoWhatsapp);
+
 module.exports = router;
