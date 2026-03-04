@@ -423,22 +423,18 @@ async function convertVideoForWhatsApp(fileBuffer, originalName) {
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
-    // Intento 1: remux sin re-encode (copia stream, <1s)
-    // Sirve si el video ya es H.264/AAC — solo mete faststart
-    const remuxCmd = `ffmpeg -i "${inputPath}" -c copy -movflags +faststart -y "${outputPath}"`;
-    let remuxOk = false;
-    try {
-      await execAsync(remuxCmd, { maxBuffer: 50 * 1024 * 1024 });
-      remuxOk = true;
-    } catch (_) {
-      // no era compatible, necesita re-encode
-    }
-
-    // Intento 2: re-encode con ultrafast (mucho más rápido que fast/medium)
-    if (!remuxOk) {
-      const encodeCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 96k -movflags +faststart -y "${outputPath}"`;
-      await execAsync(encodeCmd, { maxBuffer: 50 * 1024 * 1024 });
-    }
+    // Meta exige pista de audio AAC siempre. Si el video no tiene audio
+    // se mezcla con una pista de silencio (anullsrc) para garantizar audioCodec=aac.
+    const encodeCmd = [
+      `ffmpeg -i "${inputPath}"`,
+      `-f lavfi -i anullsrc=r=44100:cl=mono`,
+      `-c:v libx264 -preset ultrafast -crf 28`,
+      `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
+      `-map 0:v -map "[aout]"`,
+      `-c:a aac -b:a 96k -ar 44100 -ac 1`,
+      `-movflags +faststart -y "${outputPath}"`,
+    ].join(' ');
+    await execAsync(encodeCmd, { maxBuffer: 50 * 1024 * 1024 });
 
     const convertedBuffer = await fs.readFile(outputPath);
 
