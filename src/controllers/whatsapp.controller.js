@@ -1288,12 +1288,15 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
     // Buffer del archivo recibido
     const videoBuffer = req.file.buffer;
 
-    // (Opcional) convertir SOLO si lo necesitas
-    // Si ya viene mp4/h264/aac puedes saltarte esto
+    // Convertir a H.264/AAC compatible con WhatsApp
     let convertedBuffer = videoBuffer;
-
-    // ejemplo: si tu convertidor siempre devuelve mp4 compatible
-    // convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
+    try {
+      console.log('[WA_VIDEO] Convirtiendo video...');
+      convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
+      console.log('[WA_VIDEO] Conversión OK. Tamaño:', (convertedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+    } catch (convErr) {
+      console.warn('[WA_VIDEO] Conversión fallida, usando original:', convErr.message);
+    }
 
     // Subir a WhatsApp
     console.log('[WA_VIDEO] Subiendo a WhatsApp...');
