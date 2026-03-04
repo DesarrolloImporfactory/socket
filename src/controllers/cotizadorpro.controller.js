@@ -194,34 +194,44 @@ const crearMensajeBD = async (
 };
 
 // Helper: Generar datos del mensaje
-// headerMedia: { type, link?, id? } | null — se almacena en ruta_archivo para el historial
+// headerMedia: { type, fileUrl?, id?, link? } | null — se almacena en ruta_archivo para el historial
 const generarDatosMensaje = (templateName, nombreCliente, idCotizacion, headerMedia = null) => {
   const templates = {
     cotizacion_carga_enviadav2: {
-      texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊
-Por favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
+      texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊\nPor favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
     },
     confirmacion_cotizacionv2: {
-      texto: `Hola Importador {{1}}.
-Para continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.
-
-Si tiene algunas dudas estoy aqui para resolverlas. 😊`,
+      texto: `Hola Importador {{1}}.\nPara continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.\n\nSi tiene algunas dudas estoy aqui para resolverlas. 😊`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
+    },
+    cotizacion_carga_enviada_pro: {
+      texto: `🎉 ¡Hola {{1}}! Te comparto la cotización que nos solicitaste. 😊\nPor favor recuerda que, en la parte superior, encontrarás los gastos referentes a tu compra y en la parte inferior, el detalle del precio al que llegarán tus productos al destino.`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
+    },
+    confirmacion_cotizacion_pro: {
+      texto: `👉 Para continuar, por favor confirma la aceptación de la cotización haciendo clic en el siguiente enlace.\n\nSi tienes alguna duda estoy aquí para ayudarte. 😊`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
     },
   };
 
   const template = templates[templateName];
+
+  // placeholders: confirmacion_cotizacion_pro no lleva nombre (sin body con {{1}})
+  const placeholders = nombreCliente
+    ? { 1: nombreCliente, url_0_1: idCotizacion, url_full_0_1: template.url }
+    : { url_0_1: idCotizacion, url_full_0_1: template.url };
+
   const rutaArchivo = JSON.stringify({
-    placeholders: {
-      1: nombreCliente,
-      url_0_1: idCotizacion,
-      url_full_0_1: template.url,
-    },
+    placeholders,
     header: headerMedia
       ? {
-          format: headerMedia.type,
-          ...(headerMedia.id ? { mediaId: headerMedia.id } : { link: headerMedia.link }),
+          format: headerMedia.type.toUpperCase(),
+          value: '',
+          fileUrl: headerMedia.fileUrl || null,
+          meta_media_id: headerMedia.id || null,
+          mime: null,
+          size: null,
         }
       : null,
     template_name: templateName,
@@ -499,6 +509,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   const VIDEO_COTIZACION_HEADER = {
     type: 'video',
     id: videoMediaId,
+    fileUrl: VIDEO_DEFAULT_URL,
   };
 
   const plantilla1 = crearPlantillaWhatsApp(
@@ -527,8 +538,17 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
   }
 
-  const response2 = await enviarTemplateWhatsApp(plantilla2);
-  // console.log('Respuesta al enviar plantilla 2:', response2);
+  // Esperar antes de enviar la segunda plantilla para garantizar el orden de entrega en WhatsApp
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  let response2;
+  try {
+    response2 = await enviarTemplateWhatsApp(plantilla2);
+    console.log('[COTIZACION_P2] Respuesta Meta:', JSON.stringify(response2));
+  } catch (p2Err) {
+    console.error('[COTIZACION_P2] Fallo:', p2Err.message, '| Meta error:', JSON.stringify(p2Err.metaError));
+    return next(new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500));
+  }
 
   // Extraer IDs de mensajes
   const midMensaje1 = response1?.messages?.[0]?.id || null;
@@ -575,7 +595,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   // Crear mensajes en la base de datos usando helpers
   const mensaje1Data = generarDatosMensaje(
-    'cotizacion_carga_enviadav2',
+    'cotizacion_carga_enviada_pro',
     cotizacionInfo.cliente,
     id_cotizacion,
     VIDEO_COTIZACION_HEADER,
@@ -587,12 +607,12 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje1,
     mensaje1Data.texto,
     mensaje1Data.rutaArchivo,
-    'cotizacion_carga_enviadav2',
+    'cotizacion_carga_enviada_pro',
   );
   // console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
 
   const mensaje2Data = generarDatosMensaje(
-    'confirmacion_cotizacionv2',
+    'confirmacion_cotizacion_pro',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -603,7 +623,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje2,
     mensaje2Data.texto,
     mensaje2Data.rutaArchivo,
-    'confirmacion_cotizacionv2',
+    'confirmacion_cotizacion_pro',
   );
   // console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
 
