@@ -1267,45 +1267,35 @@ exports.listarProgramadosPorConfig = async (req, res) => {
   }
 };
 
-exports.enviarVideoWhatsapp = async (req, res) => {
-  const { stream_url, jwt_servidor, wa_token, phone_number_id } = req.body;
+exports.enviarVideoWhatsappFile = async (req, res) => {
+  const { jwt_servidor, wa_token, phone_number_id } = req.body;
 
-  if (!stream_url || !wa_token || !phone_number_id) {
+  if (!req.file || !wa_token || !phone_number_id) {
     return res.status(400).json({
       status: 400,
-      message: 'Faltan campos: stream_url, wa_token, phone_number_id',
+      message: 'Faltan campos: file, wa_token, phone_number_id',
     });
   }
 
   try {
-    // ── 1. Descargar ──────────────────────────────────────────────
-    console.log('[WA_VIDEO] Descargando:', stream_url);
-    const videoResponse = await axios.get(stream_url, {
-      responseType: 'arraybuffer',
-      headers: { Authorization: `Bearer ${jwt_servidor}` },
-      timeout: 120000,
-    });
-
-    const videoBuffer = Buffer.from(videoResponse.data);
     console.log(
-      '[WA_VIDEO] Descargado:',
-      (videoBuffer.length / 1024 / 1024).toFixed(2),
-      'MB',
+      '[WA_VIDEO] Recibido file:',
+      req.file.originalname,
+      req.file.mimetype,
+      req.file.size,
     );
 
-    // ── 2. Convertir ──────────────────────────────────────────────
-    console.log('[WA_VIDEO] Convirtiendo...');
-    const convertedBuffer = await convertVideoForWhatsApp(
-      videoBuffer,
-      'video.mp4',
-    );
-    console.log(
-      '[WA_VIDEO] Convertido:',
-      (convertedBuffer.length / 1024 / 1024).toFixed(2),
-      'MB',
-    );
+    // Buffer del archivo recibido
+    const videoBuffer = req.file.buffer;
 
-    // ── 3. Subir a WhatsApp ───────────────────────────────────────
+    // (Opcional) convertir SOLO si lo necesitas
+    // Si ya viene mp4/h264/aac puedes saltarte esto
+    let convertedBuffer = videoBuffer;
+
+    // ejemplo: si tu convertidor siempre devuelve mp4 compatible
+    // convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
+
+    // Subir a WhatsApp
     console.log('[WA_VIDEO] Subiendo a WhatsApp...');
     const uploadForm = new FormData();
     uploadForm.append('file', convertedBuffer, {
@@ -1333,7 +1323,6 @@ exports.enviarVideoWhatsapp = async (req, res) => {
     if (!media_id) throw new Error('WhatsApp no retornó media_id');
 
     console.log('[WA_VIDEO] ✅ media_id:', media_id);
-
     return res.json({ status: 200, media_id });
   } catch (err) {
     console.error('[WA_VIDEO] Error:', err?.response?.data || err.message);
