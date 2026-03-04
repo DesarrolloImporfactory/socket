@@ -198,16 +198,29 @@ async function uploadVideoToVideoAPI({
 
   const fileSize = buffer.length;
   const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
-  const ext = (originalname || 'video.mp4').split('.').pop().toLowerCase();
+
+  // ── Extraer extensión con fallbacks ──────────────────────────────
+  const extFromName =
+    originalname && originalname.includes('.')
+      ? originalname.split('.').pop().toLowerCase()
+      : null;
+
+  const extFromMime = mimetype
+    ? mimetype.split('/').pop().replace('quicktime', 'mov').toLowerCase()
+    : null;
+
+  const ext = extFromName || extFromMime || 'mp4';
+
+  const safeOriginalName = extFromName ? originalname : `video.${ext}`;
 
   // Fingerprint: md5(nombre + "_" + tamaño + "_" + timestamp)
   const fingerprint = crypto
     .createHash('md5')
-    .update(`${originalname || 'video.mp4'}_${fileSize}_${Date.now()}`)
+    .update(`${safeOriginalName}_${fileSize}_${Date.now()}`)
     .digest('hex');
 
   console.log(
-    `[VIDEO_API] Iniciando upload chunked: ${originalname} (${bytesMB(fileSize)}, ${totalChunks} chunks)`,
+    `[VIDEO_API] Iniciando upload chunked: ${safeOriginalName} (${bytesMB(fileSize)}, ${totalChunks} chunks) ext: ${ext}`,
   );
 
   // ── 1. Init ───────────────────────────────────────────────────────
@@ -215,7 +228,7 @@ async function uploadVideoToVideoAPI({
     BASE + 'Videos/init',
     {
       fingerprint,
-      original_name: originalname || 'video.mp4',
+      original_name: safeOriginalName,
       file_size: fileSize,
       total_chunks: totalChunks,
       chunk_size: CHUNK_SIZE,
@@ -322,7 +335,7 @@ async function uploadVideoToVideoAPI({
         Authorization: `Bearer ${jwtToken}`,
         'Content-Type': 'application/json',
       },
-      timeout: 120000, // puede demorar si el archivo es grande
+      timeout: 120000,
     },
   );
 
@@ -341,7 +354,7 @@ async function uploadVideoToVideoAPI({
   return {
     video_id: complete.video_id,
     stream_url: complete.stream_url,
-    fileUrl: complete.stream_url, // compatible con el campo que ya usa el resto del código
+    fileUrl: complete.stream_url,
   };
 }
 
