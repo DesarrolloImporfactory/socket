@@ -263,18 +263,42 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
-    // Meta exige pista de audio AAC siempre. Si el video no tiene audio
-    // se mezcla con una pista de silencio (anullsrc) para garantizar audioCodec=aac.
+    // 1) Obtener duración con ffprobe para calcular bitrate dinámico
+    let duration = 60; // fallback 60s
+    try {
+      const probe = await execAsync(
+        `ffprobe -v error -select_streams v:0 -show_entries format=duration -of csv=p=0 "${inputPath}"`,
+      );
+      const parsed = parseFloat(probe.stdout.trim());
+      if (parsed > 0) duration = parsed;
+    } catch (_) {}
+
+    // 2) Calcular bitrate para quedar bajo 15 MB (1 MB de margen)
+    const MAX_BYTES = 15 * 1024 * 1024;
+    const AUDIO_KBPS = 96;
+    const totalKbps = Math.floor((MAX_BYTES * 8) / duration / 1000);
+    const videoKbps = Math.max(100, totalKbps - AUDIO_KBPS);
+
+    console.log(`[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k`);
+
+    // 3) Encode: escala máx 720p + bitrate calculado + audio AAC garantizado
+    //    anullsrc cubre el caso de videos sin pista de audio
     const encodeCmd = [
       `ffmpeg -i "${inputPath}"`,
       `-f lavfi -i anullsrc=r=44100:cl=mono`,
-      `-c:v libx264 -preset ultrafast -crf 28`,
+      `-c:v libx264 -preset ultrafast`,
+      `-vf "scale='min(1280,iw)':min'(720,ih)':force_original_aspect_ratio=decrease"`,
+      `-b:v ${videoKbps}k -maxrate ${Math.floor(videoKbps * 1.5)}k -bufsize ${videoKbps * 2}k`,
       `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
       `-map 0:v -map "[aout]"`,
-      `-c:a aac -b:a 96k -ar 44100 -ac 1`,
+      `-c:a aac -b:a ${AUDIO_KBPS}k -ar 44100 -ac 1`,
       `-movflags +faststart -y "${outputPath}"`,
     ].join(' ');
     await execAsync(encodeCmd, { maxBuffer: 50 * 1024 * 1024 });
+
+    // 4) Verificar tamaño final
+    const statOut = await fs.stat(outputPath);
+    console.log(`[VIDEO_CONVERT] Tamaño final: ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
 
     const convertedBuffer = await fs.readFile(outputPath);
 
