@@ -4,7 +4,6 @@ const { db } = require('../database/config');
 const { DateTime } = require('luxon');
 const FormData = require('form-data');
 
-
 const {
   getConfigFromDB,
   onlyDigits,
@@ -1269,26 +1268,18 @@ exports.listarProgramadosPorConfig = async (req, res) => {
 };
 
 exports.enviarVideoWhatsapp = async (req, res) => {
-  const {
-    stream_url,
-    jwt_servidor,
-    wa_token,
-    phone_number_id,
-    numero_destino,
-    caption,
-  } = req.body;
+  const { stream_url, jwt_servidor, wa_token, phone_number_id } = req.body;
 
-  if (!stream_url || !wa_token || !phone_number_id || !numero_destino) {
+  if (!stream_url || !wa_token || !phone_number_id) {
     return res.status(400).json({
       status: 400,
-      message: 'Faltan campos requeridos: stream_url, wa_token, phone_number_id, numero_destino',
+      message: 'Faltan campos: stream_url, wa_token, phone_number_id',
     });
   }
 
   try {
-    // ── 1. Descargar video desde tu servidor ──────────────────────
-    console.log('[WA_VIDEO] Descargando video:', stream_url);
-
+    // ── 1. Descargar ──────────────────────────────────────────────
+    console.log('[WA_VIDEO] Descargando:', stream_url);
     const videoResponse = await axios.get(stream_url, {
       responseType: 'arraybuffer',
       headers: { Authorization: `Bearer ${jwt_servidor}` },
@@ -1296,16 +1287,26 @@ exports.enviarVideoWhatsapp = async (req, res) => {
     });
 
     const videoBuffer = Buffer.from(videoResponse.data);
-    console.log('[WA_VIDEO] Video descargado OK:', (videoBuffer.length / 1024 / 1024).toFixed(2), 'MB');
+    console.log(
+      '[WA_VIDEO] Descargado:',
+      (videoBuffer.length / 1024 / 1024).toFixed(2),
+      'MB',
+    );
 
-    // ── 2. Convertir con FFmpeg ───────────────────────────────────
-    console.log('[WA_VIDEO] Convirtiendo con FFmpeg...');
-    const convertedBuffer = await convertVideoForWhatsApp(videoBuffer, 'video.mp4');
-    console.log('[WA_VIDEO] Conversión OK:', (convertedBuffer.length / 1024 / 1024).toFixed(2), 'MB');
+    // ── 2. Convertir ──────────────────────────────────────────────
+    console.log('[WA_VIDEO] Convirtiendo...');
+    const convertedBuffer = await convertVideoForWhatsApp(
+      videoBuffer,
+      'video.mp4',
+    );
+    console.log(
+      '[WA_VIDEO] Convertido:',
+      (convertedBuffer.length / 1024 / 1024).toFixed(2),
+      'MB',
+    );
 
-    // ── 3. Subir a WhatsApp Media API ─────────────────────────────
+    // ── 3. Subir a WhatsApp ───────────────────────────────────────
     console.log('[WA_VIDEO] Subiendo a WhatsApp...');
-
     const uploadForm = new FormData();
     uploadForm.append('file', convertedBuffer, {
       filename: 'video.mp4',
@@ -1325,45 +1326,15 @@ exports.enviarVideoWhatsapp = async (req, res) => {
         timeout: 120000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
-      }
+      },
     );
 
     const media_id = uploadResponse.data?.id;
     if (!media_id) throw new Error('WhatsApp no retornó media_id');
 
-    console.log('[WA_VIDEO] media_id obtenido:', media_id);
+    console.log('[WA_VIDEO] ✅ media_id:', media_id);
 
-    // ── 4. Enviar mensaje ─────────────────────────────────────────
-    const sendResponse = await axios.post(
-      `https://graph.facebook.com/v19.0/${phone_number_id}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: numero_destino,
-        type: 'video',
-        video: {
-          id: media_id,
-          caption: caption || '',
-        },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${wa_token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      }
-    );
-
-    const wamid = sendResponse.data?.messages?.[0]?.id || null;
-    console.log('[WA_VIDEO] ✅ Enviado, wamid:', wamid);
-
-    return res.json({
-      status: 200,
-      message: 'Video enviado correctamente',
-      wamid,
-      media_id,
-    });
-
+    return res.json({ status: 200, media_id });
   } catch (err) {
     console.error('[WA_VIDEO] Error:', err?.response?.data || err.message);
     return res.status(500).json({
