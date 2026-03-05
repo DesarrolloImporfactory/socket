@@ -36,6 +36,7 @@ const CatalogosItemsChatCenter = require('./catalogos_items_chat_center.model');
 const EtapasLanding = require('./etapas_landing.model');
 const TemplatesIA = require('./templates_ia.model');
 const GeneracionesIA = require('./generaciones_ia.model');
+const GeneracionesAngulosIA = require('./generaciones_angulos_ia.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -496,6 +497,7 @@ const getModels = () => {
     EtapasLanding,
     TemplatesIA,
     GeneracionesIA,
+    GeneracionesAngulosIA,
   };
 };
 

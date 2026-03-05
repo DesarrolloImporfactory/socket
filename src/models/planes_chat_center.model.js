@@ -69,6 +69,11 @@ const Planes_chat_center = db.define(
       defaultValue: 0,
       comment: 'Máximo de imágenes IA por mes (0 = sin acceso)',
     },
+    max_angulos_ia: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     sequelize: db,
