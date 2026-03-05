@@ -200,6 +200,12 @@ async function getGeminiApiKey(next) {
   }
 }
 
+const MOCK_IMAGE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+function isMockMode() {
+  return process.env.GEMINI_MOCK === 'true';
+}
 // ═══════════════════════════════════════════════════════════════════════════
 // CATÁLOGOS PÚBLICOS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -403,6 +409,33 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ── MOCK MODE ──────────────────────────────────────────────
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await GeneracionesIA.create({
+      id_usuario,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      template_id: template_id || null,
+      id_etapa: etapa_id,
+      aspect_ratio,
+      description: description || null,
+      prompt: 'MOCK',
+      model: 'mock',
+      image_url: null,
+    });
+    return res.json({
+      isSuccess: true,
+      etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+      image_base64: MOCK_IMAGE_BASE64,
+      image_url: null,
+      model: 'mock',
+      usage: {
+        used: usedThisMonth + 1,
+        limit: maxImagenes,
+        remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+      },
+    });
+  }
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
@@ -786,6 +819,41 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   }
   // ───────────────────────────────────────────────────────────────────────
 
+  // ── MOCK MODE ──────────────────────────────────────────────
+  // En generar_angulos
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 800));
+    await GeneracionesAngulosIA.create({ id_usuario });
+    return res.json({
+      isSuccess: true,
+      data: [
+        {
+          titulo: 'Mock — Urgencia extrema',
+          descripcion: 'Ángulo de prueba para desarrollo local',
+          tono: 'Urgencia',
+          ejemplo_headline: '¡Solo quedan 3 unidades! No lo dejes pasar',
+        },
+        {
+          titulo: 'Mock — Exclusividad total',
+          descripcion: 'Segundo ángulo de prueba',
+          tono: 'Exclusividad',
+          ejemplo_headline: 'El producto que solo conocen los que saben',
+        },
+        {
+          titulo: 'Mock — Ahorro inteligente',
+          descripcion: 'Tercer ángulo de prueba',
+          tono: 'Ahorro',
+          ejemplo_headline: 'Paga menos, obtén más. Así de simple',
+        },
+      ],
+      angles_usage: {
+        used: usedAngulos + 1,
+        limit: maxAngulos,
+        remaining: Math.max(maxAngulos - usedAngulos - 1, 0),
+      },
+    });
+  }
+
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
@@ -948,6 +1016,34 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     return next(
       new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
     );
+  }
+
+  // ── MOCK MODE ──────────────────────────────────────────────
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await GeneracionesIA.create({
+      id_usuario,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      template_id: template_id || null,
+      id_etapa: etapa_id,
+      aspect_ratio,
+      description: description || null,
+      prompt: 'MOCK',
+      model: 'mock',
+      image_url: null,
+    });
+    return res.json({
+      isSuccess: true,
+      etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+      image_base64: MOCK_IMAGE_BASE64,
+      image_url: null,
+      model: 'mock',
+      usage: {
+        used: usedThisMonth + 1,
+        limit: maxImagenes,
+        remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+      },
+    });
   }
 
   const apiKey = await getGeminiApiKey(next);

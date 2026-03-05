@@ -21,11 +21,15 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
 
   try {
     // Armamos el query dinámico
-    let query = `UPDATE clientes_chat_center SET chat_cerrado = ?, bot_openia = ?`;
+    let query = `UPDATE clientes_chat_center 
+                  SET chat_cerrado = ?,
+                      bot_openia = ?,
+                      chat_cerrado_at = ${Number(nuevoEstado) === 1 ? 'NOW()' : 'NULL'}`;
+
     const replacements = [nuevoEstado, bot_openia];
 
     // Si bot_openia == 1 → también actualizar estado_contacto
-    if (bot_openia == 1) {
+    if (Number(bot_openia) === 1) {
       query += `, estado_contacto = ?`;
       replacements.push('contacto_inicial');
     }
@@ -43,6 +47,7 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
       status: '200',
       title: 'Petición exitosa',
       message: 'Chat actualizado correctamente',
+      chat_cerrado_at: Number(nuevoEstado) === 1 ? new Date().toString() : null,
     });
   } catch (error) {
     console.error(error);
