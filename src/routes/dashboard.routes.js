@@ -15,27 +15,9 @@ router.post(
 );
 
 router.post(
-  '/obtener_estadisticas',
+  '/obtener_dashboard_completo',
   checkPlanActivo,
-  dashboardController.obtenerEstadisticas,
-);
-
-router.post(
-  '/obtener_cola_pendientes',
-  checkPlanActivo,
-  dashboardController.obtenerColaPendientes,
-);
-
-router.post(
-  '/obtener_sla_hoy',
-  checkPlanActivo,
-  dashboardController.obtenerSlaHoy,
-);
-
-router.post(
-  '/obtener_charts',
-  checkPlanActivo,
-  dashboardController.obtenerCharts,
+  dashboardController.obtenerDashboardCompleto,
 );
 
 module.exports = router;

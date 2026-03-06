@@ -681,7 +681,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const idEtiquetaNum = Number(req.query.id_etiqueta ?? 0);
   const hasEtiqueta = Number.isFinite(idEtiquetaNum) && idEtiquetaNum > 0;
 
-  // WHERE del cliente (solo columnas de clientes_chat_center aquí)
+  // WHERE del cliente
   const whereParts = ['c.deleted_at IS NULL', 'c.id_configuracion = ?'];
   const params = [id_configuracion];
 
@@ -695,7 +695,6 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(idEtiquetaNum);
   }
 
-  // filtros por asesor y ciclo
   if (req.query.id_etiqueta_asesor) {
     whereParts.push('c.id_etiqueta_asesor = ?');
     params.push(Number(req.query.id_etiqueta_asesor));
@@ -720,7 +719,6 @@ exports.listarClientes = catchAsync(async (req, res) => {
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
 
-  // LEFT JOIN para asesor y ciclo + columnas nuevas en SELECT
   const dataSql = `
     SELECT
       c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
@@ -747,76 +745,70 @@ exports.listarClientes = catchAsync(async (req, res) => {
     LEFT JOIN etiquetas_custom_chat_center ecc
       ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
 
+    --  LEFT JOIN: Muestra todos los clientes, con o sin mensajes
     LEFT JOIN (
       SELECT
-        t.chat_id,
-        t.id_configuracion,
-        t.created_at AS ultimo_mensaje_at,
-        t.texto_mensaje AS ultimo_texto,
-        t.tipo_mensaje AS ultimo_tipo_mensaje,
-        t.rol_mensaje  AS ultimo_rol_mensaje,
-        t.id           AS ultimo_msg_id
+        id_configuracion,
+        id_cliente,
+        MAX(created_at) AS ultimo_mensaje_at,
+        SUBSTRING_INDEX(GROUP_CONCAT(texto_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_texto,
+        SUBSTRING_INDEX(GROUP_CONCAT(tipo_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_tipo_mensaje,
+        SUBSTRING_INDEX(GROUP_CONCAT(rol_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_rol_mensaje,
+        SUBSTRING_INDEX(GROUP_CONCAT(id ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_msg_id
       FROM (
+        -- mensajes donde el cliente fue el EMISOR
         SELECT
-          u.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY u.id_configuracion, u.chat_id
-            ORDER BY u.created_at DESC, u.id DESC
-          ) AS rn
-        FROM (
-          -- mensajes donde el cliente fue el EMISOR
-          SELECT
-            m.id,
-            m.id_configuracion,
-            m.id_cliente AS chat_id,
-            m.created_at,
-            m.texto_mensaje,
-            m.tipo_mensaje,
-            m.rol_mensaje
-          FROM mensajes_clientes m
-          WHERE m.deleted_at IS NULL
-            AND m.id_configuracion = ?
+          id,
+          id_configuracion,
+          id_cliente,
+          created_at,
+          texto_mensaje,
+          tipo_mensaje,
+          rol_mensaje
+        FROM mensajes_clientes
+        WHERE deleted_at IS NULL
+          AND id_configuracion = ?
 
-          UNION ALL
+        UNION ALL
 
-          -- mensajes donde el cliente fue el RECEPTOR
-          SELECT
-            m.id,
-            m.id_configuracion,
-            CAST(m.celular_recibe AS UNSIGNED) AS chat_id,
-            m.created_at,
-            m.texto_mensaje,
-            m.tipo_mensaje,
-            m.rol_mensaje
-          FROM mensajes_clientes m
-          WHERE m.deleted_at IS NULL
-            AND m.id_configuracion = ?
-            AND m.celular_recibe IS NOT NULL
-            AND m.celular_recibe <> ''
-        ) u
-      ) t
-      WHERE t.rn = 1
+        -- mensajes donde el cliente fue el RECEPTOR
+        SELECT
+          id,
+          id_configuracion,
+          CAST(celular_recibe AS UNSIGNED) AS id_cliente,
+          created_at,
+          texto_mensaje,
+          tipo_mensaje,
+          rol_mensaje
+        FROM mensajes_clientes
+        WHERE deleted_at IS NULL
+          AND id_configuracion = ?
+          AND celular_recibe IS NOT NULL
+          AND celular_recibe <> ''
+      ) all_msgs
+      GROUP BY id_configuracion, id_cliente
     ) lm
       ON lm.id_configuracion = c.id_configuracion
-     AND lm.chat_id = c.id
-     AND c.propietario = 0
+      AND lm.id_cliente = c.id
+      AND c.propietario = 0
 
     ${whereClause}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
   `;
 
+  //  COUNT: todos los clientes (con o sin mensajes)
   const countSql = `
     SELECT COUNT(*) AS total
     FROM clientes_chat_center c
     ${whereClause};
   `;
 
-  // OJO: el subquery lm usa dos veces id_configuracion (?)
+  // Ejecutar queries
   const rows = await db.query(dataSql, {
     replacements: [
-      id_configuracion,
-      id_configuracion,
+      id_configuracion, // para el subquery de mensajes (EMISOR)
+      id_configuracion, // para el subquery de mensajes (RECEPTOR)
       ...params,
       limit,
       offset,
@@ -825,7 +817,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
   });
 
   const countRows = await db.query(countSql, {
-    replacements: params,
+    replacements: params, // Solo los params del WHERE, sin id_configuracion extra
     type: db.QueryTypes.SELECT,
   });
 
