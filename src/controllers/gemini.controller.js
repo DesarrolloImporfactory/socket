@@ -9,6 +9,7 @@ const Configuraciones = require('../models/configuraciones.model');
 const Usuarios = require('../models/usuarios_chat_center.model');
 const Planes = require('../models/planes_chat_center.model');
 const GeneracionesIA = require('../models/generaciones_ia.model');
+const GeneracionesAngulosIA = require('../models/generaciones_angulos_ia.model'); // 👈 nuevo
 const EtapasLanding = require('../models/etapas_landing.model');
 const TemplatesIA = require('../models/templates_ia.model');
 
@@ -88,9 +89,6 @@ async function uploadImageToS3(base64Data, userId, suffix = '') {
   }
 }
 
-/**
- * Sube un archivo (buffer) a S3 para templates
- */
 async function uploadTemplateToS3(fileBuffer, originalName) {
   try {
     const ext = originalName.split('.').pop() || 'png';
@@ -131,6 +129,15 @@ async function getMonthlyCount(id_usuario) {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   return GeneracionesIA.count({
+    where: { id_usuario, created_at: { [Op.gte]: startOfMonth } },
+  });
+}
+
+// helper para contar ángulos del mes
+async function getMonthlyAngulosCount(id_usuario) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  return GeneracionesAngulosIA.count({
     where: { id_usuario, created_at: { [Op.gte]: startOfMonth } },
   });
 }
@@ -193,13 +200,16 @@ async function getGeminiApiKey(next) {
   }
 }
 
+const MOCK_IMAGE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+function isMockMode() {
+  return process.env.GEMINI_MOCK === 'true';
+}
 // ═══════════════════════════════════════════════════════════════════════════
 // CATÁLOGOS PÚBLICOS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * GET /gemini/etapas
- */
 exports.get_etapas = catchAsync(async (req, res) => {
   const etapas = await EtapasLanding.findAll({
     where: { activo: 1 },
@@ -216,10 +226,6 @@ exports.get_etapas = catchAsync(async (req, res) => {
   return res.json({ isSuccess: true, data: etapas });
 });
 
-/**
- * GET /gemini/templates
- * Devuelve templates agrupados por etapa
- */
 exports.get_templates = catchAsync(async (req, res) => {
   const templates = await TemplatesIA.findAll({
     where: { activo: 1 },
@@ -242,7 +248,6 @@ exports.get_templates = catchAsync(async (req, res) => {
       },
     ],
   });
-
   return res.json({ isSuccess: true, data: templates });
 });
 
@@ -250,10 +255,6 @@ exports.get_templates = catchAsync(async (req, res) => {
 // ADMIN: CRUD TEMPLATES
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * GET /gemini/admin/templates
- * Lista TODOS los templates (activos e inactivos) para el admin
- */
 exports.admin_list_templates = catchAsync(async (req, res) => {
   const templates = await TemplatesIA.findAll({
     order: [
@@ -286,24 +287,15 @@ exports.admin_list_templates = catchAsync(async (req, res) => {
   return res.json({ isSuccess: true, data: { templates, etapas } });
 });
 
-/**
- * POST /gemini/admin/templates
- * Crear un template. Sube imagen a S3.
- * Body (multipart): imagen (file), nombre, id_etapa, descripcion?, orden?
- */
 exports.admin_create_template = catchAsync(async (req, res, next) => {
   const { nombre, id_etapa, descripcion, orden } = req.body;
-
   if (!nombre) return next(new AppError('El nombre es requerido', 400));
 
   let src_url = '';
-
-  // Si viene archivo, subir a S3
   if (req.file) {
     src_url = await uploadTemplateToS3(req.file.buffer, req.file.originalname);
     if (!src_url) return next(new AppError('Error al subir la imagen', 500));
   } else if (req.body.src_url) {
-    // O aceptar URL directa
     src_url = req.body.src_url;
   } else {
     return next(
@@ -323,17 +315,12 @@ exports.admin_create_template = catchAsync(async (req, res, next) => {
   return res.status(201).json({ isSuccess: true, data: template });
 });
 
-/**
- * PUT /gemini/admin/templates/:id
- * Actualizar template. Si viene imagen nueva, sube a S3.
- */
 exports.admin_update_template = catchAsync(async (req, res, next) => {
   const { id } = req.params;
   const template = await TemplatesIA.findByPk(id);
   if (!template) return next(new AppError('Template no encontrado', 404));
 
   const updates = {};
-
   if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
   if (req.body.descripcion !== undefined)
     updates.descripcion = req.body.descripcion;
@@ -342,7 +329,6 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
   if (req.body.orden !== undefined) updates.orden = Number(req.body.orden);
   if (req.body.activo !== undefined) updates.activo = Number(req.body.activo);
 
-  // Nueva imagen
   if (req.file) {
     const newUrl = await uploadTemplateToS3(
       req.file.buffer,
@@ -355,7 +341,6 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
 
   await template.update(updates);
 
-  // Recargar con etapa
   const updated = await TemplatesIA.findByPk(id, {
     include: [
       {
@@ -370,14 +355,10 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, data: updated });
 });
 
-/**
- * DELETE /gemini/admin/templates/:id
- */
 exports.admin_delete_template = catchAsync(async (req, res, next) => {
   const { id } = req.params;
   const template = await TemplatesIA.findByPk(id);
   if (!template) return next(new AppError('Template no encontrado', 404));
-
   await template.destroy();
   return res.json({ isSuccess: true, message: 'Template eliminado' });
 });
@@ -386,10 +367,6 @@ exports.admin_delete_template = catchAsync(async (req, res, next) => {
 // GENERACIÓN POR ETAPA
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * POST /gemini/generar-etapa
- * Ahora acepta: angulo_venta, pricing (JSON string)
- */
 exports.generar_etapa = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -432,6 +409,33 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ── MOCK MODE ──────────────────────────────────────────────
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await GeneracionesIA.create({
+      id_usuario,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      template_id: template_id || null,
+      id_etapa: etapa_id,
+      aspect_ratio,
+      description: description || null,
+      prompt: 'MOCK',
+      model: 'mock',
+      image_url: null,
+    });
+    return res.json({
+      isSuccess: true,
+      etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+      image_base64: MOCK_IMAGE_BASE64,
+      image_url: null,
+      model: 'mock',
+      usage: {
+        used: usedThisMonth + 1,
+        limit: maxImagenes,
+        remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+      },
+    });
+  }
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
@@ -443,7 +447,6 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     },
   }));
 
-  // Construir pricing context
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
@@ -508,10 +511,7 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       timeout: 120000,
     });
   } catch (err) {
@@ -688,6 +688,7 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 // CONSULTAS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── get_usage — ahora incluye ángulos ──────────────────────────────────────
 exports.get_usage = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -700,22 +701,40 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       {
         model: Planes,
         as: 'plan',
-        attributes: ['id_plan', 'nombre_plan', 'max_imagenes_ia'],
+        // 👈 agrega max_angulos_ia
+        attributes: [
+          'id_plan',
+          'nombre_plan',
+          'max_imagenes_ia',
+          'max_angulos_ia',
+        ],
       },
     ],
   });
   if (!usuario) return next(new AppError('Usuario no encontrado', 404));
 
   const maxImagenes = usuario.plan?.max_imagenes_ia || 0;
-  const usedThisMonth = await getMonthlyCount(id_usuario);
+  // NULL = sin acceso, número = tiene límite mensual
+  const maxAngulos = usuario.plan?.max_angulos_ia ?? null;
+
+  const usedImagenes = await getMonthlyCount(id_usuario);
+
+  // Solo contamos si el plan tiene acceso a ángulos
+  const usedAngulos =
+    maxAngulos !== null ? await getMonthlyAngulosCount(id_usuario) : 0;
 
   return res.json({
     isSuccess: true,
     usage: {
-      used: usedThisMonth,
+      used: usedImagenes,
       limit: maxImagenes,
-      remaining: Math.max(maxImagenes - usedThisMonth, 0),
+      remaining: Math.max(maxImagenes - usedImagenes, 0),
       plan: usuario.plan?.nombre_plan || 'Sin plan',
+      // campos nuevos de ángulos
+      angles_used: usedAngulos,
+      angles_limit: maxAngulos, // null = sin acceso al feature
+      angles_remaining:
+        maxAngulos !== null ? Math.max(maxAngulos - usedAngulos, 0) : 0,
     },
   });
 });
@@ -761,15 +780,7 @@ exports.get_historial = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * POST /gemini/generar-angulos
- * Genera 3 ángulos de venta usando Gemini texto basándose en la descripción
- * del producto, precios y las imágenes del usuario.
- *
- * Body JSON:
- *  - description: string (descripción del producto/marca)
- *  - pricing: { precio_unitario: string, combos: [{ cantidad: number, precio: string }] }
- */
+// ── generar_angulos — ahora valida cuota y registra uso ───────────────────
 exports.generar_angulos = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -781,10 +792,71 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   if (!description)
     return next(new AppError('La descripción del producto es requerida', 400));
 
+  // ── Validar acceso y cuota de ángulos ──────────────────────────────────
+  const usuarioConPlan = await Usuarios.findOne({
+    where: { id_usuario },
+    attributes: ['id_usuario', 'id_plan'],
+    include: [{ model: Planes, as: 'plan', attributes: ['max_angulos_ia'] }],
+  });
+
+  const maxAngulos = usuarioConPlan?.plan?.max_angulos_ia ?? null;
+
+  // null = plan sin acceso al feature de ángulos IA
+  if (maxAngulos === null) {
+    return next(
+      new AppError('Tu plan no incluye generación de ángulos IA.', 403),
+    );
+  }
+
+  const usedAngulos = await getMonthlyAngulosCount(id_usuario);
+  if (usedAngulos >= maxAngulos) {
+    return next(
+      new AppError(
+        `Límite de ${maxAngulos} generaciones de ángulos alcanzado.`,
+        429,
+      ),
+    );
+  }
+  // ───────────────────────────────────────────────────────────────────────
+
+  // ── MOCK MODE ──────────────────────────────────────────────
+  // En generar_angulos
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 800));
+    await GeneracionesAngulosIA.create({ id_usuario });
+    return res.json({
+      isSuccess: true,
+      data: [
+        {
+          titulo: 'Mock — Urgencia extrema',
+          descripcion: 'Ángulo de prueba para desarrollo local',
+          tono: 'Urgencia',
+          ejemplo_headline: '¡Solo quedan 3 unidades! No lo dejes pasar',
+        },
+        {
+          titulo: 'Mock — Exclusividad total',
+          descripcion: 'Segundo ángulo de prueba',
+          tono: 'Exclusividad',
+          ejemplo_headline: 'El producto que solo conocen los que saben',
+        },
+        {
+          titulo: 'Mock — Ahorro inteligente',
+          descripcion: 'Tercer ángulo de prueba',
+          tono: 'Ahorro',
+          ejemplo_headline: 'Paga menos, obtén más. Así de simple',
+        },
+      ],
+      angles_usage: {
+        used: usedAngulos + 1,
+        limit: maxAngulos,
+        remaining: Math.max(maxAngulos - usedAngulos - 1, 0),
+      },
+    });
+  }
+
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
-  // Construir contexto de precios
   let pricingContext = '';
   if (pricing) {
     if (pricing.precio_unitario) {
@@ -836,7 +908,6 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
 ]`;
 
   const textModel = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
-
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent`;
 
   const payload = {
@@ -850,10 +921,7 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       timeout: 30000,
     });
   } catch (err) {
@@ -863,7 +931,6 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
     return next(new AppError(mapped.message, mapped.statusCode));
   }
 
-  // Extraer texto de la respuesta
   const parts = geminiResp?.data?.candidates?.[0]?.content?.parts || [];
   const textPart = parts.find((p) => p?.text);
   if (!textPart?.text) {
@@ -885,18 +952,27 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
     return next(new AppError('Gemini no generó ángulos válidos', 500));
   }
 
+  // Registrar el uso SOLO si Gemini respondió correctamente
+  await GeneracionesAngulosIA.create({ id_usuario });
+
+  const newUsedAngulos = usedAngulos + 1;
+
   return res.json({
     isSuccess: true,
     data: angulos.slice(0, 3),
+    // 👇 devolver uso actualizado para que el front pueda refrescarlo
+    angles_usage: {
+      used: newUsedAngulos,
+      limit: maxAngulos,
+      remaining: Math.max(maxAngulos - newUsedAngulos, 0),
+    },
   });
 });
 
-/**
- * POST /gemini/regenerar-etapa
- * Regenera UNA sola etapa con un prompt editado por el usuario.
- * Igual que generar-etapa pero acepta prompt_extra para ajustes.
- *
- */
+// ═══════════════════════════════════════════════════════════════════════════
+// REGENERAR ETAPA
+// ═══════════════════════════════════════════════════════════════════════════
+
 exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -942,6 +1018,34 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ── MOCK MODE ──────────────────────────────────────────────
+  if (isMockMode()) {
+    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await GeneracionesIA.create({
+      id_usuario,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      template_id: template_id || null,
+      id_etapa: etapa_id,
+      aspect_ratio,
+      description: description || null,
+      prompt: 'MOCK',
+      model: 'mock',
+      image_url: null,
+    });
+    return res.json({
+      isSuccess: true,
+      etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
+      image_base64: MOCK_IMAGE_BASE64,
+      image_url: null,
+      model: 'mock',
+      usage: {
+        used: usedThisMonth + 1,
+        limit: maxImagenes,
+        remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+      },
+    });
+  }
+
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
@@ -953,7 +1057,6 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     },
   }));
 
-  // Construir pricing context
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
@@ -1014,10 +1117,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       timeout: 120000,
     });
   } catch (err) {
@@ -1064,7 +1164,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─── LEGACY ─────────────────────────────────────────────────────────────────
+// ─── LEGACY ──────────────────────────────────────────────────────────────────
 
 exports.obtener_api_key = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.body?.id_configuracion || 0);

@@ -181,7 +181,8 @@ exports.enviarTemplateMasivo = async (req, res) => {
       processedFilename = req.file.originalname;
 
       if (fmt === 'VIDEO') {
-        console.log('[VIDEO] Iniciando conversión a formato WhatsApp...');
+        const videoOriginalSizeMB = req.file.buffer.length / (1024 * 1024);
+        console.log(`[VIDEO] Iniciando conversión. Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`);
         try {
           processedBuffer = await convertVideoForWhatsApp(
             req.file.buffer,
@@ -196,6 +197,13 @@ exports.enviarTemplateMasivo = async (req, res) => {
             'MB',
           );
         } catch (convErr) {
+          if (convErr.isOversized || videoOriginalSizeMB > 15) {
+            const msg = convErr.isOversized
+              ? convErr.message
+              : `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
+            console.error('[VIDEO] Video demasiado pesado:', msg);
+            return res.status(400).json({ success: false, step: 'convert_video', message: msg });
+          }
           console.warn(
             '[VIDEO] No se pudo convertir. Usando original:',
             convErr.message,
@@ -1288,12 +1296,24 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
     // Buffer del archivo recibido
     const videoBuffer = req.file.buffer;
 
-    // (Opcional) convertir SOLO si lo necesitas
-    // Si ya viene mp4/h264/aac puedes saltarte esto
+    // Convertir a H.264/AAC compatible con WhatsApp
+    const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
+    console.log(`[WA_VIDEO] Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`);
     let convertedBuffer = videoBuffer;
-
-    // ejemplo: si tu convertidor siempre devuelve mp4 compatible
-    // convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
+    try {
+      console.log('[WA_VIDEO] Convirtiendo video...');
+      convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
+      console.log('[WA_VIDEO] Conversión OK. Tamaño:', (convertedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+    } catch (convErr) {
+      if (convErr.isOversized || videoOriginalSizeMB > 15) {
+        const msg = convErr.isOversized
+          ? convErr.message
+          : `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
+        console.error('[WA_VIDEO] Video demasiado pesado:', msg);
+        return res.status(400).json({ status: 400, message: msg });
+      }
+      console.warn('[WA_VIDEO] Conversión fallida, usando original:', convErr.message);
+    }
 
     // Subir a WhatsApp
     console.log('[WA_VIDEO] Subiendo a WhatsApp...');

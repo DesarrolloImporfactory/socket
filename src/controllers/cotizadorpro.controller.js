@@ -194,34 +194,44 @@ const crearMensajeBD = async (
 };
 
 // Helper: Generar datos del mensaje
-// headerMedia: { type, link?, id? } | null — se almacena en ruta_archivo para el historial
+// headerMedia: { type, fileUrl?, id?, link? } | null — se almacena en ruta_archivo para el historial
 const generarDatosMensaje = (templateName, nombreCliente, idCotizacion, headerMedia = null) => {
   const templates = {
     cotizacion_carga_enviadav2: {
-      texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊
-Por favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
+      texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊\nPor favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
     },
     confirmacion_cotizacionv2: {
-      texto: `Hola Importador {{1}}.
-Para continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.
-
-Si tiene algunas dudas estoy aqui para resolverlas. 😊`,
+      texto: `Hola Importador {{1}}.\nPara continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.\n\nSi tiene algunas dudas estoy aqui para resolverlas. 😊`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
+    },
+    cotizacion_carga_enviada_pro: {
+      texto: `🎉 ¡Hola {{1}}! Te comparto la cotización que nos solicitaste. 😊\nPor favor recuerda que, en la parte superior, encontrarás los gastos referentes a tu compra y en la parte inferior, el detalle del precio al que llegarán tus productos al destino.`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
+    },
+    confirmacion_cotizacion_pro: {
+      texto: `👉 Para continuar, por favor confirma la aceptación de la cotización haciendo clic en el siguiente enlace.\n\nSi tienes alguna duda estoy aquí para ayudarte. 😊`,
       url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
     },
   };
 
   const template = templates[templateName];
+
+  // placeholders: confirmacion_cotizacion_pro no lleva nombre (sin body con {{1}})
+  const placeholders = nombreCliente
+    ? { 1: nombreCliente, url_0_1: idCotizacion, url_full_0_1: template.url }
+    : { url_0_1: idCotizacion, url_full_0_1: template.url };
+
   const rutaArchivo = JSON.stringify({
-    placeholders: {
-      1: nombreCliente,
-      url_0_1: idCotizacion,
-      url_full_0_1: template.url,
-    },
+    placeholders,
     header: headerMedia
       ? {
-          format: headerMedia.type,
-          ...(headerMedia.id ? { mediaId: headerMedia.id } : { link: headerMedia.link }),
+          format: headerMedia.type.toUpperCase(),
+          value: '',
+          fileUrl: headerMedia.fileUrl || null,
+          meta_media_id: headerMedia.id || null,
+          mime: null,
+          size: null,
         }
       : null,
     template_name: templateName,
@@ -235,7 +245,7 @@ Si tiene algunas dudas estoy aqui para resolverlas. 😊`,
 };
 
 // Helper: Convertir video a formato WhatsApp
-const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
+const convertVideoForWhatsApp = async (fileBuffer, originalName, targetSizeMB = 15) => {
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `input-${Date.now()}-${originalName}`);
   const outputPath = path.join(tempDir, `output-${Date.now()}.mp4`);
@@ -253,25 +263,71 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName) => {
       throw new Error('FFmpeg no está instalado en el servidor');
     }
 
-    const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -maxrate 1M -bufsize 2M -movflags +faststart -y "${outputPath}"`;
+    // 1) Obtener duración con ffprobe para calcular bitrate dinámico
+    let duration = 60; // fallback 60s
+    try {
+      const probe = await execAsync(
+        `ffprobe -v error -select_streams v:0 -show_entries format=duration -of csv=p=0 "${inputPath}"`,
+      );
+      const parsed = parseFloat(probe.stdout.trim());
+      if (parsed > 0) duration = parsed;
+    } catch (_) {}
 
-    // console.log('[VIDEO_CONVERT] Ejecutando conversión...');
-    const startTime = Date.now();
+    // 2) Calcular bitrate dinámico según targetSizeMB
+    const MAX_BYTES = targetSizeMB * 1024 * 1024;
+    const AUDIO_KBPS = 96;
+    const totalKbps = Math.floor((MAX_BYTES * 8) / duration / 1000);
+    const videoKbps = Math.max(100, totalKbps - AUDIO_KBPS);
 
-    await execAsync(ffmpegCmd, {
-      maxBuffer: 50 * 1024 * 1024,
-    });
+    console.log(`[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k | Target: ${targetSizeMB}MB`);
 
-    const duration = Date.now() - startTime;
-    // console.log('[VIDEO_CONVERT] Conversión completada en', duration, 'ms');
+    // Helper interno: construye el comando ffmpeg con los parámetros dados
+    // - Escala manteniendo aspect ratio al máximo maxW x maxH
+    // - Redondea ancho/alto a número par (libx264 lo exige)
+    const buildCmd = (vKbps, maxW, maxH, aKbps) => [
+      `ffmpeg -i "${inputPath}"`,
+      `-f lavfi -i anullsrc=r=44100:cl=mono`,
+      `-c:v libx264 -preset ultrafast`,
+      `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
+      `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
+      `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
+      `-map 0:v -map "[aout]"`,
+      `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
+      `-movflags +faststart -y "${outputPath}"`,
+    ].join(' ');
+
+    // 3) Intento 1 — 720p, bitrate calculado
+    await execAsync(buildCmd(videoKbps, 1280, 720, AUDIO_KBPS), { maxBuffer: 50 * 1024 * 1024 });
+    let statOut = await fs.stat(outputPath);
+    console.log(`[VIDEO_CONVERT] Intento 1 (720p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+
+    // 4) Intento 2 — 480p, bitrate reducido al 55%, audio 64k
+    if (statOut.size > MAX_BYTES) {
+      const vKbps2 = Math.max(80, Math.floor(videoKbps * 0.55));
+      console.warn(`[VIDEO_CONVERT] Supera límite → compresión agresiva 480p (${vKbps2}k)...`);
+      await execAsync(buildCmd(vKbps2, 854, 480, 64), { maxBuffer: 50 * 1024 * 1024 });
+      statOut = await fs.stat(outputPath);
+      console.log(`[VIDEO_CONVERT] Intento 2 (480p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+    }
+
+    // 5) Intento 3 — 360p, bitrate mínimo, audio 48k
+    if (statOut.size > MAX_BYTES) {
+      const vKbps3 = Math.max(60, Math.floor(((MAX_BYTES * 8) / duration / 1000) * 0.8 - 48));
+      console.warn(`[VIDEO_CONVERT] Aún supera límite → compresión máxima 360p (${vKbps3}k)...`);
+      await execAsync(buildCmd(vKbps3, 640, 360, 48), { maxBuffer: 50 * 1024 * 1024 });
+      statOut = await fs.stat(outputPath);
+      console.log(`[VIDEO_CONVERT] Intento 3 (360p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+    }
+
+    // 6) Si aún supera, lanzar error (no tiene sentido subir algo que Meta rechazará)
+    if (statOut.size > MAX_BYTES) {
+      const finalMB = (statOut.size / (1024 * 1024)).toFixed(2);
+      const err = new Error(`El video pesa demasiado (${finalMB}MB) y no fue posible comprimirlo por debajo de ${targetSizeMB}MB. Enviá un video más corto o de menor resolución.`);
+      err.isOversized = true;
+      throw err;
+    }
 
     const convertedBuffer = await fs.readFile(outputPath);
-
-    /*  // console.log('[VIDEO_CONVERT] Tamaños:', {
-      original: (fileBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
-      convertido: (convertedBuffer.length / (1024 * 1024)).toFixed(2) + ' MB',
-    });
- */
     await fs.unlink(inputPath).catch(() => {});
     await fs.unlink(outputPath).catch(() => {});
 
@@ -481,11 +537,17 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
       },
     });
     let videoBuffer = Buffer.from(videoResp.data);
+    const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
+    console.log(`[COTIZACION_VIDEO] Tamaño descargado: ${videoOriginalSizeMB.toFixed(2)} MB`);
 
     try {
       videoBuffer = await convertVideoForWhatsApp(videoBuffer, 'cotizacion-header.mp4');
       console.log('[COTIZACION_VIDEO] Video convertido correctamente');
     } catch (convErr) {
+      if (convErr.isOversized || videoOriginalSizeMB > 15) {
+        console.error('[COTIZACION_VIDEO] Video demasiado pesado:', convErr.message);
+        throw convErr.isOversized ? convErr : new Error(`El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`);
+      }
       console.warn('[COTIZACION_VIDEO] Conversión fallida, usando original:', convErr.message);
     }
 
@@ -499,6 +561,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   const VIDEO_COTIZACION_HEADER = {
     type: 'video',
     id: videoMediaId,
+    fileUrl: VIDEO_DEFAULT_URL,
   };
 
   const plantilla1 = crearPlantillaWhatsApp(
@@ -527,8 +590,17 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
   }
 
-  const response2 = await enviarTemplateWhatsApp(plantilla2);
-  // console.log('Respuesta al enviar plantilla 2:', response2);
+  // Esperar antes de enviar la segunda plantilla para garantizar el orden de entrega en WhatsApp
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  let response2;
+  try {
+    response2 = await enviarTemplateWhatsApp(plantilla2);
+    console.log('[COTIZACION_P2] Respuesta Meta:', JSON.stringify(response2));
+  } catch (p2Err) {
+    console.error('[COTIZACION_P2] Fallo:', p2Err.message, '| Meta error:', JSON.stringify(p2Err.metaError));
+    return next(new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500));
+  }
 
   // Extraer IDs de mensajes
   const midMensaje1 = response1?.messages?.[0]?.id || null;
@@ -575,7 +647,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   // Crear mensajes en la base de datos usando helpers
   const mensaje1Data = generarDatosMensaje(
-    'cotizacion_carga_enviadav2',
+    'cotizacion_carga_enviada_pro',
     cotizacionInfo.cliente,
     id_cotizacion,
     VIDEO_COTIZACION_HEADER,
@@ -587,12 +659,12 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje1,
     mensaje1Data.texto,
     mensaje1Data.rutaArchivo,
-    'cotizacion_carga_enviadav2',
+    'cotizacion_carga_enviada_pro',
   );
   // console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
 
   const mensaje2Data = generarDatosMensaje(
-    'confirmacion_cotizacionv2',
+    'confirmacion_cotizacion_pro',
     cotizacionInfo.cliente,
     id_cotizacion,
   );
@@ -603,7 +675,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     midMensaje2,
     mensaje2Data.texto,
     mensaje2Data.rutaArchivo,
-    'confirmacion_cotizacionv2',
+    'confirmacion_cotizacion_pro',
   );
   // console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
 
@@ -851,6 +923,8 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
 
   let convertedBuffer = videoBuffer;
   let videoFileName = 'video.mp4';
+  const videoSizeMB = videoBuffer.length / (1024 * 1024);
+  console.log(`[VIDEO_COT] Tamaño descargado: ${videoSizeMB.toFixed(2)} MB`);
 
   try {
     convertedBuffer = await convertVideoForWhatsApp(
@@ -859,6 +933,11 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     );
     videoFileName = 'cotizacion-video-converted.mp4';
   } catch (convErr) {
+    if (convErr.isOversized || videoSizeMB > 15) {
+      const msg = convErr.isOversized ? convErr.message : `El video pesa ${videoSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
+      console.error('[VIDEO_COT] Video demasiado pesado:', msg);
+      return next(new AppError(msg, 400));
+    }
     console.warn(
       '[VIDEO_COT] No se pudo convertir. Usando original:',
       convErr.message,
