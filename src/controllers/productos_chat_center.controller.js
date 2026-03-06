@@ -455,20 +455,20 @@ const DROPI_SOURCE = 'DROPI';
 
 const buildDropiImageUrl = (galleryItem) => {
   if (!galleryItem) return null;
-
-  // Si Dropi trae url absoluto
   if (galleryItem.url) return galleryItem.url;
-
-  // Si trae urlS3 (ruta relativa)
   if (galleryItem.urlS3) {
-    const base = process.env.DROPI_MEDIA_BASE_URL || '';
-    if (base)
-      return `${base.replace(/\/$/, '')}/${galleryItem.urlS3.replace(/^\//, '')}`;
-    // fallback: guardar urlS3 tal cual
-    return galleryItem.urlS3;
+    const base = 'https://d39ru7awumhhs2.cloudfront.net'; //Obtenido de Dropi inspeccionando
+    return `${base.replace(/\/$/, '')}/${galleryItem.urlS3.replace(/^\//, '')}`;
   }
-
   return null;
+};
+
+const getDropiTotalStock = (product) => {
+  if (!Array.isArray(product?.warehouse_product)) return 0;
+  return product.warehouse_product.reduce(
+    (acc, wp) => acc + (Number(wp?.stock) || 0),
+    0,
+  );
 };
 
 const sanitizeText = (html) => {
@@ -627,7 +627,7 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
     precio_upsell: null,
     imagen_upsell_url: null,
     combos_producto: null,
-    stock: 0,
+    stock: getDropiTotalStock(prod),
 
     external_source: DROPI_SOURCE,
     external_id: dropi_product_id,
