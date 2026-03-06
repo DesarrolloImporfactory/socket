@@ -83,20 +83,7 @@ const ClientesChatCenter = db.define(
     novedad_info: { type: DataTypes.TEXT('long'), allowNull: true },
 
     estado_contacto: {
-      type: DataTypes.ENUM(
-        'contacto_inicial',
-        'plataformas_clases',
-        'productos_proveedores',
-        'ventas_imporfactory',
-        'asesor',
-        'cotizaciones_imporfactory',
-        'ia_ventas',
-        'generar_guia',
-        'seguimiento',
-        'cancelado',
-        'ia_ventas_imporshop',
-        'atencion_urgente'
-      ),
+      type: DataTypes.STRING(50),
       allowNull: true,
       defaultValue: 'contacto_inicial',
     },
