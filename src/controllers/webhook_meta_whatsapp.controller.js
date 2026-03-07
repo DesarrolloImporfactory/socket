@@ -33,6 +33,8 @@ const {
   enviarAsistenteGptEventos,
   separador_productos,
   enviarAsistenteGptImporfactory,
+  enviarAsistenteGptImporshopProveedor,
+  enviarAsistenteKanban,
 } = require('../utils/webhook_whatsapp/funcciones_asistente');
 
 const {
@@ -939,6 +941,123 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 });
               }
             }
+          } else if (tipo_configuracion == 'imporshop_proveedor') {
+            respuesta_asistente = await enviarAsistenteGptImporshopProveedor({
+              mensaje: texto_mensaje,
+              id_plataforma,
+              id_configuracion,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              id_thread,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+            });
+
+            if (respuesta_asistente?.status === 200) {
+              total_tokens += Number(respuesta_asistente?.total_tokens ?? 0);
+
+              if (estado_contacto == 'contacto_inicial') {
+                // Mapeo de respuestas → estados en la DB
+                const estadoMap = {
+                  GARANTIAS: 'garantias',
+                  SOPORTE_ENVIOS: 'soporte_envios',
+                  INFO_PRODUCTO: 'info_producto',
+                  SOPORTE_DROPI: 'soporte_dropi',
+                  ONBOARDING: 'onboarding',
+                  ASESOR: 'asesor',
+                };
+
+                // Verifica si la respuesta está mapeada
+                const respuesta = respuesta_asistente.respuesta;
+
+                if (estadoMap[respuesta]) {
+                  //aqui meter filtro para que si dice asesor se reaccion a asesor nuevamente
+                  // si viene de cualquier otra IA
+                  await ClientesChatCenter.update(
+                    { estado_contacto: estadoMap[respuesta] },
+                    { where: { id: id_cliente } },
+                  );
+
+                  switch (respuesta) {
+                    case 'GARANTIAS':
+                    case 'SOPORTE_ENVIOS':
+                    case 'INFO_PRODUCTO':
+                    case 'SOPORTE_DROPI':
+                    case 'ONBOARDING':
+                      // Reenviar al asistente GPT
+                      nueva_respuesta_asistente =
+                        await enviarAsistenteGptImporshopProveedor({
+                          mensaje: texto_mensaje,
+                          id_plataforma,
+                          id_configuracion,
+                          telefono: phone_whatsapp_from,
+                          api_key_openai,
+                          id_thread,
+                          business_phone_id,
+                          accessToken,
+                          estado_contacto: estadoMap[respuesta],
+                        });
+
+                      // 2) Detectar si la nueva respuesta menciona 'asesor'
+                      const respuestaNueva =
+                        nueva_respuesta_asistente.respuesta || '';
+                      const mencionaAsesor = /asesor/i.test(respuestaNueva); // detecta asesor / Asesor / ASESOR
+
+                      if (mencionaAsesor) {
+                        // 3) Cambiar estado a asesor
+                        await ClientesChatCenter.update(
+                          { estado_contacto: 'asesor' },
+                          { where: { id: id_cliente } },
+                        );
+
+                        // 4) Ejecutar acción especial
+                        /*  await realizarAccionEspecialAsesor({
+                          id_cliente,
+                          phone_whatsapp_from,
+                          business_phone_id,
+                          accessToken,
+                        }); */
+                      }
+
+                      total_tokens += Number(
+                        nueva_respuesta_asistente?.total_tokens ?? 0,
+                      );
+
+                      await enviarMensajeWhatsapp({
+                        phone_whatsapp_to: phone_whatsapp_from,
+                        texto_mensaje: nueva_respuesta_asistente.respuesta,
+                        business_phone_id,
+                        accessToken,
+                        id_configuracion,
+                        responsable: nueva_respuesta_asistente.tipo_asistente,
+                        total_tokens,
+                      });
+                      break;
+
+                    case 'ASESOR':
+                      // 🔥 Aquí metes tu acción especial
+                      /* await realizarAccionEspecialAsesor({
+                        id_cliente,
+                        phone_whatsapp_from,
+                        business_phone_id,
+                        accessToken,
+                      }); */
+                      break;
+                  }
+                }
+              } else if (estado_contacto != 'asesor') {
+                await enviarMensajeWhatsapp({
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  texto_mensaje: respuesta_asistente.respuesta,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                  total_tokens,
+                });
+              }
+            }
           } else if (tipo_configuracion == 'eventos') {
             respuesta_asistente = await enviarAsistenteGptEventos({
               mensaje: texto_mensaje,
@@ -1575,6 +1694,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 });
               }
             }
+          } else if (tipo_configuracion == 'kanban') {
+            await enviarAsistenteKanban({
+              mensaje: texto_mensaje,
+              id_configuracion,
+              id_cliente,
+              telefono: phone_whatsapp_from,
+              api_key_openai,
+              business_phone_id,
+              accessToken,
+              estado_contacto,
+            });
           }
         }
         /* validar si el chat ah sido cerrado */

@@ -490,6 +490,182 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
+  const {
+    id_configuracion,
+    columnKeys = [],
+    limit = 20,
+    cursors = {},
+    search = {},
+    filtros = {},
+  } = req.body;
+
+  if (!id_configuracion)
+    return next(new AppError('Falta el id_configuracion', 400));
+
+  // Columnas activas dinámicas
+  const columnasDB = await db.query(
+    `SELECT estado_db FROM kanban_columnas
+     WHERE id_configuracion = ? AND activo = 1 ORDER BY orden ASC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const estadosValidos = new Set(columnasDB.map((c) => c.estado_db));
+
+  const keys =
+    Array.isArray(columnKeys) && columnKeys.length
+      ? columnKeys
+      : [...estadosValidos];
+  const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
+
+  const {
+    id_encargado = null,
+    bot_openia = null,
+    fecha_desde = null,
+    fecha_hasta = null,
+  } = filtros;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const fd = fecha_desde && DATE_RE.test(fecha_desde) ? fecha_desde : null;
+  const fh = fecha_hasta && DATE_RE.test(fecha_hasta) ? fecha_hasta : null;
+  const conFechas = !!(fd || fh);
+
+  const fetchColumn = async (colKey) => {
+    if (!estadosValidos.has(colKey))
+      return {
+        key: colKey,
+        items: [],
+        page: { has_more: false, next_cursor: null, limit: pageSize },
+      };
+
+    const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
+    const term = (search?.[colKey] || '').trim().toLowerCase();
+
+    // — parámetros del JOIN (van primero en el array final)
+    const joinParams = [];
+    const joinFrags = [];
+
+    if (conFechas) {
+      joinFrags.push(`
+        LEFT JOIN (
+          SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
+          FROM   mensajes_clientes
+          WHERE  id_configuracion = ?
+          GROUP  BY celular_recibe
+        ) lm ON lm.mid = c.id
+      `);
+      joinParams.push(id_configuracion);
+    }
+
+    // — parámetros del WHERE
+    const whereParams = [];
+    const whereConds = [];
+
+    whereConds.push('c.id_configuracion = ?');
+    whereParams.push(id_configuracion);
+    whereConds.push('c.propietario <> 1');
+    whereConds.push('LOWER(c.estado_contacto) = ?');
+    whereParams.push(colKey);
+
+    if (term) {
+      whereConds.push(
+        '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.telefono_limpio LIKE ?)',
+      );
+      const l = `%${term}%`;
+      whereParams.push(l, l, `%${search[colKey] || ''}%`);
+    }
+
+    if (
+      id_encargado !== null &&
+      id_encargado !== '' &&
+      id_encargado !== undefined
+    ) {
+      whereConds.push('c.id_encargado = ?');
+      whereParams.push(Number(id_encargado));
+    }
+
+    if (bot_openia !== null && bot_openia !== '' && bot_openia !== undefined) {
+      whereConds.push('c.bot_openia = ?');
+      whereParams.push(Number(bot_openia));
+    }
+
+    if (fd) {
+      whereConds.push('DATE(lm.ultimo_msg) >= ?');
+      whereParams.push(fd);
+    }
+    if (fh) {
+      whereConds.push('DATE(lm.ultimo_msg) <= ?');
+      whereParams.push(fh);
+    }
+
+    if (cursorId) {
+      whereConds.push('c.id < ?');
+      whereParams.push(cursorId);
+    }
+
+    const sql = `
+      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.telefono_limpio,
+             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
+             ${conFechas ? ', lm.ultimo_msg' : ''}
+      FROM   clientes_chat_center c
+      ${joinFrags.join(' ')}
+      WHERE  ${whereConds.join(' AND ')}
+      ORDER  BY c.id DESC
+      LIMIT  ?
+    `;
+
+    const rows = await db.query(sql, {
+      replacements: [...joinParams, ...whereParams, pageSize + 1],
+      type: db.QueryTypes.SELECT,
+    });
+    const has_more = rows.length > pageSize;
+    const items = has_more ? rows.slice(0, pageSize) : rows;
+    const last = items[items.length - 1];
+
+    return {
+      key: colKey,
+      items,
+      page: {
+        has_more,
+        next_cursor: last ? encodeCursor({ id: last.id }) : null,
+        limit: pageSize,
+      },
+    };
+  };
+
+  const results = await Promise.all(keys.map(fetchColumn));
+  const data = {};
+  results.forEach((r) => {
+    data[r.key] = { items: r.items, page: r.page };
+  });
+
+  return res.status(200).json({ success: true, data });
+});
+
+exports.listarAgentes = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const [conf] = await db.query(
+    `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!conf) return next(new AppError('Configuración no encontrada', 404));
+
+  const agentes = await db.query(
+    `SELECT sb.id_sub_usuario   AS id,
+            sb.nombre_encargado AS nombre,
+            sb.email,
+            sb.rol
+     FROM   sub_usuarios_chat_center sb
+     WHERE  sb.id_usuario = ?
+     ORDER  BY sb.nombre_encargado ASC`,
+    { replacements: [conf.id_usuario], type: db.QueryTypes.SELECT },
+  );
+
+  return res.status(200).json({ success: true, data: agentes });
+});
+
 function encodeCursor(obj) {
   return Buffer.from(JSON.stringify(obj)).toString('base64');
 }

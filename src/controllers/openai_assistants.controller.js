@@ -541,6 +541,14 @@ function templatesPermitidosPorTipo(tipo_configuracion) {
       'ventas_eventos',
       'separador_productos',
     ],
+    imporshop_proveedor: [
+      'contacto_inicial_proveedor',
+      'onboarding',
+      'info_producto',
+      'soporte_envios',
+      'garantias',
+      'soporte_dropi',
+    ],
   };
 
   // Si el tipo no existe, por defecto "ventas"

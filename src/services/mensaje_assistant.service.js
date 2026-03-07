@@ -973,7 +973,7 @@ async function procesarAsistenteMensajeImporfactory(body) {
     const assistants = await db.query(
       `SELECT template_key, assistant_id 
      FROM oia_assistants_cliente 
-     WHERE template_key = '${estado_contacto}'`,
+     WHERE template_key = '${estado_contacto}' AND id_configuracion = '${id_configuracion}'`,
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
@@ -1230,11 +1230,313 @@ async function procesarAsistenteMensajeImporfactory(body) {
       bloqueInfo,
       tipoInfo,
       total_tokens,
-      costo_tokens: costo,
     };
   } catch (err) {
     await log(
       `⚠️ Error en la función procesarAsistenteMensajeImporfactory. Error: ${err.message}`,
+    );
+    return {
+      status: 500,
+      error: 'Hubo un error interno en el servidor.',
+    };
+  }
+}
+
+async function procesarAsistenteMensajeImproshopProveedor(body) {
+  const {
+    mensaje,
+    id_thread,
+    id_plataforma,
+    id_configuracion,
+    telefono,
+    api_key_openai,
+    business_phone_id,
+    accessToken,
+    estado_contacto,
+  } = body;
+
+  try {
+    let nombre_estado = '';
+
+    console.log('estado_contacto: ' + estado_contacto);
+
+    if (estado_contacto == 'contacto_inicial') {
+      nombre_estado = 'contacto_inicial_proveedor';
+    } else {
+      nombre_estado = estado_contacto;
+    }
+
+    console.log('nombre_estado:' + nombre_estado);
+
+    // 1. Obtener assistants activos
+    const assistants = await db.query(
+      `SELECT template_key, assistant_id 
+     FROM oia_assistants_cliente 
+     WHERE template_key = '${nombre_estado}' AND id_configuracion = '${id_configuracion}'`,
+      {
+        replacements: [id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    if (!assistants || assistants.length === 0) {
+      await log(
+        `⚠️ No se encontró un assistant válido imporfactory para id_configuracion: ${id_configuracion}`,
+      );
+      return {
+        status: 400,
+        error: 'No se encontró un assistant válido para este contexto',
+      };
+    }
+
+    let bloqueInfo = '';
+    let tipoInfo = null;
+
+    let assistant_id = assistants[0].assistant_id;
+    let tipo_asistente = `IA_${estado_contacto}`;
+
+    if (!assistant_id) {
+      await log(
+        `⚠️ No se encontró un assistant válido imporfactory para id_thread: ${id_thread}`,
+      );
+      return {
+        status: 400,
+        error: 'No se encontró un assistant válido para este contexto',
+      };
+    }
+
+    /* console.log('estado_contacto: ' + estado_contacto); */
+    if (estado_contacto == 'plataformas_clases') {
+      const datosCliente = await obtenerCalendarioClasImporfactory();
+      bloqueInfo = datosCliente.bloque || '';
+    }
+
+    const headers = {
+      Authorization: `Bearer ${api_key_openai}`,
+      'Content-Type': 'application/json',
+      'OpenAI-Beta': 'assistants=v2',
+    };
+
+    // 2. Enviar contexto y mensaje del usuario
+    if (bloqueInfo) {
+      await axios
+        .post(
+          `https://api.openai.com/v1/threads/${id_thread}/messages`,
+          {
+            role: 'user',
+            content: `${bloqueInfo}`,
+          },
+          { headers },
+        )
+        .catch(async (err) => {
+          await log(
+            `⚠️ Error al enviar mensaje del cliente a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
+          );
+        });
+    }
+
+    await axios
+      .post(
+        `https://api.openai.com/v1/threads/${id_thread}/messages`,
+        { role: 'user', content: mensaje },
+        { headers },
+      )
+      .catch(async (err) => {
+        await log(
+          `⚠️ Error al enviar mensaje de usuario a OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
+        );
+      });
+
+    // 3. Ejecutar assistant
+    const runRes = await axios
+      .post(
+        `https://api.openai.com/v1/threads/${id_thread}/runs`,
+        { assistant_id, max_completion_tokens: 200 },
+        { headers },
+      )
+      .catch(async (err) => {
+        await log(
+          `⚠️ Error al ejecutar assistant para id_thread: ${id_thread}. Error: ${err.message}`,
+        );
+      });
+
+    const run_id = runRes.data.id;
+    if (!run_id) {
+      await log(`⚠️ No se pudo obtener run_id para id_thread: ${id_thread}`);
+      return {
+        status: 400,
+        error: 'No se pudo ejecutar el assistant.',
+      };
+    }
+
+    let prompt_tokens = 0;
+    let completion_tokens = 0;
+    let total_tokens = 0;
+
+    // 4. Esperar respuesta con polling
+    let statusRun = 'queued',
+      attempts = 0;
+    while (
+      statusRun !== 'completed' &&
+      statusRun !== 'failed' &&
+      attempts < 20
+    ) {
+      await new Promise((r) => setTimeout(r, 1000));
+      attempts++;
+      try {
+        const statusRes = await axios.get(
+          `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+          { headers },
+        );
+
+        // Aquí podrías inspeccionar el objeto para evitar errores
+        /* await log('Estatus de la respuesta recibida: ' + statusRes.status); */
+
+        // Usar flatted.stringify solo si está seguro de que el objeto no tiene ciclos
+        const objSinCiclos = flatted.stringify(statusRes.data);
+        await log('objSinCiclos: ' + objSinCiclos);
+
+        statusRun = statusRes.data.status;
+
+        /* await log('statusRun: ' + statusRun); */
+
+        // 🔎 Si el backend ya expone usage durante el run, lo registramos
+        let prompt_tokens = 0;
+let completion_tokens = 0;
+let total_tokens = 0;
+let costo = 0;
+
+        if (statusRes.data.usage) {
+          await log(
+            'Respuesta completa de usage: ' +
+              flatted.stringify(statusRes.data.usage),
+          ); // Esto te ayudará a ver la estructura completa
+
+          ({
+            prompt_tokens = 0, // Este es el valor para input_tokens
+            completion_tokens = 0, // Este es el valor para output_tokens
+            total_tokens = 0, // Total de tokens procesados
+          } = statusRes.data.usage);
+          const model = statusRes.data.model || 'gpt-4.1-mini';
+          const costo = estCosto(model, prompt_tokens, completion_tokens);
+          await log(
+            `📊 USO (parcial): input=${prompt_tokens}, output=${completion_tokens}, total=${total_tokens}, modelo=${model}, costo≈$${costo}`,
+          );
+        }
+
+        // Verifica si el estado es 'failed' para procesar el error
+        if (statusRun === 'failed') {
+          // Si hay un error en el campo 'error' de la respuesta
+          if (statusRes.data.error) {
+            await log('statusRes.data.error: ' + statusRes.data.error);
+
+            // Validar si el error es por cuota excedida
+            if (statusRes.data.error.code === 'rate_limit_exceeded') {
+              await log(
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
+              );
+              return {
+                status: 400,
+                error:
+                  'Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
+              };
+            } else if (statusRes.data.error.code === '15') {
+              await log(
+                '🚨 Error de pago: falta de fondos. Por favor, revisa tu método de pago.',
+              );
+              return {
+                status: 400,
+                error:
+                  'Error de pago: falta de fondos. Por favor, revisa tu método de pago.',
+              };
+            } else {
+              await log(
+                `⚠️ Error desconocido: ${statusRes.data.error.code} - ${statusRes.data.error.message}`,
+              );
+            }
+          } else {
+            // Si no se encuentra el campo error, revisa otros posibles campos
+            await log(
+              '⚠️ No se encontró un campo de error en la respuesta, pero la ejecución falló.',
+            );
+
+            // Verifica si hay un mensaje sobre cuota excedida
+            if (
+              statusRes.data.last_error &&
+              statusRes.data.last_error.includes(
+                'You exceeded your current quota',
+              )
+            ) {
+              await log(
+                '🚨 Se excedió la cuota de la API. Revisa tu plan y detalles de facturación.',
+              );
+            }
+
+            // Verifica si 'last_error' contiene información
+            if (statusRes.data.last_error) {
+              await log(
+                `Último error registrado: ${JSON.stringify(
+                  statusRes.data.last_error,
+                )}`,
+              );
+            }
+
+            // Si hay algún mensaje adicional sobre el fallo
+            if (statusRes.data.message) {
+              await log(`Mensaje adicional: ${statusRes.data.message}`);
+            }
+          }
+        }
+        // Verifica si el estado es 'failed' para procesar el error
+      } catch (err) {
+        await log(
+          `⚠️ Error al consultar estado de ejecución del assistant para id_thread: ${id_thread}. Error: ${err.message}`,
+        );
+        break; // Rompe el bucle en caso de error
+      }
+    }
+
+    /* await log('statusRun: ' + statusRun); */
+
+    if (statusRun === 'failed') {
+      await log(
+        `⚠️ La ejecución del assistant falló para id_thread: ${id_thread}`,
+      );
+      return {
+        status: 400,
+        error: 'Falló la ejecución del assistant.',
+      };
+    }
+
+    const messagesRes = await axios
+      .get(`https://api.openai.com/v1/threads/${id_thread}/messages`, {
+        headers,
+      })
+      .catch(async (err) => {
+        await log(
+          `⚠️ Error al obtener mensajes de OpenAI para id_thread: ${id_thread}. Error: ${err.message}`,
+        );
+      });
+
+    const mensajes = messagesRes.data.data || [];
+    const respuesta = mensajes
+      .reverse()
+      .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
+      ?.text?.value;
+
+    /* console.log('bloqueInfo: ' + bloqueInfo); */
+
+    return {
+      status: 200,
+      respuesta: respuesta || '',
+      tipo_asistente,
+      bloqueInfo,
+      tipoInfo,
+      total_tokens,
+    };
+  } catch (err) {
+    await log(
+      `⚠️ Error en la función procesarAsistenteMensajeImproshopProveedor. Error: ${err.message}`,
     );
     return {
       status: 500,
@@ -1400,5 +1702,6 @@ module.exports = {
   procesarAsistenteMensajeVentas,
   procesarAsistenteMensajeEventos,
   procesarAsistenteMensajeImporfactory,
+  procesarAsistenteMensajeImproshopProveedor,
   separadorProductos,
 };

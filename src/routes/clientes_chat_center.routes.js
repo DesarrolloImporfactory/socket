@@ -53,6 +53,16 @@ router.post(
 );
 
 router.post(
+  '/listar_contactos_estado_dinamico',
+  clientes_chat_centerController.listarContactosEstadoDinamico,
+);
+
+router.post(
+  '/listar_agentes',
+  clientes_chat_centerController.listarAgentes,
+);
+
+router.post(
   '/actualizar_estado',
   clientes_chat_centerController.actualizarEstado,
 );

@@ -12,8 +12,11 @@ const {
   procesarAsistenteMensajeVentas,
   procesarAsistenteMensajeEventos,
   procesarAsistenteMensajeImporfactory,
+  procesarAsistenteMensajeImproshopProveedor,
   separadorProductos,
 } = require('../../services/mensaje_assistant.service');
+
+const { procesarMensajeKanban } = require('../../services/kanban_ia.service');
 
 const {
   obtenerOCrearThreadId,
@@ -36,13 +39,13 @@ async function cancelarRemarketingEnNode(telefono, id_configuracion) {
 
 async function transcribirAudioConWhisperDesdeArchivo(
   rutaArchivo,
-  apiKeyOpenAI
+  apiKeyOpenAI,
 ) {
   try {
     // Elimina la parte de la URL base (https://chat.imporfactory.app) de la rutaArchivo
     const rutaLocalRelativa = rutaArchivo.replace(
       'https://chat.imporfactory.app',
-      ''
+      '',
     );
 
     /* console.log('__dirname: ' + __dirname); */
@@ -51,7 +54,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
       __dirname,
       '..',
       '..',
-      rutaLocalRelativa
+      rutaLocalRelativa,
     );
 
     // Asegúrate de que la ruta sea válida y corresponde al archivo en tu servidor
@@ -69,7 +72,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
           Authorization: `Bearer ${apiKeyOpenAI}`,
           ...form.getHeaders(),
         },
-      }
+      },
     );
 
     /* console.log('Respuesta completa:', response.data); */
@@ -77,10 +80,10 @@ async function transcribirAudioConWhisperDesdeArchivo(
     return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
   } catch (err) {
     console.log(
-      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`
+      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`,
     );
     await log(
-      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`
+      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`,
     );
     return null;
   }
@@ -97,7 +100,7 @@ async function enviarAsistenteGptVentas({
   accessToken,
   estado_contacto,
   id_cliente,
-  lista_productos = null
+  lista_productos = null,
 }) {
   try {
     const data = await procesarAsistenteMensajeVentas({
@@ -140,7 +143,7 @@ async function enviarAsistenteGptEventos({
   accessToken,
   estado_contacto,
   id_cliente,
-  lista_productos = null
+  lista_productos = null,
 }) {
   try {
     const data = await procesarAsistenteMensajeEventos({
@@ -211,6 +214,46 @@ async function enviarAsistenteGptImporfactory({
   }
 }
 
+async function enviarAsistenteGptImporshopProveedor({
+  mensaje,
+  id_plataforma,
+  id_configuracion,
+  telefono,
+  api_key_openai,
+  id_thread,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+}) {
+  try {
+    const data = await procesarAsistenteMensajeImproshopProveedor({
+      mensaje,
+      id_plataforma,
+      id_configuracion,
+      telefono,
+      api_key_openai,
+      id_thread,
+      business_phone_id,
+      accessToken,
+      estado_contacto,
+    });
+
+    if (data?.status === 200) {
+      await log(`✅ Respuesta asistente: ${JSON.stringify(data.respuesta)}`);
+    } else {
+      await log(`⚠️ Error en respuesta del asistente: ${JSON.stringify(data)}`);
+    }
+    /* console.log('respuesta asistente: ' + JSON.stringify(data)); */
+
+    return data;
+  } catch (err) {
+    console.log(`❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`);
+    await log(`❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`);
+    return false;
+  }
+}
+
+
 async function separador_productos({
   mensaje,
   id_plataforma,
@@ -240,15 +283,15 @@ async function separador_productos({
 
     if (data?.status === 200) {
       await log(
-        `✅ Respuesta separador de productos: ${JSON.stringify(data.respuesta)}`
+        `✅ Respuesta separador de productos: ${JSON.stringify(data.respuesta)}`,
       );
       return data; // Devuelve la respuesta exitosa
     } else {
       // Si hubo un error, registramos el error con la respuesta
       await log(
         `⚠️ Error en respuesta del separador de productos: ${JSON.stringify(
-          data
-        )}`
+          data,
+        )}`,
       );
       return data; // Devuelve la respuesta de error (con status !== 200)
     }
@@ -264,7 +307,7 @@ async function obtenerThreadId(id_cliente_chat_center, apiKeyOpenAI) {
   try {
     const thread_id = await obtenerOCrearThreadId(
       id_cliente_chat_center,
-      apiKeyOpenAI
+      apiKeyOpenAI,
     );
 
     if (thread_id) {
@@ -284,8 +327,37 @@ async function log(msg) {
   await fs.mkdir(logsDir, { recursive: true });
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
-    `[${new Date().toISOString()}] ${msg}\n`
+    `[${new Date().toISOString()}] ${msg}\n`,
   );
+}
+
+async function enviarAsistenteKanban({
+  mensaje,
+  id_configuracion,
+  id_cliente,
+  telefono,
+  api_key_openai,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+}) {
+  try {
+    const resultado = await procesarMensajeKanban({
+      mensaje,
+      id_configuracion,
+      id_cliente,
+      telefono,
+      api_key_openai,
+      business_phone_id,
+      accessToken,
+      estado_contacto,
+    });
+    await log(`✅ Kanban IA resultado: ${JSON.stringify(resultado)}`);
+    return resultado;
+  } catch (err) {
+    await log(`❌ Error en enviarAsistenteKanban: ${err.message}`);
+    return { ok: false, motivo: 'error' };
+  }
 }
 
 module.exports = {
@@ -296,4 +368,6 @@ module.exports = {
   separador_productos,
   obtenerThreadId,
   enviarAsistenteGptImporfactory,
+  enviarAsistenteGptImporshopProveedor,
+  enviarAsistenteKanban,
 };
