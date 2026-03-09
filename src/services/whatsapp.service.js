@@ -7,6 +7,254 @@ const {
   onlyDigits,
 } = require('../utils/whatsappTemplate.helpers');
 
+/* ================================================================
+   CACHE DE PLANTILLAS EN MEMORIA
+   - Evita consultar Meta N veces por el mismo template
+   - TTL configurable (default 30 min)
+   - Key: `${waba_id}::${nombre_template}`
+   ================================================================ */
+
+const templateCache = new Map();
+const TEMPLATE_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutos
+
+function getTemplateCacheKey(waba_id, nombre_template) {
+  return `${waba_id}::${nombre_template}`;
+}
+
+function getCachedTemplate(waba_id, nombre_template) {
+  const key = getTemplateCacheKey(waba_id, nombre_template);
+  const entry = templateCache.get(key);
+
+  if (!entry) return null;
+
+  // Expiró
+  if (Date.now() - entry.cachedAt > TEMPLATE_CACHE_TTL_MS) {
+    templateCache.delete(key);
+    return null;
+  }
+
+  return entry.data; // { text, language, header }
+}
+
+function setCachedTemplate(waba_id, nombre_template, data) {
+  const key = getTemplateCacheKey(waba_id, nombre_template);
+  templateCache.set(key, { data, cachedAt: Date.now() });
+}
+
+/**
+ * Limpia entradas expiradas del cache (llamar periódicamente si se desea)
+ */
+function pruneTemplateCache() {
+  const now = Date.now();
+  for (const [key, entry] of templateCache.entries()) {
+    if (now - entry.cachedAt > TEMPLATE_CACHE_TTL_MS) {
+      templateCache.delete(key);
+    }
+  }
+}
+
+/* ================================================================
+   obtenerTextoPlantilla — CON CACHE
+   ================================================================ */
+
+const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
+  // 1) Revisar cache primero
+  const cached = getCachedTemplate(waba_id, nombre_template);
+  if (cached) {
+    console.log('💾 [obtenerTextoPlantilla] CACHE HIT', {
+      nombre_template,
+      waba_id,
+    });
+    return cached;
+  }
+
+  const startedAt = Date.now();
+
+  try {
+    console.log('🔎 [obtenerTextoPlantilla] CACHE MISS → consultando Meta', {
+      nombre_template,
+      waba_id,
+      at: new Date().toISOString(),
+    });
+
+    const response = await axios.get(
+      `https://graph.facebook.com/v22.0/${waba_id}/message_templates`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 20000,
+        validateStatus: () => true,
+      },
+    );
+
+    console.log('📥 [obtenerTextoPlantilla] respuesta Meta', {
+      status: response.status,
+      hasData: !!response.data,
+      ms: Date.now() - startedAt,
+    });
+
+    if (
+      response.status < 200 ||
+      response.status >= 300 ||
+      response.data?.error
+    ) {
+      const metaErr =
+        response.data?.error?.message ||
+        response.data?.message ||
+        `Meta HTTP ${response.status}`;
+      const err = new Error(`[Meta Templates List] ${metaErr}`);
+      err.meta_status = response.status;
+      err.meta_error = response.data?.error || response.data || null;
+      throw err;
+    }
+
+    const data = response.data;
+
+    if (!data.data || !Array.isArray(data.data)) {
+      console.error(
+        '❌ [obtenerTextoPlantilla] No se encontraron plantillas en la API.',
+      );
+      return { text: null, language: null, header: null };
+    }
+
+    // ── Cachear TODAS las plantillas que vinieron en la respuesta ──
+    // Meta devuelve todas las plantillas del WABA en un solo GET,
+    // así que aprovechamos para cachear todas de una vez.
+    for (const tpl of data.data) {
+      const body = tpl.components?.find((comp) => comp.type === 'BODY');
+      if (!body?.text) continue;
+
+      const headerComp = tpl.components?.find((comp) => comp.type === 'HEADER');
+      let header = null;
+      if (headerComp) {
+        header = {
+          format: headerComp.format || null,
+          media_url: headerComp.example?.header_handle?.[0] || null,
+        };
+      }
+
+      const tplData = {
+        text: body.text,
+        language: tpl.language || 'es',
+        header,
+      };
+
+      setCachedTemplate(waba_id, tpl.name, tplData);
+    }
+
+    console.log('💾 [obtenerTextoPlantilla] Cacheadas', {
+      count: data.data.length,
+      waba_id,
+    });
+
+    // Ahora buscar la que necesitamos (ya está en cache)
+    const result = getCachedTemplate(waba_id, nombre_template);
+
+    if (!result) {
+      console.error(
+        `❌ [obtenerTextoPlantilla] No se encontró la plantilla: ${nombre_template}`,
+      );
+      return { text: null, language: null, header: null };
+    }
+
+    console.log('✅ [obtenerTextoPlantilla] plantilla resuelta', {
+      nombre_template,
+      language: result.language,
+      headerFormat: result.header?.format || null,
+      bodyPreview: String(result.text).slice(0, 120),
+      ms: Date.now() - startedAt,
+    });
+
+    return result;
+  } catch (error) {
+    console.error('❌ Error al obtener la plantilla:', {
+      message: error.message,
+      meta_status: error.meta_status || null,
+      meta_error: error.meta_error || null,
+      ms: Date.now() - startedAt,
+    });
+    return { text: null, language: null, header: null };
+  }
+};
+
+/* ================================================================
+   PRE-FETCH MASIVO DE PLANTILLAS (para usar desde el cron)
+   - Recibe un array de items pendientes
+   - Agrupa por waba_id + nombre_template
+   - Consulta Meta UNA SOLA VEZ por combinación única
+   - Retorna cuántas plantillas se pre-cachearon
+   ================================================================ */
+
+async function prefetchTemplates(pendientes) {
+  // Agrupar combinaciones únicas que NO estén en cache
+  const needed = new Map(); // key → { waba_id, nombre_template, id_configuracion }
+
+  for (const item of pendientes) {
+    const waba_id = item.waba_id;
+    const nombre_template = item.nombre_template;
+
+    if (!waba_id || !nombre_template) continue;
+
+    const cached = getCachedTemplate(waba_id, nombre_template);
+    if (cached) continue; // ya está en cache
+
+    const key = `${waba_id}::${nombre_template}`;
+    if (!needed.has(key)) {
+      needed.set(key, {
+        waba_id,
+        nombre_template,
+        id_configuracion: item.id_configuracion,
+      });
+    }
+  }
+
+  if (needed.size === 0) {
+    console.log(
+      '💾 [prefetchTemplates] Todas las plantillas ya están en cache',
+    );
+    return 0;
+  }
+
+  console.log(
+    `🔄 [prefetchTemplates] Pre-fetching ${needed.size} plantilla(s) únicas desde Meta`,
+  );
+
+  let fetched = 0;
+
+  for (const [, info] of needed) {
+    try {
+      const cfg = await getConfigFromDB(Number(info.id_configuracion));
+      if (!cfg?.ACCESS_TOKEN || !cfg?.WABA_ID) {
+        console.warn(
+          `⚠️ [prefetchTemplates] Config inválida para id_configuracion=${info.id_configuracion}`,
+        );
+        continue;
+      }
+
+      // obtenerTextoPlantilla ya cachea TODAS las del WABA en un solo GET
+      await obtenerTextoPlantilla(
+        info.nombre_template,
+        cfg.ACCESS_TOKEN,
+        info.waba_id,
+      );
+      fetched++;
+
+      // Pequeña pausa entre WABAs distintos para no saturar
+      await new Promise((r) => setTimeout(r, 500));
+    } catch (err) {
+      console.error(
+        `❌ [prefetchTemplates] Error pre-fetching ${info.nombre_template}:`,
+        err.message,
+      );
+    }
+  }
+
+  return fetched;
+}
+
+/* ================================================================
+   sendWhatsappMessage (sin cambios)
+   ================================================================ */
+
 exports.sendWhatsappMessage = async ({
   telefono,
   mensaje,
@@ -67,6 +315,10 @@ exports.sendWhatsappMessage = async ({
     id_wamid_mensaje: wamid,
   });
 };
+
+/* ================================================================
+   sendWhatsappMessageTemplate (envío manual, sin cambios)
+   ================================================================ */
 
 exports.sendWhatsappMessageTemplate = async ({
   telefono,
@@ -177,121 +429,11 @@ exports.sendWhatsappMessageTemplate = async ({
   });
 };
 
-const obtenerTextoPlantilla = async (templateName, accessToken, waba_id) => {
-  const startedAt = Date.now();
+/* ================================================================
+   sendWhatsappMessageTemplateScheduled (CRON)
+   - Ahora usa cache, NO consulta Meta si ya está cacheado
+   ================================================================ */
 
-  try {
-    console.log('🔎 [obtenerTextoPlantilla] inicio', {
-      templateName,
-      waba_id,
-      at: new Date().toISOString(),
-    });
-
-    const response = await axios.get(
-      `https://graph.facebook.com/v22.0/${waba_id}/message_templates`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        timeout: 20000,
-        validateStatus: () => true,
-      },
-    );
-
-    console.log('📥 [obtenerTextoPlantilla] respuesta Meta', {
-      status: response.status,
-      hasData: !!response.data,
-      keys: response.data ? Object.keys(response.data) : [],
-      ms: Date.now() - startedAt,
-    });
-
-    if (
-      response.status < 200 ||
-      response.status >= 300 ||
-      response.data?.error
-    ) {
-      const metaErr =
-        response.data?.error?.message ||
-        response.data?.message ||
-        `Meta HTTP ${response.status}`;
-      const err = new Error(`[Meta Templates List] ${metaErr}`);
-      err.meta_status = response.status;
-      err.meta_error = response.data?.error || response.data || null;
-      throw err;
-    }
-
-    const data = response.data;
-
-    if (!data.data || !Array.isArray(data.data)) {
-      console.error(
-        '❌ [obtenerTextoPlantilla] No se encontraron plantillas en la API.',
-      );
-      return { text: null, language: null, header: null };
-    }
-
-    console.log('📚 [obtenerTextoPlantilla] plantillas recibidas', {
-      count: data.data.length,
-      templateName,
-    });
-
-    const plantilla = data.data.find((tpl) => tpl.name === templateName);
-
-    if (!plantilla) {
-      console.error(
-        `❌ [obtenerTextoPlantilla] No se encontró la plantilla: ${templateName}`,
-      );
-      return { text: null, language: null, header: null };
-    }
-
-    const body = plantilla.components?.find((comp) => comp.type === 'BODY');
-
-    if (!body || !body.text) {
-      console.error(
-        '❌ [obtenerTextoPlantilla] La plantilla no tiene BODY.text',
-      );
-      return { text: null, language: null, header: null };
-    }
-
-    const languageCode = plantilla.language || 'es';
-
-    // ── Extraer header si existe ──
-    const headerComp = plantilla.components?.find(
-      (comp) => comp.type === 'HEADER',
-    );
-    let header = null;
-    if (headerComp) {
-      header = {
-        format: headerComp.format || null, // 'VIDEO', 'IMAGE', 'DOCUMENT', 'TEXT'
-        media_url: headerComp.example?.header_handle?.[0] || null,
-      };
-    }
-
-    console.log('✅ [obtenerTextoPlantilla] plantilla resuelta', {
-      templateName,
-      languageCode,
-      headerFormat: header?.format || null,
-      hasHeaderMediaUrl: !!header?.media_url,
-      bodyPreview: String(body.text).slice(0, 120),
-      ms: Date.now() - startedAt,
-    });
-
-    return { text: body.text, language: languageCode, header };
-  } catch (error) {
-    console.error('❌ Error al obtener la plantilla:', {
-      message: error.message,
-      meta_status: error.meta_status || null,
-      meta_error: error.meta_error || null,
-      ms: Date.now() - startedAt,
-    });
-    return { text: null, language: null, header: null };
-  }
-};
-
-/**
- * Envío de template para CRON programado.
- * - NO depende del access_token almacenado en template_envios_programados
- * - Toma credenciales frescas desde configuraciones (id_configuracion)
- * - Soporta header TEXT / IMAGE / VIDEO / DOCUMENT
- * - Auto-detecta header multimedia desde la definición de la plantilla en Meta
- */
 exports.sendWhatsappMessageTemplateScheduled = async ({
   telefono,
   telefono_configuracion,
@@ -311,13 +453,8 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
 
   console.log('🚀 [CRON SEND] inicio', {
     telefono,
-    telefono_configuracion,
     id_configuracion,
-    responsable,
     nombre_template,
-    language_code,
-    header_format,
-    has_header_media_url: !!header_media_url,
     at: new Date().toISOString(),
   });
 
@@ -333,19 +470,12 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     throw new Error('template_parameters debe ser un array');
   }
 
-  // ── FIX: estas validaciones se mueven DESPUÉS de obtener la plantilla ──
-
   // 1) Config fresca desde BD
-  console.log('🗄️ [CRON SEND] consultando configuración...');
   const cfg = await getConfigFromDB(Number(id_configuracion));
 
   if (!telefono_configuracion) {
     telefono_configuracion = cfg.telefono;
   }
-
-  console.log('[CRON SEND] telefono_configuracion resuelta', {
-    telefono_configuracion,
-  });
 
   if (!cfg)
     throw new Error('Configuración inválida/suspendida o no encontrada');
@@ -354,53 +484,32 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   const accessToken = cfg.ACCESS_TOKEN;
   const waba_id = cfg.WABA_ID;
 
-  console.log('✅ [CRON SEND] config cargada', {
-    id_configuracion,
-    hasPhoneId: !!business_phone_id,
-    hasToken: !!accessToken,
-    hasWaba: !!waba_id,
-  });
-
   if (!business_phone_id || !accessToken || !waba_id) {
     throw new Error(
       'Configuración incompleta (PHONE_NUMBER_ID / ACCESS_TOKEN / WABA_ID)',
     );
   }
 
-  // 2) Obtener texto, idioma y header de la plantilla desde Meta
-  console.log('🔎 [CRON SEND] obteniendo texto plantilla en Meta', {
-    nombre_template,
-    waba_id,
-  });
-
+  // 2) Obtener plantilla — ahora usa CACHE automáticamente
   const {
     text: templateText,
     language: languageFromMeta,
     header: templateHeader,
   } = await obtenerTextoPlantilla(nombre_template, accessToken, waba_id);
 
-  // ── FIX 2: resolver header DESPUÉS de obtener la plantilla ──
   const resolvedHeaderFormat = header_format || templateHeader?.format || null;
   const resolvedHeaderMediaUrl =
     header_media_url || templateHeader?.media_url || null;
 
-  // ── FIX 1: headerFormatNorm y resolvedMediaUrl declarados aquí, no antes ──
   const headerFormatNorm =
     String(resolvedHeaderFormat || '').toUpperCase() || null;
   const resolvedMediaUrl = resolvedHeaderMediaUrl;
-
-  console.log('📄 [CRON SEND] resultado plantilla', {
-    hasTemplateText: !!templateText,
-    languageFromMeta,
-    headerFormatNorm,
-    hasResolvedMediaUrl: !!resolvedMediaUrl,
-  });
 
   if (!templateText) {
     throw new Error('No se encontró el contenido de la plantilla en Meta');
   }
 
-  // Validaciones de header DESPUÉS de resolver
+  // Validaciones de header
   if (
     headerFormatNorm === 'TEXT' &&
     header_parameters != null &&
@@ -411,7 +520,6 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     );
   }
 
-  // ── FIX 3: usar resolvedMediaUrl en lugar de header_media_url ──
   if (
     ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm) &&
     !resolvedMediaUrl
@@ -421,18 +529,9 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     );
   }
 
-  console.log('🧹 [CRON SEND] validaciones ok', {
-    telefonoLimpio,
-    bodyParamsCount: template_parameters.length,
-    headerFormatNorm,
-    headerParamsCount: Array.isArray(header_parameters)
-      ? header_parameters.length
-      : 0,
-  });
-
   const LANGUAGE_CODE = language_code || languageFromMeta || 'es';
 
-  // 3) Construir components dinámicamente
+  // 3) Construir components
   const componentsPayload = [];
 
   if (headerFormatNorm === 'TEXT') {
@@ -447,7 +546,6 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     }
   }
 
-  // ── FIX 3: usar resolvedMediaUrl ──
   if (
     ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm) &&
     resolvedMediaUrl
@@ -481,13 +579,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     });
   }
 
-  console.log(' [CRON SEND] components construidos', {
-    componentsCount: componentsPayload.length,
-    componentsTypes: componentsPayload.map((c) => c.type),
-    LANGUAGE_CODE,
-  });
-
-  // 4) Payload a Meta
+  // 4) Enviar a Meta
   const payload = {
     messaging_product: 'whatsapp',
     to: telefonoLimpio,
@@ -506,24 +598,10 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
 
   const url = `https://graph.facebook.com/v22.0/${business_phone_id}/messages`;
 
-  console.log(' [CRON SEND] enviando a Meta', {
-    url,
-    to: telefonoLimpio,
-    template: nombre_template,
-    language: LANGUAGE_CODE,
-    componentsCount: componentsPayload.length,
-  });
-
   const response = await axios.post(url, payload, {
     headers,
     timeout: 30000,
     validateStatus: () => true,
-  });
-
-  console.log(' [CRON SEND] respuesta Meta', {
-    status: response.status,
-    data: response.data,
-    ms: Date.now() - startedAt,
   });
 
   if (response.status < 200 || response.status >= 300 || response.data?.error) {
@@ -539,19 +617,15 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     throw error;
   }
 
-  console.log(' [CRON SEND] Template enviado a Meta OK');
-
   const uid_whatsapp = telefonoLimpio;
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  // 5) Buscar/crear cliente destino
-  console.log('[CRON SEND] buscando/creando cliente destino...');
+  // 5) Cliente destino
   let cliente = await ClientesChatCenter.findOne({
     where: { celular_cliente: telefonoLimpio, id_configuracion },
   });
 
   if (!cliente) {
-    console.log('[CRON SEND] cliente destino no existe, creando...');
     cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -561,7 +635,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     });
   }
 
-  // 6) Buscar cliente del número de configuración
+  // 6) Cliente configuración
   let id_cliente_configuracion = null;
 
   if (telefono_configuracion) {
@@ -580,16 +654,11 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
 
       if (clienteConfiguracionExistente?.id) {
         id_cliente_configuracion = clienteConfiguracionExistente.id;
-      } else {
-        console.warn(
-          '[CRON TEMPLATE] No existe cliente_chat_center del número de configuración:',
-          telefono_configuracion,
-        );
       }
     }
   }
 
-  // 7) Guardar trazabilidad local
+  // 7) Trazabilidad
   const ruta_archivo = {
     body_parameters: template_parameters || [],
     header: {
@@ -632,3 +701,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     response: response.data,
   };
 };
+
+exports.prefetchTemplates = prefetchTemplates;
+exports.pruneTemplateCache = pruneTemplateCache;
+exports.obtenerTextoPlantilla = obtenerTextoPlantilla;

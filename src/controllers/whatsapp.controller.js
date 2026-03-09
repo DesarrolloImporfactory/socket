@@ -182,7 +182,9 @@ exports.enviarTemplateMasivo = async (req, res) => {
 
       if (fmt === 'VIDEO') {
         const videoOriginalSizeMB = req.file.buffer.length / (1024 * 1024);
-        console.log(`[VIDEO] Iniciando conversión. Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`);
+        console.log(
+          `[VIDEO] Iniciando conversión. Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`,
+        );
         try {
           processedBuffer = await convertVideoForWhatsApp(
             req.file.buffer,
@@ -202,7 +204,9 @@ exports.enviarTemplateMasivo = async (req, res) => {
               ? convErr.message
               : `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
             console.error('[VIDEO] Video demasiado pesado:', msg);
-            return res.status(400).json({ success: false, step: 'convert_video', message: msg });
+            return res
+              .status(400)
+              .json({ success: false, step: 'convert_video', message: msg });
           }
           console.warn(
             '[VIDEO] No se pudo convertir. Usando original:',
@@ -1194,8 +1198,9 @@ exports.listarProgramadosPorChat = async (req, res) => {
 exports.listarProgramadosPorConfig = async (req, res) => {
   try {
     const id_configuracion = Number(req.query?.id_configuracion || 0) || null;
-
-    const limit = Math.min(Number(req.query?.limit || 50) || 50, 200);
+    const limit = Math.min(Number(req.query?.limit || 10) || 10, 100); // lotes por página
+    const page = Math.max(Number(req.query?.page || 1) || 1, 1);
+    const offset = (page - 1) * limit;
 
     if (!id_configuracion) {
       return res.status(400).json({
@@ -1204,6 +1209,49 @@ exports.listarProgramadosPorConfig = async (req, res) => {
       });
     }
 
+    // 1) Contar total de lotes distintos
+    const [countRow] = await db.query(
+      `
+      SELECT COUNT(DISTINCT uuid_lote) AS total_lotes
+      FROM template_envios_programados
+      WHERE id_configuracion = ?
+      `,
+      {
+        replacements: [id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const totalLotes = countRow?.total_lotes || 0;
+    const totalPages = Math.ceil(totalLotes / limit);
+
+    // 2) Obtener los uuid_lote de la página actual (paginación por lote)
+    const lotesPage = await db.query(
+      `
+      SELECT uuid_lote
+      FROM template_envios_programados
+      WHERE id_configuracion = ?
+      GROUP BY uuid_lote
+      ORDER BY MAX(creado_en) DESC
+      LIMIT ? OFFSET ?
+      `,
+      {
+        replacements: [id_configuracion, limit, offset],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    if (lotesPage.length === 0) {
+      return res.json({
+        ok: true,
+        data: [],
+        pagination: { page, limit, totalLotes, totalPages },
+      });
+    }
+
+    const uuids = lotesPage.map((r) => r.uuid_lote);
+
+    // 3) Traer TODOS los registros de esos lotes
     const rows = await db.query(
       `
       SELECT
@@ -1244,12 +1292,11 @@ exports.listarProgramadosPorConfig = async (req, res) => {
       LEFT JOIN clientes_chat_center ccc
         ON ccc.id = tep.id_cliente_chat_center
 
-      WHERE tep.id_configuracion = ?
+      WHERE tep.uuid_lote IN (?)
       ORDER BY tep.creado_en DESC
-      LIMIT ?
       `,
       {
-        replacements: [id_configuracion, limit],
+        replacements: [uuids],
         type: db.QueryTypes.SELECT,
       },
     );
@@ -1263,13 +1310,19 @@ exports.listarProgramadosPorConfig = async (req, res) => {
 
     return res.json({
       ok: true,
-      data: data.reverse(), // opcional: dejar ascendente para render timeline
+      data,
+      pagination: {
+        page,
+        limit,
+        totalLotes,
+        totalPages,
+      },
     });
   } catch (error) {
-    console.error('❌ listarProgramadosPorChat:', error);
+    console.error('❌ listarProgramadosPorConfig:', error);
     return res.status(500).json({
       ok: false,
-      msg: 'Error al listar mensajes programados del chat.',
+      msg: 'Error al listar mensajes programados.',
       error: error.message,
     });
   }
@@ -1298,12 +1351,21 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
 
     // Convertir a H.264/AAC compatible con WhatsApp
     const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
-    console.log(`[WA_VIDEO] Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`);
+    console.log(
+      `[WA_VIDEO] Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`,
+    );
     let convertedBuffer = videoBuffer;
     try {
       console.log('[WA_VIDEO] Convirtiendo video...');
-      convertedBuffer = await convertVideoForWhatsApp(videoBuffer, req.file.originalname);
-      console.log('[WA_VIDEO] Conversión OK. Tamaño:', (convertedBuffer.length / (1024 * 1024)).toFixed(2), 'MB');
+      convertedBuffer = await convertVideoForWhatsApp(
+        videoBuffer,
+        req.file.originalname,
+      );
+      console.log(
+        '[WA_VIDEO] Conversión OK. Tamaño:',
+        (convertedBuffer.length / (1024 * 1024)).toFixed(2),
+        'MB',
+      );
     } catch (convErr) {
       if (convErr.isOversized || videoOriginalSizeMB > 15) {
         const msg = convErr.isOversized
@@ -1312,7 +1374,10 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
         console.error('[WA_VIDEO] Video demasiado pesado:', msg);
         return res.status(400).json({ status: 400, message: msg });
       }
-      console.warn('[WA_VIDEO] Conversión fallida, usando original:', convErr.message);
+      console.warn(
+        '[WA_VIDEO] Conversión fallida, usando original:',
+        convErr.message,
+      );
     }
 
     // Subir a WhatsApp

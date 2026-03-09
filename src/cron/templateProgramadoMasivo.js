@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const { db } = require('../database/config');
 const {
   sendWhatsappMessageTemplateScheduled,
+  prefetchTemplates,
+  pruneTemplateCache,
 } = require('../services/whatsapp.service');
 
 async function withLock(lockName, fn) {
@@ -11,7 +13,6 @@ async function withLock(lockName, fn) {
   });
 
   if (!row || Number(row.got) !== 1) {
-    // log silencioso o mínimo
     return;
   }
 
@@ -56,10 +57,6 @@ function withTimeout(promise, ms, label = 'Operación') {
   });
 }
 
-/**
- * Ejecuta UPDATE y luego obtiene ROW_COUNT() real desde MySQL/MariaDB.
- * IMPORTANTE: depende de que ambas consultas salgan por la misma conexión.
- */
 async function execUpdateAndRowCount(sql, replacements = []) {
   await db.query(sql, {
     replacements,
@@ -105,7 +102,7 @@ cron.schedule('* * * * *', async () => {
         );
       }
 
-      // 1) Buscar pendientes listos para enviar (comparando en UTC)
+      // 1) Buscar pendientes listos para enviar
       const pendientes = await db.query(
         `
         SELECT *
@@ -127,18 +124,36 @@ cron.schedule('* * * * *', async () => {
         `📋 [CRON templateProgramadoMasivo] Pendientes encontrados: ${pendientes.length}`,
       );
 
-      // 2) Enviar los mensajes con retraso entre cada uno para evitar bloqueo por spam
+      // ══════════════════════════════════════════════════════
+      // 1.5) PRE-FETCH de plantillas ANTES del loop de envío
+      //      Consulta Meta UNA VEZ por template único,
+      //      cachea todas las plantillas del WABA de golpe.
+      // ══════════════════════════════════════════════════════
+      try {
+        const prefetched = await prefetchTemplates(pendientes);
+        if (prefetched > 0) {
+          console.log(
+            `💾 [CRON templateProgramadoMasivo] Pre-cacheadas ${prefetched} plantilla(s) desde Meta`,
+          );
+        }
+      } catch (prefetchErr) {
+        // No es fatal: el envío individual hará fallback a consulta directa
+        console.warn(
+          '⚠️ [CRON templateProgramadoMasivo] Error en prefetch (no fatal):',
+          prefetchErr.message,
+        );
+      }
+
+      // 2) Enviar mensajes con retraso entre cada uno
       for (const [index, item] of pendientes.entries()) {
         const itemStart = Date.now();
 
         try {
-          // **Retraso entre cada mensaje (5 segundos por cada mensaje)**
-          const delay = index * 5000; // 5 segundos de retraso entre cada mensaje
-
-          // Esperar el retraso antes de enviar el siguiente mensaje
+          // Retraso entre mensajes (5 seg)
+          const delay = index * 5000;
           await new Promise((resolve) => setTimeout(resolve, delay));
 
-          // 2) Toma atómica del registro
+          // Toma atómica del registro
           const affectedRows = await execUpdateAndRowCount(
             `
             UPDATE template_envios_programados
@@ -153,11 +168,10 @@ cron.schedule('* * * * *', async () => {
           );
 
           if (!affectedRows) {
-            // Otro proceso lo tomó o cambió de estado entre SELECT y UPDATE
             continue;
           }
 
-          // 3) Parseo de JSONs
+          // Parseo de JSONs
           const template_parameters = parseJsonSafe(
             item.template_parameters_json,
             [],
@@ -167,7 +181,7 @@ cron.schedule('* * * * *', async () => {
             null,
           );
 
-          // 4) Envío (con timeout de seguridad)
+          // Envío (con timeout) — plantilla ya cacheada, NO consulta Meta
           const resp = await withTimeout(
             sendWhatsappMessageTemplateScheduled({
               telefono: item.telefono,
@@ -194,12 +208,12 @@ cron.schedule('* * * * *', async () => {
 
           const wamid = resp?.wamid || null;
 
-          // 5) Marcar éxito y registrar la fecha de envío correctamente después del retraso
+          // Marcar éxito
           await db.query(
             `
             UPDATE template_envios_programados
             SET estado = 'enviado',
-                enviado_en = NOW(), 
+                enviado_en = NOW(),
                 id_wamid_mensaje = ?,
                 error_message = NULL,
                 actualizado_en = NOW()
@@ -260,7 +274,6 @@ cron.schedule('* * * * *', async () => {
             err?.message || err,
           );
 
-          // Solo detalle extra si viene de Meta
           if (err?.meta_status || err?.meta_error) {
             console.error('🧾 [Meta error detail]', {
               id: item.id,
@@ -270,6 +283,9 @@ cron.schedule('* * * * *', async () => {
           }
         }
       }
+
+      // 3) Limpiar cache expirado al final del ciclo
+      pruneTemplateCache();
     } catch (error) {
       console.error(
         '❌ [CRON templateProgramadoMasivo] Error general:',
@@ -277,7 +293,6 @@ cron.schedule('* * * * *', async () => {
       );
     } finally {
       const ms = Date.now() - cicloInicio;
-      // Log final solo si hubo actividad notable (>1s), opcional pero útil
       if (ms > 1000) {
         console.log(
           `🏁 [CRON templateProgramadoMasivo] Ciclo finalizado en ${ms}ms`,
