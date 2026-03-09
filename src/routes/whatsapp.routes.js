@@ -13,6 +13,13 @@ const ffmpeg = require('fluent-ffmpeg');
 const { PassThrough } = require('stream');
 const whatsappCtrl = require('../controllers/whatsapp.controller');
 
+// helpers para Video API
+const {
+  uploadVideoToVideoAPI,
+  convertVideoForWhatsApp,
+  extractBearerToken,
+} = require('../utils/whatsappTemplate.helpers');
+
 // Detectar ffmpeg automáticamente (funciona en Windows/Linux/Mac)
 // Si ffmpeg está en el PATH del sistema, lo usará automáticamente
 
@@ -118,7 +125,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
       },
     });
 
-    // si Meta dice 401/403 (token inválido / sin permisos) -> NO es “cerrar sesión”
+    // si Meta dice 401/403 (token inválido / sin permisos) -> NO es "cerrar sesión"
     if (numbersResp.status === 401 || numbersResp.status === 403) {
       return res.json({
         success: true,
@@ -130,7 +137,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
       });
     }
 
-    // otros 4xx/5xx de Meta: lo tratamos como “sin números”, no como error fatal
+    // otros 4xx/5xx de Meta: lo tratamos como "sin números", no como error fatal
     if (numbersResp.status < 200 || numbersResp.status >= 300) {
       const metaErr = numbersResp.data?.error || null;
       const isRateLimit = metaErr?.code === 80008;
@@ -747,53 +754,127 @@ router.delete('/eliminarPlantilla', async (req, res) => {
  * PUT /api/v1/whatsapp_managment/EditarPlantilla
  * Edita una plantilla rápida en el chat center.
  *
- * Actualiza el contenido de una plantilla específica usando su ID.
+ * Ahora soporta campos de media (tipo_mensaje, ruta_archivo, mime_type, file_name)
  *
- * @param {int} id_template - ID de la plantilla a editar
- * @param {string} atajo - Nuevo valor del atajo
- * @param {string} mensaje - Nuevo contenido del mensaje
- * @return {object} status 200 | 500
- *
- * @example Body JSON:
- * {
- *   "id_template": 74,
- *   "atajo": "/gracias",
- *   "mensaje": "¡Gracias por tu compra!"
- * }
+ * @param {int}    id_template   - ID de la plantilla a editar
+ * @param {string} atajo         - Nuevo valor del atajo
+ * @param {string} mensaje       - Nuevo contenido del mensaje
+ * @param {string} tipo_mensaje  - text|image|video|document|audio  (opcional, default mantiene el actual)
+ * @param {string} ruta_archivo  - URL del archivo (S3 o Video API stream_url)
+ * @param {string} mime_type     - MIME type del archivo
+ * @param {string} file_name     - Nombre del archivo
  */
-
 router.put('/EditarPlantilla', async (req, res) => {
-  const { atajo, mensaje, id_template } = req.body;
-  //No validamos por completo ya que hay algunas plantillas que van vacias.
-  // if (!atajo || !mensaje || !id_template) {
-  //   return res.status(400).json({
-  //     success: false,
-  //     message: "Faltan datos requeridos.",
-  //   });
-  // }
+  const {
+    id_template,
+    atajo,
+    mensaje,
+    tipo_mensaje,
+    ruta_archivo,
+    mime_type,
+    file_name,
+  } = req.body;
+
+  if (!id_template) {
+    return res.status(400).json({
+      success: false,
+      message: 'Falta id_template.',
+    });
+  }
 
   try {
-    const [result] = await db.query(
-      `UPDATE templates_chat_center SET atajo = ?, mensaje = ? WHERE id_template = ?`,
-      {
-        replacements: [atajo, mensaje, id_template],
-      },
-    );
+    // ── Determinar si viene con campos de media o es edición legacy ──
+    const tieneMediaFields = tipo_mensaje !== undefined;
 
-    if (result.changedRows > 0) {
-      return res.json({
-        status: 200,
-        success: true,
-        modificado: true,
-        message: 'Plantilla editada correctamente.',
-      });
+    if (tieneMediaFields) {
+      // Edición completa (front nuevo con soporte media)
+      const tipo = String(tipo_mensaje || 'text')
+        .toLowerCase()
+        .trim();
+      const tiposOk = ['text', 'audio', 'image', 'video', 'document'];
+
+      if (!tiposOk.includes(tipo)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'tipo_mensaje inválido. Use: text|audio|image|video|document',
+        });
+      }
+
+      // Si no es texto, debe venir ruta_archivo
+      if (tipo !== 'text' && (!ruta_archivo || !String(ruta_archivo).trim())) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'ruta_archivo es obligatorio cuando tipo_mensaje no es text.',
+        });
+      }
+
+      const rutaFinal = tipo === 'text' ? null : String(ruta_archivo).trim();
+      const mimeFinal = tipo === 'text' ? null : mime_type || null;
+      const nameFinal = tipo === 'text' ? null : file_name || null;
+
+      const [result] = await db.query(
+        `UPDATE templates_chat_center
+            SET atajo         = ?,
+                mensaje       = ?,
+                tipo_mensaje  = ?,
+                ruta_archivo  = ?,
+                mime_type     = ?,
+                file_name     = ?
+          WHERE id_template   = ?`,
+        {
+          replacements: [
+            atajo,
+            mensaje ?? '',
+            tipo,
+            rutaFinal,
+            mimeFinal,
+            nameFinal,
+            id_template,
+          ],
+        },
+      );
+
+      if (result.changedRows > 0) {
+        return res.json({
+          status: 200,
+          success: true,
+          modificado: true,
+          message: 'Plantilla editada correctamente.',
+        });
+      } else {
+        return res.json({
+          status: 200,
+          success: true,
+          modificado: false,
+          message: 'Los datos enviados son iguales a los actuales.',
+        });
+      }
     } else {
-      return res.json({
-        status: 200,
-        success: true,
-        modificado: false,
-        message: 'Los datos enviados son iguales a los actuales.',
-      });
+      // Edición legacy (solo atajo + mensaje) — compatibilidad hacia atrás
+      const [result] = await db.query(
+        `UPDATE templates_chat_center SET atajo = ?, mensaje = ? WHERE id_template = ?`,
+        {
+          replacements: [atajo, mensaje, id_template],
+        },
+      );
+
+      if (result.changedRows > 0) {
+        return res.json({
+          status: 200,
+          success: true,
+          modificado: true,
+          message: 'Plantilla editada correctamente.',
+        });
+      } else {
+        return res.json({
+          status: 200,
+          success: true,
+          modificado: false,
+          message: 'Los datos enviados son iguales a los actuales.',
+        });
+      }
     }
   } catch (error) {
     console.error('Error al editar la plantilla:', error);
@@ -804,6 +885,114 @@ router.put('/EditarPlantilla', async (req, res) => {
     });
   }
 });
+
+/**
+ *  POST /api/v1/whatsapp_managment/uploadVideoPlantillaRapida
+ *
+ * Sube un VIDEO a la Video API (chunked) con conversión FFmpeg.
+ * Se usa desde CrearPlantillaRapidaModal / EditarPlantillaRapidaModal
+ * cuando tipo_mensaje === 'video'.
+ *
+ * Los demás tipos (image, document, audio) siguen subiendo directo al S3 uploader
+ * desde el frontend.
+ *
+ * Requiere JWT en header Authorization (Bearer ...) — lo envía chatApi automáticamente.
+ *
+ * Respuesta normalizada (misma forma que el S3 uploader):
+ *   { success: true, data: { url, fileName, mimeType, size, video_id } }
+ */
+router.post(
+  '/uploadVideoPlantillaRapida',
+  upload.single('file'),
+  async (req, res) => {
+    try {
+      // 1) Validar que venga archivo
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No se recibió ningún archivo de video.',
+        });
+      }
+
+      // 2) Validar que sea video
+      const mime = String(req.file.mimetype || '').toLowerCase();
+      if (!mime.startsWith('video/')) {
+        return res.status(400).json({
+          success: false,
+          message: `El archivo no es un video. MIME recibido: ${req.file.mimetype}`,
+        });
+      }
+
+      // 3) JWT requerido para Video API
+      const jwtToken = extractBearerToken(req);
+      if (!jwtToken) {
+        return res.status(401).json({
+          success: false,
+          message:
+            'Se requiere JWT (Authorization: Bearer ...) para subir video.',
+        });
+      }
+
+      // 4) Convertir video a MP4 compatible con WhatsApp (H.264/AAC)
+      let processedBuffer = req.file.buffer;
+      let processedMimetype = req.file.mimetype;
+      let processedFilename = req.file.originalname;
+
+      try {
+        processedBuffer = await convertVideoForWhatsApp(
+          req.file.buffer,
+          req.file.originalname,
+          16, // target max MB
+        );
+        processedMimetype = 'video/mp4';
+        processedFilename = req.file.originalname.replace(/\.[^.]+$/, '.mp4');
+
+        console.log(
+          '[PLANTILLA_RAPIDA_VIDEO] Conversión OK. Tamaño:',
+          (processedBuffer.length / (1024 * 1024)).toFixed(2),
+          'MB',
+        );
+      } catch (convErr) {
+        if (convErr.isOversized) {
+          return res.status(400).json({
+            success: false,
+            message: convErr.message,
+          });
+        }
+        console.warn(
+          '[PLANTILLA_RAPIDA_VIDEO] Conversión falló, usando original:',
+          convErr.message,
+        );
+      }
+
+      // 5) Subir a Video API (chunked)
+      const result = await uploadVideoToVideoAPI({
+        buffer: processedBuffer,
+        originalname: processedFilename,
+        mimetype: processedMimetype,
+        jwtToken,
+      });
+
+      // 6) Respuesta normalizada (misma forma que S3 uploader)
+      return res.json({
+        success: true,
+        data: {
+          url: result.stream_url || result.fileUrl,
+          fileName: processedFilename,
+          mimeType: processedMimetype,
+          size: processedBuffer.length,
+          video_id: result.video_id || null,
+        },
+      });
+    } catch (err) {
+      console.error('[PLANTILLA_RAPIDA_VIDEO] Error:', err);
+      return res.status(err.statusCode || 500).json({
+        success: false,
+        message: err.message || 'Error subiendo video.',
+      });
+    }
+  },
+);
 
 /**
  * PUT /api/v1/whatsapp_managment/editarConfiguración
@@ -2754,6 +2943,10 @@ router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 
 router.get('/programados_por_config', whatsappCtrl.listarProgramadosPorConfig);
 
-router.post("/enviar-video-file", upload.single("file"), whatsappCtrl.enviarVideoWhatsappFile);
+router.post(
+  '/enviar-video-file',
+  upload.single('file'),
+  whatsappCtrl.enviarVideoWhatsappFile,
+);
 
 module.exports = router;
