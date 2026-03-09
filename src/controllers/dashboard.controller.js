@@ -606,22 +606,24 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     // ====================================================================
     const agentLoad = await db.query(
       `SELECT
-         su.id_sub_usuario,
-         su.nombre_encargado,
-         COUNT(ccc.id) AS chats_abiertos
-       FROM sub_usuarios_chat_center su
-       LEFT JOIN clientes_chat_center ccc
-         ON ccc.id_encargado = su.id_sub_usuario
-         AND ccc.deleted_at IS NULL
-         AND ccc.propietario = 0
-         AND ccc.chat_cerrado = 0
-       LEFT JOIN temp_configs tc ON tc.id = ccc.id_configuracion
-       WHERE su.id_usuario = ?
-       GROUP BY su.id_sub_usuario, su.nombre_encargado
-       ORDER BY chats_abiertos DESC`,
+        su.id_sub_usuario,
+        su.nombre_encargado,
+        COUNT(DISTINCT ccc.id) AS total_chats
+          FROM sub_usuarios_chat_center su
+          LEFT JOIN (
+            SELECT ccc2.id, ccc2.id_encargado
+            FROM clientes_chat_center ccc2
+            INNER JOIN temp_configs tc ON tc.id = ccc2.id_configuracion
+            INNER JOIN temp_primer_entrante tpe
+              ON tpe.id_configuracion = ccc2.id_configuracion
+              AND tpe.client_ccc_id = ccc2.id
+            WHERE ccc2.deleted_at IS NULL AND ccc2.propietario = 0
+          ) ccc ON ccc.id_encargado = su.id_sub_usuario
+          WHERE su.id_usuario = ?
+          GROUP BY su.id_sub_usuario, su.nombre_encargado
+          ORDER BY total_chats DESC`,
       { replacements: [id_usuario], type: db.QueryTypes.SELECT, transaction },
     );
-
     // ====================================================================
     // SECCION 6: CLIENTES CON +3 TRANSFERENCIAS
     // ====================================================================
