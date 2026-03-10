@@ -9,22 +9,28 @@ const {
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
 async function withLock(lockName, fn) {
-  // intenta tomar el lock hasta 1s
-  const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
-    replacements: [lockName],
-    type: db.QueryTypes.SELECT,
-  });
-  if (!row || Number(row.got) !== 1) {
-    console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
-    return;
-  }
+  // Usa conexión dedicada fuera del pool para no bloquear conexiones de la API
+  const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
-    await fn();
-  } finally {
-    await db.query(`DO RELEASE_LOCK(?)`, {
+    const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
       replacements: [lockName],
-      type: db.QueryTypes.RAW,
+      type: db.QueryTypes.SELECT,
+      bind: undefined,
     });
+    if (!row || Number(row.got) !== 1) {
+      console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
+      return;
+    }
+    try {
+      await fn();
+    } finally {
+      await db.query(`DO RELEASE_LOCK(?)`, {
+        replacements: [lockName],
+        type: db.QueryTypes.RAW,
+      });
+    }
+  } finally {
+    db.connectionManager.releaseConnection(conn);
   }
 }
 

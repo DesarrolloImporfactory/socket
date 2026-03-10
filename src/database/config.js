@@ -9,6 +9,12 @@ const db = new Sequelize({
   port: process.env.DB_PORT_PRINCIPAL,
   logging: false,
   timezone: '-05:00',
+  pool: {
+    max: 20,
+    min: 2,
+    acquire: 30000,
+    idle: 10000,
+  },
   dialectOptions: {
     typeCast(field, next) {
       // Este bloque evita que DATETIME sea convertido a UTC
@@ -32,6 +38,12 @@ const db_2 = new Sequelize({
   port: process.env.DB_PORT,
   logging: false,
   timezone: '-05:00',
+  pool: {
+    max: 10,
+    min: 1,
+    acquire: 30000,
+    idle: 10000,
+  },
   dialectOptions: {
     typeCast(field, next) {
       // Este bloque evita que DATETIME sea convertido a UTC

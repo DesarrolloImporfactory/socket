@@ -5,22 +5,26 @@ const { sendWhatsappMessageTemplate } = require('../services/whatsapp.service');
 const moment = require('moment-timezone');
 
 async function withLock(lockName, fn) {
-  // Intenta tomar el lock hasta 1 segundo
-  const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
-    replacements: [lockName],
-    type: db.QueryTypes.SELECT,
-  });
-  if (!row || row.got !== 1) {
-    console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
-    return;
-  }
+  const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
-    await fn();
-  } finally {
-    await db.query(`DO RELEASE_LOCK(?)`, {
+    const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
       replacements: [lockName],
-      type: db.QueryTypes.RAW,
+      type: db.QueryTypes.SELECT,
     });
+    if (!row || Number(row.got) !== 1) {
+      console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
+      return;
+    }
+    try {
+      await fn();
+    } finally {
+      await db.query(`DO RELEASE_LOCK(?)`, {
+        replacements: [lockName],
+        type: db.QueryTypes.RAW,
+      });
+    }
+  } finally {
+    db.connectionManager.releaseConnection(conn);
   }
 }
 

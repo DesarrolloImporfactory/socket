@@ -11,21 +11,26 @@ const dropiService = require('../services/dropi.service');
 const DROPI_SOURCE = 'DROPI';
 
 async function withLock(lockName, fn) {
-  const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
-    replacements: [lockName],
-    type: db.QueryTypes.SELECT,
-  });
-  if (!row || Number(row.got) !== 1) {
-    console.log(' [syncDropiStock] Lock ocupado, saltando ejecución');
-    return;
-  }
+  const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
-    await fn();
-  } finally {
-    await db.query(`DO RELEASE_LOCK(?)`, {
+    const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
       replacements: [lockName],
-      type: db.QueryTypes.RAW,
+      type: db.QueryTypes.SELECT,
     });
+    if (!row || Number(row.got) !== 1) {
+      console.log(' [syncDropiStock] Lock ocupado, saltando ejecución');
+      return;
+    }
+    try {
+      await fn();
+    } finally {
+      await db.query(`DO RELEASE_LOCK(?)`, {
+        replacements: [lockName],
+        type: db.QueryTypes.RAW,
+      });
+    }
+  } finally {
+    db.connectionManager.releaseConnection(conn);
   }
 }
 

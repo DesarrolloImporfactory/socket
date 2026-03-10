@@ -7,29 +7,34 @@ const {
 } = require('../services/whatsapp.service');
 
 async function withLock(lockName, fn) {
-  const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
-    replacements: [lockName],
-    type: db.QueryTypes.SELECT,
-  });
-
-  if (!row || Number(row.got) !== 1) {
-    return;
-  }
-
+  const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
-    await fn();
-  } finally {
-    try {
-      await db.query(`DO RELEASE_LOCK(?)`, {
-        replacements: [lockName],
-        type: db.QueryTypes.RAW,
-      });
-    } catch (e) {
-      console.error(
-        '❌ [CRON templateProgramadoMasivo] Error liberando lock:',
-        e.message,
-      );
+    const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
+      replacements: [lockName],
+      type: db.QueryTypes.SELECT,
+    });
+
+    if (!row || Number(row.got) !== 1) {
+      return;
     }
+
+    try {
+      await fn();
+    } finally {
+      try {
+        await db.query(`DO RELEASE_LOCK(?)`, {
+          replacements: [lockName],
+          type: db.QueryTypes.RAW,
+        });
+      } catch (e) {
+        console.error(
+          '❌ [CRON templateProgramadoMasivo] Error liberando lock:',
+          e.message,
+        );
+      }
+    }
+  } finally {
+    db.connectionManager.releaseConnection(conn);
   }
 }
 
