@@ -934,27 +934,20 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.estado_cliente,
       c.created_at, c.updated_at,
       c.chat_cerrado, c.telefono_limpio, c.direccion,
-
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
       ecc.nombre AS ciclo_nombre,
-
       c.ultimo_mensaje_at,
       c.ultimo_texto,
       c.ultimo_tipo_mensaje,
       c.ultimo_rol_mensaje,
       c.ultimo_msg_id
-
     FROM clientes_chat_center c
-
     LEFT JOIN etiquetas_custom_chat_center eca
       ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
     LEFT JOIN etiquetas_custom_chat_center ecc
       ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
-
-    
-
     ${whereClause}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
@@ -970,8 +963,6 @@ exports.listarClientes = catchAsync(async (req, res) => {
   // Ejecutar queries
   const rows = await db.query(dataSql, {
     replacements: [
-      id_configuracion, // para el subquery de mensajes (EMISOR)
-      id_configuracion, // para el subquery de mensajes (RECEPTOR)
       ...params,
       limit,
       offset,
