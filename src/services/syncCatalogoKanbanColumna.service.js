@@ -4,9 +4,9 @@
 // ligado a UNA columna Kanban específica.
 // ─────────────────────────────────────────────────────────────
 
-const axios    = require('axios');
+const axios = require('axios');
 const FormData = require('form-data');
-const { db }   = require('../database/config');
+const { db } = require('../database/config');
 
 // ─────────────────────────────────────────────────────────────
 // syncCatalogoKanbanColumna
@@ -17,7 +17,7 @@ const { db }   = require('../database/config');
 // ─────────────────────────────────────────────────────────────
 async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   const logger = opts.logger || (async (...a) => console.log(...a));
-  const sleep  = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ── 1. Obtener datos de la columna ────────────────────────
   const [columna] = await db.query(
@@ -28,13 +28,22 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
   );
 
-  if (!columna) throw new Error(`kanban_columna id=${id_kanban_columna} no encontrada`);
-  if (!columna.assistant_id) throw new Error(`La columna "${columna.nombre}" no tiene assistant_id configurado`);
+  if (!columna)
+    throw new Error(`kanban_columna id=${id_kanban_columna} no encontrada`);
+  if (!columna.assistant_id)
+    throw new Error(
+      `La columna "${columna.nombre}" no tiene assistant_id configurado`,
+    );
 
-  const { id_configuracion, assistant_id, vector_store_id: currentVsId, catalog_file_id: previousFileId } = columna;
+  const {
+    id_configuracion,
+    assistant_id,
+    vector_store_id: currentVsId,
+    catalog_file_id: previousFileId,
+  } = columna;
 
   // ── 2. Obtener API key ────────────────────────────────────
-  const apiKey = opts.apiKeyOpenAI || await getApiKey(id_configuracion);
+  const apiKey = opts.apiKeyOpenAI || (await getApiKey(id_configuracion));
 
   const headersJson = {
     Authorization: `Bearer ${apiKey}`,
@@ -62,7 +71,9 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   );
 
   if (!productos.length) {
-    await logger(`ℹ️ Sin productos para id_configuracion=${id_configuracion}. No se sincroniza.`);
+    await logger(
+      `ℹ️ Sin productos para id_configuracion=${id_configuracion}. No se sincroniza.`,
+    );
     return { ok: true, skipped: true, reason: 'Sin productos' };
   }
 
@@ -75,7 +86,9 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   const catalogoServicios = catalogoNormalizado.filter(
     (p) => String(p.tipo || '').toLowerCase() === 'servicio',
   );
-  const itemsFinales = catalogoProductos.length ? catalogoProductos : catalogoServicios;
+  const itemsFinales = catalogoProductos.length
+    ? catalogoProductos
+    : catalogoServicios;
   const tipoCatalogo = catalogoProductos.length ? 'productos' : 'servicios';
 
   const catalogPayload = {
@@ -97,34 +110,73 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   };
 
   // ── 4. Crear o reutilizar vector store ───────────────────
-  const vectorStoreId = await createOrReuseVectorStore(currentVsId, id_configuracion, columna.nombre, headersJson, logger);
+  const vectorStoreId = await createOrReuseVectorStore(
+    currentVsId,
+    id_configuracion,
+    columna.nombre,
+    headersJson,
+    logger,
+  );
 
   // ── 5. Subir archivo catálogo ─────────────────────────────
-  const newFileId = await uploadCatalogFile(catalogPayload, id_configuracion, columna.estado_db, headersBase, logger);
+  const newFileId = await uploadCatalogFile(
+    catalogPayload,
+    id_configuracion,
+    columna.estado_db,
+    headersBase,
+    logger,
+  );
 
   // ── 6. Adjuntar al vector store ───────────────────────────
-  const { vectorStoreFileId } = await attachFileToVectorStore(vectorStoreId, newFileId, headersJson, logger);
+  const { vectorStoreFileId } = await attachFileToVectorStore(
+    vectorStoreId,
+    newFileId,
+    headersJson,
+    logger,
+  );
 
   // ── 7. Esperar indexación ─────────────────────────────────
-  await waitVectorStoreFileProcessed(vectorStoreId, vectorStoreFileId, headersJson, logger, sleep);
+  await waitVectorStoreFileProcessed(
+    vectorStoreId,
+    vectorStoreFileId,
+    headersJson,
+    logger,
+    sleep,
+  );
 
   // ── 8. Asegurar file_search en el asistente ───────────────
-  await ensureAssistantHasFileSearch(assistant_id, vectorStoreId, headersJson, logger);
+  await ensureAssistantHasFileSearch(
+    assistant_id,
+    vectorStoreId,
+    headersJson,
+    logger,
+  );
 
   // ── 9. Guardar IDs en kanban_columnas ─────────────────────
   await db.query(
     `UPDATE kanban_columnas
      SET vector_store_id = ?, catalog_file_id = ?
      WHERE id = ?`,
-    { replacements: [vectorStoreId, newFileId, id_kanban_columna], type: db.QueryTypes.UPDATE },
+    {
+      replacements: [vectorStoreId, newFileId, id_kanban_columna],
+      type: db.QueryTypes.UPDATE,
+    },
   );
 
   // ── 10. Eliminar archivo anterior ────────────────────────
   if (previousFileId && previousFileId !== newFileId) {
-    await deleteFileIfExists(previousFileId, headersBase, logger);
+    await deleteFileIfExists(
+      previousFileId,
+      vectorStoreId,
+      headersBase,
+      headersJson,
+      logger,
+    );
   }
 
-  await logger(`✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length}`);
+  await logger(
+    `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length}`,
+  );
 
   return {
     ok: true,
@@ -160,16 +212,22 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
   );
 
   if (!columnas.length) {
-    await logger(`ℹ️ Sin columnas con contexto_productos para id_configuracion=${id_configuracion}`);
+    await logger(
+      `ℹ️ Sin columnas con contexto_productos para id_configuracion=${id_configuracion}`,
+    );
     return { ok: true, skipped: true };
   }
 
-  const apiKey = opts.apiKeyOpenAI || await getApiKey(id_configuracion);
+  const apiKey = opts.apiKeyOpenAI || (await getApiKey(id_configuracion));
   const resultados = [];
 
   for (const { id } of columnas) {
     try {
-      const r = await syncCatalogoKanbanColumna(id, { ...opts, apiKeyOpenAI: apiKey, logger });
+      const r = await syncCatalogoKanbanColumna(id, {
+        ...opts,
+        apiKeyOpenAI: apiKey,
+        logger,
+      });
       resultados.push(r);
     } catch (err) {
       await logger(`⚠️ Error sync columna id=${id}: ${err.message}`);
@@ -194,16 +252,47 @@ async function getApiKey(id_configuracion) {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   if (!row?.api_key_openai)
-    throw new Error(`No se encontró api_key_openai para id_configuracion=${id_configuracion}`);
+    throw new Error(
+      `No se encontró api_key_openai para id_configuracion=${id_configuracion}`,
+    );
   return row.api_key_openai;
 }
 
-async function createOrReuseVectorStore(existingId, id_configuracion, columnaNombre, headersJson, logger) {
-  if (existingId) return existingId;
+async function createOrReuseVectorStore(
+  existingId,
+  id_configuracion,
+  columnaNombre,
+  headersJson,
+  logger,
+) {
+  // ← Verificar que el vector store existente siga vivo en OpenAI
+  if (existingId) {
+    try {
+      await axios.get(`https://api.openai.com/v1/vector_stores/${existingId}`, {
+        headers: headersJson,
+      });
+      await logger(`♻️ Reutilizando vector store: ${existingId}`);
+      return existingId;
+    } catch (err) {
+      await logger(
+        `⚠️ Vector store ${existingId} no existe en OpenAI (${err?.response?.status}) — creando uno nuevo`,
+      );
+      // Limpiar el ID inválido de la BD
+      await db.query(
+        `UPDATE kanban_columnas SET vector_store_id = NULL WHERE id_configuracion = ? AND vector_store_id = ?`,
+        {
+          replacements: [id_configuracion, existingId],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+    }
+  }
 
   const res = await axios.post(
     'https://api.openai.com/v1/vector_stores',
-    { name: `kanban_catalogo_${id_configuracion}_${columnaNombre}_${Date.now()}` },
+    {
+      name: `kanban_catalogo_${id_configuracion}_${columnaNombre}_${Date.now()}`,
+    },
     { headers: headersJson },
   );
   const vsId = res?.data?.id;
@@ -212,9 +301,15 @@ async function createOrReuseVectorStore(existingId, id_configuracion, columnaNom
   return vsId;
 }
 
-async function uploadCatalogFile(catalogPayload, id_configuracion, estado_db, headersBase, logger) {
+async function uploadCatalogFile(
+  catalogPayload,
+  id_configuracion,
+  estado_db,
+  headersBase,
+  logger,
+) {
   const filename = `catalogo_${id_configuracion}_${estado_db}_${Date.now()}.json`;
-  const buffer   = Buffer.from(JSON.stringify(catalogPayload, null, 2), 'utf8');
+  const buffer = Buffer.from(JSON.stringify(catalogPayload, null, 2), 'utf8');
 
   const form = new FormData();
   form.append('purpose', 'assistants');
@@ -232,18 +327,32 @@ async function uploadCatalogFile(catalogPayload, id_configuracion, estado_db, he
   return fileId;
 }
 
-async function attachFileToVectorStore(vectorStoreId, fileId, headersJson, logger) {
+async function attachFileToVectorStore(
+  vectorStoreId,
+  fileId,
+  headersJson,
+  logger,
+) {
   const res = await axios.post(
     `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files`,
     { file_id: fileId },
     { headers: headersJson },
   );
   const vectorStoreFileId = res?.data?.id;
-  await logger(`📎 Archivo ${fileId} adjunto al vector store ${vectorStoreId} vsFileId=${vectorStoreFileId}`);
+  await logger(
+    `📎 Archivo ${fileId} adjunto al vector store ${vectorStoreId} vsFileId=${vectorStoreFileId}`,
+  );
   return { vectorStoreFileId, status: res?.data?.status };
 }
 
-async function waitVectorStoreFileProcessed(vectorStoreId, vectorStoreFileId, headersJson, logger, sleep, maxAttempts = 30) {
+async function waitVectorStoreFileProcessed(
+  vectorStoreId,
+  vectorStoreFileId,
+  headersJson,
+  logger,
+  sleep,
+  maxAttempts = 30,
+) {
   for (let i = 1; i <= maxAttempts; i++) {
     const res = await axios.get(
       `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files/${vectorStoreFileId}`,
@@ -253,35 +362,79 @@ async function waitVectorStoreFileProcessed(vectorStoreId, vectorStoreFileId, he
     await logger(`⏳ Indexando (intento ${i}/${maxAttempts}) status=${status}`);
     if (status === 'completed') return true;
     if (status === 'failed' || status === 'cancelled')
-      throw new Error(`Falló indexación vsFile=${vectorStoreFileId} status=${status}`);
+      throw new Error(
+        `Falló indexación vsFile=${vectorStoreFileId} status=${status}`,
+      );
     await sleep(1000);
   }
   throw new Error(`Timeout indexando vsFile=${vectorStoreFileId}`);
 }
 
-async function ensureAssistantHasFileSearch(assistantId, vectorStoreId, headersJson, logger) {
+async function ensureAssistantHasFileSearch(
+  assistantId,
+  vectorStoreId,
+  headersJson,
+  logger,
+) {
   const getRes = await axios.get(
     `https://api.openai.com/v1/assistants/${assistantId}`,
     { headers: headersJson },
   );
-  const currentTools = Array.isArray(getRes.data?.tools) ? getRes.data.tools : [];
+  const currentTools = Array.isArray(getRes.data?.tools)
+    ? getRes.data.tools
+    : [];
   const hasFileSearch = currentTools.some((t) => t?.type === 'file_search');
-  const tools = hasFileSearch ? currentTools : [...currentTools, { type: 'file_search' }];
+  const tools = hasFileSearch
+    ? currentTools
+    : [...currentTools, { type: 'file_search' }];
 
   await axios.post(
     `https://api.openai.com/v1/assistants/${assistantId}`,
-    { tools, tool_resources: { file_search: { vector_store_ids: [vectorStoreId] } } },
+    {
+      tools,
+      tool_resources: { file_search: { vector_store_ids: [vectorStoreId] } },
+    },
     { headers: headersJson },
   );
-  await logger(`✅ Assistant ${assistantId} actualizado con file_search + vector_store ${vectorStoreId}`);
+  await logger(
+    `✅ Assistant ${assistantId} actualizado con file_search + vector_store ${vectorStoreId}`,
+  );
 }
 
-async function deleteFileIfExists(fileId, headersBase, logger) {
+async function deleteFileIfExists(
+  fileId,
+  vectorStoreId,
+  headersBase,
+  headersJson,
+  logger,
+) {
   try {
-    await axios.delete(`https://api.openai.com/v1/files/${fileId}`, { headers: headersBase });
+    // ── 1. Desvincular del vector store primero ──
+    if (vectorStoreId) {
+      try {
+        await axios.delete(
+          `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files/${fileId}`,
+          { headers: headersJson },
+        );
+        await logger(
+          `🔗 Archivo ${fileId} desvinculado del vector store ${vectorStoreId}`,
+        );
+      } catch (err) {
+        await logger(
+          `⚠️ No se pudo desvincular ${fileId} del vector store: ${err?.response?.data?.error?.message || err.message}`,
+        );
+      }
+    }
+
+    // ── 2. Eliminar el archivo de OpenAI Files ──
+    await axios.delete(`https://api.openai.com/v1/files/${fileId}`, {
+      headers: headersBase,
+    });
     await logger(`🗑️ Archivo anterior eliminado: ${fileId}`);
   } catch (err) {
-    await logger(`⚠️ No se pudo eliminar archivo anterior ${fileId}: ${err?.response?.data?.error?.message || err.message}`);
+    await logger(
+      `⚠️ No se pudo eliminar archivo ${fileId}: ${err?.response?.data?.error?.message || err.message}`,
+    );
   }
 }
 
@@ -289,7 +442,11 @@ async function deleteFileIfExists(fileId, headersBase, logger) {
 function safeJSONParse(value, fallback = null) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
-  try { return JSON.parse(value); } catch { return fallback; }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function formatearCombosParaCatalogo(combosProducto) {
@@ -303,11 +460,11 @@ function formatearCombosParaCatalogo(combosProducto) {
     if (Array.isArray(combosNormalizados) && combosNormalizados.length > 0) {
       combosTexto += `Combos disponibles:\n`;
       combosNormalizados.forEach((c, i) => {
-        const nombre   = c?.nombre || c?.titulo || `Combo ${i + 1}`;
-        const precio   = c?.precio ?? c?.valor ?? '';
+        const nombre = c?.nombre || c?.titulo || `Combo ${i + 1}`;
+        const precio = c?.precio ?? c?.valor ?? '';
         const cantidad = c?.cantidad ?? '';
         combosTexto += `- ${nombre}`;
-        if (cantidad)    combosTexto += ` | Cantidad: ${cantidad}`;
+        if (cantidad) combosTexto += ` | Cantidad: ${cantidad}`;
         if (precio !== '') combosTexto += ` | Precio: ${precio}`;
         combosTexto += `\n`;
       });
@@ -321,53 +478,57 @@ function formatearCombosParaCatalogo(combosProducto) {
 
 function normalizeCatalogProducts(rows) {
   return rows.map((r) => {
-    const { combos_json, combos_texto } = formatearCombosParaCatalogo(r.combos_producto);
+    const { combos_json, combos_texto } = formatearCombosParaCatalogo(
+      r.combos_producto,
+    );
 
     let bloque_prompt = '';
     bloque_prompt += `🛒 Producto: ${r.nombre || ''}\n`;
     bloque_prompt += `📃 Descripción: ${r.descripcion || ''}\n`;
     bloque_prompt += `Precio: ${r.precio ?? ''}\n`;
-    if (combos_texto)        bloque_prompt += `${combos_texto}\n`;
-    if (r.imagen_url)        bloque_prompt += `[producto_imagen_url]: ${r.imagen_url}\n`;
-    if (r.video_url)         bloque_prompt += `[producto_video_url]: ${r.video_url}\n`;
+    if (combos_texto) bloque_prompt += `${combos_texto}\n`;
+    if (r.imagen_url)
+      bloque_prompt += `[producto_imagen_url]: ${r.imagen_url}\n`;
+    if (r.video_url) bloque_prompt += `[producto_video_url]: ${r.video_url}\n`;
     bloque_prompt += `Tipo: ${r.tipo || ''}\n`;
     bloque_prompt += `Categoría: ${r.nombre_categoria || ''}\n`;
     bloque_prompt += `Nombre_upsell: ${r.nombre_upsell || ''}\n`;
     bloque_prompt += `Descripcion_upsell: ${r.descripcion_upsell || ''}\n`;
     bloque_prompt += `Precio_upsell: ${r.precio_upsell ?? ''}\n`;
-    if (r.imagen_upsell_url) bloque_prompt += `[upsell_imagen_url]: ${r.imagen_upsell_url}\n`;
+    if (r.imagen_upsell_url)
+      bloque_prompt += `[upsell_imagen_url]: ${r.imagen_upsell_url}\n`;
 
     console.log('bloque_prompt: ' + bloque_prompt);
 
     return {
       // Metadatos
-      id_producto:      r.id_producto,
+      id_producto: r.id_producto,
       id_configuracion: r.id_configuracion,
-      actualizado_en:   r.fecha_actualizacion || null,
+      actualizado_en: r.fecha_actualizacion || null,
 
       // Campos estructurados
-      nombre:           r.nombre || '',
-      descripcion:      r.descripcion || '',
-      tipo:             r.tipo || '',
-      precio:           r.precio ?? null,
-      duracion:         r.duracion ?? null,
-      stock:            r.stock ?? null,
-      id_categoria:     r.id_categoria ?? null,
+      nombre: r.nombre || '',
+      descripcion: r.descripcion || '',
+      tipo: r.tipo || '',
+      precio: r.precio ?? null,
+      duracion: r.duracion ?? null,
+      stock: r.stock ?? null,
+      id_categoria: r.id_categoria ?? null,
       nombre_categoria: r.nombre_categoria || null,
 
       // Campos que el prompt reconoce mejor
-      nombre_producto:      r.nombre || '',
+      nombre_producto: r.nombre || '',
       descripcion_producto: r.descripcion || '',
-      precio_producto:      r.precio ?? null,
-      producto_imagen_url:  r.imagen_url || null,
-      producto_video_url:   r.video_url || null,
+      precio_producto: r.precio ?? null,
+      producto_imagen_url: r.imagen_url || null,
+      producto_video_url: r.video_url || null,
 
-      nombre_upsell:        r.nombre_upsell || null,
-      descripcion_upsell:   r.descripcion_upsell || null,
-      precio_upsell:        r.precio_upsell ?? null,
-      upsell_imagen_url:    r.imagen_upsell_url || null,
+      nombre_upsell: r.nombre_upsell || null,
+      descripcion_upsell: r.descripcion_upsell || null,
+      precio_upsell: r.precio_upsell ?? null,
+      upsell_imagen_url: r.imagen_upsell_url || null,
 
-      combos_producto:       combos_json,
+      combos_producto: combos_json,
       combos_producto_texto: combos_texto,
 
       bloque_prompt: bloque_prompt.trim(),

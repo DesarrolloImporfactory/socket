@@ -129,7 +129,7 @@ async function procesarMensajeKanban(params) {
   let mensajeFinal = mensaje;
 
   // ── 4. ACCIÓN: separador_productos (pre-procesamiento) ────
-  if (tieneAccion('separador_productos')) {
+  /* if (tieneAccion('separador_productos')) {
     const [acSep] = getAcciones('separador_productos');
     const cfg = parseConfig(acSep);
     const sep_asst = cfg.assistant_id || null;
@@ -152,7 +152,7 @@ async function procesarMensajeKanban(params) {
         await log(`⚠️ Error separador_productos: ${err.message}`);
       }
     }
-  }
+  } */
 
   // ── 5. ACCIÓN: contexto_productos ─────────────────────────
   if (tieneAccion('contexto_productos') && bloqueContexto) {

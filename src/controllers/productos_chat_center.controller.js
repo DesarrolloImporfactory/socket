@@ -15,6 +15,10 @@ const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const {
   syncCatalogoAsistentesPorConfiguracion,
 } = require('../utils/openia/carga_file_productos');
+
+const {
+  syncCatalogoTodasColumnasConfig,
+} = require('../services/syncCatalogoKanbanColumna.service');
 const dropiService = require('../services/dropi.service');
 
 async function getActiveIntegration(id_configuracion) {
@@ -160,6 +164,10 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 
   syncCatalogoAsistentesPorConfiguracion(id_configuracion).catch((e) => {
     console.error(`⚠️ Error sync catálogo: ${e.message}`);
+  });
+
+  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) => {
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
   });
 
   return res.status(201).json({ status: 'success', data: nuevoProducto });
@@ -317,6 +325,10 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     console.error(`⚠️ Error sync catálogo: ${e.message}`);
   });
 
+  syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
+  });
+
   return res.status(200).json({ status: 'success', data: producto });
 });
 
@@ -333,6 +345,10 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
   }
 
   await producto.destroy();
+
+  syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
+  });
 
   res.status(200).json({
     status: 'success',
