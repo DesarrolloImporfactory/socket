@@ -51,4 +51,10 @@ router.get(
   departamentos_chat_center.obtenerHistorialEncargados,
 );
 
+router.get(
+  '/sub-usuarios-por-configuracion/:id_configuracion',
+  checkPlanActivo,
+  departamentos_chat_center.subUsuariosPorConfiguracion,
+);
+
 module.exports = router;

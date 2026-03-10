@@ -830,3 +830,45 @@ exports.obtenerHistorialEncargados = catchAsync(async (req, res, next) => {
 
   res.status(200).json({ status: 200, data: rows });
 });
+
+exports.subUsuariosPorConfiguracion = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.params;
+
+  const subUsuarios = await db.query(
+    `SELECT
+      su.id_sub_usuario,
+      su.nombre_encargado,
+      su.usuario,
+      su.email,
+      su.rol,
+      su.activar_cotizacion,
+      GROUP_CONCAT(
+        DISTINCT dc.nombre_departamento
+        ORDER BY dc.nombre_departamento
+        SEPARATOR ', '
+      ) AS departamentos,
+      MAX(sud.asignacion_auto) AS asignacion_auto
+    FROM sub_usuarios_chat_center su
+    INNER JOIN sub_usuarios_departamento sud ON su.id_sub_usuario = sud.id_sub_usuario
+    INNER JOIN departamentos_chat_center dc ON sud.id_departamento = dc.id_departamento
+    WHERE dc.id_configuracion = :id_configuracion
+    GROUP BY
+      su.id_sub_usuario,
+      su.nombre_encargado,
+      su.usuario,
+      su.email,
+      su.rol,
+      su.activar_cotizacion
+    ORDER BY su.nombre_encargado ASC`,
+    {
+      replacements: { id_configuracion },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  return res.status(200).json({
+    status: 'success',
+    total: subUsuarios.length,
+    data: subUsuarios,
+  });
+});
