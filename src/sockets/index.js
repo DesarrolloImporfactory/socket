@@ -688,6 +688,25 @@ class Sockets {
 
             // opción simple:
             this.io.emit('ENCARGADO_CHAT_ACTUALIZADO', payload);
+
+            if (global.presenceIo) {
+              const { db } = require('../database/config');
+              const [cfg] = await db.query(
+                `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+                {
+                  replacements: [id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              if (cfg) {
+                global.presenceIo
+                  .to(`dashboard:${cfg.id_usuario}`)
+                  .emit('dashboard:update', {
+                    tipo: 'chat_transferred',
+                    id_configuracion,
+                  });
+              }
+            }
           } catch (err) {
             socket.emit('ASIGNAR_ENCARGADO_RESPONSE', {
               status: 'error',

@@ -318,7 +318,7 @@ class InstagramService {
       meta: { raw: message },
     });
 
-    // ✅ UPDATE_CHAT (IG IN)
+    //  UPDATE_CHAT (IG IN)
     emitUpdateChatIG({
       id_configuracion,
       chatId: idClienteContacto, // ✅ contacto
@@ -333,6 +333,23 @@ class InstagramService {
       },
       kind: 'in',
     });
+
+    //  Dashboard real-time
+    if (global.presenceIo) {
+      try {
+        const [cfgRow] = await db.query(
+          `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (cfgRow) {
+          global.presenceIo
+            .to(`dashboard:${cfgRow.id_usuario}`)
+            .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
+        }
+      } catch (e) {
+        console.warn('[dashboard emit IG]', e.message);
+      }
+    }
   }
 
   static async handleEchoAsOutgoing({
@@ -440,7 +457,7 @@ class InstagramService {
       meta: { raw: postback },
     });
 
-    // ✅ UPDATE_CHAT (IG POSTBACK IN)
+    //  UPDATE_CHAT (IG POSTBACK IN)
     emitUpdateChatIG({
       id_configuracion,
       chatId: idClienteContacto,
@@ -456,6 +473,23 @@ class InstagramService {
       },
       kind: 'postback',
     });
+
+    //  Dashboard real-time
+    if (global.presenceIo) {
+      try {
+        const [cfgRow] = await db.query(
+          `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (cfgRow) {
+          global.presenceIo
+            .to(`dashboard:${cfgRow.id_usuario}`)
+            .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
+        }
+      } catch (e) {
+        console.warn('[dashboard emit IG]', e.message);
+      }
+    }
   }
 }
 

@@ -339,7 +339,24 @@ class MessengerService {
 
       console.log('[MS][SAVE_INCOMING][OK]', saved);
 
-      // ✅ emitir UPDATE_CHAT para ver en tiempo real (MS IN)
+      // Dashboard real-time
+      if (global.presenceIo) {
+        try {
+          const [cfgRow] = await db.query(
+            `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+            { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+          );
+          if (cfgRow) {
+            global.presenceIo
+              .to(`dashboard:${cfgRow.id_usuario}`)
+              .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
+          }
+        } catch (e) {
+          console.warn('[dashboard emit MS]', e.message);
+        }
+      }
+
+      //  emitir UPDATE_CHAT para ver en tiempo real (MS IN)
       emitUpdateChatMS({
         id_configuracion,
         chatId: idClienteContacto,
@@ -444,7 +461,25 @@ class MessengerService {
       });
 
       console.log('[MS][SAVE_POSTBACK_IN][OK]', inSaved);
-      // ✅ emitir UPDATE_CHAT para ver en tiempo real (MS POSTBACK IN)
+
+      //  Dashboard real-time
+      if (global.presenceIo) {
+        try {
+          const [cfgRow] = await db.query(
+            `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+            { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+          );
+          if (cfgRow) {
+            global.presenceIo
+              .to(`dashboard:${cfgRow.id_usuario}`)
+              .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
+          }
+        } catch (e) {
+          console.warn('[dashboard emit MS]', e.message);
+        }
+      }
+
+      //  emitir UPDATE_CHAT para ver en tiempo real (MS POSTBACK IN)
       emitUpdateChatMS({
         id_configuracion,
         chatId: idClienteContacto,

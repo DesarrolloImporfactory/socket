@@ -604,26 +604,66 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     // ====================================================================
     // SECCION 5: CARGA POR ASESOR
     // ====================================================================
-    const agentLoad = await db.query(
+
+    // 5a) Chats asignados en el RANGO (via historial_encargados)
+    const agentLoadHistorico = await db.query(
       `SELECT
-        su.id_sub_usuario,
-        su.nombre_encargado,
-        COUNT(DISTINCT ccc.id) AS total_chats
-          FROM sub_usuarios_chat_center su
-          LEFT JOIN (
-            SELECT ccc2.id, ccc2.id_encargado
-            FROM clientes_chat_center ccc2
-            INNER JOIN temp_configs tc ON tc.id = ccc2.id_configuracion
-            INNER JOIN temp_primer_entrante tpe
-              ON tpe.id_configuracion = ccc2.id_configuracion
-              AND tpe.client_ccc_id = ccc2.id
-            WHERE ccc2.deleted_at IS NULL AND ccc2.propietario = 0
-          ) ccc ON ccc.id_encargado = su.id_sub_usuario
-          WHERE su.id_usuario = ?
-          GROUP BY su.id_sub_usuario, su.nombre_encargado
-          ORDER BY total_chats DESC`,
+     su.id_sub_usuario,
+     su.nombre_encargado,
+     COUNT(DISTINCT h.id_cliente_chat_center) AS total_chats
+   FROM sub_usuarios_chat_center su
+   LEFT JOIN (
+     SELECT h2.id_encargado_nuevo, h2.id_cliente_chat_center
+     FROM historial_encargados h2
+     INNER JOIN clientes_chat_center ccc2
+       ON ccc2.id = h2.id_cliente_chat_center
+     INNER JOIN temp_configs tc ON tc.id = ccc2.id_configuracion
+     WHERE h2.fecha_registro BETWEEN ? AND ?
+       AND ccc2.deleted_at IS NULL
+       AND ccc2.propietario = 0
+   ) h ON h.id_encargado_nuevo = su.id_sub_usuario
+   WHERE su.id_usuario = ?
+   GROUP BY su.id_sub_usuario, su.nombre_encargado
+   ORDER BY total_chats DESC`,
+      {
+        replacements: [fromDT, toDT, id_usuario],
+        type: db.QueryTypes.SELECT,
+        transaction,
+      },
+    );
+
+    // 5b) Chats abiertos AHORA MISMO (sin filtro de fechas)
+    const agentLoadActual = await db.query(
+      `SELECT
+     su.id_sub_usuario,
+     COUNT(DISTINCT ccc.id) AS chats_abiertos_ahora
+   FROM sub_usuarios_chat_center su
+   LEFT JOIN clientes_chat_center ccc
+     ON ccc.id_encargado = su.id_sub_usuario
+     AND ccc.chat_cerrado = 0
+     AND ccc.deleted_at IS NULL
+     AND ccc.propietario = 0
+   INNER JOIN temp_configs tc ON tc.id = ccc.id_configuracion
+   WHERE su.id_usuario = ?
+   GROUP BY su.id_sub_usuario`,
       { replacements: [id_usuario], type: db.QueryTypes.SELECT, transaction },
     );
+
+    // Merge
+    const actualMap = new Map(
+      agentLoadActual.map((r) => [
+        r.id_sub_usuario,
+        Number(r.chats_abiertos_ahora || 0),
+      ]),
+    );
+
+    const agentLoad = agentLoadHistorico.map((r) => ({
+      id_sub_usuario: r.id_sub_usuario,
+      nombre_encargado: r.nombre_encargado,
+      total_chats: Number(r.total_chats || 0),
+      chats_abiertos_ahora: actualMap.get(r.id_sub_usuario) || 0,
+    }));
+
     // ====================================================================
     // SECCION 6: CLIENTES CON +3 TRANSFERENCIAS
     // ====================================================================

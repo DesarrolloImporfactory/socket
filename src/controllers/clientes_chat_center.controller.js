@@ -43,6 +43,27 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.UPDATE,
     });
 
+    //Emitimos al dashboard
+    if (global.io) {
+      const [chat] = await db.query(
+        `SELECT cfg.id_usuario, c.id_configuracion
+         FROM clientes_chat_center c
+         INNER JOIN configuraciones cfg ON cfg.id = c.id_configuracion
+         WHERE c.id = ? LIMIT 1`,
+        { replacements: [chatId], type: db.QueryTypes.SELECT },
+      );
+      if (chat) {
+        const tipo =
+          Number(nuevoEstado) === 1 ? 'chat_resolved' : 'queue_change';
+        global.presenceIo
+          .to(`dashboard:${chat.id_usuario}`)
+          .emit('dashboard:update', {
+            tipo,
+            id_configuracion: chat.id_configuracion,
+          });
+      }
+    }
+
     res.status(200).json({
       status: '200',
       title: 'Petición exitosa',
@@ -746,14 +767,25 @@ exports.actualizarEstado = async (req, res) => {
       estado_contacto: estadoBD,
     });
 
+    //Emitimos al dashboard para chats en cola y estados futuros
+    if (global.presenceIo) {
+      const [cfg] = await db.query(
+        `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (cfg) {
+        global.presenceIo
+          .to(`dashboard:${cfg.id_usuario}`)
+          .emit('dashboard:update', { tipo: 'queue_change', id_configuracion });
+      }
+    }
+
     return res.json({
       success: true,
       message: 'Estado de contacto actualizado correctamente',
       data: cliente,
     });
   } catch (error) {
-    console.error('Error al actualizar estado contacto:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Error interno del servidor',

@@ -711,6 +711,26 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_cliente,
         );
 
+        // Dashboard real-time: nuevo mensaje entrante
+        if (global.presenceIo) {
+          try {
+            const [cfgRow] = await db.query(
+              `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+              { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+            );
+            if (cfgRow) {
+              global.presenceIo
+                .to(`dashboard:${cfgRow.id_usuario}`)
+                .emit('dashboard:update', {
+                  tipo: 'new_chat',
+                  id_configuracion,
+                });
+            }
+          } catch (e) {
+            console.warn('[dashboard emit WA]', e.message);
+          }
+        }
+
         cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
         if (tipo_button == 'template') {
           await enviarMensajeTextoWhatsApp(
