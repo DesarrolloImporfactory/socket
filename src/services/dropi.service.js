@@ -48,17 +48,10 @@ function normalizeDropiError(err) {
   const status = err?.response?.status || 500;
   const data = err?.response?.data;
 
-  // 🔍 DEBUG COMPLETO - remover después
-  console.error('===== DROPI ERROR DEBUG =====');
-  console.error('HTTP Status:', status);
-  console.error('Response Data:', JSON.stringify(data, null, 2));
-  console.error('Request URL:', err?.config?.baseURL + err?.config?.url);
-  console.error(
-    'Request Headers sent:',
-    JSON.stringify(err?.config?.headers, null, 2),
+  // Solo log básico, sin headers ni token
+  console.log(
+    `[Dropi Error] ${status} - ${err?.config?.method?.toUpperCase()} ${err?.config?.url} - ${JSON.stringify(data)}`,
   );
-  console.error('Axios message:', err?.message);
-  console.error('=============================');
 
   const msg =
     (data && (data.message || data.msg || data.error)) ||

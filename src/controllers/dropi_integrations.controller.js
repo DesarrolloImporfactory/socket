@@ -561,21 +561,6 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
-  // 🔍 DEBUG
-  console.log('🔑 Integration key (last 6):', String(integrationKey).slice(-6));
-  console.log('🌍 Country code:', integration.country_code);
-
-  try {
-    const axios = require('axios');
-    const { data: ipInfo } = await axios.get(
-      'https://api.ipify.org?format=json',
-      { timeout: 3000 },
-    );
-    console.log('🌐 IP pública saliente del servidor:', ipInfo.ip);
-  } catch (e) {
-    console.log('⚠️ No se pudo obtener IP pública:', e.message);
-  }
-
   // params (sin id_configuracion)
   const raw = { ...req.body };
   delete raw.id_configuracion;
