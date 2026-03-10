@@ -126,8 +126,6 @@ cron.schedule('* * * * *', async () => {
 
       // ══════════════════════════════════════════════════════
       // 1.5) PRE-FETCH de plantillas ANTES del loop de envío
-      //      Consulta Meta UNA VEZ por template único,
-      //      cachea todas las plantillas del WABA de golpe.
       // ══════════════════════════════════════════════════════
       try {
         const prefetched = await prefetchTemplates(pendientes);
@@ -137,7 +135,6 @@ cron.schedule('* * * * *', async () => {
           );
         }
       } catch (prefetchErr) {
-        // No es fatal: el envío individual hará fallback a consulta directa
         console.warn(
           '⚠️ [CRON templateProgramadoMasivo] Error en prefetch (no fatal):',
           prefetchErr.message,
@@ -181,7 +178,7 @@ cron.schedule('* * * * *', async () => {
             null,
           );
 
-          // Envío (con timeout) — plantilla ya cacheada, NO consulta Meta
+          // Envío (con timeout)
           const resp = await withTimeout(
             sendWhatsappMessageTemplateScheduled({
               telefono: item.telefono,
@@ -208,7 +205,14 @@ cron.schedule('* * * * *', async () => {
 
           const wamid = resp?.wamid || null;
 
-          // Marcar éxito
+          // ── FIX 1 ────────────────────────────────────────────────────────
+          // AND estado = 'procesando' evita que un background tardío
+          // (request HTTP que siguió corriendo tras el timeout) sobreescriba
+          // un estado que ya fue resuelto por otro tick como 'error'.
+          // Sin esta condición: el background llega ~50s después, encuentra
+          // id=X en estado='error' y lo pisa con 'enviado', generando el
+          // registro inconsistente que veías (estado=error + id_wamid lleno).
+          // ─────────────────────────────────────────────────────────────────
           await db.query(
             `
             UPDATE template_envios_programados
@@ -218,6 +222,7 @@ cron.schedule('* * * * *', async () => {
                 error_message = NULL,
                 actualizado_en = NOW()
             WHERE id = ?
+              AND estado = 'procesando'
             `,
             {
               replacements: [wamid, item.id],
@@ -233,8 +238,18 @@ cron.schedule('* * * * *', async () => {
           const intentosActuales = intentosPrevios + 1;
           const maxIntentos = Number(item.max_intentos || 3);
 
+          // ── FIX 2 ────────────────────────────────────────────────────────
+          // Si el error es TIMEOUT, el request HTTP ya salió hacia Meta y
+          // puede haber sido procesado. Si devolvemos a 'pendiente', el
+          // siguiente tick lo reenvía aunque el mensaje ya llegó → duplicado.
+          // Por eso en timeout siempre marcamos 'error' (no reintentar).
+          // El operador puede revisar en Meta si llegó y corregir manualmente.
+          // ─────────────────────────────────────────────────────────────────
+          const esCancelablePorTimeout = err?.code === 'TIMEOUT';
           const nuevoEstado =
-            intentosActuales >= maxIntentos ? 'error' : 'pendiente';
+            esCancelablePorTimeout || intentosActuales >= maxIntentos
+              ? 'error'
+              : 'pendiente';
 
           const errorPayload = {
             message: err?.message || 'Error desconocido',
@@ -252,6 +267,7 @@ cron.schedule('* * * * *', async () => {
                   error_message = ?,
                   actualizado_en = NOW()
               WHERE id = ?
+                AND estado = 'procesando'
               `,
               {
                 replacements: [
