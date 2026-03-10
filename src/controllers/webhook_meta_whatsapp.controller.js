@@ -285,9 +285,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             );
             break;
 
-          case 131026:
-            debugLogMsg = '⚠️ Mensaje no entregado (code 131026).';
+          case 131026: {
+            const details = error?.error_data?.details || '';
+            debugLogMsg = `⚠️ Mensaje no entregado (131026)${details ? ` | Detalle: ${details}` : ''}`;
             break;
+          }
 
           case 131047:
             debugLogMsg = '⚠️ Fuera de ventana de 24h. Requiere plantilla.';

@@ -241,3 +241,14 @@ exports.syncCatalogo = catchAsync(async (req, res, next) => {
     total_items: resultado.total_items,
   });
 });
+
+exports.sincronizarCatalogo = catchAsync(async (req, res, next) => {
+  const { id } = req.body; // id_kanban_columna
+  if (!id) return next(new AppError('Falta id', 400));
+
+  const resultado = await syncCatalogoKanbanColumna(id, {
+    logger: async (msg) => console.log(`[sync_catalogo] ${msg}`),
+  });
+
+  return res.status(200).json({ success: true, data: resultado });
+});

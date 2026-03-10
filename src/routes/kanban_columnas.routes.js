@@ -17,6 +17,8 @@ router.post('/reordenar', KanbanColumnasController.reordenarColumnas);
 
 router.post('/sync_catalogo', KanbanColumnasController.syncCatalogo);
 
+router.post('/sincronizar_catalogo', KanbanColumnasController.sincronizarCatalogo);
+
 /* SECCION DE CONTROLADORES ASISTENTES */
 // Multer en memoria (sin guardar en disco — se envía directo a OpenAI)
 const upload = multer({

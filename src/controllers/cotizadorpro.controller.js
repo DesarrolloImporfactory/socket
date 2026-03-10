@@ -700,6 +700,188 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
+  const token = extraerTokenDeCabecera(req);
+
+  const { id_cotizacion } = req.body;
+
+  if (!id_cotizacion) {
+    return next(new AppError('id_cotizacion es requerido', 400));
+  }
+
+  const resultado = await db_2.query(
+    `
+        SELECT 
+            c.id_cotizacion,
+            d.pais_origen,
+            d.pais_destino,
+            u.nombre_users AS cliente,
+            p.whatsapp AS celular_cliente,
+            p.email AS email_cliente
+        FROM cotizadorpro_cotizaciones c
+        JOIN cotizadorpro_detalle_cot d ON c.id_cotizacion = d.id_cotizacion
+        JOIN users u ON d.id_users = u.id_users
+        JOIN usuario_plataforma up ON u.id_users = up.id_usuario
+        JOIN plataformas p ON up.id_plataforma = p.id_plataforma
+        WHERE c.id_cotizacion = ?
+    `,
+    {
+      replacements: [id_cotizacion],
+      type: db_2.QueryTypes.SELECT,
+    },
+  );
+
+  if (resultado.length === 0) {
+    return next(new AppError('Cotización no encontrada', 404));
+  }
+
+  const cotizacionInfo = resultado[0];
+  const celularFormateado = formatPhoneForWhatsApp(
+    cotizacionInfo.celular_cliente,
+    '593',
+  );
+
+  const VIDEO_DEFAULT_URL = 'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
+
+  let videoMediaId = null;
+  try {
+    console.log('[REENVIO_VIDEO] Descargando video predeterminado...');
+    const videoResp = await axios.get(VIDEO_DEFAULT_URL, {
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    let videoBuffer = Buffer.from(videoResp.data);
+    const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
+
+    try {
+      videoBuffer = await convertVideoForWhatsApp(videoBuffer, 'cotizacion-header.mp4');
+      console.log('[REENVIO_VIDEO] Video convertido correctamente');
+    } catch (convErr) {
+      if (convErr.isOversized || videoOriginalSizeMB > 15) {
+        throw convErr.isOversized ? convErr : new Error(`El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB.`);
+      }
+      console.warn('[REENVIO_VIDEO] Conversión fallida, usando original:', convErr.message);
+    }
+
+    videoMediaId = await uploadVideoToMeta(videoBuffer, 'cotizacion-header.mp4');
+    console.log('[REENVIO_VIDEO] Video subido a Meta. mediaId:', videoMediaId);
+  } catch (videoErr) {
+    console.error('[REENVIO_VIDEO] Error procesando video:', videoErr.message);
+    return next(new AppError('Error al preparar el video de la cotización', 500));
+  }
+
+  const VIDEO_COTIZACION_HEADER = {
+    type: 'video',
+    id: videoMediaId,
+    fileUrl: VIDEO_DEFAULT_URL,
+  };
+
+  const plantilla1 = crearPlantillaWhatsApp(
+    celularFormateado,
+    'cotizacion_carga_enviada_pro',
+    cotizacionInfo.cliente,
+    id_cotizacion,
+    VIDEO_COTIZACION_HEADER,
+  );
+
+  const plantilla2 = crearPlantillaWhatsApp(
+    celularFormateado,
+    'confirmacion_cotizacion_pro',
+    null,
+    id_cotizacion,
+  );
+
+  let response1;
+  try {
+    response1 = await enviarTemplateWhatsApp(plantilla1);
+  } catch (p1Err) {
+    console.error('[REENVIO_P1] Fallo:', p1Err.message);
+    return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  let response2;
+  try {
+    response2 = await enviarTemplateWhatsApp(plantilla2);
+  } catch (p2Err) {
+    console.error('[REENVIO_P2] Fallo:', p2Err.message);
+    return next(new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500));
+  }
+
+  const midMensaje1 = response1?.messages?.[0]?.id || null;
+  const midMensaje2 = response2?.messages?.[0]?.id || null;
+
+  if (
+    !response1?.messages?.[0]?.message_status ||
+    response1.messages[0].message_status !== 'accepted'
+  ) {
+    return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
+  }
+
+  let chatId = null;
+  const foundChat = await Clientes_chat_center.findOne({
+    where: {
+      celular_cliente: { [Op.like]: `%${celularFormateado}%` },
+      id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+    },
+  });
+
+  if (foundChat) {
+    chatId = foundChat.id;
+  } else {
+    const nuevoChat = await Clientes_chat_center.create({
+      id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+      nombre_cliente: cotizacionInfo.cliente,
+      celular_cliente: celularFormateado,
+      uid_cliente: COTIZADOR_CONFIG.UID_CLIENTE,
+      email_cliente: cotizacionInfo.email_cliente,
+      estado_cliente: 1,
+      chat_cerrado: false,
+    });
+    chatId = nuevoChat.id;
+  }
+
+  const mensaje1Data = generarDatosMensaje(
+    'cotizacion_carga_enviada_pro',
+    cotizacionInfo.cliente,
+    id_cotizacion,
+    VIDEO_COTIZACION_HEADER,
+  );
+
+  await crearMensajeBD(
+    chatId,
+    celularFormateado,
+    midMensaje1,
+    mensaje1Data.texto,
+    mensaje1Data.rutaArchivo,
+    'cotizacion_carga_enviada_pro',
+  );
+
+  const mensaje2Data = generarDatosMensaje(
+    'confirmacion_cotizacion_pro',
+    cotizacionInfo.cliente,
+    id_cotizacion,
+  );
+
+  await crearMensajeBD(
+    chatId,
+    celularFormateado,
+    midMensaje2,
+    mensaje2Data.texto,
+    mensaje2Data.rutaArchivo,
+    'confirmacion_cotizacion_pro',
+  );
+
+  res.status(200).json({
+    status: 200,
+    title: 'Petición exitosa',
+    message: 'Cotización reenviada correctamente',
+    cotizacion: cotizacionInfo,
+  });
+});
+
 exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
   const { id_cotizacion, fecha_estimada } = req.body;
 
