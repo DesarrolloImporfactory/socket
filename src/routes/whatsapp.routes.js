@@ -887,26 +887,37 @@ router.put('/EditarPlantilla', async (req, res) => {
 });
 
 /**
- *  POST /api/v1/whatsapp_managment/uploadVideoPlantillaRapida
+ * ✅ POST /api/v1/whatsapp_managment/uploadVideoPlantillaRapida
  *
- * Sube un VIDEO a la Video API (chunked) con conversión FFmpeg.
- * Se usa desde CrearPlantillaRapidaModal / EditarPlantillaRapidaModal
- * cuando tipo_mensaje === 'video'.
+ * Sube video convertido a Video API (chunked).
+ * Mismo flujo que enviarTemplateMasivo para videos:
+ *   FFmpeg → Video API → stream_url
  *
- * Los demás tipos (image, document, audio) siguen subiendo directo al S3 uploader
- * desde el frontend.
+ * NO sube a S3. Video nunca va a S3.
  *
- * Requiere JWT en header Authorization (Bearer ...) — lo envía chatApi automáticamente.
+ * Al momento de ENVIAR por WhatsApp, el backend debe:
+ *   descargar buffer desde stream_url (con JWT) → subir a Meta → media_id → enviar con media_id
+ *   (igual que enviarTemplateMasivo / enviarVideoWhatsappFile)
  *
- * Respuesta normalizada (misma forma que el S3 uploader):
- *   { success: true, data: { url, fileName, mimeType, size, video_id } }
+ * Respuesta:
+ *   {
+ *     success: true,
+ *     data: {
+ *       url: "https://new.imporsuitpro.com/...",  ← stream_url de Video API
+ *       fileName: "video.mp4",
+ *       mimeType: "video/mp4",
+ *       size: 1234567,
+ *       video_id: "abc123",
+ *       stream_url: "https://new.imporsuitpro.com/..."
+ *     }
+ *   }
  */
 router.post(
   '/uploadVideoPlantillaRapida',
   upload.single('file'),
   async (req, res) => {
     try {
-      // 1) Validar que venga archivo
+      // 1) Validar archivo
       if (!req.file) {
         return res.status(400).json({
           success: false,
@@ -923,7 +934,7 @@ router.post(
         });
       }
 
-      // 3) JWT requerido para Video API
+      // 3) JWT para Video API
       const jwtToken = extractBearerToken(req);
       if (!jwtToken) {
         return res.status(401).json({
@@ -933,59 +944,77 @@ router.post(
         });
       }
 
-      // 4) Convertir video a MP4 compatible con WhatsApp (H.264/AAC)
+      // 4) Convertir a MP4 H.264/AAC (compatible WhatsApp)
       let processedBuffer = req.file.buffer;
       let processedMimetype = req.file.mimetype;
       let processedFilename = req.file.originalname;
+
+      const videoOriginalSizeMB = req.file.buffer.length / (1024 * 1024);
+      console.log(
+        `[PLANTILLA_VIDEO] Tamaño original: ${videoOriginalSizeMB.toFixed(2)} MB`,
+      );
 
       try {
         processedBuffer = await convertVideoForWhatsApp(
           req.file.buffer,
           req.file.originalname,
-          16, // target max MB
         );
         processedMimetype = 'video/mp4';
         processedFilename = req.file.originalname.replace(/\.[^.]+$/, '.mp4');
 
         console.log(
-          '[PLANTILLA_RAPIDA_VIDEO] Conversión OK. Tamaño:',
+          '[PLANTILLA_VIDEO] Conversión OK:',
           (processedBuffer.length / (1024 * 1024)).toFixed(2),
           'MB',
         );
       } catch (convErr) {
-        if (convErr.isOversized) {
-          return res.status(400).json({
-            success: false,
-            message: convErr.message,
-          });
+        if (convErr.isOversized || videoOriginalSizeMB > 15) {
+          const msg = convErr.isOversized
+            ? convErr.message
+            : `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
+          return res.status(400).json({ success: false, message: msg });
         }
         console.warn(
-          '[PLANTILLA_RAPIDA_VIDEO] Conversión falló, usando original:',
+          '[PLANTILLA_VIDEO] Conversión falló, usando original:',
           convErr.message,
         );
       }
 
-      // 5) Subir a Video API (chunked)
-      const result = await uploadVideoToVideoAPI({
-        buffer: processedBuffer,
-        originalname: processedFilename,
-        mimetype: processedMimetype,
-        jwtToken,
-      });
+      // 5) Subir a Video API (chunked) — mismo flujo que enviarTemplateMasivo
+      let videoApiResult;
+      try {
+        videoApiResult = await uploadVideoToVideoAPI({
+          buffer: processedBuffer,
+          originalname: processedFilename,
+          mimetype: processedMimetype,
+          jwtToken,
+        });
+        console.log(
+          '[PLANTILLA_VIDEO] Video API OK:',
+          videoApiResult.video_id,
+          videoApiResult.stream_url,
+        );
+      } catch (err) {
+        return res.status(err.statusCode || 502).json({
+          success: false,
+          message: err.message || 'No se pudo subir video a la Video API',
+        });
+      }
 
-      // 6) Respuesta normalizada (misma forma que S3 uploader)
+      // 6) Respuesta — url = stream_url de Video API
       return res.json({
         success: true,
         data: {
-          url: result.stream_url || result.fileUrl,
+          url: videoApiResult.stream_url || videoApiResult.fileUrl,
           fileName: processedFilename,
           mimeType: processedMimetype,
           size: processedBuffer.length,
-          video_id: result.video_id || null,
+          video_id: videoApiResult.video_id,
+          stream_url: videoApiResult.stream_url || videoApiResult.fileUrl,
         },
       });
     } catch (err) {
-      console.error('[PLANTILLA_RAPIDA_VIDEO] Error:', err);
+      console.error('[PLANTILLA_VIDEO] Error:', err);
       return res.status(err.statusCode || 500).json({
         success: false,
         message: err.message || 'Error subiendo video.',

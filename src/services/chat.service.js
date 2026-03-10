@@ -492,6 +492,7 @@ class ChatService {
         id_configuracion,
         ruta_archivo = null,
         nombre_encargado,
+        jwt_token = null, // ← NUEVO
       } = data;
 
       const fromTelefono = dataAdmin.id_telefono;
@@ -499,12 +500,11 @@ class ChatService {
 
       const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
 
-      //  Construir requestData según tipo
       let requestData;
-
       const tipo = String(tipo_mensaje || 'text').toLowerCase();
 
       if (tipo === 'text') {
+        // ← SIN CAMBIOS
         requestData = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
@@ -513,28 +513,90 @@ class ChatService {
           text: { preview_url: true, body: mensaje || '' },
         };
       } else if (tipo === 'image') {
+        // ← SIN CAMBIOS
         if (!ruta_archivo) throw new Error('Falta ruta_archivo para image');
         requestData = {
           messaging_product: 'whatsapp',
           to,
           type: 'image',
           image: {
-            link: ruta_archivo, //  URL pública
-            caption: mensaje || '', // caption
-          },
-        };
-      } else if (tipo === 'video') {
-        if (!ruta_archivo) throw new Error('Falta ruta_archivo para video');
-        requestData = {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'video',
-          video: {
             link: ruta_archivo,
             caption: mensaje || '',
           },
         };
+      } else if (tipo === 'video') {
+        // ═══════════════════════════════════════════
+        //  VIDEO: mismo flujo que enviarVideoWhatsappFile
+        //    Descargar buffer → subir a Meta → media_id
+        // ═══════════════════════════════════════════
+        if (!ruta_archivo) throw new Error('Falta ruta_archivo para video');
+
+        const axios = require('axios');
+        const FormData = require('form-data');
+
+        // 1) Descargar video como buffer
+        //    Si es Video API → usa el jwt_token del frontend
+        //    Si es URL pública → descarga sin auth
+        const downloadHeaders = {};
+        const isVideoApi = String(ruta_archivo).includes('/Videos/stream');
+        if (isVideoApi && jwt_token) {
+          downloadHeaders.Authorization = `Bearer ${jwt_token}`;
+        }
+
+        console.log('[VIDEO_SEND] Descargando desde:', ruta_archivo);
+
+        const dlResp = await axios.get(ruta_archivo, {
+          headers: downloadHeaders,
+          responseType: 'arraybuffer',
+          timeout: 60000,
+        });
+
+        const videoBuffer = Buffer.from(dlResp.data);
+        console.log(
+          `[VIDEO_SEND] Descargado: ${(videoBuffer.length / (1024 * 1024)).toFixed(2)} MB`,
+        );
+
+        // 2) Subir buffer a Meta → media_id (igual que enviarVideoWhatsappFile)
+        const uploadForm = new FormData();
+        uploadForm.append('file', videoBuffer, {
+          filename: 'video.mp4',
+          contentType: 'video/mp4',
+        });
+        uploadForm.append('type', 'video/mp4');
+        uploadForm.append('messaging_product', 'whatsapp');
+
+        const uploadResp = await axios.post(
+          `https://graph.facebook.com/v19.0/${fromTelefono}/media`,
+          uploadForm,
+          {
+            headers: {
+              Authorization: `Bearer ${fromToken}`,
+              ...uploadForm.getHeaders(),
+            },
+            timeout: 120000,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+          },
+        );
+
+        const mediaId = uploadResp.data?.id;
+        if (!mediaId) throw new Error('Meta no retornó media_id');
+
+        console.log(`[VIDEO_SEND] ✅ media_id: ${mediaId}`);
+
+        // 3) Enviar con media_id (NO con link)
+        requestData = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'video',
+          video: {
+            id: mediaId, // ← media_id, NO link
+            caption: mensaje || '',
+          },
+        };
       } else if (tipo === 'document' || tipo === 'file') {
+        // ← SIN CAMBIOS
         if (!ruta_archivo) throw new Error('Falta ruta_archivo para document');
         requestData = {
           messaging_product: 'whatsapp',
@@ -543,11 +605,10 @@ class ChatService {
           document: {
             link: ruta_archivo,
             caption: mensaje || '',
-            // filename: 'archivo.pdf' // opcional si lo tiene
           },
         };
       } else {
-        // fallback seguro
+        // ← SIN CAMBIOS
         requestData = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
@@ -557,12 +618,12 @@ class ChatService {
         };
       }
 
+      // ← TODO LO DE ABAJO SIN CAMBIOS (envío + guardado BD)
       const headers = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${fromToken}`,
       };
 
-      // Enviar SIEMPRE (texto o media)
       const response = await fetch(url, {
         method: 'POST',
         headers,
@@ -578,7 +639,6 @@ class ChatService {
 
       const wamid = responseData?.messages?.[0]?.id || null;
 
-      // ---- su guardado en BD queda igual ----
       const cliente = await ClientesChatCenter.findOne({
         where: { uid_cliente: fromTelefono, id_configuracion },
       });

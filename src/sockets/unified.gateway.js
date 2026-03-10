@@ -289,6 +289,7 @@ module.exports = function attachUnifiedGateway(io, services) {
     tipo_mensaje,
     ruta_archivo,
     agent_name,
+    jwt_token,
   }) {
     const dataAdmin = await chatService.getDataAdmin(chatRow.id_configuracion);
     const to = norm(chatRow.celular_cliente);
@@ -301,6 +302,7 @@ module.exports = function attachUnifiedGateway(io, services) {
       id_configuracion: chatRow.id_configuracion,
       ruta_archivo: ruta_archivo || null,
       nombre_encargado: agent_name || null,
+      jwt_token,
     });
 
     const m = resp?.mensajeNuevo;
@@ -572,6 +574,7 @@ module.exports = function attachUnifiedGateway(io, services) {
 
         // ✅ nuevo (front)
         attachment_url,
+        jwt_token,
       } = payload || {};
 
       if (!id_configuracion || !chatId) {
@@ -627,6 +630,7 @@ module.exports = function attachUnifiedGateway(io, services) {
           tipo_mensaje: finalTipo,
           ruta_archivo: finalRuta,
           agent_name,
+          jwt_token,
         });
       } else if (source === 'ms') {
         msg = await sendMS({
@@ -747,6 +751,8 @@ module.exports = function attachUnifiedGateway(io, services) {
           mime_type: data?.mime_type,
           file_name: data?.file_name,
           size: data?.size,
+
+          jwt_token: data?.jwt_token || null,
         };
 
         const result = await handleUnifiedSend(unifiedPayload);
