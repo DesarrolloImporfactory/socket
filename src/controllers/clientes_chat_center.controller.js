@@ -940,11 +940,11 @@ exports.listarClientes = catchAsync(async (req, res) => {
       eca.nombre AS asesor_nombre,
       ecc.nombre AS ciclo_nombre,
 
-      lm.ultimo_mensaje_at,
-      lm.ultimo_texto,
-      lm.ultimo_tipo_mensaje,
-      lm.ultimo_rol_mensaje,
-      lm.ultimo_msg_id
+      c.ultimo_mensaje_at,
+      c.ultimo_texto,
+      c.ultimo_tipo_mensaje,
+      c.ultimo_rol_mensaje,
+      c.ultimo_msg_id
 
     FROM clientes_chat_center c
 
@@ -953,52 +953,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
     LEFT JOIN etiquetas_custom_chat_center ecc
       ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
 
-    --  LEFT JOIN: Muestra todos los clientes, con o sin mensajes
-    LEFT JOIN (
-      SELECT
-        id_configuracion,
-        id_cliente,
-        MAX(created_at) AS ultimo_mensaje_at,
-        SUBSTRING_INDEX(GROUP_CONCAT(texto_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_texto,
-        SUBSTRING_INDEX(GROUP_CONCAT(tipo_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_tipo_mensaje,
-        SUBSTRING_INDEX(GROUP_CONCAT(rol_mensaje ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_rol_mensaje,
-        SUBSTRING_INDEX(GROUP_CONCAT(id ORDER BY created_at DESC, id DESC), ',', 1) AS ultimo_msg_id
-      FROM (
-        -- mensajes donde el cliente fue el EMISOR
-        SELECT
-          id,
-          id_configuracion,
-          id_cliente,
-          created_at,
-          texto_mensaje,
-          tipo_mensaje,
-          rol_mensaje
-        FROM mensajes_clientes
-        WHERE deleted_at IS NULL
-          AND id_configuracion = ?
-
-        UNION ALL
-
-        -- mensajes donde el cliente fue el RECEPTOR
-        SELECT
-          id,
-          id_configuracion,
-          CAST(celular_recibe AS UNSIGNED) AS id_cliente,
-          created_at,
-          texto_mensaje,
-          tipo_mensaje,
-          rol_mensaje
-        FROM mensajes_clientes
-        WHERE deleted_at IS NULL
-          AND id_configuracion = ?
-          AND celular_recibe IS NOT NULL
-          AND celular_recibe <> ''
-      ) all_msgs
-      GROUP BY id_configuracion, id_cliente
-    ) lm
-      ON lm.id_configuracion = c.id_configuracion
-      AND lm.id_cliente = c.id
-      AND c.propietario = 0
+    
 
     ${whereClause}
     ORDER BY ${orderBy}
