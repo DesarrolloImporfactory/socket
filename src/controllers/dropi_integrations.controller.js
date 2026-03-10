@@ -561,6 +561,21 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
+  // 🔍 DEBUG
+  console.log('🔑 Integration key (last 6):', String(integrationKey).slice(-6));
+  console.log('🌍 Country code:', integration.country_code);
+
+  try {
+    const axios = require('axios');
+    const { data: ipInfo } = await axios.get(
+      'https://api.ipify.org?format=json',
+      { timeout: 3000 },
+    );
+    console.log('🌐 IP pública saliente del servidor:', ipInfo.ip);
+  } catch (e) {
+    console.log('⚠️ No se pudo obtener IP pública:', e.message);
+  }
+
   // params (sin id_configuracion)
   const raw = { ...req.body };
   delete raw.id_configuracion;
@@ -572,15 +587,25 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     return next(e);
   }
 
+  console.log('📤 Params enviados a Dropi:', JSON.stringify(params));
+
   // GET hacia Dropi
-  const dropiResponse = await dropiService.listMyOrders({
-    integrationKey,
-    params,
-    country_code: integration.country_code,
-  });
+  let dropiResponse;
+  try {
+    dropiResponse = await dropiService.listMyOrders({
+      integrationKey,
+      params,
+      country_code: integration.country_code,
+    });
+  } catch (err) {
+    console.error('❌ Error completo de Dropi:');
+    console.error('  Status:', err?.statusCode || err?.status);
+    console.error('  Message:', err?.message);
+    console.error('  Stack:', err?.stack);
+    return next(err);
+  }
 
   // ✅ Enriquecer aquí
-  // Dropi suele devolver { objects: [...] } o su estructura puede variar: ajústelo si hace falta.
   const objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
   const enrichedObjects = await enrichOrdersWithChatAndAgent({
     id_configuracion,
