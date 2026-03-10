@@ -75,12 +75,17 @@ async function execUpdateAndRowCount(sql, replacements = []) {
   return Number(rowCountRow?.affectedRows || 0);
 }
 
+let isRunning = false;
+
 /**
  * Cron: envíos programados de templates WhatsApp
  * Corre cada minuto
  */
 cron.schedule('* * * * *', async () => {
-  await withLock('template_programado_masivo_lock', async () => {
+  if (isRunning) return;
+  isRunning = true;
+  try {
+    await withLock('template_programado_masivo_lock', async () => {
     const cicloInicio = Date.now();
 
     try {
@@ -321,5 +326,8 @@ cron.schedule('* * * * *', async () => {
         );
       }
     }
-  });
+    });
+  } finally {
+    isRunning = false;
+  }
 });

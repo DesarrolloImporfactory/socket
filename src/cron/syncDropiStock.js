@@ -151,9 +151,17 @@ async function syncAllDropiStock() {
   );
 }
 
+let isRunning = false;
+
 // ─── schedule: todos los días a las 4:00 AM (hora del servidor) ───
 cron.schedule('0 4 * * *', async () => {
-  await withLock('sync_dropi_stock_lock', syncAllDropiStock);
+  if (isRunning) return;
+  isRunning = true;
+  try {
+    await withLock('sync_dropi_stock_lock', syncAllDropiStock);
+  } finally {
+    isRunning = false;
+  }
 });
 
 // Exportar por si en algun momento se llame desde un endpoint de admin

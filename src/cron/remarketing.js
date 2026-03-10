@@ -34,8 +34,13 @@ async function withLock(lockName, fn) {
   }
 }
 
+let isRunning = false;
+
 cron.schedule('*/1 * * * *', async () => {
-  await withLock('remarketing_cron_lock', async () => {
+  if (isRunning) return;
+  isRunning = true;
+  try {
+    await withLock('remarketing_cron_lock', async () => {
     /* console.log('⏱️ Ejecutando tarea de remarketing'); */
 
     const pendientes = await db.query(
@@ -98,5 +103,8 @@ cron.schedule('*/1 * * * *', async () => {
         console.error('❌ Error en cron remarketing:', err.message);
       }
     }
-  });
+    });
+  } finally {
+    isRunning = false;
+  }
 });

@@ -28,8 +28,13 @@ async function withLock(lockName, fn) {
   }
 }
 
+let isRunning = false;
+
 cron.schedule('*/30 * * * *', async () => {
-  await withLock('aviso_calendarios_cron_lock', async () => {
+  if (isRunning) return;
+  isRunning = true;
+  try {
+    await withLock('aviso_calendarios_cron_lock', async () => {
     console.log('⏱️ Ejecutando tarea de aviso de reuniones');
 
     // Obtener la fecha y hora actual en la zona horaria de Ecuador (Guayaquil)
@@ -123,5 +128,8 @@ cron.schedule('*/30 * * * *', async () => {
         console.error('❌ Error enviando aviso de reunión:', err.message);
       }
     }
-  });
+    });
+  } finally {
+    isRunning = false;
+  }
 });
