@@ -146,9 +146,10 @@ cron.schedule('* * * * *', async () => {
         const itemStart = Date.now();
 
         try {
-          // Retraso entre mensajes (5 seg)
-          const delay = index * 5000;
-          await new Promise((resolve) => setTimeout(resolve, delay));
+          // Retraso siempre 5s entre un item y el anterio
+          if (index > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
 
           // Toma atómica del registro
           const affectedRows = await execUpdateAndRowCount(
