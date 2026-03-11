@@ -10,10 +10,11 @@ const db = new Sequelize({
   logging: false,
   timezone: '-05:00',
   pool: {
-    max: 20,
-    min: 2,
+    max: 30,
+    min: 5,
     acquire: 30000,
     idle: 10000,
+    evict: 5000,
   },
   dialectOptions: {
     typeCast(field, next) {
@@ -39,10 +40,11 @@ const db_2 = new Sequelize({
   logging: false,
   timezone: '-05:00',
   pool: {
-    max: 10,
-    min: 1,
+    max: 30,
+    min: 5,
     acquire: 30000,
     idle: 10000,
+    evict: 5000,
   },
   dialectOptions: {
     typeCast(field, next) {
