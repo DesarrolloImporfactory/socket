@@ -98,9 +98,12 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
 });
 
 exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
-  const { telefono, nombre, apellido, id_configuracion } = req.body;
+  const { telefono: telefonoRaw, nombre, apellido, id_configuracion } = req.body;
 
   try {
+    // Limpiar teléfono: quitar caracteres especiales y espacios
+    const telefono = telefonoRaw?.replace(/[^0-9]/g, '') ?? '';
+
     // 1. Obtener id_telefono desde configuraciones
     const [configuracion] = await db.query(
       'SELECT id_telefono FROM configuraciones WHERE id = ? AND suspendido = 0',
@@ -962,11 +965,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
 
   // Ejecutar queries
   const rows = await db.query(dataSql, {
-    replacements: [
-      ...params,
-      limit,
-      offset,
-    ],
+    replacements: [...params, limit, offset],
     type: db.QueryTypes.SELECT,
   });
 
