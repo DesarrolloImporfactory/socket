@@ -18,6 +18,11 @@ const GeneracionesIA = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    id_producto: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
+      defaultValue: null,
+    },
     template_id: {
       type: DataTypes.INTEGER,
       allowNull: true,

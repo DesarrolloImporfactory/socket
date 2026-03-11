@@ -37,6 +37,7 @@ const EtapasLanding = require('./etapas_landing.model');
 const TemplatesIA = require('./templates_ia.model');
 const GeneracionesIA = require('./generaciones_ia.model');
 const GeneracionesAngulosIA = require('./generaciones_angulos_ia.model');
+const ProductosIA = require('./productos_ia.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -453,6 +454,44 @@ const initModel = () => {
     foreignKey: 'id_etapa',
     sourceKey: 'id',
     as: 'templates',
+  });
+
+  ProductosIA.belongsTo(Usuarios_chat_center, {
+    foreignKey: 'id_usuario',
+    targetKey: 'id_usuario',
+    as: 'usuario',
+  });
+
+  Usuarios_chat_center.hasMany(ProductosIA, {
+    foreignKey: 'id_usuario',
+    sourceKey: 'id_usuario',
+    as: 'productos_ia',
+  });
+
+  // ===== ProductosIA ↔ GeneracionesIA =====
+  ProductosIA.hasMany(GeneracionesIA, {
+    foreignKey: 'id_producto',
+    sourceKey: 'id',
+    as: 'generaciones',
+  });
+
+  GeneracionesIA.belongsTo(ProductosIA, {
+    foreignKey: 'id_producto',
+    targetKey: 'id',
+    as: 'producto',
+  });
+
+  // ===== GeneracionesIA ↔ TemplatesIA (faltaba) =====
+  GeneracionesIA.belongsTo(TemplatesIA, {
+    foreignKey: 'template_id',
+    targetKey: 'id',
+    as: 'template',
+  });
+
+  TemplatesIA.hasMany(GeneracionesIA, {
+    foreignKey: 'template_id',
+    sourceKey: 'id',
+    as: 'generaciones',
   });
 };
 

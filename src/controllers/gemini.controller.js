@@ -9,7 +9,7 @@ const Configuraciones = require('../models/configuraciones.model');
 const Usuarios = require('../models/usuarios_chat_center.model');
 const Planes = require('../models/planes_chat_center.model');
 const GeneracionesIA = require('../models/generaciones_ia.model');
-const GeneracionesAngulosIA = require('../models/generaciones_angulos_ia.model'); // 👈 nuevo
+const GeneracionesAngulosIA = require('../models/generaciones_angulos_ia.model');
 const EtapasLanding = require('../models/etapas_landing.model');
 const TemplatesIA = require('../models/templates_ia.model');
 
@@ -133,7 +133,6 @@ async function getMonthlyCount(id_usuario) {
   });
 }
 
-// helper para contar ángulos del mes
 async function getMonthlyAngulosCount(id_usuario) {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -200,12 +199,30 @@ async function getGeminiApiKey(next) {
   }
 }
 
+// ── Auto-set portada helper ─────────────────────────────────────────────────
+async function autoSetPortadaIfNeeded(id_producto, image_url) {
+  if (!id_producto || !image_url) return;
+  try {
+    // Lazy require para evitar dependencia circular si existiera
+    const ProductosIA = require('../models/productos_ia.model');
+    const prod = await ProductosIA.findByPk(id_producto, {
+      attributes: ['id', 'imagen_portada'],
+    });
+    if (prod && !prod.imagen_portada) {
+      await prod.update({ imagen_portada: image_url });
+    }
+  } catch (e) {
+    console.error('[Gemini] Auto-portada error:', e.message);
+  }
+}
+
 const MOCK_IMAGE_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
 function isMockMode() {
   return process.env.GEMINI_MOCK === 'true';
 }
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CATÁLOGOS PÚBLICOS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -379,6 +396,11 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   const aspect_ratio = String(req.body?.aspect_ratio || '16:9').trim();
   const angulo_venta = String(req.body?.angulo_venta || '').trim();
   const marca = String(req.body?.marca || '').trim();
+  const moneda = String(req.body?.moneda || 'USD').trim();
+  const idioma = String(req.body?.idioma || 'es').trim();
+  const id_producto = req.body?.id_producto
+    ? Number(req.body.id_producto)
+    : null;
 
   let pricing = null;
   try {
@@ -411,10 +433,11 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
 
   // ── MOCK MODE ──────────────────────────────────────────────
   if (isMockMode()) {
-    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await new Promise((r) => setTimeout(r, 1500));
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      id_producto,
       template_id: template_id || null,
       id_etapa: etapa_id,
       aspect_ratio,
@@ -447,17 +470,35 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     },
   }));
 
+  const SIMBOLOS = {
+    USD: '$',
+    COP: '$',
+    MXN: '$',
+    PEN: 'S/',
+    ARS: '$',
+    BRL: 'R$',
+  };
+  const sym = SIMBOLOS[moneda] || '$';
+
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
-      pricingText += `\nPrecio del producto: $${pricing.precio_unitario}`;
+      pricingText += `\nPrecio del producto: ${sym}${pricing.precio_unitario} ${moneda}`;
     if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
       pricingText += '\nOfertas por combo:';
       pricing.combos.forEach((c) => {
-        pricingText += ` ${c.cantidad}x por $${c.precio} |`;
+        pricingText += ` ${c.cantidad}x por ${sym}${c.precio} ${moneda} |`;
       });
     }
   }
+
+  const IDIOMAS_MAP = {
+    es: 'español latinoamericano',
+    en: 'English',
+    pt: 'Português brasileiro',
+    fr: 'Français',
+    zh: '中文 (Chino simplificado)',
+  };
 
   const prompt = [
     etapa.prompt,
@@ -472,6 +513,12 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
       : '',
     pricingText
       ? `\n--- PRECIOS (usar EXACTAMENTE estos valores en la imagen si la sección lo requiere) ---${pricingText}`
+      : '',
+    moneda !== 'USD'
+      ? `\nMONEDA: Todos los precios están en ${moneda}. Usa el símbolo correspondiente (no USD).`
+      : '',
+    idioma !== 'es'
+      ? `\nIDIOMA OBLIGATORIO: Genera TODOS los textos de la imagen en ${IDIOMAS_MAP[idioma] || idioma}. NO uses español.`
       : '',
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
     'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
@@ -511,7 +558,10 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
       timeout: 120000,
     });
   } catch (err) {
@@ -533,6 +583,7 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   await GeneracionesIA.create({
     id_usuario,
     id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    id_producto,
     template_id: template_id || null,
     id_etapa: etapa_id,
     aspect_ratio,
@@ -541,6 +592,9 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     model,
     image_url,
   });
+
+  // Auto-set portada si el producto no tiene una
+  await autoSetPortadaIfNeeded(id_producto, image_url);
 
   const newUsed = usedThisMonth + 1;
 
@@ -688,7 +742,6 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 // CONSULTAS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── get_usage — ahora incluye ángulos ──────────────────────────────────────
 exports.get_usage = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -701,7 +754,6 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       {
         model: Planes,
         as: 'plan',
-        // 👈 agrega max_angulos_ia
         attributes: [
           'id_plan',
           'nombre_plan',
@@ -714,12 +766,9 @@ exports.get_usage = catchAsync(async (req, res, next) => {
   if (!usuario) return next(new AppError('Usuario no encontrado', 404));
 
   const maxImagenes = usuario.plan?.max_imagenes_ia || 0;
-  // NULL = sin acceso, número = tiene límite mensual
   const maxAngulos = usuario.plan?.max_angulos_ia ?? null;
 
   const usedImagenes = await getMonthlyCount(id_usuario);
-
-  // Solo contamos si el plan tiene acceso a ángulos
   const usedAngulos =
     maxAngulos !== null ? await getMonthlyAngulosCount(id_usuario) : 0;
 
@@ -730,9 +779,8 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       limit: maxImagenes,
       remaining: Math.max(maxImagenes - usedImagenes, 0),
       plan: usuario.plan?.nombre_plan || 'Sin plan',
-      // campos nuevos de ángulos
       angles_used: usedAngulos,
-      angles_limit: maxAngulos, // null = sin acceso al feature
+      angles_limit: maxAngulos,
       angles_remaining:
         maxAngulos !== null ? Math.max(maxAngulos - usedAngulos, 0) : 0,
     },
@@ -780,7 +828,6 @@ exports.get_historial = catchAsync(async (req, res, next) => {
   });
 });
 
-// ── generar_angulos — ahora valida cuota y registra uso ───────────────────
 exports.generar_angulos = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
@@ -792,7 +839,6 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   if (!description)
     return next(new AppError('La descripción del producto es requerida', 400));
 
-  // ── Validar acceso y cuota de ángulos ──────────────────────────────────
   const usuarioConPlan = await Usuarios.findOne({
     where: { id_usuario },
     attributes: ['id_usuario', 'id_plan'],
@@ -801,7 +847,6 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   const maxAngulos = usuarioConPlan?.plan?.max_angulos_ia ?? null;
 
-  // null = plan sin acceso al feature de ángulos IA
   if (maxAngulos === null) {
     return next(
       new AppError('Tu plan no incluye generación de ángulos IA.', 403),
@@ -817,10 +862,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
       ),
     );
   }
-  // ───────────────────────────────────────────────────────────────────────
 
-  // ── MOCK MODE ──────────────────────────────────────────────
-  // En generar_angulos
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 800));
     await GeneracionesAngulosIA.create({ id_usuario });
@@ -921,7 +963,10 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
       timeout: 30000,
     });
   } catch (err) {
@@ -952,7 +997,6 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
     return next(new AppError('Gemini no generó ángulos válidos', 500));
   }
 
-  // Registrar el uso SOLO si Gemini respondió correctamente
   await GeneracionesAngulosIA.create({ id_usuario });
 
   const newUsedAngulos = usedAngulos + 1;
@@ -960,7 +1004,6 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
   return res.json({
     isSuccess: true,
     data: angulos.slice(0, 3),
-    // 👇 devolver uso actualizado para que el front pueda refrescarlo
     angles_usage: {
       used: newUsedAngulos,
       limit: maxAngulos,
@@ -986,6 +1029,11 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   const angulo_venta = String(req.body?.angulo_venta || '').trim();
   const prompt_extra = String(req.body?.prompt_extra || '').trim();
   const marca = String(req.body?.marca || '').trim();
+  const moneda = String(req.body?.moneda || 'USD').trim();
+  const idioma = String(req.body?.idioma || 'es').trim();
+  const id_producto = req.body?.id_producto
+    ? Number(req.body.id_producto)
+    : null;
 
   let pricing = null;
   try {
@@ -1018,12 +1066,12 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     );
   }
 
-  // ── MOCK MODE ──────────────────────────────────────────────
   if (isMockMode()) {
-    await new Promise((r) => setTimeout(r, 1500)); // simula delay
+    await new Promise((r) => setTimeout(r, 1500));
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+      id_producto,
       template_id: template_id || null,
       id_etapa: etapa_id,
       aspect_ratio,
@@ -1057,17 +1105,35 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     },
   }));
 
+  const SIMBOLOS = {
+    USD: '$',
+    COP: '$',
+    MXN: '$',
+    PEN: 'S/',
+    ARS: '$',
+    BRL: 'R$',
+  };
+  const sym = SIMBOLOS[moneda] || '$';
+
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
-      pricingText += `\nPrecio del producto: $${pricing.precio_unitario}`;
+      pricingText += `\nPrecio del producto: ${sym}${pricing.precio_unitario} ${moneda}`;
     if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
       pricingText += '\nOfertas por combo:';
       pricing.combos.forEach((c) => {
-        pricingText += ` ${c.cantidad}x por $${c.precio} |`;
+        pricingText += ` ${c.cantidad}x por ${sym}${c.precio} ${moneda} |`;
       });
     }
   }
+
+  const IDIOMAS_MAP = {
+    es: 'español latinoamericano',
+    en: 'English',
+    pt: 'Português brasileiro',
+    fr: 'Français',
+    zh: '中文 (Chino simplificado)',
+  };
 
   const prompt = [
     etapa.prompt,
@@ -1076,7 +1142,15 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
       ? `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`
       : '',
     angulo_venta ? `\nÁNGULO DE VENTA SELECCIONADO: ${angulo_venta}` : '',
-    pricingText,
+    pricingText
+      ? `\n--- PRECIOS (usar EXACTAMENTE estos valores en la imagen si la sección lo requiere) ---${pricingText}`
+      : '',
+    moneda !== 'USD'
+      ? `\nMONEDA: Todos los precios están en ${moneda}. Usa el símbolo correspondiente (no USD).`
+      : '',
+    idioma !== 'es'
+      ? `\nIDIOMA OBLIGATORIO: Genera TODOS los textos de la imagen en ${IDIOMAS_MAP[idioma] || idioma}. NO uses español.`
+      : '',
     `\n--- CORRECCIONES DEL USUARIO ---`,
     `El usuario ha pedido los siguientes cambios específicos: ${prompt_extra}`,
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
@@ -1117,7 +1191,10 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   let geminiResp;
   try {
     geminiResp = await axios.post(geminiUrl, payload, {
-      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
       timeout: 120000,
     });
   } catch (err) {
@@ -1139,6 +1216,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   await GeneracionesIA.create({
     id_usuario,
     id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    id_producto,
     template_id: template_id || null,
     id_etapa: etapa_id,
     aspect_ratio,
@@ -1147,6 +1225,9 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     model,
     image_url,
   });
+
+  //  Auto-set portada si el producto no tiene una
+  await autoSetPortadaIfNeeded(id_producto, image_url);
 
   const newUsed = usedThisMonth + 1;
 

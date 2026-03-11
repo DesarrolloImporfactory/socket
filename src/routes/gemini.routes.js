@@ -4,6 +4,7 @@ const router = express.Router();
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const geminiController = require('../controllers/gemini.controller');
+const productosCtrl = require('../controllers/productos_ia.controller');
 const multer = require('multer');
 
 const upload = multer({
@@ -25,6 +26,39 @@ router.get('/templates', geminiController.get_templates);
 // ─── Consultas (requieren plan activo) ───────────────────────────────────────
 router.get('/usage', checkPlanActivo, geminiController.get_usage);
 router.get('/historial', checkPlanActivo, geminiController.get_historial);
+
+// ─── Productos IA (CRUD) ─────────────────────────────────────────────────────
+router.get('/productos', checkPlanActivo, productosCtrl.listar_productos);
+router.get('/productos/:id', checkPlanActivo, productosCtrl.obtener_producto);
+router.post('/productos', checkPlanActivo, productosCtrl.crear_producto);
+router.put(
+  '/productos/:id',
+  checkPlanActivo,
+  productosCtrl.actualizar_producto,
+);
+router.delete(
+  '/productos/:id',
+  checkPlanActivo,
+  productosCtrl.eliminar_producto,
+);
+router.patch(
+  '/productos/:id/portada',
+  checkPlanActivo,
+  productosCtrl.asignar_portada,
+);
+
+router.patch(
+  '/productos/:id/portada-upload',
+  checkPlanActivo,
+  uploadSingle.single('imagen_portada'),
+  productosCtrl.subir_portada,
+);
+
+router.post(
+  '/productos/:id/asignar-imagenes',
+  checkPlanActivo,
+  productosCtrl.asignar_imagenes,
+);
 
 // ─── Ángulos de venta (IA texto) ─────────────────────────────────────────────
 router.post(
