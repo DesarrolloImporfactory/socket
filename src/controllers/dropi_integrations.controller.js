@@ -444,7 +444,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   for (const k of uniqueKeys) {
     orConditions.push(
       { celular_cliente: { [Op.like]: `%${k}` } },
-      { telefono_limpio: { [Op.like]: `%${k}` } },
     );
   }
 
@@ -457,7 +456,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
     attributes: [
       'id',
       'celular_cliente',
-      'telefono_limpio',
       'id_encargado',
       'estado_contacto',
     ],
@@ -468,9 +466,8 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   const clientByKey = new Map();
   for (const c of clientes) {
     const ks1 = phoneKeys(c?.celular_cliente);
-    const ks2 = phoneKeys(c?.telefono_limpio);
 
-    [...ks1, ...ks2].forEach((k) => {
+    [...ks1].forEach((k) => {
       if (k && !clientByKey.has(k)) clientByKey.set(k, c);
     });
   }

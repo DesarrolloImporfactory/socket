@@ -343,7 +343,7 @@ class ChatService {
       });
 
       const celular_cliente =
-        chats.length > 0 ? chats[0].telefono_limpio : null;
+        chats.length > 0 ? chats[0].celular_cliente : null;
       //  console.log("Chats: ", chats);
 
       const phoneVariants = generatePhoneVariations(celular_cliente, 593);
@@ -851,7 +851,7 @@ class ChatService {
           anulada: 0,
           id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
-            telefono_limpio: {
+            celular_cliente: {
               [Op.like]: `%${formato}%`,
             },
           })),
@@ -865,7 +865,7 @@ class ChatService {
 
           id_plataforma: id_plataforma,
           [Op.or]: telefonoFormateado.map((formato) => ({
-            telefono_limpio: {
+            celular_cliente: {
               [Op.like]: `%${formato}%`,
             },
           })),
@@ -932,7 +932,7 @@ class ChatService {
       FROM novedades nvd 
       INNER JOIN facturas_cot fc ON fc.numero_guia = nvd.guia_novedad
       WHERE nvd.id_plataforma = :id_plataforma
-      AND fc.telefono_limpio = :telefono
+      AND fc.celular_cliente = :telefono
       AND NOT (
         (nvd.guia_novedad LIKE 'IMP%' OR nvd.guia_novedad LIKE 'MKP%') 
         AND nvd.estado_novedad IN (

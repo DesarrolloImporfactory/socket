@@ -455,7 +455,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
       where.push(`(
       LOWER(nombre_cliente) LIKE ? OR
       LOWER(apellido_cliente) LIKE ? OR
-      telefono_limpio LIKE ?
+      celular_cliente LIKE ?
     )`);
       const like = `%${term}%`;
       replacements.push(like, like, `%${search[colKey] || ''}%`);
@@ -471,7 +471,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
 
     const rows = await db.query(
       `
-      SELECT id, nombre_cliente, apellido_cliente, telefono_limpio, estado_contacto, created_at, bot_openia
+      SELECT id, nombre_cliente, apellido_cliente, celular_cliente, estado_contacto, created_at, bot_openia
       FROM clientes_chat_center
       ${whereSql}
       ORDER BY id DESC
@@ -592,7 +592,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
 
     if (term) {
       whereConds.push(
-        '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.telefono_limpio LIKE ?)',
+        '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.celular_cliente LIKE ?)',
       );
       const l = `%${term}%`;
       whereParams.push(l, l, `%${search[colKey] || ''}%`);
@@ -627,7 +627,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     }
 
     const sql = `
-      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.telefono_limpio,
+      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
              c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
              ${conFechas ? ', lm.ultimo_msg' : ''}
       FROM   clientes_chat_center c
@@ -922,8 +922,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.nombre_cliente   LIKE ? OR
       c.apellido_cliente LIKE ? OR
       c.email_cliente    LIKE ? OR
-      c.celular_cliente  LIKE ? OR
-      c.telefono_limpio  LIKE ?
+      c.celular_cliente  LIKE ? 
     )`);
     params.push(like, like, like, like, like);
   }
@@ -936,7 +935,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente,
       c.estado_cliente,
       c.created_at, c.updated_at,
-      c.chat_cerrado, c.telefono_limpio, c.direccion,
+      c.chat_cerrado, c.direccion,
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
@@ -1142,7 +1141,7 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
             nombre_cliente, apellido_cliente, email_cliente, celular_cliente,
             imagePath, mensajes_por_dia_cliente, estado_cliente,
             created_at, updated_at, deleted_at, chat_cerrado, bot_openia,
-            id_departamento, id_encargado, pedido_confirmado, telefono_limpio
+            id_departamento, id_encargado, pedido_confirmado
      FROM clientes_chat_center WHERE id = ?`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
@@ -1262,7 +1261,6 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.apellido_cliente LIKE ? OR
       c.email_cliente    LIKE ? OR
       c.celular_cliente  LIKE ? OR
-      c.telefono_limpio  LIKE ? OR
       c.uid_cliente      LIKE ?
     )`);
     params.push(like, like, like, like, like, like);
@@ -1313,7 +1311,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.imagePath, c.mensajes_por_dia_cliente, c.estado_cliente,
       c.created_at, c.updated_at, c.deleted_at,
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
-      c.pedido_confirmado, c.telefono_limpio, c.direccion, c.productos,
+      c.pedido_confirmado, c.direccion, c.productos,
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
