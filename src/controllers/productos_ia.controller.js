@@ -393,7 +393,7 @@ exports.listar_dropi_productos = catchAsync(async (req, res, next) => {
     startData: Number(req.body?.startData) ?? 0,
     no_count: true,
     order_by: req.body?.order_by || 'id',
-    order_type: req.body?.order_type || 'asc',
+    order_type: req.body?.order_type || 'desc',
     keywords: req.body?.keywords || '',
   };
 
