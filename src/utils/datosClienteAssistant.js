@@ -42,7 +42,7 @@ const obtenerDatosClienteParaAssistant = async (
     WHERE 
       fc.anulada = 0  
       AND (fc.id_plataforma = ? OR fc.id_propietario = ? OR b.id_plataforma = ?)
-      AND (fc.telefono = ? OR fc.telefono_limpio = ?)
+      AND (fc.telefono = ? OR fc.celular_cliente = ?)
       AND (TRIM(fc.numero_guia) <> '' AND fc.numero_guia IS NOT NULL AND fc.numero_guia <> '0'
            OR (TRIM(fc.numero_guia) = '' OR fc.numero_guia IS NULL OR fc.numero_guia = '0'))
     ORDER BY fc.fecha_guia DESC, fc.fecha_factura DESC

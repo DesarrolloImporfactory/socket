@@ -136,16 +136,21 @@ const crearPlantillaWhatsApp = (
 // Helper: Enviar template de WhatsApp
 const enviarTemplateWhatsApp = async (plantilla) => {
   const response = await axios.post(
-    `https://graph.facebook.com/v19.0/${process.env.CONFIGURACION_WS}/messages`,
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${process.env.CONFIGURACION_WS}/messages`,
     plantilla,
     {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
       },
+      params: { debug: 'all' },
       validateStatus: () => true, // no lanzar excepcion, manejar todos los status
     },
   );
+  if (response.data.__debug) {
+    console.log('[WA_TEMPLATE] Debug info de Meta:', JSON.stringify(response.data.__debug));
+  }
+
 
   if (response.status < 200 || response.status >= 300) {
     console.error(
@@ -155,7 +160,8 @@ const enviarTemplateWhatsApp = async (plantilla) => {
       JSON.stringify(plantilla, null, 2),
       JSON.stringify(response.data, null, 2),
     );
-    const metaMsg = response.data?.error?.message || JSON.stringify(response.data);
+    const metaMsg =
+      response.data?.error?.message || JSON.stringify(response.data);
     const err = new Error(`Meta ${response.status}: ${metaMsg}`);
     err.metaError = response.data?.error;
     err.statusCode = response.status;
@@ -195,7 +201,12 @@ const crearMensajeBD = async (
 
 // Helper: Generar datos del mensaje
 // headerMedia: { type, fileUrl?, id?, link? } | null — se almacena en ruta_archivo para el historial
-const generarDatosMensaje = (templateName, nombreCliente, idCotizacion, headerMedia = null) => {
+const generarDatosMensaje = (
+  templateName,
+  nombreCliente,
+  idCotizacion,
+  headerMedia = null,
+) => {
   const templates = {
     cotizacion_carga_enviadav2: {
       texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊\nPor favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
@@ -245,14 +256,17 @@ const generarDatosMensaje = (templateName, nombreCliente, idCotizacion, headerMe
 };
 
 // Helper: Convertir video a formato WhatsApp
-const convertVideoForWhatsApp = async (fileBuffer, originalName, targetSizeMB = 15) => {
+const convertVideoForWhatsApp = async (
+  fileBuffer,
+  originalName,
+  targetSizeMB = 15,
+) => {
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `input-${Date.now()}-${originalName}`);
   const outputPath = path.join(tempDir, `output-${Date.now()}.mp4`);
 
   try {
     await fs.writeFile(inputPath, fileBuffer);
-    // console.log('[VIDEO_CONVERT] Archivo temporal creado:', inputPath);
 
     try {
       await execAsync('ffmpeg -version');
@@ -279,50 +293,65 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName, targetSizeMB = 
     const totalKbps = Math.floor((MAX_BYTES * 8) / duration / 1000);
     const videoKbps = Math.max(100, totalKbps - AUDIO_KBPS);
 
-    console.log(`[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k | Target: ${targetSizeMB}MB`);
+  
 
     // Helper interno: construye el comando ffmpeg con los parámetros dados
     // - Escala manteniendo aspect ratio al máximo maxW x maxH
     // - Redondea ancho/alto a número par (libx264 lo exige)
-    const buildCmd = (vKbps, maxW, maxH, aKbps) => [
-      `ffmpeg -i "${inputPath}"`,
-      `-f lavfi -i anullsrc=r=44100:cl=mono`,
-      `-c:v libx264 -preset ultrafast`,
-      `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
-      `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
-      `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
-      `-map 0:v -map "[aout]"`,
-      `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
-      `-movflags +faststart -y "${outputPath}"`,
-    ].join(' ');
+    const buildCmd = (vKbps, maxW, maxH, aKbps) =>
+      [
+        `ffmpeg -i "${inputPath}"`,
+        `-f lavfi -i anullsrc=r=44100:cl=mono`,
+        `-c:v libx264 -preset ultrafast`,
+        `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
+        `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
+        `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
+        `-map 0:v -map "[aout]"`,
+        `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
+        `-movflags +faststart -y "${outputPath}"`,
+      ].join(' ');
 
     // 3) Intento 1 — 720p, bitrate calculado
-    await execAsync(buildCmd(videoKbps, 1280, 720, AUDIO_KBPS), { maxBuffer: 50 * 1024 * 1024 });
+    await execAsync(buildCmd(videoKbps, 1280, 720, AUDIO_KBPS), {
+      maxBuffer: 50 * 1024 * 1024,
+    });
     let statOut = await fs.stat(outputPath);
-    console.log(`[VIDEO_CONVERT] Intento 1 (720p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
-
+  
     // 4) Intento 2 — 480p, bitrate reducido al 55%, audio 64k
     if (statOut.size > MAX_BYTES) {
       const vKbps2 = Math.max(80, Math.floor(videoKbps * 0.55));
-      console.warn(`[VIDEO_CONVERT] Supera límite → compresión agresiva 480p (${vKbps2}k)...`);
-      await execAsync(buildCmd(vKbps2, 854, 480, 64), { maxBuffer: 50 * 1024 * 1024 });
+      console.warn(
+        `[VIDEO_CONVERT] Supera límite → compresión agresiva 480p (${vKbps2}k)...`,
+      );
+      await execAsync(buildCmd(vKbps2, 854, 480, 64), {
+        maxBuffer: 50 * 1024 * 1024,
+      });
       statOut = await fs.stat(outputPath);
-      console.log(`[VIDEO_CONVERT] Intento 2 (480p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+    
     }
 
     // 5) Intento 3 — 360p, bitrate mínimo, audio 48k
     if (statOut.size > MAX_BYTES) {
-      const vKbps3 = Math.max(60, Math.floor(((MAX_BYTES * 8) / duration / 1000) * 0.8 - 48));
-      console.warn(`[VIDEO_CONVERT] Aún supera límite → compresión máxima 360p (${vKbps3}k)...`);
-      await execAsync(buildCmd(vKbps3, 640, 360, 48), { maxBuffer: 50 * 1024 * 1024 });
+      const vKbps3 = Math.max(
+        60,
+        Math.floor(((MAX_BYTES * 8) / duration / 1000) * 0.8 - 48),
+      );
+      console.warn(
+        `[VIDEO_CONVERT] Aún supera límite → compresión máxima 360p (${vKbps3}k)...`,
+      );
+      await execAsync(buildCmd(vKbps3, 640, 360, 48), {
+        maxBuffer: 50 * 1024 * 1024,
+      });
       statOut = await fs.stat(outputPath);
-      console.log(`[VIDEO_CONVERT] Intento 3 (360p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+     
     }
 
     // 6) Si aún supera, lanzar error (no tiene sentido subir algo que Meta rechazará)
     if (statOut.size > MAX_BYTES) {
       const finalMB = (statOut.size / (1024 * 1024)).toFixed(2);
-      const err = new Error(`El video pesa demasiado (${finalMB}MB) y no fue posible comprimirlo por debajo de ${targetSizeMB}MB. Enviá un video más corto o de menor resolución.`);
+      const err = new Error(
+        `El video pesa demasiado (${finalMB}MB) y no fue posible comprimirlo por debajo de ${targetSizeMB}MB. Enviá un video más corto o de menor resolución.`,
+      );
       err.isOversized = true;
       throw err;
     }
@@ -343,14 +372,9 @@ const convertVideoForWhatsApp = async (fileBuffer, originalName, targetSizeMB = 
 
 // Helper: Subir video a Meta
 const uploadVideoToMeta = async (fileBuffer, fileName) => {
-  const mediaUrl = `https://graph.facebook.com/v22.0/${process.env.CONFIGURACION_WS}/media`;
+  const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${process.env.CONFIGURACION_WS}/media`;
 
-  /*  // console.log('[UPLOAD_META] Iniciando subida:', {
-    fileName,
-    size: fileBuffer.length,
-    sizeMB: (fileBuffer.length / (1024 * 1024)).toFixed(2),
-  });
- */
+
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('type', 'video/mp4');
@@ -364,9 +388,14 @@ const uploadVideoToMeta = async (fileBuffer, fileName) => {
       Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
       ...form.getHeaders(),
     },
+    params: { debug: 'all' },
     timeout: 60000,
     validateStatus: () => true,
   });
+
+  if(mediaResp.data.__debug) {
+    console.log('[UPLOAD_META] Debug info de Meta:', JSON.stringify(mediaResp.data.__debug));
+  }
 
   if (
     mediaResp.status < 200 ||
@@ -382,8 +411,6 @@ const uploadVideoToMeta = async (fileBuffer, fileName) => {
     console.error('[UPLOAD_META] Sin mediaId:', mediaResp.data);
     throw new Error('Respuesta de Meta sin mediaId');
   }
-
-  // console.log('[UPLOAD_META] Éxito. MediaId:', mediaId);
 
   return mediaId;
 };
@@ -407,8 +434,6 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 
   // Normalizar el número de teléfono
   const phoneInfo = normalizePhoneNumber(celular, '593'); // '593' es Ecuador por defecto
-  // console.log('Información del teléfono:', phoneInfo);
-  // { normalizedPhone: '987654321', countryCode: '593', country: 'Ecuador', hasCountryCode: true/false }
 
   // Generar variaciones del número para búsqueda flexible
   const phoneVariations = generatePhoneVariations(celular, '593');
@@ -425,7 +450,6 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 
   // poner todos los id_plataforma en un array
   const plataformaIds = plataforma.map((p) => p.id_plataforma);
-  // console.log('IDs de plataformas:', plataformaIds);
 
   const usuarioPlataformas = await UsuarioPlataforma.findAll({
     where: {
@@ -466,9 +490,6 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
     { type: db_2.QueryTypes.SELECT },
   );
 
-  // console.log('Cotizaciones encontradas:', cotizaciones.length);
-
-  // console.log('Query ejecutada:', cotizaciones);
   res.status(200).json({
     status: '200',
     title: 'Petición exitosa',
@@ -478,12 +499,10 @@ exports.obtenerCotizaciones = catchAsync(async (req, res, next) => {
 });
 
 exports.enviarCotizacion = catchAsync(async (req, res, next) => {
- const token = extraerTokenDeCabecera(req);
-
+  const token = extraerTokenDeCabecera(req);
 
   const { id_cotizacion } = req.body;
 
-  console.log('ID de cotización recibida:', id_cotizacion);
 
   if (!id_cotizacion) {
     return next(new AppError('id_cotizacion es requerido', 400));
@@ -524,38 +543,57 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   // Crear y enviar las dos plantillas de WhatsApp
   // plantilla1: descargar video predeterminado → convertir → subir a Meta → header con mediaId
-  const VIDEO_DEFAULT_URL = 'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
+  const VIDEO_DEFAULT_URL =
+    'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
 
   let videoMediaId = null;
   try {
-    console.log('[COTIZACION_VIDEO] Descargando video predeterminado...');
     const videoResp = await axios.get(VIDEO_DEFAULT_URL, {
       responseType: 'arraybuffer',
       timeout: 60000,
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
       },
     });
     let videoBuffer = Buffer.from(videoResp.data);
     const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
-    console.log(`[COTIZACION_VIDEO] Tamaño descargado: ${videoOriginalSizeMB.toFixed(2)} MB`);
-
+  
     try {
-      videoBuffer = await convertVideoForWhatsApp(videoBuffer, 'cotizacion-header.mp4');
-      console.log('[COTIZACION_VIDEO] Video convertido correctamente');
+      videoBuffer = await convertVideoForWhatsApp(
+        videoBuffer,
+        'cotizacion-header.mp4',
+      );
     } catch (convErr) {
       if (convErr.isOversized || videoOriginalSizeMB > 15) {
-        console.error('[COTIZACION_VIDEO] Video demasiado pesado:', convErr.message);
-        throw convErr.isOversized ? convErr : new Error(`El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`);
+        console.error(
+          '[COTIZACION_VIDEO] Video demasiado pesado:',
+          convErr.message,
+        );
+        throw convErr.isOversized
+          ? convErr
+          : new Error(
+              `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`,
+            );
       }
-      console.warn('[COTIZACION_VIDEO] Conversión fallida, usando original:', convErr.message);
+      console.warn(
+        '[COTIZACION_VIDEO] Conversión fallida, usando original:',
+        convErr.message,
+      );
     }
 
-    videoMediaId = await uploadVideoToMeta(videoBuffer, 'cotizacion-header.mp4');
-    console.log('[COTIZACION_VIDEO] Video subido a Meta. mediaId:', videoMediaId);
+    videoMediaId = await uploadVideoToMeta(
+      videoBuffer,
+      'cotizacion-header.mp4',
+    );
+   
   } catch (videoErr) {
-    console.error('[COTIZACION_VIDEO] Error procesando video:', videoErr.message);
-    return next(new AppError('Error al preparar el video de la cotización', 500));
+    console.error(
+      '[COTIZACION_VIDEO] Error procesando video:',
+      videoErr.message,
+    );
+    return next(
+      new AppError('Error al preparar el video de la cotización', 500),
+    );
   }
 
   const VIDEO_COTIZACION_HEADER = {
@@ -579,15 +617,19 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     id_cotizacion,
   );
 
-  // Enviar las plantillas
-  console.log('[COTIZACION_P1] Payload plantilla1:', JSON.stringify(plantilla1, null, 2));
   let response1;
   try {
     response1 = await enviarTemplateWhatsApp(plantilla1);
-    console.log('[COTIZACION_P1] Respuesta Meta:', JSON.stringify(response1));
   } catch (p1Err) {
-    console.error('[COTIZACION_P1] Fallo:', p1Err.message, '| Meta error:', JSON.stringify(p1Err.metaError));
-    return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
+    console.error(
+      '[COTIZACION_P1] Fallo:',
+      p1Err.message,
+      '| Meta error:',
+      JSON.stringify(p1Err.metaError),
+    );
+    return next(
+      new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500),
+    );
   }
 
   // Esperar antes de enviar la segunda plantilla para garantizar el orden de entrega en WhatsApp
@@ -596,10 +638,16 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   let response2;
   try {
     response2 = await enviarTemplateWhatsApp(plantilla2);
-    console.log('[COTIZACION_P2] Respuesta Meta:', JSON.stringify(response2));
   } catch (p2Err) {
-    console.error('[COTIZACION_P2] Fallo:', p2Err.message, '| Meta error:', JSON.stringify(p2Err.metaError));
-    return next(new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500));
+    console.error(
+      '[COTIZACION_P2] Fallo:',
+      p2Err.message,
+      '| Meta error:',
+      JSON.stringify(p2Err.metaError),
+    );
+    return next(
+      new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500),
+    );
   }
 
   // Extraer IDs de mensajes
@@ -611,7 +659,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     !response1?.messages?.[0]?.message_status ||
     response1.messages[0].message_status !== 'accepted'
   ) {
-    // console.log('Error al enviar la cotización:', response1);
     return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
   }
 
@@ -627,7 +674,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   });
 
   if (foundChat) {
-    // console.log('Chat encontrado con ID:', foundChat.id);
     chatId = foundChat.id;
   } else {
     // Crear nuevo chat
@@ -641,7 +687,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
       chat_cerrado: false,
     });
 
-    // console.log('Nuevo chat creado con ID:', nuevoChat.id);
     chatId = nuevoChat.id;
   }
 
@@ -661,7 +706,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     mensaje1Data.rutaArchivo,
     'cotizacion_carga_enviada_pro',
   );
-  // console.log('Mensaje 1 registrado en BD con ID:', mensaje1.id);
 
   const mensaje2Data = generarDatosMensaje(
     'confirmacion_cotizacion_pro',
@@ -677,7 +721,6 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
     mensaje2Data.rutaArchivo,
     'confirmacion_cotizacion_pro',
   );
-  // console.log('Mensaje 2 registrado en BD con ID:', mensaje2.id);
 
   // Actualizar estado de la cotización
   await db_2.query(
@@ -741,11 +784,11 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
     '593',
   );
 
-  const VIDEO_DEFAULT_URL = 'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
+  const VIDEO_DEFAULT_URL =
+    'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
 
   let videoMediaId = null;
   try {
-    console.log('[REENVIO_VIDEO] Descargando video predeterminado...');
     const videoResp = await axios.get(VIDEO_DEFAULT_URL, {
       responseType: 'arraybuffer',
       timeout: 60000,
@@ -755,20 +798,33 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
     const videoOriginalSizeMB = videoBuffer.length / (1024 * 1024);
 
     try {
-      videoBuffer = await convertVideoForWhatsApp(videoBuffer, 'cotizacion-header.mp4');
-      console.log('[REENVIO_VIDEO] Video convertido correctamente');
+      videoBuffer = await convertVideoForWhatsApp(
+        videoBuffer,
+        'cotizacion-header.mp4',
+      );
     } catch (convErr) {
       if (convErr.isOversized || videoOriginalSizeMB > 15) {
-        throw convErr.isOversized ? convErr : new Error(`El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB.`);
+        throw convErr.isOversized
+          ? convErr
+          : new Error(
+              `El video pesa ${videoOriginalSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB.`,
+            );
       }
-      console.warn('[REENVIO_VIDEO] Conversión fallida, usando original:', convErr.message);
+      console.warn(
+        '[REENVIO_VIDEO] Conversión fallida, usando original:',
+        convErr.message,
+      );
     }
 
-    videoMediaId = await uploadVideoToMeta(videoBuffer, 'cotizacion-header.mp4');
-    console.log('[REENVIO_VIDEO] Video subido a Meta. mediaId:', videoMediaId);
+    videoMediaId = await uploadVideoToMeta(
+      videoBuffer,
+      'cotizacion-header.mp4',
+    );
   } catch (videoErr) {
     console.error('[REENVIO_VIDEO] Error procesando video:', videoErr.message);
-    return next(new AppError('Error al preparar el video de la cotización', 500));
+    return next(
+      new AppError('Error al preparar el video de la cotización', 500),
+    );
   }
 
   const VIDEO_COTIZACION_HEADER = {
@@ -797,7 +853,9 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
     response1 = await enviarTemplateWhatsApp(plantilla1);
   } catch (p1Err) {
     console.error('[REENVIO_P1] Fallo:', p1Err.message);
-    return next(new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500));
+    return next(
+      new AppError(`Error plantilla cotizacion: ${p1Err.message}`, 500),
+    );
   }
 
   await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -807,7 +865,9 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
     response2 = await enviarTemplateWhatsApp(plantilla2);
   } catch (p2Err) {
     console.error('[REENVIO_P2] Fallo:', p2Err.message);
-    return next(new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500));
+    return next(
+      new AppError(`Error plantilla confirmacion: ${p2Err.message}`, 500),
+    );
   }
 
   const midMensaje1 = response1?.messages?.[0]?.id || null;
@@ -926,9 +986,7 @@ exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
 
   // Formatear la fecha a dd/mm/yyyy
   const fechaFormateada = formatearFecha(fecha_estimada);
-  console.log(
-    `[FECHA_EST] Fecha original: ${fecha_estimada}, Fecha formateada: ${fechaFormateada}`,
-  );
+  
 
   // Crear template con nombre y fecha
   const templateFecha = {
@@ -1081,7 +1139,6 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
 
       if (resultado.length > 0) {
         nombreCliente = resultado[0].cliente;
-        // console.log('[VIDEO_COT] Cliente encontrado:', nombreCliente);
       }
     } catch (err) {
       console.warn(
@@ -1106,7 +1163,6 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   let convertedBuffer = videoBuffer;
   let videoFileName = 'video.mp4';
   const videoSizeMB = videoBuffer.length / (1024 * 1024);
-  console.log(`[VIDEO_COT] Tamaño descargado: ${videoSizeMB.toFixed(2)} MB`);
 
   try {
     convertedBuffer = await convertVideoForWhatsApp(
@@ -1116,7 +1172,9 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
     videoFileName = 'cotizacion-video-converted.mp4';
   } catch (convErr) {
     if (convErr.isOversized || videoSizeMB > 15) {
-      const msg = convErr.isOversized ? convErr.message : `El video pesa ${videoSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
+      const msg = convErr.isOversized
+        ? convErr.message
+        : `El video pesa ${videoSizeMB.toFixed(2)}MB y no se pudo comprimir por debajo de 15MB. Enviá un video más corto o de menor resolución.`;
       console.error('[VIDEO_COT] Video demasiado pesado:', msg);
       return next(new AppError(msg, 400));
     }
@@ -1138,9 +1196,10 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
 
   // 5. Verificar estado del media
   try {
-    const mediaCheckUrl = `https://graph.facebook.com/v22.0/${mediaId}`;
+    const mediaCheckUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaCheck = await axios.get(mediaCheckUrl, {
       headers: { Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}` },
+      params: { debug: 'all' },
       timeout: 10000,
       validateStatus: () => true,
     });
@@ -1199,16 +1258,21 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   let response;
   try {
     response = await axios.post(
-      `https://graph.facebook.com/v19.0/${process.env.CONFIGURACION_WS}/messages`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${process.env.CONFIGURACION_WS}/messages`,
       templateVideo,
       {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
         },
+        params: { debug: 'all' },
       },
     );
-    //console.log('[VIDEO_COT] Respuesta de Meta:', response.data);
+
+    if(response.data.__debug) {
+      console.log('[VIDEO_COT] Debug info de Meta:', JSON.stringify(response.data.__debug));
+    }
+    
   } catch (sendErr) {
     console.error(
       '[VIDEO_COT] Error al enviar mensaje:',
@@ -1239,7 +1303,6 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   });
 
   if (foundChat) {
-    //console.log('[VIDEO_COT] Chat encontrado con ID:', foundChat.id);
     chatId = foundChat.id;
   } else {
     const nuevoChat = await Clientes_chat_center.create({
@@ -1251,7 +1314,6 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
       chat_cerrado: false,
     });
 
-    //console.log('[VIDEO_COT] Nuevo chat creado con ID:', nuevoChat.id);
     chatId = nuevoChat.id;
   }
 
@@ -1300,18 +1362,12 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     { where: { id_cotizacion: id_cotizacion } },
   );
 
-  console.log('[SUBESTADO] Filas afectadas:', rowsAffected);
 
   // Verificar que se guardó correctamente
   const cotizacionActualizada = await CotizadorproCotizaciones.findOne({
     where: { id_cotizacion: id_cotizacion },
     attributes: ['id_cotizacion', 'subestado', 'fecha_recibida', 'estado'],
   });
-
-  console.log(
-    '[SUBESTADO] Verificación después del update:',
-    cotizacionActualizada?.dataValues,
-  );
 
   res.status(200).json({
     status: 200,

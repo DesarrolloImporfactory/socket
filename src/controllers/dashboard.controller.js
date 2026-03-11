@@ -357,7 +357,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
          ccc.apellido_cliente,
          ccc.source,
          ccc.estado_contacto,
-         ccc.telefono_limpio,
+         ccc.celular_cliente,
          ccc.id_encargado,
          ccc.id_configuracion,
          su.nombre_encargado AS responsable,
@@ -403,7 +403,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
                 : r.source || '—',
         waitSeconds: wait,
         estado_contacto: r.estado_contacto || '—',
-        telefono_limpio: r.telefono_limpio || '—',
+        celular_cliente: r.celular_cliente || '—',
         responsable: r.responsable || 'Sin asignar',
         id_configuracion: r.id_configuracion,
       };
@@ -672,7 +672,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
          h.id_cliente_chat_center,
          ccc.nombre_cliente,
          ccc.apellido_cliente,
-         ccc.telefono_limpio,
+         ccc.celular_cliente,
          ccc.source,
          ccc.id_configuracion,
          COUNT(h.id) AS total_transferencias,
@@ -684,7 +684,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
        WHERE ccc.deleted_at IS NULL
          AND h.fecha_registro BETWEEN ? AND ?
        GROUP BY h.id_cliente_chat_center, ccc.nombre_cliente, ccc.apellido_cliente,
-                ccc.telefono_limpio, ccc.source, ccc.id_configuracion, su_actual.nombre_encargado
+                ccc.celular_cliente, ccc.source, ccc.id_configuracion, su_actual.nombre_encargado
        HAVING total_transferencias >= 3
        ORDER BY total_transferencias DESC
        LIMIT 30`,
@@ -697,7 +697,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
       return {
         id: `${r.id_cliente_chat_center}`,
         client: fullName || 'Cliente sin nombre',
-        telefono: r.telefono_limpio || '—',
+        telefono: r.celular_cliente || '—',
         channel: mapChannel(r.source),
         totalTransferencias: Number(r.total_transferencias),
         responsableActual: r.responsable_actual || 'Sin asignar',

@@ -156,7 +156,7 @@ exports.infoCliente = catchAsync(async (req, res, next) => {
       COALESCE(SUM(CASE WHEN estado_guia_sistema IN (${ESTADOS_DEVOL})   THEN 1 END),0) AS devoluciones
     FROM facturas_cot
     /*  quitamos "+" y comparamos con LIKE */
-    WHERE REPLACE(telefono_limpio, '+', '') LIKE :tel
+    WHERE REPLACE(celular_cliente, '+', '') LIKE :tel
   `;
 
   const [stats] = await db_2.query(sql, {

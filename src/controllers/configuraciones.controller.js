@@ -360,7 +360,7 @@ exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
         (
           SELECT count(*)
           FROM clientes_chat_center ccc
-          WHERE ccc.id_configuracion = c.id AND ccc.telefono_limpio <> c.telefono
+          WHERE ccc.id_configuracion = c.id AND ccc.celular_cliente <> c.telefono
         ) AS cantidad_conversaciones
 
       FROM configuraciones c
