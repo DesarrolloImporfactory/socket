@@ -19,6 +19,7 @@ const {
   convertVideoForWhatsApp,
   extractBearerToken,
 } = require('../utils/whatsappTemplate.helpers');
+const logger = require('../utils/logger');
 
 // Detectar ffmpeg automáticamente (funciona en Windows/Linux/Mac)
 // Si ffmpeg está en el PATH del sistema, lo usará automáticamente
@@ -2600,7 +2601,7 @@ router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
     const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
 
     // ========= 1) Subir media a Meta =========
-    const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
+    const mediaUrl = `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/media`;
 
     const mimeType = req.file.mimetype || 'audio/ogg';
     const fileName = req.file.originalname || `audio-${Date.now()}.ogg`;
@@ -2647,14 +2648,14 @@ router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
     }
 
     // ========= 2) Enviar mensaje por id =========
-    const msgUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
+    const msgUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
 
     const payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to,
       type: 'audio',
-      audio: { id: mediaId, voice: true },
+      audio: { id: mediaId },
     };
 
     const msgResp = await axios.post(msgUrl, payload, {
@@ -2811,7 +2812,7 @@ router.post(
       // ========= PASO 2: Subir a Meta =========
       console.log('📤 Paso 2: Subiendo audio a Meta...');
 
-      const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
+      const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
       const mimeType = 'audio/mpeg';
       const fileName = `AUD-${Date.now()}.mp3`;
 
@@ -2828,9 +2829,19 @@ router.post(
           Authorization: `Bearer ${ACCESS_TOKEN}`,
           ...metaForm.getHeaders(),
         },
+        params: { debug: 'all' },
         timeout: 30000,
         validateStatus: () => true,
       });
+
+      if (mediaResp.data?.__debug) {
+        console.log('📊 Debug info de Meta:', mediaResp.data.__debug);
+        logger.info('Meta debug info (upload media)', {
+          meta_debug: mediaResp.data.__debug,
+          step: 'upload_media',
+          id_configuracion,
+        });
+      }
 
       if (
         mediaResp.status < 200 ||
@@ -2861,13 +2872,13 @@ router.post(
       // ========= PASO 3: Enviar mensaje de audio =========
       console.log('💬 Paso 3: Enviando mensaje de audio...');
 
-      const msgUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`;
+      const msgUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
         to,
         type: 'audio',
-        audio: { id: mediaId },
+        audio: { id: mediaId},
       };
 
       const msgResp = await axios.post(msgUrl, payload, {
@@ -2875,9 +2886,20 @@ router.post(
           Authorization: `Bearer ${ACCESS_TOKEN}`,
           'Content-Type': 'application/json',
         },
+        params: { debug: 'all' },
         timeout: 30000,
         validateStatus: () => true,
       });
+      console.log('Respuesta de Meta al enviar mensaje:', msgResp.data);
+
+      if(msgResp.data?.__debug) {
+        console.log('📊 Debug info de Meta (send message):', msgResp.data.__debug);
+        logger.info('Meta debug info (send message)', {
+          meta_debug: msgResp.data.__debug,
+          step: 'send_message',
+          id_configuracion,
+        });
+      }
 
       if (
         msgResp.status < 200 ||
