@@ -344,6 +344,8 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
+  const idConfigSync = producto.id_configuracion;
+
   await producto.destroy();
 
   syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {

@@ -334,6 +334,78 @@ exports.remove = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, message: 'Integración eliminada' });
 });
 
+exports.getMyIntegration = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+
+  const integration = await DropiIntegrations.findOne({
+    where: { id_usuario, deleted_at: null, is_active: 1 },
+    attributes: [
+      'id',
+      'store_name',
+      'country_code',
+      'integration_key_last4',
+      'created_at',
+    ],
+  });
+
+  return res.json({ isSuccess: true, data: integration || null });
+});
+
+exports.createMyIntegration = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  const { store_name, country_code, integration_key } = req.body;
+
+  if (!store_name || !country_code || !integration_key)
+    return next(
+      new AppError(
+        'store_name, country_code e integration_key son requeridos',
+        400,
+      ),
+    );
+
+  // Desactivar integraciones anteriores del usuario
+  await DropiIntegrations.update(
+    { is_active: 0, deleted_at: new Date() },
+    { where: { id_usuario, deleted_at: null } },
+  );
+
+  const nueva = await DropiIntegrations.create({
+    id_usuario,
+    id_configuracion: null,
+    store_name: String(store_name).trim(),
+    country_code: String(country_code).trim().toUpperCase(),
+    integration_key_enc: encryptToken(integration_key),
+    integration_key_last4: last4(integration_key),
+    is_active: 1,
+    deleted_at: null,
+  });
+
+  return res.status(201).json({ isSuccess: true, data: safeRow(nueva) });
+});
+
+exports.removeMyIntegration = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  const { id } = req.params;
+
+  const row = await DropiIntegrations.findOne({
+    where: { id, id_usuario, deleted_at: null },
+  });
+
+  if (!row)
+    return next(
+      new AppError('Integración no encontrada o no pertenece a tu cuenta', 404),
+    );
+
+  row.is_active = 0;
+  row.deleted_at = new Date();
+  await row.save();
+
+  return res.json({
+    isSuccess: true,
+    message: 'Integración Dropi desvinculada correctamente',
+  });
+});
+
 /* =========================
    Dropi: Crear Orden
    POST /api/v1/dropi_integrations/orders/myorders

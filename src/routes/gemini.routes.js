@@ -27,6 +27,9 @@ router.get('/templates', geminiController.get_templates);
 router.get('/usage', checkPlanActivo, geminiController.get_usage);
 router.get('/historial', checkPlanActivo, geminiController.get_historial);
 
+// ─── Negocios del usuario (configuraciones) ─────────────────────────────────
+router.get('/mis-negocios', checkPlanActivo, productosCtrl.listar_mis_negocios);
+
 // ─── Productos IA (CRUD) ─────────────────────────────────────────────────────
 router.get('/productos', checkPlanActivo, productosCtrl.listar_productos);
 router.get('/productos/:id', checkPlanActivo, productosCtrl.obtener_producto);
@@ -46,18 +49,35 @@ router.patch(
   checkPlanActivo,
   productosCtrl.asignar_portada,
 );
-
 router.patch(
   '/productos/:id/portada-upload',
   checkPlanActivo,
   uploadSingle.single('imagen_portada'),
   productosCtrl.subir_portada,
 );
-
 router.post(
   '/productos/:id/asignar-imagenes',
   checkPlanActivo,
   productosCtrl.asignar_imagenes,
+);
+
+// ─── Alimentar negocio con IA ────────────────────────────────────────────────
+router.post(
+  '/productos/:id/alimentar-negocio',
+  checkPlanActivo,
+  productosCtrl.alimentar_negocio,
+);
+
+// ─── Importar desde Dropi → productos_ia ────────────────────────────────────
+router.post(
+  '/dropi/productos',
+  checkPlanActivo,
+  productosCtrl.listar_dropi_productos,
+);
+router.post(
+  '/dropi/importar',
+  checkPlanActivo,
+  productosCtrl.importar_desde_dropi,
 );
 
 // ─── Ángulos de venta (IA texto) ─────────────────────────────────────────────
@@ -81,7 +101,7 @@ router.post(
   geminiController.generar_etapa,
 );
 
-// ─── Regeneración (editar prompt por etapa) ──────────────────────────────────
+// ─── Regeneración ────────────────────────────────────────────────────────────
 router.post(
   '/regenerar-etapa',
   checkPlanActivo,

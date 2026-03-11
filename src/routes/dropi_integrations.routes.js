@@ -12,6 +12,11 @@ router.post('/', auth.protectConfigOwner, ctrl.create);
 router.patch('/:id', ctrl.update);
 router.delete('/:id', ctrl.remove);
 
+// Vincular Dropi a nivel usuario (sin necesitar id_configuracion)
+router.get('/my-integration', ctrl.getMyIntegration);
+router.post('/my-integration', ctrl.createMyIntegration);
+router.delete('/my-integration/:id', ctrl.removeMyIntegration);
+
 //Crear orden
 router.post(
   '/orders/myorders',

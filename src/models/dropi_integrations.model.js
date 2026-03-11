@@ -13,7 +13,12 @@ const DropiIntegrations = db.define(
 
     id_configuracion: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false,
+      allowNull: true,
+    },
+
+    id_usuario: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
     },
 
     store_name: {
@@ -68,7 +73,7 @@ const DropiIntegrations = db.define(
         fields: ['country_code'],
       },
     ],
-  }
+  },
 );
 
 module.exports = DropiIntegrations;
