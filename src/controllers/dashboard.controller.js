@@ -13,6 +13,17 @@ const catchAsync = require('../utils/catchAsync');
 exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
   const { id_usuario, id_sub_usuario, incluir_etiquetas = 1 } = req.body;
 
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      departamentos: [],
+      usuarios: [],
+      conexiones: [],
+      etiquetas_por_configuracion: {},
+      motivos: [],
+    },
+  });
+
   if (!id_usuario) {
     return res
       .status(400)
@@ -163,6 +174,24 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
 exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
   const { id_usuario, id_configuracion = null, from, to } = req.body;
 
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      summary: {},
+      pendingQueue: [],
+      slaToday: {},
+      charts: {},
+      agentLoad: [],
+      frequentTransfers: [],
+      meta: {
+        from,
+        to,
+        id_configuracion: id_configuracion || null,
+        executedAt: new Date().toISOString(),
+      },
+    },
+  });
+
   if (!id_usuario || !from || !to) {
     return res.status(400).json({
       status: 'error',
@@ -177,26 +206,18 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
 
   try {
     // ══════════════════════════════════════════════════════════════════
-    // LIMPIEZA PREVENTIVA
+    // LIMPIEZA PREVENTIVA (tablas permanentes para debugging — DROP activo)
     // ══════════════════════════════════════════════════════════════════
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_configs', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_primer_entrante', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_entrante', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_saliente', {
-      transaction,
-    });
+    await db.query('DROP TABLE IF EXISTS temp_configs', { transaction });
+    await db.query('DROP TABLE IF EXISTS temp_primer_entrante', { transaction });
+    await db.query('DROP TABLE IF EXISTS temp_ultimo_entrante', { transaction });
+    await db.query('DROP TABLE IF EXISTS temp_ultimo_saliente', { transaction });
 
     // ══════════════════════════════════════════════════════════════════
     // TEMP 1: Configuraciones del usuario
     // ══════════════════════════════════════════════════════════════════
     await db.query(
-      `CREATE TEMPORARY TABLE temp_configs (
+      `CREATE TABLE temp_configs (
          id INT PRIMARY KEY
        ) AS
        SELECT id FROM configuraciones
@@ -214,7 +235,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     // TEMP 2: Primer mensaje ENTRANTE por cliente EN EL RANGO
     // ══════════════════════════════════════════════════════════════════
     await db.query(
-      `CREATE TEMPORARY TABLE temp_primer_entrante (
+      `CREATE TABLE temp_primer_entrante (
          id_configuracion INT,
          client_ccc_id INT,
          first_in_at DATETIME,
@@ -234,7 +255,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     // TEMP 3: Ultimo mensaje ENTRANTE por cliente (global)
     // ══════════════════════════════════════════════════════════════════
     await db.query(
-      `CREATE TEMPORARY TABLE temp_ultimo_entrante (
+      `CREATE TABLE temp_ultimo_entrante (
          id_configuracion INT,
          client_ccc_id INT,
          ultima_entrada_at DATETIME,
@@ -252,7 +273,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     // TEMP 4: Ultimo mensaje SALIENTE por cliente (global)
     // ══════════════════════════════════════════════════════════════════
     await db.query(
-      `CREATE TEMPORARY TABLE temp_ultimo_saliente (
+      `CREATE TABLE temp_ultimo_saliente (
          id_configuracion INT,
          client_ccc_id INT,
          ultima_salida_at DATETIME,
@@ -706,20 +727,20 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     });
 
     // ══════════════════════════════════════════════════════════════════
-    // LIMPIEZA + COMMIT
+    // LIMPIEZA + COMMIT (comentado temporalmente para debugging)
     // ══════════════════════════════════════════════════════════════════
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_configs', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_primer_entrante', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_entrante', {
-      transaction,
-    });
-    await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_saliente', {
-      transaction,
-    });
+    // await db.query('DROP TEMPORARY TABLE IF EXISTS temp_configs', {
+    //   transaction,
+    // });
+    // await db.query('DROP TEMPORARY TABLE IF EXISTS temp_primer_entrante', {
+    //   transaction,
+    // });
+    // await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_entrante', {
+    //   transaction,
+    // });
+    // await db.query('DROP TEMPORARY TABLE IF EXISTS temp_ultimo_saliente', {
+    //   transaction,
+    // });
     await transaction.commit();
 
     // ══════════════════════════════════════════════════════════════════
