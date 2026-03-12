@@ -924,7 +924,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.email_cliente    LIKE ? OR
       c.celular_cliente  LIKE ? 
     )`);
-    params.push(like, like, like, like, like);
+    params.push( like, like, like, like);
   }
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
