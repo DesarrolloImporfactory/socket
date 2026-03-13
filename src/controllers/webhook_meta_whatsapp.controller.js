@@ -656,23 +656,54 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         ruta_archivo = JSON.stringify(ruta_archivo);
       }
 
-      const creacion_mensaje = await MensajeCliente.create({
-        id_configuracion,
-        id_cliente: clienteExisteConfiguracion.id,
-        mid_mensaje: business_phone_id,
-        tipo_mensaje,
-        texto_mensaje,
-        ruta_archivo,
-        rol_mensaje: isSMBEcho ? 1 : 0,
-        celular_recibe: id_cliente,
-        uid_whatsapp: phone_whatsapp_from,
-        visto: 0,
-        responsable: isSMBEcho ? 'Whatsapp Business' : null,
-        id_wamid_mensaje: msg0?.id,
+      // ✅ Deduplicación: evitar insertar el mismo wamid dos veces (Meta reenvía webhooks)
+      if (msg0?.id) {
+        const yaExiste = await MensajeCliente.findOne({
+          where: { id_wamid_mensaje: msg0.id },
+          attributes: ['id'],
+        });
+        if (yaExiste) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ⚠️ Mensaje duplicado ignorado: ${msg0.id}\n`,
+          );
+          return;
+        }
+      }
 
-        // ✅ solo si field === 'history'
-        ...metaTimestamps,
-      });
+      // ✅ Retry en caso de ER_LOCK_WAIT_TIMEOUT (error transitorio de MySQL)
+      let creacion_mensaje = null;
+      for (let intento = 1; intento <= 3; intento++) {
+        try {
+          creacion_mensaje = await MensajeCliente.create({
+            id_configuracion,
+            id_cliente: clienteExisteConfiguracion.id,
+            mid_mensaje: business_phone_id,
+            tipo_mensaje,
+            texto_mensaje,
+            ruta_archivo,
+            rol_mensaje: isSMBEcho ? 1 : 0,
+            celular_recibe: id_cliente,
+            uid_whatsapp: phone_whatsapp_from,
+            visto: 0,
+            responsable: isSMBEcho ? 'Whatsapp Business' : null,
+            id_wamid_mensaje: msg0?.id,
+
+            // ✅ solo si field === 'history'
+            ...metaTimestamps,
+          });
+          break; // éxito: salir del loop
+        } catch (lockErr) {
+          const isLockTimeout =
+            lockErr?.parent?.errno === 1205 ||
+            lockErr?.parent?.code === 'ER_LOCK_WAIT_TIMEOUT';
+          if (isLockTimeout && intento < 3) {
+            await new Promise((r) => setTimeout(r, 300 * intento));
+          } else {
+            throw lockErr; // no es lock timeout o agotamos reintentos
+          }
+        }
+      }
 
       /* console.log('creacion_mensaje: ' + JSON.stringify(creacion_mensaje));
       console.log('creacion_mensaje.id: ' + creacion_mensaje.id); */
