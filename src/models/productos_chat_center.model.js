@@ -36,6 +36,10 @@ const ProductosChatCenter = db.define(
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
     },
+    precio_proveedor: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: false,
+    },
     duracion: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

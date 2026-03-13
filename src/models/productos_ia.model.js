@@ -42,6 +42,10 @@ const ProductosIA = db.define(
       type: DataTypes.DECIMAL(12, 2),
       allowNull: true,
     },
+    precio_proveedor: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: true,
+    },
     combos: {
       type: DataTypes.TEXT,
       allowNull: true,
