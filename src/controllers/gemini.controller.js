@@ -412,7 +412,16 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   if (!etapa_id) return next(new AppError('etapa_id es requerido', 400));
 
   const files = Array.isArray(req.files) ? req.files : [];
-  if (!files.length)
+
+  let userImageUrls = [];
+  try {
+    if (req.body?.user_image_urls)
+      userImageUrls = JSON.parse(req.body.user_image_urls);
+    if (!Array.isArray(userImageUrls)) userImageUrls = [];
+  } catch {
+    userImageUrls = [];
+  }
+  if (!files.length && !userImageUrls.length)
     return next(new AppError('Debes subir al menos una imagen', 400));
 
   const etapa = await EtapasLanding.findOne({
@@ -469,6 +478,14 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
       data: f.buffer.toString('base64'),
     },
   }));
+  for (const imgUrl of userImageUrls) {
+    try {
+      const inlineData = await downloadToInlineData(imgUrl);
+      userParts.push({ inline_data: inlineData });
+    } catch (e) {
+      console.error('[Gemini] Error descargando imagen remota:', e.message);
+    }
+  }
 
   const SIMBOLOS = {
     USD: '$',
@@ -1047,7 +1064,15 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     return next(new AppError('prompt_extra es requerido para regenerar', 400));
 
   const files = Array.isArray(req.files) ? req.files : [];
-  if (!files.length)
+  let userImageUrls = [];
+  try {
+    if (req.body?.user_image_urls)
+      userImageUrls = JSON.parse(req.body.user_image_urls);
+    if (!Array.isArray(userImageUrls)) userImageUrls = [];
+  } catch {
+    userImageUrls = [];
+  }
+  if (!files.length && !userImageUrls.length)
     return next(new AppError('Debes subir al menos una imagen', 400));
 
   const etapa = await EtapasLanding.findOne({
@@ -1104,6 +1129,14 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
       data: f.buffer.toString('base64'),
     },
   }));
+  for (const imgUrl of userImageUrls) {
+    try {
+      const inlineData = await downloadToInlineData(imgUrl);
+      userParts.push({ inline_data: inlineData });
+    } catch (e) {
+      console.error('[Gemini] Error descargando imagen remota:', e.message);
+    }
+  }
 
   const SIMBOLOS = {
     USD: '$',

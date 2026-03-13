@@ -193,25 +193,44 @@ exports.obtener_producto = catchAsync(async (req, res, next) => {
 
 exports.crear_producto = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
-  if (!id_usuario)
-    return next(new AppError('No se pudo identificar al usuario', 401));
+  const id_sub_usuario = req.sessionUser?.id_sub_usuario || null;
 
-  const { nombre, descripcion, marca, moneda, precio_unitario, combos } =
-    req.body;
+  const {
+    nombre,
+    descripcion,
+    marca,
+    moneda,
+    idioma,
+    precio_unitario,
+    combos,
+  } = req.body;
 
   if (!nombre || !String(nombre).trim()) {
-    return next(new AppError('El nombre del producto es requerido', 400));
+    return next(new AppError('El nombre es requerido', 400));
+  }
+
+  // Parsear combos si viene como string
+  let combosData = null;
+  if (combos) {
+    try {
+      combosData = typeof combos === 'string' ? JSON.parse(combos) : combos;
+      if (!Array.isArray(combosData)) combosData = null;
+    } catch {
+      combosData = null;
+    }
   }
 
   const producto = await ProductosIA.create({
     id_usuario,
-    id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    id_sub_usuario,
     nombre: String(nombre).trim(),
     descripcion: descripcion ? String(descripcion).trim() : null,
     marca: marca ? String(marca).trim() : null,
-    moneda: moneda || 'USD',
-    precio_unitario: precio_unitario || null,
-    combos: combos || null,
+    moneda: moneda ? String(moneda).trim() : 'USD',
+    idioma: idioma ? String(idioma).trim() : 'es',
+    precio_unitario: precio_unitario ? Number(precio_unitario) : null,
+    combos: combosData,
+    estado: 'activo',
   });
 
   return res.status(201).json({ isSuccess: true, data: producto });
@@ -223,27 +242,47 @@ exports.crear_producto = catchAsync(async (req, res, next) => {
 
 exports.actualizar_producto = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
-  if (!id_usuario)
-    return next(new AppError('No se pudo identificar al usuario', 401));
-
   const { id } = req.params;
 
-  const producto = await ProductosIA.findOne({ where: { id, id_usuario } });
+  const producto = await ProductosIA.findOne({
+    where: { id, id_usuario, estado: 'activo' },
+  });
   if (!producto) return next(new AppError('Producto no encontrado', 404));
 
   const updates = {};
+
   if (req.body.nombre !== undefined)
     updates.nombre = String(req.body.nombre).trim();
   if (req.body.descripcion !== undefined)
-    updates.descripcion = req.body.descripcion;
-  if (req.body.marca !== undefined) updates.marca = req.body.marca;
-  if (req.body.moneda !== undefined) updates.moneda = req.body.moneda;
+    updates.descripcion = req.body.descripcion
+      ? String(req.body.descripcion).trim()
+      : null;
+  if (req.body.marca !== undefined)
+    updates.marca = req.body.marca ? String(req.body.marca).trim() : null;
+  if (req.body.moneda !== undefined)
+    updates.moneda = String(req.body.moneda).trim() || 'USD';
+  if (req.body.idioma !== undefined)
+    updates.idioma = String(req.body.idioma).trim() || 'es';
   if (req.body.precio_unitario !== undefined)
-    updates.precio_unitario = req.body.precio_unitario;
-  if (req.body.combos !== undefined) updates.combos = req.body.combos;
-  if (req.body.imagen_portada !== undefined)
-    updates.imagen_portada = req.body.imagen_portada;
-  if (req.body.estado !== undefined) updates.estado = req.body.estado;
+    updates.precio_unitario = req.body.precio_unitario
+      ? Number(req.body.precio_unitario)
+      : null;
+
+  if (req.body.combos !== undefined) {
+    let combosData = null;
+    if (req.body.combos) {
+      try {
+        combosData =
+          typeof req.body.combos === 'string'
+            ? JSON.parse(req.body.combos)
+            : req.body.combos;
+        if (!Array.isArray(combosData)) combosData = null;
+      } catch {
+        combosData = null;
+      }
+    }
+    updates.combos = combosData;
+  }
 
   await producto.update(updates);
 
@@ -545,6 +584,7 @@ exports.importar_desde_dropi = catchAsync(async (req, res, next) => {
   const imagen_portada = buildDropiImageUrl(mainImg);
 
   const precio_unitario = Number(prod.suggested_price || 0) || null;
+  const precio_proveedor = Number(prod.sale_price || 0) || null;
 
   const getDropiTotalStock = (product) => {
     if (!Array.isArray(product?.warehouse_product)) return 0;
@@ -566,6 +606,7 @@ exports.importar_desde_dropi = catchAsync(async (req, res, next) => {
     marca: null,
     moneda: 'USD',
     precio_unitario,
+    precio_proveedor,
     imagen_portada,
     estado: 'activo',
     external_source: 'DROPI',
@@ -639,6 +680,7 @@ exports.alimentar_negocio = catchAsync(async (req, res, next) => {
     descripcion: producto.descripcion || null,
     tipo: 'producto',
     precio: producto.precio_unitario || 0,
+    precio_proveedor: producto.precio_proveedor || 0,
     duracion: 0,
     imagen_url: producto.imagen_portada || null,
     video_url: null,

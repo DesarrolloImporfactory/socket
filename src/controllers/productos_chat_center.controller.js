@@ -600,6 +600,8 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
     ? precio_override
     : precio_sugerido;
 
+  const precio_prov = Number(prod.sale_price || 0);
+
   // 6) descripción: usar la del detalle
   const descripcion_final = sanitizeText(prod.description);
 
@@ -636,6 +638,7 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
     descripcion: descripcion_final,
     tipo: 'producto',
     precio: precio_final,
+    precio_proveedor: precio_prov,
     duracion: 0,
     id_categoria: id_categoria_asignada,
     imagen_url,
