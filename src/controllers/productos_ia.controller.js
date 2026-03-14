@@ -691,7 +691,9 @@ exports.alimentar_negocio = catchAsync(async (req, res, next) => {
     stock: vieneDropi ? producto.stock || 0 : 0,
 
     // Combos: si el producto tiene combos definidos
-    combos_producto: producto.combos || null,
+    combos_producto: producto.combos?.length
+      ? JSON.stringify(producto.combos)
+      : null,
 
     // Origen: diferenciamos Dropi puro de InstaLanding
     external_source: vieneDropi ? 'DROPI' : 'INSTA_LANDING',
