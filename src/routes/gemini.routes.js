@@ -5,6 +5,7 @@ const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const geminiController = require('../controllers/gemini.controller');
 const productosCtrl = require('../controllers/productos_ia.controller');
+const templatePrivadosCtrl = require('../controllers/templates_ia.privados.controller');
 const multer = require('multer');
 
 const upload = multer({
@@ -122,6 +123,20 @@ router.put(
   geminiController.admin_update_template,
 );
 router.delete('/admin/templates/:id', geminiController.admin_delete_template);
+
+// ─── Templates Privados del usuario ──────────────────────────────────────────
+router.get('/mis-templates', checkPlanActivo, templatePrivadosCtrl.listar);
+router.post(
+  '/mis-templates',
+  checkPlanActivo,
+  uploadSingle.single('imagen'),
+  templatePrivadosCtrl.crear,
+);
+router.delete(
+  '/mis-templates/:id',
+  checkPlanActivo,
+  templatePrivadosCtrl.eliminar,
+);
 
 // ─── Legacy ──────────────────────────────────────────────────────────────────
 router.post(

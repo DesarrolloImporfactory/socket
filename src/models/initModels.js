@@ -35,6 +35,7 @@ const CatalogosChatCenter = require('./catalogos_chat_center.model');
 const CatalogosItemsChatCenter = require('./catalogos_items_chat_center.model');
 const EtapasLanding = require('./etapas_landing.model');
 const TemplatesIA = require('./templates_ia.model');
+const TemplatesIAPrivados = require('./templates_ia_privados.model');
 const GeneracionesIA = require('./generaciones_ia.model');
 const GeneracionesAngulosIA = require('./generaciones_angulos_ia.model');
 const ProductosIA = require('./productos_ia.model');
@@ -493,6 +494,18 @@ const initModel = () => {
     sourceKey: 'id',
     as: 'generaciones',
   });
+
+  TemplatesIAPrivados.belongsTo(EtapasLanding, {
+    foreignKey: 'id_etapa',
+    targetKey: 'id',
+    as: 'etapa',
+  });
+
+  EtapasLanding.hasMany(TemplatesIAPrivados, {
+    foreignKey: 'id_etapa',
+    sourceKey: 'id',
+    as: 'templates_privados',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -537,6 +550,7 @@ const getModels = () => {
     TemplatesIA,
     GeneracionesIA,
     GeneracionesAngulosIA,
+    TemplatesIAPrivados,
   };
 };
 

@@ -98,11 +98,11 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     descripcion_upsell,
     precio_upsell,
     combos_producto,
-
     material,
     landing_url,
     id_dropi,
     es_privado,
+    precio_proveedor,
   } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -146,6 +146,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     material: material || null,
     tipo,
     precio,
+    precio_proveedor: precio_proveedor || null,
     duracion,
     id_categoria,
     imagen_url,
@@ -192,6 +193,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     landing_url,
     id_dropi,
     es_privado,
+    precio_proveedor,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -313,6 +315,10 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     }
 
     producto.es_privado = parsed;
+  }
+
+  if (typeof precio_proveedor !== 'undefined') {
+    producto.precio_proveedor = precio_proveedor || null;
   }
 
   producto.fecha_actualizacion = new Date();
