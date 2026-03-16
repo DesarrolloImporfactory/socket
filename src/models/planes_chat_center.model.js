@@ -74,6 +74,112 @@ const Planes_chat_center = db.define(
       allowNull: true,
       defaultValue: null,
     },
+
+    // ═══════════════════════════════════════════════════════
+    // NUEVAS COLUMNAS — Ecosistema 4 Planes
+    // ═══════════════════════════════════════════════════════
+    tools_access: {
+      type: DataTypes.STRING(30),
+      allowNull: false,
+      defaultValue: 'both',
+      comment: 'insta_landing | imporchat | both',
+    },
+    max_banners_mes: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    max_secciones_landing: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    max_estilos_visuales: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    max_productos_dropi: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: '-1 = ilimitado',
+    },
+    max_agentes_whatsapp: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    landing_whatsapp_link: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    ab_testing: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    bot_entrenado: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    analytics_nivel: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'none',
+      comment: 'none | basico | completo | avanzado',
+    },
+    max_subcuentas: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    soporte_nivel: {
+      type: DataTypes.STRING(30),
+      allowNull: false,
+      defaultValue: 'chat_24h',
+      comment: 'chat_24h | whatsapp_4h | vip_onboarding',
+    },
+    trial_type: {
+      type: DataTypes.STRING(10),
+      allowNull: false,
+      defaultValue: 'none',
+      comment: 'none | days | usage',
+    },
+    trial_value: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'dias o cantidad de usos gratis',
+    },
+    multi_numero_whatsapp: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    bulk_gen_productos: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    estilos_custom: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    secciones_custom: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    sort_order: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'orden visual en frontend',
+    },
   },
   {
     sequelize: db,

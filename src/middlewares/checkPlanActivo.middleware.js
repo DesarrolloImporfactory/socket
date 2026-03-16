@@ -41,7 +41,51 @@ const checkPlanActivo = async (req, res, next) => {
 
     const ahora = new Date();
 
-    // Trial vigente y estadp es activo => permitir
+    // ═══════════════════════════════════════════════════════
+    // NUEVO: Trial por uso (Insta Landing)
+    // Estado: trial_usage — no tiene suscripción Stripe,
+    // solo puede usar IL hasta agotar sus imágenes gratis.
+    // ═══════════════════════════════════════════════════════
+    if (usuario.estado === 'trial_usage') {
+      if (!usuario.id_plan) {
+        return res.status(402).json({
+          status: 'fail',
+          code: 'PLAN_REQUIRED',
+          message: 'No tiene un plan asignado.',
+          redirectTo: '/planes',
+        });
+      }
+
+      // Verificar si aún tiene imágenes disponibles
+      const IL_TRIAL_LIMIT = 10;
+      const usadas = Number(usuario.il_imagenes_usadas || 0);
+
+      if (usadas >= IL_TRIAL_LIMIT) {
+        return res.status(402).json({
+          status: 'fail',
+          code: 'TRIAL_EXHAUSTED',
+          message:
+            'Su prueba gratuita ha terminado. Suscríbase para continuar.',
+          redirectTo: '/planes',
+          trial_info: {
+            used: usadas,
+            limit: IL_TRIAL_LIMIT,
+            remaining: 0,
+          },
+        });
+      }
+
+      // Trial vigente, dejar pasar
+      req.planInfo = {
+        trial_usage: true,
+        il_imagenes_usadas: usadas,
+        il_imagenes_limite: IL_TRIAL_LIMIT,
+        il_imagenes_restantes: IL_TRIAL_LIMIT - usadas,
+      };
+      return next();
+    }
+
+    // Trial vigente (Stripe trial) y estado es activo => permitir
     if (
       usuario.trial_end &&
       ahora <= new Date(usuario.trial_end) &&
@@ -87,7 +131,7 @@ const checkPlanActivo = async (req, res, next) => {
       });
     }
 
-    // (Opcional pero recomendado) Validar que el plan exista y esté activo en el catálogo
+    // Validar que el plan exista y esté activo en el catálogo
     if (Planes_chat_center) {
       const plan = await Planes_chat_center.findByPk(usuario.id_plan);
       if (!plan || Number(plan.activo) !== 1) {

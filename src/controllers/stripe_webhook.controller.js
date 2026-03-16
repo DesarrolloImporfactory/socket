@@ -364,9 +364,9 @@ exports.stripeWebhook = async (req, res) => {
 
         // =========
         // Promo $5: marcar promo_plan2_used SOLO si hubo descuento real (planes 2/3/4)
-        // IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18)
+        // IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18/20)
         // =========
-        const PROMO_PLANS = new Set([2, 3, 4]);
+        const PROMO_PLANS = new Set([2, 3, 4, 6, 16, 17, 18, 20]);
 
         const totalDiscount = (invoice.total_discount_amounts || []).reduce(
           (acc, d) => acc + (d.amount || 0),

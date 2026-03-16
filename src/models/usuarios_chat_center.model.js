@@ -42,6 +42,7 @@ const Usuarios_chat_center = db.define(
         'suspendido',
         'vencido',
         'cancelado',
+        'trial_usage',
       ),
       allowNull: true,
       defaultValue: 'inactivo',
@@ -109,6 +110,16 @@ const Usuarios_chat_center = db.define(
     canceled_at: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    il_trial_used: {
+      type: DataTypes.TINYINT,
+      defaultValue: 0,
+      comment: '1 = ya usó trial de Insta Landing',
+    },
+    il_imagenes_usadas: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      comment: 'contador imágenes generadas en trial IL',
     },
   },
   {

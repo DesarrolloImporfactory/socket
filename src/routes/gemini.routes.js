@@ -26,7 +26,7 @@ router.get('/templates', geminiController.get_templates);
 
 // ─── Consultas (requieren plan activo) ───────────────────────────────────────
 router.get('/usage', checkPlanActivo, geminiController.get_usage);
-router.get('/historial', checkPlanActivo, geminiController.get_historial);
+router.get('/historial', geminiController.get_historial);
 
 // ─── Negocios del usuario (configuraciones) ─────────────────────────────────
 router.get('/mis-negocios', checkPlanActivo, productosCtrl.listar_mis_negocios);

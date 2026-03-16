@@ -6,29 +6,40 @@ const router = express.Router();
 
 router.use(protect);
 
-// Checkout Subscription (trial lo decide backend)
+// Checkout Subscription
 router.post('/crearSesionPago', stripeController.crearSesionPago);
 
-// Cambiar Plan- upgrade, downgrade
+// Cambiar Plan (upgrade, downgrade, mismo precio)
 router.post('/cambiarPlan', stripeController.cambiarPlan);
 
-//  Suscripción activa (para MiPlan.jsx)
+// Suscripción activa (para MiPlan.jsx y PlanesView.jsx)
 router.post(
   '/obtenerSuscripcionActiva',
   stripeController.obtenerSuscripcionActiva,
 );
 
-//  Facturas (para MiPlan.jsx)
+// Facturas
 router.post('/facturasUsuario', stripeController.facturasUsuario);
 
-//  Customer Portal (cancelar, métodos, facturas, etc.)
+// Customer Portal
 router.post('/portalCliente', stripeController.portalCliente);
 
-//  Cancelar suscripción (si quiere mantener botón directo)
+// Cancelar suscripción
 router.post('/cancelarSuscripcion', stripeController.cancelarSuscripcion);
 
-// (Opcional) Portales específicos (si ya los usa)
+// Portales específicos
 router.post('/portalGestionMetodos', stripeController.portalGestionMetodos);
 router.post('/portalAddPaymentMethod', stripeController.portalAddPaymentMethod);
+
+// ═══════════════════════════════════════════════════════
+// NUEVOS: Trial por uso (Insta Landing)
+// ═══════════════════════════════════════════════════════
+
+// Activar prueba gratuita IL (10 imágenes, sin tarjeta)
+router.post('/activarTrialUsage', stripeController.activarTrialUsage);
+
+// Verificar/incrementar uso del trial IL
+// Llamar desde el endpoint de generación de imágenes
+router.post('/verificarTrialUsage', stripeController.verificarTrialUsage);
 
 module.exports = router;

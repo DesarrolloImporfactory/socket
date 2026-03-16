@@ -15,6 +15,9 @@ const TemplatesIA = require('../models/templates_ia.model');
 
 const { decryptToken } = require('../utils/cryptoToken');
 
+// ─── constantes ─────────────────────────────────────────────────────────────
+const IL_TRIAL_IMAGES = 10;
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 async function downloadToInlineData(url) {
@@ -141,15 +144,32 @@ async function getMonthlyAngulosCount(id_usuario) {
   });
 }
 
+/**
+ * validateUserQuota
+ * - Plan pagado: usa max_imagenes_ia del plan y conteo mensual de generaciones_ia
+ * - Trial usage (IL): usa trial_value (10) como límite y il_imagenes_usadas como contador
+ */
 async function validateUserQuota(id_usuario, next) {
   const usuario = await Usuarios.findOne({
     where: { id_usuario },
-    attributes: ['id_usuario', 'id_plan', 'estado'],
+    attributes: [
+      'id_usuario',
+      'id_plan',
+      'estado',
+      'il_imagenes_usadas',
+      'il_trial_used',
+    ],
     include: [
       {
         model: Planes,
         as: 'plan',
-        attributes: ['id_plan', 'nombre_plan', 'max_imagenes_ia'],
+        attributes: [
+          'id_plan',
+          'nombre_plan',
+          'max_imagenes_ia',
+          'trial_type',
+          'trial_value',
+        ],
       },
     ],
   });
@@ -163,6 +183,32 @@ async function validateUserQuota(id_usuario, next) {
     return null;
   }
 
+  // ── Trial por uso (Insta Landing) ──
+  const estado = (usuario.estado || '').toLowerCase();
+
+  if (estado === 'trial_usage') {
+    const limite = Number(usuario.plan?.trial_value) || IL_TRIAL_IMAGES;
+    const usadas = Number(usuario.il_imagenes_usadas || 0);
+
+    if (usadas >= limite) {
+      next(
+        new AppError(
+          `Tu prueba gratuita de ${limite} imágenes ha terminado. Suscríbete para seguir generando.`,
+          402,
+        ),
+      );
+      return null;
+    }
+
+    return {
+      usuario,
+      maxImagenes: limite,
+      usedThisMonth: usadas,
+      isTrialUsage: true,
+    };
+  }
+
+  // ── Plan pagado normal ──
   const maxImagenes = usuario.plan.max_imagenes_ia || 0;
   if (maxImagenes <= 0) {
     next(
@@ -172,7 +218,7 @@ async function validateUserQuota(id_usuario, next) {
   }
 
   const usedThisMonth = await getMonthlyCount(id_usuario);
-  return { usuario, maxImagenes, usedThisMonth };
+  return { usuario, maxImagenes, usedThisMonth, isTrialUsage: false };
 }
 
 async function getGeminiApiKey(next) {
@@ -203,7 +249,6 @@ async function getGeminiApiKey(next) {
 async function autoSetPortadaIfNeeded(id_producto, image_url) {
   if (!id_producto || !image_url) return;
   try {
-    // Lazy require para evitar dependencia circular si existiera
     const ProductosIA = require('../models/productos_ia.model');
     const prod = await ProductosIA.findByPk(id_producto, {
       attributes: ['id', 'imagen_portada'],
@@ -221,6 +266,34 @@ const MOCK_IMAGE_BASE64 =
 
 function isMockMode() {
   return process.env.GEMINI_MOCK === 'true';
+}
+
+/**
+ * Helper: construir error de límite según tipo de quota
+ */
+function buildQuotaError(quota) {
+  if (quota.isTrialUsage) {
+    return new AppError(
+      `Tu prueba gratuita de ${quota.maxImagenes} imágenes ha terminado. Suscríbete para continuar.`,
+      402,
+    );
+  }
+  return new AppError(
+    `Límite de ${quota.maxImagenes} imágenes alcanzado.`,
+    429,
+  );
+}
+
+/**
+ * Helper: incrementar contador de trial usage si aplica
+ */
+async function incrementTrialIfNeeded(quota, id_usuario) {
+  if (quota.isTrialUsage) {
+    await Usuarios.increment('il_imagenes_usadas', {
+      by: 1,
+      where: { id_usuario },
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -435,14 +508,15 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
 
   const { maxImagenes, usedThisMonth } = quota;
   if (usedThisMonth >= maxImagenes) {
-    return next(
-      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
-    );
+    return next(buildQuotaError(quota));
   }
 
   // ── MOCK MODE ──────────────────────────────────────────────
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 1500));
+
+    await incrementTrialIfNeeded(quota, id_usuario);
+
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
@@ -465,9 +539,11 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
         used: usedThisMonth + 1,
         limit: maxImagenes,
         remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+        is_trial: quota.isTrialUsage,
       },
     });
   }
+
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
 
@@ -610,8 +686,9 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     image_url,
   });
 
-  // Auto-set portada si el producto no tiene una
   await autoSetPortadaIfNeeded(id_producto, image_url);
+
+  await incrementTrialIfNeeded(quota, id_usuario);
 
   const newUsed = usedThisMonth + 1;
 
@@ -625,6 +702,7 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
       used: newUsed,
       limit: maxImagenes,
       remaining: Math.max(maxImagenes - newUsed, 0),
+      is_trial: quota.isTrialUsage,
     },
   });
 });
@@ -655,9 +733,7 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 
   const { maxImagenes, usedThisMonth } = quota;
   if (usedThisMonth >= maxImagenes) {
-    return next(
-      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
-    );
+    return next(buildQuotaError(quota));
   }
 
   const apiKey = await getGeminiApiKey(next);
@@ -741,6 +817,8 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
     image_url,
   });
 
+  await incrementTrialIfNeeded(quota, id_usuario);
+
   return res.json({
     isSuccess: true,
     image_base64,
@@ -751,6 +829,7 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
       used: usedThisMonth + 1,
       limit: maxImagenes,
       remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+      is_trial: quota.isTrialUsage,
     },
   });
 });
@@ -766,7 +845,7 @@ exports.get_usage = catchAsync(async (req, res, next) => {
 
   const usuario = await Usuarios.findOne({
     where: { id_usuario },
-    attributes: ['id_usuario', 'id_plan'],
+    attributes: ['id_usuario', 'id_plan', 'estado', 'il_imagenes_usadas'],
     include: [
       {
         model: Planes,
@@ -776,16 +855,27 @@ exports.get_usage = catchAsync(async (req, res, next) => {
           'nombre_plan',
           'max_imagenes_ia',
           'max_angulos_ia',
+          'trial_type',
+          'trial_value',
         ],
       },
     ],
   });
   if (!usuario) return next(new AppError('Usuario no encontrado', 404));
 
-  const maxImagenes = usuario.plan?.max_imagenes_ia || 0;
-  const maxAngulos = usuario.plan?.max_angulos_ia ?? null;
+  const estado = (usuario.estado || '').toLowerCase();
+  const isTrialUsage = estado === 'trial_usage';
 
-  const usedImagenes = await getMonthlyCount(id_usuario);
+  // Si está en trial_usage, el límite es trial_value y el usado es il_imagenes_usadas
+  const maxImagenes = isTrialUsage
+    ? Number(usuario.plan?.trial_value) || IL_TRIAL_IMAGES
+    : usuario.plan?.max_imagenes_ia || 0;
+
+  const usedImagenes = isTrialUsage
+    ? Number(usuario.il_imagenes_usadas || 0)
+    : await getMonthlyCount(id_usuario);
+
+  const maxAngulos = usuario.plan?.max_angulos_ia ?? null;
   const usedAngulos =
     maxAngulos !== null ? await getMonthlyAngulosCount(id_usuario) : 0;
 
@@ -796,6 +886,7 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       limit: maxImagenes,
       remaining: Math.max(maxImagenes - usedImagenes, 0),
       plan: usuario.plan?.nombre_plan || 'Sin plan',
+      is_trial: isTrialUsage,
       angles_used: usedAngulos,
       angles_limit: maxAngulos,
       angles_remaining:
@@ -1086,13 +1177,14 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
 
   const { maxImagenes, usedThisMonth } = quota;
   if (usedThisMonth >= maxImagenes) {
-    return next(
-      new AppError(`Límite de ${maxImagenes} imágenes alcanzado.`, 429),
-    );
+    return next(buildQuotaError(quota));
   }
 
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 1500));
+
+    await incrementTrialIfNeeded(quota, id_usuario);
+
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
@@ -1115,6 +1207,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
         used: usedThisMonth + 1,
         limit: maxImagenes,
         remaining: Math.max(maxImagenes - usedThisMonth - 1, 0),
+        is_trial: quota.isTrialUsage,
       },
     });
   }
@@ -1259,8 +1352,9 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     image_url,
   });
 
-  //  Auto-set portada si el producto no tiene una
   await autoSetPortadaIfNeeded(id_producto, image_url);
+
+  await incrementTrialIfNeeded(quota, id_usuario);
 
   const newUsed = usedThisMonth + 1;
 
@@ -1274,6 +1368,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
       used: newUsed,
       limit: maxImagenes,
       remaining: Math.max(maxImagenes - newUsed, 0),
+      is_trial: quota.isTrialUsage,
     },
   });
 });

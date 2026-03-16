@@ -3,17 +3,17 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
-//Selección automática de variables por entorno (production vs test)
+// ─────────────────────────────────────────────────────────────
+// Selección automática de variables por entorno
+// ─────────────────────────────────────────────────────────────
 const isProd =
   String(process.env.NODE_ENV || '').toLowerCase() === 'production';
 
-// Helper: lee la variable PROD si existe, si no usa TEST; en no-prod prioriza TEST.
 const envPick = (prodKey, testKey, fallback = '') => {
   const prodVal = process.env[prodKey];
   const testVal = process.env[testKey];
-
-  if (isProd) return prodVal ?? fallback; // prod => PROD
-  return testVal ?? prodVal ?? fallback; // dev/test => TEST (si no, PROD)
+  if (isProd) return prodVal ?? fallback;
+  return testVal ?? prodVal ?? fallback;
 };
 
 /**
@@ -23,36 +23,83 @@ const envPick = (prodKey, testKey, fallback = '') => {
  */
 const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
 
-//Cupones por entorno
-const COUPON_PLAN2 = envPick(
+// Cupones por plan y entorno
+const COUPON_PLAN_IL = envPick(
+  'STRIPE_COUPON_IL_FIRST_MONTH',
+  'STRIPE_COUPON_IL_FIRST_MONTH_TEST',
+);
+const COUPON_PLAN_IC = envPick(
   'STRIPE_COUPON_PLAN2_FIRST_MONTH',
   'STRIPE_COUPON_PLAN2_FIRST_MONTH_TEST',
 );
-const COUPON_PLAN3 = envPick(
+const COUPON_PLAN_PRO = envPick(
   'STRIPE_COUPON_PLAN3_FIRST_MONTH',
   'STRIPE_COUPON_PLAN3_FIRST_MONTH_TEST',
 );
-const COUPON_PLAN4 = envPick(
+const COUPON_PLAN_ADV = envPick(
   'STRIPE_COUPON_PLAN4_FIRST_MONTH',
   'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
 );
 
-// URLs por entorno
+// URLs
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
   'FRONT_SUCCESS_URL_TEST',
 );
 const FRONT_CANCEL_URL = envPick('FRONT_CANCEL_URL', 'FRONT_CANCEL_URL_TEST');
 
-const STRIPE_PLAN_CONEXION_ID = Number(
-  envPick('STRIPE_PLAN_CONEXION_ID', 'STRIPE_PLAN_CONEXION_ID_TEST'),
+// IDs de planes por entorno
+const PLAN_IL_ID = Number(
+  envPick('STRIPE_PLAN_IL_ID', 'STRIPE_PLAN_IL_ID_TEST', '6'),
+);
+const PLAN_IC_ID = Number(
+  envPick('STRIPE_PLAN_CONEXION_ID', 'STRIPE_PLAN_CONEXION_ID_TEST', '2'),
 );
 
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
-/**
- * Helpers
- */
+// ─────────────────────────────────────────────────────────────
+// Configuración de planes (ecosistema)
+// ─────────────────────────────────────────────────────────────
+
+// Trial por días: solo ImporChat (7 días)
+const TRIAL_DAYS = 7;
+
+// Trial por uso: solo Insta Landing (10 imágenes gratis, sin tarjeta)
+const IL_TRIAL_IMAGES = 10;
+
+// Promo $5 primer mes: todos los planes pagos (IL, IC, Pro, Avanzado)
+const PROMO_FIRST_MONTH_PRICE = 5;
+
+// Mapeo plan_id → cupón Stripe
+const getCouponByPlan = (idPlan) => {
+  const num = Number(idPlan);
+  const map = {
+    [PLAN_IL_ID]: COUPON_PLAN_IL,
+    [PLAN_IC_ID]: COUPON_PLAN_IC,
+  };
+
+  // Para planes Pro y Avanzado, usar IDs fijos (prod: 3/4, test: 17/18)
+  if (isProd) {
+    map[3] = COUPON_PLAN_PRO;
+    map[4] = COUPON_PLAN_ADV;
+  } else {
+    map[17] = COUPON_PLAN_PRO;
+    map[18] = COUPON_PLAN_ADV;
+  }
+
+  return map[num] || null;
+};
+
+// Set de planes que aplican promo $5 primer mes
+const getPromoPlans = () => {
+  if (isProd) return new Set([PLAN_IL_ID, PLAN_IC_ID, 3, 4]);
+  return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18]);
+};
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
 const getUserById = async (id_usuario) => {
   const [[u]] = await db.query(
     `SELECT
@@ -60,6 +107,8 @@ const getUserById = async (id_usuario) => {
         email_propietario,
         free_trial_used,
         promo_plan2_used,
+        il_trial_used,
+        il_imagenes_usadas,
         id_costumer,
         stripe_subscription_id,
         id_plan,
@@ -77,13 +126,19 @@ const getUserById = async (id_usuario) => {
      LIMIT 1`,
     { replacements: [id_usuario] },
   );
-
   return u || null;
 };
 
 const getPlanById = async (id_plan) => {
   const [[p]] = await db.query(
-    `SELECT id_plan, nombre_plan, descripcion_plan, id_price, duracion_plan, precio_plan
+    `SELECT id_plan, nombre_plan, descripcion_plan, id_price, duracion_plan, precio_plan,
+            tools_access, trial_type, trial_value,
+            max_banners_mes, max_angulos_ia, max_imagenes_ia,
+            max_secciones_landing, max_estilos_visuales, max_productos_dropi,
+            max_agentes_whatsapp, landing_whatsapp_link, ab_testing, bot_entrenado,
+            analytics_nivel, max_subcuentas, soporte_nivel,
+            multi_numero_whatsapp, bulk_gen_productos, estilos_custom, secciones_custom,
+            sort_order
      FROM planes_chat_center
      WHERE id_plan = ?
      LIMIT 1`,
@@ -92,11 +147,140 @@ const getPlanById = async (id_plan) => {
   return p || null;
 };
 
-/**
- *  Checkout Session - subscription
- * - Trial: 15 días SOLO si el usuario no lo ha usado (free_trial_used=0) en el id_plan 2
- * - Cupon de descuento: $5 por el primer mes en cualquier plan, solo se puede utilizar 1 vez.
- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─────────────────────────────────────────────────────────────
+// NUEVO: Activar Trial por Uso (Insta Landing)
+// ─────────────────────────────────────────────────────────────
+// El usuario NO paga. Se le asigna el plan IL con estado 'trial_usage'.
+// Puede generar hasta IL_TRIAL_IMAGES imágenes gratis.
+// Cuando se le acaban → frontend lo lleva a checkout.
+// ─────────────────────────────────────────────────────────────
+exports.activarTrialUsage = catchAsync(async (req, res, next) => {
+  const { id_usuario } = req.body;
+  if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  // Si ya tiene plan activo, no puede activar trial
+  const estadoActual = (user.estado || '').toLowerCase();
+  const tieneActivo =
+    estadoActual.includes('activo') || estadoActual.includes('trial');
+  if (user.id_plan && tieneActivo) {
+    return res.status(400).json({
+      success: false,
+      message: 'Ya tiene un plan activo. No puede activar la prueba gratuita.',
+    });
+  }
+
+  // Si ya usó el trial de IL, no puede de nuevo
+  if (Number(user.il_trial_used) === 1) {
+    return res.status(400).json({
+      success: false,
+      message: 'Ya utilizó su prueba gratuita de Insta Landing.',
+      il_trial_used: true,
+    });
+  }
+
+  // Activar trial: asignar plan IL con estado trial_usage
+  await db.query(
+    `UPDATE usuarios_chat_center
+     SET id_plan = ?,
+         estado = 'trial_usage',
+         il_trial_used = 1,
+         il_imagenes_usadas = 0
+     WHERE id_usuario = ?`,
+    { replacements: [PLAN_IL_ID, id_usuario] },
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: `Prueba gratuita activada. Puede generar hasta ${IL_TRIAL_IMAGES} imágenes.`,
+    plan_id: PLAN_IL_ID,
+    imagenes_disponibles: IL_TRIAL_IMAGES,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// NUEVO: Verificar/Incrementar uso de trial IL
+// ─────────────────────────────────────────────────────────────
+// Llamar desde el endpoint de generación de imágenes ANTES de generar.
+// Retorna { allowed: true/false, remaining: N }
+// ─────────────────────────────────────────────────────────────
+exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
+  const { id_usuario, incrementar = false } = req.body;
+  if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  const estado = (user.estado || '').toLowerCase();
+
+  // Si no está en trial_usage, no aplica este endpoint
+  if (estado !== 'trial_usage') {
+    return res.status(200).json({
+      success: true,
+      allowed: true,
+      is_trial: false,
+      message: 'Usuario no está en trial por uso.',
+    });
+  }
+
+  const usadas = Number(user.il_imagenes_usadas || 0);
+  const limite = IL_TRIAL_IMAGES;
+  const remaining = Math.max(0, limite - usadas);
+
+  if (remaining <= 0) {
+    return res.status(200).json({
+      success: true,
+      allowed: false,
+      is_trial: true,
+      remaining: 0,
+      message: 'Prueba gratuita agotada. Debe suscribirse para continuar.',
+      redirect_to_checkout: true,
+    });
+  }
+
+  // Si pide incrementar (cuando efectivamente se genera una imagen)
+  if (incrementar) {
+    await db.query(
+      `UPDATE usuarios_chat_center
+       SET il_imagenes_usadas = il_imagenes_usadas + 1
+       WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+
+    const newRemaining = remaining - 1;
+    return res.status(200).json({
+      success: true,
+      allowed: true,
+      is_trial: true,
+      remaining: newRemaining,
+      message:
+        newRemaining > 0
+          ? `Imagen generada. Le quedan ${newRemaining} de ${limite}.`
+          : 'Última imagen gratuita generada. Debe suscribirse para continuar.',
+      redirect_to_checkout: newRemaining <= 0,
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    allowed: true,
+    is_trial: true,
+    remaining,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Checkout Session (subscription)
+// ─────────────────────────────────────────────────────────────
+// - IL ($29): NO trial Stripe (trial es por uso en app). Promo $5.
+// - IC ($29): Trial 7 días + Promo $5 primer cobro.
+// - Pro ($59): Promo $5 primer mes.
+// - Avanzado ($99): Promo $5 primer mes.
+// ─────────────────────────────────────────────────────────────
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan, id_plataforma = null } = req.body;
 
@@ -112,38 +296,27 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
-  const CONEXION_PLAN_ID = STRIPE_PLAN_CONEXION_ID;
   // =========================
-  // 1) TRIAL (solo Plan 2)
+  // 1) TRIAL por días: solo ImporChat, solo si no ha usado trial
   // =========================
+  const isICPlan = Number(id_plan) === PLAN_IC_ID;
   const eligibleTrial = Number(user.free_trial_used || 0) === 0;
-  const shouldApplyTrial =
-    eligibleTrial && Number(id_plan) === CONEXION_PLAN_ID;
-  const trialDays = shouldApplyTrial ? 15 : undefined;
+  const shouldApplyTrial = eligibleTrial && isICPlan;
+  const trialDays = shouldApplyTrial ? TRIAL_DAYS : undefined;
 
   // =========================
-  // 2) PROMO $5 PRIMER MES (planes 2,3,4) UNA SOLA VEZ TOTAL
-  //    - Se controla con promo_plan2_used como "promo_5_used"
-  //// IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18)
+  // 2) PROMO $5 PRIMER MES (todos los planes) — 1 sola vez global
   // =========================
-  const PROMO_PLANS = new Set([2, 3, 4]);
-
-  const couponByPlan = {
-    2: COUPON_PLAN2,
-    3: COUPON_PLAN3,
-    4: COUPON_PLAN4,
-  };
-
+  const PROMO_PLANS = getPromoPlans();
   const isPromoPlan = PROMO_PLANS.has(Number(id_plan));
-  const couponId = couponByPlan[Number(id_plan)] || null;
-
-  const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0; // <-- bandera global
+  const couponId = getCouponByPlan(id_plan);
+  const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0;
   const canApplyPromo = isPromoPlan && promoNotUsedYet && Boolean(couponId);
 
   // =========================
-  // URLs + customer params
+  // URLs + customer
   // =========================
-  const successUrl = `${FRONT_SUCCESS_URL}`;
+  const successUrl = FRONT_SUCCESS_URL;
   const cancelUrl = FRONT_CANCEL_URL;
 
   const customerParam = user.id_costumer
@@ -154,7 +327,6 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     ? { customer_update: { address: 'auto', name: 'auto' } }
     : {};
 
-  // metadata común
   const meta = {
     id_usuario: String(id_usuario),
     id_plan: String(id_plan),
@@ -174,13 +346,12 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
 
     metadata: meta,
 
-    // Promo $5 (cupón "once") — se aplica si está habilitado para el usuario
+    // Promo $5 primer mes
     ...(canApplyPromo ? { discounts: [{ coupon: couponId }] } : {}),
 
     subscription_data: {
-      // Trial solo si aplica (Plan 2 y elegible)
+      // Trial solo si aplica (IC y elegible)
       ...(trialDays ? { trial_period_days: trialDays } : {}),
-
       metadata: meta,
     },
 
@@ -197,24 +368,19 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   });
 });
 
-// Helper: escoger la suscripción "vigente" de Stripe para este customer
+// ─────────────────────────────────────────────────────────────
+// Obtener suscripción activa (para MiPlan / PlanesView)
+// ─────────────────────────────────────────────────────────────
 const pickCurrentStripeSubscription = async (customerId) => {
   if (!customerId) return null;
-
-  // Traemos varias para poder elegir correctamente
   const list = await stripe.subscriptions.list({
     customer: customerId,
     status: 'all',
     limit: 20,
   });
-
   const subs = list?.data || [];
   if (!subs.length) return null;
 
-  // Priorización:
-  // 1) active/trialing
-  // 2) si no hay, past_due (por si quiere mostrar suspendido)
-  // 3) si no hay, la más reciente
   const preferredStatuses = ['active', 'trialing', 'past_due'];
   for (const st of preferredStatuses) {
     const found = subs
@@ -222,17 +388,9 @@ const pickCurrentStripeSubscription = async (customerId) => {
       .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
     if (found) return found;
   }
-
   return subs.sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
 };
 
-/**
-/**
- * Obtener suscripción activa (para MiPlan)
- * Retorna plan mezclando BD + estado Stripe.
- * Robustez: si en BD quedó una suscripción cancelada/incorrecta y el customer tiene otra activa,
- * se elige automáticamente la vigente (active/trialing/past_due) y se sincroniza a BD.
- */
 exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
@@ -240,40 +398,73 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Si el usuario no tiene plan, devolvemos null + flags
+  // Flags comunes
+  const userFlags = {
+    trial_eligible: Number(user.free_trial_used || 0) === 0,
+    promo_plan2_used: Number(user.promo_plan2_used || 0),
+    promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+    il_trial_used: Number(user.il_trial_used || 0) === 1,
+    il_imagenes_usadas: Number(user.il_imagenes_usadas || 0),
+    il_imagenes_limite: IL_TRIAL_IMAGES,
+  };
+
+  // Sin plan asignado
   if (!user.id_plan) {
     return res.status(200).json({
       success: true,
       plan: null,
-      user_flags: {
-        trial_eligible: Number(user.free_trial_used || 0) === 0,
-        promo_plan2_used: Number(user.promo_plan2_used || 0),
-        promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
-      },
+      user_flags: userFlags,
     });
   }
 
   const planDb = await getPlanById(user.id_plan);
 
-  // Estado base desde BD
   let estadoFinal = (user.estado || 'inactivo').toLowerCase();
   let fechaRenovacion = user.fecha_renovacion || null;
-
-  // Flags base desde BD (vienen del webhook o BD)
   let stripeStatus = user.stripe_subscription_status || null;
   let cancelAtPeriodEnd = user.cancel_at_period_end ? 1 : 0;
   let cancelAt = user.cancel_at || null;
   let canceledAt = user.canceled_at || null;
 
-  /**
-   * Stripe Resolution:
-   * - Si existe stripe_subscription_id, intentamos retrieve.
-   * - Si está cancelada/no existe y tenemos customer, buscamos la "vigente" (helper del usuario).
-   * - Si encontramos una distinta, sincronizamos BD para evitar futuros errores.
-   */
+  // Si estado es trial_usage (IL), no hay suscripción Stripe
+  if (estadoFinal === 'trial_usage') {
+    return res.status(200).json({
+      success: true,
+      plan: {
+        id_plan: user.id_plan,
+        nombre_plan: planDb?.nombre_plan || 'Insta Landing',
+        descripcion_plan: planDb?.descripcion_plan || '',
+        estado: 'trial_usage',
+        fecha_renovacion: null,
+        stripe_subscription_status: null,
+        cancel_at_period_end: 0,
+        cancel_at: null,
+        canceled_at: null,
+        tipo_plan: user.tipo_plan,
+        permanente: user.permanente,
+        free_trial_used: Number(user.free_trial_used || 0),
+        trial_eligible: Number(user.free_trial_used || 0) === 0,
+        promo_plan2_used: Number(user.promo_plan2_used || 0),
+        promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+        // Info trial usage
+        trial_type: 'usage',
+        il_imagenes_usadas: Number(user.il_imagenes_usadas || 0),
+        il_imagenes_limite: IL_TRIAL_IMAGES,
+        il_imagenes_restantes: Math.max(
+          0,
+          IL_TRIAL_IMAGES - Number(user.il_imagenes_usadas || 0),
+        ),
+        // Datos del plan
+        tools_access: planDb?.tools_access || 'insta_landing',
+        ...(planDb || {}),
+      },
+      user_flags: userFlags,
+    });
+  }
+
+  // ─── Stripe Resolution (mismo flujo que antes) ───
   let sub = null;
 
-  // 1) Retrieve por el id guardado en BD (si existe)
   if (user.stripe_subscription_id) {
     try {
       sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
@@ -283,21 +474,15 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     }
   }
 
-  // 2) Si la suscripción recuperada es mala/incorrecta, resolvemos por customer (si existe)
   const statusBad =
     !sub ||
     ['canceled', 'unpaid'].includes(String(sub.status || '').toLowerCase());
 
   if (statusBad && user.id_costumer) {
     try {
-      // Helper (ya lo creó usted): debe devolver la suscripción vigente del customer
-      // Ej: active/trialing; si no existe, puede devolver past_due o la más reciente.
       const picked = await pickCurrentStripeSubscription(user.id_costumer);
-
       if (picked) {
         sub = picked;
-
-        // Sincronizar BD si difiere (para que la próxima consulta ya sea correcta)
         if (
           user.stripe_subscription_id !== sub.id ||
           user.stripe_subscription_status !== sub.status
@@ -324,10 +509,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
               },
             );
           } catch (e) {
-            console.warn(
-              'DB sync stripe_subscription_id/status fail:',
-              e?.message,
-            );
+            console.warn('DB sync fail:', e?.message);
           }
         }
       }
@@ -336,11 +518,9 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     }
   }
 
-  // 3) Si tenemos sub válida, ajustamos estado/fechas/flags desde Stripe
   if (sub?.status) {
     stripeStatus = sub.status;
 
-    // status: active, trialing, past_due, canceled, unpaid, incomplete, incomplete_expired, paused...
     if (sub.status === 'trialing' || sub.status === 'active')
       estadoFinal = 'activo';
     else if (sub.status === 'canceled') estadoFinal = 'cancelado';
@@ -348,18 +528,14 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       estadoFinal = 'suspendido';
     else estadoFinal = (user.estado || 'inactivo').toLowerCase();
 
-    // flags
     cancelAtPeriodEnd = sub?.cancel_at_period_end ? 1 : 0;
     cancelAt = sub?.cancel_at ? new Date(sub.cancel_at * 1000) : null;
     canceledAt = sub?.canceled_at ? new Date(sub.canceled_at * 1000) : null;
 
-    // Fechas (period_end o trial_end)
     if (sub?.current_period_end)
       fechaRenovacion = new Date(sub.current_period_end * 1000);
     else if (sub?.trial_end) fechaRenovacion = new Date(sub.trial_end * 1000);
 
-    // Si está cancelada de forma inmediata (no al final del periodo), no tiene sentido mostrar "renovación"
-    // (evita confusiones en frontend)
     if (sub.status === 'canceled' && !sub.cancel_at_period_end) {
       fechaRenovacion = null;
     }
@@ -371,30 +547,29 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       id_plan: user.id_plan,
       nombre_plan: planDb?.nombre_plan || 'Plan',
       descripcion_plan: planDb?.descripcion_plan || '',
-      estado: estadoFinal, // activo | suspendido | cancelado | vencido | inactivo
+      estado: estadoFinal,
       fecha_renovacion: fechaRenovacion,
-
-      // flags para frontend
       stripe_subscription_status: stripeStatus,
       cancel_at_period_end: cancelAtPeriodEnd,
       cancel_at: cancelAt,
       canceled_at: canceledAt,
-
-      // extras
       tipo_plan: user.tipo_plan,
       permanente: user.permanente,
       free_trial_used: Number(user.free_trial_used || 0),
       trial_eligible: Number(user.free_trial_used || 0) === 0,
       promo_plan2_used: Number(user.promo_plan2_used || 0),
       promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+      // Datos del plan
+      tools_access: planDb?.tools_access || 'both',
+      ...(planDb || {}),
     },
+    user_flags: userFlags,
   });
 });
 
-/**
- *  Facturas del usuario (para MiPlan)
- * Requiere customer id en usuarios_chat_center.id_costumer
- */
+// ─────────────────────────────────────────────────────────────
+// Facturas del usuario
+// ─────────────────────────────────────────────────────────────
 exports.facturasUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
@@ -402,15 +577,12 @@ exports.facturasUsuario = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  const customer = user.id_costumer; //  su columna real
+  const customer = user.id_costumer;
   if (!customer) {
     return res.status(200).json({ success: true, data: [] });
   }
 
-  const invoices = await stripe.invoices.list({
-    customer,
-    limit: 20,
-  });
+  const invoices = await stripe.invoices.list({ customer, limit: 20 });
 
   const data = (invoices?.data || []).map((inv) => ({
     id: inv.id,
@@ -425,10 +597,9 @@ exports.facturasUsuario = catchAsync(async (req, res, next) => {
   return res.status(200).json({ success: true, data });
 });
 
-/**
- *  Portal Cliente (SaaS)
- * Facturas + Cancelación + Métodos + Cambios (según configuración del portal en Stripe)
- */
+// ─────────────────────────────────────────────────────────────
+// Portal Cliente
+// ─────────────────────────────────────────────────────────────
 exports.portalCliente = catchAsync(async (req, res, next) => {
   const { id_usuario, return_url } = req.body;
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
@@ -436,14 +607,9 @@ exports.portalCliente = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  const customer = user.id_costumer; //  su columna real
+  const customer = user.id_costumer;
   if (!customer) {
-    return next(
-      new AppError(
-        'Usuario sin id_costumer (customer de Stripe). Sincronice el customer al crear la suscripción.',
-        400,
-      ),
-    );
+    return next(new AppError('Usuario sin id_costumer.', 400));
   }
 
   const session = await stripe.billingPortal.sessions.create({
@@ -454,9 +620,9 @@ exports.portalCliente = catchAsync(async (req, res, next) => {
   return res.status(200).json({ success: true, url: session.url });
 });
 
-/**
- *  Cancelar suscripción (opcional: si usa botón directo)
- */
+// ─────────────────────────────────────────────────────────────
+// Cancelar suscripción
+// ─────────────────────────────────────────────────────────────
 exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
@@ -464,11 +630,24 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
+  // Si está en trial_usage de IL, simplemente desactivar
+  if ((user.estado || '').toLowerCase() === 'trial_usage') {
+    await db.query(
+      `UPDATE usuarios_chat_center
+       SET estado = 'inactivo', id_plan = NULL
+       WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+    return res.status(200).json({
+      success: true,
+      message: 'Prueba gratuita cancelada.',
+    });
+  }
+
   if (!user.stripe_subscription_id) {
     return next(new AppError('Usuario no tiene stripe_subscription_id.', 400));
   }
 
-  // Cancel al final del periodo actual (no corta de inmediato)
   const sub = await stripe.subscriptions.update(user.stripe_subscription_id, {
     cancel_at_period_end: true,
   });
@@ -481,10 +660,9 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * (Opcional) Portal métodos - si quiere mantener endpoints específicos
- * Nota: Stripe recomienda usar SOLO portalCliente, pero esto lo dejo por compatibilidad con su front actual.
- */
+// ─────────────────────────────────────────────────────────────
+// Portal métodos
+// ─────────────────────────────────────────────────────────────
 exports.portalGestionMetodos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
@@ -517,6 +695,9 @@ exports.portalAddPaymentMethod = catchAsync(async (req, res, next) => {
   return res.status(200).json({ success: true, url: session.url });
 });
 
+// ─────────────────────────────────────────────────────────────
+// Cambiar Plan (upgrade / downgrade)
+// ─────────────────────────────────────────────────────────────
 exports.cambiarPlan = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan_nuevo } = req.body;
 
@@ -526,6 +707,15 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  // Si viene de trial_usage (IL sin suscripción Stripe), redirigir a checkout
+  if ((user.estado || '').toLowerCase() === 'trial_usage') {
+    return res.status(200).json({
+      success: false,
+      redirect_to_checkout: true,
+      message: 'Debe completar la suscripción primero. Use crearSesionPago.',
+    });
+  }
 
   if (!user.stripe_subscription_id) {
     return next(new AppError('Usuario no tiene stripe_subscription_id.', 400));
@@ -538,14 +728,12 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan nuevo inválido o sin id_price.', 400));
   }
 
-  // Si ya está en ese plan, no hacer nada
   if (Number(user.id_plan) === Number(id_plan_nuevo)) {
     return res
       .status(200)
       .json({ success: true, message: 'Ya está en ese plan.' });
   }
 
-  // Cargar suscripción real para tomar itemId y period_end
   let sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
     expand: ['items.data.price'],
   });
@@ -557,31 +745,22 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
   const precioActual = Number(planActual?.precio_plan || 0);
   const precioNuevo = Number(planNuevo?.precio_plan || 0);
-
   const esUpgrade = precioNuevo > precioActual;
   const esDowngrade = precioNuevo < precioActual;
 
-  // ===========================
-  // si es UPGRADE y existe schedule por downgrade anterior,
-  // libérelo para evitar "cambios fantasma" o conflictos futuros.
-  // ===========================
+  // Si es upgrade y existe schedule previo, liberarlo
   if (esUpgrade && sub.schedule) {
     try {
       await stripe.subscriptionSchedules.release(sub.schedule);
-
-      // Releer suscripción ya sin schedule
       sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
         expand: ['items.data.price'],
       });
     } catch (e) {
       console.log('[cambiarPlan] schedule release failed:', e?.message);
-      // no rompemos, pero idealmente se libera
     }
   }
 
-  // ===========================
-  // MISMO PRECIO: cambio inmediato sin cobro
-  // ===========================
+  // ─── MISMO PRECIO ───
   if (!esUpgrade && !esDowngrade) {
     await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
@@ -606,7 +785,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     );
 
     const idPagoAudit = `plan_same_${user.stripe_subscription_id}_${Date.now()}_${id_usuario}_${user.id_plan}_${id_plan_nuevo}`;
-
     await db.query(
       `INSERT IGNORE INTO transacciones_stripe_chat
        (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
@@ -628,7 +806,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Guardar "pending" en BD (para trazabilidad)
+  // Guardar pending
   await db.query(
     `UPDATE usuarios_chat_center
      SET pending_plan_id = ?,
@@ -645,13 +823,10 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     },
   );
 
-  // ===========================
-  // UPGRADE: cobrar YA (prorrateo)
-  // ===========================
+  // ─── UPGRADE ───
   if (esUpgrade) {
     const cortarTrial = sub.status === 'trialing';
 
-    // 1) Actualiza la suscripción y pide que expanda latest_invoice + payment_intent
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
       proration_behavior: 'create_prorations',
@@ -666,46 +841,21 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     });
 
     const latestInvoice = updated.latest_invoice;
-
     if (!latestInvoice || !latestInvoice.id) {
       return res.status(400).json({
         success: false,
-        message:
-          'No se pudo generar la factura de prorrateo para el upgrade. Intente nuevamente.',
+        message: 'No se pudo generar la factura de prorrateo.',
       });
     }
 
-    // 2) Verifique monto (su regla: debe haber cobro real)
-    const invoiceTotal = Number(latestInvoice.total || 0);
-    const invoiceAmountDue = Number(latestInvoice.amount_due || 0);
-
-    // Si Stripe todavía no calculó totales en el objeto expandido, recargue
     const invFresh = await stripe.invoices.retrieve(latestInvoice.id, {
       expand: ['payment_intent'],
-    });
-
-    console.log('[upgrade] invoice debug:', {
-      id: invFresh.id,
-      total: invFresh.total,
-      amount_due: invFresh.amount_due,
-      amount_paid: invFresh.amount_paid,
-      starting_balance: invFresh.starting_balance,
-      ending_balance: invFresh.ending_balance,
-      customer_balance: invFresh.customer_balance,
-      lines: (invFresh.lines?.data || []).map((l) => ({
-        amount: l.amount,
-        proration: l.proration,
-        description: l.description,
-        price: l.price?.id,
-      })),
     });
 
     const totalFresh = Number(invFresh.total || 0);
     const dueFresh = Number(invFresh.amount_due || 0);
 
     if (totalFresh <= 0 || dueFresh <= 0) {
-      // Regla de negocio: no hay cobro => NO se permite upgrade
-      // (Opcional) revertir el price al anterior para no dejarlo “medio aplicado”
       await stripe.subscriptions.update(sub.id, {
         items: [{ id: subItem.id, price: subItem.price.id }],
         proration_behavior: 'none',
@@ -720,21 +870,18 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
       await db.query(
         `UPDATE usuarios_chat_center
-       SET pending_plan_id = NULL,
-           pending_change = NULL,
-           pending_effective_at = NULL
-       WHERE id_usuario = ?`,
+         SET pending_plan_id = NULL, pending_change = NULL, pending_effective_at = NULL
+         WHERE id_usuario = ?`,
         { replacements: [id_usuario] },
       );
 
       return res.status(400).json({
         success: false,
         message:
-          'No se pudo generar un cobro inmediato para el upgrade (importe $0). Revise saldo/créditos del cliente o intente nuevamente.',
+          'No se pudo generar cobro inmediato ($0). Revise saldo/créditos.',
       });
     }
 
-    // 3) Guardar la invoice que DEBE gatillar el upgrade en el webhook
     try {
       await stripe.subscriptions.update(updated.id, {
         metadata: {
@@ -743,20 +890,16 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         },
       });
     } catch (e) {
-      console.log(
-        '[cambiarPlan] metadata pending_invoice_id failed:',
-        e?.message,
-      );
+      console.log('[cambiarPlan] metadata fail:', e?.message);
     }
 
-    // 4) Intentar cobrar
     let paid = null;
     try {
       paid = await stripe.invoices.pay(invFresh.id, {
         expand: ['payment_intent'],
       });
     } catch (e) {
-      // requiere SCA, no rompemos
+      // requiere SCA
     }
 
     const pi = paid?.payment_intent || invFresh?.payment_intent || null;
@@ -767,7 +910,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         actionRequired: false,
         subscription_id: updated.id,
         invoice_id: paid.id,
-        message: 'Upgrade cobrado y aplicado exitosamente.',
+        message: 'Upgrade cobrado y aplicado.',
       });
     }
 
@@ -783,12 +926,10 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         payment_intent_status: pi.status,
         subscription_id: updated.id,
         invoice_id: invFresh.id,
-        message:
-          'Requiere confirmación bancaria (3DS) para completar el upgrade.',
+        message: 'Requiere confirmación bancaria (3DS).',
       });
     }
 
-    // Fallback: hosted_invoice_url
     const invForUrl = await stripe.invoices.retrieve(invFresh.id);
     return res.status(200).json({
       success: true,
@@ -796,20 +937,16 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       subscription_id: updated.id,
       invoice_id: invFresh.id,
       hosted_invoice_url: invForUrl.hosted_invoice_url,
-      message: 'Debe completar el pago para finalizar el upgrade.',
+      message: 'Complete el pago para finalizar el upgrade.',
     });
   }
 
-  // ===========================
-  // DOWNGRADE: aplicar al CORTE usando Schedule
-  // ===========================
+  // ─── DOWNGRADE ───
   if (esDowngrade) {
     const periodEnd = sub.current_period_end;
     const currentPriceId = subItem.price?.id;
 
-    // 1) Si ya tiene schedule, úselo. Si no, créelo.
     let scheduleId = sub.schedule;
-
     if (!scheduleId) {
       const schedule = await stripe.subscriptionSchedules.create({
         from_subscription: sub.id,
@@ -817,7 +954,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       scheduleId = schedule.id;
     }
 
-    // 2) Actualizar el schedule (2 fases)
     await stripe.subscriptionSchedules.update(scheduleId, {
       end_behavior: 'release',
       phases: [
@@ -840,14 +976,10 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message:
-        'Downgrade programado para el próximo corte. Se mantendrá el plan actual hasta esa fecha.',
+      message: 'Downgrade programado para el próximo corte.',
       effective_at: new Date(periodEnd * 1000),
     });
   }
 
-  return res.status(200).json({
-    success: true,
-    message: 'Cambio solicitado.',
-  });
+  return res.status(200).json({ success: true, message: 'Cambio solicitado.' });
 });
