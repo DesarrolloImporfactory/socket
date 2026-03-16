@@ -43,6 +43,7 @@ const Usuarios_chat_center = db.define(
         'vencido',
         'cancelado',
         'trial_usage',
+        'promo_usage',
       ),
       allowNull: true,
       defaultValue: 'inactivo',
@@ -120,6 +121,14 @@ const Usuarios_chat_center = db.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
       comment: 'contador imágenes generadas en trial IL',
+    },
+    promo_imagenes_restantes: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    promo_angulos_restantes: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
     },
   },
   {

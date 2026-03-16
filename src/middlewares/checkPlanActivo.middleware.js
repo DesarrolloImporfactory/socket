@@ -1,5 +1,6 @@
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
+const { db } = require('../database/config');
 
 const checkPlanActivo = async (req, res, next) => {
   try {
@@ -33,7 +34,7 @@ const checkPlanActivo = async (req, res, next) => {
       });
     }
 
-    // Si es plan permanente, permitir (salvo regla de arriba)
+    // Si es plan permanente, permitir
     if (Number(usuario.permanente) === 1) {
       req.planInfo = { permanente: true };
       return next();
@@ -42,9 +43,7 @@ const checkPlanActivo = async (req, res, next) => {
     const ahora = new Date();
 
     // ═══════════════════════════════════════════════════════
-    // NUEVO: Trial por uso (Insta Landing)
-    // Estado: trial_usage — no tiene suscripción Stripe,
-    // solo puede usar IL hasta agotar sus imágenes gratis.
+    // Trial por uso (Insta Landing)
     // ═══════════════════════════════════════════════════════
     if (usuario.estado === 'trial_usage') {
       if (!usuario.id_plan) {
@@ -56,7 +55,6 @@ const checkPlanActivo = async (req, res, next) => {
         });
       }
 
-      // Verificar si aún tiene imágenes disponibles
       const IL_TRIAL_LIMIT = 10;
       const usadas = Number(usuario.il_imagenes_usadas || 0);
 
@@ -75,12 +73,81 @@ const checkPlanActivo = async (req, res, next) => {
         });
       }
 
-      // Trial vigente, dejar pasar
       req.planInfo = {
         trial_usage: true,
         il_imagenes_usadas: usadas,
         il_imagenes_limite: IL_TRIAL_LIMIT,
         il_imagenes_restantes: IL_TRIAL_LIMIT - usadas,
+      };
+      return next();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Promo usage (Código Promocional)
+    // ═══════════════════════════════════════════════════════
+    if (usuario.estado === 'promo_usage') {
+      if (!usuario.id_plan) {
+        return res.status(402).json({
+          status: 'fail',
+          code: 'PLAN_REQUIRED',
+          message: 'No tiene un plan asignado.',
+          redirectTo: '/planes',
+        });
+      }
+
+      const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
+      const angRestantes = Number(usuario.promo_angulos_restantes || 0);
+
+      // Si ambos recursos están en 0, expiró
+      if (imgRestantes <= 0 && angRestantes <= 0) {
+        // Buscar info del último código canjeado para redirect y descripción
+        let promoRedirect = null;
+        let promoDescripcion = null;
+        let promoCodigo = null;
+
+        try {
+          const [[canje]] = await db.query(
+            `SELECT cp.redirect_on_exhaust, cp.descripcion, cp.codigo
+             FROM canjes_codigo_promocional ccp
+             JOIN codigos_promocionales cp ON cp.id_codigo = ccp.id_codigo
+             WHERE ccp.id_usuario = ?
+             ORDER BY ccp.fecha_canje DESC
+             LIMIT 1`,
+            { replacements: [sessionUser.id_usuario] },
+          );
+          if (canje) {
+            promoRedirect = canje.redirect_on_exhaust || null;
+            promoDescripcion = canje.descripcion || null;
+            promoCodigo = canje.codigo || null;
+          }
+        } catch (e) {
+          console.warn(
+            '[checkPlanActivo] Error fetching promo info:',
+            e?.message,
+          );
+        }
+
+        return res.status(402).json({
+          status: 'fail',
+          code: 'PROMO_EXHAUSTED',
+          message:
+            'Sus recursos promocionales se agotaron. Suscríbase para continuar.',
+          redirectTo: promoRedirect || '/planes',
+          promo_info: {
+            imagenes_restantes: 0,
+            angulos_restantes: 0,
+            redirect_url: promoRedirect,
+            descripcion: promoDescripcion,
+            codigo: promoCodigo,
+          },
+        });
+      }
+
+      // Aún tiene recursos, dejar pasar
+      req.planInfo = {
+        promo_usage: true,
+        promo_imagenes_restantes: imgRestantes,
+        promo_angulos_restantes: angRestantes,
       };
       return next();
     }

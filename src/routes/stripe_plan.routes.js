@@ -32,14 +32,31 @@ router.post('/portalGestionMetodos', stripeController.portalGestionMetodos);
 router.post('/portalAddPaymentMethod', stripeController.portalAddPaymentMethod);
 
 // ═══════════════════════════════════════════════════════
-// NUEVOS: Trial por uso (Insta Landing)
+// Trial por uso (Insta Landing)
 // ═══════════════════════════════════════════════════════
-
-// Activar prueba gratuita IL (10 imágenes, sin tarjeta)
 router.post('/activarTrialUsage', stripeController.activarTrialUsage);
-
-// Verificar/incrementar uso del trial IL
-// Llamar desde el endpoint de generación de imágenes
 router.post('/verificarTrialUsage', stripeController.verificarTrialUsage);
+
+// ═══════════════════════════════════════════════════════
+// Códigos Promocionales — Cliente
+// ═══════════════════════════════════════════════════════
+router.post('/validarCodigoPromo', stripeController.validarCodigoPromo);
+router.post('/canjearCodigoPromo', stripeController.canjearCodigoPromo);
+
+// ═══════════════════════════════════════════════════════
+// Códigos Promocionales — CRUD Super Admin
+// Proteger con middleware de admin en tu implementación
+// ═══════════════════════════════════════════════════════
+router.get('/codigos-promo', stripeController.listarCodigosPromo);
+router.post('/codigos-promo', stripeController.crearCodigoPromo);
+router.put('/codigos-promo/:id_codigo', stripeController.actualizarCodigoPromo);
+router.delete(
+  '/codigos-promo/:id_codigo',
+  stripeController.eliminarCodigoPromo,
+);
+router.get(
+  '/codigos-promo/:id_codigo/canjes',
+  stripeController.listarCanjesCodigo,
+);
 
 module.exports = router;

@@ -16,14 +16,8 @@ const envPick = (prodKey, testKey, fallback = '') => {
   return testVal ?? prodVal ?? fallback;
 };
 
-/**
- * Variables Stripe según entorno
- * - En producción: STRIPE_SECRET_KEY
- * - En no-producción: STRIPE_SECRET_KEY_TEST (y si falta, cae a STRIPE_SECRET_KEY)
- */
 const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
 
-// Cupones por plan y entorno
 const COUPON_PLAN_IL = envPick(
   'STRIPE_COUPON_IL_FIRST_MONTH',
   'STRIPE_COUPON_IL_FIRST_MONTH_TEST',
@@ -41,14 +35,12 @@ const COUPON_PLAN_ADV = envPick(
   'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
 );
 
-// URLs
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
   'FRONT_SUCCESS_URL_TEST',
 );
 const FRONT_CANCEL_URL = envPick('FRONT_CANCEL_URL', 'FRONT_CANCEL_URL_TEST');
 
-// IDs de planes por entorno
 const PLAN_IL_ID = Number(
   envPick('STRIPE_PLAN_IL_ID', 'STRIPE_PLAN_IL_ID_TEST', '6'),
 );
@@ -61,25 +53,16 @@ const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 // ─────────────────────────────────────────────────────────────
 // Configuración de planes (ecosistema)
 // ─────────────────────────────────────────────────────────────
-
-// Trial por días: solo ImporChat (7 días)
 const TRIAL_DAYS = 7;
-
-// Trial por uso: solo Insta Landing (10 imágenes gratis, sin tarjeta)
 const IL_TRIAL_IMAGES = 10;
-
-// Promo $5 primer mes: todos los planes pagos (IL, IC, Pro, Avanzado)
 const PROMO_FIRST_MONTH_PRICE = 5;
 
-// Mapeo plan_id → cupón Stripe
 const getCouponByPlan = (idPlan) => {
   const num = Number(idPlan);
   const map = {
     [PLAN_IL_ID]: COUPON_PLAN_IL,
     [PLAN_IC_ID]: COUPON_PLAN_IC,
   };
-
-  // Para planes Pro y Avanzado, usar IDs fijos (prod: 3/4, test: 17/18)
   if (isProd) {
     map[3] = COUPON_PLAN_PRO;
     map[4] = COUPON_PLAN_ADV;
@@ -87,11 +70,9 @@ const getCouponByPlan = (idPlan) => {
     map[17] = COUPON_PLAN_PRO;
     map[18] = COUPON_PLAN_ADV;
   }
-
   return map[num] || null;
 };
 
-// Set de planes que aplican promo $5 primer mes
 const getPromoPlans = () => {
   if (isProd) return new Set([PLAN_IL_ID, PLAN_IC_ID, 3, 4]);
   return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18]);
@@ -109,6 +90,8 @@ const getUserById = async (id_usuario) => {
         promo_plan2_used,
         il_trial_used,
         il_imagenes_usadas,
+        promo_imagenes_restantes,
+        promo_angulos_restantes,
         id_costumer,
         stripe_subscription_id,
         id_plan,
@@ -150,11 +133,7 @@ const getPlanById = async (id_plan) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────────────────────
-// NUEVO: Activar Trial por Uso (Insta Landing)
-// ─────────────────────────────────────────────────────────────
-// El usuario NO paga. Se le asigna el plan IL con estado 'trial_usage'.
-// Puede generar hasta IL_TRIAL_IMAGES imágenes gratis.
-// Cuando se le acaban → frontend lo lleva a checkout.
+// Activar Trial por Uso (Insta Landing)
 // ─────────────────────────────────────────────────────────────
 exports.activarTrialUsage = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -163,7 +142,6 @@ exports.activarTrialUsage = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Si ya tiene plan activo, no puede activar trial
   const estadoActual = (user.estado || '').toLowerCase();
   const tieneActivo =
     estadoActual.includes('activo') || estadoActual.includes('trial');
@@ -174,7 +152,6 @@ exports.activarTrialUsage = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Si ya usó el trial de IL, no puede de nuevo
   if (Number(user.il_trial_used) === 1) {
     return res.status(400).json({
       success: false,
@@ -183,7 +160,6 @@ exports.activarTrialUsage = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Activar trial: asignar plan IL con estado trial_usage
   await db.query(
     `UPDATE usuarios_chat_center
      SET id_plan = ?,
@@ -203,13 +179,11 @@ exports.activarTrialUsage = catchAsync(async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// NUEVO: Verificar/Incrementar uso de trial IL
-// ─────────────────────────────────────────────────────────────
-// Llamar desde el endpoint de generación de imágenes ANTES de generar.
-// Retorna { allowed: true/false, remaining: N }
+// Verificar/Incrementar uso de trial IL Y promo_usage
 // ─────────────────────────────────────────────────────────────
 exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
-  const { id_usuario, incrementar = false } = req.body;
+  const { id_usuario, incrementar = false, tipo = 'imagen' } = req.body;
+  // tipo: 'imagen' | 'angulo'
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
 
   const user = await getUserById(id_usuario);
@@ -217,69 +191,173 @@ exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
 
   const estado = (user.estado || '').toLowerCase();
 
-  // Si no está en trial_usage, no aplica este endpoint
-  if (estado !== 'trial_usage') {
+  // ─── PROMO USAGE (código promocional) ───
+  if (estado === 'promo_usage') {
+    const imgRestantes = Number(user.promo_imagenes_restantes || 0);
+    const angRestantes = Number(user.promo_angulos_restantes || 0);
+
+    const esAngulo = tipo === 'angulo';
+    const remaining = esAngulo ? angRestantes : imgRestantes;
+    const recursoLabel = esAngulo ? 'ángulos' : 'imágenes';
+
+    if (remaining <= 0) {
+      const todoAgotado = imgRestantes <= 0 && angRestantes <= 0;
+
+      // Buscar config de redirect del código canjeado
+      let redirectTo = null;
+      if (todoAgotado) {
+        const [[canje]] = await db.query(
+          `SELECT cp.redirect_on_exhaust
+           FROM canjes_codigo_promocional ccp
+           JOIN codigos_promocionales cp ON cp.id_codigo = ccp.id_codigo
+           WHERE ccp.id_usuario = ?
+           ORDER BY ccp.fecha_canje DESC
+           LIMIT 1`,
+          { replacements: [id_usuario] },
+        );
+        redirectTo = canje?.redirect_on_exhaust || null;
+      }
+
+      return res.status(200).json({
+        success: true,
+        allowed: false,
+        is_trial: false,
+        is_promo: true,
+        remaining: 0,
+        remaining_imagenes: imgRestantes,
+        remaining_angulos: angRestantes,
+        message: `${recursoLabel.charAt(0).toUpperCase() + recursoLabel.slice(1)} promocionales agotados.`,
+        redirect_to: redirectTo,
+        redirect_to_checkout: !redirectTo,
+      });
+    }
+
+    if (incrementar) {
+      const campo = esAngulo
+        ? 'promo_angulos_restantes'
+        : 'promo_imagenes_restantes';
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET ${campo} = GREATEST(0, ${campo} - 1)
+         WHERE id_usuario = ?`,
+        { replacements: [id_usuario] },
+      );
+
+      const newRemaining = remaining - 1;
+      const newImg = esAngulo ? imgRestantes : Math.max(0, imgRestantes - 1);
+      const newAng = esAngulo ? Math.max(0, angRestantes - 1) : angRestantes;
+      const todoAgotado = newImg <= 0 && newAng <= 0;
+
+      let redirectTo = null;
+      if (todoAgotado) {
+        const [[canje]] = await db.query(
+          `SELECT cp.redirect_on_exhaust
+           FROM canjes_codigo_promocional ccp
+           JOIN codigos_promocionales cp ON cp.id_codigo = ccp.id_codigo
+           WHERE ccp.id_usuario = ?
+           ORDER BY ccp.fecha_canje DESC
+           LIMIT 1`,
+          { replacements: [id_usuario] },
+        );
+        redirectTo = canje?.redirect_on_exhaust || null;
+      }
+
+      return res.status(200).json({
+        success: true,
+        allowed: true,
+        is_trial: false,
+        is_promo: true,
+        remaining: newRemaining,
+        remaining_imagenes: newImg,
+        remaining_angulos: newAng,
+        message:
+          newRemaining > 0
+            ? `Recurso usado. Te quedan ${newRemaining} ${recursoLabel} promo.`
+            : `Último ${esAngulo ? 'ángulo' : 'imagen'} promo usado.`,
+        redirect_to: todoAgotado ? redirectTo : null,
+        redirect_to_checkout: todoAgotado ? !redirectTo : false,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       allowed: true,
       is_trial: false,
-      message: 'Usuario no está en trial por uso.',
+      is_promo: true,
+      remaining,
+      remaining_imagenes: imgRestantes,
+      remaining_angulos: angRestantes,
     });
   }
 
-  const usadas = Number(user.il_imagenes_usadas || 0);
-  const limite = IL_TRIAL_IMAGES;
-  const remaining = Math.max(0, limite - usadas);
+  // ─── TRIAL USAGE (IL original, 10 imágenes) ───
+  if (estado === 'trial_usage') {
+    const usadas = Number(user.il_imagenes_usadas || 0);
+    const limite = IL_TRIAL_IMAGES;
+    const remaining = Math.max(0, limite - usadas);
 
-  if (remaining <= 0) {
-    return res.status(200).json({
-      success: true,
-      allowed: false,
-      is_trial: true,
-      remaining: 0,
-      message: 'Prueba gratuita agotada. Debe suscribirse para continuar.',
-      redirect_to_checkout: true,
-    });
-  }
+    if (remaining <= 0) {
+      return res.status(200).json({
+        success: true,
+        allowed: false,
+        is_trial: true,
+        is_promo: false,
+        remaining: 0,
+        message: 'Prueba gratuita agotada. Debe suscribirse para continuar.',
+        redirect_to_checkout: true,
+      });
+    }
 
-  // Si pide incrementar (cuando efectivamente se genera una imagen)
-  if (incrementar) {
-    await db.query(
-      `UPDATE usuarios_chat_center
-       SET il_imagenes_usadas = il_imagenes_usadas + 1
-       WHERE id_usuario = ?`,
-      { replacements: [id_usuario] },
-    );
+    if (incrementar) {
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET il_imagenes_usadas = il_imagenes_usadas + 1
+         WHERE id_usuario = ?`,
+        { replacements: [id_usuario] },
+      );
 
-    const newRemaining = remaining - 1;
+      const newRemaining = remaining - 1;
+      return res.status(200).json({
+        success: true,
+        allowed: true,
+        is_trial: true,
+        is_promo: false,
+        remaining: newRemaining,
+        message:
+          newRemaining > 0
+            ? `Imagen generada. Le quedan ${newRemaining} de ${limite}.`
+            : 'Última imagen gratuita. Debe suscribirse.',
+        redirect_to_checkout: newRemaining <= 0,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       allowed: true,
       is_trial: true,
-      remaining: newRemaining,
-      message:
-        newRemaining > 0
-          ? `Imagen generada. Le quedan ${newRemaining} de ${limite}.`
-          : 'Última imagen gratuita generada. Debe suscribirse para continuar.',
-      redirect_to_checkout: newRemaining <= 0,
+      is_promo: false,
+      remaining,
     });
   }
+
+  // ─── Plan normal ───
+  const promoImgRestantes = Number(user.promo_imagenes_restantes || 0);
+  const promoAngRestantes = Number(user.promo_angulos_restantes || 0);
 
   return res.status(200).json({
     success: true,
     allowed: true,
-    is_trial: true,
-    remaining,
+    is_trial: false,
+    is_promo: false,
+    remaining: null,
+    promo_bonus_imagenes: promoImgRestantes > 0 ? promoImgRestantes : undefined,
+    promo_bonus_angulos: promoAngRestantes > 0 ? promoAngRestantes : undefined,
+    message: 'Usuario no está en trial por uso.',
   });
 });
 
 // ─────────────────────────────────────────────────────────────
 // Checkout Session (subscription)
-// ─────────────────────────────────────────────────────────────
-// - IL ($29): NO trial Stripe (trial es por uso en app). Promo $5.
-// - IC ($29): Trial 7 días + Promo $5 primer cobro.
-// - Pro ($59): Promo $5 primer mes.
-// - Avanzado ($99): Promo $5 primer mes.
 // ─────────────────────────────────────────────────────────────
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan, id_plataforma = null } = req.body;
@@ -296,26 +374,17 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
-  // =========================
-  // 1) TRIAL por días: solo ImporChat, solo si no ha usado trial
-  // =========================
   const isICPlan = Number(id_plan) === PLAN_IC_ID;
   const eligibleTrial = Number(user.free_trial_used || 0) === 0;
   const shouldApplyTrial = eligibleTrial && isICPlan;
   const trialDays = shouldApplyTrial ? TRIAL_DAYS : undefined;
 
-  // =========================
-  // 2) PROMO $5 PRIMER MES (todos los planes) — 1 sola vez global
-  // =========================
   const PROMO_PLANS = getPromoPlans();
   const isPromoPlan = PROMO_PLANS.has(Number(id_plan));
   const couponId = getCouponByPlan(id_plan);
   const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0;
   const canApplyPromo = isPromoPlan && promoNotUsedYet && Boolean(couponId);
 
-  // =========================
-  // URLs + customer
-  // =========================
   const successUrl = FRONT_SUCCESS_URL;
   const cancelUrl = FRONT_CANCEL_URL;
 
@@ -337,24 +406,16 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     mode: 'subscription',
     payment_method_types: ['card'],
     line_items: [{ price: plan.id_price, quantity: 1 }],
-
     ...customerParam,
     ...customerUpdateParam,
-
     client_reference_id: String(id_usuario),
     payment_method_collection: 'always',
-
     metadata: meta,
-
-    // Promo $5 primer mes
     ...(canApplyPromo ? { discounts: [{ coupon: couponId }] } : {}),
-
     subscription_data: {
-      // Trial solo si aplica (IC y elegible)
       ...(trialDays ? { trial_period_days: trialDays } : {}),
       metadata: meta,
     },
-
     success_url: successUrl,
     cancel_url: cancelUrl,
   });
@@ -398,7 +459,6 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Flags comunes
   const userFlags = {
     trial_eligible: Number(user.free_trial_used || 0) === 0,
     promo_plan2_used: Number(user.promo_plan2_used || 0),
@@ -406,9 +466,10 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     il_trial_used: Number(user.il_trial_used || 0) === 1,
     il_imagenes_usadas: Number(user.il_imagenes_usadas || 0),
     il_imagenes_limite: IL_TRIAL_IMAGES,
+    promo_imagenes_restantes: Number(user.promo_imagenes_restantes || 0),
+    promo_angulos_restantes: Number(user.promo_angulos_restantes || 0),
   };
 
-  // Sin plan asignado
   if (!user.id_plan) {
     return res.status(200).json({
       success: true,
@@ -426,7 +487,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
   let cancelAt = user.cancel_at || null;
   let canceledAt = user.canceled_at || null;
 
-  // Si estado es trial_usage (IL), no hay suscripción Stripe
+  // ─── TRIAL USAGE (IL sin Stripe) ───
   if (estadoFinal === 'trial_usage') {
     return res.status(200).json({
       success: true,
@@ -446,7 +507,6 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
         trial_eligible: Number(user.free_trial_used || 0) === 0,
         promo_plan2_used: Number(user.promo_plan2_used || 0),
         promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
-        // Info trial usage
         trial_type: 'usage',
         il_imagenes_usadas: Number(user.il_imagenes_usadas || 0),
         il_imagenes_limite: IL_TRIAL_IMAGES,
@@ -454,7 +514,6 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
           0,
           IL_TRIAL_IMAGES - Number(user.il_imagenes_usadas || 0),
         ),
-        // Datos del plan
         tools_access: planDb?.tools_access || 'insta_landing',
         ...(planDb || {}),
       },
@@ -462,7 +521,37 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     });
   }
 
-  // ─── Stripe Resolution (mismo flujo que antes) ───
+  // ─── PROMO USAGE (código promocional, sin Stripe) ───
+  if (estadoFinal === 'promo_usage') {
+    return res.status(200).json({
+      success: true,
+      plan: {
+        id_plan: user.id_plan,
+        nombre_plan: planDb?.nombre_plan || 'Insta Landing',
+        descripcion_plan: planDb?.descripcion_plan || '',
+        estado: 'promo_usage',
+        fecha_renovacion: null,
+        stripe_subscription_status: null,
+        cancel_at_period_end: 0,
+        cancel_at: null,
+        canceled_at: null,
+        tipo_plan: user.tipo_plan,
+        permanente: user.permanente,
+        free_trial_used: Number(user.free_trial_used || 0),
+        trial_eligible: Number(user.free_trial_used || 0) === 0,
+        promo_plan2_used: Number(user.promo_plan2_used || 0),
+        promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+        trial_type: 'promo',
+        promo_imagenes_restantes: Number(user.promo_imagenes_restantes || 0),
+        promo_angulos_restantes: Number(user.promo_angulos_restantes || 0),
+        tools_access: planDb?.tools_access || 'insta_landing',
+        ...(planDb || {}),
+      },
+      user_flags: userFlags,
+    });
+  }
+
+  // ─── Stripe Resolution ───
   let sub = null;
 
   if (user.stripe_subscription_id) {
@@ -559,7 +648,6 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       trial_eligible: Number(user.free_trial_used || 0) === 0,
       promo_plan2_used: Number(user.promo_plan2_used || 0),
       promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
-      // Datos del plan
       tools_access: planDb?.tools_access || 'both',
       ...(planDb || {}),
     },
@@ -630,7 +718,7 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Si está en trial_usage de IL, simplemente desactivar
+  // Trial usage de IL
   if ((user.estado || '').toLowerCase() === 'trial_usage') {
     await db.query(
       `UPDATE usuarios_chat_center
@@ -641,6 +729,23 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: 'Prueba gratuita cancelada.',
+    });
+  }
+
+  // Promo usage
+  if ((user.estado || '').toLowerCase() === 'promo_usage') {
+    await db.query(
+      `UPDATE usuarios_chat_center
+       SET estado = 'inactivo',
+           id_plan = NULL,
+           promo_imagenes_restantes = 0,
+           promo_angulos_restantes = 0
+       WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+    return res.status(200).json({
+      success: true,
+      message: 'Acceso promocional cancelado.',
     });
   }
 
@@ -708,8 +813,9 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Si viene de trial_usage (IL sin suscripción Stripe), redirigir a checkout
-  if ((user.estado || '').toLowerCase() === 'trial_usage') {
+  // Desde trial_usage o promo_usage → redirigir a checkout
+  const estadoLower = (user.estado || '').toLowerCase();
+  if (estadoLower === 'trial_usage' || estadoLower === 'promo_usage') {
     return res.status(200).json({
       success: false,
       redirect_to_checkout: true,
@@ -748,7 +854,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   const esUpgrade = precioNuevo > precioActual;
   const esDowngrade = precioNuevo < precioActual;
 
-  // Si es upgrade y existe schedule previo, liberarlo
   if (esUpgrade && sub.schedule) {
     try {
       await stripe.subscriptionSchedules.release(sub.schedule);
@@ -982,4 +1087,455 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   }
 
   return res.status(200).json({ success: true, message: 'Cambio solicitado.' });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// CÓDIGOS PROMOCIONALES
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// Validar Código Promo (solo consulta)
+// ─────────────────────────────────────────────────────────────
+exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
+  const { id_usuario, codigo } = req.body;
+
+  if (!id_usuario || !codigo) {
+    return next(new AppError('Falta id_usuario o codigo.', 400));
+  }
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  const codigoLimpio = codigo.trim().toUpperCase();
+
+  const [[promo]] = await db.query(
+    `SELECT id_codigo, codigo, descripcion, imagenes_regalo, angulos_regalo,
+            max_usos, usos_actuales, activo, fecha_inicio, fecha_fin,
+            redirect_on_exhaust
+     FROM codigos_promocionales
+     WHERE codigo = ?
+     LIMIT 1`,
+    { replacements: [codigoLimpio] },
+  );
+
+  if (!promo) {
+    return res.status(200).json({
+      success: false,
+      message: 'Código no encontrado. Verifica e intenta de nuevo.',
+    });
+  }
+
+  if (!promo.activo) {
+    return res.status(200).json({
+      success: false,
+      message: 'Este código ya no está disponible.',
+    });
+  }
+
+  const now = new Date();
+  if (promo.fecha_inicio && new Date(promo.fecha_inicio) > now) {
+    return res
+      .status(200)
+      .json({ success: false, message: 'Este código aún no está activo.' });
+  }
+  if (promo.fecha_fin && new Date(promo.fecha_fin) < now) {
+    return res
+      .status(200)
+      .json({ success: false, message: 'Este código ha expirado.' });
+  }
+
+  if (promo.max_usos > 0 && promo.usos_actuales >= promo.max_usos) {
+    return res.status(200).json({
+      success: false,
+      message: 'Este código ha alcanzado su límite de usos.',
+    });
+  }
+
+  const [[yaCanjeado]] = await db.query(
+    `SELECT id_canje FROM canjes_codigo_promocional
+     WHERE id_usuario = ? AND id_codigo = ?
+     LIMIT 1`,
+    { replacements: [id_usuario, promo.id_codigo] },
+  );
+
+  if (yaCanjeado) {
+    return res.status(200).json({
+      success: false,
+      message: 'Ya utilizaste este código promocional.',
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    valid: true,
+    codigo: promo.codigo,
+    imagenes_regalo: Number(promo.imagenes_regalo || 0),
+    angulos_regalo: Number(promo.angulos_regalo || 0),
+    descripcion: promo.descripcion,
+    message: `Código válido: ${promo.imagenes_regalo} imágenes + ${promo.angulos_regalo} ángulos AI gratis.`,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Canjear Código Promo
+// ─────────────────────────────────────────────────────────────
+exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
+  const { id_usuario, codigo } = req.body;
+
+  if (!id_usuario || !codigo) {
+    return next(new AppError('Falta id_usuario o codigo.', 400));
+  }
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  const codigoLimpio = codigo.trim().toUpperCase();
+
+  const [[promo]] = await db.query(
+    `SELECT id_codigo, codigo, imagenes_regalo, angulos_regalo,
+            max_usos, usos_actuales, activo, fecha_inicio, fecha_fin
+     FROM codigos_promocionales
+     WHERE codigo = ?
+     LIMIT 1`,
+    { replacements: [codigoLimpio] },
+  );
+
+  if (!promo || !promo.activo) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Código no válido o inactivo.' });
+  }
+
+  const now = new Date();
+  if (promo.fecha_inicio && new Date(promo.fecha_inicio) > now) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Código aún no activo.' });
+  }
+  if (promo.fecha_fin && new Date(promo.fecha_fin) < now) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Código expirado.' });
+  }
+  if (promo.max_usos > 0 && promo.usos_actuales >= promo.max_usos) {
+    return res.status(400).json({ success: false, message: 'Código agotado.' });
+  }
+
+  const [[yaCanjeado]] = await db.query(
+    `SELECT id_canje FROM canjes_codigo_promocional
+     WHERE id_usuario = ? AND id_codigo = ?
+     LIMIT 1`,
+    { replacements: [id_usuario, promo.id_codigo] },
+  );
+
+  if (yaCanjeado) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Ya canjeaste este código.' });
+  }
+
+  const imagenesRegalo = Number(promo.imagenes_regalo || 0);
+  const angulosRegalo = Number(promo.angulos_regalo || 0);
+
+  const estadoActual = (user.estado || '').toLowerCase();
+  const tieneActivo =
+    estadoActual.includes('activo') ||
+    estadoActual.includes('trial') ||
+    estadoActual === 'trial_usage' ||
+    estadoActual === 'promo_usage';
+
+  if (!user.id_plan || !tieneActivo) {
+    await db.query(
+      `UPDATE usuarios_chat_center
+       SET id_plan = ?,
+           estado = 'promo_usage',
+           promo_imagenes_restantes = promo_imagenes_restantes + ?,
+           promo_angulos_restantes  = promo_angulos_restantes + ?
+       WHERE id_usuario = ?`,
+      { replacements: [PLAN_IL_ID, imagenesRegalo, angulosRegalo, id_usuario] },
+    );
+  } else {
+    await db.query(
+      `UPDATE usuarios_chat_center
+       SET promo_imagenes_restantes = promo_imagenes_restantes + ?,
+           promo_angulos_restantes  = promo_angulos_restantes + ?
+       WHERE id_usuario = ?`,
+      { replacements: [imagenesRegalo, angulosRegalo, id_usuario] },
+    );
+  }
+
+  await db.query(
+    `INSERT INTO canjes_codigo_promocional (id_codigo, id_usuario, imagenes_otorgadas, angulos_otorgados)
+     VALUES (?, ?, ?, ?)`,
+    {
+      replacements: [
+        promo.id_codigo,
+        id_usuario,
+        imagenesRegalo,
+        angulosRegalo,
+      ],
+    },
+  );
+
+  await db.query(
+    `UPDATE codigos_promocionales
+     SET usos_actuales = usos_actuales + 1
+     WHERE id_codigo = ?`,
+    { replacements: [promo.id_codigo] },
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: `¡Código canjeado! Tienes ${imagenesRegalo} imágenes y ${angulosRegalo} ángulos AI para usar.`,
+    imagenes_otorgadas: imagenesRegalo,
+    angulos_otorgados: angulosRegalo,
+    plan_id: PLAN_IL_ID,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// CRUD CÓDIGOS PROMOCIONALES (Super Admin)
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// Listar todos los códigos
+// ─────────────────────────────────────────────────────────────
+exports.listarCodigosPromo = catchAsync(async (req, res, next) => {
+  const [rows] = await db.query(
+    `SELECT cp.*,
+            (SELECT COUNT(*) FROM canjes_codigo_promocional ccp WHERE ccp.id_codigo = cp.id_codigo) AS total_canjes
+     FROM codigos_promocionales cp
+     ORDER BY cp.created_at DESC`,
+  );
+
+  return res.status(200).json({ success: true, data: rows || [] });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Crear código
+// ─────────────────────────────────────────────────────────────
+exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
+  const {
+    codigo,
+    descripcion = null,
+    imagenes_regalo = 25,
+    angulos_regalo = 10,
+    max_usos = 100,
+    activo = 1,
+    fecha_inicio = null,
+    fecha_fin = null,
+    redirect_on_exhaust = null,
+  } = req.body;
+
+  if (!codigo || !codigo.trim()) {
+    return next(new AppError('El código es obligatorio.', 400));
+  }
+
+  const codigoLimpio = codigo.trim().toUpperCase();
+
+  // Verificar duplicado
+  const [[existe]] = await db.query(
+    `SELECT id_codigo FROM codigos_promocionales WHERE codigo = ? LIMIT 1`,
+    { replacements: [codigoLimpio] },
+  );
+
+  if (existe) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Ese código ya existe.' });
+  }
+
+  const [result] = await db.query(
+    `INSERT INTO codigos_promocionales
+       (codigo, descripcion, imagenes_regalo, angulos_regalo, max_usos, activo, fecha_inicio, fecha_fin, redirect_on_exhaust)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    {
+      replacements: [
+        codigoLimpio,
+        descripcion,
+        imagenes_regalo,
+        angulos_regalo,
+        max_usos,
+        activo ? 1 : 0,
+        fecha_inicio || null,
+        fecha_fin || null,
+        redirect_on_exhaust || null,
+      ],
+    },
+  );
+
+  return res.status(201).json({
+    success: true,
+    message: 'Código creado.',
+    id_codigo: result?.insertId || null,
+    codigo: codigoLimpio,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Actualizar código
+// ─────────────────────────────────────────────────────────────
+exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
+  const { id_codigo } = req.params;
+  if (!id_codigo) return next(new AppError('Falta id_codigo.', 400));
+
+  const {
+    codigo,
+    descripcion,
+    imagenes_regalo,
+    angulos_regalo,
+    max_usos,
+    activo,
+    fecha_inicio,
+    fecha_fin,
+    redirect_on_exhaust,
+  } = req.body;
+
+  // Verificar que existe
+  const [[existing]] = await db.query(
+    `SELECT id_codigo FROM codigos_promocionales WHERE id_codigo = ? LIMIT 1`,
+    { replacements: [id_codigo] },
+  );
+
+  if (!existing) {
+    return res
+      .status(404)
+      .json({ success: false, message: 'Código no encontrado.' });
+  }
+
+  // Construir SET dinámico solo con campos enviados
+  const updates = [];
+  const values = [];
+
+  if (codigo !== undefined) {
+    const codigoLimpio = codigo.trim().toUpperCase();
+    // Verificar duplicado si se cambia el código
+    const [[dup]] = await db.query(
+      `SELECT id_codigo FROM codigos_promocionales WHERE codigo = ? AND id_codigo != ? LIMIT 1`,
+      { replacements: [codigoLimpio, id_codigo] },
+    );
+    if (dup) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Ese código ya existe.' });
+    }
+    updates.push('codigo = ?');
+    values.push(codigoLimpio);
+  }
+  if (descripcion !== undefined) {
+    updates.push('descripcion = ?');
+    values.push(descripcion);
+  }
+  if (imagenes_regalo !== undefined) {
+    updates.push('imagenes_regalo = ?');
+    values.push(Number(imagenes_regalo));
+  }
+  if (angulos_regalo !== undefined) {
+    updates.push('angulos_regalo = ?');
+    values.push(Number(angulos_regalo));
+  }
+  if (max_usos !== undefined) {
+    updates.push('max_usos = ?');
+    values.push(Number(max_usos));
+  }
+  if (activo !== undefined) {
+    updates.push('activo = ?');
+    values.push(activo ? 1 : 0);
+  }
+  if (fecha_inicio !== undefined) {
+    updates.push('fecha_inicio = ?');
+    values.push(fecha_inicio || null);
+  }
+  if (fecha_fin !== undefined) {
+    updates.push('fecha_fin = ?');
+    values.push(fecha_fin || null);
+  }
+  if (redirect_on_exhaust !== undefined) {
+    updates.push('redirect_on_exhaust = ?');
+    values.push(redirect_on_exhaust || null);
+  }
+
+  if (updates.length === 0) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'No hay campos para actualizar.' });
+  }
+
+  values.push(id_codigo);
+
+  await db.query(
+    `UPDATE codigos_promocionales SET ${updates.join(', ')} WHERE id_codigo = ?`,
+    { replacements: values },
+  );
+
+  return res
+    .status(200)
+    .json({ success: true, message: 'Código actualizado.' });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Eliminar código (soft: desactivar / hard: borrar)
+// ─────────────────────────────────────────────────────────────
+exports.eliminarCodigoPromo = catchAsync(async (req, res, next) => {
+  const { id_codigo } = req.params;
+  const { hard = false } = req.body;
+
+  if (!id_codigo) return next(new AppError('Falta id_codigo.', 400));
+
+  const [[existing]] = await db.query(
+    `SELECT id_codigo, usos_actuales FROM codigos_promocionales WHERE id_codigo = ? LIMIT 1`,
+    { replacements: [id_codigo] },
+  );
+
+  if (!existing) {
+    return res
+      .status(404)
+      .json({ success: false, message: 'Código no encontrado.' });
+  }
+
+  if (hard) {
+    // Hard delete: solo si nunca fue canjeado
+    if (Number(existing.usos_actuales) > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'No se puede eliminar un código con canjes. Desactívelo en su lugar.',
+      });
+    }
+    await db.query(`DELETE FROM codigos_promocionales WHERE id_codigo = ?`, {
+      replacements: [id_codigo],
+    });
+    return res
+      .status(200)
+      .json({ success: true, message: 'Código eliminado permanentemente.' });
+  }
+
+  // Soft delete: desactivar
+  await db.query(
+    `UPDATE codigos_promocionales SET activo = 0 WHERE id_codigo = ?`,
+    { replacements: [id_codigo] },
+  );
+
+  return res
+    .status(200)
+    .json({ success: true, message: 'Código desactivado.' });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Ver canjes de un código específico
+// ─────────────────────────────────────────────────────────────
+exports.listarCanjesCodigo = catchAsync(async (req, res, next) => {
+  const { id_codigo } = req.params;
+  if (!id_codigo) return next(new AppError('Falta id_codigo.', 400));
+
+  const [rows] = await db.query(
+    `SELECT ccp.*, u.email_propietario
+     FROM canjes_codigo_promocional ccp
+     LEFT JOIN usuarios_chat_center u ON u.id_usuario = ccp.id_usuario
+     WHERE ccp.id_codigo = ?
+     ORDER BY ccp.fecha_canje DESC`,
+    { replacements: [id_codigo] },
+  );
+
+  return res.status(200).json({ success: true, data: rows || [] });
 });
