@@ -287,7 +287,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           case 131026: {
             const details = error?.error_data?.details || '';
-            debugLogMsg = `⚠️ Mensaje no entregado (131026)${details ? ` | Detalle: ${details}` : ''}`;
+            debugLogMsg = `⚠️ El número no tiene WhatsApp'}`;
             break;
           }
 
@@ -305,6 +305,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             break;
           case 131053:
             debugLogMsg = '⚠️ Error al enviar el audio.';
+            break;
+
+          case 130472:
+            debugLogMsg = '⚠️ El usuario no acepta mensajes de este negocio';
             break;
 
           default:
