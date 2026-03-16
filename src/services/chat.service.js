@@ -640,7 +640,7 @@ class ChatService {
       const wamid = responseData?.messages?.[0]?.id || null;
 
       const cliente = await ClientesChatCenter.findOne({
-        where: { uid_cliente: fromTelefono, id_configuracion },
+        where: { propietario: "1", id_configuracion },
       });
 
       const receptor = await ClientesChatCenter.findOne({
