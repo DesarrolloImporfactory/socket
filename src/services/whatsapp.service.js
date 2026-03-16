@@ -54,7 +54,43 @@ function pruneTemplateCache() {
 }
 
 /* ================================================================
-   obtenerTextoPlantilla — CON CACHE
+   cacheTemplatesFromResponse — Extrae y cachea plantillas de una
+   respuesta de Meta (una página)
+   ================================================================ */
+
+function cacheTemplatesFromResponse(templates, waba_id) {
+  let cached = 0;
+  for (const tpl of templates) {
+    const body = tpl.components?.find((comp) => comp.type === 'BODY');
+    if (!body?.text) continue;
+
+    const headerComp = tpl.components?.find((comp) => comp.type === 'HEADER');
+    let header = null;
+    if (headerComp) {
+      header = {
+        format: headerComp.format || null,
+        media_url: headerComp.example?.header_handle?.[0] || null,
+      };
+    }
+
+    const tplData = {
+      text: body.text,
+      language: tpl.language || 'es',
+      header,
+    };
+
+    setCachedTemplate(waba_id, tpl.name, tplData);
+    cached++;
+  }
+  return cached;
+}
+
+/* ================================================================
+   obtenerTextoPlantilla — CON CACHE + PAGINACIÓN COMPLETA
+   
+   FIX 1: Ahora pagina TODAS las páginas de Meta si el template
+          no se encuentra en la primera página.
+   FIX 2: Propaga errores reales en vez de tragarlos silenciosamente.
    ================================================================ */
 
 const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
@@ -70,23 +106,33 @@ const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
 
   const startedAt = Date.now();
 
-  try {
-    console.log('🔎 [obtenerTextoPlantilla] CACHE MISS → consultando Meta', {
+  // ── FIX 2: Ya NO hay try/catch que trague errores ──
+  // Si Meta falla, el error se propaga al caller con el detalle real.
+
+  console.log(
+    '🔎 [obtenerTextoPlantilla] CACHE MISS → consultando Meta (con paginación)',
+    {
       nombre_template,
       waba_id,
       at: new Date().toISOString(),
+    },
+  );
+
+  let nextUrl = `https://graph.facebook.com/v22.0/${waba_id}/message_templates`;
+  let totalCached = 0;
+  let pageNum = 0;
+  const MAX_PAGES = 10; // Límite de seguridad para no paginar infinitamente
+
+  while (nextUrl && pageNum < MAX_PAGES) {
+    pageNum++;
+
+    const response = await axios.get(nextUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 20000,
+      validateStatus: () => true,
     });
 
-    const response = await axios.get(
-      `https://graph.facebook.com/v22.0/${waba_id}/message_templates`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        timeout: 20000,
-        validateStatus: () => true,
-      },
-    );
-
-    console.log('📥 [obtenerTextoPlantilla] respuesta Meta', {
+    console.log(`📥 [obtenerTextoPlantilla] respuesta Meta página ${pageNum}`, {
       status: response.status,
       hasData: !!response.data,
       ms: Date.now() - startedAt,
@@ -116,64 +162,56 @@ const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
       return { text: null, language: null, header: null };
     }
 
-    // ── Cachear TODAS las plantillas que vinieron en la respuesta ──
-    // Meta devuelve todas las plantillas del WABA en un solo GET,
-    // así que aprovechamos para cachear todas de una vez.
-    for (const tpl of data.data) {
-      const body = tpl.components?.find((comp) => comp.type === 'BODY');
-      if (!body?.text) continue;
+    // Cachear TODAS las plantillas de esta página
+    const cachedThisPage = cacheTemplatesFromResponse(data.data, waba_id);
+    totalCached += cachedThisPage;
 
-      const headerComp = tpl.components?.find((comp) => comp.type === 'HEADER');
-      let header = null;
-      if (headerComp) {
-        header = {
-          format: headerComp.format || null,
-          media_url: headerComp.example?.header_handle?.[0] || null,
-        };
-      }
-
-      const tplData = {
-        text: body.text,
-        language: tpl.language || 'es',
-        header,
-      };
-
-      setCachedTemplate(waba_id, tpl.name, tplData);
-    }
-
-    console.log('💾 [obtenerTextoPlantilla] Cacheadas', {
-      count: data.data.length,
-      waba_id,
-    });
-
-    // Ahora buscar la que necesitamos (ya está en cache)
+    // Verificar si ya tenemos la que buscamos
     const result = getCachedTemplate(waba_id, nombre_template);
-
-    if (!result) {
-      console.error(
-        `❌ [obtenerTextoPlantilla] No se encontró la plantilla: ${nombre_template}`,
-      );
-      return { text: null, language: null, header: null };
+    if (result) {
+      console.log('✅ [obtenerTextoPlantilla] plantilla resuelta', {
+        nombre_template,
+        language: result.language,
+        headerFormat: result.header?.format || null,
+        bodyPreview: String(result.text).slice(0, 120),
+        page: pageNum,
+        totalCached,
+        ms: Date.now() - startedAt,
+      });
+      return result;
     }
 
-    console.log('✅ [obtenerTextoPlantilla] plantilla resuelta', {
-      nombre_template,
-      language: result.language,
-      headerFormat: result.header?.format || null,
-      bodyPreview: String(result.text).slice(0, 120),
-      ms: Date.now() - startedAt,
-    });
+    // ── FIX 1: Seguir paginando si hay más páginas ──
+    nextUrl = data.paging?.next || null;
 
-    return result;
-  } catch (error) {
-    console.error('❌ Error al obtener la plantilla:', {
-      message: error.message,
-      meta_status: error.meta_status || null,
-      meta_error: error.meta_error || null,
-      ms: Date.now() - startedAt,
-    });
+    if (nextUrl) {
+      console.log(
+        `🔄 [obtenerTextoPlantilla] Template no encontrado en página ${pageNum}, paginando...`,
+        {
+          nombre_template,
+          cachedSoFar: totalCached,
+        },
+      );
+    }
+  }
+
+  console.log('💾 [obtenerTextoPlantilla] Paginación completa', {
+    pages: pageNum,
+    totalCached,
+    waba_id,
+  });
+
+  // Después de paginar todo, intentar una última vez desde cache
+  const finalResult = getCachedTemplate(waba_id, nombre_template);
+
+  if (!finalResult) {
+    console.error(
+      `❌ [obtenerTextoPlantilla] No se encontró la plantilla después de ${pageNum} páginas: ${nombre_template}`,
+    );
     return { text: null, language: null, header: null };
   }
+
+  return finalResult;
 };
 
 /* ================================================================
@@ -230,7 +268,7 @@ async function prefetchTemplates(pendientes) {
         continue;
       }
 
-      // obtenerTextoPlantilla ya cachea TODAS las del WABA en un solo GET
+      // obtenerTextoPlantilla ahora pagina y cachea TODAS las del WABA
       await obtenerTextoPlantilla(
         info.nombre_template,
         cfg.ACCESS_TOKEN,
@@ -241,9 +279,14 @@ async function prefetchTemplates(pendientes) {
       // Pequeña pausa entre WABAs distintos para no saturar
       await new Promise((r) => setTimeout(r, 500));
     } catch (err) {
+      // ── FIX 2: Loguear error real del prefetch ──
       console.error(
         `❌ [prefetchTemplates] Error pre-fetching ${info.nombre_template}:`,
-        err.message,
+        {
+          message: err.message,
+          meta_status: err.meta_status || null,
+          meta_error: err.meta_error || null,
+        },
       );
     }
   }
@@ -431,7 +474,9 @@ exports.sendWhatsappMessageTemplate = async ({
 
 /* ================================================================
    sendWhatsappMessageTemplateScheduled (CRON)
-   - Ahora usa cache, NO consulta Meta si ya está cacheado
+   
+   FIX 3: Retry con invalidación de cache si templateText es null
+   FIX 2: Errores de Meta se propagan con detalle real
    ================================================================ */
 
 exports.sendWhatsappMessageTemplateScheduled = async ({
@@ -490,12 +535,40 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     );
   }
 
-  // 2) Obtener plantilla — ahora usa CACHE automáticamente
+  // 2) Obtener plantilla — ahora usa CACHE + PAGINACIÓN automáticamente
+  let templateResult = await obtenerTextoPlantilla(
+    nombre_template,
+    accessToken,
+    waba_id,
+  );
+
+  // ── FIX 3: RETRY con invalidación de cache si no se encontró ──
+  if (!templateResult.text) {
+    console.warn(
+      `⚠️ [CRON SEND] Template no encontrado en primer intento, reintentando con cache limpio...`,
+      {
+        nombre_template,
+        waba_id,
+      },
+    );
+
+    // Invalidar cache de este template específico
+    const cacheKey = getTemplateCacheKey(waba_id, nombre_template);
+    templateCache.delete(cacheKey);
+
+    // Reintentar (esto fuerza un GET fresco a Meta con paginación)
+    templateResult = await obtenerTextoPlantilla(
+      nombre_template,
+      accessToken,
+      waba_id,
+    );
+  }
+
   const {
     text: templateText,
     language: languageFromMeta,
     header: templateHeader,
-  } = await obtenerTextoPlantilla(nombre_template, accessToken, waba_id);
+  } = templateResult;
 
   const resolvedHeaderFormat = header_format || templateHeader?.format || null;
   const resolvedHeaderMediaUrl =
@@ -506,7 +579,17 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   const resolvedMediaUrl = resolvedHeaderMediaUrl;
 
   if (!templateText) {
-    throw new Error('No se encontró el contenido de la plantilla en Meta');
+    const err = new Error(
+      'No se encontró el contenido de la plantilla en Meta (tras retry con paginación completa)',
+    );
+    err.meta_status = null;
+    err.meta_error = {
+      detail:
+        'Template no existe en ninguna página del WABA o no tiene componente BODY',
+      nombre_template,
+      waba_id,
+    };
+    throw err;
   }
 
   // Validaciones de header
