@@ -475,8 +475,11 @@ exports.sendWhatsappMessageTemplate = async ({
 /* ================================================================
    sendWhatsappMessageTemplateScheduled (CRON)
    
-   FIX 3: Retry con invalidación de cache si templateText es null
+   FIX 1: Paginación completa de templates en Meta
    FIX 2: Errores de Meta se propagan con detalle real
+   FIX 3: Retry con invalidación de cache si templateText es null
+   FIX 4: Búsqueda de clientes con REPLACE para manejar espacios
+          en celular_cliente (ej: "52 6699207031" vs "526699207031")
    ================================================================ */
 
 exports.sendWhatsappMessageTemplateScheduled = async ({
@@ -552,11 +555,9 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
       },
     );
 
-    // Invalidar cache de este template específico
     const cacheKey = getTemplateCacheKey(waba_id, nombre_template);
     templateCache.delete(cacheKey);
 
-    // Reintentar (esto fuerza un GET fresco a Meta con paginación)
     templateResult = await obtenerTextoPlantilla(
       nombre_template,
       accessToken,
@@ -703,19 +704,34 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   const uid_whatsapp = telefonoLimpio;
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  // 5) Cliente destino
-  let cliente = await ClientesChatCenter.findOne({
-    where: { celular_cliente: telefonoLimpio, id_configuracion },
-  });
+  // ══════════════════════════════════════════════════════════════
+  // FIX 4: Búsquedas con REPLACE(celular_cliente, ' ', '') para
+  //        manejar números guardados con espacios (ej: "52 6699207031")
+  // ══════════════════════════════════════════════════════════════
 
-  if (!cliente) {
-    cliente = await ClientesChatCenter.create({
+  // 5) Cliente destino
+  const [clienteRow] = await db.query(
+    `SELECT id FROM clientes_chat_center
+     WHERE REPLACE(celular_cliente, ' ', '') = ?
+       AND id_configuracion = ?
+     LIMIT 1`,
+    {
+      replacements: [telefonoLimpio, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  let clienteId = clienteRow?.id || null;
+
+  if (!clienteId) {
+    const nuevoCliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
       nombre_cliente: '',
       apellido_cliente: '',
       celular_cliente: telefonoLimpio,
     });
+    clienteId = nuevoCliente.id;
   }
 
   // 6) Cliente configuración
@@ -727,7 +743,8 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     if (telCfgLimpio) {
       const [clienteConfiguracionExistente] = await db.query(
         `SELECT id FROM clientes_chat_center
-         WHERE celular_cliente = ? AND id_configuracion = ?
+         WHERE REPLACE(celular_cliente, ' ', '') = ?
+           AND id_configuracion = ?
          LIMIT 1`,
         {
           replacements: [telCfgLimpio, id_configuracion],
@@ -755,11 +772,11 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
 
   await MensajesClientes.create({
     id_configuracion,
-    id_cliente: id_cliente_configuracion,
+    id_cliente: id_cliente_configuracion || clienteId,
     mid_mensaje: business_phone_id,
     tipo_mensaje: 'template',
     rol_mensaje: 1,
-    celular_recibe: cliente.id,
+    celular_recibe: clienteId,
     responsable,
     texto_mensaje: templateText,
     ruta_archivo: JSON.stringify(ruta_archivo),
