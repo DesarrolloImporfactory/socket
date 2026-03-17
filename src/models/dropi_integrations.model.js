@@ -37,13 +37,13 @@ const DropiIntegrations = db.define(
     },
 
     integration_key_last4: {
-      type: DataTypes.STRING(4), // en tabla es CHAR(4), esto mapea bien
+      type: DataTypes.STRING(4),
       allowNull: true,
       defaultValue: null,
     },
 
     is_active: {
-      type: DataTypes.TINYINT, // se alinea con tinyint(1)
+      type: DataTypes.TINYINT,
       allowNull: false,
       defaultValue: 1,
     },
@@ -52,6 +52,24 @@ const DropiIntegrations = db.define(
       type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null,
+    },
+
+    sync_stock: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+
+    sync_sale_price: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+
+    sync_suggested_price: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
     },
   },
   {

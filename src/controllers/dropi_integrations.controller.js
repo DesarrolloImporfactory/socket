@@ -514,9 +514,7 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   // 2) Buscar clientes_chat_center que coincidan con esos keys
   const orConditions = [];
   for (const k of uniqueKeys) {
-    orConditions.push(
-      { celular_cliente: { [Op.like]: `%${k}` } },
-    );
+    orConditions.push({ celular_cliente: { [Op.like]: `%${k}` } });
   }
 
   const clientes = await ClientesChatCenter.findAll({
@@ -525,12 +523,7 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
       deleted_at: null,
       [Op.or]: orConditions,
     },
-    attributes: [
-      'id',
-      'celular_cliente',
-      'id_encargado',
-      'estado_contacto',
-    ],
+    attributes: ['id', 'celular_cliente', 'id_encargado', 'estado_contacto'],
     raw: true,
   });
 
@@ -768,4 +761,59 @@ exports.listCities = catchAsync(async (req, res, next) => {
   });
 
   return res.json({ isSuccess: true, data: dropiResponse });
+});
+
+exports.getSyncConfig = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.query?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      sync_stock: integration.sync_stock ?? 0,
+      sync_sale_price: integration.sync_sale_price ?? 0,
+      sync_suggested_price: integration.sync_suggested_price ?? 0,
+    },
+  });
+});
+
+exports.updateSyncConfig = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const { sync_stock, sync_sale_price, sync_suggested_price } = req.body;
+
+  const updates = {};
+  if (sync_stock !== undefined) updates.sync_stock = sync_stock ? 1 : 0;
+  if (sync_sale_price !== undefined)
+    updates.sync_sale_price = sync_sale_price ? 1 : 0;
+  if (sync_suggested_price !== undefined)
+    updates.sync_suggested_price = sync_suggested_price ? 1 : 0;
+
+  if (!Object.keys(updates).length)
+    return next(new AppError('No se enviaron campos para actualizar', 400));
+
+  await DropiIntegrations.update(updates, {
+    where: { id: integration.id },
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      sync_stock: updates.sync_stock ?? integration.sync_stock,
+      sync_sale_price: updates.sync_sale_price ?? integration.sync_sale_price,
+      sync_suggested_price:
+        updates.sync_suggested_price ?? integration.sync_suggested_price,
+    },
+  });
 });

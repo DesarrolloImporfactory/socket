@@ -98,7 +98,16 @@ async function syncAllDropiStock() {
       continue;
     }
 
+    const { sync_stock, sync_sale_price, sync_suggested_price } = integration;
+
+    // Si ninguno está activo, saltar toda la config
+    if (!sync_stock && !sync_sale_price && !sync_suggested_price) {
+      console.log(`[syncDropi] Config ${idConfig}: sin sync activo, saltando`);
+      continue;
+    }
+
     // 4) Por cada producto, consultar detalle en Dropi y actualizar stock
+
     for (const producto of prods) {
       try {
         const dropiDetail = await dropiService.getProductDetail({
@@ -110,51 +119,63 @@ async function syncAllDropiStock() {
         const prod = dropiDetail?.objects;
         if (!prod) {
           console.warn(
-            `⚠️  [syncDropiStock] Producto Dropi #${producto.external_id} no encontrado en API`,
+            ` [syncDropi] Producto Dropi #${producto.external_id} no encontrado`,
           );
           continue;
         }
 
-        const nuevoStock = calcTotalStock(prod);
-        const stockAnterior = producto.stock;
+        const updateFields = {};
 
-        // Solo actualizar si cambió, para no generar escrituras innecesarias
-        if (nuevoStock !== stockAnterior) {
-          await ProductosChatCenter.update(
-            {
-              stock: nuevoStock,
-              fecha_actualizacion: new Date(),
-            },
-            { where: { id: producto.id } },
-          );
+        if (sync_stock) {
+          const nuevoStock = calcTotalStock(prod);
+          if (nuevoStock !== producto.stock) {
+            updateFields.stock = nuevoStock;
+          }
+        }
 
+        if (sync_sale_price && prod.sale_price != null) {
+          const nuevo = parseFloat(prod.sale_price);
+          if (nuevo !== parseFloat(producto.precio_proveedor || 0)) {
+            updateFields.precio_proveedor = nuevo;
+          }
+        }
+
+        if (sync_suggested_price && prod.suggested_price != null) {
+          const nuevo = parseFloat(prod.suggested_price);
+          if (nuevo !== parseFloat(producto.precio || 0)) {
+            updateFields.precio = nuevo;
+          }
+        }
+
+        if (Object.keys(updateFields).length > 0) {
+          updateFields.fecha_actualizacion = new Date();
+          await ProductosChatCenter.update(updateFields, {
+            where: { id: producto.id },
+          });
           console.log(
-            ` [syncDropiStock] Producto #${producto.id} (Dropi #${producto.external_id}): ${stockAnterior} → ${nuevoStock}`,
+            `✅ [syncDropi] #${producto.id}: ${JSON.stringify(updateFields)}`,
           );
         }
 
         actualizados++;
-
-        // Pequeña pausa para no saturar la API de Dropi (100ms entre llamadas)
         await new Promise((r) => setTimeout(r, 100));
       } catch (err) {
         errores++;
-        console.error(
-          ` [syncDropiStock] Error producto #${producto.id} (Dropi #${producto.external_id}): ${err.message}`,
-        );
+        console.error(`❌ [syncDropi] #${producto.id}: ${err.message}`);
       }
     }
   }
 
   console.log(
-    `🏁 [syncDropiStock] Finalizado — actualizados: ${actualizados}, errores: ${errores}`,
+    ` [syncDropiStock] Finalizado — actualizados: ${actualizados}, errores: ${errores}`,
   );
 }
 
 let isRunning = false;
 
 // ─── schedule: todos los días a las 4:00 AM (hora del servidor) ───
-cron.schedule('0 4 * * *', async () => {
+// cron.schedule('0 4 * * *', async () => {
+cron.schedule('* * * * *', async () => {
   if (isRunning) return;
   isRunning = true;
   try {
