@@ -10,6 +10,10 @@ const dropiService = require('../services/dropi.service');
 // ─── helpers ───
 const DROPI_SOURCE = 'DROPI';
 
+// Pausa aleatoria entre 3-6 segundos (simula navegación orgánica)
+const randomPause = () =>
+  new Promise((r) => setTimeout(r, 3000 + Math.floor(Math.random() * 3000)));
+
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
@@ -18,7 +22,7 @@ async function withLock(lockName, fn) {
       type: db.QueryTypes.SELECT,
     });
     if (!row || Number(row.got) !== 1) {
-      console.log(' [syncDropiStock] Lock ocupado, saltando ejecución');
+      console.log(' [syncDropi] Lock ocupado, saltando ejecución');
       return;
     }
     try {
@@ -51,7 +55,7 @@ async function getActiveIntegration(id_configuracion) {
 
 // ─── lógica principal ───
 async function syncAllDropiStock() {
-  console.log('[syncDropiStock] Iniciando sincronización de stock Dropi…');
+  console.log('[syncDropi] Iniciando sincronización Dropi…');
 
   // 1) Traer todos los productos vinculados a Dropi que no estén eliminados
   const productos = await ProductosChatCenter.findAll({
@@ -63,13 +67,11 @@ async function syncAllDropiStock() {
   });
 
   if (!productos.length) {
-    console.log('ℹ [syncDropiStock] No hay productos Dropi para sincronizar');
+    console.log('ℹ [syncDropi] No hay productos Dropi para sincronizar');
     return;
   }
 
-  console.log(
-    `📦 [syncDropiStock] Productos a sincronizar: ${productos.length}`,
-  );
+  console.log(`[syncDropi] Productos a sincronizar: ${productos.length}`);
 
   // 2) Agrupar por id_configuracion para reutilizar la misma integración
   const porConfig = {};
@@ -82,31 +84,33 @@ async function syncAllDropiStock() {
   let actualizados = 0;
   let errores = 0;
 
-  // 3) Iterar por cada configuración
   for (const [idConfig, prods] of Object.entries(porConfig)) {
     const integration = await getActiveIntegration(Number(idConfig));
     if (!integration) {
       console.warn(
-        `⚠️  [syncDropiStock] Config ${idConfig}: sin integración activa, saltando ${prods.length} productos`,
+        ` [syncDropi] Config ${idConfig}: sin integración activa, saltando ${prods.length} productos`,
       );
       continue;
     }
 
     const integrationKey = decryptToken(integration.integration_key_enc);
     if (!integrationKey) {
-      console.warn(`⚠️  [syncDropiStock] Config ${idConfig}: key inválida`);
+      console.warn(`  [syncDropi] Config ${idConfig}: key inválida`);
       continue;
     }
 
     const { sync_stock, sync_sale_price, sync_suggested_price } = integration;
 
-    // Si ninguno está activo, saltar toda la config
     if (!sync_stock && !sync_sale_price && !sync_suggested_price) {
-      console.log(`[syncDropi] Config ${idConfig}: sin sync activo, saltando`);
+      console.log(
+        `  [syncDropi] Config ${idConfig}: sin sync activo, saltando`,
+      );
       continue;
     }
 
-    // 4) Por cada producto, consultar detalle en Dropi y actualizar stock
+    console.log(
+      `[syncDropi] Config ${idConfig}: ${prods.length} productos | stock:${sync_stock ? '✓' : '✗'} sale_price:${sync_sale_price ? '✓' : '✗'} suggested:${sync_suggested_price ? '✓' : '✗'}`,
+    );
 
     for (const producto of prods) {
       try {
@@ -119,7 +123,7 @@ async function syncAllDropiStock() {
         const prod = dropiDetail?.objects;
         if (!prod) {
           console.warn(
-            ` [syncDropi] Producto Dropi #${producto.external_id} no encontrado`,
+            ` [syncDropi] Dropi #${producto.external_id} no encontrado en API`,
           );
           continue;
         }
@@ -153,28 +157,33 @@ async function syncAllDropiStock() {
             where: { id: producto.id },
           });
           console.log(
-            `✅ [syncDropi] #${producto.id}: ${JSON.stringify(updateFields)}`,
+            `✅ [syncDropi] #${producto.id} (Dropi #${producto.external_id}): ${JSON.stringify(updateFields)}`,
           );
         }
 
         actualizados++;
-        await new Promise((r) => setTimeout(r, 100));
       } catch (err) {
         errores++;
-        console.error(`❌ [syncDropi] #${producto.id}: ${err.message}`);
+        console.error(
+          `❌ [syncDropi] #${producto.id} (Dropi #${producto.external_id}): ${err.message}`,
+        );
       }
+
+      // Pausa aleatoria 3-6s entre cada producto
+      await randomPause();
     }
   }
 
   console.log(
-    ` [syncDropiStock] Finalizado — actualizados: ${actualizados}, errores: ${errores}`,
+    ` [syncDropi] Finalizado — procesados: ${actualizados}, errores: ${errores}`,
   );
 }
 
 let isRunning = false;
 
 // ─── schedule: todos los días a las 4:00 AM (hora del servidor) ───
-cron.schedule('0 4 * * *', async () => {
+// cron.schedule('0 4 * * *', async () => {
+cron.schedule('* * * * *', async () => {
   if (isRunning) return;
   isRunning = true;
   try {
@@ -184,5 +193,4 @@ cron.schedule('0 4 * * *', async () => {
   }
 });
 
-// Exportar por si en algun momento se llame desde un endpoint de admin
 module.exports = { syncAllDropiStock };
