@@ -4,7 +4,10 @@ const express = require('express');
 
 const router = express.Router();
 
-const { protect } = require('../middlewares/auth.middleware');
+const {
+  protect,
+  protectConfigOwner,
+} = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
 const limiteConversaciones = require('../middlewares/limiteConversaciones.middleware');
@@ -29,49 +32,56 @@ router.use(protect);
 
 router.post(
   '/obtener_template_transportadora',
-  configuracionesController.obtener_template_transportadora
+  configuracionesController.obtener_template_transportadora,
 );
 
 router.post(
   '/validar_conexion_usuario',
   checkPlanActivo,
-  configuracionesController.validarConexionUsuario
+  configuracionesController.validarConexionUsuario,
 );
 
 router.post(
   '/listar_conexiones',
   checkPlanActivo,
   /* limiteConversaciones, */
-  configuracionesController.listarConexiones
+  configuracionesController.listarConexiones,
 );
 
 router.post(
   '/listar_conexiones_sub_user',
   checkPlanActivo,
   /* limiteConversaciones, */
-  configuracionesController.listarConexionesSubUser
+  configuracionesController.listarConexionesSubUser,
 );
 
 router.post(
   '/listar_admin_conexiones',
   checkPlanActivo,
-  configuracionesController.listarAdminConexiones
+  configuracionesController.listarAdminConexiones,
 );
 
 router.post(
   '/listar_configuraciones',
-  configuracionesController.listarConfiguraciones
+  configuracionesController.listarConfiguraciones,
 );
 
 router.post(
   '/agregarConfiguracion',
   limiteConexiones,
-  configuracionesController.agregarConfiguracion
+  configuracionesController.agregarConfiguracion,
 );
 router.post(
   '/toggle_suspension',
   validarReactivarConLimite,
-  configuracionesController.toggleSuspension
+  configuracionesController.toggleSuspension,
+);
+
+router.post(
+  '/exportar_mensajes_xlsx',
+  checkPlanActivo,
+  protectConfigOwner,
+  configuracionesController.exportarMensajesXLSX,
 );
 
 module.exports = router;
