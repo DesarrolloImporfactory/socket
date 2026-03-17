@@ -117,3 +117,32 @@ attachUnifiedGateway(io, {
     return null;
   },
 });
+
+// ─── Process-level error handlers ───────────────────────────────
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  // Dar tiempo para logs y luego cerrar
+  setTimeout(() => process.exit(1), 1000);
+});
+
+// ─── Graceful shutdown ──────────────────────────────────────────
+const gracefulShutdown = async (signal) => {
+  console.log(`\n🔄 ${signal} received. Shutting down gracefully...`);
+  try {
+    server.close();
+    await db.close();
+    await db_2.close();
+    console.log('✅ All connections closed.');
+    process.exit(0);
+  } catch (err) {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

@@ -11,6 +11,25 @@ const { decryptToken } = require('../utils/cryptoToken');
 
 const onlineUsers = [];
 
+// Retry helper para queries que fallan por ECONNRESET
+async function withRetry(fn, retries = 2, delay = 500) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isTransient = /ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|SequelizeConnectionError/i.test(
+        err.message || err.name || '',
+      );
+      if (isTransient && i < retries) {
+        console.warn(`⚠️ Retry ${i + 1}/${retries} after: ${err.message}`);
+        await new Promise((r) => setTimeout(r, delay * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function getActiveIntegration(id_configuracion) {
   return DropiIntegrations.findOne({
     where: { id_configuracion, deleted_at: null, is_active: 1 },
@@ -92,17 +111,19 @@ class Sockets {
           try {
             const chatService = new ChatService();
 
-            const chats = await chatService.findChats(
-              id_configuracion,
-              id_sub_usuario,
-              rol,
-              {
-                cursorFecha,
-                cursorId,
-                limit,
-                filtros,
-                scopeChats,
-              },
+            const chats = await withRetry(() =>
+              chatService.findChats(
+                id_configuracion,
+                id_sub_usuario,
+                rol,
+                {
+                  cursorFecha,
+                  cursorId,
+                  limit,
+                  filtros,
+                  scopeChats,
+                },
+              ),
             );
 
             socket.emit('CHATS', chats);
@@ -116,9 +137,8 @@ class Sockets {
       socket.on('GET_CHATS_BOX', async ({ chatId, id_configuracion }) => {
         try {
           const chatService = new ChatService();
-          const chat = await chatService.getChatsByClient(
-            chatId,
-            id_configuracion,
+          const chat = await withRetry(() =>
+            chatService.getChatsByClient(chatId, id_configuracion),
           );
           // Enviar el chat al cliente que hizo la solicitud
           socket.emit('CHATS_BOX_RESPONSE', chat);
