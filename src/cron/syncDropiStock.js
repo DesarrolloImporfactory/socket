@@ -174,8 +174,7 @@ async function syncAllDropiStock() {
 let isRunning = false;
 
 // ─── schedule: todos los días a las 4:00 AM (hora del servidor) ───
-// cron.schedule('0 4 * * *', async () => {
-cron.schedule('* * * * *', async () => {
+cron.schedule('0 4 * * *', async () => {
   if (isRunning) return;
   isRunning = true;
   try {
