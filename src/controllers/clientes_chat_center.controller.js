@@ -98,7 +98,12 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
 });
 
 exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
-  const { telefono: telefonoRaw, nombre, apellido, id_configuracion } = req.body;
+  const {
+    telefono: telefonoRaw,
+    nombre,
+    apellido,
+    id_configuracion,
+  } = req.body;
 
   try {
     // Limpiar teléfono: quitar caracteres especiales y espacios
@@ -728,32 +733,24 @@ exports.actualizarEstado = async (req, res) => {
       });
     }
 
-    // 🟦 MAPEO del estado del FRONT al estado REAL en la BD
-    const estadoMap = {
-      CONTACTO_INICIAL: 'contacto_inicial',
-      PLATAFORMAS_Y_CLASES: 'plataformas_clases',
-      PRODUCTOS_Y_PROVEEDORES: 'productos_proveedores',
-      VENTAS: 'ventas_imporfactory',
-      ASESOR: 'asesor',
-      COTIZACIONES: 'cotizaciones_imporfactory',
-      IA_VENTAS: 'ia_ventas',
-      GENERAR_GUIA: 'generar_guia',
-      SEGUIMIENTO: 'seguimiento',
-      CANCELADO: 'cancelado',
-      ATENCION_URGENTE: 'atencion_urgente',
-      IA_VENTAS_IMPORSHOP: 'ia_ventas_imporshop',
-    };
+    // ── Validar que el estado exista en kanban_columnas ──
+    const [columna] = await db.query(
+      `SELECT id FROM kanban_columnas 
+       WHERE id_configuracion = ? AND estado_db = ? AND activo = 1 LIMIT 1`,
+      {
+        replacements: [id_configuracion, nuevo_estado],
+        type: db.QueryTypes.SELECT,
+      },
+    );
 
-    const estadoBD = estadoMap[nuevo_estado];
-
-    if (!estadoBD) {
+    if (!columna) {
       return res.status(400).json({
         success: false,
         message: `El estado "${nuevo_estado}" no es válido.`,
       });
     }
 
-    // Buscar cliente
+    // ── Buscar cliente ──
     const cliente = await ClientesChatCenter.findOne({
       where: { id: id_cliente, id_configuracion },
     });
@@ -765,12 +762,10 @@ exports.actualizarEstado = async (req, res) => {
       });
     }
 
-    // Actualizar
-    await cliente.update({
-      estado_contacto: estadoBD,
-    });
+    // ── Actualizar ──
+    await cliente.update({ estado_contacto: nuevo_estado });
 
-    //Emitimos al dashboard para chats en cola y estados futuros
+    // ── Emitir socket ──
     if (global.presenceIo) {
       const [cfg] = await db.query(
         `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -785,7 +780,7 @@ exports.actualizarEstado = async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Estado de contacto actualizado correctamente',
+      message: 'Estado actualizado correctamente',
       data: cliente,
     });
   } catch (error) {
@@ -924,7 +919,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.email_cliente    LIKE ? OR
       c.celular_cliente  LIKE ? 
     )`);
-    params.push( like, like, like, like);
+    params.push(like, like, like, like);
   }
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
