@@ -12,7 +12,7 @@ const DROPI_SOURCE = 'DROPI';
 
 // Pausa aleatoria entre 3-6 segundos (simula navegación orgánica)
 const randomPause = () =>
-  new Promise((r) => setTimeout(r, 3000 + Math.floor(Math.random() * 3000)));
+  new Promise((r) => setTimeout(r, 5000 + Math.floor(Math.random() * 3000)));
 
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
