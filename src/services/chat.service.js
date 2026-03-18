@@ -596,17 +596,102 @@ class ChatService {
           },
         };
       } else if (tipo === 'document' || tipo === 'file') {
-        // ← SIN CAMBIOS
         if (!ruta_archivo) throw new Error('Falta ruta_archivo para document');
-        requestData = {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'document',
-          document: {
-            link: ruta_archivo,
-            caption: mensaje || '',
-          },
-        };
+
+        const audioExtensions = /\.(mp3|ogg|wav|aac|m4a|oga|opus)(\?.*)?$/i;
+        const isAudio = audioExtensions.test(ruta_archivo);
+
+        if (isAudio) {
+          const ffmpeg = require('fluent-ffmpeg');
+          const { file: tmpFile } = require('tmp-promise');
+          const fs = require('fs');
+          const FormData = require('form-data');
+
+          // 1) Descargar el audio original
+          console.log('[AUDIO_SEND] Descargando desde:', ruta_archivo);
+          const dlResp = await axios.get(ruta_archivo, {
+            responseType: 'arraybuffer',
+            timeout: 60000,
+          });
+          const inputBuffer = Buffer.from(dlResp.data);
+          console.log(`[AUDIO_SEND] Descargado: ${(inputBuffer.length / 1024).toFixed(1)} KB`);
+
+          // 2) Archivos temporales de entrada y salida
+          const inputTmp = await tmpFile({ postfix: '.mp3', keep: false });
+          const outputTmp = await tmpFile({ postfix: '.ogg', keep: false });
+
+          try {
+            await fs.promises.writeFile(inputTmp.path, inputBuffer);
+
+            // 3) Convertir a OGG/OPUS (formato requerido por WhatsApp Business API)
+            await new Promise((resolve, reject) => {
+              ffmpeg(inputTmp.path)
+                .audioCodec('libopus')
+                .audioChannels(1)
+                .audioFrequency(16000)
+                .audioBitrate('64k')
+                .format('ogg')
+                .on('end', resolve)
+                .on('error', reject)
+                .save(outputTmp.path);
+            });
+
+            const oggBuffer = await fs.promises.readFile(outputTmp.path);
+            console.log(`[AUDIO_SEND] Convertido OGG/OPUS: ${(oggBuffer.length / 1024).toFixed(1)} KB`);
+
+            // 4) Subir buffer OGG a Meta → obtener media_id
+            const uploadForm = new FormData();
+            uploadForm.append('file', oggBuffer, {
+              filename: 'audio.ogg',
+              contentType: 'audio/ogg',
+            });
+            uploadForm.append('type', 'audio/ogg');
+            uploadForm.append('messaging_product', 'whatsapp');
+
+            const uploadResp = await axios.post(
+              `https://graph.facebook.com/v19.0/${fromTelefono}/media`,
+              uploadForm,
+              {
+                headers: {
+                  Authorization: `Bearer ${fromToken}`,
+                  ...uploadForm.getHeaders(),
+                },
+                timeout: 120000,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+              },
+            );
+
+            const mediaId = uploadResp.data?.id;
+            if (!mediaId) throw new Error('Meta no retornó media_id para el audio');
+            console.log(`[AUDIO_SEND] ✅ media_id: ${mediaId}`);
+
+            // 5) Enviar como audio de voz con media_id (NO link)
+            requestData = {
+              messaging_product: 'whatsapp',
+              recipient_type: 'individual',
+              to,
+              type: 'audio',
+              audio: {
+                id: mediaId,
+                voice: true,
+              },
+            };
+          } finally {
+            await inputTmp.cleanup();
+            await outputTmp.cleanup();
+          }
+        } else {
+          requestData = {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'document',
+            document: {
+              link: ruta_archivo,
+              caption: mensaje || '',
+            },
+          };
+        }
       } else {
         // ← SIN CAMBIOS
         requestData = {
@@ -653,7 +738,7 @@ class ChatService {
       const mensajeCliente = {
         id_configuracion: dataAdmin.id,
         mid_mensaje: fromTelefono,
-        tipo_mensaje: tipo === 'file' ? 'document' : tipo,
+        tipo_mensaje: requestData?.type ?? (tipo === 'file' ? 'document' : tipo),
         rol_mensaje: 1,
         id_cliente,
         uid_whatsapp: to,
