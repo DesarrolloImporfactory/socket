@@ -1,6 +1,7 @@
 const axios = require('axios');
 const FormDataLib = require('form-data');
 const { Op } = require('sequelize');
+const { db } = require('../database/config');
 
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
@@ -933,22 +934,35 @@ exports.get_usage = catchAsync(async (req, res, next) => {
   const isTrialUsage = estado === 'trial_usage';
   const isPromoUsage = estado === 'promo_usage';
 
-  // ── Promo usage: límites son los restantes ──
+  // ── Promo usage: calcular total original del cupón ──
   if (isPromoUsage) {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
     const angRestantes = Number(usuario.promo_angulos_restantes || 0);
 
+    // Buscar cuánto le dieron originalmente
+    const [[canje]] = await db.query(
+      `SELECT imagenes_otorgadas, angulos_otorgados
+     FROM canjes_codigo_promocional
+     WHERE id_usuario = ?
+     ORDER BY fecha_canje DESC
+     LIMIT 1`,
+      { replacements: [id_usuario] },
+    );
+
+    const imgTotal = Number(canje?.imagenes_otorgadas || imgRestantes);
+    const angTotal = Number(canje?.angulos_otorgados || angRestantes);
+
     return res.json({
       isSuccess: true,
       usage: {
-        used: 0,
-        limit: imgRestantes,
+        used: imgTotal - imgRestantes,
+        limit: imgTotal,
         remaining: imgRestantes,
         plan: 'Código Promocional',
         is_trial: false,
         is_promo: true,
-        angles_used: 0,
-        angles_limit: angRestantes,
+        angles_used: angTotal - angRestantes,
+        angles_limit: angTotal,
         angles_remaining: angRestantes,
       },
     });
