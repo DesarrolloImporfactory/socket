@@ -536,10 +536,9 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   }
 
   const cotizacionInfo = resultado[0];
-  const celularFormateado = formatPhoneForWhatsApp(
-    cotizacionInfo.celular_cliente,
-    '593',
-  );
+  const celularFormateado =  cotizacionInfo.celular_cliente
+
+  console.log('[ENVIAR_COTIZACION] Celular formateado:', celularFormateado);
 
   // Crear y enviar las dos plantillas de WhatsApp
   // plantilla1: descargar video predeterminado → convertir → subir a Meta → header con mediaId
@@ -664,11 +663,10 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
 
   // Buscar o crear el chat
   let chatId = null;
+  const celularLimpio = celularFormateado.replace(/[\s+]/g, '');
   const foundChat = await Clientes_chat_center.findOne({
     where: {
-      celular_cliente: {
-        [Op.like]: `%${celularFormateado}%`,
-      },
+      celular_cliente: celularLimpio,
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
     },
   });
@@ -676,11 +674,10 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    // Crear nuevo chat
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
       nombre_cliente: cotizacionInfo.cliente,
-      celular_cliente: celularFormateado,
+      celular_cliente: celularLimpio,
       uid_cliente: COTIZADOR_CONFIG.UID_CLIENTE,
       email_cliente: cotizacionInfo.email_cliente,
       estado_cliente: 1,
