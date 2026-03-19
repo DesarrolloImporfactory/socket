@@ -36,6 +36,8 @@ function pickImageBase64(geminiResp) {
 
 function mapGeminiQuotaMessage(rawMsg = '') {
   const msg = String(rawMsg);
+  console.error('[Gemini] RAW ERROR:', msg);
+
   const isQuota =
     msg.includes('exceeded your current quota') ||
     msg.includes('Quota exceeded') ||
