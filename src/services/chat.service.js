@@ -602,10 +602,13 @@ class ChatService {
         const isAudio = audioExtensions.test(ruta_archivo);
 
         if (isAudio) {
-          const ffmpeg = require('fluent-ffmpeg');
           const { file: tmpFile } = require('tmp-promise');
           const fs = require('fs');
+          const path = require('path');
           const FormData = require('form-data');
+          const { execFile } = require('child_process');
+          const { promisify } = require('util');
+          const execFileAsync = promisify(execFile);
 
           // 1) Descargar el audio original
           console.log('[AUDIO_SEND] Descargando desde:', ruta_archivo);
@@ -616,34 +619,50 @@ class ChatService {
           const inputBuffer = Buffer.from(dlResp.data);
           console.log(`[AUDIO_SEND] Descargado: ${(inputBuffer.length / 1024).toFixed(1)} KB`);
 
+          // Detectar extensión real de la URL (mp3, m4a, wav, etc.)
+          const urlPath = ruta_archivo.split('?')[0];
+          const inputExt = path.extname(urlPath).toLowerCase() || '.mp3';
+
           // 2) Archivos temporales de entrada y salida
-          const inputTmp = await tmpFile({ postfix: '.mp3', keep: false });
+          const inputTmp = await tmpFile({ postfix: inputExt, keep: false });
           const outputTmp = await tmpFile({ postfix: '.ogg', keep: false });
 
           try {
             await fs.promises.writeFile(inputTmp.path, inputBuffer);
 
-            // 3) Convertir a OGG/OPUS (formato requerido por WhatsApp Business API)
-            await new Promise((resolve, reject) => {
-              ffmpeg(inputTmp.path)
-                .audioCodec('libopus')
-                .audioChannels(1)
-                .audioFrequency(16000)
-                .audioBitrate('64k')
-                .format('ogg')
-                .on('end', resolve)
-                .on('error', reject)
-                .save(outputTmp.path);
+            // 3) Convertir a OGG/OPUS con execFile para control exacto de argumentos.
+            //    WhatsApp exige: libopus, mono, 16000 Hz, sin streams de video.
+            const ffmpegArgs = [
+              '-y',
+              '-i', inputTmp.path,
+              '-vn',                  // eliminar video si existe
+              '-c:a', 'libopus',
+              '-ar', '16000',         // 16 kHz wideband
+              '-ac', '1',             // mono
+              '-b:a', '16k',          // 16 kbps CBR
+              '-application', 'voip', // application mode para voz
+              '-frame_duration', '20',// frames de 20 ms
+              '-f', 'ogg',
+              outputTmp.path,
+            ];
+
+            console.log('[AUDIO_SEND] ffmpeg args:', ffmpegArgs.join(' '));
+            const { stderr } = await execFileAsync('ffmpeg', ffmpegArgs).catch((err) => {
+              throw new Error(`ffmpeg falló: ${err.stderr || err.message}`);
             });
+            if (stderr) console.log('[AUDIO_SEND] ffmpeg stderr:', stderr);
 
             const oggBuffer = await fs.promises.readFile(outputTmp.path);
+            if (!oggBuffer || oggBuffer.length < 100) {
+              throw new Error(`OGG generado inválido (${oggBuffer?.length ?? 0} bytes)`);
+            }
             console.log(`[AUDIO_SEND] Convertido OGG/OPUS: ${(oggBuffer.length / 1024).toFixed(1)} KB`);
 
             // 4) Subir buffer OGG a Meta → obtener media_id
             const uploadForm = new FormData();
             uploadForm.append('file', oggBuffer, {
               filename: 'audio.ogg',
-              contentType: 'audio/ogg',
+              contentType: 'audio/ogg; codecs=opus',
             });
             uploadForm.append('type', 'audio/ogg');
             uploadForm.append('messaging_product', 'whatsapp');
