@@ -19,6 +19,13 @@ const { decryptToken } = require('../utils/cryptoToken');
 // ─── constantes ─────────────────────────────────────────────────────────────
 const IL_TRIAL_IMAGES = 10;
 
+// ─── Modelos de imagen Gemini (fallback chain) ──────────────────────────────
+const GEMINI_IMAGE_MODELS = [
+  process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview',
+  'gemini-2.5-flash-preview-image-generation',
+  'gemini-3-pro-image-preview',
+];
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 async function downloadToInlineData(url) {
@@ -36,7 +43,7 @@ function pickImageBase64(geminiResp) {
 
 function mapGeminiQuotaMessage(rawMsg = '') {
   const msg = String(rawMsg);
-  console.error('[Gemini] RAW ERROR:', msg);
+  console.error(`[Gemini] RAW ERROR: ${msg}`);
 
   const isQuota =
     msg.includes('exceeded your current quota') ||
@@ -47,28 +54,115 @@ function mapGeminiQuotaMessage(rawMsg = '') {
   if (isQuota) {
     return {
       statusCode: 402,
+      retryable: false,
       message:
         'La API Key de Gemini no tiene cuota disponible o no tiene facturación activada. ' +
         'Activa Billing (Paid tier) en Google AI Studio.',
     };
   }
+
+  const isOverloaded =
+    msg.includes('high demand') ||
+    msg.includes('overloaded') ||
+    msg.includes('try again later') ||
+    msg.includes('502') ||
+    msg.includes('503') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('Internal error') ||
+    msg.includes('internal');
+
+  if (isOverloaded) {
+    return {
+      statusCode: 503,
+      retryable: true,
+      message:
+        'El motor de generación se encuentra con alta demanda. Inténtalo de nuevo en unos minutos.',
+    };
+  }
+
   return {
     statusCode: 500,
+    retryable: false,
     message: 'Error al generar la imagen con Gemini. Intenta nuevamente.',
   };
+}
+
+async function callGeminiWithRetry(payload, apiKey, next) {
+  const MAX_RETRIES = 2;
+  const RETRY_DELAY = 3000;
+  let lastError = null;
+
+  for (const model of GEMINI_IMAGE_MODELS) {
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const resp = await axios.post(geminiUrl, payload, {
+          headers: {
+            'x-goog-api-key': apiKey,
+            'Content-Type': 'application/json',
+          },
+          timeout: 120000,
+        });
+
+        const image_base64 = pickImageBase64(resp);
+        if (image_base64) {
+          if (model !== GEMINI_IMAGE_MODELS[0]) {
+            console.log(`[Gemini] Generado con modelo fallback: ${model}`);
+          }
+          return { image_base64, model };
+        }
+
+        lastError = {
+          message: 'Gemini no devolvió imagen',
+          statusCode: 500,
+          retryable: false,
+        };
+        break;
+      } catch (err) {
+        const rawMsg =
+          err?.response?.data?.error?.message || err?.message || '';
+        const mapped = mapGeminiQuotaMessage(rawMsg);
+        lastError = mapped;
+
+        if (mapped.statusCode === 402) {
+          return next(new AppError(mapped.message, mapped.statusCode));
+        }
+
+        if (mapped.retryable && attempt < MAX_RETRIES) {
+          console.warn(
+            `[Gemini] Retry ${attempt + 1}/${MAX_RETRIES} modelo=${model} — ${rawMsg.slice(0, 100)}`,
+          );
+          await new Promise((r) => setTimeout(r, RETRY_DELAY * (attempt + 1)));
+          continue;
+        }
+
+        console.warn(
+          `[Gemini] Modelo ${model} falló tras ${attempt + 1} intentos, probando siguiente...`,
+        );
+        break;
+      }
+    }
+  }
+
+  const finalMsg = lastError?.retryable
+    ? 'El motor de generación se encuentra con alta demanda. Inténtalo de nuevo en unos minutos.'
+    : lastError?.message || 'Error al generar la imagen.';
+  const finalCode = lastError?.retryable ? 503 : lastError?.statusCode || 500;
+
+  return next(new AppError(finalMsg, finalCode));
 }
 
 async function uploadImageToS3(base64Data, userId, suffix = '') {
   try {
     const buffer = Buffer.from(base64Data, 'base64');
     const fileName = `ia-gen-${userId}-${Date.now()}${suffix}.png`;
-
     const form = new FormDataLib();
     form.append('file', buffer, {
       filename: `generaciones-ia/${fileName}`,
       contentType: 'image/png',
     });
-
     const resp = await axios.post(
       'https://uploader.imporfactory.app/api/files/upload',
       form,
@@ -78,7 +172,6 @@ async function uploadImageToS3(base64Data, userId, suffix = '') {
         validateStatus: () => true,
       },
     );
-
     if (
       resp.status >= 200 &&
       resp.status < 300 &&
@@ -99,13 +192,11 @@ async function uploadTemplateToS3(fileBuffer, originalName) {
   try {
     const ext = originalName.split('.').pop() || 'png';
     const fileName = `templates-ia/template-${Date.now()}.${ext}`;
-
     const form = new FormDataLib();
     form.append('file', fileBuffer, {
       filename: fileName,
       contentType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
     });
-
     const resp = await axios.post(
       'https://uploader.imporfactory.app/api/files/upload',
       form,
@@ -115,7 +206,6 @@ async function uploadTemplateToS3(fileBuffer, originalName) {
         validateStatus: () => true,
       },
     );
-
     if (
       resp.status >= 200 &&
       resp.status < 300 &&
@@ -180,7 +270,6 @@ async function validateUserQuota(id_usuario, next) {
       },
     ],
   });
-
   if (!usuario) {
     next(new AppError('Usuario no encontrado', 404));
     return null;
@@ -196,7 +285,6 @@ async function validateUserQuota(id_usuario, next) {
   if (estado === 'trial_usage') {
     const limite = Number(usuario.plan?.trial_value) || IL_TRIAL_IMAGES;
     const usadas = Number(usuario.il_imagenes_usadas || 0);
-
     if (usadas >= limite) {
       next(
         new AppError(
@@ -206,7 +294,6 @@ async function validateUserQuota(id_usuario, next) {
       );
       return null;
     }
-
     return {
       usuario,
       maxImagenes: limite,
@@ -219,7 +306,6 @@ async function validateUserQuota(id_usuario, next) {
   // ── Promo usage (código promocional, usuario SIN plan pagado) ──
   if (estado === 'promo_usage') {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
-
     if (imgRestantes <= 0) {
       next(
         new AppError(
@@ -229,7 +315,6 @@ async function validateUserQuota(id_usuario, next) {
       );
       return null;
     }
-
     return {
       usuario,
       maxImagenes: imgRestantes,
@@ -245,7 +330,7 @@ async function validateUserQuota(id_usuario, next) {
 
   // Si el plan NO incluye imágenes, pero tiene bonus promo → usar promo
   if (maxImagenes <= 0) {
-    if (promoImgRestantes > 0) {
+    if (promoImgRestantes > 0)
       return {
         usuario,
         maxImagenes: promoImgRestantes,
@@ -253,7 +338,6 @@ async function validateUserQuota(id_usuario, next) {
         isTrialUsage: false,
         isPromoUsage: true,
       };
-    }
     next(
       new AppError('Tu plan no incluye generación de imágenes con IA.', 403),
     );
@@ -261,7 +345,6 @@ async function validateUserQuota(id_usuario, next) {
   }
 
   const usedThisMonth = await getMonthlyCount(id_usuario);
-
   // Si agotó cuota mensual del plan, pero tiene bonus promo → usar promo
   if (usedThisMonth >= maxImagenes && promoImgRestantes > 0) {
     return {
@@ -290,14 +373,12 @@ async function getGeminiApiKey(next) {
     attributes: ['id', 'api_key_gemini'],
     order: [['id', 'ASC']],
   });
-
   if (!cfg || !cfg.api_key_gemini) {
     next(
       new AppError('No hay API Key de Gemini configurada en el sistema', 500),
     );
     return null;
   }
-
   try {
     return decryptToken(cfg.api_key_gemini);
   } catch {
@@ -306,7 +387,6 @@ async function getGeminiApiKey(next) {
   }
 }
 
-// ── Auto-set portada helper ─────────────────────────────────────────────────
 async function autoSetPortadaIfNeeded(id_producto, image_url) {
   if (!id_producto || !image_url) return;
   try {
@@ -314,9 +394,8 @@ async function autoSetPortadaIfNeeded(id_producto, image_url) {
     const prod = await ProductosIA.findByPk(id_producto, {
       attributes: ['id', 'imagen_portada'],
     });
-    if (prod && !prod.imagen_portada) {
+    if (prod && !prod.imagen_portada)
       await prod.update({ imagen_portada: image_url });
-    }
   } catch (e) {
     console.error('[Gemini] Auto-portada error:', e.message);
   }
@@ -324,58 +403,40 @@ async function autoSetPortadaIfNeeded(id_producto, image_url) {
 
 const MOCK_IMAGE_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-
 function isMockMode() {
   return process.env.GEMINI_MOCK === 'true';
 }
 
-/**
- * Helper: construir error de límite según tipo de quota
- */
 function buildQuotaError(quota) {
-  if (quota.isTrialUsage) {
+  if (quota.isTrialUsage)
     return new AppError(
       `Tu prueba gratuita de ${quota.maxImagenes} imágenes ha terminado. Suscríbete para continuar.`,
       402,
     );
-  }
-  if (quota.isPromoUsage) {
+  if (quota.isPromoUsage)
     return new AppError(
       'Tus imágenes promocionales se agotaron. Suscríbete para continuar.',
       402,
     );
-  }
   return new AppError(
     `Límite de ${quota.maxImagenes} imágenes alcanzado.`,
     429,
   );
 }
 
-/**
- * Helper: incrementar/decrementar contadores según tipo de uso
- * - trial_usage: incrementa il_imagenes_usadas
- * - promo_usage: decrementa promo_imagenes_restantes
- * - plan normal con isPromoUsage=true: decrementa promo_imagenes_restantes (bonus)
- * - plan normal: no hace nada (se cuenta por registros en generaciones_ia)
- */
 async function incrementUsageCounter(quota, id_usuario) {
-  if (quota.isTrialUsage) {
+  if (quota.isTrialUsage)
     await Usuarios.increment('il_imagenes_usadas', {
       by: 1,
       where: { id_usuario },
     });
-  }
-  if (quota.isPromoUsage) {
+  if (quota.isPromoUsage)
     await Usuarios.decrement('promo_imagenes_restantes', {
       by: 1,
       where: { id_usuario },
     });
-  }
 }
 
-/**
- * Helper: construir objeto usage para la respuesta
- */
 function buildUsageResponse(quota) {
   if (quota.isPromoUsage) {
     const remaining = Math.max(quota.maxImagenes - 1, 0);
@@ -387,7 +448,6 @@ function buildUsageResponse(quota) {
       is_promo: true,
     };
   }
-
   const newUsed = quota.usedThisMonth + 1;
   return {
     used: newUsed,
@@ -462,7 +522,6 @@ exports.admin_list_templates = catchAsync(async (req, res) => {
       },
     ],
   });
-
   const etapas = await EtapasLanding.findAll({
     where: { activo: 1 },
     attributes: [
@@ -475,14 +534,12 @@ exports.admin_list_templates = catchAsync(async (req, res) => {
     ],
     order: [['orden', 'ASC']],
   });
-
   return res.json({ isSuccess: true, data: { templates, etapas } });
 });
 
 exports.admin_create_template = catchAsync(async (req, res, next) => {
   const { nombre, id_etapa, descripcion, orden } = req.body;
   if (!nombre) return next(new AppError('El nombre es requerido', 400));
-
   let src_url = '';
   if (req.file) {
     src_url = await uploadTemplateToS3(req.file.buffer, req.file.originalname);
@@ -494,7 +551,6 @@ exports.admin_create_template = catchAsync(async (req, res, next) => {
       new AppError('Debes subir una imagen o proporcionar una URL', 400),
     );
   }
-
   const template = await TemplatesIA.create({
     nombre,
     src_url,
@@ -503,7 +559,6 @@ exports.admin_create_template = catchAsync(async (req, res, next) => {
     orden: orden ? Number(orden) : 0,
     activo: 1,
   });
-
   return res.status(201).json({ isSuccess: true, data: template });
 });
 
@@ -511,7 +566,6 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
   const { id } = req.params;
   const template = await TemplatesIA.findByPk(id);
   if (!template) return next(new AppError('Template no encontrado', 404));
-
   const updates = {};
   if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
   if (req.body.descripcion !== undefined)
@@ -520,7 +574,6 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
     updates.id_etapa = req.body.id_etapa ? Number(req.body.id_etapa) : null;
   if (req.body.orden !== undefined) updates.orden = Number(req.body.orden);
   if (req.body.activo !== undefined) updates.activo = Number(req.body.activo);
-
   if (req.file) {
     const newUrl = await uploadTemplateToS3(
       req.file.buffer,
@@ -530,9 +583,7 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
   } else if (req.body.src_url) {
     updates.src_url = req.body.src_url;
   }
-
   await template.update(updates);
-
   const updated = await TemplatesIA.findByPk(id, {
     include: [
       {
@@ -543,7 +594,6 @@ exports.admin_update_template = catchAsync(async (req, res, next) => {
       },
     ],
   });
-
   return res.json({ isSuccess: true, data: updated });
 });
 
@@ -587,7 +637,6 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   if (!etapa_id) return next(new AppError('etapa_id es requerido', 400));
 
   const files = Array.isArray(req.files) ? req.files : [];
-
   let userImageUrls = [];
   try {
     if (req.body?.user_image_urls)
@@ -607,18 +656,12 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
 
   const quota = await validateUserQuota(id_usuario, next);
   if (!quota) return;
-
-  const { maxImagenes, usedThisMonth } = quota;
-  if (usedThisMonth >= maxImagenes) {
+  if (quota.usedThisMonth >= quota.maxImagenes)
     return next(buildQuotaError(quota));
-  }
 
-  // ── MOCK MODE ──────────────────────────────────────────────
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 1500));
-
     await incrementUsageCounter(quota, id_usuario);
-
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
@@ -631,7 +674,6 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
       model: 'mock',
       image_url: null,
     });
-
     return res.json({
       isSuccess: true,
       etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
@@ -670,7 +712,6 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     BRL: 'R$',
   };
   const sym = SIMBOLOS[moneda] || '$';
-
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
@@ -721,10 +762,6 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     .filter(Boolean)
     .join('\n');
 
-  const model =
-    process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
   const payload = {
     contents: [
       {
@@ -746,25 +783,11 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     },
   };
 
-  let geminiResp;
-  try {
-    geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      timeout: 120000,
-    });
-  } catch (err) {
-    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
-    const mapped = mapGeminiQuotaMessage(rawMsg);
-    return next(new AppError(mapped.message, mapped.statusCode));
-  }
+  const result = await callGeminiWithRetry(payload, apiKey, next);
+  if (!result || !result.image_base64) return;
 
-  const image_base64 = pickImageBase64(geminiResp);
-  if (!image_base64)
-    return next(new AppError('Gemini no devolvió imagen', 500));
-
+  const image_base64 = result.image_base64;
+  const model = result.model;
   const image_url = await uploadImageToS3(
     image_base64,
     id_usuario,
@@ -783,9 +806,7 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     model,
     image_url,
   });
-
   await autoSetPortadaIfNeeded(id_producto, image_url);
-
   await incrementUsageCounter(quota, id_usuario);
 
   return res.json({
@@ -814,18 +835,14 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 
   if (!template_url)
     return next(new AppError('template_url es requerido', 400));
-
   const files = Array.isArray(req.files) ? req.files : [];
   if (!files.length)
     return next(new AppError('Debes subir al menos una imagen', 400));
 
   const quota = await validateUserQuota(id_usuario, next);
   if (!quota) return;
-
-  const { maxImagenes, usedThisMonth } = quota;
-  if (usedThisMonth >= maxImagenes) {
+  if (quota.usedThisMonth >= quota.maxImagenes)
     return next(buildQuotaError(quota));
-  }
 
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return;
@@ -848,53 +865,32 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
     .filter(Boolean)
     .join('\n');
 
-  const model =
-    process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
-  let geminiResp;
-  try {
-    geminiResp = await axios.post(
-      geminiUrl,
+  const payload = {
+    contents: [
       {
-        contents: [
+        parts: [
+          { text: prompt },
           {
-            parts: [
-              { text: prompt },
-              {
-                inline_data: {
-                  mime_type: templateInline.mimeType,
-                  data: templateInline.data,
-                },
-              },
-              ...userParts,
-            ],
+            inline_data: {
+              mime_type: templateInline.mimeType,
+              data: templateInline.data,
+            },
           },
+          ...userParts,
         ],
-        generationConfig: {
-          responseModalities: ['IMAGE'],
-          imageConfig: { aspectRatio: aspect_ratio },
-        },
       },
-      {
-        headers: {
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        timeout: 120000,
-      },
-    );
-  } catch (err) {
-    const mapped = mapGeminiQuotaMessage(
-      err?.response?.data?.error?.message || err?.message || '',
-    );
-    return next(new AppError(mapped.message, mapped.statusCode));
-  }
+    ],
+    generationConfig: {
+      responseModalities: ['IMAGE'],
+      imageConfig: { aspectRatio: aspect_ratio },
+    },
+  };
 
-  const image_base64 = pickImageBase64(geminiResp);
-  if (!image_base64)
-    return next(new AppError('Gemini no devolvió imagen', 500));
+  const result = await callGeminiWithRetry(payload, apiKey, next);
+  if (!result || !result.image_base64) return;
 
+  const image_base64 = result.image_base64;
+  const model = result.model;
   const image_url = await uploadImageToS3(image_base64, id_usuario);
 
   await GeneracionesIA.create({
@@ -907,7 +903,6 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
     model,
     image_url,
   });
-
   await incrementUsageCounter(quota, id_usuario);
 
   return res.json({
@@ -960,23 +955,15 @@ exports.get_usage = catchAsync(async (req, res, next) => {
   const isTrialUsage = estado === 'trial_usage';
   const isPromoUsage = estado === 'promo_usage';
 
-  // ── Promo usage (estado promo_usage, sin plan pagado): calcular total original del cupón ──
   if (isPromoUsage) {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
     const angRestantes = Number(usuario.promo_angulos_restantes || 0);
-
     const [[canje]] = await db.query(
-      `SELECT imagenes_otorgadas, angulos_otorgados
-     FROM canjes_codigo_promocional
-     WHERE id_usuario = ?
-     ORDER BY fecha_canje DESC
-     LIMIT 1`,
+      `SELECT imagenes_otorgadas, angulos_otorgados FROM canjes_codigo_promocional WHERE id_usuario = ? ORDER BY fecha_canje DESC LIMIT 1`,
       { replacements: [id_usuario] },
     );
-
     const imgTotal = Number(canje?.imagenes_otorgadas || imgRestantes);
     const angTotal = Number(canje?.angulos_otorgados || angRestantes);
-
     return res.json({
       isSuccess: true,
       usage: {
@@ -993,20 +980,15 @@ exports.get_usage = catchAsync(async (req, res, next) => {
     });
   }
 
-  // ── Trial usage: límite es trial_value, usado es il_imagenes_usadas ──
   const maxImagenes = isTrialUsage
     ? Number(usuario.plan?.trial_value) || IL_TRIAL_IMAGES
     : usuario.plan?.max_imagenes_ia || 0;
-
   const usedImagenes = isTrialUsage
     ? Number(usuario.il_imagenes_usadas || 0)
     : await getMonthlyCount(id_usuario);
-
   const maxAngulos = usuario.plan?.max_angulos_ia ?? null;
   const usedAngulos =
     maxAngulos !== null ? await getMonthlyAngulosCount(id_usuario) : 0;
-
-  // ── Bonus promo (usuario con plan activo que TAMBIÉN canjeó código) ──
   const promoImgBonus = Number(usuario.promo_imagenes_restantes || 0);
   const promoAngBonus = Number(usuario.promo_angulos_restantes || 0);
 
@@ -1023,7 +1005,6 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       angles_limit: maxAngulos,
       angles_remaining:
         maxAngulos !== null ? Math.max(maxAngulos - usedAngulos, 0) : 0,
-      // Bonus promo adicional al plan (si canjeó código teniendo plan activo)
       promo_imagenes_restantes: promoImgBonus > 0 ? promoImgBonus : undefined,
       promo_angulos_restantes: promoAngBonus > 0 ? promoAngBonus : undefined,
     },
@@ -1034,11 +1015,9 @@ exports.get_historial = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
     return next(new AppError('No se pudo identificar al usuario', 401));
-
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
   const offset = (page - 1) * limit;
-
   const { count, rows } = await GeneracionesIA.findAndCountAll({
     where: { id_usuario },
     order: [['created_at', 'DESC']],
@@ -1063,7 +1042,6 @@ exports.get_historial = catchAsync(async (req, res, next) => {
       },
     ],
   });
-
   return res.json({
     isSuccess: true,
     data: rows,
@@ -1079,10 +1057,8 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
     return next(new AppError('No se pudo identificar al usuario', 401));
-
   const description = String(req.body?.description || '').trim();
   const pricing = req.body?.pricing || null;
-
   if (!description)
     return next(new AppError('La descripción del producto es requerida', 400));
 
@@ -1091,64 +1067,52 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     attributes: ['id_usuario', 'id_plan', 'estado', 'promo_angulos_restantes'],
     include: [{ model: Planes, as: 'plan', attributes: ['max_angulos_ia'] }],
   });
-
   const estadoAng = (usuarioConPlan?.estado || '').toLowerCase();
 
-  // ── Promo usage (estado promo_usage, sin plan pagado): validar contra promo_angulos_restantes ──
+  // ── Promo usage (sin plan pagado) ──
   if (estadoAng === 'promo_usage') {
     const angRestantes = Number(usuarioConPlan.promo_angulos_restantes || 0);
-
-    if (angRestantes <= 0) {
+    if (angRestantes <= 0)
       return next(
         new AppError(
           'Tus ángulos promocionales se agotaron. Suscríbete para continuar.',
           402,
         ),
       );
-    }
-
     const angulosResult = await _generateAngulos(description, pricing, next);
     if (!angulosResult) return;
-
     await Usuarios.decrement('promo_angulos_restantes', {
       by: 1,
       where: { id_usuario },
     });
-
     await GeneracionesAngulosIA.create({ id_usuario });
-
-    const newRestantes = angRestantes - 1;
-
     return res.json({
       isSuccess: true,
       data: angulosResult,
       angles_usage: {
         used: 0,
         limit: angRestantes,
-        remaining: newRestantes,
+        remaining: angRestantes - 1,
         is_promo: true,
       },
     });
   }
 
-  // ── Plan normal: validar contra max_angulos_ia del plan ──
+  // ── Plan normal ──
   const maxAngulos = usuarioConPlan?.plan?.max_angulos_ia ?? null;
   const promoAngRestantes = Number(
     usuarioConPlan?.promo_angulos_restantes || 0,
   );
 
-  // Si plan no incluye ángulos, pero tiene bonus promo → usar promo
   if (maxAngulos === null || maxAngulos <= 0) {
     if (promoAngRestantes > 0) {
       const angulosResult = await _generateAngulos(description, pricing, next);
       if (!angulosResult) return;
-
       await Usuarios.decrement('promo_angulos_restantes', {
         by: 1,
         where: { id_usuario },
       });
       await GeneracionesAngulosIA.create({ id_usuario });
-
       return res.json({
         isSuccess: true,
         data: angulosResult,
@@ -1160,7 +1124,6 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
         },
       });
     }
-
     return next(
       new AppError('Tu plan no incluye generación de ángulos IA.', 403),
     );
@@ -1168,17 +1131,14 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   const usedAngulos = await getMonthlyAngulosCount(id_usuario);
 
-  // Si agotó cuota mensual del plan, pero tiene bonus promo → usar promo
   if (usedAngulos >= maxAngulos && promoAngRestantes > 0) {
     const angulosResult = await _generateAngulos(description, pricing, next);
     if (!angulosResult) return;
-
     await Usuarios.decrement('promo_angulos_restantes', {
       by: 1,
       where: { id_usuario },
     });
     await GeneracionesAngulosIA.create({ id_usuario });
-
     return res.json({
       isSuccess: true,
       data: angulosResult,
@@ -1191,16 +1151,14 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     });
   }
 
-  if (usedAngulos >= maxAngulos) {
+  if (usedAngulos >= maxAngulos)
     return next(
       new AppError(
         `Límite de ${maxAngulos} generaciones de ángulos alcanzado.`,
         429,
       ),
     );
-  }
 
-  // Mock mode
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 800));
     await GeneracionesAngulosIA.create({ id_usuario });
@@ -1236,11 +1194,8 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   const angulosResult = await _generateAngulos(description, pricing, next);
   if (!angulosResult) return;
-
   await GeneracionesAngulosIA.create({ id_usuario });
-
   const newUsedAngulos = usedAngulos + 1;
-
   return res.json({
     isSuccess: true,
     data: angulosResult,
@@ -1252,19 +1207,14 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * _generateAngulos — lógica Gemini extraída para reusar en promo y normal
- * Retorna array de ángulos o null (y llama next con error)
- */
 async function _generateAngulos(description, pricing, next) {
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return null;
 
   let pricingContext = '';
   if (pricing) {
-    if (pricing.precio_unitario) {
+    if (pricing.precio_unitario)
       pricingContext += `\nPrecio unitario: $${pricing.precio_unitario}`;
-    }
     if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
       pricingContext += '\nCombos/ofertas disponibles:';
       pricing.combos.forEach((c) => {
@@ -1290,46 +1240,33 @@ Reglas:
 
 Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este formato exacto:
 [
-  {
-    "titulo": "Título corto y llamativo (máx 8 palabras)",
-    "descripcion": "Explicación del enfoque de venta y qué emociones ataca (máx 40 palabras)",
-    "tono": "El tono emocional principal en 2-3 palabras",
-    "ejemplo_headline": "Un headline de ejemplo para la landing (máx 12 palabras)"
-  },
-  {
-    "titulo": "...",
-    "descripcion": "...",
-    "tono": "...",
-    "ejemplo_headline": "..."
-  },
-  {
-    "titulo": "...",
-    "descripcion": "...",
-    "tono": "...",
-    "ejemplo_headline": "..."
-  }
+  { "titulo": "Título corto y llamativo (máx 8 palabras)", "descripcion": "Explicación del enfoque de venta y qué emociones ataca (máx 40 palabras)", "tono": "El tono emocional principal en 2-3 palabras", "ejemplo_headline": "Un headline de ejemplo para la landing (máx 12 palabras)" },
+  { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." },
+  { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." }
 ]`;
 
   const textModel = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent`;
 
-  const payload = {
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.9,
-    },
-  };
-
   let geminiResp;
   try {
-    geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
+    geminiResp = await axios.post(
+      geminiUrl,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.9,
+        },
       },
-      timeout: 30000,
-    });
+      {
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      },
+    );
   } catch (err) {
     console.log('[Angulos] Gemini error:', err?.response?.data || err.message);
     const rawMsg = err?.response?.data?.error?.message || err?.message || '';
@@ -1356,12 +1293,10 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
     next(new AppError('Error al procesar los ángulos de venta', 500));
     return null;
   }
-
   if (!Array.isArray(angulos) || angulos.length < 1) {
     next(new AppError('Gemini no generó ángulos válidos', 500));
     return null;
   }
-
   return angulos.slice(0, 3);
 }
 
@@ -1419,17 +1354,12 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
 
   const quota = await validateUserQuota(id_usuario, next);
   if (!quota) return;
-
-  const { maxImagenes, usedThisMonth } = quota;
-  if (usedThisMonth >= maxImagenes) {
+  if (quota.usedThisMonth >= quota.maxImagenes)
     return next(buildQuotaError(quota));
-  }
 
   if (isMockMode()) {
     await new Promise((r) => setTimeout(r, 1500));
-
     await incrementUsageCounter(quota, id_usuario);
-
     await GeneracionesIA.create({
       id_usuario,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
@@ -1442,7 +1372,6 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
       model: 'mock',
       image_url: null,
     });
-
     return res.json({
       isSuccess: true,
       etapa: { id: etapa.id, nombre: etapa.nombre, slug: etapa.slug },
@@ -1481,7 +1410,6 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     BRL: 'R$',
   };
   const sym = SIMBOLOS[moneda] || '$';
-
   let pricingText = '';
   if (pricing) {
     if (pricing.precio_unitario)
@@ -1518,7 +1446,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     idioma !== 'es'
       ? `\nIDIOMA OBLIGATORIO: Genera TODOS los textos de la imagen en ${IDIOMAS_MAP[idioma] || idioma}. NO uses español.`
       : '',
-    `\n--- CORRECCIONES DEL USUARIO ---`,
+    '\n--- CORRECCIONES DEL USUARIO ---',
     `El usuario ha pedido los siguientes cambios específicos: ${prompt_extra}`,
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
     'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
@@ -1529,10 +1457,6 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   ]
     .filter(Boolean)
     .join('\n');
-
-  const model =
-    process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const payload = {
     contents: [
@@ -1555,25 +1479,11 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     },
   };
 
-  let geminiResp;
-  try {
-    geminiResp = await axios.post(geminiUrl, payload, {
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      timeout: 120000,
-    });
-  } catch (err) {
-    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
-    const mapped = mapGeminiQuotaMessage(rawMsg);
-    return next(new AppError(mapped.message, mapped.statusCode));
-  }
+  const result = await callGeminiWithRetry(payload, apiKey, next);
+  if (!result || !result.image_base64) return;
 
-  const image_base64 = pickImageBase64(geminiResp);
-  if (!image_base64)
-    return next(new AppError('Gemini no devolvió imagen', 500));
-
+  const image_base64 = result.image_base64;
+  const model = result.model;
   const image_url = await uploadImageToS3(
     image_base64,
     id_usuario,
@@ -1592,9 +1502,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     model,
     image_url,
   });
-
   await autoSetPortadaIfNeeded(id_producto, image_url);
-
   await incrementUsageCounter(quota, id_usuario);
 
   return res.json({
@@ -1613,13 +1521,11 @@ exports.obtener_api_key = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.body?.id_configuracion || 0);
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
-
   const cfg = await Configuraciones.findOne({
     where: { id: id_configuracion },
     attributes: ['id', 'api_key_gemini'],
   });
   if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-
   return res.json({
     isSuccess: true,
     api_key: Boolean(cfg.api_key_gemini && String(cfg.api_key_gemini).trim()),
@@ -1629,23 +1535,19 @@ exports.obtener_api_key = catchAsync(async (req, res, next) => {
 exports.guardar_api_key = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.body?.id_configuracion || 0);
   const api_key = String(req.body?.api_key || '').trim();
-
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
   if (!api_key) return next(new AppError('api_key es requerida', 400));
-
   const cfg = await Configuraciones.findOne({
     where: { id: id_configuracion },
     attributes: ['id'],
   });
   if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-
   const { encryptToken } = require('../utils/cryptoToken');
   await Configuraciones.update(
     { api_key_gemini: encryptToken(api_key) },
     { where: { id: id_configuracion } },
   );
-
   return res.json({
     isSuccess: true,
     message: 'API Key guardada correctamente',
