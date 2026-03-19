@@ -630,6 +630,17 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     }
   }
 
+  // ── Ajustar tools_access si tiene recursos promo para Insta Landing ──
+  let effectiveToolsAccess = planDb?.tools_access || 'both';
+  if (effectiveToolsAccess !== 'both') {
+    const hasPromoResources =
+      Number(user.promo_imagenes_restantes || 0) > 0 ||
+      Number(user.promo_angulos_restantes || 0) > 0;
+    if (hasPromoResources) {
+      effectiveToolsAccess = 'both';
+    }
+  }
+
   return res.status(200).json({
     success: true,
     plan: {
@@ -648,8 +659,8 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       trial_eligible: Number(user.free_trial_used || 0) === 0,
       promo_plan2_used: Number(user.promo_plan2_used || 0),
       promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
-      tools_access: planDb?.tools_access || 'both',
       ...(planDb || {}),
+      tools_access: effectiveToolsAccess,
     },
     user_flags: userFlags,
   });

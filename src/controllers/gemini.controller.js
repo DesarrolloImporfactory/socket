@@ -150,6 +150,7 @@ async function getMonthlyAngulosCount(id_usuario) {
  * - Plan pagado: usa max_imagenes_ia del plan y conteo mensual
  * - Trial usage (IL): usa trial_value (10) como límite y il_imagenes_usadas
  * - Promo usage (código promo): usa promo_imagenes_restantes como límite
+ * - Plan pagado SIN imágenes o cuota agotada + bonus promo: usa promo como fallback
  */
 async function validateUserQuota(id_usuario, next) {
   const usuario = await Usuarios.findOne({
@@ -213,8 +214,7 @@ async function validateUserQuota(id_usuario, next) {
     };
   }
 
-  // ── Promo usage (código promocional) ──
-  // El límite SON las imágenes restantes. used = 0 porque se descuenta directo.
+  // ── Promo usage (código promocional, usuario SIN plan pagado) ──
   if (estado === 'promo_usage') {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
 
@@ -239,7 +239,19 @@ async function validateUserQuota(id_usuario, next) {
 
   // ── Plan pagado normal ──
   const maxImagenes = usuario.plan.max_imagenes_ia || 0;
+  const promoImgRestantes = Number(usuario.promo_imagenes_restantes || 0);
+
+  // Si el plan NO incluye imágenes, pero tiene bonus promo → usar promo
   if (maxImagenes <= 0) {
+    if (promoImgRestantes > 0) {
+      return {
+        usuario,
+        maxImagenes: promoImgRestantes,
+        usedThisMonth: 0,
+        isTrialUsage: false,
+        isPromoUsage: true,
+      };
+    }
     next(
       new AppError('Tu plan no incluye generación de imágenes con IA.', 403),
     );
@@ -247,6 +259,18 @@ async function validateUserQuota(id_usuario, next) {
   }
 
   const usedThisMonth = await getMonthlyCount(id_usuario);
+
+  // Si agotó cuota mensual del plan, pero tiene bonus promo → usar promo
+  if (usedThisMonth >= maxImagenes && promoImgRestantes > 0) {
+    return {
+      usuario,
+      maxImagenes: promoImgRestantes,
+      usedThisMonth: 0,
+      isTrialUsage: false,
+      isPromoUsage: true,
+    };
+  }
+
   return {
     usuario,
     maxImagenes,
@@ -329,6 +353,7 @@ function buildQuotaError(quota) {
  * Helper: incrementar/decrementar contadores según tipo de uso
  * - trial_usage: incrementa il_imagenes_usadas
  * - promo_usage: decrementa promo_imagenes_restantes
+ * - plan normal con isPromoUsage=true: decrementa promo_imagenes_restantes (bonus)
  * - plan normal: no hace nada (se cuenta por registros en generaciones_ia)
  */
 async function incrementUsageCounter(quota, id_usuario) {
@@ -351,7 +376,6 @@ async function incrementUsageCounter(quota, id_usuario) {
  */
 function buildUsageResponse(quota) {
   if (quota.isPromoUsage) {
-    // Para promo, el "remaining" real es maxImagenes - 1 (porque ya se usó 1)
     const remaining = Math.max(quota.maxImagenes - 1, 0);
     return {
       used: 0,
@@ -934,12 +958,11 @@ exports.get_usage = catchAsync(async (req, res, next) => {
   const isTrialUsage = estado === 'trial_usage';
   const isPromoUsage = estado === 'promo_usage';
 
-  // ── Promo usage: calcular total original del cupón ──
+  // ── Promo usage (estado promo_usage, sin plan pagado): calcular total original del cupón ──
   if (isPromoUsage) {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
     const angRestantes = Number(usuario.promo_angulos_restantes || 0);
 
-    // Buscar cuánto le dieron originalmente
     const [[canje]] = await db.query(
       `SELECT imagenes_otorgadas, angulos_otorgados
      FROM canjes_codigo_promocional
@@ -981,6 +1004,10 @@ exports.get_usage = catchAsync(async (req, res, next) => {
   const usedAngulos =
     maxAngulos !== null ? await getMonthlyAngulosCount(id_usuario) : 0;
 
+  // ── Bonus promo (usuario con plan activo que TAMBIÉN canjeó código) ──
+  const promoImgBonus = Number(usuario.promo_imagenes_restantes || 0);
+  const promoAngBonus = Number(usuario.promo_angulos_restantes || 0);
+
   return res.json({
     isSuccess: true,
     usage: {
@@ -994,6 +1021,9 @@ exports.get_usage = catchAsync(async (req, res, next) => {
       angles_limit: maxAngulos,
       angles_remaining:
         maxAngulos !== null ? Math.max(maxAngulos - usedAngulos, 0) : 0,
+      // Bonus promo adicional al plan (si canjeó código teniendo plan activo)
+      promo_imagenes_restantes: promoImgBonus > 0 ? promoImgBonus : undefined,
+      promo_angulos_restantes: promoAngBonus > 0 ? promoAngBonus : undefined,
     },
   });
 });
@@ -1062,7 +1092,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   const estadoAng = (usuarioConPlan?.estado || '').toLowerCase();
 
-  // ── Promo usage: validar contra promo_angulos_restantes ──
+  // ── Promo usage (estado promo_usage, sin plan pagado): validar contra promo_angulos_restantes ──
   if (estadoAng === 'promo_usage') {
     const angRestantes = Number(usuarioConPlan.promo_angulos_restantes || 0);
 
@@ -1075,17 +1105,14 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
       );
     }
 
-    // Generar los ángulos (misma lógica de abajo)
     const angulosResult = await _generateAngulos(description, pricing, next);
     if (!angulosResult) return;
 
-    // Decrementar promo_angulos_restantes
     await Usuarios.decrement('promo_angulos_restantes', {
       by: 1,
       where: { id_usuario },
     });
 
-    // Registrar
     await GeneracionesAngulosIA.create({ id_usuario });
 
     const newRestantes = angRestantes - 1;
@@ -1104,14 +1131,64 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   // ── Plan normal: validar contra max_angulos_ia del plan ──
   const maxAngulos = usuarioConPlan?.plan?.max_angulos_ia ?? null;
+  const promoAngRestantes = Number(
+    usuarioConPlan?.promo_angulos_restantes || 0,
+  );
 
-  if (maxAngulos === null) {
+  // Si plan no incluye ángulos, pero tiene bonus promo → usar promo
+  if (maxAngulos === null || maxAngulos <= 0) {
+    if (promoAngRestantes > 0) {
+      const angulosResult = await _generateAngulos(description, pricing, next);
+      if (!angulosResult) return;
+
+      await Usuarios.decrement('promo_angulos_restantes', {
+        by: 1,
+        where: { id_usuario },
+      });
+      await GeneracionesAngulosIA.create({ id_usuario });
+
+      return res.json({
+        isSuccess: true,
+        data: angulosResult,
+        angles_usage: {
+          used: 0,
+          limit: promoAngRestantes,
+          remaining: promoAngRestantes - 1,
+          is_promo: true,
+        },
+      });
+    }
+
     return next(
       new AppError('Tu plan no incluye generación de ángulos IA.', 403),
     );
   }
 
   const usedAngulos = await getMonthlyAngulosCount(id_usuario);
+
+  // Si agotó cuota mensual del plan, pero tiene bonus promo → usar promo
+  if (usedAngulos >= maxAngulos && promoAngRestantes > 0) {
+    const angulosResult = await _generateAngulos(description, pricing, next);
+    if (!angulosResult) return;
+
+    await Usuarios.decrement('promo_angulos_restantes', {
+      by: 1,
+      where: { id_usuario },
+    });
+    await GeneracionesAngulosIA.create({ id_usuario });
+
+    return res.json({
+      isSuccess: true,
+      data: angulosResult,
+      angles_usage: {
+        used: 0,
+        limit: promoAngRestantes,
+        remaining: promoAngRestantes - 1,
+        is_promo: true,
+      },
+    });
+  }
+
   if (usedAngulos >= maxAngulos) {
     return next(
       new AppError(
