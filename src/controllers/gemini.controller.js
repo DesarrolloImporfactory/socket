@@ -239,10 +239,6 @@ async function getMonthlyAngulosCount(id_usuario) {
 
 /**
  * validateUserQuota
- * - Plan pagado: usa max_imagenes_ia del plan y conteo mensual
- * - Trial usage (IL): usa trial_value (10) como límite y il_imagenes_usadas
- * - Promo usage (código promo): usa promo_imagenes_restantes como límite
- * - Plan pagado SIN imágenes o cuota agotada + bonus promo: usa promo como fallback
  */
 async function validateUserQuota(id_usuario, next) {
   const usuario = await Usuarios.findOne({
@@ -281,7 +277,6 @@ async function validateUserQuota(id_usuario, next) {
 
   const estado = (usuario.estado || '').toLowerCase();
 
-  // ── Trial por uso (Insta Landing) ──
   if (estado === 'trial_usage') {
     const limite = Number(usuario.plan?.trial_value) || IL_TRIAL_IMAGES;
     const usadas = Number(usuario.il_imagenes_usadas || 0);
@@ -303,7 +298,6 @@ async function validateUserQuota(id_usuario, next) {
     };
   }
 
-  // ── Promo usage (código promocional, usuario SIN plan pagado) ──
   if (estado === 'promo_usage') {
     const imgRestantes = Number(usuario.promo_imagenes_restantes || 0);
     if (imgRestantes <= 0) {
@@ -324,11 +318,9 @@ async function validateUserQuota(id_usuario, next) {
     };
   }
 
-  // ── Plan pagado normal ──
   const maxImagenes = usuario.plan.max_imagenes_ia || 0;
   const promoImgRestantes = Number(usuario.promo_imagenes_restantes || 0);
 
-  // Si el plan NO incluye imágenes, pero tiene bonus promo → usar promo
   if (maxImagenes <= 0) {
     if (promoImgRestantes > 0)
       return {
@@ -345,7 +337,6 @@ async function validateUserQuota(id_usuario, next) {
   }
 
   const usedThisMonth = await getMonthlyCount(id_usuario);
-  // Si agotó cuota mensual del plan, pero tiene bonus promo → usar promo
   if (usedThisMonth >= maxImagenes && promoImgRestantes > 0) {
     return {
       usuario,
@@ -456,6 +447,139 @@ function buildUsageResponse(quota) {
     is_trial: quota.isTrialUsage,
     is_promo: false,
   };
+}
+
+// ─── helpers de prompt reutilizables ────────────────────────────────────────
+
+const SIMBOLOS_MONEDA = {
+  USD: '$',
+  COP: '$',
+  MXN: '$',
+  PEN: 'S/',
+  ARS: '$',
+  BRL: 'R$',
+};
+
+const IDIOMAS_MAP = {
+  es: 'español latinoamericano',
+  en: 'English',
+  pt: 'Português brasileiro',
+  fr: 'Français',
+  zh: '中文 (Chino simplificado)',
+};
+
+/**
+ * Construye las secciones dinámicas del prompt según la etapa.
+ *
+ * - Precio / moneda  → SOLO para etapa "hero"
+ * - Idioma           → TODAS las etapas
+ */
+function buildDynamicPromptSections({
+  etapaSlug,
+  description,
+  marca,
+  angulo_venta,
+  pricing,
+  moneda,
+  idioma,
+}) {
+  const slug = (etapaSlug || '').toLowerCase();
+  const isPricingEtapa = slug === 'hero' || slug === 'oferta';
+  const sym = SIMBOLOS_MONEDA[moneda] || '$';
+  const sections = [];
+
+  // ── Descripción (todas las etapas) ──
+  if (description) {
+    sections.push(
+      `\nDetalles del producto/marca proporcionados por el usuario: ${description}`,
+    );
+  }
+
+  // ── Marca (todas las etapas) ──
+  if (marca) {
+    sections.push(
+      `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`,
+    );
+  }
+
+  // ── Ángulo de venta (todas las etapas) ──
+  if (angulo_venta) {
+    sections.push(
+      `\nÁNGULO DE VENTA SELECCIONADO POR EL USUARIO: ${angulo_venta}` +
+        `\nUSA este ángulo como base para los textos, títulos y enfoque persuasivo de la imagen.`,
+    );
+  }
+
+  // ── Precio y moneda → SOLO etapas hero y oferta ──
+  if (isPricingEtapa && pricing) {
+    let pricingLines = [];
+
+    if (pricing.precio_unitario) {
+      pricingLines.push(
+        `• 1 unidad = ${sym}${pricing.precio_unitario} ${moneda}`,
+      );
+    }
+    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
+      pricing.combos.forEach((c) => {
+        pricingLines.push(
+          `• ${c.cantidad} unidades = ${sym}${c.precio} ${moneda}`,
+        );
+      });
+    }
+
+    if (pricingLines.length > 0) {
+      sections.push(
+        `\n--- PRECIOS OFICIALES DEL PRODUCTO (DATOS EXACTOS DEL VENDEDOR) ---` +
+          `\n${pricingLines.join('\n')}` +
+          `\n` +
+          `\n⚠️ REGLAS ESTRICTAS DE PRECIOS — LEE CON ATENCIÓN:` +
+          `\n1. Estos son los PRECIOS FINALES DE VENTA. Muéstralos TAL CUAL en la imagen.` +
+          `\n2. PROHIBIDO inventar "precios originales", "precios tachados", "precios antes" o descuentos ficticios.` +
+          `\n3. PROHIBIDO calcular porcentajes de descuento a menos que el usuario los haya proporcionado explícitamente.` +
+          `\n4. Si hay combo (ej: 2 unidades = ${sym}100), muestra ese precio como el PRECIO REAL del combo, NO como un descuento sobre otro precio.` +
+          `\n5. NO cambies los números. Si dice ${sym}${pricing.precio_unitario || '—'}, escribe "${sym}${pricing.precio_unitario || '—'}" exacto.` +
+          `\n6. NO redondees, NO inventes centavos, NO modifiques ningún valor.`,
+      );
+    } else {
+      console.warn(
+        `[Prompt] isPricingEtapa=true pero pricing vacío: ${JSON.stringify(pricing)}`,
+      );
+    }
+
+    // Moneda — siempre incluir en etapas de precio para reforzar
+    sections.push(
+      `\nMONEDA: ${moneda} (símbolo: ${sym}).` +
+        `\nTodos los precios en la imagen DEBEN usar el símbolo "${sym}" seguido del valor numérico y "${moneda}".` +
+        (moneda !== 'USD'
+          ? ` NUNCA uses dólares americanos (USD/$). La moneda correcta es ${moneda} con símbolo ${sym}.`
+          : ''),
+    );
+  }
+
+  // ── Etapas SIN precios → bloqueo explícito ──
+  if (!isPricingEtapa) {
+    sections.push(
+      `\n⚠️ ESTA SECCIÓN NO ES DE PRECIOS. NO incluyas precios, valores monetarios ni ofertas en esta imagen. ` +
+        `Enfócate únicamente en el diseño visual y el mensaje de esta etapa.`,
+    );
+  }
+
+  // ── Idioma → TODAS las etapas (reforzado) ──
+  if (idioma !== 'es') {
+    const idiomaName = IDIOMAS_MAP[idioma] || idioma;
+    sections.push(
+      `\n--- IDIOMA OBLIGATORIO ---` +
+        `\nTODOS los textos visibles en la imagen DEBEN estar en ${idiomaName}.` +
+        `\nESTO INCLUYE: títulos, subtítulos, botones, etiquetas, llamados a la acción, y CUALQUIER texto.` +
+        `\nNO uses español bajo ninguna circunstancia. El idioma ${idiomaName} es OBLIGATORIO para todo el contenido textual.`,
+    );
+  } else {
+    sections.push(
+      `\nIDIOMA: Todos los textos de la imagen deben estar en español latinoamericano.`,
+    );
+  }
+
+  return sections;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -703,55 +827,20 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
     }
   }
 
-  const SIMBOLOS = {
-    USD: '$',
-    COP: '$',
-    MXN: '$',
-    PEN: 'S/',
-    ARS: '$',
-    BRL: 'R$',
-  };
-  const sym = SIMBOLOS[moneda] || '$';
-  let pricingText = '';
-  if (pricing) {
-    if (pricing.precio_unitario)
-      pricingText += `\nPrecio del producto: ${sym}${pricing.precio_unitario} ${moneda}`;
-    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
-      pricingText += '\nOfertas por combo:';
-      pricing.combos.forEach((c) => {
-        pricingText += ` ${c.cantidad}x por ${sym}${c.precio} ${moneda} |`;
-      });
-    }
-  }
-
-  const IDIOMAS_MAP = {
-    es: 'español latinoamericano',
-    en: 'English',
-    pt: 'Português brasileiro',
-    fr: 'Français',
-    zh: '中文 (Chino simplificado)',
-  };
+  // ── Construir prompt con secciones dinámicas ──
+  const dynamicSections = buildDynamicPromptSections({
+    etapaSlug: etapa.slug,
+    description,
+    marca,
+    angulo_venta,
+    pricing,
+    moneda,
+    idioma,
+  });
 
   const prompt = [
     etapa.prompt,
-    description
-      ? `\nDetalles del producto/marca proporcionados por el usuario: ${description}`
-      : '',
-    marca
-      ? `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`
-      : '',
-    angulo_venta
-      ? `\nÁNGULO DE VENTA SELECCIONADO POR EL USUARIO: ${angulo_venta}\nUSA este ángulo como base para los textos, títulos y enfoque persuasivo de la imagen.`
-      : '',
-    pricingText
-      ? `\n--- PRECIOS (usar EXACTAMENTE estos valores en la imagen si la sección lo requiere) ---${pricingText}`
-      : '',
-    moneda !== 'USD'
-      ? `\nMONEDA: Todos los precios están en ${moneda}. Usa el símbolo correspondiente (no USD).`
-      : '',
-    idioma !== 'es'
-      ? `\nIDIOMA OBLIGATORIO: Genera TODOS los textos de la imagen en ${IDIOMAS_MAP[idioma] || idioma}. NO uses español.`
-      : '',
+    ...dynamicSections,
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
     'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
     'DEBES replicar EXACTAMENTE: la paleta de colores, tipografía, estilo de fondos, bordes, iconografía y jerarquía visual del TEMPLATE.',
@@ -1069,7 +1158,6 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   });
   const estadoAng = (usuarioConPlan?.estado || '').toLowerCase();
 
-  // ── Promo usage (sin plan pagado) ──
   if (estadoAng === 'promo_usage') {
     const angRestantes = Number(usuarioConPlan.promo_angulos_restantes || 0);
     if (angRestantes <= 0)
@@ -1098,7 +1186,6 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     });
   }
 
-  // ── Plan normal ──
   const maxAngulos = usuarioConPlan?.plan?.max_angulos_ia ?? null;
   const promoAngRestantes = Number(
     usuarioConPlan?.promo_angulos_restantes || 0,
@@ -1401,51 +1488,20 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     }
   }
 
-  const SIMBOLOS = {
-    USD: '$',
-    COP: '$',
-    MXN: '$',
-    PEN: 'S/',
-    ARS: '$',
-    BRL: 'R$',
-  };
-  const sym = SIMBOLOS[moneda] || '$';
-  let pricingText = '';
-  if (pricing) {
-    if (pricing.precio_unitario)
-      pricingText += `\nPrecio del producto: ${sym}${pricing.precio_unitario} ${moneda}`;
-    if (Array.isArray(pricing.combos) && pricing.combos.length > 0) {
-      pricingText += '\nOfertas por combo:';
-      pricing.combos.forEach((c) => {
-        pricingText += ` ${c.cantidad}x por ${sym}${c.precio} ${moneda} |`;
-      });
-    }
-  }
-
-  const IDIOMAS_MAP = {
-    es: 'español latinoamericano',
-    en: 'English',
-    pt: 'Português brasileiro',
-    fr: 'Français',
-    zh: '中文 (Chino simplificado)',
-  };
+  // ── Construir prompt con secciones dinámicas ──
+  const dynamicSections = buildDynamicPromptSections({
+    etapaSlug: etapa.slug,
+    description,
+    marca,
+    angulo_venta,
+    pricing,
+    moneda,
+    idioma,
+  });
 
   const prompt = [
     etapa.prompt,
-    description ? `\nDetalles del producto/marca: ${description}` : '',
-    marca
-      ? `\nMARCA/NEGOCIO: "${marca}" — Usa este nombre de marca exacto donde corresponda en la imagen.`
-      : '',
-    angulo_venta ? `\nÁNGULO DE VENTA SELECCIONADO: ${angulo_venta}` : '',
-    pricingText
-      ? `\n--- PRECIOS (usar EXACTAMENTE estos valores en la imagen si la sección lo requiere) ---${pricingText}`
-      : '',
-    moneda !== 'USD'
-      ? `\nMONEDA: Todos los precios están en ${moneda}. Usa el símbolo correspondiente (no USD).`
-      : '',
-    idioma !== 'es'
-      ? `\nIDIOMA OBLIGATORIO: Genera TODOS los textos de la imagen en ${IDIOMAS_MAP[idioma] || idioma}. NO uses español.`
-      : '',
+    ...dynamicSections,
     '\n--- CORRECCIONES DEL USUARIO ---',
     `El usuario ha pedido los siguientes cambios específicos: ${prompt_extra}`,
     '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
