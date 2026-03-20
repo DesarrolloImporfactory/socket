@@ -20,10 +20,10 @@ const { decryptToken } = require('../utils/cryptoToken');
 const IL_TRIAL_IMAGES = 10;
 
 // ─── Modelos de imagen Gemini (fallback chain) ──────────────────────────────
+
 const GEMINI_IMAGE_MODELS = [
-  process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview',
-  'gemini-2.5-flash-preview-image-generation',
-  'gemini-3-pro-image-preview',
+  process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
+  'gemini-3.1-flash-image-preview',
 ];
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -88,9 +88,12 @@ function mapGeminiQuotaMessage(rawMsg = '') {
   };
 }
 
+// FIX: Reducido MAX_RETRIES a 1 y timeout a 60s para evitar 502 de Apache.
+//      Antes: 3 modelos × 3 retries × 120s = 18 min peor caso.
+//      Ahora: 2 modelos × 2 intentos × 60s = 4 min peor caso.
 async function callGeminiWithRetry(payload, apiKey, next) {
-  const MAX_RETRIES = 2;
-  const RETRY_DELAY = 3000;
+  const MAX_RETRIES = 1;
+  const RETRY_DELAY = 2000;
   let lastError = null;
 
   for (const model of GEMINI_IMAGE_MODELS) {
@@ -103,7 +106,7 @@ async function callGeminiWithRetry(payload, apiKey, next) {
             'x-goog-api-key': apiKey,
             'Content-Type': 'application/json',
           },
-          timeout: 120000,
+          timeout: 60000,
         });
 
         const image_base64 = pickImageBase64(resp);
