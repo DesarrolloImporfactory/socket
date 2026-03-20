@@ -24,6 +24,8 @@ exports.dropiOrdersWebhook = catchAsync(async (req, res, next) => {
 
   const body = req.body || {};
 
+  console.log('📦 Dropi webhook recibido:', JSON.stringify(body, null, 2));
+
   const dropi_order_id = body.id ? Number(body.id) : null;
   const status = body.status ? String(body.status) : null;
   const supplier_id = body.supplier_id ? Number(body.supplier_id) : null;
