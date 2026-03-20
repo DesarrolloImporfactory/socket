@@ -322,10 +322,21 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
 });
 
 exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
-  const { id_mensaje, new_wamid, id_wamid_mensaje } = req.body;
+  let { id_mensaje, new_wamid, id_wamid_mensaje } = req.body;
+
+  const fixBase64Padding = (str) => {
+    if (!str) return str;
+    const prefix = 'wamid.';
+    const base64Part = str.startsWith(prefix) ? str.slice(prefix.length) : str;
+    const missing = (4 - (base64Part.length % 4)) % 4;
+    const padded = base64Part + '='.repeat(missing);
+    return str.startsWith(prefix) ? prefix + padded : padded;
+  };
+
+  new_wamid = fixBase64Padding(new_wamid);
+  id_wamid_mensaje = fixBase64Padding(id_wamid_mensaje);
 
   try {
-    // Primero actualizamos
     await db.query(
       `UPDATE mensajes_clientes 
        SET id_wamid_mensaje = ?
@@ -336,7 +347,6 @@ exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
       },
     );
 
-    // Después eliminamos de la tabla errores_chat_meta
     await db.query(
       `DELETE FROM errores_chat_meta 
        WHERE id_wamid_mensaje = ?`,
@@ -362,22 +372,6 @@ exports.actualizarMensajeReenviado = catchAsync(async (req, res, next) => {
       message: 'Ocurrió un error al actualizar o limpiar errores',
     });
   }
-});
-
-exports.findFullByPhone = catchAsync(async (req, res, next) => {
-  const phone = req.params.phone.trim();
-  const id_plataforma = req.query.id_plataforma;
-
-  if (!id_plataforma)
-    return next(new AppError('id_plataforma es requerido', 400));
-
-  const chatService = new ChatService();
-  const chat = await chatService.findChatByPhone(id_plataforma, phone);
-
-  if (!chat)
-    return res.status(404).json({ status: 404, message: 'Chat no encontrado' });
-
-  res.json({ status: 200, data: chat });
 });
 
 exports.findFullByPhone = catchAsync(async (req, res, next) => {
@@ -722,7 +716,7 @@ const ESTADO_DB_MAP = {
   ATENCION_URGENTE: 'atencion_urgente',
 };
 
-exports.actualizarEstado = async (req, res) => {
+exports.actualizarEstadoDinamico = async (req, res) => {
   try {
     const { id_cliente, nuevo_estado, id_configuracion } = req.body;
 
@@ -781,6 +775,85 @@ exports.actualizarEstado = async (req, res) => {
     return res.json({
       success: true,
       message: 'Estado actualizado correctamente',
+      data: cliente,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+    });
+  }
+};
+
+exports.actualizarEstado = async (req, res) => {
+  try {
+    const { id_cliente, nuevo_estado, id_configuracion } = req.body;
+
+    if (!id_cliente || !nuevo_estado || !id_configuracion) {
+      return res.status(400).json({
+        success: false,
+        message: 'Faltan parámetros obligatorios',
+      });
+    }
+
+    // 🟦 MAPEO del estado del FRONT al estado REAL en la BD
+    const estadoMap = {
+      CONTACTO_INICIAL: 'contacto_inicial',
+      PLATAFORMAS_Y_CLASES: 'plataformas_clases',
+      PRODUCTOS_Y_PROVEEDORES: 'productos_proveedores',
+      VENTAS: 'ventas_imporfactory',
+      ASESOR: 'asesor',
+      COTIZACIONES: 'cotizaciones_imporfactory',
+      IA_VENTAS: 'ia_ventas',
+      GENERAR_GUIA: 'generar_guia',
+      SEGUIMIENTO: 'seguimiento',
+      CANCELADO: 'cancelado',
+      ATENCION_URGENTE: 'atencion_urgente',
+      IA_VENTAS_IMPORSHOP: 'ia_ventas_imporshop',
+    };
+
+    const estadoBD = estadoMap[nuevo_estado];
+
+    if (!estadoBD) {
+      return res.status(400).json({
+        success: false,
+        message: `El estado "${nuevo_estado}" no es válido.`,
+      });
+    }
+
+    // Buscar cliente
+    const cliente = await ClientesChatCenter.findOne({
+      where: { id: id_cliente, id_configuracion },
+    });
+
+    if (!cliente) {
+      return res.status(404).json({
+        success: false,
+        message: 'Cliente no encontrado',
+      });
+    }
+
+    // Actualizar
+    await cliente.update({
+      estado_contacto: estadoBD,
+    });
+
+    //Emitimos al dashboard para chats en cola y estados futuros
+    if (global.presenceIo) {
+      const [cfg] = await db.query(
+        `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (cfg) {
+        global.presenceIo
+          .to(`dashboard:${cfg.id_usuario}`)
+          .emit('dashboard:update', { tipo: 'queue_change', id_configuracion });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Estado de contacto actualizado correctamente',
       data: cliente,
     });
   } catch (error) {

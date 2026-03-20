@@ -53,7 +53,6 @@ async function procesarMensajeKanban(params) {
     business_phone_id,
     accessToken,
   } = params;
-
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.nombre, kc.assistant_id, kc.activa_ia,
@@ -495,4 +494,97 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   await log(`✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}`);
 }
 
-module.exports = { procesarMensajeKanban };
+// ══════════════════════════════════════════════════════════════
+// cancelarRemarketingKanban
+// Se llama SIEMPRE que el cliente envía un mensaje en modo kanban
+// ══════════════════════════════════════════════════════════════
+async function cancelarRemarketingKanban(id_cliente, id_configuracion) {
+  try {
+    await db.query(
+      `UPDATE remarketing_pendientes
+       SET cancelado = 1
+       WHERE id_cliente_chat_center = ?
+         AND id_configuracion = ?
+         AND enviado = 0
+         AND cancelado = 0`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    await log(`✅ Remarketing cancelado para cliente=${id_cliente}`);
+  } catch (err) {
+    await log(`⚠️ Error cancelando remarketing: ${err.message}`);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// programarRemarketingKanban
+// Se llama SIEMPRE después de procesar el mensaje (con o sin IA)
+// ══════════════════════════════════════════════════════════════
+async function programarRemarketingKanban({
+  id_configuracion,
+  id_cliente,
+  telefono,
+  estado_contacto,
+}) {
+  try {
+    const [configRM] = await db.query(
+      `SELECT tiempo_espera_horas, nombre_template, language_code, estado_destino
+       FROM configuracion_remarketing
+       WHERE id_configuracion = ? AND estado_contacto = ? AND activo = 1
+       LIMIT 1`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    if (!configRM) return;
+
+    const [cfg] = await db.query(
+      `SELECT telefono FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    const telefono_configuracion = cfg?.telefono ? String(cfg.telefono) : null;
+    if (!telefono_configuracion) return;
+
+    const tiempoDisparo = new Date(
+      Date.now() + configRM.tiempo_espera_horas * 3600000,
+    );
+
+    await db.query(
+      `INSERT INTO remarketing_pendientes
+       (telefono, telefono_configuracion, id_cliente_chat_center,
+        id_configuracion, estado_contacto_origen, nombre_template,
+        language_code, tiempo_disparo, estado_destino, enviado, cancelado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+      {
+        replacements: [
+          telefono,
+          telefono_configuracion,
+          id_cliente,
+          id_configuracion,
+          estado_contacto,
+          configRM.nombre_template,
+          configRM.language_code,
+          tiempoDisparo,
+          configRM.estado_destino || null,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    await log(
+      `📅 Remarketing programado en ${configRM.tiempo_espera_horas}h — estado=${estado_contacto} telefono=${telefono}`,
+    );
+  } catch (err) {
+    await log(`⚠️ Error programando remarketing: ${err.message}`);
+  }
+}
+
+module.exports = {
+  procesarMensajeKanban,
+  cancelarRemarketingKanban,
+  programarRemarketingKanban,
+};

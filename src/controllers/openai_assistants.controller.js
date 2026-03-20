@@ -1040,14 +1040,13 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     tiempo_espera_horas,
     nombre_template,
     language_code,
+    estado_destino = null,
   } = req.body;
 
   try {
     const [existe] = await db.query(
       `SELECT id FROM configuracion_remarketing
-       WHERE id_configuracion = ?
-       AND estado_contacto = ?
-       LIMIT 1`,
+       WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
       {
         replacements: [id_configuracion, estado_contacto],
         type: db.QueryTypes.SELECT,
@@ -1057,17 +1056,15 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     if (existe) {
       await db.query(
         `UPDATE configuracion_remarketing
-         SET tiempo_espera_horas = ?,
-             nombre_template = ?,
-             language_code = ?,
-             activo = 1
-         WHERE id_configuracion = ?
-         AND estado_contacto = ?`,
+         SET tiempo_espera_horas = ?, nombre_template = ?,
+             language_code = ?, estado_destino = ?, activo = 1
+         WHERE id_configuracion = ? AND estado_contacto = ?`,
         {
           replacements: [
             tiempo_espera_horas,
             nombre_template,
             language_code,
+            estado_destino || null,
             id_configuracion,
             estado_contacto,
           ],
@@ -1077,10 +1074,9 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     } else {
       await db.query(
         `INSERT INTO configuracion_remarketing
-         (id_configuracion, estado_contacto,
-          tiempo_espera_horas, nombre_template,
-          language_code, activo)
-         VALUES (?, ?, ?, ?, ?, 1)`,
+         (id_configuracion, estado_contacto, tiempo_espera_horas,
+          nombre_template, language_code, estado_destino, activo)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
@@ -1088,6 +1084,7 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             tiempo_espera_horas,
             nombre_template,
             language_code,
+            estado_destino || null,
           ],
           type: db.QueryTypes.INSERT,
         },
@@ -1107,27 +1104,19 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
 exports.obtener_remarketing = catchAsync(async (req, res, next) => {
   const { id_configuracion, estado_contacto } = req.body;
 
-  try {
-    const [config] = await db.query(
-      `SELECT tiempo_espera_horas, nombre_template, language_code, activo
-       FROM configuracion_remarketing
-       WHERE id_configuracion = ?
-         AND estado_contacto = ?
-       LIMIT 1`,
-      {
-        replacements: [id_configuracion, estado_contacto],
-        type: db.QueryTypes.SELECT,
-      },
-    );
+  const [config] = await db.query(
+    `SELECT tiempo_espera_horas, nombre_template, language_code, 
+            estado_destino, activo
+     FROM configuracion_remarketing
+     WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
+    {
+      replacements: [id_configuracion, estado_contacto],
+      type: db.QueryTypes.SELECT,
+    },
+  );
 
-    res.status(200).json({
+  res.status(200).json({
       status: '200',
       data: config || null,
     });
-  } catch (error) {
-    console.error(error);
-    return next(
-      new AppError('Error obteniendo configuración de remarketing', 500),
-    );
-  }
 });

@@ -41,68 +41,74 @@ cron.schedule('*/1 * * * *', async () => {
   isRunning = true;
   try {
     await withLock('remarketing_cron_lock', async () => {
-    /* console.log('⏱️ Ejecutando tarea de remarketing'); */
+      /* console.log('⏱️ Ejecutando tarea de remarketing'); */
 
-    const pendientes = await db.query(
-      `SELECT * FROM remarketing_pendientes 
+      const pendientes = await db.query(
+        `SELECT * FROM remarketing_pendientes 
        WHERE enviado = 0 AND cancelado = 0 AND tiempo_disparo <= NOW()`,
-      { type: db.QueryTypes.SELECT },
-    );
+        { type: db.QueryTypes.SELECT },
+      );
 
-    for (const record of pendientes) {
-      try {
-        // 1️⃣ Verificar estado actual del cliente
-        const cliente = await ClientesChatCenter.findByPk(
-          record.id_cliente_chat_center,
-        );
+      for (const record of pendientes) {
+        try {
+          // 1️⃣ Verificar estado actual del cliente
+          const cliente = await ClientesChatCenter.findByPk(
+            record.id_cliente_chat_center,
+          );
 
-        if (!cliente) continue;
+          if (!cliente) continue;
 
-        // Si el estado cambió, cancelar
-        if (cliente.estado_contacto !== record.estado_contacto_origen) {
-          await db.query(
-            `UPDATE remarketing_pendientes
+          // Si el estado cambió, cancelar
+          if (cliente.estado_contacto !== record.estado_contacto_origen) {
+            await db.query(
+              `UPDATE remarketing_pendientes
          SET cancelado = 1
          WHERE id = ?`,
+              {
+                replacements: [record.id],
+                type: db.QueryTypes.UPDATE,
+              },
+            );
+            continue;
+          }
+
+          // 2️⃣ Enviar plantilla
+          await sendWhatsappMessageTemplateScheduled({
+            telefono: record.telefono,
+            telefono_configuracion: record.telefono_configuracion || null,
+            id_configuracion: record.id_configuracion,
+            nombre_template: record.nombre_template,
+            language_code: record.language_code,
+            template_parameters: [], // si luego quieres dinámicos los agregamos
+            responsable: 'cron_remarketing_estado',
+          });
+
+          // 3️⃣ Actualizar estado automáticamente (opcional)
+          /* await ClientesChatCenter.update(
+          { estado_contacto: 'seguimiento' },
+          { where: { id: record.id_cliente_chat_center } },
+        ); */
+
+          const estadoDestino = record.estado_destino || 'seguimiento';
+          await ClientesChatCenter.update(
+            { estado_contacto: estadoDestino },
+            { where: { id: record.id_cliente_chat_center } },
+          );
+
+          // 4️⃣ Marcar como enviado
+          await db.query(
+            `UPDATE remarketing_pendientes
+       SET enviado = 1
+       WHERE id = ?`,
             {
               replacements: [record.id],
               type: db.QueryTypes.UPDATE,
             },
           );
-          continue;
+        } catch (err) {
+          console.error('❌ Error en cron remarketing:', err.message);
         }
-
-        // 2️⃣ Enviar plantilla
-        await sendWhatsappMessageTemplateScheduled({
-          telefono: record.telefono,
-          telefono_configuracion: record.telefono_configuracion || null,
-          id_configuracion: record.id_configuracion,
-          nombre_template: record.nombre_template,
-          language_code: record.language_code,
-          template_parameters: [], // si luego quieres dinámicos los agregamos
-          responsable: 'cron_remarketing_estado',
-        });
-
-        // 3️⃣ Actualizar estado automáticamente (opcional)
-        await ClientesChatCenter.update(
-          { estado_contacto: 'seguimiento' },
-          { where: { id: record.id_cliente_chat_center } },
-        );
-
-        // 4️⃣ Marcar como enviado
-        await db.query(
-          `UPDATE remarketing_pendientes
-       SET enviado = 1
-       WHERE id = ?`,
-          {
-            replacements: [record.id],
-            type: db.QueryTypes.UPDATE,
-          },
-        );
-      } catch (err) {
-        console.error('❌ Error en cron remarketing:', err.message);
       }
-    }
     });
   } finally {
     isRunning = false;

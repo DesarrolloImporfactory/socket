@@ -35,6 +35,8 @@ const {
   enviarAsistenteGptImporfactory,
   enviarAsistenteGptImporshopProveedor,
   enviarAsistenteKanban,
+  cancelarRemarketingKanbanWrapper,
+  programarRemarketingKanbanWrapper,
 } = require('../utils/webhook_whatsapp/funcciones_asistente');
 
 const {
@@ -1721,6 +1723,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               }
             }
           } else if (tipo_configuracion == 'kanban') {
+            // 1. Cliente respondió → cancelar remarketing pendiente SIEMPRE
+            await cancelarRemarketingKanbanWrapper(
+              id_cliente,
+              id_configuracion,
+            );
+
+            // 2. Correr IA (solo si la columna tiene activa_ia=1)
             await enviarAsistenteKanban({
               mensaje: texto_mensaje,
               id_configuracion,
@@ -1730,6 +1739,24 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               business_phone_id,
               accessToken,
               estado_contacto,
+            });
+
+            // 3. Re-leer estado actual (la IA pudo haberlo cambiado con un trigger)
+            const clienteActualizado = await ClientesChatCenter.findByPk(
+              id_cliente,
+              {
+                attributes: ['estado_contacto'],
+              },
+            );
+            const estadoFinal =
+              clienteActualizado?.estado_contacto || estado_contacto;
+
+            // 4. Programar nuevo remarketing según estado final (con o sin IA)
+            await programarRemarketingKanbanWrapper({
+              id_configuracion,
+              id_cliente,
+              telefono: phone_whatsapp_from,
+              estado_contacto: estadoFinal,
             });
           }
         }

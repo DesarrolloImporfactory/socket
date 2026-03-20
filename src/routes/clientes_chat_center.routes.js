@@ -66,6 +66,12 @@ router.post(
   '/actualizar_estado',
   clientes_chat_centerController.actualizarEstado,
 );
+
+router.post(
+  '/actualizar_estado_dinamico',
+  clientes_chat_centerController.actualizarEstadoDinamico,
+);
+
 router.post(
   '/listar_ultimo_mensaje',
   clientes_chat_centerController.ultimo_mensaje,

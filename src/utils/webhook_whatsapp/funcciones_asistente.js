@@ -16,7 +16,11 @@ const {
   separadorProductos,
 } = require('../../services/mensaje_assistant.service');
 
-const { procesarMensajeKanban } = require('../../services/kanban_ia.service');
+const {
+  procesarMensajeKanban,
+  cancelarRemarketingKanban,
+  programarRemarketingKanban,
+} = require('../../services/kanban_ia.service');
 
 const {
   obtenerOCrearThreadId,
@@ -247,12 +251,15 @@ async function enviarAsistenteGptImporshopProveedor({
 
     return data;
   } catch (err) {
-    console.log(`❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`);
-    await log(`❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`);
+    console.log(
+      `❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`,
+    );
+    await log(
+      `❌ Error en procesarAsistenteMensajeImproshopProveedor: ${err.message}`,
+    );
     return false;
   }
 }
-
 
 async function separador_productos({
   mensaje,
@@ -360,6 +367,22 @@ async function enviarAsistenteKanban({
   }
 }
 
+async function cancelarRemarketingKanbanWrapper(id_cliente, id_configuracion) {
+  try {
+    await cancelarRemarketingKanban(id_cliente, id_configuracion);
+  } catch (err) {
+    await log(`❌ Error en cancelarRemarketingKanbanWrapper: ${err.message}`);
+  }
+}
+
+async function programarRemarketingKanbanWrapper(params) {
+  try {
+    await programarRemarketingKanban(params);
+  } catch (err) {
+    await log(`❌ Error en programarRemarketingKanbanWrapper: ${err.message}`);
+  }
+}
+
 module.exports = {
   cancelarRemarketingEnNode,
   transcribirAudioConWhisperDesdeArchivo,
@@ -370,4 +393,6 @@ module.exports = {
   enviarAsistenteGptImporfactory,
   enviarAsistenteGptImporshopProveedor,
   enviarAsistenteKanban,
+  cancelarRemarketingKanbanWrapper,
+  programarRemarketingKanbanWrapper,
 };
