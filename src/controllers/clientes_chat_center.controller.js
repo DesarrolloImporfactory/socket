@@ -557,29 +557,28 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       return {
         key: colKey,
         items: [],
+        total: 0,
         page: { has_more: false, next_cursor: null, limit: pageSize },
       };
 
     const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
     const term = (search?.[colKey] || '').trim().toLowerCase();
 
-    // — parámetros del JOIN (van primero en el array final)
     const joinParams = [];
     const joinFrags = [];
 
     if (conFechas) {
       joinFrags.push(`
-        LEFT JOIN (
-          SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
-          FROM   mensajes_clientes
-          WHERE  id_configuracion = ?
-          GROUP  BY celular_recibe
-        ) lm ON lm.mid = c.id
-      `);
+      LEFT JOIN (
+        SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
+        FROM   mensajes_clientes
+        WHERE  id_configuracion = ?
+        GROUP  BY celular_recibe
+      ) lm ON lm.mid = c.id
+    `);
       joinParams.push(id_configuracion);
     }
 
-    // — parámetros del WHERE
     const whereParams = [];
     const whereConds = [];
 
@@ -594,9 +593,8 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
         '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.celular_cliente LIKE ?)',
       );
       const l = `%${term}%`;
-      whereParams.push(l, l, `%${search[colKey] || ''}%`);
+      whereParams.push(l, l, `%${(search[colKey] || '').trim()}%`);
     }
-
     if (
       id_encargado !== null &&
       id_encargado !== '' &&
@@ -605,12 +603,10 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       whereConds.push('c.id_encargado = ?');
       whereParams.push(Number(id_encargado));
     }
-
     if (bot_openia !== null && bot_openia !== '' && bot_openia !== undefined) {
       whereConds.push('c.bot_openia = ?');
       whereParams.push(Number(bot_openia));
     }
-
     if (fd) {
       whereConds.push('DATE(lm.ultimo_msg) >= ?');
       whereParams.push(fd);
@@ -620,26 +616,43 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       whereParams.push(fh);
     }
 
+    const whereStr = whereConds.join(' AND ');
+    const joinStr = joinFrags.join(' ');
+
+    // ── COUNT total (sin cursor) ──
+    const [countRow] = await db.query(
+      `SELECT COUNT(*) AS total FROM clientes_chat_center c ${joinStr} WHERE ${whereStr}`,
+      {
+        replacements: [...joinParams, ...whereParams],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    const total = Number(countRow?.total || 0);
+
+    // ── SELECT paginado (con cursor) ──
+    const paginatedParams = [...whereParams];
+    const paginatedConds = [...whereConds];
     if (cursorId) {
-      whereConds.push('c.id < ?');
-      whereParams.push(cursorId);
+      paginatedConds.push('c.id < ?');
+      paginatedParams.push(cursorId);
     }
 
     const sql = `
-      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
-             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
-             ${conFechas ? ', lm.ultimo_msg' : ''}
-      FROM   clientes_chat_center c
-      ${joinFrags.join(' ')}
-      WHERE  ${whereConds.join(' AND ')}
-      ORDER  BY c.id DESC
-      LIMIT  ?
-    `;
+    SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
+           c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
+           ${conFechas ? ', lm.ultimo_msg' : ''}
+    FROM   clientes_chat_center c
+    ${joinStr}
+    WHERE  ${paginatedConds.join(' AND ')}
+    ORDER  BY c.id DESC
+    LIMIT  ?
+  `;
 
     const rows = await db.query(sql, {
-      replacements: [...joinParams, ...whereParams, pageSize + 1],
+      replacements: [...joinParams, ...paginatedParams, pageSize + 1],
       type: db.QueryTypes.SELECT,
     });
+
     const has_more = rows.length > pageSize;
     const items = has_more ? rows.slice(0, pageSize) : rows;
     const last = items[items.length - 1];
@@ -647,6 +660,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     return {
       key: colKey,
       items,
+      total,
       page: {
         has_more,
         next_cursor: last ? encodeCursor({ id: last.id }) : null,
@@ -655,10 +669,11 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     };
   };
 
+  // Al final del controlador, actualizar el mapeo:
   const results = await Promise.all(keys.map(fetchColumn));
   const data = {};
   results.forEach((r) => {
-    data[r.key] = { items: r.items, page: r.page };
+    data[r.key] = { items: r.items, total: r.total, page: r.page };
   });
 
   return res.status(200).json({ success: true, data });

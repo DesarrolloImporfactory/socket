@@ -13,6 +13,10 @@ const whatsappRouter = require('./routes/whatsapp.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
 const etiquetasAsignadasRouter = require('./routes/etiquetas_asignadas.routes');
 
+const dropiPlantillastRouter = require('./routes/dropi_plantillas.routes');
+
+const kanbanPlantillastRouter = require('./routes/kanban_plantillas.routes');
+
 const plataformaRouter = require('./routes/plataformas.routes');
 
 const clientes_chat_centerRouter = require('./routes/clientes_chat_center.routes');
@@ -234,6 +238,8 @@ app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
+app.use('/api/v1/dropi_plantillas', dropiPlantillastRouter);
+app.use('/api/v1/kanban_plantillas', kanbanPlantillastRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use(
