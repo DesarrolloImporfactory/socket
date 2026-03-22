@@ -461,12 +461,11 @@ class Sockets {
       socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
         try {
           const id_configuracion = toInt(payload?.id_configuracion);
-          const EnvioConCobroRaw = payload?.EnvioConCobro; // bool o string
-
+          const EnvioConCobroRaw = payload?.EnvioConCobro;
           const ciudad_destino_cod_dane = strOrNull(
             payload?.ciudad_destino_cod_dane,
           );
-          const ciudad_remitente_cod_dane = strOrNull(
+          let ciudad_remitente_cod_dane = strOrNull(
             payload?.ciudad_remitente_cod_dane,
           );
 
@@ -474,8 +473,6 @@ class Sockets {
             throw new AppError('id_configuracion es requerido', 400);
           if (!ciudad_destino_cod_dane)
             throw new AppError('ciudad_destino_cod_dane es requerido', 400);
-          if (!ciudad_remitente_cod_dane)
-            throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
 
           const integration = await getActiveIntegration(id_configuracion);
           if (!integration)
@@ -484,7 +481,6 @@ class Sockets {
           const integrationKey = decryptToken(integration.integration_key_enc);
           if (!integrationKey) throw new AppError('Dropi key inválida', 400);
 
-          // Dropi lo quiere como string "true"/"false"
           const EnvioConCobro =
             String(EnvioConCobroRaw).toLowerCase() === 'true'
               ? 'true'
@@ -495,14 +491,50 @@ class Sockets {
             : [];
           const amount = payload?.amount || null;
 
+          // Resolver cod_dane real del remitente desde el detalle del producto
+          if (products.length > 0 && products[0]?.id) {
+            try {
+              const productDetail = await dropiService.getProductDetail({
+                integrationKey,
+                productId: products[0].id,
+                country_code: integration.country_code,
+              });
+
+              const obj =
+                productDetail?.objects ||
+                productDetail?.data?.objects ||
+                productDetail;
+
+              // Intentar múltiples rutas para encontrar el cod_dane de la bodega
+              const wp = obj?.warehouse_product?.[0];
+              const resolvedCodDane =
+                wp?.warehouse?.city?.cod_dane ||
+                wp?.warehouse?.[0]?.city?.cod_dane ||
+                obj?.warehouse?.city?.cod_dane ||
+                null;
+
+              if (resolvedCodDane) {
+                console.log(
+                  `[Dropi Cotiza] cod_dane resuelto desde producto: ${resolvedCodDane} (antes: ${ciudad_remitente_cod_dane})`,
+                );
+                ciudad_remitente_cod_dane = String(resolvedCodDane);
+              }
+            } catch (e) {
+              console.log(
+                `[Dropi Cotiza] No se pudo resolver cod_dane del producto ${products[0].id}: ${e.message}`,
+              );
+            }
+          }
+
+          if (!ciudad_remitente_cod_dane)
+            throw new AppError('No se pudo resolver la ciudad remitente', 400);
+
           const dropiPayload = {
             EnvioConCobro,
             ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
             ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
-
-            //Ecuador necesita enviar esta info, Colombia lo ignora
             products,
-            ...((amount != null) & { amount }),
+            ...(amount != null && { amount }),
           };
 
           const data = await dropiService.cotizaEnvioTransportadora({
