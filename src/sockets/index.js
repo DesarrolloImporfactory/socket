@@ -17,9 +17,10 @@ async function withRetry(fn, retries = 2, delay = 500) {
     try {
       return await fn();
     } catch (err) {
-      const isTransient = /ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|SequelizeConnectionError/i.test(
-        err.message || err.name || '',
-      );
+      const isTransient =
+        /ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|SequelizeConnectionError/i.test(
+          err.message || err.name || '',
+        );
       if (isTransient && i < retries) {
         console.warn(`⚠️ Retry ${i + 1}/${retries} after: ${err.message}`);
         await new Promise((r) => setTimeout(r, delay * (i + 1)));
@@ -112,18 +113,13 @@ class Sockets {
             const chatService = new ChatService();
 
             const chats = await withRetry(() =>
-              chatService.findChats(
-                id_configuracion,
-                id_sub_usuario,
-                rol,
-                {
-                  cursorFecha,
-                  cursorId,
-                  limit,
-                  filtros,
-                  scopeChats,
-                },
-              ),
+              chatService.findChats(id_configuracion, id_sub_usuario, rol, {
+                cursorFecha,
+                cursorId,
+                limit,
+                filtros,
+                scopeChats,
+              }),
             );
 
             socket.emit('CHATS', chats);
@@ -494,10 +490,19 @@ class Sockets {
               ? 'true'
               : 'false';
 
+          const products = Array.isArray(payload?.products)
+            ? payload.products
+            : [];
+          const amount = payload?.amount || null;
+
           const dropiPayload = {
             EnvioConCobro,
             ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
             ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
+
+            //Ecuador necesita enviar esta info, Colombia lo ignora
+            products,
+            ...((amount != null) & { amount }),
           };
 
           const data = await dropiService.cotizaEnvioTransportadora({
