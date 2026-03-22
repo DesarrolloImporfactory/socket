@@ -465,7 +465,7 @@ class Sockets {
           const ciudad_destino_cod_dane = strOrNull(
             payload?.ciudad_destino_cod_dane,
           );
-          const ciudad_remitente_cod_dane = strOrNull(
+          let ciudad_remitente_cod_dane = strOrNull(
             payload?.ciudad_remitente_cod_dane,
           );
 
@@ -488,15 +488,58 @@ class Sockets {
               ? 'true'
               : 'false';
 
-          // ✅ Log para debug — qué llega del frontend
+          const products = Array.isArray(payload?.products)
+            ? payload.products
+            : [];
+          const amount = payload?.amount || null;
+          const destinationLabel = strOrNull(payload?.destination_label) || '';
+
+          // ✅ Solo Ecuador: resolver cod_dane real via getOriginCityForCalculateShipping
+          if (
+            integration.country_code === 'EC' &&
+            products.length > 0 &&
+            products[0]?.id
+          ) {
+            try {
+              const originData = await dropiService.getOriginCityForShipping({
+                integrationKey,
+                productId: products[0].id,
+                productType: products[0]?.type || 'SIMPLE',
+                destination: destinationLabel,
+                country_code: integration.country_code,
+              });
+
+              const resolvedCodDane =
+                originData?.data?.city_dropi?.cod_dane ||
+                originData?.data?.warehouse?.city?.cod_dane ||
+                null;
+
+              if (resolvedCodDane) {
+                console.log(
+                  `[Dropi Cotiza EC] cod_dane resuelto: ${resolvedCodDane} (antes: ${ciudad_remitente_cod_dane})`,
+                );
+                ciudad_remitente_cod_dane = String(resolvedCodDane);
+              }
+            } catch (e) {
+              console.log(
+                `[Dropi Cotiza EC] getOriginCity falló: ${e.message}`,
+              );
+            }
+          }
+
           console.log(
             `[Dropi Cotiza] (${integration.country_code}) remitente: ${ciudad_remitente_cod_dane}, destino: ${ciudad_destino_cod_dane}`,
           );
+
+          // ✅ CO: payload limpio — EC: payload con products y amount
+          const isEC = integration.country_code === 'EC';
 
           const dropiPayload = {
             EnvioConCobro,
             ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
             ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
+            ...(isEC && products.length > 0 && { products }),
+            ...(isEC && amount != null && { amount }),
           };
 
           const data = await dropiService.cotizaEnvioTransportadora({

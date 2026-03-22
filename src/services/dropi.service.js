@@ -201,3 +201,35 @@ exports.getProductDetail = async ({
     throw normalizeDropiError(err);
   }
 };
+
+exports.getOriginCityForShipping = async ({
+  integrationKey,
+  productId,
+  productType,
+  destination,
+  country_code,
+}) => {
+  try {
+    const code = String(country_code || '').toUpperCase();
+    const baseURL = DROPI_BASE_URLS[code];
+    if (!baseURL) throw new AppError(`Dropi: país no soportado (${code})`, 400);
+
+    const apiBaseURL = baseURL.replace('/integrations', '/api');
+
+    const { data } = await axios.post(
+      `${apiBaseURL}/orders/getOriginCityForCalculateShipping`,
+      {
+        id: Number(productId),
+        type: productType || 'SIMPLE',
+        destination: destination || '',
+      },
+      {
+        headers: dropiHeaders(integrationKey),
+        timeout: 15000,
+      },
+    );
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
