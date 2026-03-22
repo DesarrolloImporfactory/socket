@@ -500,6 +500,12 @@ class Sockets {
                 country_code: integration.country_code,
               });
 
+              // ✅ LOG COMPLETO para debug
+              console.log(
+                `[Dropi Debug] getProductDetail producto ${products[0].id} (${integration.country_code}):`,
+                JSON.stringify(productDetail, null, 2),
+              );
+
               const obj =
                 productDetail?.objects ||
                 productDetail?.data?.objects ||
