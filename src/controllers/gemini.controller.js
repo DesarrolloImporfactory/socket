@@ -19,12 +19,9 @@ const { decryptToken } = require('../utils/cryptoToken');
 // ─── constantes ─────────────────────────────────────────────────────────────
 const IL_TRIAL_IMAGES = 10;
 
-// ─── Modelos de imagen Gemini (fallback chain) ──────────────────────────────
+// ─── Modelo de imagen Gemini (único — nanobanana) ───────────────────────────
 
-const GEMINI_IMAGE_MODELS = [
-  process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
-  'gemini-3.1-flash-image-preview',
-];
+const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -77,7 +74,8 @@ function mapGeminiQuotaMessage(rawMsg = '') {
       statusCode: 503,
       retryable: true,
       message:
-        'El motor de generación se encuentra con alta demanda. Inténtalo de nuevo en unos minutos.',
+        'El motor de generación se encuentra con alta demanda. ' +
+        'Inténtalo de nuevo en 30 minutos por favor.',
     };
   }
 
@@ -88,73 +86,55 @@ function mapGeminiQuotaMessage(rawMsg = '') {
   };
 }
 
-// FIX: Reducido MAX_RETRIES a 1 y timeout a 60s para evitar 502 de Apache.
-//      Antes: 3 modelos × 3 retries × 120s = 18 min peor caso.
-//      Ahora: 2 modelos × 2 intentos × 60s = 4 min peor caso.
+/**
+ * callGeminiWithRetry
+ *
+ * Usa ÚNICAMENTE gemini-3.1-flash-image-preview (nanobanana).
+ * Si el modelo responde con error de alta demanda → mensaje claro al usuario.
+ * Sin fallback a otros modelos.
+ */
 async function callGeminiWithRetry(payload, apiKey, next) {
-  const MAX_RETRIES = 1;
-  const RETRY_DELAY = 2000;
-  let lastError = null;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`;
 
-  for (const model of GEMINI_IMAGE_MODELS) {
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  try {
+    const resp = await axios.post(geminiUrl, payload, {
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      timeout: 90000,
+    });
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const resp = await axios.post(geminiUrl, payload, {
-          headers: {
-            'x-goog-api-key': apiKey,
-            'Content-Type': 'application/json',
-          },
-          timeout: 60000,
-        });
-
-        const image_base64 = pickImageBase64(resp);
-        if (image_base64) {
-          if (model !== GEMINI_IMAGE_MODELS[0]) {
-            console.log(`[Gemini] Generado con modelo fallback: ${model}`);
-          }
-          return { image_base64, model };
-        }
-
-        lastError = {
-          message: 'Gemini no devolvió imagen',
-          statusCode: 500,
-          retryable: false,
-        };
-        break;
-      } catch (err) {
-        const rawMsg =
-          err?.response?.data?.error?.message || err?.message || '';
-        const mapped = mapGeminiQuotaMessage(rawMsg);
-        lastError = mapped;
-
-        if (mapped.statusCode === 402) {
-          return next(new AppError(mapped.message, mapped.statusCode));
-        }
-
-        if (mapped.retryable && attempt < MAX_RETRIES) {
-          console.warn(
-            `[Gemini] Retry ${attempt + 1}/${MAX_RETRIES} modelo=${model} — ${rawMsg.slice(0, 100)}`,
-          );
-          await new Promise((r) => setTimeout(r, RETRY_DELAY * (attempt + 1)));
-          continue;
-        }
-
-        console.warn(
-          `[Gemini] Modelo ${model} falló tras ${attempt + 1} intentos, probando siguiente...`,
-        );
-        break;
-      }
+    const image_base64 = pickImageBase64(resp);
+    if (image_base64) {
+      return { image_base64, model: GEMINI_IMAGE_MODEL };
     }
+
+    return next(
+      new AppError('Gemini no devolvió imagen. Inténtalo de nuevo.', 500),
+    );
+  } catch (err) {
+    const rawMsg = err?.response?.data?.error?.message || err?.message || '';
+    const mapped = mapGeminiQuotaMessage(rawMsg);
+
+    // Error de facturación → directo
+    if (mapped.statusCode === 402) {
+      return next(new AppError(mapped.message, mapped.statusCode));
+    }
+
+    // Alta demanda / sobrecarga → mensaje claro, sin fallback
+    if (mapped.retryable) {
+      return next(
+        new AppError(
+          'El motor de generación se encuentra con alta demanda. ' +
+            'Inténtalo de nuevo en 30 minutos por favor.',
+          503,
+        ),
+      );
+    }
+
+    return next(new AppError(mapped.message, mapped.statusCode));
   }
-
-  const finalMsg = lastError?.retryable
-    ? 'El motor de generación se encuentra con alta demanda. Inténtalo de nuevo en unos minutos.'
-    : lastError?.message || 'Error al generar la imagen.';
-  const finalCode = lastError?.retryable ? 503 : lastError?.statusCode || 500;
-
-  return next(new AppError(finalMsg, finalCode));
 }
 
 async function uploadImageToS3(base64Data, userId, suffix = '') {
@@ -474,7 +454,7 @@ const IDIOMAS_MAP = {
 /**
  * Construye las secciones dinámicas del prompt según la etapa.
  *
- * - Precio / moneda  → SOLO para etapa "hero"
+ * - Precio / moneda  → SOLO para etapa "hero" y "oferta"
  * - Idioma           → TODAS las etapas
  */
 function buildDynamicPromptSections({
@@ -844,11 +824,13 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   const prompt = [
     etapa.prompt,
     ...dynamicSections,
-    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
-    'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
-    'DEBES replicar EXACTAMENTE: la paleta de colores, tipografía, estilo de fondos, bordes, iconografía y jerarquía visual del TEMPLATE.',
-    'NO inventes colores nuevos. Usa los mismos tonos, degradados y contrastes del TEMPLATE.',
-    'Integra las fotos del producto del usuario dentro del diseño manteniendo la coherencia visual del TEMPLATE.',
+    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO Y COLOR ---',
+    'PALETA DE COLORES: Analiza las FOTOS DEL PRODUCTO que subió el usuario y extrae de ellas la paleta de colores dominante (colores del producto, empaque, etiqueta, etc.).',
+    'USA esos colores del producto como la línea cromática PRINCIPAL de toda la imagen: fondos, degradados, acentos, textos destacados y elementos decorativos.',
+    'La imagen TEMPLATE adjunta es tu referencia de ESTRUCTURA Y LAYOUT: replica su organización de elementos, distribución de espacios, jerarquía visual, tipografía, bordes y nivel de profesionalismo.',
+    'NO copies los colores del template. Los colores SIEMPRE salen del producto del usuario.',
+    'Si el producto es mayormente blanco o neutro, usa tonos complementarios sutiles que armonicen con el producto.',
+    'Integra las fotos del producto del usuario dentro del diseño de forma natural y protagonista.',
     'Genera UNA sola imagen final, profesional, lista para publicar.',
   ]
     .filter(Boolean)
@@ -949,7 +931,10 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
 
   const prompt = [
     'Eres un diseñador experto en creatividades para anuncios.',
-    'Replica el estilo del TEMPLATE (layout, tipografías, colores y jerarquía visual).',
+    'PALETA DE COLORES: Analiza las FOTOS DEL PRODUCTO del usuario y extrae su paleta de colores dominante.',
+    'Usa esos colores del producto como la línea cromática principal de toda la imagen.',
+    'Del TEMPLATE replica ÚNICAMENTE la estructura, layout, distribución de espacios, tipografía y nivel de profesionalismo.',
+    'NO copies los colores del template. Los colores salen del producto.',
     'Usa las imágenes del producto como referencia para insertar el producto en el diseño.',
     'Genera UNA sola imagen publicitaria final, lista para publicar.',
     description ? `Detalles del producto/marca: ${description}` : '',
@@ -1507,11 +1492,13 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
     ...dynamicSections,
     '\n--- CORRECCIONES DEL USUARIO ---',
     `El usuario ha pedido los siguientes cambios específicos: ${prompt_extra}`,
-    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO ---',
-    'La imagen TEMPLATE adjunta es tu referencia PRINCIPAL de diseño.',
-    'DEBES replicar EXACTAMENTE: la paleta de colores, tipografía, estilo de fondos, bordes, iconografía y jerarquía visual del TEMPLATE.',
-    'NO inventes colores nuevos. Usa los mismos tonos, degradados y contrastes del TEMPLATE.',
-    'Integra las fotos del producto del usuario dentro del diseño manteniendo la coherencia visual del TEMPLATE.',
+    '\n--- INSTRUCCIONES OBLIGATORIAS DE ESTILO Y COLOR ---',
+    'PALETA DE COLORES: Analiza las FOTOS DEL PRODUCTO que subió el usuario y extrae de ellas la paleta de colores dominante (colores del producto, empaque, etiqueta, etc.).',
+    'USA esos colores del producto como la línea cromática PRINCIPAL de toda la imagen: fondos, degradados, acentos, textos destacados y elementos decorativos.',
+    'La imagen TEMPLATE adjunta es tu referencia de ESTRUCTURA Y LAYOUT: replica su organización de elementos, distribución de espacios, jerarquía visual, tipografía, bordes y nivel de profesionalismo.',
+    'NO copies los colores del template. Los colores SIEMPRE salen del producto del usuario.',
+    'Si el producto es mayormente blanco o neutro, usa tonos complementarios sutiles que armonicen con el producto.',
+    'Integra las fotos del producto del usuario dentro del diseño de forma natural y protagonista.',
     'Genera UNA sola imagen final, profesional, lista para publicar.',
   ]
     .filter(Boolean)
