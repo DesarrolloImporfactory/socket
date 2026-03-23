@@ -458,6 +458,92 @@ class Sockets {
         }
       });
 
+      // socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
+      //   try {
+      //     const id_configuracion = toInt(payload?.id_configuracion);
+      //     const EnvioConCobroRaw = payload?.EnvioConCobro;
+      //     const ciudad_destino_cod_dane = strOrNull(
+      //       payload?.ciudad_destino_cod_dane,
+      //     );
+      //     const ciudad_remitente_cod_dane = strOrNull(
+      //       payload?.ciudad_remitente_cod_dane,
+      //     );
+
+      //     if (!id_configuracion)
+      //       throw new AppError('id_configuracion es requerido', 400);
+      //     if (!ciudad_destino_cod_dane)
+      //       throw new AppError('ciudad_destino_cod_dane es requerido', 400);
+      //     if (!ciudad_remitente_cod_dane)
+      //       throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
+
+      //     const integration = await getActiveIntegration(id_configuracion);
+      //     if (!integration)
+      //       throw new AppError('No existe una integración Dropi activa', 404);
+
+      //     const integrationKey = decryptToken(integration.integration_key_enc);
+      //     if (!integrationKey) throw new AppError('Dropi key inválida', 400);
+
+      //     const EnvioConCobro =
+      //       String(EnvioConCobroRaw).toLowerCase() === 'true' ? true : false;
+
+      //     const products = Array.isArray(payload?.products)
+      //       ? payload.products
+      //       : [];
+      //     const amount = payload?.amount || null;
+
+      //     const dropiPayload = {
+      //       EnvioConCobro,
+      //       ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
+      //       ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
+      //       products,
+      //       ...(amount != null && { amount }),
+      //     };
+
+      //     // Resolver warehouse_id real del primer producto
+      //     if (products.length > 0 && products[0]?.id) {
+      //       try {
+      //         const productDetail = await dropiService.getProductDetail({
+      //           integrationKey,
+      //           productId: products[0].id,
+      //           country_code: integration.country_code,
+      //         });
+      //         const obj = productDetail?.objects || productDetail;
+      //         const warehouseId =
+      //           obj?.warehouse_product?.[0]?.warehouse_id || null;
+
+      //         if (warehouseId) {
+      //           dropiPayload.warehouse = { id: warehouseId };
+      //           console.log(
+      //             `[Dropi Cotiza] (${integration.country_code}) warehouse_id: ${warehouseId} para producto ${products[0].id}`,
+      //           );
+      //         }
+      //       } catch (e) {
+      //         console.log(
+      //           `[Dropi Cotiza] (${integration.country_code}) getProductDetail falló: ${e.message}`,
+      //         );
+      //       }
+      //     }
+
+      //     console.log(
+      //       `[Dropi Cotiza] (${integration.country_code}) payload:`,
+      //       JSON.stringify(dropiPayload),
+      //     );
+
+      //     const data = await dropiService.cotizaEnvioTransportadora({
+      //       integrationKey,
+      //       payload: dropiPayload,
+      //       country_code: integration.country_code,
+      //     });
+
+      //     socket.emit('DROPI_COTIZA_ENVIO_V2_OK', { isSuccess: true, data });
+      //   } catch (e) {
+      //     socket.emit('DROPI_COTIZA_ENVIO_V2_ERROR', {
+      //       isSuccess: false,
+      //       message: e?.message || 'Error cotizando transportadoras',
+      //     });
+      //   }
+      // });
+
       socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
         try {
           const id_configuracion = toInt(payload?.id_configuracion);
@@ -490,16 +576,19 @@ class Sockets {
             ? payload.products
             : [];
           const amount = payload?.amount || null;
+          const ciudadDestinoFull = payload?.ciudad_destino_full || null;
 
-          const dropiPayload = {
-            EnvioConCobro,
-            ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
-            ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
-            products,
-            ...(amount != null && { amount }),
+          // Ciudad destino: objeto completo si viene, sino solo cod_dane
+          const ciudad_destino = ciudadDestinoFull || {
+            cod_dane: ciudad_destino_cod_dane,
           };
 
-          // Resolver warehouse_id real del primer producto
+          // Ciudad remitente: empezar con cod_dane
+          let ciudad_remitente = { cod_dane: ciudad_remitente_cod_dane };
+
+          let warehouseObj = null;
+
+          // Obtener warehouse del producto y resolver ciudad remitente completa
           if (products.length > 0 && products[0]?.id) {
             try {
               const productDetail = await dropiService.getProductDetail({
@@ -507,15 +596,67 @@ class Sockets {
                 productId: products[0].id,
                 country_code: integration.country_code,
               });
+
               const obj = productDetail?.objects || productDetail;
-              const warehouseId =
-                obj?.warehouse_product?.[0]?.warehouse_id || null;
+              const wp = obj?.warehouse_product?.[0];
+              const warehouseId = wp?.warehouse_id || null;
 
               if (warehouseId) {
-                dropiPayload.warehouse = { id: warehouseId };
-                console.log(
-                  `[Dropi Cotiza] (${integration.country_code}) warehouse_id: ${warehouseId} para producto ${products[0].id}`,
-                );
+                warehouseObj = { id: warehouseId };
+
+                // Intentar resolver la ciudad remitente completa
+                // Listar departments, luego buscar la city por cod_dane
+                try {
+                  const statesData = await dropiService.listStates({
+                    integrationKey,
+                    country_id: 1,
+                    country_code: integration.country_code,
+                  });
+
+                  const departments =
+                    statesData?.objects || statesData?.data || [];
+
+                  // Buscar en cada departamento la ciudad que matchee el cod_dane
+                  for (const dept of departments) {
+                    const deptId = dept.id || dept.department_id;
+                    if (!deptId) continue;
+
+                    try {
+                      const citiesData = await dropiService.listCities({
+                        integrationKey,
+                        payload: {
+                          department_id: deptId,
+                          rate_type: EnvioConCobro
+                            ? 'CON RECAUDO'
+                            : 'SIN RECAUDO',
+                        },
+                        country_code: integration.country_code,
+                      });
+
+                      const citiesList =
+                        citiesData?.objects?.cities || citiesData?.cities || [];
+                      const found = citiesList.find(
+                        (c) =>
+                          String(c.cod_dane || '') ===
+                          ciudad_remitente_cod_dane,
+                      );
+
+                      if (found) {
+                        ciudad_remitente = found;
+                        console.log(
+                          `[Dropi Cotiza] (${integration.country_code}) ciudad remitente resuelta: ${found.name} (dept ${deptId})`,
+                        );
+                        break;
+                      }
+                    } catch (e) {
+                      // Seguir con el siguiente departamento
+                    }
+                  }
+                } catch (e) {
+                  console.log(
+                    `[Dropi Cotiza] (${integration.country_code}) no se pudo resolver ciudad remitente completa: ${e.message}`,
+                  );
+                }
               }
             } catch (e) {
               console.log(
@@ -523,6 +664,15 @@ class Sockets {
               );
             }
           }
+
+          const dropiPayload = {
+            EnvioConCobro,
+            ciudad_destino,
+            ciudad_remitente,
+            products,
+            ...(amount != null && { amount }),
+            ...(warehouseObj && { warehouse: warehouseObj }),
+          };
 
           console.log(
             `[Dropi Cotiza] (${integration.country_code}) payload:`,
