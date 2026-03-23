@@ -578,17 +578,14 @@ class Sockets {
           const amount = payload?.amount || null;
           const ciudadDestinoFull = payload?.ciudad_destino_full || null;
 
-          // Ciudad destino: objeto completo si viene, sino solo cod_dane
-          const ciudad_destino = ciudadDestinoFull || {
+          // ── Resolver objetos completos de ciudades ──
+          let ciudad_destino = ciudadDestinoFull || {
             cod_dane: ciudad_destino_cod_dane,
           };
-
-          // Ciudad remitente: empezar con cod_dane
           let ciudad_remitente = { cod_dane: ciudad_remitente_cod_dane };
-
           let warehouseObj = null;
 
-          // Obtener warehouse del producto y resolver ciudad remitente completa
+          // Obtener warehouse del producto
           if (products.length > 0 && products[0]?.id) {
             try {
               const productDetail = await dropiService.getProductDetail({
@@ -596,72 +593,118 @@ class Sockets {
                 productId: products[0].id,
                 country_code: integration.country_code,
               });
-
               const obj = productDetail?.objects || productDetail;
-              const wp = obj?.warehouse_product?.[0];
-              const warehouseId = wp?.warehouse_id || null;
-
+              const warehouseId =
+                obj?.warehouse_product?.[0]?.warehouse_id || null;
               if (warehouseId) {
                 warehouseObj = { id: warehouseId };
-
-                // Intentar resolver la ciudad remitente completa
-                // Listar departments, luego buscar la city por cod_dane
-                try {
-                  const statesData = await dropiService.listStates({
-                    integrationKey,
-                    country_id: 1,
-                    country_code: integration.country_code,
-                  });
-
-                  const departments =
-                    statesData?.objects || statesData?.data || [];
-
-                  // Buscar en cada departamento la ciudad que matchee el cod_dane
-                  for (const dept of departments) {
-                    const deptId = dept.id || dept.department_id;
-                    if (!deptId) continue;
-
-                    try {
-                      const citiesData = await dropiService.listCities({
-                        integrationKey,
-                        payload: {
-                          department_id: deptId,
-                          rate_type: EnvioConCobro
-                            ? 'CON RECAUDO'
-                            : 'SIN RECAUDO',
-                        },
-                        country_code: integration.country_code,
-                      });
-
-                      const citiesList =
-                        citiesData?.objects?.cities || citiesData?.cities || [];
-                      const found = citiesList.find(
-                        (c) =>
-                          String(c.cod_dane || '') ===
-                          ciudad_remitente_cod_dane,
-                      );
-
-                      if (found) {
-                        ciudad_remitente = found;
-                        console.log(
-                          `[Dropi Cotiza] (${integration.country_code}) ciudad remitente resuelta: ${found.name} (dept ${deptId})`,
-                        );
-                        break;
-                      }
-                    } catch (e) {
-                      // Seguir con el siguiente departamento
-                    }
-                  }
-                } catch (e) {
-                  console.log(
-                    `[Dropi Cotiza] (${integration.country_code}) no se pudo resolver ciudad remitente completa: ${e.message}`,
-                  );
-                }
               }
             } catch (e) {
               console.log(
                 `[Dropi Cotiza] (${integration.country_code}) getProductDetail falló: ${e.message}`,
               );
+            }
+          }
+
+          // Obtener departments UNA sola vez
+          let departments = [];
+          try {
+            const statesData = await dropiService.listStates({
+              integrationKey,
+              country_id: 1,
+              country_code: integration.country_code,
+            });
+            departments = statesData?.objects || statesData?.data || [];
+            if (!Array.isArray(departments)) departments = [];
+          } catch (e) {
+            console.log(
+              `[Dropi Cotiza] (${integration.country_code}) listStates falló: ${e.message}`,
+            );
+          }
+
+          // Helper: construir objeto department
+          const buildDepartment = (dept) => ({
+            id: dept.id || dept.department_id,
+            name: dept.name || dept.department || dept.nombre,
+            country_id: dept.country_id || 1,
+            created_at: dept.created_at || null,
+            updated_at: dept.updated_at || null,
+            deleted_at: dept.deleted_at || null,
+            department_code: dept.department_code || null,
+          });
+
+          // Helper: buscar ciudad por cod_dane en un departamento
+          const findCityInDept = async (deptId, targetCodDane) => {
+            try {
+              const citiesData = await dropiService.listCities({
+                integrationKey,
+                payload: {
+                  department_id: deptId,
+                  rate_type: EnvioConCobro ? 'CON RECAUDO' : 'SIN RECAUDO',
+                },
+                country_code: integration.country_code,
+              });
+              const citiesList =
+                citiesData?.objects?.cities || citiesData?.cities || [];
+              return (
+                citiesList.find(
+                  (c) => String(c.cod_dane || '') === String(targetCodDane),
+                ) || null
+              );
+            } catch {
+              return null;
+            }
+          };
+
+          // ── Enriquecer ciudad_destino con department si falta ──
+          if (
+            ciudad_destino &&
+            ciudad_destino.department_id &&
+            !ciudad_destino.department
+          ) {
+            const dept = departments.find(
+              (d) =>
+                Number(d.id || d.department_id) ===
+                Number(ciudad_destino.department_id),
+            );
+            if (dept) {
+              ciudad_destino = {
+                ...ciudad_destino,
+                department: buildDepartment(dept),
+              };
+            }
+          }
+
+          // ── Resolver ciudad_remitente completa buscando en departments/cities ──
+          // Solo si no es el mismo cod_dane que destino (evitar búsqueda innecesaria)
+          if (
+            ciudad_remitente_cod_dane === ciudad_destino_cod_dane &&
+            ciudad_destino.id
+          ) {
+            // Misma ciudad — reusar
+            ciudad_remitente = { ...ciudad_destino };
+            console.log(
+              `[Dropi Cotiza] (${integration.country_code}) remitente = destino (${ciudad_destino.name})`,
+            );
+          } else if (departments.length > 0) {
+            for (const dept of departments) {
+              const deptId = Number(dept.id || dept.department_id);
+              if (!deptId) continue;
+
+              const found = await findCityInDept(
+                deptId,
+                ciudad_remitente_cod_dane,
+              );
+              if (found) {
+                ciudad_remitente = {
+                  ...found,
+                  department: buildDepartment(dept),
+                };
+                console.log(
+                  `[Dropi Cotiza] (${integration.country_code}) remitente resuelto: ${found.name}, ${dept.name}`,
+                );
+                break;
+              }
             }
           }
 
@@ -675,7 +718,7 @@ class Sockets {
           };
 
           console.log(
-            `[Dropi Cotiza] (${integration.country_code}) payload:`,
+            `[Dropi Cotiza] (${integration.country_code}) payload final:`,
             JSON.stringify(dropiPayload),
           );
 
