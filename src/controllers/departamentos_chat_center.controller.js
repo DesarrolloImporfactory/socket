@@ -12,28 +12,11 @@ const { QueryTypes } = require('sequelize');
 
 const Configuraciones = require('../models/configuraciones.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
+const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
-
-// Helper para emitir al dashboard
-async function emitDashboardUpdate(id_configuracion, tipo) {
-  if (!global.presenceIo) return;
-  try {
-    const [cfg] = await db.query(
-      `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
-    if (cfg) {
-      global.presenceIo
-        .to(`dashboard:${cfg.id_usuario}`)
-        .emit('dashboard:update', { tipo, id_configuracion });
-    }
-  } catch (e) {
-    console.warn('[dashboard emit error]', e.message);
-  }
-}
 
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
@@ -725,11 +708,11 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         }
       }
 
-      //Emitir al dashboard - cubre origen y destino si son diferentes configuraciones
+      // Emitir al dashboard - cubre origen y destino
       const configDestino = configuracion_transferida?.id_configuracion;
-      await emitDashboardUpdate(id_configuracion, 'chat_transferred');
+      dashboardEmitter.emitByConfig(id_configuracion, 'chat_transferred');
       if (configDestino && configDestino !== id_configuracion) {
-        await emitDashboardUpdate(configDestino, 'chat_transferred');
+        dashboardEmitter.emitByConfig(configDestino, 'chat_transferred');
       }
       break;
     }
@@ -778,7 +761,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
 
   enviarConsultaAPI(id_configuracion, id_cliente_chat_center);
 
-  await emitDashboardUpdate(id_configuracion, 'chat_transferred');
+  dashboardEmitter.emitByConfig(id_configuracion, 'chat_transferred');
 
   return res
     .status(200)

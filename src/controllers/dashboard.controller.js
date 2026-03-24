@@ -7,6 +7,11 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 
 const EtiquetaService = require('../services/etiqueta.service');
 const catchAsync = require('../utils/catchAsync');
+const dashboardCache = require('./dashboardCache');
+
+// TTL del cache en milisegundos (5 segundos)
+// Si 10 agentes piden la misma data en 5s, solo 1 query real se ejecuta
+const CACHE_TTL = 5000;
 
 // ════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -54,6 +59,26 @@ async function resolveRole(id_usuario, id_sub_usuario) {
   return { esAdmin, id_sub_usuario, rol };
 }
 
+const VALID_SECTIONS = new Set([
+  'summary',
+  'pendingQueue',
+  'slaToday',
+  'charts',
+  'agentLoad',
+  'frequentTransfers',
+]);
+const ALL_SECTIONS = [...VALID_SECTIONS];
+
+function parseSections(raw) {
+  if (!raw || raw === 'all') return new Set(ALL_SECTIONS);
+  if (Array.isArray(raw) && raw.length > 0) {
+    if (raw.includes('all')) return new Set(ALL_SECTIONS);
+    const valid = raw.filter((s) => VALID_SECTIONS.has(s));
+    return valid.length > 0 ? new Set(valid) : new Set(ALL_SECTIONS);
+  }
+  return new Set(ALL_SECTIONS);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 1) FILTROS DEL DASHBOARD
 // ════════════════════════════════════════════════════════════════════════════
@@ -80,7 +105,6 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
   }
 
   const [usuarios, conexiones, deps] = await Promise.all([
-    // Usuarios: Admin → todos | Agente → solo él
     Sub_usuarios_chat_center.findAll({
       where: esAdmin ? { id_usuario } : { id_usuario, id_sub_usuario },
     }).then((rows) =>
@@ -90,7 +114,6 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
       }),
     ),
 
-    // Conexiones (ya filtra por departamentos asignados cuando no es admin)
     db.query(
       `SELECT
           c.id, c.id_plataforma, c.nombre_configuracion, c.telefono,
@@ -116,7 +139,6 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
       },
     ),
 
-    // Departamentos: Admin → todos | Agente → solo donde está asignado
     (async () => {
       const findOpts = {
         where: { id_usuario },
@@ -204,8 +226,6 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// CHANNEL MAP
-// ════════════════════════════════════════════════════════════════════════════
 const CHANNEL_MAP = { wa: 'WhatsApp', ig: 'Instagram', ms: 'Messenger' };
 function mapChannel(s) {
   return CHANNEL_MAP[s] || s || '—';
@@ -214,17 +234,12 @@ function mapChannel(s) {
 // ════════════════════════════════════════════════════════════════════════════
 // 2) DASHBOARD COMPLETO — Admin
 // ════════════════════════════════════════════════════════════════════════════
-// Acepta id_sub_usuario_filtro opcional:
-//   - Si viene → filtra por ese agente (como si fuera su dashboard personal)
-//   - Si no viene → ve todo
-// Esto permite que el admin seleccione "Belén" en el dropdown y vea
-// exactamente lo mismo que Belén ve en su propio dashboard.
-// ════════════════════════════════════════════════════════════════════════════
 exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
   const {
     id_usuario,
     id_configuracion = null,
     id_sub_usuario_filtro = null,
+    sections: rawSections = null,
     from,
     to,
   } = req.body;
@@ -236,7 +251,6 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     });
   }
 
-  // Si el admin seleccionó un usuario específico, validar que pertenezca a su cuenta
   let agentId = null;
   if (id_sub_usuario_filtro) {
     const [exists] = await db.query(
@@ -247,29 +261,29 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
         type: db.QueryTypes.SELECT,
       },
     );
-    if (exists) {
-      agentId = id_sub_usuario_filtro;
-    }
-    // Si no existe, simplemente ignora el filtro (ve todo)
+    if (exists) agentId = id_sub_usuario_filtro;
   }
 
+  const sections = parseSections(rawSections);
   return executeDashboard(res, {
     id_usuario,
     id_configuracion,
     from,
     to,
     agentId,
+    sections,
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// 3) DASHBOARD AGENTE — Sub-usuario NO admin (ve solo lo suyo)
+// 3) DASHBOARD AGENTE
 // ════════════════════════════════════════════════════════════════════════════
 exports.obtenerDashboardAgente = catchAsync(async (req, res) => {
   const {
     id_usuario,
     id_sub_usuario,
     id_configuracion = null,
+    sections: rawSections = null,
     from,
     to,
   } = req.body;
@@ -291,21 +305,27 @@ exports.obtenerDashboardAgente = catchAsync(async (req, res) => {
   }
 
   const agentId = resolved.esAdmin ? null : id_sub_usuario;
+  const sections = parseSections(rawSections);
   return executeDashboard(res, {
     id_usuario,
     id_configuracion,
     from,
     to,
     agentId,
+    sections,
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// EJECUTOR COMPARTIDO
+// EJECUTOR COMPARTIDO — CON CACHE
+// ════════════════════════════════════════════════════════════════════════════
+// Cada sección se cachea independientemente.
+// Si 10 agentes piden "summary" con los mismos params en 5s → 1 query real.
+// Si 5 piden "summary" y 5 piden "pendingQueue" → 2 queries reales.
 // ════════════════════════════════════════════════════════════════════════════
 async function executeDashboard(
   res,
-  { id_usuario, id_configuracion, from, to, agentId },
+  { id_usuario, id_configuracion, from, to, agentId, sections },
 ) {
   const fromDT = `${from} 00:00:00`;
   const toDT = `${to} 23:59:59`;
@@ -313,48 +333,53 @@ async function executeDashboard(
   const configIds = await getConfigIds(id_usuario, id_configuracion);
 
   if (!configIds.length) {
-    return res.json({
-      status: 'success',
-      data: {
-        summary: {
-          chatsCreated: 0,
-          chatsResolved: 0,
-          withReplies: 0,
-          noReply: 0,
-          avgFirstResponseSeconds: null,
-          avgResolutionSeconds: null,
-        },
-        pendingQueue: [],
-        slaToday: {
-          generalPct: 0,
-          metaPct: 0,
-          channels: [],
-          resolvedToday: 0,
-          abandoned: 0,
-        },
-        charts: {
-          byChannel: [],
-          byConnection: [],
-          chatsCreated: [],
-          chatsResolved: [],
-          firstResponse: [],
-          resolution: [],
-        },
-        agentLoad: [],
-        frequentTransfers: [],
-        meta: {
-          from,
-          to,
-          id_configuracion: id_configuracion || null,
-          agentId: agentId || null,
-          executedAt: new Date().toISOString(),
-        },
-      },
-    });
+    const empty = {};
+    if (sections.has('summary'))
+      empty.summary = {
+        chatsCreated: 0,
+        chatsResolved: 0,
+        withReplies: 0,
+        noReply: 0,
+        avgFirstResponseSeconds: null,
+        avgResolutionSeconds: null,
+      };
+    if (sections.has('pendingQueue')) empty.pendingQueue = [];
+    if (sections.has('slaToday'))
+      empty.slaToday = {
+        generalPct: 0,
+        metaPct: 0,
+        channels: [],
+        resolvedToday: 0,
+        abandoned: 0,
+      };
+    if (sections.has('charts'))
+      empty.charts = {
+        byChannel: [],
+        byConnection: [],
+        chatsCreated: [],
+        chatsResolved: [],
+        firstResponse: [],
+        resolution: [],
+      };
+    if (sections.has('agentLoad')) empty.agentLoad = [];
+    if (sections.has('frequentTransfers')) empty.frequentTransfers = [];
+    empty.meta = {
+      from,
+      to,
+      id_configuracion: id_configuracion || null,
+      agentId: agentId || null,
+      sections: [...sections],
+      executedAt: new Date().toISOString(),
+    };
+    return res.json({ status: 'success', data: empty });
   }
 
   const ids = safeIn(configIds);
 
+  // Parámetros base para construir cache keys
+  const cacheBase = { id_usuario, id_configuracion, agentId, from, to };
+
+  // Ejecutar en paralelo SOLO las secciones solicitadas, CON CACHE
   const [
     summaryResults,
     pendingQueue,
@@ -363,32 +388,71 @@ async function executeDashboard(
     agentLoadResults,
     frequentTransfers,
   ] = await Promise.all([
-    buildSummary(ids, fromDT, toDT, agentId),
-    buildPendingQueue(ids, fromDT, toDT, agentId),
-    buildSLA(ids, fromDT, toDT, agentId),
-    buildCharts(ids, fromDT, toDT, agentId),
-    buildAgentLoad(ids, id_usuario, fromDT, toDT, agentId),
-    buildFrequentTransfers(ids, fromDT, toDT, agentId),
+    sections.has('summary')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'summary' }),
+          CACHE_TTL,
+          () => buildSummary(ids, fromDT, toDT, agentId),
+        )
+      : null,
+    sections.has('pendingQueue')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'pendingQueue' }),
+          CACHE_TTL,
+          () => buildPendingQueue(ids, fromDT, toDT, agentId),
+        )
+      : null,
+    sections.has('slaToday')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'slaToday' }),
+          CACHE_TTL,
+          () => buildSLA(ids, fromDT, toDT, agentId),
+        )
+      : null,
+    sections.has('charts')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'charts' }),
+          CACHE_TTL,
+          () => buildCharts(ids, fromDT, toDT, agentId),
+        )
+      : null,
+    sections.has('agentLoad')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'agentLoad' }),
+          CACHE_TTL,
+          () => buildAgentLoad(ids, id_usuario, fromDT, toDT, agentId),
+        )
+      : null,
+    sections.has('frequentTransfers')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({
+            ...cacheBase,
+            section: 'frequentTransfers',
+          }),
+          CACHE_TTL,
+          () => buildFrequentTransfers(ids, fromDT, toDT, agentId),
+        )
+      : null,
   ]);
 
-  return res.json({
-    status: 'success',
-    data: {
-      summary: summaryResults,
-      pendingQueue,
-      slaToday: slaResults,
-      charts: chartsResults,
-      agentLoad: agentLoadResults,
-      frequentTransfers,
-      meta: {
-        from,
-        to,
-        id_configuracion: id_configuracion || null,
-        agentId: agentId || null,
-        executedAt: new Date().toISOString(),
-      },
-    },
-  });
+  const data = {};
+  if (summaryResults !== null) data.summary = summaryResults;
+  if (pendingQueue !== null) data.pendingQueue = pendingQueue;
+  if (slaResults !== null) data.slaToday = slaResults;
+  if (chartsResults !== null) data.charts = chartsResults;
+  if (agentLoadResults !== null) data.agentLoad = agentLoadResults;
+  if (frequentTransfers !== null) data.frequentTransfers = frequentTransfers;
+
+  data.meta = {
+    from,
+    to,
+    id_configuracion: id_configuracion || null,
+    agentId: agentId || null,
+    sections: [...sections],
+    executedAt: new Date().toISOString(),
+  };
+
+  return res.json({ status: 'success', data });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -413,7 +477,6 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
           type: db.QueryTypes.SELECT,
         },
       ),
-
       db.query(
         `SELECT COUNT(*) AS total FROM clientes_chat_center ccc
        WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
@@ -423,7 +486,6 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
           type: db.QueryTypes.SELECT,
         },
       ),
-
       db.query(
         `SELECT
          SUM(CASE WHEN first_resp_at IS NOT NULL THEN 1 ELSE 0 END) AS withReplies,
@@ -449,7 +511,6 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
           type: db.QueryTypes.SELECT,
         },
       ),
-
       db.query(
         `SELECT ROUND(AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at))) AS avgResolutionSeconds
        FROM clientes_chat_center ccc
@@ -488,7 +549,6 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
 // ════════════════════════════════════════════════════════════════════════════
 async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
   const af = agentFilter(agentId);
-
   const rows = await db.query(
     `SELECT ccc.id, ccc.nombre_cliente, ccc.apellido_cliente, ccc.source, ccc.estado_contacto,
        ccc.celular_cliente, ccc.id_encargado, ccc.id_configuracion,
@@ -563,7 +623,6 @@ async function buildSLA(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT ccc.source, COUNT(*) AS total FROM clientes_chat_center ccc
        INNER JOIN (
@@ -658,7 +717,6 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT cfg.nombre_configuracion AS name, COUNT(*) AS value
        FROM mensajes_clientes mc
@@ -672,7 +730,6 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT DATE_FORMAT(first_in_at, '%H:00') AS hour, COUNT(*) AS chats FROM (
          SELECT MIN(mc.created_at) AS first_in_at
@@ -687,7 +744,6 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour, COUNT(*) AS resolved
        FROM clientes_chat_center ccc
@@ -699,7 +755,6 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT DATE_FORMAT(pe.first_in_at, '%H:00') AS hour,
          AVG(TIMESTAMPDIFF(SECOND, pe.first_in_at, pe.first_resp_at)) AS avgSeconds, COUNT(*) AS chats
@@ -723,7 +778,6 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour,
          AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at)) AS avgSeconds, COUNT(*) AS chats
@@ -799,7 +853,6 @@ async function buildAgentLoad(
         type: db.QueryTypes.SELECT,
       },
     ),
-
     db.query(
       `SELECT su.id_sub_usuario, COUNT(DISTINCT ccc.id) AS chats_abiertos_ahora
        FROM sub_usuarios_chat_center su
@@ -820,7 +873,6 @@ async function buildAgentLoad(
       Number(r.chats_abiertos_ahora || 0),
     ]),
   );
-
   return agentLoadHistorico.map((r) => ({
     id_sub_usuario: r.id_sub_usuario,
     nombre_encargado: r.nombre_encargado,
@@ -834,7 +886,6 @@ async function buildAgentLoad(
 // ════════════════════════════════════════════════════════════════════════════
 async function buildFrequentTransfers(configIds, fromDT, toDT, agentId = null) {
   const af = agentFilter(agentId);
-
   const rows = await db.query(
     `SELECT h.id_cliente_chat_center, ccc.nombre_cliente, ccc.apellido_cliente, ccc.celular_cliente,
        ccc.source, ccc.id_configuracion, COUNT(h.id) AS total_transferencias,

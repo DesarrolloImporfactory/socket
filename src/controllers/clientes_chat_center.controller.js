@@ -14,6 +14,7 @@ const { QueryTypes } = require('sequelize');
 const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
+const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -43,24 +44,17 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.UPDATE,
     });
 
-    //Emitimos al dashboard
-    if (global.io) {
+    // Emitir al dashboard
+    {
       const [chat] = await db.query(
-        `SELECT cfg.id_usuario, c.id_configuracion
-         FROM clientes_chat_center c
-         INNER JOIN configuraciones cfg ON cfg.id = c.id_configuracion
-         WHERE c.id = ? LIMIT 1`,
+        `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
         { replacements: [chatId], type: db.QueryTypes.SELECT },
       );
       if (chat) {
         const tipo =
           Number(nuevoEstado) === 1 ? 'chat_resolved' : 'queue_change';
-        global.presenceIo
-          .to(`dashboard:${chat.id_usuario}`)
-          .emit('dashboard:update', {
-            tipo,
-            id_configuracion: chat.id_configuracion,
-          });
+        const deltas = tipo === 'chat_resolved' ? { chatsResolved: 1 } : null;
+        dashboardEmitter.emitByConfig(chat.id_configuracion, tipo, deltas);
       }
     }
 
@@ -774,18 +768,8 @@ exports.actualizarEstadoDinamico = async (req, res) => {
     // ── Actualizar ──
     await cliente.update({ estado_contacto: nuevo_estado });
 
-    // ── Emitir socket ──
-    if (global.presenceIo) {
-      const [cfg] = await db.query(
-        `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-      );
-      if (cfg) {
-        global.presenceIo
-          .to(`dashboard:${cfg.id_usuario}`)
-          .emit('dashboard:update', { tipo: 'queue_change', id_configuracion });
-      }
-    }
+    // Emitir al dashboard
+    dashboardEmitter.emitByConfig(id_configuracion, 'queue_change');
 
     return res.json({
       success: true,
@@ -853,18 +837,8 @@ exports.actualizarEstado = async (req, res) => {
       estado_contacto: estadoBD,
     });
 
-    //Emitimos al dashboard para chats en cola y estados futuros
-    if (global.presenceIo) {
-      const [cfg] = await db.query(
-        `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-      );
-      if (cfg) {
-        global.presenceIo
-          .to(`dashboard:${cfg.id_usuario}`)
-          .emit('dashboard:update', { tipo: 'queue_change', id_configuracion });
-      }
-    }
+    // Emitir al dashboard
+    dashboardEmitter.emitByConfig(id_configuracion, 'queue_change');
 
     return res.json({
       success: true,

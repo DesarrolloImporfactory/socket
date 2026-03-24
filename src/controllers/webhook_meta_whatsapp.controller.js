@@ -11,6 +11,7 @@ const Templates_chat_center = require('../models/templates_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Errores_chat_meta = require('../models/errores_chat_meta.model');
 const logger = require('../utils/logger');
+const dashboardEmitter = require('./dashboardEmitter');
 
 const servicioAppointments = require('../services/appointments.service');
 const {
@@ -720,24 +721,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         );
 
         // Dashboard real-time: nuevo mensaje entrante
-        if (global.presenceIo) {
-          try {
-            const [cfgRow] = await db.query(
-              `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-              { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-            );
-            if (cfgRow) {
-              global.presenceIo
-                .to(`dashboard:${cfgRow.id_usuario}`)
-                .emit('dashboard:update', {
-                  tipo: 'new_chat',
-                  id_configuracion,
-                });
-            }
-          } catch (e) {
-            console.warn('[dashboard emit WA]', e.message);
-          }
-        }
+        dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+          chatsCreated: 1,
+        });
 
         cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
         if (tipo_button == 'template') {

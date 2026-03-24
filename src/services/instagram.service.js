@@ -1,6 +1,7 @@
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
+const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 let IO = null;
 
@@ -334,22 +335,10 @@ class InstagramService {
       kind: 'in',
     });
 
-    //  Dashboard real-time
-    if (global.presenceIo) {
-      try {
-        const [cfgRow] = await db.query(
-          `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-        );
-        if (cfgRow) {
-          global.presenceIo
-            .to(`dashboard:${cfgRow.id_usuario}`)
-            .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
-        }
-      } catch (e) {
-        console.warn('[dashboard emit IG]', e.message);
-      }
-    }
+    // Dashboard real-time
+    dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+      chatsCreated: 1,
+    });
   }
 
   static async handleEchoAsOutgoing({
@@ -474,22 +463,10 @@ class InstagramService {
       kind: 'postback',
     });
 
-    //  Dashboard real-time
-    if (global.presenceIo) {
-      try {
-        const [cfgRow] = await db.query(
-          `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-        );
-        if (cfgRow) {
-          global.presenceIo
-            .to(`dashboard:${cfgRow.id_usuario}`)
-            .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
-        }
-      } catch (e) {
-        console.warn('[dashboard emit IG]', e.message);
-      }
-    }
+    // Dashboard real-time
+    dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+      chatsCreated: 1,
+    });
   }
 }
 

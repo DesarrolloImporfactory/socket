@@ -1,6 +1,7 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
+const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 const FB_APP_ID = process.env.FB_APP_ID;
 
@@ -340,21 +341,9 @@ class MessengerService {
       console.log('[MS][SAVE_INCOMING][OK]', saved);
 
       // Dashboard real-time
-      if (global.presenceIo) {
-        try {
-          const [cfgRow] = await db.query(
-            `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-            { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-          );
-          if (cfgRow) {
-            global.presenceIo
-              .to(`dashboard:${cfgRow.id_usuario}`)
-              .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
-          }
-        } catch (e) {
-          console.warn('[dashboard emit MS]', e.message);
-        }
-      }
+      dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+        chatsCreated: 1,
+      });
 
       //  emitir UPDATE_CHAT para ver en tiempo real (MS IN)
       emitUpdateChatMS({
@@ -462,22 +451,10 @@ class MessengerService {
 
       console.log('[MS][SAVE_POSTBACK_IN][OK]', inSaved);
 
-      //  Dashboard real-time
-      if (global.presenceIo) {
-        try {
-          const [cfgRow] = await db.query(
-            `SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`,
-            { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-          );
-          if (cfgRow) {
-            global.presenceIo
-              .to(`dashboard:${cfgRow.id_usuario}`)
-              .emit('dashboard:update', { tipo: 'new_chat', id_configuracion });
-          }
-        } catch (e) {
-          console.warn('[dashboard emit MS]', e.message);
-        }
-      }
+      // Dashboard real-time
+      dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+        chatsCreated: 1,
+      });
 
       //  emitir UPDATE_CHAT para ver en tiempo real (MS POSTBACK IN)
       emitUpdateChatMS({
