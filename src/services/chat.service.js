@@ -110,14 +110,8 @@ class ChatService {
         }
       }
 
-      if (filtros.selectedPedidos_confirmados) {
-        if (filtros.selectedPedidos_confirmados.value === '1') {
-          whereClause += ` AND pedido_confirmado = 1`;
-        } else if (filtros.selectedPedidos_confirmados.value === '0') {
-          whereClause += ` AND pedido_confirmado = 0`;
-        }
-      } else {
-        console.log('filtros.selectedPedidos_confirmados es null o undefined');
+      if (filtros.selectedEstado_contacto?.value) {
+        whereClause += ` AND estado_db = '${filtros.selectedEstado_contacto.value}'`;
       }
 
       if (filtros.selectedTab) {
@@ -617,7 +611,9 @@ class ChatService {
             timeout: 60000,
           });
           const inputBuffer = Buffer.from(dlResp.data);
-          console.log(`[AUDIO_SEND] Descargado: ${(inputBuffer.length / 1024).toFixed(1)} KB`);
+          console.log(
+            `[AUDIO_SEND] Descargado: ${(inputBuffer.length / 1024).toFixed(1)} KB`,
+          );
 
           // Detectar extensión real de la URL (mp3, m4a, wav, etc.)
           const urlPath = ruta_archivo.split('?')[0];
@@ -634,29 +630,43 @@ class ChatService {
             //    WhatsApp exige: libopus, mono, 16000 Hz, sin streams de video.
             const ffmpegArgs = [
               '-y',
-              '-i', inputTmp.path,
-              '-vn',                  // eliminar video si existe
-              '-c:a', 'libopus',
-              '-ar', '16000',         // 16 kHz wideband
-              '-ac', '1',             // mono
-              '-b:a', '16k',          // 16 kbps CBR
-              '-application', 'voip', // application mode para voz
-              '-frame_duration', '20',// frames de 20 ms
-              '-f', 'ogg',
+              '-i',
+              inputTmp.path,
+              '-vn', // eliminar video si existe
+              '-c:a',
+              'libopus',
+              '-ar',
+              '16000', // 16 kHz wideband
+              '-ac',
+              '1', // mono
+              '-b:a',
+              '16k', // 16 kbps CBR
+              '-application',
+              'voip', // application mode para voz
+              '-frame_duration',
+              '20', // frames de 20 ms
+              '-f',
+              'ogg',
               outputTmp.path,
             ];
 
             console.log('[AUDIO_SEND] ffmpeg args:', ffmpegArgs.join(' '));
-            const { stderr } = await execFileAsync('ffmpeg', ffmpegArgs).catch((err) => {
-              throw new Error(`ffmpeg falló: ${err.stderr || err.message}`);
-            });
+            const { stderr } = await execFileAsync('ffmpeg', ffmpegArgs).catch(
+              (err) => {
+                throw new Error(`ffmpeg falló: ${err.stderr || err.message}`);
+              },
+            );
             if (stderr) console.log('[AUDIO_SEND] ffmpeg stderr:', stderr);
 
             const oggBuffer = await fs.promises.readFile(outputTmp.path);
             if (!oggBuffer || oggBuffer.length < 100) {
-              throw new Error(`OGG generado inválido (${oggBuffer?.length ?? 0} bytes)`);
+              throw new Error(
+                `OGG generado inválido (${oggBuffer?.length ?? 0} bytes)`,
+              );
             }
-            console.log(`[AUDIO_SEND] Convertido OGG/OPUS: ${(oggBuffer.length / 1024).toFixed(1)} KB`);
+            console.log(
+              `[AUDIO_SEND] Convertido OGG/OPUS: ${(oggBuffer.length / 1024).toFixed(1)} KB`,
+            );
 
             // 4) Subir buffer OGG a Meta → obtener media_id
             const uploadForm = new FormData();
@@ -682,7 +692,8 @@ class ChatService {
             );
 
             const mediaId = uploadResp.data?.id;
-            if (!mediaId) throw new Error('Meta no retornó media_id para el audio');
+            if (!mediaId)
+              throw new Error('Meta no retornó media_id para el audio');
             console.log(`[AUDIO_SEND] ✅ media_id: ${mediaId}`);
 
             // 5) Enviar como audio de voz con media_id (NO link)
@@ -744,7 +755,7 @@ class ChatService {
       const wamid = responseData?.messages?.[0]?.id || null;
 
       const cliente = await ClientesChatCenter.findOne({
-        where: { propietario: "1", id_configuracion },
+        where: { propietario: '1', id_configuracion },
       });
 
       const receptor = await ClientesChatCenter.findOne({
@@ -757,7 +768,8 @@ class ChatService {
       const mensajeCliente = {
         id_configuracion: dataAdmin.id,
         mid_mensaje: fromTelefono,
-        tipo_mensaje: requestData?.type ?? (tipo === 'file' ? 'document' : tipo),
+        tipo_mensaje:
+          requestData?.type ?? (tipo === 'file' ? 'document' : tipo),
         rol_mensaje: 1,
         id_cliente,
         uid_whatsapp: to,
