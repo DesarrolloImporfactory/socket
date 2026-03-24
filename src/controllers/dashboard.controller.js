@@ -9,7 +9,7 @@ const EtiquetaService = require('../services/etiqueta.service');
 const catchAsync = require('../utils/catchAsync');
 
 // ════════════════════════════════════════════════════════════════════════
-// HELPER: Obtener IDs de configuraciones del usuario (se reutiliza en todo)
+// HELPERS
 // ════════════════════════════════════════════════════════════════════════
 async function getConfigIds(id_usuario, id_configuracion = null) {
   const where = id_configuracion
@@ -26,12 +26,32 @@ async function getConfigIds(id_usuario, id_configuracion = null) {
   return rows.map((r) => r.id);
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// Helper: placeholder seguro para IN (?)
-// Si el array está vacío devuelve [0] para que el query no falle
-// ════════════════════════════════════════════════════════════════════════
 function safeIn(ids) {
   return ids.length ? ids : [0];
+}
+
+function agentFilter(agentId, alias = 'ccc') {
+  if (!agentId) return { sql: '', params: [] };
+  return { sql: `AND ${alias}.id_encargado = ?`, params: [agentId] };
+}
+
+async function resolveRole(id_usuario, id_sub_usuario) {
+  if (!id_sub_usuario) return { esAdmin: true, id_sub_usuario: null };
+
+  const [subRow] = await db.query(
+    `SELECT rol FROM sub_usuarios_chat_center
+     WHERE id_sub_usuario = ? AND id_usuario = ? LIMIT 1`,
+    {
+      replacements: [id_sub_usuario, id_usuario],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const rol = subRow?.rol || null;
+  if (!rol) return { error: true };
+
+  const esAdmin = rol === 'administrador';
+  return { esAdmin, id_sub_usuario, rol };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -46,40 +66,31 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
       .json({ status: 'error', message: 'Falta id_usuario' });
   }
 
-  // ── Determinar rol (admin o no) ──────────────────────────────────────
   let esAdmin = true;
 
   if (id_sub_usuario) {
-    const [subRow] = await db.query(
-      `SELECT rol FROM sub_usuarios_chat_center
-       WHERE id_sub_usuario = ? AND id_usuario = ? LIMIT 1`,
-      {
-        replacements: [id_sub_usuario, id_usuario],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-
-    const rol = subRow?.rol || null;
-    if (!rol) {
+    const resolved = await resolveRole(id_usuario, id_sub_usuario);
+    if (resolved.error) {
       return res.status(403).json({
         status: 'error',
         message: 'Subusuario inválido o no pertenece al usuario.',
       });
     }
-    esAdmin = rol === 'administrador' || rol === 'super_administrador';
+    esAdmin = resolved.esAdmin;
   }
 
-  // ── Ejecutar en PARALELO: usuarios, conexiones, departamentos ────────
   const [usuarios, conexiones, deps] = await Promise.all([
-    // Usuarios
-    Sub_usuarios_chat_center.findAll({ where: { id_usuario } }).then((rows) =>
+    // Usuarios: Admin → todos | Agente → solo él
+    Sub_usuarios_chat_center.findAll({
+      where: esAdmin ? { id_usuario } : { id_usuario, id_sub_usuario },
+    }).then((rows) =>
       (rows || []).map((u) => {
         const { password, admin_pass, ...safe } = u.toJSON();
         return safe;
       }),
     ),
 
-    // Conexiones (query directa, ya optimizada)
+    // Conexiones (ya filtra por departamentos asignados cuando no es admin)
     db.query(
       `SELECT
           c.id, c.id_plataforma, c.nombre_configuracion, c.telefono,
@@ -105,21 +116,35 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
       },
     ),
 
-    // Departamentos con includes
-    DepartamentosChatCenter.findAll({
-      where: { id_usuario },
-      include: [
-        {
-          model: Configuraciones,
-          as: 'configuracion',
-          attributes: ['nombre_configuracion', 'id', 'permiso_round_robin'],
-          required: false,
-        },
-      ],
-    }),
+    // Departamentos: Admin → todos | Agente → solo donde está asignado
+    (async () => {
+      const findOpts = {
+        where: { id_usuario },
+        include: [
+          {
+            model: Configuraciones,
+            as: 'configuracion',
+            attributes: ['nombre_configuracion', 'id', 'permiso_round_robin'],
+            required: false,
+          },
+        ],
+      };
+
+      if (!esAdmin && id_sub_usuario) {
+        const misAsignaciones = await Sub_usuarios_departamento.findAll({
+          where: { id_sub_usuario },
+          attributes: ['id_departamento'],
+          raw: true,
+        });
+        const misDepIds = misAsignaciones.map((a) => a.id_departamento);
+        if (!misDepIds.length) return [];
+        findOpts.where.id_departamento = misDepIds;
+      }
+
+      return DepartamentosChatCenter.findAll(findOpts);
+    })(),
   ]);
 
-  // ── Departamentos: agregar usuarios asignados en paralelo ────────────
   const departamentos = await Promise.all(
     (deps || []).map(async (dep) => {
       const asignaciones = await Sub_usuarios_departamento.findAll({
@@ -143,14 +168,12 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
     }),
   );
 
-  // ── Etiquetas (si se piden) ──────────────────────────────────────────
   let etiquetas_por_configuracion = {};
   if (Number(incluir_etiquetas) === 1) {
     const idsConfig = (conexiones || [])
       .map((c) => Number(c.id))
       .filter(Boolean);
 
-    // Batch con Promise.all en lugar de secuencial
     const etiquetasArr = await Promise.all(
       idsConfig.map(async (id_configuracion) => {
         try {
@@ -180,24 +203,31 @@ exports.obtenerFiltrosDashboard = catchAsync(async (req, res) => {
   });
 });
 
-// ESTRATEGIA:
-//   1. Obtener IDs de configs (1 query liviana)
-//   2. Ejecutar TODAS las secciones en PARALELO con Promise.all
-//   3. Cada query usa IN (config_ids) + índices compuestos
-//   4. NO se usa transacción (solo lectura, no hay estado mutable)
-//   5. Las sub-consultas correlacionadas se limitan con índices
-
-const CHANNEL_MAP = {
-  wa: 'WhatsApp',
-  ig: 'Instagram',
-  ms: 'Messenger',
-};
+// ════════════════════════════════════════════════════════════════════════════
+// CHANNEL MAP
+// ════════════════════════════════════════════════════════════════════════════
+const CHANNEL_MAP = { wa: 'WhatsApp', ig: 'Instagram', ms: 'Messenger' };
 function mapChannel(s) {
   return CHANNEL_MAP[s] || s || '—';
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 2) DASHBOARD COMPLETO — Admin
+// ════════════════════════════════════════════════════════════════════════════
+// Acepta id_sub_usuario_filtro opcional:
+//   - Si viene → filtra por ese agente (como si fuera su dashboard personal)
+//   - Si no viene → ve todo
+// Esto permite que el admin seleccione "Belén" en el dropdown y vea
+// exactamente lo mismo que Belén ve en su propio dashboard.
+// ════════════════════════════════════════════════════════════════════════════
 exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
-  const { id_usuario, id_configuracion = null, from, to } = req.body;
+  const {
+    id_usuario,
+    id_configuracion = null,
+    id_sub_usuario_filtro = null,
+    from,
+    to,
+  } = req.body;
 
   if (!id_usuario || !from || !to) {
     return res.status(400).json({
@@ -206,10 +236,80 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     });
   }
 
+  // Si el admin seleccionó un usuario específico, validar que pertenezca a su cuenta
+  let agentId = null;
+  if (id_sub_usuario_filtro) {
+    const [exists] = await db.query(
+      `SELECT 1 FROM sub_usuarios_chat_center
+       WHERE id_sub_usuario = ? AND id_usuario = ? LIMIT 1`,
+      {
+        replacements: [id_sub_usuario_filtro, id_usuario],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (exists) {
+      agentId = id_sub_usuario_filtro;
+    }
+    // Si no existe, simplemente ignora el filtro (ve todo)
+  }
+
+  return executeDashboard(res, {
+    id_usuario,
+    id_configuracion,
+    from,
+    to,
+    agentId,
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3) DASHBOARD AGENTE — Sub-usuario NO admin (ve solo lo suyo)
+// ════════════════════════════════════════════════════════════════════════════
+exports.obtenerDashboardAgente = catchAsync(async (req, res) => {
+  const {
+    id_usuario,
+    id_sub_usuario,
+    id_configuracion = null,
+    from,
+    to,
+  } = req.body;
+
+  if (!id_usuario || !id_sub_usuario || !from || !to) {
+    return res.status(400).json({
+      status: 'error',
+      message:
+        'Faltan parámetros requeridos: id_usuario, id_sub_usuario, from, to',
+    });
+  }
+
+  const resolved = await resolveRole(id_usuario, id_sub_usuario);
+  if (resolved.error) {
+    return res.status(403).json({
+      status: 'error',
+      message: 'Subusuario inválido o no pertenece al usuario.',
+    });
+  }
+
+  const agentId = resolved.esAdmin ? null : id_sub_usuario;
+  return executeDashboard(res, {
+    id_usuario,
+    id_configuracion,
+    from,
+    to,
+    agentId,
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// EJECUTOR COMPARTIDO
+// ════════════════════════════════════════════════════════════════════════════
+async function executeDashboard(
+  res,
+  { id_usuario, id_configuracion, from, to, agentId },
+) {
   const fromDT = `${from} 00:00:00`;
   const toDT = `${to} 23:59:59`;
 
-  // ── Paso 1: Config IDs (muy rápido, PK) ─────────────────────────────
   const configIds = await getConfigIds(id_usuario, id_configuracion);
 
   if (!configIds.length) {
@@ -246,6 +346,7 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
           from,
           to,
           id_configuracion: id_configuracion || null,
+          agentId: agentId || null,
           executedAt: new Date().toISOString(),
         },
       },
@@ -254,7 +355,6 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
 
   const ids = safeIn(configIds);
 
-  // ── Paso 2: Ejecutar TODAS las secciones en paralelo ─────────────────
   const [
     summaryResults,
     pendingQueue,
@@ -263,23 +363,12 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
     agentLoadResults,
     frequentTransfers,
   ] = await Promise.all([
-    // ═══ SECCION 1: SUMMARY ═══
-    buildSummary(ids, fromDT, toDT),
-
-    // ═══ SECCION 2: PENDING QUEUE ═══
-    buildPendingQueue(ids, fromDT, toDT),
-
-    // ═══ SECCION 3: SLA ═══
-    buildSLA(ids, fromDT, toDT),
-
-    // ═══ SECCION 4: CHARTS ═══
-    buildCharts(ids, fromDT, toDT),
-
-    // ═══ SECCION 5: AGENT LOAD ═══
-    buildAgentLoad(ids, id_usuario, fromDT, toDT),
-
-    // ═══ SECCION 6: FREQUENT TRANSFERS ═══
-    buildFrequentTransfers(ids, fromDT, toDT),
+    buildSummary(ids, fromDT, toDT, agentId),
+    buildPendingQueue(ids, fromDT, toDT, agentId),
+    buildSLA(ids, fromDT, toDT, agentId),
+    buildCharts(ids, fromDT, toDT, agentId),
+    buildAgentLoad(ids, id_usuario, fromDT, toDT, agentId),
+    buildFrequentTransfers(ids, fromDT, toDT, agentId),
   ]);
 
   return res.json({
@@ -295,127 +384,84 @@ exports.obtenerDashboardCompleto = catchAsync(async (req, res) => {
         from,
         to,
         id_configuracion: id_configuracion || null,
+        agentId: agentId || null,
         executedAt: new Date().toISOString(),
       },
     },
   });
-});
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 1: SUMMARY
 // ════════════════════════════════════════════════════════════════════════════
-// Una sola query con sub-selects condicionales.
-// Evita las 4 queries separadas del controller original.
-// ════════════════════════════════════════════════════════════════════════════
-async function buildSummary(configIds, fromDT, toDT) {
-  // 1a + 1b + 1c en paralelo con queries independientes
+async function buildSummary(configIds, fromDT, toDT, agentId = null) {
+  const af = agentFilter(agentId);
+
   const [chatsCreatedRow, chatsResolvedRow, repliesAgg, resolutionAgg] =
     await Promise.all([
-      // Chats creados en el rango
       db.query(
-        `SELECT COUNT(*) AS total
-         FROM (
-           SELECT mc.celular_recibe
-           FROM mensajes_clientes mc
-           INNER JOIN clientes_chat_center ccc
-             ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
-           WHERE mc.id_configuracion IN (?)
-             AND mc.deleted_at IS NULL
-             AND mc.rol_mensaje = 0
-             AND mc.created_at BETWEEN ? AND ?
-             AND ccc.deleted_at IS NULL
-             AND ccc.propietario = 0
-           GROUP BY mc.id_configuracion, mc.celular_recibe
-         ) sub`,
-        { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
-      ),
-
-      // Chats resueltos en el rango
-      db.query(
-        `SELECT COUNT(*) AS total
-         FROM clientes_chat_center ccc
-         WHERE ccc.id_configuracion IN (?)
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-           AND ccc.chat_cerrado = 1
-           AND ccc.chat_cerrado_at BETWEEN ? AND ?`,
-        { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
-      ),
-
-      // Con/sin respuesta + avg primera respuesta
-      // Usa CTE para el primer entrante y luego busca primera respuesta via índice
-      db.query(
-        `SELECT
-           SUM(CASE WHEN first_resp_at IS NOT NULL THEN 1 ELSE 0 END) AS withReplies,
-           SUM(CASE WHEN first_resp_at IS NULL     THEN 1 ELSE 0 END) AS noReply,
-           ROUND(AVG(
-             CASE WHEN first_resp_at IS NOT NULL
-               THEN TIMESTAMPDIFF(SECOND, first_in_at, first_resp_at)
-             END
-           )) AS avgFirstResponseSeconds
-         FROM (
-           SELECT
-             pe.id_configuracion,
-             pe.client_ccc_id,
-             pe.first_in_at,
-             (SELECT MIN(mo.created_at)
-              FROM mensajes_clientes mo
-              WHERE mo.id_configuracion = pe.id_configuracion
-                AND mo.celular_recibe   = pe.client_ccc_id
-                AND mo.rol_mensaje      = 1
-                AND mo.deleted_at IS NULL
-                AND mo.created_at > pe.first_in_at
-                AND mo.created_at <= ?
-              LIMIT 1
-             ) AS first_resp_at
-           FROM (
-             SELECT mc.id_configuracion,
-                    mc.celular_recibe AS client_ccc_id,
-                    MIN(mc.created_at) AS first_in_at
-             FROM mensajes_clientes mc
-             WHERE mc.id_configuracion IN (?)
-               AND mc.deleted_at IS NULL
-               AND mc.rol_mensaje = 0
-               AND mc.created_at BETWEEN ? AND ?
-             GROUP BY mc.id_configuracion, mc.celular_recibe
-           ) pe
-           INNER JOIN clientes_chat_center ccc
-             ON ccc.id_configuracion = pe.id_configuracion
-             AND ccc.id = pe.client_ccc_id
-             AND ccc.deleted_at IS NULL
-             AND ccc.propietario = 0
-         ) analysis`,
+        `SELECT COUNT(*) AS total FROM (
+         SELECT mc.celular_recibe
+         FROM mensajes_clientes mc
+         INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
+         WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+           AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+         GROUP BY mc.id_configuracion, mc.celular_recibe
+       ) sub`,
         {
-          replacements: [toDT, configIds, fromDT, toDT],
+          replacements: [configIds, fromDT, toDT, ...af.params],
           type: db.QueryTypes.SELECT,
         },
       ),
 
-      // Avg tiempo de resolución
       db.query(
-        `SELECT ROUND(AVG(
-           TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at)
-         )) AS avgResolutionSeconds
-         FROM clientes_chat_center ccc
-         INNER JOIN (
-           SELECT id_configuracion,
-                  celular_recibe AS client_ccc_id,
-                  MIN(created_at) AS first_in_at
-           FROM mensajes_clientes
-           WHERE id_configuracion IN (?)
-             AND deleted_at IS NULL
-             AND rol_mensaje = 0
-           GROUP BY id_configuracion, celular_recibe
-         ) first_in
-           ON first_in.id_configuracion = ccc.id_configuracion
-           AND first_in.client_ccc_id = ccc.id
-         WHERE ccc.id_configuracion IN (?)
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-           AND ccc.chat_cerrado = 1
-           AND ccc.chat_cerrado_at BETWEEN ? AND ?`,
+        `SELECT COUNT(*) AS total FROM clientes_chat_center ccc
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+         AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}`,
         {
-          replacements: [configIds, configIds, fromDT, toDT],
+          replacements: [configIds, fromDT, toDT, ...af.params],
+          type: db.QueryTypes.SELECT,
+        },
+      ),
+
+      db.query(
+        `SELECT
+         SUM(CASE WHEN first_resp_at IS NOT NULL THEN 1 ELSE 0 END) AS withReplies,
+         SUM(CASE WHEN first_resp_at IS NULL THEN 1 ELSE 0 END) AS noReply,
+         ROUND(AVG(CASE WHEN first_resp_at IS NOT NULL THEN TIMESTAMPDIFF(SECOND, first_in_at, first_resp_at) END)) AS avgFirstResponseSeconds
+       FROM (
+         SELECT pe.id_configuracion, pe.client_ccc_id, pe.first_in_at,
+           (SELECT MIN(mo.created_at) FROM mensajes_clientes mo
+            WHERE mo.id_configuracion = pe.id_configuracion AND mo.celular_recibe = pe.client_ccc_id
+              AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL AND mo.created_at > pe.first_in_at AND mo.created_at <= ?
+            LIMIT 1) AS first_resp_at
+         FROM (
+           SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MIN(mc.created_at) AS first_in_at
+           FROM mensajes_clientes mc
+           WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0 AND mc.created_at BETWEEN ? AND ?
+           GROUP BY mc.id_configuracion, mc.celular_recibe
+         ) pe
+         INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = pe.id_configuracion AND ccc.id = pe.client_ccc_id
+           AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+       ) analysis`,
+        {
+          replacements: [toDT, configIds, fromDT, toDT, ...af.params],
+          type: db.QueryTypes.SELECT,
+        },
+      ),
+
+      db.query(
+        `SELECT ROUND(AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at))) AS avgResolutionSeconds
+       FROM clientes_chat_center ccc
+       INNER JOIN (
+         SELECT id_configuracion, celular_recibe AS client_ccc_id, MIN(created_at) AS first_in_at
+         FROM mensajes_clientes WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+         GROUP BY id_configuracion, celular_recibe
+       ) first_in ON first_in.id_configuracion = ccc.id_configuracion AND first_in.client_ccc_id = ccc.id
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+         AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}`,
+        {
+          replacements: [configIds, configIds, fromDT, toDT, ...af.params],
           type: db.QueryTypes.SELECT,
         },
       ),
@@ -440,60 +486,40 @@ async function buildSummary(configIds, fromDT, toDT) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 2: PENDING QUEUE
 // ════════════════════════════════════════════════════════════════════════════
-// Clientes con chat abierto cuyo último mensaje entrante NO tiene
-// respuesta posterior. Usa LEFT JOIN anti-pattern en vez de NOT EXISTS.
-// ════════════════════════════════════════════════════════════════════════════
-async function buildPendingQueue(configIds, fromDT, toDT) {
+async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
+  const af = agentFilter(agentId);
+
   const rows = await db.query(
-    `SELECT
-       ccc.id,
-       ccc.nombre_cliente,
-       ccc.apellido_cliente,
-       ccc.source,
-       ccc.estado_contacto,
-       ccc.celular_cliente,
-       ccc.id_encargado,
-       ccc.id_configuracion,
-       su.nombre_encargado AS responsable,
-       ultimo_in.ultima_entrada_at,
+    `SELECT ccc.id, ccc.nombre_cliente, ccc.apellido_cliente, ccc.source, ccc.estado_contacto,
+       ccc.celular_cliente, ccc.id_encargado, ccc.id_configuracion,
+       su.nombre_encargado AS responsable, ultimo_in.ultima_entrada_at,
        TIMESTAMPDIFF(SECOND, ultimo_in.ultima_entrada_at, NOW()) AS waitSeconds
      FROM clientes_chat_center ccc
      INNER JOIN (
-       SELECT mc.id_configuracion,
-              mc.celular_recibe AS client_ccc_id,
-              MAX(mc.created_at) AS ultima_entrada_at
-       FROM mensajes_clientes mc
-       WHERE mc.id_configuracion IN (?)
-         AND mc.deleted_at IS NULL
-         AND mc.rol_mensaje = 0
+       SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MAX(mc.created_at) AS ultima_entrada_at
+       FROM mensajes_clientes mc WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
        GROUP BY mc.id_configuracion, mc.celular_recibe
-     ) ultimo_in
-       ON ultimo_in.id_configuracion = ccc.id_configuracion
-       AND ultimo_in.client_ccc_id = ccc.id
+     ) ultimo_in ON ultimo_in.id_configuracion = ccc.id_configuracion AND ultimo_in.client_ccc_id = ccc.id
      LEFT JOIN (
-       SELECT mc2.id_configuracion,
-              mc2.celular_recibe AS client_ccc_id,
-              MAX(mc2.created_at) AS ultima_salida_at
-       FROM mensajes_clientes mc2
-       WHERE mc2.id_configuracion IN (?)
-         AND mc2.deleted_at IS NULL
-         AND mc2.rol_mensaje = 1
+       SELECT mc2.id_configuracion, mc2.celular_recibe AS client_ccc_id, MAX(mc2.created_at) AS ultima_salida_at
+       FROM mensajes_clientes mc2 WHERE mc2.id_configuracion IN (?) AND mc2.deleted_at IS NULL AND mc2.rol_mensaje = 1
        GROUP BY mc2.id_configuracion, mc2.celular_recibe
-     ) ultimo_out
-       ON ultimo_out.id_configuracion = ccc.id_configuracion
-       AND ultimo_out.client_ccc_id = ccc.id
-     LEFT JOIN sub_usuarios_chat_center su
-       ON su.id_sub_usuario = ccc.id_encargado
-     WHERE ccc.id_configuracion IN (?)
-       AND ccc.deleted_at IS NULL
-       AND ccc.propietario = 0
-       AND ccc.chat_cerrado = 0
+     ) ultimo_out ON ultimo_out.id_configuracion = ccc.id_configuracion AND ultimo_out.client_ccc_id = ccc.id
+     LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = ccc.id_encargado
+     WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0 AND ccc.chat_cerrado = 0
        AND ultimo_in.ultima_entrada_at BETWEEN ? AND ?
        AND (ultimo_out.ultima_salida_at IS NULL OR ultimo_out.ultima_salida_at < ultimo_in.ultima_entrada_at)
-     ORDER BY ultimo_in.ultima_entrada_at ASC
-     LIMIT 50`,
+       ${af.sql}
+     ORDER BY ultimo_in.ultima_entrada_at ASC LIMIT 50`,
     {
-      replacements: [configIds, configIds, configIds, fromDT, toDT],
+      replacements: [
+        configIds,
+        configIds,
+        configIds,
+        fromDT,
+        toDT,
+        ...af.params,
+      ],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -503,7 +529,6 @@ async function buildPendingQueue(configIds, fromDT, toDT) {
     let priority = 'Baja';
     if (wait >= 600) priority = 'Alta';
     else if (wait >= 300) priority = 'Media';
-
     const fullName =
       `${(r.nombre_cliente || '').trim()} ${(r.apellido_cliente || '').trim()}`.trim();
     return {
@@ -523,56 +548,39 @@ async function buildPendingQueue(configIds, fromDT, toDT) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 3: SLA
 // ════════════════════════════════════════════════════════════════════════════
-async function buildSLA(configIds, fromDT, toDT) {
+async function buildSLA(configIds, fromDT, toDT, agentId = null) {
   const ABANDON_HOURS = Number(process.env.SLA_ABANDON_HOURS || 2);
+  const af = agentFilter(agentId);
 
   const [resolvedByChannel, abandonedByChannel] = await Promise.all([
     db.query(
-      `SELECT ccc.source, COUNT(*) AS total
-       FROM clientes_chat_center ccc
-       WHERE ccc.id_configuracion IN (?)
-         AND ccc.deleted_at IS NULL
-         AND ccc.propietario = 0
-         AND ccc.chat_cerrado = 1
-         AND ccc.chat_cerrado_at BETWEEN ? AND ?
+      `SELECT ccc.source, COUNT(*) AS total FROM clientes_chat_center ccc
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+         AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}
        GROUP BY ccc.source`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
+      {
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
     ),
 
     db.query(
-      `SELECT ccc.source, COUNT(*) AS total
-       FROM clientes_chat_center ccc
+      `SELECT ccc.source, COUNT(*) AS total FROM clientes_chat_center ccc
        INNER JOIN (
-         SELECT mc.id_configuracion,
-                mc.celular_recibe AS client_ccc_id,
-                MAX(mc.created_at) AS ultima_entrada_at
-         FROM mensajes_clientes mc
-         WHERE mc.id_configuracion IN (?)
-           AND mc.deleted_at IS NULL
-           AND mc.rol_mensaje = 0
+         SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MAX(mc.created_at) AS ultima_entrada_at
+         FROM mensajes_clientes mc WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
          GROUP BY mc.id_configuracion, mc.celular_recibe
-       ) ultimo_in
-         ON ultimo_in.id_configuracion = ccc.id_configuracion
-         AND ultimo_in.client_ccc_id = ccc.id
+       ) ultimo_in ON ultimo_in.id_configuracion = ccc.id_configuracion AND ultimo_in.client_ccc_id = ccc.id
        LEFT JOIN (
-         SELECT mc2.id_configuracion,
-                mc2.celular_recibe AS client_ccc_id,
-                MAX(mc2.created_at) AS ultima_salida_at
-         FROM mensajes_clientes mc2
-         WHERE mc2.id_configuracion IN (?)
-           AND mc2.deleted_at IS NULL
-           AND mc2.rol_mensaje = 1
+         SELECT mc2.id_configuracion, mc2.celular_recibe AS client_ccc_id, MAX(mc2.created_at) AS ultima_salida_at
+         FROM mensajes_clientes mc2 WHERE mc2.id_configuracion IN (?) AND mc2.deleted_at IS NULL AND mc2.rol_mensaje = 1
          GROUP BY mc2.id_configuracion, mc2.celular_recibe
-       ) ultimo_out
-         ON ultimo_out.id_configuracion = ccc.id_configuracion
-         AND ultimo_out.client_ccc_id = ccc.id
-       WHERE ccc.id_configuracion IN (?)
-         AND ccc.deleted_at IS NULL
-         AND ccc.propietario = 0
-         AND ccc.chat_cerrado = 0
+       ) ultimo_out ON ultimo_out.id_configuracion = ccc.id_configuracion AND ultimo_out.client_ccc_id = ccc.id
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0 AND ccc.chat_cerrado = 0
          AND ultimo_in.ultima_entrada_at BETWEEN ? AND ?
          AND TIMESTAMPDIFF(HOUR, ultimo_in.ultima_entrada_at, NOW()) >= ?
          AND (ultimo_out.ultima_salida_at IS NULL OR ultimo_out.ultima_salida_at < ultimo_in.ultima_entrada_at)
+         ${af.sql}
        GROUP BY ccc.source`,
       {
         replacements: [
@@ -582,6 +590,7 @@ async function buildSLA(configIds, fromDT, toDT) {
           fromDT,
           toDT,
           ABANDON_HOURS,
+          ...af.params,
         ],
         type: db.QueryTypes.SELECT,
       },
@@ -594,7 +603,6 @@ async function buildSLA(configIds, fromDT, toDT) {
   const abandonedMap = new Map(
     abandonedByChannel.map((r) => [r.source, Number(r.total)]),
   );
-
   const sources = ['wa', 'ms', 'ig'];
   const channels = sources.map((s) => {
     const resolved = resolvedMap.get(s) || 0;
@@ -605,7 +613,6 @@ async function buildSLA(configIds, fromDT, toDT) {
       pct: d ? Math.round((resolved / d) * 1000) / 10 : 0,
     };
   });
-
   const resolvedToday = sources.reduce(
     (a, s) => a + (resolvedMap.get(s) || 0),
     0,
@@ -628,7 +635,9 @@ async function buildSLA(configIds, fromDT, toDT) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 4: CHARTS
 // ════════════════════════════════════════════════════════════════════════════
-async function buildCharts(configIds, fromDT, toDT) {
+async function buildCharts(configIds, fromDT, toDT, agentId = null) {
+  const af = agentFilter(agentId);
+
   const [
     byChannel,
     byConnection,
@@ -637,140 +646,98 @@ async function buildCharts(configIds, fromDT, toDT) {
     firstResponse,
     resolution,
   ] = await Promise.all([
-    // Por canal
     db.query(
       `SELECT UPPER(COALESCE(ccc.source, 'OTHER')) AS name, COUNT(*) AS value
-         FROM mensajes_clientes mc
-         INNER JOIN clientes_chat_center ccc
-           ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
-         WHERE mc.id_configuracion IN (?)
-           AND mc.deleted_at IS NULL
-           AND mc.rol_mensaje = 0
-           AND mc.created_at BETWEEN ? AND ?
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-         GROUP BY ccc.source ORDER BY value DESC`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
+       FROM mensajes_clientes mc
+       INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
+       WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+         AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+       GROUP BY ccc.source ORDER BY value DESC`,
+      {
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
     ),
 
-    // Por conexión
     db.query(
       `SELECT cfg.nombre_configuracion AS name, COUNT(*) AS value
-         FROM mensajes_clientes mc
-         INNER JOIN configuraciones cfg ON cfg.id = mc.id_configuracion
-         INNER JOIN clientes_chat_center ccc
-           ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
-         WHERE mc.id_configuracion IN (?)
-           AND mc.deleted_at IS NULL
-           AND mc.rol_mensaje = 0
-           AND mc.created_at BETWEEN ? AND ?
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-         GROUP BY cfg.id, cfg.nombre_configuracion ORDER BY value DESC`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
+       FROM mensajes_clientes mc
+       INNER JOIN configuraciones cfg ON cfg.id = mc.id_configuracion
+       INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
+       WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+         AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+       GROUP BY cfg.id, cfg.nombre_configuracion ORDER BY value DESC`,
+      {
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
     ),
 
-    // Chats creados por hora
     db.query(
-      `SELECT DATE_FORMAT(first_in_at, '%H:00') AS hour, COUNT(*) AS chats
-         FROM (
-           SELECT MIN(mc.created_at) AS first_in_at
-           FROM mensajes_clientes mc
-           INNER JOIN clientes_chat_center ccc
-             ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
-           WHERE mc.id_configuracion IN (?)
-             AND mc.deleted_at IS NULL
-             AND mc.rol_mensaje = 0
-             AND mc.created_at BETWEEN ? AND ?
-             AND ccc.deleted_at IS NULL
-             AND ccc.propietario = 0
-           GROUP BY mc.id_configuracion, mc.celular_recibe
-         ) sub
-         GROUP BY hour ORDER BY hour ASC`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
+      `SELECT DATE_FORMAT(first_in_at, '%H:00') AS hour, COUNT(*) AS chats FROM (
+         SELECT MIN(mc.created_at) AS first_in_at
+         FROM mensajes_clientes mc
+         INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
+         WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+           AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+         GROUP BY mc.id_configuracion, mc.celular_recibe
+       ) sub GROUP BY hour ORDER BY hour ASC`,
+      {
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
     ),
 
-    // Chats resueltos por hora
     db.query(
       `SELECT DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour, COUNT(*) AS resolved
-         FROM clientes_chat_center ccc
-         WHERE ccc.id_configuracion IN (?)
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-           AND ccc.chat_cerrado = 1
-           AND ccc.chat_cerrado_at BETWEEN ? AND ?
-         GROUP BY hour ORDER BY hour ASC`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
-    ),
-
-    // Primera respuesta por hora
-    db.query(
-      `SELECT
-           DATE_FORMAT(pe.first_in_at, '%H:00') AS hour,
-           AVG(TIMESTAMPDIFF(SECOND, pe.first_in_at, pe.first_resp_at)) AS avgSeconds,
-           COUNT(*) AS chats
-         FROM (
-           SELECT
-             sub.first_in_at,
-             (SELECT MIN(mo.created_at)
-              FROM mensajes_clientes mo
-              WHERE mo.id_configuracion = sub.id_configuracion
-                AND mo.celular_recibe   = sub.client_ccc_id
-                AND mo.rol_mensaje      = 1
-                AND mo.deleted_at IS NULL
-                AND mo.created_at > sub.first_in_at
-              LIMIT 1
-             ) AS first_resp_at,
-             sub.id_configuracion,
-             sub.client_ccc_id
-           FROM (
-             SELECT mc.id_configuracion,
-                    mc.celular_recibe AS client_ccc_id,
-                    MIN(mc.created_at) AS first_in_at
-             FROM mensajes_clientes mc
-             INNER JOIN clientes_chat_center ccc
-               ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
-             WHERE mc.id_configuracion IN (?)
-               AND mc.deleted_at IS NULL
-               AND mc.rol_mensaje = 0
-               AND mc.created_at BETWEEN ? AND ?
-               AND ccc.deleted_at IS NULL
-               AND ccc.propietario = 0
-             GROUP BY mc.id_configuracion, mc.celular_recibe
-           ) sub
-         ) pe
-         WHERE pe.first_resp_at IS NOT NULL
-         GROUP BY hour ORDER BY hour ASC`,
-      { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
-    ),
-
-    // Resolución por hora
-    db.query(
-      `SELECT
-           DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour,
-           AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at)) AS avgSeconds,
-           COUNT(*) AS chats
-         FROM clientes_chat_center ccc
-         INNER JOIN (
-           SELECT id_configuracion,
-                  celular_recibe AS client_ccc_id,
-                  MIN(created_at) AS first_in_at
-           FROM mensajes_clientes
-           WHERE id_configuracion IN (?)
-             AND deleted_at IS NULL
-             AND rol_mensaje = 0
-           GROUP BY id_configuracion, celular_recibe
-         ) first_in
-           ON first_in.id_configuracion = ccc.id_configuracion
-           AND first_in.client_ccc_id = ccc.id
-         WHERE ccc.id_configuracion IN (?)
-           AND ccc.deleted_at IS NULL
-           AND ccc.propietario = 0
-           AND ccc.chat_cerrado = 1
-           AND ccc.chat_cerrado_at BETWEEN ? AND ?
-         GROUP BY hour ORDER BY hour ASC`,
+       FROM clientes_chat_center ccc
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+         AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}
+       GROUP BY hour ORDER BY hour ASC`,
       {
-        replacements: [configIds, configIds, fromDT, toDT],
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
+    ),
+
+    db.query(
+      `SELECT DATE_FORMAT(pe.first_in_at, '%H:00') AS hour,
+         AVG(TIMESTAMPDIFF(SECOND, pe.first_in_at, pe.first_resp_at)) AS avgSeconds, COUNT(*) AS chats
+       FROM (
+         SELECT sub.first_in_at,
+           (SELECT MIN(mo.created_at) FROM mensajes_clientes mo
+            WHERE mo.id_configuracion = sub.id_configuracion AND mo.celular_recibe = sub.client_ccc_id
+              AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL AND mo.created_at > sub.first_in_at LIMIT 1
+           ) AS first_resp_at, sub.id_configuracion, sub.client_ccc_id
+         FROM (
+           SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MIN(mc.created_at) AS first_in_at
+           FROM mensajes_clientes mc
+           INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = mc.id_configuracion AND ccc.id = mc.celular_recibe
+           WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+             AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+           GROUP BY mc.id_configuracion, mc.celular_recibe
+         ) sub
+       ) pe WHERE pe.first_resp_at IS NOT NULL GROUP BY hour ORDER BY hour ASC`,
+      {
+        replacements: [configIds, fromDT, toDT, ...af.params],
+        type: db.QueryTypes.SELECT,
+      },
+    ),
+
+    db.query(
+      `SELECT DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour,
+         AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at)) AS avgSeconds, COUNT(*) AS chats
+       FROM clientes_chat_center ccc
+       INNER JOIN (
+         SELECT id_configuracion, celular_recibe AS client_ccc_id, MIN(created_at) AS first_in_at
+         FROM mensajes_clientes WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+         GROUP BY id_configuracion, celular_recibe
+       ) first_in ON first_in.id_configuracion = ccc.id_configuracion AND first_in.client_ccc_id = ccc.id
+       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+         AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}
+       GROUP BY hour ORDER BY hour ASC`,
+      {
+        replacements: [configIds, configIds, fromDT, toDT, ...af.params],
         type: db.QueryTypes.SELECT,
       },
     ),
@@ -805,49 +772,45 @@ async function buildCharts(configIds, fromDT, toDT) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 5: AGENT LOAD
 // ════════════════════════════════════════════════════════════════════════════
-async function buildAgentLoad(configIds, id_usuario, fromDT, toDT) {
+async function buildAgentLoad(
+  configIds,
+  id_usuario,
+  fromDT,
+  toDT,
+  agentId = null,
+) {
+  const agentWhere = agentId ? 'AND su.id_sub_usuario = ?' : '';
+  const agentParams = agentId ? [agentId] : [];
+
   const [agentLoadHistorico, agentLoadActual] = await Promise.all([
-    // Chats asignados en el rango (via historial_encargados)
     db.query(
-      `SELECT
-         su.id_sub_usuario,
-         su.nombre_encargado,
-         COUNT(DISTINCT h.id_cliente_chat_center) AS total_chats
+      `SELECT su.id_sub_usuario, su.nombre_encargado, COUNT(DISTINCT h.id_cliente_chat_center) AS total_chats
        FROM sub_usuarios_chat_center su
        LEFT JOIN (
          SELECT h2.id_encargado_nuevo, h2.id_cliente_chat_center
          FROM historial_encargados h2
-         INNER JOIN clientes_chat_center ccc2
-           ON ccc2.id = h2.id_cliente_chat_center
-         WHERE ccc2.id_configuracion IN (?)
-           AND h2.fecha_registro BETWEEN ? AND ?
-           AND ccc2.deleted_at IS NULL
-           AND ccc2.propietario = 0
+         INNER JOIN clientes_chat_center ccc2 ON ccc2.id = h2.id_cliente_chat_center
+         WHERE ccc2.id_configuracion IN (?) AND h2.fecha_registro BETWEEN ? AND ? AND ccc2.deleted_at IS NULL AND ccc2.propietario = 0
        ) h ON h.id_encargado_nuevo = su.id_sub_usuario
-       WHERE su.id_usuario = ?
-       GROUP BY su.id_sub_usuario, su.nombre_encargado
-       ORDER BY total_chats DESC`,
+       WHERE su.id_usuario = ? ${agentWhere}
+       GROUP BY su.id_sub_usuario, su.nombre_encargado ORDER BY total_chats DESC`,
       {
-        replacements: [configIds, fromDT, toDT, id_usuario],
+        replacements: [configIds, fromDT, toDT, id_usuario, ...agentParams],
         type: db.QueryTypes.SELECT,
       },
     ),
 
-    // Chats abiertos ahora mismo
     db.query(
-      `SELECT
-         su.id_sub_usuario,
-         COUNT(DISTINCT ccc.id) AS chats_abiertos_ahora
+      `SELECT su.id_sub_usuario, COUNT(DISTINCT ccc.id) AS chats_abiertos_ahora
        FROM sub_usuarios_chat_center su
-       LEFT JOIN clientes_chat_center ccc
-         ON ccc.id_encargado = su.id_sub_usuario
-         AND ccc.id_configuracion IN (?)
-         AND ccc.chat_cerrado = 0
-         AND ccc.deleted_at IS NULL
-         AND ccc.propietario = 0
-       WHERE su.id_usuario = ?
+       LEFT JOIN clientes_chat_center ccc ON ccc.id_encargado = su.id_sub_usuario
+         AND ccc.id_configuracion IN (?) AND ccc.chat_cerrado = 0 AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+       WHERE su.id_usuario = ? ${agentWhere}
        GROUP BY su.id_sub_usuario`,
-      { replacements: [configIds, id_usuario], type: db.QueryTypes.SELECT },
+      {
+        replacements: [configIds, id_usuario, ...agentParams],
+        type: db.QueryTypes.SELECT,
+      },
     ),
   ]);
 
@@ -869,29 +832,24 @@ async function buildAgentLoad(configIds, id_usuario, fromDT, toDT) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 6: FREQUENT TRANSFERS
 // ════════════════════════════════════════════════════════════════════════════
-async function buildFrequentTransfers(configIds, fromDT, toDT) {
+async function buildFrequentTransfers(configIds, fromDT, toDT, agentId = null) {
+  const af = agentFilter(agentId);
+
   const rows = await db.query(
-    `SELECT
-       h.id_cliente_chat_center,
-       ccc.nombre_cliente,
-       ccc.apellido_cliente,
-       ccc.celular_cliente,
-       ccc.source,
-       ccc.id_configuracion,
-       COUNT(h.id) AS total_transferencias,
+    `SELECT h.id_cliente_chat_center, ccc.nombre_cliente, ccc.apellido_cliente, ccc.celular_cliente,
+       ccc.source, ccc.id_configuracion, COUNT(h.id) AS total_transferencias,
        su_actual.nombre_encargado AS responsable_actual
      FROM historial_encargados h
      INNER JOIN clientes_chat_center ccc ON ccc.id = h.id_cliente_chat_center
      LEFT JOIN sub_usuarios_chat_center su_actual ON su_actual.id_sub_usuario = ccc.id_encargado
-     WHERE ccc.id_configuracion IN (?)
-       AND ccc.deleted_at IS NULL
-       AND h.fecha_registro BETWEEN ? AND ?
+     WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND h.fecha_registro BETWEEN ? AND ? ${af.sql}
      GROUP BY h.id_cliente_chat_center, ccc.nombre_cliente, ccc.apellido_cliente,
               ccc.celular_cliente, ccc.source, ccc.id_configuracion, su_actual.nombre_encargado
-     HAVING total_transferencias >= 3
-     ORDER BY total_transferencias DESC
-     LIMIT 30`,
-    { replacements: [configIds, fromDT, toDT], type: db.QueryTypes.SELECT },
+     HAVING total_transferencias >= 3 ORDER BY total_transferencias DESC LIMIT 30`,
+    {
+      replacements: [configIds, fromDT, toDT, ...af.params],
+      type: db.QueryTypes.SELECT,
+    },
   );
 
   return rows.map((r) => {

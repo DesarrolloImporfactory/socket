@@ -40,7 +40,7 @@ function pickImageBase64(geminiResp) {
 
 function mapGeminiQuotaMessage(rawMsg = '') {
   const msg = String(rawMsg);
-  console.error(`[Gemini] RAW ERROR: ${msg}`);
+  console.error(`[IA] RAW ERROR: ${msg}`);
 
   const isQuota =
     msg.includes('exceeded your current quota') ||
@@ -53,8 +53,8 @@ function mapGeminiQuotaMessage(rawMsg = '') {
       statusCode: 402,
       retryable: false,
       message:
-        'La API Key de Gemini no tiene cuota disponible o no tiene facturación activada. ' +
-        'Activa Billing (Paid tier) en Google AI Studio.',
+        'El motor de generación no tiene cuota disponible o no tiene facturación activada. ' +
+        'Contacta al administrador para activar la facturación.',
     };
   }
 
@@ -62,6 +62,9 @@ function mapGeminiQuotaMessage(rawMsg = '') {
     msg.includes('high demand') ||
     msg.includes('overloaded') ||
     msg.includes('try again later') ||
+    msg.includes('timeout') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('ECONNABORTED') ||
     msg.includes('502') ||
     msg.includes('503') ||
     msg.includes('UNAVAILABLE') ||
@@ -82,7 +85,7 @@ function mapGeminiQuotaMessage(rawMsg = '') {
   return {
     statusCode: 500,
     retryable: false,
-    message: 'Error al generar la imagen con Gemini. Intenta nuevamente.',
+    message: 'Error al generar la imagen. Intenta nuevamente.',
   };
 }
 
@@ -102,7 +105,7 @@ async function callGeminiWithRetry(payload, apiKey, next) {
         'x-goog-api-key': apiKey,
         'Content-Type': 'application/json',
       },
-      timeout: 90000,
+      timeout: 180000,
     });
 
     const image_base64 = pickImageBase64(resp);
@@ -110,8 +113,58 @@ async function callGeminiWithRetry(payload, apiKey, next) {
       return { image_base64, model: GEMINI_IMAGE_MODEL };
     }
 
+    // ── Diagnóstico: Motor respondió pero sin imagen ──
+    const candidate = resp?.data?.candidates?.[0];
+    const finishReason = candidate?.finishReason || 'UNKNOWN';
+    const parts = candidate?.content?.parts || [];
+    const textPart = parts.find((p) => p?.text);
+    const promptFeedback = resp?.data?.promptFeedback;
+    const blockReason = promptFeedback?.blockReason;
+
+    console.error(
+      '[IA] No image in response. Diagnostics:',
+      JSON.stringify(
+        {
+          finishReason,
+          blockReason: blockReason || null,
+          partsCount: parts.length,
+          partTypes: parts.map((p) => Object.keys(p).join(',')),
+          textPreview: textPart?.text?.slice(0, 200) || null,
+          safetyRatings:
+            candidate?.safetyRatings?.map(
+              (r) => `${r.category}:${r.probability}`,
+            ) || [],
+          promptFeedback: promptFeedback || null,
+        },
+        null,
+        2,
+      ),
+    );
+
+    // Bloqueo por safety
+    if (blockReason || finishReason === 'SAFETY') {
+      return next(
+        new AppError(
+          'El motor bloqueó la generación por políticas de contenido. ' +
+            'Intenta con otra imagen o descripción diferente.',
+          422,
+        ),
+      );
+    }
+
+    // Motor respondió solo con texto (a veces pasa)
+    if (textPart?.text && parts.length === 1) {
+      return next(
+        new AppError(
+          'El motor respondió con texto en lugar de imagen. ' +
+            'Inténtalo de nuevo, a veces ocurre por alta demanda.',
+          503,
+        ),
+      );
+    }
+
     return next(
-      new AppError('Gemini no devolvió imagen. Inténtalo de nuevo.', 500),
+      new AppError('El motor no devolvió imagen. Inténtalo de nuevo.', 500),
     );
   } catch (err) {
     const rawMsg = err?.response?.data?.error?.message || err?.message || '';
@@ -163,10 +216,10 @@ async function uploadImageToS3(base64Data, userId, suffix = '') {
     ) {
       return resp.data.data.url;
     }
-    console.error('[Gemini] S3 upload failed:', resp.status, resp.data);
+    console.error('[IA] S3 upload failed:', resp.status, resp.data);
     return null;
   } catch (err) {
-    console.error('[Gemini] S3 upload error:', err.message);
+    console.error('[IA] S3 upload error:', err.message);
     return null;
   }
 }
@@ -349,14 +402,17 @@ async function getGeminiApiKey(next) {
   });
   if (!cfg || !cfg.api_key_gemini) {
     next(
-      new AppError('No hay API Key de Gemini configurada en el sistema', 500),
+      new AppError(
+        'No hay API Key del motor de generación configurada en el sistema',
+        500,
+      ),
     );
     return null;
   }
   try {
     return decryptToken(cfg.api_key_gemini);
   } catch {
-    next(new AppError('API Key de Gemini inválida', 500));
+    next(new AppError('API Key del motor de generación inválida', 500));
     return null;
   }
 }
@@ -371,7 +427,7 @@ async function autoSetPortadaIfNeeded(id_producto, image_url) {
     if (prod && !prod.imagen_portada)
       await prod.update({ imagen_portada: image_url });
   } catch (e) {
-    console.error('[Gemini] Auto-portada error:', e.message);
+    console.error('[IA] Auto-portada error:', e.message);
   }
 }
 
@@ -806,7 +862,7 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
       const inlineData = await downloadToInlineData(imgUrl);
       userParts.push({ inline_data: inlineData });
     } catch (e) {
-      console.error('[Gemini] Error descargando imagen remota:', e.message);
+      console.error('[IA] Error descargando imagen remota:', e.message);
     }
   }
 
@@ -1134,10 +1190,10 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   const id_usuario = req.sessionUser?.id_usuario;
   if (!id_usuario)
     return next(new AppError('No se pudo identificar al usuario', 401));
-  const description = String(req.body?.description || '').trim();
+  const marca = String(req.body?.marca || '').trim();
   const pricing = req.body?.pricing || null;
-  if (!description)
-    return next(new AppError('La descripción del producto es requerida', 400));
+  if (!marca)
+    return next(new AppError('El nombre del producto/marca es requerido', 400));
 
   const usuarioConPlan = await Usuarios.findOne({
     where: { id_usuario },
@@ -1155,8 +1211,8 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
           402,
         ),
       );
-    const angulosResult = await _generateAngulos(description, pricing, next);
-    if (!angulosResult) return;
+    const genResult = await _generateAngulos(marca, pricing, next);
+    if (!genResult) return;
     await Usuarios.decrement('promo_angulos_restantes', {
       by: 1,
       where: { id_usuario },
@@ -1164,7 +1220,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     await GeneracionesAngulosIA.create({ id_usuario });
     return res.json({
       isSuccess: true,
-      data: angulosResult,
+      data: genResult,
       angles_usage: {
         used: 0,
         limit: angRestantes,
@@ -1181,8 +1237,8 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
 
   if (maxAngulos === null || maxAngulos <= 0) {
     if (promoAngRestantes > 0) {
-      const angulosResult = await _generateAngulos(description, pricing, next);
-      if (!angulosResult) return;
+      const genResult = await _generateAngulos(marca, pricing, next);
+      if (!genResult) return;
       await Usuarios.decrement('promo_angulos_restantes', {
         by: 1,
         where: { id_usuario },
@@ -1190,7 +1246,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
       await GeneracionesAngulosIA.create({ id_usuario });
       return res.json({
         isSuccess: true,
-        data: angulosResult,
+        data: genResult,
         angles_usage: {
           used: 0,
           limit: promoAngRestantes,
@@ -1207,8 +1263,8 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   const usedAngulos = await getMonthlyAngulosCount(id_usuario);
 
   if (usedAngulos >= maxAngulos && promoAngRestantes > 0) {
-    const angulosResult = await _generateAngulos(description, pricing, next);
-    if (!angulosResult) return;
+    const genResult = await _generateAngulos(marca, pricing, next);
+    if (!genResult) return;
     await Usuarios.decrement('promo_angulos_restantes', {
       by: 1,
       where: { id_usuario },
@@ -1216,7 +1272,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     await GeneracionesAngulosIA.create({ id_usuario });
     return res.json({
       isSuccess: true,
-      data: angulosResult,
+      data: genResult,
       angles_usage: {
         used: 0,
         limit: promoAngRestantes,
@@ -1239,26 +1295,29 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     await GeneracionesAngulosIA.create({ id_usuario });
     return res.json({
       isSuccess: true,
-      data: [
-        {
-          titulo: 'Mock — Urgencia extrema',
-          descripcion: 'Ángulo de prueba para desarrollo local',
-          tono: 'Urgencia',
-          ejemplo_headline: '¡Solo quedan 3 unidades! No lo dejes pasar',
-        },
-        {
-          titulo: 'Mock — Exclusividad total',
-          descripcion: 'Segundo ángulo de prueba',
-          tono: 'Exclusividad',
-          ejemplo_headline: 'El producto que solo conocen los que saben',
-        },
-        {
-          titulo: 'Mock — Ahorro inteligente',
-          descripcion: 'Tercer ángulo de prueba',
-          tono: 'Ahorro',
-          ejemplo_headline: 'Paga menos, obtén más. Así de simple',
-        },
-      ],
+      data: {
+        descripcion: `${marca} es un producto premium diseñado para quienes buscan calidad y resultados reales. Con ingredientes de alta gama y una presentación elegante, ofrece una experiencia superior a un precio accesible.`,
+        angulos: [
+          {
+            titulo: 'Mock — Urgencia extrema',
+            descripcion: 'Ángulo de prueba para desarrollo local',
+            tono: 'Urgencia',
+            ejemplo_headline: '¡Solo quedan 3 unidades! No lo dejes pasar',
+          },
+          {
+            titulo: 'Mock — Exclusividad total',
+            descripcion: 'Segundo ángulo de prueba',
+            tono: 'Exclusividad',
+            ejemplo_headline: 'El producto que solo conocen los que saben',
+          },
+          {
+            titulo: 'Mock — Ahorro inteligente',
+            descripcion: 'Tercer ángulo de prueba',
+            tono: 'Ahorro',
+            ejemplo_headline: 'Paga menos, obtén más. Así de simple',
+          },
+        ],
+      },
       angles_usage: {
         used: usedAngulos + 1,
         limit: maxAngulos,
@@ -1267,13 +1326,13 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
     });
   }
 
-  const angulosResult = await _generateAngulos(description, pricing, next);
-  if (!angulosResult) return;
+  const genResult = await _generateAngulos(marca, pricing, next);
+  if (!genResult) return;
   await GeneracionesAngulosIA.create({ id_usuario });
   const newUsedAngulos = usedAngulos + 1;
   return res.json({
     isSuccess: true,
-    data: angulosResult,
+    data: genResult,
     angles_usage: {
       used: newUsedAngulos,
       limit: maxAngulos,
@@ -1282,7 +1341,7 @@ exports.generar_angulos = catchAsync(async (req, res, next) => {
   });
 });
 
-async function _generateAngulos(description, pricing, next) {
+async function _generateAngulos(marca, pricing, next) {
   const apiKey = await getGeminiApiKey(next);
   if (!apiKey) return null;
 
@@ -1300,10 +1359,18 @@ async function _generateAngulos(description, pricing, next) {
 
   const prompt = `Eres un experto en copywriting, neuroventas y marketing digital especializado en e-commerce para Latinoamérica.
 
-PRODUCTO/MARCA: ${description}
+PRODUCTO/MARCA: ${marca}
 ${pricingContext}
 
-Tu tarea: Genera EXACTAMENTE 3 ángulos de venta DIFERENTES y CREATIVOS para este producto.
+Tu tarea tiene DOS partes:
+
+PARTE 1 — DESCRIPCIÓN DEL PRODUCTO:
+Genera una descripción comercial completa y persuasiva del producto (60-120 palabras).
+Debe incluir: qué es, para quién es, beneficios clave, diferenciadores y tono emocional.
+Escribe como si fueras el vendedor estrella describiendo el producto a su equipo de marketing.
+
+PARTE 2 — ÁNGULOS DE VENTA:
+Genera EXACTAMENTE 3 ángulos de venta DIFERENTES y CREATIVOS para este producto.
 Cada ángulo debe atacar una emoción/necesidad diferente del comprador.
 
 Reglas:
@@ -1314,11 +1381,14 @@ Reglas:
 - Sé específico, no genérico
 
 Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este formato exacto:
-[
-  { "titulo": "Título corto y llamativo (máx 8 palabras)", "descripcion": "Explicación del enfoque de venta y qué emociones ataca (máx 40 palabras)", "tono": "El tono emocional principal en 2-3 palabras", "ejemplo_headline": "Un headline de ejemplo para la landing (máx 12 palabras)" },
-  { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." },
-  { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." }
-]`;
+{
+  "descripcion": "Descripción comercial completa del producto...",
+  "angulos": [
+    { "titulo": "Título corto y llamativo (máx 8 palabras)", "descripcion": "Explicación del enfoque de venta y qué emociones ataca (máx 40 palabras)", "tono": "El tono emocional principal en 2-3 palabras", "ejemplo_headline": "Un headline de ejemplo para la landing (máx 12 palabras)" },
+    { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." },
+    { "titulo": "...", "descripcion": "...", "tono": "...", "ejemplo_headline": "..." }
+  ]
+}`;
 
   const textModel = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent`;
@@ -1343,7 +1413,7 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
       },
     );
   } catch (err) {
-    console.log('[Angulos] Gemini error:', err?.response?.data || err.message);
+    console.log('[IA-Angulos] Error:', err?.response?.data || err.message);
     const rawMsg = err?.response?.data?.error?.message || err?.message || '';
     const mapped = mapGeminiQuotaMessage(rawMsg);
     next(new AppError(mapped.message, mapped.statusCode));
@@ -1353,26 +1423,44 @@ Responde ÚNICAMENTE con un JSON válido (sin markdown, sin backticks) con este 
   const parts = geminiResp?.data?.candidates?.[0]?.content?.parts || [];
   const textPart = parts.find((p) => p?.text);
   if (!textPart?.text) {
-    next(new AppError('Gemini no devolvió ángulos de venta', 500));
+    next(new AppError('El motor no devolvió resultados', 500));
     return null;
   }
 
-  let angulos;
+  let parsed;
   try {
     const cleaned = textPart.text
       .replace(/```json/g, '')
       .replace(/```/g, '')
       .trim();
-    angulos = JSON.parse(cleaned);
+    parsed = JSON.parse(cleaned);
   } catch {
-    next(new AppError('Error al procesar los ángulos de venta', 500));
+    next(new AppError('Error al procesar la respuesta de IA', 500));
     return null;
   }
-  if (!Array.isArray(angulos) || angulos.length < 1) {
-    next(new AppError('Gemini no generó ángulos válidos', 500));
+
+  // Soportar ambos formatos: objeto { descripcion, angulos } o array legacy
+  if (Array.isArray(parsed)) {
+    // Fallback: si Gemini devuelve solo array de ángulos
+    return {
+      descripcion: '',
+      angulos: parsed.slice(0, 3),
+    };
+  }
+
+  if (
+    !parsed.angulos ||
+    !Array.isArray(parsed.angulos) ||
+    parsed.angulos.length < 1
+  ) {
+    next(new AppError('El motor no generó ángulos válidos', 500));
     return null;
   }
-  return angulos.slice(0, 3);
+
+  return {
+    descripcion: parsed.descripcion || '',
+    angulos: parsed.angulos.slice(0, 3),
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1472,7 +1560,7 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
       const inlineData = await downloadToInlineData(imgUrl);
       userParts.push({ inline_data: inlineData });
     } catch (e) {
-      console.error('[Gemini] Error descargando imagen remota:', e.message);
+      console.error('[IA] Error descargando imagen remota:', e.message);
     }
   }
 
