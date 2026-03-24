@@ -1417,3 +1417,76 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
     });
   }
 };
+
+exports.eliminarTemplateMeta = async (req, res) => {
+  try {
+    const { id_configuracion, template_name, hsm_id } = req.body;
+
+    if (!id_configuracion || !template_name) {
+      return res.status(400).json({
+        success: false,
+        message: 'Faltan campos: id_configuracion y/o template_name',
+      });
+    }
+
+    const cfg = await getConfigFromDB(Number(id_configuracion));
+    if (!cfg) {
+      return res.status(200).json({
+        success: false,
+        message: 'Configuración inválida o sin token/WABA_ID',
+      });
+    }
+
+    if (!cfg.WABA_ID) {
+      return res.status(200).json({
+        success: false,
+        message: 'No se encontró WABA_ID (id_whatsapp) en la configuración',
+      });
+    }
+
+    const url = `https://graph.facebook.com/v22.0/${cfg.WABA_ID}/message_templates`;
+
+    // Params: siempre name, y hsm_id si viene
+    const params = { name: template_name };
+    if (hsm_id) params.hsm_id = hsm_id;
+
+    const resp = await axios.delete(url, {
+      params,
+      headers: { Authorization: `Bearer ${cfg.ACCESS_TOKEN}` },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+
+    console.log('[DELETE_TEMPLATE]', {
+      template_name,
+      hsm_id: hsm_id || 'N/A',
+      waba_id: cfg.WABA_ID,
+      meta_status: resp.status,
+      meta_data: resp.data,
+    });
+
+    if (resp.status >= 200 && resp.status < 300 && resp.data?.success) {
+      return res.json({
+        success: true,
+        message: `Plantilla "${template_name}" eliminada de Meta.`,
+      });
+    }
+
+    return res.status(200).json({
+      success: false,
+      meta_status: resp.status,
+      error: resp.data,
+      message:
+        resp.data?.error?.error_user_msg ||
+        resp.data?.error?.message ||
+        'Meta no pudo eliminar la plantilla',
+    });
+  } catch (e) {
+    console.error('[DELETE_TEMPLATE] Error:', e.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno al eliminar plantilla',
+      error: e.message,
+    });
+  }
+};

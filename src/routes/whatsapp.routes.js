@@ -2878,7 +2878,7 @@ router.post(
         recipient_type: 'individual',
         to,
         type: 'audio',
-        audio: { id: mediaId},
+        audio: { id: mediaId },
       };
 
       const msgResp = await axios.post(msgUrl, payload, {
@@ -2892,8 +2892,11 @@ router.post(
       });
       console.log('Respuesta de Meta al enviar mensaje:', msgResp.data);
 
-      if(msgResp.data?.__debug) {
-        console.log('📊 Debug info de Meta (send message):', msgResp.data.__debug);
+      if (msgResp.data?.__debug) {
+        console.log(
+          '📊 Debug info de Meta (send message):',
+          msgResp.data.__debug,
+        );
         logger.info('Meta debug info (send message)', {
           meta_debug: msgResp.data.__debug,
           step: 'send_message',
@@ -2999,5 +3002,7 @@ router.post(
   upload.single('file'),
   whatsappCtrl.enviarVideoWhatsappFile,
 );
+
+router.post('/eliminarTemplateMeta', whatsappCtrl.eliminarTemplateMeta);
 
 module.exports = router;
