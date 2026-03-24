@@ -973,6 +973,11 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(Number(req.query.id_etiqueta_ciclo));
   }
 
+  if (req.query.estado_contacto && String(req.query.estado_contacto).trim()) {
+    whereParts.push('c.estado_contacto = ?');
+    params.push(String(req.query.estado_contacto).trim().toLowerCase());
+  }
+
   if (q) {
     const like = `%${q}%`;
     whereParts.push(`(
@@ -1332,6 +1337,11 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   if (req.query.id_etiqueta_ciclo) {
     where.push('c.id_etiqueta_ciclo = ?');
     params.push(Number(req.query.id_etiqueta_ciclo));
+  }
+
+  if (req.query.estado_contacto && String(req.query.estado_contacto).trim()) {
+    where.push('c.estado_contacto = ?');
+    params.push(String(req.query.estado_contacto).trim().toLowerCase());
   }
 
   // IN dinámico para etiquetas
