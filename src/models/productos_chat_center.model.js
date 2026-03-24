@@ -10,7 +10,7 @@ const ProductosChatCenter = db.define(
       primaryKey: true,
     },
     id_configuracion: {
-      type: DataTypes.BIGINT.UNSIGNED,
+      type: DataTypes.BIGINT,
       allowNull: false,
     },
     nombre: {
@@ -38,8 +38,9 @@ const ProductosChatCenter = db.define(
     },
     precio_proveedor: {
       type: DataTypes.DECIMAL(12, 2),
-      allowNull: false,
+      allowNull: true,
     },
+
     duracion: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
@@ -76,9 +77,10 @@ const ProductosChatCenter = db.define(
     },
 
     external_source: {
-      type: DataTypes.STRING(20),
+      type: DataTypes.STRING(100),
       allowNull: true,
     },
+
     external_id: {
       type: DataTypes.BIGINT,
       allowNull: true,
