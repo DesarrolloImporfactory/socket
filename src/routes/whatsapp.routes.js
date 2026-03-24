@@ -2379,6 +2379,16 @@ function parseMetaError(metaData) {
     };
   }
 
+  // 135000: excedio las 24 horas para realizar la sincronizacion
+  if (code === 135000 || message.includes('(#135000)')) {
+    return {
+      http: 400,
+      status: 'not_coexistence_number',
+      mensaje:
+        'La sincronización solo se puede realizar dentro de las primeras 24 horas después de haber conectado el número con Imporchat. Si necesitas completar este paso, te recomendamos desvincular y volver a vincular el número.',
+    };
+  }
+
   // Token inválido / expirado
   if (code === 190) {
     return {
