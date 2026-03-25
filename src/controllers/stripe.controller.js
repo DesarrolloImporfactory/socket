@@ -103,7 +103,8 @@ const getUserById = async (id_usuario) => {
         stripe_subscription_status,
         cancel_at_period_end,
         cancel_at,
-        canceled_at
+        canceled_at,
+        unlocked_plans
      FROM usuarios_chat_center
      WHERE id_usuario = ?
      LIMIT 1`,
@@ -468,6 +469,14 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     il_imagenes_limite: IL_TRIAL_IMAGES,
     promo_imagenes_restantes: Number(user.promo_imagenes_restantes || 0),
     promo_angulos_restantes: Number(user.promo_angulos_restantes || 0),
+    unlocked_plans: (() => {
+      try {
+        const arr = JSON.parse(user.unlocked_plans || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
+    })(),
   };
 
   if (!user.id_plan) {
@@ -1125,7 +1134,7 @@ exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
   const [[promo]] = await db.query(
     `SELECT id_codigo, codigo, descripcion, imagenes_regalo, angulos_regalo,
             max_usos, usos_actuales, activo, fecha_inicio, fecha_fin,
-            redirect_on_exhaust
+            redirect_on_exhaust, unlock_plan_id
      FROM codigos_promocionales
      WHERE codigo = ?
      LIMIT 1`,
@@ -1178,7 +1187,6 @@ exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
       message: 'Ya utilizaste este código promocional.',
     });
   }
-
   return res.status(200).json({
     success: true,
     valid: true,
@@ -1186,7 +1194,10 @@ exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
     imagenes_regalo: Number(promo.imagenes_regalo || 0),
     angulos_regalo: Number(promo.angulos_regalo || 0),
     descripcion: promo.descripcion,
-    message: `Código válido: ${promo.imagenes_regalo} imágenes + ${promo.angulos_regalo} ángulos AI gratis.`,
+    unlock_plan_id: promo.unlock_plan_id || null,
+    message: promo.unlock_plan_id
+      ? 'Código válido: Desbloquea un plan exclusivo para ti.'
+      : `Código válido: ${promo.imagenes_regalo} imágenes + ${promo.angulos_regalo} ángulos AI gratis.`,
   });
 });
 
@@ -1207,7 +1218,7 @@ exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
 
   const [[promo]] = await db.query(
     `SELECT id_codigo, codigo, imagenes_regalo, angulos_regalo,
-            max_usos, usos_actuales, activo, fecha_inicio, fecha_fin
+            max_usos, usos_actuales, activo, fecha_inicio, fecha_fin, unlock_plan_id
      FROM codigos_promocionales
      WHERE codigo = ?
      LIMIT 1`,
@@ -1298,12 +1309,49 @@ exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
     { replacements: [promo.id_codigo] },
   );
 
+  if (promo.unlock_plan_id) {
+    try {
+      const [[currentUser]] = await db.query(
+        `SELECT unlocked_plans FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+        { replacements: [id_usuario] },
+      );
+
+      let unlocked = [];
+      try {
+        unlocked = JSON.parse(currentUser?.unlocked_plans || '[]');
+      } catch {
+        unlocked = [];
+      }
+      if (!Array.isArray(unlocked)) unlocked = [];
+
+      const planToUnlock = Number(promo.unlock_plan_id);
+      if (!unlocked.includes(planToUnlock)) {
+        unlocked.push(planToUnlock);
+        await db.query(
+          `UPDATE usuarios_chat_center SET unlocked_plans = ? WHERE id_usuario = ?`,
+          { replacements: [JSON.stringify(unlocked), id_usuario] },
+        );
+      }
+    } catch (e) {
+      console.warn(
+        '[canjearCodigoPromo] unlock_plan_id save failed:',
+        e?.message,
+      );
+    }
+  }
+
   return res.status(200).json({
     success: true,
-    message: `¡Código canjeado! Tienes ${imagenesRegalo} imágenes y ${angulosRegalo} ángulos AI para usar.`,
+    message:
+      imagenesRegalo > 0 || angulosRegalo > 0
+        ? `¡Código canjeado! Tienes ${imagenesRegalo} imágenes y ${angulosRegalo} ángulos AI para usar.`
+        : promo.unlock_plan_id
+          ? '¡Código canjeado! Se desbloqueó un plan exclusivo para ti.'
+          : '¡Código canjeado!',
     imagenes_otorgadas: imagenesRegalo,
     angulos_otorgados: angulosRegalo,
     plan_id: PLAN_IL_ID,
+    unlocked_plan_id: promo.unlock_plan_id || null,
   });
 });
 
@@ -1339,6 +1387,7 @@ exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
     fecha_inicio = null,
     fecha_fin = null,
     redirect_on_exhaust = null,
+    unlock_plan_id = null,
   } = req.body;
 
   if (!codigo || !codigo.trim()) {
@@ -1361,8 +1410,8 @@ exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
 
   const [result] = await db.query(
     `INSERT INTO codigos_promocionales
-       (codigo, descripcion, imagenes_regalo, angulos_regalo, max_usos, activo, fecha_inicio, fecha_fin, redirect_on_exhaust)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (codigo, descripcion, imagenes_regalo, angulos_regalo, max_usos, activo, fecha_inicio, fecha_fin, redirect_on_exhaust, unlock_plan_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     {
       replacements: [
         codigoLimpio,
@@ -1374,6 +1423,7 @@ exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
         fecha_inicio || null,
         fecha_fin || null,
         redirect_on_exhaust || null,
+        unlock_plan_id || null,
       ],
     },
   );
@@ -1403,6 +1453,7 @@ exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
     fecha_inicio,
     fecha_fin,
     redirect_on_exhaust,
+    unlock_plan_id,
   } = req.body;
 
   // Verificar que existe
@@ -1467,6 +1518,10 @@ exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
   if (redirect_on_exhaust !== undefined) {
     updates.push('redirect_on_exhaust = ?');
     values.push(redirect_on_exhaust || null);
+  }
+  if (unlock_plan_id !== undefined) {
+    updates.push('unlock_plan_id = ?');
+    values.push(unlock_plan_id || null);
   }
 
   if (updates.length === 0) {

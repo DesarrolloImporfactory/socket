@@ -63,6 +63,11 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
       defaultValue: 0,
     },
+    promo_plan2_used: {
+      type: DataTypes.TINYINT,
+      allowNull: true,
+      defaultValue: 0,
+    },
     tour_conexiones_dismissed: {
       type: DataTypes.TINYINT,
       allowNull: false,
@@ -129,6 +134,12 @@ const Usuarios_chat_center = db.define(
     promo_angulos_restantes: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
+    },
+    unlocked_plans: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'JSON array de plan IDs desbloqueados. Ej: [22]',
     },
   },
   {
