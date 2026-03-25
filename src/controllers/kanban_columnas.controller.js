@@ -15,7 +15,7 @@ const {
 async function getColumnas(id_configuracion) {
   return db.query(
     `SELECT id, nombre, estado_db, color_fondo, color_texto,
-            icono, orden, activo, es_estado_final,
+            icono, orden, activo, es_estado_final, es_principal,
             activa_ia, max_tokens, assistant_id
      FROM kanban_columnas
      WHERE id_configuracion = ?
@@ -251,4 +251,39 @@ exports.sincronizarCatalogo = catchAsync(async (req, res, next) => {
   });
 
   return res.status(200).json({ success: true, data: resultado });
+});
+
+exports.marcarPrincipal = catchAsync(async (req, res, next) => {
+  const { id, id_configuracion } = req.body;
+  if (!id || !id_configuracion)
+    return next(new AppError('Faltan id e id_configuracion', 400));
+
+  // Desmarcar todas las columnas de esta configuración
+  await db.query(
+    `UPDATE kanban_columnas SET es_principal = 0 WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  // Marcar solo la seleccionada
+  await db.query(
+    `UPDATE kanban_columnas SET es_principal = 1 WHERE id = ? AND id_configuracion = ?`,
+    { replacements: [id, id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  const columnas = await getColumnas(id_configuracion);
+  return res.status(200).json({ success: true, data: columnas });
+});
+
+exports.quitarPrincipal = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  await db.query(
+    `UPDATE kanban_columnas SET es_principal = 0 WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  const columnas = await getColumnas(id_configuracion);
+  return res.status(200).json({ success: true, data: columnas });
 });
