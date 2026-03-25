@@ -539,6 +539,7 @@ exports.stripeWebhook = async (req, res) => {
       /**
        * ❌ Pago fallido
        * - Suspende usuario SOLO si el fallo es de la suscripción activa en BD
+       * - Si es un upgrade pendiente que falló, revierte al plan original sin suspender
        * - Sincroniza status/flags de Stripe
        * - Inserta transacción idempotente
        */
@@ -624,25 +625,119 @@ exports.stripeWebhook = async (req, res) => {
             break;
           }
 
-          // Si ES la activa, suspendemos
-          await db.query(
-            `UPDATE usuarios_chat_center
-             SET estado = 'suspendido',
-                 stripe_subscription_status = COALESCE(?, stripe_subscription_status),
-                 cancel_at_period_end = COALESCE(?, cancel_at_period_end),
-                 cancel_at = COALESCE(?, cancel_at),
-                 canceled_at = COALESCE(?, canceled_at)
-             WHERE id_usuario = ?`,
-            {
-              replacements: [
-                subStatus,
-                cancelAtPeriodEnd,
-                cancelAt,
-                canceledAt,
-                id_usuario,
-              ],
-            },
-          );
+          // Si ES la activa
+          if (isActiveSub) {
+            // ─── Verificar si es un upgrade pendiente que falló ───
+            let isFailedUpgrade = false;
+
+            try {
+              const subForCheck = await stripe.subscriptions.retrieve(
+                subscriptionId,
+                { expand: ['items.data.price'] },
+              );
+              const meta = subForCheck.metadata || {};
+
+              if (
+                meta.pending_change === 'upgrade' &&
+                meta.pending_plan_id &&
+                meta.pending_invoice_id === invoice.id
+              ) {
+                isFailedUpgrade = true;
+
+                // Obtener el price del plan original para revertir en Stripe
+                const [[origPlan]] = await db.query(
+                  `SELECT p.id_price
+                   FROM usuarios_chat_center u
+                   JOIN planes_chat_center p ON p.id_plan = u.id_plan
+                   WHERE u.id_usuario = ?
+                   LIMIT 1`,
+                  { replacements: [id_usuario] },
+                );
+
+                const subItem = subForCheck.items?.data?.[0];
+
+                if (origPlan?.id_price && subItem?.id) {
+                  // Revertir suscripción en Stripe al plan/precio original
+                  await stripe.subscriptions.update(subscriptionId, {
+                    items: [{ id: subItem.id, price: origPlan.id_price }],
+                    proration_behavior: 'none',
+                    payment_behavior: 'allow_incomplete',
+                    metadata: {
+                      ...meta,
+                      id_plan: meta.id_plan || '',
+                      pending_plan_id: '',
+                      pending_change: '',
+                      pending_invoice_id: '',
+                    },
+                  });
+                  console.log(
+                    '[stripe] ROLLBACK upgrade: reverted to price',
+                    origPlan.id_price,
+                  );
+                }
+
+                // Limpiar SOLO pending_* en BD — no tocar estado, plan, trial, promo, nada más
+                await db.query(
+                  `UPDATE usuarios_chat_center
+                   SET pending_plan_id = NULL,
+                       pending_change = NULL,
+                       pending_effective_at = NULL
+                   WHERE id_usuario = ?`,
+                  { replacements: [id_usuario] },
+                );
+
+                // Auditar
+                await db
+                  .query(
+                    `INSERT IGNORE INTO transacciones_stripe_chat
+                   (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+                   VALUES (?, ?, ?, ?, NOW(), ?)`,
+                    {
+                      replacements: [
+                        `upgrade_rollback_${subscriptionId}_${invoice.id}`,
+                        subscriptionId,
+                        id_usuario,
+                        `upgrade_rollback:${meta.pending_plan_id}`,
+                        customerId || null,
+                      ],
+                    },
+                  )
+                  .catch(() => {});
+
+                console.log(
+                  '[stripe] Upgrade rollback complete for user:',
+                  id_usuario,
+                );
+              }
+            } catch (e) {
+              console.log(
+                '[stripe] upgrade rollback check failed:',
+                e?.message,
+              );
+            }
+
+            // Solo suspender si NO fue un upgrade fallido
+            if (!isFailedUpgrade) {
+              await db.query(
+                `UPDATE usuarios_chat_center
+                 SET estado = 'suspendido',
+                     stripe_subscription_status = COALESCE(?, stripe_subscription_status),
+                     cancel_at_period_end = COALESCE(?, cancel_at_period_end),
+                     cancel_at = COALESCE(?, cancel_at),
+                     canceled_at = COALESCE(?, canceled_at)
+                 WHERE id_usuario = ?`,
+                {
+                  replacements: [
+                    subStatus,
+                    cancelAtPeriodEnd,
+                    cancelAt,
+                    canceledAt,
+                    id_usuario,
+                  ],
+                },
+              );
+            }
+          }
         }
 
         await db.query(
