@@ -29,10 +29,30 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
 
     const replacements = [nuevoEstado, bot_openia];
 
-    // Si bot_openia == 1 → también actualizar estado_contacto
+    // Si bot_openia == 1 → actualizar estado_contacto a la columna principal
     if (Number(bot_openia) === 1) {
+      // Buscar columna principal de esta configuración
+      const [chat] = await db.query(
+        `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+        { replacements: [chatId], type: db.QueryTypes.SELECT },
+      );
+
+      let estadoPrincipal = 'contacto_inicial'; // fallback por si no hay principal
+
+      if (chat?.id_configuracion) {
+        const [colPrincipal] = await db.query(
+          `SELECT estado_db FROM kanban_columnas 
+       WHERE id_configuracion = ? AND es_principal = 1 AND activo = 1 
+       LIMIT 1`,
+          { replacements: [chat.id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (colPrincipal?.estado_db) {
+          estadoPrincipal = colPrincipal.estado_db;
+        }
+      }
+
       query += `, estado_contacto = ?`;
-      replacements.push('contacto_inicial');
+      replacements.push(estadoPrincipal);
     }
 
     query += ` WHERE id = ?`;
