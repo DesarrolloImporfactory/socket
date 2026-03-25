@@ -373,3 +373,238 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
 
   return res.json({ success: true, message: 'Configuración reiniciada' });
 });
+
+// ── Guardar plantilla del cliente ─────────────────────────────
+exports.guardarCliente = catchAsync(async (req, res, next) => {
+  const { id_configuracion, nombre, descripcion } = req.body;
+  if (!id_configuracion || !nombre)
+    return next(new AppError('Faltan campos obligatorios', 400));
+
+  // Leer columnas actuales con sus acciones
+  const columnas = await db.query(
+    `SELECT id, nombre, estado_db, color_fondo, color_texto, icono,
+          orden, activo, es_estado_final, activa_ia, max_tokens,
+          instrucciones, modelo
+   FROM kanban_columnas
+   WHERE id_configuracion = ? AND activo = 1
+   ORDER BY orden ASC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!columnas.length)
+    return next(new AppError('No hay columnas para guardar', 400));
+
+  // Leer acciones de cada columna
+  const ids = columnas.map((c) => c.id);
+  const acciones = await db.query(
+    `SELECT id_kanban_columna, tipo_accion, config, orden
+     FROM kanban_acciones
+     WHERE id_kanban_columna IN (${ids.join(',')}) AND activo = 1
+     ORDER BY orden ASC`,
+    { type: db.QueryTypes.SELECT },
+  );
+
+  // Construir estructura
+  const data = {
+    columnas: columnas.map((col) => ({
+      nombre: col.nombre,
+      estado_db: col.estado_db,
+      color_fondo: col.color_fondo,
+      color_texto: col.color_texto,
+      icono: col.icono,
+      orden: col.orden,
+      activo: col.activo,
+      es_estado_final: col.es_estado_final,
+      activa_ia: col.activa_ia,
+      max_tokens: col.max_tokens,
+      instrucciones: col.instrucciones || null,
+      modelo: col.modelo || 'gpt-4o-mini',
+      acciones: acciones
+        .filter((a) => a.id_kanban_columna === col.id)
+        .map((a) => ({
+          tipo_accion: a.tipo_accion,
+          config:
+            typeof a.config === 'string' ? JSON.parse(a.config) : a.config,
+          orden: a.orden,
+        })),
+    })),
+  };
+
+  await db.query(
+    `INSERT INTO kanban_plantillas_guardadas
+     (id_configuracion, nombre, descripcion, data)
+     VALUES (?, ?, ?, ?)`,
+    {
+      replacements: [
+        id_configuracion,
+        nombre.trim(),
+        descripcion?.trim() || null,
+        JSON.stringify(data),
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  return res.json({ success: true, message: 'Plantilla guardada' });
+});
+
+// ── Listar plantillas guardadas del cliente ───────────────────
+exports.listarCliente = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const plantillas = await db.query(
+    `SELECT id, nombre, descripcion, created_at, data,
+          JSON_LENGTH(JSON_EXTRACT(data, '$.columnas')) AS total_columnas
+   FROM kanban_plantillas_guardadas
+   WHERE id_configuracion = ?
+   ORDER BY created_at DESC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  return res.json({
+    success: true,
+    data: plantillas.map((p) => {
+      const parsed = typeof p.data === 'string' ? JSON.parse(p.data) : p.data;
+      const total_prompts = (parsed?.columnas || []).filter(
+        (c) => c.instrucciones,
+      ).length;
+      return {
+        ...p,
+        data: undefined,
+        total_columnas: p.total_columnas,
+        total_prompts,
+      };
+    }),
+  });
+});
+
+// ── Aplicar plantilla guardada ────────────────────────────────
+exports.aplicarCliente = catchAsync(async (req, res, next) => {
+  const { id_configuracion, id_plantilla } = req.body;
+  if (!id_configuracion || !id_plantilla)
+    return next(new AppError('Faltan campos obligatorios', 400));
+
+  const [plantilla] = await db.query(
+    `SELECT data FROM kanban_plantillas_guardadas WHERE id = ? LIMIT 1`,
+    { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
+  );
+  if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
+
+  // ── Obtener api_key para crear asistentes ──
+  const [configRow] = await db.query(
+    `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const api_key_openai = configRow?.api_key_openai || null;
+
+  const headers = api_key_openai
+    ? {
+        Authorization: `Bearer ${api_key_openai}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2',
+      }
+    : null;
+
+  const { columnas } =
+    typeof plantilla.data === 'string'
+      ? JSON.parse(plantilla.data)
+      : plantilla.data;
+
+  const resultado = [];
+
+  for (const col of columnas) {
+    // ── Crear asistente en OpenAI si tiene instrucciones ──
+    let assistant_id = null;
+    if (col.instrucciones && headers) {
+      try {
+        const aRes = await axios.post(
+          'https://api.openai.com/v1/assistants',
+          {
+            name: col.nombre,
+            instructions: col.instrucciones,
+            model: col.modelo || 'gpt-4o-mini',
+            tools: [{ type: 'file_search' }],
+          },
+          { headers },
+        );
+        assistant_id = aRes.data?.id || null;
+      } catch (err) {
+        console.error(
+          `Error creando asistente para ${col.nombre}:`,
+          err.message,
+        );
+      }
+    }
+
+    const [insertResult] = await db.query(
+      `INSERT INTO kanban_columnas
+       (id_configuracion, nombre, estado_db, color_fondo, color_texto,
+        icono, orden, activo, es_estado_final, activa_ia, max_tokens,
+        instrucciones, modelo, assistant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_configuracion,
+          col.nombre,
+          col.estado_db,
+          col.color_fondo,
+          col.color_texto,
+          col.icono,
+          col.orden,
+          col.activo,
+          col.es_estado_final,
+          col.activa_ia,
+          col.max_tokens,
+          col.instrucciones || null,
+          col.modelo || 'gpt-4o-mini',
+          assistant_id,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+
+    const id_columna = insertResult;
+
+    for (const accion of col.acciones || []) {
+      await db.query(
+        `INSERT INTO kanban_acciones
+         (id_kanban_columna, id_configuracion, tipo_accion, config, activo, orden)
+         VALUES (?, ?, ?, ?, 1, ?)`,
+        {
+          replacements: [
+            id_columna,
+            id_configuracion,
+            accion.tipo_accion,
+            JSON.stringify(accion.config),
+            accion.orden,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    }
+
+    resultado.push({
+      columna: col.nombre,
+      estado_db: col.estado_db,
+      assistant_id,
+      tiene_prompt: !!col.instrucciones,
+    });
+  }
+
+  return res.json({ success: true, data: resultado });
+});
+
+// ── Eliminar plantilla guardada ───────────────────────────────
+exports.eliminarCliente = catchAsync(async (req, res, next) => {
+  const { id, id_configuracion } = req.body;
+  if (!id || !id_configuracion) return next(new AppError('Faltan campos', 400));
+
+  await db.query(
+    `DELETE FROM kanban_plantillas_guardadas WHERE id = ? AND id_configuracion = ?`,
+    { replacements: [id, id_configuracion], type: db.QueryTypes.DELETE },
+  );
+
+  return res.json({ success: true });
+});
