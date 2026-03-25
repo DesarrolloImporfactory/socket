@@ -983,6 +983,35 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     const totalFresh = Number(invFresh.total || 0);
     const dueFresh = Number(invFresh.amount_due || 0);
 
+    // ─── Blindaje: si el invoice ya está pagado, es el viejo (no el de prorrateo) ───
+    if (invFresh.status === 'paid' || invFresh.paid === true) {
+      // Revertir suscripción al plan original
+      await stripe.subscriptions.update(sub.id, {
+        items: [{ id: subItem.id, price: subItem.price.id }],
+        proration_behavior: 'none',
+        payment_behavior: 'allow_incomplete',
+        metadata: {
+          ...(sub.metadata || {}),
+          pending_plan_id: '',
+          pending_change: '',
+          pending_invoice_id: '',
+        },
+      });
+
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET pending_plan_id = NULL, pending_change = NULL, pending_effective_at = NULL
+         WHERE id_usuario = ?`,
+        { replacements: [id_usuario] },
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          'No se pudo generar la factura de prorrateo. Intente de nuevo en unos segundos.',
+      });
+    }
+
     if (totalFresh <= 0 || dueFresh <= 0) {
       await stripe.subscriptions.update(sub.id, {
         items: [{ id: subItem.id, price: subItem.price.id }],
