@@ -58,5 +58,7 @@ router.get(
   '/codigos-promo/:id_codigo/canjes',
   stripeController.listarCanjesCodigo,
 );
+// Captura de tarjeta Plan 21 (Method Ecommerce)
+router.post('/capturarTarjetaPlan21', stripeController.capturarTarjetaPlan21);
 
 module.exports = router;

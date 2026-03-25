@@ -3,9 +3,11 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
+const requireStripeSubscription = require('../middlewares/requireStripeSubscription.middleware');
 const geminiController = require('../controllers/gemini.controller');
 const productosCtrl = require('../controllers/productos_ia.controller');
 const templatePrivadosCtrl = require('../controllers/templates_ia.privados.controller');
+
 const multer = require('multer');
 
 const upload = multer({
@@ -85,6 +87,7 @@ router.post(
 router.post(
   '/generar-angulos',
   checkPlanActivo,
+  requireStripeSubscription,
   geminiController.generar_angulos,
 );
 
@@ -92,12 +95,14 @@ router.post(
 router.post(
   '/generar',
   checkPlanActivo,
+  requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.generar_multipart,
 );
 router.post(
   '/generar-etapa',
   checkPlanActivo,
+  requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.generar_etapa,
 );
@@ -106,6 +111,7 @@ router.post(
 router.post(
   '/regenerar-etapa',
   checkPlanActivo,
+  requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.regenerar_etapa,
 );

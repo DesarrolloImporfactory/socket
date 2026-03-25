@@ -661,6 +661,9 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
       ...(planDb || {}),
       tools_access: effectiveToolsAccess,
+      stripe_subscription_id: user.stripe_subscription_id || null,
+      needs_card_capture:
+        Number(user.id_plan) === 21 && !user.stripe_subscription_id,
     },
     user_flags: userFlags,
   });
@@ -1549,4 +1552,98 @@ exports.listarCanjesCodigo = catchAsync(async (req, res, next) => {
   );
 
   return res.status(200).json({ success: true, data: rows || [] });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Capturar Tarjeta Plan 21 (Method Ecommerce)
+// ─────────────────────────────────────────────────────────────
+exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
+  const { id_usuario } = req.body;
+
+  if (!id_usuario) {
+    return next(new AppError('Falta id_usuario.', 400));
+  }
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  if (Number(user.id_plan) !== 21) {
+    return next(
+      new AppError(
+        'Este endpoint es solo para Plan Method Ecommerce (21).',
+        400,
+      ),
+    );
+  }
+
+  if (user.stripe_subscription_id) {
+    return res.status(400).json({
+      success: false,
+      message: 'Ya tiene una suscripción activa en Stripe.',
+    });
+  }
+
+  const plan = await getPlanById(21);
+  if (!plan || !plan.id_price) {
+    return next(
+      new AppError('Plan 21 no tiene id_price configurado en Stripe.', 400),
+    );
+  }
+
+  // ─── Calcular días de trial restantes ───
+  const ahora = new Date();
+  const fechaRenovacion = user.fecha_renovacion
+    ? new Date(user.fecha_renovacion)
+    : null;
+
+  let trialDays = 0;
+
+  if (fechaRenovacion && fechaRenovacion > ahora) {
+    const msRestantes = fechaRenovacion.getTime() - ahora.getTime();
+    trialDays = Math.ceil(msRestantes / (1000 * 60 * 60 * 24));
+    trialDays = Math.min(trialDays, 730); // Stripe max
+  }
+
+  // ─── Crear Checkout Session ───
+  const customerParam = user.id_costumer
+    ? { customer: user.id_costumer }
+    : { customer_email: user.email_propietario || undefined };
+
+  const customerUpdateParam = user.id_costumer
+    ? { customer_update: { address: 'auto', name: 'auto' } }
+    : {};
+
+  const meta = {
+    id_usuario: String(id_usuario),
+    id_plan: '21',
+    capture_card_plan21: 'true',
+  };
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'subscription',
+    payment_method_types: ['card'],
+    line_items: [{ price: plan.id_price, quantity: 1 }],
+    ...customerParam,
+    ...customerUpdateParam,
+    client_reference_id: String(id_usuario),
+    payment_method_collection: 'always',
+    metadata: meta,
+    subscription_data: {
+      ...(trialDays > 0 ? { trial_period_days: trialDays } : {}),
+      metadata: meta,
+    },
+    success_url: FRONT_SUCCESS_URL,
+    cancel_url: FRONT_CANCEL_URL,
+  });
+
+  return res.status(200).json({
+    success: true,
+    url: session.url,
+    sessionId: session.id,
+    trialDays,
+    message:
+      trialDays > 0
+        ? `Checkout creado con ${trialDays} días de acceso incluido. Primer cobro de $29: ${fechaRenovacion.toISOString().split('T')[0]}.`
+        : 'Checkout creado. Cobro de $29 inmediato (período expirado).',
+  });
 });

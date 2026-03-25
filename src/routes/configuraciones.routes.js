@@ -11,6 +11,7 @@ const {
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
 const limiteConversaciones = require('../middlewares/limiteConversaciones.middleware');
+const requireStripeSubscription = require('../middlewares/requireStripeSubscription.middleware');
 
 // wrapper que llama a tu limiteConexiones solo al reactivar
 const validarReactivarConLimite = (req, res, next) => {
@@ -68,6 +69,7 @@ router.post(
 
 router.post(
   '/agregarConfiguracion',
+  requireStripeSubscription,
   limiteConexiones,
   configuracionesController.agregarConfiguracion,
 );
