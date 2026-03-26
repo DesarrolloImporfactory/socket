@@ -897,10 +897,18 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   let keepGoing = true;
   const PAGE_SIZE = 100;
   let pagesCount = 0;
-  let currentDelay = 1500;
+  let currentDelay = 2500; // 2.5s base — más conservador
+  let consecutiveRetries = 0;
+  const MAX_RETRIES_PER_PAGE = 5;
+
+  console.log(`[dashboard] Starting fetch: from=${from} until=${until}`);
 
   while (keepGoing) {
     try {
+      console.log(
+        `[dashboard] Fetching page ${pagesCount + 1} (start=${start}, delay=${currentDelay}ms, orders=${allOrders.length})`,
+      );
+
       const dropiResponse = await dropiService.listMyOrders({
         integrationKey,
         params: {
@@ -916,30 +924,53 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       const objects = dropiResponse?.objects || [];
       allOrders = allOrders.concat(objects);
       pagesCount++;
+      consecutiveRetries = 0; // reset on success
+
+      console.log(
+        `[dashboard] Page ${pagesCount} OK: ${objects.length} orders (total: ${allOrders.length})`,
+      );
 
       keepGoing = objects.length >= PAGE_SIZE;
       start += PAGE_SIZE;
 
-      if (allOrders.length >= 5000) break;
-      currentDelay = 1500;
+      if (allOrders.length >= 5000) {
+        console.log('[dashboard] Safety limit 5000 reached, stopping.');
+        break;
+      }
+
+      // Delay entre páginas — reset a base después de éxito
+      currentDelay = 2500;
       if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
 
       if (status === 429) {
-        currentDelay = Math.min(currentDelay * 2, 10000);
-        console.log(`[dashboard] Rate limited. Waiting ${currentDelay}ms...`);
+        consecutiveRetries++;
+
+        if (consecutiveRetries >= MAX_RETRIES_PER_PAGE) {
+          console.log(
+            `[dashboard] Max retries (${MAX_RETRIES_PER_PAGE}) reached at start=${start}. Returning partial data.`,
+          );
+          keepGoing = false;
+          break;
+        }
+
+        currentDelay = Math.min(currentDelay * 2, 15000); // max 15s
+        console.log(
+          `[dashboard] 429 Rate limited (retry ${consecutiveRetries}/${MAX_RETRIES_PER_PAGE}). Waiting ${currentDelay}ms...`,
+        );
         await new Promise((r) => setTimeout(r, currentDelay));
-        continue;
+        continue; // retry same page
       }
 
-      console.error(
-        '[dashboard] Dropi page error at start=' + start,
-        err?.message,
-      );
+      console.error(`[dashboard] Error at start=${start}: ${err?.message}`);
       keepGoing = false;
     }
   }
+
+  console.log(
+    `[dashboard] Fetch complete: ${allOrders.length} orders in ${pagesCount} pages`,
+  );
 
   function classify(status) {
     const s = String(status || '')
