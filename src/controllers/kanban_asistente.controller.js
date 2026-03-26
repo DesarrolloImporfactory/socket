@@ -3,11 +3,11 @@
 // CRUD completo de asistentes OpenAI desde KanbanConfig
 // ════════════════════════════════════════════════════════════
 
-const axios    = require('axios');
+const axios = require('axios');
 const FormData = require('form-data');
-const AppError   = require('../utils/appError');
+const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
-const { db }     = require('../database/config');
+const { db } = require('../database/config');
 
 // Tipos de archivo aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
@@ -36,9 +36,11 @@ const EXT_LABEL = {
   'text/markdown': 'MD',
   'text/html': 'HTML',
   'application/msword': 'DOC',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'DOCX',
   'application/vnd.ms-powerpoint': 'PPT',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PPTX',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    'PPTX',
   'application/vnd.ms-excel': 'XLS',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
   'application/json': 'JSON',
@@ -50,12 +52,19 @@ async function getApiKey(id_configuracion) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  if (!row?.api_key_openai) throw new Error(`Sin api_key_openai para id_configuracion=${id_configuracion}`);
+  if (!row?.api_key_openai)
+    throw new Error(
+      `Sin api_key_openai para id_configuracion=${id_configuracion}`,
+    );
   return row.api_key_openai;
 }
 
 function headersJson(apiKey) {
-  return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' };
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
 }
 function headersBase(apiKey) {
   return { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'assistants=v2' };
@@ -72,19 +81,28 @@ function parsearErrorOpenAI(err) {
     const code = data.error.code || '';
 
     // Errores comunes de archivos
-    if (msg.includes('unsupported')) return `Tipo de archivo no soportado por OpenAI. Usa PDF, DOCX, TXT, CSV, JSON, MD, XLSX o PPTX.`;
-    if (msg.includes('too large') || msg.includes('size')) return `El archivo supera el tamaño máximo permitido (512 MB por archivo, 100 MB para sin parsear).`;
-    if (msg.includes('quota') || code === 'insufficient_quota') return `Tu API key no tiene saldo suficiente en OpenAI.`;
-    if (msg.includes('invalid_api_key') || status === 401) return `API key de OpenAI inválida o expirada. Verifica en Configuración.`;
-    if (msg.includes('rate_limit') || code === 'rate_limit_exceeded') return `Límite de peticiones a OpenAI alcanzado. Intenta en unos segundos.`;
-    if (msg.includes('model_not_found')) return `El modelo seleccionado no está disponible con tu API key.`;
-    if (msg.includes('vector_store')) return `Error en el almacén vectorial de OpenAI: ${msg}`;
+    if (msg.includes('unsupported'))
+      return `Tipo de archivo no soportado por OpenAI. Usa PDF, DOCX, TXT, CSV, JSON, MD, XLSX o PPTX.`;
+    if (msg.includes('too large') || msg.includes('size'))
+      return `El archivo supera el tamaño máximo permitido (512 MB por archivo, 100 MB para sin parsear).`;
+    if (msg.includes('quota') || code === 'insufficient_quota')
+      return `Tu API key no tiene saldo suficiente en OpenAI.`;
+    if (msg.includes('invalid_api_key') || status === 401)
+      return `API key de OpenAI inválida o expirada. Verifica en Configuración.`;
+    if (msg.includes('rate_limit') || code === 'rate_limit_exceeded')
+      return `Límite de peticiones a OpenAI alcanzado. Intenta en unos segundos.`;
+    if (msg.includes('model_not_found'))
+      return `El modelo seleccionado no está disponible con tu API key.`;
+    if (msg.includes('vector_store'))
+      return `Error en el almacén vectorial de OpenAI: ${msg}`;
 
     return msg; // mensaje original si no matchea ningún patrón conocido
   }
 
-  if (status === 404) return 'Asistente no encontrado en OpenAI. Es posible que haya sido eliminado.';
-  if (status === 429) return 'Demasiadas peticiones a OpenAI. Espera unos segundos e intenta de nuevo.';
+  if (status === 404)
+    return 'Asistente no encontrado en OpenAI. Es posible que haya sido eliminado.';
+  if (status === 429)
+    return 'Demasiadas peticiones a OpenAI. Espera unos segundos e intenta de nuevo.';
   if (status === 500) return 'Error interno de OpenAI. Intenta más tarde.';
 
   return err.message || 'Error desconocido al conectar con OpenAI.';
@@ -139,34 +157,41 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
                 { headers: headersBase(apiKey) },
               );
               return {
-                id:       f.id,
-                nombre:   fileRes.data?.filename || f.id,
-                bytes:    fileRes.data?.bytes    || 0,
-                status:   f.status,
-                created:  f.created_at,
+                id: f.id,
+                nombre: fileRes.data?.filename || f.id,
+                bytes: fileRes.data?.bytes || 0,
+                status: f.status,
+                created: f.created_at,
               };
             } catch {
               return { id: f.id, nombre: f.id, bytes: 0, status: f.status };
             }
-          })
+          }),
         );
-      } catch (_) { /* ignorar error de archivos, no romper el flujo */ }
+      } catch (_) {
+        /* ignorar error de archivos, no romper el flujo */
+      }
     }
 
     return res.status(200).json({
       success: true,
       data: {
-        assistant_id:    asst.id,
-        nombre:          asst.name,
-        instrucciones:   asst.instructions,
-        modelo:          asst.model,
+        assistant_id: asst.id,
+        nombre: asst.name,
+        instrucciones: asst.instructions,
+        modelo: asst.model,
         vector_store_id: col.vector_store_id,
         archivos,
       },
     });
   } catch (err) {
     const mensaje = parsearErrorOpenAI(err);
-    return next(new AppError(`Error al obtener asistente: ${mensaje}`, err?.response?.status || 500));
+    return next(
+      new AppError(
+        `Error al obtener asistente: ${mensaje}`,
+        err?.response?.status || 500,
+      ),
+    );
   }
 });
 
@@ -183,15 +208,29 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
-  if (col.assistant_id) return next(new AppError('Esta columna ya tiene un asistente. Edítalo en lugar de crear uno nuevo.', 400));
+  if (col.assistant_id)
+    return next(
+      new AppError(
+        'Esta columna ya tiene un asistente. Edítalo en lugar de crear uno nuevo.',
+        400,
+      ),
+    );
 
   const apiKey = await getApiKey(col.id_configuracion);
 
-  const nombreFinal       = nombre?.trim()        || `Asistente - ${col.col_nombre}`;
-  const instruccionesFinal = instrucciones?.trim() || `Eres un asistente de ventas. Responde en español de forma cordial y profesional.`;
+  const nombreFinal = nombre?.trim() || `Asistente - ${col.col_nombre}`;
+  const instruccionesFinal =
+    instrucciones?.trim() ||
+    `Eres un asistente de ventas. Responde en español de forma cordial y profesional.`;
 
   const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
-  if (!MODELOS_VALIDOS.includes(modelo)) return next(new AppError(`Modelo inválido. Opciones: ${MODELOS_VALIDOS.join(', ')}`, 400));
+  if (!MODELOS_VALIDOS.includes(modelo))
+    return next(
+      new AppError(
+        `Modelo inválido. Opciones: ${MODELOS_VALIDOS.join(', ')}`,
+        400,
+      ),
+    );
 
   try {
     const asstRes = await axios.post(
@@ -205,14 +244,19 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
 
     // Guardar en BD
     await db.query(
-      `UPDATE kanban_columnas SET assistant_id = ? WHERE id = ?`,
-      { replacements: [assistant_id, id], type: db.QueryTypes.UPDATE },
+      `UPDATE kanban_columnas 
+   SET assistant_id = ?, instrucciones = ?, modelo = ?
+   WHERE id = ?`,
+      {
+        replacements: [assistant_id, instrucciones, modelo, id],
+        type: db.QueryTypes.UPDATE,
+      },
     );
 
     return res.status(200).json({
       success: true,
       assistant_id,
-      nombre:        nombreFinal,
+      nombre: nombreFinal,
       instrucciones: instruccionesFinal,
       modelo,
     });
@@ -239,20 +283,26 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
 
   // Actualizar BD siempre (activa_ia, max_tokens)
   await db.query(
-    `UPDATE kanban_columnas SET activa_ia = ?, max_tokens = ? WHERE id = ?`,
-    { replacements: [activa_ia ?? 0, max_tokens || 500, id], type: db.QueryTypes.UPDATE },
+    `UPDATE kanban_columnas 
+   SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
+   WHERE id = ?`,
+    {
+      replacements: [activa_ia, max_tokens, instrucciones, modelo, id],
+      type: db.QueryTypes.UPDATE,
+    },
   );
 
   // Si tiene asistente, actualizar también en OpenAI
   if (col.assistant_id && (nombre || instrucciones || modelo)) {
     const apiKey = await getApiKey(col.id_configuracion);
     const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
-    const modeloFinal = modelo && MODELOS_VALIDOS.includes(modelo) ? modelo : undefined;
+    const modeloFinal =
+      modelo && MODELOS_VALIDOS.includes(modelo) ? modelo : undefined;
 
     const body = {};
-    if (nombre)       body.name         = nombre.trim();
+    if (nombre) body.name = nombre.trim();
     if (instrucciones) body.instructions = instrucciones.trim();
-    if (modeloFinal)  body.model        = modeloFinal;
+    if (modeloFinal) body.model = modeloFinal;
 
     try {
       await axios.post(
@@ -262,7 +312,12 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
       );
     } catch (err) {
       const mensaje = parsearErrorOpenAI(err);
-      return next(new AppError(`Cambios en BD guardados, pero error en OpenAI: ${mensaje}`, 500));
+      return next(
+        new AppError(
+          `Cambios en BD guardados, pero error en OpenAI: ${mensaje}`,
+          500,
+        ),
+      );
     }
   }
 
@@ -278,41 +333,61 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
   const { id } = req.body;
   const archivo = req.file; // multer
 
-  if (!id)      return next(new AppError('Falta id de columna', 400));
+  if (!id) return next(new AppError('Falta id de columna', 400));
   if (!archivo) return next(new AppError('No se recibió ningún archivo', 400));
 
   // Validar tipo MIME antes de llamar a OpenAI
   if (!MIME_TYPES_PERMITIDOS.has(archivo.mimetype)) {
     const formatoRecibido = archivo.mimetype || 'desconocido';
-    const formatosOk = ['PDF', 'DOCX', 'TXT', 'CSV', 'JSON', 'MD', 'XLSX', 'PPTX', 'HTML'].join(', ');
-    return next(new AppError(
-      `Formato "${formatoRecibido}" no aceptado por OpenAI. Sube un archivo: ${formatosOk}.`,
-      400,
-    ));
+    const formatosOk = [
+      'PDF',
+      'DOCX',
+      'TXT',
+      'CSV',
+      'JSON',
+      'MD',
+      'XLSX',
+      'PPTX',
+      'HTML',
+    ].join(', ');
+    return next(
+      new AppError(
+        `Formato "${formatoRecibido}" no aceptado por OpenAI. Sube un archivo: ${formatosOk}.`,
+        400,
+      ),
+    );
   }
 
   // Validar tamaño (512 MB límite OpenAI, usamos 100 MB como límite práctico)
   const MAX_BYTES = 100 * 1024 * 1024;
   if (archivo.size > MAX_BYTES) {
     const mb = (archivo.size / (1024 * 1024)).toFixed(1);
-    return next(new AppError(`El archivo (${mb} MB) supera el límite de 100 MB.`, 400));
+    return next(
+      new AppError(`El archivo (${mb} MB) supera el límite de 100 MB.`, 400),
+    );
   }
 
   const [col] = await db.query(
     `SELECT id, id_configuracion, assistant_id, vector_store_id FROM kanban_columnas WHERE id = ?`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
-  if (!col)               return next(new AppError('Columna no encontrada', 404));
-  if (!col.assistant_id)  return next(new AppError('La columna no tiene asistente. Créalo primero.', 400));
+  if (!col) return next(new AppError('Columna no encontrada', 404));
+  if (!col.assistant_id)
+    return next(
+      new AppError('La columna no tiene asistente. Créalo primero.', 400),
+    );
 
   const apiKey = await getApiKey(col.id_configuracion);
-  const sleep  = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   try {
     // 1. Subir archivo a OpenAI Files
     const form = new FormData();
     form.append('purpose', 'assistants');
-    form.append('file', archivo.buffer, { filename: archivo.originalname, contentType: archivo.mimetype });
+    form.append('file', archivo.buffer, {
+      filename: archivo.originalname,
+      contentType: archivo.mimetype,
+    });
 
     const fileRes = await axios.post('https://api.openai.com/v1/files', form, {
       headers: { ...headersBase(apiKey), ...form.getHeaders() },
@@ -360,7 +435,9 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       );
       status = poll.data?.status;
       if (status === 'failed' || status === 'cancelled') {
-        throw new Error(`OpenAI no pudo indexar el archivo (status=${status}). El formato puede no ser compatible para búsqueda semántica.`);
+        throw new Error(
+          `OpenAI no pudo indexar el archivo (status=${status}). El formato puede no ser compatible para búsqueda semántica.`,
+        );
       }
     }
 
@@ -384,12 +461,11 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       success: true,
       file_id,
-      nombre:          archivo.originalname,
-      bytes:           archivo.size,
-      status:          'completed',
+      nombre: archivo.originalname,
+      bytes: archivo.size,
+      status: 'completed',
       vector_store_id: vectorStoreId,
     });
-
   } catch (err) {
     const mensaje = parsearErrorOpenAI(err);
     return next(new AppError(mensaje, err?.response?.status || 500));
@@ -421,16 +497,17 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
         { headers: headersJson(apiKey) },
       );
     } catch (err) {
-      errores.push(`No se pudo quitar del vector store: ${parsearErrorOpenAI(err)}`);
+      errores.push(
+        `No se pudo quitar del vector store: ${parsearErrorOpenAI(err)}`,
+      );
     }
   }
 
   // Eliminar el archivo de OpenAI
   try {
-    await axios.delete(
-      `https://api.openai.com/v1/files/${file_id}`,
-      { headers: headersBase(apiKey) },
-    );
+    await axios.delete(`https://api.openai.com/v1/files/${file_id}`, {
+      headers: headersBase(apiKey),
+    });
   } catch (err) {
     errores.push(`No se pudo eliminar el archivo: ${parsearErrorOpenAI(err)}`);
   }
