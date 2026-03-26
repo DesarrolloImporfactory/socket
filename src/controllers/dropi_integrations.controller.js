@@ -933,8 +933,8 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       keepGoing = objects.length >= PAGE_SIZE;
       start += PAGE_SIZE;
 
-      if (allOrders.length >= 5000) {
-        console.log('[dashboard] Safety limit 5000 reached, stopping.');
+      if (allOrders.length >= 1500) {
+        console.log('[dashboard] Chunk limit 1500 reached, returning.');
         break;
       }
 
@@ -1138,6 +1138,8 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
 
   retiroAgencia.sort((a, b) => b.days - a.days);
 
+  const isPartial = allOrders.length >= 1500;
+
   return res.json({
     isSuccess: true,
     data: {
@@ -1166,6 +1168,10 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
         .slice(0, 10),
       retiroAgencia: retiroAgencia.slice(0, 20),
       pagesFetched: pagesCount,
+      isPartial,
+      partialMessage: isPartial
+        ? `Se analizaron las primeras ${allOrders.length.toLocaleString()} órdenes. Para datos completos, seleccione un rango más corto.`
+        : null,
     },
   });
 });
