@@ -44,4 +44,6 @@ router.post('/location/cities', auth.protectConfigOwner, ctrl.listCities);
 router.get('/sync-config', auth.protectConfigOwner, ctrl.getSyncConfig);
 router.put('/sync-config', auth.protectConfigOwner, ctrl.updateSyncConfig);
 
+router.get('/all-my-integrations', ctrl.listAllMyIntegrations);
+
 module.exports = router;

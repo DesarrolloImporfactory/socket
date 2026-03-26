@@ -6,7 +6,7 @@ const Configuraciones = require('../models/configuraciones.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const { Op } = require('sequelize');
-
+const { db } = require('../database/config');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
 
@@ -826,4 +826,51 @@ exports.updateSyncConfig = catchAsync(async (req, res, next) => {
         updates.sync_suggested_price ?? integration.sync_suggested_price,
     },
   });
+});
+
+exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario) return next(new AppError('No autenticado', 401));
+
+  const [rows] = await db.query(
+    `SELECT di.id,
+            di.id_configuracion,
+            di.id_usuario,
+            di.store_name,
+            di.country_code,
+            di.integration_key_last4,
+            di.is_active,
+            di.created_at,
+            c.nombre_configuracion,
+            c.telefono
+     FROM dropi_integrations di
+     LEFT JOIN configuraciones c ON c.id = di.id_configuracion
+     WHERE di.is_active = 1
+       AND di.deleted_at IS NULL
+       AND (
+         di.id_usuario = :id_usuario
+         OR di.id_configuracion IN (
+           SELECT id FROM configuraciones WHERE id_usuario = :id_usuario
+         )
+       )
+     ORDER BY di.created_at DESC`,
+    { replacements: { id_usuario } },
+  );
+
+  const data = (rows || []).map((r) => ({
+    id: r.id,
+    id_configuracion: r.id_configuracion,
+    id_usuario: r.id_usuario,
+    store_name: r.store_name,
+    country_code: r.country_code,
+    integration_key_last4: r.integration_key_last4,
+    type: r.id_configuracion ? 'config' : 'user',
+    label: r.id_configuracion
+      ? `${r.store_name} — ${r.nombre_configuracion || r.telefono || `Config #${r.id_configuracion}`}`
+      : `${r.store_name} (Mi cuenta)`,
+    nombre_configuracion: r.nombre_configuracion || null,
+    telefono: r.telefono || null,
+  }));
+
+  return res.json({ isSuccess: true, data });
 });
