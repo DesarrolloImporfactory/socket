@@ -874,3 +874,256 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
 
   return res.json({ isSuccess: true, data });
 });
+
+exports.getDashboardStats = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  if (!from || !until)
+    return next(new AppError('from y until son requeridos', 400));
+
+  let allOrders = [];
+  let start = 0;
+  let keepGoing = true;
+  const PAGE_SIZE = 100;
+  let pagesCount = 0;
+
+  while (keepGoing) {
+    try {
+      const dropiResponse = await dropiService.listMyOrders({
+        integrationKey,
+        params: {
+          result_number: PAGE_SIZE,
+          start,
+          filter_date_by: 'FECHA DE CREADO',
+          from,
+          until,
+        },
+        country_code: integration.country_code,
+      });
+
+      const objects = dropiResponse?.objects || [];
+      allOrders = allOrders.concat(objects);
+      pagesCount++;
+
+      keepGoing = objects.length >= PAGE_SIZE;
+      start += PAGE_SIZE;
+
+      if (allOrders.length >= 5000) break;
+      if (keepGoing) await new Promise((r) => setTimeout(r, 1200));
+    } catch (err) {
+      console.error(
+        '[dashboard] Dropi page error at start=' + start,
+        err?.message,
+      );
+      keepGoing = false;
+    }
+  }
+
+  function classify(status) {
+    const s = String(status || '')
+      .trim()
+      .toUpperCase();
+
+    if (
+      s === 'ENTREGADO' ||
+      s.includes('ENTREGADA') ||
+      s === 'REPORTADO ENTREGADO' ||
+      s === 'ENTREGA DIGITALIZADA' ||
+      s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
+    )
+      return 'entregada';
+
+    if (
+      s.includes('DEVOLUCION') ||
+      s.includes('DEVOLUCIÓN') ||
+      s === 'DEVUELTO' ||
+      s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
+      s === 'DESAPLICADO'
+    )
+      return 'devolucion';
+
+    if (
+      s === 'CANCELADO' ||
+      s.includes('CANCELADA') ||
+      s === 'ANULADA' ||
+      s === 'RECHAZADO' ||
+      s === 'GUIA_ANULADA'
+    )
+      return 'cancelada';
+
+    if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
+
+    if (
+      s.includes('RETIRO EN AGENCIA') ||
+      s.includes('ENVÍO LISTO EN OFICINA') ||
+      s === 'ENVIO LISTO EN OFICINA'
+    )
+      return 'retiro_agencia';
+
+    if (
+      s.includes('NOVEDAD') ||
+      s.includes('SOLUCION') ||
+      s === 'CON NOVEDAD' ||
+      s === 'DESTINATARIO FALLECIDO' ||
+      s.includes('DESTINATARIO RE-PROGRAMA') ||
+      s.includes('DESTINATARIO SOLICITA') ||
+      s.includes('FUERA DE COBERTURA') ||
+      s.includes('OBSTRUCCIÓN EN LA VÍA') ||
+      s.includes('PROBLEMAS DE ORDEN') ||
+      s.includes('VISITA A DESTINATARIO') ||
+      s.includes('ACCIDENTE EN CARRETERA') ||
+      s.includes('EN ESPERA DE FIRMA')
+    )
+      return 'novedad';
+
+    if (
+      s.includes('INDEMNIZ') ||
+      s.includes('SINIESTRO') ||
+      s.includes('INCAUTADO') ||
+      s.includes('HURTAD') ||
+      s.includes('AVERÍA')
+    )
+      return 'indemnizada';
+
+    if (
+      s === 'GUIA_GENERADA' ||
+      s.includes('TRÁNSITO') ||
+      s.includes('TRANSITO') ||
+      s.includes('EN RUTA') ||
+      s.includes('EN CAMINO') ||
+      s.includes('EN REPARTO') ||
+      s.includes('BODEGA') ||
+      s.includes('EMBARCANDO') ||
+      s.includes('RECOLECT') ||
+      s.includes('RECOGIDO') ||
+      s.includes('ASIGNADO') ||
+      s.includes('PICKING') ||
+      s.includes('PACKING') ||
+      s.includes('GENERADO') ||
+      s.includes('GENERADA') ||
+      s.includes('ZONA DE ENTREGA') ||
+      s.includes('PREPARADO') ||
+      s.includes('INVENTARIO') ||
+      s.includes('INGRES') ||
+      s.includes('RECIBIDO') ||
+      s === 'POR RECOLECTAR' ||
+      s === 'PROCESAMIENTO' ||
+      s.includes('EN DISTRIBUCION')
+    )
+      return 'en_transito';
+
+    return 'otro';
+  }
+
+  const statusStats = {};
+  const dailyMap = {};
+  const productMap = {};
+  const retiroAgencia = [];
+  const now = new Date();
+
+  for (const o of allOrders) {
+    const cat = classify(o.status);
+    const total = Number(o.total_order || 0);
+
+    if (!statusStats[cat]) statusStats[cat] = { count: 0, money: 0 };
+    statusStats[cat].count += 1;
+    statusStats[cat].money += total;
+
+    const day = (o.created_at || '').slice(0, 10);
+    if (day) {
+      if (!dailyMap[day])
+        dailyMap[day] = { day, pedidos: 0, entregadas: 0, devoluciones: 0 };
+      dailyMap[day].pedidos += 1;
+      if (cat === 'entregada') dailyMap[day].entregadas += 1;
+      if (cat === 'devolucion') dailyMap[day].devoluciones += 1;
+    }
+
+    const details = Array.isArray(o.orderdetails) ? o.orderdetails : [];
+    for (const d of details) {
+      const name = d?.product?.name || 'Sin nombre';
+      if (!productMap[name])
+        productMap[name] = {
+          name,
+          ordenes: 0,
+          entregadas: 0,
+          devoluciones: 0,
+          ingreso: 0,
+        };
+      productMap[name].ordenes += 1;
+      if (cat === 'entregada') {
+        productMap[name].entregadas += 1;
+        productMap[name].ingreso += total;
+      }
+      if (cat === 'devolucion') productMap[name].devoluciones += 1;
+    }
+
+    if (cat === 'retiro_agencia') {
+      const created = new Date(o.created_at);
+      const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+      retiroAgencia.push({
+        id: o.id,
+        name: o.name || '',
+        surname: o.surname || '',
+        city: o.city || '',
+        shipping_company: o.shipping_company || '',
+        shipping_guide: o.shipping_guide || '',
+        total_order: total,
+        status: o.status,
+        created_at: o.created_at,
+        days: diffDays,
+      });
+    }
+  }
+
+  const totalOrders = allOrders.length;
+  const entregadas = statusStats.entregada?.count || 0;
+  const devoluciones = statusStats.devolucion?.count || 0;
+  const totalMoney = allOrders.reduce(
+    (s, o) => s + Number(o.total_order || 0),
+    0,
+  );
+
+  retiroAgencia.sort((a, b) => b.days - a.days);
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      totalOrders,
+      totalMoney,
+      statusStats,
+      kpis: {
+        totalOrders,
+        entregadas,
+        devoluciones,
+        canceladas: statusStats.cancelada?.count || 0,
+        totalMoney,
+        ingresoEntregadas: statusStats.entregada?.money || 0,
+        tasaEntrega: totalOrders > 0 ? (entregadas / totalOrders) * 100 : 0,
+        tasaDevolucion:
+          totalOrders > 0 ? (devoluciones / totalOrders) * 100 : 0,
+        ticketPromedio:
+          entregadas > 0 ? (statusStats.entregada?.money || 0) / entregadas : 0,
+        retiroAgencia: statusStats.retiro_agencia?.count || 0,
+      },
+      dailyChart: Object.values(dailyMap).sort((a, b) =>
+        a.day.localeCompare(b.day),
+      ),
+      topProducts: Object.values(productMap)
+        .sort((a, b) => b.ordenes - a.ordenes)
+        .slice(0, 10),
+      retiroAgencia: retiroAgencia.slice(0, 20),
+      pagesFetched: pagesCount,
+    },
+  });
+});

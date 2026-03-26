@@ -46,4 +46,10 @@ router.put('/sync-config', auth.protectConfigOwner, ctrl.updateSyncConfig);
 
 router.get('/all-my-integrations', ctrl.listAllMyIntegrations);
 
+router.post(
+  '/dashboard/stats',
+  auth.protectConfigOwner,
+  ctrl.getDashboardStats,
+);
+
 module.exports = router;
