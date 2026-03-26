@@ -218,6 +218,7 @@ function toIntOrDefault(v, def) {
 
 function buildDropiOrdersListParams(body = {}) {
   const result_number = toIntOrDefault(body.result_number, 10);
+  const start = toIntOrDefault(body.start, 0);
 
   const filter_date_by = strOrNull(body.filter_date_by) || 'FECHA DE CREADO';
   const from = strOrNull(body.from);
@@ -235,7 +236,8 @@ function buildDropiOrdersListParams(body = {}) {
 
   // Esto será query params para Dropi GET
   const params = {
-    result_number,
+    result_number: result_number + 1,
+    start,
     filter_date_by,
     from,
     until,
@@ -244,7 +246,7 @@ function buildDropiOrdersListParams(body = {}) {
   if (status) params.status = status;
   if (textToSearch) params.textToSearch = textToSearch;
 
-  return params;
+  return { params, requestedSize: result_number };
 }
 
 /* =========================
@@ -627,12 +629,14 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
   const raw = { ...req.body };
   delete raw.id_configuracion;
 
-  let params;
+  let paramsResult;
   try {
-    params = buildDropiOrdersListParams(raw);
+    paramsResult = buildDropiOrdersListParams(raw);
   } catch (e) {
     return next(e);
   }
+
+  const { params, requestedSize } = paramsResult;
 
   console.log('📤 Params enviados a Dropi:', JSON.stringify(params));
 
@@ -659,10 +663,16 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     objects,
   });
 
-  // devolvemos misma respuesta pero reemplazando objects enriquecidos
+  // Truco n+1: si vino 1 extra, hay mas paginas para el front paginado de 10
+  const hasMore = enrichedObjects.length > requestedSize;
+  const trimmed = hasMore
+    ? enrichedObjects.slice(0, requestedSize)
+    : enrichedObjects;
+
   const final = {
     ...dropiResponse,
-    objects: enrichedObjects,
+    objects: trimmed,
+    hasMore,
   };
 
   return res.json({
