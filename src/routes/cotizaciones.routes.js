@@ -13,4 +13,6 @@ router.post('/enviarFechaEstimada', cotizadorpro.enviarFechaEstimada);
 router.post('/enviarVideoCotizacion', cotizadorpro.enviarVideoCotizacion);
 router.post('/reenviarCotizacion', cotizadorpro.reenviarCotizacion);
 
+router.post('/enviarCarga', cotizadorpro.enviarCarga);
+
 module.exports = router;

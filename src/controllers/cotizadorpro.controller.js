@@ -1377,3 +1377,181 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
     },
   });
 });
+
+exports.enviarCarga = catchAsync(async (req, res, next) => {
+  const { id_carga, contactos } = req.body;
+  if (!id_carga) {
+    return next(new AppError('id_carga es requerido', 400));
+  }
+  if (!contactos || !Array.isArray(contactos) || contactos.length === 0) {
+    return next(
+      new AppError(
+        'contactos es requerido y debe ser un arreglo con al menos un elemento',
+        400,
+      ),
+    );
+  }
+
+  const buscarCargaSql = await db_2.query(
+    `
+    SELECT
+      c.id_carga,
+      c.fecha_estimada
+    FROM cotizadorpro_cargas c
+    WHERE c.id_carga = ?
+    `,
+    {
+      replacements: [id_carga],
+      type: db_2.QueryTypes.SELECT,
+    },
+  );
+  if (buscarCargaSql.length === 0) {
+    return next(new AppError('Carga no encontrada', 404));
+  }
+  const cargaInfo = buscarCargaSql[0];
+
+  const fechaFormateada = formatearFecha(cargaInfo.fecha_estimada);
+  const resultados = [];
+
+  for (const contacto of contactos) {
+    const { telefono, nombre, cotizaciones } = contacto;
+
+    if (!telefono) {
+      resultados.push({
+        telefono,
+        nombre,
+        success: false,
+        error: 'telefono es requerido',
+      });
+      continue;
+    }
+
+    const celularFormateado = formatPhoneForWhatsApp(telefono, '593');
+    const nombreCliente = nombre || 'Estimado cliente';
+
+    const templateCarga = {
+      messaging_product: 'whatsapp',
+      to: celularFormateado,
+      type: 'template',
+      template: {
+        name: 'contenedor_cerrado_2',
+        language: { code: 'es' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: nombreCliente },
+              { type: 'text', text: fechaFormateada },
+            ],
+          },
+        ],
+      },
+    };
+
+    let response;
+    try {
+      response = await enviarTemplateWhatsApp(templateCarga);
+    } catch (err) {
+      console.error(
+        `[ENVIAR_CARGA] Error enviando a ${celularFormateado}:`,
+        err.message,
+      );
+      resultados.push({ telefono, nombre, success: false, error: err.message });
+      continue;
+    }
+
+    const midMensaje = response?.messages?.[0]?.id || null;
+
+    if (response?.messages?.[0]?.message_status !== 'accepted') {
+      resultados.push({
+        telefono,
+        nombre,
+        success: false,
+        error: 'WhatsApp no aceptó el mensaje',
+      });
+      continue;
+    }
+
+    // Buscar o crear chat
+    let chatId = null;
+    const celularLimpio = celularFormateado.replace(/[\s+]/g, '');
+    const foundChat = await Clientes_chat_center.findOne({
+      where: {
+        celular_cliente: { [Op.like]: `%${celularLimpio}%` },
+        id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+      },
+    });
+
+    if (foundChat) {
+      chatId = foundChat.id;
+    } else {
+      const nuevoChat = await Clientes_chat_center.create({
+        id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+        nombre_cliente: nombreCliente,
+        celular_cliente: celularLimpio,
+        uid_cliente: COTIZADOR_CONFIG.UID_CLIENTE,
+        estado_cliente: 1,
+        chat_cerrado: false,
+      });
+      chatId = nuevoChat.id;
+    }
+
+    const rutaArchivo = JSON.stringify({
+      placeholders: {
+        1: nombreCliente,
+        2: fechaFormateada,
+      },
+      header: null,
+      template_name: 'contenedor_cerrado_2',
+      language: 'es',
+      id_carga,
+      cotizaciones: cotizaciones || [],
+    });
+
+    const textoMensaje = `🎉 ¡Hola ${nombreCliente} !Te informamos que tu envío ya se encuentra en camino a su destino.\nLa fecha estimada de llegada de tu carga a nuestra bodega es: ${fechaFormateada}\n👉 Envía tu comprobante de pago.`;
+
+    try {
+      await crearMensajeBD(
+        chatId,
+        celularFormateado,
+        midMensaje,
+        textoMensaje,
+        rutaArchivo,
+        'contenedor_cerrado_2',
+      );
+    } catch (dbErr) {
+      console.error(
+        `[ENVIAR_CARGA] Error guardando mensaje para ${celularFormateado}:`,
+        dbErr.message,
+      );
+    }
+
+    resultados.push({
+      telefono,
+      nombre,
+      success: true,
+      wamid: midMensaje,
+      chatId,
+    });
+
+    // Delay entre mensajes para evitar rate limiting de Meta
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  const enviados = resultados.filter((r) => r.success).length;
+  const fallidos = resultados.filter((r) => !r.success).length;
+
+  res.status(200).json({
+    status: 200,
+    title: 'Envío masivo completado',
+    message: `Se enviaron ${enviados} de ${resultados.length} mensajes correctamente`,
+    data: {
+      id_carga,
+      fecha_estimada: fechaFormateada,
+      total: resultados.length,
+      enviados,
+      fallidos,
+      resultados,
+    },
+  });
+});
