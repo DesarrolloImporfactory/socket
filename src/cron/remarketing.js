@@ -1,13 +1,11 @@
-// cron/remarketing.js
 const cron = require('node-cron');
 const axios = require('axios');
+const FormData = require('form-data'); // ← ESTE ES EL FIX — requiere el paquete npm
 const { db } = require('../database/config');
 const {
-  sendWhatsappMessage,
   sendWhatsappMessageTemplateScheduled,
   obtenerTextoPlantilla,
 } = require('../services/whatsapp.service');
-
 const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
@@ -22,23 +20,31 @@ async function uploadMediaToMeta(
     VIDEO: 'video/mp4',
     DOCUMENT: 'application/pdf',
   };
-  const EXT = {
-    IMAGE: 'jpg',
-    VIDEO: 'mp4',
-    DOCUMENT: 'pdf',
-  };
+  const EXT = { IMAGE: 'jpg', VIDEO: 'mp4', DOCUMENT: 'pdf' };
 
   const fmt = String(headerFormat || '').toUpperCase();
   const mimeType = MIME[fmt] || 'application/octet-stream';
   const ext = EXT[fmt] || 'bin';
 
-  // 1) Descargar el archivo
-  const download = await axios.get(mediaUrl, {
-    responseType: 'arraybuffer',
-    timeout: 30000,
-  });
+  console.log(`⬆️ [uploadMedia] Iniciando descarga de: ${mediaUrl}`);
+  console.log(`⬆️ [uploadMedia] fmt=${fmt} mimeType=${mimeType}`);
 
-  // 2) Subir a Meta → obtenemos media_id
+  // 1) Descargar el archivo
+  let download;
+  try {
+    download = await axios.get(mediaUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    console.log(
+      `⬆️ [uploadMedia] Descarga OK — tamaño: ${download.data.byteLength} bytes, status: ${download.status}`,
+    );
+  } catch (dlErr) {
+    console.error(`❌ [uploadMedia] Error descargando archivo:`, dlErr.message);
+    throw dlErr;
+  }
+
+  // 2) Construir form-data (paquete npm, no global browser)
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('type', mimeType);
@@ -47,17 +53,30 @@ async function uploadMediaToMeta(
     contentType: mimeType,
   });
 
-  const uploadRes = await axios.post(
-    `https://graph.facebook.com/v22.0/${business_phone_id}/media`,
-    form,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        ...form.getHeaders(),
-      },
-      timeout: 60000,
-    },
+  const uploadHeaders = {
+    Authorization: `Bearer ${accessToken}`,
+    ...form.getHeaders(), // ← solo funciona con el paquete npm
+  };
+
+  console.log(
+    `⬆️ [uploadMedia] Subiendo a Meta phone_id=${business_phone_id}...`,
   );
+
+  let uploadRes;
+  try {
+    uploadRes = await axios.post(
+      `https://graph.facebook.com/v22.0/${business_phone_id}/media`,
+      form,
+      { headers: uploadHeaders, timeout: 60000, validateStatus: () => true },
+    );
+    console.log(
+      `⬆️ [uploadMedia] Respuesta Meta upload — status: ${uploadRes.status}`,
+      JSON.stringify(uploadRes.data),
+    );
+  } catch (upErr) {
+    console.error(`❌ [uploadMedia] Error en POST a Meta:`, upErr.message);
+    throw upErr;
+  }
 
   if (!uploadRes.data?.id) {
     throw new Error(
@@ -65,20 +84,20 @@ async function uploadMediaToMeta(
     );
   }
 
-  return uploadRes.data.id; // ← media_id fresco
+  console.log(`✅ [uploadMedia] media_id obtenido: ${uploadRes.data.id}`);
+  return uploadRes.data.id;
 }
 
+// withLock igual
 async function withLock(lockName, fn) {
-  // Usa conexión dedicada fuera del pool para no bloquear conexiones de la API
   const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
     const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
       replacements: [lockName],
       type: db.QueryTypes.SELECT,
-      bind: undefined,
     });
     if (!row || Number(row.got) !== 1) {
-      console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
+      console.log('🔒 No se obtuvo lock');
       return;
     }
     try {
@@ -107,14 +126,32 @@ cron.schedule('*/1 * * * *', async () => {
         { type: db.QueryTypes.SELECT },
       );
 
+      if (!pendientes.length) return;
+      console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
+
       for (const record of pendientes) {
         try {
+          console.log(
+            `\n🔄 [remarketing] Procesando id=${record.id} tel=${record.telefono} template="${record.nombre_template}"`,
+          );
+          console.log(
+            `🔄 [remarketing] header_format="${record.header_format}" header_media_url="${record.header_media_url}"`,
+          );
+
           const cliente = await ClientesChatCenter.findByPk(
             record.id_cliente_chat_center,
           );
-          if (!cliente) continue;
+          if (!cliente) {
+            console.warn(
+              `⚠️ [remarketing] Cliente no encontrado id=${record.id_cliente_chat_center}`,
+            );
+            continue;
+          }
 
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
+            console.log(
+              `🚫 [remarketing] Estado cambió (${record.estado_contacto_origen} → ${cliente.estado_contacto}), cancelando id=${record.id}`,
+            );
             await db.query(
               `UPDATE remarketing_pendientes SET cancelado = 1 WHERE id = ?`,
               { replacements: [record.id], type: db.QueryTypes.UPDATE },
@@ -122,45 +159,39 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
-          // ══════════════════════════════════════════════════
-          // Si el template tiene header de media:
-          // 1) Obtenemos config fresca
-          // 2) Obtenemos la URL actual del template (puede ser
-          //    header_handle o la guardada en BD)
-          // 3) Subimos el archivo a Meta → media_id
-          // 4) Construimos una URL especial "mediaid://ID" que
-          //    le pasamos como header_media_url
-          //
-          // PERO sendWhatsappMessageTemplateScheduled solo
-          // soporta { link } — así que hacemos el envío
-          // directo aquí para el caso media y usamos la
-          // función normal para texto.
-          // ══════════════════════════════════════════════════
           const headerFormatNorm = String(
             record.header_format || '',
           ).toUpperCase();
           const esMediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
             headerFormatNorm,
           );
+          console.log(
+            `🔄 [remarketing] esMediaHeader=${esMediaHeader} headerFormatNorm="${headerFormatNorm}"`,
+          );
 
           if (esMediaHeader) {
-            // ── Envío directo con media_id ──────────────────
             const cfg = await getConfigFromDB(Number(record.id_configuracion));
             if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID || !cfg?.WABA_ID) {
               throw new Error('Config incompleta para envío de media');
             }
 
-            // Obtener URL más fresca posible del template
+            // URL fresca desde Meta como fallback
             const tplData = await obtenerTextoPlantilla(
               record.nombre_template,
               cfg.ACCESS_TOKEN,
               cfg.WABA_ID,
             );
 
-            // Prioridad: URL guardada en BD (la que puso el usuario)
-            // Fallback: header_handle fresco del template en Meta
+            console.log(
+              `🔄 [remarketing] tplData.header =`,
+              JSON.stringify(tplData?.header),
+            );
+
             const mediaUrlFuente =
               record.header_media_url || tplData?.header?.media_url;
+            console.log(
+              `🔄 [remarketing] mediaUrlFuente = "${mediaUrlFuente}"`,
+            );
 
             if (!mediaUrlFuente) {
               throw new Error(
@@ -168,20 +199,15 @@ cron.schedule('*/1 * * * *', async () => {
               );
             }
 
-            // Subir a Meta → media_id fresco (evita 403)
-            console.log(
-              `⬆️ [remarketing] Subiendo media a Meta para "${record.nombre_template}"...`,
-            );
+            // Upload → media_id (evita 403)
             const mediaId = await uploadMediaToMeta(
               mediaUrlFuente,
               headerFormatNorm,
               cfg.ACCESS_TOKEN,
               cfg.PHONE_NUMBER_ID,
             );
-            console.log(`✅ [remarketing] media_id obtenido: ${mediaId}`);
 
-            // Construir payload con { id } en lugar de { link }
-            const mediaType = headerFormatNorm.toLowerCase(); // 'image'|'video'|'document'
+            const mediaType = headerFormatNorm.toLowerCase();
             const mediaObj = { id: mediaId };
             if (mediaType === 'document' && record.header_media_name) {
               mediaObj.filename = record.header_media_name;
@@ -194,15 +220,13 @@ cron.schedule('*/1 * * * *', async () => {
               },
             ];
 
-            // Si hubiera parámetros de body
-            if (
-              record.template_parameters &&
-              JSON.parse(record.template_parameters || '[]').length > 0
-            ) {
-              const params = JSON.parse(record.template_parameters);
+            const bodyParams = record.template_parameters
+              ? JSON.parse(record.template_parameters || '[]')
+              : [];
+            if (bodyParams.length > 0) {
               components.push({
                 type: 'body',
-                parameters: params.map((p) => ({
+                parameters: bodyParams.map((p) => ({
                   type: 'text',
                   text: String(p),
                 })),
@@ -222,6 +246,11 @@ cron.schedule('*/1 * * * *', async () => {
               },
             };
 
+            console.log(
+              `📤 [remarketing] Payload a Meta:`,
+              JSON.stringify(payload, null, 2),
+            );
+
             const sendRes = await axios.post(
               `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`,
               payload,
@@ -233,6 +262,11 @@ cron.schedule('*/1 * * * *', async () => {
                 timeout: 30000,
                 validateStatus: () => true,
               },
+            );
+
+            console.log(
+              `📤 [remarketing] Respuesta Meta send — status: ${sendRes.status}`,
+              JSON.stringify(sendRes.data),
             );
 
             if (
@@ -247,13 +281,10 @@ cron.schedule('*/1 * * * *', async () => {
               err.meta_error = sendRes.data?.error || sendRes.data;
               throw err;
             }
-
-            console.log(
-              `✅ [remarketing] Template media enviado: ${record.nombre_template}`,
-              sendRes.data,
-            );
           } else {
-            // ── Texto normal: usa la función existente ──────
+            console.log(
+              `📤 [remarketing] Enviando template de texto con sendWhatsappMessageTemplateScheduled`,
+            );
             await sendWhatsappMessageTemplateScheduled({
               telefono: record.telefono,
               telefono_configuracion: record.telefono_configuracion || null,
@@ -269,7 +300,6 @@ cron.schedule('*/1 * * * *', async () => {
             });
           }
 
-          // Mover columna y marcar enviado
           const estadoDestino = record.estado_destino || 'seguimiento';
           await ClientesChatCenter.update(
             { estado_contacto: estadoDestino },
@@ -280,8 +310,10 @@ cron.schedule('*/1 * * * *', async () => {
             `UPDATE remarketing_pendientes SET enviado = 1 WHERE id = ?`,
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
+
+          console.log(`✅ [remarketing] id=${record.id} marcado como enviado`);
         } catch (err) {
-          console.error('❌ Error en cron remarketing:', err.message);
+          console.error(`❌ [remarketing] Error id=${record.id}:`, err.message);
           if (err?.meta_status || err?.meta_error) {
             console.error('🧾 [Meta error detail]', {
               meta_status: err.meta_status,
