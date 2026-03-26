@@ -243,14 +243,49 @@ exports.syncCatalogo = catchAsync(async (req, res, next) => {
 });
 
 exports.sincronizarCatalogo = catchAsync(async (req, res, next) => {
-  const { id } = req.body; // id_kanban_columna
+  const { id } = req.body;
   if (!id) return next(new AppError('Falta id', 400));
 
-  const resultado = await syncCatalogoKanbanColumna(id, {
-    logger: async (msg) => console.log(`[sync_catalogo] ${msg}`),
-  });
+  // Marcar como procesando ANTES de responder
+  await db.query(
+    `UPDATE kanban_columnas SET sync_status = 'procesando', sync_at = NOW() WHERE id = ?`,
+    { replacements: [id], type: db.QueryTypes.UPDATE },
+  );
 
-  return res.status(200).json({ success: true, data: resultado });
+  // Responder inmediatamente
+  res.status(200).json({ success: true, procesando: true });
+
+  // Procesar en background
+  setImmediate(async () => {
+    try {
+      await syncCatalogoKanbanColumna(id, {
+        logger: async (msg) => console.log(`[sync_catalogo] ${msg}`),
+      });
+      await db.query(
+        `UPDATE kanban_columnas SET sync_status = 'completado', sync_at = NOW() WHERE id = ?`,
+        { replacements: [id], type: db.QueryTypes.UPDATE },
+      );
+      console.log(`[sync_catalogo] ✅ Completado columna id=${id}`);
+    } catch (err) {
+      await db.query(
+        `UPDATE kanban_columnas SET sync_status = 'error', sync_at = NOW() WHERE id = ?`,
+        { replacements: [id], type: db.QueryTypes.UPDATE },
+      );
+      console.error(`[sync_catalogo] ❌ Error: ${err.message}`);
+    }
+  });
+});
+
+exports.syncStatus = catchAsync(async (req, res, next) => {
+  const { id } = req.body;
+  if (!id) return next(new AppError('Falta id', 400));
+
+  const [col] = await db.query(
+    `SELECT sync_status, sync_at FROM kanban_columnas WHERE id = ? LIMIT 1`,
+    { replacements: [id], type: db.QueryTypes.SELECT },
+  );
+
+  return res.json({ success: true, data: col });
 });
 
 exports.marcarPrincipal = catchAsync(async (req, res, next) => {

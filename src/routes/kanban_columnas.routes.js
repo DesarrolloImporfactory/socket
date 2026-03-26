@@ -19,7 +19,11 @@ router.post('/quitar_principal', KanbanColumnasController.quitarPrincipal);
 
 router.post('/sync_catalogo', KanbanColumnasController.syncCatalogo);
 
-router.post('/sincronizar_catalogo', KanbanColumnasController.sincronizarCatalogo);
+router.post(
+  '/sincronizar_catalogo',
+  KanbanColumnasController.sincronizarCatalogo,
+);
+router.post('/sync_status', KanbanColumnasController.syncStatus);
 
 /* SECCION DE CONTROLADORES ASISTENTES */
 // Multer en memoria (sin guardar en disco — se envía directo a OpenAI)

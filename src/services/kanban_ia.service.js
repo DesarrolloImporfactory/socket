@@ -530,7 +530,9 @@ async function programarRemarketingKanban({
 }) {
   try {
     const [configRM] = await db.query(
-      `SELECT tiempo_espera_horas, nombre_template, language_code, estado_destino
+      `SELECT tiempo_espera_horas, nombre_template, language_code,
+              estado_destino, header_format, header_media_url,
+              header_media_name, header_parameters
        FROM configuracion_remarketing
        WHERE id_configuracion = ? AND estado_contacto = ? AND activo = 1
        LIMIT 1`,
@@ -554,12 +556,19 @@ async function programarRemarketingKanban({
       Date.now() + configRM.tiempo_espera_horas * 3600000,
     );
 
+    // ✅ Decodificar &amp; antes de guardar
+    const headerMediaUrl = configRM.header_media_url
+      ? configRM.header_media_url.replace(/&amp;/g, '&')
+      : null;
+
     await db.query(
       `INSERT INTO remarketing_pendientes
        (telefono, telefono_configuracion, id_cliente_chat_center,
         id_configuracion, estado_contacto_origen, nombre_template,
-        language_code, tiempo_disparo, estado_destino, enviado, cancelado)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+        language_code, tiempo_disparo, estado_destino,
+        header_format, header_media_url, header_media_name, header_parameters,
+        enviado, cancelado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
       {
         replacements: [
           telefono,
@@ -571,12 +580,16 @@ async function programarRemarketingKanban({
           configRM.language_code,
           tiempoDisparo,
           configRM.estado_destino || null,
+          configRM.header_format || null,
+          headerMediaUrl,
+          configRM.header_media_name || null,
+          configRM.header_parameters || null,
         ],
         type: db.QueryTypes.INSERT,
       },
     );
     await log(
-      `📅 Remarketing programado en ${configRM.tiempo_espera_horas}h — estado=${estado_contacto} telefono=${telefono}`,
+      `📅 Remarketing programado en ${configRM.tiempo_espera_horas}h — estado=${estado_contacto}`,
     );
   } catch (err) {
     await log(`⚠️ Error programando remarketing: ${err.message}`);

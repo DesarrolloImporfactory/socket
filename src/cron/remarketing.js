@@ -81,6 +81,13 @@ cron.schedule('*/1 * * * *', async () => {
             language_code: record.language_code,
             template_parameters: [], // si luego quieres dinámicos los agregamos
             responsable: 'cron_remarketing_estado',
+
+            header_format: record.header_format || null,
+            header_media_url: record.header_media_url || null,
+            header_media_name: record.header_media_name || null,
+            header_parameters: record.header_parameters
+              ? JSON.parse(record.header_parameters)
+              : null,
           });
 
           // 3️⃣ Actualizar estado automáticamente (opcional)

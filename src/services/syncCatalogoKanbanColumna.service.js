@@ -351,7 +351,7 @@ async function waitVectorStoreFileProcessed(
   headersJson,
   logger,
   sleep,
-  maxAttempts = 30,
+  maxAttempts = 60,
 ) {
   for (let i = 1; i <= maxAttempts; i++) {
     const res = await axios.get(
@@ -365,7 +365,7 @@ async function waitVectorStoreFileProcessed(
       throw new Error(
         `Falló indexación vsFile=${vectorStoreFileId} status=${status}`,
       );
-    await sleep(1000);
+    await sleep(2000);
   }
   throw new Error(`Timeout indexando vsFile=${vectorStoreFileId}`);
 }

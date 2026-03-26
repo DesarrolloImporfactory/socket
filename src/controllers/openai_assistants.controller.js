@@ -1041,6 +1041,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     nombre_template,
     language_code,
     estado_destino = null,
+    header_format = null,
+    header_media_url = null,
+    header_media_name = null,
+    header_parameters = null,
   } = req.body;
 
   try {
@@ -1057,7 +1061,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       await db.query(
         `UPDATE configuracion_remarketing
          SET tiempo_espera_horas = ?, nombre_template = ?,
-             language_code = ?, estado_destino = ?, activo = 1
+             language_code = ?, estado_destino = ?,
+             header_format = ?, header_media_url = ?,
+             header_media_name = ?, header_parameters = ?,
+             activo = 1
          WHERE id_configuracion = ? AND estado_contacto = ?`,
         {
           replacements: [
@@ -1065,6 +1072,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             nombre_template,
             language_code,
             estado_destino || null,
+            header_format || null,
+            header_media_url || null,
+            header_media_name || null,
+            header_parameters ? JSON.stringify(header_parameters) : null,
             id_configuracion,
             estado_contacto,
           ],
@@ -1075,8 +1086,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       await db.query(
         `INSERT INTO configuracion_remarketing
          (id_configuracion, estado_contacto, tiempo_espera_horas,
-          nombre_template, language_code, estado_destino, activo)
-         VALUES (?, ?, ?, ?, ?, ?, 1)`,
+          nombre_template, language_code, estado_destino,
+          header_format, header_media_url, header_media_name,
+          header_parameters, activo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
@@ -1085,16 +1098,22 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             nombre_template,
             language_code,
             estado_destino || null,
+            header_format || null,
+            header_media_url || null,
+            header_media_name || null,
+            header_parameters ? JSON.stringify(header_parameters) : null,
           ],
           type: db.QueryTypes.INSERT,
         },
       );
     }
 
-    res.status(200).json({
-      status: '200',
-      message: 'Remarketing configurado correctamente',
-    });
+    res
+      .status(200)
+      .json({
+        status: '200',
+        message: 'Remarketing configurado correctamente',
+      });
   } catch (error) {
     console.error(error);
     return next(new AppError('Error configurando remarketing', 500));
@@ -1116,7 +1135,7 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
   );
 
   res.status(200).json({
-      status: '200',
-      data: config || null,
-    });
+    status: '200',
+    data: config || null,
+  });
 });
