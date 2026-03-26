@@ -6,6 +6,8 @@ const {
   sendWhatsappMessage,
   sendWhatsappMessageTemplateScheduled,
 } = require('../services/whatsapp.service');
+
+const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 
 async function withLock(lockName, fn) {
@@ -41,60 +43,91 @@ cron.schedule('*/1 * * * *', async () => {
   isRunning = true;
   try {
     await withLock('remarketing_cron_lock', async () => {
-      /* console.log('⏱️ Ejecutando tarea de remarketing'); */
-
       const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
-       WHERE enviado = 0 AND cancelado = 0 AND tiempo_disparo <= NOW()`,
+         WHERE enviado = 0 AND cancelado = 0 AND tiempo_disparo <= NOW()`,
         { type: db.QueryTypes.SELECT },
       );
 
       for (const record of pendientes) {
         try {
-          // 1️⃣ Verificar estado actual del cliente
           const cliente = await ClientesChatCenter.findByPk(
             record.id_cliente_chat_center,
           );
-
           if (!cliente) continue;
 
-          // Si el estado cambió, cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
             await db.query(
-              `UPDATE remarketing_pendientes
-         SET cancelado = 1
-         WHERE id = ?`,
-              {
-                replacements: [record.id],
-                type: db.QueryTypes.UPDATE,
-              },
+              `UPDATE remarketing_pendientes SET cancelado = 1 WHERE id = ?`,
+              { replacements: [record.id], type: db.QueryTypes.UPDATE },
             );
             continue;
           }
 
-          // 2️⃣ Enviar plantilla
+          // ══════════════════════════════════════════════════════════
+          // SOLUCIÓN: Si el template tiene header de media (IMAGE/VIDEO/
+          // DOCUMENT), obtenemos la URL fresca desde Meta en el momento
+          // del envío — nunca usamos la URL guardada en BD que ya expiró.
+          // obtenerTextoPlantilla tiene cache de 30 min y pagina Meta,
+          // así que la URL que devuelve siempre es reciente y válida.
+          // ══════════════════════════════════════════════════════════
+          let headerMediaUrl = record.header_media_url || null;
+          const headerFormatNorm = String(
+            record.header_format || '',
+          ).toUpperCase();
+
+          if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm)) {
+            try {
+              const cfg = await getConfigFromDB(
+                Number(record.id_configuracion),
+              );
+
+              if (cfg?.ACCESS_TOKEN && cfg?.WABA_ID) {
+                const tplData = await obtenerTextoPlantilla(
+                  record.nombre_template,
+                  cfg.ACCESS_TOKEN,
+                  cfg.WABA_ID,
+                );
+
+                if (tplData?.header?.media_url) {
+                  headerMediaUrl = tplData.header.media_url;
+                  console.log(
+                    `🔄 [remarketing] URL de media refrescada para "${record.nombre_template}"`,
+                  );
+                } else {
+                  console.warn(
+                    `⚠️ [remarketing] No se obtuvo media_url fresca para "${record.nombre_template}", usando la guardada en BD`,
+                  );
+                }
+              }
+            } catch (refreshErr) {
+              console.warn(
+                `⚠️ [remarketing] Error refrescando media_url (usando BD como fallback):`,
+                refreshErr.message,
+              );
+              // headerMediaUrl sigue siendo record.header_media_url — fallback seguro
+            }
+          }
+
+          // ══════════════════════════════════════════════════════════
+          // Envío — igual que antes, solo cambia headerMediaUrl
+          // ══════════════════════════════════════════════════════════
           await sendWhatsappMessageTemplateScheduled({
             telefono: record.telefono,
             telefono_configuracion: record.telefono_configuracion || null,
             id_configuracion: record.id_configuracion,
             nombre_template: record.nombre_template,
             language_code: record.language_code,
-            template_parameters: [], // si luego quieres dinámicos los agregamos
+            template_parameters: [],
             responsable: 'cron_remarketing_estado',
 
             header_format: record.header_format || null,
-            header_media_url: record.header_media_url || null,
+            header_media_url: headerMediaUrl, // ← URL fresca
             header_media_name: record.header_media_name || null,
             header_parameters: record.header_parameters
               ? JSON.parse(record.header_parameters)
               : null,
           });
-
-          // 3️⃣ Actualizar estado automáticamente (opcional)
-          /* await ClientesChatCenter.update(
-          { estado_contacto: 'seguimiento' },
-          { where: { id: record.id_cliente_chat_center } },
-        ); */
 
           const estadoDestino = record.estado_destino || 'seguimiento';
           await ClientesChatCenter.update(
@@ -102,18 +135,18 @@ cron.schedule('*/1 * * * *', async () => {
             { where: { id: record.id_cliente_chat_center } },
           );
 
-          // 4️⃣ Marcar como enviado
           await db.query(
-            `UPDATE remarketing_pendientes
-       SET enviado = 1
-       WHERE id = ?`,
-            {
-              replacements: [record.id],
-              type: db.QueryTypes.UPDATE,
-            },
+            `UPDATE remarketing_pendientes SET enviado = 1 WHERE id = ?`,
+            { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
         } catch (err) {
           console.error('❌ Error en cron remarketing:', err.message);
+          if (err?.meta_status || err?.meta_error) {
+            console.error('🧾 [Meta error detail]', {
+              meta_status: err.meta_status,
+              meta_error: err.meta_error,
+            });
+          }
         }
       }
     });
