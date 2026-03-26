@@ -897,6 +897,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   let keepGoing = true;
   const PAGE_SIZE = 100;
   let pagesCount = 0;
+  let currentDelay = 1500;
 
   while (keepGoing) {
     try {
@@ -920,8 +921,18 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       start += PAGE_SIZE;
 
       if (allOrders.length >= 5000) break;
-      if (keepGoing) await new Promise((r) => setTimeout(r, 1200));
+      currentDelay = 1500;
+      if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
     } catch (err) {
+      const status = err?.statusCode || err?.status || 500;
+
+      if (status === 429) {
+        currentDelay = Math.min(currentDelay * 2, 10000);
+        console.log(`[dashboard] Rate limited. Waiting ${currentDelay}ms...`);
+        await new Promise((r) => setTimeout(r, currentDelay));
+        continue;
+      }
+
       console.error(
         '[dashboard] Dropi page error at start=' + start,
         err?.message,

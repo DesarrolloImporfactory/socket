@@ -58,7 +58,9 @@ function normalizeDropiError(err) {
     err?.message ||
     'Error desconocido en Dropi';
 
-  return new AppError(`Dropi: ${msg}`, status);
+  const appError = new AppError(`Dropi: ${msg}`, status);
+  appError.statusCode = status;
+  return appError;
 }
 
 /**
