@@ -482,31 +482,44 @@ function normalizeCatalogProducts(rows) {
       r.combos_producto,
     );
 
+    // Codifica espacios y caracteres especiales pero respeta la estructura de la URL
+    const encodeUrl = (url) => {
+      if (!url) return null;
+      try {
+        // Separar protocolo+dominio+path del filename
+        const lastSlash = url.lastIndexOf('/');
+        const base = url.substring(0, lastSlash + 1);
+        const filename = url.substring(lastSlash + 1);
+        // Codificar solo el filename (donde están los espacios y paréntesis)
+        return base + encodeURIComponent(filename);
+      } catch {
+        return url;
+      }
+    };
+
+    const imagen_url = encodeUrl(r.imagen_url);
+    const video_url = encodeUrl(r.video_url);
+    const imagen_upsell_url = encodeUrl(r.imagen_upsell_url);
+
     let bloque_prompt = '';
     bloque_prompt += `🛒 Producto: ${r.nombre || ''}\n`;
     bloque_prompt += `📃 Descripción: ${r.descripcion || ''}\n`;
     bloque_prompt += `Precio: ${r.precio ?? ''}\n`;
     if (combos_texto) bloque_prompt += `${combos_texto}\n`;
-    if (r.imagen_url)
-      bloque_prompt += `[producto_imagen_url]: ${r.imagen_url}\n`;
-    if (r.video_url) bloque_prompt += `[producto_video_url]: ${r.video_url}\n`;
+    if (imagen_url) bloque_prompt += `[producto_imagen_url]: ${imagen_url}\n`;
+    if (video_url) bloque_prompt += `[producto_video_url]: ${video_url}\n`;
     bloque_prompt += `Tipo: ${r.tipo || ''}\n`;
     bloque_prompt += `Categoría: ${r.nombre_categoria || ''}\n`;
     bloque_prompt += `Nombre_upsell: ${r.nombre_upsell || ''}\n`;
     bloque_prompt += `Descripcion_upsell: ${r.descripcion_upsell || ''}\n`;
     bloque_prompt += `Precio_upsell: ${r.precio_upsell ?? ''}\n`;
-    if (r.imagen_upsell_url)
-      bloque_prompt += `[upsell_imagen_url]: ${r.imagen_upsell_url}\n`;
-
-    console.log('bloque_prompt: ' + bloque_prompt);
+    if (imagen_upsell_url)
+      bloque_prompt += `[upsell_imagen_url]: ${imagen_upsell_url}\n`;
 
     return {
-      // Metadatos
       id_producto: r.id_producto,
       id_configuracion: r.id_configuracion,
       actualizado_en: r.fecha_actualizacion || null,
-
-      // Campos estructurados
       nombre: r.nombre || '',
       descripcion: r.descripcion || '',
       tipo: r.tipo || '',
@@ -515,22 +528,17 @@ function normalizeCatalogProducts(rows) {
       stock: r.stock ?? null,
       id_categoria: r.id_categoria ?? null,
       nombre_categoria: r.nombre_categoria || null,
-
-      // Campos que el prompt reconoce mejor
       nombre_producto: r.nombre || '',
       descripcion_producto: r.descripcion || '',
       precio_producto: r.precio ?? null,
-      producto_imagen_url: r.imagen_url || null,
-      producto_video_url: r.video_url || null,
-
+      producto_imagen_url: imagen_url,
+      producto_video_url: video_url,
       nombre_upsell: r.nombre_upsell || null,
       descripcion_upsell: r.descripcion_upsell || null,
       precio_upsell: r.precio_upsell ?? null,
-      upsell_imagen_url: r.imagen_upsell_url || null,
-
+      upsell_imagen_url: imagen_upsell_url,
       combos_producto: combos_json,
       combos_producto_texto: combos_texto,
-
       bloque_prompt: bloque_prompt.trim(),
     };
   });
