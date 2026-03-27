@@ -876,6 +876,9 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, data });
 });
 
+// Tracking en memoria de syncs completados
+if (!global._dropiSyncDone) global._dropiSyncDone = {};
+
 // classify — mismo de antes, pero lo sacamos como helper reutilizable
 function classifyDropiStatus(status) {
   const s = String(status || '')
@@ -1021,7 +1024,10 @@ async function upsertOrdersToCache(id_configuracion, orders) {
 }
 
 /**
- * Sync: traer de Dropi las órdenes que cambiaron desde el último sync
+ * Sync: traer de Dropi las órdenes del rango
+ * FIXES:
+ * - Trackea sync completado en global para evitar loop infinito
+ * - Re-sync usa FECHA DE CAMBIO DE ESTATUS pero con fechas correctas
  */
 async function syncFromDropi({
   integrationKey,
@@ -1030,6 +1036,8 @@ async function syncFromDropi({
   from,
   until,
 }) {
+  const syncKey = `${id_configuracion}_${from}_${until}`;
+
   // ¿Cuándo fue el último sync para este rango?
   const lastSync = await DropiOrdersCache.findOne({
     where: {
@@ -1045,25 +1053,27 @@ async function syncFromDropi({
   const lastSyncTime = lastSync?.synced_at || null;
   const now = new Date();
 
-  // Si el último sync fue hace menos de 10 minutos, no re-sincronizar
+  // Si el último sync fue hace menos de 10 minutos, skip
   if (lastSyncTime) {
     const diffMinutes = (now - new Date(lastSyncTime)) / (1000 * 60);
     if (diffMinutes < 10) {
       console.log(
         `[cache] Skipping sync — last sync was ${diffMinutes.toFixed(1)}min ago`,
       );
+      global._dropiSyncDone[syncKey] = { at: Date.now(), count: -1 };
       return { synced: false, reason: 'recent' };
     }
   }
 
-  // Sincronizar usando FECHA DE CAMBIO DE ESTATUS para capturar cambios
+  // Primera vez: FECHA DE CREADO (consistente con lo que Dropi muestra nativo)
+  // Re-sync: FECHA DE CAMBIO DE ESTATUS (captura cambios de estado)
   const filterDateBy = lastSyncTime
     ? 'FECHA DE CAMBIO DE ESTATUS'
     : 'FECHA DE CREADO';
 
-  const syncFrom = lastSyncTime
-    ? new Date(lastSyncTime).toISOString().slice(0, 10)
-    : from;
+  // FIX: Siempre usar las fechas originales del rango
+  const syncFrom = from;
+  const syncUntil = until;
 
   let allOrders = [];
   let start = 0;
@@ -1073,7 +1083,7 @@ async function syncFromDropi({
   let consecutiveRetries = 0;
 
   console.log(
-    `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${until}`,
+    `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${syncUntil} (config=${id_configuracion})`,
   );
 
   while (keepGoing) {
@@ -1085,7 +1095,7 @@ async function syncFromDropi({
           start,
           filter_date_by: filterDateBy,
           from: syncFrom,
-          until,
+          until: syncUntil,
         },
         country_code,
       });
@@ -1098,6 +1108,7 @@ async function syncFromDropi({
 
       if (allOrders.length >= 5000) break;
       currentDelay = 2500;
+      consecutiveRetries = 0;
       if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
@@ -1123,7 +1134,12 @@ async function syncFromDropi({
     await upsertOrdersToCache(id_configuracion, allOrders);
   }
 
-  console.log(`[cache] Sync complete: ${allOrders.length} orders synced`);
+  // Marcar sync como completado (incluso si trajo 0 órdenes)
+  global._dropiSyncDone[syncKey] = { at: Date.now(), count: allOrders.length };
+
+  console.log(
+    `[cache] Sync complete: ${allOrders.length} orders synced (key=${syncKey})`,
+  );
   return { synced: true, count: allOrders.length };
 }
 
@@ -1286,8 +1302,51 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     `[dashboard] Cache has ${cachedCount} orders for config ${id_configuracion} (${from} → ${until})`,
   );
 
-  // 2) Lanzar sync en background (NUNCA bloquear)
+  const syncKey = `${id_configuracion}_${from}_${until}`;
+
+  // 2) Si no hay cache o forceSync → lanzar sync
   if (cachedCount === 0 || forceSync) {
+    // FIX: ¿Ya intentamos sincronizar este rango recientemente?
+    const prevSync = global._dropiSyncDone?.[syncKey];
+    const syncRanRecently = prevSync && Date.now() - prevSync.at < 120000; // 2 minutos
+
+    if (cachedCount === 0 && syncRanRecently) {
+      // Sync ya corrió y no encontró nada → NO decir "syncing", devolver vacío
+      console.log(
+        `[dashboard] Sync already ran for ${syncKey} (found ${prevSync.count} orders). Returning empty.`,
+      );
+
+      return res.json({
+        isSuccess: true,
+        data: {
+          syncing: false,
+          totalOrders: 0,
+          totalMoney: 0,
+          statusStats: {},
+          kpis: {
+            totalOrders: 0,
+            entregadas: 0,
+            devoluciones: 0,
+            canceladas: 0,
+            totalMoney: 0,
+            ingresoEntregadas: 0,
+            tasaEntrega: 0,
+            tasaDevolucion: 0,
+            ticketPromedio: 0,
+            retiroAgencia: 0,
+          },
+          dailyChart: [],
+          topProducts: [],
+          retiroAgencia: [],
+          pagesFetched: 0,
+          isPartial: false,
+          partialMessage: null,
+          fromCache: false,
+        },
+      });
+    }
+
+    // Lanzar sync en background (no bloquear)
     syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
@@ -1298,7 +1357,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       console.error('[dashboard] Background sync error:', err?.message),
     );
 
-    // Si no hay cache, decirle al frontend que estamos sincronizando
+    // Si no hay cache → decir "syncing" para que frontend reintente
     if (cachedCount === 0) {
       return res.json({
         isSuccess: true,
@@ -1332,7 +1391,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       });
     }
   } else {
-    // Hay cache — sync background solo si hace +10 min
+    // Hay cache → sync background solo si hace +10 min
     syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
