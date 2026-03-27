@@ -1272,7 +1272,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
 
   const forceSync = req.body?.forceSync === true;
 
-  // 1) ¿Tenemos data en cache para este rango?
+  // 1) ¿Cuántas órdenes hay en cache para este rango?
   const cachedCount = await DropiOrdersCache.count({
     where: {
       id_configuracion,
@@ -1286,21 +1286,53 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     `[dashboard] Cache has ${cachedCount} orders for config ${id_configuracion} (${from} → ${until})`,
   );
 
-  // 2) Si no hay cache O forceSync → sincronizar desde Dropi (background-safe)
+  // 2) Lanzar sync en background (NUNCA bloquear)
   if (cachedCount === 0 || forceSync) {
-    console.log(
-      `[dashboard] Syncing from Dropi (cachedCount=${cachedCount}, forceSync=${forceSync})`,
-    );
-    await syncFromDropi({
+    syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
       id_configuracion,
       from,
       until,
-    });
+    }).catch((err) =>
+      console.error('[dashboard] Background sync error:', err?.message),
+    );
+
+    // Si no hay cache, decirle al frontend que estamos sincronizando
+    if (cachedCount === 0) {
+      return res.json({
+        isSuccess: true,
+        data: {
+          syncing: true,
+          message:
+            'Sincronizando órdenes por primera vez. Consulte de nuevo en unos segundos.',
+          totalOrders: 0,
+          totalMoney: 0,
+          statusStats: {},
+          kpis: {
+            totalOrders: 0,
+            entregadas: 0,
+            devoluciones: 0,
+            canceladas: 0,
+            totalMoney: 0,
+            ingresoEntregadas: 0,
+            tasaEntrega: 0,
+            tasaDevolucion: 0,
+            ticketPromedio: 0,
+            retiroAgencia: 0,
+          },
+          dailyChart: [],
+          topProducts: [],
+          retiroAgencia: [],
+          pagesFetched: 0,
+          isPartial: false,
+          partialMessage: null,
+          fromCache: false,
+        },
+      });
+    }
   } else {
-    // 3) Si hay cache, sync en background solo si hace +10 min
-    //    Pero NO esperamos — respondemos con cache al instante
+    // Hay cache — sync background solo si hace +10 min
     syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
@@ -1312,14 +1344,15 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     );
   }
 
-  // 4) Computar stats desde BD (instantáneo)
+  // 3) Computar stats desde BD (instantáneo)
   const stats = await computeStatsFromCache(id_configuracion, from, until);
 
   return res.json({
     isSuccess: true,
     data: {
       ...stats,
-      fromCache: cachedCount > 0,
+      syncing: false,
+      fromCache: true,
       pagesFetched: 0,
       isPartial: false,
       partialMessage: null,
