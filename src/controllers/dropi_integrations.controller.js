@@ -1161,6 +1161,10 @@ async function syncFromDropi({
   return { synced: true, count: allOrders.length };
 }
 
+
+// Lock global para profit sync — solo 1 a la vez por config
+if (!global._profitSyncLock) global._profitSyncLock = {};
+
 /**
  * Sync profit: consulta el detalle de cada orden para obtener dropshipper_amount_to_win
  * Se ejecuta en background después del sync principal.
@@ -1173,86 +1177,97 @@ async function syncProfitDetails({
   from,
   until,
 }) {
-  const pending = await DropiOrdersCache.findAll({
-    where: {
-      id_configuracion,
-      dropshipper_profit: null,
-      order_created_at: {
-        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+  // Si ya hay un profit sync corriendo para esta config, skip
+  if (global._profitSyncLock[id_configuracion]) {
+    console.log(`[profit] Already running for config ${id_configuracion}, skipping`);
+    return { calculated: 0, skipped: true, reason: 'locked' };
+  }
+
+  global._profitSyncLock[id_configuracion] = true;
+
+  try {
+    const pending = await DropiOrdersCache.findAll({
+      where: {
+        id_configuracion,
+        dropshipper_profit: null,
+        order_created_at: {
+          [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+        },
       },
-    },
-    attributes: ['id', 'dropi_order_id'],
-    limit: 50,
-    order: [['id', 'ASC']],
-  });
+      attributes: ['id', 'dropi_order_id'],
+      limit: 50,
+      order: [['id', 'ASC']],
+    });
 
-  if (!pending.length) {
-    console.log(`[profit] No pending orders for config ${id_configuracion}`);
-    return { calculated: 0, pending: 0 };
-  }
-
-  console.log(
-    `[profit] Calculating profit for ${pending.length} orders (config ${id_configuracion})`,
-  );
-
-  let calculated = 0;
-  let errors = 0;
-
-  for (let idx = 0; idx < pending.length; idx++) {
-    const order = pending[idx];
-    try {
-      const detail = await dropiService.getOrderDetail({
-        integrationKey,
-        orderId: order.dropi_order_id,
-        country_code,
-      });
-
-      const profit = detail?.objects?.dropshipper_amount_to_win;
-
-      // Si la primera orden no tiene profit → es proveedor, marcar TODAS como 0
-      if (idx === 0 && (profit === null || profit === undefined)) {
-        console.log(
-          `[profit] No dropshipper_amount_to_win found — likely proveedor account. Marking all as 0.`,
-        );
-        await DropiOrdersCache.update(
-          { dropshipper_profit: 0 },
-          {
-            where: {
-              id_configuracion,
-              dropshipper_profit: null,
-            },
-          },
-        );
-        return { calculated: 0, skipped: true, reason: 'proveedor' };
-      }
-
-      await DropiOrdersCache.update(
-        { dropshipper_profit: Number(profit || 0) },
-        { where: { id: order.id } },
-      );
-      calculated++;
-
-      await new Promise((r) => setTimeout(r, 2500));
-    } catch (err) {
-      const status = err?.response?.status || err?.statusCode || 500;
-      if (status === 429) {
-        console.log('[profit] Rate limited, stopping this batch');
-        break;
-      }
-      console.error(
-        `[profit] Error order ${order.dropi_order_id}: ${err?.message}`,
-      );
-      errors++;
-      if (errors >= 5) {
-        console.log('[profit] Too many errors, stopping batch');
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 3000));
+    if (!pending.length) {
+      console.log(`[profit] No pending orders for config ${id_configuracion}`);
+      return { calculated: 0, pending: 0 };
     }
-  }
 
-  console.log(`[profit] Done: ${calculated} calculated, ${errors} errors`);
-  return { calculated, errors, total: pending.length };
+    console.log(
+      `[profit] Calculating profit for ${pending.length} orders (config ${id_configuracion})`,
+    );
+
+    let calculated = 0;
+    let errors = 0;
+
+    for (let idx = 0; idx < pending.length; idx++) {
+      const order = pending[idx];
+      try {
+        const detail = await dropiService.getOrderDetail({
+          integrationKey,
+          orderId: order.dropi_order_id,
+          country_code,
+        });
+
+        const profit = detail?.objects?.dropshipper_amount_to_win;
+
+        if (idx === 0 && (profit === null || profit === undefined)) {
+          console.log(
+            `[profit] No dropshipper_amount_to_win found — likely proveedor account. Marking all as 0.`,
+          );
+          await DropiOrdersCache.update(
+            { dropshipper_profit: 0 },
+            {
+              where: {
+                id_configuracion,
+                dropshipper_profit: null,
+              },
+            },
+          );
+          return { calculated: 0, skipped: true, reason: 'proveedor' };
+        }
+
+        await DropiOrdersCache.update(
+          { dropshipper_profit: Number(profit || 0) },
+          { where: { id: order.id } },
+        );
+        calculated++;
+
+        await new Promise((r) => setTimeout(r, 2500));
+      } catch (err) {
+        const status = err?.response?.status || err?.statusCode || 500;
+        if (status === 429) {
+          console.log('[profit] Rate limited, stopping this batch');
+          break;
+        }
+        console.error(
+          `[profit] Error order ${order.dropi_order_id}: ${err?.message}`,
+        );
+        errors++;
+        if (errors >= 5) {
+          console.log('[profit] Too many errors, stopping batch');
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+
+    console.log(`[profit] Done: ${calculated} calculated, ${errors} errors`);
+    return { calculated, errors, total: pending.length };
+  } finally {
+    global._profitSyncLock[id_configuracion] = false;
+  }
 }
 
 /**
