@@ -22,6 +22,11 @@ const DropiOrdersCache = db.define(
     shipping_guide: DataTypes.STRING(300),
     product_names: DataTypes.TEXT,
     order_created_at: DataTypes.DATE,
+    dropshipper_profit: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: true,
+      defaultValue: null,
+    },
     order_data: DataTypes.TEXT('long'),
     synced_at: DataTypes.DATE,
   },

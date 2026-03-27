@@ -104,6 +104,22 @@ exports.listMyOrders = async ({ integrationKey, params, country_code }) => {
 };
 
 /**
+ * GET /orders/myorders/v2/:orderId  (Detalle de una orden)
+ */
+exports.getOrderDetail = async ({ integrationKey, orderId, country_code }) => {
+  try {
+    const dropiHttp = getDropiHttp(country_code);
+    const { data } = await dropiHttp.get(`/orders/myorders/${orderId}`, {
+      headers: dropiHeaders(integrationKey),
+      timeout: 15000,
+    });
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
+/**
  * POST /products/index
  */
 exports.listProductsIndex = async ({

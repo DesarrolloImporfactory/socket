@@ -1038,7 +1038,6 @@ async function syncFromDropi({
 }) {
   const syncKey = `${id_configuracion}_${from}_${until}`;
 
-  // ¿Cuándo fue el último sync para este rango?
   const lastSync = await DropiOrdersCache.findOne({
     where: {
       id_configuracion,
@@ -1053,7 +1052,6 @@ async function syncFromDropi({
   const lastSyncTime = lastSync?.synced_at || null;
   const now = new Date();
 
-  // Si el último sync fue hace menos de 10 minutos, skip
   if (lastSyncTime) {
     const diffMinutes = (now - new Date(lastSyncTime)) / (1000 * 60);
     if (diffMinutes < 10) {
@@ -1061,17 +1059,26 @@ async function syncFromDropi({
         `[cache] Skipping sync — last sync was ${diffMinutes.toFixed(1)}min ago`,
       );
       global._dropiSyncDone[syncKey] = { at: Date.now(), count: -1 };
+
+      // Aunque no re-sincronizamos órdenes, sí calcular profit pendiente
+      syncProfitDetails({
+        integrationKey,
+        country_code,
+        id_configuracion,
+        from,
+        until,
+      }).catch((err) =>
+        console.error('[profit] Background profit sync error:', err?.message),
+      );
+
       return { synced: false, reason: 'recent' };
     }
   }
 
-  // Primera vez: FECHA DE CREADO (consistente con lo que Dropi muestra nativo)
-  // Re-sync: FECHA DE CAMBIO DE ESTATUS (captura cambios de estado)
   const filterDateBy = lastSyncTime
     ? 'FECHA DE CAMBIO DE ESTATUS'
     : 'FECHA DE CREADO';
 
-  // FIX: Siempre usar las fechas originales del rango
   const syncFrom = from;
   const syncUntil = until;
 
@@ -1134,13 +1141,118 @@ async function syncFromDropi({
     await upsertOrdersToCache(id_configuracion, allOrders);
   }
 
-  // Marcar sync como completado (incluso si trajo 0 órdenes)
   global._dropiSyncDone[syncKey] = { at: Date.now(), count: allOrders.length };
 
   console.log(
     `[cache] Sync complete: ${allOrders.length} orders synced (key=${syncKey})`,
   );
+
+  // Lanzar sync de profit en background (no bloquear)
+  syncProfitDetails({
+    integrationKey,
+    country_code,
+    id_configuracion,
+    from,
+    until,
+  }).catch((err) =>
+    console.error('[profit] Background profit sync error:', err?.message),
+  );
+
   return { synced: true, count: allOrders.length };
+}
+
+/**
+ * Sync profit: consulta el detalle de cada orden para obtener dropshipper_amount_to_win
+ * Se ejecuta en background después del sync principal.
+ * Máximo 50 órdenes por ejecución para no explotar Dropi.
+ */
+async function syncProfitDetails({
+  integrationKey,
+  country_code,
+  id_configuracion,
+  from,
+  until,
+}) {
+  const pending = await DropiOrdersCache.findAll({
+    where: {
+      id_configuracion,
+      dropshipper_profit: null,
+      order_created_at: {
+        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+      },
+    },
+    attributes: ['id', 'dropi_order_id'],
+    limit: 50,
+    order: [['id', 'ASC']],
+  });
+
+  if (!pending.length) {
+    console.log(`[profit] No pending orders for config ${id_configuracion}`);
+    return { calculated: 0, pending: 0 };
+  }
+
+  console.log(
+    `[profit] Calculating profit for ${pending.length} orders (config ${id_configuracion})`,
+  );
+
+  let calculated = 0;
+  let errors = 0;
+
+  for (let idx = 0; idx < pending.length; idx++) {
+    const order = pending[idx];
+    try {
+      const detail = await dropiService.getOrderDetail({
+        integrationKey,
+        orderId: order.dropi_order_id,
+        country_code,
+      });
+
+      const profit = detail?.objects?.dropshipper_amount_to_win;
+
+      // Si la primera orden no tiene profit → es proveedor, marcar TODAS como 0
+      if (idx === 0 && (profit === null || profit === undefined)) {
+        console.log(
+          `[profit] No dropshipper_amount_to_win found — likely proveedor account. Marking all as 0.`,
+        );
+        await DropiOrdersCache.update(
+          { dropshipper_profit: 0 },
+          {
+            where: {
+              id_configuracion,
+              dropshipper_profit: null,
+            },
+          },
+        );
+        return { calculated: 0, skipped: true, reason: 'proveedor' };
+      }
+
+      await DropiOrdersCache.update(
+        { dropshipper_profit: Number(profit || 0) },
+        { where: { id: order.id } },
+      );
+      calculated++;
+
+      await new Promise((r) => setTimeout(r, 2500));
+    } catch (err) {
+      const status = err?.response?.status || err?.statusCode || 500;
+      if (status === 429) {
+        console.log('[profit] Rate limited, stopping this batch');
+        break;
+      }
+      console.error(
+        `[profit] Error order ${order.dropi_order_id}: ${err?.message}`,
+      );
+      errors++;
+      if (errors >= 5) {
+        console.log('[profit] Too many errors, stopping batch');
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  console.log(`[profit] Done: ${calculated} calculated, ${errors} errors`);
+  return { calculated, errors, total: pending.length };
 }
 
 /**
@@ -1167,6 +1279,7 @@ async function computeStatsFromCache(id_configuracion, from, until) {
       'shipping_guide',
       'product_names',
       'order_created_at',
+      'dropshipper_profit',
     ],
     raw: true,
   });
@@ -1177,13 +1290,34 @@ async function computeStatsFromCache(id_configuracion, from, until) {
   const retiroAgencia = [];
   const now = new Date();
 
+  // Profit tracking
+  let profitEntregadas = 0;
+  let profitPotencialTotal = 0;
+  let profitCalculated = 0;
+  let profitPending = 0;
+
   for (const o of rows) {
     const cat = o.classified_status || 'otro';
     const total = Number(o.total_order || 0);
+    const profit =
+      o.dropshipper_profit !== null && o.dropshipper_profit !== undefined
+        ? Number(o.dropshipper_profit)
+        : null;
 
     if (!statusStats[cat]) statusStats[cat] = { count: 0, money: 0 };
     statusStats[cat].count += 1;
     statusStats[cat].money += total;
+
+    // Profit acumulado
+    if (profit !== null) {
+      profitCalculated++;
+      profitPotencialTotal += profit;
+      if (cat === 'entregada') {
+        profitEntregadas += profit;
+      }
+    } else {
+      profitPending++;
+    }
 
     const day = o.order_created_at
       ? new Date(o.order_created_at).toISOString().slice(0, 10)
@@ -1242,6 +1376,10 @@ async function computeStatsFromCache(id_configuracion, from, until) {
 
   retiroAgencia.sort((a, b) => b.days - a.days);
 
+  // Profit calculations
+  const avgProfitPerOrder =
+    profitCalculated > 0 ? profitPotencialTotal / profitCalculated : 0;
+
   return {
     totalOrders,
     totalMoney,
@@ -1258,6 +1396,24 @@ async function computeStatsFromCache(id_configuracion, from, until) {
       ticketPromedio:
         entregadas > 0 ? (statusStats.entregada?.money || 0) / entregadas : 0,
       retiroAgencia: statusStats.retiro_agencia?.count || 0,
+    },
+    profitData: {
+      profitEntregadas: Math.round(profitEntregadas * 100) / 100,
+      profitPotencialTotal: Math.round(profitPotencialTotal * 100) / 100,
+      profitCalculated,
+      profitPending,
+      totalOrders,
+      entregadas,
+      entregables:
+        totalOrders -
+        (statusStats.cancelada?.count || 0) -
+        (statusStats.devolucion?.count || 0),
+      avgProfitPerOrder: Math.round(avgProfitPerOrder * 100) / 100,
+      isComplete: profitPending === 0,
+      pctCalculated:
+        totalOrders > 0
+          ? Math.round((profitCalculated / totalOrders) * 100)
+          : 0,
     },
     dailyChart: Object.values(dailyMap).sort((a, b) =>
       a.day.localeCompare(b.day),
