@@ -879,6 +879,9 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
 // Tracking en memoria de syncs completados
 if (!global._dropiSyncDone) global._dropiSyncDone = {};
 
+// Sync por configuracion/ una a la vez por usuario
+if (!global._dropiSyncLock) global._dropiSyncLock = {};
+
 // classify — mismo de antes, pero lo sacamos como helper reutilizable
 function classifyDropiStatus(status) {
   const s = String(status || '')
@@ -1038,129 +1041,143 @@ async function syncFromDropi({
 }) {
   const syncKey = `${id_configuracion}_${from}_${until}`;
 
-  const lastSync = await DropiOrdersCache.findOne({
-    where: {
-      id_configuracion,
-      order_created_at: {
-        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
-      },
-    },
-    order: [['synced_at', 'DESC']],
-    attributes: ['synced_at'],
-  });
+  if (global._dropiSyncLock[id_configuracion]) {
+    console.log(
+      `[cache] Sync already running for config ${id_configuracion}, skipping`,
+    );
+    return { synced: false, reason: 'locked' };
+  }
+  global._dropiSyncLock[id_configuracion] = true;
 
-  const lastSyncTime = lastSync?.synced_at || null;
-  const now = new Date();
-
-  if (lastSyncTime) {
-    const diffMinutes = (now - new Date(lastSyncTime)) / (1000 * 60);
-    if (diffMinutes < 10) {
-      console.log(
-        `[cache] Skipping sync — last sync was ${diffMinutes.toFixed(1)}min ago`,
-      );
-      global._dropiSyncDone[syncKey] = { at: Date.now(), count: -1 };
-
-      // Aunque no re-sincronizamos órdenes, sí calcular profit pendiente
-      syncProfitDetails({
-        integrationKey,
-        country_code,
+  try {
+    const lastSync = await DropiOrdersCache.findOne({
+      where: {
         id_configuracion,
-        from,
-        until,
-      }).catch((err) =>
-        console.error('[profit] Background profit sync error:', err?.message),
-      );
-
-      return { synced: false, reason: 'recent' };
-    }
-  }
-
-  const filterDateBy = lastSyncTime
-    ? 'FECHA DE CAMBIO DE ESTATUS'
-    : 'FECHA DE CREADO';
-
-  const syncFrom = from;
-  const syncUntil = until;
-
-  let allOrders = [];
-  let start = 0;
-  let keepGoing = true;
-  const PAGE_SIZE = 100;
-  let currentDelay = 2500;
-  let consecutiveRetries = 0;
-
-  console.log(
-    `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${syncUntil} (config=${id_configuracion})`,
-  );
-
-  while (keepGoing) {
-    try {
-      const dropiResponse = await dropiService.listMyOrders({
-        integrationKey,
-        params: {
-          result_number: PAGE_SIZE,
-          start,
-          filter_date_by: filterDateBy,
-          from: syncFrom,
-          until: syncUntil,
+        order_created_at: {
+          [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
         },
-        country_code,
-      });
+      },
+      order: [['synced_at', 'DESC']],
+      attributes: ['synced_at'],
+    });
 
-      const objects = dropiResponse?.objects || [];
-      allOrders = allOrders.concat(objects);
+    const lastSyncTime = lastSync?.synced_at || null;
+    const now = new Date();
 
-      keepGoing = objects.length >= PAGE_SIZE;
-      start += PAGE_SIZE;
-
-      if (allOrders.length >= 5000) break;
-      currentDelay = 2500;
-      consecutiveRetries = 0;
-      if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
-    } catch (err) {
-      const status = err?.statusCode || err?.status || 500;
-      if (status === 429) {
-        consecutiveRetries++;
-        if (consecutiveRetries >= 5) {
-          keepGoing = false;
-          break;
-        }
-        currentDelay = Math.min(currentDelay * 2, 15000);
+    if (lastSyncTime) {
+      const diffMinutes = (now - new Date(lastSyncTime)) / (1000 * 60);
+      if (diffMinutes < 10) {
         console.log(
-          `[cache] 429 Rate limited (retry ${consecutiveRetries}/5). Waiting ${currentDelay}ms...`,
+          `[cache] Skipping sync — last sync was ${diffMinutes.toFixed(1)}min ago`,
         );
-        await new Promise((r) => setTimeout(r, currentDelay));
-        continue;
+        global._dropiSyncDone[syncKey] = { at: Date.now(), count: -1 };
+
+        // Aunque no re-sincronizamos órdenes, sí calcular profit pendiente
+        syncProfitDetails({
+          integrationKey,
+          country_code,
+          id_configuracion,
+          from,
+          until,
+        }).catch((err) =>
+          console.error('[profit] Background profit sync error:', err?.message),
+        );
+
+        return { synced: false, reason: 'recent' };
       }
-      console.error(`[cache] Dropi error at start=${start}: ${err?.message}`);
-      keepGoing = false;
     }
+
+    const filterDateBy = lastSyncTime
+      ? 'FECHA DE CAMBIO DE ESTATUS'
+      : 'FECHA DE CREADO';
+
+    const syncFrom = from;
+    const syncUntil = until;
+
+    let allOrders = [];
+    let start = 0;
+    let keepGoing = true;
+    const PAGE_SIZE = 100;
+    let currentDelay = 2500;
+    let consecutiveRetries = 0;
+
+    console.log(
+      `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${syncUntil} (config=${id_configuracion})`,
+    );
+
+    while (keepGoing) {
+      try {
+        const dropiResponse = await dropiService.listMyOrders({
+          integrationKey,
+          params: {
+            result_number: PAGE_SIZE,
+            start,
+            filter_date_by: filterDateBy,
+            from: syncFrom,
+            until: syncUntil,
+          },
+          country_code,
+        });
+
+        const objects = dropiResponse?.objects || [];
+        allOrders = allOrders.concat(objects);
+
+        keepGoing = objects.length >= PAGE_SIZE;
+        start += PAGE_SIZE;
+
+        if (allOrders.length >= 5000) break;
+        currentDelay = 2500;
+        consecutiveRetries = 0;
+        if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
+      } catch (err) {
+        const status = err?.statusCode || err?.status || 500;
+        if (status === 429) {
+          consecutiveRetries++;
+          if (consecutiveRetries >= 5) {
+            keepGoing = false;
+            break;
+          }
+          currentDelay = Math.min(currentDelay * 2, 15000);
+          console.log(
+            `[cache] 429 Rate limited (retry ${consecutiveRetries}/5). Waiting ${currentDelay}ms...`,
+          );
+          await new Promise((r) => setTimeout(r, currentDelay));
+          continue;
+        }
+        console.error(`[cache] Dropi error at start=${start}: ${err?.message}`);
+        keepGoing = false;
+      }
+    }
+
+    if (allOrders.length > 0) {
+      await upsertOrdersToCache(id_configuracion, allOrders);
+    }
+
+    global._dropiSyncDone[syncKey] = {
+      at: Date.now(),
+      count: allOrders.length,
+    };
+
+    console.log(
+      `[cache] Sync complete: ${allOrders.length} orders synced (key=${syncKey})`,
+    );
+
+    // Lanzar sync de profit en background (no bloquear)
+    syncProfitDetails({
+      integrationKey,
+      country_code,
+      id_configuracion,
+      from,
+      until,
+    }).catch((err) =>
+      console.error('[profit] Background profit sync error:', err?.message),
+    );
+
+    return { synced: true, count: allOrders.length };
+  } finally {
+    global._dropiSyncLock[id_configuracion] = false;
   }
-
-  if (allOrders.length > 0) {
-    await upsertOrdersToCache(id_configuracion, allOrders);
-  }
-
-  global._dropiSyncDone[syncKey] = { at: Date.now(), count: allOrders.length };
-
-  console.log(
-    `[cache] Sync complete: ${allOrders.length} orders synced (key=${syncKey})`,
-  );
-
-  // Lanzar sync de profit en background (no bloquear)
-  syncProfitDetails({
-    integrationKey,
-    country_code,
-    id_configuracion,
-    from,
-    until,
-  }).catch((err) =>
-    console.error('[profit] Background profit sync error:', err?.message),
-  );
-
-  return { synced: true, count: allOrders.length };
 }
-
 
 // Lock global para profit sync — solo 1 a la vez por config
 if (!global._profitSyncLock) global._profitSyncLock = {};
@@ -1179,7 +1196,9 @@ async function syncProfitDetails({
 }) {
   // Si ya hay un profit sync corriendo para esta config, skip
   if (global._profitSyncLock[id_configuracion]) {
-    console.log(`[profit] Already running for config ${id_configuracion}, skipping`);
+    console.log(
+      `[profit] Already running for config ${id_configuracion}, skipping`,
+    );
     return { calculated: 0, skipped: true, reason: 'locked' };
   }
 
