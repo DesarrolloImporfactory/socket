@@ -1,14 +1,21 @@
 const cron = require('node-cron');
 const axios = require('axios');
-const FormData = require('form-data'); // ← ESTE ES EL FIX — requiere el paquete npm
+const FormData = require('form-data');
 const { db } = require('../database/config');
 const {
   sendWhatsappMessageTemplateScheduled,
   obtenerTextoPlantilla,
 } = require('../services/whatsapp.service');
-const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
+const {
+  getConfigFromDB,
+  onlyDigits,
+} = require('../utils/whatsappTemplate.helpers');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
+const MensajesClientes = require('../models/mensaje_cliente.model');
 
+/* ================================================================
+   uploadMediaToMeta
+   ================================================================ */
 async function uploadMediaToMeta(
   mediaUrl,
   headerFormat,
@@ -26,25 +33,16 @@ async function uploadMediaToMeta(
   const mimeType = MIME[fmt] || 'application/octet-stream';
   const ext = EXT[fmt] || 'bin';
 
-  console.log(`⬆️ [uploadMedia] Iniciando descarga de: ${mediaUrl}`);
-  console.log(`⬆️ [uploadMedia] fmt=${fmt} mimeType=${mimeType}`);
+  console.log(`⬆️ [uploadMedia] Descargando: ${mediaUrl} fmt=${fmt}`);
 
-  // 1) Descargar el archivo
-  let download;
-  try {
-    download = await axios.get(mediaUrl, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-    console.log(
-      `⬆️ [uploadMedia] Descarga OK — tamaño: ${download.data.byteLength} bytes, status: ${download.status}`,
-    );
-  } catch (dlErr) {
-    console.error(`❌ [uploadMedia] Error descargando archivo:`, dlErr.message);
-    throw dlErr;
-  }
+  const download = await axios.get(mediaUrl, {
+    responseType: 'arraybuffer',
+    timeout: 30000,
+  });
+  console.log(
+    `⬆️ [uploadMedia] Descarga OK — ${download.data.byteLength} bytes`,
+  );
 
-  // 2) Construir form-data (paquete npm, no global browser)
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('type', mimeType);
@@ -53,30 +51,20 @@ async function uploadMediaToMeta(
     contentType: mimeType,
   });
 
-  const uploadHeaders = {
-    Authorization: `Bearer ${accessToken}`,
-    ...form.getHeaders(), // ← solo funciona con el paquete npm
-  };
-
-  console.log(
-    `⬆️ [uploadMedia] Subiendo a Meta phone_id=${business_phone_id}...`,
+  const uploadRes = await axios.post(
+    `https://graph.facebook.com/v22.0/${business_phone_id}/media`,
+    form,
+    {
+      headers: { Authorization: `Bearer ${accessToken}`, ...form.getHeaders() },
+      timeout: 60000,
+      validateStatus: () => true,
+    },
   );
 
-  let uploadRes;
-  try {
-    uploadRes = await axios.post(
-      `https://graph.facebook.com/v22.0/${business_phone_id}/media`,
-      form,
-      { headers: uploadHeaders, timeout: 60000, validateStatus: () => true },
-    );
-    console.log(
-      `⬆️ [uploadMedia] Respuesta Meta upload — status: ${uploadRes.status}`,
-      JSON.stringify(uploadRes.data),
-    );
-  } catch (upErr) {
-    console.error(`❌ [uploadMedia] Error en POST a Meta:`, upErr.message);
-    throw upErr;
-  }
+  console.log(
+    `⬆️ [uploadMedia] Respuesta Meta upload — status: ${uploadRes.status}`,
+    JSON.stringify(uploadRes.data),
+  );
 
   if (!uploadRes.data?.id) {
     throw new Error(
@@ -84,11 +72,13 @@ async function uploadMediaToMeta(
     );
   }
 
-  console.log(`✅ [uploadMedia] media_id obtenido: ${uploadRes.data.id}`);
+  console.log(`✅ [uploadMedia] media_id: ${uploadRes.data.id}`);
   return uploadRes.data.id;
 }
 
-// withLock igual
+/* ================================================================
+   withLock
+   ================================================================ */
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
@@ -113,6 +103,9 @@ async function withLock(lockName, fn) {
   }
 }
 
+/* ================================================================
+   CRON
+   ================================================================ */
 let isRunning = false;
 
 cron.schedule('*/1 * * * *', async () => {
@@ -132,12 +125,13 @@ cron.schedule('*/1 * * * *', async () => {
       for (const record of pendientes) {
         try {
           console.log(
-            `\n🔄 [remarketing] Procesando id=${record.id} tel=${record.telefono} template="${record.nombre_template}"`,
+            `\n🔄 [remarketing] id=${record.id} tel=${record.telefono} template="${record.nombre_template}"`,
           );
           console.log(
             `🔄 [remarketing] header_format="${record.header_format}" header_media_url="${record.header_media_url}"`,
           );
 
+          // 1) Verificar cliente
           const cliente = await ClientesChatCenter.findByPk(
             record.id_cliente_chat_center,
           );
@@ -148,9 +142,10 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
+          // 2) Si el estado cambió, cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
             console.log(
-              `🚫 [remarketing] Estado cambió (${record.estado_contacto_origen} → ${cliente.estado_contacto}), cancelando id=${record.id}`,
+              `🚫 [remarketing] Estado cambió, cancelando id=${record.id}`,
             );
             await db.query(
               `UPDATE remarketing_pendientes SET cancelado = 1 WHERE id = ?`,
@@ -165,23 +160,23 @@ cron.schedule('*/1 * * * *', async () => {
           const esMediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
             headerFormatNorm,
           );
-          console.log(
-            `🔄 [remarketing] esMediaHeader=${esMediaHeader} headerFormatNorm="${headerFormatNorm}"`,
-          );
+          console.log(`🔄 [remarketing] esMediaHeader=${esMediaHeader}`);
 
+          // ══════════════════════════════════════════════════════
+          // CASO A: Template con media (IMAGE / VIDEO / DOCUMENT)
+          // ══════════════════════════════════════════════════════
           if (esMediaHeader) {
             const cfg = await getConfigFromDB(Number(record.id_configuracion));
             if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID || !cfg?.WABA_ID) {
               throw new Error('Config incompleta para envío de media');
             }
 
-            // URL fresca desde Meta como fallback
+            // Texto + header fresco desde Meta (con cache 30 min)
             const tplData = await obtenerTextoPlantilla(
               record.nombre_template,
               cfg.ACCESS_TOKEN,
               cfg.WABA_ID,
             );
-
             console.log(
               `🔄 [remarketing] tplData.header =`,
               JSON.stringify(tplData?.header),
@@ -195,24 +190,24 @@ cron.schedule('*/1 * * * *', async () => {
 
             if (!mediaUrlFuente) {
               throw new Error(
-                `No hay URL de media disponible para "${record.nombre_template}"`,
+                `No hay URL de media para "${record.nombre_template}"`,
               );
             }
 
-            // Upload → media_id (evita 403)
+            // Upload → media_id fresco (evita 403)
             const mediaId = await uploadMediaToMeta(
               mediaUrlFuente,
               headerFormatNorm,
               cfg.ACCESS_TOKEN,
               cfg.PHONE_NUMBER_ID,
             );
-
-            const mediaType = headerFormatNorm.toLowerCase();
+            const mediaType = headerFormatNorm.toLowerCase(); // 'image' | 'video' | 'document'
             const mediaObj = { id: mediaId };
             if (mediaType === 'document' && record.header_media_name) {
               mediaObj.filename = record.header_media_name;
             }
 
+            // Construir components
             const components = [
               {
                 type: 'header',
@@ -233,21 +228,23 @@ cron.schedule('*/1 * * * *', async () => {
               });
             }
 
+            const LANGUAGE_CODE =
+              record.language_code || tplData?.language || 'es';
+            const telefonoLimpio = onlyDigits(record.telefono || '');
+
             const payload = {
               messaging_product: 'whatsapp',
-              to: record.telefono.replace(/\D/g, ''),
+              to: telefonoLimpio,
               type: 'template',
               template: {
                 name: record.nombre_template,
-                language: {
-                  code: record.language_code || tplData?.language || 'es',
-                },
+                language: { code: LANGUAGE_CODE },
                 components,
               },
             };
 
             console.log(
-              `📤 [remarketing] Payload a Meta:`,
+              `📤 [remarketing] Payload:`,
               JSON.stringify(payload, null, 2),
             );
 
@@ -265,7 +262,7 @@ cron.schedule('*/1 * * * *', async () => {
             );
 
             console.log(
-              `📤 [remarketing] Respuesta Meta send — status: ${sendRes.status}`,
+              `📤 [remarketing] Respuesta Meta — status: ${sendRes.status}`,
               JSON.stringify(sendRes.data),
             );
 
@@ -281,9 +278,93 @@ cron.schedule('*/1 * * * *', async () => {
               err.meta_error = sendRes.data?.error || sendRes.data;
               throw err;
             }
+
+            // ── Guardar en MensajesClientes (misma lógica que sendWhatsappMessageTemplateScheduled) ──
+            const wamid = sendRes.data?.messages?.[0]?.id || null;
+            const uid_whatsapp = telefonoLimpio;
+
+            // Cliente destino
+            const [clienteRow] = await db.query(
+              `SELECT id FROM clientes_chat_center
+               WHERE REPLACE(celular_cliente, ' ', '') = ?
+                 AND id_configuracion = ?
+               LIMIT 1`,
+              {
+                replacements: [telefonoLimpio, record.id_configuracion],
+                type: db.QueryTypes.SELECT,
+              },
+            );
+
+            let clienteId = clienteRow?.id || null;
+            if (!clienteId) {
+              const nuevo = await ClientesChatCenter.create({
+                id_configuracion: record.id_configuracion,
+                uid_cliente: cfg.PHONE_NUMBER_ID,
+                nombre_cliente: '',
+                apellido_cliente: '',
+                celular_cliente: telefonoLimpio,
+              });
+              clienteId = nuevo.id;
+            }
+
+            // Cliente configuración
+            let id_cliente_configuracion = null;
+            const telCfg = record.telefono_configuracion
+              ? onlyDigits(record.telefono_configuracion)
+              : onlyDigits(cfg.telefono || '');
+
+            if (telCfg) {
+              const [cfgCliente] = await db.query(
+                `SELECT id FROM clientes_chat_center
+                 WHERE REPLACE(celular_cliente, ' ', '') = ?
+                   AND id_configuracion = ?
+                 LIMIT 1`,
+                {
+                  replacements: [telCfg, record.id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              if (cfgCliente?.id) id_cliente_configuracion = cfgCliente.id;
+            }
+
+            const ruta_archivo = {
+              body_parameters: bodyParams,
+              header: {
+                format: headerFormatNorm,
+                parameters: null,
+                media_url: mediaUrlFuente,
+                media_name: record.header_media_name || null,
+              },
+              source: 'cron_remarketing',
+            };
+
+            await MensajesClientes.create({
+              id_configuracion: record.id_configuracion,
+              id_cliente: id_cliente_configuracion || clienteId,
+              mid_mensaje: cfg.PHONE_NUMBER_ID,
+              tipo_mensaje: 'template',
+              rol_mensaje: 1,
+              celular_recibe: clienteId,
+              responsable: 'cron_remarketing_estado',
+              texto_mensaje: tplData?.text || record.nombre_template,
+              ruta_archivo: JSON.stringify(ruta_archivo),
+              visto: 1,
+              uid_whatsapp,
+              id_wamid_mensaje: wamid,
+              template_name: record.nombre_template,
+              language_code: LANGUAGE_CODE,
+            });
+
+            console.log(
+              `💾 [remarketing] MensajesClientes guardado — wamid=${wamid} clienteId=${clienteId}`,
+            );
+
+            // ══════════════════════════════════════════════════════
+            // CASO B: Template de texto — usa la función existente
+            // ══════════════════════════════════════════════════════
           } else {
             console.log(
-              `📤 [remarketing] Enviando template de texto con sendWhatsappMessageTemplateScheduled`,
+              `📤 [remarketing] Template texto → sendWhatsappMessageTemplateScheduled`,
             );
             await sendWhatsappMessageTemplateScheduled({
               telefono: record.telefono,
@@ -300,18 +381,20 @@ cron.schedule('*/1 * * * *', async () => {
             });
           }
 
+          // 3) Mover columna
           const estadoDestino = record.estado_destino || 'seguimiento';
           await ClientesChatCenter.update(
             { estado_contacto: estadoDestino },
             { where: { id: record.id_cliente_chat_center } },
           );
 
+          // 4) Marcar como enviado
           await db.query(
             `UPDATE remarketing_pendientes SET enviado = 1 WHERE id = ?`,
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
-          console.log(`✅ [remarketing] id=${record.id} marcado como enviado`);
+          console.log(`✅ [remarketing] id=${record.id} enviado y marcado OK`);
         } catch (err) {
           console.error(`❌ [remarketing] Error id=${record.id}:`, err.message);
           if (err?.meta_status || err?.meta_error) {
