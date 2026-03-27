@@ -5,7 +5,8 @@ const DropiIntegrations = require('../models/dropi_integrations.model');
 const Configuraciones = require('../models/configuraciones.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
-const { Op } = require('sequelize');
+const DropiOrdersCache = require('../models/dropi_orders_cache.model');
+const { Op, fn, col, literal } = require('sequelize');
 const { db } = require('../database/config');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
@@ -875,198 +876,284 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, data });
 });
 
-exports.getDashboardStats = catchAsync(async (req, res, next) => {
-  const id_configuracion = toInt(req.body?.id_configuracion);
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
+// classify — mismo de antes, pero lo sacamos como helper reutilizable
+function classifyDropiStatus(status) {
+  const s = String(status || '')
+    .trim()
+    .toUpperCase();
 
-  const integration = await getActiveIntegration(id_configuracion);
-  if (!integration)
-    return next(new AppError('No existe una integración Dropi activa', 404));
+  if (
+    s === 'ENTREGADO' ||
+    s.includes('ENTREGADA') ||
+    s === 'REPORTADO ENTREGADO' ||
+    s === 'ENTREGA DIGITALIZADA' ||
+    s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
+  )
+    return 'entregada';
+  if (
+    s.includes('DEVOLUCION') ||
+    s.includes('DEVOLUCIÓN') ||
+    s === 'DEVUELTO' ||
+    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
+    s === 'DESAPLICADO'
+  )
+    return 'devolucion';
+  if (
+    s === 'CANCELADO' ||
+    s.includes('CANCELADA') ||
+    s === 'ANULADA' ||
+    s === 'RECHAZADO' ||
+    s === 'GUIA_ANULADA'
+  )
+    return 'cancelada';
+  if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
+  if (
+    s.includes('RETIRO EN AGENCIA') ||
+    s.includes('ENVÍO LISTO EN OFICINA') ||
+    s === 'ENVIO LISTO EN OFICINA'
+  )
+    return 'retiro_agencia';
+  if (
+    s.includes('NOVEDAD') ||
+    s.includes('SOLUCION') ||
+    s === 'CON NOVEDAD' ||
+    s === 'DESTINATARIO FALLECIDO' ||
+    s.includes('DESTINATARIO RE-PROGRAMA') ||
+    s.includes('DESTINATARIO SOLICITA') ||
+    s.includes('FUERA DE COBERTURA') ||
+    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
+    s.includes('PROBLEMAS DE ORDEN') ||
+    s.includes('VISITA A DESTINATARIO') ||
+    s.includes('ACCIDENTE EN CARRETERA') ||
+    s.includes('EN ESPERA DE FIRMA')
+  )
+    return 'novedad';
+  if (
+    s.includes('INDEMNIZ') ||
+    s.includes('SINIESTRO') ||
+    s.includes('INCAUTADO') ||
+    s.includes('HURTAD') ||
+    s.includes('AVERÍA')
+  )
+    return 'indemnizada';
+  if (
+    s === 'GUIA_GENERADA' ||
+    s.includes('TRÁNSITO') ||
+    s.includes('TRANSITO') ||
+    s.includes('EN RUTA') ||
+    s.includes('EN CAMINO') ||
+    s.includes('EN REPARTO') ||
+    s.includes('BODEGA') ||
+    s.includes('EMBARCANDO') ||
+    s.includes('RECOLECT') ||
+    s.includes('RECOGIDO') ||
+    s.includes('ASIGNADO') ||
+    s.includes('PICKING') ||
+    s.includes('PACKING') ||
+    s.includes('GENERADO') ||
+    s.includes('GENERADA') ||
+    s.includes('ZONA DE ENTREGA') ||
+    s.includes('PREPARADO') ||
+    s.includes('INVENTARIO') ||
+    s.includes('INGRES') ||
+    s.includes('RECIBIDO') ||
+    s === 'POR RECOLECTAR' ||
+    s === 'PROCESAMIENTO' ||
+    s.includes('EN DISTRIBUCION')
+  )
+    return 'en_transito';
+  return 'otro';
+}
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
-  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+/**
+ * Upsert órdenes de Dropi en cache local
+ */
+async function upsertOrdersToCache(id_configuracion, orders) {
+  if (!orders.length) return;
 
-  const from = strOrNull(req.body?.from);
-  const until = strOrNull(req.body?.until);
-  if (!from || !until)
-    return next(new AppError('from y until son requeridos', 400));
+  const bulkData = orders.map((o) => {
+    const details = Array.isArray(o.orderdetails) ? o.orderdetails : [];
+    const productNames = details.map((d) => d?.product?.name).filter(Boolean);
+
+    return {
+      dropi_order_id: o.id,
+      id_configuracion,
+      status: o.status || null,
+      classified_status: classifyDropiStatus(o.status),
+      total_order: Number(o.total_order || 0),
+      name: o.name || null,
+      surname: o.surname || null,
+      phone: o.phone || null,
+      city: o.city || null,
+      shipping_company: o.shipping_company || null,
+      shipping_guide: o.shipping_guide || null,
+      product_names: JSON.stringify(productNames),
+      order_created_at: o.created_at || null,
+      order_data: JSON.stringify(o),
+      synced_at: new Date(),
+    };
+  });
+
+  // Upsert en lotes de 200
+  for (let i = 0; i < bulkData.length; i += 200) {
+    const batch = bulkData.slice(i, i + 200);
+    await DropiOrdersCache.bulkCreate(batch, {
+      updateOnDuplicate: [
+        'status',
+        'classified_status',
+        'total_order',
+        'name',
+        'surname',
+        'phone',
+        'city',
+        'shipping_company',
+        'shipping_guide',
+        'product_names',
+        'order_data',
+        'synced_at',
+      ],
+    });
+  }
+
+  console.log(
+    `[cache] Upserted ${bulkData.length} orders for config ${id_configuracion}`,
+  );
+}
+
+/**
+ * Sync: traer de Dropi las órdenes que cambiaron desde el último sync
+ */
+async function syncFromDropi({
+  integrationKey,
+  country_code,
+  id_configuracion,
+  from,
+  until,
+}) {
+  // ¿Cuándo fue el último sync para este rango?
+  const lastSync = await DropiOrdersCache.findOne({
+    where: {
+      id_configuracion,
+      order_created_at: {
+        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+      },
+    },
+    order: [['synced_at', 'DESC']],
+    attributes: ['synced_at'],
+  });
+
+  const lastSyncTime = lastSync?.synced_at || null;
+  const now = new Date();
+
+  // Si el último sync fue hace menos de 10 minutos, no re-sincronizar
+  if (lastSyncTime) {
+    const diffMinutes = (now - new Date(lastSyncTime)) / (1000 * 60);
+    if (diffMinutes < 10) {
+      console.log(
+        `[cache] Skipping sync — last sync was ${diffMinutes.toFixed(1)}min ago`,
+      );
+      return { synced: false, reason: 'recent' };
+    }
+  }
+
+  // Sincronizar usando FECHA DE CAMBIO DE ESTATUS para capturar cambios
+  const filterDateBy = lastSyncTime
+    ? 'FECHA DE CAMBIO DE ESTATUS'
+    : 'FECHA DE CREADO';
+
+  const syncFrom = lastSyncTime
+    ? new Date(lastSyncTime).toISOString().slice(0, 10)
+    : from;
 
   let allOrders = [];
   let start = 0;
   let keepGoing = true;
   const PAGE_SIZE = 100;
-  let pagesCount = 0;
-  let currentDelay = 2500; // 2.5s base — más conservador
+  let currentDelay = 2500;
   let consecutiveRetries = 0;
-  const MAX_RETRIES_PER_PAGE = 5;
 
-  console.log(`[dashboard] Starting fetch: from=${from} until=${until}`);
+  console.log(
+    `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${until}`,
+  );
 
   while (keepGoing) {
     try {
-      console.log(
-        `[dashboard] Fetching page ${pagesCount + 1} (start=${start}, delay=${currentDelay}ms, orders=${allOrders.length})`,
-      );
-
       const dropiResponse = await dropiService.listMyOrders({
         integrationKey,
         params: {
           result_number: PAGE_SIZE,
           start,
-          filter_date_by: 'FECHA DE CREADO',
-          from,
+          filter_date_by: filterDateBy,
+          from: syncFrom,
           until,
         },
-        country_code: integration.country_code,
+        country_code,
       });
 
       const objects = dropiResponse?.objects || [];
       allOrders = allOrders.concat(objects);
-      pagesCount++;
-      consecutiveRetries = 0; // reset on success
-
-      console.log(
-        `[dashboard] Page ${pagesCount} OK: ${objects.length} orders (total: ${allOrders.length})`,
-      );
 
       keepGoing = objects.length >= PAGE_SIZE;
       start += PAGE_SIZE;
 
-      if (allOrders.length >= 1500) {
-        console.log('[dashboard] Chunk limit 1500 reached, returning.');
-        break;
-      }
-
-      // Delay entre páginas — reset a base después de éxito
+      if (allOrders.length >= 5000) break;
       currentDelay = 2500;
       if (keepGoing) await new Promise((r) => setTimeout(r, currentDelay));
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
-
       if (status === 429) {
         consecutiveRetries++;
-
-        if (consecutiveRetries >= MAX_RETRIES_PER_PAGE) {
-          console.log(
-            `[dashboard] Max retries (${MAX_RETRIES_PER_PAGE}) reached at start=${start}. Returning partial data.`,
-          );
+        if (consecutiveRetries >= 5) {
           keepGoing = false;
           break;
         }
-
-        currentDelay = Math.min(currentDelay * 2, 15000); // max 15s
+        currentDelay = Math.min(currentDelay * 2, 15000);
         console.log(
-          `[dashboard] 429 Rate limited (retry ${consecutiveRetries}/${MAX_RETRIES_PER_PAGE}). Waiting ${currentDelay}ms...`,
+          `[cache] 429 Rate limited (retry ${consecutiveRetries}/5). Waiting ${currentDelay}ms...`,
         );
         await new Promise((r) => setTimeout(r, currentDelay));
-        continue; // retry same page
+        continue;
       }
-
-      console.error(`[dashboard] Error at start=${start}: ${err?.message}`);
+      console.error(`[cache] Dropi error at start=${start}: ${err?.message}`);
       keepGoing = false;
     }
   }
 
-  console.log(
-    `[dashboard] Fetch complete: ${allOrders.length} orders in ${pagesCount} pages`,
-  );
-
-  function classify(status) {
-    const s = String(status || '')
-      .trim()
-      .toUpperCase();
-
-    if (
-      s === 'ENTREGADO' ||
-      s.includes('ENTREGADA') ||
-      s === 'REPORTADO ENTREGADO' ||
-      s === 'ENTREGA DIGITALIZADA' ||
-      s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
-    )
-      return 'entregada';
-
-    if (
-      s.includes('DEVOLUCION') ||
-      s.includes('DEVOLUCIÓN') ||
-      s === 'DEVUELTO' ||
-      s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
-      s === 'DESAPLICADO'
-    )
-      return 'devolucion';
-
-    if (
-      s === 'CANCELADO' ||
-      s.includes('CANCELADA') ||
-      s === 'ANULADA' ||
-      s === 'RECHAZADO' ||
-      s === 'GUIA_ANULADA'
-    )
-      return 'cancelada';
-
-    if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
-
-    if (
-      s.includes('RETIRO EN AGENCIA') ||
-      s.includes('ENVÍO LISTO EN OFICINA') ||
-      s === 'ENVIO LISTO EN OFICINA'
-    )
-      return 'retiro_agencia';
-
-    if (
-      s.includes('NOVEDAD') ||
-      s.includes('SOLUCION') ||
-      s === 'CON NOVEDAD' ||
-      s === 'DESTINATARIO FALLECIDO' ||
-      s.includes('DESTINATARIO RE-PROGRAMA') ||
-      s.includes('DESTINATARIO SOLICITA') ||
-      s.includes('FUERA DE COBERTURA') ||
-      s.includes('OBSTRUCCIÓN EN LA VÍA') ||
-      s.includes('PROBLEMAS DE ORDEN') ||
-      s.includes('VISITA A DESTINATARIO') ||
-      s.includes('ACCIDENTE EN CARRETERA') ||
-      s.includes('EN ESPERA DE FIRMA')
-    )
-      return 'novedad';
-
-    if (
-      s.includes('INDEMNIZ') ||
-      s.includes('SINIESTRO') ||
-      s.includes('INCAUTADO') ||
-      s.includes('HURTAD') ||
-      s.includes('AVERÍA')
-    )
-      return 'indemnizada';
-
-    if (
-      s === 'GUIA_GENERADA' ||
-      s.includes('TRÁNSITO') ||
-      s.includes('TRANSITO') ||
-      s.includes('EN RUTA') ||
-      s.includes('EN CAMINO') ||
-      s.includes('EN REPARTO') ||
-      s.includes('BODEGA') ||
-      s.includes('EMBARCANDO') ||
-      s.includes('RECOLECT') ||
-      s.includes('RECOGIDO') ||
-      s.includes('ASIGNADO') ||
-      s.includes('PICKING') ||
-      s.includes('PACKING') ||
-      s.includes('GENERADO') ||
-      s.includes('GENERADA') ||
-      s.includes('ZONA DE ENTREGA') ||
-      s.includes('PREPARADO') ||
-      s.includes('INVENTARIO') ||
-      s.includes('INGRES') ||
-      s.includes('RECIBIDO') ||
-      s === 'POR RECOLECTAR' ||
-      s === 'PROCESAMIENTO' ||
-      s.includes('EN DISTRIBUCION')
-    )
-      return 'en_transito';
-
-    return 'otro';
+  if (allOrders.length > 0) {
+    await upsertOrdersToCache(id_configuracion, allOrders);
   }
+
+  console.log(`[cache] Sync complete: ${allOrders.length} orders synced`);
+  return { synced: true, count: allOrders.length };
+}
+
+/**
+ * Computar stats desde la BD local (instantáneo)
+ */
+async function computeStatsFromCache(id_configuracion, from, until) {
+  const rows = await DropiOrdersCache.findAll({
+    where: {
+      id_configuracion,
+      order_created_at: {
+        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+      },
+    },
+    attributes: [
+      'dropi_order_id',
+      'status',
+      'classified_status',
+      'total_order',
+      'name',
+      'surname',
+      'city',
+      'phone',
+      'shipping_company',
+      'shipping_guide',
+      'product_names',
+      'order_created_at',
+    ],
+    raw: true,
+  });
 
   const statusStats = {};
   const dailyMap = {};
@@ -1074,15 +1161,17 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   const retiroAgencia = [];
   const now = new Date();
 
-  for (const o of allOrders) {
-    const cat = classify(o.status);
+  for (const o of rows) {
+    const cat = o.classified_status || 'otro';
     const total = Number(o.total_order || 0);
 
     if (!statusStats[cat]) statusStats[cat] = { count: 0, money: 0 };
     statusStats[cat].count += 1;
     statusStats[cat].money += total;
 
-    const day = (o.created_at || '').slice(0, 10);
+    const day = o.order_created_at
+      ? new Date(o.order_created_at).toISOString().slice(0, 10)
+      : null;
     if (day) {
       if (!dailyMap[day])
         dailyMap[day] = { day, pedidos: 0, entregadas: 0, devoluciones: 0 };
@@ -1091,9 +1180,11 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       if (cat === 'devolucion') dailyMap[day].devoluciones += 1;
     }
 
-    const details = Array.isArray(o.orderdetails) ? o.orderdetails : [];
-    for (const d of details) {
-      const name = d?.product?.name || 'Sin nombre';
+    let productNames = [];
+    try {
+      productNames = JSON.parse(o.product_names || '[]');
+    } catch (e) {}
+    for (const name of productNames) {
       if (!productMap[name])
         productMap[name] = {
           name,
@@ -1111,10 +1202,10 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     }
 
     if (cat === 'retiro_agencia') {
-      const created = new Date(o.created_at);
+      const created = new Date(o.order_created_at);
       const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
       retiroAgencia.push({
-        id: o.id,
+        id: o.dropi_order_id,
         name: o.name || '',
         surname: o.surname || '',
         city: o.city || '',
@@ -1122,56 +1213,116 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
         shipping_guide: o.shipping_guide || '',
         total_order: total,
         status: o.status,
-        created_at: o.created_at,
+        created_at: o.order_created_at,
         days: diffDays,
       });
     }
   }
 
-  const totalOrders = allOrders.length;
+  const totalOrders = rows.length;
   const entregadas = statusStats.entregada?.count || 0;
   const devoluciones = statusStats.devolucion?.count || 0;
-  const totalMoney = allOrders.reduce(
-    (s, o) => s + Number(o.total_order || 0),
-    0,
-  );
+  const totalMoney = rows.reduce((s, o) => s + Number(o.total_order || 0), 0);
 
   retiroAgencia.sort((a, b) => b.days - a.days);
 
-  const isPartial = allOrders.length >= 1500;
+  return {
+    totalOrders,
+    totalMoney,
+    statusStats,
+    kpis: {
+      totalOrders,
+      entregadas,
+      devoluciones,
+      canceladas: statusStats.cancelada?.count || 0,
+      totalMoney,
+      ingresoEntregadas: statusStats.entregada?.money || 0,
+      tasaEntrega: totalOrders > 0 ? (entregadas / totalOrders) * 100 : 0,
+      tasaDevolucion: totalOrders > 0 ? (devoluciones / totalOrders) * 100 : 0,
+      ticketPromedio:
+        entregadas > 0 ? (statusStats.entregada?.money || 0) / entregadas : 0,
+      retiroAgencia: statusStats.retiro_agencia?.count || 0,
+    },
+    dailyChart: Object.values(dailyMap).sort((a, b) =>
+      a.day.localeCompare(b.day),
+    ),
+    topProducts: Object.values(productMap)
+      .sort((a, b) => b.ordenes - a.ordenes)
+      .slice(0, 10),
+    retiroAgencia: retiroAgencia.slice(0, 20),
+  };
+}
+
+exports.getDashboardStats = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe una integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  if (!from || !until)
+    return next(new AppError('from y until son requeridos', 400));
+
+  const forceSync = req.body?.forceSync === true;
+
+  // 1) ¿Tenemos data en cache para este rango?
+  const cachedCount = await DropiOrdersCache.count({
+    where: {
+      id_configuracion,
+      order_created_at: {
+        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+      },
+    },
+  });
+
+  console.log(
+    `[dashboard] Cache has ${cachedCount} orders for config ${id_configuracion} (${from} → ${until})`,
+  );
+
+  // 2) Si no hay cache O forceSync → sincronizar desde Dropi (background-safe)
+  if (cachedCount === 0 || forceSync) {
+    console.log(
+      `[dashboard] Syncing from Dropi (cachedCount=${cachedCount}, forceSync=${forceSync})`,
+    );
+    await syncFromDropi({
+      integrationKey,
+      country_code: integration.country_code,
+      id_configuracion,
+      from,
+      until,
+    });
+  } else {
+    // 3) Si hay cache, sync en background solo si hace +10 min
+    //    Pero NO esperamos — respondemos con cache al instante
+    syncFromDropi({
+      integrationKey,
+      country_code: integration.country_code,
+      id_configuracion,
+      from,
+      until,
+    }).catch((err) =>
+      console.error('[dashboard] Background sync error:', err?.message),
+    );
+  }
+
+  // 4) Computar stats desde BD (instantáneo)
+  const stats = await computeStatsFromCache(id_configuracion, from, until);
 
   return res.json({
     isSuccess: true,
     data: {
-      totalOrders,
-      totalMoney,
-      statusStats,
-      kpis: {
-        totalOrders,
-        entregadas,
-        devoluciones,
-        canceladas: statusStats.cancelada?.count || 0,
-        totalMoney,
-        ingresoEntregadas: statusStats.entregada?.money || 0,
-        tasaEntrega: totalOrders > 0 ? (entregadas / totalOrders) * 100 : 0,
-        tasaDevolucion:
-          totalOrders > 0 ? (devoluciones / totalOrders) * 100 : 0,
-        ticketPromedio:
-          entregadas > 0 ? (statusStats.entregada?.money || 0) / entregadas : 0,
-        retiroAgencia: statusStats.retiro_agencia?.count || 0,
-      },
-      dailyChart: Object.values(dailyMap).sort((a, b) =>
-        a.day.localeCompare(b.day),
-      ),
-      topProducts: Object.values(productMap)
-        .sort((a, b) => b.ordenes - a.ordenes)
-        .slice(0, 10),
-      retiroAgencia: retiroAgencia.slice(0, 20),
-      pagesFetched: pagesCount,
-      isPartial,
-      partialMessage: isPartial
-        ? `Se analizaron las primeras ${allOrders.length.toLocaleString()} órdenes. Para datos completos, seleccione un rango más corto.`
-        : null,
+      ...stats,
+      fromCache: cachedCount > 0,
+      pagesFetched: 0,
+      isPartial: false,
+      partialMessage: null,
     },
   });
 });
