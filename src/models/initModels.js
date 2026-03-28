@@ -39,6 +39,7 @@ const TemplatesIAPrivados = require('./templates_ia_privados.model');
 const GeneracionesIA = require('./generaciones_ia.model');
 const GeneracionesAngulosIA = require('./generaciones_angulos_ia.model');
 const ProductosIA = require('./productos_ia.model');
+const Password_reset_codes = require('./password_reset_codes.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -506,6 +507,18 @@ const initModel = () => {
     sourceKey: 'id',
     as: 'templates_privados',
   });
+
+  Sub_usuarios_chat_center.hasMany(Password_reset_codes, {
+    foreignKey: 'id_sub_usuario',
+    sourceKey: 'id_sub_usuario',
+    as: 'reset_codes',
+  });
+
+  Password_reset_codes.belongsTo(Sub_usuarios_chat_center, {
+    foreignKey: 'id_sub_usuario',
+    targetKey: 'id_sub_usuario',
+    as: 'sub_usuario',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -551,6 +564,7 @@ const getModels = () => {
     GeneracionesIA,
     GeneracionesAngulosIA,
     TemplatesIAPrivados,
+    Password_reset_codes,
   };
 };
 
