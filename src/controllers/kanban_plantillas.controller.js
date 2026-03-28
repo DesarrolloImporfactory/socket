@@ -436,11 +436,11 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
 
   const columnas = await db.query(
     `SELECT id, nombre, estado_db, color_fondo, color_texto, icono,
-            orden, activo, es_estado_final, activa_ia, max_tokens,
-            instrucciones, modelo
-     FROM kanban_columnas
-     WHERE id_configuracion = ? AND activo = 1
-     ORDER BY orden ASC`,
+          orden, activo, es_estado_final, es_principal, activa_ia, max_tokens,
+          instrucciones, modelo
+   FROM kanban_columnas
+   WHERE id_configuracion = ? AND activo = 1
+   ORDER BY orden ASC`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
@@ -466,6 +466,7 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
       orden: col.orden,
       activo: col.activo,
       es_estado_final: col.es_estado_final,
+      es_principal: col.es_principal || 0, // ← agregar
       activa_ia: col.activa_ia,
       max_tokens: col.max_tokens,
       instrucciones: col.instrucciones || null,
@@ -592,10 +593,10 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
 
     const [insertResult] = await db.query(
       `INSERT INTO kanban_columnas
-       (id_configuracion, nombre, estado_db, color_fondo, color_texto,
-        icono, orden, activo, es_estado_final, activa_ia, max_tokens,
-        instrucciones, modelo, assistant_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   (id_configuracion, nombre, estado_db, color_fondo, color_texto,
+    icono, orden, activo, es_estado_final, es_principal, activa_ia, max_tokens,
+    instrucciones, modelo, assistant_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -607,6 +608,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           col.orden,
           col.activo,
           col.es_estado_final,
+          col.es_principal || 0, // ← agregar
           col.activa_ia,
           col.max_tokens,
           col.instrucciones || null,
