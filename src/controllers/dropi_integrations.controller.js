@@ -77,10 +77,8 @@ function strOrNull(v) {
 
 /**
  * Construye el payload EXCLUSIVAMENTE con el body que funciona en Postman.
- * (Mismos campos, nada extra)
  */
 function buildDropiOrderPayload(body = {}) {
-  // Requeridos mínimos para que Dropi acepte (según su experiencia con Postman)
   const required = {
     type: strOrNull(body.type),
     type_service: strOrNull(body.type_service),
@@ -89,10 +87,6 @@ function buildDropiOrderPayload(body = {}) {
     total_order: toInt(body.total_order),
     shipping_amount: toInt(body.shipping_amount),
     payment_method_id: toInt(body.payment_method_id),
-
-    // supplier_id: toInt(body.supplier_id),
-    // shop_id: toInt(body.shop_id),
-    // warehouses_selected_id: toInt(body.warehouses_selected_id),
 
     name: strOrNull(body.name),
     surname: strOrNull(body.surname),
@@ -126,7 +120,6 @@ function buildDropiOrderPayload(body = {}) {
     throw new AppError('products debe ser un arreglo con al menos 1 item', 400);
   }
 
-  // Validación mínima de products según su body funcional
   const products = required.products.map((p, idx) => {
     const id = toInt(p?.id);
     const quantity = toInt(p?.quantity);
@@ -144,7 +137,7 @@ function buildDropiOrderPayload(body = {}) {
 
     return {
       id,
-      name: str(p?.name), // Dropi le aceptó string aquí
+      name: str(p?.name),
       type: str(p?.type),
 
       variation_id:
@@ -157,13 +150,11 @@ function buildDropiOrderPayload(body = {}) {
       quantity,
       price,
 
-      // En su body funcional vienen como string
       sale_price: p?.sale_price ?? null,
       suggested_price: p?.suggested_price ?? null,
     };
   });
 
-  // Opcionales pero incluidos en su body funcional (y los respetamos tal cual)
   const distributionCompany =
     body.distributionCompany && typeof body.distributionCompany === 'object'
       ? {
@@ -172,7 +163,6 @@ function buildDropiOrderPayload(body = {}) {
         }
       : null;
 
-  // Armado FINAL: solo lo que usted usa
   return {
     type: required.type,
     type_service: required.type_service,
@@ -183,10 +173,6 @@ function buildDropiOrderPayload(body = {}) {
     payment_method_id: required.payment_method_id,
 
     notes: body.notes ?? '',
-
-    // supplier_id: required.supplier_id,
-    // shop_id: required.shop_id,
-    // warehouses_selected_id: required.warehouses_selected_id,
 
     name: required.name,
     surname: required.surname,
@@ -227,7 +213,6 @@ function buildDropiOrdersListParams(body = {}) {
   const status = strOrNull(body.status);
   const textToSearch = strOrNull(body.textToSearch);
 
-  // Validación mínima exigida x Dropi
   if (!result_number || !result_number) {
     throw new AppError(
       'Filter_date_by y result_number son obligatorios para consultar órdenes',
@@ -235,7 +220,6 @@ function buildDropiOrdersListParams(body = {}) {
     );
   }
 
-  // Esto será query params para Dropi GET
   const params = {
     result_number: result_number + 1,
     start,
@@ -411,7 +395,6 @@ exports.removeMyIntegration = catchAsync(async (req, res, next) => {
 
 /* =========================
    Dropi: Crear Orden
-   POST /api/v1/dropi_integrations/orders/myorders
 ========================= */
 
 exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
@@ -435,7 +418,6 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
-  // Construir payload final (sin id_configuracion)
   const raw = { ...req.body };
   delete raw.id_configuracion;
 
@@ -446,7 +428,6 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     return next(e);
   }
 
-  // Llamada a Dropi (sin Bearer, con header Dropi-Key)
   const dropiResponse = await dropiService.createOrderMyOrders({
     integrationKey,
     payload,
@@ -472,27 +453,18 @@ function phoneKeys(v) {
   if (!d) return [];
   const keys = [];
 
-  // guardamos varias llaves para soportar:
-  // - Dropi (9 dígitos)
-  // - celulares con prefijo país (593XXXXXXXXX)
-  // - países con 10 dígitos
   if (d.length >= 9) keys.push(d.slice(-9));
   if (d.length >= 10) keys.push(d.slice(-10));
 
-  // opcional: si usted maneja otros países con 11+ y quiere más tolerancia
-  // if (d.length >= 11) keys.push(d.slice(-11));
-
-  // unique
   return Array.from(new Set(keys));
 }
 
 // =========================
-// Enriquecer órdenes (bulk, 1 query clientes + 1 query subusuarios)
+// Enriquecer órdenes (bulk)
 // =========================
 async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
   if (!Array.isArray(objects) || objects.length === 0) return objects;
 
-  // 1) recolectar phones desde Dropi
   const allPhoneKeys = [];
   const phoneKeysByOrderId = new Map();
 
@@ -514,7 +486,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
     }));
   }
 
-  // 2) Buscar clientes_chat_center que coincidan con esos keys
   const orConditions = [];
   for (const k of uniqueKeys) {
     orConditions.push({ celular_cliente: { [Op.like]: `%${k}` } });
@@ -530,7 +501,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
     raw: true,
   });
 
-  // 3) índice por llaves
   const clientByKey = new Map();
   for (const c of clientes) {
     const ks1 = phoneKeys(c?.celular_cliente);
@@ -540,7 +510,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
     });
   }
 
-  // 4) encargados únicos
   const encargadoIds = Array.from(
     new Set(
       clientes
@@ -564,7 +533,6 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
     );
   }
 
-  // 5) Enriquecer cada orden
   const enriched = objects.map((o) => {
     const ks = phoneKeysByOrderId.get(String(o?.id)) || [];
     let client = null;
@@ -626,7 +594,6 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
-  // params (sin id_configuracion)
   const raw = { ...req.body };
   delete raw.id_configuracion;
 
@@ -641,7 +608,6 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
 
   console.log('📤 Params enviados a Dropi:', JSON.stringify(params));
 
-  // GET hacia Dropi
   let dropiResponse;
   try {
     dropiResponse = await dropiService.listMyOrders({
@@ -657,14 +623,12 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     return next(err);
   }
 
-  // ✅ Enriquecer aquí
   const objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
   const enrichedObjects = await enrichOrdersWithChatAndAgent({
     id_configuracion,
     objects,
   });
 
-  // Truco n+1: si vino 1 extra, hay mas paginas para el front paginado de 10
   const hasMore = enrichedObjects.length > requestedSize;
   const trimmed = hasMore
     ? enrichedObjects.slice(0, requestedSize)
@@ -694,7 +658,6 @@ exports.listProductsIndex = catchAsync(async (req, res, next) => {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
-  // payload recomendado por doc
   const payload = {
     pageSize: toInt(req.body?.pageSize) || 50,
     startData: toInt(req.body?.startData) ?? 0,
@@ -704,7 +667,6 @@ exports.listProductsIndex = catchAsync(async (req, res, next) => {
     keywords: str(req.body?.keywords || ''),
   };
 
-  // filtros opcionales (solo si vienen)
   if (Array.isArray(req.body?.category) && req.body.category.length) {
     payload.category = req.body.category;
   }
@@ -724,7 +686,7 @@ exports.listProductsIndex = catchAsync(async (req, res, next) => {
 
 exports.listStates = catchAsync(async (req, res, next) => {
   const id_configuracion = toInt(req.query?.id_configuracion);
-  const country_id = toInt(req.query?.country_id) ?? 1; // default 1 de momento
+  const country_id = toInt(req.query?.country_id) ?? 1;
 
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
@@ -748,7 +710,7 @@ exports.listStates = catchAsync(async (req, res, next) => {
 exports.listCities = catchAsync(async (req, res, next) => {
   const id_configuracion = toInt(req.body?.id_configuracion);
   const department_id = toInt(req.body?.department_id);
-  const rate_type = strOrNull(req.body?.rate_type); // "CON RECAUDO" "SIN RECAUDO"
+  const rate_type = strOrNull(req.body?.rate_type);
 
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
@@ -876,13 +838,16 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, data });
 });
 
-// Tracking en memoria de syncs completados
+/* =========================
+   Dashboard: Cache + Stats
+========================= */
+
+// Tracking en memoria
 if (!global._dropiSyncDone) global._dropiSyncDone = {};
-
-// Sync por configuracion/ una a la vez por usuario
 if (!global._dropiSyncLock) global._dropiSyncLock = {};
+if (!global._profitSyncLock) global._profitSyncLock = {};
 
-// classify — mismo de antes, pero lo sacamos como helper reutilizable
+// ── Clasificar status Dropi ──
 function classifyDropiStatus(status) {
   const s = String(status || '')
     .trim()
@@ -971,11 +936,49 @@ function classifyDropiStatus(status) {
   return 'otro';
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Cache context helpers
+   cacheCtx = { id_configuracion: X } | { id_usuario: Y }
+   ═══════════════════════════════════════════════════════════ */
+
 /**
- * Upsert órdenes de Dropi en cache local
+ * WHERE clause para filtrar cache.
+ * Config-level: { id_configuracion: X, id_usuario: 0 }
+ * User-level:   { id_configuracion: 0, id_usuario: Y }
  */
-async function upsertOrdersToCache(id_configuracion, orders) {
+function buildCacheWhere(cacheCtx) {
+  if (cacheCtx.id_configuracion) {
+    return { id_configuracion: cacheCtx.id_configuracion, id_usuario: 0 };
+  }
+  return { id_configuracion: 0, id_usuario: cacheCtx.id_usuario };
+}
+
+/**
+ * Campos para INSERT/upsert.
+ */
+function buildCacheInsert(cacheCtx) {
+  return {
+    id_configuracion: cacheCtx.id_configuracion || 0,
+    id_usuario: cacheCtx.id_usuario || 0,
+  };
+}
+
+/**
+ * String key para sync locks y tracking.
+ */
+function buildCacheKey(cacheCtx) {
+  if (cacheCtx.id_configuracion) return `c_${cacheCtx.id_configuracion}`;
+  return `u_${cacheCtx.id_usuario}`;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Upsert órdenes en cache
+   ═══════════════════════════════════════════════════════════ */
+
+async function upsertOrdersToCache(cacheCtx, orders) {
   if (!orders.length) return;
+
+  const insertFields = buildCacheInsert(cacheCtx);
 
   const bulkData = orders.map((o) => {
     const details = Array.isArray(o.orderdetails) ? o.orderdetails : [];
@@ -983,7 +986,7 @@ async function upsertOrdersToCache(id_configuracion, orders) {
 
     return {
       dropi_order_id: o.id,
-      id_configuracion,
+      ...insertFields,
       status: o.status || null,
       classified_status: classifyDropiStatus(o.status),
       total_order: Number(o.total_order || 0),
@@ -1000,7 +1003,6 @@ async function upsertOrdersToCache(id_configuracion, orders) {
     };
   });
 
-  // Upsert en lotes de 200
   for (let i = 0; i < bulkData.length; i += 200) {
     const batch = bulkData.slice(i, i + 200);
     await DropiOrdersCache.bulkCreate(batch, {
@@ -1022,37 +1024,35 @@ async function upsertOrdersToCache(id_configuracion, orders) {
   }
 
   console.log(
-    `[cache] Upserted ${bulkData.length} orders for config ${id_configuracion}`,
+    `[cache] Upserted ${bulkData.length} orders for ${buildCacheKey(cacheCtx)}`,
   );
 }
 
-/**
- * Sync: traer de Dropi las órdenes del rango
- * FIXES:
- * - Trackea sync completado en global para evitar loop infinito
- * - Re-sync usa FECHA DE CAMBIO DE ESTATUS pero con fechas correctas
- */
+/* ═══════════════════════════════════════════════════════════
+   Sync desde Dropi
+   ═══════════════════════════════════════════════════════════ */
+
 async function syncFromDropi({
   integrationKey,
   country_code,
-  id_configuracion,
+  cacheCtx,
   from,
   until,
 }) {
-  const syncKey = `${id_configuracion}_${from}_${until}`;
+  const lockKey = buildCacheKey(cacheCtx);
+  const syncKey = `${lockKey}_${from}_${until}`;
+  const cacheWhere = buildCacheWhere(cacheCtx);
 
-  if (global._dropiSyncLock[id_configuracion]) {
-    console.log(
-      `[cache] Sync already running for config ${id_configuracion}, skipping`,
-    );
+  if (global._dropiSyncLock[lockKey]) {
+    console.log(`[cache] Sync already running for ${lockKey}, skipping`);
     return { synced: false, reason: 'locked' };
   }
-  global._dropiSyncLock[id_configuracion] = true;
+  global._dropiSyncLock[lockKey] = true;
 
   try {
     const lastSync = await DropiOrdersCache.findOne({
       where: {
-        id_configuracion,
+        ...cacheWhere,
         order_created_at: {
           [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
         },
@@ -1072,11 +1072,10 @@ async function syncFromDropi({
         );
         global._dropiSyncDone[syncKey] = { at: Date.now(), count: -1 };
 
-        // Aunque no re-sincronizamos órdenes, sí calcular profit pendiente
         syncProfitDetails({
           integrationKey,
           country_code,
-          id_configuracion,
+          cacheCtx,
           from,
           until,
         }).catch((err) =>
@@ -1091,9 +1090,6 @@ async function syncFromDropi({
       ? 'FECHA DE CAMBIO DE ESTATUS'
       : 'FECHA DE CREADO';
 
-    const syncFrom = from;
-    const syncUntil = until;
-
     let allOrders = [];
     let start = 0;
     let keepGoing = true;
@@ -1102,7 +1098,7 @@ async function syncFromDropi({
     let consecutiveRetries = 0;
 
     console.log(
-      `[cache] Syncing from Dropi: ${filterDateBy} from=${syncFrom} until=${syncUntil} (config=${id_configuracion})`,
+      `[cache] Syncing from Dropi: ${filterDateBy} from=${from} until=${until} (${lockKey})`,
     );
 
     while (keepGoing) {
@@ -1113,8 +1109,8 @@ async function syncFromDropi({
             result_number: PAGE_SIZE,
             start,
             filter_date_by: filterDateBy,
-            from: syncFrom,
-            until: syncUntil,
+            from,
+            until,
           },
           country_code,
         });
@@ -1150,7 +1146,7 @@ async function syncFromDropi({
     }
 
     if (allOrders.length > 0) {
-      await upsertOrdersToCache(id_configuracion, allOrders);
+      await upsertOrdersToCache(cacheCtx, allOrders);
     }
 
     global._dropiSyncDone[syncKey] = {
@@ -1162,11 +1158,10 @@ async function syncFromDropi({
       `[cache] Sync complete: ${allOrders.length} orders synced (key=${syncKey})`,
     );
 
-    // Lanzar sync de profit en background (no bloquear)
     syncProfitDetails({
       integrationKey,
       country_code,
-      id_configuracion,
+      cacheCtx,
       from,
       until,
     }).catch((err) =>
@@ -1175,39 +1170,35 @@ async function syncFromDropi({
 
     return { synced: true, count: allOrders.length };
   } finally {
-    global._dropiSyncLock[id_configuracion] = false;
+    global._dropiSyncLock[lockKey] = false;
   }
 }
 
-// Lock global para profit sync — solo 1 a la vez por config
-if (!global._profitSyncLock) global._profitSyncLock = {};
+/* ═══════════════════════════════════════════════════════════
+   Sync profit details
+   ═══════════════════════════════════════════════════════════ */
 
-/**
- * Sync profit: consulta el detalle de cada orden para obtener dropshipper_amount_to_win
- * Se ejecuta en background después del sync principal.
- * Máximo 50 órdenes por ejecución para no explotar Dropi.
- */
 async function syncProfitDetails({
   integrationKey,
   country_code,
-  id_configuracion,
+  cacheCtx,
   from,
   until,
 }) {
-  // Si ya hay un profit sync corriendo para esta config, skip
-  if (global._profitSyncLock[id_configuracion]) {
-    console.log(
-      `[profit] Already running for config ${id_configuracion}, skipping`,
-    );
+  const lockKey = buildCacheKey(cacheCtx);
+  const cacheWhere = buildCacheWhere(cacheCtx);
+
+  if (global._profitSyncLock[lockKey]) {
+    console.log(`[profit] Already running for ${lockKey}, skipping`);
     return { calculated: 0, skipped: true, reason: 'locked' };
   }
 
-  global._profitSyncLock[id_configuracion] = true;
+  global._profitSyncLock[lockKey] = true;
 
   try {
     const pending = await DropiOrdersCache.findAll({
       where: {
-        id_configuracion,
+        ...cacheWhere,
         dropshipper_profit: null,
         order_created_at: {
           [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
@@ -1219,12 +1210,12 @@ async function syncProfitDetails({
     });
 
     if (!pending.length) {
-      console.log(`[profit] No pending orders for config ${id_configuracion}`);
+      console.log(`[profit] No pending orders for ${lockKey}`);
       return { calculated: 0, pending: 0 };
     }
 
     console.log(
-      `[profit] Calculating profit for ${pending.length} orders (config ${id_configuracion})`,
+      `[profit] Calculating profit for ${pending.length} orders (${lockKey})`,
     );
 
     let calculated = 0;
@@ -1249,7 +1240,7 @@ async function syncProfitDetails({
             { dropshipper_profit: 0 },
             {
               where: {
-                id_configuracion,
+                ...cacheWhere,
                 dropshipper_profit: null,
               },
             },
@@ -1285,17 +1276,28 @@ async function syncProfitDetails({
     console.log(`[profit] Done: ${calculated} calculated, ${errors} errors`);
     return { calculated, errors, total: pending.length };
   } finally {
-    global._profitSyncLock[id_configuracion] = false;
+    global._profitSyncLock[lockKey] = false;
   }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Computar stats desde cache
+   ═══════════════════════════════════════════════════════════ */
+
 /**
- * Computar stats desde la BD local (instantáneo)
+ * REEMPLAZAR computeStatsFromCache en dropi_integrations.controller.js
+ *
+ * Cambios vs versión anterior:
+ * - Agrega ordersByStatus: objeto con arrays de órdenes por cada classified_status (máx 25 por estado)
+ * - Incluye phone en cada orden
+ * - retiroAgencia sigue existiendo por compatibilidad pero ahora también está en ordersByStatus.retiro_agencia
  */
-async function computeStatsFromCache(id_configuracion, from, until) {
+async function computeStatsFromCache(cacheCtx, from, until) {
+  const cacheWhere = buildCacheWhere(cacheCtx);
+
   const rows = await DropiOrdersCache.findAll({
     where: {
-      id_configuracion,
+      ...cacheWhere,
       order_created_at: {
         [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
       },
@@ -1322,9 +1324,9 @@ async function computeStatsFromCache(id_configuracion, from, until) {
   const dailyMap = {};
   const productMap = {};
   const retiroAgencia = [];
+  const ordersByStatus = {};
   const now = new Date();
 
-  // Profit tracking
   let profitEntregadas = 0;
   let profitPotencialTotal = 0;
   let profitCalculated = 0;
@@ -1342,7 +1344,6 @@ async function computeStatsFromCache(id_configuracion, from, until) {
     statusStats[cat].count += 1;
     statusStats[cat].money += total;
 
-    // Profit acumulado
     if (profit !== null) {
       profitCalculated++;
       profitPotencialTotal += profit;
@@ -1385,21 +1386,34 @@ async function computeStatsFromCache(id_configuracion, from, until) {
       if (cat === 'devolucion') productMap[name].devoluciones += 1;
     }
 
+    // ── Orden individual para ordersByStatus (máx 25 por estado) ──
+    const created = new Date(o.order_created_at);
+    const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+
+    const orderEntry = {
+      id: o.dropi_order_id,
+      name: o.name || '',
+      surname: o.surname || '',
+      phone: o.phone || '',
+      city: o.city || '',
+      shipping_company: o.shipping_company || '',
+      shipping_guide: o.shipping_guide || '',
+      total_order: total,
+      status: o.status,
+      created_at: o.order_created_at,
+      days: diffDays,
+      classified_status: cat,
+      profit: profit,
+    };
+
+    if (!ordersByStatus[cat]) ordersByStatus[cat] = [];
+    if (ordersByStatus[cat].length < 25) {
+      ordersByStatus[cat].push(orderEntry);
+    }
+
+    // retiroAgencia legacy (compatibilidad)
     if (cat === 'retiro_agencia') {
-      const created = new Date(o.order_created_at);
-      const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-      retiroAgencia.push({
-        id: o.dropi_order_id,
-        name: o.name || '',
-        surname: o.surname || '',
-        city: o.city || '',
-        shipping_company: o.shipping_company || '',
-        shipping_guide: o.shipping_guide || '',
-        total_order: total,
-        status: o.status,
-        created_at: o.order_created_at,
-        days: diffDays,
-      });
+      retiroAgencia.push(orderEntry);
     }
   }
 
@@ -1410,7 +1424,11 @@ async function computeStatsFromCache(id_configuracion, from, until) {
 
   retiroAgencia.sort((a, b) => b.days - a.days);
 
-  // Profit calculations
+  // Ordenar cada grupo en ordersByStatus por días desc
+  for (const key of Object.keys(ordersByStatus)) {
+    ordersByStatus[key].sort((a, b) => b.days - a.days);
+  }
+
   const avgProfitPerOrder =
     profitCalculated > 0 ? profitPotencialTotal / profitCalculated : 0;
 
@@ -1418,6 +1436,7 @@ async function computeStatsFromCache(id_configuracion, from, until) {
     totalOrders,
     totalMoney,
     statusStats,
+    ordersByStatus,
     kpis: {
       totalOrders,
       entregadas,
@@ -1459,14 +1478,71 @@ async function computeStatsFromCache(id_configuracion, from, until) {
   };
 }
 
-exports.getDashboardStats = catchAsync(async (req, res, next) => {
-  const id_configuracion = toInt(req.body?.id_configuracion);
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
+/* ═══════════════════════════════════════════════════════════
+   getDashboardStats
+   Soporta integration_id (user-level y config-level)
+   o id_configuracion (legacy)
+   ═══════════════════════════════════════════════════════════ */
 
-  const integration = await getActiveIntegration(id_configuracion);
-  if (!integration)
-    return next(new AppError('No existe una integración Dropi activa', 404));
+exports.getDashboardStats = catchAsync(async (req, res, next) => {
+  const integration_id = toInt(req.body?.integration_id);
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const id_usuario = req.sessionUser?.id_usuario;
+
+  if (!integration_id && !id_configuracion) {
+    return next(
+      new AppError('integration_id o id_configuracion es requerido', 400),
+    );
+  }
+
+  let integration;
+
+  if (integration_id) {
+    // ── Buscar por integration_id (soporta user-level y config-level) ──
+    integration = await DropiIntegrations.findOne({
+      where: { id: integration_id, deleted_at: null, is_active: 1 },
+    });
+
+    if (!integration) {
+      return next(new AppError('Integración Dropi no encontrada', 404));
+    }
+
+    // Verificar ownership
+    if (integration.id_configuracion) {
+      const cfg = await Configuraciones.findOne({
+        where: { id: integration.id_configuracion, id_usuario },
+      });
+      if (!cfg) {
+        return next(
+          new AppError('Integración no pertenece a esta cuenta', 403),
+        );
+      }
+    } else {
+      if (Number(integration.id_usuario) !== Number(id_usuario)) {
+        return next(
+          new AppError('Integración no pertenece a esta cuenta', 403),
+        );
+      }
+    }
+  } else {
+    // ── Legacy: buscar por id_configuracion ──
+    const cfg = await Configuraciones.findOne({
+      where: { id: id_configuracion, id_usuario },
+    });
+    if (!cfg) {
+      return next(
+        new AppError(
+          'Configuración no válida o no pertenece a esta cuenta',
+          403,
+        ),
+      );
+    }
+
+    integration = await getActiveIntegration(id_configuracion);
+    if (!integration) {
+      return next(new AppError('No existe una integración Dropi activa', 404));
+    }
+  }
 
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
@@ -1476,12 +1552,19 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   if (!from || !until)
     return next(new AppError('from y until son requeridos', 400));
 
+  // Determinar cacheCtx según tipo de integración
+  const cacheCtx = integration.id_configuracion
+    ? { id_configuracion: Number(integration.id_configuracion) }
+    : { id_usuario: Number(integration.id_usuario) };
+
+  const cacheWhere = buildCacheWhere(cacheCtx);
+  const lockKey = buildCacheKey(cacheCtx);
   const forceSync = req.body?.forceSync === true;
 
   // 1) ¿Cuántas órdenes hay en cache para este rango?
   const cachedCount = await DropiOrdersCache.count({
     where: {
-      id_configuracion,
+      ...cacheWhere,
       order_created_at: {
         [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
       },
@@ -1489,19 +1572,17 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   });
 
   console.log(
-    `[dashboard] Cache has ${cachedCount} orders for config ${id_configuracion} (${from} → ${until})`,
+    `[dashboard] Cache has ${cachedCount} orders for ${lockKey} (${from} → ${until})`,
   );
 
-  const syncKey = `${id_configuracion}_${from}_${until}`;
+  const syncKey = `${lockKey}_${from}_${until}`;
 
   // 2) Si no hay cache o forceSync → lanzar sync
   if (cachedCount === 0 || forceSync) {
-    // FIX: ¿Ya intentamos sincronizar este rango recientemente?
     const prevSync = global._dropiSyncDone?.[syncKey];
-    const syncRanRecently = prevSync && Date.now() - prevSync.at < 120000; // 2 minutos
+    const syncRanRecently = prevSync && Date.now() - prevSync.at < 120000;
 
     if (cachedCount === 0 && syncRanRecently) {
-      // Sync ya corrió y no encontró nada → NO decir "syncing", devolver vacío
       console.log(
         `[dashboard] Sync already ran for ${syncKey} (found ${prevSync.count} orders). Returning empty.`,
       );
@@ -1536,18 +1617,17 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       });
     }
 
-    // Lanzar sync en background (no bloquear)
+    // Sync en background
     syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
-      id_configuracion,
+      cacheCtx,
       from,
       until,
     }).catch((err) =>
       console.error('[dashboard] Background sync error:', err?.message),
     );
 
-    // Si no hay cache → decir "syncing" para que frontend reintente
     if (cachedCount === 0) {
       return res.json({
         isSuccess: true,
@@ -1581,11 +1661,11 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       });
     }
   } else {
-    // Hay cache → sync background solo si hace +10 min
+    // Hay cache → sync background
     syncFromDropi({
       integrationKey,
       country_code: integration.country_code,
-      id_configuracion,
+      cacheCtx,
       from,
       until,
     }).catch((err) =>
@@ -1593,8 +1673,8 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     );
   }
 
-  // 3) Computar stats desde BD (instantáneo)
-  const stats = await computeStatsFromCache(id_configuracion, from, until);
+  // 3) Computar stats desde BD
+  const stats = await computeStatsFromCache(cacheCtx, from, until);
 
   return res.json({
     isSuccess: true,

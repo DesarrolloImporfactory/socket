@@ -40,6 +40,7 @@ const GeneracionesIA = require('./generaciones_ia.model');
 const GeneracionesAngulosIA = require('./generaciones_angulos_ia.model');
 const ProductosIA = require('./productos_ia.model');
 const Password_reset_codes = require('./password_reset_codes.model');
+const ShopifyConnections = require('./shopify_connections.model');
 
 const initModel = () => {
   // Asociaciones existentes
@@ -519,6 +520,18 @@ const initModel = () => {
     targetKey: 'id_sub_usuario',
     as: 'sub_usuario',
   });
+
+  ShopifyConnections.belongsTo(Usuarios_chat_center, {
+    foreignKey: 'id_usuario',
+    targetKey: 'id_usuario',
+    as: 'usuario',
+  });
+
+  Usuarios_chat_center.hasMany(ShopifyConnections, {
+    foreignKey: 'id_usuario',
+    sourceKey: 'id_usuario',
+    as: 'shopify_connections',
+  });
 };
 
 // Función para obtener todos los modelos
@@ -565,6 +578,7 @@ const getModels = () => {
     GeneracionesAngulosIA,
     TemplatesIAPrivados,
     Password_reset_codes,
+    ShopifyConnections,
   };
 };
 

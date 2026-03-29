@@ -46,10 +46,8 @@ router.put('/sync-config', auth.protectConfigOwner, ctrl.updateSyncConfig);
 
 router.get('/all-my-integrations', ctrl.listAllMyIntegrations);
 
-router.post(
-  '/dashboard/stats',
-  auth.protectConfigOwner,
-  ctrl.getDashboardStats,
-);
+// Dashboard: NO requiere protectConfigOwner porque soporta integraciones
+// a nivel usuario (sin id_configuracion). Ownership se valida en el controller.
+router.post('/dashboard/stats', ctrl.getDashboardStats);
 
 module.exports = router;

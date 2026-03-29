@@ -103,6 +103,8 @@ const dashboardRouter = require('./routes/dashboard.routes');
 
 const geminiRouter = require('./routes/gemini.routes');
 
+const ShopifyConnectionsRouter = require('./routes/shopify.routes');
+
 const path = require('path');
 
 const app = express();
@@ -284,6 +286,7 @@ app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/gemini', geminiRouter);
+app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 
 app.all('*', (req, res, next) => {
   return next(

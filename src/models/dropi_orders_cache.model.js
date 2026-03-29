@@ -10,7 +10,16 @@ const DropiOrdersCache = db.define(
       autoIncrement: true,
     },
     dropi_order_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    id_configuracion: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    id_configuracion: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    id_usuario: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0,
+    },
     status: DataTypes.STRING(300),
     classified_status: DataTypes.STRING(200),
     total_order: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
