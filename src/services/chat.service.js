@@ -57,7 +57,7 @@ class ChatService {
       }
       let whereClause = '';
 
-      if (rol == 'administrador') {
+      if (rol == 'administrador' || rol == 'admin_limitado') {
         whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
 
         if (scopeChats != 'mine') {
@@ -235,8 +235,8 @@ class ChatService {
             : null,
       };
 
-      // Solo agregar id_sub_usuario si el rol no es 'administrador'
-      if (rol !== 'administrador') {
+      // Solo agregar id_sub_usuario si el rol no es 'administrador' o 'admin_limitado'
+      if (rol !== 'administrador' || rol !== 'admin_limitado') {
         if (scopeChats == 'mine') {
           replacements.id_sub_usuario = id_sub_usuario;
         }
