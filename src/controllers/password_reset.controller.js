@@ -82,7 +82,7 @@ exports.verifyCode = catchAsync(async (req, res, next) => {
   const emailNorm = email.trim().toLowerCase();
 
   //Buscar codigo valido - no usado y no expirado
-  const registro = Password_reset_codes.findOne({
+  const registro = await Password_reset_codes.findOne({
     where: {
       email: emailNorm,
       codigo: codigo.trim(),
