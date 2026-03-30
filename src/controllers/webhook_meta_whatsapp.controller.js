@@ -63,7 +63,7 @@ const {
 
 const {
   crearClienteConRoundRobinUnDepto,
-  asignarRoundRobinClienteExistente
+  asignarRoundRobinClienteExistente,
 } = require('../utils/webhook_whatsapp/round_robin');
 
 const {
@@ -297,6 +297,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           case 131047:
             debugLogMsg = '⚠️ Fuera de ventana de 24h. Requiere plantilla.';
+            break;
+
+          case 131031:
+            debugLogMsg =
+              '🔒 Cuenta de WhatsApp bloqueada o restringida por Meta. Verifica el Business Manager.';
             break;
 
           case 131048:
@@ -606,14 +611,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       // ✅ si el chat estaba cerrado, reabrir
       if (cliente.chat_cerrado === 1) {
-          // Chat sin encargado → aplicar RR y reabrir
-          await asignarRoundRobinClienteExistente({
-            id_cliente,
-            id_configuracion,
-            id_usuario_dueno: configuracion.id_usuario,
-            permiso_round_robin: configuracion.permiso_round_robin,
-            motivo: 'auto_round_robin_reopen',
-          });
+        // Chat sin encargado → aplicar RR y reabrir
+        await asignarRoundRobinClienteExistente({
+          id_cliente,
+          id_configuracion,
+          id_usuario_dueno: configuracion.id_usuario,
+          permiso_round_robin: configuracion.permiso_round_robin,
+          motivo: 'auto_round_robin_reopen',
+        });
       }
 
       await fsp.appendFile(
