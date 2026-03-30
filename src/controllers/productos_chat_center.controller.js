@@ -12,9 +12,6 @@ const CategoriasChatCenter = require('../models/categorias_chat_center.model');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
-const {
-  syncCatalogoAsistentesPorConfiguracion,
-} = require('../utils/openia/carga_file_productos');
 
 const {
   syncCatalogoTodasColumnasConfig,
@@ -161,10 +158,6 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     precio_upsell,
     imagen_upsell_url,
     combos_producto,
-  });
-
-  syncCatalogoAsistentesPorConfiguracion(id_configuracion).catch((e) => {
-    console.error(`⚠️ Error sync catálogo: ${e.message}`);
   });
 
   syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) => {
@@ -326,10 +319,6 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   const idConfigSync = producto.id_configuracion;
 
   await producto.save();
-
-  syncCatalogoAsistentesPorConfiguracion(idConfigSync).catch((e) => {
-    console.error(`⚠️ Error sync catálogo: ${e.message}`);
-  });
 
   syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {
     console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
