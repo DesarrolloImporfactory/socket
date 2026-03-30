@@ -158,7 +158,11 @@ const checkPlanActivo = async (req, res, next) => {
       ahora <= new Date(usuario.trial_end) &&
       usuario.estado === 'activo'
     ) {
-      req.planInfo = { trial: true, trial_end: usuario.trial_end };
+      let plan = null;
+      if (usuario.id_plan) {
+        plan = await Planes_chat_center.findByPk(usuario.id_plan);
+      }
+      req.planInfo = { trial: true, trial_end: usuario.trial_end, plan };
       return next();
     }
 

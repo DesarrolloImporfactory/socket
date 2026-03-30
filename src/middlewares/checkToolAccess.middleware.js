@@ -91,16 +91,21 @@ const checkToolAccess = (requiredTool) => {
     let toolsAccess = '';
 
     if (planInfo.plan) {
-      // Caso 5: plan normal activo — el plan ya viene en planInfo
+      // Caso 5: plan normal activo, o trial con plan precargado desde checkPlanActivo
       toolsAccess = (planInfo.plan.tools_access || '').toLowerCase().trim();
     } else if (planInfo.trial) {
-      // Caso 4: Stripe trial (7 días) — checkPlanActivo no incluye el plan,
-      // necesitamos cargarlo desde el sessionUser para verificar tools_access
+      // Caso 4 (fallback): Stripe trial sin plan precargado
       try {
-        const id_plan = req.sessionUser?.id_plan;
-        if (id_plan) {
-          const plan = await Planes_chat_center.findByPk(id_plan);
-          toolsAccess = (plan?.tools_access || '').toLowerCase().trim();
+        const id_usuario = req.sessionUser?.id_usuario;
+        if (id_usuario) {
+          const usuario =
+            await require('../models/usuarios_chat_center.model').findByPk(
+              id_usuario,
+            );
+          if (usuario?.id_plan) {
+            const plan = await Planes_chat_center.findByPk(usuario.id_plan);
+            toolsAccess = (plan?.tools_access || '').toLowerCase().trim();
+          }
         }
       } catch (e) {
         console.warn(
