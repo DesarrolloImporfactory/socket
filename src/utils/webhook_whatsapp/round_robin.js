@@ -155,11 +155,9 @@ async function crearClienteConRoundRobinUnDepto({
       },
     );
 
-    
-
     let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
 
-    console.log("lista encargados sin filtrar: "+ JSON.stringify(lista));
+    console.log('lista encargados sin filtrar: ' + JSON.stringify(lista));
 
     // ✅ Filtrar SOLO conectados
     const listaOnline = lista.filter((id) => {
@@ -169,7 +167,7 @@ async function crearClienteConRoundRobinUnDepto({
 
     lista = listaOnline;
 
-    console.log("lista encargados con filtrar: "+ JSON.stringify(lista));
+    console.log('lista encargados con filtrar: ' + JSON.stringify(lista));
 
     // Si no hay nadie, crear sin encargado
     if (!lista.length) {
@@ -292,4 +290,151 @@ async function crearClienteConRoundRobinUnDepto({
   }
 }
 
-module.exports = { crearClienteConRoundRobinUnDepto };
+async function asignarRoundRobinClienteExistente({
+  id_cliente,
+  id_configuracion,
+  id_usuario_dueno,
+  permiso_round_robin,
+  motivo = 'auto_round_robin_reopen',
+}) {
+  // Si no tiene permiso, no hacer nada
+  const rrDisabled =
+    permiso_round_robin === 0 ||
+    permiso_round_robin === '0' ||
+    permiso_round_robin === false;
+
+  if (rrDisabled) {
+    await log(
+      `⚠️ RR deshabilitado. No se asigna encargado al reabrir. id_cliente=${id_cliente}`,
+    );
+    return null;
+  }
+
+  const lockKey = `rr:${id_configuracion}`;
+
+  const [lockRow] = await db.query(`SELECT GET_LOCK(?, 5) AS got`, {
+    replacements: [lockKey],
+    type: db.QueryTypes.SELECT,
+  });
+
+  if (!lockRow || Number(lockRow.got) !== 1) {
+    await log(`⚠️ No se pudo obtener GET_LOCK para ${lockKey}.`);
+  }
+
+  try {
+    // 1) Obtener departamento
+    const dept = await db.query(
+      `SELECT id_departamento FROM departamentos_chat_center
+       WHERE id_configuracion = ? ORDER BY id_departamento ASC LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    const id_departamento_asginado = dept?.[0]?.id_departamento ?? null;
+
+    if (!id_departamento_asginado) {
+      await log(
+        `⚠️ Sin departamento. No se asigna encargado. id_cliente=${id_cliente}`,
+      );
+      return null;
+    }
+
+    // 2) Candidatos online
+    const encargados = await db.query(
+      `SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc 
+       INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario 
+       WHERE suc.id_usuario = ? AND sud.id_departamento = ? AND sud.asignacion_auto = 1
+       AND suc.rol NOT IN ('administrador', 'super_administrador')
+       ORDER BY suc.id_sub_usuario ASC`,
+      {
+        replacements: [id_usuario_dueno, id_departamento_asginado],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
+
+    lista = lista.filter((id) => {
+      const p = presenceStore.getPresence(id);
+      return p?.online === true;
+    });
+
+    if (!lista.length) {
+      // ← AGREGAR ESTO
+      await ClientesChatCenter.update(
+        { chat_cerrado: 0, id_encargado: null },
+        { where: { id: id_cliente } },
+      );
+      await log(
+        `⚠️ Sin encargados online al reabrir. id_cliente=${id_cliente} → reabierto sin encargado`,
+      );
+      return null;
+    }
+
+    // 3) Puntero RR
+    const last = await db.query(
+      `SELECT he.id_encargado_nuevo
+       FROM historial_encargados he
+       INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
+       WHERE cc.id_configuracion = ?
+         AND (he.motivo = 'auto_round_robin' OR he.motivo LIKE 'auto_round_robin_%')
+       ORDER BY he.id DESC LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    const lastAssigned = last?.[0]?.id_encargado_nuevo
+      ? Number(last[0].id_encargado_nuevo)
+      : null;
+
+    // 4) Elegir siguiente
+    let id_encargado_nuevo = null;
+    if (!lastAssigned) {
+      id_encargado_nuevo = lista[0];
+    } else {
+      const idx = lista.indexOf(lastAssigned);
+      id_encargado_nuevo =
+        idx === -1 ? lista[0] : lista[(idx + 1) % lista.length];
+    }
+
+    // 5) Update cliente existente
+    await ClientesChatCenter.update(
+      {
+        chat_cerrado: 0,
+        id_encargado: id_encargado_nuevo,
+        id_departamento: id_departamento_asginado,
+      },
+      { where: { id: id_cliente } },
+    );
+
+    // 6) Guardar historial
+    await db.query(
+      `INSERT INTO historial_encargados
+         (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+       VALUES (?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_cliente,
+          id_departamento_asginado,
+          null,
+          id_encargado_nuevo,
+          motivo,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+
+    await log(
+      `✅ RR reopen: id_cliente=${id_cliente} asignado a id_encargado=${id_encargado_nuevo}`,
+    );
+    return id_encargado_nuevo;
+  } finally {
+    await db.query(`SELECT RELEASE_LOCK(?) AS released`, {
+      replacements: [lockKey],
+      type: db.QueryTypes.SELECT,
+    });
+  }
+}
+
+module.exports = {
+  crearClienteConRoundRobinUnDepto,
+  asignarRoundRobinClienteExistente,
+};
