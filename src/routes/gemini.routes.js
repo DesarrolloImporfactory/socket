@@ -3,6 +3,7 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
+const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const requireStripeSubscription = require('../middlewares/requireStripeSubscription.middleware');
 const geminiController = require('../controllers/gemini.controller');
 const productosCtrl = require('../controllers/productos_ia.controller');
@@ -20,73 +21,64 @@ const uploadSingle = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+// ── Guards ──
+const ilGuard = [checkPlanActivo, checkToolAccess('insta_landing')];
+
 router.use(protect);
 
 // ─── Catálogos públicos ──────────────────────────────────────────────────────
 router.get('/etapas', geminiController.get_etapas);
 router.get('/templates', geminiController.get_templates);
 
-// ─── Consultas (requieren plan activo) ───────────────────────────────────────
-router.get('/usage', checkPlanActivo, geminiController.get_usage);
-router.get('/historial', geminiController.get_historial);
+// ─── Consultas (requieren plan activo + insta landing) ───────────────────────
+router.get('/usage', ...ilGuard, geminiController.get_usage);
+router.get('/historial', ...ilGuard, geminiController.get_historial);
 
 // ─── Negocios del usuario (configuraciones) ─────────────────────────────────
-router.get('/mis-negocios', checkPlanActivo, productosCtrl.listar_mis_negocios);
+router.get('/mis-negocios', ...ilGuard, productosCtrl.listar_mis_negocios);
 
 // ─── Productos IA (CRUD) ─────────────────────────────────────────────────────
-router.get('/productos', checkPlanActivo, productosCtrl.listar_productos);
-router.get('/productos/:id', checkPlanActivo, productosCtrl.obtener_producto);
-router.post('/productos', checkPlanActivo, productosCtrl.crear_producto);
-router.put(
-  '/productos/:id',
-  checkPlanActivo,
-  productosCtrl.actualizar_producto,
-);
-router.delete(
-  '/productos/:id',
-  checkPlanActivo,
-  productosCtrl.eliminar_producto,
-);
+router.get('/productos', ...ilGuard, productosCtrl.listar_productos);
+router.get('/productos/:id', ...ilGuard, productosCtrl.obtener_producto);
+router.post('/productos', ...ilGuard, productosCtrl.crear_producto);
+router.put('/productos/:id', ...ilGuard, productosCtrl.actualizar_producto);
+router.delete('/productos/:id', ...ilGuard, productosCtrl.eliminar_producto);
 router.patch(
   '/productos/:id/portada',
-  checkPlanActivo,
+  ...ilGuard,
   productosCtrl.asignar_portada,
 );
 router.patch(
   '/productos/:id/portada-upload',
-  checkPlanActivo,
+  ...ilGuard,
   uploadSingle.single('imagen_portada'),
   productosCtrl.subir_portada,
 );
 router.post(
   '/productos/:id/asignar-imagenes',
-  checkPlanActivo,
+  ...ilGuard,
   productosCtrl.asignar_imagenes,
 );
 
 // ─── Alimentar negocio con IA ────────────────────────────────────────────────
 router.post(
   '/productos/:id/alimentar-negocio',
-  checkPlanActivo,
+  ...ilGuard,
   productosCtrl.alimentar_negocio,
 );
 
 // ─── Importar desde Dropi → productos_ia ────────────────────────────────────
 router.post(
   '/dropi/productos',
-  checkPlanActivo,
+  ...ilGuard,
   productosCtrl.listar_dropi_productos,
 );
-router.post(
-  '/dropi/importar',
-  checkPlanActivo,
-  productosCtrl.importar_desde_dropi,
-);
+router.post('/dropi/importar', ...ilGuard, productosCtrl.importar_desde_dropi);
 
 // ─── Ángulos de venta (IA texto) ─────────────────────────────────────────────
 router.post(
   '/generar-angulos',
-  checkPlanActivo,
+  ...ilGuard,
   requireStripeSubscription,
   geminiController.generar_angulos,
 );
@@ -94,14 +86,14 @@ router.post(
 // ─── Generación ──────────────────────────────────────────────────────────────
 router.post(
   '/generar',
-  checkPlanActivo,
+  ...ilGuard,
   requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.generar_multipart,
 );
 router.post(
   '/generar-etapa',
-  checkPlanActivo,
+  ...ilGuard,
   requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.generar_etapa,
@@ -110,7 +102,7 @@ router.post(
 // ─── Regeneración ────────────────────────────────────────────────────────────
 router.post(
   '/regenerar-etapa',
-  checkPlanActivo,
+  ...ilGuard,
   requireStripeSubscription,
   upload.array('user_images', 6),
   geminiController.regenerar_etapa,
@@ -131,29 +123,17 @@ router.put(
 router.delete('/admin/templates/:id', geminiController.admin_delete_template);
 
 // ─── Templates Privados del usuario ──────────────────────────────────────────
-router.get('/mis-templates', checkPlanActivo, templatePrivadosCtrl.listar);
+router.get('/mis-templates', ...ilGuard, templatePrivadosCtrl.listar);
 router.post(
   '/mis-templates',
-  checkPlanActivo,
+  ...ilGuard,
   uploadSingle.single('imagen'),
   templatePrivadosCtrl.crear,
 );
-router.delete(
-  '/mis-templates/:id',
-  checkPlanActivo,
-  templatePrivadosCtrl.eliminar,
-);
+router.delete('/mis-templates/:id', ...ilGuard, templatePrivadosCtrl.eliminar);
 
 // ─── Legacy ──────────────────────────────────────────────────────────────────
-router.post(
-  '/obtener_api_key',
-  checkPlanActivo,
-  geminiController.obtener_api_key,
-);
-router.post(
-  '/guardar_api_key',
-  checkPlanActivo,
-  geminiController.guardar_api_key,
-);
+router.post('/obtener_api_key', ...ilGuard, geminiController.obtener_api_key);
+router.post('/guardar_api_key', ...ilGuard, geminiController.guardar_api_key);
 
 module.exports = router;

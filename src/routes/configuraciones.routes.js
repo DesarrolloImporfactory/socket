@@ -9,9 +9,13 @@ const {
   protectConfigOwner,
 } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
+const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
 const limiteConversaciones = require('../middlewares/limiteConversaciones.middleware');
 const requireStripeSubscription = require('../middlewares/requireStripeSubscription.middleware');
+
+// ── Guards ──
+const imporchatGuard = [checkPlanActivo, checkToolAccess('imporchat')];
 
 // wrapper que llama a tu limiteConexiones solo al reactivar
 const validarReactivarConLimite = (req, res, next) => {
@@ -38,27 +42,27 @@ router.post(
 
 router.post(
   '/validar_conexion_usuario',
-  checkPlanActivo,
+  ...imporchatGuard,
   configuracionesController.validarConexionUsuario,
 );
 
 router.post(
   '/listar_conexiones',
-  checkPlanActivo,
+  ...imporchatGuard,
   /* limiteConversaciones, */
   configuracionesController.listarConexiones,
 );
 
 router.post(
   '/listar_conexiones_sub_user',
-  checkPlanActivo,
+  ...imporchatGuard,
   /* limiteConversaciones, */
   configuracionesController.listarConexionesSubUser,
 );
 
 router.post(
   '/listar_admin_conexiones',
-  checkPlanActivo,
+  ...imporchatGuard,
   configuracionesController.listarAdminConexiones,
 );
 
@@ -69,19 +73,21 @@ router.post(
 
 router.post(
   '/agregarConfiguracion',
+  ...imporchatGuard,
   requireStripeSubscription,
   limiteConexiones,
   configuracionesController.agregarConfiguracion,
 );
 router.post(
   '/toggle_suspension',
+  ...imporchatGuard,
   validarReactivarConLimite,
   configuracionesController.toggleSuspension,
 );
 
 router.post(
   '/exportar_mensajes_xlsx',
-  checkPlanActivo,
+  ...imporchatGuard,
   protectConfigOwner,
   configuracionesController.exportarMensajesXLSX,
 );

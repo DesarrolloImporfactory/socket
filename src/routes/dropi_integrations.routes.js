@@ -2,7 +2,11 @@ const express = require('express');
 const router = express.Router();
 
 const auth = require('../middlewares/auth.middleware');
+const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
+const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const ctrl = require('../controllers/dropi_integrations.controller');
+
+const dropiboardGuard = [checkPlanActivo, checkToolAccess('dropiboard')];
 
 router.use(auth.protect);
 
@@ -41,13 +45,18 @@ router.get('/location/states', auth.protectConfigOwner, ctrl.listStates);
 router.post('/location/cities', auth.protectConfigOwner, ctrl.listCities);
 
 //Sync config
-router.get('/sync-config', auth.protectConfigOwner, ctrl.getSyncConfig);
-router.put('/sync-config', auth.protectConfigOwner, ctrl.updateSyncConfig);
+router.get('/sync-config', ...dropiboardGuard, ctrl.getSyncConfig);
+router.put('/sync-config', ...dropiboardGuard, ctrl.updateSyncConfig);
 
-router.get('/all-my-integrations', ctrl.listAllMyIntegrations);
+router.get(
+  '/all-my-integrations',
+  ...dropiboardGuard,
+  ctrl.listAllMyIntegrations,
+);
 
 // Dashboard: NO requiere protectConfigOwner porque soporta integraciones
 // a nivel usuario (sin id_configuracion). Ownership se valida en el controller.
-router.post('/dashboard/stats', ctrl.getDashboardStats);
+// Dashboard: requiere plan activo + valida tools_access en el controller
+router.post('/dashboard/stats', ...dropiboardGuard, ctrl.getDashboardStats);
 
 module.exports = router;
