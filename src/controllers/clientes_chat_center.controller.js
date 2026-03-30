@@ -946,7 +946,9 @@ function parseEstado(raw) {
 /* ============================================================
    GET /api/v1/clientes_chat_center/listar
    ?page=&limit=&q=&estado=&id_etiqueta=&sort=&id_configuracion=
-   &id_etiqueta_asesor=&id_etiqueta_ciclo=
+   &id_etiqueta_asesor=1,2,3  (multi-select, comma-separated)
+   &id_etiqueta_ciclo=4,5     (multi-select, comma-separated)
+   &estado_contacto=nuevo,en_proceso  (multi-select, comma-separated)
    ============================================================ */
 exports.listarClientes = catchAsync(async (req, res) => {
   const page = Math.max(1, Number(req.query.page ?? 1));
@@ -969,6 +971,21 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const idEtiquetaNum = Number(req.query.id_etiqueta ?? 0);
   const hasEtiqueta = Number.isFinite(idEtiquetaNum) && idEtiquetaNum > 0;
 
+  // ── Helper: parsear comma-separated a array limpio ──
+  const parseCSV = (raw) => {
+    if (!raw) return [];
+    return String(raw)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
+  const parseCSVNumbers = (raw) => {
+    return parseCSV(raw)
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0);
+  };
+
   // WHERE del cliente
   const whereParts = ['c.deleted_at IS NULL', 'c.id_configuracion = ?'];
   const params = [id_configuracion];
@@ -983,19 +1000,40 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(idEtiquetaNum);
   }
 
-  if (req.query.id_etiqueta_asesor) {
+  // ── Multi-select: Asesor (IN) ──
+  const idsAsesor = parseCSVNumbers(req.query.id_etiqueta_asesor);
+  if (idsAsesor.length === 1) {
     whereParts.push('c.id_etiqueta_asesor = ?');
-    params.push(Number(req.query.id_etiqueta_asesor));
+    params.push(idsAsesor[0]);
+  } else if (idsAsesor.length > 1) {
+    whereParts.push(
+      `c.id_etiqueta_asesor IN (${idsAsesor.map(() => '?').join(',')})`,
+    );
+    params.push(...idsAsesor);
   }
 
-  if (req.query.id_etiqueta_ciclo) {
+  // ── Multi-select: Ciclo (IN) ──
+  const idsCiclo = parseCSVNumbers(req.query.id_etiqueta_ciclo);
+  if (idsCiclo.length === 1) {
     whereParts.push('c.id_etiqueta_ciclo = ?');
-    params.push(Number(req.query.id_etiqueta_ciclo));
+    params.push(idsCiclo[0]);
+  } else if (idsCiclo.length > 1) {
+    whereParts.push(
+      `c.id_etiqueta_ciclo IN (${idsCiclo.map(() => '?').join(',')})`,
+    );
+    params.push(...idsCiclo);
   }
 
-  if (req.query.estado_contacto && String(req.query.estado_contacto).trim()) {
+  // ── Multi-select: Estado Contacto (IN) ──
+  const idsEstadoContacto = parseCSV(req.query.estado_contacto);
+  if (idsEstadoContacto.length === 1) {
     whereParts.push('c.estado_contacto = ?');
-    params.push(String(req.query.estado_contacto).trim().toLowerCase());
+    params.push(idsEstadoContacto[0].toLowerCase());
+  } else if (idsEstadoContacto.length > 1) {
+    whereParts.push(
+      `c.estado_contacto IN (${idsEstadoContacto.map(() => '?').join(',')})`,
+    );
+    params.push(...idsEstadoContacto.map((s) => s.toLowerCase()));
   }
 
   if (q) {
@@ -1037,21 +1075,19 @@ exports.listarClientes = catchAsync(async (req, res) => {
     LIMIT ? OFFSET ?;
   `;
 
-  //  COUNT: todos los clientes (con o sin mensajes)
   const countSql = `
     SELECT COUNT(*) AS total
     FROM clientes_chat_center c
     ${whereClause};
   `;
 
-  // Ejecutar queries
   const rows = await db.query(dataSql, {
     replacements: [...params, limit, offset],
     type: db.QueryTypes.SELECT,
   });
 
   const countRows = await db.query(countSql, {
-    replacements: params, // Solo los params del WHERE, sin id_configuracion extra
+    replacements: params,
     type: db.QueryTypes.SELECT,
   });
 

@@ -3,6 +3,7 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const { DateTime } = require('luxon');
 const FormData = require('form-data');
+const catchAsync = require('../utils/catchAsync');
 
 const {
   getConfigFromDB,
@@ -1195,138 +1196,177 @@ exports.listarProgramadosPorChat = async (req, res) => {
   }
 };
 
-exports.listarProgramadosPorConfig = async (req, res) => {
-  try {
-    const id_configuracion = Number(req.query?.id_configuracion || 0) || null;
-    const limit = Math.min(Number(req.query?.limit || 10) || 10, 100); // lotes por página
-    const page = Math.max(Number(req.query?.page || 1) || 1, 1);
-    const offset = (page - 1) * limit;
+/* ────────────────────────────────────────────────
+   1) Listar programados agrupados por lote (SSR)
+   ──────────────────────────────────────────────── */
 
-    if (!id_configuracion) {
-      return res.status(400).json({
-        ok: false,
-        msg: 'Faltan parámetros: id_configuracion',
-      });
-    }
+exports.programados_por_config = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion ?? 0);
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'id_configuracion es requerido' });
+  }
 
-    // 1) Contar total de lotes distintos
-    const [countRow] = await db.query(
-      `
-      SELECT COUNT(DISTINCT uuid_lote) AS total_lotes
-      FROM template_envios_programados
-      WHERE id_configuracion = ?
-      `,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      },
+  const page = Math.max(1, Number(req.query.page ?? 1));
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 10)));
+  const offset = (page - 1) * limit;
+
+  const q = String(req.query.q ?? '').trim();
+  const nombreTemplate = String(req.query.nombre_template ?? '').trim();
+  const estado = String(req.query.estado ?? '')
+    .trim()
+    .toLowerCase();
+  const fechaDesde = String(req.query.fecha_desde ?? '').trim();
+  const fechaHasta = String(req.query.fecha_hasta ?? '').trim();
+
+  // ── 1) Obtener UUIDs de lotes que coincidan con los filtros ──
+  const loteWhere = ['t.id_configuracion = ?'];
+  const loteParams = [id_configuracion];
+
+  if (q) {
+    const like = `%${q}%`;
+    loteWhere.push(
+      `(t.uuid_lote LIKE ? OR t.telefono LIKE ? OR t.nombre_template LIKE ?)`,
     );
+    loteParams.push(like, like, like);
+  }
 
-    const totalLotes = countRow?.total_lotes || 0;
-    const totalPages = Math.ceil(totalLotes / limit);
+  if (nombreTemplate) {
+    loteWhere.push('t.nombre_template = ?');
+    loteParams.push(nombreTemplate);
+  }
 
-    // 2) Obtener los uuid_lote de la página actual (paginación por lote)
-    const lotesPage = await db.query(
-      `
-      SELECT uuid_lote
-      FROM template_envios_programados
-      WHERE id_configuracion = ?
-      GROUP BY uuid_lote
-      ORDER BY MAX(creado_en) DESC
-      LIMIT ? OFFSET ?
-      `,
-      {
-        replacements: [id_configuracion, limit, offset],
-        type: db.QueryTypes.SELECT,
-      },
-    );
+  if (
+    estado &&
+    ['pendiente', 'enviado', 'error', 'procesando'].includes(estado)
+  ) {
+    loteWhere.push('t.estado = ?');
+    loteParams.push(estado);
+  }
 
-    if (lotesPage.length === 0) {
-      return res.json({
-        ok: true,
-        data: [],
-        pagination: { page, limit, totalLotes, totalPages },
-      });
-    }
+  if (fechaDesde) {
+    loteWhere.push('t.fecha_programada >= ?');
+    loteParams.push(fechaDesde);
+  }
 
-    const uuids = lotesPage.map((r) => r.uuid_lote);
+  if (fechaHasta) {
+    // Incluir todo el día
+    loteWhere.push('t.fecha_programada <= ?');
+    loteParams.push(`${fechaHasta} 23:59:59`);
+  }
 
-    // 3) Traer TODOS los registros de esos lotes
-    const rows = await db.query(
-      `
-      SELECT
-        tep.id,
-        tep.uuid_lote,
-        tep.id_configuracion,
-        tep.id_usuario,
-        tep.id_cliente_chat_center,
-        tep.telefono,
-        tep.telefono_configuracion,
-        tep.business_phone_id,
-        tep.waba_id,
-        tep.nombre_template,
-        tep.language_code,
-        tep.template_parameters_json,
-        tep.header_format,
-        tep.header_parameters_json,
-        tep.header_media_url,
-        tep.header_media_name,
-        tep.fecha_programada,
-        tep.fecha_programada_utc,
-        tep.timezone,
-        tep.estado,
-        tep.intentos,
-        tep.max_intentos,
-        tep.error_message,
-        tep.meta_json,
-        tep.id_wamid_mensaje,
-        tep.enviado_en,
-        tep.creado_en,
-        tep.actualizado_en,
+  const whereClause = loteWhere.join(' AND ');
 
-        ccc.nombre_cliente,
-        ccc.apellido_cliente,
-        ccc.email_cliente
+  // Contar lotes únicos que coinciden
+  const countSql = `
+    SELECT COUNT(DISTINCT t.uuid_lote) AS totalLotes
+    FROM template_envios_programados t
+    WHERE ${whereClause}
+  `;
 
-      FROM template_envios_programados tep
-      LEFT JOIN clientes_chat_center ccc
-        ON ccc.id = tep.id_cliente_chat_center
+  const [countRow] = await db.query(countSql, {
+    replacements: loteParams,
+    type: db.QueryTypes.SELECT,
+  });
 
-      WHERE tep.uuid_lote IN (?)
-      ORDER BY tep.creado_en DESC
-      `,
-      {
-        replacements: [uuids],
-        type: db.QueryTypes.SELECT,
-      },
-    );
+  const totalLotes = Number(countRow?.totalLotes ?? 0);
+  const totalPages = Math.max(1, Math.ceil(totalLotes / limit));
 
-    const data = rows.map((r) => ({
-      ...r,
-      template_parameters_json: parseMaybeJSON(r.template_parameters_json, []),
-      header_parameters_json: parseMaybeJSON(r.header_parameters_json, null),
-      meta_json: parseMaybeJSON(r.meta_json, null),
-    }));
-
-    return res.json({
+  if (totalLotes === 0) {
+    return res.status(200).json({
       ok: true,
-      data,
-      pagination: {
-        page,
-        limit,
-        totalLotes,
-        totalPages,
-      },
-    });
-  } catch (error) {
-    console.error('❌ listarProgramadosPorConfig:', error);
-    return res.status(500).json({
-      ok: false,
-      msg: 'Error al listar mensajes programados.',
-      error: error.message,
+      data: [],
+      pagination: { page, limit, totalLotes: 0, totalPages: 1 },
     });
   }
-};
+
+  // ── 2) Obtener UUIDs paginados (ordenados por creación más reciente) ──
+  const uuidsSql = `
+    SELECT uuid_lote, MAX(creado_en) AS max_creado
+    FROM template_envios_programados t
+    WHERE ${whereClause}
+    GROUP BY uuid_lote
+    ORDER BY max_creado DESC
+    LIMIT ? OFFSET ?
+  `;
+
+  const uuidRows = await db.query(uuidsSql, {
+    replacements: [...loteParams, limit, offset],
+    type: db.QueryTypes.SELECT,
+  });
+
+  if (!uuidRows.length) {
+    return res.status(200).json({
+      ok: true,
+      data: [],
+      pagination: { page, limit, totalLotes, totalPages },
+    });
+  }
+
+  const uuids = uuidRows.map((r) => r.uuid_lote);
+
+  // ── 3) Traer todos los items de esos lotes ──
+  // LEFT JOIN con clientes para traer nombre/apellido/email
+  const dataSql = `
+    SELECT
+      t.*,
+      c.nombre_cliente,
+      c.apellido_cliente,
+      c.email_cliente
+    FROM template_envios_programados t
+    LEFT JOIN clientes_chat_center c
+      ON c.id = t.id_cliente_chat_center
+      AND c.id_configuracion = t.id_configuracion
+    WHERE t.uuid_lote IN (${uuids.map(() => '?').join(',')})
+    ORDER BY t.fecha_programada ASC, t.id ASC
+  `;
+
+  const items = await db.query(dataSql, {
+    replacements: uuids,
+    type: db.QueryTypes.SELECT,
+  });
+
+  return res.status(200).json({
+    ok: true,
+    data: items,
+    pagination: { page, limit, totalLotes, totalPages },
+  });
+});
+
+/* ────────────────────────────────────────────────
+   2) Templates disponibles (nombres únicos usados
+      en envíos programados de esta configuración)
+   ──────────────────────────────────────────────── */
+
+exports.templates_programados = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion ?? 0);
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'id_configuracion es requerido' });
+  }
+
+  const rows = await db.query(
+    `
+    SELECT DISTINCT nombre_template
+    FROM template_envios_programados
+    WHERE id_configuracion = ?
+      AND nombre_template IS NOT NULL
+      AND nombre_template != ''
+    ORDER BY nombre_template ASC
+    `,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  return res.status(200).json({
+    ok: true,
+    templates: rows.map((r) => r.nombre_template),
+  });
+});
 
 exports.enviarVideoWhatsappFile = async (req, res) => {
   const { jwt_servidor, wa_token, phone_number_id } = req.body;

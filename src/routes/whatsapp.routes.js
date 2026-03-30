@@ -3005,7 +3005,8 @@ router.post(
 
 router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 
-router.get('/programados_por_config', whatsappCtrl.listarProgramadosPorConfig);
+router.get('/programados_por_config', whatsappCtrl.programados_por_config);
+router.get('/templates_programados', whatsappCtrl.templates_programados);
 
 router.post(
   '/enviar-video-file',
