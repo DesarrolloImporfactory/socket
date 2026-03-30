@@ -15,6 +15,7 @@ async function withLock(lockName, fn) {
     });
 
     if (!row || Number(row.got) !== 1) {
+      console.log('🔒 No se obtuvo lock');
       return;
     }
 
@@ -75,6 +76,17 @@ async function execUpdateAndRowCount(sql, replacements = []) {
   return Number(rowCountRow?.affectedRows || 0);
 }
 
+/**
+ * Helper: detectar si un error es rate limiting de Meta (código 80008)
+ */
+function isMetaRateLimit(err) {
+  return (
+    err?.meta_error?.code === 80008 ||
+    err?.message?.includes('80008') ||
+    err?.message?.includes('too many calls')
+  );
+}
+
 let isRunning = false;
 
 /**
@@ -86,246 +98,279 @@ cron.schedule('* * * * *', async () => {
   isRunning = true;
   try {
     await withLock('template_programado_masivo_lock', async () => {
-    const cicloInicio = Date.now();
+      const cicloInicio = Date.now();
 
-    try {
-      // 0) Recovery de registros atascados en "procesando"
-      const rescuedRows = await execUpdateAndRowCount(
-        `
-        UPDATE template_envios_programados
-        SET estado = 'pendiente',
-            error_message = CONCAT(
-              '[AUTO-RECOVERY] Reencolado por cron (procesando > 10 min) | ',
-              COALESCE(error_message, '')
-            ),
-            actualizado_en = NOW()
-        WHERE estado = 'procesando'
-          AND actualizado_en < (NOW() - INTERVAL 10 MINUTE)
-          AND intentos < max_intentos
-        `,
-        [],
-      );
-
-      if (rescuedRows > 0) {
-        console.log(
-          `♻️ [CRON templateProgramadoMasivo] Reencolados por recovery: ${rescuedRows}`,
-        );
-      }
-
-      // 1) Buscar pendientes listos para enviar
-      const pendientes = await db.query(
-        `
-        SELECT *
-        FROM template_envios_programados
-        WHERE estado = 'pendiente'
-          AND fecha_programada_utc <= UTC_TIMESTAMP()
-          AND intentos < max_intentos
-        ORDER BY fecha_programada_utc ASC, id ASC
-        LIMIT 100
-        `,
-        { type: db.QueryTypes.SELECT },
-      );
-
-      if (!pendientes.length) {
-        return;
-      }
-
-      console.log(
-        `📋 [CRON templateProgramadoMasivo] Pendientes encontrados: ${pendientes.length}`,
-      );
-
-      // ══════════════════════════════════════════════════════
-      // 1.5) PRE-FETCH de plantillas ANTES del loop de envío
-      // ══════════════════════════════════════════════════════
       try {
-        const prefetched = await prefetchTemplates(pendientes);
-        if (prefetched > 0) {
+        // 0) Recovery de registros atascados en "procesando"
+        const rescuedRows = await execUpdateAndRowCount(
+          `
+          UPDATE template_envios_programados
+          SET estado = 'pendiente',
+              error_message = CONCAT(
+                '[AUTO-RECOVERY] Reencolado por cron (procesando > 10 min) | ',
+                COALESCE(error_message, '')
+              ),
+              actualizado_en = NOW()
+          WHERE estado = 'procesando'
+            AND actualizado_en < (NOW() - INTERVAL 10 MINUTE)
+            AND intentos < max_intentos
+          `,
+          [],
+        );
+
+        if (rescuedRows > 0) {
           console.log(
-            `💾 [CRON templateProgramadoMasivo] Pre-cacheadas ${prefetched} plantilla(s) desde Meta`,
+            `♻️ [CRON templateProgramadoMasivo] Reencolados por recovery: ${rescuedRows}`,
           );
         }
-      } catch (prefetchErr) {
-        console.warn(
-          '⚠️ [CRON templateProgramadoMasivo] Error en prefetch (no fatal):',
-          prefetchErr.message,
+
+        // 1) Buscar pendientes listos para enviar
+        const pendientes = await db.query(
+          `
+          SELECT *
+          FROM template_envios_programados
+          WHERE estado = 'pendiente'
+            AND fecha_programada_utc <= UTC_TIMESTAMP()
+            AND intentos < max_intentos
+          ORDER BY fecha_programada_utc ASC, id ASC
+          LIMIT 100
+          `,
+          { type: db.QueryTypes.SELECT },
         );
-      }
 
-      // 2) Enviar mensajes con retraso entre cada uno
-      for (const [index, item] of pendientes.entries()) {
-        const itemStart = Date.now();
+        if (!pendientes.length) {
+          return;
+        }
 
+        console.log(
+          `📋 [CRON templateProgramadoMasivo] Pendientes encontrados: ${pendientes.length}`,
+        );
+
+        // ══════════════════════════════════════════════════════
+        // 1.5) PRE-FETCH de plantillas ANTES del loop de envío
+        // ══════════════════════════════════════════════════════
         try {
-          // Retraso siempre 5s entre un item y el anterio
-          if (index > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 5000));
+          const prefetched = await prefetchTemplates(pendientes);
+          if (prefetched > 0) {
+            console.log(
+              `💾 [CRON templateProgramadoMasivo] Pre-cacheadas ${prefetched} plantilla(s) desde Meta`,
+            );
+          }
+        } catch (prefetchErr) {
+          // ── FIX: Si es rate limiting, abortar ciclo completo ──
+          // No tiene sentido enviar 100+ mensajes si ni pudimos cachear
+          // la plantilla — cada envío haría su propia llamada a Meta
+          // y empeoraría el rate limit.
+          if (isMetaRateLimit(prefetchErr)) {
+            console.error(
+              '🛑 [CRON templateProgramadoMasivo] Rate limit de Meta en prefetch — abortando ciclo. Se reintentará en el próximo tick (30 min).',
+            );
+            return; // Sale del withLock, no procesa ningún envío
           }
 
-          // Toma atómica del registro
-          const affectedRows = await execUpdateAndRowCount(
-            `
-            UPDATE template_envios_programados
-            SET estado = 'procesando',
-                intentos = intentos + 1,
-                actualizado_en = NOW()
-            WHERE id = ?
-              AND estado = 'pendiente'
-              AND intentos < max_intentos
-            `,
-            [item.id],
+          console.warn(
+            '⚠️ [CRON templateProgramadoMasivo] Error en prefetch (no fatal):',
+            prefetchErr.message,
           );
+        }
 
-          if (!affectedRows) {
-            continue;
-          }
-
-          // Parseo de JSONs
-          const template_parameters = parseJsonSafe(
-            item.template_parameters_json,
-            [],
-          );
-          const header_parameters = parseJsonSafe(
-            item.header_parameters_json,
-            null,
-          );
-
-          // Envío (con timeout)
-          const resp = await withTimeout(
-            sendWhatsappMessageTemplateScheduled({
-              telefono: item.telefono,
-              telefono_configuracion: item.telefono_configuracion,
-              id_configuracion: item.id_configuracion,
-              responsable: 'cron_template_programado',
-
-              nombre_template: item.nombre_template,
-              language_code: item.language_code || null,
-              template_parameters: Array.isArray(template_parameters)
-                ? template_parameters
-                : [],
-
-              header_format: item.header_format || null,
-              header_parameters: Array.isArray(header_parameters)
-                ? header_parameters
-                : null,
-              header_media_url: item.header_media_url || null,
-              header_media_name: item.header_media_name || null,
-            }),
-            45000,
-            `sendWhatsappMessageTemplateScheduled id=${item.id}`,
-          );
-
-          const wamid = resp?.wamid || null;
-
-          // ── FIX 1 ────────────────────────────────────────────────────────
-          // AND estado = 'procesando' evita que un background tardío
-          // (request HTTP que siguió corriendo tras el timeout) sobreescriba
-          // un estado que ya fue resuelto por otro tick como 'error'.
-          // Sin esta condición: el background llega ~50s después, encuentra
-          // id=X en estado='error' y lo pisa con 'enviado', generando el
-          // registro inconsistente que veías (estado=error + id_wamid lleno).
-          // ─────────────────────────────────────────────────────────────────
-          await db.query(
-            `
-            UPDATE template_envios_programados
-            SET estado = 'enviado',
-                enviado_en = NOW(),
-                id_wamid_mensaje = ?,
-                error_message = NULL,
-                actualizado_en = NOW()
-            WHERE id = ?
-              AND estado = 'procesando'
-            `,
-            {
-              replacements: [wamid, item.id],
-              type: db.QueryTypes.UPDATE,
-            },
-          );
-
-          console.log(
-            `✅ [CRON templateProgramadoMasivo] Enviado id=${item.id} tel=${item.telefono} wamid=${wamid || 'N/A'} ms=${Date.now() - itemStart}`,
-          );
-        } catch (err) {
-          const intentosPrevios = Number(item.intentos || 0);
-          const intentosActuales = intentosPrevios + 1;
-          const maxIntentos = Number(item.max_intentos || 3);
-
-          // ── FIX 2 ────────────────────────────────────────────────────────
-          // Si el error es TIMEOUT, el request HTTP ya salió hacia Meta y
-          // puede haber sido procesado. Si devolvemos a 'pendiente', el
-          // siguiente tick lo reenvía aunque el mensaje ya llegó → duplicado.
-          // Por eso en timeout siempre marcamos 'error' (no reintentar).
-          // El operador puede revisar en Meta si llegó y corregir manualmente.
-          // ─────────────────────────────────────────────────────────────────
-          const esCancelablePorTimeout = err?.code === 'TIMEOUT';
-          const nuevoEstado =
-            esCancelablePorTimeout || intentosActuales >= maxIntentos
-              ? 'error'
-              : 'pendiente';
-
-          const errorPayload = {
-            message: err?.message || 'Error desconocido',
-            code: err?.code || null,
-            meta_status: err?.meta_status || null,
-            meta_error: err?.meta_error || null,
-            at: new Date().toISOString(),
-          };
+        // 2) Enviar mensajes con retraso entre cada uno
+        for (const [index, item] of pendientes.entries()) {
+          const itemStart = Date.now();
 
           try {
+            // Retraso siempre 5s entre un item y el anterior
+            if (index > 0) {
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+            }
+
+            // Toma atómica del registro
+            const affectedRows = await execUpdateAndRowCount(
+              `
+              UPDATE template_envios_programados
+              SET estado = 'procesando',
+                  intentos = intentos + 1,
+                  actualizado_en = NOW()
+              WHERE id = ?
+                AND estado = 'pendiente'
+                AND intentos < max_intentos
+              `,
+              [item.id],
+            );
+
+            if (!affectedRows) {
+              continue;
+            }
+
+            // Parseo de JSONs
+            const template_parameters = parseJsonSafe(
+              item.template_parameters_json,
+              [],
+            );
+            const header_parameters = parseJsonSafe(
+              item.header_parameters_json,
+              null,
+            );
+
+            // Envío (con timeout)
+            const resp = await withTimeout(
+              sendWhatsappMessageTemplateScheduled({
+                telefono: item.telefono,
+                telefono_configuracion: item.telefono_configuracion,
+                id_configuracion: item.id_configuracion,
+                responsable: 'cron_template_programado',
+
+                nombre_template: item.nombre_template,
+                language_code: item.language_code || null,
+                template_parameters: Array.isArray(template_parameters)
+                  ? template_parameters
+                  : [],
+
+                header_format: item.header_format || null,
+                header_parameters: Array.isArray(header_parameters)
+                  ? header_parameters
+                  : null,
+                header_media_url: item.header_media_url || null,
+                header_media_name: item.header_media_name || null,
+              }),
+              45000,
+              `sendWhatsappMessageTemplateScheduled id=${item.id}`,
+            );
+
+            const wamid = resp?.wamid || null;
+
             await db.query(
               `
               UPDATE template_envios_programados
-              SET estado = ?,
-                  error_message = ?,
+              SET estado = 'enviado',
+                  enviado_en = NOW(),
+                  id_wamid_mensaje = ?,
+                  error_message = NULL,
                   actualizado_en = NOW()
               WHERE id = ?
                 AND estado = 'procesando'
               `,
               {
-                replacements: [
-                  nuevoEstado,
-                  JSON.stringify(errorPayload).slice(0, 4000),
-                  item.id,
-                ],
+                replacements: [wamid, item.id],
                 type: db.QueryTypes.UPDATE,
               },
             );
-          } catch (updateErr) {
-            console.error(
-              `❌ [CRON templateProgramadoMasivo] Error actualizando catch id=${item.id}:`,
-              updateErr.message,
+
+            console.log(
+              `✅ [CRON templateProgramadoMasivo] Enviado id=${item.id} tel=${item.telefono} wamid=${wamid || 'N/A'} ms=${Date.now() - itemStart}`,
             );
-          }
+          } catch (err) {
+            // ── FIX: Rate limit en envío → parar todo el lote ──
+            // No quemar intentos de los demás si Meta está limitando.
+            if (isMetaRateLimit(err)) {
+              console.error(
+                `🛑 [CRON templateProgramadoMasivo] Rate limit en id=${item.id}. Pausando lote — se reintentará en el próximo ciclo (30 min).`,
+              );
 
-          console.error(
-            `❌ [CRON templateProgramadoMasivo] Falló id=${item.id} estado=${nuevoEstado} intento=${intentosActuales}/${maxIntentos}:`,
-            err?.message || err,
-          );
+              // Devolver este item a pendiente sin quemar intento
+              try {
+                await db.query(
+                  `UPDATE template_envios_programados
+                   SET estado = 'pendiente',
+                       intentos = GREATEST(intentos - 1, 0),
+                       error_message = ?,
+                       actualizado_en = NOW()
+                   WHERE id = ? AND estado = 'procesando'`,
+                  {
+                    replacements: [
+                      JSON.stringify({
+                        message: 'Rate limited — reintento automático',
+                        at: new Date().toISOString(),
+                      }),
+                      item.id,
+                    ],
+                    type: db.QueryTypes.UPDATE,
+                  },
+                );
+              } catch (updateErr) {
+                console.error(
+                  `❌ [CRON] Error devolviendo a pendiente id=${item.id}:`,
+                  updateErr.message,
+                );
+              }
 
-          if (err?.meta_status || err?.meta_error) {
-            console.error('🧾 [Meta error detail]', {
-              id: item.id,
-              meta_status: err.meta_status || null,
-              meta_error: err.meta_error || null,
-            });
+              break; // ← Sale del for loop, no sigue con los demás
+            }
+
+            const intentosPrevios = Number(item.intentos || 0);
+            const intentosActuales = intentosPrevios + 1;
+            const maxIntentos = Number(item.max_intentos || 3);
+
+            const esCancelablePorTimeout = err?.code === 'TIMEOUT';
+            const nuevoEstado =
+              esCancelablePorTimeout || intentosActuales >= maxIntentos
+                ? 'error'
+                : 'pendiente';
+
+            const errorPayload = {
+              message: err?.message || 'Error desconocido',
+              code: err?.code || null,
+              meta_status: err?.meta_status || null,
+              meta_error: err?.meta_error || null,
+              at: new Date().toISOString(),
+            };
+
+            try {
+              await db.query(
+                `
+                UPDATE template_envios_programados
+                SET estado = ?,
+                    error_message = ?,
+                    actualizado_en = NOW()
+                WHERE id = ?
+                  AND estado = 'procesando'
+                `,
+                {
+                  replacements: [
+                    nuevoEstado,
+                    JSON.stringify(errorPayload).slice(0, 4000),
+                    item.id,
+                  ],
+                  type: db.QueryTypes.UPDATE,
+                },
+              );
+            } catch (updateErr) {
+              console.error(
+                `❌ [CRON templateProgramadoMasivo] Error actualizando catch id=${item.id}:`,
+                updateErr.message,
+              );
+            }
+
+            console.error(
+              `❌ [CRON templateProgramadoMasivo] Falló id=${item.id} estado=${nuevoEstado} intento=${intentosActuales}/${maxIntentos}:`,
+              err?.message || err,
+            );
+
+            if (err?.meta_status || err?.meta_error) {
+              console.error('🧾 [Meta error detail]', {
+                id: item.id,
+                meta_status: err.meta_status || null,
+                meta_error: err.meta_error || null,
+              });
+            }
           }
         }
-      }
 
-      // 3) Limpiar cache expirado al final del ciclo
-      pruneTemplateCache();
-    } catch (error) {
-      console.error(
-        '❌ [CRON templateProgramadoMasivo] Error general:',
-        error.message,
-      );
-    } finally {
-      const ms = Date.now() - cicloInicio;
-      if (ms > 1000) {
-        console.log(
-          `🏁 [CRON templateProgramadoMasivo] Ciclo finalizado en ${ms}ms`,
+        // 3) Limpiar cache expirado al final del ciclo
+        pruneTemplateCache();
+      } catch (error) {
+        console.error(
+          '❌ [CRON templateProgramadoMasivo] Error general:',
+          error.message,
         );
+      } finally {
+        const ms = Date.now() - cicloInicio;
+        if (ms > 1000) {
+          console.log(
+            `🏁 [CRON templateProgramadoMasivo] Ciclo finalizado en ${ms}ms`,
+          );
+        }
       }
-    }
     });
   } finally {
     isRunning = false;

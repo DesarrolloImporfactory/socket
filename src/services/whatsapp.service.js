@@ -106,9 +106,6 @@ const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
 
   const startedAt = Date.now();
 
-  // ── FIX 2: Ya NO hay try/catch que trague errores ──
-  // Si Meta falla, el error se propaga al caller con el detalle real.
-
   console.log(
     '🔎 [obtenerTextoPlantilla] CACHE MISS → consultando Meta (con paginación)',
     {
@@ -220,6 +217,9 @@ const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
    - Agrupa por waba_id + nombre_template
    - Consulta Meta UNA SOLA VEZ por combinación única
    - Retorna cuántas plantillas se pre-cachearon
+   
+   FIX: Propaga errores de rate limiting (80008) al caller
+        para que el cron pueda abortar el ciclo.
    ================================================================ */
 
 async function prefetchTemplates(pendientes) {
@@ -279,7 +279,20 @@ async function prefetchTemplates(pendientes) {
       // Pequeña pausa entre WABAs distintos para no saturar
       await new Promise((r) => setTimeout(r, 500));
     } catch (err) {
-      // ── FIX 2: Loguear error real del prefetch ──
+      // ── FIX: Rate limit → propagar al cron para que aborte el ciclo ──
+      const isRateLimit =
+        err?.meta_error?.code === 80008 ||
+        err?.message?.includes('80008') ||
+        err?.message?.includes('too many calls');
+
+      if (isRateLimit) {
+        console.error(
+          '🛑 [prefetchTemplates] Rate limit de Meta — propagando error al cron',
+        );
+        throw err; // El cron detecta esto y hace return (aborta ciclo)
+      }
+
+      // Otros errores: loguear y seguir con la siguiente plantilla
       console.error(
         `❌ [prefetchTemplates] Error pre-fetching ${info.nombre_template}:`,
         {
