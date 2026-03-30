@@ -62,7 +62,8 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
             pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
             pc.stock, pc.nombre_upsell, pc.descripcion_upsell,
             pc.precio_upsell, pc.imagen_upsell_url, pc.combos_producto,
-            pc.fecha_actualizacion, cc.nombre AS nombre_categoria
+            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
+            cc.nombre AS nombre_categoria
      FROM   productos_chat_center pc
      LEFT JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
      WHERE  pc.id_configuracion = ?
@@ -516,6 +517,10 @@ function normalizeCatalogProducts(rows) {
     if (imagen_upsell_url)
       bloque_prompt += `[upsell_imagen_url]: ${imagen_upsell_url}\n`;
 
+    if (r.material) bloque_prompt += `[ficha_tecnica_url]: ${r.material}\n`;
+    if (r.landing_url) bloque_prompt += `[landing_url]: ${r.landing_url}\n`;
+    if (r.precio_proveedor) bloque_prompt += `precio_proveedor ${r.precio_proveedor}\n`;
+
     return {
       id_producto: r.id_producto,
       id_configuracion: r.id_configuracion,
@@ -536,6 +541,9 @@ function normalizeCatalogProducts(rows) {
       nombre_upsell: r.nombre_upsell || null,
       descripcion_upsell: r.descripcion_upsell || null,
       precio_upsell: r.precio_upsell ?? null,
+      material: r.material || null,
+      landing_url: r.landing_url || null,
+      precio_proveedor: r.precio_proveedor || null,
       upsell_imagen_url: imagen_upsell_url,
       combos_producto: combos_json,
       combos_producto_texto: combos_texto,
