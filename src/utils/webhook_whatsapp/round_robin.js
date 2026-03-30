@@ -304,8 +304,12 @@ async function asignarRoundRobinClienteExistente({
     permiso_round_robin === false;
 
   if (rrDisabled) {
+    await ClientesChatCenter.update(
+      { chat_cerrado: 0, id_encargado: null },
+      { where: { id: id_cliente } },
+    );
     await log(
-      `⚠️ RR deshabilitado. No se asigna encargado al reabrir. id_cliente=${id_cliente}`,
+      `⚠️ RR deshabilitado. Chat reabierto sin encargado (espera). id_cliente=${id_cliente}`,
     );
     return null;
   }
