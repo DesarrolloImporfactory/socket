@@ -1266,7 +1266,7 @@ async function syncProfitDetails({
         );
         errors++;
         if (errors >= 5) {
-          console.log('[profit] Too many errors, stopping batch');
+          console.log('[profit] Too many errors, stopping batch.');
           break;
         }
         await new Promise((r) => setTimeout(r, 3000));
