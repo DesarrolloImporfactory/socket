@@ -591,6 +591,56 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     });
   }
 
+  // ─── CORTESÍA / Acceso manual sin Stripe ───
+  // Si no hay stripe_subscription_id, estado es "activo" y fecha_renovacion
+  // está en el futuro → retornar directo sin consultar Stripe.
+  // Útil para dar meses gratis o cortesías manuales desde la DB.
+  const ahora = new Date();
+  const fechaRenDb = user.fecha_renovacion
+    ? new Date(user.fecha_renovacion)
+    : null;
+  const esAccesoManual =
+    !user.stripe_subscription_id &&
+    estadoFinal === 'activo' &&
+    fechaRenDb &&
+    fechaRenDb > ahora;
+
+  if (esAccesoManual) {
+    let effectiveToolsAccess = planDb?.tools_access || 'both';
+    if (effectiveToolsAccess !== 'both') {
+      const hasPromoResources =
+        Number(user.promo_imagenes_restantes || 0) > 0 ||
+        Number(user.promo_angulos_restantes || 0) > 0;
+      if (hasPromoResources) effectiveToolsAccess = 'both';
+    }
+
+    return res.status(200).json({
+      success: true,
+      plan: {
+        id_plan: user.id_plan,
+        nombre_plan: planDb?.nombre_plan || 'Plan',
+        descripcion_plan: planDb?.descripcion_plan || '',
+        estado: 'activo',
+        fecha_renovacion: fechaRenDb,
+        stripe_subscription_status: 'courtesy',
+        cancel_at_period_end: 0,
+        cancel_at: null,
+        canceled_at: null,
+        tipo_plan: user.tipo_plan,
+        permanente: user.permanente,
+        free_trial_used: Number(user.free_trial_used || 0),
+        trial_eligible: Number(user.free_trial_used || 0) === 0,
+        promo_plan2_used: Number(user.promo_plan2_used || 0),
+        promo_plan2_eligible: Number(user.promo_plan2_used || 0) === 0,
+        ...(planDb || {}),
+        tools_access: effectiveToolsAccess,
+        stripe_subscription_id: null,
+        needs_card_capture: false,
+      },
+      user_flags: userFlags,
+    });
+  }
+
   // ─── Stripe Resolution ───
   let sub = null;
 
