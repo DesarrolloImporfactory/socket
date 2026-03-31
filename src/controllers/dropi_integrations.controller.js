@@ -1280,6 +1280,137 @@ async function syncProfitDetails({
   }
 }
 
+/**
+ * Analiza órdenes en devolución desde el cache.
+ * Parsea order_data para extraer los movimientos de tracking
+ * (c aplica a TODAS las transportadoras)
+ * y detecta cuáles NO tienen "DEV CONFIRMADA POR BODEGA".
+ */
+async function analyzeDevolutions(cacheWhere, from, until) {
+  const devRows = await DropiOrdersCache.findAll({
+    where: {
+      ...cacheWhere,
+      classified_status: 'devolucion',
+      order_created_at: {
+        [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+      },
+    },
+    attributes: [
+      'dropi_order_id',
+      'order_data',
+      'total_order',
+      'order_created_at',
+      'dropshipper_profit',
+    ],
+    raw: true,
+    order: [['order_created_at', 'DESC']],
+    limit: 200,
+  });
+
+  const supplierIds = new Set();
+  const userIds = new Set();
+  const orders = [];
+
+  for (const row of devRows) {
+    let od = {};
+    try {
+      od = JSON.parse(row.order_data || '{}');
+    } catch (e) {
+      continue;
+    }
+
+    // Tracking para detección de proveedor
+    if (od.supplier?.id) supplierIds.add(od.supplier.id);
+    if (od.user?.id) userIds.add(od.user.id);
+
+    // Movimientos ordenados cronológicamente
+    const movements = (od.servientrega_movements || []).sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at),
+    );
+
+    // Detección de escaneo
+    const hasBodegaScan = movements.some((m) =>
+      String(m.nom_mov || '')
+        .toUpperCase()
+        .includes('DEV CONFIRMADA POR BODEGA'),
+    );
+
+    const hasDevolucionRemitente = movements.some((m) => {
+      const upper = String(m.nom_mov || '').toUpperCase();
+      return (
+        upper.includes('DEVOLUCION AL REMITENTE') ||
+        upper.includes('DEVOLUCIÓN AL REMITENTE')
+      );
+    });
+
+    const managedDevolution = od.managed_devolution_app === true;
+
+    // Productos
+    const details = od.orderdetails || [];
+    const products = details.map((d) => ({
+      name: d?.product?.name || 'Sin nombre',
+      sku: d?.product?.sku || '',
+      quantity: d?.quantity || 1,
+      sale_price: d?.product?.sale_price || 0,
+    }));
+
+    // Nivel de alerta
+    // critical = ya se devolvió al remitente PERO no se escaneó en bodega
+    // pending  = aún no ha llegado la devolución final (en tránsito de vuelta)
+    // ok       = escaneada correctamente
+    let alertLevel = 'ok';
+    if (hasDevolucionRemitente && !hasBodegaScan) {
+      alertLevel = 'critical';
+    } else if (!hasDevolucionRemitente && !hasBodegaScan) {
+      alertLevel = 'pending';
+    }
+
+    orders.push({
+      id: row.dropi_order_id,
+      name: od.name || '',
+      surname: od.surname || '',
+      phone: od.phone || '',
+      city: od.city || '',
+      state: od.state || '',
+      total_order: Number(row.total_order || 0),
+      shipping_company: od.shipping_company || '',
+      shipping_guide: od.shipping_guide || '',
+      status: od.status || '',
+      created_at: row.order_created_at,
+      profit: row.dropshipper_profit,
+      products,
+      managedDevolution,
+      movements: movements.map((m) => ({
+        nom_mov: m.nom_mov,
+        created_at: m.created_at,
+      })),
+      hasBodegaScan,
+      hasDevolucionRemitente,
+      alertLevel,
+    });
+  }
+
+  // ── Detección de proveedor ──
+  // Si hay un solo supplier_id y múltiples user_id → el usuario es proveedor
+  const isSupplierView = supplierIds.size === 1 && userIds.size > 1;
+
+  const totalDevolutions = orders.length;
+  const withScan = orders.filter((o) => o.alertLevel === 'ok').length;
+  const withoutScan = orders.filter((o) => o.alertLevel === 'critical').length;
+  const pendingReturn = orders.filter((o) => o.alertLevel === 'pending').length;
+
+  return {
+    isSupplierView,
+    summary: {
+      totalDevolutions,
+      withScan,
+      withoutScan,
+      pendingReturn,
+    },
+    orders,
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════
    Computar stats desde cache
    ═══════════════════════════════════════════════════════════ */
@@ -1432,6 +1563,9 @@ async function computeStatsFromCache(cacheCtx, from, until) {
   const avgProfitPerOrder =
     profitCalculated > 0 ? profitPotencialTotal / profitCalculated : 0;
 
+  // ── Análisis de devoluciones (escaneo bodega) ──
+  const devolucionAnalysis = await analyzeDevolutions(cacheWhere, from, until);
+
   return {
     totalOrders,
     totalMoney,
@@ -1475,6 +1609,7 @@ async function computeStatsFromCache(cacheCtx, from, until) {
       .sort((a, b) => b.ordenes - a.ordenes)
       .slice(0, 10),
     retiroAgencia: retiroAgencia.slice(0, 20),
+    devolucionAnalysis,
   };
 }
 
