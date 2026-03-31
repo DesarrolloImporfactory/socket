@@ -1036,6 +1036,25 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(...idsEstadoContacto.map((s) => s.toLowerCase()));
   }
 
+  // ── Filtro por fecha ──
+  const fechaTipo = String(req.query.fecha_tipo ?? '').trim(); // 'created' | 'actividad'
+  const fechaDesde = String(req.query.fecha_desde ?? '').trim(); // 'YYYY-MM-DD'
+  const fechaHasta = String(req.query.fecha_hasta ?? '').trim(); // 'YYYY-MM-DD'
+
+  if (fechaTipo && (fechaDesde || fechaHasta)) {
+    const col =
+      fechaTipo === 'actividad' ? 'c.ultimo_mensaje_at' : 'c.created_at';
+
+    if (fechaDesde) {
+      whereParts.push(`${col} >= ?`);
+      params.push(`${fechaDesde} 00:00:00`);
+    }
+    if (fechaHasta) {
+      whereParts.push(`${col} <= ?`);
+      params.push(`${fechaHasta} 23:59:59`);
+    }
+  }
+
   if (q) {
     const like = `%${q}%`;
     whereParts.push(`(
