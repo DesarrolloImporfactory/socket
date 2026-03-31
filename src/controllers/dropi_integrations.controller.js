@@ -1304,7 +1304,6 @@ async function analyzeDevolutions(cacheWhere, from, until) {
     ],
     raw: true,
     order: [['order_created_at', 'DESC']],
-    limit: 200,
   });
 
   const supplierIds = new Set();
