@@ -14,23 +14,15 @@ const validField = (req, res, next) => {
 
 // Validación para crear usuario (registro)
 exports.createUserValidation = [
-  body('nombre').notEmpty().withMessage('El nombre es obligatorio.'),
-  body('usuario')
-    .notEmpty()
-    .withMessage('El nombre de usuario es obligatorio.'),
-  body('password')
-    .notEmpty()
-    .withMessage('La contraseña es obligatoria.')
-    .isLength({ min: 6 })
-    .withMessage('La contraseña debe tener al menos 6 caracteres.'),
   body('email')
-    .notEmpty()
-    .withMessage('El correo electrónico es obligatorio.')
-    .isEmail()
-    .withMessage('Debe ser un correo electrónico válido.'),
+    .notEmpty().withMessage('El correo electrónico es obligatorio.')
+    .isEmail().withMessage('Debe ser un correo electrónico válido.'),
   body('nombre_encargado')
-    .notEmpty()
-    .withMessage('El nombre del encargado es obligatorio.'),
+    .notEmpty().withMessage('El nombre es obligatorio.')
+    .isLength({ min: 3 }).withMessage('Mínimo 3 caracteres.'),
+  body('password')
+    .notEmpty().withMessage('La contraseña es obligatoria.')
+    .isLength({ min: 6 }).withMessage('Mínimo 6 caracteres.'),
   validField,
 ];
 

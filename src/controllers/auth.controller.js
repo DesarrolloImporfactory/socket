@@ -14,30 +14,36 @@ const jwt = require('jsonwebtoken');
 const { db, db_2 } = require('../database/config');
 
 exports.registrarUsuario = catchAsync(async (req, res, next) => {
-  const { nombre, usuario, password, email, nombre_encargado } = req.body;
+  const { email, nombre_encargado, password } = req.body;
 
-  if (!nombre || !usuario || !password || !email || !nombre_encargado) {
+  // --- Campos obligatorios (solo 3) ---
+  if (!email || !nombre_encargado || !password) {
     return res
       .status(400)
       .json({ status: 'fail', message: 'Todos los campos son obligatorios' });
   }
 
+  // --- Auto-derivar campos que ya no vienen del form ---
+  const nombre = nombre_encargado.trim(); // empresa = nombre del encargado
+  const usuario = email.toLowerCase().trim(); // usuario = email (login ya lo soporta)
+
+  // --- Validar duplicados por email (es el identificador único real) ---
   const existeUsuario = await Usuarios_chat_center.findOne({
-    where: { nombre },
+    where: { email_propietario: email },
   });
   if (existeUsuario) {
     return res
       .status(400)
-      .json({ status: 'fail', message: 'Ya existe un usuario con ese nombre' });
+      .json({ status: 'fail', message: 'Ya existe una cuenta con ese email' });
   }
 
   const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
-    where: { [Op.or]: [{ usuario }, { email }] },
+    where: { email },
   });
   if (existeSubUsuario) {
     return res.status(400).json({
       status: 'fail',
-      message: 'El usuario o el email ya están en uso',
+      message: 'El email ya está en uso',
     });
   }
 
@@ -46,11 +52,13 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
   try {
     const { nuevoUsuario, nuevoSubUsuario, id_sub_usuario } =
       await sequelize.transaction(async (t) => {
+        // 1) Crear usuario principal — "nombre" queda poblado
         const nuevoUsuarioInst = await Usuarios_chat_center.create(
           { nombre, email_propietario: email },
           { transaction: t },
         );
 
+        // 2) Stripe customer
         const resultado = await crearStripeCustomer({
           nombre,
           email,
@@ -64,7 +72,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           err.httpStatus =
             resultado.code === 'STRIPE_CUSTOMER_EMAIL_EXISTS' ? 409 : 502;
           err.code = resultado.code;
-          throw err; // rollback
+          throw err;
         }
 
         const stripe_customer_id = resultado.id_customer;
@@ -73,7 +81,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           const err = new Error('No se pudo crear el cliente en Stripe');
           err.httpStatus = 502;
           err.code = 'STRIPE_CUSTOMER_ID_INVALID';
-          throw err; // rollback
+          throw err;
         }
 
         await nuevoUsuarioInst.update(
@@ -81,10 +89,11 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           { transaction: t },
         );
 
+        // 3) Crear subusuario — "usuario" y "nombre_encargado" quedan poblados
         const nuevoSubUsuario = await crearSubUsuario(
           {
             id_usuario: nuevoUsuarioInst.id_usuario,
-            usuario,
+            usuario, // ← email como username
             password,
             email,
             nombre_encargado,
@@ -100,12 +109,12 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
         };
       });
 
-    // ✅ fuera de la transacción (ya hay commit)
+    // Token fuera de la transacción
     const token = await generarToken(id_sub_usuario);
 
     return res.status(201).json({
       status: 'success',
-      message: 'Cuenta y usuario administrador creados correctamente 🎉',
+      message: 'Cuenta creada correctamente 🎉',
       token,
       user: {
         id_usuario: nuevoUsuario.id_usuario,
