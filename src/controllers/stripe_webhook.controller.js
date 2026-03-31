@@ -366,7 +366,7 @@ exports.stripeWebhook = async (req, res) => {
         // Promo $5: marcar promo_plan2_used SOLO si hubo descuento real (planes 2/3/4)
         // IMPORTANTE: Promo $5: marcar promo_plan2_used SOLO si hubo descuento real en test (planes 16/17/18/20)
         // =========
-        const PROMO_PLANS = new Set([2, 3, 4, 6, 16, 17, 18, 20]);
+        const PROMO_PLANS = new Set([2, 3, 4, 6, 16, 17, 18, 20, 22, 23]);
 
         const totalDiscount = (invoice.total_discount_amounts || []).reduce(
           (acc, d) => acc + (d.amount || 0),
@@ -402,9 +402,12 @@ exports.stripeWebhook = async (req, res) => {
         const CONEXION_PLAN_ID = Number(
           process.env.STRIPE_PLAN_CONEXION_ID || 2,
         );
+        const COMUNIDAD_PLAN_ID = isProd ? 22 : 23;
         const hadTrial = subStatus === 'trialing' || !!trialEnd;
-        const markTrialUsed =
-          Number(planToApply) === CONEXION_PLAN_ID && hadTrial ? 1 : 0;
+        const isTrialPlan =
+          Number(planToApply) === CONEXION_PLAN_ID ||
+          Number(planToApply) === COMUNIDAD_PLAN_ID;
+        const markTrialUsed = isTrialPlan && hadTrial ? 1 : 0;
 
         // =========
         // 3) Update usuario: sincronización total

@@ -54,6 +54,9 @@ const PLAN_IC_ID = Number(
 );
 
 // ID del Plan Comunidad por entorno
+// const PLAN_COMUNIDAD_ID = Number(
+//   envPick('STRIPE_PLAN_COMUNIDAD_ID', 'STRIPE_PLAN_COMUNIDAD_ID_TEST', '22'),
+// );
 const PLAN_COMUNIDAD_ID = isProd ? 22 : 23;
 
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
@@ -62,7 +65,7 @@ const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 // Configuración de planes (ecosistema)
 // ─────────────────────────────────────────────────────────────
 const TRIAL_DAYS = 7;
-const TRIAL_DAYS_COMUNIDAD = 5; // ✅ NUEVO: 5 días de prueba para Comunidad
+const TRIAL_DAYS_COMUNIDAD = 5;
 const IL_TRIAL_IMAGES = 10;
 const PROMO_FIRST_MONTH_PRICE = 5;
 
@@ -71,7 +74,7 @@ const getCouponByPlan = (idPlan) => {
   const map = {
     [PLAN_IL_ID]: COUPON_PLAN_IL,
     [PLAN_IC_ID]: COUPON_PLAN_IC,
-    [PLAN_COMUNIDAD_ID]: COUPON_PLAN_COMUNIDAD, // ✅ NUEVO
+    [PLAN_COMUNIDAD_ID]: COUPON_PLAN_COMUNIDAD,
   };
   if (isProd) {
     map[3] = COUPON_PLAN_PRO;
@@ -396,8 +399,8 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
 
   let trialDays;
   if (isComunidadPlan) {
-    // ✅ Comunidad: siempre 5 días (gateado por unlock vía código promo)
-    trialDays = TRIAL_DAYS_COMUNIDAD;
+    const comunidadTrialEligible = Number(user.free_trial_used || 0) === 0;
+    trialDays = comunidadTrialEligible ? TRIAL_DAYS_COMUNIDAD : undefined;
   } else if (shouldApplyTrialIC) {
     trialDays = TRIAL_DAYS;
   } else {
