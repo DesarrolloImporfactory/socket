@@ -287,7 +287,13 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
    SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
    WHERE id = ?`,
     {
-      replacements: [activa_ia, max_tokens, instrucciones, modelo, id],
+      replacements: [
+        activa_ia ?? null,
+        max_tokens ?? null,
+        instrucciones ?? null, // ← aquí estaba fallando (índice 2)
+        modelo ?? null,
+        id,
+      ],
       type: db.QueryTypes.UPDATE,
     },
   );
