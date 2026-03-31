@@ -35,6 +35,11 @@ const COUPON_PLAN_ADV = envPick(
   'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
 );
 
+const COUPON_PLAN_COMUNIDAD = envPick(
+  't7Ky1nOU', //STRIPE_COUPON_COMUNIDAD_FIRST_MONTH
+  'JUGGtBc9',
+);
+
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
   'FRONT_SUCCESS_URL_TEST',
@@ -48,12 +53,16 @@ const PLAN_IC_ID = Number(
   envPick('STRIPE_PLAN_CONEXION_ID', 'STRIPE_PLAN_CONEXION_ID_TEST', '2'),
 );
 
+// ID del Plan Comunidad por entorno
+const PLAN_COMUNIDAD_ID = isProd ? 22 : 23;
+
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
 // ─────────────────────────────────────────────────────────────
 // Configuración de planes (ecosistema)
 // ─────────────────────────────────────────────────────────────
 const TRIAL_DAYS = 7;
+const TRIAL_DAYS_COMUNIDAD = 5; // ✅ NUEVO: 5 días de prueba para Comunidad
 const IL_TRIAL_IMAGES = 10;
 const PROMO_FIRST_MONTH_PRICE = 5;
 
@@ -62,6 +71,7 @@ const getCouponByPlan = (idPlan) => {
   const map = {
     [PLAN_IL_ID]: COUPON_PLAN_IL,
     [PLAN_IC_ID]: COUPON_PLAN_IC,
+    [PLAN_COMUNIDAD_ID]: COUPON_PLAN_COMUNIDAD, // ✅ NUEVO
   };
   if (isProd) {
     map[3] = COUPON_PLAN_PRO;
@@ -74,8 +84,8 @@ const getCouponByPlan = (idPlan) => {
 };
 
 const getPromoPlans = () => {
-  if (isProd) return new Set([PLAN_IL_ID, PLAN_IC_ID, 3, 4]);
-  return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18]);
+  if (isProd) return new Set([PLAN_IL_ID, PLAN_IC_ID, 3, 4, PLAN_COMUNIDAD_ID]); // ✅ añadido COMUNIDAD
+  return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18, PLAN_COMUNIDAD_ID]); // ✅ añadido COMUNIDAD
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -184,7 +194,6 @@ exports.activarTrialUsage = catchAsync(async (req, res, next) => {
 // ─────────────────────────────────────────────────────────────
 exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
   const { id_usuario, incrementar = false, tipo = 'imagen' } = req.body;
-  // tipo: 'imagen' | 'angulo'
   if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
 
   const user = await getUserById(id_usuario);
@@ -204,7 +213,6 @@ exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
     if (remaining <= 0) {
       const todoAgotado = imgRestantes <= 0 && angRestantes <= 0;
 
-      // Buscar config de redirect del código canjeado
       let redirectTo = null;
       if (todoAgotado) {
         const [[canje]] = await db.query(
@@ -359,6 +367,7 @@ exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
 
 // ─────────────────────────────────────────────────────────────
 // Checkout Session (subscription)
+// ✅ MODIFICADO: Soporte trial 5 días + cupón $5 para Plan Comunidad
 // ─────────────────────────────────────────────────────────────
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const { id_usuario, id_plan, id_plataforma = null } = req.body;
@@ -375,13 +384,29 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
-  const isICPlan = Number(id_plan) === PLAN_IC_ID;
-  const eligibleTrial = Number(user.free_trial_used || 0) === 0;
-  const shouldApplyTrial = eligibleTrial && isICPlan;
-  const trialDays = shouldApplyTrial ? TRIAL_DAYS : undefined;
+  // ─── Trial Days Logic ───
+  // Plan ImporChat (2/16): 7 días si no ha usado trial
+  // Plan Comunidad (22): 5 días siempre (ya está gateado por código promo)
+  const numPlan = Number(id_plan);
+  const isICPlan = numPlan === PLAN_IC_ID;
+  const isComunidadPlan = numPlan === PLAN_COMUNIDAD_ID;
 
+  const eligibleTrial = Number(user.free_trial_used || 0) === 0;
+  const shouldApplyTrialIC = eligibleTrial && isICPlan;
+
+  let trialDays;
+  if (isComunidadPlan) {
+    // ✅ Comunidad: siempre 5 días (gateado por unlock vía código promo)
+    trialDays = TRIAL_DAYS_COMUNIDAD;
+  } else if (shouldApplyTrialIC) {
+    trialDays = TRIAL_DAYS;
+  } else {
+    trialDays = undefined;
+  }
+
+  // ─── Promo $5 primer mes ───
   const PROMO_PLANS = getPromoPlans();
-  const isPromoPlan = PROMO_PLANS.has(Number(id_plan));
+  const isPromoPlan = PROMO_PLANS.has(numPlan);
   const couponId = getCouponByPlan(id_plan);
   const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0;
   const canApplyPromo = isPromoPlan && promoNotUsedYet && Boolean(couponId);
@@ -426,6 +451,7 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     url: session.url,
     sessionId: session.id,
     trialApplied: !!trialDays,
+    trialDays: trialDays || 0,
     promoApplied: !!canApplyPromo,
   });
 });
@@ -741,7 +767,6 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Trial usage de IL
   if ((user.estado || '').toLowerCase() === 'trial_usage') {
     await db.query(
       `UPDATE usuarios_chat_center
@@ -755,7 +780,6 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Promo usage
   if ((user.estado || '').toLowerCase() === 'promo_usage') {
     await db.query(
       `UPDATE usuarios_chat_center
@@ -836,7 +860,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
 
-  // Desde trial_usage o promo_usage → redirigir a checkout
   const estadoLower = (user.estado || '').toLowerCase();
   if (estadoLower === 'trial_usage' || estadoLower === 'promo_usage') {
     return res.status(200).json({
@@ -983,9 +1006,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     const totalFresh = Number(invFresh.total || 0);
     const dueFresh = Number(invFresh.amount_due || 0);
 
-    // ─── Blindaje: si el invoice ya está pagado, es el viejo (no el de prorrateo) ───
     if (invFresh.status === 'paid' || invFresh.paid === true) {
-      // Revertir suscripción al plan original
       await stripe.subscriptions.update(sub.id, {
         items: [{ id: subItem.id, price: subItem.price.id }],
         proration_behavior: 'none',
@@ -1145,9 +1166,6 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 // CÓDIGOS PROMOCIONALES
 // ═══════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────────
-// Validar Código Promo (solo consulta)
-// ─────────────────────────────────────────────────────────────
 exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
   const { id_usuario, codigo } = req.body;
 
@@ -1230,9 +1248,6 @@ exports.validarCodigoPromo = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Canjear Código Promo
-// ─────────────────────────────────────────────────────────────
 exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
   const { id_usuario, codigo } = req.body;
 
@@ -1291,6 +1306,10 @@ exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
   const imagenesRegalo = Number(promo.imagenes_regalo || 0);
   const angulosRegalo = Number(promo.angulos_regalo || 0);
 
+  // ✅ FIX: Si solo desbloquea plan (sin recursos), no tocar estado ni id_plan
+  const isUnlockOnly =
+    promo.unlock_plan_id && imagenesRegalo === 0 && angulosRegalo === 0;
+
   const estadoActual = (user.estado || '').toLowerCase();
   const tieneActivo =
     estadoActual.includes('activo') ||
@@ -1298,24 +1317,28 @@ exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
     estadoActual === 'trial_usage' ||
     estadoActual === 'promo_usage';
 
-  if (!user.id_plan || !tieneActivo) {
-    await db.query(
-      `UPDATE usuarios_chat_center
-       SET id_plan = ?,
-           estado = 'promo_usage',
-           promo_imagenes_restantes = promo_imagenes_restantes + ?,
-           promo_angulos_restantes  = promo_angulos_restantes + ?
-       WHERE id_usuario = ?`,
-      { replacements: [PLAN_IL_ID, imagenesRegalo, angulosRegalo, id_usuario] },
-    );
-  } else {
-    await db.query(
-      `UPDATE usuarios_chat_center
-       SET promo_imagenes_restantes = promo_imagenes_restantes + ?,
-           promo_angulos_restantes  = promo_angulos_restantes + ?
-       WHERE id_usuario = ?`,
-      { replacements: [imagenesRegalo, angulosRegalo, id_usuario] },
-    );
+  if (!isUnlockOnly) {
+    if (!user.id_plan || !tieneActivo) {
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET id_plan = ?,
+             estado = 'promo_usage',
+             promo_imagenes_restantes = promo_imagenes_restantes + ?,
+             promo_angulos_restantes  = promo_angulos_restantes + ?
+         WHERE id_usuario = ?`,
+        {
+          replacements: [PLAN_IL_ID, imagenesRegalo, angulosRegalo, id_usuario],
+        },
+      );
+    } else {
+      await db.query(
+        `UPDATE usuarios_chat_center
+         SET promo_imagenes_restantes = promo_imagenes_restantes + ?,
+             promo_angulos_restantes  = promo_angulos_restantes + ?
+         WHERE id_usuario = ?`,
+        { replacements: [imagenesRegalo, angulosRegalo, id_usuario] },
+      );
+    }
   }
 
   await db.query(
@@ -1388,9 +1411,6 @@ exports.canjearCodigoPromo = catchAsync(async (req, res, next) => {
 // CRUD CÓDIGOS PROMOCIONALES (Super Admin)
 // ═══════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────────
-// Listar todos los códigos
-// ─────────────────────────────────────────────────────────────
 exports.listarCodigosPromo = catchAsync(async (req, res, next) => {
   const [rows] = await db.query(
     `SELECT cp.*,
@@ -1402,9 +1422,6 @@ exports.listarCodigosPromo = catchAsync(async (req, res, next) => {
   return res.status(200).json({ success: true, data: rows || [] });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Crear código
-// ─────────────────────────────────────────────────────────────
 exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
   const {
     codigo,
@@ -1425,7 +1442,6 @@ exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
 
   const codigoLimpio = codigo.trim().toUpperCase();
 
-  // Verificar duplicado
   const [[existe]] = await db.query(
     `SELECT id_codigo FROM codigos_promocionales WHERE codigo = ? LIMIT 1`,
     { replacements: [codigoLimpio] },
@@ -1465,9 +1481,6 @@ exports.crearCodigoPromo = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Actualizar código
-// ─────────────────────────────────────────────────────────────
 exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
   const { id_codigo } = req.params;
   if (!id_codigo) return next(new AppError('Falta id_codigo.', 400));
@@ -1485,7 +1498,6 @@ exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
     unlock_plan_id,
   } = req.body;
 
-  // Verificar que existe
   const [[existing]] = await db.query(
     `SELECT id_codigo FROM codigos_promocionales WHERE id_codigo = ? LIMIT 1`,
     { replacements: [id_codigo] },
@@ -1497,13 +1509,11 @@ exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
       .json({ success: false, message: 'Código no encontrado.' });
   }
 
-  // Construir SET dinámico solo con campos enviados
   const updates = [];
   const values = [];
 
   if (codigo !== undefined) {
     const codigoLimpio = codigo.trim().toUpperCase();
-    // Verificar duplicado si se cambia el código
     const [[dup]] = await db.query(
       `SELECT id_codigo FROM codigos_promocionales WHERE codigo = ? AND id_codigo != ? LIMIT 1`,
       { replacements: [codigoLimpio, id_codigo] },
@@ -1571,9 +1581,6 @@ exports.actualizarCodigoPromo = catchAsync(async (req, res, next) => {
     .json({ success: true, message: 'Código actualizado.' });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Eliminar código (soft: desactivar / hard: borrar)
-// ─────────────────────────────────────────────────────────────
 exports.eliminarCodigoPromo = catchAsync(async (req, res, next) => {
   const { id_codigo } = req.params;
   const { hard = false } = req.body;
@@ -1592,7 +1599,6 @@ exports.eliminarCodigoPromo = catchAsync(async (req, res, next) => {
   }
 
   if (hard) {
-    // Hard delete: solo si nunca fue canjeado
     if (Number(existing.usos_actuales) > 0) {
       return res.status(400).json({
         success: false,
@@ -1608,7 +1614,6 @@ exports.eliminarCodigoPromo = catchAsync(async (req, res, next) => {
       .json({ success: true, message: 'Código eliminado permanentemente.' });
   }
 
-  // Soft delete: desactivar
   await db.query(
     `UPDATE codigos_promocionales SET activo = 0 WHERE id_codigo = ?`,
     { replacements: [id_codigo] },
@@ -1619,9 +1624,6 @@ exports.eliminarCodigoPromo = catchAsync(async (req, res, next) => {
     .json({ success: true, message: 'Código desactivado.' });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Ver canjes de un código específico
-// ─────────────────────────────────────────────────────────────
 exports.listarCanjesCodigo = catchAsync(async (req, res, next) => {
   const { id_codigo } = req.params;
   if (!id_codigo) return next(new AppError('Falta id_codigo.', 400));
@@ -1674,7 +1676,6 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
     );
   }
 
-  // ─── Calcular días de trial restantes ───
   const ahora = new Date();
   const fechaRenovacion = user.fecha_renovacion
     ? new Date(user.fecha_renovacion)
@@ -1685,10 +1686,9 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
   if (fechaRenovacion && fechaRenovacion > ahora) {
     const msRestantes = fechaRenovacion.getTime() - ahora.getTime();
     trialDays = Math.ceil(msRestantes / (1000 * 60 * 60 * 24));
-    trialDays = Math.min(trialDays, 730); // Stripe max
+    trialDays = Math.min(trialDays, 730);
   }
 
-  // ─── Crear Checkout Session ───
   const customerParam = user.id_costumer
     ? { customer: user.id_costumer }
     : { customer_email: user.email_propietario || undefined };
