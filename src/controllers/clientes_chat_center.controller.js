@@ -968,9 +968,6 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const estadoParsed = parseEstado(req.query.estado);
   const orderBy = parseSort(req.query.sort);
 
-  const idEtiquetaNum = Number(req.query.id_etiqueta ?? 0);
-  const hasEtiqueta = Number.isFinite(idEtiquetaNum) && idEtiquetaNum > 0;
-
   // ── Helper: parsear comma-separated a array limpio ──
   const parseCSV = (raw) => {
     if (!raw) return [];
@@ -995,9 +992,23 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(estadoParsed);
   }
 
-  if (hasEtiqueta) {
-    whereParts.push('c.id_etiqueta = ?');
-    params.push(idEtiquetaNum);
+  // ── Multi-select: Etiqueta (via tabla asignaciones) ──
+  const idsEtiqueta = parseCSVNumbers(req.query.id_etiqueta);
+  if (idsEtiqueta.length === 1) {
+    whereParts.push(`c.id IN (
+    SELECT id_cliente_chat_center 
+    FROM etiquetas_asignadas 
+    WHERE id_etiqueta = ? AND id_configuracion = ?
+  )`);
+    params.push(idsEtiqueta[0], id_configuracion);
+  } else if (idsEtiqueta.length > 1) {
+    whereParts.push(`c.id IN (
+    SELECT id_cliente_chat_center 
+    FROM etiquetas_asignadas 
+    WHERE id_etiqueta IN (${idsEtiqueta.map(() => '?').join(',')}) 
+      AND id_configuracion = ?
+  )`);
+    params.push(...idsEtiqueta, id_configuracion);
   }
 
   // ── Multi-select: Asesor (IN) ──
