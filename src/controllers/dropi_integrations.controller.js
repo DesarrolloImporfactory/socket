@@ -1082,6 +1082,19 @@ async function syncFromDropi({
           console.error('[profit] Background profit sync error:', err?.message),
         );
 
+        syncDevolutionDetails({
+          integrationKey,
+          country_code,
+          cacheCtx,
+          from,
+          until,
+        }).catch((err) =>
+          console.error(
+            '[dev-sync] Background devolution sync error:',
+            err?.message,
+          ),
+        );
+
         return { synced: false, reason: 'recent' };
       }
     }
@@ -1166,6 +1179,19 @@ async function syncFromDropi({
       until,
     }).catch((err) =>
       console.error('[profit] Background profit sync error:', err?.message),
+    );
+
+    syncDevolutionDetails({
+      integrationKey,
+      country_code,
+      cacheCtx,
+      from,
+      until,
+    }).catch((err) =>
+      console.error(
+        '[dev-sync] Background devolution sync error:',
+        err?.message,
+      ),
     );
 
     return { synced: true, count: allOrders.length };
@@ -1280,11 +1306,158 @@ async function syncProfitDetails({
   }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Sync devolution details (history) para órdenes sin movements
+   ─────────────────────────────────────────────────────────
+   Cuando managed_devolution_app=false, servientrega_movements
+   viene vacío. Fetcheamos getOrderDetail para obtener el
+   history de Dropi y guardarlo en order_data del cache.
+   ═══════════════════════════════════════════════════════════ */
+
+if (!global._devSyncLock) global._devSyncLock = {};
+
+async function syncDevolutionDetails({
+  integrationKey,
+  country_code,
+  cacheCtx,
+  from,
+  until,
+}) {
+  const lockKey = buildCacheKey(cacheCtx);
+  const cacheWhere = buildCacheWhere(cacheCtx);
+
+  if (global._devSyncLock[lockKey]) {
+    console.log(`[dev-sync] Already running for ${lockKey}, skipping`);
+    return { updated: 0, skipped: true };
+  }
+
+  global._devSyncLock[lockKey] = true;
+
+  try {
+    const devRows = await DropiOrdersCache.findAll({
+      where: {
+        ...cacheWhere,
+        classified_status: 'devolucion',
+        order_created_at: {
+          [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+        },
+      },
+      attributes: ['id', 'dropi_order_id', 'order_data'],
+      raw: true,
+    });
+
+    // Filtrar: solo las que tienen servientrega_movements vacío Y no tienen history
+    const needsRefresh = devRows.filter((row) => {
+      try {
+        const od = JSON.parse(row.order_data || '{}');
+        const movements = od.servientrega_movements || [];
+        const history = od.history || [];
+        return movements.length === 0 && history.length === 0;
+      } catch {
+        return true;
+      }
+    });
+
+    if (!needsRefresh.length) {
+      console.log(
+        `[dev-sync] No devolutions need history refresh for ${lockKey}`,
+      );
+      return { updated: 0, total: devRows.length };
+    }
+
+    console.log(
+      `[dev-sync] Refreshing history for ${needsRefresh.length}/${devRows.length} devolutions (${lockKey})`,
+    );
+
+    let updated = 0;
+    let errors = 0;
+
+    for (const row of needsRefresh) {
+      try {
+        const detail = await dropiService.getOrderDetail({
+          integrationKey,
+          orderId: row.dropi_order_id,
+          country_code,
+        });
+
+        const freshOrder = detail?.objects;
+        if (!freshOrder) {
+          errors++;
+          continue;
+        }
+
+        const freshHistory = freshOrder.history || [];
+        const freshMovements = freshOrder.servientrega_movements || [];
+
+        if (freshHistory.length > 0 || freshMovements.length > 0) {
+          let existingOd = {};
+          try {
+            existingOd = JSON.parse(row.order_data || '{}');
+          } catch {
+            existingOd = {};
+          }
+
+          // Guardar history Y movements (por si ahora sí tiene)
+          if (freshHistory.length > 0) {
+            existingOd.history = freshHistory;
+          }
+          if (freshMovements.length > 0) {
+            existingOd.servientrega_movements = freshMovements;
+          }
+          if (freshOrder.managed_devolution_app !== undefined) {
+            existingOd.managed_devolution_app =
+              freshOrder.managed_devolution_app;
+          }
+
+          await DropiOrdersCache.update(
+            {
+              order_data: JSON.stringify(existingOd),
+              synced_at: new Date(),
+            },
+            { where: { id: row.id } },
+          );
+          updated++;
+        }
+
+        await new Promise((r) => setTimeout(r, 2500));
+      } catch (err) {
+        const status = err?.response?.status || err?.statusCode || 500;
+        if (status === 429) {
+          console.log('[dev-sync] Rate limited, stopping batch');
+          break;
+        }
+        console.error(
+          `[dev-sync] Error order ${row.dropi_order_id}: ${err?.message}`,
+        );
+        errors++;
+        if (errors >= 5) {
+          console.log('[dev-sync] Too many errors, stopping batch');
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+
+    console.log(
+      `[dev-sync] Done: ${updated} updated, ${errors} errors, ${needsRefresh.length} needed (${lockKey})`,
+    );
+    return { updated, errors, total: needsRefresh.length };
+  } finally {
+    global._devSyncLock[lockKey] = false;
+  }
+}
+
 /**
  * Analiza órdenes en devolución desde el cache.
- * Parsea order_data para extraer los movimientos de tracking
- * (c aplica a TODAS las transportadoras)
- * y detecta cuáles NO tienen "DEV CONFIRMADA POR BODEGA".
+ * Usa servientrega_movements como fuente primaria.
+ * Cuando está vacío, usa history (del getOrderDetail) como fallback.
+ *
+ * alertLevel:
+ *   ok           = tiene "DEV CONFIRMADA POR BODEGA" en movements
+ *   critical     = tiene "DEVOLUCION AL REMITENTE" sin escaneo (solo con movements)
+ *   unverifiable = sin movements (managed_devolution_app=false), ya devuelta,
+ *                  no podemos verificar escaneo en bodega
+ *   pending      = aún no ha llegado la devolución final
  */
 async function analyzeDevolutions(cacheWhere, from, until) {
   const devRows = await DropiOrdersCache.findAll({
@@ -1318,23 +1491,29 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       continue;
     }
 
-    // Tracking para detección de proveedor
     if (od.supplier?.id) supplierIds.add(od.supplier.id);
     if (od.user?.id) userIds.add(od.user.id);
 
-    // Movimientos ordenados cronológicamente
-    const movements = (od.servientrega_movements || []).sort(
+    // ── Fuente 1: servientrega_movements (carrier tracking) ──
+    const carrierMovements = (od.servientrega_movements || []).sort(
       (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
 
-    // Detección de escaneo
-    const hasBodegaScan = movements.some((m) =>
+    // ── Fuente 2: history (historial interno Dropi, fallback) ──
+    const dropiHistory = (od.history || []).sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at),
+    );
+
+    const hasCarrierData = carrierMovements.length > 0;
+
+    // ── Detección de escaneo (solo aplica con carrier data) ──
+    const hasBodegaScan = carrierMovements.some((m) =>
       String(m.nom_mov || '')
         .toUpperCase()
         .includes('DEV CONFIRMADA POR BODEGA'),
     );
 
-    const hasDevolucionRemitente = movements.some((m) => {
+    const hasDevolucionRemitente = carrierMovements.some((m) => {
       const upper = String(m.nom_mov || '').toUpperCase();
       return (
         upper.includes('DEVOLUCION AL REMITENTE') ||
@@ -1353,15 +1532,86 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       sale_price: d?.product?.sale_price || 0,
     }));
 
-    // Nivel de alerta
-    // critical = ya se devolvió al remitente PERO no se escaneó en bodega
-    // pending  = aún no ha llegado la devolución final (en tránsito de vuelta)
-    // ok       = escaneada correctamente
-    let alertLevel = 'ok';
-    if (hasDevolucionRemitente && !hasBodegaScan) {
-      alertLevel = 'critical';
-    } else if (!hasDevolucionRemitente && !hasBodegaScan) {
-      alertLevel = 'pending';
+    // ── Nivel de alerta ──
+    let alertLevel;
+
+    if (hasCarrierData) {
+      // Con datos de carrier → lógica original
+      if (hasBodegaScan) {
+        alertLevel = 'ok';
+      } else if (hasDevolucionRemitente) {
+        alertLevel = 'critical';
+      } else {
+        alertLevel = 'pending';
+      }
+    } else {
+      // Sin datos de carrier → revisar history como fallback
+      const statusUpper = String(od.status || '').toUpperCase();
+      const isDevolucionFinal =
+        statusUpper.includes('DEVOLUCION') ||
+        statusUpper.includes('DEVOLUCIÓN') ||
+        statusUpper === 'DEVUELTO';
+
+      // Buscar escaneo de bodega en history también
+      const hasBodegaScanInHistory = dropiHistory.some((h) =>
+        String(h.status || '')
+          .toUpperCase()
+          .includes('DEV CONFIRMADA POR BODEGA'),
+      );
+
+      // Buscar devolución al remitente en history
+      const hasDevRemInHistory = dropiHistory.some((h) => {
+        const s = String(h.status || '').toUpperCase();
+        return (
+          s.includes('DEVOLUCION AL REMITENTE') ||
+          s.includes('DEVOLUCIÓN AL REMITENTE')
+        );
+      });
+
+      if (hasBodegaScanInHistory) {
+        alertLevel = 'ok';
+      } else if (isDevolucionFinal && hasDevRemInHistory) {
+        alertLevel = 'critical';
+      } else if (isDevolucionFinal) {
+        alertLevel = 'unverifiable';
+      } else {
+        alertLevel = 'pending';
+      }
+    }
+
+    // ── Construir movements para el timeline ──
+    // Si tiene carrier data → usar eso. Si no → usar history de Dropi.
+    let timelineMovements;
+    let timelineSource; // 'carrier' | 'dropi_history'
+
+    if (hasCarrierData) {
+      timelineSource = 'carrier';
+      timelineMovements = carrierMovements.map((m) => ({
+        nom_mov: m.nom_mov,
+        created_at: m.created_at,
+      }));
+    } else if (dropiHistory.length > 0) {
+      timelineSource = 'dropi_history';
+      timelineMovements = dropiHistory
+        .filter((h) => {
+          // Filtrar solo los states relevantes del carrier (no internos)
+          const s = String(h.status || '').toUpperCase();
+          // Excluir states internos del dropshipper/supplier
+          return !(
+            s === 'PENDIENTE CONFIRMACION' ||
+            s === 'PENDIENTE' ||
+            s === 'GUIA_GENERADA' ||
+            s === 'PREPARADO PARA TRANSPORTADORA'
+          );
+        })
+        .map((h) => ({
+          nom_mov: h.status,
+          created_at: h.created_at,
+          novedad: h.novedad_servientrega || null,
+        }));
+    } else {
+      timelineSource = 'none';
+      timelineMovements = [];
     }
 
     orders.push({
@@ -1379,24 +1629,23 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       profit: row.dropshipper_profit,
       products,
       managedDevolution,
-      movements: movements.map((m) => ({
-        nom_mov: m.nom_mov,
-        created_at: m.created_at,
-      })),
+      movements: timelineMovements,
+      timelineSource,
       hasBodegaScan,
       hasDevolucionRemitente,
       alertLevel,
     });
   }
 
-  // ── Detección de proveedor ──
-  // Si hay un solo supplier_id y múltiples user_id → el usuario es proveedor
   const isSupplierView = supplierIds.size === 1 && userIds.size > 1;
 
   const totalDevolutions = orders.length;
   const withScan = orders.filter((o) => o.alertLevel === 'ok').length;
   const withoutScan = orders.filter((o) => o.alertLevel === 'critical').length;
   const pendingReturn = orders.filter((o) => o.alertLevel === 'pending').length;
+  const unverifiable = orders.filter(
+    (o) => o.alertLevel === 'unverifiable',
+  ).length;
 
   return {
     isSupplierView,
@@ -1405,6 +1654,7 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       withScan,
       withoutScan,
       pendingReturn,
+      unverifiable,
     },
     orders,
   };
