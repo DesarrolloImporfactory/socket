@@ -21,6 +21,8 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const { Op } = require('sequelize');
+const fsp = require('fs').promises;
+const path = require('path');
 
 const { db } = require('../database/config');
 const DropiIntegrations = require('../models/dropi_integrations.model');
@@ -36,6 +38,24 @@ const DELAY_BETWEEN_WA_SENDS = 800; // ms entre envíos a Meta API
 const MAX_ORDERS_PER_INTEGRATION = 2000; // techo de seguridad por ejecución
 const MAX_RETRIES_429 = 4;
 const META_API_VERSION = 'v19.0';
+
+/* ─── Logging helpers ───────────────────────────────────────── */
+const logsDir = path.join(process.cwd(), './src/logs/logs_dropi');
+
+async function ensureDir(dir) {
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+  } catch (_) {}
+}
+
+async function log(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  process.stdout.write(line);
+  try {
+    await ensureDir(logsDir);
+    await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line);
+  } catch (_) {}
+}
 
 /* ─── Lock global para no solapar ejecuciones ───────────────── */
 if (!global._hourlyDropiSyncRunning) global._hourlyDropiSyncRunning = false;
@@ -339,8 +359,8 @@ async function procesarTemplates({ orders, id_configuracion }) {
   // Credenciales WA
   const creds = await getWaCredentials(id_configuracion);
   if (!creds?.phone_number_id || !creds?.waba_token) {
-    console.warn(
-      `[hourly-dropi] Config #${id_configuracion} sin credenciales WA`,
+    await log(
+      `[hourly-dropi] ⚠️ Config #${id_configuracion} sin credenciales WA`,
     );
     return { enviados: 0, omitidos: 0, errores: 0 };
   }
@@ -391,7 +411,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
         wa_message_id: waMessageId,
       });
 
-      console.log(
+      await log(
         `[hourly-dropi] ✉ orden #${order.id} → ${estadoDropi} → ${nombre_template} → ${order.phone}`,
       );
       enviados++;
@@ -400,13 +420,13 @@ async function procesarTemplates({ orders, id_configuracion }) {
     } catch (err) {
       errores++;
       const metaCode = err?.response?.data?.error?.code;
-      console.error(
-        `[hourly-dropi] Error template orden #${order?.id}: ${err?.message} (Meta code: ${metaCode})`,
+      await log(
+        `[hourly-dropi] ❌ Error template orden #${order?.id}: ${err?.message} (Meta code: ${metaCode})`,
       );
 
       // Rate limit de Meta → pausa larga
       if (err?.response?.status === 429 || metaCode === 130429) {
-        console.warn('[hourly-dropi] Rate limit Meta — pausando 30s');
+        await log('[hourly-dropi] ⚠️ Rate limit Meta — pausando 30s');
         await new Promise((r) => setTimeout(r, 30000));
       }
     }
@@ -426,13 +446,13 @@ async function syncIntegration(integration, from, until) {
   try {
     integrationKey = decryptToken(integration.integration_key_enc);
   } catch (e) {
-    console.warn(
-      `[hourly-dropi] ${label} — error descifrando key: ${e.message}`,
+    await log(
+      `[hourly-dropi] ${label} — ❌ error descifrando key: ${e.message}`,
     );
     return { label, synced: 0, skipped: true };
   }
   if (!integrationKey?.trim()) {
-    console.warn(`[hourly-dropi] ${label} — key vacía`);
+    await log(`[hourly-dropi] ${label} — ⚠️ key vacía`);
     return { label, synced: 0, skipped: true };
   }
 
@@ -469,8 +489,8 @@ async function syncIntegration(integration, from, until) {
       delay = DELAY_BETWEEN_PAGES;
 
       if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) {
-        console.warn(
-          `[hourly-dropi] ${label} — techo ${MAX_ORDERS_PER_INTEGRATION} alcanzado`,
+        await log(
+          `[hourly-dropi] ${label} — ⚠️ techo ${MAX_ORDERS_PER_INTEGRATION} alcanzado`,
         );
         break;
       }
@@ -483,14 +503,14 @@ async function syncIntegration(integration, from, until) {
           break;
         }
         delay = Math.min(delay * 2, 20000);
-        console.warn(
-          `[hourly-dropi] ${label} — 429 retry ${retries}/${MAX_RETRIES_429}, wait ${delay}ms`,
+        await log(
+          `[hourly-dropi] ${label} — ⚠️ 429 retry ${retries}/${MAX_RETRIES_429}, wait ${delay}ms`,
         );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      console.error(
-        `[hourly-dropi] ${label} — error start=${start}: ${err?.message}`,
+      await log(
+        `[hourly-dropi] ${label} — ❌ error start=${start}: ${err?.message}`,
       );
       break;
     }
@@ -500,8 +520,8 @@ async function syncIntegration(integration, from, until) {
   if (allOrders.length > 0) {
     await upsertOrders(cacheInsertFields, allOrders);
   }
-  console.log(
-    `[hourly-dropi] ${label} — ${allOrders.length} órdenes sincronizadas`,
+  await log(
+    `[hourly-dropi] ${label} — ✅ ${allOrders.length} órdenes sincronizadas`,
   );
 
   /* ── Fase 3: Templates WhatsApp (solo integraciones con id_configuracion) ── */
@@ -511,7 +531,7 @@ async function syncIntegration(integration, from, until) {
       orders: allOrders,
       id_configuracion: id_config,
     });
-    console.log(
+    await log(
       `[hourly-dropi] ${label} — templates: ${JSON.stringify(templateStats)}`,
     );
   }
@@ -527,16 +547,16 @@ async function syncIntegration(integration, from, until) {
 /* ─── Job principal ─────────────────────────────────────────── */
 async function runHourlyDropiSync() {
   if (global._hourlyDropiSyncRunning) {
-    console.log('[hourly-dropi] Ya hay una ejecución en curso, saltando');
+    await log('[hourly-dropi] ⚠️ Ya hay una ejecución en curso, saltando');
     return;
   }
   global._hourlyDropiSyncRunning = true;
   const t0 = Date.now();
-  console.log(`[hourly-dropi] ▶ ${new Date().toISOString()}`);
+  await log(`[hourly-dropi] ▶ Iniciando sync`);
 
   try {
     const { from, until } = getDateRange();
-    console.log(`[hourly-dropi] Rango ${from} → ${until}`);
+    await log(`[hourly-dropi] Rango ${from} → ${until}`);
 
     const integrations = await DropiIntegrations.findAll({
       where: { is_active: 1, deleted_at: null },
@@ -549,7 +569,7 @@ async function runHourlyDropiSync() {
       ],
       raw: true,
     });
-    console.log(`[hourly-dropi] ${integrations.length} integraciones activas`);
+    await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
 
     const totals = { ordenes: 0, enviados: 0, skipped: 0, errores: 0 };
 
@@ -562,8 +582,8 @@ async function runHourlyDropiSync() {
             (totals.enviados += r.templates?.enviados || 0));
       } catch (err) {
         totals.errores++;
-        console.error(
-          `[hourly-dropi] Error integ#${integrations[i].id}: ${err?.message}`,
+        await log(
+          `[hourly-dropi] ❌ Error integ#${integrations[i].id}: ${err?.message}`,
         );
       }
       if (i < integrations.length - 1)
@@ -571,12 +591,12 @@ async function runHourlyDropiSync() {
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(
+    await log(
       `[hourly-dropi] ✅ ${elapsed}s | órdenes: ${totals.ordenes} | ` +
         `templates: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
     );
   } catch (err) {
-    console.error('[hourly-dropi] ❌ Error general:', err?.message);
+    await log(`[hourly-dropi] ❌ Error general: ${err?.message}`);
   } finally {
     global._hourlyDropiSyncRunning = false;
   }
@@ -585,10 +605,12 @@ async function runHourlyDropiSync() {
 /* ─── Registrar cron ────────────────────────────────────────── */
 cron.schedule('5 * * * *', () => {
   runHourlyDropiSync().catch((err) =>
-    console.error('[hourly-dropi] Unhandled:', err?.message),
+    log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
 });
 
-console.log('[hourly-dropi] Cron registrado — cada hora en el minuto :05');
+log('[hourly-dropi] Cron registrado — cada hora en el minuto :05').catch(
+  () => {},
+);
 
 module.exports = { runHourlyDropiSync };
