@@ -1810,15 +1810,20 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   // 3) Computar stats desde BD
   const stats = await computeStatsFromCache(cacheCtx, from, until);
 
+  // ¿El sync background sigue corriendo?
+  const stillSyncing = !!global._dropiSyncLock[lockKey];
+
   return res.json({
     isSuccess: true,
     data: {
       ...stats,
-      syncing: false,
+      syncing: stillSyncing,
       fromCache: true,
       pagesFetched: 0,
       isPartial: false,
-      partialMessage: null,
+      partialMessage: stillSyncing
+        ? 'Seguimos sincronizando tus órdenes en segundo plano. Los datos se actualizarán automáticamente.'
+        : null,
     },
   });
 });

@@ -31,5 +31,6 @@ router.post(
   shopifyCtrl.insertar_imagen_descripcion,
 );
 router.post('/upload-batch', checkPlanActivo, shopifyCtrl.subir_batch);
+router.get('/orders', checkPlanActivo, shopifyCtrl.listar_ordenes);
 
 module.exports = router;

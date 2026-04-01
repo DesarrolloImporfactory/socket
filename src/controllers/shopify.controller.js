@@ -222,14 +222,9 @@ exports.callback = catchAsync(async (req, res, next) => {
   // 4. Obtener info básica de la tienda
   let shopInfo = {};
   try {
-    const infoResp = await axios.get(
-      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/shop.json`,
-      {
-        headers: { 'X-Shopify-Access-Token': accessToken },
-        timeout: 10000,
-      },
-    );
-    shopInfo = infoResp.data?.shop || {};
+    const shopQuery = `{ shop { name email myshopifyDomain } }`;
+    const shopResp = await shopifyGraphQL(shop, accessToken, shopQuery);
+    shopInfo = shopResp?.data?.shop || {};
   } catch (e) {
     console.error('[Shopify] Shop info error:', e.message);
   }
@@ -824,6 +819,110 @@ exports.subir_batch = catchAsync(async (req, res, next) => {
       total: results.length,
       success_count: results.filter((r) => r.success).length,
       results,
+    },
+  });
+});
+
+exports.listar_ordenes = catchAsync(async (req, res, next) => {
+  const id_usuario = req.sessionUser?.id_usuario;
+  if (!id_usuario)
+    return next(new AppError('No se pudo identificar al usuario', 401));
+
+  const connData = await getActiveConnection(id_usuario, next);
+  if (!connData) return;
+  const { connection, accessToken } = connData;
+
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+  const cursor = req.query.cursor || null;
+  const status = req.query.status || null; // "unfulfilled", "fulfilled", etc.
+
+  const afterClause = cursor ? `, after: "${cursor}"` : '';
+  const queryParts = [];
+  if (status) queryParts.push(`fulfillment_status:${status}`);
+  const queryFilter = queryParts.length
+    ? `, query: "${queryParts.join(' AND ')}"`
+    : '';
+
+  const gqlQuery = `{
+    orders(first: ${limit}${afterClause}${queryFilter}, sortKey: CREATED_AT, reverse: true) {
+      edges {
+        cursor
+        node {
+          id
+          name
+          createdAt
+          displayFinancialStatus
+          displayFulfillmentStatus
+          totalPriceSet { shopMoney { amount currencyCode } }
+          customer { firstName lastName email }
+          lineItems(first: 5) {
+            edges {
+              node {
+                title
+                quantity
+                originalTotalSet { shopMoney { amount currencyCode } }
+                image { url }
+              }
+            }
+          }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
+
+  let data;
+  try {
+    data = await shopifyGraphQL(connection.shop_domain, accessToken, gqlQuery);
+  } catch (err) {
+    console.error(
+      '[Shopify] Orders query error:',
+      err?.response?.data || err.message,
+    );
+    if (err?.response?.status === 401) {
+      await connection.update({ estado: 'error' });
+      return next(
+        new AppError(
+          'Tu conexión con Shopify ha expirado. Reconecta tu tienda.',
+          401,
+        ),
+      );
+    }
+    return next(new AppError('Error al consultar órdenes de Shopify', 500));
+  }
+
+  const edges = data?.data?.orders?.edges || [];
+  const pageInfo = data?.data?.orders?.pageInfo || {};
+
+  const orders = edges.map((e) => ({
+    id: e.node.id,
+    name: e.node.name,
+    created_at: e.node.createdAt,
+    financial_status: e.node.displayFinancialStatus,
+    fulfillment_status: e.node.displayFulfillmentStatus,
+    total: e.node.totalPriceSet?.shopMoney?.amount || '0',
+    currency: e.node.totalPriceSet?.shopMoney?.currencyCode || 'USD',
+    customer: e.node.customer
+      ? {
+          name: `${e.node.customer.firstName || ''} ${e.node.customer.lastName || ''}`.trim(),
+          email: e.node.customer.email,
+        }
+      : null,
+    line_items: (e.node.lineItems?.edges || []).map((li) => ({
+      title: li.node.title,
+      quantity: li.node.quantity,
+      total: li.node.originalTotalSet?.shopMoney?.amount || '0',
+      image_url: li.node.image?.url || null,
+    })),
+    cursor: e.cursor,
+  }));
+
+  return res.json({
+    isSuccess: true,
+    data: orders,
+    pagination: {
+      has_next: pageInfo.hasNextPage || false,
+      next_cursor: pageInfo.endCursor || null,
     },
   });
 });
