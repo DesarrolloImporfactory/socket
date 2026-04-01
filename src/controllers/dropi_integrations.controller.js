@@ -1574,7 +1574,7 @@ async function analyzeDevolutions(cacheWhere, from, until) {
     Number(provRows[0].suppliers) === 1 &&
     Number(provRows[0].users) > 1;
 
-  // ── Órdenes: solo top 300 priorizadas (critical > unverifiable > pending > ok) ──
+  // ── Órdenes: todas, ordenadas por prioridad ──
   const devRows = await DropiOrdersCache.findAll({
     where: {
       ...cacheWhere,
@@ -1600,7 +1600,6 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       ],
       ['order_created_at', 'ASC'],
     ],
-    limit: 300,
   });
 
   const orders = [];
