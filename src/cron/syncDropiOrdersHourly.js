@@ -603,7 +603,7 @@ async function runHourlyDropiSync() {
 }
 
 /* ─── Registrar cron ────────────────────────────────────────── */
-cron.schedule('5 * * * *', () => {
+cron.schedule('*/5 * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
