@@ -36,6 +36,11 @@ const DropiOrdersCache = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    devolution_alert: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
+    },
     order_data: DataTypes.TEXT('long'),
     synced_at: DataTypes.DATE,
   },

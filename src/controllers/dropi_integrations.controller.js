@@ -971,6 +971,56 @@ function buildCacheKey(cacheCtx) {
   return `u_${cacheCtx.id_usuario}`;
 }
 
+/**
+ * Computa el alertLevel de devolución para una orden.
+ * Se usa en upsertOrdersToCache y syncDevolutionDetails.
+ */
+function computeDevolutionAlert(orderObj) {
+  if (classifyDropiStatus(orderObj.status) !== 'devolucion') return null;
+
+  const movements = orderObj.servientrega_movements || [];
+  const history = orderObj.history || [];
+
+  if (movements.length > 0) {
+    const hasBS = movements.some((m) =>
+      String(m.nom_mov || '')
+        .toUpperCase()
+        .includes('DEV CONFIRMADA POR BODEGA'),
+    );
+    const hasDR = movements.some((m) => {
+      const u = String(m.nom_mov || '').toUpperCase();
+      return (
+        u.includes('DEVOLUCION AL REMITENTE') ||
+        u.includes('DEVOLUCIÓN AL REMITENTE')
+      );
+    });
+    if (hasBS) return 'ok';
+    if (hasDR) return 'critical';
+    return 'pending';
+  }
+
+  if (history.length > 0) {
+    const hasBSH = history.some((h) =>
+      String(h.status || '')
+        .toUpperCase()
+        .includes('DEV CONFIRMADA POR BODEGA'),
+    );
+    const hasDRH = history.some((h) => {
+      const s = String(h.status || '').toUpperCase();
+      return (
+        s.includes('DEVOLUCION AL REMITENTE') ||
+        s.includes('DEVOLUCIÓN AL REMITENTE')
+      );
+    });
+    if (hasBSH) return 'ok';
+    if (hasDRH) return 'critical';
+    return 'unverifiable';
+  }
+
+  // Sin movements ni history → unverifiable (pendiente de syncDevolutionDetails)
+  return 'unverifiable';
+}
+
 /* ═══════════════════════════════════════════════════════════
    Upsert órdenes en cache
    ═══════════════════════════════════════════════════════════ */
@@ -1000,6 +1050,7 @@ async function upsertOrdersToCache(cacheCtx, orders) {
       order_created_at: o.created_at || null,
       order_data: JSON.stringify(o),
       synced_at: new Date(),
+      devolution_alert: computeDevolutionAlert(o),
     };
   });
 
@@ -1019,6 +1070,7 @@ async function upsertOrdersToCache(cacheCtx, orders) {
         'product_names',
         'order_data',
         'synced_at',
+        'devolution_alert',
       ],
     });
   }
@@ -1409,9 +1461,12 @@ async function syncDevolutionDetails({
               freshOrder.managed_devolution_app;
           }
 
+          const newAlert = computeDevolutionAlert(existingOd);
+
           await DropiOrdersCache.update(
             {
               order_data: JSON.stringify(existingOd),
+              devolution_alert: newAlert,
               synced_at: new Date(),
             },
             { where: { id: row.id } },
@@ -1460,6 +1515,66 @@ async function syncDevolutionDetails({
  *   pending      = aún no ha llegado la devolución final
  */
 async function analyzeDevolutions(cacheWhere, from, until) {
+  // ── Summary: SQL puro, sin parsear order_data ──
+  const [summaryRows] = await db.query(
+    `SELECT devolution_alert, COUNT(*) as cnt
+     FROM dropi_orders_cache
+     WHERE id_configuracion = :id_configuracion
+       AND id_usuario = :id_usuario
+       AND classified_status = 'devolucion'
+       AND order_created_at BETWEEN :from AND :until
+     GROUP BY devolution_alert`,
+    {
+      replacements: {
+        id_configuracion: cacheWhere.id_configuracion ?? 0,
+        id_usuario: cacheWhere.id_usuario ?? 0,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  let withScan = 0,
+    withoutScan = 0,
+    pendingReturn = 0,
+    unverifiable = 0;
+  let totalDevolutions = 0;
+
+  for (const r of summaryRows) {
+    const cnt = Number(r.cnt || 0);
+    totalDevolutions += cnt;
+    if (r.devolution_alert === 'ok') withScan = cnt;
+    else if (r.devolution_alert === 'critical') withoutScan = cnt;
+    else if (r.devolution_alert === 'pending') pendingReturn = cnt;
+    else unverifiable += cnt; // null + 'unverifiable'
+  }
+
+  // ── Detección de proveedor (ligera con JSON_EXTRACT) ──
+  const [provRows] = await db.query(
+    `SELECT
+       COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.supplier.id'))) as suppliers,
+       COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.user.id'))) as users
+     FROM dropi_orders_cache
+     WHERE id_configuracion = :id_configuracion
+       AND id_usuario = :id_usuario
+       AND classified_status = 'devolucion'
+       AND order_created_at BETWEEN :from AND :until`,
+    {
+      replacements: {
+        id_configuracion: cacheWhere.id_configuracion ?? 0,
+        id_usuario: cacheWhere.id_usuario ?? 0,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  const isSupplierView =
+    provRows?.[0] &&
+    Number(provRows[0].suppliers) === 1 &&
+    Number(provRows[0].users) > 1;
+
+  // ── Órdenes: solo top 300 priorizadas (critical > unverifiable > pending > ok) ──
   const devRows = await DropiOrdersCache.findAll({
     where: {
       ...cacheWhere,
@@ -1474,13 +1589,20 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       'total_order',
       'order_created_at',
       'dropshipper_profit',
+      'devolution_alert',
     ],
     raw: true,
-    order: [['order_created_at', 'DESC']],
+    order: [
+      [
+        literal(
+          `FIELD(IFNULL(devolution_alert,'unverifiable'), 'critical', 'unverifiable', 'pending', 'ok')`,
+        ),
+      ],
+      ['order_created_at', 'ASC'],
+    ],
+    limit: 300,
   });
 
-  const supplierIds = new Set();
-  const userIds = new Set();
   const orders = [];
 
   for (const row of devRows) {
@@ -1491,39 +1613,14 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       continue;
     }
 
-    if (od.supplier?.id) supplierIds.add(od.supplier.id);
-    if (od.user?.id) userIds.add(od.user.id);
-
-    // ── Fuente 1: servientrega_movements (carrier tracking) ──
     const carrierMovements = (od.servientrega_movements || []).sort(
       (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
-
-    // ── Fuente 2: history (historial interno Dropi, fallback) ──
     const dropiHistory = (od.history || []).sort(
       (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
-
     const hasCarrierData = carrierMovements.length > 0;
 
-    // ── Detección de escaneo (solo aplica con carrier data) ──
-    const hasBodegaScan = carrierMovements.some((m) =>
-      String(m.nom_mov || '')
-        .toUpperCase()
-        .includes('DEV CONFIRMADA POR BODEGA'),
-    );
-
-    const hasDevolucionRemitente = carrierMovements.some((m) => {
-      const upper = String(m.nom_mov || '').toUpperCase();
-      return (
-        upper.includes('DEVOLUCION AL REMITENTE') ||
-        upper.includes('DEVOLUCIÓN AL REMITENTE')
-      );
-    });
-
-    const managedDevolution = od.managed_devolution_app === true;
-
-    // Productos
     const details = od.orderdetails || [];
     const products = details.map((d) => ({
       name: d?.product?.name || 'Sin nombre',
@@ -1532,57 +1629,9 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       sale_price: d?.product?.sale_price || 0,
     }));
 
-    // ── Nivel de alerta ──
-    let alertLevel;
-
-    if (hasCarrierData) {
-      // Con datos de carrier → lógica original
-      if (hasBodegaScan) {
-        alertLevel = 'ok';
-      } else if (hasDevolucionRemitente) {
-        alertLevel = 'critical';
-      } else {
-        alertLevel = 'pending';
-      }
-    } else {
-      // Sin datos de carrier → revisar history como fallback
-      const statusUpper = String(od.status || '').toUpperCase();
-      const isDevolucionFinal =
-        statusUpper.includes('DEVOLUCION') ||
-        statusUpper.includes('DEVOLUCIÓN') ||
-        statusUpper === 'DEVUELTO';
-
-      // Buscar escaneo de bodega en history también
-      const hasBodegaScanInHistory = dropiHistory.some((h) =>
-        String(h.status || '')
-          .toUpperCase()
-          .includes('DEV CONFIRMADA POR BODEGA'),
-      );
-
-      // Buscar devolución al remitente en history
-      const hasDevRemInHistory = dropiHistory.some((h) => {
-        const s = String(h.status || '').toUpperCase();
-        return (
-          s.includes('DEVOLUCION AL REMITENTE') ||
-          s.includes('DEVOLUCIÓN AL REMITENTE')
-        );
-      });
-
-      if (hasBodegaScanInHistory) {
-        alertLevel = 'ok';
-      } else if (isDevolucionFinal && hasDevRemInHistory) {
-        alertLevel = 'critical';
-      } else if (isDevolucionFinal) {
-        alertLevel = 'unverifiable';
-      } else {
-        alertLevel = 'pending';
-      }
-    }
-
-    // ── Construir movements para el timeline ──
-    // Si tiene carrier data → usar eso. Si no → usar history de Dropi.
+    // Timeline
     let timelineMovements;
-    let timelineSource; // 'carrier' | 'dropi_history'
+    let timelineSource;
 
     if (hasCarrierData) {
       timelineSource = 'carrier';
@@ -1594,9 +1643,7 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       timelineSource = 'dropi_history';
       timelineMovements = dropiHistory
         .filter((h) => {
-          // Filtrar solo los states relevantes del carrier (no internos)
           const s = String(h.status || '').toUpperCase();
-          // Excluir states internos del dropshipper/supplier
           return !(
             s === 'PENDIENTE CONFIRMACION' ||
             s === 'PENDIENTE' ||
@@ -1614,6 +1661,8 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       timelineMovements = [];
     }
 
+    const alertLevel = row.devolution_alert || 'unverifiable';
+
     orders.push({
       id: row.dropi_order_id,
       name: od.name || '',
@@ -1628,24 +1677,14 @@ async function analyzeDevolutions(cacheWhere, from, until) {
       created_at: row.order_created_at,
       profit: row.dropshipper_profit,
       products,
-      managedDevolution,
+      managedDevolution: od.managed_devolution_app === true,
       movements: timelineMovements,
       timelineSource,
-      hasBodegaScan,
-      hasDevolucionRemitente,
+      hasBodegaScan: alertLevel === 'ok',
+      hasDevolucionRemitente: alertLevel === 'critical',
       alertLevel,
     });
   }
-
-  const isSupplierView = supplierIds.size === 1 && userIds.size > 1;
-
-  const totalDevolutions = orders.length;
-  const withScan = orders.filter((o) => o.alertLevel === 'ok').length;
-  const withoutScan = orders.filter((o) => o.alertLevel === 'critical').length;
-  const pendingReturn = orders.filter((o) => o.alertLevel === 'pending').length;
-  const unverifiable = orders.filter(
-    (o) => o.alertLevel === 'unverifiable',
-  ).length;
 
   return {
     isSupplierView,
@@ -1664,14 +1703,6 @@ async function analyzeDevolutions(cacheWhere, from, until) {
    Computar stats desde cache
    ═══════════════════════════════════════════════════════════ */
 
-/**
- * REEMPLAZAR computeStatsFromCache en dropi_integrations.controller.js
- *
- * Cambios vs versión anterior:
- * - Agrega ordersByStatus: objeto con arrays de órdenes por cada classified_status (máx 25 por estado)
- * - Incluye phone en cada orden
- * - retiroAgencia sigue existiendo por compatibilidad pero ahora también está en ordersByStatus.retiro_agencia
- */
 async function computeStatsFromCache(cacheCtx, from, until) {
   const cacheWhere = buildCacheWhere(cacheCtx);
 
