@@ -217,9 +217,10 @@ async function upsertOrders(cacheInsertFields, orders) {
 /* --- Credenciales WA --------------------------------------- */
 async function getWaCredentials(id_configuracion) {
   const [row] = await db.query(
-    `SELECT phone_number_id, waba_token
+    `SELECT id_telefono  AS phone_number_id,
+            token        AS waba_token
      FROM configuraciones
-     WHERE id = ? AND phone_number_id IS NOT NULL
+     WHERE id = ? AND id_telefono IS NOT NULL AND token IS NOT NULL
      LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
