@@ -3,19 +3,19 @@
 /**
  * cron/syncDropiOrdersHourly.js
  *
- * Cada hora (minuto :05):
- *  1. Para cada integración Dropi activa → consulta órdenes con
- *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer → hoy)
+ * Cada minuto (modo testing). Cambiar a '5 * * * *' en produccion.
+ *  1. Para cada integracion Dropi activa -> consulta ordenes con
+ *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer -> hoy)
  *     y hace upsert al cache.
  *  2. Por cada orden sincronizada verifica si su estado tiene una plantilla
  *     WhatsApp activa configurada en dropi_plantillas_config.
- *  3. Si aún no se envió ese (orden + config + estado) → envía el template
+ *  3. Si aun no se envio ese (orden + config + estado) -> envia el template
  *     y registra en dropi_plantillas_enviadas (tabla de dedup).
  *
  * Dedup:
  *   UNIQUE KEY (dropi_order_id, id_configuracion, estado_dropi)
- *   → Mismo pedido + mismo estado  = solo se notifica UNA VEZ ✅
- *   → Mismo pedido cambia de estado = nuevo combo → se notifica de nuevo ✅
+ *   -> Mismo pedido + mismo estado  = solo se notifica UNA VEZ
+ *   -> Mismo pedido cambia de estado = nuevo combo -> se notifica de nuevo
  */
 
 const cron = require('node-cron');
@@ -30,16 +30,16 @@ const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 const dropiService = require('../services/dropi.service');
 const { decryptToken } = require('../utils/cryptoToken');
 
-/* ─── Constantes ────────────────────────────────────────────── */
+/* --- Constantes -------------------------------------------- */
 const PAGE_SIZE = 100;
-const DELAY_BETWEEN_PAGES = 2500; // ms entre páginas de la misma integración
-const DELAY_BETWEEN_INTEGRATIONS = 4000; // ms entre integraciones (evitar ban Dropi)
-const DELAY_BETWEEN_WA_SENDS = 800; // ms entre envíos a Meta API
-const MAX_ORDERS_PER_INTEGRATION = 2000; // techo de seguridad por ejecución
+const DELAY_BETWEEN_PAGES = 2500;
+const DELAY_BETWEEN_INTEGRATIONS = 4000;
+const DELAY_BETWEEN_WA_SENDS = 800;
+const MAX_ORDERS_PER_INTEGRATION = 2000;
 const MAX_RETRIES_429 = 4;
 const META_API_VERSION = 'v19.0';
 
-/* ─── Logging helpers ───────────────────────────────────────── */
+/* --- Logging ----------------------------------------------- */
 const logsDir = path.join(process.cwd(), './src/logs/logs_dropi');
 
 async function ensureDir(dir) {
@@ -53,17 +53,16 @@ async function log(msg) {
   process.stdout.write(line);
   try {
     await ensureDir(logsDir);
-    await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line);
+    await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line, {
+      encoding: 'utf8',
+    });
   } catch (_) {}
 }
 
-/* ─── Lock global para no solapar ejecuciones ───────────────── */
+/* --- Lock global ------------------------------------------- */
 if (!global._hourlyDropiSyncRunning) global._hourlyDropiSyncRunning = false;
 
-/* ─── Mapeo classified_status → estado_dropi ───────────────────
-   Debe coincidir con los estados que el usuario configura en
-   DropisPlantillas.jsx / dropi_plantillas_config.
-   ──────────────────────────────────────────────────────────── */
+/* --- Mapeo classified_status -> estado_dropi --------------- */
 const CLASSIFIED_TO_ESTADO = {
   entregada: 'ENTREGADA',
   devolucion: 'DEVOLUCION',
@@ -72,10 +71,9 @@ const CLASSIFIED_TO_ESTADO = {
   retiro_agencia: 'RETIRO EN AGENCIA',
   novedad: 'NOVEDAD',
   en_transito: 'EN TRANSITO',
-  // 'indemnizada' y 'otro' → sin plantilla configurable
 };
 
-/* ─── Helpers de fecha (UTC-5 Ecuador) ─────────────────────── */
+/* --- Helpers de fecha (UTC-5 Ecuador) ---------------------- */
 function getDateRange() {
   const now = new Date();
   const ecNow = new Date(
@@ -85,12 +83,12 @@ function getDateRange() {
   const fmt = (d) =>
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   return {
-    from: fmt(new Date(ecNow.getTime() - 24 * 60 * 60 * 1000)), // ayer
-    until: fmt(ecNow), // hoy
+    from: fmt(new Date(ecNow.getTime() - 24 * 60 * 60 * 1000)),
+    until: fmt(ecNow),
   };
 }
 
-/* ─── Clasificar status (idéntico al controller) ─────────────── */
+/* --- Clasificar status ------------------------------------- */
 function classifyDropiStatus(status) {
   const s = String(status || '')
     .trim()
@@ -105,7 +103,7 @@ function classifyDropiStatus(status) {
     return 'entregada';
   if (
     s.includes('DEVOLUCION') ||
-    s.includes('DEVOLUCIÓN') ||
+    s.includes('DEVOLUCION') ||
     s === 'DEVUELTO' ||
     s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
     s === 'DESAPLICADO'
@@ -120,11 +118,7 @@ function classifyDropiStatus(status) {
   )
     return 'cancelada';
   if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
-  if (
-    s.includes('RETIRO EN AGENCIA') ||
-    s.includes('ENVÍO LISTO EN OFICINA') ||
-    s === 'ENVIO LISTO EN OFICINA'
-  )
+  if (s.includes('RETIRO EN AGENCIA') || s.includes('ENVIO LISTO EN OFICINA'))
     return 'retiro_agencia';
   if (
     s.includes('NOVEDAD') ||
@@ -134,7 +128,6 @@ function classifyDropiStatus(status) {
     s.includes('DESTINATARIO RE-PROGRAMA') ||
     s.includes('DESTINATARIO SOLICITA') ||
     s.includes('FUERA DE COBERTURA') ||
-    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
     s.includes('PROBLEMAS DE ORDEN') ||
     s.includes('VISITA A DESTINATARIO') ||
     s.includes('ACCIDENTE EN CARRETERA') ||
@@ -146,12 +139,11 @@ function classifyDropiStatus(status) {
     s.includes('SINIESTRO') ||
     s.includes('INCAUTADO') ||
     s.includes('HURTAD') ||
-    s.includes('AVERÍA')
+    s.includes('AVERIA')
   )
     return 'indemnizada';
   if (
     s === 'GUIA_GENERADA' ||
-    s.includes('TRÁNSITO') ||
     s.includes('TRANSITO') ||
     s.includes('EN RUTA') ||
     s.includes('EN CAMINO') ||
@@ -178,7 +170,7 @@ function classifyDropiStatus(status) {
   return 'otro';
 }
 
-/* ─── Upsert al cache ───────────────────────────────────────── */
+/* --- Upsert al cache --------------------------------------- */
 async function upsertOrders(cacheInsertFields, orders) {
   if (!orders.length) return;
   const bulk = orders.map((o) => {
@@ -222,9 +214,7 @@ async function upsertOrders(cacheInsertFields, orders) {
   }
 }
 
-/* ─── Credenciales WA de una configuración ─────────────────────
-   AJUSTA los nombres de columna si difieren en tu tabla.
-   ──────────────────────────────────────────────────────────── */
+/* --- Credenciales WA --------------------------------------- */
 async function getWaCredentials(id_configuracion) {
   const [row] = await db.query(
     `SELECT phone_number_id, waba_token
@@ -236,18 +226,18 @@ async function getWaCredentials(id_configuracion) {
   return row || null;
 }
 
-/* ─── Normalizar teléfono → E.164 sin '+' ───────────────────── */
+/* --- Normalizar telefono -> E.164 sin '+' ------------------ */
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
   if (!digits) return null;
-  if (digits.length >= 11) return digits; // ya tiene código de país
+  if (digits.length >= 11) return digits;
   if (digits.length === 10 && digits.startsWith('0'))
-    return '593' + digits.slice(1); // EC 0XXX
-  if (digits.length === 9) return '593' + digits; // EC sin 0
+    return '593' + digits.slice(1);
+  if (digits.length === 9) return '593' + digits;
   return digits;
 }
 
-/* ─── Enviar template vía Meta Graph API ────────────────────── */
+/* --- Enviar template via Meta Graph API -------------------- */
 async function sendWhatsappTemplate({
   phone_number_id,
   waba_token,
@@ -256,7 +246,7 @@ async function sendWhatsappTemplate({
   languageCode,
 }) {
   const to = normalizePhone(phone);
-  if (!to) throw new Error(`Teléfono inválido: ${phone}`);
+  if (!to) throw new Error(`Telefono invalido: ${phone}`);
 
   const { data } = await axios.post(
     `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
@@ -267,8 +257,6 @@ async function sendWhatsappTemplate({
       template: {
         name: templateName,
         language: { code: languageCode || 'es' },
-        // Si tus templates tienen variables body {{1}}, {{2}}, agrégalas aquí:
-        // components: [{ type: 'body', parameters: [{ type: 'text', text: 'valor' }] }]
       },
     },
     {
@@ -280,10 +268,10 @@ async function sendWhatsappTemplate({
     },
   );
 
-  return data?.messages?.[0]?.id || null; // ID de mensaje devuelto por Meta
+  return data?.messages?.[0]?.id || null;
 }
 
-/* ─── Verificar dedup ───────────────────────────────────────── */
+/* --- Verificar dedup --------------------------------------- */
 async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   const [row] = await db.query(
     `SELECT id FROM dropi_plantillas_enviadas
@@ -297,7 +285,7 @@ async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   return !!row;
 }
 
-/* ─── Registrar envío ───────────────────────────────────────── */
+/* --- Registrar envio --------------------------------------- */
 async function registrarEnvio({
   dropi_order_id,
   id_configuracion,
@@ -324,7 +312,7 @@ async function registrarEnvio({
   );
 }
 
-/* ─── Cargar plantillas activas de una config ───────────────── */
+/* --- Plantillas activas de una config ---------------------- */
 async function getPlantillasActivas(id_configuracion) {
   const rows = await db.query(
     `SELECT estado_dropi, nombre_template, language_code
@@ -335,32 +323,28 @@ async function getPlantillasActivas(id_configuracion) {
        AND nombre_template != ''`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  // Mapa { 'ENTREGADA': { nombre_template, language_code }, ... }
   const map = {};
-  for (const r of rows)
+  for (const r of rows) {
     map[r.estado_dropi] = {
       nombre_template: r.nombre_template,
       language_code: r.language_code || 'es',
     };
+  }
   return map;
 }
 
-/* ─── Procesar templates para un lote de órdenes ───────────────
-   Recibe las órdenes TAL COMO vienen de la API Dropi (con .id, .phone, .status)
-   ──────────────────────────────────────────────────────────── */
+/* --- Procesar templates ------------------------------------ */
 async function procesarTemplates({ orders, id_configuracion }) {
   if (!orders.length) return { enviados: 0, omitidos: 0, errores: 0 };
 
-  // Plantillas activas para esta config
   const plantillas = await getPlantillasActivas(id_configuracion);
   if (!Object.keys(plantillas).length)
     return { enviados: 0, omitidos: 0, errores: 0 };
 
-  // Credenciales WA
   const creds = await getWaCredentials(id_configuracion);
   if (!creds?.phone_number_id || !creds?.waba_token) {
     await log(
-      `[hourly-dropi] ⚠️ Config #${id_configuracion} sin credenciales WA`,
+      `[hourly-dropi] WARNING Config #${id_configuracion} sin credenciales WA`,
     );
     return { enviados: 0, omitidos: 0, errores: 0 };
   }
@@ -371,7 +355,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
 
   for (const order of orders) {
     try {
-      // Clasificar y mapear al estado configurable
       const classified = classifyDropiStatus(order.status);
       const estadoDropi = CLASSIFIED_TO_ESTADO[classified];
 
@@ -383,8 +366,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
         omitidos++;
         continue;
       }
-
-      // Dedup: ¿ya se envió este estado para esta orden?
       if (await yaFueEnviado(order.id, id_configuracion, estadoDropi)) {
         omitidos++;
         continue;
@@ -392,7 +373,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
 
       const { nombre_template, language_code } = plantillas[estadoDropi];
 
-      // Enviar a Meta
       const waMessageId = await sendWhatsappTemplate({
         phone_number_id: creds.phone_number_id,
         waba_token: creds.waba_token,
@@ -401,7 +381,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
         languageCode: language_code,
       });
 
-      // Registrar para no reenviar
       await registrarEnvio({
         dropi_order_id: order.id,
         id_configuracion,
@@ -412,7 +391,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
       });
 
       await log(
-        `[hourly-dropi] ✉ orden #${order.id} → ${estadoDropi} → ${nombre_template} → ${order.phone}`,
+        `[hourly-dropi] ENVIADO orden #${order.id} | estado: ${estadoDropi} | tpl: ${nombre_template} | phone: ${order.phone}`,
       );
       enviados++;
 
@@ -421,12 +400,11 @@ async function procesarTemplates({ orders, id_configuracion }) {
       errores++;
       const metaCode = err?.response?.data?.error?.code;
       await log(
-        `[hourly-dropi] ❌ Error template orden #${order?.id}: ${err?.message} (Meta code: ${metaCode})`,
+        `[hourly-dropi] ERROR template orden #${order?.id}: ${err?.message} | Meta code: ${metaCode}`,
       );
 
-      // Rate limit de Meta → pausa larga
       if (err?.response?.status === 429 || metaCode === 130429) {
-        await log('[hourly-dropi] ⚠️ Rate limit Meta — pausando 30s');
+        await log('[hourly-dropi] WARNING Rate limit Meta -- pausando 30s');
         await new Promise((r) => setTimeout(r, 30000));
       }
     }
@@ -435,7 +413,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
   return { enviados, omitidos, errores };
 }
 
-/* ─── Sync completo de una integración ─────────────────────── */
+/* --- Sync de una integracion ------------------------------- */
 async function syncIntegration(integration, from, until) {
   const label = `integ#${integration.id}(${integration.country_code})`;
   const id_config = integration.id_configuracion
@@ -446,13 +424,11 @@ async function syncIntegration(integration, from, until) {
   try {
     integrationKey = decryptToken(integration.integration_key_enc);
   } catch (e) {
-    await log(
-      `[hourly-dropi] ${label} — ❌ error descifrando key: ${e.message}`,
-    );
+    await log(`[hourly-dropi] ${label} ERROR descifrando key: ${e.message}`);
     return { label, synced: 0, skipped: true };
   }
   if (!integrationKey?.trim()) {
-    await log(`[hourly-dropi] ${label} — ⚠️ key vacía`);
+    await log(`[hourly-dropi] ${label} WARNING key vacia`);
     return { label, synced: 0, skipped: true };
   }
 
@@ -460,7 +436,7 @@ async function syncIntegration(integration, from, until) {
     ? { id_configuracion: id_config, id_usuario: 0 }
     : { id_configuracion: 0, id_usuario: Number(integration.id_usuario) };
 
-  /* ── Fase 1: Fetch Dropi ── */
+  /* Fase 1: Fetch Dropi */
   let allOrders = [];
   let start = 0;
   let keepGoing = true;
@@ -490,7 +466,7 @@ async function syncIntegration(integration, from, until) {
 
       if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) {
         await log(
-          `[hourly-dropi] ${label} — ⚠️ techo ${MAX_ORDERS_PER_INTEGRATION} alcanzado`,
+          `[hourly-dropi] ${label} WARNING techo ${MAX_ORDERS_PER_INTEGRATION} alcanzado`,
         );
         break;
       }
@@ -504,27 +480,27 @@ async function syncIntegration(integration, from, until) {
         }
         delay = Math.min(delay * 2, 20000);
         await log(
-          `[hourly-dropi] ${label} — ⚠️ 429 retry ${retries}/${MAX_RETRIES_429}, wait ${delay}ms`,
+          `[hourly-dropi] ${label} WARNING 429 retry ${retries}/${MAX_RETRIES_429} wait ${delay}ms`,
         );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       await log(
-        `[hourly-dropi] ${label} — ❌ error start=${start}: ${err?.message}`,
+        `[hourly-dropi] ${label} ERROR start=${start}: ${err?.message}`,
       );
       break;
     }
   }
 
-  /* ── Fase 2: Upsert cache ── */
+  /* Fase 2: Upsert cache */
   if (allOrders.length > 0) {
     await upsertOrders(cacheInsertFields, allOrders);
   }
   await log(
-    `[hourly-dropi] ${label} — ✅ ${allOrders.length} órdenes sincronizadas`,
+    `[hourly-dropi] ${label} OK ${allOrders.length} ordenes sincronizadas`,
   );
 
-  /* ── Fase 3: Templates WhatsApp (solo integraciones con id_configuracion) ── */
+  /* Fase 3: Templates WhatsApp */
   let templateStats = { enviados: 0, omitidos: 0, errores: 0 };
   if (id_config && allOrders.length > 0) {
     templateStats = await procesarTemplates({
@@ -532,7 +508,7 @@ async function syncIntegration(integration, from, until) {
       id_configuracion: id_config,
     });
     await log(
-      `[hourly-dropi] ${label} — templates: ${JSON.stringify(templateStats)}`,
+      `[hourly-dropi] ${label} templates: ${JSON.stringify(templateStats)}`,
     );
   }
 
@@ -544,19 +520,19 @@ async function syncIntegration(integration, from, until) {
   };
 }
 
-/* ─── Job principal ─────────────────────────────────────────── */
+/* --- Job principal ----------------------------------------- */
 async function runHourlyDropiSync() {
   if (global._hourlyDropiSyncRunning) {
-    await log('[hourly-dropi] ⚠️ Ya hay una ejecución en curso, saltando');
+    await log('[hourly-dropi] WARNING ya hay una ejecucion en curso, saltando');
     return;
   }
   global._hourlyDropiSyncRunning = true;
   const t0 = Date.now();
-  await log(`[hourly-dropi] ▶ Iniciando sync`);
+  await log('[hourly-dropi] >> Iniciando sync');
 
   try {
     const { from, until } = getDateRange();
-    await log(`[hourly-dropi] Rango ${from} → ${until}`);
+    await log(`[hourly-dropi] Rango ${from} -> ${until}`);
 
     const integrations = await DropiIntegrations.findAll({
       where: { is_active: 1, deleted_at: null },
@@ -569,47 +545,53 @@ async function runHourlyDropiSync() {
       ],
       raw: true,
     });
-    await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
+    await log(
+      `[hourly-dropi] ${integrations.length} integraciones activas encontradas`,
+    );
 
     const totals = { ordenes: 0, enviados: 0, skipped: 0, errores: 0 };
 
     for (let i = 0; i < integrations.length; i++) {
       try {
         const r = await syncIntegration(integrations[i], from, until);
-        r.skipped
-          ? totals.skipped++
-          : ((totals.ordenes += r.synced),
-            (totals.enviados += r.templates?.enviados || 0));
+        if (r.skipped) {
+          totals.skipped++;
+        } else {
+          totals.ordenes += r.synced;
+          totals.enviados += r.templates?.enviados || 0;
+        }
       } catch (err) {
         totals.errores++;
         await log(
-          `[hourly-dropi] ❌ Error integ#${integrations[i].id}: ${err?.message}`,
+          `[hourly-dropi] ERROR integ#${integrations[i].id}: ${err?.message}`,
         );
       }
-      if (i < integrations.length - 1)
+      if (i < integrations.length - 1) {
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
+      }
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     await log(
-      `[hourly-dropi] ✅ ${elapsed}s | órdenes: ${totals.ordenes} | ` +
-        `templates: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
+      `[hourly-dropi] DONE ${elapsed}s | ordenes: ${totals.ordenes} | templates: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
     );
   } catch (err) {
-    await log(`[hourly-dropi] ❌ Error general: ${err?.message}`);
+    await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
   } finally {
     global._hourlyDropiSyncRunning = false;
   }
 }
 
-/* ─── Registrar cron ────────────────────────────────────────── */
-cron.schedule('*/5 * * * *', () => {
+/* --- Registrar cron ---------------------------------------- */
+// '* * * * *'    = cada 1 minuto  (TESTING)
+// '5 * * * *'    = cada hora al :05 (PRODUCCION)
+cron.schedule('* * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
 });
 
-log('[hourly-dropi] Cron registrado — cada hora en el minuto :05').catch(
+log('[hourly-dropi] Cron registrado -- ejecuta cada 1 minuto (testing)').catch(
   () => {},
 );
 
