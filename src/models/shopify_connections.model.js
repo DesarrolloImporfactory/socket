@@ -38,7 +38,7 @@ const ShopifyConnections = db.define(
       allowNull: true,
     },
     estado: {
-      type: DataTypes.ENUM('activo', 'desconectado', 'error'),
+      type: DataTypes.ENUM('activo', 'desconectado', 'error', 'eliminado'),
       defaultValue: 'activo',
     },
     ultima_sincronizacion: {

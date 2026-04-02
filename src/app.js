@@ -205,9 +205,7 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
-    '/api/v1/shopify/webhooks/customer-data-request',
-    '/api/v1/shopify/webhooks/customer-data-erasure',
-    '/api/v1/shopify/webhooks/shop-data-erasure',
+    '/api/v1/shopify/webhooks',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -220,6 +218,7 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
+    '/api/v1/shopify/webhooks',
   ];
   if (skipPaths.includes(req.path)) return next();
 

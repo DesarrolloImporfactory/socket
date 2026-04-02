@@ -928,38 +928,29 @@ exports.listar_ordenes = catchAsync(async (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GDPR COMPLIANCE WEBHOOKS (obligatorios para app pública)
+// GDPR COMPLIANCE WEBHOOK UNIFICADO (obligatorio para app pública)
 // ═══════════════════════════════════════════════════════════════════════════
 
-exports.customerDataRequest = (req, res) => {
-  console.log(
-    '[Shopify Webhook] Customer data request:',
-    JSON.stringify(req.body),
-  );
-  return res.status(200).json({ received: true });
-};
+exports.handleComplianceWebhook = async (req, res) => {
+  const topic = req.get('X-Shopify-Topic');
+  console.log(`[Shopify Webhook] Topic: ${topic}`, JSON.stringify(req.body));
 
-exports.customerDataErasure = (req, res) => {
-  console.log(
-    '[Shopify Webhook] Customer data erasure:',
-    JSON.stringify(req.body),
-  );
-  return res.status(200).json({ received: true });
-};
-
-exports.shopDataErasure = async (req, res) => {
-  console.log('[Shopify Webhook] Shop data erasure:', JSON.stringify(req.body));
-  try {
-    const shopDomain = req.body?.shop_domain;
-    if (shopDomain) {
-      await ShopifyConnections.update(
-        { estado: 'eliminado', access_token: null },
-        { where: { shop_domain: shopDomain } },
-      );
-      console.log(`[Shopify Webhook] Conexión eliminada para ${shopDomain}`);
+  if (topic === 'shop/redact') {
+    try {
+      const shopDomain = req.body?.shop_domain;
+      if (shopDomain) {
+        await ShopifyConnections.update(
+          { estado: 'eliminado', access_token: null },
+          { where: { shop_domain: shopDomain } },
+        );
+        console.log(`[Shopify Webhook] Conexión eliminada para ${shopDomain}`);
+      }
+    } catch (err) {
+      console.error('[Shopify Webhook] Error:', err.message);
     }
-  } catch (err) {
-    console.error('[Shopify Webhook] Error en shop erasure:', err.message);
   }
+
+  // customers/data_request y customers/redact → 200 OK
+  // (no almacenamos datos de clientes directamente)
   return res.status(200).json({ received: true });
 };

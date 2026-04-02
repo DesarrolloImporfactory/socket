@@ -25,24 +25,14 @@ function verifyShopifyWebhook(req, res, next) {
   next();
 }
 
-// ─── Webhooks GDPR (antes de protect, usan HMAC de Shopify) ──────────────────
+// ─── Webhook GDPR unificado ──────────────────────────────────────────────────
 router.post(
-  '/webhooks/customer-data-request',
+  '/webhooks',
   verifyShopifyWebhook,
-  shopifyCtrl.customerDataRequest,
-);
-router.post(
-  '/webhooks/customer-data-erasure',
-  verifyShopifyWebhook,
-  shopifyCtrl.customerDataErasure,
-);
-router.post(
-  '/webhooks/shop-data-erasure',
-  verifyShopifyWebhook,
-  shopifyCtrl.shopDataErasure,
+  shopifyCtrl.handleComplianceWebhook,
 );
 
-// ─── OAuth (callback NO requiere protect porque viene de Shopify) ────────────
+// ─── OAuth (callback viene de Shopify, no requiere protect) ──────────────────
 router.get('/callback', shopifyCtrl.callback);
 
 // ─── Todo lo demás requiere autenticación ────────────────────────────────────
@@ -53,7 +43,7 @@ router.post('/auth', checkPlanActivo, shopifyCtrl.iniciar_auth);
 router.get('/status', shopifyCtrl.status);
 router.delete('/disconnect', shopifyCtrl.disconnect);
 
-// ─── Productos de la tienda conectada ────────────────────────────────────────
+// ─── Productos ───────────────────────────────────────────────────────────────
 router.get('/products', checkPlanActivo, shopifyCtrl.listar_productos);
 
 // ─── Subir imágenes ──────────────────────────────────────────────────────────
