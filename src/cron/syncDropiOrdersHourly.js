@@ -586,7 +586,7 @@ async function runHourlyDropiSync() {
 /* --- Registrar cron ---------------------------------------- */
 // '* * * * *'    = cada 1 minuto  (TESTING)
 // '5 * * * *'    = cada hora al :05 (PRODUCCION)
-cron.schedule('* * * * *', () => {
+cron.schedule('5 * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
