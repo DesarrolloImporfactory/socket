@@ -13,6 +13,11 @@ const { QueryTypes } = require('sequelize');
  */
 exports.inbound = async (req, res) => {
   try {
+    console.log(
+      '[webhook_contactos] Body recibido:',
+      JSON.stringify(req.body, null, 2),
+    );
+
     // // ── 0. Validar secret ──
     // const secret = process.env.WEBHOOK_CONTACTOS_SECRET || '';
     // const headerSecret = req.headers['x-webhook-secret'] || '';
