@@ -35,12 +35,10 @@ const COUPON_PLAN_ADV = envPick(
   'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
 );
 
-// const COUPON_PLAN_COMUNIDAD = envPick(
-//   't7Ky1nOU', //STRIPE_COUPON_COMUNIDAD_FIRST_MONTH
-//   'JUGGtBc9',
-// );
-
-const COUPON_PLAN_COMUNIDAD = isProd ? 't7Ky1nOU' : 'JUGGtBc9';
+const COUPON_PLAN_COMUNIDAD = envPick(
+  'STRIPE_COUPON_COMUNIDAD_FIRST_MONTH',
+  'STRIPE_COUPON_COMUNIDAD_FIRST_MONTH_TEST',
+);
 
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
@@ -56,10 +54,9 @@ const PLAN_IC_ID = Number(
 );
 
 // ID del Plan Comunidad por entorno
-// const PLAN_COMUNIDAD_ID = Number(
-//   envPick('STRIPE_PLAN_COMUNIDAD_ID', 'STRIPE_PLAN_COMUNIDAD_ID_TEST', '22'),
-// );
-const PLAN_COMUNIDAD_ID = isProd ? 22 : 23;
+const PLAN_COMUNIDAD_ID = Number(
+  envPick('STRIPE_PLAN_COMUNIDAD_ID', 'STRIPE_PLAN_COMUNIDAD_ID_TEST', '22'),
+);
 
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 

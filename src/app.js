@@ -60,10 +60,7 @@ const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes
 const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
 
 const stripeRouter = require('./routes/stripe_plan.routes');
-
 const stripe_webhookController = require('./controllers/stripe_webhook.controller');
-
-const stripe_pago_webhookController = require('./controllers/stripe_pago_webhook.controller');
 
 const categorias_chat_centerRouter = require('./routes/categorias_chat_center.routes');
 
@@ -89,10 +86,6 @@ const webhook_meta_whatsappRouter = require('./routes/webhook_meta_whatsapp.rout
 
 const instagramRouter = require('./routes/instagram.routes');
 
-const stripeproRouter = require('./routes/stripepro.routes');
-
-const stripeproPagosRouter = require('./routes/stripepro_pagos.routes');
-
 const droppiIntegrationsRouter = require('./routes/dropi_integrations.routes');
 
 const cotizacionesRouter = require('./routes/cotizaciones.routes');
@@ -116,17 +109,10 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again in an hour!',
 });
 
-// WEBHOOK: este debe ir antes del body parser y fuera del router
 app.post(
   '/api/v1/stripe_plan/stripeWebhook',
   express.raw({ type: 'application/json' }),
   stripe_webhookController.stripeWebhook,
-);
-
-app.post(
-  '/api/v1/stripe_plan_pago/webhook',
-  express.raw({ type: 'application/json' }),
-  stripe_pago_webhookController.stripeWebhook,
 );
 
 const allowlist = [
@@ -201,6 +187,16 @@ app.use(
   }),
 );
 
+// Raw body para Shopify GDPR Webhooks (verificación HMAC)
+app.use(
+  '/api/v1/shopify/webhooks',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
+
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
@@ -209,7 +205,9 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
-    '/api/v1/stripe_plan_pago/webhook',
+    '/api/v1/shopify/webhooks/customer-data-request',
+    '/api/v1/shopify/webhooks/customer-data-erasure',
+    '/api/v1/shopify/webhooks/shop-data-erasure',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -222,7 +220,6 @@ app.use((req, res, next) => {
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
-    '/api/v1/stripe_plan_pago/webhook',
   ];
   if (skipPaths.includes(req.path)) return next();
 
@@ -278,8 +275,6 @@ app.use('/api/v1/messenger', messengerRouter);
 app.use('/api/v1/tiktok', tikTokRouter);
 app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
-app.use('/api/v1/stripepro', stripeproRouter);
-app.use('/api/v1/stripepro_pagos', stripeproPagosRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
