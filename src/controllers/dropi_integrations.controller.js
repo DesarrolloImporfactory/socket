@@ -2115,6 +2115,7 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
   if (!phone || phone.length < 7) {
     return next(new AppError('Teléfono inválido', 400));
   }
+
   if (!id_configuracion) {
     return next(new AppError('id_configuracion es requerido', 400));
   }
@@ -2127,7 +2128,7 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
-  // ── 1) Normalizar teléfono y generar variaciones ──
+  // Normalizar teléfono y generar variaciones
   let normalized = phone;
   if (normalized.startsWith('593')) normalized = normalized.substring(3);
   if (normalized.startsWith('0')) normalized = normalized.substring(1);
@@ -2136,7 +2137,6 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
     ...new Set([phone, normalized, '0' + normalized, '593' + normalized]),
   ];
 
-  // ── 2) Buscar órdenes por cada variación de teléfono ──
   const allOrders = new Map();
 
   for (const variant of variations) {
@@ -2157,9 +2157,11 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
         if (order?.id) allOrders.set(order.id, order);
       }
     } catch (err) {
-      console.warn(`[history] Error variación ${variant}: ${err?.message}`);
+      // Si una variación falla (429, etc.), seguimos con las demás
+      console.warn(`[history] Error con variación ${variant}: ${err?.message}`);
     }
 
+    // Rate limit protection
     await new Promise((r) => setTimeout(r, 1000));
   }
 
@@ -2167,8 +2169,8 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
     (a, b) => new Date(b.created_at) - new Date(a.created_at),
   );
 
-  // ── 3) Stats propias (tu tienda) ──
-  const myStats = {
+  // Stats
+  const stats = {
     total_orders: orders.length,
     delivered: 0,
     canceled: 0,
@@ -2180,74 +2182,31 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
   for (const o of orders) {
     const cat = classifyDropiStatus(o.status);
     if (cat === 'entregada') {
-      myStats.delivered++;
-      myStats.total_revenue += Number(o.total_order || 0);
+      stats.delivered++;
+      stats.total_revenue += Number(o.total_order || 0);
     } else if (cat === 'cancelada' || cat === 'devolucion') {
-      myStats.canceled++;
+      stats.canceled++;
     } else if (cat === 'pendiente') {
-      myStats.pending++;
-    } else {
-      myStats.in_transit++;
+      stats.pending++;
+    } else if (
+      cat === 'en_transito' ||
+      cat === 'novedad' ||
+      cat === 'retiro_agencia'
+    ) {
+      stats.in_transit++;
     }
   }
 
-  // ── 4) Client-stats cross-store (si hay órdenes) ──
-  let crossStoreStats = null;
-
-  if (orders.length > 0) {
-    const orderIds = orders.map((o) => o.id);
-
-    try {
-      const csResponse = await dropiService.getClientStats({
-        integrationKey,
-        orderIds,
-        country_code: integration.country_code,
-      });
-
-      // Tomar el que tenga más total_orders (mejor representación)
-      const csData = csResponse?.data || csResponse || {};
-      let bestStat = null;
-
-      for (const key of Object.keys(csData)) {
-        const stat = csData[key];
-        if (
-          !bestStat ||
-          (stat?.client_total_orders || 0) >
-            (bestStat?.client_total_orders || 0)
-        ) {
-          bestStat = stat;
-        }
-      }
-
-      if (bestStat) {
-        crossStoreStats = {
-          total_orders_all_stores: bestStat.client_total_orders || 0,
-          total_returns_all_stores: bestStat.client_total_orders_returneds || 0,
-          has_repeated_orders: (bestStat.ordenes_repetidas || []).length > 0,
-          repeated_orders: bestStat.ordenes_repetidas || [],
-          raw: csData, // para debug, lo puedes quitar después
-        };
-      }
-    } catch (err) {
-      console.warn(`[history] client-stats error: ${err?.message}`);
-      // No falla el endpoint, solo no tenemos cross-store
-    }
-  }
-
-  // ── 5) Calcular riesgo combinado ──
-  // Prioridad: cross-store si existe, si no, solo tu tienda
-  const totalRef =
-    crossStoreStats?.total_orders_all_stores || myStats.total_orders;
-  const returnsRef =
-    crossStoreStats?.total_returns_all_stores || myStats.canceled;
-
+  // Nivel de riesgo
   const deliveryRate =
-    totalRef > 0 ? ((totalRef - returnsRef) / totalRef) * 100 : null;
+    stats.total_orders > 0
+      ? (stats.delivered / stats.total_orders) * 100
+      : null;
 
   let risk_level = 'unknown';
   let risk_color = 'gray';
 
-  if (totalRef === 0) {
+  if (stats.total_orders === 0) {
     risk_level = 'new';
     risk_color = 'gray';
   } else if (deliveryRate >= 70) {
@@ -2264,21 +2223,12 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
   return res.json({
     isSuccess: true,
     data: {
-      // Tu tienda
-      stats: myStats,
-
-      // Cross-store (Dropi global)
-      crossStore: crossStoreStats,
-
-      // Riesgo calculado
+      stats,
       risk: {
         level: risk_level,
         color: risk_color,
         delivery_rate: deliveryRate,
-        source: crossStoreStats ? 'cross_store' : 'my_store',
       },
-
-      // Últimas órdenes
       orders: orders.slice(0, 20).map((o) => ({
         id: o.id,
         date: (o.created_at || '').substring(0, 10),
@@ -2287,5 +2237,55 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
         city: o.city || '',
       })),
     },
+  });
+});
+
+exports.getClientStats = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const order_ids = req.body?.order_ids;
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion requerido', 400));
+  if (!Array.isArray(order_ids) || order_ids.length === 0) {
+    return next(new AppError('order_ids requerido (array)', 400));
+  }
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('No existe integración Dropi activa', 404));
+
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
+
+  const csResponse = await dropiService.getClientStats({
+    integrationKey,
+    orderIds: order_ids.map(Number),
+    country_code: integration.country_code,
+  });
+
+  const csData = csResponse?.data || csResponse || {};
+
+  // Tomar el que tenga más total_orders
+  let bestStat = null;
+  for (const key of Object.keys(csData)) {
+    const stat = csData[key];
+    if (
+      !bestStat ||
+      (stat?.client_total_orders || 0) > (bestStat?.client_total_orders || 0)
+    ) {
+      bestStat = stat;
+    }
+  }
+
+  return res.json({
+    isSuccess: true,
+    data: bestStat
+      ? {
+          total_orders_all_stores: bestStat.client_total_orders || 0,
+          total_returns_all_stores: bestStat.client_total_orders_returneds || 0,
+          has_repeated_orders: (bestStat.ordenes_repetidas || []).length > 0,
+          repeated_orders: bestStat.ordenes_repetidas || [],
+        }
+      : null,
   });
 });

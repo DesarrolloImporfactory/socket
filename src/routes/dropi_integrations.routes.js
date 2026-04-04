@@ -50,6 +50,8 @@ router.get(
   ctrl.getCustomerHistory,
 );
 
+router.post('/client-stats', auth.protectConfigOwner, ctrl.getClientStats);
+
 //Sync config
 router.get('/sync-config', ...dropiboardGuard, ctrl.getSyncConfig);
 router.put('/sync-config', ...dropiboardGuard, ctrl.updateSyncConfig);
