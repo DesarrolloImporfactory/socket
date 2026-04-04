@@ -246,3 +246,21 @@ exports.getOriginCityForShipping = async ({
     throw normalizeDropiError(err);
   }
 };
+
+/**
+ * POST /orders/myorders/client-stats
+ * Historial cross-store del cliente en Dropi
+ */
+exports.getClientStats = async ({ integrationKey, orderIds, country_code }) => {
+  try {
+    const dropiHttp = getDropiHttp(country_code);
+    const { data } = await dropiHttp.post(
+      '/orders/myorders/client-stats',
+      { order_ids: orderIds },
+      { headers: dropiHeaders(integrationKey) },
+    );
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};

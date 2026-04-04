@@ -44,6 +44,12 @@ router.get('/location/states', auth.protectConfigOwner, ctrl.listStates);
 //Obtener Cities (con body id_configuracion, department_id, rate_type)
 router.post('/location/cities', auth.protectConfigOwner, ctrl.listCities);
 
+router.get(
+  '/customer-history/:phone',
+  auth.protectConfigOwner,
+  ctrl.getCustomerHistory,
+);
+
 //Sync config
 router.get('/sync-config', ...dropiboardGuard, ctrl.getSyncConfig);
 router.put('/sync-config', ...dropiboardGuard, ctrl.updateSyncConfig);
