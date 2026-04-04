@@ -38,7 +38,7 @@ function oauth2(redirectUri = getRedirectUri()) {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    redirectUri
+    redirectUri,
   );
 }
 
@@ -48,7 +48,7 @@ function oauth2(redirectUri = getRedirectUri()) {
 async function getOwnerUserIdBySub(uid) {
   const row = await db.query(
     `SELECT id_usuario FROM sub_usuarios_chat_center WHERE id_sub_usuario = ? LIMIT 1`,
-    { replacements: [uid], type: db.QueryTypes.SELECT }
+    { replacements: [uid], type: db.QueryTypes.SELECT },
   );
   return row?.[0]?.id_usuario ? Number(row[0].id_usuario) : null;
 }
@@ -70,7 +70,7 @@ async function resolveCalendarId(uid, requestedCalendarId) {
       {
         replacements: [requestedCalendarId, ownerUserId],
         type: db.QueryTypes.SELECT,
-      }
+      },
     );
     if (ok?.[0]?.id) return Number(ok[0].id);
   }
@@ -78,7 +78,7 @@ async function resolveCalendarId(uid, requestedCalendarId) {
   // 2) Tomar el más reciente del mismo owner
   const last = await db.query(
     `SELECT id FROM calendars WHERE created_by = ? ORDER BY id DESC LIMIT 1`,
-    { replacements: [ownerUserId], type: db.QueryTypes.SELECT }
+    { replacements: [ownerUserId], type: db.QueryTypes.SELECT },
   );
   return last?.[0]?.id ? Number(last[0].id) : null;
 }
@@ -153,7 +153,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     if (!googleEmail && tokens.id_token) {
       try {
         const payload = JSON.parse(
-          Buffer.from(tokens.id_token.split('.')[1], 'base64').toString('utf8')
+          Buffer.from(tokens.id_token.split('.')[1], 'base64').toString('utf8'),
         );
         googleEmail = payload?.email || null;
       } catch {}
@@ -162,7 +162,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     // CalendarId efectivo (validado por created_by = id_usuario)
     const effectiveCalendarId = await resolveCalendarId(
       Number(uid),
-      Number(stateCalendarId) || null
+      Number(stateCalendarId) || null,
     );
 
     // Guardar/actualizar cuenta vinculada
@@ -187,7 +187,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
           tokens.expiry_date || null, // (si no viene, puedes derivarlo de expires_in)
         ],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
 
     // 🔌 AÑADIDO: al vincular, inicia el canal watch (si tu googleSync lo maneja internamente)
@@ -202,7 +202,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     }
 
     return res.send(
-      '✅ Google Calendar vinculado. Ya puede cerrar esta pestaña.'
+      '✅ Google Calendar vinculado. Ya puede cerrar esta pestaña.',
     );
   } catch (e) {
     console.error(e);
@@ -226,7 +226,7 @@ router.get('/google/status', protect, async (req, res) => {
        FROM users_google_accounts
       WHERE id_sub_usuario = ? AND calendar_id = ? AND is_active = 1
       LIMIT 1`,
-    { replacements: [uid, calId], type: db.QueryTypes.SELECT }
+    { replacements: [uid, calId], type: db.QueryTypes.SELECT },
   );
 
   const row = rows?.[0];
@@ -249,7 +249,7 @@ router.post('/google/unlink', protect, async (req, res) => {
         SET is_active = 0, revoked_at = NOW(),
             access_token = NULL, refresh_token = NULL, expiry_date = NULL
       WHERE id_sub_usuario = ? AND calendar_id = ?`,
-    { replacements: [uid, calId], type: db.QueryTypes.UPDATE }
+    { replacements: [uid, calId], type: db.QueryTypes.UPDATE },
   );
 
   // 🔌 AÑADIDO: detener watch (best-effort)
@@ -343,6 +343,29 @@ router.post('/google/push', async (req, res) => {
     // Google solo exige 2xx; no reintenta si devolvemos 500
     return res.status(200).end();
   }
+});
+
+/**
+ * GET /api/v1/google/is-linked
+ * Retorna si el sub_usuario tiene ALGUNA cuenta Google activa
+ */
+router.get('/google/is-linked', protect, async (req, res) => {
+  const uid = Number(req.sessionUser?.id_sub_usuario);
+  if (!uid) return res.json({ linked: false });
+
+  const rows = await db.query(
+    `SELECT google_email FROM users_google_accounts
+     WHERE id_sub_usuario = ? AND is_active = 1
+       AND (access_token IS NOT NULL OR refresh_token IS NOT NULL)
+     LIMIT 1`,
+    { replacements: [uid], type: db.QueryTypes.SELECT },
+  );
+
+  const row = rows?.[0];
+  return res.json({
+    linked: !!row,
+    google_email: row?.google_email || null,
+  });
 });
 
 module.exports = router;
