@@ -254,7 +254,7 @@ exports.getOriginCityForShipping = async ({
 exports.getClientStats = async ({ integrationKey, orderIds, country_code }) => {
   try {
     const dropiHttp = getDropiHttp(country_code);
-    const { data } = await dropiHttp.post(
+    const { data } = await dropiHttp.get(
       '/orders/myorders/client-stats',
       { order_ids: orderIds },
       { headers: dropiHeaders(integrationKey) },
