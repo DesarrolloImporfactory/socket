@@ -14,6 +14,7 @@ const DropiIntegrations = require('../models/dropi_integrations.model');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 
 const { convertirVideoWhatsApp } = require('../middlewares/videoConverter');
+const { convertirVideoEnBackground } = require('../middlewares/videoConverter');
 
 const {
   syncCatalogoTodasColumnasConfig,
@@ -127,34 +128,14 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const imagen_url = imagenFile
     ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
     : null;
-
   const imagen_upsell_url = imagen_upsellFile
     ? `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`
     : null;
 
-  // ── Conversión de video a H.264/AAC compatible WhatsApp ──
-  let video_url = null;
-  if (videoFile) {
-    try {
-      const inputPath = path.join(
-        __dirname,
-        '..',
-        'uploads',
-        'productos',
-        'video',
-        videoFile.filename,
-      );
-      const convertedFilename = await convertirVideoWhatsApp(inputPath);
-      video_url = `${dominio}/uploads/productos/video/${convertedFilename}`;
-    } catch (convErr) {
-      console.error(
-        '⚠️ Error convirtiendo video (se guarda original):',
-        convErr.message,
-      );
-      // fallback: guardar el original sin convertir antes de fallar
-      video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
-    }
-  }
+  // Guardar con URL original — la conversión ocurre después de responder
+  const video_url = videoFile
+    ? `${dominio}/uploads/productos/video/${videoFile.filename}`
+    : null;
 
   const nuevoProducto = await ProductosChatCenter.create({
     id_configuracion,
@@ -178,11 +159,29 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     combos_producto,
   });
 
-  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) => {
-    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
-  });
+  // ← Responder ANTES de convertir
+  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) =>
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
+  );
+  res.status(201).json({ status: 'success', data: nuevoProducto });
 
-  return res.status(201).json({ status: 'success', data: nuevoProducto });
+  // ← Conversión en background (después del res.json, no bloquea)
+  if (videoFile) {
+    const inputPath = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'video',
+      videoFile.filename,
+    );
+    convertirVideoEnBackground(
+      inputPath,
+      nuevoProducto.id,
+      dominio,
+      ProductosChatCenter,
+    );
+  }
 });
 
 // ========== ACTUALIZAR ==========
@@ -204,7 +203,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     id_dropi,
     es_privado,
     precio_proveedor,
-    remove_video, // ← NUEVO: "1" cuando el usuario quitó el video
+    remove_video,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -222,14 +221,13 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (imagenFile) {
     try {
       if (producto.imagen_url) {
-        const filename = path.basename(producto.imagen_url);
         const absPath = path.join(
           __dirname,
           '..',
           'uploads',
           'productos',
           'imagen',
-          filename,
+          path.basename(producto.imagen_url),
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
@@ -237,75 +235,63 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.imagen_url = `${dominio}/uploads/productos/imagen/${imagenFile.filename}`;
   }
 
-  // ── VIDEO: tres casos ──
+  // ── VIDEO ──
+  let videoParaConvertir = null; // guardamos referencia para background
+
   if (videoFile) {
-    // CASO 1: llegó nuevo video → convertir + borrar anterior
+    // Nuevo video subido → borrar anterior, guardar original por ahora
     try {
       if (producto.video_url) {
-        const filename = path.basename(producto.video_url);
         const absPath = path.join(
           __dirname,
           '..',
           'uploads',
           'productos',
           'video',
-          filename,
+          path.basename(producto.video_url),
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
     } catch (_) {}
-
-    try {
-      const inputPath = path.join(
-        __dirname,
-        '..',
-        'uploads',
-        'productos',
-        'video',
-        videoFile.filename,
-      );
-      const convertedFilename = await convertirVideoWhatsApp(inputPath);
-      producto.video_url = `${dominio}/uploads/productos/video/${convertedFilename}`;
-    } catch (convErr) {
-      console.error(
-        '⚠️ Error convirtiendo video (se guarda original):',
-        convErr.message,
-      );
-      producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
-    }
+    producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
+    videoParaConvertir = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'video',
+      videoFile.filename,
+    );
   } else if (String(remove_video) === '1') {
-    // CASO 2: usuario quitó el video sin subir uno nuevo → borrar archivo + limpiar BD
+    // Usuario quitó el video → borrar archivo + limpiar BD
     try {
       if (producto.video_url) {
-        const filename = path.basename(producto.video_url);
         const absPath = path.join(
           __dirname,
           '..',
           'uploads',
           'productos',
           'video',
-          filename,
+          path.basename(producto.video_url),
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
     } catch (_) {}
     producto.video_url = null;
-
-    // CASO 3: no llegó video y no se pidió quitar → se mantiene el video existente
   }
+  // Si no llegó video y no se pidió quitar → se mantiene el existente
 
   // ── IMAGEN UPSELL ──
   if (imagen_upsellFile) {
     try {
       if (producto.imagen_upsell_url) {
-        const filename = path.basename(producto.imagen_upsell_url);
         const absPath = path.join(
           __dirname,
           '..',
           'uploads',
           'productos',
           'imagen_upsell',
-          filename,
+          path.basename(producto.imagen_upsell_url),
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
@@ -335,37 +321,41 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.precio_proveedor = precio_proveedor || null;
 
   if (typeof id_dropi !== 'undefined') {
-    const idDropiParsed =
-      id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
-    producto.id_dropi = Number.isFinite(idDropiParsed) ? idDropiParsed : null;
+    const p = id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
+    producto.id_dropi = Number.isFinite(p) ? p : null;
   }
 
   if (typeof es_privado !== 'undefined') {
     let parsed = null;
-    if (es_privado === '' || es_privado == null) {
-      parsed = null;
-    } else if (typeof es_privado === 'boolean') {
-      parsed = es_privado ? 1 : 0;
-    } else if (String(es_privado).toLowerCase() === 'true') {
-      parsed = 1;
-    } else if (String(es_privado).toLowerCase() === 'false') {
-      parsed = 0;
-    } else {
-      parsed = Number(es_privado) === 1 ? 1 : 0;
-    }
+    if (es_privado === '' || es_privado == null) parsed = null;
+    else if (typeof es_privado === 'boolean') parsed = es_privado ? 1 : 0;
+    else if (String(es_privado).toLowerCase() === 'true') parsed = 1;
+    else if (String(es_privado).toLowerCase() === 'false') parsed = 0;
+    else parsed = Number(es_privado) === 1 ? 1 : 0;
     producto.es_privado = parsed;
   }
 
   producto.fecha_actualizacion = new Date();
-
   const idConfigSync = producto.id_configuracion;
+  const productoId = producto.id;
+
   await producto.save();
 
-  syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {
-    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`);
-  });
+  // ← Responder ANTES de convertir
+  syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) =>
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
+  );
+  res.status(200).json({ status: 'success', data: producto });
 
-  return res.status(200).json({ status: 'success', data: producto });
+  // ← Conversión en background (después del res.json)
+  if (videoParaConvertir) {
+    convertirVideoEnBackground(
+      videoParaConvertir,
+      productoId,
+      dominio,
+      ProductosChatCenter,
+    );
+  }
 });
 
 exports.eliminarProducto = catchAsync(async (req, res, next) => {
