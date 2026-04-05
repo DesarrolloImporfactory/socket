@@ -286,6 +286,18 @@ async function procesarMensajeKanban(params) {
       }).catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
     }
     for (const url of videos) {
+      await log(`🎥 Intentando enviar video URL: ${url}`);
+
+      // Verificar tamaño antes de enviar
+      try {
+        const headRes = await axios.head(url);
+        const bytes = headRes.headers['content-length'];
+        const mb = bytes ? (bytes / 1024 / 1024).toFixed(2) : 'desconocido';
+        await log(`📦 Tamaño video: ${mb} MB`);
+      } catch (e) {
+        await log(`⚠️ No se pudo verificar tamaño: ${e.message}`);
+      }
+
       await enviarMedioWhatsapp({
         tipo: 'video',
         url_archivo: url,
@@ -294,7 +306,9 @@ async function procesarMensajeKanban(params) {
         accessToken,
         id_configuracion,
         responsable: `IA_${columna.nombre}`,
-      }).catch(async (err) => log(`⚠️ Error enviando video: ${err.message}`));
+      }).catch(async (err) =>
+        log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
+      );
     }
   }
 

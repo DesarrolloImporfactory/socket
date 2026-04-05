@@ -13,6 +13,8 @@ const CategoriasChatCenter = require('../models/categorias_chat_center.model');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 
+const { convertirVideoWhatsApp } = require('../middlewares/videoConverter');
+
 const {
   syncCatalogoTodasColumnasConfig,
 } = require('../services/syncCatalogoKanbanColumna.service');
@@ -109,7 +111,6 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Normalizaciones seguras
   const idDropiParsed =
     id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
   const esPrivadoParsed =
@@ -119,7 +120,6 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
         ? 1
         : 0;
 
-  // Archivos
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
@@ -128,13 +128,33 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
     : null;
 
-  const video_url = videoFile
-    ? `${dominio}/uploads/productos/video/${videoFile.filename}`
-    : null;
-
   const imagen_upsell_url = imagen_upsellFile
     ? `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`
     : null;
+
+  // ── Conversión de video a H.264/AAC compatible WhatsApp ──
+  let video_url = null;
+  if (videoFile) {
+    try {
+      const inputPath = path.join(
+        __dirname,
+        '..',
+        'uploads',
+        'productos',
+        'video',
+        videoFile.filename,
+      );
+      const convertedFilename = await convertirVideoWhatsApp(inputPath);
+      video_url = `${dominio}/uploads/productos/video/${convertedFilename}`;
+    } catch (convErr) {
+      console.error(
+        '⚠️ Error convirtiendo video (se guarda original):',
+        convErr.message,
+      );
+      // fallback: guardar el original sin convertir antes de fallar
+      video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
+    }
+  }
 
   const nuevoProducto = await ProductosChatCenter.create({
     id_configuracion,
@@ -149,10 +169,8 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     imagen_url,
     video_url,
     landing_url: landing_url || null,
-
     es_privado: esPrivadoParsed,
     id_dropi: Number.isFinite(idDropiParsed) ? idDropiParsed : null,
-
     nombre_upsell,
     descripcion_upsell,
     precio_upsell,
@@ -181,12 +199,12 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     descripcion_upsell,
     precio_upsell,
     combos_producto,
-
     material,
     landing_url,
     id_dropi,
     es_privado,
     precio_proveedor,
+    remove_video, // ← NUEVO: "1" cuando el usuario quitó el video
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -200,7 +218,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
 
-  // Si llega NUEVA IMAGEN: borrar anterior y setear nueva URL
+  // ── IMAGEN ──
   if (imagenFile) {
     try {
       if (producto.imagen_url) {
@@ -219,8 +237,9 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.imagen_url = `${dominio}/uploads/productos/imagen/${imagenFile.filename}`;
   }
 
-  // Si llega NUEVO VIDEO: borrar anterior y setear nueva URL
+  // ── VIDEO: tres casos ──
   if (videoFile) {
+    // CASO 1: llegó nuevo video → convertir + borrar anterior
     try {
       if (producto.video_url) {
         const filename = path.basename(producto.video_url);
@@ -235,9 +254,47 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
     } catch (_) {}
-    producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
+
+    try {
+      const inputPath = path.join(
+        __dirname,
+        '..',
+        'uploads',
+        'productos',
+        'video',
+        videoFile.filename,
+      );
+      const convertedFilename = await convertirVideoWhatsApp(inputPath);
+      producto.video_url = `${dominio}/uploads/productos/video/${convertedFilename}`;
+    } catch (convErr) {
+      console.error(
+        '⚠️ Error convirtiendo video (se guarda original):',
+        convErr.message,
+      );
+      producto.video_url = `${dominio}/uploads/productos/video/${videoFile.filename}`;
+    }
+  } else if (String(remove_video) === '1') {
+    // CASO 2: usuario quitó el video sin subir uno nuevo → borrar archivo + limpiar BD
+    try {
+      if (producto.video_url) {
+        const filename = path.basename(producto.video_url);
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'video',
+          filename,
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+    producto.video_url = null;
+
+    // CASO 3: no llegó video y no se pidió quitar → se mantiene el video existente
   }
 
+  // ── IMAGEN UPSELL ──
   if (imagen_upsellFile) {
     try {
       if (producto.imagen_upsell_url) {
@@ -247,7 +304,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
           '..',
           'uploads',
           'productos',
-          'imagen',
+          'imagen_upsell',
           filename,
         );
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
@@ -256,34 +313,26 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
   }
 
-  // ========= Actualizar campos básicos (si vienen) =========
+  // ── Campos básicos ──
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
   if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
-
   if (typeof nombre_upsell !== 'undefined')
     producto.nombre_upsell = nombre_upsell;
-
   if (typeof descripcion_upsell !== 'undefined')
     producto.descripcion_upsell = descripcion_upsell;
-
   if (typeof precio_upsell !== 'undefined')
     producto.precio_upsell = precio_upsell;
-
   if (typeof combos_producto !== 'undefined')
     producto.combos_producto = combos_producto;
-
-  // ========= Nuevos campos (si vienen) =========
-  if (typeof material !== 'undefined') {
-    producto.material = material || null;
-  }
-
-  if (typeof landing_url !== 'undefined') {
+  if (typeof material !== 'undefined') producto.material = material || null;
+  if (typeof landing_url !== 'undefined')
     producto.landing_url = landing_url || null;
-  }
+  if (typeof precio_proveedor !== 'undefined')
+    producto.precio_proveedor = precio_proveedor || null;
 
   if (typeof id_dropi !== 'undefined') {
     const idDropiParsed =
@@ -292,9 +341,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   }
 
   if (typeof es_privado !== 'undefined') {
-    // Acepta: 1/0, "1"/"0", true/false, "true"/"false", "" -> null
     let parsed = null;
-
     if (es_privado === '' || es_privado == null) {
       parsed = null;
     } else if (typeof es_privado === 'boolean') {
@@ -306,18 +353,12 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     } else {
       parsed = Number(es_privado) === 1 ? 1 : 0;
     }
-
     producto.es_privado = parsed;
-  }
-
-  if (typeof precio_proveedor !== 'undefined') {
-    producto.precio_proveedor = precio_proveedor || null;
   }
 
   producto.fecha_actualizacion = new Date();
 
   const idConfigSync = producto.id_configuracion;
-
   await producto.save();
 
   syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) => {
