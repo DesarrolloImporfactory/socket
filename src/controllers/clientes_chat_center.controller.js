@@ -15,6 +15,7 @@ const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
+const { intentarEnviarEncuesta } = require('../utils/encuestaSatisfaccion');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -75,6 +76,52 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
           Number(nuevoEstado) === 1 ? 'chat_resolved' : 'queue_change';
         const deltas = tipo === 'chat_resolved' ? { chatsResolved: 1 } : null;
         dashboardEmitter.emitByConfig(chat.id_configuracion, tipo, deltas);
+      }
+    }
+
+    // ── Encuesta de satisfacción al cerrar ──
+    if (Number(nuevoEstado) === 1) {
+      try {
+        const [chatData] = await db.query(
+          `SELECT id, id_configuracion, nombre_cliente, id_encargado
+           FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+          { replacements: [chatId], type: db.QueryTypes.SELECT },
+        );
+
+        if (chatData?.id_configuracion) {
+          // id_encargado = quien tiene asignado el chat (el que lo cerró)
+          const idEncargado =
+            chatData.id_encargado || req.sessionUser?.id_sub_usuario || null;
+
+          const resultadoEncuesta = await intentarEnviarEncuesta({
+            idConfiguracion: chatData.id_configuracion,
+            idClienteChatCenter: chatData.id,
+            idEncargado,
+            nombreCliente: chatData.nombre_cliente || '',
+          });
+
+          if (resultadoEncuesta.enviado) {
+            console.log(
+              `[encuesta] Programada para cliente=${chatId} delay=${resultadoEncuesta.delay_minutos}min`,
+            );
+            // TODO: cuando esté listo, conectar envío WhatsApp aquí
+            // if (resultadoEncuesta.delay_minutos > 0) {
+            //   setTimeout(() => {
+            //     enviarMensajeWA(celular, resultadoEncuesta.mensaje);
+            //   }, resultadoEncuesta.delay_minutos * 60 * 1000);
+            // } else {
+            //   enviarMensajeWA(celular, resultadoEncuesta.mensaje);
+            // }
+          } else {
+            console.log(`[encuesta] No enviada: ${resultadoEncuesta.razon}`);
+          }
+        }
+      } catch (encuestaErr) {
+        // No bloquear el cierre del chat si falla la encuesta
+        console.error(
+          '[encuesta] Error al intentar enviar encuesta:',
+          encuestaErr,
+        );
       }
     }
 

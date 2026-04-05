@@ -100,6 +100,8 @@ const ShopifyConnectionsRouter = require('./routes/shopify.routes');
 
 const webhookContactosRouter = require('./routes/webhook_contactos.routes');
 
+const encuestasRouter = require('./routes/encuestas.routes');
+
 const path = require('path');
 
 const app = express();
@@ -284,6 +286,7 @@ app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 app.use('/api/v1/webhook_contactos', webhookContactosRouter);
+app.use('/api/v1/encuestas', encuestasRouter);
 
 app.all('*', (req, res, next) => {
   return next(
