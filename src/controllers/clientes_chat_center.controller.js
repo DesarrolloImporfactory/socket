@@ -16,6 +16,7 @@ const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { intentarEnviarEncuesta } = require('../utils/encuestaSatisfaccion');
+const ExcelJS = require('exceljs');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -2352,4 +2353,250 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
     telefonos_unicos: mapByPhone.size,
     errores,
   });
+});
+
+exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body.id_configuracion ?? 0);
+  if (!id_configuracion) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  // ── Mismos filtros que listarClientes ──
+  const parseCSV = (raw) => {
+    if (!raw) return [];
+    return String(raw)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+  const parseCSVNumbers = (raw) =>
+    parseCSV(raw)
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+  const q = String(req.body.q ?? '').trim();
+  const estadoParsed = parseEstado(req.body.estado);
+  const orderBy = parseSort(req.body.sort);
+
+  const whereParts = ['c.deleted_at IS NULL', 'c.id_configuracion = ?'];
+  const params = [id_configuracion];
+
+  if (estadoParsed !== null) {
+    whereParts.push('c.estado_cliente = ?');
+    params.push(estadoParsed);
+  }
+
+  const idsEtiqueta = parseCSVNumbers(req.body.id_etiqueta);
+  if (idsEtiqueta.length === 1) {
+    whereParts.push(
+      `c.id IN (SELECT id_cliente_chat_center FROM etiquetas_asignadas WHERE id_etiqueta = ? AND id_configuracion = ?)`,
+    );
+    params.push(idsEtiqueta[0], id_configuracion);
+  } else if (idsEtiqueta.length > 1) {
+    whereParts.push(
+      `c.id IN (SELECT id_cliente_chat_center FROM etiquetas_asignadas WHERE id_etiqueta IN (${idsEtiqueta.map(() => '?').join(',')}) AND id_configuracion = ?)`,
+    );
+    params.push(...idsEtiqueta, id_configuracion);
+  }
+
+  const idsAsesor = parseCSVNumbers(req.body.id_etiqueta_asesor);
+  if (idsAsesor.length === 1) {
+    whereParts.push('c.id_etiqueta_asesor = ?');
+    params.push(idsAsesor[0]);
+  } else if (idsAsesor.length > 1) {
+    whereParts.push(
+      `c.id_etiqueta_asesor IN (${idsAsesor.map(() => '?').join(',')})`,
+    );
+    params.push(...idsAsesor);
+  }
+
+  const idsCiclo = parseCSVNumbers(req.body.id_etiqueta_ciclo);
+  if (idsCiclo.length === 1) {
+    whereParts.push('c.id_etiqueta_ciclo = ?');
+    params.push(idsCiclo[0]);
+  } else if (idsCiclo.length > 1) {
+    whereParts.push(
+      `c.id_etiqueta_ciclo IN (${idsCiclo.map(() => '?').join(',')})`,
+    );
+    params.push(...idsCiclo);
+  }
+
+  const idsEstadoContacto = parseCSV(req.body.estado_contacto);
+  if (idsEstadoContacto.length === 1) {
+    whereParts.push('c.estado_contacto = ?');
+    params.push(idsEstadoContacto[0].toLowerCase());
+  } else if (idsEstadoContacto.length > 1) {
+    whereParts.push(
+      `c.estado_contacto IN (${idsEstadoContacto.map(() => '?').join(',')})`,
+    );
+    params.push(...idsEstadoContacto.map((s) => s.toLowerCase()));
+  }
+
+  const fechaTipo = String(req.body.fecha_tipo ?? '').trim();
+  const fechaDesde = String(req.body.fecha_desde ?? '').trim();
+  const fechaHasta = String(req.body.fecha_hasta ?? '').trim();
+
+  if (fechaTipo && (fechaDesde || fechaHasta)) {
+    const col =
+      fechaTipo === 'actividad' ? 'c.ultimo_mensaje_at' : 'c.created_at';
+    if (fechaDesde) {
+      whereParts.push(`${col} >= ?`);
+      params.push(`${fechaDesde} 00:00:00`);
+    }
+    if (fechaHasta) {
+      whereParts.push(`${col} <= ?`);
+      params.push(`${fechaHasta} 23:59:59`);
+    }
+  }
+
+  if (q) {
+    const like = `%${q}%`;
+    whereParts.push(
+      `(c.nombre_cliente LIKE ? OR c.apellido_cliente LIKE ? OR c.email_cliente LIKE ? OR c.celular_cliente LIKE ?)`,
+    );
+    params.push(like, like, like, like);
+  }
+
+  const whereClause = `WHERE ${whereParts.join(' AND ')}`;
+
+  const sql = `
+    SELECT
+      c.id,
+      c.nombre_cliente,
+      c.apellido_cliente,
+      c.email_cliente,
+      c.celular_cliente,
+      CASE c.estado_cliente WHEN 1 THEN 'Activo' WHEN 0 THEN 'Inactivo' ELSE c.estado_cliente END AS estado,
+      c.estado_contacto,
+      c.created_at,
+      c.ultimo_mensaje_at,
+      c.ultimo_texto,
+      c.chat_cerrado,
+      c.direccion,
+      eca.nombre  AS asesor_nombre,
+      ecc.nombre  AS ciclo_nombre,
+      IFNULL(etq.etiquetas, '') AS etiquetas
+    FROM clientes_chat_center c
+    LEFT JOIN etiquetas_custom_chat_center eca
+      ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
+    LEFT JOIN etiquetas_custom_chat_center ecc
+      ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
+    LEFT JOIN (
+      SELECT ea.id_cliente_chat_center,
+             GROUP_CONCAT(e.nombre_etiqueta SEPARATOR ', ') AS etiquetas
+      FROM etiquetas_asignadas ea
+      JOIN etiquetas_chat_center e ON e.id_etiqueta = ea.id_etiqueta
+      WHERE ea.id_configuracion = ?
+      GROUP BY ea.id_cliente_chat_center
+    ) etq ON etq.id_cliente_chat_center = c.id
+    ${whereClause}
+    ORDER BY ${orderBy}
+  `;
+
+  // El ? del subquery de etiquetas va ANTES de los params del WHERE
+  const replacements = [id_configuracion, ...params];
+
+  // ── Headers HTTP ──
+  const nombreArchivo = `contactos_${id_configuracion}_${Date.now()}.xlsx`;
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  );
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${nombreArchivo}"`,
+  );
+
+  // ── ExcelJS streaming ──
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+    stream: res,
+    useStyles: true,
+  });
+  const sheet = workbook.addWorksheet('Contactos');
+
+  sheet.columns = [
+    { header: 'ID', key: 'id', width: 10 },
+    { header: 'Nombre', key: 'nombre', width: 24 },
+    { header: 'Apellido', key: 'apellido', width: 24 },
+    { header: 'Teléfono', key: 'telefono', width: 18 },
+    { header: 'Email', key: 'email', width: 30 },
+    { header: 'Estado', key: 'estado', width: 12 },
+    { header: 'Estado Contacto', key: 'estado_contacto', width: 18 },
+    { header: 'Etiquetas', key: 'etiquetas', width: 40 },
+    { header: 'Asesor', key: 'asesor', width: 20 },
+    { header: 'Ciclo', key: 'ciclo', width: 20 },
+    { header: 'Dirección', key: 'direccion', width: 30 },
+    { header: 'Creado', key: 'created_at', width: 20 },
+    { header: 'Última Actividad', key: 'ultimo_mensaje_at', width: 20 },
+    { header: 'Último Mensaje', key: 'ultimo_texto', width: 40 },
+    { header: 'Chat Cerrado', key: 'chat_cerrado', width: 14 },
+  ];
+
+  // Estilo header
+  sheet.getRow(1).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF171931' },
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF4F46E5' } } };
+  });
+  sheet.getRow(1).height = 28;
+  sheet.getRow(1).commit();
+
+  // ── Streaming por chunks ──
+  const CHUNK_SIZE = 5000;
+  let offset = 0;
+  let hayMas = true;
+  let filaNum = 2;
+
+  while (hayMas) {
+    const [rows] = await db.query(
+      `${sql} LIMIT ${CHUNK_SIZE} OFFSET ${offset}`,
+      { replacements },
+    );
+
+    if (!rows || rows.length === 0) break;
+
+    for (const row of rows) {
+      const fila = sheet.addRow({
+        id: row.id,
+        nombre: row.nombre_cliente || '',
+        apellido: row.apellido_cliente || '',
+        telefono: row.celular_cliente || '',
+        email: row.email_cliente || '',
+        estado: row.estado || '',
+        estado_contacto: row.estado_contacto || '',
+        etiquetas: row.etiquetas || '',
+        asesor: row.asesor_nombre || '',
+        ciclo: row.ciclo_nombre || '',
+        direccion: row.direccion || '',
+        created_at: row.created_at,
+        ultimo_mensaje_at: row.ultimo_mensaje_at,
+        ultimo_texto: row.ultimo_texto || '',
+        chat_cerrado: row.chat_cerrado ? 'Sí' : 'No',
+      });
+
+      if (filaNum % 2 === 0) {
+        fila.eachCell((cell) => {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFF8FAFC' },
+          };
+        });
+      }
+
+      fila.commit();
+      filaNum++;
+    }
+
+    offset += CHUNK_SIZE;
+    if (rows.length < CHUNK_SIZE) hayMas = false;
+  }
+
+  sheet.commit();
+  await workbook.commit();
 });

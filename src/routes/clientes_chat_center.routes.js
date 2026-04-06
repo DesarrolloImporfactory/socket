@@ -57,10 +57,7 @@ router.post(
   clientes_chat_centerController.listarContactosEstadoDinamico,
 );
 
-router.post(
-  '/listar_agentes',
-  clientes_chat_centerController.listarAgentes,
-);
+router.post('/listar_agentes', clientes_chat_centerController.listarAgentes);
 
 router.post(
   '/actualizar_estado',
@@ -109,6 +106,11 @@ router.post(
   '/importacion_masiva',
   uploadExcel,
   clientes_chat_centerController.importacionMasiva,
+);
+
+router.post(
+  '/exportar_contactos_xlsx',
+  clientes_chat_centerController.exportarContactosXLSX,
 );
 
 module.exports = router;

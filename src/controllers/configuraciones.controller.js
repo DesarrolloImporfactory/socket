@@ -496,8 +496,7 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
 exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
   const { id_configuracion, fecha_inicio, fecha_fin } = req.body;
 
-  // --- Construir query con filtros opcionales de fecha ---
-  const replacements = [id_configuracion];
+  const replacements = [id_configuracion, id_configuracion];
   let whereFechas = '';
 
   if (fecha_inicio) {
@@ -521,6 +520,7 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
          WHEN 3 THEN 'Notificacion (transferencia)'
          ELSE CONCAT('Otro (', mc.rol_mensaje, ')')
       END                         AS rol_mensaje,
+      IFNULL(etq.etiquetas, '')   AS etiquetas,
       mc.texto_mensaje,
       mc.ruta_archivo,
       mc.template_name,
@@ -538,13 +538,21 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
     LEFT JOIN clientes_chat_center emisor   ON emisor.id = mc.id_cliente
     LEFT JOIN clientes_chat_center receptor ON receptor.id = mc.celular_recibe
     LEFT JOIN configuraciones conf          ON conf.id = mc.id_configuracion
+    LEFT JOIN (
+      SELECT ea.id_cliente_chat_center,
+             GROUP_CONCAT(e.nombre_etiqueta SEPARATOR ', ') AS etiquetas
+      FROM etiquetas_asignadas ea
+   JOIN etiquetas_chat_center e ON e.id_etiqueta = ea.id_etiqueta
+
+      WHERE ea.id_configuracion = ?
+      GROUP BY ea.id_cliente_chat_center
+    ) etq ON etq.id_cliente_chat_center = mc.celular_recibe
     WHERE mc.id_configuracion = ?
       AND mc.deleted_at IS NULL
       ${whereFechas}
     ORDER BY mc.created_at DESC
   `;
 
-  // --- Headers HTTP para descarga ---
   const nombreArchivo = `mensajes_config_${id_configuracion}_${Date.now()}.xlsx`;
   res.setHeader(
     'Content-Type',
@@ -555,7 +563,6 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
     `attachment; filename="${nombreArchivo}"`,
   );
 
-  // --- ExcelJS en modo STREAMING (no acumula en memoria) ---
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     stream: res,
     useStyles: true,
@@ -563,12 +570,12 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
 
   const sheet = workbook.addWorksheet('Mensajes');
 
-  // Definir columnas con ancho y encabezado
   sheet.columns = [
     { header: 'ID Mensaje', key: 'id_mensaje', width: 12 },
     { header: 'Canal', key: 'canal', width: 8 },
     { header: 'Tipo Mensaje', key: 'tipo_mensaje', width: 14 },
     { header: 'Rol', key: 'rol_mensaje', width: 16 },
+    { header: 'Etiquetas', key: 'etiquetas', width: 40 },
     { header: 'Texto Mensaje', key: 'texto_mensaje', width: 50 },
     { header: 'Archivo', key: 'ruta_archivo', width: 40 },
     { header: 'Template', key: 'template_name', width: 20 },
@@ -584,13 +591,12 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
     { header: 'Teléfono Conexión', key: 'telefono_conexion', width: 16 },
   ];
 
-  // Estilo del encabezado
   sheet.getRow(1).eachCell((cell) => {
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF171931' }, // tu dark navy
+      fgColor: { argb: 'FF171931' },
     };
     cell.alignment = { vertical: 'middle', horizontal: 'center' };
     cell.border = {
@@ -598,15 +604,12 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
     };
   });
   sheet.getRow(1).height = 28;
-
-  // Commit del encabezado (lo envía al stream)
   sheet.getRow(1).commit();
 
-  // --- Streaming por chunks ---
   const CHUNK_SIZE = 5000;
   let offset = 0;
   let hayMas = true;
-  let filaNum = 2; // la 1 es el encabezado
+  let filaNum = 2;
 
   while (hayMas) {
     const [rows] = await db.query(
@@ -622,6 +625,7 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
         canal: row.canal,
         tipo_mensaje: row.tipo_mensaje,
         rol_mensaje: row.rol_mensaje,
+        etiquetas: row.etiquetas || '',
         texto_mensaje: row.texto_mensaje || '',
         ruta_archivo: row.ruta_archivo || '',
         template_name: row.template_name || '',
@@ -637,18 +641,17 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
         telefono_conexion: row.telefono_conexion || '',
       });
 
-      // Zebra striping sutil
       if (filaNum % 2 === 0) {
         fila.eachCell((cell) => {
           cell.fill = {
             type: 'pattern',
             pattern: 'solid',
-            fgColor: { argb: 'FFF8FAFC' }, // slate-50
+            fgColor: { argb: 'FFF8FAFC' },
           };
         });
       }
 
-      fila.commit(); // ← CLAVE: libera la fila de memoria
+      fila.commit();
       filaNum++;
     }
 
@@ -656,7 +659,6 @@ exports.exportarMensajesXLSX = catchAsync(async (req, res, next) => {
     if (rows.length < CHUNK_SIZE) hayMas = false;
   }
 
-  // Finalizar y cerrar el stream
   sheet.commit();
   await workbook.commit();
 });
