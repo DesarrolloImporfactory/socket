@@ -1245,15 +1245,27 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
       meta: { state: 'OK', page_limit: limit },
     });
   } catch (error) {
-    const code = error?.response?.data?.error?.code;
+    const metaError = error?.response?.data?.error;
+    const code = metaError?.code;
+
+    // Token inválido → tratar como no conectado
     if (code === 190) {
-      // Token inválido → tratar como no conectado, no forzar logout
       return res.status(200).json({
         success: true,
         data: [],
         meta: { state: 'INVALID_TOKEN' },
       });
     }
+
+    // Rate limit de Meta → NO es error, devolver estado especial
+    if (code === 80008) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        meta: { state: 'RATE_LIMITED' },
+      });
+    }
+
     const http = error.response?.status || 500;
     return res.status(http).json({
       success: false,

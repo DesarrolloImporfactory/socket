@@ -2,7 +2,6 @@
  * encuestas.controller.js
  *
  * CRUD de encuestas + stats + respuestas
- * Para el frontend de configuración y visualización
  */
 
 const { db } = require('../database/config');
@@ -10,6 +9,9 @@ const { QueryTypes } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const crypto = require('crypto');
+
+const DEFAULT_MENSAJE_SATISFACCION =
+  '¡Hola {nombre}! 🙏\n\nGracias por comunicarte con nosotros. Nos encantaría saber cómo fue tu experiencia:\n\n👉 {link}\n\n¡Solo toma 10 segundos!';
 
 // ── Listar encuestas de una conexión ──
 exports.listarPorConexion = catchAsync(async (req, res, next) => {
@@ -52,7 +54,6 @@ exports.stats = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
-  // Stats generales
   const [general] = await db.query(
     `
     SELECT
@@ -75,7 +76,6 @@ exports.stats = catchAsync(async (req, res, next) => {
     },
   );
 
-  // Stats por encargado
   const porEncargado = await db.query(
     `
     SELECT
@@ -96,7 +96,6 @@ exports.stats = catchAsync(async (req, res, next) => {
     },
   );
 
-  // Últimos 7 días
   const porDia = await db.query(
     `
     SELECT
@@ -115,10 +114,7 @@ exports.stats = catchAsync(async (req, res, next) => {
     },
   );
 
-  return res.json({
-    success: true,
-    data: { general, porEncargado, porDia },
-  });
+  return res.json({ success: true, data: { general, porEncargado, porDia } });
 });
 
 // ── Listar respuestas paginadas ──
@@ -194,12 +190,46 @@ exports.crear = catchAsync(async (req, res, next) => {
     return next(new AppError('Faltan campos obligatorios', 400));
   }
 
+  // ── Validar: máximo 1 encuesta de satisfacción activa por conexión ──
+  if (tipo === 'satisfaccion') {
+    // Delay máximo 23h (1380 min) para no exceder ventana 24h de WhatsApp
+    if ((delay_envio_minutos || 0) > 1380) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'El delay máximo es 1380 minutos (23 horas) para no exceder la ventana de 24h de WhatsApp.',
+      });
+    }
+
+    const [existente] = await db.query(
+      `
+      SELECT e.id, e.nombre FROM encuestas e
+      JOIN encuestas_conexiones ec ON ec.id_encuesta = e.id
+      WHERE ec.id_configuracion = :cfg
+        AND e.tipo = 'satisfaccion'
+        AND e.activa = 1
+        AND e.deleted_at IS NULL
+      LIMIT 1
+    `,
+      {
+        replacements: { cfg: id_configuracion },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    if (existente) {
+      return res.status(400).json({
+        success: false,
+        message: `Ya tienes una encuesta de satisfacción activa: "${existente.nombre}". Desactívala o elimínala antes de crear otra.`,
+      });
+    }
+  }
+
   const preguntasJson =
     typeof preguntas === 'string' ? preguntas : JSON.stringify(preguntas || []);
   const webhookSecret =
     tipo === 'webhook_lead' ? crypto.randomBytes(16).toString('hex') : null;
 
-  // Crear encuesta
   const [idEncuesta] = await db.query(
     `
     INSERT INTO encuestas
@@ -218,7 +248,9 @@ exports.crear = catchAsync(async (req, res, next) => {
         preguntas: preguntasJson,
         cooldown: cooldown_horas ?? (tipo === 'satisfaccion' ? 24 : 0),
         delay: delay_envio_minutos ?? 0,
-        mensaje: mensaje_envio || null,
+        mensaje:
+          mensaje_envio ||
+          (tipo === 'satisfaccion' ? DEFAULT_MENSAJE_SATISFACCION : null),
         url: url_encuesta_publica || null,
         umbral: umbral_escalacion ?? 2,
       },
@@ -226,7 +258,6 @@ exports.crear = catchAsync(async (req, res, next) => {
     },
   );
 
-  // Vincular a conexión
   await db.query(
     `
     INSERT INTO encuestas_conexiones
@@ -266,6 +297,14 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     id_configuracion,
   } = req.body;
 
+  // Validar delay máximo
+  if (delay_envio_minutos !== undefined && delay_envio_minutos > 1380) {
+    return res.status(400).json({
+      success: false,
+      message: 'El delay máximo es de 23 horas.',
+    });
+  }
+
   await db.query(
     `
     UPDATE encuestas SET
@@ -294,7 +333,6 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     },
   );
 
-  // Actualizar conexión si viene id_configuracion
   if (id_configuracion && auto_enviar_al_cerrar !== undefined) {
     await db.query(
       `
@@ -321,26 +359,62 @@ exports.actualizar = catchAsync(async (req, res, next) => {
 exports.toggleActiva = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
+  const [enc] = await db.query(
+    `SELECT activa, tipo FROM encuestas WHERE id = :id AND deleted_at IS NULL`,
+    { replacements: { id }, type: QueryTypes.SELECT },
+  );
+
+  if (!enc) return next(new AppError('Encuesta no encontrada', 404));
+
+  // Si está inactiva y es satisfacción → validar que no haya otra activa
+  if (!enc.activa && enc.tipo === 'satisfaccion') {
+    const [conn] = await db.query(
+      `SELECT id_configuracion FROM encuestas_conexiones WHERE id_encuesta = :id LIMIT 1`,
+      { replacements: { id }, type: QueryTypes.SELECT },
+    );
+
+    if (conn) {
+      const [otra] = await db.query(
+        `
+        SELECT e.id, e.nombre FROM encuestas e
+        JOIN encuestas_conexiones ec ON ec.id_encuesta = e.id
+        WHERE ec.id_configuracion = :cfg
+          AND e.tipo = 'satisfaccion' AND e.activa = 1
+          AND e.deleted_at IS NULL AND e.id != :id
+        LIMIT 1
+      `,
+        {
+          replacements: { cfg: conn.id_configuracion, id },
+          type: QueryTypes.SELECT,
+        },
+      );
+
+      if (otra) {
+        return res.status(400).json({
+          success: false,
+          message: `Ya tienes otra encuesta de satisfacción activa: "${otra.nombre}". Desactívala primero.`,
+        });
+      }
+    }
+  }
+
   await db.query(
-    `
-    UPDATE encuestas SET activa = NOT activa, updated_at = NOW() WHERE id = :id
-  `,
+    `UPDATE encuestas SET activa = NOT activa, updated_at = NOW() WHERE id = :id`,
     { replacements: { id }, type: QueryTypes.UPDATE },
   );
 
-  const [enc] = await db.query(`SELECT activa FROM encuestas WHERE id = :id`, {
-    replacements: { id },
-    type: QueryTypes.SELECT,
-  });
+  const [updated] = await db.query(
+    `SELECT activa FROM encuestas WHERE id = :id`,
+    { replacements: { id }, type: QueryTypes.SELECT },
+  );
 
-  return res.json({ success: true, activa: enc?.activa });
+  return res.json({ success: true, activa: updated?.activa });
 });
 
 // ── Eliminar encuesta (soft-delete) ──
 exports.eliminar = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
-  // Verificar que existe
   const [enc] = await db.query(
     `SELECT id FROM encuestas WHERE id = :id AND deleted_at IS NULL`,
     { replacements: { id }, type: QueryTypes.SELECT },

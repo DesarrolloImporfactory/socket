@@ -33,13 +33,12 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
 
     // Si bot_openia == 1 → actualizar estado_contacto a la columna principal
     if (Number(bot_openia) === 1) {
-      // Buscar columna principal de esta configuración
       const [chat] = await db.query(
         `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
         { replacements: [chatId], type: db.QueryTypes.SELECT },
       );
 
-      let estadoPrincipal = 'contacto_inicial'; // fallback por si no hay principal
+      let estadoPrincipal = 'contacto_inicial';
 
       if (chat?.id_configuracion) {
         const [colPrincipal] = await db.query(
@@ -84,13 +83,23 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
     if (Number(nuevoEstado) === 1) {
       try {
         const [chatData] = await db.query(
-          `SELECT id, id_configuracion, nombre_cliente, id_encargado
+          `SELECT id, id_configuracion, nombre_cliente, celular_cliente, id_encargado
            FROM clientes_chat_center WHERE id = ? LIMIT 1`,
           { replacements: [chatId], type: db.QueryTypes.SELECT },
         );
 
-        if (chatData?.id_configuracion) {
-          // id_encargado = quien tiene asignado el chat (el que lo cerró)
+        // Solo aplicar encuesta si el chat es de WhatsApp
+        const [chatSource] = await db.query(
+          `SELECT source FROM vista_chats WHERE id = ? AND id_configuracion = ? LIMIT 1`,
+          {
+            replacements: [chatId, chatData.id_configuracion],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        const esWhatsApp = !chatSource?.source || chatSource.source === 'wa';
+
+        if (chatData?.id_configuracion && esWhatsApp) {
           const idEncargado =
             chatData.id_encargado || req.sessionUser?.id_sub_usuario || null;
 
@@ -102,23 +111,80 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
           });
 
           if (resultadoEncuesta.enviado) {
-            console.log(
-              `[encuesta] Programada para cliente=${chatId} delay=${resultadoEncuesta.delay_minutos}min`,
-            );
-            // TODO: cuando esté listo, conectar envío WhatsApp aquí
-            // if (resultadoEncuesta.delay_minutos > 0) {
-            //   setTimeout(() => {
-            //     enviarMensajeWA(celular, resultadoEncuesta.mensaje);
-            //   }, resultadoEncuesta.delay_minutos * 60 * 1000);
-            // } else {
-            //   enviarMensajeWA(celular, resultadoEncuesta.mensaje);
-            // }
+            const celular = resultadoEncuesta.celular;
+            const mensaje = resultadoEncuesta.mensaje;
+            const delayMs = (resultadoEncuesta.delay_minutos || 0) * 60 * 1000;
+
+            // Función que envía el mensaje por WhatsApp
+            const enviarEncuestaWA = async () => {
+              try {
+                const chatService = new ChatService();
+                const dataAdmin = await chatService.getDataAdmin(
+                  chatData.id_configuracion,
+                );
+
+                if (!dataAdmin) {
+                  console.error(
+                    `[encuesta] No se encontró dataAdmin para config=${chatData.id_configuracion}`,
+                  );
+                  return;
+                }
+
+                // Normalizar teléfono (quitar + y espacios)
+                const to = String(celular || '')
+                  .replace(/\s+/g, '')
+                  .replace(/^\+/, '');
+
+                if (!to) {
+                  console.error(
+                    `[encuesta] Celular vacío para cliente=${chatData.id}`,
+                  );
+                  return;
+                }
+
+                // Enviar mensaje de texto por WhatsApp
+                const resp = await chatService.sendMessage({
+                  mensaje: mensaje,
+                  to: to,
+                  dataAdmin: dataAdmin,
+                  tipo_mensaje: 'text',
+                  id_configuracion: chatData.id_configuracion,
+                  nombre_encargado: 'Sistema de valoraciones',
+                  ruta_archivo: null,
+                });
+
+                console.log(
+                  `[encuesta] ✅ Mensaje WA enviado: cliente=${chatData.id} to=${to} ` +
+                    `mid=${resp?.mensajeNuevo?.id_wamid_mensaje || 'N/A'}`,
+                );
+                await db.query(
+                  `UPDATE encuestas_respuestas SET estado = 'enviada', updated_at = NOW() WHERE id = ?`,
+                  {
+                    replacements: [resultadoEncuesta.id_respuesta],
+                    type: db.QueryTypes.UPDATE,
+                  },
+                );
+              } catch (sendErr) {
+                console.error(
+                  `[encuesta] ❌ Error enviando WA: ${sendErr.message}`,
+                );
+              }
+            };
+
+            // Ejecutar con delay o inmediato
+            if (delayMs > 0) {
+              console.log(
+                `[encuesta] ⏳ Programado en ${resultadoEncuesta.delay_minutos}min para cliente=${chatData.id}`,
+              );
+              setTimeout(enviarEncuestaWA, delayMs);
+            } else {
+              await enviarEncuestaWA();
+            }
           } else {
             console.log(`[encuesta] No enviada: ${resultadoEncuesta.razon}`);
           }
         }
       } catch (encuestaErr) {
-        // No bloquear el cierre del chat si falla la encuesta
         console.error(
           '[encuesta] Error al intentar enviar encuesta:',
           encuestaErr,
