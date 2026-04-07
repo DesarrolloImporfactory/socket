@@ -1378,6 +1378,79 @@ Adjuntamos evidencia para su validación. Si desea recibir más fotografías o d
   });
 });
 
+// Constantes del CRM de ventas
+const CRM_CONFIG = {
+  ID_CONFIGURACION: 242,
+  ID_CLIENTE: 22126,
+  UID_CLIENTE: '482973848238138',
+  RESPONSABLE: 'CRM Ventas',
+};
+
+exports.registrarMensajeCRM = catchAsync(async (req, res, next) => {
+  const { celular, nombre, wamid, template_name, texto_mensaje, email } = req.body;
+
+  if (!celular)       return next(new AppError('celular es requerido', 400));
+  if (!nombre)        return next(new AppError('nombre es requerido', 400));
+  if (!wamid)         return next(new AppError('wamid es requerido', 400));
+  if (!template_name) return next(new AppError('template_name es requerido', 400));
+  if (!texto_mensaje) return next(new AppError('texto_mensaje es requerido', 400));
+
+  const celularLimpio = celular.replace(/[\s+()-]/g, '');
+
+  let chatId = null;
+  const foundChat = await Clientes_chat_center.findOne({
+    where: {
+      celular_cliente: celularLimpio,
+      id_configuracion: CRM_CONFIG.ID_CONFIGURACION,
+    },
+  });
+
+  if (foundChat) {
+    chatId = foundChat.id;
+  } else {
+    const nuevoChat = await Clientes_chat_center.create({
+      id_configuracion: CRM_CONFIG.ID_CONFIGURACION,
+      nombre_cliente: nombre,
+      celular_cliente: celularLimpio,
+      uid_cliente: CRM_CONFIG.UID_CLIENTE,
+      email_cliente: email || null,
+      estado_cliente: 1,
+      chat_cerrado: false,
+    });
+    chatId = nuevoChat.id;
+  }
+
+  const mensaje = await MensajesClientes.create({
+    id_configuracion: CRM_CONFIG.ID_CONFIGURACION,
+    id_cliente: CRM_CONFIG.ID_CLIENTE,
+    source: 'wa',
+    mid_mensaje: CRM_CONFIG.UID_CLIENTE,
+    tipo_mensaje: 'template',
+    rol_mensaje: 1,
+    celular_recibe: chatId.toString(),
+    responsable: CRM_CONFIG.RESPONSABLE,
+    uid_whatsapp: celularLimpio,
+    id_wamid_mensaje: wamid,
+    texto_mensaje,
+    visto: false,
+    language_code: 'es',
+    template_name,
+  });
+
+  res.status(200).json({
+    status: 200,
+    success: true,
+    title: 'Registro exitoso',
+    message: 'Chat y mensaje registrados correctamente',
+    data: {
+      chatId,
+      mensajeId: mensaje.id,
+      celular: celularLimpio,
+      wamid,
+    },
+  });
+});
+
 exports.enviarCarga = catchAsync(async (req, res, next) => {
   const { id_carga, contactos } = req.body;
   if (!id_carga) {
