@@ -1139,3 +1139,24 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
     data: config || null,
   });
 });
+
+exports.eliminar_thread = catchAsync(async (req, res, next) => {
+  const { id_cliente_chat_center } = req.body;
+
+  if (!id_cliente_chat_center) {
+    return next(new AppError('Falta el campo id_cliente_chat_center', 400));
+  }
+
+  const deleted = await db.query(
+    `DELETE FROM openai_threads WHERE id_cliente_chat_center = ?`,
+    {
+      replacements: [id_cliente_chat_center],
+      type: db.QueryTypes.DELETE,
+    },
+  );
+
+  res.status(200).json({
+    status: '200',
+    message: `Thread eliminado correctamente para id_cliente_chat_center: ${id_cliente_chat_center}`,
+  });
+});
