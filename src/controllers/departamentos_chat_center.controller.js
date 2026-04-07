@@ -5,6 +5,7 @@ const { db } = require('../database/config');
 
 const DepartamentosChatCenter = require('../models/departamentos_chat_center.model');
 const Sub_usuarios_departamento = require('../models/sub_usuarios_departamento.model');
+const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Clientes_chat_center = require('../models/clientes_chat_center.model');
 const Historial_encargados = require('../models/historial_encargados.model');
 const HistorialEncargadosFacebook = require('../models/historial_encargados_messenger.model');
@@ -363,6 +364,18 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     });
   }
 
+  // ✅ buscar nombre encargado y propietario origen UNA SOLA VEZ
+  const subUsuario = id_encargado
+    ? await Sub_usuarios_chat_center.findByPk(id_encargado, {
+        attributes: ['nombre_encargado'],
+      })
+    : null;
+  const nombreEncargado = subUsuario?.nombre_encargado ?? `ID ${id_encargado}`;
+
+  const propietarioOrigen = await Clientes_chat_center.findOne({
+    where: { id_configuracion, propietario: 1 },
+  });
+
   switch (source) {
     case 'ms': {
       if (!id_cliente_chat_center) {
@@ -429,6 +442,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         );
       }
 
+      // ✅ mensaje en el chat destino
       await MensajesClientes.create({
         id_configuracion: configuracion_transferida.id_configuracion,
         id_cliente: cliente_configuracion.id,
@@ -440,6 +454,21 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         celular_recibe: clienteActual.id,
         uid_whatsapp: clienteActual.celular_cliente,
       });
+
+      // ✅ mensaje en el chat origen
+      if (propietarioOrigen) {
+        await MensajesClientes.create({
+          id_configuracion,
+          id_cliente: propietarioOrigen.id,
+          mid_mensaje: propietarioOrigen.id_telefono,
+          tipo_mensaje: 'notificacion',
+          visto: 0,
+          texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+          rol_mensaje: 3,
+          celular_recibe: clienteActual.id,
+          uid_whatsapp: clienteActual.celular_cliente,
+        });
+      }
 
       enviarConsultaAPI(
         configuracion_transferida.id_configuracion,
@@ -513,6 +542,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         );
       }
 
+      // ✅ mensaje en el chat destino
       await MensajesClientes.create({
         id_configuracion: configuracion_transferida.id_configuracion,
         id_cliente: cliente_configuracion.id,
@@ -524,6 +554,21 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         celular_recibe: clienteActual.id,
         uid_whatsapp: clienteActual.celular_cliente,
       });
+
+      // ✅ mensaje en el chat origen
+      if (propietarioOrigen) {
+        await MensajesClientes.create({
+          id_configuracion,
+          id_cliente: propietarioOrigen.id,
+          mid_mensaje: propietarioOrigen.id_telefono,
+          tipo_mensaje: 'notificacion',
+          visto: 0,
+          texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+          rol_mensaje: 3,
+          celular_recibe: clienteActual.id,
+          uid_whatsapp: clienteActual.celular_cliente,
+        });
+      }
 
       enviarConsultaAPI(
         configuracion_transferida.id_configuracion,
@@ -658,6 +703,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             },
           );
 
+          // ✅ mensaje en el chat destino
           await MensajesClientes.create({
             id_configuracion: configuracion_transferida.id_configuracion,
             id_cliente: cliente_configuracion.id,
@@ -670,6 +716,21 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             celular_recibe: validar_cliente_new_conf.id,
             uid_whatsapp: validar_cliente_new_conf.celular_cliente,
           });
+
+          // ✅ mensaje en el chat origen
+          if (propietarioOrigen) {
+            await MensajesClientes.create({
+              id_configuracion,
+              id_cliente: propietarioOrigen.id,
+              mid_mensaje: propietarioOrigen.id_telefono,
+              tipo_mensaje: 'notificacion',
+              visto: 0,
+              texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+              rol_mensaje: 3,
+              celular_recibe: clienteActual.id,
+              uid_whatsapp: clienteActual.celular_cliente,
+            });
+          }
 
           enviarConsultaAPI(
             configuracion_transferida.id_configuracion,
@@ -687,6 +748,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             uid_cliente: cliente_configuracion.uid_cliente,
           });
 
+          // ✅ mensaje en el chat destino
           // 2) Crear el mensaje usando el nuevo cliente
           await MensajesClientes.create({
             id_configuracion: configuracion_transferida.id_configuracion,
@@ -700,6 +762,21 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
             uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente
           });
+
+          // ✅ mensaje en el chat origen
+          if (propietarioOrigen) {
+            await MensajesClientes.create({
+              id_configuracion,
+              id_cliente: propietarioOrigen.id,
+              mid_mensaje: propietarioOrigen.id_telefono,
+              tipo_mensaje: 'notificacion',
+              visto: 0,
+              texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+              rol_mensaje: 3,
+              celular_recibe: clienteActual.id,
+              uid_whatsapp: clienteActual.celular_cliente,
+            });
+          }
 
           enviarConsultaAPI(
             configuracion_transferida.id_configuracion,
