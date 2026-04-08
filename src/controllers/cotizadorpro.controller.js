@@ -781,7 +781,7 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
   );
 
   const VIDEO_DEFAULT_URL =
-    'https://new.imporsuitpro.com/Videos/stream/e750c4d548eb6e828b2ece6bc0639649';
+    'https://new.imporsuitpro.com/Videos/stream/142a81defb7d52ee043640df1c8e2efc';
 
   let videoMediaId = null;
   try {
