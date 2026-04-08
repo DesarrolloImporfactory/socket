@@ -997,7 +997,7 @@ const KANBAN_TEMPLATES_META = [
         format: 'VIDEO',
         example: {
           header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/ef6998b17237ad28ce2c6e2ef29e058b',
+            'https://new.imporsuitpro.com/Videos/stream/3619a3291e1ccfe2388174618b50b550',
           ],
         },
       },
@@ -1017,7 +1017,7 @@ const KANBAN_TEMPLATES_META = [
         format: 'VIDEO',
         example: {
           header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/f072982f7a8664215f4d3c077a7ecfa4',
+            'https://new.imporsuitpro.com/Videos/stream/58b0a69a64359e85d12dd722f27f7afe',
           ],
         },
       },
