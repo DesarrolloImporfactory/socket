@@ -255,7 +255,12 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
     const uid_cliente = configuracion.id_telefono;
 
     // 2) UPSERT (si existe por UNIQUE, no falla y devuelve el id existente)
-    console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L259 — agregarNumeroChat UPSERT, celular:', telefono, 'id_configuracion:', id_configuracion);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L259 — agregarNumeroChat UPSERT, celular:',
+      telefono,
+      'id_configuracion:',
+      id_configuracion,
+    );
     const upsertSql = `
       INSERT INTO clientes_chat_center
         (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente, created_at, updated_at)
@@ -370,39 +375,31 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     const nombre_cliente = config.nombre_configuracion;
     const apellido_cliente = '';
 
-    // 2) UPSERT cliente propietario (evita duplicados y carreras)
-    console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L374 — buscar_id_recibe UPSERT propietario=1, id_configuracion:', id_configuracion);
-    const upsertClienteSql = `
-      INSERT INTO clientes_chat_center
-        (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-      ON DUPLICATE KEY UPDATE
-        uid_cliente      = VALUES(uid_cliente),
-        nombre_cliente   = VALUES(nombre_cliente),
-        apellido_cliente = VALUES(apellido_cliente),
-        celular_cliente  = VALUES(celular_cliente),
-        propietario      = VALUES(propietario),
-        updated_at       = NOW(),
-        id              = LAST_INSERT_ID(id)
-    `;
+    // 2) Buscar o crear cliente propietario (dueño de la configuración)
+    console.log(
+      '[clientes_chat_center] Buscando propietario — id_configuracion:',
+      id_configuracion,
+      '| telefono_configuracion:',
+      telefono_configuracion,
+    );
 
-    await db.query(upsertClienteSql, {
-      replacements: [
-        id_configuracion,
-        uid_cliente,
-        nombre_cliente,
-        apellido_cliente,
-        '',
-        telefono_configuracion,
-        1,
-      ],
-      type: db.QueryTypes.INSERT,
+    let clientePropietario = await ClientesChatCenter.findOne({
+      where: { celular_cliente: telefono_configuracion, id_configuracion },
     });
 
-    const [{ id: id_cliente_configuracion }] = await db.query(
-      'SELECT LAST_INSERT_ID() AS id',
-      { type: db.QueryTypes.SELECT },
-    );
+    if (!clientePropietario?.id) {
+      console.log('[clientes_chat_center] Propietario no existe, creando...');
+      clientePropietario = await ClientesChatCenter.create({
+        id_configuracion,
+        uid_cliente: uid_cliente,
+        nombre_cliente: nombre_cliente,
+        apellido_cliente: '',
+        celular_cliente: telefono_configuracion,
+        propietario: 1,
+      });
+    }
+
+    const id_cliente_configuracion = clientePropietario.id;
 
     // 3) Insertar mensaje
     await db.query(
@@ -1281,7 +1278,10 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
 
   // ✅ UPSERT: si existe, actualiza y no falla por duplicado
   // ✅ Además devuelve el id REAL (nuevo o existente) usando LAST_INSERT_ID
-  console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L1283 — agregarCliente UPSERT, id_configuracion:', id_configuracion);
+  console.log(
+    '[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L1283 — agregarCliente UPSERT, id_configuracion:',
+    id_configuracion,
+  );
   const upsertSql = `
     INSERT INTO clientes_chat_center (
       id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
@@ -2110,7 +2110,12 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         );
       });
 
-      console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L2111 — importacionMasiva UPSERT bulk, chunk size:', chunk.length, 'id_configuracion:', id_configuracion);
+      console.log(
+        '[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L2111 — importacionMasiva UPSERT bulk, chunk size:',
+        chunk.length,
+        'id_configuracion:',
+        id_configuracion,
+      );
       const upsertSql = `
         INSERT INTO clientes_chat_center
           (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
