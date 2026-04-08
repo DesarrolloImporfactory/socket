@@ -29,6 +29,9 @@ exports.listarPorConexion = catchAsync(async (req, res, next) => {
            ec.auto_enviar_al_cerrar, ec.webhook_secret,
            (SELECT COUNT(*) FROM encuestas_respuestas er
             WHERE er.id_encuesta = e.id AND er.id_configuracion = :cfg) AS total_respuestas,
+           (SELECT COUNT(*) FROM encuestas_respuestas er3
+            WHERE er3.id_encuesta = e.id AND er3.id_configuracion = :cfg
+              AND er3.estado = 'respondida') AS total_respondidas,
            (SELECT ROUND(AVG(er2.score), 1) FROM encuestas_respuestas er2
             WHERE er2.id_encuesta = e.id AND er2.id_configuracion = :cfg
               AND er2.score IS NOT NULL) AS promedio_score
@@ -117,10 +120,10 @@ exports.stats = catchAsync(async (req, res, next) => {
   return res.json({ success: true, data: { general, porEncargado, porDia } });
 });
 
-// ── Listar respuestas paginadas ──
+// ── Listar respuestas paginadas (con filtros server-side) ──
 exports.listarRespuestas = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const { id_configuracion } = req.query;
+  const { id_configuracion, estado, busqueda } = req.query;
   const page = Math.max(1, Number(req.query.page || 1));
   const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
   const offset = (page - 1) * limit;
@@ -128,33 +131,71 @@ exports.listarRespuestas = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
+  // Construir WHERE dinámico
+  let extraWhere = '';
+  const replacements = { id, cfg: id_configuracion, limit, offset };
+
+  // Filtro por estado
+  if (estado === 'respondidas') {
+    extraWhere += ` AND er.estado = 'respondida'`;
+  } else if (estado === 'escalados') {
+    extraWhere += ` AND er.escalado = 1`;
+  }
+
+  // Filtro por búsqueda (nombre o teléfono)
+  if (busqueda && busqueda.trim()) {
+    extraWhere += ` AND (c.nombre_cliente LIKE :search
+                      OR c.apellido_cliente LIKE :search
+                      OR c.celular_cliente LIKE :search)`;
+    replacements.search = `%${busqueda.trim()}%`;
+  }
+
   const respuestas = await db.query(
     `
     SELECT
-      er.id, er.source, er.score, er.estado, er.escalado,
-      er.respuestas, er.datos_contacto, er.created_at,
+      er.id, er.id_cliente_chat_center, er.source, er.score,
+      er.estado, er.escalado, er.respuestas, er.datos_contacto,
+      er.id_configuracion, er.created_at,
       c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
       COALESCE(s.nombre_encargado, 'Sin asignar') AS nombre_encargado
     FROM encuestas_respuestas er
     LEFT JOIN clientes_chat_center c ON c.id = er.id_cliente_chat_center
     LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = er.id_encargado
     WHERE er.id_encuesta = :id AND er.id_configuracion = :cfg
+      ${extraWhere}
     ORDER BY er.created_at DESC
     LIMIT :limit OFFSET :offset
   `,
     {
-      replacements: { id, cfg: id_configuracion, limit, offset },
+      replacements,
       type: QueryTypes.SELECT,
     },
   );
 
+  const countReplacements = { id, cfg: id_configuracion };
+  let countExtraWhere = '';
+  if (estado === 'respondidas') {
+    countExtraWhere += ` AND er.estado = 'respondida'`;
+  } else if (estado === 'escalados') {
+    countExtraWhere += ` AND er.escalado = 1`;
+  }
+  if (busqueda && busqueda.trim()) {
+    countExtraWhere += ` AND (c.nombre_cliente LIKE :search
+                          OR c.apellido_cliente LIKE :search
+                          OR c.celular_cliente LIKE :search)`;
+    countReplacements.search = `%${busqueda.trim()}%`;
+  }
+
   const [{ total }] = await db.query(
     `
-    SELECT COUNT(*) AS total FROM encuestas_respuestas
-    WHERE id_encuesta = :id AND id_configuracion = :cfg
+    SELECT COUNT(*) AS total
+    FROM encuestas_respuestas er
+    LEFT JOIN clientes_chat_center c ON c.id = er.id_cliente_chat_center
+    WHERE er.id_encuesta = :id AND er.id_configuracion = :cfg
+      ${countExtraWhere}
   `,
     {
-      replacements: { id, cfg: id_configuracion },
+      replacements: countReplacements,
       type: QueryTypes.SELECT,
     },
   );
@@ -192,7 +233,6 @@ exports.crear = catchAsync(async (req, res, next) => {
 
   // ── Validar: máximo 1 encuesta de satisfacción activa por conexión ──
   if (tipo === 'satisfaccion') {
-    // Delay máximo 23h (1380 min) para no exceder ventana 24h de WhatsApp
     if ((delay_envio_minutos || 0) > 1380) {
       return res.status(400).json({
         success: false,
@@ -297,7 +337,6 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     id_configuracion,
   } = req.body;
 
-  // Validar delay máximo
   if (delay_envio_minutos !== undefined && delay_envio_minutos > 1380) {
     return res.status(400).json({
       success: false,
@@ -366,7 +405,6 @@ exports.toggleActiva = catchAsync(async (req, res, next) => {
 
   if (!enc) return next(new AppError('Encuesta no encontrada', 404));
 
-  // Si está inactiva y es satisfacción → validar que no haya otra activa
   if (!enc.activa && enc.tipo === 'satisfaccion') {
     const [conn] = await db.query(
       `SELECT id_configuracion FROM encuestas_conexiones WHERE id_encuesta = :id LIMIT 1`,
