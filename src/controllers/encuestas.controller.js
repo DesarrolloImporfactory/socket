@@ -429,3 +429,33 @@ exports.eliminar = catchAsync(async (req, res, next) => {
 
   return res.json({ success: true, message: 'Encuesta eliminada' });
 });
+
+// ── Respuestas de encuestas de un cliente específico ──
+exports.respuestasPorCliente = catchAsync(async (req, res, next) => {
+  const { id_cliente } = req.params;
+  const { id_configuracion } = req.query;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const respuestas = await db.query(
+    `
+    SELECT
+      er.id, er.id_encuesta, er.source, er.score, er.estado, er.escalado,
+      er.respuestas, er.datos_contacto, er.created_at,
+      e.nombre AS nombre_encuesta, e.tipo AS tipo_encuesta
+    FROM encuestas_respuestas er
+    JOIN encuestas e ON e.id = er.id_encuesta
+    WHERE er.id_cliente_chat_center = :id_cliente
+      AND er.id_configuracion = :cfg
+      AND e.deleted_at IS NULL
+    ORDER BY er.created_at DESC
+    LIMIT 50
+  `,
+    {
+      replacements: { id_cliente, cfg: id_configuracion },
+      type: QueryTypes.SELECT,
+    },
+  );
+
+  return res.json({ success: true, data: respuestas });
+});

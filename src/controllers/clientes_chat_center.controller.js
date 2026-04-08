@@ -84,11 +84,10 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
       try {
         const [chatData] = await db.query(
           `SELECT id, id_configuracion, nombre_cliente, celular_cliente, id_encargado
-           FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+       FROM clientes_chat_center WHERE id = ? LIMIT 1`,
           { replacements: [chatId], type: db.QueryTypes.SELECT },
         );
 
-        // Solo aplicar encuesta si el chat es de WhatsApp
         const [chatSource] = await db.query(
           `SELECT source FROM vista_chats WHERE id = ? AND id_configuracion = ? LIMIT 1`,
           {
@@ -100,95 +99,24 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
         const esWhatsApp = !chatSource?.source || chatSource.source === 'wa';
 
         if (chatData?.id_configuracion && esWhatsApp) {
-          const idEncargado =
-            chatData.id_encargado || req.sessionUser?.id_sub_usuario || null;
-
-          const resultadoEncuesta = await intentarEnviarEncuesta({
+          const resultado = await intentarEnviarEncuesta({
             idConfiguracion: chatData.id_configuracion,
             idClienteChatCenter: chatData.id,
-            idEncargado,
+            idEncargado:
+              chatData.id_encargado || req.sessionUser?.id_sub_usuario || null,
             nombreCliente: chatData.nombre_cliente || '',
           });
 
-          if (resultadoEncuesta.enviado) {
-            const celular = resultadoEncuesta.celular;
-            const mensaje = resultadoEncuesta.mensaje;
-            const delayMs = (resultadoEncuesta.delay_minutos || 0) * 60 * 1000;
-
-            // Función que envía el mensaje por WhatsApp
-            const enviarEncuestaWA = async () => {
-              try {
-                const chatService = new ChatService();
-                const dataAdmin = await chatService.getDataAdmin(
-                  chatData.id_configuracion,
-                );
-
-                if (!dataAdmin) {
-                  console.error(
-                    `[encuesta] No se encontró dataAdmin para config=${chatData.id_configuracion}`,
-                  );
-                  return;
-                }
-
-                // Normalizar teléfono (quitar + y espacios)
-                const to = String(celular || '')
-                  .replace(/\s+/g, '')
-                  .replace(/^\+/, '');
-
-                if (!to) {
-                  console.error(
-                    `[encuesta] Celular vacío para cliente=${chatData.id}`,
-                  );
-                  return;
-                }
-
-                // Enviar mensaje de texto por WhatsApp
-                const resp = await chatService.sendMessage({
-                  mensaje: mensaje,
-                  to: to,
-                  dataAdmin: dataAdmin,
-                  tipo_mensaje: 'text',
-                  id_configuracion: chatData.id_configuracion,
-                  nombre_encargado: 'Sistema de valoraciones',
-                  ruta_archivo: null,
-                });
-
-                console.log(
-                  `[encuesta] ✅ Mensaje WA enviado: cliente=${chatData.id} to=${to} ` +
-                    `mid=${resp?.mensajeNuevo?.id_wamid_mensaje || 'N/A'}`,
-                );
-                await db.query(
-                  `UPDATE encuestas_respuestas SET estado = 'enviada', updated_at = NOW() WHERE id = ?`,
-                  {
-                    replacements: [resultadoEncuesta.id_respuesta],
-                    type: db.QueryTypes.UPDATE,
-                  },
-                );
-              } catch (sendErr) {
-                console.error(
-                  `[encuesta] ❌ Error enviando WA: ${sendErr.message}`,
-                );
-              }
-            };
-
-            // Ejecutar con delay o inmediato
-            if (delayMs > 0) {
-              console.log(
-                `[encuesta] ⏳ Programado en ${resultadoEncuesta.delay_minutos}min para cliente=${chatData.id}`,
-              );
-              setTimeout(enviarEncuestaWA, delayMs);
-            } else {
-              await enviarEncuestaWA();
-            }
+          if (resultado.programado) {
+            console.log(
+              `[encuesta] Programada en ${resultado.delay_minutos}min para cliente=${chatData.id}`,
+            );
           } else {
-            console.log(`[encuesta] No enviada: ${resultadoEncuesta.razon}`);
+            console.log(`[encuesta] No programada: ${resultado.razon}`);
           }
         }
       } catch (encuestaErr) {
-        console.error(
-          '[encuesta] Error al intentar enviar encuesta:',
-          encuestaErr,
-        );
+        console.error('[encuesta] Error al programar encuesta:', encuestaErr);
       }
     }
 

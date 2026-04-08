@@ -45,6 +45,7 @@ require('./cron/aviso_calendarios');
 require('./cron/templateProgramadoMasivo.js');
 require('./cron/syncDropiStock.js');
 require('./cron/syncDropiOrdersHourly.js');
+require('./cron/cronEncuestasEnvio.js');
 
 // Server HTTP
 const server = app.listen(process.env.PORT, () => {

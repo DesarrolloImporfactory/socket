@@ -1,31 +1,16 @@
-/**
- * encuestaSatisfaccion.js
- *
- * Utilidad para enviar encuestas de satisfacción al cerrar un chat.
- *
- * FLUJO:
- *   1. Asesor cierra chat → se llama intentarEnviarEncuesta()
- *   2. Verifica encuesta activa, cooldown, ventana 24h de WhatsApp
- *   3. Retorna mensaje armado + celular + delay para que el caller envíe
- *   4. El caller (actualizar_cerrado) envía por WhatsApp via ChatService
- *
- * RESTRICCIONES:
- *   - Delay máximo: 23 horas (1380 min) para no exceder ventana 24h de WA
- *   - Si el último mensaje del cliente es muy viejo, no se envía
- */
-
 const { db } = require('../database/config');
 const { QueryTypes } = require('sequelize');
 
 const FRONTEND_BASE_URL =
   process.env.FRONTEND_URL || 'https://chatcenter.imporfactory.app';
 const MAX_DELAY_MINUTOS = 1380; // 23 horas
-const VENTANA_WA_MS = 23.5 * 60 * 60 * 1000; // 23.5 horas en ms (margen de seguridad)
+const VENTANA_WA_MS = 23.5 * 60 * 60 * 1000;
 
 /**
- * Intenta programar una encuesta de satisfacción al cerrar un chat.
+ * Programa una encuesta de satisfacción.
+ * Inserta en encuestas_envios_programados para que el cron la envíe.
  *
- * @returns {Object} { enviado, razon?, mensaje?, link?, celular?, delay_minutos?, id_respuesta? }
+ * @returns {Object} { programado, razon? }
  */
 async function intentarEnviarEncuesta({
   idConfiguracion,
@@ -60,15 +45,13 @@ async function intentarEnviarEncuesta({
     );
 
     if (!config) {
-      return { enviado: false, razon: 'no_configurada' };
+      return { programado: false, razon: 'no_configurada' };
     }
 
     // ── 2. Obtener celular del cliente ──
     const [cliente] = await db.query(
-      `
-      SELECT celular_cliente FROM clientes_chat_center
-      WHERE id = :id AND deleted_at IS NULL LIMIT 1
-    `,
+      `SELECT celular_cliente FROM clientes_chat_center
+       WHERE id = :id AND deleted_at IS NULL LIMIT 1`,
       {
         replacements: { id: idClienteChatCenter },
         type: QueryTypes.SELECT,
@@ -76,21 +59,22 @@ async function intentarEnviarEncuesta({
     );
 
     if (!cliente?.celular_cliente) {
-      return { enviado: false, razon: 'sin_celular' };
+      return { programado: false, razon: 'sin_celular' };
     }
 
     const celular = cliente.celular_cliente;
+    const delayMinutos = Math.min(
+      config.delay_envio_minutos || 0,
+      MAX_DELAY_MINUTOS,
+    );
 
     // ── 3. Verificar ventana de 24h de WhatsApp ──
-    // Buscar último mensaje ENTRANTE del cliente
     const [ultimoMensaje] = await db.query(
-      `
-      SELECT MAX(created_at) AS last_incoming
-      FROM mensajes_clientes
-      WHERE celular_recibe = :chatId
-        AND direction = 'in'
-        AND deleted_at IS NULL
-    `,
+      `SELECT MAX(created_at) AS last_incoming
+       FROM mensajes_clientes
+       WHERE celular_recibe = :chatId
+         AND direction = 'in'
+         AND deleted_at IS NULL`,
       {
         replacements: { chatId: String(idClienteChatCenter) },
         type: QueryTypes.SELECT,
@@ -99,33 +83,26 @@ async function intentarEnviarEncuesta({
 
     if (ultimoMensaje?.last_incoming) {
       const lastIncoming = new Date(ultimoMensaje.last_incoming).getTime();
-      const delayMs =
-        Math.min(config.delay_envio_minutos || 0, MAX_DELAY_MINUTOS) *
-        60 *
-        1000;
+      const delayMs = delayMinutos * 60 * 1000;
       const envioEn = Date.now() + delayMs;
       const ventanaExpira = lastIncoming + VENTANA_WA_MS;
 
       if (envioEn > ventanaExpira) {
         console.log(
-          `[encuestaSatisfaccion] ⚠️ Fuera de ventana 24h para cliente=${idClienteChatCenter}. ` +
-            `Último msg: ${new Date(lastIncoming).toISOString()}, envío en: ${new Date(envioEn).toISOString()}`,
+          `[encuesta] ⚠️ Fuera de ventana 24h para cliente=${idClienteChatCenter}`,
         );
-        return { enviado: false, razon: 'fuera_ventana_24h' };
+        return { programado: false, razon: 'fuera_ventana_24h' };
       }
     }
-    // Si no hay mensajes entrantes, igual intentamos (puede ser primer contacto vía link)
 
     // ── 4. Verificar cooldown ──
     if (config.cooldown_horas > 0) {
       const [ultima] = await db.query(
-        `
-        SELECT created_at FROM encuestas_respuestas
-        WHERE id_encuesta = :enc
-          AND id_cliente_chat_center = :cli
-          AND estado IN ('pendiente', 'enviada', 'respondida')
-        ORDER BY created_at DESC LIMIT 1
-      `,
+        `SELECT created_at FROM encuestas_respuestas
+         WHERE id_encuesta = :enc
+           AND id_cliente_chat_center = :cli
+           AND estado IN ('pendiente', 'enviada', 'respondida')
+         ORDER BY created_at DESC LIMIT 1`,
         {
           replacements: { enc: config.id_encuesta, cli: idClienteChatCenter },
           type: QueryTypes.SELECT,
@@ -138,7 +115,7 @@ async function intentarEnviarEncuesta({
           (1000 * 60 * 60);
         if (horasDesdeUltima < config.cooldown_horas) {
           return {
-            enviado: false,
+            programado: false,
             razon: 'cooldown',
             horas_restantes: Math.ceil(
               config.cooldown_horas - horasDesdeUltima,
@@ -148,7 +125,20 @@ async function intentarEnviarEncuesta({
       }
     }
 
-    // ── 5. Armar link y mensaje ──
+    // ── 5. Cancelar envíos pendientes anteriores del mismo cliente+encuesta ──
+    await db.query(
+      `UPDATE encuestas_envios_programados
+       SET estado = 'cancelado'
+       WHERE id_cliente_chat_center = :cli
+         AND id_encuesta = :enc
+         AND estado = 'pendiente'`,
+      {
+        replacements: { cli: idClienteChatCenter, enc: config.id_encuesta },
+        type: QueryTypes.UPDATE,
+      },
+    );
+
+    // ── 6. Armar link y mensaje ──
     const link = `${FRONTEND_BASE_URL}/encuesta-publica/${config.id_encuesta}?cid=${idClienteChatCenter}`;
 
     const mensajeTemplate =
@@ -159,14 +149,12 @@ async function intentarEnviarEncuesta({
       .replace(/\{link\}/g, link)
       .replace(/\{nombre\}/g, nombreCliente || 'estimado cliente');
 
-    // ── 6. Crear registro pendiente ──
-    const [insertId] = await db.query(
-      `
-      INSERT INTO encuestas_respuestas
+    // ── 7. Crear registro en encuestas_respuestas ──
+    const [idRespuesta] = await db.query(
+      `INSERT INTO encuestas_respuestas
         (id_encuesta, id_configuracion, id_cliente_chat_center, id_encargado,
-        source, score, respuestas, estado)
-      VALUES (:enc, :cfg, :cli, :encargado, 'link', NULL, '{}', 'pendiente')
-    `,
+         source, score, respuestas, estado)
+       VALUES (:enc, :cfg, :cli, :encargado, 'link', NULL, '{}', 'pendiente')`,
       {
         replacements: {
           enc: config.id_encuesta,
@@ -178,28 +166,40 @@ async function intentarEnviarEncuesta({
       },
     );
 
-    const delayFinal = Math.min(
-      config.delay_envio_minutos || 0,
-      MAX_DELAY_MINUTOS,
+    // ── 8. Programar envío ──
+    await db.query(
+      `INSERT INTO encuestas_envios_programados
+        (id_encuesta, id_configuracion, id_cliente_chat_center, id_encargado,
+         id_respuesta, celular, mensaje, enviar_en)
+       VALUES (:enc, :cfg, :cli, :encargado, :resp, :cel, :msg,
+               DATE_ADD(NOW(), INTERVAL :delay MINUTE))`,
+      {
+        replacements: {
+          enc: config.id_encuesta,
+          cfg: idConfiguracion,
+          cli: idClienteChatCenter,
+          encargado: idEncargado,
+          resp: idRespuesta,
+          cel: celular,
+          msg: mensaje,
+          delay: delayMinutos,
+        },
+        type: QueryTypes.INSERT,
+      },
     );
 
     console.log(
-      `[encuestaSatisfaccion] ✅ Encuesta preparada: respuesta_id=${insertId} ` +
-        `cliente=${idClienteChatCenter} celular=${celular} delay=${delayFinal}min`,
+      `[encuesta] ✅ Programada: respuesta_id=${idRespuesta} cliente=${idClienteChatCenter} delay=${delayMinutos}min`,
     );
 
     return {
-      enviado: true,
-      mensaje,
-      link,
-      celular,
-      id_encuesta: config.id_encuesta,
-      id_respuesta: insertId,
-      delay_minutos: delayFinal,
+      programado: true,
+      id_respuesta: idRespuesta,
+      delay_minutos: delayMinutos,
     };
   } catch (err) {
-    console.error('[encuestaSatisfaccion] ❌ ERROR:', err);
-    return { enviado: false, razon: 'error', error: err.message };
+    console.error('[encuesta] ❌ ERROR:', err);
+    return { programado: false, razon: 'error', error: err.message };
   }
 }
 
