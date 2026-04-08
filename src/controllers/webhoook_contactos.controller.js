@@ -230,6 +230,7 @@ exports.inbound = async (req, res) => {
 
     // Si no existe → crear nuevo contacto
     if (!idCliente) {
+      console.log('[clientes_chat_center INSERT] controllers/webhoook_contactos.controller.js ~L235 — webhook contactos nuevo lead, celular:', telRaw, 'id_configuracion:', idConfiguracion);
       const [insertResult] = await db.query(
         `
         INSERT INTO clientes_chat_center

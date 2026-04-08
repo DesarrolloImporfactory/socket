@@ -297,6 +297,7 @@ cron.schedule('*/1 * * * *', async () => {
 
             let clienteId = clienteRow?.id || null;
             if (!clienteId) {
+              console.log('[clientes_chat_center INSERT] cron/remarketing.js ~L300 — creando cliente para remarketing, celular:', telefonoLimpio, 'id_configuracion:', record.id_configuracion);
               const nuevo = await ClientesChatCenter.create({
                 id_configuracion: record.id_configuracion,
                 uid_cliente: cfg.PHONE_NUMBER_ID,

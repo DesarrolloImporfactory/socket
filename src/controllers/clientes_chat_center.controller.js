@@ -255,6 +255,7 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
     const uid_cliente = configuracion.id_telefono;
 
     // 2) UPSERT (si existe por UNIQUE, no falla y devuelve el id existente)
+    console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L259 — agregarNumeroChat UPSERT, celular:', telefono, 'id_configuracion:', id_configuracion);
     const upsertSql = `
       INSERT INTO clientes_chat_center
         (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente, created_at, updated_at)
@@ -370,6 +371,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     const apellido_cliente = '';
 
     // 2) UPSERT cliente propietario (evita duplicados y carreras)
+    console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L374 — buscar_id_recibe UPSERT propietario=1, id_configuracion:', id_configuracion);
     const upsertClienteSql = `
       INSERT INTO clientes_chat_center
         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente, email_cliente, celular_cliente, propietario, created_at, updated_at)
@@ -1279,6 +1281,7 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
 
   // ✅ UPSERT: si existe, actualiza y no falla por duplicado
   // ✅ Además devuelve el id REAL (nuevo o existente) usando LAST_INSERT_ID
+  console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L1283 — agregarCliente UPSERT, id_configuracion:', id_configuracion);
   const upsertSql = `
     INSERT INTO clientes_chat_center (
       id_plataforma, id_configuracion, id_etiqueta, uid_cliente,
@@ -2107,6 +2110,7 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
         );
       });
 
+      console.log('[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L2111 — importacionMasiva UPSERT bulk, chunk size:', chunk.length, 'id_configuracion:', id_configuracion);
       const upsertSql = `
         INSERT INTO clientes_chat_center
           (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,

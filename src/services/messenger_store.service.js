@@ -99,6 +99,7 @@ async function getOwnerClientId({ id_configuracion, id_plataforma, page_id }) {
     page_id,
   });
 
+  console.log('[clientes_chat_center INSERT] services/messenger_store.service.js ~L103 — getOwnerClientId propietario=1, id_configuracion:', id_configuracion);
   const [ins] = await db.query(
     `INSERT INTO clientes_chat_center
       (id_configuracion, id_plataforma, propietario,

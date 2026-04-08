@@ -348,6 +348,7 @@ exports.sendWhatsappMessage = async ({
   });
 
   if (!cliente) {
+    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L351 — enviarMensajeWhatsappCliente, celular:', telefono, 'id_configuracion:', id_configuracion);
     cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -442,6 +443,7 @@ exports.sendWhatsappMessageTemplate = async ({
   });
 
   if (!cliente) {
+    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L445 — enviarPlantillaWhatsapp, celular:', telefono, 'id_configuracion:', id_configuracion);
     cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -737,6 +739,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   let clienteId = clienteRow?.id || null;
 
   if (!clienteId) {
+    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L740 — crearChatRemarketingWS, celular:', telefonoLimpio, 'id_configuracion:', id_configuracion);
     const nuevoCliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,

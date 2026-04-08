@@ -1420,6 +1420,7 @@ async function upsertOwnerByConfig({
   }
 
   // 3) Si no existe -> crear
+  console.log('[clientes_chat_center INSERT] routes/whatsapp.routes.js ~L1424 — getOrCreateOwnerClient propietario=1, id_configuracion:', id_configuracion);
   const [ins] = await db.query(
     `INSERT INTO clientes_chat_center
       (id_configuracion, id_plataforma, uid_cliente, nombre_cliente, celular_cliente,
