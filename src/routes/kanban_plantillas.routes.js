@@ -18,4 +18,9 @@ router.post('/listar_globales', ctrl.listarGlobales);
 router.post('/aplicar_global', ctrl.aplicarGlobal);
 router.post('/eliminar_global', ctrl.eliminarGlobal);
 
+/* ── NUEVOS: templates Meta + respuestas rápidas ── */
+router.post('/crear_templates_meta', ctrl.crearTemplatesMeta);
+router.post('/crear_respuestas_rapidas', ctrl.crearRespuestasRapidas);
+router.get('/t/:guide', ctrl.trackingRedirect);
+
 module.exports = router;

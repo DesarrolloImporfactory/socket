@@ -2,6 +2,8 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
+
+const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
 const axios = require('axios');
 
 // ── Plantillas hardcodeadas ───────────────────────────────────
@@ -148,7 +150,15 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
-  // 1. Obtener IDs de columnas para borrar acciones
+  // 0. Saber qué plantilla tenía (ANTES de borrar)
+  const [config] = await db.query(
+    `SELECT kanban_global_id FROM configuraciones WHERE id = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  const id_plantilla = config?.kanban_global_id;
+
+  // 1. Obtener IDs de columnas
   const columnas = await db.query(
     `SELECT id FROM kanban_columnas WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -156,6 +166,7 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
 
   if (columnas.length) {
     const ids = columnas.map((c) => c.id);
+
     await db.query(
       `DELETE FROM kanban_acciones WHERE id_kanban_columna IN (${ids.join(',')})`,
       { type: db.QueryTypes.DELETE },
@@ -174,7 +185,35 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
   );
 
-  return res.json({ success: true, message: 'Configuración reiniciada' });
+  // 4. Limpiar estado global
+  await db.query(
+    `UPDATE configuraciones 
+     SET kanban_global_activo = 0, kanban_global_id = NULL
+     WHERE id = ?`,
+    { replacements: [id_configuracion] },
+  );
+
+  // 5. LOG 🔥 (esto es clave)
+  await db.query(
+    `INSERT INTO configuraciones_kanban_global_log
+     (id_configuracion, id_plantilla, accion, detalle)
+     VALUES (?, ?, 'eliminado', ?)`,
+    {
+      replacements: [
+        id_configuracion,
+        id_plantilla || null,
+        JSON.stringify({
+          motivo: 'reinicio_manual',
+          columnas_eliminadas: columnas.length,
+        }),
+      ],
+    },
+  );
+
+  return res.json({
+    success: true,
+    message: 'Configuración reiniciada',
+  });
 });
 
 // ── Guardar plantilla del cliente ─────────────────────────────
@@ -535,6 +574,252 @@ exports.listarGlobales = catchAsync(async (req, res) => {
   return res.json({ success: true, data: resultado });
 });
 
+const mediaCache = new Map();
+
+async function getBufferFromUrl(url) {
+  const resp = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: 15000,
+  });
+  return Buffer.from(resp.data);
+}
+
+function getMimeType(format) {
+  if (format === 'VIDEO') return 'video/mp4';
+  if (format === 'IMAGE') return 'image/jpeg';
+  if (format === 'DOCUMENT') return 'application/pdf';
+  return 'application/octet-stream';
+}
+
+const FB_APP_ID = process.env.FB_APP_ID;
+
+/**
+ * Flujo basado en ejemplos públicos donde la respuesta devuelve "h" y eso se usa en header_handle. :contentReference[oaicite:5]{index=5}
+ */
+async function uploadResumableAndGetHandle({
+  accessToken,
+  fileBuffer,
+  mimeType,
+  fileName,
+}) {
+  if (!FB_APP_ID) {
+    throw new Error('Falta FB_APP_ID');
+  }
+
+  const ax = axios.create({
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  // 1) Crear sesión de subida (upload session)
+  const startUrl = `https://graph.facebook.com/v22.0/${FB_APP_ID}/uploads`;
+  const startResp = await ax.post(startUrl, null, {
+    params: {
+      file_length: fileBuffer.length,
+      file_type: mimeType,
+      file_name: fileName,
+    },
+  });
+
+  if (startResp.status < 200 || startResp.status >= 300) {
+    throw new Error(
+      `No se pudo iniciar upload session: ${startResp.status} ${JSON.stringify(startResp.data)}`,
+    );
+  }
+
+  const uploadSessionId = startResp.data?.id;
+  if (!uploadSessionId) {
+    throw new Error(`Upload session sin id: ${JSON.stringify(startResp.data)}`);
+  }
+
+  // 2) Subir binario
+  const uploadUrl = `https://graph.facebook.com/v22.0/${uploadSessionId}`;
+  const uploadResp = await axios.post(uploadUrl, fileBuffer, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/octet-stream',
+      file_offset: '0',
+    },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (uploadResp.status < 200 || uploadResp.status >= 300) {
+    throw new Error(
+      `No se pudo subir archivo: ${uploadResp.status} ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  // En ejemplos, se usa "h" como handle para header_handle. :contentReference[oaicite:6]{index=6}
+  const handle = uploadResp.data?.h;
+  if (!handle) {
+    throw new Error(
+      `Respuesta sin handle (h): ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  return handle;
+}
+
+async function prepareComponentsWithHandles(components, ACCESS_TOKEN) {
+  const newComponents = [];
+
+  for (const comp of components) {
+    if (
+      comp?.type === 'HEADER' &&
+      ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(comp?.format) &&
+      comp?.example?.header_handle?.[0]
+    ) {
+      const url = comp.example.header_handle[0];
+
+      try {
+        let handle;
+
+        if (mediaCache.has(url)) {
+          handle = mediaCache.get(url);
+        } else {
+          const buffer = await getBufferFromUrl(url);
+
+          handle = await uploadResumableAndGetHandle({
+            accessToken: ACCESS_TOKEN,
+            fileBuffer: buffer,
+            mimeType: getMimeType(comp.format),
+            fileName: `file.${getMimeType(comp.format).split('/')[1]}`,
+          });
+
+          mediaCache.set(url, handle);
+        }
+
+        newComponents.push({
+          ...comp,
+          example: { header_handle: [handle] },
+        });
+      } catch (err) {
+        throw new Error(`MEDIA_ERROR: ${url}`);
+      }
+    } else {
+      newComponents.push(comp);
+    }
+  }
+
+  return newComponents;
+}
+
+// ── Helpers internos ( solo retornan data) ──
+async function _crearTemplatesMeta(id_configuracion) {
+  const wabaConfig = await getConfigFromDB(id_configuracion);
+  if (!wabaConfig?.WABA_ID || !wabaConfig?.ACCESS_TOKEN)
+    return [{ status: 'skipped', mensaje: 'Sin config WABA' }];
+
+  const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+
+  let existentes = [];
+  try {
+    const { data } = await axios.get(
+      `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=200`,
+    );
+    existentes = (data.data || []).map((p) => p.name);
+  } catch (e) {
+    console.error('Error listando templates:', e.message);
+  }
+
+  const resultados = [];
+
+  for (const tpl of KANBAN_TEMPLATES_META) {
+    if (existentes.includes(tpl.name)) {
+      resultados.push({ nombre: tpl.name, status: 'omitido' });
+      continue;
+    }
+
+    try {
+      let componentsPrepared;
+
+      try {
+        componentsPrepared = await prepareComponentsWithHandles(
+          tpl.components,
+          ACCESS_TOKEN,
+        );
+      } catch (mediaError) {
+        // 🚨 NO crear template si falla media
+        resultados.push({
+          nombre: tpl.name,
+          status: 'error_media',
+          error: mediaError.message,
+        });
+        continue; // sigue con el siguiente template
+      }
+
+      const payload = {
+        name: tpl.name,
+        language: tpl.language,
+        category: tpl.category,
+        components: componentsPrepared,
+      };
+
+      const r = await axios.post(
+        `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      resultados.push({
+        nombre: tpl.name,
+        status: 'success',
+        id: r.data?.id,
+      });
+    } catch (err) {
+      resultados.push({
+        nombre: tpl.name,
+        status: 'error',
+        error: err.response?.data?.error?.message || err.message,
+      });
+    }
+  }
+  return resultados;
+}
+
+async function _crearRespuestasRapidas(id_configuracion) {
+  let existentes = [];
+  try {
+    const rows = await db.query(
+      `SELECT atajo FROM templates_chat_center WHERE id_configuracion = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    existentes = rows.map((r) => r.atajo);
+  } catch (e) {
+    console.error('Error consultando existentes:', e.message);
+  }
+
+  const resultados = [];
+  for (const rr of KANBAN_RESPUESTAS_RAPIDAS) {
+    if (existentes.includes(rr.atajo)) {
+      resultados.push({ atajo: rr.atajo, status: 'omitido' });
+      continue;
+    }
+    try {
+      const [insertId] = await db.query(
+        `INSERT INTO templates_chat_center
+         (atajo, mensaje, id_configuracion, tipo_mensaje, ruta_archivo, mime_type, file_name)
+         VALUES (?, ?, ?, 'text', NULL, NULL, NULL)`,
+        {
+          replacements: [rr.atajo, rr.mensaje, id_configuracion],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+      resultados.push({ atajo: rr.atajo, status: 'success', insertId });
+    } catch (err) {
+      resultados.push({ atajo: rr.atajo, status: 'error', error: err.message });
+    }
+  }
+  return resultados;
+}
+
 // ── Aplicar plantilla global ───────────────────────────────
 exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   const { id_configuracion, id_plantilla, empresa } = req.body;
@@ -649,7 +934,42 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
 
-  return res.json({ success: true, data: resultado });
+  const resultadoTemplates = await _crearTemplatesMeta(id_configuracion);
+  const resultadoRapidas = await _crearRespuestasRapidas(id_configuracion);
+
+  // Guardar estado actual
+  await db.query(
+    `UPDATE configuraciones 
+   SET kanban_global_activo = 1, kanban_global_id = ?
+   WHERE id = ?`,
+    { replacements: [id_plantilla, id_configuracion] },
+  );
+
+  await db.query(
+    `INSERT INTO configuraciones_kanban_global_log
+   (id_configuracion, id_plantilla, accion, detalle)
+   VALUES (?, ?, 'aplicado', ?)`,
+    {
+      replacements: [
+        id_configuracion,
+        id_plantilla,
+        JSON.stringify({
+          columnas: resultado,
+          templates_meta: resultadoTemplates,
+          respuestas_rapidas: resultadoRapidas,
+        }),
+      ],
+    },
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      columnas: resultado,
+      templates_meta: resultadoTemplates,
+      respuestas_rapidas: resultadoRapidas,
+    },
+  });
 });
 
 // ── Eliminar plantilla global ──────────────────────────────
@@ -665,3 +985,298 @@ exports.eliminarGlobal = catchAsync(async (req, res, next) => {
   return res.json({ success: true });
 });
 /* seccion de plantillas globales */
+
+const KANBAN_TEMPLATES_META = [
+  {
+    name: 'remarketing_k1',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'VIDEO',
+        example: {
+          header_handle: [
+            'https://new.imporsuitpro.com/Videos/stream/ef6998b17237ad28ce2c6e2ef29e058b',
+          ],
+        },
+      },
+      {
+        type: 'BODY',
+        text: 'Tu pedido ya está listo para salir. Compárteme tu ubicación para coordinar el envío de inmediato.',
+      },
+    ],
+  },
+  {
+    name: 'remarketing_k2',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'VIDEO',
+        example: {
+          header_handle: [
+            'https://new.imporsuitpro.com/Videos/stream/f072982f7a8664215f4d3c077a7ecfa4',
+          ],
+        },
+      },
+      {
+        type: 'BODY',
+        text: 'Tu pedido está listo y tenemos cupos de envío GRATIS disponibles por poco tiempo.\nRecuerda, el pago lo realizas directamente al transportista al momento de la entrega.',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Quiero envío hoy' },
+          { type: 'QUICK_REPLY', text: 'Tengo una consulta' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'remarketing_k3',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'IMAGE',
+        example: {
+          header_handle: [
+            'https://imp-datas.s3.amazonaws.com/images/2026-04-07T21-27-32-154Z-534427295_813699714500800_6839605187360868450_n.png',
+          ],
+        },
+      },
+      {
+        type: 'BODY',
+        text: 'Se aplicó un ajuste especial del 10% a tu pedido. Envíame tu ubicación para coordinar el despacho.',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Quiero mi descuento' },
+          { type: 'QUICK_REPLY', text: 'Enviar ubicación' },
+        ],
+      },
+    ],
+  },
+  // ── GUÍA GENERADA (con botones URL corregidos) ──
+  {
+    name: 'guia_generada_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'La guía de envío de tu pedido ha sido generada. El tiempo estimado de entrega es de 2 a 3 días hábiles.',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          {
+            type: 'URL',
+            text: 'Descargar Guía',
+            url: 'https://d39ru7awumhhs2.cloudfront.net/{{1}}',
+            example: [
+              'https://d39ru7awumhhs2.cloudfront.net/guias/ejemplo.pdf',
+            ],
+          },
+          {
+            type: 'URL',
+            text: 'Seguimiento del pedido',
+            url: 'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/{{1}}',
+            example: [
+              'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/LC123456',
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'novedad_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Te comento que se ha gestionado un nuevo intento de entrega con la transportadora. Por favor, estar atento para que puedas recibir tu pedido sin inconvenientes.',
+      },
+    ],
+  },
+  {
+    name: 'novedad_k2',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Estimado cliente, le recordamos que al seleccionar pago contraentrega, usted se comprometió a recibir y pagar el pedido, conforme a la ley 67 del 2022 de Comercio Electrónico.\n\nEl costo del envío ya fue asumido por nuestra empresa.\nSe ha programado un nuevo intento de entrega para el día {{1}}.\n\nEs importante contar con su disponibilidad para evitar cancelación del pedido y posibles restricciones en futuras compras.',
+        example: { body_text: [['15 de Abril']] },
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Confirmo recepción' },
+          { type: 'QUICK_REPLY', text: 'Reprogramar entrega' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'retiro_agencia_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'AVISO IMPORTANTE',
+      },
+      {
+        type: 'BODY',
+        text: 'Estimado Cliente:\nServientrega le notifica que su pedido esta listo para ser retirado en agencia: {{1}}\nPor favor acercarse lo más pronto posible.',
+        example: { body_text: [['Agencia Norte Quito']] },
+      },
+    ],
+  },
+  // ── CONFIRMACIÓN DE PEDIDO ──
+  {
+    name: 'confirmacion_pedido_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\nPor favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
+        example: {
+          body_text: [
+            [
+              'Daniel',
+              '35.00',
+              'Audífonos Bluetooth',
+              'Daniel Bonilla',
+              '0987654321',
+              'Av. Simón Bolívar y Mariscal Sucre',
+            ],
+          ],
+        },
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'CONFIRMAR PEDIDO' },
+          { type: 'QUICK_REPLY', text: 'ACTUALIZAR INFORMACIÓN' },
+        ],
+      },
+    ],
+  },
+  // ── ZONA DE ENTREGA ──
+  {
+    name: 'zona_entrega_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'Llego el día de entrega',
+      },
+      {
+        type: 'BODY',
+        text: 'Hoy tu pedido ha llegado 📦✅ a {{1}} y está próximo a ser entregado en {{2}}, en el horario de 9 am a 6 pm. ¡Te recordamos tener el valor total de {{3}} en efectivo! Agradecemos estar atento a las llamadas del courier 🚚 Revisa el estado de tu guía aquí {{4}} 😊.',
+        example: {
+          body_text: [
+            [
+              'Quito',
+              'Av. Amazonas 123',
+              '$20.00',
+              'https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=LC123',
+            ],
+          ],
+        },
+      },
+    ],
+  },
+];
+
+// ── Respuestas rápidas para Kanban ───────────────────────────
+const KANBAN_RESPUESTAS_RAPIDAS = [
+  {
+    atajo: 'orden_aprobada',
+    mensaje:
+      'Tu orden ya ha sido aprobada correctamente.\nEstamos a la espera de que la transportadora genere la guía de envío. 📦 Apenas esté disponible, te la compartiré de inmediato para que puedas hacer el seguimiento.',
+  },
+  {
+    atajo: 'agradecimiento',
+    mensaje:
+      'Muchas gracias por confiar en nosotros y bienvenid@ a la familia 🙌🛍 espero disfrutes de nuestros productos.',
+  },
+  {
+    atajo: 'pago_contraentrega',
+    mensaje:
+      'El pago es CONTRA-ENTREGA 💵, es decir, que vas a pagar tu pedido en efectivo cuando el transportista te lo entregue.',
+  },
+  {
+    atajo: 'genera_preguntas',
+    mensaje:
+      '¿Tienes alguna pregunta específica sobre el producto? 🤔\nEstoy aquí para proporcionarte más información y aclarar cualquier duda que puedas tener. 😊',
+  },
+  {
+    atajo: 'despedida',
+    mensaje:
+      'Agradezco tu tiempo y consideración. 🙌\nEspero con ansias tu respuesta y la oportunidad de brindarte una solución de calidad. ¡Que tengas un maravilloso día! ✨',
+  },
+  {
+    atajo: 'ubicacion_incorrecta',
+    mensaje:
+      'Genial, en este momento procedo con el empaque de su pedido. 📦\nPor favor si me ayuda con la ubicación por Google Maps 📍 para que el transportista llegue con facilidad.',
+  },
+  {
+    atajo: 'antes_generar_guia',
+    mensaje:
+      'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
+  },
+];
+
+exports.crearTemplatesMeta = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+  const data = await _crearTemplatesMeta(id_configuracion);
+  return res.json({ success: true, data });
+});
+
+exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+  const data = await _crearRespuestasRapidas(id_configuracion);
+  return res.json({ success: true, data });
+});
+
+exports.trackingRedirect = (req, res) => {
+  const g = String(req.params.guide || '').trim();
+  if (!g) return res.status(400).send('Guía requerida');
+
+  const upper = g.toUpperCase();
+  let url;
+
+  if (
+    upper.startsWith('LC') ||
+    upper.startsWith('IMP') ||
+    upper.startsWith('MKP')
+  )
+    url = `https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=${encodeURIComponent(g)}`;
+  else if (upper.startsWith('D0') || upper.startsWith('I0'))
+    url = `https://ec.gintracom.site/web/site/tracking?guia=${encodeURIComponent(g)}`;
+  else if (upper.startsWith('V'))
+    url = `https://tracking.veloces.app/tracking-client/${encodeURIComponent(g)}`;
+  else if (upper.startsWith('WYB'))
+    url = `https://app.urbano.com.ec/plugin/etracking/etracking/?guia=${encodeURIComponent(g)}`;
+  else
+    url = `https://www.servientrega.com.ec/Tracking/?guia=${encodeURIComponent(g)}&tipo=GUIA`;
+
+  return res.redirect(url);
+};
