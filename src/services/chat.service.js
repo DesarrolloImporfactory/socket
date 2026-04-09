@@ -355,13 +355,12 @@ class ChatService {
         chats.length > 0 ? chats[0].celular_cliente : null;
       //  console.log("Chats: ", chats);
 
-      const phoneVariants = generatePhoneVariations(celular_cliente, 593);
+      const phoneVariants = celular_cliente;
       const plataforma = await Plataforma.findAll({
         where: {
-          [Op.or]: phoneVariants.map((variant) => ({
-            whatsapp: { [Op.like]: `%${variant}%` },
-          })),
+          whatsapp: { [Op.like]: `%${phoneVariants}%` },
         },
+
         order: [['id_plataforma', 'ASC']],
       });
 
@@ -401,24 +400,28 @@ class ChatService {
           console.log('Paquetes con estado:', paquetesConEstado);
 
           // OR por campo (si existe un 1 en cualquiera -> queda 1)
-          paquetes = paquetesConEstado.reduce(
-            (acc, row) => {
-              acc.importacion =
-                acc.importacion || Number(row.importacion) === 1 ? 1 : 0;
-              acc.productos =
-                acc.productos || Number(row.productos) === 1 ? 1 : 0;
-              acc.ecommerce =
-                acc.ecommerce || Number(row.ecommerce) === 1 ? 1 : 0;
-              acc.fecha_suscripcion = row.fecha_suscripcion; // Puedes ajustar esto si quieres la fecha más reciente o alguna lógica específica
-              return acc;
-            },
-            {
-              importacion: 0,
-              productos: 0,
-              ecommerce: 0,
-              fecha_suscripcion: null,
-            },
-          );
+          if ([265, 237, 242, 251].includes(Number(id_configuracion))) {
+            paquetes = paquetesConEstado.reduce(
+              (acc, row) => {
+                acc.importacion =
+                  acc.importacion || Number(row.importacion) === 1 ? 1 : 0;
+                acc.productos =
+                  acc.productos || Number(row.productos) === 1 ? 1 : 0;
+                acc.ecommerce =
+                  acc.ecommerce || Number(row.ecommerce) === 1 ? 1 : 0;
+                acc.fecha_suscripcion = row.fecha_suscripcion; // Puedes ajustar esto si quieres la fecha más reciente o alguna lógica específica
+                return acc;
+              },
+              {
+                importacion: 0,
+                productos: 0,
+                ecommerce: 0,
+                fecha_suscripcion: null,
+              },
+            );
+          }else{
+            paquetes = null;
+          }
         }
       }
 
