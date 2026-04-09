@@ -459,92 +459,6 @@ class Sockets {
         }
       });
 
-      // socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
-      //   try {
-      //     const id_configuracion = toInt(payload?.id_configuracion);
-      //     const EnvioConCobroRaw = payload?.EnvioConCobro;
-      //     const ciudad_destino_cod_dane = strOrNull(
-      //       payload?.ciudad_destino_cod_dane,
-      //     );
-      //     const ciudad_remitente_cod_dane = strOrNull(
-      //       payload?.ciudad_remitente_cod_dane,
-      //     );
-
-      //     if (!id_configuracion)
-      //       throw new AppError('id_configuracion es requerido', 400);
-      //     if (!ciudad_destino_cod_dane)
-      //       throw new AppError('ciudad_destino_cod_dane es requerido', 400);
-      //     if (!ciudad_remitente_cod_dane)
-      //       throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
-
-      //     const integration = await getActiveIntegration(id_configuracion);
-      //     if (!integration)
-      //       throw new AppError('No existe una integración Dropi activa', 404);
-
-      //     const integrationKey = decryptToken(integration.integration_key_enc);
-      //     if (!integrationKey) throw new AppError('Dropi key inválida', 400);
-
-      //     const EnvioConCobro =
-      //       String(EnvioConCobroRaw).toLowerCase() === 'true' ? true : false;
-
-      //     const products = Array.isArray(payload?.products)
-      //       ? payload.products
-      //       : [];
-      //     const amount = payload?.amount || null;
-
-      //     const dropiPayload = {
-      //       EnvioConCobro,
-      //       ciudad_destino: { cod_dane: ciudad_destino_cod_dane },
-      //       ciudad_remitente: { cod_dane: ciudad_remitente_cod_dane },
-      //       products,
-      //       ...(amount != null && { amount }),
-      //     };
-
-      //     // Resolver warehouse_id real del primer producto
-      //     if (products.length > 0 && products[0]?.id) {
-      //       try {
-      //         const productDetail = await dropiService.getProductDetail({
-      //           integrationKey,
-      //           productId: products[0].id,
-      //           country_code: integration.country_code,
-      //         });
-      //         const obj = productDetail?.objects || productDetail;
-      //         const warehouseId =
-      //           obj?.warehouse_product?.[0]?.warehouse_id || null;
-
-      //         if (warehouseId) {
-      //           dropiPayload.warehouse = { id: warehouseId };
-      //           console.log(
-      //             `[Dropi Cotiza] (${integration.country_code}) warehouse_id: ${warehouseId} para producto ${products[0].id}`,
-      //           );
-      //         }
-      //       } catch (e) {
-      //         console.log(
-      //           `[Dropi Cotiza] (${integration.country_code}) getProductDetail falló: ${e.message}`,
-      //         );
-      //       }
-      //     }
-
-      //     console.log(
-      //       `[Dropi Cotiza] (${integration.country_code}) payload:`,
-      //       JSON.stringify(dropiPayload),
-      //     );
-
-      //     const data = await dropiService.cotizaEnvioTransportadora({
-      //       integrationKey,
-      //       payload: dropiPayload,
-      //       country_code: integration.country_code,
-      //     });
-
-      //     socket.emit('DROPI_COTIZA_ENVIO_V2_OK', { isSuccess: true, data });
-      //   } catch (e) {
-      //     socket.emit('DROPI_COTIZA_ENVIO_V2_ERROR', {
-      //       isSuccess: false,
-      //       message: e?.message || 'Error cotizando transportadoras',
-      //     });
-      //   }
-      // });
-
       socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
         try {
           const id_configuracion = toInt(payload?.id_configuracion);
@@ -710,8 +624,20 @@ class Sockets {
                 country_code: integration.country_code,
               });
               const obj = productDetail?.objects || productDetail;
-              const warehouseId =
+              let warehouseId =
                 obj?.warehouse_product?.[0]?.warehouse_id || null;
+
+              // Fallback VARIABLE: buscar en variations
+              if (
+                !warehouseId &&
+                Array.isArray(obj?.variations) &&
+                obj.variations.length > 0
+              ) {
+                warehouseId =
+                  obj.variations[0]?.warehouse_product_variation?.[0]
+                    ?.warehouse_id || null;
+              }
+
               if (warehouseId) warehouseObj = { id: warehouseId };
             } catch (e) {
               console.log(
