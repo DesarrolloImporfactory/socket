@@ -507,13 +507,38 @@ const buildDropiImageUrl = (galleryItem) => {
   return null;
 };
 
-const getDropiTotalStock = (product) => {
-  if (!Array.isArray(product?.warehouse_product)) return 0;
-  return product.warehouse_product.reduce(
+function resolveDropiPrices(prod) {
+  let sale_price = prod.sale_price != null ? Number(prod.sale_price) : null;
+  let suggested_price =
+    prod.suggested_price != null ? Number(prod.suggested_price) : null;
+
+  if (Array.isArray(prod.variations) && prod.variations.length > 0) {
+    if (sale_price == null || sale_price === 0) {
+      sale_price = Number(prod.variations[0].sale_price || 0);
+    }
+    if (suggested_price == null || suggested_price === 0) {
+      suggested_price = Number(prod.variations[0].suggested_price || 0);
+    }
+  }
+
+  return {
+    sale_price: sale_price || 0,
+    suggested_price: suggested_price || 0,
+  };
+}
+
+function getDropiTotalStock(prod) {
+  // Variable: sumar stock de variations
+  if (Array.isArray(prod?.variations) && prod.variations.length > 0) {
+    return prod.variations.reduce((acc, v) => acc + (Number(v?.stock) || 0), 0);
+  }
+  // Simple: warehouse_product
+  if (!Array.isArray(prod?.warehouse_product)) return 0;
+  return prod.warehouse_product.reduce(
     (acc, wp) => acc + (Number(wp?.stock) || 0),
     0,
   );
-};
+}
 
 const sanitizeText = (html) => {
   if (!html) return '';
@@ -621,12 +646,11 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
   const imagen_url = buildDropiImageUrl(mainImg);
 
   // 5) precio: SIEMPRE suggested_price (salvo override)
-  const precio_sugerido = Number(prod.suggested_price || 0);
+  const { sale_price: precio_prov, suggested_price: precio_sugerido } =
+    resolveDropiPrices(prod);
   const precio_final = Number.isFinite(precio_override)
     ? precio_override
     : precio_sugerido;
-
-  const precio_prov = Number(prod.sale_price || 0);
 
   // 6) descripción: usar la del detalle
   const descripcion_final = sanitizeText(prod.description);

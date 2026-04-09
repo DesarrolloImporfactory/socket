@@ -39,6 +39,14 @@ async function withLock(lockName, fn) {
 }
 
 function calcTotalStock(product) {
+  // Variable: variations tienen el stock real
+  if (Array.isArray(product?.variations) && product.variations.length > 0) {
+    return product.variations.reduce(
+      (acc, v) => acc + (Number(v?.stock) || 0),
+      0,
+    );
+  }
+  // Simple: warehouse_product
   if (!Array.isArray(product?.warehouse_product)) return 0;
   return product.warehouse_product.reduce(
     (acc, wp) => acc + (Number(wp?.stock) || 0),
@@ -57,7 +65,6 @@ async function getActiveIntegration(id_configuracion) {
 async function syncAllDropiStock() {
   console.log('[syncDropi] Iniciando sincronización Dropi…');
 
-  // 1) Traer todos los productos vinculados a Dropi que no estén eliminados
   const productos = await ProductosChatCenter.findAll({
     where: {
       external_source: DROPI_SOURCE,
@@ -73,7 +80,6 @@ async function syncAllDropiStock() {
 
   console.log(`[syncDropi] Productos a sincronizar: ${productos.length}`);
 
-  // 2) Agrupar por id_configuracion para reutilizar la misma integración
   const porConfig = {};
   for (const p of productos) {
     const key = p.id_configuracion;
@@ -130,6 +136,7 @@ async function syncAllDropiStock() {
 
         const updateFields = {};
 
+        // ── Stock (soporta VARIABLE y SIMPLE) ──
         if (sync_stock) {
           const nuevoStock = calcTotalStock(prod);
           if (nuevoStock !== producto.stock) {
@@ -137,17 +144,35 @@ async function syncAllDropiStock() {
           }
         }
 
-        if (sync_sale_price && prod.sale_price != null) {
-          const nuevo = parseFloat(prod.sale_price);
-          if (nuevo !== parseFloat(producto.precio_proveedor || 0)) {
-            updateFields.precio_proveedor = nuevo;
+        // ── Sale price: fallback a variations[0] ──
+        if (sync_sale_price) {
+          const effectiveSalePrice =
+            prod.sale_price ??
+            (Array.isArray(prod.variations) && prod.variations.length
+              ? prod.variations[0].sale_price
+              : null);
+
+          if (effectiveSalePrice != null) {
+            const nuevo = parseFloat(effectiveSalePrice);
+            if (nuevo !== parseFloat(producto.precio_proveedor || 0)) {
+              updateFields.precio_proveedor = nuevo;
+            }
           }
         }
 
-        if (sync_suggested_price && prod.suggested_price != null) {
-          const nuevo = parseFloat(prod.suggested_price);
-          if (nuevo !== parseFloat(producto.precio || 0)) {
-            updateFields.precio = nuevo;
+        // ── Suggested price: fallback a variations[0] ──
+        if (sync_suggested_price) {
+          const effectiveSuggested =
+            prod.suggested_price ??
+            (Array.isArray(prod.variations) && prod.variations.length
+              ? prod.variations[0].suggested_price
+              : null);
+
+          if (effectiveSuggested != null) {
+            const nuevo = parseFloat(effectiveSuggested);
+            if (nuevo !== parseFloat(producto.precio || 0)) {
+              updateFields.precio = nuevo;
+            }
           }
         }
 
