@@ -29,6 +29,27 @@ const upload = multer({
   limits: { fileSize: 110 * 1024 * 1024 }, // 110MB para margen (doc 100MB)
 });
 
+/**
+ * Wrapper that converts MulterError into a clean 400 JSON response
+ * instead of bubbling up as a 500 through the global error handler.
+ */
+const uploadSingle = (fieldName) => (req, res, next) => {
+  upload.single(fieldName)(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: `El archivo supera el límite permitido (110 MB).`,
+        code: 'LIMIT_FILE_SIZE',
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Error al procesar el archivo.',
+    });
+  });
+};
+
 const FB_APP_ID = process.env.FB_APP_ID;
 
 /**
@@ -377,7 +398,7 @@ async function uploadResumableAndGetHandle({
  */
 router.post(
   '/CrearPlantilla',
-  upload.single('headerFile'),
+  uploadSingle('headerFile'),
   async (req, res) => {
     try {
       // multipart => todo viene como string
@@ -915,7 +936,7 @@ router.put('/EditarPlantilla', async (req, res) => {
  */
 router.post(
   '/uploadVideoPlantillaRapida',
-  upload.single('file'),
+  uploadSingle('file'),
   async (req, res) => {
     try {
       // 1) Validar archivo
@@ -2592,7 +2613,7 @@ router.post('/coexistencia/sync', async (req, res) => {
   }
 });
 
-router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
+router.post('/enviarAudio', uploadSingle('audio'), async (req, res) => {
   try {
     const { id_configuracion, to } = req.body;
 
@@ -2738,7 +2759,7 @@ router.post('/enviarAudio', upload.single('audio'), async (req, res) => {
  */
 router.post(
   '/enviarAudioCompleto',
-  upload.single('audio'),
+  uploadSingle('audio'),
   async (req, res) => {
     try {
       const { id_configuracion, to } = req.body;
@@ -3006,13 +3027,13 @@ router.post(
 
 router.post(
   '/enviar_template_masivo',
-  upload.single('header_file'),
+  uploadSingle('header_file'),
   whatsappCtrl.enviarTemplateMasivo,
 );
 
 router.post(
   '/programar_template_masivo',
-  upload.single('header_file'),
+  uploadSingle('header_file'),
   whatsappCtrl.programarTemplateMasivo,
 );
 
@@ -3023,7 +3044,7 @@ router.get('/templates_programados', whatsappCtrl.templates_programados);
 
 router.post(
   '/enviar-video-file',
-  upload.single('file'),
+  uploadSingle('file'),
   whatsappCtrl.enviarVideoWhatsappFile,
 );
 
