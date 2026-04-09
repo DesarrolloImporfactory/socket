@@ -259,9 +259,20 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
 
       EXISTS (
         SELECT 1
-        FROM tiktok_devs_connections tdc
-        WHERE tdc.id_configuracion = c.id
-      ) AS tiktok_conectado
+        FROM meta_ad_connections mac
+        WHERE mac.id_configuracion = c.id
+          AND mac.status = 'active'
+      ) AS meta_ads_conectado,
+
+      (
+        SELECT mac.ad_account_name
+        FROM meta_ad_connections mac
+        WHERE mac.id_configuracion = c.id
+          AND mac.status = 'active'
+        ORDER BY mac.id DESC
+        LIMIT 1
+      ) AS meta_ads_account_name
+       
 
     FROM configuraciones c
     WHERE c.id_usuario = ?

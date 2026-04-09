@@ -104,6 +104,8 @@ const encuestasRouter = require('./routes/encuestas.routes');
 
 const encuestasPublicoRouter = require('./routes/encuestas_publico.routes');
 
+const metaAdsRouter = require('./routes/meta_ads.routes');
+
 const path = require('path');
 
 const app = express();
@@ -289,7 +291,7 @@ app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
-app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
+app.use('/api/v1/meta_ads', metaAdsRouter);
 
 app.all('*', (req, res, next) => {
   return next(
