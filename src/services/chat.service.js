@@ -114,6 +114,18 @@ class ChatService {
         whereClause += ` AND estado_db = '${filtros.selectedEstado_contacto.value}'`;
       }
 
+      // Filtro lectura
+      if (filtros.selectedLectura?.value === 'no_leidos') {
+        whereClause += ` AND mensajes_pendientes > 0`;
+      } else if (filtros.selectedLectura?.value === 'leidos') {
+        whereClause += ` AND mensajes_pendientes = 0`;
+      }
+
+      // Filtro asesor
+      if (filtros.selectedAsesor?.value) {
+        whereClause += ` AND id_encargado = :selectedAsesor`;
+      }
+
       if (filtros.selectedTab) {
         if (filtros.selectedTab === 'abierto') {
           whereClause += ` AND chat_cerrado = 0`;
@@ -233,6 +245,9 @@ class ChatService {
           filtros.source && filtros.source !== 'all'
             ? String(filtros.source)
             : null,
+        ...(filtros.selectedAsesor?.value && {
+          selectedAsesor: filtros.selectedAsesor.value,
+        }),
       };
 
       // Solo agregar id_sub_usuario si el rol no es 'administrador' o 'admin_limitado'
