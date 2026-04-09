@@ -528,11 +528,21 @@ function resolveDropiPrices(prod) {
 }
 
 function getDropiTotalStock(prod) {
-  // Variable: sumar stock de variations
   if (Array.isArray(prod?.variations) && prod.variations.length > 0) {
-    return prod.variations.reduce((acc, v) => acc + (Number(v?.stock) || 0), 0);
+    return prod.variations.reduce((acc, v) => {
+      if (v.stock != null && Number(v.stock) > 0) return acc + Number(v.stock);
+      if (Array.isArray(v.warehouse_product_variation)) {
+        return (
+          acc +
+          v.warehouse_product_variation.reduce(
+            (a, wpv) => a + (Number(wpv?.stock) || 0),
+            0,
+          )
+        );
+      }
+      return acc;
+    }, 0);
   }
-  // Simple: warehouse_product
   if (!Array.isArray(prod?.warehouse_product)) return 0;
   return prod.warehouse_product.reduce(
     (acc, wp) => acc + (Number(wp?.stock) || 0),

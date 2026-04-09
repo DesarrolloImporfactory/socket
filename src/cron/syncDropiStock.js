@@ -39,14 +39,21 @@ async function withLock(lockName, fn) {
 }
 
 function calcTotalStock(product) {
-  // Variable: variations tienen el stock real
   if (Array.isArray(product?.variations) && product.variations.length > 0) {
-    return product.variations.reduce(
-      (acc, v) => acc + (Number(v?.stock) || 0),
-      0,
-    );
+    return product.variations.reduce((acc, v) => {
+      if (v.stock != null && Number(v.stock) > 0) return acc + Number(v.stock);
+      if (Array.isArray(v.warehouse_product_variation)) {
+        return (
+          acc +
+          v.warehouse_product_variation.reduce(
+            (a, wpv) => a + (Number(wpv?.stock) || 0),
+            0,
+          )
+        );
+      }
+      return acc;
+    }, 0);
   }
-  // Simple: warehouse_product
   if (!Array.isArray(product?.warehouse_product)) return 0;
   return product.warehouse_product.reduce(
     (acc, wp) => acc + (Number(wp?.stock) || 0),
