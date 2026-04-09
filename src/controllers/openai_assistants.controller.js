@@ -1108,12 +1108,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       );
     }
 
-    res
-      .status(200)
-      .json({
-        status: '200',
-        message: 'Remarketing configurado correctamente',
-      });
+    res.status(200).json({
+      status: '200',
+      message: 'Remarketing configurado correctamente',
+    });
   } catch (error) {
     console.error(error);
     return next(new AppError('Error configurando remarketing', 500));
@@ -1138,6 +1136,48 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
     status: '200',
     data: config || null,
   });
+});
+
+exports.desactivar_remarketing = catchAsync(async (req, res, next) => {
+  const { id_configuracion, estado_contacto } = req.body;
+
+  try {
+    // 1) Eliminar config completamente
+    await db.query(
+      `DELETE FROM configuracion_remarketing
+       WHERE id_configuracion = ? AND estado_contacto = ?`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.DELETE,
+      },
+    );
+
+    // 2) Cancelar pendientes que aún no se enviaron
+    await db.query(
+      `UPDATE remarketing_pendientes
+       SET cancelado = 1
+       WHERE id_configuracion = ?
+         AND estado_contacto_origen = ?
+         AND enviado = 0
+         AND cancelado = 0`,
+      {
+        replacements: [id_configuracion, estado_contacto],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
+    console.log(
+      `🗑️ [remarketing] Config eliminada + pendientes cancelados: cfg=${id_configuracion} estado=${estado_contacto}`,
+    );
+
+    res.status(200).json({
+      status: '200',
+      message: 'Remarketing desactivado correctamente',
+    });
+  } catch (error) {
+    console.error(error);
+    return next(new AppError('Error desactivando remarketing', 500));
+  }
 });
 
 exports.eliminar_thread = catchAsync(async (req, res, next) => {

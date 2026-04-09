@@ -52,6 +52,11 @@ router.post(
   openai_assistantsController.obtener_remarketing,
 );
 
+router.post(
+  '/desactivar_remarketing',
+  openai_assistantsController.desactivar_remarketing,
+);
+
 router.post('/eliminar_thread', openai_assistantsController.eliminar_thread);
 
 module.exports = router;
