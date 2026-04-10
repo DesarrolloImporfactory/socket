@@ -122,15 +122,13 @@ function assertMeta(resp, label) {
 // ══════════════════════════════════════════════
 // 1) CONECTAR AD ACCOUNT (Paso 1 + Paso 2 en un solo endpoint)
 // ══════════════════════════════════════════════
-
 exports.conectarAdAccount = async (req, res) => {
   try {
     const {
-      code,
+      code, // ya no se usa, pero lo dejamos por compatibilidad
       id_configuracion,
       id_usuario,
       redirect_uri,
-      // Paso 2 (confirmar):
       ad_account_id,
       access_token: providedToken,
     } = req.body;
@@ -138,17 +136,15 @@ exports.conectarAdAccount = async (req, res) => {
     // ══════════════════════════════════════
     // PASO 2: Confirmar selección (viene ad_account_id + token)
     // ══════════════════════════════════════
-    if (ad_account_id && providedToken) {
+    if (ad_account_id && providedToken && id_configuracion) {
       const ax = metaAx(providedToken);
       const verifyResp = await ax.get(`${GRAPH_BASE}/${ad_account_id}`, {
         params: { fields: 'id,name,account_status,currency,timezone_name' },
       });
       const acct = assertMeta(verifyResp, 'verify_account');
 
-      // Upsert en DB
       const existing = await db.query(
-        `SELECT id FROM meta_ad_connections
-         WHERE id_configuracion = ? AND ad_account_id = ?`,
+        `SELECT id FROM meta_ad_connections WHERE id_configuracion = ? AND ad_account_id = ?`,
         {
           replacements: [id_configuracion, ad_account_id],
           type: db.QueryTypes.SELECT,
@@ -158,13 +154,8 @@ exports.conectarAdAccount = async (req, res) => {
       if (existing.length) {
         await db.query(
           `UPDATE meta_ad_connections SET
-             access_token     = ?,
-             ad_account_name  = ?,
-             currency         = ?,
-             timezone_name    = ?,
-             account_status   = ?,
-             status           = 'active',
-             updated_at       = NOW()
+             access_token = ?, ad_account_name = ?, currency = ?,
+             timezone_name = ?, account_status = ?, status = 'active', updated_at = NOW()
            WHERE id_configuracion = ? AND ad_account_id = ?`,
           {
             replacements: [
@@ -181,8 +172,7 @@ exports.conectarAdAccount = async (req, res) => {
       } else {
         await db.query(
           `INSERT INTO meta_ad_connections
-             (id_configuracion, id_usuario, ad_account_id, ad_account_name,
-              access_token, currency, timezone_name, account_status)
+             (id_configuracion, id_usuario, ad_account_id, ad_account_name, access_token, currency, timezone_name, account_status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           {
             replacements: [
@@ -208,51 +198,25 @@ exports.conectarAdAccount = async (req, res) => {
     }
 
     // ══════════════════════════════════════
-    // PASO 1: Exchange code → listar cuentas
+    // PASO 1: Listar cuentas (token viene directo del frontend, no hay exchange)
     // ══════════════════════════════════════
-    if (!code || !id_configuracion || !id_usuario) {
-      return res.status(400).json({
-        success: false,
-        message: 'Faltan campos: code, id_configuracion, id_usuario',
-      });
+    const userToken = providedToken; // implicit grant → ya viene el token
+
+    if (!userToken) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Falta access_token.' });
     }
 
-    let userToken;
-    // Popup SDK: exchange SIN redirect_uri primero
-    try {
-      const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-        params: {
-          client_id: FB_APP_ID,
-          client_secret: FB_APP_SECRET,
-          code,
-        },
-      });
-      userToken = tokenResp.data?.access_token;
-    } catch (e1) {
-      // Fallback: con redirect_uri
-      try {
-        const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-          params: {
-            client_id: FB_APP_ID,
-            client_secret: FB_APP_SECRET,
-            code,
-            redirect_uri:
-              redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
-          },
-        });
-        userToken = tokenResp2.data?.access_token;
-      } catch (e2) {
-        return res.status(400).json({
+    if (!id_configuracion || !id_usuario) {
+      return res
+        .status(400)
+        .json({
           success: false,
-          message: 'No se pudo intercambiar el código por token.',
-          error_sin_redirect: e1?.response?.data || e1.message,
-          error_con_redirect: e2?.response?.data || e2.message,
+          message: 'Faltan campos: id_configuracion, id_usuario',
         });
-      }
     }
-    if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
-    // Listar ad accounts
     const ax = metaAx(userToken);
     const adResp = await ax.get(`${GRAPH_BASE}/me/adaccounts`, {
       params: {
@@ -285,10 +249,12 @@ exports.conectarAdAccount = async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.conectar error:', err.message);
-    return res.status(400).json({
-      success: false,
-      message: err.meta_error?.message || err.message,
-    });
+    return res
+      .status(400)
+      .json({
+        success: false,
+        message: err.meta_error?.message || err.message,
+      });
   }
 };
 
