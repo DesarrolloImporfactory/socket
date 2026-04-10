@@ -125,8 +125,91 @@ function assertMeta(resp, label) {
 
 exports.conectarAdAccount = async (req, res) => {
   try {
-    const { code, id_configuracion, id_usuario, redirect_uri } = req.body;
+    const {
+      code,
+      id_configuracion,
+      id_usuario,
+      redirect_uri,
+      // Paso 2 (confirmar):
+      ad_account_id,
+      access_token: providedToken,
+    } = req.body;
 
+    // ══════════════════════════════════════
+    // PASO 2: Confirmar selección (viene ad_account_id + token)
+    // ══════════════════════════════════════
+    if (ad_account_id && providedToken) {
+      const ax = metaAx(providedToken);
+      const verifyResp = await ax.get(`${GRAPH_BASE}/${ad_account_id}`, {
+        params: { fields: 'id,name,account_status,currency,timezone_name' },
+      });
+      const acct = assertMeta(verifyResp, 'verify_account');
+
+      // Upsert en DB
+      const existing = await db.query(
+        `SELECT id FROM meta_ad_connections
+         WHERE id_configuracion = ? AND ad_account_id = ?`,
+        {
+          replacements: [id_configuracion, ad_account_id],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      if (existing.length) {
+        await db.query(
+          `UPDATE meta_ad_connections SET
+             access_token     = ?,
+             ad_account_name  = ?,
+             currency         = ?,
+             timezone_name    = ?,
+             account_status   = ?,
+             status           = 'active',
+             updated_at       = NOW()
+           WHERE id_configuracion = ? AND ad_account_id = ?`,
+          {
+            replacements: [
+              providedToken,
+              acct.name,
+              acct.currency,
+              acct.timezone_name,
+              acct.account_status,
+              id_configuracion,
+              ad_account_id,
+            ],
+          },
+        );
+      } else {
+        await db.query(
+          `INSERT INTO meta_ad_connections
+             (id_configuracion, id_usuario, ad_account_id, ad_account_name,
+              access_token, currency, timezone_name, account_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          {
+            replacements: [
+              id_configuracion,
+              id_usuario,
+              ad_account_id,
+              acct.name,
+              providedToken,
+              acct.currency,
+              acct.timezone_name,
+              acct.account_status,
+            ],
+          },
+        );
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cuenta publicitaria conectada correctamente.',
+        ad_account_id,
+        ad_account_name: acct.name,
+      });
+    }
+
+    // ══════════════════════════════════════
+    // PASO 1: Exchange code → listar cuentas
+    // ══════════════════════════════════════
     if (!code || !id_configuracion || !id_usuario) {
       return res.status(400).json({
         success: false,
@@ -134,21 +217,42 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    // 1) Exchange code → token
-    const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-      params: {
-        client_id: FB_APP_ID,
-        client_secret: FB_APP_SECRET,
-        code,
-        redirect_uri:
-          redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
-      },
-    });
+    // Exchange con fallback (mismo patrón que embeddedSignupComplete)
+    let userToken;
+    try {
+      const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
+        params: {
+          client_id: FB_APP_ID,
+          client_secret: FB_APP_SECRET,
+          code,
+          redirect_uri:
+            redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
+        },
+      });
+      userToken = tokenResp.data?.access_token;
+    } catch (eWith) {
+      // Fallback: sin redirect_uri (popup SDK usa su propio redirect interno)
+      try {
+        const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
+          params: {
+            client_id: FB_APP_ID,
+            client_secret: FB_APP_SECRET,
+            code,
+          },
+        });
+        userToken = tokenResp2.data?.access_token;
+      } catch (eNo) {
+        return res.status(400).json({
+          success: false,
+          message: 'No se pudo intercambiar el código por token.',
+          error: eNo?.response?.data || eNo.message,
+        });
+      }
+    }
 
-    const userToken = tokenResp.data?.access_token;
     if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
-    // 2) Listar ad accounts del usuario
+    // Listar ad accounts
     const ax = metaAx(userToken);
     const adResp = await ax.get(`${GRAPH_BASE}/me/adaccounts`, {
       params: {
@@ -163,13 +267,10 @@ exports.conectarAdAccount = async (req, res) => {
     if (!accounts.length) {
       return res.json({
         success: false,
-        message:
-          'No se encontraron cuentas publicitarias vinculadas a tu usuario de Facebook.',
-        step: 'list_ad_accounts',
+        message: 'No se encontraron cuentas publicitarias.',
       });
     }
 
-    // Devolvemos la lista para que el frontend muestre un selector
     return res.json({
       success: true,
       step: 'select_account',
@@ -180,17 +281,13 @@ exports.conectarAdAccount = async (req, res) => {
         currency: a.currency,
         timezone_name: a.timezone_name,
       })),
-      _token: userToken, // el front lo re-envía en el paso 2
+      _token: userToken,
     });
   } catch (err) {
     logger.error('metaAds.conectar error:', err.message);
     return res.status(400).json({
       success: false,
-      message:
-        err.meta_error?.message ||
-        err.message ||
-        'Error al conectar Ad Account',
-      meta_error: err.meta_error || null,
+      message: err.meta_error?.message || err.message,
     });
   }
 };
@@ -752,12 +849,10 @@ exports.toggleCampania = async (req, res) => {
     // status: 'PAUSED' | 'ACTIVE'
 
     if (!campaign_id || !['PAUSED', 'ACTIVE'].includes(status)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
-        });
+      return res.status(400).json({
+        success: false,
+        message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
+      });
     }
 
     const conn = await getAdConnection(id_configuracion);
