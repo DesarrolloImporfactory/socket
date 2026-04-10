@@ -217,39 +217,39 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    // Exchange con fallback (mismo patrón que embeddedSignupComplete)
     let userToken;
+    // Popup SDK: exchange SIN redirect_uri primero
     try {
       const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
         params: {
           client_id: FB_APP_ID,
           client_secret: FB_APP_SECRET,
           code,
-          redirect_uri:
-            redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
         },
       });
       userToken = tokenResp.data?.access_token;
-    } catch (eWith) {
-      // Fallback: sin redirect_uri (popup SDK usa su propio redirect interno)
+    } catch (e1) {
+      // Fallback: con redirect_uri
       try {
         const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
           params: {
             client_id: FB_APP_ID,
             client_secret: FB_APP_SECRET,
             code,
+            redirect_uri:
+              redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
           },
         });
         userToken = tokenResp2.data?.access_token;
-      } catch (eNo) {
+      } catch (e2) {
         return res.status(400).json({
           success: false,
           message: 'No se pudo intercambiar el código por token.',
-          error: eNo?.response?.data || eNo.message,
+          error_sin_redirect: e1?.response?.data || e1.message,
+          error_con_redirect: e2?.response?.data || e2.message,
         });
       }
     }
-
     if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
     // Listar ad accounts
