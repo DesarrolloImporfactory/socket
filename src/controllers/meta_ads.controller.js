@@ -119,10 +119,10 @@ function assertMeta(resp, label) {
   throw err;
 }
 
-/**
- * POST /api/v1/meta_ads/conectar/confirmar
- * Paso 2: el usuario eligió una cuenta → guardamos
- */
+// ══════════════════════════════════════════════
+// 1) CONECTAR AD ACCOUNT (Paso 1 + Paso 2 en un solo endpoint)
+// ══════════════════════════════════════════════
+
 exports.conectarAdAccount = async (req, res) => {
   try {
     const {
@@ -135,9 +135,10 @@ exports.conectarAdAccount = async (req, res) => {
       access_token: providedToken,
     } = req.body;
 
-    // ── PASO 2: Confirmar selección ──
+    // ══════════════════════════════════════
+    // PASO 2: Confirmar selección (viene ad_account_id + token)
+    // ══════════════════════════════════════
     if (ad_account_id && providedToken) {
-      // Verificar que el token funciona para esa cuenta
       const ax = metaAx(providedToken);
       const verifyResp = await ax.get(`${GRAPH_BASE}/${ad_account_id}`, {
         params: { fields: 'id,name,account_status,currency,timezone_name' },
@@ -206,7 +207,9 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    // ── PASO 1: Exchange code → listar cuentas ──
+    // ══════════════════════════════════════
+    // PASO 1: Exchange code → listar cuentas
+    // ══════════════════════════════════════
     if (!code || !id_configuracion || !id_usuario) {
       return res.status(400).json({
         success: false,
@@ -214,19 +217,42 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-      params: {
-        client_id: FB_APP_ID,
-        client_secret: FB_APP_SECRET,
-        code,
-        redirect_uri:
-          redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
-      },
-    });
+    // Exchange con fallback (mismo patrón que embeddedSignupComplete)
+    let userToken;
+    try {
+      const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
+        params: {
+          client_id: FB_APP_ID,
+          client_secret: FB_APP_SECRET,
+          code,
+          redirect_uri:
+            redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
+        },
+      });
+      userToken = tokenResp.data?.access_token;
+    } catch (eWith) {
+      // Fallback: sin redirect_uri (popup SDK usa su propio redirect interno)
+      try {
+        const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
+          params: {
+            client_id: FB_APP_ID,
+            client_secret: FB_APP_SECRET,
+            code,
+          },
+        });
+        userToken = tokenResp2.data?.access_token;
+      } catch (eNo) {
+        return res.status(400).json({
+          success: false,
+          message: 'No se pudo intercambiar el código por token.',
+          error: eNo?.response?.data || eNo.message,
+        });
+      }
+    }
 
-    const userToken = tokenResp.data?.access_token;
     if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
+    // Listar ad accounts
     const ax = metaAx(userToken);
     const adResp = await ax.get(`${GRAPH_BASE}/me/adaccounts`, {
       params: {
