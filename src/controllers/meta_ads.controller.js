@@ -209,12 +209,10 @@ exports.conectarAdAccount = async (req, res) => {
     }
 
     if (!id_configuracion || !id_usuario) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: 'Faltan campos: id_configuracion, id_usuario',
-        });
+      return res.status(400).json({
+        success: false,
+        message: 'Faltan campos: id_configuracion, id_usuario',
+      });
     }
 
     const ax = metaAx(userToken);
@@ -249,12 +247,10 @@ exports.conectarAdAccount = async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.conectar error:', err.message);
-    return res
-      .status(400)
-      .json({
-        success: false,
-        message: err.meta_error?.message || err.message,
-      });
+    return res.status(400).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
   }
 };
 
@@ -547,7 +543,6 @@ exports.insightsTopAds = async (req, res) => {
         fields: [
           'ad_id',
           'ad_name',
-          'adcreative{id,effective_object_story_id,thumbnail_url}',
           'campaign_name',
           'spend',
           'impressions',
@@ -566,18 +561,42 @@ exports.insightsTopAds = async (req, res) => {
 
     const data = assertMeta(resp, 'insights_top_ads');
 
+    // Obtener creatives (post_id + thumbnail) por cada ad
+    const adIds = [
+      ...new Set((data.data || []).map((r) => r.ad_id).filter(Boolean)),
+    ];
+    const creativeMap = {};
+
+    if (adIds.length) {
+      await Promise.all(
+        adIds.map(async (adId) => {
+          try {
+            const crResp = await ax.get(`${GRAPH_BASE}/${adId}`, {
+              params: {
+                fields: 'creative{effective_object_story_id,thumbnail_url}',
+              },
+            });
+            if (crResp.status >= 200 && crResp.status < 300) {
+              creativeMap[adId] = crResp.data?.creative || {};
+            }
+          } catch {}
+        }),
+      );
+    }
+
     const ads = (data.data || []).map((row) => {
       const actions = parseActions(row.actions);
       const purchaseValue = parseActionValues(row.action_values);
       const spend = Number(row.spend) || 0;
+      const creative = creativeMap[row.ad_id] || {};
 
       return {
         ad_id: row.ad_id,
         ad_name: row.ad_name,
         campaign_name: row.campaign_name || null,
 
-        post_id: row.adcreative?.effective_object_story_id || null,
-        thumbnail_url: row.adcreative?.thumbnail_url || null,
+        post_id: creative.effective_object_story_id || null,
+        thumbnail_url: creative.thumbnail_url || null,
 
         spend,
         impressions: Number(row.impressions) || 0,
