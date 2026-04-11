@@ -21,4 +21,6 @@ router.patch('/:id/toggle', ctrl.toggleActiva);
 router.delete('/:id', ctrl.eliminar);
 
 router.get('/cliente/:id_cliente/respuestas', ctrl.respuestasPorCliente);
+
+router.patch('/respuesta/:id_respuesta/resolver', ctrl.resolverEscalado);
 module.exports = router;

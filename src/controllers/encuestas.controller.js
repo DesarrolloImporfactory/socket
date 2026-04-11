@@ -156,6 +156,7 @@ exports.listarRespuestas = catchAsync(async (req, res, next) => {
       er.id, er.id_cliente_chat_center, er.source, er.score,
       er.estado, er.escalado, er.respuestas, er.datos_contacto,
       er.id_configuracion, er.created_at,
+      er.resolucion_comentario, er.resolucion_por, er.resolucion_fecha, er.escalado_resuelto,
       c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
       COALESCE(s.nombre_encargado, 'Sin asignar') AS nombre_encargado
     FROM encuestas_respuestas er
@@ -496,4 +497,43 @@ exports.respuestasPorCliente = catchAsync(async (req, res, next) => {
   );
 
   return res.json({ success: true, data: respuestas });
+});
+
+exports.resolverEscalado = catchAsync(async (req, res, next) => {
+  const { id_respuesta } = req.params;
+  const { comentario } = req.body;
+  const id_usuario = req.sessionUser?.id_usuario;
+
+  if (!comentario || !comentario.trim()) {
+    return next(new AppError('El comentario es obligatorio', 400));
+  }
+
+  const [resp] = await db.query(
+    `SELECT id, escalado, escalado_resuelto FROM encuestas_respuestas WHERE id = :id`,
+    { replacements: { id: id_respuesta }, type: QueryTypes.SELECT },
+  );
+
+  if (!resp) return next(new AppError('Respuesta no encontrada', 404));
+  if (!resp.escalado)
+    return next(new AppError('Esta respuesta no está escalada', 400));
+
+  await db.query(
+    `UPDATE encuestas_respuestas SET
+       resolucion_comentario = :comentario,
+       resolucion_por = :usuario,
+       resolucion_fecha = NOW(),
+       escalado_resuelto = 1,
+       updated_at = NOW()
+     WHERE id = :id`,
+    {
+      replacements: {
+        id: id_respuesta,
+        comentario: comentario.trim(),
+        usuario: id_usuario,
+      },
+      type: QueryTypes.UPDATE,
+    },
+  );
+
+  return res.json({ success: true, message: 'Caso resuelto' });
 });

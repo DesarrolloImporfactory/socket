@@ -1,17 +1,6 @@
 /**
  * metaAds.controller.js
- * Controller para integración Meta Marketing API (ads_read)
- *
- * Endpoints:
- *  - conectarAdAccount     (OAuth exchange + listar ad accounts + guardar)
- *  - desconectarAdAccount
- *  - obtenerConexion
- *  - insightsAccount       (resumen general: spend, ROAS, CPA, CTR, purchases, etc.)
- *  - insightsCampaigns     (tabla: por campaña)
- *  - insightsTopAds        (top ads por rendimiento)
- *  - listarCampanias       (status de campañas)
- *  - toggleCampania        (pausar/activar campaña - requiere ads_management)
- *  - syncInsights          (forzar re-fetch)
+ * Controller para integración Meta Marketing API (ads_read + ads_management)
  */
 
 const axios = require('axios');
@@ -26,22 +15,14 @@ const GRAPH_BASE = 'https://graph.facebook.com/v22.0';
 // HELPERS
 // ══════════════════════════════════════════════
 
-/**
- * Obtiene la conexión activa de ads para una configuración
- */
 async function getAdConnection(id_configuracion) {
   const rows = await db.query(
-    `SELECT * FROM meta_ad_connections
-     WHERE id_configuracion = ? AND status = 'active'
-     LIMIT 1`,
+    `SELECT * FROM meta_ad_connections WHERE id_configuracion = ? AND status = 'active' LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   return rows[0] || null;
 }
 
-/**
- * Parsea el array de `actions` de Meta y extrae métricas conocidas
- */
 function parseActions(actions) {
   const result = {
     purchases: 0,
@@ -50,13 +31,10 @@ function parseActions(actions) {
     leads: 0,
     add_to_cart: 0,
   };
-
   if (!Array.isArray(actions)) return result;
-
   for (const a of actions) {
     const t = a.action_type;
     const v = Number(a.value) || 0;
-
     if (t === 'purchase' || t === 'offsite_conversion.fb_pixel_purchase')
       result.purchases += v;
     if (
@@ -74,13 +52,9 @@ function parseActions(actions) {
     if (t === 'add_to_cart' || t === 'offsite_conversion.fb_pixel_add_to_cart')
       result.add_to_cart += v;
   }
-
   return result;
 }
 
-/**
- * Parsea action_values para sacar revenue
- */
 function parseActionValues(actionValues) {
   if (!Array.isArray(actionValues)) return 0;
   let total = 0;
@@ -95,9 +69,6 @@ function parseActionValues(actionValues) {
   return total;
 }
 
-/**
- * Axios helper con token + timeout + sin throw en 4xx
- */
 function metaAx(token) {
   return axios.create({
     headers: { Authorization: `Bearer ${token}` },
@@ -106,9 +77,6 @@ function metaAx(token) {
   });
 }
 
-/**
- * Valida respuesta de Meta y retorna data o lanza
- */
 function assertMeta(resp, label) {
   if (resp.status >= 200 && resp.status < 300) return resp.data;
   const err = new Error(
@@ -118,6 +86,27 @@ function assertMeta(resp, label) {
   err.meta_error = resp.data?.error || resp.data;
   throw err;
 }
+
+/**
+ * Construye params de fecha para Meta API.
+ * Soporta time_range {"since":"YYYY-MM-DD","until":"YYYY-MM-DD"} O date_preset (last_30d, today, etc.)
+ */
+function buildDateParams(query) {
+  if (query.time_range) {
+    try {
+      const tr =
+        typeof query.time_range === 'string'
+          ? JSON.parse(query.time_range)
+          : query.time_range;
+      return { time_range: JSON.stringify(tr) };
+    } catch {}
+  }
+  return { date_preset: query.date_preset || 'last_30d' };
+}
+
+// ══════════════════════════════════════════════
+// 1) CONECTAR AD ACCOUNT
+// ══════════════════════════════════════════════
 
 exports.conectarAdAccount = async (req, res) => {
   try {
@@ -130,9 +119,7 @@ exports.conectarAdAccount = async (req, res) => {
       access_token: providedToken,
     } = req.body;
 
-    // ══════════════════════════════════════
     // PASO 2: Confirmar selección
-    // ══════════════════════════════════════
     if (ad_account_id && providedToken && id_configuracion) {
       const ax = metaAx(providedToken);
       const verifyResp = await ax.get(`${GRAPH_BASE}/${ad_account_id}`, {
@@ -194,14 +181,14 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    // ══════════════════════════════════════
-    // PASO 1: Exchange code → listar cuentas (System User Token = permanente)
-    // ══════════════════════════════════════
+    // PASO 1: Exchange code → listar cuentas
     if (!code || !id_configuracion || !id_usuario) {
-      return res.status(400).json({
-        success: false,
-        message: 'Faltan campos: code, id_configuracion, id_usuario',
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: 'Faltan campos: code, id_configuracion, id_usuario',
+        });
     }
 
     let userToken;
@@ -240,7 +227,6 @@ exports.conectarAdAccount = async (req, res) => {
         limit: 50,
       },
     });
-
     const adData = assertMeta(adResp, 'adaccounts');
     const accounts = adData.data || [];
 
@@ -265,10 +251,12 @@ exports.conectarAdAccount = async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.conectar error:', err.message);
-    return res.status(400).json({
-      success: false,
-      message: err.meta_error?.message || err.message,
-    });
+    return res
+      .status(400)
+      .json({
+        success: false,
+        message: err.meta_error?.message || err.message,
+      });
   }
 };
 
@@ -279,18 +267,15 @@ exports.conectarAdAccount = async (req, res) => {
 exports.desconectarAdAccount = async (req, res) => {
   try {
     const { id_configuracion } = req.body;
-    if (!id_configuracion) {
+    if (!id_configuracion)
       return res
         .status(400)
         .json({ success: false, message: 'Falta id_configuracion' });
-    }
 
     await db.query(
-      `UPDATE meta_ad_connections SET status = 'disconnected', updated_at = NOW()
-       WHERE id_configuracion = ? AND status = 'active'`,
+      `UPDATE meta_ad_connections SET status = 'disconnected', updated_at = NOW() WHERE id_configuracion = ? AND status = 'active'`,
       { replacements: [id_configuracion] },
     );
-
     return res.json({
       success: true,
       message: 'Cuenta publicitaria desconectada.',
@@ -307,11 +292,10 @@ exports.desconectarAdAccount = async (req, res) => {
 exports.obtenerConexion = async (req, res) => {
   try {
     const { id_configuracion } = req.query;
-    if (!id_configuracion) {
+    if (!id_configuracion)
       return res
         .status(400)
         .json({ success: false, message: 'Falta id_configuracion' });
-    }
 
     const conn = await getAdConnection(id_configuracion);
     return res.json({
@@ -333,13 +317,13 @@ exports.obtenerConexion = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 4) INSIGHTS - ACCOUNT LEVEL (resumen top)
+// 4) INSIGHTS - ACCOUNT LEVEL
 // ══════════════════════════════════════════════
 
 exports.insightsAccount = async (req, res) => {
   try {
-    const { id_configuracion, date_preset } = req.query;
-    const preset = date_preset || 'last_30d';
+    const { id_configuracion } = req.query;
+    const dateParams = buildDateParams(req.query);
 
     const conn = await getAdConnection(id_configuracion);
     if (!conn)
@@ -363,7 +347,7 @@ exports.insightsAccount = async (req, res) => {
           'action_values',
           'cost_per_action_type',
         ].join(','),
-        date_preset: preset,
+        ...dateParams,
         level: 'account',
       },
     });
@@ -375,7 +359,6 @@ exports.insightsAccount = async (req, res) => {
     const purchaseValue = parseActionValues(row.action_values);
     const spend = Number(row.spend) || 0;
 
-    // CPA de purchases desde cost_per_action_type
     let cpaPurchase = 0;
     if (Array.isArray(row.cost_per_action_type)) {
       const found = row.cost_per_action_type.find(
@@ -385,13 +368,11 @@ exports.insightsAccount = async (req, res) => {
       );
       cpaPurchase = Number(found?.value) || 0;
     }
-    if (!cpaPurchase && actions.purchases > 0) {
+    if (!cpaPurchase && actions.purchases > 0)
       cpaPurchase = spend / actions.purchases;
-    }
 
     return res.json({
       success: true,
-      date_preset: preset,
       currency: conn.currency,
       data: {
         spend,
@@ -400,28 +381,26 @@ exports.insightsAccount = async (req, res) => {
         ctr: Number(row.ctr) || 0,
         cpc: Number(row.cpc) || 0,
         cpm: Number(row.cpm) || 0,
-
         purchases: actions.purchases,
         purchase_value: purchaseValue,
         roas: spend > 0 ? +(purchaseValue / spend).toFixed(2) : 0,
         cpa_purchase: +cpaPurchase.toFixed(2),
-
         complete_registrations: actions.complete_registrations,
         messaging_conversations: actions.messaging_conversations,
         leads: actions.leads,
         add_to_cart: actions.add_to_cart,
-
-        // Raw para debug / custom
         actions_raw: row.actions || [],
         action_values_raw: row.action_values || [],
       },
     });
   } catch (err) {
     logger.error('insightsAccount:', err.message);
-    return res.status(err.meta_status || 500).json({
-      success: false,
-      message: err.meta_error?.message || err.message,
-    });
+    return res
+      .status(err.meta_status || 500)
+      .json({
+        success: false,
+        message: err.meta_error?.message || err.message,
+      });
   }
 };
 
@@ -431,8 +410,8 @@ exports.insightsAccount = async (req, res) => {
 
 exports.insightsCampaigns = async (req, res) => {
   try {
-    const { id_configuracion, date_preset } = req.query;
-    const preset = date_preset || 'last_30d';
+    const { id_configuracion } = req.query;
+    const dateParams = buildDateParams(req.query);
 
     const conn = await getAdConnection(id_configuracion);
     if (!conn)
@@ -443,7 +422,6 @@ exports.insightsCampaigns = async (req, res) => {
 
     const ax = metaAx(conn.access_token);
 
-    // Insights por campaña
     const resp = await ax.get(`${GRAPH_BASE}/${conn.ad_account_id}/insights`, {
       params: {
         fields: [
@@ -457,7 +435,7 @@ exports.insightsCampaigns = async (req, res) => {
           'actions',
           'action_values',
         ].join(','),
-        date_preset: preset,
+        ...dateParams,
         level: 'campaign',
         limit: 100,
       },
@@ -465,7 +443,6 @@ exports.insightsCampaigns = async (req, res) => {
 
     const data = assertMeta(resp, 'insights_campaigns');
 
-    // Status de campañas (en paralelo)
     const statusResp = await ax.get(
       `${GRAPH_BASE}/${conn.ad_account_id}/campaigns`,
       {
@@ -478,9 +455,7 @@ exports.insightsCampaigns = async (req, res) => {
     );
     const statusData = assertMeta(statusResp, 'campaigns_status');
     const statusMap = {};
-    for (const c of statusData.data || []) {
-      statusMap[c.id] = c;
-    }
+    for (const c of statusData.data || []) statusMap[c.id] = c;
 
     const campaigns = (data.data || []).map((row) => {
       const actions = parseActions(row.actions);
@@ -491,23 +466,18 @@ exports.insightsCampaigns = async (req, res) => {
       return {
         campaign_id: row.campaign_id,
         campaign_name: row.campaign_name,
-
         spend,
         impressions: Number(row.impressions) || 0,
         clicks: Number(row.clicks) || 0,
         ctr: Number(row.ctr) || 0,
         cpc: Number(row.cpc) || 0,
-
         purchases: actions.purchases,
         purchase_value: purchaseValue,
         roas: spend > 0 ? +(purchaseValue / spend).toFixed(2) : 0,
         cpa_purchase:
           actions.purchases > 0 ? +(spend / actions.purchases).toFixed(2) : 0,
-
         complete_registrations: actions.complete_registrations,
         messaging_conversations: actions.messaging_conversations,
-
-        // Status
         status: status.status || null,
         effective_status: status.effective_status || null,
         daily_budget: status.daily_budget
@@ -519,32 +489,32 @@ exports.insightsCampaigns = async (req, res) => {
       };
     });
 
-    // Ordenar por spend desc
     campaigns.sort((a, b) => b.spend - a.spend);
 
     return res.json({
       success: true,
-      date_preset: preset,
       currency: conn.currency,
       data: campaigns,
     });
   } catch (err) {
     logger.error('insightsCampaigns:', err.message);
-    return res.status(err.meta_status || 500).json({
-      success: false,
-      message: err.meta_error?.message || err.message,
-    });
+    return res
+      .status(err.meta_status || 500)
+      .json({
+        success: false,
+        message: err.meta_error?.message || err.message,
+      });
   }
 };
 
 // ══════════════════════════════════════════════
-// 6) TOP ADS (nivel ad)
+// 6) TOP ADS
 // ══════════════════════════════════════════════
 
 exports.insightsTopAds = async (req, res) => {
   try {
-    const { id_configuracion, date_preset, limit: rawLimit } = req.query;
-    const preset = date_preset || 'last_30d';
+    const { id_configuracion, limit: rawLimit } = req.query;
+    const dateParams = buildDateParams(req.query);
     const limit = Math.min(Number(rawLimit) || 10, 50);
 
     const conn = await getAdConnection(id_configuracion);
@@ -570,7 +540,7 @@ exports.insightsTopAds = async (req, res) => {
           'actions',
           'action_values',
         ].join(','),
-        date_preset: preset,
+        ...dateParams,
         level: 'ad',
         sort: ['spend_descending'],
         limit,
@@ -579,12 +549,10 @@ exports.insightsTopAds = async (req, res) => {
 
     const data = assertMeta(resp, 'insights_top_ads');
 
-    // Obtener creatives (post_id + thumbnail) por cada ad
     const adIds = [
       ...new Set((data.data || []).map((r) => r.ad_id).filter(Boolean)),
     ];
     const creativeMap = {};
-
     if (adIds.length) {
       await Promise.all(
         adIds.map(async (adId) => {
@@ -612,44 +580,37 @@ exports.insightsTopAds = async (req, res) => {
         ad_id: row.ad_id,
         ad_name: row.ad_name,
         campaign_name: row.campaign_name || null,
-
         post_id: creative.effective_object_story_id || null,
         thumbnail_url: creative.thumbnail_url || null,
-
         spend,
         impressions: Number(row.impressions) || 0,
         clicks: Number(row.clicks) || 0,
         ctr: Number(row.ctr) || 0,
         cpc: Number(row.cpc) || 0,
-
         purchases: actions.purchases,
         purchase_value: purchaseValue,
         roas: spend > 0 ? +(purchaseValue / spend).toFixed(2) : 0,
         cpa_purchase:
           actions.purchases > 0 ? +(spend / actions.purchases).toFixed(2) : 0,
-
         complete_registrations: actions.complete_registrations,
         messaging_conversations: actions.messaging_conversations,
       };
     });
 
-    return res.json({
-      success: true,
-      date_preset: preset,
-      currency: conn.currency,
-      data: ads,
-    });
+    return res.json({ success: true, currency: conn.currency, data: ads });
   } catch (err) {
     logger.error('insightsTopAds:', err.message);
-    return res.status(err.meta_status || 500).json({
-      success: false,
-      message: err.meta_error?.message || err.message,
-    });
+    return res
+      .status(err.meta_status || 500)
+      .json({
+        success: false,
+        message: err.meta_error?.message || err.message,
+      });
   }
 };
 
 // ══════════════════════════════════════════════
-// 7) LISTAR CAMPAÑAS (status)
+// 7) LISTAR CAMPAÑAS
 // ══════════════════════════════════════════════
 
 exports.listarCampanias = async (req, res) => {
@@ -663,7 +624,6 @@ exports.listarCampanias = async (req, res) => {
       });
 
     const ax = metaAx(conn.access_token);
-
     const resp = await ax.get(`${GRAPH_BASE}/${conn.ad_account_id}/campaigns`, {
       params: {
         fields:
@@ -671,7 +631,6 @@ exports.listarCampanias = async (req, res) => {
         limit: 100,
       },
     });
-
     const data = assertMeta(resp, 'campaigns');
 
     const campaigns = (data.data || []).map((c) => ({
@@ -695,20 +654,19 @@ exports.listarCampanias = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 8) TOGGLE CAMPAÑA (pausar/activar)
-//    Requiere permiso ads_management
+// 8) TOGGLE CAMPAÑA
 // ══════════════════════════════════════════════
 
 exports.toggleCampania = async (req, res) => {
   try {
     const { id_configuracion, campaign_id, status } = req.body;
-    // status: 'PAUSED' | 'ACTIVE'
-
     if (!campaign_id || !['PAUSED', 'ACTIVE'].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
+        });
     }
 
     const conn = await getAdConnection(id_configuracion);
@@ -719,14 +677,12 @@ exports.toggleCampania = async (req, res) => {
       });
 
     const ax = metaAx(conn.access_token);
-
     const resp = await ax.post(`${GRAPH_BASE}/${campaign_id}`, { status });
 
     if (resp.status < 200 || resp.status >= 300) {
       return res.json({
         success: false,
-        message:
-          'Meta rechazó el cambio de status. ¿Tienes permiso ads_management?',
+        message: 'Meta rechazó el cambio. ¿Tienes permiso ads_management?',
         meta_error: resp.data?.error || resp.data,
       });
     }
@@ -738,7 +694,7 @@ exports.toggleCampania = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 9) SYNC MANUAL (fuerza re-fetch y guarda en cache)
+// 9) SYNC MANUAL
 // ══════════════════════════════════════════════
 
 exports.syncInsights = async (req, res) => {
@@ -754,8 +710,6 @@ exports.syncInsights = async (req, res) => {
       });
 
     const ax = metaAx(conn.access_token);
-
-    // Account level
     const acctResp = await ax.get(
       `${GRAPH_BASE}/${conn.ad_account_id}/insights`,
       {
@@ -775,25 +729,21 @@ exports.syncInsights = async (req, res) => {
       const purchaseValue = parseActionValues(row.action_values);
       const spend = Number(row.spend) || 0;
 
-      // Upsert cache
       await db.query(
         `INSERT INTO meta_ads_insights_cache
            (id_connection, ad_account_id, level, date_start, date_stop, date_preset,
-            spend, impressions, clicks, ctr, cpc, cpm,
-            actions_json, action_values_json,
+            spend, impressions, clicks, ctr, cpc, cpm, actions_json, action_values_json,
             purchases, purchase_value, complete_registrations, messaging_conversations, leads, add_to_cart,
             roas, cpa_purchase)
          VALUES (?, ?, 'account', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-           spend = VALUES(spend), impressions = VALUES(impressions), clicks = VALUES(clicks),
-           ctr = VALUES(ctr), cpc = VALUES(cpc), cpm = VALUES(cpm),
-           actions_json = VALUES(actions_json), action_values_json = VALUES(action_values_json),
-           purchases = VALUES(purchases), purchase_value = VALUES(purchase_value),
-           complete_registrations = VALUES(complete_registrations),
-           messaging_conversations = VALUES(messaging_conversations),
-           leads = VALUES(leads), add_to_cart = VALUES(add_to_cart),
-           roas = VALUES(roas), cpa_purchase = VALUES(cpa_purchase),
-           fetched_at = NOW()`,
+           spend=VALUES(spend), impressions=VALUES(impressions), clicks=VALUES(clicks),
+           ctr=VALUES(ctr), cpc=VALUES(cpc), cpm=VALUES(cpm),
+           actions_json=VALUES(actions_json), action_values_json=VALUES(action_values_json),
+           purchases=VALUES(purchases), purchase_value=VALUES(purchase_value),
+           complete_registrations=VALUES(complete_registrations), messaging_conversations=VALUES(messaging_conversations),
+           leads=VALUES(leads), add_to_cart=VALUES(add_to_cart),
+           roas=VALUES(roas), cpa_purchase=VALUES(cpa_purchase), fetched_at=NOW()`,
         {
           replacements: [
             conn.id,
