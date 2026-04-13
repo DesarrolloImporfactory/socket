@@ -545,11 +545,11 @@ async function programarRemarketingKanban({
   try {
     const [configRM] = await db.query(
       `SELECT tiempo_espera_horas, nombre_template, language_code,
-              estado_destino, header_format, header_media_url,
-              header_media_name, header_parameters
-       FROM configuracion_remarketing
-       WHERE id_configuracion = ? AND estado_contacto = ? AND activo = 1
-       LIMIT 1`,
+          estado_destino, header_format, header_media_url,
+          header_media_name, header_parameters
+   FROM configuracion_remarketing
+   WHERE id_configuracion = ? AND estado_contacto = ? AND secuencia = 1 AND activo = 1
+   LIMIT 1`,
       {
         replacements: [id_configuracion, estado_contacto],
         type: db.QueryTypes.SELECT,
@@ -557,6 +557,21 @@ async function programarRemarketingKanban({
     );
 
     if (!configRM) return;
+
+    // ── SAFEGUARD: cancelar cualquier pendiente existente antes de programar ──
+    // Evita dobles en condiciones de carrera cron + webhook
+    await db.query(
+      `UPDATE remarketing_pendientes
+       SET cancelado = 1
+       WHERE id_cliente_chat_center = ?
+         AND id_configuracion = ?
+         AND enviado = 0
+         AND cancelado = 0`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
 
     const [cfg] = await db.query(
       `SELECT telefono FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -577,12 +592,12 @@ async function programarRemarketingKanban({
 
     await db.query(
       `INSERT INTO remarketing_pendientes
-       (telefono, telefono_configuracion, id_cliente_chat_center,
-        id_configuracion, estado_contacto_origen, nombre_template,
-        language_code, tiempo_disparo, estado_destino,
-        header_format, header_media_url, header_media_name, header_parameters,
-        enviado, cancelado)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+   (telefono, telefono_configuracion, id_cliente_chat_center,
+    id_configuracion, estado_contacto_origen, nombre_template,
+    language_code, tiempo_disparo, estado_destino,
+    header_format, header_media_url, header_media_name, header_parameters,
+    enviado, cancelado, secuencia)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
       {
         replacements: [
           telefono,

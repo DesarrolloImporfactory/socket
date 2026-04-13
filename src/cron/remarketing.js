@@ -182,8 +182,9 @@ cron.schedule('*/1 * * * *', async () => {
               JSON.stringify(tplData?.header),
             );
 
-            const mediaUrlFuente =
-              record.header_media_url || tplData?.header?.media_url;
+            const mediaUrlFuente = (
+              record.header_media_url || tplData?.header?.media_url
+            )?.replace(/&amp;/g, '&');
             console.log(
               `🔄 [remarketing] mediaUrlFuente = "${mediaUrlFuente}"`,
             );
@@ -297,7 +298,12 @@ cron.schedule('*/1 * * * *', async () => {
 
             let clienteId = clienteRow?.id || null;
             if (!clienteId) {
-              console.log('[clientes_chat_center INSERT] cron/remarketing.js ~L300 — creando cliente para remarketing, celular:', telefonoLimpio, 'id_configuracion:', record.id_configuracion);
+              console.log(
+                '[clientes_chat_center INSERT] cron/remarketing.js ~L300 — creando cliente para remarketing, celular:',
+                telefonoLimpio,
+                'id_configuracion:',
+                record.id_configuracion,
+              );
               const nuevo = await ClientesChatCenter.create({
                 id_configuracion: record.id_configuracion,
                 uid_cliente: cfg.PHONE_NUMBER_ID,
@@ -382,20 +388,121 @@ cron.schedule('*/1 * * * *', async () => {
             });
           }
 
-          // 3) Mover columna
-          const estadoDestino = record.estado_destino || 'seguimiento';
-          await ClientesChatCenter.update(
-            { estado_contacto: estadoDestino },
-            { where: { id: record.id_cliente_chat_center } },
+          // 3) Lógica de secuencia
+          const secuenciaActual = Number(record.secuencia || 1);
+
+          // Buscar si hay siguiente secuencia configurada para este estado
+          const [siguienteConfig] = await db.query(
+            `SELECT * FROM configuracion_remarketing
+   WHERE id_configuracion = ? 
+     AND estado_contacto = ? 
+     AND secuencia = ? 
+     AND activo = 1
+   LIMIT 1`,
+            {
+              replacements: [
+                record.id_configuracion,
+                record.estado_contacto_origen,
+                secuenciaActual + 1,
+              ],
+              type: db.QueryTypes.SELECT,
+            },
           );
 
-          // 4) Marcar como enviado
+          if (siguienteConfig) {
+            // ── SAFEGUARD: cancelar otros pendientes del cliente antes de insertar seq siguiente ──
+            await db.query(
+              `UPDATE remarketing_pendientes
+     SET cancelado = 1
+     WHERE id_cliente_chat_center = ?
+       AND id_configuracion = ?
+       AND enviado = 0
+       AND cancelado = 0
+       AND id != ?`, // no cancelar el actual (que ya se está procesando)
+              {
+                replacements: [
+                  record.id_cliente_chat_center,
+                  record.id_configuracion,
+                  record.id,
+                ],
+                type: db.QueryTypes.UPDATE,
+              },
+            );
+
+            // ── Hay siguiente → programarlo ──
+            const tiempoDisparo = new Date(
+              Date.now() + siguienteConfig.tiempo_espera_horas * 60 * 60 * 1000,
+            );
+
+            await db.query(
+              `INSERT INTO remarketing_pendientes
+   (id_cliente_chat_center, id_configuracion, telefono,
+    telefono_configuracion, nombre_template, language_code,
+    header_format, header_media_url, header_media_name, header_parameters,
+    estado_contacto_origen, estado_destino,
+    tiempo_disparo, enviado, cancelado, secuencia)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+              {
+                replacements: [
+                  record.id_cliente_chat_center,
+                  record.id_configuracion,
+                  record.telefono,
+                  record.telefono_configuracion || null,
+                  siguienteConfig.nombre_template,
+                  siguienteConfig.language_code || 'es',
+                  siguienteConfig.header_format || null,
+                  siguienteConfig.header_media_url
+                    ? String(siguienteConfig.header_media_url).replace(
+                        /&amp;/g,
+                        '&',
+                      )
+                    : null,
+                  siguienteConfig.header_media_name || null,
+                  siguienteConfig.header_parameters || null,
+                  // ← estado donde quedó el cliente después de este envío
+                  record.estado_destino || record.estado_contacto_origen,
+                  siguienteConfig.estado_destino || null,
+                  tiempoDisparo,
+                  secuenciaActual + 1,
+                ],
+                type: db.QueryTypes.INSERT,
+              },
+            );
+
+            console.log(
+              `🔄 [remarketing] Secuencia ${secuenciaActual + 1} programada`,
+            );
+          }
+
+          // ── Mover columna en CADA envío si tiene estado_destino ──
+          if (record.estado_destino) {
+            await ClientesChatCenter.update(
+              { estado_contacto: record.estado_destino },
+              { where: { id: record.id_cliente_chat_center } },
+            );
+            console.log(
+              `📂 [remarketing] Cliente movido a "${record.estado_destino}" (secuencia=${secuenciaActual})`,
+            );
+          } else if (!siguienteConfig) {
+            // Sin estado_destino y es el último → mover a seguimiento por defecto
+            await ClientesChatCenter.update(
+              { estado_contacto: 'seguimiento' },
+              { where: { id: record.id_cliente_chat_center } },
+            );
+            console.log(
+              `📂 [remarketing] Última secuencia sin destino, moviendo a "seguimiento"`,
+            );
+          }
+
+          // 4) Marcar este registro como enviado (siempre)
           await db.query(
             `UPDATE remarketing_pendientes SET enviado = 1 WHERE id = ?`,
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
-          console.log(`✅ [remarketing] id=${record.id} enviado y marcado OK`);
+          console.log(
+            `✅ [remarketing] id=${record.id} secuencia=${secuenciaActual} enviado y marcado OK`,
+          );
         } catch (err) {
           console.error(`❌ [remarketing] Error id=${record.id}:`, err.message);
           if (err?.meta_status || err?.meta_error) {

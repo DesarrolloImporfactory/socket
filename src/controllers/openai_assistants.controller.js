@@ -1037,81 +1037,64 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
   const {
     id_configuracion,
     estado_contacto,
-    tiempo_espera_horas,
-    nombre_template,
-    language_code,
-    estado_destino = null,
-    header_format = null,
-    header_media_url = null,
-    header_media_name = null,
-    header_parameters = null,
+    // ← NUEVO: array de hasta 3 remarketings
+    // [{ secuencia, tiempo_espera_horas, nombre_template, language_code,
+    //    estado_destino, header_format, header_media_url, header_media_name }]
+    remarketings = [],
   } = req.body;
 
+  if (!id_configuracion || !estado_contacto) {
+    return next(new AppError('Faltan parámetros requeridos', 400));
+  }
+
+  // Validar máximo 3
+  const lista = remarketings.slice(0, 3);
+  if (!lista.length) {
+    return next(new AppError('Se requiere al menos 1 remarketing', 400));
+  }
+
   try {
-    const [existe] = await db.query(
-      `SELECT id FROM configuracion_remarketing
-       WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
+    // Borrar configs existentes para este estado y reinsertarlas
+    await db.query(
+      `DELETE FROM configuracion_remarketing
+       WHERE id_configuracion = ? AND estado_contacto = ?`,
       {
         replacements: [id_configuracion, estado_contacto],
-        type: db.QueryTypes.SELECT,
+        type: db.QueryTypes.DELETE,
       },
     );
 
-    if (existe) {
-      await db.query(
-        `UPDATE configuracion_remarketing
-         SET tiempo_espera_horas = ?, nombre_template = ?,
-             language_code = ?, estado_destino = ?,
-             header_format = ?, header_media_url = ?,
-             header_media_name = ?, header_parameters = ?,
-             activo = 1
-         WHERE id_configuracion = ? AND estado_contacto = ?`,
-        {
-          replacements: [
-            tiempo_espera_horas,
-            nombre_template,
-            language_code,
-            estado_destino || null,
-            header_format || null,
-            header_media_url || null,
-            header_media_name || null,
-            header_parameters ? JSON.stringify(header_parameters) : null,
-            id_configuracion,
-            estado_contacto,
-          ],
-          type: db.QueryTypes.UPDATE,
-        },
-      );
-    } else {
+    for (let i = 0; i < lista.length; i++) {
+      const r = lista[i];
+      const secuencia = i + 1;
+
       await db.query(
         `INSERT INTO configuracion_remarketing
-         (id_configuracion, estado_contacto, tiempo_espera_horas,
-          nombre_template, language_code, estado_destino,
-          header_format, header_media_url, header_media_name,
-          header_parameters, activo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         (id_configuracion, estado_contacto, secuencia,
+          tiempo_espera_horas, nombre_template, language_code,
+          estado_destino, header_format, header_media_url,
+          header_media_name, header_parameters, activo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
             estado_contacto,
-            tiempo_espera_horas,
-            nombre_template,
-            language_code,
-            estado_destino || null,
-            header_format || null,
-            header_media_url || null,
-            header_media_name || null,
-            header_parameters ? JSON.stringify(header_parameters) : null,
+            secuencia,
+            r.tiempo_espera_horas,
+            r.nombre_template,
+            r.language_code || 'es',
+            r.estado_destino || null,
+            r.header_format || null,
+            r.header_media_url || null,
+            r.header_media_name || null,
+            r.header_parameters ? JSON.stringify(r.header_parameters) : null,
           ],
           type: db.QueryTypes.INSERT,
         },
       );
     }
 
-    res.status(200).json({
-      status: '200',
-      message: 'Remarketing configurado correctamente',
-    });
+    res.status(200).json({ status: '200', message: 'Remarketing configurado' });
   } catch (error) {
     console.error(error);
     return next(new AppError('Error configurando remarketing', 500));
@@ -1121,11 +1104,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
 exports.obtener_remarketing = catchAsync(async (req, res, next) => {
   const { id_configuracion, estado_contacto } = req.body;
 
-  const [config] = await db.query(
-    `SELECT tiempo_espera_horas, nombre_template, language_code, 
-            estado_destino, activo
-     FROM configuracion_remarketing
-     WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
+  const rows = await db.query(
+    `SELECT * FROM configuracion_remarketing
+     WHERE id_configuracion = ? AND estado_contacto = ? AND activo = 1
+     ORDER BY secuencia ASC`,
     {
       replacements: [id_configuracion, estado_contacto],
       type: db.QueryTypes.SELECT,
@@ -1134,8 +1116,24 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: '200',
-    data: config || null,
+    data: rows.length ? rows : null, // null si no hay config
   });
+});
+
+// desactivar_remarketing — igual que antes
+exports.desactivar_remarketing = catchAsync(async (req, res, next) => {
+  const { id_configuracion, estado_contacto } = req.body;
+
+  await db.query(
+    `DELETE FROM configuracion_remarketing
+     WHERE id_configuracion = ? AND estado_contacto = ?`,
+    {
+      replacements: [id_configuracion, estado_contacto],
+      type: db.QueryTypes.DELETE,
+    },
+  );
+
+  res.status(200).json({ status: '200', message: 'Remarketing desactivado' });
 });
 
 exports.desactivar_remarketing = catchAsync(async (req, res, next) => {
