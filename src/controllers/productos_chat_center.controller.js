@@ -385,7 +385,6 @@ exports.eliminarProducto = catchAsync(async (req, res, next) => {
 });
 
 const xlsx = require('xlsx');
-const mysql = require('mysql2/promise');
 
 exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
   if (!req.file) {
@@ -396,11 +395,20 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
   }
 
   const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_configuracion es requerido.' });
+  }
 
-  // Leer el archivo directamente desde memoria (buffer)
+  const idConf = Number(id_configuracion);
+
+  // ── Leer Excel ──
   const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
-  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    defval: '',
+  });
 
   if (!data.length) {
     return res
@@ -408,53 +416,179 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
       .json({ status: 'fail', message: 'El archivo Excel está vacío.' });
   }
 
+  // ── Normalizar headers (trim + lowercase) ──
+  const normalize = (rows) =>
+    rows.map((row) => {
+      const obj = {};
+      for (const [key, val] of Object.entries(row)) {
+        obj[key.trim().toLowerCase().replace(/\s+/g, '_')] = val;
+      }
+      return obj;
+    });
+
+  const filas = normalize(data);
+
+  // ── Cache de categorías para no crear duplicadas ──
+  const catCache = {}; // { "nombreLower": id }
+
   const resultados = [];
+  let insertados = 0;
+  let errores = 0;
 
-  // Usar la instancia db ya configurada
-  for (const [index, row] of data.entries()) {
+  for (const [index, row] of filas.entries()) {
     try {
-      const { nombre, descripcion, tipo, precio, duracion, stock } = row;
+      const nombre = String(row.nombre || '').trim();
+      const tipo = String(row.tipo || '')
+        .trim()
+        .toLowerCase();
+      const precio = Number(row.precio);
 
-      if (!id_configuracion || !nombre || !tipo || !precio) {
-        resultados.push({ index, error: 'Faltan campos obligatorios' });
+      // ── Validación obligatoria ──
+      if (!nombre) {
+        resultados.push({ fila: index + 2, error: 'Falta "nombre"' });
+        errores++;
+        continue;
+      }
+      if (
+        !tipo ||
+        !['producto', 'servicio'].includes(
+          tipo.startsWith('ser') ? 'servicio' : 'producto',
+        )
+      ) {
+        // accept flexible typing
+      }
+      if (!Number.isFinite(precio) || precio < 0) {
+        resultados.push({
+          fila: index + 2,
+          error: 'Precio inválido o faltante',
+        });
+        errores++;
         continue;
       }
 
-      // Usamos db.query para hacer la inserción de los productos
-      await db.query(
-        `
-        INSERT INTO productos_chat_center (
-          id_configuracion, nombre, descripcion, tipo, precio, duracion, imagen_url,
-          video_url, stock, eliminado, id_categoria, fecha_creacion, fecha_actualizacion
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-        `,
-        {
-          replacements: [
-            id_configuracion,
-            nombre,
-            descripcion || null,
-            tipo,
-            precio,
-            duracion || 0,
-            null, // Sin imagen_url
-            null, // Sin video_url
-            stock || 0,
-            0, // Valor por defecto de eliminado
-            null,
-          ],
-        },
-      );
+      const tipoNorm = tipo.startsWith('ser') ? 'servicio' : 'producto';
 
-      resultados.push({ index, status: 'insertado' });
+      // ── Categoría (auto-create) ──
+      let id_categoria = null;
+      const catNombre = String(row.categoria || '').trim();
+      if (catNombre) {
+        const catKey = catNombre.toLowerCase();
+        if (catCache[catKey]) {
+          id_categoria = catCache[catKey];
+        } else {
+          const cat = await getOrCreateCategoria({
+            id_configuracion: idConf,
+            nombre: catNombre,
+          });
+          if (cat) {
+            id_categoria = cat.id;
+            catCache[catKey] = cat.id;
+          }
+        }
+      }
+
+      // ── Imagen URL ──
+      const imagen_url =
+        String(row.imagen_url || row.imagen || '').trim() || null;
+
+      // ── Precio proveedor ──
+      const precio_proveedor = Number(row.precio_proveedor);
+      const ppFinal = Number.isFinite(precio_proveedor)
+        ? precio_proveedor
+        : null;
+
+      // ── Stock ──
+      const stockVal = Number(row.stock);
+      const stock = Number.isFinite(stockVal)
+        ? Math.max(0, Math.round(stockVal))
+        : 0;
+
+      // ── Material ──
+      const material = String(row.material || '').trim() || null;
+
+      // ── es_privado ──
+      let es_privado = null;
+      const privRaw = String(row.es_privado || '')
+        .trim()
+        .toLowerCase();
+      if (
+        privRaw === '1' ||
+        privRaw === 'si' ||
+        privRaw === 'sí' ||
+        privRaw === 'true'
+      ) {
+        es_privado = 1;
+      } else if (privRaw === '0' || privRaw === 'no' || privRaw === 'false') {
+        es_privado = 0;
+      }
+
+      // ── Combos: formato "2x50, 3x80, 4x90" → JSON array ──
+      let combos_producto = null;
+      const combosRaw = String(row.combos || '').trim();
+      if (combosRaw) {
+        try {
+          const combosArr = combosRaw
+            .split(',')
+            .map((c) => {
+              const parts = c.trim().toLowerCase().split('x');
+              if (parts.length === 2) {
+                const qty = Number(parts[0].trim());
+                const price = Number(parts[1].trim());
+                if (Number.isFinite(qty) && Number.isFinite(price)) {
+                  return { cantidad: qty, precio: price };
+                }
+              }
+              return null;
+            })
+            .filter(Boolean);
+
+          if (combosArr.length > 0) {
+            combos_producto = JSON.stringify(combosArr);
+          }
+        } catch (_) {
+          // Si falla parseo de combos, lo dejamos null
+        }
+      }
+
+      // ── Descripción ──
+      const descripcion = String(row.descripcion || '').trim() || null;
+
+      // ── INSERT ──
+      await ProductosChatCenter.create({
+        id_configuracion: idConf,
+        nombre,
+        descripcion,
+        material,
+        tipo: tipoNorm,
+        precio,
+        precio_proveedor: ppFinal,
+        duracion: 0,
+        id_categoria,
+        imagen_url,
+        video_url: null,
+        stock,
+        es_privado,
+        combos_producto,
+        eliminado: 0,
+      });
+
+      resultados.push({ fila: index + 2, status: 'insertado', nombre });
+      insertados++;
     } catch (error) {
-      // Si hay error, lo agregamos al resultado
-      resultados.push({ index, error: error.message });
+      resultados.push({ fila: index + 2, error: error.message });
+      errores++;
     }
   }
 
+  // Sync catálogo kanban
+  syncCatalogoTodasColumnasConfig(idConf).catch((e) =>
+    console.error(`⚠️ Error sync kanban catálogo post-masiva: ${e.message}`),
+  );
+
   res.status(200).json({
     status: 'success',
-    message: 'Carga masiva finalizada',
+    message: `Carga masiva finalizada: ${insertados} insertados, ${errores} errores de ${filas.length} filas.`,
+    resumen: { total: filas.length, insertados, errores },
     resultados,
   });
 });
@@ -713,6 +847,11 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
     external_source: DROPI_SOURCE,
     external_id: dropi_product_id,
   });
+
+  // sync kanban catálogo
+  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) =>
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
+  );
 
   return res.status(201).json({
     status: 'success',
