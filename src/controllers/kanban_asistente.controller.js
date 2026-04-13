@@ -87,8 +87,10 @@ function parsearErrorOpenAI(err) {
       return `El archivo supera el tamaño máximo permitido (512 MB por archivo, 100 MB para sin parsear).`;
     if (msg.includes('quota') || code === 'insufficient_quota')
       return `Tu API key no tiene saldo suficiente en OpenAI.`;
-    if (msg.includes('invalid_api_key') || status === 401)
+    if (msg.includes('invalid_api_key'))
       return `API key de OpenAI inválida o expirada. Verifica en Configuración.`;
+    if (status === 401)
+      return `Error de autenticación con OpenAI (transitorio). Intenta de nuevo.`;
     if (msg.includes('rate_limit') || code === 'rate_limit_exceeded')
       return `Límite de peticiones a OpenAI alcanzado. Intenta en unos segundos.`;
     if (msg.includes('model_not_found'))
@@ -106,6 +108,23 @@ function parsearErrorOpenAI(err) {
   if (status === 500) return 'Error interno de OpenAI. Intenta más tarde.';
 
   return err.message || 'Error desconocido al conectar con OpenAI.';
+}
+
+async function withRetry(fn, { intentos = 5, delayMs = 2000 } = {}) {
+  let ultimoError;
+  for (let i = 0; i < intentos; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err?.response?.status;
+      const transitorio = [401, 429, 500, 502, 503].includes(status);
+      if (!transitorio) throw err;
+      ultimoError = err;
+      if (i < intentos - 1)
+        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw ultimoError;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -131,9 +150,10 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
 
   try {
     // Obtener datos del asistente
-    const asstRes = await axios.get(
-      `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-      { headers: headersJson(apiKey) },
+    const asstRes = await withRetry(() =>
+      axios.get(`https://api.openai.com/v1/assistants/${col.assistant_id}`, {
+        headers: headersJson(apiKey),
+      }),
     );
 
     const asst = asstRes.data;
