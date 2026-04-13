@@ -41,6 +41,11 @@ const DropiOrdersCache = db.define(
       allowNull: true,
       defaultValue: null,
     },
+    dev_recheck_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
     order_data: DataTypes.TEXT('long'),
     synced_at: DataTypes.DATE,
   },

@@ -1359,11 +1359,17 @@ async function syncProfitDetails({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Sync devolution details (history) para órdenes sin movements
+   Sync devolution details
    ─────────────────────────────────────────────────────────
-   Cuando managed_devolution_app=false, servientrega_movements
-   viene vacío. Fetcheamos getOrderDetail para obtener el
-   history de Dropi y guardarlo en order_data del cache.
+   Dos grupos:
+   1) Sin movements NI history → necesitan data inicial
+   2) Critical → re-check por si recibieron "DEV CONFIRMADA
+      POR BODEGA" después del sync original.
+   
+   Filtros para no saturar API:
+   - Solo critical (no ok/pending/unverifiable)
+   - Cooldown 48h por orden (dev_recheck_at)
+   - Bloques de 10 con pausa de 15s entre bloques
    ═══════════════════════════════════════════════════════════ */
 
 if (!global._devSyncLock) global._devSyncLock = {};
@@ -1394,12 +1400,20 @@ async function syncDevolutionDetails({
           [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
         },
       },
-      attributes: ['id', 'dropi_order_id', 'order_data'],
+      attributes: [
+        'id',
+        'dropi_order_id',
+        'order_data',
+        'devolution_alert',
+        'dev_recheck_at',
+      ],
       raw: true,
     });
 
-    // Filtrar: solo las que tienen servientrega_movements vacío Y no tienen history
-    const needsRefresh = devRows.filter((row) => {
+    const now = new Date();
+
+    // ── Grupo 1: Sin movements NI history → necesitan data inicial ──
+    const withoutData = devRows.filter((row) => {
       try {
         const od = JSON.parse(row.order_data || '{}');
         const movements = od.servientrega_movements || [];
@@ -1410,21 +1424,61 @@ async function syncDevolutionDetails({
       }
     });
 
-    if (!needsRefresh.length) {
+    // ── Grupo 2: Critical con movements → re-check si pasó cooldown 48h ──
+    const criticalRecheck = devRows.filter((row) => {
+      if (row.devolution_alert !== 'critical') return false;
+
+      // Si no tiene movements, ya cayó en grupo 1
+      try {
+        const od = JSON.parse(row.order_data || '{}');
+        if (
+          (od.servientrega_movements || []).length === 0 &&
+          (od.history || []).length === 0
+        )
+          return false;
+      } catch {
+        return false;
+      }
+
+      // Cooldown 48h
+      if (row.dev_recheck_at) {
+        const hoursSinceRecheck =
+          (now - new Date(row.dev_recheck_at)) / (1000 * 60 * 60);
+        if (hoursSinceRecheck < 48) return false;
+      }
+
+      return true;
+    });
+
+    const finalBatch = [...withoutData, ...criticalRecheck];
+
+    if (!finalBatch.length) {
       console.log(
-        `[dev-sync] No devolutions need history refresh for ${lockKey}`,
+        `[dev-sync] Nothing to refresh for ${lockKey} ` +
+          `(${devRows.length} devolutions, ${criticalRecheck.length} critical eligible)`,
       );
-      return { updated: 0, total: devRows.length };
+      return { updated: 0, total: devRows.length, criticalEligible: 0 };
     }
 
     console.log(
-      `[dev-sync] Refreshing history for ${needsRefresh.length}/${devRows.length} devolutions (${lockKey})`,
+      `[dev-sync] Refreshing ${finalBatch.length} orders for ${lockKey} ` +
+        `(${withoutData.length} sin data + ${criticalRecheck.length} critical recheck)`,
     );
 
     let updated = 0;
     let errors = 0;
 
-    for (const row of needsRefresh) {
+    for (let i = 0; i < finalBatch.length; i++) {
+      const row = finalBatch[i];
+
+      // ── Pausa extra cada 10 órdenes para no saturar API ──
+      if (i > 0 && i % 10 === 0) {
+        console.log(
+          `[dev-sync] Bloque ${i / 10} completado (${updated} updated), pausa 15s...`,
+        );
+        await new Promise((r) => setTimeout(r, 15000));
+      }
+
       try {
         const detail = await dropiService.getOrderDetail({
           integrationKey,
@@ -1435,13 +1489,22 @@ async function syncDevolutionDetails({
         const freshOrder = detail?.objects;
         if (!freshOrder) {
           errors++;
+          // Marcar recheck para no reintentar en 48h
+          if (row.devolution_alert === 'critical') {
+            await DropiOrdersCache.update(
+              { dev_recheck_at: now },
+              { where: { id: row.id } },
+            );
+          }
           continue;
         }
 
         const freshHistory = freshOrder.history || [];
         const freshMovements = freshOrder.servientrega_movements || [];
+        const isCriticalRecheck = row.devolution_alert === 'critical';
+        const hasNewData = freshHistory.length > 0 || freshMovements.length > 0;
 
-        if (freshHistory.length > 0 || freshMovements.length > 0) {
+        if (hasNewData || isCriticalRecheck) {
           let existingOd = {};
           try {
             existingOd = JSON.parse(row.order_data || '{}');
@@ -1449,12 +1512,12 @@ async function syncDevolutionDetails({
             existingOd = {};
           }
 
-          // Guardar history Y movements (por si ahora sí tiene)
-          if (freshHistory.length > 0) {
-            existingOd.history = freshHistory;
-          }
+          // Siempre reemplazar con data fresca (puede tener nuevos movements)
           if (freshMovements.length > 0) {
             existingOd.servientrega_movements = freshMovements;
+          }
+          if (freshHistory.length > 0) {
+            existingOd.history = freshHistory;
           }
           if (freshOrder.managed_devolution_app !== undefined) {
             existingOd.managed_devolution_app =
@@ -1467,25 +1530,46 @@ async function syncDevolutionDetails({
             {
               order_data: JSON.stringify(existingOd),
               devolution_alert: newAlert,
-              synced_at: new Date(),
+              synced_at: now,
+              dev_recheck_at: now,
             },
             { where: { id: row.id } },
           );
+
+          if (newAlert !== row.devolution_alert) {
+            console.log(
+              `[dev-sync] Order ${row.dropi_order_id}: ${row.devolution_alert} → ${newAlert}`,
+            );
+          }
+
           updated++;
+        } else if (isCriticalRecheck) {
+          // Sin data nueva pero marcamos recheck para cooldown 48h
+          await DropiOrdersCache.update(
+            { dev_recheck_at: now },
+            { where: { id: row.id } },
+          );
         }
 
         await new Promise((r) => setTimeout(r, 2500));
       } catch (err) {
         const status = err?.response?.status || err?.statusCode || 500;
         if (status === 429) {
-          console.log('[dev-sync] Rate limited, stopping batch');
-          break;
+          console.log('[dev-sync] Rate limited, pausa 30s...');
+          await new Promise((r) => setTimeout(r, 30000));
+          i--; // reintentar la misma orden
+          errors++;
+          if (errors >= 10) {
+            console.log('[dev-sync] Demasiados 429, cortando batch');
+            break;
+          }
+          continue;
         }
         console.error(
           `[dev-sync] Error order ${row.dropi_order_id}: ${err?.message}`,
         );
         errors++;
-        if (errors >= 5) {
+        if (errors >= 10) {
           console.log('[dev-sync] Too many errors, stopping batch');
           break;
         }
@@ -1494,9 +1578,15 @@ async function syncDevolutionDetails({
     }
 
     console.log(
-      `[dev-sync] Done: ${updated} updated, ${errors} errors, ${needsRefresh.length} needed (${lockKey})`,
+      `[dev-sync] Done: ${updated} updated, ${errors} errors ` +
+        `(${withoutData.length} sin-data + ${criticalRecheck.length} critical) [${lockKey}]`,
     );
-    return { updated, errors, total: needsRefresh.length };
+    return {
+      updated,
+      errors,
+      withoutData: withoutData.length,
+      criticalRechecked: criticalRecheck.length,
+    };
   } finally {
     global._devSyncLock[lockKey] = false;
   }
