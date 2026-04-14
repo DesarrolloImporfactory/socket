@@ -91,10 +91,6 @@ const ClientesChatCenter = db.define(
     propietario: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     direccion: { type: DataTypes.STRING(255), allowNull: true },
     productos: { type: DataTypes.STRING(255), allowNull: true },
-    respuesta_encuesta_1: { type: DataTypes.STRING(500), allowNull: true },
-    respuesta_encuesta_2: { type: DataTypes.STRING(500), allowNull: true },
-    respuesta_encuesta_3: { type: DataTypes.STRING(500), allowNull: true },
-    webhook_payload: { type: DataTypes.JSON, allowNull: true },
   },
   {
     tableName: 'clientes_chat_center',
