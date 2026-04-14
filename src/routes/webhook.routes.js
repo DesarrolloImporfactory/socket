@@ -5,7 +5,7 @@ const uploadMemory = multer({ storage: multer.memoryStorage() });
 const { PassThrough } = require('stream');
 const FormData = require('form-data');
 
-const { webhook } = require('../controllers/chat.controller');
+const { webhook, webhookEstadoMeta } = require('../controllers/chat.controller');
 const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -19,6 +19,8 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/webhook', webhook);
+
+router.post('/webhook-estado-meta', webhookEstadoMeta);
 
 router.post('/upload', uploadMemory.single('audio'), async (req, res) => {
   try {
@@ -58,10 +60,7 @@ router.post('/upload', uploadMemory.single('audio'), async (req, res) => {
       .audioFrequency(48000)
       .audioChannels(1)
       .format('ogg')
-      .outputOptions([
-        '-vbr on',
-        '-compression_level 10',
-      ])
+      .outputOptions(['-vbr on', '-compression_level 10'])
       .on('error', (err) => {
         console.error('Error en la conversión:', err);
         return res

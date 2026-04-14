@@ -16,7 +16,7 @@ async function enviarConsultaAPI(id_configuracion, celular_recibe) {
       },
       {
         headers: { 'Content-Type': 'application/json' },
-      }
+      },
     );
 
     if (response.status === 200) {
@@ -26,7 +26,7 @@ async function enviarConsultaAPI(id_configuracion, celular_recibe) {
         path.join(logsDir, 'debug_log.txt'),
         `[${new Date().toISOString()}] ❌ Error HTTP ${
           response.status
-        } - Respuesta: ${JSON.stringify(response.data)}\n`
+        } - Respuesta: ${JSON.stringify(response.data)}\n`,
       );
       return false;
     }
@@ -35,7 +35,33 @@ async function enviarConsultaAPI(id_configuracion, celular_recibe) {
       path.join(logsDir, 'debug_log.txt'),
       `[${new Date().toISOString()}] ❌ Error en enviarConsultaAPI: ${
         err.message
-      }\n`
+      }\n`,
+    );
+    return false;
+  }
+}
+
+async function enviarEstadoMetaAPI(id_configuracion, wamid, estado_meta) {
+  await fs.mkdir(logsDir, { recursive: true });
+
+  try {
+    const response = await axios.post(
+      'http://localhost:3000/api/v1/whatsapp/webhook-estado-meta',
+      {
+        id_configuracion,
+        wamid,
+        estado_meta,
+      },
+      {
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+
+    return response.status === 200;
+  } catch (err) {
+    await fs.appendFile(
+      path.join(logsDir, 'debug_log.txt'),
+      `[${new Date().toISOString()}] ❌ Error en enviarEstadoMetaAPI: ${err.message}\n`,
     );
     return false;
   }
@@ -43,4 +69,5 @@ async function enviarConsultaAPI(id_configuracion, celular_recibe) {
 
 module.exports = {
   enviarConsultaAPI,
+  enviarEstadoMetaAPI,
 };

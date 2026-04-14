@@ -110,6 +110,17 @@ const MensajesClientes = db.define(
     template_name: { type: DataTypes.STRING(250), allowNull: true },
     language_code: { type: DataTypes.STRING(20), allowNull: true },
     meta_media_id: { type: DataTypes.STRING(64), allowNull: true },
+    context_wamid: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null,
+    },
+    estado_meta: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+      comment: '0=enviado, 1=entregado, 2=leído por cliente',
+    },
   },
   {
     tableName: 'mensajes_clientes',

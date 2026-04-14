@@ -70,3 +70,24 @@ exports.webhook = catchAsync(async (req, res, next) => {
     return res.status(500).json({ message: 'Error al procesar el mensaje' });
   }
 });
+
+exports.webhookEstadoMeta = catchAsync(async (req, res, next) => {
+  try {
+    const { id_configuracion, wamid, estado_meta } = req.body;
+
+    if (!io) {
+      return res.status(500).json({ message: 'Socket no disponible' });
+    }
+
+    io.emit('MESSAGE_STATUS_UPDATE', {
+      id_configuracion,
+      wamid,
+      estado_meta,
+    });
+
+    return res.status(200).json({ message: 'Estado emitido' });
+  } catch (error) {
+    console.error('Error en webhookEstadoMeta:', error);
+    return res.status(500).json({ message: 'Error al emitir estado' });
+  }
+});

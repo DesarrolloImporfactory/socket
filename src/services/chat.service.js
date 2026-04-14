@@ -337,6 +337,8 @@ class ChatService {
               'attachments_unificado',
               'meta_unificado',
               'json_mensaje',
+              'context_wamid',
+              'estado_meta',
             ],
             include: [
               {
@@ -419,7 +421,7 @@ class ChatService {
                 fecha_suscripcion: null,
               },
             );
-          }else{
+          } else {
             paquetes = null;
           }
         }

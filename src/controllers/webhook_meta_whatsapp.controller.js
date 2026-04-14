@@ -55,6 +55,7 @@ const {
 
 const {
   enviarConsultaAPI,
+  enviarEstadoMetaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 
 const {
@@ -262,7 +263,30 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       for (const status of statuses) {
         const wamid = status?.id || '';
+        const messageStatus = status?.status || '';
         const error = status?.errors?.[0];
+
+        // ✅ Entregado al teléfono del cliente
+        if (messageStatus === 'delivered') {
+          await MensajeCliente.update(
+            { estado_meta: 1 },
+            { where: { id_wamid_mensaje: wamid, id_configuracion } },
+          );
+          continue;
+        }
+
+        // ✅ Leído por el cliente
+        if (messageStatus === 'read') {
+          await MensajeCliente.update(
+            { estado_meta: 2 },
+            { where: { id_wamid_mensaje: wamid, id_configuracion } },
+          );
+
+          // ✅ mismo patrón que enviarConsultaAPI
+          await enviarEstadoMetaAPI(id_configuracion, wamid, 2);
+
+          continue;
+        }
 
         if (!error) continue; // No hay error, pasamos
 
@@ -381,6 +405,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       let texto_mensaje = '';
       let ruta_archivo = null;
       let tipo_button = '';
+
+      // ✅ Capturar si el cliente respondió a un mensaje específico
+      const context_wamid = msg0?.context?.id || null;
 
       // Obtener el objeto de mensaje completo (por si se necesita)
       const mensaje_recibido = msg0 || {};
@@ -684,6 +711,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
         visto: 0,
+        estado_meta: 0, // ✅ arranca en "enviado"
+        context_wamid, // ✅ null si no es reply, wamid si sí
         responsable: isSMBEcho ? 'Whatsapp Business' : null,
         id_wamid_mensaje: msg0?.id,
 
@@ -1813,3 +1842,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
     }
   });
 });
+
+exports.emitirEstadoMeta = (id_configuracion, wamid, estado_meta) => {
+  if (!io) return;
+
+  io.emit('MESSAGE_STATUS_UPDATE', {
+    id_configuracion,
+    wamid,
+    estado_meta,
+  });
+};
