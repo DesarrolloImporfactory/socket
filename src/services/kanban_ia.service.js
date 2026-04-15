@@ -267,49 +267,43 @@ async function procesarMensajeKanban(params) {
     }
   }
 
-  // ── 12. ACCIÓN: enviar_media ──────────────────────────────
+  // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
+  const { texto, imagenes, videos } = extraerMedia(respuestaRaw);
+  soloTexto = texto;
 
-  if (tieneAccion('enviar_media')) {
-    const { texto, imagenes, videos } = extraerMedia(respuestaRaw);
-    soloTexto = texto;
-
-    for (const url of imagenes) {
-      await enviarMedioWhatsapp({
-        tipo: 'image',
-        url_archivo: url,
-        phone_whatsapp_to: telefono,
-        business_phone_id,
-        accessToken,
-        id_configuracion,
-        responsable: `IA_${columna.nombre}`,
-      }).catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
+  for (const url of imagenes) {
+    await enviarMedioWhatsapp({
+      tipo: 'image',
+      url_archivo: url,
+      phone_whatsapp_to: telefono,
+      business_phone_id,
+      accessToken,
+      id_configuracion,
+      responsable: `IA_${columna.nombre}`,
+    }).catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
+  }
+  for (const url of videos) {
+    await log(`🎥 Intentando enviar video URL: ${url}`);
+    try {
+      const headRes = await axios.head(url);
+      const bytes = headRes.headers['content-length'];
+      const mb = bytes ? (bytes / 1024 / 1024).toFixed(2) : 'desconocido';
+      await log(`📦 Tamaño video: ${mb} MB`);
+    } catch (e) {
+      await log(`⚠️ No se pudo verificar tamaño: ${e.message}`);
     }
-    for (const url of videos) {
-      await log(`🎥 Intentando enviar video URL: ${url}`);
-
-      // Verificar tamaño antes de enviar
-      try {
-        const headRes = await axios.head(url);
-        const bytes = headRes.headers['content-length'];
-        const mb = bytes ? (bytes / 1024 / 1024).toFixed(2) : 'desconocido';
-        await log(`📦 Tamaño video: ${mb} MB`);
-      } catch (e) {
-        await log(`⚠️ No se pudo verificar tamaño: ${e.message}`);
-      }
-
-      await enviarMedioWhatsapp({
-        tipo: 'video',
-        url_archivo: url,
-        phone_whatsapp_to: telefono,
-        business_phone_id,
-        accessToken,
-        id_configuracion,
-        responsable: `IA_${columna.nombre}`,
-      }).catch(async (err) =>
-        log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
-      );
-    }
+    await enviarMedioWhatsapp({
+      tipo: 'video',
+      url_archivo: url,
+      phone_whatsapp_to: telefono,
+      business_phone_id,
+      accessToken,
+      id_configuracion,
+      responsable: `IA_${columna.nombre}`,
+    }).catch(async (err) =>
+      log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
+    );
   }
 
   // ── 13. Enviar texto final ────────────────────────────────
