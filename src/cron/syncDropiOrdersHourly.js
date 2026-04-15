@@ -1,21 +1,35 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js
+ * cron/syncDropiOrdersHourly.js  — v2 (con parámetros de template)
  *
- * Cada minuto (modo testing). Cambiar a '5 * * * *' en produccion.
- *  1. Para cada integracion Dropi activa -> consulta ordenes con
- *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer -> hoy)
+ * Cron de automatización de mensajes WhatsApp por cambio de estado Dropi.
+ *
+ * Flujo:
+ *  1. Para cada integración Dropi activa → consulta órdenes con
+ *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer → hoy)
  *     y hace upsert al cache.
- *  2. Por cada orden sincronizada verifica si su estado tiene una plantilla
- *     WhatsApp activa configurada en dropi_plantillas_config.
- *  3. Si aun no se envio ese (orden + config + estado) -> envia el template
- *     y registra en dropi_plantillas_enviadas (tabla de dedup).
+ *  2. Por cada orden sincronizada, mapea su status Dropi al estado
+ *     configurado en dropi_plantillas_config.
+ *  3. Si aún no se envió ese combo (orden + config + estado):
+ *     a) Verifica si hay ventana 24h abierta → envía respuesta rápida (gratis)
+ *     b) Si no hay ventana → envía template de Meta (pagado)
+ *        con body params, button params resueltos desde la orden
+ *  4. Registra en dropi_plantillas_enviadas (dedup) Y en mensajes_clientes
+ *     (para que aparezca en el chat center con json_mensaje y ruta_archivo).
  *
- * Dedup:
- *   UNIQUE KEY (dropi_order_id, id_configuracion, estado_dropi)
- *   -> Mismo pedido + mismo estado  = solo se notifica UNA VEZ
- *   -> Mismo pedido cambia de estado = nuevo combo -> se notifica de nuevo
+ * parametros_json en dropi_plantillas_config:
+ *   {
+ *     "body": ["nombre", "contenido", "costo"],
+ *     "buttons": [
+ *       { "index": 0, "variable": "numero_guia" },
+ *       { "index": 1, "variable": "numero_guia" }
+ *     ]
+ *   }
+ *
+ * Variables disponibles (extraídas de la orden Dropi):
+ *   nombre, contenido, direccion, costo, ciudad, provincia,
+ *   numero_guia, transportadora, tracking, order_id, telefono, guia_pdf
  */
 
 const cron = require('node-cron');
@@ -30,16 +44,28 @@ const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 const dropiService = require('../services/dropi.service');
 const { decryptToken } = require('../utils/cryptoToken');
 
-/* --- Constantes -------------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Constantes
+   ═══════════════════════════════════════════════════════════ */
+
 const PAGE_SIZE = 100;
 const DELAY_BETWEEN_PAGES = 2500;
 const DELAY_BETWEEN_INTEGRATIONS = 4000;
 const DELAY_BETWEEN_WA_SENDS = 800;
 const MAX_ORDERS_PER_INTEGRATION = 2000;
 const MAX_RETRIES_429 = 4;
-const META_API_VERSION = 'v19.0';
+const META_API_VERSION = 'v22.0';
 
-/* --- Logging ----------------------------------------------- */
+// Estados que SIEMPRE envían template (primer contacto)
+const SIEMPRE_TEMPLATE = new Set(['PENDIENTE CONFIRMACION']);
+
+// Horas de ventana (23h por margen de seguridad)
+const VENTANA_HORAS = 23;
+
+/* ═══════════════════════════════════════════════════════════
+   Logging
+   ═══════════════════════════════════════════════════════════ */
+
 const logsDir = path.join(process.cwd(), './src/logs/logs_dropi');
 
 async function ensureDir(dir) {
@@ -59,36 +85,110 @@ async function log(msg) {
   } catch (_) {}
 }
 
-/* --- Lock global ------------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Lock global
+   ═══════════════════════════════════════════════════════════ */
+
 if (!global._hourlyDropiSyncRunning) global._hourlyDropiSyncRunning = false;
 
-/* --- Mapeo classified_status -> estado_dropi --------------- */
-const CLASSIFIED_TO_ESTADO = {
-  entregada: 'ENTREGADA',
-  devolucion: 'DEVOLUCION',
-  cancelada: 'CANCELADO',
-  pendiente: 'PENDIENTE CONFIRMACION',
-  retiro_agencia: 'RETIRO EN AGENCIA',
-  novedad: 'NOVEDAD',
-  en_transito: 'EN TRANSITO',
-};
+/* ═══════════════════════════════════════════════════════════
+   Mapeo: raw status Dropi → estado en dropi_plantillas_config
+   ═══════════════════════════════════════════════════════════ */
 
-/* --- Helpers de fecha (UTC-5 Ecuador) ---------------------- */
-function getDateRange() {
-  const now = new Date();
-  const ecNow = new Date(
-    now.getTime() + (now.getTimezoneOffset() + -5 * 60) * 60000,
-  );
-  const pad = (n) => String(n).padStart(2, '0');
-  const fmt = (d) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  return {
-    from: fmt(new Date(ecNow.getTime() - 24 * 60 * 60 * 1000)),
-    until: fmt(ecNow),
-  };
+function mapDropiStatusToEstadoConfig(rawStatus) {
+  const s = String(rawStatus || '')
+    .trim()
+    .toUpperCase();
+
+  if (s === 'PENDIENTE CONFIRMACION') return 'PENDIENTE CONFIRMACION';
+  if (s === 'PENDIENTE') return 'PENDIENTE';
+  if (s === 'GUIA_GENERADA') return 'GUIA GENERADA';
+
+  if (
+    s === 'CANCELADO' ||
+    s.includes('CANCELADA') ||
+    s === 'ANULADA' ||
+    s === 'RECHAZADO' ||
+    s === 'GUIA_ANULADA'
+  )
+    return 'CANCELADO';
+
+  if (
+    s.includes('RETIRO EN AGENCIA') ||
+    s.includes('ENVÍO LISTO EN OFICINA') ||
+    s === 'ENVIO LISTO EN OFICINA'
+  )
+    return 'RETIRO EN AGENCIA';
+
+  if (
+    s === 'ENTREGADO' ||
+    s.includes('ENTREGADA') ||
+    s === 'REPORTADO ENTREGADO' ||
+    s === 'ENTREGA DIGITALIZADA' ||
+    s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
+  )
+    return 'ENTREGADA';
+
+  if (
+    s.includes('DEVOLUCION') ||
+    s.includes('DEVOLUCIÓN') ||
+    s === 'DEVUELTO' ||
+    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
+    s === 'DESAPLICADO'
+  )
+    return 'DEVOLUCION';
+
+  if (
+    s.includes('NOVEDAD') ||
+    s.includes('SOLUCION') ||
+    s.includes('SOLUCIÓN') ||
+    s === 'CON NOVEDAD' ||
+    s === 'DESTINATARIO FALLECIDO' ||
+    s.includes('DESTINATARIO RE-PROGRAMA') ||
+    s.includes('DESTINATARIO SOLICITA') ||
+    s.includes('FUERA DE COBERTURA') ||
+    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
+    s.includes('PROBLEMAS DE ORDEN') ||
+    s.includes('VISITA A DESTINATARIO') ||
+    s.includes('ACCIDENTE EN CARRETERA') ||
+    s.includes('EN ESPERA DE FIRMA')
+  )
+    return 'NOVEDAD';
+
+  if (
+    s.includes('TRÁNSITO') ||
+    s.includes('TRANSITO') ||
+    s.includes('EN RUTA') ||
+    s.includes('EN CAMINO') ||
+    s.includes('EN REPARTO') ||
+    s.includes('BODEGA') ||
+    s.includes('EMBARCANDO') ||
+    s.includes('RECOLECT') ||
+    s.includes('RECOGIDO') ||
+    s.includes('ASIGNADO') ||
+    s.includes('PICKING') ||
+    s.includes('PACKING') ||
+    s.includes('GENERADO') ||
+    s.includes('GENERADA') ||
+    s.includes('ZONA DE ENTREGA') ||
+    s.includes('PREPARADO') ||
+    s.includes('INVENTARIO') ||
+    s.includes('INGRES') ||
+    s.includes('RECIBIDO') ||
+    s === 'POR RECOLECTAR' ||
+    s === 'PROCESAMIENTO' ||
+    s.includes('EN DISTRIBUCION') ||
+    s.includes('EN DISTRIBUCIÓN')
+  )
+    return 'EN TRANSITO';
+
+  return null;
 }
 
-/* --- Clasificar status ------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   classifyDropiStatus (para cache)
+   ═══════════════════════════════════════════════════════════ */
+
 function classifyDropiStatus(status) {
   const s = String(status || '')
     .trim()
@@ -103,7 +203,7 @@ function classifyDropiStatus(status) {
     return 'entregada';
   if (
     s.includes('DEVOLUCION') ||
-    s.includes('DEVOLUCION') ||
+    s.includes('DEVOLUCIÓN') ||
     s === 'DEVUELTO' ||
     s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
     s === 'DESAPLICADO'
@@ -118,7 +218,11 @@ function classifyDropiStatus(status) {
   )
     return 'cancelada';
   if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
-  if (s.includes('RETIRO EN AGENCIA') || s.includes('ENVIO LISTO EN OFICINA'))
+  if (
+    s.includes('RETIRO EN AGENCIA') ||
+    s.includes('ENVÍO LISTO EN OFICINA') ||
+    s === 'ENVIO LISTO EN OFICINA'
+  )
     return 'retiro_agencia';
   if (
     s.includes('NOVEDAD') ||
@@ -128,6 +232,7 @@ function classifyDropiStatus(status) {
     s.includes('DESTINATARIO RE-PROGRAMA') ||
     s.includes('DESTINATARIO SOLICITA') ||
     s.includes('FUERA DE COBERTURA') ||
+    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
     s.includes('PROBLEMAS DE ORDEN') ||
     s.includes('VISITA A DESTINATARIO') ||
     s.includes('ACCIDENTE EN CARRETERA') ||
@@ -139,11 +244,12 @@ function classifyDropiStatus(status) {
     s.includes('SINIESTRO') ||
     s.includes('INCAUTADO') ||
     s.includes('HURTAD') ||
-    s.includes('AVERIA')
+    s.includes('AVERÍA')
   )
     return 'indemnizada';
   if (
     s === 'GUIA_GENERADA' ||
+    s.includes('TRÁNSITO') ||
     s.includes('TRANSITO') ||
     s.includes('EN RUTA') ||
     s.includes('EN CAMINO') ||
@@ -170,7 +276,181 @@ function classifyDropiStatus(status) {
   return 'otro';
 }
 
-/* --- Upsert al cache --------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Helpers generales
+   ═══════════════════════════════════════════════════════════ */
+
+function getDateRange() {
+  const now = new Date();
+  const ecNow = new Date(
+    now.getTime() + (now.getTimezoneOffset() + -5 * 60) * 60000,
+  );
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmt = (d) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return {
+    from: fmt(new Date(ecNow.getTime() - 24 * 60 * 60 * 1000)),
+    until: fmt(ecNow),
+  };
+}
+
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length >= 11) return digits;
+  if (digits.length === 10 && digits.startsWith('0'))
+    return '593' + digits.slice(1);
+  if (digits.length === 9) return '593' + digits;
+  return digits;
+}
+
+function safeJsonParse(str, fallback) {
+  try {
+    return str ? JSON.parse(str) : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Tracking URL / Guía PDF
+   ═══════════════════════════════════════════════════════════ */
+
+function getTrackingUrl(shippingCompany, guide) {
+  if (!guide) return '';
+  const comp = String(shippingCompany || '').toUpperCase();
+  const g = String(guide).trim();
+  if (
+    comp.includes('LAAR') ||
+    g.startsWith('LC') ||
+    g.startsWith('IMP') ||
+    g.startsWith('MKP')
+  )
+    return `https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=${encodeURIComponent(g)}`;
+  if (comp.includes('GINTRACOM') || g.startsWith('D0') || g.startsWith('I0'))
+    return `https://ec.gintracom.site/web/site/tracking?guia=${encodeURIComponent(g)}`;
+  if (comp.includes('VELOCES') || g.startsWith('V'))
+    return `https://tracking.veloces.app/tracking-client/${encodeURIComponent(g)}`;
+  if (comp.includes('URBANO') || g.startsWith('WYB'))
+    return `https://app.urbano.com.ec/plugin/etracking/etracking/?guia=${encodeURIComponent(g)}`;
+  if (comp.includes('SERVIENTREGA'))
+    return `https://www.servientrega.com.ec/Tracking/?guia=${encodeURIComponent(g)}&tipo=GUIA`;
+  return '';
+}
+
+function getGuiaPdfUrl(order) {
+  const guiaPath = order.guia_urls3;
+  if (!guiaPath) return '';
+  return `https://d39ru7awumhhs2.cloudfront.net/${guiaPath}`;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Resolver variable de template desde la orden Dropi
+   ═══════════════════════════════════════════════════════════ */
+
+function resolveVariable(varName, order) {
+  const details = Array.isArray(order.orderdetails) ? order.orderdetails : [];
+
+  switch (varName) {
+    case 'nombre':
+      return `${order.name || ''} ${order.surname || ''}`.trim() || 'Cliente';
+    case 'contenido':
+      if (!details.length) return 'Tu pedido';
+      return details
+        .map((d) => `${d?.quantity || 1} x ${d?.product?.name || 'Producto'}`)
+        .join(', ');
+    case 'direccion':
+      return order.dir || 'Dirección no disponible';
+    case 'costo':
+      return String(order.total_order || '0');
+    case 'ciudad':
+      return order.city || '';
+    case 'provincia':
+      return order.state || '';
+    case 'numero_guia':
+      return order.shipping_guide || '';
+    case 'transportadora':
+      return order.shipping_company || '';
+    case 'tracking':
+      return getTrackingUrl(order.shipping_company, order.shipping_guide);
+    case 'guia_pdf':
+      return getGuiaPdfUrl(order);
+    case 'order_id':
+      return String(order.id || '');
+    case 'telefono':
+      return order.phone || '';
+    default:
+      return '';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ruta_archivo — trazabilidad (mismo formato del sistema viejo)
+   ═══════════════════════════════════════════════════════════ */
+
+function buildRutaArchivo(order, estadoConfig) {
+  const details = Array.isArray(order.orderdetails) ? order.orderdetails : [];
+  return {
+    nombre: `${order.name || ''} ${order.surname || ''}`.trim(),
+    direccion: order.dir || '',
+    email: '',
+    celular: order.phone || '',
+    order_id: String(order.id || ''),
+    contenido: details
+      .map((d) => ` ${d?.quantity || 1} x ${d?.product?.name || 'Producto'} `)
+      .join(','),
+    costo: String(order.total_order || '0'),
+    ciudad: order.city || '',
+    tracking: getTrackingUrl(order.shipping_company, order.shipping_guide),
+    transportadora: order.shipping_company || '',
+    numero_guia: order.shipping_guide || '',
+    estado_notificacion: estadoConfig,
+    source: 'cron_dropi_status',
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Construir components de Meta API desde parametros_json
+   ═══════════════════════════════════════════════════════════ */
+
+function buildTemplateComponents(parametrosJson, order) {
+  const config = safeJsonParse(parametrosJson, null);
+  if (!config) return [];
+
+  const components = [];
+
+  // Body parameters
+  if (Array.isArray(config.body) && config.body.length > 0) {
+    components.push({
+      type: 'body',
+      parameters: config.body.map((varName) => ({
+        type: 'text',
+        text: resolveVariable(varName, order) || '',
+      })),
+    });
+  }
+
+  // Button parameters (URL dinámica)
+  if (Array.isArray(config.buttons) && config.buttons.length > 0) {
+    for (const btn of config.buttons) {
+      const idx = btn.index != null ? btn.index : 0;
+      const value = resolveVariable(btn.variable || '', order) || '';
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(idx),
+        parameters: [{ type: 'text', text: value }],
+      });
+    }
+  }
+
+  return components;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Upsert órdenes al cache
+   ═══════════════════════════════════════════════════════════ */
+
 async function upsertOrders(cacheInsertFields, orders) {
   if (!orders.length) return;
   const bulk = orders.map((o) => {
@@ -214,70 +494,53 @@ async function upsertOrders(cacheInsertFields, orders) {
   }
 }
 
-/* --- Credenciales WA --------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Credenciales WA
+   ═══════════════════════════════════════════════════════════ */
+
 async function getWaCredentials(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id_telefono  AS phone_number_id,
-            token        AS waba_token
-     FROM configuraciones
-     WHERE id = ? AND id_telefono IS NOT NULL AND token IS NOT NULL
-     LIMIT 1`,
+    `SELECT id_telefono AS phone_number_id, token AS waba_token, telefono
+     FROM configuraciones WHERE id = ? AND id_telefono IS NOT NULL AND token IS NOT NULL LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   return row || null;
 }
 
-/* --- Normalizar telefono -> E.164 sin '+' ------------------ */
-function normalizePhone(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return null;
-  if (digits.length >= 11) return digits;
-  if (digits.length === 10 && digits.startsWith('0'))
-    return '593' + digits.slice(1);
-  if (digits.length === 9) return '593' + digits;
-  return digits;
-}
+/* ═══════════════════════════════════════════════════════════
+   Plantillas activas (con parámetros)
+   ═══════════════════════════════════════════════════════════ */
 
-/* --- Enviar template via Meta Graph API -------------------- */
-async function sendWhatsappTemplate({
-  phone_number_id,
-  waba_token,
-  phone,
-  templateName,
-  languageCode,
-}) {
-  const to = normalizePhone(phone);
-  if (!to) throw new Error(`Telefono invalido: ${phone}`);
-
-  const { data } = await axios.post(
-    `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
-    {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode || 'es' },
-      },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${waba_token}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 12000,
-    },
+async function getPlantillasActivas(id_configuracion) {
+  const rows = await db.query(
+    `SELECT estado_dropi, nombre_template, language_code,
+            mensaje_rapido, usar_respuesta_rapida, parametros_json
+     FROM dropi_plantillas_config
+     WHERE id_configuracion = ? AND activo = 1
+       AND nombre_template IS NOT NULL AND nombre_template != ''`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-
-  return data?.messages?.[0]?.id || null;
+  const map = {};
+  for (const r of rows) {
+    map[r.estado_dropi] = {
+      nombre_template: r.nombre_template,
+      language_code: r.language_code || 'es',
+      mensaje_rapido: r.mensaje_rapido || null,
+      usar_respuesta_rapida: !!r.usar_respuesta_rapida,
+      parametros_json: r.parametros_json || null,
+    };
+  }
+  return map;
 }
 
-/* --- Verificar dedup --------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Dedup
+   ═══════════════════════════════════════════════════════════ */
+
 async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   const [row] = await db.query(
     `SELECT id FROM dropi_plantillas_enviadas
-     WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ?
-     LIMIT 1`,
+     WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ? LIMIT 1`,
     {
       replacements: [dropi_order_id, id_configuracion, estado_dropi],
       type: db.QueryTypes.SELECT,
@@ -286,7 +549,6 @@ async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   return !!row;
 }
 
-/* --- Registrar envio --------------------------------------- */
 async function registrarEnvio({
   dropi_order_id,
   id_configuracion,
@@ -313,28 +575,266 @@ async function registrarEnvio({
   );
 }
 
-/* --- Plantillas activas de una config ---------------------- */
-async function getPlantillasActivas(id_configuracion) {
-  const rows = await db.query(
-    `SELECT estado_dropi, nombre_template, language_code
-     FROM dropi_plantillas_config
-     WHERE id_configuracion = ?
-       AND activo = 1
-       AND nombre_template IS NOT NULL
-       AND nombre_template != ''`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+/* ═══════════════════════════════════════════════════════════
+   Resolver clientes en chat center
+   
+   id_cliente     = sender (negocio)   → idClienteConfig
+   celular_recibe = receiver (cliente) → clienteId
+   ═══════════════════════════════════════════════════════════ */
+
+async function resolverClientes({
+  id_configuracion,
+  phoneNorm,
+  phone_number_id,
+  telefonoConfig,
+}) {
+  // Cliente destino (receiver)
+  const [clienteRow] = await db.query(
+    `SELECT id FROM clientes_chat_center
+     WHERE id_configuracion = ? AND deleted_at IS NULL
+       AND (REPLACE(celular_cliente, ' ', '') = ? OR telefono_limpio = ? OR celular_cliente LIKE ?)
+     ORDER BY id DESC LIMIT 1`,
+    {
+      replacements: [
+        id_configuracion,
+        phoneNorm,
+        phoneNorm,
+        `%${phoneNorm.slice(-9)}`,
+      ],
+      type: db.QueryTypes.SELECT,
+    },
   );
-  const map = {};
-  for (const r of rows) {
-    map[r.estado_dropi] = {
-      nombre_template: r.nombre_template,
-      language_code: r.language_code || 'es',
-    };
+
+  let clienteId = clienteRow?.id || null;
+
+  if (!clienteId) {
+    const [insertResult] = await db.query(
+      `INSERT INTO clientes_chat_center
+         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
+          celular_cliente, telefono_limpio, source)
+       VALUES (?, ?, '', '', ?, ?, 'wa')`,
+      {
+        replacements: [id_configuracion, phone_number_id, phoneNorm, phoneNorm],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    clienteId = insertResult;
   }
-  return map;
+
+  // Cliente negocio (sender)
+  let idClienteConfig = null;
+  if (telefonoConfig) {
+    const telCfgLimpio = String(telefonoConfig).replace(/\D/g, '');
+    if (telCfgLimpio) {
+      const [cfgRow] = await db.query(
+        `SELECT id FROM clientes_chat_center
+         WHERE id_configuracion = ?
+           AND (REPLACE(celular_cliente, ' ', '') = ? OR telefono_limpio = ?)
+         LIMIT 1`,
+        {
+          replacements: [id_configuracion, telCfgLimpio, telCfgLimpio],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      idClienteConfig = cfgRow?.id || null;
+    }
+  }
+
+  return { clienteId, idClienteConfig };
 }
 
-/* --- Procesar templates ------------------------------------ */
+/* ═══════════════════════════════════════════════════════════
+   Registrar mensaje en mensajes_clientes
+   (mismo patrón que sendWhatsappMessageTemplateScheduled)
+   ═══════════════════════════════════════════════════════════ */
+
+async function registrarMensajeEnChat({
+  id_configuracion,
+  phone_number_id,
+  clienteId,
+  idClienteConfig,
+  phoneNorm,
+  tipoEnvio,
+  textoMensaje,
+  templateName,
+  languageCode,
+  waMessageId,
+  rutaArchivo,
+  jsonMensaje,
+}) {
+  try {
+    await db.query(
+      `INSERT INTO mensajes_clientes
+         (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje,
+          celular_recibe, responsable, texto_mensaje, ruta_archivo,
+          json_mensaje, visto, uid_whatsapp, id_wamid_mensaje,
+          template_name, language_code, informacion_suficiente)
+       VALUES (?, ?, ?, ?, 1, ?, 'cron_dropi_status', ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
+      {
+        replacements: [
+          id_configuracion,
+          idClienteConfig || clienteId, // id_cliente = sender (negocio)
+          phone_number_id,
+          tipoEnvio === 'template' ? 'template' : 'text',
+          clienteId, // celular_recibe = receiver (cliente)
+          textoMensaje || '',
+          rutaArchivo ? JSON.stringify(rutaArchivo) : null,
+          jsonMensaje ? JSON.stringify(jsonMensaje) : null,
+          phoneNorm,
+          waMessageId || null,
+          tipoEnvio === 'template' ? templateName || null : null,
+          tipoEnvio === 'template' ? languageCode || null : null,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch (err) {
+    await log(`[hourly-dropi] WARNING chat registro: ${err?.message}`);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Verificar ventana 24h
+   ═══════════════════════════════════════════════════════════ */
+
+async function verificarVentana24h(id_configuracion, phoneNorm) {
+  const [clienteRow] = await db.query(
+    `SELECT id, ultimo_mensaje_at, ultimo_rol_mensaje
+     FROM clientes_chat_center
+     WHERE id_configuracion = ? AND deleted_at IS NULL
+       AND (REPLACE(celular_cliente, ' ', '') = ? OR telefono_limpio = ? OR celular_cliente LIKE ?)
+     ORDER BY id DESC LIMIT 1`,
+    {
+      replacements: [
+        id_configuracion,
+        phoneNorm,
+        phoneNorm,
+        `%${phoneNorm.slice(-9)}`,
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (!clienteRow || !clienteRow.ultimo_mensaje_at) return false;
+
+  // Último mensaje fue del cliente (rol 0) → rápido
+  if (String(clienteRow.ultimo_rol_mensaje) === '0') {
+    const horasDiff =
+      (Date.now() - new Date(clienteRow.ultimo_mensaje_at).getTime()) /
+      (1000 * 60 * 60);
+    return horasDiff < VENTANA_HORAS;
+  }
+
+  // Último fue outgoing → buscar último entrante real
+  const [msgRow] = await db.query(
+    `SELECT created_at FROM mensajes_clientes
+     WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0
+     ORDER BY created_at DESC LIMIT 1`,
+    {
+      replacements: [clienteRow.id, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (!msgRow?.created_at) return false;
+  const horasDiff =
+    (Date.now() - new Date(msgRow.created_at).getTime()) / (1000 * 60 * 60);
+  return horasDiff < VENTANA_HORAS;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Error helpers
+   ═══════════════════════════════════════════════════════════ */
+
+function isWindowClosedError(err) {
+  const c = err?.response?.data?.error?.code;
+  const sc = err?.response?.data?.error?.error_subcode;
+  return c === 131047 || sc === 131047 || c === 131026;
+}
+
+function isMetaRateLimit(err) {
+  const s = err?.response?.status;
+  const c = err?.response?.data?.error?.code;
+  return s === 429 || c === 130429 || c === 80008;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Enviar template (con components)
+   ═══════════════════════════════════════════════════════════ */
+
+async function enviarTemplate({
+  phone_number_id,
+  waba_token,
+  phoneNorm,
+  templateName,
+  languageCode,
+  components,
+}) {
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: phoneNorm,
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: languageCode || 'es' },
+    },
+  };
+
+  if (components && components.length > 0) {
+    payload.template.components = components;
+  }
+
+  const { data } = await axios.post(
+    `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
+    payload,
+    {
+      headers: {
+        Authorization: `Bearer ${waba_token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    },
+  );
+
+  return { wamid: data?.messages?.[0]?.id || null, payload };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Enviar respuesta rápida
+   ═══════════════════════════════════════════════════════════ */
+
+async function enviarRespuestaRapida({
+  phone_number_id,
+  waba_token,
+  phoneNorm,
+  mensaje,
+}) {
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: phoneNorm,
+    type: 'text',
+    text: { body: mensaje },
+  };
+
+  const { data } = await axios.post(
+    `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
+    payload,
+    {
+      headers: {
+        Authorization: `Bearer ${waba_token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    },
+  );
+
+  return { wamid: data?.messages?.[0]?.id || null, payload };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Procesar templates para un lote de órdenes
+   ═══════════════════════════════════════════════════════════ */
+
 async function procesarTemplates({ orders, id_configuracion }) {
   if (!orders.length) return { enviados: 0, omitidos: 0, errores: 0 };
 
@@ -350,16 +850,16 @@ async function procesarTemplates({ orders, id_configuracion }) {
     return { enviados: 0, omitidos: 0, errores: 0 };
   }
 
-  let enviados = 0;
-  let omitidos = 0;
-  let errores = 0;
+  const telefonoConfig = creds.telefono || null;
+  let enviados = 0,
+    omitidos = 0,
+    errores = 0;
 
   for (const order of orders) {
     try {
-      const classified = classifyDropiStatus(order.status);
-      const estadoDropi = CLASSIFIED_TO_ESTADO[classified];
-
-      if (!estadoDropi || !plantillas[estadoDropi]) {
+      // 1. Mapear status
+      const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
+      if (!estadoConfig || !plantillas[estadoConfig]) {
         omitidos++;
         continue;
       }
@@ -367,46 +867,138 @@ async function procesarTemplates({ orders, id_configuracion }) {
         omitidos++;
         continue;
       }
-      if (await yaFueEnviado(order.id, id_configuracion, estadoDropi)) {
+
+      // 2. Dedup
+      if (await yaFueEnviado(order.id, id_configuracion, estadoConfig)) {
         omitidos++;
         continue;
       }
 
-      const { nombre_template, language_code } = plantillas[estadoDropi];
+      const config = plantillas[estadoConfig];
+      const phoneNorm = normalizePhone(order.phone);
+      if (!phoneNorm) {
+        omitidos++;
+        continue;
+      }
 
-      const waMessageId = await sendWhatsappTemplate({
+      // 3. Resolver clientes
+      const { clienteId, idClienteConfig } = await resolverClientes({
+        id_configuracion,
+        phoneNorm,
         phone_number_id: creds.phone_number_id,
-        waba_token: creds.waba_token,
-        phone: order.phone,
-        templateName: nombre_template,
-        languageCode: language_code,
+        telefonoConfig,
       });
 
+      // 4. Construir components y ruta_archivo
+      const components = buildTemplateComponents(config.parametros_json, order);
+      const rutaArchivo = buildRutaArchivo(order, estadoConfig);
+
+      // 5. Decidir: respuesta rápida vs template
+      let tipoEnvio = 'template';
+      let waMessageId = null;
+      let textoEnviado = config.nombre_template;
+      let jsonMensajeEnviado = null;
+
+      const forzarTemplate = SIEMPRE_TEMPLATE.has(estadoConfig);
+
+      if (
+        !forzarTemplate &&
+        config.usar_respuesta_rapida &&
+        config.mensaje_rapido
+      ) {
+        const ventanaAbierta = await verificarVentana24h(
+          id_configuracion,
+          phoneNorm,
+        );
+
+        if (ventanaAbierta) {
+          try {
+            const result = await enviarRespuestaRapida({
+              phone_number_id: creds.phone_number_id,
+              waba_token: creds.waba_token,
+              phoneNorm,
+              mensaje: config.mensaje_rapido,
+            });
+            waMessageId = result.wamid;
+            jsonMensajeEnviado = result.payload;
+            tipoEnvio = 'respuesta_rapida';
+            textoEnviado = config.mensaje_rapido;
+
+            await log(
+              `[hourly-dropi] ✉ RR #${order.id} | ${estadoConfig} | ${order.phone}`,
+            );
+          } catch (rrErr) {
+            if (isWindowClosedError(rrErr)) {
+              await log(
+                `[hourly-dropi] Ventana cerrada ${order.phone}, fallback template`,
+              );
+              tipoEnvio = 'template';
+            } else {
+              throw rrErr;
+            }
+          }
+        }
+      }
+
+      // Template (decisión directa o fallback)
+      if (tipoEnvio === 'template') {
+        const result = await enviarTemplate({
+          phone_number_id: creds.phone_number_id,
+          waba_token: creds.waba_token,
+          phoneNorm,
+          templateName: config.nombre_template,
+          languageCode: config.language_code,
+          components,
+        });
+        waMessageId = result.wamid;
+        jsonMensajeEnviado = result.payload;
+        textoEnviado = config.nombre_template;
+
+        await log(
+          `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
+        );
+      }
+
+      // 6. Registrar en chat center
+      await registrarMensajeEnChat({
+        id_configuracion,
+        phone_number_id: creds.phone_number_id,
+        clienteId,
+        idClienteConfig,
+        phoneNorm,
+        tipoEnvio,
+        textoEnviado,
+        templateName: tipoEnvio === 'template' ? config.nombre_template : null,
+        languageCode: config.language_code,
+        waMessageId,
+        rutaArchivo,
+        jsonMensaje: jsonMensajeEnviado,
+      });
+
+      // 7. Dedup
       await registrarEnvio({
         dropi_order_id: order.id,
         id_configuracion,
-        estado_dropi: estadoDropi,
+        estado_dropi: estadoConfig,
         phone: order.phone,
-        template_name: nombre_template,
+        template_name:
+          tipoEnvio === 'respuesta_rapida'
+            ? `[RR] ${config.mensaje_rapido.slice(0, 80)}`
+            : config.nombre_template,
         wa_message_id: waMessageId,
       });
 
-      await log(
-        `[hourly-dropi] ENVIADO orden #${order.id} | estado: ${estadoDropi} | tpl: ${nombre_template} | phone: ${order.phone}`,
-      );
       enviados++;
-
       await new Promise((r) => setTimeout(r, DELAY_BETWEEN_WA_SENDS));
     } catch (err) {
       errores++;
-      const metaCode = err?.response?.data?.error?.code;
-      await log(
-        `[hourly-dropi] ERROR template orden #${order?.id}: ${err?.message} | Meta code: ${metaCode}`,
-      );
-
-      if (err?.response?.status === 429 || metaCode === 130429) {
-        await log('[hourly-dropi] WARNING Rate limit Meta -- pausando 30s');
+      if (isMetaRateLimit(err)) {
+        await log(`[hourly-dropi] 🛑 Rate limit #${order?.id} — pausa 30s`);
         await new Promise((r) => setTimeout(r, 30000));
+      } else {
+        await log(
+          `[hourly-dropi] ❌ #${order?.id}: ${err?.message} | Meta: ${err?.response?.data?.error?.code || 'N/A'}`,
+        );
       }
     }
   }
@@ -414,7 +1006,10 @@ async function procesarTemplates({ orders, id_configuracion }) {
   return { enviados, omitidos, errores };
 }
 
-/* --- Sync de una integracion ------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Sync de una integración
+   ═══════════════════════════════════════════════════════════ */
+
 async function syncIntegration(integration, from, until) {
   const label = `integ#${integration.id}(${integration.country_code})`;
   const id_config = integration.id_configuracion
@@ -425,11 +1020,11 @@ async function syncIntegration(integration, from, until) {
   try {
     integrationKey = decryptToken(integration.integration_key_enc);
   } catch (e) {
-    await log(`[hourly-dropi] ${label} ERROR descifrando key: ${e.message}`);
+    await log(`[hourly-dropi] ${label} ERROR key: ${e.message}`);
     return { label, synced: 0, skipped: true };
   }
   if (!integrationKey?.trim()) {
-    await log(`[hourly-dropi] ${label} WARNING key vacia`);
+    await log(`[hourly-dropi] ${label} WARNING key vacía`);
     return { label, synced: 0, skipped: true };
   }
 
@@ -437,12 +1032,12 @@ async function syncIntegration(integration, from, until) {
     ? { id_configuracion: id_config, id_usuario: 0 }
     : { id_configuracion: 0, id_usuario: Number(integration.id_usuario) };
 
-  /* Fase 1: Fetch Dropi */
-  let allOrders = [];
-  let start = 0;
-  let keepGoing = true;
-  let retries = 0;
-  let delay = DELAY_BETWEEN_PAGES;
+  // Fase 1: Fetch Dropi
+  let allOrders = [],
+    start = 0,
+    keepGoing = true,
+    retries = 0,
+    delay = DELAY_BETWEEN_PAGES;
 
   while (keepGoing) {
     try {
@@ -457,51 +1052,38 @@ async function syncIntegration(integration, from, until) {
         },
         country_code: integration.country_code,
       });
-
       const objects = resp?.objects || [];
       allOrders = allOrders.concat(objects);
       keepGoing = objects.length >= PAGE_SIZE;
       start += PAGE_SIZE;
       retries = 0;
       delay = DELAY_BETWEEN_PAGES;
-
       if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) {
-        await log(
-          `[hourly-dropi] ${label} WARNING techo ${MAX_ORDERS_PER_INTEGRATION} alcanzado`,
-        );
+        await log(`[hourly-dropi] ${label} WARNING techo`);
         break;
       }
       if (keepGoing) await new Promise((r) => setTimeout(r, delay));
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
       if (status === 429) {
-        if (++retries >= MAX_RETRIES_429) {
-          keepGoing = false;
-          break;
-        }
+        if (++retries >= MAX_RETRIES_429) break;
         delay = Math.min(delay * 2, 20000);
         await log(
-          `[hourly-dropi] ${label} WARNING 429 retry ${retries}/${MAX_RETRIES_429} wait ${delay}ms`,
+          `[hourly-dropi] ${label} 429 retry ${retries}/${MAX_RETRIES_429}`,
         );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      await log(
-        `[hourly-dropi] ${label} ERROR start=${start}: ${err?.message}`,
-      );
+      await log(`[hourly-dropi] ${label} ERROR: ${err?.message}`);
       break;
     }
   }
 
-  /* Fase 2: Upsert cache */
-  if (allOrders.length > 0) {
-    await upsertOrders(cacheInsertFields, allOrders);
-  }
-  await log(
-    `[hourly-dropi] ${label} OK ${allOrders.length} ordenes sincronizadas`,
-  );
+  // Fase 2: Upsert cache
+  if (allOrders.length > 0) await upsertOrders(cacheInsertFields, allOrders);
+  await log(`[hourly-dropi] ${label} OK ${allOrders.length} órdenes`);
 
-  /* Fase 3: Templates WhatsApp */
+  // Fase 3: Templates
   let templateStats = { enviados: 0, omitidos: 0, errores: 0 };
   if (id_config && allOrders.length > 0) {
     templateStats = await procesarTemplates({
@@ -509,7 +1091,7 @@ async function syncIntegration(integration, from, until) {
       id_configuracion: id_config,
     });
     await log(
-      `[hourly-dropi] ${label} templates: ${JSON.stringify(templateStats)}`,
+      `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores}`,
     );
   }
 
@@ -521,10 +1103,13 @@ async function syncIntegration(integration, from, until) {
   };
 }
 
-/* --- Job principal ----------------------------------------- */
+/* ═══════════════════════════════════════════════════════════
+   Job principal
+   ═══════════════════════════════════════════════════════════ */
+
 async function runHourlyDropiSync() {
   if (global._hourlyDropiSyncRunning) {
-    await log('[hourly-dropi] WARNING ya hay una ejecucion en curso, saltando');
+    await log('[hourly-dropi] WARNING ya corriendo');
     return;
   }
   global._hourlyDropiSyncRunning = true;
@@ -533,7 +1118,7 @@ async function runHourlyDropiSync() {
 
   try {
     const { from, until } = getDateRange();
-    await log(`[hourly-dropi] Rango ${from} -> ${until}`);
+    await log(`[hourly-dropi] Rango ${from} → ${until}`);
 
     const integrations = await DropiIntegrations.findAll({
       where: { is_active: 1, deleted_at: null },
@@ -546,9 +1131,7 @@ async function runHourlyDropiSync() {
       ],
       raw: true,
     });
-    await log(
-      `[hourly-dropi] ${integrations.length} integraciones activas encontradas`,
-    );
+    await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
 
     const totals = { ordenes: 0, enviados: 0, skipped: 0, errores: 0 };
 
@@ -560,6 +1143,7 @@ async function runHourlyDropiSync() {
         } else {
           totals.ordenes += r.synced;
           totals.enviados += r.templates?.enviados || 0;
+          totals.errores += r.templates?.errores || 0;
         }
       } catch (err) {
         totals.errores++;
@@ -567,14 +1151,12 @@ async function runHourlyDropiSync() {
           `[hourly-dropi] ERROR integ#${integrations[i].id}: ${err?.message}`,
         );
       }
-      if (i < integrations.length - 1) {
+      if (i < integrations.length - 1)
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
-      }
     }
 
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     await log(
-      `[hourly-dropi] DONE ${elapsed}s | ordenes: ${totals.ordenes} | templates: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
+      `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
     );
   } catch (err) {
     await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
@@ -583,17 +1165,13 @@ async function runHourlyDropiSync() {
   }
 }
 
-/* --- Registrar cron ---------------------------------------- */
-// '* * * * *'    = cada 1 minuto  (TESTING)
-// '5 * * * *'    = cada hora al :05 (PRODUCCION)
-cron.schedule('5 * * * *', () => {
+// cron.schedule('*/15 * * * *', () => {
+cron.schedule('* * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
 });
 
-log('[hourly-dropi] Cron registrado -- ejecuta cada 1 minuto (testing)').catch(
-  () => {},
-);
+log('[hourly-dropi] Cron registrado — cada hora al :05').catch(() => {});
 
 module.exports = { runHourlyDropiSync };

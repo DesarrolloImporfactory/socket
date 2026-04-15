@@ -23,6 +23,11 @@ async function getAdConnection(id_configuracion) {
   return rows[0] || null;
 }
 
+/**
+ * parseActions — usa SOLO el action_type estándar (sin offsite_conversion.* duplicados)
+ * Meta devuelve ambos: "purchase" y "offsite_conversion.fb_pixel_purchase" con el mismo valor.
+ * Sumar ambos duplica los números.
+ */
 function parseActions(actions) {
   const result = {
     purchases: 0,
@@ -35,38 +40,39 @@ function parseActions(actions) {
   for (const a of actions) {
     const t = a.action_type;
     const v = Number(a.value) || 0;
-    if (t === 'purchase' || t === 'offsite_conversion.fb_pixel_purchase')
-      result.purchases += v;
-    if (
-      t === 'complete_registration' ||
-      t === 'offsite_conversion.fb_pixel_complete_registration'
-    )
-      result.complete_registrations += v;
-    if (
-      t === 'onsite_conversion.messaging_conversation_started_7d' ||
-      t === 'onsite_conversion.messaging_first_reply'
-    )
+    if (t === 'purchase') result.purchases += v;
+    if (t === 'complete_registration') result.complete_registrations += v;
+    if (t === 'onsite_conversion.messaging_conversation_started_7d')
       result.messaging_conversations += v;
-    if (t === 'lead' || t === 'offsite_conversion.fb_pixel_lead')
-      result.leads += v;
-    if (t === 'add_to_cart' || t === 'offsite_conversion.fb_pixel_add_to_cart')
-      result.add_to_cart += v;
+    if (t === 'lead') result.leads += v;
+    if (t === 'add_to_cart') result.add_to_cart += v;
   }
   return result;
 }
 
+/**
+ * parseActionValues — solo "purchase" estándar, no el offsite_conversion variant
+ */
 function parseActionValues(actionValues) {
   if (!Array.isArray(actionValues)) return 0;
   let total = 0;
   for (const a of actionValues) {
-    if (
-      a.action_type === 'purchase' ||
-      a.action_type === 'offsite_conversion.fb_pixel_purchase'
-    ) {
+    if (a.action_type === 'purchase') {
       total += Number(a.value) || 0;
     }
   }
   return total;
+}
+
+/**
+ * Extrae CPA de un action_type específico desde cost_per_action_type.
+ */
+function extractCpa(costPerActionType, actionTypes) {
+  if (!Array.isArray(costPerActionType)) return 0;
+  const found = costPerActionType.find((c) =>
+    actionTypes.includes(c.action_type),
+  );
+  return Number(found?.value) || 0;
 }
 
 function metaAx(token) {
@@ -87,10 +93,6 @@ function assertMeta(resp, label) {
   throw err;
 }
 
-/**
- * Construye params de fecha para Meta API.
- * Soporta time_range {"since":"YYYY-MM-DD","until":"YYYY-MM-DD"} O date_preset (last_30d, today, etc.)
- */
 function buildDateParams(query) {
   if (query.time_range) {
     try {
@@ -183,12 +185,10 @@ exports.conectarAdAccount = async (req, res) => {
 
     // PASO 1: Exchange code → listar cuentas
     if (!code || !id_configuracion || !id_usuario) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: 'Faltan campos: code, id_configuracion, id_usuario',
-        });
+      return res.status(400).json({
+        success: false,
+        message: 'Faltan campos: code, id_configuracion, id_usuario',
+      });
     }
 
     let userToken;
@@ -251,12 +251,10 @@ exports.conectarAdAccount = async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.conectar error:', err.message);
-    return res
-      .status(400)
-      .json({
-        success: false,
-        message: err.meta_error?.message || err.message,
-      });
+    return res.status(400).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
   }
 };
 
@@ -359,17 +357,28 @@ exports.insightsAccount = async (req, res) => {
     const purchaseValue = parseActionValues(row.action_values);
     const spend = Number(row.spend) || 0;
 
-    let cpaPurchase = 0;
-    if (Array.isArray(row.cost_per_action_type)) {
-      const found = row.cost_per_action_type.find(
-        (c) =>
-          c.action_type === 'purchase' ||
-          c.action_type === 'offsite_conversion.fb_pixel_purchase',
-      );
-      cpaPurchase = Number(found?.value) || 0;
-    }
+    // CPA Purchase
+    let cpaPurchase = extractCpa(row.cost_per_action_type, ['purchase']);
     if (!cpaPurchase && actions.purchases > 0)
       cpaPurchase = spend / actions.purchases;
+
+    // CPA Messaging
+    let cpaMessaging = extractCpa(row.cost_per_action_type, [
+      'onsite_conversion.messaging_conversation_started_7d',
+    ]);
+    if (!cpaMessaging && actions.messaging_conversations > 0)
+      cpaMessaging = spend / actions.messaging_conversations;
+
+    // CPA Lead
+    let cpaLead = extractCpa(row.cost_per_action_type, ['lead']);
+    if (!cpaLead && actions.leads > 0) cpaLead = spend / actions.leads;
+
+    // CPA Registration
+    let cpaRegistration = extractCpa(row.cost_per_action_type, [
+      'complete_registration',
+    ]);
+    if (!cpaRegistration && actions.complete_registrations > 0)
+      cpaRegistration = spend / actions.complete_registrations;
 
     return res.json({
       success: true,
@@ -386,8 +395,11 @@ exports.insightsAccount = async (req, res) => {
         roas: spend > 0 ? +(purchaseValue / spend).toFixed(2) : 0,
         cpa_purchase: +cpaPurchase.toFixed(2),
         complete_registrations: actions.complete_registrations,
+        cpa_registration: +cpaRegistration.toFixed(2),
         messaging_conversations: actions.messaging_conversations,
+        cpa_messaging: +cpaMessaging.toFixed(2),
         leads: actions.leads,
+        cpa_lead: +cpaLead.toFixed(2),
         add_to_cart: actions.add_to_cart,
         actions_raw: row.actions || [],
         action_values_raw: row.action_values || [],
@@ -395,12 +407,10 @@ exports.insightsAccount = async (req, res) => {
     });
   } catch (err) {
     logger.error('insightsAccount:', err.message);
-    return res
-      .status(err.meta_status || 500)
-      .json({
-        success: false,
-        message: err.meta_error?.message || err.message,
-      });
+    return res.status(err.meta_status || 500).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
   }
 };
 
@@ -434,6 +444,7 @@ exports.insightsCampaigns = async (req, res) => {
           'cpc',
           'actions',
           'action_values',
+          'cost_per_action_type',
         ].join(','),
         ...dateParams,
         level: 'campaign',
@@ -463,6 +474,15 @@ exports.insightsCampaigns = async (req, res) => {
       const spend = Number(row.spend) || 0;
       const status = statusMap[row.campaign_id] || {};
 
+      let cpaMessaging = extractCpa(row.cost_per_action_type, [
+        'onsite_conversion.messaging_conversation_started_7d',
+      ]);
+      if (!cpaMessaging && actions.messaging_conversations > 0)
+        cpaMessaging = spend / actions.messaging_conversations;
+
+      let cpaLead = extractCpa(row.cost_per_action_type, ['lead']);
+      if (!cpaLead && actions.leads > 0) cpaLead = spend / actions.leads;
+
       return {
         campaign_id: row.campaign_id,
         campaign_name: row.campaign_name,
@@ -478,6 +498,10 @@ exports.insightsCampaigns = async (req, res) => {
           actions.purchases > 0 ? +(spend / actions.purchases).toFixed(2) : 0,
         complete_registrations: actions.complete_registrations,
         messaging_conversations: actions.messaging_conversations,
+        cpa_messaging: +cpaMessaging.toFixed(2),
+        leads: actions.leads,
+        cpa_lead: +cpaLead.toFixed(2),
+        add_to_cart: actions.add_to_cart,
         status: status.status || null,
         effective_status: status.effective_status || null,
         daily_budget: status.daily_budget
@@ -498,12 +522,10 @@ exports.insightsCampaigns = async (req, res) => {
     });
   } catch (err) {
     logger.error('insightsCampaigns:', err.message);
-    return res
-      .status(err.meta_status || 500)
-      .json({
-        success: false,
-        message: err.meta_error?.message || err.message,
-      });
+    return res.status(err.meta_status || 500).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
   }
 };
 
@@ -539,6 +561,7 @@ exports.insightsTopAds = async (req, res) => {
           'cpc',
           'actions',
           'action_values',
+          'cost_per_action_type',
         ].join(','),
         ...dateParams,
         level: 'ad',
@@ -576,6 +599,15 @@ exports.insightsTopAds = async (req, res) => {
       const spend = Number(row.spend) || 0;
       const creative = creativeMap[row.ad_id] || {};
 
+      let cpaMessaging = extractCpa(row.cost_per_action_type, [
+        'onsite_conversion.messaging_conversation_started_7d',
+      ]);
+      if (!cpaMessaging && actions.messaging_conversations > 0)
+        cpaMessaging = spend / actions.messaging_conversations;
+
+      let cpaLead = extractCpa(row.cost_per_action_type, ['lead']);
+      if (!cpaLead && actions.leads > 0) cpaLead = spend / actions.leads;
+
       return {
         ad_id: row.ad_id,
         ad_name: row.ad_name,
@@ -594,18 +626,20 @@ exports.insightsTopAds = async (req, res) => {
           actions.purchases > 0 ? +(spend / actions.purchases).toFixed(2) : 0,
         complete_registrations: actions.complete_registrations,
         messaging_conversations: actions.messaging_conversations,
+        cpa_messaging: +cpaMessaging.toFixed(2),
+        leads: actions.leads,
+        cpa_lead: +cpaLead.toFixed(2),
+        add_to_cart: actions.add_to_cart,
       };
     });
 
     return res.json({ success: true, currency: conn.currency, data: ads });
   } catch (err) {
     logger.error('insightsTopAds:', err.message);
-    return res
-      .status(err.meta_status || 500)
-      .json({
-        success: false,
-        message: err.meta_error?.message || err.message,
-      });
+    return res.status(err.meta_status || 500).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
   }
 };
 
@@ -661,12 +695,10 @@ exports.toggleCampania = async (req, res) => {
   try {
     const { id_configuracion, campaign_id, status } = req.body;
     if (!campaign_id || !['PAUSED', 'ACTIVE'].includes(status)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
-        });
+      return res.status(400).json({
+        success: false,
+        message: 'campaign_id y status (PAUSED|ACTIVE) requeridos.',
+      });
     }
 
     const conn = await getAdConnection(id_configuracion);
