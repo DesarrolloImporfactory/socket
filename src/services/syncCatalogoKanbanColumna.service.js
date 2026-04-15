@@ -1,20 +1,9 @@
 // services/syncCatalogoKanbanColumna.service.js
-// Basado en syncCatalogoAsistentesPorConfiguracion pero targeting kanban_columnas.
-// Sincroniza el catálogo de productos al vector store del asistente
-// ligado a UNA columna Kanban específica.
-// ─────────────────────────────────────────────────────────────
 
 const axios = require('axios');
 const FormData = require('form-data');
 const { db } = require('../database/config');
 
-// ─────────────────────────────────────────────────────────────
-// syncCatalogoKanbanColumna
-// @param {number}   id_kanban_columna  — PK de kanban_columnas
-// @param {object}   opts
-// @param {string}   opts.apiKeyOpenAI  — opcional (si no, busca de configuraciones)
-// @param {function} opts.logger        — async logger opcional
-// ─────────────────────────────────────────────────────────────
 async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   const logger = opts.logger || (async (...a) => console.log(...a));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,12 +24,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
       `La columna "${columna.nombre}" no tiene assistant_id configurado`,
     );
 
-  const {
-    id_configuracion,
-    assistant_id,
-    vector_store_id: currentVsId,
-    catalog_file_id: previousFileId,
-  } = columna;
+  const { id_configuracion, assistant_id } = columna;
 
   // ── 2. Obtener API key ────────────────────────────────────
   const apiKey = opts.apiKeyOpenAI || (await getApiKey(id_configuracion));
@@ -55,7 +39,24 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     'OpenAI-Beta': 'assistants=v2',
   };
 
-  // ── 3. Obtener catálogo de productos ─────────────────────
+  // ── 3. LIMPIAR TODOS los vector stores del asistente ──────
+  // Esto garantiza que al finalizar solo exista 1 VS con 1 archivo.
+  await cleanupAllAssistantVectorStores(
+    assistant_id,
+    headersJson,
+    headersBase,
+    logger,
+  );
+
+  // Limpiar también los IDs viejos en BD para esta columna
+  await db.query(
+    `UPDATE kanban_columnas
+     SET vector_store_id = NULL, catalog_file_id = NULL
+     WHERE id = ?`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.UPDATE },
+  );
+
+  // ── 4. Obtener catálogo de productos ──────────────────────
   const productos = await db.query(
     `SELECT pc.id AS id_producto, pc.id_configuracion,
             pc.nombre, pc.descripcion, pc.tipo, pc.precio,
@@ -80,7 +81,6 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 
   const catalogoNormalizado = normalizeCatalogProducts(productos);
 
-  // Separar productos de servicios (igual que syncCatalogoAsistentesPorConfiguracion)
   const catalogoProductos = catalogoNormalizado.filter(
     (p) => String(p.tipo || '').toLowerCase() !== 'servicio',
   );
@@ -110,16 +110,15 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     ],
   };
 
-  // ── 4. Crear o reutilizar vector store ───────────────────
-  const vectorStoreId = await createOrReuseVectorStore(
-    currentVsId,
+  // ── 5. Crear vector store nuevo (siempre fresco) ──────────
+  const vectorStoreId = await createFreshVectorStore(
     id_configuracion,
     columna.nombre,
     headersJson,
     logger,
   );
 
-  // ── 5. Subir archivo catálogo ─────────────────────────────
+  // ── 6. Subir archivo catálogo ─────────────────────────────
   const newFileId = await uploadCatalogFile(
     catalogPayload,
     id_configuracion,
@@ -128,7 +127,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     logger,
   );
 
-  // ── 6. Adjuntar al vector store ───────────────────────────
+  // ── 7. Adjuntar al vector store ───────────────────────────
   const { vectorStoreFileId } = await attachFileToVectorStore(
     vectorStoreId,
     newFileId,
@@ -136,7 +135,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     logger,
   );
 
-  // ── 7. Esperar indexación ─────────────────────────────────
+  // ── 8. Esperar indexación ─────────────────────────────────
   await waitVectorStoreFileProcessed(
     vectorStoreId,
     vectorStoreFileId,
@@ -145,7 +144,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     sleep,
   );
 
-  // ── 8. Asegurar file_search en el asistente ───────────────
+  // ── 9. Actualizar asistente con el nuevo VS ───────────────
   await ensureAssistantHasFileSearch(
     assistant_id,
     vectorStoreId,
@@ -153,27 +152,16 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     logger,
   );
 
-  // ── 9. Guardar IDs en kanban_columnas ─────────────────────
+  // ── 10. Guardar IDs nuevos en BD ──────────────────────────
   await db.query(
     `UPDATE kanban_columnas
-     SET vector_store_id = ?, catalog_file_id = ?
-     WHERE id = ?`,
+   SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
+   WHERE id = ?`,
     {
       replacements: [vectorStoreId, newFileId, id_kanban_columna],
       type: db.QueryTypes.UPDATE,
     },
   );
-
-  // ── 10. Eliminar archivo anterior ────────────────────────
-  if (previousFileId && previousFileId !== newFileId) {
-    await deleteFileIfExists(
-      previousFileId,
-      vectorStoreId,
-      headersBase,
-      headersJson,
-      logger,
-    );
-  }
 
   await logger(
     `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length}`,
@@ -191,14 +179,11 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// syncCatalogoTodasColumnasConfig
-// Sincroniza todas las columnas activas de una configuración
-// que tengan activa_ia=1 y contexto_productos habilitado.
+// syncCatalogoTodasColumnasConfig  (sin cambios de lógica)
 // ─────────────────────────────────────────────────────────────
 async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
   const logger = opts.logger || (async (...a) => console.log(...a));
 
-  // Columnas con IA activa Y acción contexto_productos
   const columnas = await db.query(
     `SELECT DISTINCT kc.id
      FROM   kanban_columnas kc
@@ -244,7 +229,151 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Helpers internos
+// NUEVO HELPER: cleanupAllAssistantVectorStores
+// ══════════════════════════════════════════════════════════════
+// Elimina TODOS los vector stores que el asistente tenga en
+// tool_resources.file_search.vector_store_ids.
+// Por cada VS:
+//   1. Lista todos sus files → los desvincular + elimina de Files API
+//   2. Elimina el vector store de OpenAI
+// Finalmente deja al asistente con vector_store_ids: []
+// ──────────────────────────────────────────────────────────────
+async function cleanupAllAssistantVectorStores(
+  assistantId,
+  headersJson,
+  headersBase,
+  logger,
+) {
+  // ── a) Obtener IDs actuales del asistente ──────────────────
+  let existingVsIds = [];
+  try {
+    const res = await axios.get(
+      `https://api.openai.com/v1/assistants/${assistantId}`,
+      { headers: headersJson },
+    );
+    existingVsIds =
+      res.data?.tool_resources?.file_search?.vector_store_ids || [];
+  } catch (err) {
+    await logger(
+      `⚠️ No se pudo obtener el asistente ${assistantId}: ${err?.response?.data?.error?.message || err.message}`,
+    );
+    return; // Si falla, continuar igual (el VS nuevo se creará limpio)
+  }
+
+  if (!existingVsIds.length) {
+    await logger(
+      `ℹ️ Asistente ${assistantId} no tiene vector stores. Nada que limpiar.`,
+    );
+    return;
+  }
+
+  await logger(
+    `🧹 Limpiando ${existingVsIds.length} vector store(s) del asistente ${assistantId}: ${existingVsIds.join(', ')}`,
+  );
+
+  // ── b) Por cada vector store, eliminar sus archivos y luego el VS ──
+  for (const vsId of existingVsIds) {
+    try {
+      // b.1) Listar todos los files del vector store (paginado)
+      let allVsFiles = [];
+      let hasMore = true;
+      let afterCursor = undefined;
+
+      while (hasMore) {
+        const params = { limit: 100 };
+        if (afterCursor) params.after = afterCursor;
+
+        const listRes = await axios.get(
+          `https://api.openai.com/v1/vector_stores/${vsId}/files`,
+          { headers: headersJson, params },
+        );
+
+        const pageFiles = listRes.data?.data || [];
+        allVsFiles = allVsFiles.concat(pageFiles);
+        hasMore = listRes.data?.has_more || false;
+        afterCursor = pageFiles.length
+          ? pageFiles[pageFiles.length - 1].id
+          : undefined;
+      }
+
+      await logger(
+        `  📋 VS ${vsId}: ${allVsFiles.length} archivo(s) encontrado(s)`,
+      );
+
+      // b.2) Desvincular cada file del VS y eliminarlo de Files API
+      for (const vsFile of allVsFiles) {
+        const fileId = vsFile.id;
+
+        // Desvincular del vector store
+        try {
+          await axios.delete(
+            `https://api.openai.com/v1/vector_stores/${vsId}/files/${fileId}`,
+            { headers: headersJson },
+          );
+          await logger(`    🔗 File ${fileId} desvinculado de VS ${vsId}`);
+        } catch (err) {
+          await logger(
+            `    ⚠️ No se pudo desvincular ${fileId} de VS ${vsId}: ${err?.response?.data?.error?.message || err.message}`,
+          );
+        }
+
+        // Eliminar de OpenAI Files API
+        try {
+          await axios.delete(`https://api.openai.com/v1/files/${fileId}`, {
+            headers: headersBase,
+          });
+          await logger(`    🗑️ File ${fileId} eliminado de OpenAI Files`);
+        } catch (err) {
+          await logger(
+            `    ⚠️ No se pudo eliminar file ${fileId}: ${err?.response?.data?.error?.message || err.message}`,
+          );
+        }
+      }
+
+      // b.3) Eliminar el vector store en sí
+      try {
+        await axios.delete(`https://api.openai.com/v1/vector_stores/${vsId}`, {
+          headers: headersJson,
+        });
+        await logger(`  🗑️ Vector store ${vsId} eliminado`);
+      } catch (err) {
+        await logger(
+          `  ⚠️ No se pudo eliminar VS ${vsId}: ${err?.response?.data?.error?.message || err.message}`,
+        );
+      }
+    } catch (err) {
+      await logger(
+        `⚠️ Error procesando VS ${vsId}: ${err?.response?.data?.error?.message || err.message}`,
+      );
+    }
+  }
+
+  // ── c) Dejar al asistente con vector_store_ids vacío ──────
+  try {
+    const currentRes = await axios.get(
+      `https://api.openai.com/v1/assistants/${assistantId}`,
+      { headers: headersJson },
+    );
+    const tools = currentRes.data?.tools || [];
+
+    await axios.post(
+      `https://api.openai.com/v1/assistants/${assistantId}`,
+      {
+        tools,
+        tool_resources: { file_search: { vector_store_ids: [] } },
+      },
+      { headers: headersJson },
+    );
+    await logger(`✅ Asistente ${assistantId} limpio — vector_store_ids: []`);
+  } catch (err) {
+    await logger(
+      `⚠️ No se pudo limpiar tool_resources del asistente: ${err?.response?.data?.error?.message || err.message}`,
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Helpers (modificados/renombrados)
 // ══════════════════════════════════════════════════════════════
 
 async function getApiKey(id_configuracion) {
@@ -259,36 +388,13 @@ async function getApiKey(id_configuracion) {
   return row.api_key_openai;
 }
 
-async function createOrReuseVectorStore(
-  existingId,
+// Renombrado: ya no "reutiliza", siempre crea uno nuevo
+async function createFreshVectorStore(
   id_configuracion,
   columnaNombre,
   headersJson,
   logger,
 ) {
-  // ← Verificar que el vector store existente siga vivo en OpenAI
-  if (existingId) {
-    try {
-      await axios.get(`https://api.openai.com/v1/vector_stores/${existingId}`, {
-        headers: headersJson,
-      });
-      await logger(`♻️ Reutilizando vector store: ${existingId}`);
-      return existingId;
-    } catch (err) {
-      await logger(
-        `⚠️ Vector store ${existingId} no existe en OpenAI (${err?.response?.status}) — creando uno nuevo`,
-      );
-      // Limpiar el ID inválido de la BD
-      await db.query(
-        `UPDATE kanban_columnas SET vector_store_id = NULL WHERE id_configuracion = ? AND vector_store_id = ?`,
-        {
-          replacements: [id_configuracion, existingId],
-          type: db.QueryTypes.UPDATE,
-        },
-      );
-    }
-  }
-
   const res = await axios.post(
     'https://api.openai.com/v1/vector_stores',
     {
@@ -298,7 +404,7 @@ async function createOrReuseVectorStore(
   );
   const vsId = res?.data?.id;
   if (!vsId) throw new Error('No se pudo crear vector_store');
-  await logger(`✅ Vector store creado: ${vsId}`);
+  await logger(`✅ Vector store nuevo creado: ${vsId}`);
   return vsId;
 }
 
@@ -402,44 +508,7 @@ async function ensureAssistantHasFileSearch(
   );
 }
 
-async function deleteFileIfExists(
-  fileId,
-  vectorStoreId,
-  headersBase,
-  headersJson,
-  logger,
-) {
-  try {
-    // ── 1. Desvincular del vector store primero ──
-    if (vectorStoreId) {
-      try {
-        await axios.delete(
-          `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files/${fileId}`,
-          { headers: headersJson },
-        );
-        await logger(
-          `🔗 Archivo ${fileId} desvinculado del vector store ${vectorStoreId}`,
-        );
-      } catch (err) {
-        await logger(
-          `⚠️ No se pudo desvincular ${fileId} del vector store: ${err?.response?.data?.error?.message || err.message}`,
-        );
-      }
-    }
-
-    // ── 2. Eliminar el archivo de OpenAI Files ──
-    await axios.delete(`https://api.openai.com/v1/files/${fileId}`, {
-      headers: headersBase,
-    });
-    await logger(`🗑️ Archivo anterior eliminado: ${fileId}`);
-  } catch (err) {
-    await logger(
-      `⚠️ No se pudo eliminar archivo ${fileId}: ${err?.response?.data?.error?.message || err.message}`,
-    );
-  }
-}
-
-// ── Normalizar productos (idéntico a syncCatalogoAsistentesPorConfiguracion) ──
+// ── Normalizadores (sin cambios) ──────────────────────────────
 function safeJSONParse(value, fallback = null) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
@@ -483,15 +552,12 @@ function normalizeCatalogProducts(rows) {
       r.combos_producto,
     );
 
-    // Codifica espacios y caracteres especiales pero respeta la estructura de la URL
     const encodeUrl = (url) => {
       if (!url) return null;
       try {
-        // Separar protocolo+dominio+path del filename
         const lastSlash = url.lastIndexOf('/');
         const base = url.substring(0, lastSlash + 1);
         const filename = url.substring(lastSlash + 1);
-        // Codificar solo el filename (donde están los espacios y paréntesis)
         return base + encodeURIComponent(filename);
       } catch {
         return url;
@@ -516,10 +582,10 @@ function normalizeCatalogProducts(rows) {
     bloque_prompt += `Precio_upsell: ${r.precio_upsell ?? ''}\n`;
     if (imagen_upsell_url)
       bloque_prompt += `[upsell_imagen_url]: ${imagen_upsell_url}\n`;
-
     if (r.material) bloque_prompt += `[ficha_tecnica_url]: ${r.material}\n`;
     if (r.landing_url) bloque_prompt += `[landing_url]: ${r.landing_url}\n`;
-    if (r.precio_proveedor) bloque_prompt += `precio_proveedor ${r.precio_proveedor}\n`;
+    if (r.precio_proveedor)
+      bloque_prompt += `precio_proveedor ${r.precio_proveedor}\n`;
 
     return {
       id_producto: r.id_producto,

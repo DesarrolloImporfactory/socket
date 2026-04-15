@@ -4,6 +4,7 @@ const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
 const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
+const { syncCatalogoTodasColumnasConfig } = require('../services/syncCatalogoKanbanColumna.service');
 const axios = require('axios');
 
 // ── Plantillas hardcodeadas ───────────────────────────────────
@@ -820,6 +821,32 @@ async function _crearRespuestasRapidas(id_configuracion) {
   return resultados;
 }
 
+// ── Validar que el API key de OpenAI esté activo ───────────────
+async function validarApiKeyOpenAI(apiKey) {
+  try {
+    await axios.get('https://api.openai.com/v1/models', {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 8000,
+    });
+    return { valido: true };
+  } catch (err) {
+    const status = err?.response?.status;
+    const mensaje = err?.response?.data?.error?.message || err.message;
+
+    if (status === 401)
+      return { valido: false, razon: 'API key inválida o expirada', detalle: mensaje };
+    if (status === 429)
+      return { valido: false, razon: 'Límite de uso de OpenAI alcanzado', detalle: mensaje };
+    if (status === 403)
+      return { valido: false, razon: 'API key sin permisos suficientes', detalle: mensaje };
+
+    return { valido: false, razon: 'No se pudo conectar con OpenAI', detalle: mensaje };
+  }
+}
+
 // ── Aplicar plantilla global ───────────────────────────────
 exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   const { id_configuracion, id_plantilla, empresa } = req.body;
@@ -837,6 +864,27 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const api_key_openai = configRow?.api_key_openai || null;
+
+  // ── Validar API key ANTES de crear cualquier cosa ──────────
+  if (!api_key_openai) {
+    return next(
+      new AppError(
+        'No hay API key de OpenAI configurada. Por favor ingresa una antes de aplicar la plantilla.',
+        400,
+      ),
+    );
+  }
+
+  const validacion = await validarApiKeyOpenAI(api_key_openai);
+  if (!validacion.valido) {
+    return next(
+      new AppError(
+        `API key de OpenAI no válida: ${validacion.razon}. No se creó ninguna columna ni asistente.`,
+        400,
+      ),
+    );
+  }
+  // ── API key confirmada, continuar ──────────────────────────
 
   const headers = api_key_openai
     ? {
@@ -960,6 +1008,13 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
         }),
       ],
     },
+  );
+
+  // ── Sync catálogo (fire-and-forget, no bloquea la respuesta) ──
+  syncCatalogoTodasColumnasConfig(id_configuracion, {
+    logger: async (...args) => console.log('[sync-catalogo]', ...args),
+  }).catch((err) =>
+    console.error('[sync-catalogo] Error en sync automático:', err.message),
   );
 
   return res.json({
