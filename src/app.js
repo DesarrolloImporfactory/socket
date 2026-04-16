@@ -106,6 +106,8 @@ const encuestasPublicoRouter = require('./routes/encuestas_publico.routes');
 
 const metaAdsRouter = require('./routes/meta_ads.routes');
 
+const soporteChatRoutes = require('./routes/soporte_chat.routes');
+
 const path = require('path');
 
 const app = express();
@@ -293,6 +295,7 @@ app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
 app.use('/api/v1/meta_ads', metaAdsRouter);
+app.use('/api/v1/soporte_chat', soporteChatRoutes);
 
 app.all('*', (req, res, next) => {
   return next(
