@@ -1223,7 +1223,7 @@ async function runHourlyDropiSync() {
   }
 }
 
-cron.schedule('* * * * *', () => {
+cron.schedule('*/5 * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
