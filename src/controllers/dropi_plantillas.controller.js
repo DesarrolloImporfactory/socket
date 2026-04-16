@@ -20,7 +20,7 @@ exports.obtener = catchAsync(async (req, res) => {
 
   const registros = await db.query(
     `SELECT estado_dropi, nombre_template, language_code, activo,
-            mensaje_rapido, usar_respuesta_rapida, parametros_json
+            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text
      FROM dropi_plantillas_config
      WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -36,6 +36,7 @@ exports.obtener = catchAsync(async (req, res) => {
       mensaje_rapido: encontrado?.mensaje_rapido || '',
       usar_respuesta_rapida: encontrado?.usar_respuesta_rapida ?? 1,
       parametros_json: encontrado?.parametros_json || null,
+      body_text: encontrado?.body_text || null,
     };
   }
 
@@ -53,12 +54,22 @@ exports.guardar = catchAsync(async (req, res) => {
     mensaje_rapido,
     usar_respuesta_rapida,
     parametros_json,
+    body_text,
   } = req.body;
 
   if (!id_configuracion || !estado_dropi) {
     return res
       .status(400)
       .json({ success: false, message: 'Faltan campos obligatorios' });
+  }
+
+  // Validar: si se activa, debe tener template seleccionado
+  if (activo && (!nombre_template || !nombre_template.trim())) {
+    return res.status(400).json({
+      success: false,
+      message:
+        'Debes seleccionar una plantilla de WhatsApp para activar este estado',
+    });
   }
 
   const [existe] = await db.query(
@@ -78,7 +89,8 @@ exports.guardar = catchAsync(async (req, res) => {
            activo = ?,
            mensaje_rapido = ?,
            usar_respuesta_rapida = ?,
-           parametros_json = ?
+           parametros_json = ?,
+           body_text = ?
        WHERE id_configuracion = ? AND estado_dropi = ?`,
       {
         replacements: [
@@ -92,6 +104,7 @@ exports.guardar = catchAsync(async (req, res) => {
               : 0
             : 1,
           parametros_json || null,
+          body_text || null,
           id_configuracion,
           estado_dropi,
         ],
@@ -102,8 +115,8 @@ exports.guardar = catchAsync(async (req, res) => {
     await db.query(
       `INSERT INTO dropi_plantillas_config
          (id_configuracion, estado_dropi, nombre_template, language_code,
-          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -118,6 +131,7 @@ exports.guardar = catchAsync(async (req, res) => {
               : 0
             : 1,
           parametros_json || null,
+          body_text || null,
         ],
         type: db.QueryTypes.INSERT,
       },
