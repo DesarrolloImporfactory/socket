@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js  — v2 (con parámetros de template)
+ * cron/syncDropiOrdersHourly.js  — v4
  *
  * Cron de automatización de mensajes WhatsApp por cambio de estado Dropi.
  *
@@ -16,7 +16,8 @@
  *     b) Si no hay ventana → envía template de Meta (pagado)
  *        con body params, button params resueltos desde la orden
  *  4. Registra en dropi_plantillas_enviadas (dedup) Y en mensajes_clientes
- *     (para que aparezca en el chat center con json_mensaje y ruta_archivo).
+ *     (para que aparezca en el chat center con json_mensaje, ruta_archivo
+ *      y texto_mensaje con el body real interpolado desde body_text).
  *
  * parametros_json en dropi_plantillas_config:
  *   {
@@ -26,6 +27,10 @@
  *       { "index": 1, "variable": "numero_guia" }
  *     ]
  *   }
+ *
+ * body_text en dropi_plantillas_config:
+ *   El body tal cual está en Meta con placeholders {{1}}, {{2}}, etc.
+ *   Se interpola localmente para guardar en texto_mensaje sin llamar a Meta.
  *
  * Variables disponibles (extraídas de la orden Dropi):
  *   nombre, contenido, direccion, costo, ciudad, provincia,
@@ -84,12 +89,6 @@ async function log(msg) {
     });
   } catch (_) {}
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Lock global
-   ═══════════════════════════════════════════════════════════ */
-
-if (!global._hourlyDropiSyncRunning) global._hourlyDropiSyncRunning = false;
 
 /* ═══════════════════════════════════════════════════════════
    Mapeo: raw status Dropi → estado en dropi_plantillas_config
@@ -341,7 +340,11 @@ function getTrackingUrl(shippingCompany, guide) {
 function getGuiaPdfUrl(order) {
   const guiaPath = order.guia_urls3;
   if (!guiaPath) return '';
-  return `https://d39ru7awumhhs2.cloudfront.net/${guiaPath}`;
+  // El template de Meta ya tiene https://d39ru7awumhhs2.cloudfront.net/ como base URL del botón
+  // Solo devolvemos el path relativo
+  const CF_PREFIX = 'https://d39ru7awumhhs2.cloudfront.net/';
+  if (guiaPath.startsWith(CF_PREFIX)) return guiaPath.replace(CF_PREFIX, '');
+  return guiaPath;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -385,7 +388,24 @@ function resolveVariable(varName, order) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   ruta_archivo — trazabilidad (mismo formato del sistema viejo)
+   Interpolar body_text con los parámetros resueltos
+   "Hola {{1}}, pedido {{2}}" + ["Juan","123"] → "Hola Juan, pedido 123"
+   ═══════════════════════════════════════════════════════════ */
+
+function interpolarBodyText(bodyText, components) {
+  if (!bodyText) return null;
+  let resultado = bodyText;
+  const bodyComp = components.find((c) => c.type === 'body');
+  if (bodyComp?.parameters) {
+    bodyComp.parameters.forEach((p, i) => {
+      resultado = resultado.replace(`{{${i + 1}}}`, p.text || '');
+    });
+  }
+  return resultado;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ruta_archivo — trazabilidad
    ═══════════════════════════════════════════════════════════ */
 
 function buildRutaArchivo(order, estadoConfig) {
@@ -405,7 +425,7 @@ function buildRutaArchivo(order, estadoConfig) {
     transportadora: order.shipping_company || '',
     numero_guia: order.shipping_guide || '',
     estado_notificacion: estadoConfig,
-    source: 'cron_dropi_status',
+    source: 'wa',
   };
 }
 
@@ -419,7 +439,6 @@ function buildTemplateComponents(parametrosJson, order) {
 
   const components = [];
 
-  // Body parameters
   if (Array.isArray(config.body) && config.body.length > 0) {
     components.push({
       type: 'body',
@@ -430,7 +449,6 @@ function buildTemplateComponents(parametrosJson, order) {
     });
   }
 
-  // Button parameters (URL dinámica)
   if (Array.isArray(config.buttons) && config.buttons.length > 0) {
     for (const btn of config.buttons) {
       const idx = btn.index != null ? btn.index : 0;
@@ -508,13 +526,13 @@ async function getWaCredentials(id_configuracion) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Plantillas activas (con parámetros)
+   Plantillas activas (con parámetros y body_text)
    ═══════════════════════════════════════════════════════════ */
 
 async function getPlantillasActivas(id_configuracion) {
   const rows = await db.query(
     `SELECT estado_dropi, nombre_template, language_code,
-            mensaje_rapido, usar_respuesta_rapida, parametros_json
+            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text
      FROM dropi_plantillas_config
      WHERE id_configuracion = ? AND activo = 1
        AND nombre_template IS NOT NULL AND nombre_template != ''`,
@@ -528,6 +546,7 @@ async function getPlantillasActivas(id_configuracion) {
       mensaje_rapido: r.mensaje_rapido || null,
       usar_respuesta_rapida: !!r.usar_respuesta_rapida,
       parametros_json: r.parametros_json || null,
+      body_text: r.body_text || null,
     };
   }
   return map;
@@ -577,9 +596,6 @@ async function registrarEnvio({
 
 /* ═══════════════════════════════════════════════════════════
    Resolver clientes en chat center
-   
-   id_cliente     = sender (negocio)   → idClienteConfig
-   celular_recibe = receiver (cliente) → clienteId
    ═══════════════════════════════════════════════════════════ */
 
 async function resolverClientes({
@@ -588,7 +604,6 @@ async function resolverClientes({
   phone_number_id,
   telefonoConfig,
 }) {
-  // Cliente destino (receiver)
   const [clienteRow] = await db.query(
     `SELECT id FROM clientes_chat_center
      WHERE id_configuracion = ? AND deleted_at IS NULL
@@ -621,7 +636,6 @@ async function resolverClientes({
     clienteId = insertResult;
   }
 
-  // Cliente negocio (sender)
   let idClienteConfig = null;
   if (telefonoConfig) {
     const telCfgLimpio = String(telefonoConfig).replace(/\D/g, '');
@@ -645,7 +659,6 @@ async function resolverClientes({
 
 /* ═══════════════════════════════════════════════════════════
    Registrar mensaje en mensajes_clientes
-   (mismo patrón que sendWhatsappMessageTemplateScheduled)
    ═══════════════════════════════════════════════════════════ */
 
 async function registrarMensajeEnChat({
@@ -669,14 +682,14 @@ async function registrarMensajeEnChat({
           celular_recibe, responsable, texto_mensaje, ruta_archivo,
           json_mensaje, visto, uid_whatsapp, id_wamid_mensaje,
           template_name, language_code, informacion_suficiente)
-       VALUES (?, ?, ?, ?, 1, ?, 'cron_dropi_status', ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
+       VALUES (?, ?, ?, ?, 1, ?, 'Dropi Status', ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
       {
         replacements: [
           id_configuracion,
-          idClienteConfig || clienteId, // id_cliente = sender (negocio)
+          idClienteConfig || clienteId,
           phone_number_id,
           tipoEnvio === 'template' ? 'template' : 'text',
-          clienteId, // celular_recibe = receiver (cliente)
+          clienteId,
           textoMensaje || '',
           rutaArchivo ? JSON.stringify(rutaArchivo) : null,
           jsonMensaje ? JSON.stringify(jsonMensaje) : null,
@@ -717,7 +730,6 @@ async function verificarVentana24h(id_configuracion, phoneNorm) {
 
   if (!clienteRow || !clienteRow.ultimo_mensaje_at) return false;
 
-  // Último mensaje fue del cliente (rol 0) → rápido
   if (String(clienteRow.ultimo_rol_mensaje) === '0') {
     const horasDiff =
       (Date.now() - new Date(clienteRow.ultimo_mensaje_at).getTime()) /
@@ -725,7 +737,6 @@ async function verificarVentana24h(id_configuracion, phoneNorm) {
     return horasDiff < VENTANA_HORAS;
   }
 
-  // Último fue outgoing → buscar último entrante real
   const [msgRow] = await db.query(
     `SELECT created_at FROM mensajes_clientes
      WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0
@@ -839,8 +850,16 @@ async function procesarTemplates({ orders, id_configuracion }) {
   if (!orders.length) return { enviados: 0, omitidos: 0, errores: 0 };
 
   const plantillas = await getPlantillasActivas(id_configuracion);
-  if (!Object.keys(plantillas).length)
+  if (!Object.keys(plantillas).length) {
+    await log(
+      `[hourly-dropi] ⚠ Config #${id_configuracion} sin plantillas activas`,
+    );
     return { enviados: 0, omitidos: 0, errores: 0 };
+  }
+
+  await log(
+    `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
+  );
 
   const creds = await getWaCredentials(id_configuracion);
   if (!creds?.phone_number_id || !creds?.waba_token) {
@@ -859,11 +878,27 @@ async function procesarTemplates({ orders, id_configuracion }) {
     try {
       // 1. Mapear status
       const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
-      if (!estadoConfig || !plantillas[estadoConfig]) {
+
+      if (!estadoConfig) {
+        await log(
+          `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" | SIN MAPEO (status no reconocido)`,
+        );
         omitidos++;
         continue;
       }
+
+      if (!plantillas[estadoConfig]) {
+        await log(
+          `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" → "${estadoConfig}" | SIN PLANTILLA configurada`,
+        );
+        omitidos++;
+        continue;
+      }
+
       if (!order.phone) {
+        await log(
+          `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | SIN TELEFONO`,
+        );
         omitidos++;
         continue;
       }
@@ -877,6 +912,9 @@ async function procesarTemplates({ orders, id_configuracion }) {
       const config = plantillas[estadoConfig];
       const phoneNorm = normalizePhone(order.phone);
       if (!phoneNorm) {
+        await log(
+          `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | TELEFONO INVALIDO: "${order.phone}"`,
+        );
         omitidos++;
         continue;
       }
@@ -909,6 +947,10 @@ async function procesarTemplates({ orders, id_configuracion }) {
         const ventanaAbierta = await verificarVentana24h(
           id_configuracion,
           phoneNorm,
+        );
+
+        await log(
+          `[hourly-dropi] 🔍 #${order.id} | ${estadoConfig} | ventana24h=${ventanaAbierta} | usar_rr=${config.usar_respuesta_rapida}`,
         );
 
         if (ventanaAbierta) {
@@ -952,7 +994,13 @@ async function procesarTemplates({ orders, id_configuracion }) {
         });
         waMessageId = result.wamid;
         jsonMensajeEnviado = result.payload;
-        textoEnviado = config.nombre_template;
+
+        // Interpolar body real desde config local (sin llamar a Meta)
+        const bodyInterpolado = interpolarBodyText(
+          config.body_text,
+          components,
+        );
+        textoEnviado = bodyInterpolado || config.nombre_template;
 
         await log(
           `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
@@ -967,7 +1015,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
         idClienteConfig,
         phoneNorm,
         tipoEnvio,
-        textoEnviado,
+        textoMensaje: textoEnviado,
         templateName: tipoEnvio === 'template' ? config.nombre_template : null,
         languageCode: config.language_code,
         waMessageId,
@@ -1104,15 +1152,19 @@ async function syncIntegration(integration, from, until) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Job principal
+   Job principal — con MySQL GET_LOCK
    ═══════════════════════════════════════════════════════════ */
 
 async function runHourlyDropiSync() {
-  if (global._hourlyDropiSyncRunning) {
-    await log('[hourly-dropi] WARNING ya corriendo');
+  const [row] = await db.query(
+    `SELECT GET_LOCK('dropi_sync_hourly', 1) AS got`,
+    { type: db.QueryTypes.SELECT },
+  );
+  if (!row || Number(row.got) !== 1) {
+    await log('[hourly-dropi] 🔒 Lock no obtenido, skip');
     return;
   }
-  global._hourlyDropiSyncRunning = true;
+
   const t0 = Date.now();
   await log('[hourly-dropi] >> Iniciando sync');
 
@@ -1161,17 +1213,22 @@ async function runHourlyDropiSync() {
   } catch (err) {
     await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
   } finally {
-    global._hourlyDropiSyncRunning = false;
+    try {
+      await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
+        type: db.QueryTypes.RAW,
+      });
+    } catch (e) {
+      await log(`[hourly-dropi] ERROR liberando lock: ${e?.message}`);
+    }
   }
 }
 
-// cron.schedule('*/15 * * * *', () => {
 cron.schedule('* * * * *', () => {
   runHourlyDropiSync().catch((err) =>
     log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
   );
 });
 
-log('[hourly-dropi] Cron registrado — cada hora al :05').catch(() => {});
+log('[hourly-dropi] Cron registrado — cada minuto').catch(() => {});
 
 module.exports = { runHourlyDropiSync };
