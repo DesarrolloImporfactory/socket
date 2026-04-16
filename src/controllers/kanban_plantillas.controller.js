@@ -4,7 +4,9 @@ const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
 const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
-const { syncCatalogoTodasColumnasConfig } = require('../services/syncCatalogoKanbanColumna.service');
+const {
+  syncCatalogoTodasColumnasConfig,
+} = require('../services/syncCatalogoKanbanColumna.service');
 const axios = require('axios');
 
 // ── Plantillas hardcodeadas ───────────────────────────────────
@@ -837,13 +839,29 @@ async function validarApiKeyOpenAI(apiKey) {
     const mensaje = err?.response?.data?.error?.message || err.message;
 
     if (status === 401)
-      return { valido: false, razon: 'API key inválida o expirada', detalle: mensaje };
+      return {
+        valido: false,
+        razon: 'API key inválida o expirada',
+        detalle: mensaje,
+      };
     if (status === 429)
-      return { valido: false, razon: 'Límite de uso de OpenAI alcanzado', detalle: mensaje };
+      return {
+        valido: false,
+        razon: 'Límite de uso de OpenAI alcanzado',
+        detalle: mensaje,
+      };
     if (status === 403)
-      return { valido: false, razon: 'API key sin permisos suficientes', detalle: mensaje };
+      return {
+        valido: false,
+        razon: 'API key sin permisos suficientes',
+        detalle: mensaje,
+      };
 
-    return { valido: false, razon: 'No se pudo conectar con OpenAI', detalle: mensaje };
+    return {
+      valido: false,
+      razon: 'No se pudo conectar con OpenAI',
+      detalle: mensaje,
+    };
   }
 }
 
@@ -1113,6 +1131,18 @@ const KANBAN_TEMPLATES_META = [
           { type: 'QUICK_REPLY', text: 'Quiero mi descuento' },
           { type: 'QUICK_REPLY', text: 'Enviar ubicación' },
         ],
+      },
+    ],
+  },
+  // ── ANTES DE GENERAR GUÍA ──
+  {
+    name: 'antes_generar_guia_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
       },
     ],
   },
