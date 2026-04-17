@@ -229,7 +229,7 @@ const ask = async (req, res) => {
 
     if (!apiKey) {
       // Fallback: usar API key del sistema para soporte
-      apiKey = process.env.OPENAI_API_KEY || null;
+      apiKey = process.env.OPENAI_API_KEY_SOPORTE || null;
     }
 
     if (!apiKey) {
