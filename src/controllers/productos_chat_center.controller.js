@@ -21,6 +21,11 @@ const {
 } = require('../services/syncCatalogoKanbanColumna.service');
 const dropiService = require('../services/dropi.service');
 
+const {
+  convertLocalFileToJpg,
+  downloadAndConvertToJpgS3,
+} = require('../utils/imageConverter');
+
 async function getActiveIntegration(id_configuracion) {
   return DropiIntegrations.findOne({
     where: { id_configuracion, deleted_at: null, is_active: 1 },
@@ -124,6 +129,39 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
+
+  // ── Convertir imágenes a JPG (evita webp/heic que Meta rechaza) ──
+  if (imagenFile) {
+    const absPath = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'imagen',
+      imagenFile.filename,
+    );
+    try {
+      imagenFile.filename = await convertLocalFileToJpg(absPath);
+    } catch (e) {
+      console.error(`[AGREGAR] Error convirtiendo imagen: ${e.message}`);
+    }
+  }
+
+  if (imagen_upsellFile) {
+    const absPath = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'imagen_upsell',
+      imagen_upsellFile.filename,
+    );
+    try {
+      imagen_upsellFile.filename = await convertLocalFileToJpg(absPath);
+    } catch (e) {
+      console.error(`[AGREGAR] Error convirtiendo imagen upsell: ${e.message}`);
+    }
+  }
 
   const imagen_url = imagenFile
     ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
@@ -232,6 +270,22 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
     } catch (_) {}
+
+    // Convertir nueva imagen a JPG
+    const absPathNew = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'imagen',
+      imagenFile.filename,
+    );
+    try {
+      imagenFile.filename = await convertLocalFileToJpg(absPathNew);
+    } catch (e) {
+      console.error(`[ACTUALIZAR] Error convirtiendo imagen: ${e.message}`);
+    }
+
     producto.imagen_url = `${dominio}/uploads/productos/imagen/${imagenFile.filename}`;
   }
 
@@ -296,6 +350,24 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
         if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
       }
     } catch (_) {}
+
+    // Convertir nueva imagen upsell a JPG
+    const absPathNew = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'productos',
+      'imagen_upsell',
+      imagen_upsellFile.filename,
+    );
+    try {
+      imagen_upsellFile.filename = await convertLocalFileToJpg(absPathNew);
+    } catch (e) {
+      console.error(
+        `[ACTUALIZAR] Error convirtiendo imagen upsell: ${e.message}`,
+      );
+    }
+
     producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
   }
 
@@ -487,9 +559,22 @@ exports.cargaMasivaProductos = catchAsync(async (req, res, next) => {
         }
       }
 
-      // ── Imagen URL ──
-      const imagen_url =
-        String(row.imagen_url || row.imagen || '').trim() || null;
+      // ── Imagen URL (si es URL externa, convertir a JPG y subir a S3) ──
+      let imagen_url = null;
+      const rawImagenUrl = String(row.imagen_url || row.imagen || '').trim();
+
+      if (rawImagenUrl) {
+        if (/^https?:\/\//i.test(rawImagenUrl)) {
+          imagen_url = await downloadAndConvertToJpgS3(
+            rawImagenUrl,
+            `masiva-${idConf}-fila${index + 2}`,
+            'productos/carga_masiva',
+          );
+          if (!imagen_url) imagen_url = rawImagenUrl; // fallback
+        } else {
+          imagen_url = rawImagenUrl;
+        }
+      }
 
       // ── Precio proveedor ──
       const precio_proveedor = Number(row.precio_proveedor);
@@ -787,7 +872,25 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
 
   const mainImg = imgs.find((g) => g.main) || imgs[0] || null;
 
-  const imagen_url = buildDropiImageUrl(mainImg);
+  // Descargar y convertir imagen Dropi a JPG en S3 (evita webp)
+  const dropiImgUrl = buildDropiImageUrl(mainImg);
+  let imagen_url = null;
+
+  if (dropiImgUrl) {
+    imagen_url = await downloadAndConvertToJpgS3(
+      dropiImgUrl,
+      `dropi-${dropi_product_id}`,
+      'productos/dropi',
+    );
+
+    // Fallback: si falló la conversión/subida, usar URL original
+    if (!imagen_url) {
+      imagen_url = dropiImgUrl;
+      console.warn(
+        `[IMPORT_DROPI] Producto ${dropi_product_id} importado con URL original (fallback)`,
+      );
+    }
+  }
 
   // 5) precio: SIEMPRE suggested_price (salvo override)
   const { sale_price: precio_prov, suggested_price: precio_sugerido } =
