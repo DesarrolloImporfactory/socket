@@ -545,6 +545,7 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
 });
 
 // ── Listar plantillas globales ─────────────────────────────
+// ── Listar plantillas globales ─────────────────────────────
 exports.listarGlobales = catchAsync(async (req, res) => {
   const plantillas = await db.query(
     `SELECT id, nombre, descripcion, icono, color, created_at,
@@ -558,9 +559,26 @@ exports.listarGlobales = catchAsync(async (req, res) => {
 
   const resultado = plantillas.map((p) => {
     const parsed = typeof p.data === 'string' ? JSON.parse(p.data) : p.data;
-    const columnas_ia = (parsed?.columnas || []).filter(
-      (c) => c.activa_ia,
-    ).length;
+    const cols = parsed?.columnas || [];
+
+    const columnas_ia = cols.filter((c) => c.activa_ia).length;
+
+    // Preview liviano — sin prompts ni acciones, solo lo que el
+    // frontend necesita para mostrar la lista en el paso 2.
+    const columnasPreview = cols
+      .slice()
+      .sort((a, b) => (a.orden || 0) - (b.orden || 0))
+      .map((c) => ({
+        nombre: c.nombre,
+        estado_db: c.estado_db,
+        color_fondo: c.color_fondo,
+        color_texto: c.color_texto,
+        icono: c.icono,
+        orden: c.orden,
+        activa_ia: !!c.activa_ia,
+        es_estado_final: !!c.es_estado_final,
+      }));
+
     return {
       id: p.id,
       nombre: p.nombre,
@@ -570,6 +588,7 @@ exports.listarGlobales = catchAsync(async (req, res) => {
       created_at: p.created_at,
       total_columnas: p.total_columnas,
       columnas_ia,
+      columnas: columnasPreview,
       tipo: 'global',
     };
   });
@@ -929,7 +948,9 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           {
             name: empresa ? `${col.nombre} - ${empresa}` : col.nombre,
             instructions: empresa
-              ? col.instrucciones.replace(/\[empresa\]/gi, empresa)
+              ? col.instrucciones
+                  .replace(/\[empresa\]/gi, empresa)
+                  .replace(/\bimporshop\b/gi, empresa)
               : col.instrucciones,
             model: col.modelo || 'gpt-4o-mini',
             tools: [{ type: 'file_search' }],
