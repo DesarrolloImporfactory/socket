@@ -1530,3 +1530,260 @@ exports.eliminarTemplateMeta = async (req, res) => {
     });
   }
 };
+
+/* ────────────────────────────────────────────────
+   3) Editar fecha/hora de un lote programado
+      Solo afecta items pendientes (no toca los ya enviados ni los en proceso)
+   ──────────────────────────────────────────────── */
+exports.editarFechaLote = catchAsync(async (req, res) => {
+  const {
+    uuid_lote,
+    id_configuracion,
+    fecha_programada, // 'YYYY-MM-DD HH:mm:ss' en hora local
+    timezone = 'America/Guayaquil',
+  } = req.body || {};
+
+  if (!uuid_lote || !id_configuracion || !fecha_programada) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'Faltan campos: uuid_lote, id_configuracion, fecha_programada',
+    });
+  }
+
+  // Validar timezone + parsear
+  const tz = String(timezone).trim();
+  const dtLocal = DateTime.fromSQL(String(fecha_programada), { zone: tz });
+
+  if (!dtLocal.isValid) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'fecha_programada o timezone inválidos.',
+      error: dtLocal.invalidExplanation || dtLocal.invalidReason,
+    });
+  }
+
+  // Validar que sea a futuro (con 1 min de tolerancia)
+  const ahora = DateTime.utc();
+  if (dtLocal.toUTC() <= ahora.plus({ minutes: 1 })) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'La nueva fecha debe ser al menos 1 minuto en el futuro.',
+    });
+  }
+
+  const fechaLocalSql = dtLocal.toFormat('yyyy-LL-dd HH:mm:ss');
+  const fechaUtcSql = dtLocal.toUTC().toFormat('yyyy-LL-dd HH:mm:ss');
+
+  // Solo reprogramamos los pendientes del lote
+  const [result] = await db.query(
+    `
+    UPDATE template_envios_programados
+       SET fecha_programada = ?,
+           fecha_programada_utc = ?,
+           timezone = ?,
+           actualizado_en = NOW()
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+       AND estado = 'pendiente'
+    `,
+    {
+      replacements: [
+        fechaLocalSql,
+        fechaUtcSql,
+        tz,
+        uuid_lote,
+        Number(id_configuracion),
+      ],
+    },
+  );
+
+  const afectados = result?.affectedRows ?? result ?? 0;
+
+  if (!afectados) {
+    return res.status(200).json({
+      ok: false,
+      msg: 'No hay mensajes pendientes que reprogramar en este lote (pueden estar enviados, en proceso o cancelados).',
+    });
+  }
+
+  return res.json({
+    ok: true,
+    msg: `Se reprogramaron ${afectados} mensaje(s) pendiente(s).`,
+    data: {
+      uuid_lote,
+      afectados,
+      nueva_fecha_local: fechaLocalSql,
+      nueva_fecha_utc: fechaUtcSql,
+      timezone: tz,
+    },
+  });
+});
+
+/* ────────────────────────────────────────────────
+   4) Cancelar lote
+      - Solo marca como 'cancelado' los pendientes
+      - Devuelve cuántos se cancelaron, cuántos ya se enviaron, cuántos fallaron
+   ──────────────────────────────────────────────── */
+exports.cancelarLote = catchAsync(async (req, res) => {
+  const { uuid_lote, id_configuracion } = req.body || {};
+
+  if (!uuid_lote || !id_configuracion) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'Faltan campos: uuid_lote, id_configuracion',
+    });
+  }
+
+  // 1) Resumen previo
+  const resumen = await db.query(
+    `
+    SELECT estado, COUNT(*) AS total
+      FROM template_envios_programados
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+     GROUP BY estado
+    `,
+    {
+      replacements: [uuid_lote, Number(id_configuracion)],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const conteo = resumen.reduce((acc, r) => {
+    acc[r.estado] = Number(r.total);
+    return acc;
+  }, {});
+
+  const pendientes = conteo.pendiente || 0;
+  const procesando = conteo.procesando || 0;
+  const enviados = conteo.enviado || 0;
+  const errores = conteo.error || 0;
+  const cancelados_previos = conteo.cancelado || 0;
+
+  if (pendientes + procesando + enviados + errores + cancelados_previos === 0) {
+    return res.status(404).json({
+      ok: false,
+      msg: 'El lote no existe o no pertenece a esta configuración.',
+    });
+  }
+
+  // 2) Si ya no hay nada pendiente, no hay qué cancelar
+  if (pendientes === 0) {
+    return res.status(200).json({
+      ok: false,
+      msg:
+        procesando > 0
+          ? 'El lote ya se está procesando. No se puede cancelar en este momento.'
+          : 'El lote ya no tiene mensajes pendientes que cancelar.',
+      data: {
+        enviados,
+        errores,
+        procesando,
+        cancelados_previos,
+        pendientes: 0,
+      },
+    });
+  }
+
+  // 3) Cancelar solo los pendientes
+  const [result] = await db.query(
+    `
+    UPDATE template_envios_programados
+       SET estado = 'cancelado',
+           actualizado_en = NOW()
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+       AND estado = 'pendiente'
+    `,
+    {
+      replacements: [uuid_lote, Number(id_configuracion)],
+    },
+  );
+
+  const cancelados = result?.affectedRows ?? result ?? 0;
+
+  // 4) Mensaje adaptado al contexto
+  let msg = `Lote cancelado. Se cancelaron ${cancelados} mensaje(s) pendiente(s).`;
+  if (procesando > 0) {
+    msg += ` ⚠️ Ya se estaban procesando ${procesando} mensaje(s), esos pueden haberse enviado igual.`;
+  }
+  if (enviados > 0) {
+    msg += ` ${enviados} ya fueron enviados previamente y no se pueden deshacer.`;
+  }
+
+  return res.json({
+    ok: true,
+    msg,
+    data: {
+      uuid_lote,
+      cancelados,
+      enviados,
+      errores,
+      procesando,
+    },
+  });
+});
+
+/* ────────────────────────────────────────────────
+   5) Reintentar fallidos + pendientes atascados del lote
+      - estado = 'error'
+      - estado = 'pendiente' AND intentos >= max_intentos  (stuck)
+      Los vuelve a 'pendiente', intentos=0, error_message=null
+      y opcionalmente mueve fecha_programada_utc = NOW() para que salgan ya.
+   ──────────────────────────────────────────────── */
+exports.reintentarLote = catchAsync(async (req, res) => {
+  const {
+    uuid_lote,
+    id_configuracion,
+    reenviar_ahora = true, // si true, reprograma a NOW()
+  } = req.body || {};
+
+  if (!uuid_lote || !id_configuracion) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'Faltan campos: uuid_lote, id_configuracion',
+    });
+  }
+
+  const setFechaSql = reenviar_ahora
+    ? `, fecha_programada = NOW()
+       , fecha_programada_utc = UTC_TIMESTAMP()`
+    : '';
+
+  const [result] = await db.query(
+    `
+    UPDATE template_envios_programados
+       SET estado = 'pendiente',
+           intentos = 0,
+           error_message = NULL,
+           actualizado_en = NOW()
+           ${setFechaSql}
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+       AND (
+            estado = 'error'
+            OR (estado = 'pendiente' AND intentos >= max_intentos)
+       )
+    `,
+    {
+      replacements: [uuid_lote, Number(id_configuracion)],
+    },
+  );
+
+  const afectados = result?.affectedRows ?? result ?? 0;
+
+  if (!afectados) {
+    return res.status(200).json({
+      ok: false,
+      msg: 'No hay mensajes para reintentar en este lote (ningún error ni pendiente atascado).',
+    });
+  }
+
+  return res.json({
+    ok: true,
+    msg: `Se reencolaron ${afectados} mensaje(s) para reintento${
+      reenviar_ahora ? ' inmediato' : ''
+    }.`,
+    data: { uuid_lote, afectados, reenviar_ahora },
+  });
+});

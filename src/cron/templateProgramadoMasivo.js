@@ -104,16 +104,25 @@ cron.schedule('* * * * *', async () => {
         // 0) Recovery de registros atascados en "procesando"
         const rescuedRows = await execUpdateAndRowCount(
           `
-          UPDATE template_envios_programados
-          SET estado = 'pendiente',
-              error_message = CONCAT(
+          UPDATE template_envios_programados t
+          SET t.estado = 'pendiente',
+              t.error_message = CONCAT(
                 '[AUTO-RECOVERY] Reencolado por cron (procesando > 10 min) | ',
-                COALESCE(error_message, '')
+                COALESCE(t.error_message, '')
               ),
-              actualizado_en = NOW()
-          WHERE estado = 'procesando'
-            AND actualizado_en < (NOW() - INTERVAL 10 MINUTE)
-            AND intentos < max_intentos
+              t.actualizado_en = NOW()
+          WHERE t.estado = 'procesando'
+            AND t.actualizado_en < (NOW() - INTERVAL 10 MINUTE)
+            AND t.intentos < t.max_intentos
+            AND NOT EXISTS (
+              SELECT 1
+              FROM (
+                SELECT DISTINCT uuid_lote
+                FROM template_envios_programados
+                WHERE estado = 'cancelado'
+              ) AS c
+              WHERE c.uuid_lote = t.uuid_lote
+            )
           `,
           [],
         );
@@ -121,6 +130,36 @@ cron.schedule('* * * * *', async () => {
         if (rescuedRows > 0) {
           console.log(
             `♻️ [CRON templateProgramadoMasivo] Reencolados por recovery: ${rescuedRows}`,
+          );
+        }
+
+        // 0.1) Cerrar 'procesando' huérfanos de lotes cancelados
+        // Si un lote fue cancelado mientras un mensaje estaba en procesamiento,
+        // lo marcamos como 'error' en vez de revivirlo.
+        const closedOrphans = await execUpdateAndRowCount(
+          `
+            UPDATE template_envios_programados t
+            SET t.estado = 'error',
+                t.error_message = '[CANCELADO] Lote cancelado mientras el mensaje estaba en procesamiento',
+                t.actualizado_en = NOW()
+            WHERE t.estado = 'procesando'
+              AND t.actualizado_en < (NOW() - INTERVAL 10 MINUTE)
+              AND EXISTS (
+                SELECT 1
+                FROM (
+                  SELECT DISTINCT uuid_lote
+                  FROM template_envios_programados
+                  WHERE estado = 'cancelado'
+                ) AS c
+                WHERE c.uuid_lote = t.uuid_lote
+              )
+          `,
+          [],
+        );
+
+        if (closedOrphans > 0) {
+          console.log(
+            `🚫 [CRON templateProgramadoMasivo] Cerrados por cancelación de lote: ${closedOrphans}`,
           );
         }
 

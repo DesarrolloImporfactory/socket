@@ -396,96 +396,92 @@ async function uploadResumableAndGetHandle({
  * - JSON normal (sin archivo)
  * - multipart/form-data (con headerFile)
  */
-router.post(
-  '/CrearPlantilla',
-  uploadSingle('headerFile'),
-  async (req, res) => {
-    try {
-      // multipart => todo viene como string
-      const id_configuracion = req.body.id_configuracion;
-      const name = req.body.name;
-      const language = req.body.language;
-      const category = req.body.category;
+router.post('/CrearPlantilla', uploadSingle('headerFile'), async (req, res) => {
+  try {
+    // multipart => todo viene como string
+    const id_configuracion = req.body.id_configuracion;
+    const name = req.body.name;
+    const language = req.body.language;
+    const category = req.body.category;
 
-      let components = req.body.components;
-      if (typeof components === 'string') {
-        components = JSON.parse(components);
-      }
+    let components = req.body.components;
+    if (typeof components === 'string') {
+      components = JSON.parse(components);
+    }
 
-      if (!id_configuracion || !name || !language || !category || !components) {
-        return res
-          .status(400)
-          .json({ success: false, error: 'Faltan campos obligatorios.' });
-      }
+    if (!id_configuracion || !name || !language || !category || !components) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Faltan campos obligatorios.' });
+    }
 
-      const wabaConfig = await getConfigFromDB(id_configuracion);
-      if (!wabaConfig) {
-        return res
-          .status(404)
-          .json({ success: false, error: 'No se encontró configuración.' });
-      }
+    const wabaConfig = await getConfigFromDB(id_configuracion);
+    if (!wabaConfig) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'No se encontró configuración.' });
+    }
 
-      const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+    const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
 
-      // Si viene archivo, subimos y lo convertimos en header_handle
-      if (req.file) {
-        const mimeType = req.file.mimetype || 'application/octet-stream';
-        const fileName =
-          req.file.originalname ||
-          `header${path.extname(req.file.originalname || '')}`;
+    // Si viene archivo, subimos y lo convertimos en header_handle
+    if (req.file) {
+      const mimeType = req.file.mimetype || 'application/octet-stream';
+      const fileName =
+        req.file.originalname ||
+        `header${path.extname(req.file.originalname || '')}`;
 
-        const handle = await uploadResumableAndGetHandle({
-          accessToken: ACCESS_TOKEN,
-          fileBuffer: req.file.buffer,
-          mimeType,
-          fileName,
-        });
-
-        // Injectar example.header_handle en el HEADER de media
-        components = components.map((c) => {
-          if (
-            c?.type === 'HEADER' &&
-            ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(c?.format)
-          ) {
-            return {
-              ...c,
-              example: { header_handle: [handle] },
-            };
-          }
-          return c;
-        });
-      }
-
-      const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
-
-      const payload = { name, language, category, components };
-
-      const response = await axios.post(url, payload, {
-        headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-        validateStatus: () => true,
+      const handle = await uploadResumableAndGetHandle({
+        accessToken: ACCESS_TOKEN,
+        fileBuffer: req.file.buffer,
+        mimeType,
+        fileName,
       });
 
-      if (response.status < 200 || response.status >= 300) {
-        return res.status(200).json({
-          success: false,
-          meta_status: response.status,
-          error: response.data,
-        });
-      }
-
-      return res.json({ success: true, data: response.data });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error?.message || 'Error interno',
+      // Injectar example.header_handle en el HEADER de media
+      components = components.map((c) => {
+        if (
+          c?.type === 'HEADER' &&
+          ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(c?.format)
+        ) {
+          return {
+            ...c,
+            example: { header_handle: [handle] },
+          };
+        }
+        return c;
       });
     }
-  },
-);
+
+    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+
+    const payload = { name, language, category, components };
+
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      return res.status(200).json({
+        success: false,
+        meta_status: response.status,
+        error: response.data,
+      });
+    }
+
+    return res.json({ success: true, data: response.data });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Error interno',
+    });
+  }
+});
 
 /**
  * Ruta: POST /api/v1/whatsapp_managment/obtenerRespuestasRapidas
@@ -1441,7 +1437,10 @@ async function upsertOwnerByConfig({
   }
 
   // 3) Si no existe -> crear
-  console.log('[clientes_chat_center INSERT] routes/whatsapp.routes.js ~L1424 — getOrCreateOwnerClient propietario=1, id_configuracion:', id_configuracion);
+  console.log(
+    '[clientes_chat_center INSERT] routes/whatsapp.routes.js ~L1424 — getOrCreateOwnerClient propietario=1, id_configuracion:',
+    id_configuracion,
+  );
   const [ins] = await db.query(
     `INSERT INTO clientes_chat_center
       (id_configuracion, id_plataforma, uid_cliente, nombre_cliente, celular_cliente,
@@ -2757,273 +2756,264 @@ router.post('/enviarAudio', uploadSingle('audio'), async (req, res) => {
  * Form-data:
  *  - audio: archivo de audio (cualquier formato)
  */
-router.post(
-  '/enviarAudioCompleto',
-  uploadSingle('audio'),
-  async (req, res) => {
-    try {
-      const { id_configuracion, to } = req.body;
+router.post('/enviarAudioCompleto', uploadSingle('audio'), async (req, res) => {
+  try {
+    const { id_configuracion, to } = req.body;
 
-      // Validaciones
-      if (!id_configuracion) {
-        return res.status(400).json({
-          success: false,
-          message: 'Falta id_configuracion',
-        });
-      }
-      if (!to) {
-        return res.status(400).json({
-          success: false,
-          message: 'Falta el campo to (destinatario)',
-        });
-      }
-      if (!req.file?.buffer) {
-        return res.status(400).json({
-          success: false,
-          message: 'Falta el archivo audio',
-        });
-      }
-
-      // Obtener config de WhatsApp
-      const cfg = await getConfigFromDB(id_configuracion);
-      if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID) {
-        return res.status(404).json({
-          success: false,
-          message: 'Config no encontrada o incompleta',
-        });
-      }
-
-      const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
-
-      // ========= PASO 1: Convertir audio a OGG OPUS =========
-      console.log('🎵 Paso 1: Convirtiendo audio a OGG OPUS...');
-
-      const inputStream = new PassThrough();
-      inputStream.end(req.file.buffer);
-
-      const outputStream = new PassThrough();
-      const chunks = [];
-
-      const conversionPromise = new Promise((resolve, reject) => {
-        let ffmpegProcess;
-        let resolved = false;
-
-        outputStream.on('data', (chunk) => chunks.push(chunk));
-
-        outputStream.on('end', () => {
-          if (!resolved) {
-            resolved = true;
-            const convertedBuffer = Buffer.concat(chunks);
-            console.log(
-              `✅ Audio convertido: ${(convertedBuffer.length / 1024).toFixed(2)} KB`,
-            );
-            resolve(convertedBuffer);
-          }
-        });
-
-        outputStream.on('error', (err) => {
-          if (!resolved) {
-            resolved = true;
-            reject(err);
-          }
-        });
-
-        ffmpegProcess = ffmpeg(inputStream)
-          .audioCodec('libmp3lame')
-          .audioBitrate('128k')
-          .audioFrequency(44100)
-          .audioChannels(1)
-          .format('mp3')
-          .on('start', (cmdline) => {
-            console.log('🔧 FFmpeg command:', cmdline);
-          })
-          .on('error', (err) => {
-            if (!resolved) {
-              resolved = true;
-              console.error('❌ Error en conversión ffmpeg:', err);
-              reject(err);
-            }
-          })
-          .on('end', () => {
-            console.log('🎵 FFmpeg finalizó la conversión');
-          });
-
-        ffmpegProcess.pipe(outputStream, { end: true });
-      });
-
-      const convertedAudioBuffer = await conversionPromise;
-
-      // ========= PASO 2: Subir a Meta =========
-      console.log('📤 Paso 2: Subiendo audio a Meta...');
-
-      const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
-      const mimeType = 'audio/mpeg';
-      const fileName = `AUD-${Date.now()}.mp3`;
-
-      const metaForm = new FormData();
-      metaForm.append('messaging_product', 'whatsapp');
-      metaForm.append('type', mimeType);
-      metaForm.append('file', convertedAudioBuffer, {
-        filename: fileName,
-        contentType: mimeType,
-      });
-
-      const mediaResp = await axios.post(mediaUrl, metaForm, {
-        headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
-          ...metaForm.getHeaders(),
-        },
-        params: { debug: 'all' },
-        timeout: 30000,
-        validateStatus: () => true,
-      });
-
-      if (mediaResp.data?.__debug) {
-        console.log('📊 Debug info de Meta:', mediaResp.data.__debug);
-        logger.info('Meta debug info (upload media)', {
-          meta_debug: mediaResp.data.__debug,
-          step: 'upload_media',
-          id_configuracion,
-        });
-      }
-
-      if (
-        mediaResp.status < 200 ||
-        mediaResp.status >= 300 ||
-        mediaResp.data?.error
-      ) {
-        console.error('❌ Error subiendo a Meta:', mediaResp.data);
-        return res.status(200).json({
-          success: false,
-          step: 'upload_media_to_meta',
-          meta_status: mediaResp.status,
-          error: mediaResp.data?.error || mediaResp.data,
-        });
-      }
-
-      const mediaId = mediaResp.data?.id;
-      if (!mediaId) {
-        return res.status(200).json({
-          success: false,
-          step: 'upload_media_to_meta',
-          error: 'Meta no devolvió media_id',
-          raw: mediaResp.data,
-        });
-      }
-
-      console.log(`✅ Audio subido a Meta. Media ID: ${mediaId}`);
-
-      // ========= PASO 3: Enviar mensaje de audio =========
-      console.log('💬 Paso 3: Enviando mensaje de audio...');
-
-      const msgUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-      const payload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to,
-        type: 'audio',
-        audio: { id: mediaId },
-      };
-
-      const msgResp = await axios.post(msgUrl, payload, {
-        headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        params: { debug: 'all' },
-        timeout: 30000,
-        validateStatus: () => true,
-      });
-      console.log('Respuesta de Meta al enviar mensaje:', msgResp.data);
-
-      if (msgResp.data?.__debug) {
-        console.log(
-          '📊 Debug info de Meta (send message):',
-          msgResp.data.__debug,
-        );
-        logger.info('Meta debug info (send message)', {
-          meta_debug: msgResp.data.__debug,
-          step: 'send_message',
-          id_configuracion,
-        });
-      }
-
-      if (
-        msgResp.status < 200 ||
-        msgResp.status >= 300 ||
-        msgResp.data?.error
-      ) {
-        console.error('❌ Error enviando mensaje:', msgResp.data);
-        return res.status(200).json({
-          success: false,
-          step: 'send_message',
-          meta_status: msgResp.status,
-          mediaId,
-          error: msgResp.data?.error || msgResp.data,
-        });
-      }
-
-      const wamid = msgResp.data?.messages?.[0]?.id || null;
-      console.log(`✅ Mensaje enviado. WAMID: ${wamid}`);
-
-      // ========= PASO 4: Guardar en AWS (Uploader) =========
-      console.log('☁️  Paso 4: Guardando en AWS...');
-
-      const awsForm = new FormData();
-      awsForm.append('file', convertedAudioBuffer, {
-        filename: fileName,
-        contentType: mimeType,
-      });
-
-      const uploaderResp = await axios.post(
-        'https://uploader.imporfactory.app/api/files/upload',
-        awsForm,
-        {
-          headers: awsForm.getHeaders(),
-          timeout: 30000,
-          validateStatus: () => true,
-        },
-      );
-
-      let awsUrl = null;
-      if (
-        uploaderResp.status >= 200 &&
-        uploaderResp.status < 300 &&
-        uploaderResp.data?.success
-      ) {
-        awsUrl = uploaderResp.data.data?.url || null;
-        console.log(`✅ Audio guardado en AWS: ${awsUrl}`);
-      } else {
-        console.warn('⚠️  No se pudo guardar en AWS:', uploaderResp.data);
-      }
-
-      // ========= Respuesta final =========
-      return res.json({
-        success: true,
-        message: 'Audio procesado, enviado y guardado correctamente',
-        data: {
-          mediaId,
-          wamid,
-          awsUrl,
-        },
-        details: {
-          meta_upload: mediaResp.data,
-          meta_send: msgResp.data,
-          aws_upload: uploaderResp.data,
-        },
-      });
-    } catch (error) {
-      console.error('❌ Error en /enviarAudioCompleto:', error);
-      return res.status(500).json({
+    // Validaciones
+    if (!id_configuracion) {
+      return res.status(400).json({
         success: false,
-        message: 'Error interno procesando el audio',
-        error: error?.message,
-        stack:
-          process.env.NODE_ENV === 'development' ? error?.stack : undefined,
+        message: 'Falta id_configuracion',
       });
     }
-  },
-);
+    if (!to) {
+      return res.status(400).json({
+        success: false,
+        message: 'Falta el campo to (destinatario)',
+      });
+    }
+    if (!req.file?.buffer) {
+      return res.status(400).json({
+        success: false,
+        message: 'Falta el archivo audio',
+      });
+    }
+
+    // Obtener config de WhatsApp
+    const cfg = await getConfigFromDB(id_configuracion);
+    if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID) {
+      return res.status(404).json({
+        success: false,
+        message: 'Config no encontrada o incompleta',
+      });
+    }
+
+    const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
+
+    // ========= PASO 1: Convertir audio a OGG OPUS =========
+    console.log('🎵 Paso 1: Convirtiendo audio a OGG OPUS...');
+
+    const inputStream = new PassThrough();
+    inputStream.end(req.file.buffer);
+
+    const outputStream = new PassThrough();
+    const chunks = [];
+
+    const conversionPromise = new Promise((resolve, reject) => {
+      let ffmpegProcess;
+      let resolved = false;
+
+      outputStream.on('data', (chunk) => chunks.push(chunk));
+
+      outputStream.on('end', () => {
+        if (!resolved) {
+          resolved = true;
+          const convertedBuffer = Buffer.concat(chunks);
+          console.log(
+            `✅ Audio convertido: ${(convertedBuffer.length / 1024).toFixed(2)} KB`,
+          );
+          resolve(convertedBuffer);
+        }
+      });
+
+      outputStream.on('error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
+
+      ffmpegProcess = ffmpeg(inputStream)
+        .audioCodec('libmp3lame')
+        .audioBitrate('128k')
+        .audioFrequency(44100)
+        .audioChannels(1)
+        .format('mp3')
+        .on('start', (cmdline) => {
+          console.log('🔧 FFmpeg command:', cmdline);
+        })
+        .on('error', (err) => {
+          if (!resolved) {
+            resolved = true;
+            console.error('❌ Error en conversión ffmpeg:', err);
+            reject(err);
+          }
+        })
+        .on('end', () => {
+          console.log('🎵 FFmpeg finalizó la conversión');
+        });
+
+      ffmpegProcess.pipe(outputStream, { end: true });
+    });
+
+    const convertedAudioBuffer = await conversionPromise;
+
+    // ========= PASO 2: Subir a Meta =========
+    console.log('📤 Paso 2: Subiendo audio a Meta...');
+
+    const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
+    const mimeType = 'audio/mpeg';
+    const fileName = `AUD-${Date.now()}.mp3`;
+
+    const metaForm = new FormData();
+    metaForm.append('messaging_product', 'whatsapp');
+    metaForm.append('type', mimeType);
+    metaForm.append('file', convertedAudioBuffer, {
+      filename: fileName,
+      contentType: mimeType,
+    });
+
+    const mediaResp = await axios.post(mediaUrl, metaForm, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        ...metaForm.getHeaders(),
+      },
+      params: { debug: 'all' },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+
+    if (mediaResp.data?.__debug) {
+      console.log('📊 Debug info de Meta:', mediaResp.data.__debug);
+      logger.info('Meta debug info (upload media)', {
+        meta_debug: mediaResp.data.__debug,
+        step: 'upload_media',
+        id_configuracion,
+      });
+    }
+
+    if (
+      mediaResp.status < 200 ||
+      mediaResp.status >= 300 ||
+      mediaResp.data?.error
+    ) {
+      console.error('❌ Error subiendo a Meta:', mediaResp.data);
+      return res.status(200).json({
+        success: false,
+        step: 'upload_media_to_meta',
+        meta_status: mediaResp.status,
+        error: mediaResp.data?.error || mediaResp.data,
+      });
+    }
+
+    const mediaId = mediaResp.data?.id;
+    if (!mediaId) {
+      return res.status(200).json({
+        success: false,
+        step: 'upload_media_to_meta',
+        error: 'Meta no devolvió media_id',
+        raw: mediaResp.data,
+      });
+    }
+
+    console.log(`✅ Audio subido a Meta. Media ID: ${mediaId}`);
+
+    // ========= PASO 3: Enviar mensaje de audio =========
+    console.log('💬 Paso 3: Enviando mensaje de audio...');
+
+    const msgUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'audio',
+      audio: { id: mediaId },
+    };
+
+    const msgResp = await axios.post(msgUrl, payload, {
+      headers: {
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      params: { debug: 'all' },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+    console.log('Respuesta de Meta al enviar mensaje:', msgResp.data);
+
+    if (msgResp.data?.__debug) {
+      console.log(
+        '📊 Debug info de Meta (send message):',
+        msgResp.data.__debug,
+      );
+      logger.info('Meta debug info (send message)', {
+        meta_debug: msgResp.data.__debug,
+        step: 'send_message',
+        id_configuracion,
+      });
+    }
+
+    if (msgResp.status < 200 || msgResp.status >= 300 || msgResp.data?.error) {
+      console.error('❌ Error enviando mensaje:', msgResp.data);
+      return res.status(200).json({
+        success: false,
+        step: 'send_message',
+        meta_status: msgResp.status,
+        mediaId,
+        error: msgResp.data?.error || msgResp.data,
+      });
+    }
+
+    const wamid = msgResp.data?.messages?.[0]?.id || null;
+    console.log(`✅ Mensaje enviado. WAMID: ${wamid}`);
+
+    // ========= PASO 4: Guardar en AWS (Uploader) =========
+    console.log('☁️  Paso 4: Guardando en AWS...');
+
+    const awsForm = new FormData();
+    awsForm.append('file', convertedAudioBuffer, {
+      filename: fileName,
+      contentType: mimeType,
+    });
+
+    const uploaderResp = await axios.post(
+      'https://uploader.imporfactory.app/api/files/upload',
+      awsForm,
+      {
+        headers: awsForm.getHeaders(),
+        timeout: 30000,
+        validateStatus: () => true,
+      },
+    );
+
+    let awsUrl = null;
+    if (
+      uploaderResp.status >= 200 &&
+      uploaderResp.status < 300 &&
+      uploaderResp.data?.success
+    ) {
+      awsUrl = uploaderResp.data.data?.url || null;
+      console.log(`✅ Audio guardado en AWS: ${awsUrl}`);
+    } else {
+      console.warn('⚠️  No se pudo guardar en AWS:', uploaderResp.data);
+    }
+
+    // ========= Respuesta final =========
+    return res.json({
+      success: true,
+      message: 'Audio procesado, enviado y guardado correctamente',
+      data: {
+        mediaId,
+        wamid,
+        awsUrl,
+      },
+      details: {
+        meta_upload: mediaResp.data,
+        meta_send: msgResp.data,
+        aws_upload: uploaderResp.data,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error en /enviarAudioCompleto:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno procesando el audio',
+      error: error?.message,
+      stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined,
+    });
+  }
+});
 
 router.post(
   '/enviar_template_masivo',
@@ -3049,5 +3039,9 @@ router.post(
 );
 
 router.post('/eliminarTemplateMeta', whatsappCtrl.eliminarTemplateMeta);
+
+router.put('/programados_editar_fecha', whatsappCtrl.editarFechaLote);
+router.delete('/programados_cancelar_lote', whatsappCtrl.cancelarLote);
+router.post('/programados_reintentar_lote', whatsappCtrl.reintentarLote);
 
 module.exports = router;

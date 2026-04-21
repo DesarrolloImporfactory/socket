@@ -300,27 +300,18 @@ async function enrichOrdersWithChatAndAgent({ id_configuracion, objects }) {
 
   const orConditions = [];
   for (const k of uniqueKeys) {
-    orConditions.push(
-      { celular_cliente: { [Op.like]: `%${k}` } },
-    );
+    orConditions.push({ celular_cliente: { [Op.like]: `%${k}` } });
   }
 
   const clientes = await ClientesChatCenter.findAll({
     where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
-    attributes: [
-      'id',
-      'celular_cliente',
-      'id_encargado',
-      'estado_contacto',
-    ],
+    attributes: ['id', 'celular_cliente', 'id_encargado', 'estado_contacto'],
     raw: true,
   });
 
   const clientByKey = new Map();
   for (const c of clientes) {
-    [
-      ...phoneKeys(c?.celular_cliente),
-    ].forEach((k) => {
+    [...phoneKeys(c?.celular_cliente)].forEach((k) => {
       if (k && !clientByKey.has(k)) clientByKey.set(k, c);
     });
   }
@@ -556,12 +547,19 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
     throw new AppError('No hay campos válidos para actualizar', 400);
   }
 
-  return dropiService.updateMyOrder({
+  const dropiResponse = await dropiService.updateMyOrder({
     integrationKey,
     orderId: oid,
     payload,
     country_code: integration.country_code,
   });
+
+  const norm = normalizeDropiResult(dropiResponse);
+  if (!norm.ok) {
+    throw new AppError(norm.message, norm.status || 400);
+  }
+
+  return norm.data;
 }
 
 module.exports = {
