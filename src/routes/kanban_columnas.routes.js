@@ -16,6 +16,8 @@ router.post('/eliminar', KanbanColumnasController.eliminarColumna);
 router.post('/reordenar', KanbanColumnasController.reordenarColumnas);
 router.post('/marcar_principal', KanbanColumnasController.marcarPrincipal);
 router.post('/quitar_principal', KanbanColumnasController.quitarPrincipal);
+router.post('/marcar_dropi_principal', KanbanColumnasController.marcarDropiPrincipal);
+router.post('/quitar_dropi_principal', KanbanColumnasController.quitarDropiPrincipal);
 
 router.post('/sync_catalogo', KanbanColumnasController.syncCatalogo);
 

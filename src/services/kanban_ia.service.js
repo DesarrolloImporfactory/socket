@@ -326,6 +326,43 @@ async function procesarMensajeKanban(params) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// limpiarCitasFileSearch
+// Borra las citas 【X:Y†source】 que OpenAI inyecta automáticamente
+// cuando el asistente usa file_search. Dos capas: annotations
+// (método oficial por índices) + regex de respaldo.
+// ══════════════════════════════════════════════════════════════
+function limpiarCitasFileSearch(textBlock) {
+  if (!textBlock?.value) return '';
+  let texto = textBlock.value;
+  const anns = textBlock.annotations || [];
+
+  // Capa 1: borrar por índices exactos (de atrás hacia adelante
+  // para no desfasar las posiciones restantes)
+  for (let i = anns.length - 1; i >= 0; i--) {
+    const a = anns[i];
+    if (
+      typeof a?.start_index === 'number' &&
+      typeof a?.end_index === 'number'
+    ) {
+      texto = texto.slice(0, a.start_index) + texto.slice(a.end_index);
+    }
+  }
+
+  // Capa 2: regex de respaldo por si algún formato cambia
+  texto = texto
+    .replace(/【[^】]*】/g, '')
+    .replace(/\[\d+:\d+†[^\]]*\]/g, '')
+    .replace(/\[source\]/gi, '')
+    .replace(/\[doc\d+\]/gi, '');
+
+  // Limpiar espacios y puntuación que quedaron colgando
+  return texto
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// ══════════════════════════════════════════════════════════════
 // ejecutarAsistente — polling OpenAI
 // ══════════════════════════════════════════════════════════════
 async function ejecutarAsistente({
@@ -387,11 +424,12 @@ async function ejecutarAsistente({
     { headers },
   );
   const mensajes = messagesRes.data.data || [];
-  const respuesta =
-    mensajes
-      .reverse()
-      .find((m) => m.role === 'assistant' && m.run_id === run_id)?.content?.[0]
-      ?.text?.value || '';
+  const textBlock = mensajes
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.run_id === run_id)
+    ?.content?.[0]?.text;
+
+  const respuesta = limpiarCitasFileSearch(textBlock);
 
   return { respuesta, total_tokens };
 }

@@ -15,8 +15,9 @@ const {
 async function getColumnas(id_configuracion) {
   return db.query(
     `SELECT id, nombre, estado_db, color_fondo, color_texto, icono, orden,
-        activo, es_estado_final, es_principal, activa_ia, max_tokens,
-        assistant_id, vector_store_id, catalog_file_id, catalog_synced_at
+        activo, es_estado_final, es_principal, es_dropi_principal,
+        activa_ia, max_tokens, assistant_id, vector_store_id,
+        catalog_file_id, catalog_synced_at
      FROM kanban_columnas
      WHERE id_configuracion = ?
      ORDER BY orden ASC`,
@@ -316,6 +317,46 @@ exports.quitarPrincipal = catchAsync(async (req, res, next) => {
 
   await db.query(
     `UPDATE kanban_columnas SET es_principal = 0 WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  const columnas = await getColumnas(id_configuracion);
+  return res.status(200).json({ success: true, data: columnas });
+});
+
+// ─── Marcar como columna principal de Dropi ───────────────────
+// POST /kanban_columnas/marcar_dropi_principal
+exports.marcarDropiPrincipal = catchAsync(async (req, res, next) => {
+  const { id, id_configuracion } = req.body;
+  if (!id || !id_configuracion)
+    return next(new AppError('Faltan id e id_configuracion', 400));
+
+  // Desmarcar todas las columnas de esta configuración
+  await db.query(
+    `UPDATE kanban_columnas SET es_dropi_principal = 0 WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  // Marcar solo la seleccionada
+  await db.query(
+    `UPDATE kanban_columnas SET es_dropi_principal = 1 
+     WHERE id = ? AND id_configuracion = ?`,
+    { replacements: [id, id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  const columnas = await getColumnas(id_configuracion);
+  return res.status(200).json({ success: true, data: columnas });
+});
+
+// ─── Quitar columna principal de Dropi ────────────────────────
+// POST /kanban_columnas/quitar_dropi_principal
+exports.quitarDropiPrincipal = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  await db.query(
+    `UPDATE kanban_columnas SET es_dropi_principal = 0 WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
 

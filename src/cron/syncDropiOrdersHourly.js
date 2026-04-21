@@ -553,6 +553,20 @@ async function getPlantillasActivas(id_configuracion) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Columna principal de Dropi (para update de estado_contacto)
+   ═══════════════════════════════════════════════════════════ */
+
+async function getColumnaPrincipalDropi(id_configuracion) {
+  const [row] = await db.query(
+    `SELECT id, estado_db FROM kanban_columnas
+     WHERE id_configuracion = ? AND es_dropi_principal = 1
+     LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return row || null;
+}
+
+/* ═══════════════════════════════════════════════════════════
    Dedup
    ═══════════════════════════════════════════════════════════ */
 
@@ -870,6 +884,15 @@ async function procesarTemplates({ orders, id_configuracion }) {
   }
 
   const telefonoConfig = creds.telefono || null;
+
+  // Columna Dropi para actualizar estado_contacto en PENDIENTE CONFIRMACION
+  const colDropiPrincipal = await getColumnaPrincipalDropi(id_configuracion);
+  if (!colDropiPrincipal) {
+    await log(
+      `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal de Dropi — no se actualizará estado_contacto`,
+    );
+  }
+
   let enviados = 0,
     omitidos = 0,
     errores = 0;
