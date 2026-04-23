@@ -7,7 +7,7 @@ async function enviarEscribiendoWhatsapp(
   accessToken
 ) {
   try {
-    const url = `https://graph.facebook.com/v13.0/${business_phone_id}/messages`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
     const data = {
       messaging_product: 'whatsapp',
       to: phone_whatsapp_from,
@@ -30,7 +30,7 @@ const detenerEscribiendoWhatsapp = async (
   business_phone_id,
   accessToken
 ) => {
-  const url = `https://graph.facebook.com/v14.0/${business_phone_id}/messages`;
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
   const body = {
     recipient_type: 'individual',
     to: phone_whatsapp_to,

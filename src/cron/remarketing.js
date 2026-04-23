@@ -33,15 +33,15 @@ async function uploadMediaToMeta(
   const mimeType = MIME[fmt] || 'application/octet-stream';
   const ext = EXT[fmt] || 'bin';
 
-  console.log(`⬆️ [uploadMedia] Descargando: ${mediaUrl} fmt=${fmt}`);
+  /* console.log(`⬆️ [uploadMedia] Descargando: ${mediaUrl} fmt=${fmt}`); */
 
   const download = await axios.get(mediaUrl, {
     responseType: 'arraybuffer',
     timeout: 30000,
   });
-  console.log(
+  /* console.log(
     `⬆️ [uploadMedia] Descarga OK — ${download.data.byteLength} bytes`,
-  );
+  ); */
 
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
@@ -52,7 +52,7 @@ async function uploadMediaToMeta(
   });
 
   const uploadRes = await axios.post(
-    `https://graph.facebook.com/v22.0/${business_phone_id}/media`,
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/media`,
     form,
     {
       headers: { Authorization: `Bearer ${accessToken}`, ...form.getHeaders() },
@@ -61,10 +61,10 @@ async function uploadMediaToMeta(
     },
   );
 
-  console.log(
+  /* console.log(
     `⬆️ [uploadMedia] Respuesta Meta upload — status: ${uploadRes.status}`,
     JSON.stringify(uploadRes.data),
-  );
+  ); */
 
   if (!uploadRes.data?.id) {
     throw new Error(
@@ -72,7 +72,7 @@ async function uploadMediaToMeta(
     );
   }
 
-  console.log(`✅ [uploadMedia] media_id: ${uploadRes.data.id}`);
+  /* console.log(`✅ [uploadMedia] media_id: ${uploadRes.data.id}`); */
   return uploadRes.data.id;
 }
 
@@ -87,7 +87,7 @@ async function withLock(lockName, fn) {
       type: db.QueryTypes.SELECT,
     });
     if (!row || Number(row.got) !== 1) {
-      console.log('🔒 No se obtuvo lock');
+      /* console.log('🔒 No se obtuvo lock'); */
       return;
     }
     try {
@@ -120,16 +120,16 @@ cron.schedule('*/1 * * * *', async () => {
       );
 
       if (!pendientes.length) return;
-      console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
+      /* console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`); */
 
       for (const record of pendientes) {
         try {
-          console.log(
+          /* console.log(
             `\n🔄 [remarketing] id=${record.id} tel=${record.telefono} template="${record.nombre_template}"`,
           );
           console.log(
             `🔄 [remarketing] header_format="${record.header_format}" header_media_url="${record.header_media_url}"`,
-          );
+          ); */
 
           // 1) Verificar cliente
           const cliente = await ClientesChatCenter.findByPk(
@@ -144,9 +144,9 @@ cron.schedule('*/1 * * * *', async () => {
 
           // 2) Si el estado cambió, cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
-            console.log(
+            /* console.log(
               `🚫 [remarketing] Estado cambió, cancelando id=${record.id}`,
-            );
+            ); */
             await db.query(
               `UPDATE remarketing_pendientes SET cancelado = 1 WHERE id = ?`,
               { replacements: [record.id], type: db.QueryTypes.UPDATE },
@@ -160,7 +160,7 @@ cron.schedule('*/1 * * * *', async () => {
           const esMediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
             headerFormatNorm,
           );
-          console.log(`🔄 [remarketing] esMediaHeader=${esMediaHeader}`);
+          /* console.log(`🔄 [remarketing] esMediaHeader=${esMediaHeader}`); */
 
           // ══════════════════════════════════════════════════════
           // CASO A: Template con media (IMAGE / VIDEO / DOCUMENT)
@@ -177,17 +177,17 @@ cron.schedule('*/1 * * * *', async () => {
               cfg.ACCESS_TOKEN,
               cfg.WABA_ID,
             );
-            console.log(
+            /* console.log(
               `🔄 [remarketing] tplData.header =`,
               JSON.stringify(tplData?.header),
-            );
+            ); */
 
             const mediaUrlFuente = (
               record.header_media_url || tplData?.header?.media_url
             )?.replace(/&amp;/g, '&');
-            console.log(
+            /* console.log(
               `🔄 [remarketing] mediaUrlFuente = "${mediaUrlFuente}"`,
-            );
+            ); */
 
             if (!mediaUrlFuente) {
               throw new Error(
@@ -244,13 +244,13 @@ cron.schedule('*/1 * * * *', async () => {
               },
             };
 
-            console.log(
+            /* console.log(
               `📤 [remarketing] Payload:`,
               JSON.stringify(payload, null, 2),
-            );
+            ); */
 
             const sendRes = await axios.post(
-              `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`,
+              `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`,
               payload,
               {
                 headers: {
@@ -262,10 +262,10 @@ cron.schedule('*/1 * * * *', async () => {
               },
             );
 
-            console.log(
+            /* console.log(
               `📤 [remarketing] Respuesta Meta — status: ${sendRes.status}`,
               JSON.stringify(sendRes.data),
-            );
+            ); */
 
             if (
               sendRes.status < 200 ||
@@ -298,12 +298,12 @@ cron.schedule('*/1 * * * *', async () => {
 
             let clienteId = clienteRow?.id || null;
             if (!clienteId) {
-              console.log(
+              /* console.log(
                 '[clientes_chat_center INSERT] cron/remarketing.js ~L300 — creando cliente para remarketing, celular:',
                 telefonoLimpio,
                 'id_configuracion:',
                 record.id_configuracion,
-              );
+              ); */
               const nuevo = await ClientesChatCenter.create({
                 id_configuracion: record.id_configuracion,
                 uid_cliente: cfg.PHONE_NUMBER_ID,
@@ -362,17 +362,17 @@ cron.schedule('*/1 * * * *', async () => {
               language_code: LANGUAGE_CODE,
             });
 
-            console.log(
+            /* console.log(
               `💾 [remarketing] MensajesClientes guardado — wamid=${wamid} clienteId=${clienteId}`,
-            );
+            ); */
 
             // ══════════════════════════════════════════════════════
             // CASO B: Template de texto — usa la función existente
             // ══════════════════════════════════════════════════════
           } else {
-            console.log(
+            /* console.log(
               `📤 [remarketing] Template texto → sendWhatsappMessageTemplateScheduled`,
-            );
+            ); */
             await sendWhatsappMessageTemplateScheduled({
               telefono: record.telefono,
               telefono_configuracion: record.telefono_configuracion || null,
@@ -469,9 +469,9 @@ cron.schedule('*/1 * * * *', async () => {
               },
             );
 
-            console.log(
+            /* console.log(
               `🔄 [remarketing] Secuencia ${secuenciaActual + 1} programada`,
-            );
+            ); */
           }
 
           // ── Mover columna en CADA envío si tiene estado_destino ──
@@ -480,18 +480,18 @@ cron.schedule('*/1 * * * *', async () => {
               { estado_contacto: record.estado_destino },
               { where: { id: record.id_cliente_chat_center } },
             );
-            console.log(
+            /* console.log(
               `📂 [remarketing] Cliente movido a "${record.estado_destino}" (secuencia=${secuenciaActual})`,
-            );
+            ); */
           } else if (!siguienteConfig) {
             // Sin estado_destino y es el último → mover a seguimiento por defecto
             await ClientesChatCenter.update(
               { estado_contacto: 'seguimiento' },
               { where: { id: record.id_cliente_chat_center } },
             );
-            console.log(
+            /* console.log(
               `📂 [remarketing] Última secuencia sin destino, moviendo a "seguimiento"`,
-            );
+            ); */
           }
 
           // 4) Marcar este registro como enviado (siempre)
@@ -500,9 +500,9 @@ cron.schedule('*/1 * * * *', async () => {
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
-          console.log(
+          /* console.log(
             `✅ [remarketing] id=${record.id} secuencia=${secuenciaActual} enviado y marcado OK`,
-          );
+          ); */
         } catch (err) {
           console.error(`❌ [remarketing] Error id=${record.id}:`, err.message);
           if (err?.meta_status || err?.meta_error) {

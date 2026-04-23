@@ -96,7 +96,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     // 0) Info de la WABA (dueño real del portafolio)
     // =========================
     const wabaInfoResp = await ax.get(
-      `https://graph.facebook.com/v22.0/${WABA_ID}`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}`,
       {
         params: {
           fields: 'id,name,owner_business_info,on_behalf_of_business_info',
@@ -133,7 +133,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     }
 
     // 1) Números
-    const numbersUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/phone_numbers`;
+    const numbersUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/phone_numbers`;
     const numbersResp = await ax.get(numbersUrl, {
       params: {
         fields: [
@@ -219,7 +219,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     const merged = await Promise.all(
       numbers.map(async (n) => {
         const profileResp = await ax.get(
-          `https://graph.facebook.com/v22.0/${n.id}/whatsapp_business_profile`,
+          `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${n.id}/whatsapp_business_profile`,
           {
             params: {
               fields: [
@@ -341,7 +341,7 @@ async function uploadResumableAndGetHandle({
   });
 
   // 1) Crear sesión de subida (upload session)
-  const startUrl = `https://graph.facebook.com/v22.0/${FB_APP_ID}/uploads`;
+  const startUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${FB_APP_ID}/uploads`;
   const startResp = await ax.post(startUrl, null, {
     params: {
       file_length: fileBuffer.length,
@@ -362,7 +362,7 @@ async function uploadResumableAndGetHandle({
   }
 
   // 2) Subir binario
-  const uploadUrl = `https://graph.facebook.com/v22.0/${uploadSessionId}`;
+  const uploadUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${uploadSessionId}`;
   const uploadResp = await axios.post(uploadUrl, fileBuffer, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -453,7 +453,7 @@ router.post('/CrearPlantilla', uploadSingle('headerFile'), async (req, res) => {
       });
     }
 
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`;
 
     const payload = { name, language, category, components };
 
@@ -1249,7 +1249,7 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
     if (after) params.set('after', after);
     if (before) params.set('before', before);
 
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates?${params.toString()}`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?${params.toString()}`;
 
     const { data } = await axios.get(url, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
@@ -1703,7 +1703,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
     const r = await axios.get(
-      'https://graph.facebook.com/v22.0/oauth/access_token',
+      'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
       {
         params: {
           client_id: process.env.FB_APP_ID,
@@ -1722,7 +1722,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     try {
       console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
       const r2 = await axios.get(
-        'https://graph.facebook.com/v22.0/oauth/access_token',
+        'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
         {
           params: {
             client_id: process.env.FB_APP_ID,
@@ -1752,7 +1752,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     try {
       const clientResp = await safeGet(
-        `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${BUSINESS_ID}/client_whatsapp_business_accounts`,
         {},
         bearer(SYS_TOKEN),
       );
@@ -1766,7 +1766,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     try {
       const ownedResp = await safeGet(
-        `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
         {},
         bearer(SYS_TOKEN),
       );
@@ -1794,7 +1794,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     async function fetchPhonesOf(wabaId) {
       const r = await safeGet(
-        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${wabaId}/phone_numbers`,
         { fields: 'id,display_phone_number,status,code_verification_status' },
         bearer(SYS_TOKEN),
       );
@@ -1840,7 +1840,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     // ====== 4) Registrar el número (REGISTER) ======
     // ✅ REGLA: Si el número ya está CONNECTED (coexistencia), NO hacemos register y seguimos.
-    const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
+    const regUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}/register`;
     const matchedStatus = String(matchedPhone?.status || '').toUpperCase();
 
     if (matchedStatus === 'CONNECTED') {
@@ -1886,7 +1886,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     }
 
     // ====== 5) Suscribir app al WABA ======
-    const subUrl = `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`;
+    const subUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${wabaId}/subscribed_apps`;
     console.log('[POST][SUBSCRIBE] ->', subUrl);
     try {
       await safePost(
@@ -1911,7 +1911,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     let info = {};
     try {
       const r1 = await safeGet(
-        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}`,
         {
           fields:
             'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
@@ -1923,7 +1923,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     } catch (e1) {
       console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
       const r2 = await safeGet(
-        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}`,
         {
           fields:
             'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
@@ -2308,7 +2308,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
     }
 
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
-    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=100`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=100`;
 
     // 1. Obtener plantillas existentes
     const { data } = await axios.get(url);
@@ -2328,7 +2328,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
       }
 
       try {
-        const crearUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+        const crearUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`;
         const response = await axios.post(crearUrl, plantilla, {
           headers: {
             Authorization: `Bearer ${ACCESS_TOKEN}`,
@@ -2502,7 +2502,7 @@ router.post('/coexistencia/sync', async (req, res) => {
       });
     }
 
-    const endpoint = `https://graph.facebook.com/v22.0/${phoneNumberId}/smb_app_data`;
+    const endpoint = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}/smb_app_data`;
 
     const ax = axios.create({
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
@@ -2644,7 +2644,7 @@ router.post('/enviarAudio', uploadSingle('audio'), async (req, res) => {
     const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
 
     // ========= 1) Subir media a Meta =========
-    const mediaUrl = `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/media`;
+    const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
 
     const mimeType = req.file.mimetype || 'audio/ogg';
     const fileName = req.file.originalname || `audio-${Date.now()}.ogg`;

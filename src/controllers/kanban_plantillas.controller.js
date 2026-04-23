@@ -635,7 +635,7 @@ async function uploadResumableAndGetHandle({
   });
 
   // 1) Crear sesión de subida (upload session)
-  const startUrl = `https://graph.facebook.com/v22.0/${FB_APP_ID}/uploads`;
+  const startUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${FB_APP_ID}/uploads`;
   const startResp = await ax.post(startUrl, null, {
     params: {
       file_length: fileBuffer.length,
@@ -656,7 +656,7 @@ async function uploadResumableAndGetHandle({
   }
 
   // 2) Subir binario
-  const uploadUrl = `https://graph.facebook.com/v22.0/${uploadSessionId}`;
+  const uploadUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${uploadSessionId}`;
   const uploadResp = await axios.post(uploadUrl, fileBuffer, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -739,7 +739,7 @@ async function _crearTemplatesMeta(id_configuracion) {
   let existentes = [];
   try {
     const { data } = await axios.get(
-      `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=200`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=200`,
     );
     existentes = (data.data || []).map((p) => p.name);
   } catch (e) {
@@ -780,7 +780,7 @@ async function _crearTemplatesMeta(id_configuracion) {
       };
 
       const r = await axios.post(
-        `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`,
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`,
         payload,
         {
           headers: {

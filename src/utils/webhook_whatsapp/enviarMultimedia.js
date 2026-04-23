@@ -18,7 +18,7 @@ async function enviarMedioWhatsapp({
 }) {
   await fs.mkdir(logsDir, { recursive: true });
 
-  const url = `https://graph.facebook.com/v20.0/${business_phone_id}/messages`;
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
   const data = {
     messaging_product: 'whatsapp',
     to: phone_whatsapp_to,
