@@ -21,9 +21,10 @@ exports.listarPorConexion = catchAsync(async (req, res, next) => {
 
   const encuestas = await db.query(
     `
-    SELECT e.id, e.tipo, e.nombre, e.descripcion, e.activa,
+  SELECT e.id, e.tipo, e.nombre, e.descripcion, e.activa,
            e.cooldown_horas, e.delay_envio_minutos, e.mensaje_envio,
            e.url_encuesta_publica, e.umbral_escalacion,
+           e.mensaje_dentro_24h, e.template_fuera_24h, e.template_parameters,
            e.created_at,
            ec.id AS id_conexion, ec.activa AS conexion_activa,
            ec.auto_enviar_al_cerrar, ec.webhook_secret,
@@ -336,6 +337,9 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     auto_enviar_al_cerrar,
     umbral_escalacion,
     id_configuracion,
+    mensaje_dentro_24h,
+    template_fuera_24h,
+    template_parameters,
   } = req.body;
 
   if (delay_envio_minutos !== undefined && delay_envio_minutos > 1380) {
@@ -343,6 +347,21 @@ exports.actualizar = catchAsync(async (req, res, next) => {
       success: false,
       message: 'El delay máximo es de 23 horas.',
     });
+  }
+
+  // Normalizar template_parameters: puede venir como array, string JSON, null o vacío
+  let templateParamsNormalized;
+  if (template_parameters === undefined) {
+    templateParamsNormalized = undefined; // no tocar el campo
+  } else if (template_parameters === null || template_parameters === '') {
+    templateParamsNormalized = null; // limpiar explícitamente
+  } else if (Array.isArray(template_parameters)) {
+    templateParamsNormalized =
+      template_parameters.length > 0
+        ? JSON.stringify(template_parameters)
+        : null;
+  } else {
+    templateParamsNormalized = String(template_parameters); // ya es JSON string
   }
 
   await db.query(
@@ -355,6 +374,9 @@ exports.actualizar = catchAsync(async (req, res, next) => {
       delay_envio_minutos = COALESCE(:delay, delay_envio_minutos),
       mensaje_envio = COALESCE(:mensaje, mensaje_envio),
       umbral_escalacion = COALESCE(:umbral, umbral_escalacion),
+      mensaje_dentro_24h = CASE WHEN :mensaje24_provided = 1 THEN :mensaje24 ELSE mensaje_dentro_24h END,
+      template_fuera_24h = CASE WHEN :tpl_provided = 1 THEN :tpl ELSE template_fuera_24h END,
+      template_parameters = CASE WHEN :tplparams_provided = 1 THEN :tplparams ELSE template_parameters END,
       updated_at = NOW()
     WHERE id = :id
   `,
@@ -368,6 +390,13 @@ exports.actualizar = catchAsync(async (req, res, next) => {
         delay: delay_envio_minutos ?? null,
         mensaje: mensaje_envio ?? null,
         umbral: umbral_escalacion ?? null,
+        // 🆕 webhook auto-respuesta
+        mensaje24_provided: mensaje_dentro_24h !== undefined ? 1 : 0,
+        mensaje24: mensaje_dentro_24h || null,
+        tpl_provided: template_fuera_24h !== undefined ? 1 : 0,
+        tpl: template_fuera_24h || null,
+        tplparams_provided: templateParamsNormalized !== undefined ? 1 : 0,
+        tplparams: templateParamsNormalized ?? null,
       },
       type: QueryTypes.UPDATE,
     },
