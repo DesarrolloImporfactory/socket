@@ -532,7 +532,8 @@ async function getWaCredentials(id_configuracion) {
 async function getPlantillasActivas(id_configuracion) {
   const rows = await db.query(
     `SELECT estado_dropi, nombre_template, language_code,
-            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text
+            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
+            columna_destino
      FROM dropi_plantillas_config
      WHERE id_configuracion = ? AND activo = 1
        AND nombre_template IS NOT NULL AND nombre_template != ''`,
@@ -547,9 +548,24 @@ async function getPlantillasActivas(id_configuracion) {
       usar_respuesta_rapida: !!r.usar_respuesta_rapida,
       parametros_json: r.parametros_json || null,
       body_text: r.body_text || null,
+      columna_destino: r.columna_destino || null,
     };
   }
   return map;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Columna principal de Dropi (para update de estado_contacto)
+   ═══════════════════════════════════════════════════════════ */
+
+async function getColumnaPrincipalDropi(id_configuracion) {
+  const [row] = await db.query(
+    `SELECT id, estado_db FROM kanban_columnas
+     WHERE id_configuracion = ? AND es_dropi_principal = 1
+     LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return row || null;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -871,6 +887,13 @@ async function procesarTemplates({ orders, id_configuracion }) {
 
   const telefonoConfig = creds.telefono || null;
 
+  // Columna Dropi para actualizar estado_contacto en PENDIENTE CONFIRMACION
+  const colDropiPrincipal = await getColumnaPrincipalDropi(id_configuracion);
+  if (!colDropiPrincipal) {
+    await log(
+      `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal de Dropi — no se actualizará estado_contacto`,
+    );
+  }
 
   let enviados = 0,
     omitidos = 0,
@@ -1007,6 +1030,38 @@ async function procesarTemplates({ orders, id_configuracion }) {
         await log(
           `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
         );
+      }
+
+      // 5.5. Mover cliente a columna destino (según estado)
+      let columnaDestino = null;
+
+      if (estadoConfig === 'PENDIENTE CONFIRMACION') {
+        // Primer contacto: columna Dropi principal del kanban
+        columnaDestino = colDropiPrincipal?.estado_db || null;
+      } else if (config.columna_destino) {
+        // Otros estados: columna configurada en dropi_plantillas_config
+        columnaDestino = config.columna_destino;
+      }
+
+      if (columnaDestino && clienteId) {
+        try {
+          await db.query(
+            `UPDATE clientes_chat_center
+         SET estado_contacto = ?
+       WHERE id = ? AND id_configuracion = ?`,
+            {
+              replacements: [columnaDestino, clienteId, id_configuracion],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+          await log(
+            `[hourly-dropi] 📌 Cliente #${clienteId} → estado_contacto="${columnaDestino}" (${estadoConfig})`,
+          );
+        } catch (err) {
+          await log(
+            `[hourly-dropi] ⚠ Error moviendo cliente #${clienteId}: ${err?.message}`,
+          );
+        }
       }
 
       // 6. Registrar en chat center

@@ -20,7 +20,8 @@ exports.obtener = catchAsync(async (req, res) => {
 
   const registros = await db.query(
     `SELECT estado_dropi, nombre_template, language_code, activo,
-            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text
+            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
+            columna_destino
      FROM dropi_plantillas_config
      WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -37,6 +38,7 @@ exports.obtener = catchAsync(async (req, res) => {
       usar_respuesta_rapida: encontrado?.usar_respuesta_rapida ?? 1,
       parametros_json: encontrado?.parametros_json || null,
       body_text: encontrado?.body_text || null,
+      columna_destino: encontrado?.columna_destino || null,
     };
   }
 
@@ -55,6 +57,7 @@ exports.guardar = catchAsync(async (req, res) => {
     usar_respuesta_rapida,
     parametros_json,
     body_text,
+    columna_destino,
   } = req.body;
 
   if (!id_configuracion || !estado_dropi) {
@@ -71,6 +74,12 @@ exports.guardar = catchAsync(async (req, res) => {
         'Debes seleccionar una plantilla de WhatsApp para activar este estado',
     });
   }
+
+  // Normalizar columna_destino: string vacío → null
+  const columnaDestinoClean =
+    columna_destino && String(columna_destino).trim() !== ''
+      ? String(columna_destino).trim()
+      : null;
 
   const [existe] = await db.query(
     `SELECT id FROM dropi_plantillas_config
@@ -90,7 +99,8 @@ exports.guardar = catchAsync(async (req, res) => {
            mensaje_rapido = ?,
            usar_respuesta_rapida = ?,
            parametros_json = ?,
-           body_text = ?
+           body_text = ?,
+           columna_destino = ?
        WHERE id_configuracion = ? AND estado_dropi = ?`,
       {
         replacements: [
@@ -105,6 +115,7 @@ exports.guardar = catchAsync(async (req, res) => {
             : 1,
           parametros_json || null,
           body_text || null,
+          columnaDestinoClean,
           id_configuracion,
           estado_dropi,
         ],
@@ -115,8 +126,9 @@ exports.guardar = catchAsync(async (req, res) => {
     await db.query(
       `INSERT INTO dropi_plantillas_config
          (id_configuracion, estado_dropi, nombre_template, language_code,
-          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
+          columna_destino)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -132,6 +144,7 @@ exports.guardar = catchAsync(async (req, res) => {
             : 1,
           parametros_json || null,
           body_text || null,
+          columnaDestinoClean,
         ],
         type: db.QueryTypes.INSERT,
       },
