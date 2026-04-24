@@ -841,15 +841,13 @@ const DROPI_CONFIG_POR_DEFECTO = [
   },
   {
     estado_dropi: 'PENDIENTE',
-    nombre_template: 'contacto_inicial',
+    nombre_template: 'antes_generar_guia_k1',
     columna_destino: 'generar_guia',
     activo: 1,
     usar_respuesta_rapida: 1,
     mensaje_rapido:
       'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
     parametros: null,
-    body_text:
-      'Hola, estamos enviando los últimos pedidos. 🚛\nNecesito confirmar unos detalles de tu orden.\n\nResponde este mensaje para continuar la conversación.',
   },
   {
     estado_dropi: 'GUIA GENERADA',
@@ -898,12 +896,17 @@ const DROPI_CONFIG_POR_DEFECTO = [
   },
 ];
 
-// ── Aplicar config dropi por defecto (solo estados que NO existan) ──
+// ── Aplicar config dropi por defecto (UPSERT — siempre sobreescribe) ──
 async function _aplicarConfigDropiPorDefecto(id_configuracion) {
   const resultados = [];
 
   for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
     try {
+      const body_text =
+        cfg.body_text ||
+        _getBodyTextFromKanbanTemplate(cfg.nombre_template) ||
+        null;
+
       const [existe] = await db.query(
         `SELECT id FROM dropi_plantillas_config
          WHERE id_configuracion = ? AND estado_dropi = ? LIMIT 1`,
@@ -914,43 +917,68 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
       );
 
       if (existe) {
-        resultados.push({ estado: cfg.estado_dropi, status: 'omitido' });
-        continue;
+        await db.query(
+          `UPDATE dropi_plantillas_config
+           SET nombre_template = ?,
+               columna_destino = ?,
+               language_code = 'es',
+               activo = ?,
+               mensaje_rapido = ?,
+               usar_respuesta_rapida = ?,
+               parametros_json = ?,
+               body_text = ?,
+               updated_at = NOW()
+           WHERE id = ?`,
+          {
+            replacements: [
+              cfg.nombre_template,
+              cfg.columna_destino || null,
+              cfg.activo,
+              cfg.mensaje_rapido,
+              cfg.usar_respuesta_rapida,
+              cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+              body_text,
+              existe.id,
+            ],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+
+        resultados.push({
+          estado: cfg.estado_dropi,
+          template: cfg.nombre_template,
+          columna_destino: cfg.columna_destino || null,
+          status: 'actualizado',
+        });
+      } else {
+        await db.query(
+          `INSERT INTO dropi_plantillas_config
+           (id_configuracion, estado_dropi, nombre_template, columna_destino, language_code,
+            activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
+           VALUES (?, ?, ?, ?, 'es', ?, ?, ?, ?, ?)`,
+          {
+            replacements: [
+              id_configuracion,
+              cfg.estado_dropi,
+              cfg.nombre_template,
+              cfg.columna_destino || null,
+              cfg.activo,
+              cfg.mensaje_rapido,
+              cfg.usar_respuesta_rapida,
+              cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+              body_text,
+            ],
+            type: db.QueryTypes.INSERT,
+          },
+        );
+
+        resultados.push({
+          estado: cfg.estado_dropi,
+          template: cfg.nombre_template,
+          columna_destino: cfg.columna_destino || null,
+          status: 'creado',
+        });
       }
-
-      // Prioridad: body_text manual del cfg → body del template Meta → null
-      const body_text =
-        cfg.body_text ||
-        _getBodyTextFromKanbanTemplate(cfg.nombre_template) ||
-        null;
-
-      await db.query(
-        `INSERT INTO dropi_plantillas_config
-         (id_configuracion, estado_dropi, nombre_template, columna_destino, language_code,
-          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
-         VALUES (?, ?, ?, ?, 'es', ?, ?, ?, ?, ?)`,
-        {
-          replacements: [
-            id_configuracion,
-            cfg.estado_dropi,
-            cfg.nombre_template,
-            cfg.columna_destino || null,
-            cfg.activo,
-            cfg.mensaje_rapido,
-            cfg.usar_respuesta_rapida,
-            cfg.parametros ? JSON.stringify(cfg.parametros) : null,
-            body_text,
-          ],
-          type: db.QueryTypes.INSERT,
-        },
-      );
-
-      resultados.push({
-        estado: cfg.estado_dropi,
-        template: cfg.nombre_template,
-        columna_destino: cfg.columna_destino || null,
-        status: 'creado',
-      });
     } catch (err) {
       resultados.push({
         estado: cfg.estado_dropi,
