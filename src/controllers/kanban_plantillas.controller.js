@@ -1069,9 +1069,9 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     const [insertResult] = await db.query(
       `INSERT INTO kanban_columnas
    (id_configuracion, nombre, estado_db, color_fondo, color_texto,
-    icono, orden, activo, es_estado_final, es_principal, activa_ia, max_tokens,
+    icono, orden, activo, es_estado_final, es_principal, es_dropi_principal, activa_ia, max_tokens,
     instrucciones, modelo, assistant_id)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -1084,6 +1084,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           col.activo,
           col.es_estado_final,
           col.es_principal || 0,
+          col.es_dropi_principal || 0,
           col.activa_ia,
           col.max_tokens,
           col.instrucciones || null,
