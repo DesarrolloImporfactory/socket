@@ -555,17 +555,31 @@ async function getPlantillasActivas(id_configuracion) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Columna principal de Dropi (para update de estado_contacto)
+   Columna destino para PENDIENTE CONFIRMACION
+   Prioridad: es_dropi_principal → es_principal → null
    ═══════════════════════════════════════════════════════════ */
 
 async function getColumnaPrincipalDropi(id_configuracion) {
-  const [row] = await db.query(
-    `SELECT id, estado_db FROM kanban_columnas
+  // 1. Intentar es_dropi_principal (configuración específica de Dropi)
+  const [dropiCol] = await db.query(
+    `SELECT id, estado_db, 'dropi' AS tipo FROM kanban_columnas
      WHERE id_configuracion = ? AND es_dropi_principal = 1
      LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  return row || null;
+  if (dropiCol) return dropiCol;
+
+  // 2. Fallback a es_principal (columna principal general del kanban)
+  const [principalCol] = await db.query(
+    `SELECT id, estado_db, 'principal' AS tipo FROM kanban_columnas
+     WHERE id_configuracion = ? AND es_principal = 1
+     LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (principalCol) return principalCol;
+
+  // 3. Nada configurado
+  return null;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -891,7 +905,15 @@ async function procesarTemplates({ orders, id_configuracion }) {
   const colDropiPrincipal = await getColumnaPrincipalDropi(id_configuracion);
   if (!colDropiPrincipal) {
     await log(
-      `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal de Dropi — no se actualizará estado_contacto`,
+      `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal (ni es_dropi_principal ni es_principal) — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
+    );
+  } else if (colDropiPrincipal.tipo === 'principal') {
+    await log(
+      `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback (no hay es_dropi_principal) → "${colDropiPrincipal.estado_db}"`,
+    );
+  } else {
+    await log(
+      `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
     );
   }
 
