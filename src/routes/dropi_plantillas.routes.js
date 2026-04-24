@@ -1,4 +1,3 @@
-// dropi_plantillas.routes.js
 const router = require('express').Router();
 const ctrl = require('../controllers/dropi_plantillas.controller');
 

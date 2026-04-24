@@ -32,7 +32,6 @@ exports.aplicar = catchAsync(async (req, res, next) => {
     return next(new AppError('Faltan campos obligatorios', 400));
   }
 
-  // ── Obtener api_key_openai desde BD ──
   const [configRow] = await db.query(
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -57,7 +56,6 @@ exports.aplicar = catchAsync(async (req, res, next) => {
   const resultado = [];
 
   for (const col of plantilla.columnas) {
-    // 1. Crear asistente en OpenAI si tiene prompt
     let assistant_id = null;
     if (col.prompt_key && prompts[col.prompt_key] && api_key_openai) {
       try {
@@ -80,7 +78,6 @@ exports.aplicar = catchAsync(async (req, res, next) => {
       }
     }
 
-    // 2. Insertar columna
     const [insertResult] = await db.query(
       `INSERT INTO kanban_columnas
        (id_configuracion, nombre, estado_db, color_fondo, color_texto,
@@ -108,7 +105,6 @@ exports.aplicar = catchAsync(async (req, res, next) => {
 
     const id_columna = insertResult;
 
-    // 3. Insertar acciones
     for (const accion of col.acciones) {
       await db.query(
         `INSERT INTO kanban_acciones
@@ -135,7 +131,6 @@ exports.aplicar = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 4. Activar tipo_configuracion = kanban
   await db.query(
     `UPDATE configuraciones SET tipo_configuracion = 'kanban' WHERE id = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
@@ -153,7 +148,6 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
-  // 0. Saber qué plantilla tenía (ANTES de borrar)
   const [config] = await db.query(
     `SELECT kanban_global_id FROM configuraciones WHERE id = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -161,7 +155,6 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
 
   const id_plantilla = config?.kanban_global_id;
 
-  // 1. Obtener IDs de columnas
   const columnas = await db.query(
     `SELECT id FROM kanban_columnas WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -176,19 +169,16 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     );
   }
 
-  // 2. Borrar columnas
   await db.query(`DELETE FROM kanban_columnas WHERE id_configuracion = ?`, {
     replacements: [id_configuracion],
     type: db.QueryTypes.DELETE,
   });
 
-  // 3. Borrar config de remarketing
   await db.query(
     `DELETE FROM configuracion_remarketing WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
   );
 
-  // 4. Limpiar estado global
   await db.query(
     `UPDATE configuraciones 
      SET kanban_global_activo = 0, kanban_global_id = NULL
@@ -196,7 +186,6 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion] },
   );
 
-  // 5. LOG 🔥 (esto es clave)
   await db.query(
     `INSERT INTO configuraciones_kanban_global_log
      (id_configuracion, id_plantilla, accion, detalle)
@@ -225,7 +214,6 @@ exports.guardarCliente = catchAsync(async (req, res, next) => {
   if (!id_configuracion || !nombre)
     return next(new AppError('Faltan campos obligatorios', 400));
 
-  // Leer columnas actuales con sus acciones
   const columnas = await db.query(
     `SELECT id, nombre, estado_db, color_fondo, color_texto, icono,
           orden, activo, es_estado_final, activa_ia, max_tokens,
@@ -239,7 +227,6 @@ exports.guardarCliente = catchAsync(async (req, res, next) => {
   if (!columnas.length)
     return next(new AppError('No hay columnas para guardar', 400));
 
-  // Leer acciones de cada columna
   const ids = columnas.map((c) => c.id);
   const acciones = await db.query(
     `SELECT id_kanban_columna, tipo_accion, config, orden
@@ -249,7 +236,6 @@ exports.guardarCliente = catchAsync(async (req, res, next) => {
     { type: db.QueryTypes.SELECT },
   );
 
-  // Construir estructura
   const data = {
     columnas: columnas.map((col) => ({
       nombre: col.nombre,
@@ -337,7 +323,6 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
   );
   if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
 
-  // ── Obtener api_key para crear asistentes ──
   const [configRow] = await db.query(
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -360,7 +345,6 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
   const resultado = [];
 
   for (const col of columnas) {
-    // ── Verificar si ya existe esa columna ──
     const [existente] = await db.query(
       `SELECT id FROM kanban_columnas 
      WHERE id_configuracion = ? AND estado_db = ? LIMIT 1`,
@@ -375,9 +359,9 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
         columna: col.nombre,
         estado_db: col.estado_db,
         assistant_id: null,
-        omitida: true, // ← saltada por duplicado
+        omitida: true,
       });
-      continue; // ← no insertar, seguir con la siguiente
+      continue;
     }
 
     let assistant_id = null;
@@ -386,10 +370,8 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
         const aRes = await axios.post(
           'https://api.openai.com/v1/assistants',
           {
-            name: empresa ? `${col.nombre} - ${empresa}` : col.nombre,
-            instructions: empresa
-              ? col.instrucciones.replace(/\[empresa\]/gi, empresa)
-              : col.instrucciones,
+            name: col.nombre,
+            instructions: col.instrucciones,
             model: col.modelo || 'gpt-4o-mini',
             tools: [{ type: 'file_search' }],
           },
@@ -508,7 +490,7 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
       orden: col.orden,
       activo: col.activo,
       es_estado_final: col.es_estado_final,
-      es_principal: col.es_principal || 0, // ← agregar
+      es_principal: col.es_principal || 0,
       activa_ia: col.activa_ia,
       max_tokens: col.max_tokens,
       instrucciones: col.instrucciones || null,
@@ -545,7 +527,6 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
 });
 
 // ── Listar plantillas globales ─────────────────────────────
-// ── Listar plantillas globales ─────────────────────────────
 exports.listarGlobales = catchAsync(async (req, res) => {
   const plantillas = await db.query(
     `SELECT id, nombre, descripcion, icono, color, created_at,
@@ -563,8 +544,6 @@ exports.listarGlobales = catchAsync(async (req, res) => {
 
     const columnas_ia = cols.filter((c) => c.activa_ia).length;
 
-    // Preview liviano — sin prompts ni acciones, solo lo que el
-    // frontend necesita para mostrar la lista en el paso 2.
     const columnasPreview = cols
       .slice()
       .sort((a, b) => (a.orden || 0) - (b.orden || 0))
@@ -615,9 +594,6 @@ function getMimeType(format) {
 
 const FB_APP_ID = process.env.FB_APP_ID;
 
-/**
- * Flujo basado en ejemplos públicos donde la respuesta devuelve "h" y eso se usa en header_handle. :contentReference[oaicite:5]{index=5}
- */
 async function uploadResumableAndGetHandle({
   accessToken,
   fileBuffer,
@@ -634,7 +610,6 @@ async function uploadResumableAndGetHandle({
     validateStatus: () => true,
   });
 
-  // 1) Crear sesión de subida (upload session)
   const startUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${FB_APP_ID}/uploads`;
   const startResp = await ax.post(startUrl, null, {
     params: {
@@ -655,7 +630,6 @@ async function uploadResumableAndGetHandle({
     throw new Error(`Upload session sin id: ${JSON.stringify(startResp.data)}`);
   }
 
-  // 2) Subir binario
   const uploadUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${uploadSessionId}`;
   const uploadResp = await axios.post(uploadUrl, fileBuffer, {
     headers: {
@@ -673,7 +647,6 @@ async function uploadResumableAndGetHandle({
     );
   }
 
-  // En ejemplos, se usa "h" como handle para header_handle. :contentReference[oaicite:6]{index=6}
   const handle = uploadResp.data?.h;
   if (!handle) {
     throw new Error(
@@ -763,13 +736,12 @@ async function _crearTemplatesMeta(id_configuracion) {
           ACCESS_TOKEN,
         );
       } catch (mediaError) {
-        // 🚨 NO crear template si falla media
         resultados.push({
           nombre: tpl.name,
           status: 'error_media',
           error: mediaError.message,
         });
-        continue; // sigue con el siguiente template
+        continue;
       }
 
       const payload = {
@@ -842,6 +814,138 @@ async function _crearRespuestasRapidas(id_configuracion) {
   return resultados;
 }
 
+// ── Helper: extraer body_text de un template del catálogo ──
+function _getBodyTextFromKanbanTemplate(templateName) {
+  const tpl = KANBAN_TEMPLATES_META.find((t) => t.name === templateName);
+  if (!tpl) return null;
+  const body = tpl.components.find((c) => c.type === 'BODY');
+  return body?.text || null;
+}
+
+// ── Configuración por defecto de dropi_plantillas_config || Espejo exacto del setup necesario dropshipping───────
+const DROPI_CONFIG_POR_DEFECTO = [
+  {
+    estado_dropi: 'PENDIENTE CONFIRMACION',
+    nombre_template: 'confirmacion_pedido_k1',
+    activo: 1,
+    usar_respuesta_rapida: 1,
+    mensaje_rapido: null,
+    parametros: {
+      body: ['nombre', 'costo', 'contenido', 'nombre', 'telefono', 'direccion'],
+      buttons: [],
+    },
+  },
+  {
+    estado_dropi: 'PENDIENTE',
+    nombre_template: 'antes_generar_guia_k1',
+    activo: 1,
+    usar_respuesta_rapida: 1,
+    mensaje_rapido:
+      'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
+    parametros: null,
+  },
+  {
+    estado_dropi: 'GUIA GENERADA',
+    nombre_template: 'guia_generada_k1',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: {
+      body: [],
+      buttons: [
+        { index: 0, variable: 'guia_pdf' },
+        { index: 1, variable: 'numero_guia' },
+      ],
+    },
+  },
+  {
+    estado_dropi: 'EN TRANSITO',
+    nombre_template: 'zona_entrega_k1',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: {
+      body: ['ciudad', 'direccion', 'costo', 'tracking'],
+      buttons: [],
+    },
+  },
+  {
+    estado_dropi: 'RETIRO EN AGENCIA',
+    nombre_template: 'retiro_agencia_k1',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: { body: ['direccion'], buttons: [] },
+  },
+  {
+    estado_dropi: 'NOVEDAD',
+    nombre_template: 'novedadk2',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: null,
+  },
+];
+
+// ── Aplicar config dropi por defecto (solo estados que NO existan) ──
+async function _aplicarConfigDropiPorDefecto(id_configuracion) {
+  const resultados = [];
+
+  for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
+    try {
+      const [existe] = await db.query(
+        `SELECT id FROM dropi_plantillas_config
+         WHERE id_configuracion = ? AND estado_dropi = ? LIMIT 1`,
+        {
+          replacements: [id_configuracion, cfg.estado_dropi],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      if (existe) {
+        resultados.push({ estado: cfg.estado_dropi, status: 'omitido' });
+        continue;
+      }
+
+      const body_text = _getBodyTextFromKanbanTemplate(cfg.nombre_template);
+
+      await db.query(
+        `INSERT INTO dropi_plantillas_config
+         (id_configuracion, estado_dropi, nombre_template, language_code,
+          activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
+         VALUES (?, ?, ?, 'es', ?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            id_configuracion,
+            cfg.estado_dropi,
+            cfg.nombre_template,
+            cfg.activo,
+            cfg.mensaje_rapido,
+            cfg.usar_respuesta_rapida,
+            cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+            body_text,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+
+      resultados.push({
+        estado: cfg.estado_dropi,
+        template: cfg.nombre_template,
+        status: 'creado',
+      });
+    } catch (err) {
+      resultados.push({
+        estado: cfg.estado_dropi,
+        status: 'error',
+        error: err.message,
+      });
+    }
+  }
+
+  return resultados;
+}
+
 // ── Validar que el API key de OpenAI esté activo ───────────────
 async function validarApiKeyOpenAI(apiKey) {
   try {
@@ -902,7 +1006,6 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   );
   const api_key_openai = configRow?.api_key_openai || null;
 
-  // ── Validar API key ANTES de crear cualquier cosa ──────────
   if (!api_key_openai) {
     return next(
       new AppError(
@@ -921,7 +1024,6 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       ),
     );
   }
-  // ── API key confirmada, continuar ──────────────────────────
 
   const headers = api_key_openai
     ? {
@@ -980,7 +1082,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           col.orden,
           col.activo,
           col.es_estado_final,
-          col.es_principal || 0, // ← agregar
+          col.es_principal || 0,
           col.activa_ia,
           col.max_tokens,
           col.instrucciones || null,
@@ -1023,8 +1125,9 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
 
   const resultadoTemplates = await _crearTemplatesMeta(id_configuracion);
   const resultadoRapidas = await _crearRespuestasRapidas(id_configuracion);
+  const resultadoDropiConfig =
+    await _aplicarConfigDropiPorDefecto(id_configuracion);
 
-  // Guardar estado actual
   await db.query(
     `UPDATE configuraciones 
    SET kanban_global_activo = 1, kanban_global_id = ?
@@ -1044,12 +1147,12 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           columnas: resultado,
           templates_meta: resultadoTemplates,
           respuestas_rapidas: resultadoRapidas,
+          dropi_config: resultadoDropiConfig,
         }),
       ],
     },
   );
 
-  // ── Sync catálogo (fire-and-forget, no bloquea la respuesta) ──
   syncCatalogoTodasColumnasConfig(id_configuracion, {
     logger: async (...args) => console.log('[sync-catalogo]', ...args),
   }).catch((err) =>
@@ -1062,6 +1165,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       columnas: resultado,
       templates_meta: resultadoTemplates,
       respuestas_rapidas: resultadoRapidas,
+      dropi_config: resultadoDropiConfig,
     },
   });
 });
@@ -1155,7 +1259,6 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
-  // ── ANTES DE GENERAR GUÍA ──
   {
     name: 'antes_generar_guia_k1',
     language: 'es',
@@ -1167,7 +1270,6 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
-  // ── GUÍA GENERADA (con botones URL corregidos) ──
   {
     name: 'guia_generada_k1',
     language: 'es',
@@ -1212,14 +1314,13 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
-    name: 'novedad_k2',
+    name: 'novedadk2',
     language: 'es',
     category: 'UTILITY',
     components: [
       {
         type: 'BODY',
-        text: 'Estimado cliente, le recordamos que al seleccionar pago contraentrega, usted se comprometió a recibir y pagar el pedido, conforme a la ley 67 del 2022 de Comercio Electrónico.\n\nEl costo del envío ya fue asumido por nuestra empresa.\nSe ha programado un nuevo intento de entrega para el día {{1}}.\n\nEs importante contar con su disponibilidad para evitar cancelación del pedido y posibles restricciones en futuras compras.',
-        example: { body_text: [['15 de Abril']] },
+        text: 'Estimado cliente, le recordamos que al seleccionar pago contraentrega, usted se comprometió a recibir y pagar el pedido, conforme a la ley 67 del 2022 de Comercio Electrónico.\n\nEl costo del envío ya fue asumido por nuestra empresa.\nNecesitamos programar un nuevo intento de entrega lo antes posible por favor.\n\nEs importante contar con su disponibilidad para evitar cancelación del pedido y posibles restricciones en futuras compras.',
       },
       {
         type: 'BUTTONS',
@@ -1247,7 +1348,6 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
-  // ── CONFIRMACIÓN DE PEDIDO ──
   {
     name: 'confirmacion_pedido_k1',
     language: 'es',
@@ -1278,7 +1378,6 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
-  // ── ZONA DE ENTREGA ──
   {
     name: 'zona_entrega_k1',
     language: 'es',
@@ -1361,6 +1460,75 @@ exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
   const data = await _crearRespuestasRapidas(id_configuracion);
   return res.json({ success: true, data });
 });
+
+// ── Migración masiva one-shot (ejecutar UNA vez y luego comentar) ──
+// exports.migrarTodasLasConexiones = catchAsync(async (req, res, next) => {
+//   const { secret } = req.body;
+
+//   // Cambiá este secret por algo que solo vos sepas
+//   if (secret !== 'IMPOR_MIGRA_2026_DBonilla') {
+//     return next(new AppError('No autorizado', 403));
+//   }
+
+//   const configs = await db.query(
+//     `SELECT id
+//      FROM configuraciones
+//      WHERE kanban_global_activo = 1`,
+//     { type: db.QueryTypes.SELECT },
+//   );
+
+//   if (!configs.length) {
+//     return res.json({
+//       success: true,
+//       message: 'No hay configuraciones con kanban global activo',
+//       total: 0,
+//     });
+//   }
+
+//   const resumen = [];
+
+//   for (const c of configs) {
+//     try {
+//       const templates = await _crearTemplatesMeta(c.id);
+//       const rapidas = await _crearRespuestasRapidas(c.id);
+//       const dropi = await _aplicarConfigDropiPorDefecto(c.id);
+
+//       const creadosTpl = templates.filter((t) => t.status === 'success').length;
+//       const creadosRr = rapidas.filter((r) => r.status === 'success').length;
+//       const creadosDropi = dropi.filter((d) => d.status === 'creado').length;
+
+//       resumen.push({
+//         id_configuracion: c.id,
+//         templates_creados: creadosTpl,
+//         templates_omitidos: templates.filter((t) => t.status === 'omitido')
+//           .length,
+//         templates_error: templates.filter(
+//           (t) => t.status?.startsWith('error') || t.status === 'error_media',
+//         ).length,
+//         respuestas_rapidas_creadas: creadosRr,
+//         dropi_config_creados: creadosDropi,
+//         dropi_config_omitidos: dropi.filter((d) => d.status === 'omitido')
+//           .length,
+//       });
+
+//       console.log(
+//         `[MIGRA] ${c.id} → tpl:+${creadosTpl} rr:+${creadosRr} dropi:+${creadosDropi}`,
+//       );
+//     } catch (err) {
+//       resumen.push({
+//         id_configuracion: c.id,
+//         error: err.message,
+//       });
+//       console.error(`[MIGRA] Error en ${c.id}:`, err.message);
+//     }
+//   }
+
+//   return res.json({
+//     success: true,
+//     total: configs.length,
+//     resumen,
+//   });
+// });
 
 exports.trackingRedirect = (req, res) => {
   const g = String(req.params.guide || '').trim();

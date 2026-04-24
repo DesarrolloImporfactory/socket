@@ -23,4 +23,5 @@ router.post('/crear_templates_meta', ctrl.crearTemplatesMeta);
 router.post('/crear_respuestas_rapidas', ctrl.crearRespuestasRapidas);
 router.get('/t/:guide', ctrl.trackingRedirect);
 
+// router.post('/migrar_todas_conexiones', ctrl.migrarTodasLasConexiones);
 module.exports = router;
