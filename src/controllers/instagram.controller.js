@@ -62,7 +62,7 @@ exports.listConnections = async (req, res) => {
         try {
           if (!r.ig_id || !r.page_access_token) return r;
           const { data: ig } = await axios.get(
-            `https://graph.facebook.com/v19.0/${r.ig_id}`,
+            `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${r.ig_id}`,
             {
               params: {
                 fields:

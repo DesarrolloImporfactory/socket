@@ -178,7 +178,7 @@ exports.fetchAndStoreProfile = async (req, res) => {
 
     if (realSource === 'ig') {
       // ✅ Instagram: name, profile_picture_url
-      const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
+      const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${encodeURIComponent(
         external_id,
       )}?fields=name,profile_pic&access_token=${encodeURIComponent(token)}`;
 
@@ -200,7 +200,7 @@ exports.fetchAndStoreProfile = async (req, res) => {
       pic = ig.profile_pic || null;
     } else {
       // ✅ Messenger (ms): first_name, last_name, picture
-      const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
+      const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${encodeURIComponent(
         external_id,
       )}?fields=first_name,last_name,picture&access_token=${encodeURIComponent(
         token,
@@ -296,7 +296,7 @@ exports.refreshMissing = async (req, res) => {
         );
         if (!token) continue;
 
-        const url = `https://graph.facebook.com/v22.0/${encodeURIComponent(
+        const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${encodeURIComponent(
           psid,
         )}?fields=first_name,last_name,picture&access_token=${encodeURIComponent(
           token,

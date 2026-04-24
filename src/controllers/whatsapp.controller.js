@@ -308,7 +308,7 @@ exports.enviarTemplateMasivo = async (req, res) => {
         await new Promise((resolve) => setTimeout(resolve, 2000));
 
         try {
-          const mediaCheckUrl = `https://graph.facebook.com/v22.0/${meta_media_id}`;
+          const mediaCheckUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${meta_media_id}`;
           const mediaCheck = await axios.get(mediaCheckUrl, {
             headers: { Authorization: `Bearer ${cfg.ACCESS_TOKEN}` },
             timeout: 10000,
@@ -552,7 +552,7 @@ exports.enviarTemplateMasivo = async (req, res) => {
       validateStatus: () => true,
     });
 
-    const url = `https://graph.facebook.com/v22.0/${cfg.PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`;
     const resp = await ax.post(url, payload);
 
     console.log('[SEND_TEMPLATE] Respuesta de Meta:', {
@@ -1431,7 +1431,7 @@ exports.enviarVideoWhatsappFile = async (req, res) => {
     uploadForm.append('messaging_product', 'whatsapp');
 
     const uploadResponse = await axios.post(
-      `https://graph.facebook.com/v19.0/${phone_number_id}/media`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phone_number_id}/media`,
       uploadForm,
       {
         headers: {
@@ -1484,7 +1484,7 @@ exports.eliminarTemplateMeta = async (req, res) => {
       });
     }
 
-    const url = `https://graph.facebook.com/v22.0/${cfg.WABA_ID}/message_templates`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.WABA_ID}/message_templates`;
 
     // Params: siempre name, y hsm_id si viene
     const params = { name: template_name };

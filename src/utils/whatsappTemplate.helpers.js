@@ -359,7 +359,7 @@ async function uploadVideoToVideoAPI({
 }
 
 async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
-  const mediaUrl = `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/media`;
+  const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
 
   const mimeType = file.mimetype || 'application/octet-stream';
   const fileName = file.originalname || `file-${Date.now()}`;

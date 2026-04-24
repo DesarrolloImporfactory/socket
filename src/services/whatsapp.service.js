@@ -115,7 +115,7 @@ const obtenerTextoPlantilla = async (nombre_template, accessToken, waba_id) => {
     },
   );
 
-  let nextUrl = `https://graph.facebook.com/v22.0/${waba_id}/message_templates`;
+  let nextUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${waba_id}/message_templates`;
   let totalCached = 0;
   let pageNum = 0;
   const MAX_PAGES = 10; // Límite de seguridad para no paginar infinitamente
@@ -319,7 +319,7 @@ exports.sendWhatsappMessage = async ({
   id_configuracion,
   responsable,
 }) => {
-  const url = `https://graph.facebook.com/v20.0/${business_phone_id}/messages`;
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
   const data = {
     messaging_product: 'whatsapp',
@@ -399,7 +399,7 @@ exports.sendWhatsappMessageTemplate = async ({
     };
   }
 
-  const url = `https://graph.facebook.com/v20.0/${business_phone_id}/messages`;
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
   if (!Array.isArray(template_parameters)) {
     throw new Error('template_parameters debe ser un array');
@@ -695,7 +695,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     'Content-Type': 'application/json',
   };
 
-  const url = `https://graph.facebook.com/v22.0/${business_phone_id}/messages`;
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
   const response = await axios.post(url, payload, {
     headers,

@@ -512,7 +512,7 @@ class ChatService {
       const fromTelefono = dataAdmin.id_telefono;
       const fromToken = dataAdmin.token;
 
-      const url = `https://graph.facebook.com/v19.0/${fromTelefono}/messages`;
+      const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${fromTelefono}/messages`;
 
       let requestData;
       const tipo = String(tipo_mensaje || 'text').toLowerCase();
@@ -580,7 +580,7 @@ class ChatService {
         uploadForm.append('messaging_product', 'whatsapp');
 
         const uploadResp = await axios.post(
-          `https://graph.facebook.com/v19.0/${fromTelefono}/media`,
+          `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${fromTelefono}/media`,
           uploadForm,
           {
             headers: {
@@ -698,7 +698,7 @@ class ChatService {
             uploadForm.append('messaging_product', 'whatsapp');
 
             const uploadResp = await axios.post(
-              `https://graph.facebook.com/v19.0/${fromTelefono}/media`,
+              `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${fromTelefono}/media`,
               uploadForm,
               {
                 headers: {

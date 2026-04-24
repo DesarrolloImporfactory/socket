@@ -96,7 +96,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     // 0) Info de la WABA (dueño real del portafolio)
     // =========================
     const wabaInfoResp = await ax.get(
-      `https://graph.facebook.com/v22.0/${WABA_ID}`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}`,
       {
         params: {
           fields: 'id,name,owner_business_info,on_behalf_of_business_info',
@@ -133,7 +133,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     }
 
     // 1) Números
-    const numbersUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/phone_numbers`;
+    const numbersUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/phone_numbers`;
     const numbersResp = await ax.get(numbersUrl, {
       params: {
         fields: [
@@ -219,7 +219,7 @@ router.post('/ObtenerNumeros', async (req, res) => {
     const merged = await Promise.all(
       numbers.map(async (n) => {
         const profileResp = await ax.get(
-          `https://graph.facebook.com/v22.0/${n.id}/whatsapp_business_profile`,
+          `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${n.id}/whatsapp_business_profile`,
           {
             params: {
               fields: [
@@ -341,7 +341,7 @@ async function uploadResumableAndGetHandle({
   });
 
   // 1) Crear sesión de subida (upload session)
-  const startUrl = `https://graph.facebook.com/v22.0/${FB_APP_ID}/uploads`;
+  const startUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${FB_APP_ID}/uploads`;
   const startResp = await ax.post(startUrl, null, {
     params: {
       file_length: fileBuffer.length,
@@ -362,7 +362,7 @@ async function uploadResumableAndGetHandle({
   }
 
   // 2) Subir binario
-  const uploadUrl = `https://graph.facebook.com/v22.0/${uploadSessionId}`;
+  const uploadUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${uploadSessionId}`;
   const uploadResp = await axios.post(uploadUrl, fileBuffer, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -453,7 +453,7 @@ router.post('/CrearPlantilla', uploadSingle('headerFile'), async (req, res) => {
       });
     }
 
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`;
 
     const payload = { name, language, category, components };
 
@@ -1249,7 +1249,7 @@ router.post('/obtenerTemplatesWhatsapp', async (req, res) => {
     if (after) params.set('after', after);
     if (before) params.set('before', before);
 
-    const url = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates?${params.toString()}`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?${params.toString()}`;
 
     const { data } = await axios.get(url, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
@@ -1778,7 +1778,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
     const r = await axios.get(
-      'https://graph.facebook.com/v22.0/oauth/access_token',
+      'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
       {
         params: {
           client_id: process.env.FB_APP_ID,
@@ -1797,7 +1797,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     try {
       console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
       const r2 = await axios.get(
-        'https://graph.facebook.com/v22.0/oauth/access_token',
+        'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
         {
           params: {
             client_id: process.env.FB_APP_ID,
@@ -1820,167 +1820,88 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     if (!clientToken)
       throw new Error('No se obtuvo access token a partir del code');
 
-    const displayWanted = norm(display_number_onboarding || '');
+    // ====== 2) Obtener WABAs visibles ======
+    console.log('[WABA][FETCH] Obteniendo WABAs (client/owned)…');
+
+    const wabas = [];
+
+    try {
+      const clientResp = await safeGet(
+        `https://graph.facebook.com/v22.0/${BUSINESS_ID}/client_whatsapp_business_accounts`,
+        {},
+        bearer(SYS_TOKEN),
+      );
+      wabas.push(...(clientResp.data?.data || []));
+    } catch (e) {
+      console.log(
+        '[WABA][WARN] No se pudieron obtener client_wabas:',
+        e?.response?.data || e.message,
+      );
+    }
+
+    try {
+      const ownedResp = await safeGet(
+        `https://graph.facebook.com/v22.0/${BUSINESS_ID}/owned_whatsapp_business_accounts`,
+        {},
+        bearer(SYS_TOKEN),
+      );
+      wabas.push(...(ownedResp.data?.data || []));
+    } catch (e) {
+      console.log(
+        '[WABA][WARN] No se pudieron obtener owned_wabas:',
+        e?.response?.data || e.message,
+      );
+    }
+
+    if (!wabas.length) {
+      throw new Error(
+        `❌ No se encontraron WABAs visibles para el BUSINESS_ID: ${BUSINESS_ID}`,
+      );
+    }
+
+    // ====== 3) Selección del número (SOLO por display_number_onboarding) ======
     let wabaPicked = null;
     let phoneNumberId = null;
     let displayNumber = null;
     let matchedPhone = null;
 
-    // ====== 2) WABA DISCOVERY CON CACHE + FIELD EXPANSION ======
-    const PHONES_EXPANSION =
-      'id,name,phone_numbers.limit(50){id,display_phone_number,status,code_verification_status}';
-    const SIMPLE_FIELDS = 'id,name';
+    const displayWanted = norm(display_number_onboarding || '');
 
-    const cacheValid = (entry) =>
-      entry?.data && Date.now() - entry.fetchedAt < WABA_CACHE_TTL_MS;
+    async function fetchPhonesOf(wabaId) {
+      const r = await safeGet(
+        `https://graph.facebook.com/v22.0/${wabaId}/phone_numbers`,
+        { fields: 'id,display_phone_number,status,code_verification_status' },
+        bearer(SYS_TOKEN),
+      );
+      return r?.data?.data || [];
+    }
 
-    const findInList = (list) => {
-      for (const waba of list || []) {
-        const phones = waba.phone_numbers?.data || [];
+    console.log('[SELECT][TRY] display_number_onboarding:', displayWanted);
+    for (const waba of wabas) {
+      try {
+        const phones = await fetchPhonesOf(waba.id);
         const match = phones.find(
           (p) => norm(p.display_phone_number) === displayWanted,
         );
-        if (match) return { waba, match };
-      }
-      return null;
-    };
-
-    // ====== 2a) INTENTO 1: Cache hit con expansion ======
-    for (const kind of ['client', 'owned']) {
-      if (cacheValid(WABA_CACHE[kind]) && WABA_CACHE[kind].withPhones) {
-        const hit = findInList(WABA_CACHE[kind].data);
-        if (hit) {
-          wabaPicked = hit.waba;
-          matchedPhone = hit.match;
-          phoneNumberId = String(hit.match.id);
-          displayNumber = norm(hit.match.display_phone_number);
-          console.log(
-            `[SELECT][CACHE_HIT][${kind.toUpperCase()}] wabaId=${wabaPicked.id} phoneNumberId=${phoneNumberId}`,
-          );
+        if (match) {
+          matchedPhone = match;
+          wabaPicked = waba;
+          phoneNumberId = String(match.id);
+          displayNumber = norm(match.display_phone_number);
+          console.log('[SELECT][MATCH][DISPLAY]', {
+            wabaId: waba.id,
+            wabaName: waba.name,
+            phoneNumberId,
+            displayNumber,
+            status: match.status,
+          });
           break;
         }
-      }
-    }
-
-    // ====== 2b) INTENTO 2: Fetch fresco con field expansion ======
-    if (!wabaPicked) {
-      console.log('[WABA][FETCH] discovery con field expansion…');
-
-      for (const kind of ['client', 'owned']) {
-        if (wabaPicked) break;
-        const edge =
-          kind === 'client'
-            ? 'client_whatsapp_business_accounts'
-            : 'owned_whatsapp_business_accounts';
-        try {
-          const resp = await safeGet(
-            `https://graph.facebook.com/v22.0/${BUSINESS_ID}/${edge}`,
-            { fields: PHONES_EXPANSION, limit: 200 },
-            bearer(SYS_TOKEN),
-          );
-          const list = resp.data?.data || [];
-          WABA_CACHE[kind] = {
-            data: list,
-            fetchedAt: Date.now(),
-            withPhones: true,
-          };
-          const hit = findInList(list);
-          if (hit) {
-            wabaPicked = hit.waba;
-            matchedPhone = hit.match;
-            phoneNumberId = String(hit.match.id);
-            displayNumber = norm(hit.match.display_phone_number);
-            console.log(
-              `[SELECT][MATCH][${kind.toUpperCase()}][EXPANSION] wabaId=${wabaPicked.id} phoneNumberId=${phoneNumberId} status=${matchedPhone.status}`,
-            );
-          }
-        } catch (e) {
-          console.log(
-            `[WABA][WARN][${kind}] expansion falló:`,
-            e?.response?.data?.error?.code || e.message,
-          );
-        }
-      }
-    }
-
-    // ====== 2c) INTENTO 3: Fallback — lista simple + fast scan primeras 20 ======
-    if (!wabaPicked) {
-      console.log('[WABA][FALLBACK] lista simple + fast scan…');
-
-      for (const kind of ['client', 'owned']) {
-        if (wabaPicked) break;
-        const edge =
-          kind === 'client'
-            ? 'client_whatsapp_business_accounts'
-            : 'owned_whatsapp_business_accounts';
-        try {
-          const resp = await safeGet(
-            `https://graph.facebook.com/v22.0/${BUSINESS_ID}/${edge}`,
-            { fields: SIMPLE_FIELDS, limit: 200 },
-            bearer(SYS_TOKEN),
-          );
-          const list = resp.data?.data || [];
-          // Actualizamos cache simple (sin phones)
-          WABA_CACHE[kind] = {
-            data: list,
-            fetchedAt: Date.now(),
-            withPhones: false,
-          };
-
-          // Fast scan: solo las primeras 20 (las recientes están arriba)
-          const firstBatch = list.slice(0, 20);
-          for (const waba of firstBatch) {
-            if (wabaPicked) break;
-            if (isWabaThrottled(waba.id)) {
-              console.log(
-                `[SELECT][SKIP] WABA ${waba.id} throttled, saltando.`,
-              );
-              continue;
-            }
-            try {
-              const phResp = await safeGet(
-                `https://graph.facebook.com/v22.0/${waba.id}/phone_numbers`,
-                {
-                  fields:
-                    'id,display_phone_number,status,code_verification_status',
-                },
-                bearer(SYS_TOKEN),
-              );
-              const phones = phResp.data?.data || [];
-              const match = phones.find(
-                (p) => norm(p.display_phone_number) === displayWanted,
-              );
-              if (match) {
-                wabaPicked = waba;
-                matchedPhone = match;
-                phoneNumberId = String(match.id);
-                displayNumber = norm(match.display_phone_number);
-                console.log(
-                  `[SELECT][MATCH][${kind.toUpperCase()}][FAST] wabaId=${waba.id} phoneNumberId=${phoneNumberId}`,
-                );
-                break;
-              }
-            } catch (e) {
-              const codeErr = e?.response?.data?.error?.code;
-              if (codeErr === 80008) {
-                // Meta ya marcó esta WABA como throttled en el header, ya lo capturó processBucHeader
-                console.log(
-                  `[SELECT][SKIP] WABA ${waba.id} 80008, continúo con siguiente.`,
-                );
-                continue;
-              }
-              console.log(
-                `[SELECT][WARN] WABA ${waba.id} phones:`,
-                e?.response?.data || e.message,
-              );
-            }
-          }
-        } catch (e) {
-          console.log(
-            `[WABA][WARN][${kind}] lista simple falló:`,
-            e?.response?.data?.error?.code || e.message,
-          );
-        }
+      } catch (e) {
+        console.log(
+          `[SELECT][WARN] WABA ${waba.id} phones:`,
+          e?.response?.data || e.message,
+        );
       }
     }
 
@@ -1992,7 +1913,8 @@ router.post('/embeddedSignupComplete', async (req, res) => {
 
     const wabaId = String(wabaPicked.id);
 
-    // ====== 3) Registrar el número (REGISTER) ======
+    // ====== 4) Registrar el número (REGISTER) ======
+    // ✅ REGLA: Si el número ya está CONNECTED (coexistencia), NO hacemos register y seguimos.
     const regUrl = `https://graph.facebook.com/v22.0/${phoneNumberId}/register`;
     const matchedStatus = String(matchedPhone?.status || '').toUpperCase();
 
@@ -2036,7 +1958,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       }
     }
 
-    // ====== 4) Suscribir app al WABA ======
+    // ====== 5) Suscribir app al WABA ======
     const subUrl = `https://graph.facebook.com/v22.0/${wabaId}/subscribed_apps`;
     console.log('[POST][SUBSCRIBE] ->', subUrl);
     try {
@@ -2058,36 +1980,31 @@ router.post('/embeddedSignupComplete', async (req, res) => {
       console.log('[SUBSCRIBE][OK] con clientToken');
     }
 
-    // ====== 5) Obtener info del número (verified_name, etc.) ======
-    // Optimización: si ya teníamos info del expansion + no necesitamos verified_name,
-    // podríamos saltarlo. Pero como el nombre_configuracion depende de verified_name,
-    // lo mantenemos. Si el expansion ya trajo verified_name, podrías quitarlo.
-    let info = matchedPhone || {};
-    if (!info.verified_name) {
-      try {
-        const r1 = await safeGet(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}`,
-          {
-            fields:
-              'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
-          },
-          bearer(SYS_TOKEN),
-        );
-        info = r1.data || {};
-        console.log('[PN-INFO][OK] con SYS_TOKEN');
-      } catch (e1) {
-        console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
-        const r2 = await safeGet(
-          `https://graph.facebook.com/v22.0/${phoneNumberId}`,
-          {
-            fields:
-              'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
-          },
-          bearer(clientToken),
-        );
-        info = r2.data || {};
-        console.log('[PN-INFO][OK] con clientToken');
-      }
+    // ====== 6) Verificar estado del número ======
+    let info = {};
+    try {
+      const r1 = await safeGet(
+        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        {
+          fields:
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+        },
+        bearer(SYS_TOKEN),
+      );
+      info = r1.data || {};
+      console.log('[PN-INFO][OK] con SYS_TOKEN');
+    } catch (e1) {
+      console.log('[PN-INFO][WARN] SYS_TOKEN falló; retry con clientToken');
+      const r2 = await safeGet(
+        `https://graph.facebook.com/v22.0/${phoneNumberId}`,
+        {
+          fields:
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+        },
+        bearer(clientToken),
+      );
+      info = r2.data || {};
+      console.log('[PN-INFO][OK] con clientToken');
     }
 
     const nombre_configuracion = `${
@@ -2934,7 +2851,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
     }
 
     const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
-    const url = `https://graph.facebook.com/v17.0/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=100`;
+    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=100`;
 
     // 1. Obtener plantillas existentes
     const { data } = await axios.get(url);
@@ -2954,7 +2871,7 @@ router.post('/crearPlantillasAutomaticas', async (req, res) => {
       }
 
       try {
-        const crearUrl = `https://graph.facebook.com/v22.0/${WABA_ID}/message_templates`;
+        const crearUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`;
         const response = await axios.post(crearUrl, plantilla, {
           headers: {
             Authorization: `Bearer ${ACCESS_TOKEN}`,
@@ -3128,7 +3045,7 @@ router.post('/coexistencia/sync', async (req, res) => {
       });
     }
 
-    const endpoint = `https://graph.facebook.com/v22.0/${phoneNumberId}/smb_app_data`;
+    const endpoint = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}/smb_app_data`;
 
     const ax = axios.create({
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
@@ -3270,7 +3187,7 @@ router.post('/enviarAudio', uploadSingle('audio'), async (req, res) => {
     const { ACCESS_TOKEN, PHONE_NUMBER_ID } = cfg;
 
     // ========= 1) Subir media a Meta =========
-    const mediaUrl = `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/media`;
+    const mediaUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${PHONE_NUMBER_ID}/media`;
 
     const mimeType = req.file.mimetype || 'audio/ogg';
     const fileName = req.file.originalname || `audio-${Date.now()}.ogg`;

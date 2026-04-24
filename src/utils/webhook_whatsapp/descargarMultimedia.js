@@ -23,7 +23,7 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
     await fs.mkdir(audioDir, { recursive: true });
 
     // Paso 1: Obtener URL de descarga
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaInfoUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaResponse = await axios.get(mediaInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -104,7 +104,7 @@ async function descargarImagenWhatsapp(mediaId, accessToken) {
     await fs.mkdir(imageDir, { recursive: true });
 
     // Paso 1: obtener la URL real de descarga
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaInfoUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaResponse = await axios.get(mediaInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -186,7 +186,7 @@ async function descargarDocumentoWhatsapp(
     await fs.mkdir(docDir, { recursive: true });
 
     // Paso 1: obtener la URL real de descarga
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaInfoUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaResponse = await axios.get(mediaInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -275,7 +275,7 @@ async function descargarVideoWhatsapp(mediaId, accessToken) {
     await fs.mkdir(videoDir, { recursive: true });
 
     // Paso 1: obtener la URL real de descarga
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaInfoUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaResponse = await axios.get(mediaInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -354,7 +354,7 @@ async function descargarStickerWhatsapp(mediaId, accessToken) {
     await fs.mkdir(stickerDir, { recursive: true });
 
     // Paso 1: obtener la URL real
-    const mediaInfoUrl = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaInfoUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${mediaId}`;
     const mediaResponse = await axios.get(mediaInfoUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
