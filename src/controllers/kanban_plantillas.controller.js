@@ -830,6 +830,7 @@ const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'PENDIENTE CONFIRMACION',
     nombre_template: 'confirmacion_pedido_k1',
+    columna_destino: null,
     activo: 1,
     usar_respuesta_rapida: 1,
     mensaje_rapido: null,
@@ -840,16 +841,20 @@ const DROPI_CONFIG_POR_DEFECTO = [
   },
   {
     estado_dropi: 'PENDIENTE',
-    nombre_template: 'antes_generar_guia_k1',
+    nombre_template: 'contacto_inicial',
+    columna_destino: 'generar_guia',
     activo: 1,
     usar_respuesta_rapida: 1,
     mensaje_rapido:
       'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
     parametros: null,
+    body_text:
+      'Hola, estamos enviando los últimos pedidos. 🚛\nNecesito confirmar unos detalles de tu orden.\n\nResponde este mensaje para continuar la conversación.',
   },
   {
     estado_dropi: 'GUIA GENERADA',
     nombre_template: 'guia_generada_k1',
+    columna_destino: 'guia_generada',
     activo: 1,
     usar_respuesta_rapida: 0,
     mensaje_rapido: null,
@@ -864,6 +869,7 @@ const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'EN TRANSITO',
     nombre_template: 'zona_entrega_k1',
+    columna_destino: 'en_transito',
     activo: 1,
     usar_respuesta_rapida: 0,
     mensaje_rapido: null,
@@ -875,6 +881,7 @@ const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'RETIRO EN AGENCIA',
     nombre_template: 'retiro_agencia_k1',
+    columna_destino: 'retiro_agencia',
     activo: 1,
     usar_respuesta_rapida: 0,
     mensaje_rapido: null,
@@ -883,6 +890,7 @@ const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'NOVEDAD',
     nombre_template: 'novedadk2',
+    columna_destino: 'novedad',
     activo: 1,
     usar_respuesta_rapida: 0,
     mensaje_rapido: null,
@@ -910,18 +918,23 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
         continue;
       }
 
-      const body_text = _getBodyTextFromKanbanTemplate(cfg.nombre_template);
+      // Prioridad: body_text manual del cfg → body del template Meta → null
+      const body_text =
+        cfg.body_text ||
+        _getBodyTextFromKanbanTemplate(cfg.nombre_template) ||
+        null;
 
       await db.query(
         `INSERT INTO dropi_plantillas_config
-         (id_configuracion, estado_dropi, nombre_template, language_code,
+         (id_configuracion, estado_dropi, nombre_template, columna_destino, language_code,
           activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text)
-         VALUES (?, ?, ?, 'es', ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 'es', ?, ?, ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
             cfg.estado_dropi,
             cfg.nombre_template,
+            cfg.columna_destino || null,
             cfg.activo,
             cfg.mensaje_rapido,
             cfg.usar_respuesta_rapida,
@@ -935,6 +948,7 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
       resultados.push({
         estado: cfg.estado_dropi,
         template: cfg.nombre_template,
+        columna_destino: cfg.columna_destino || null,
         status: 'creado',
       });
     } catch (err) {
