@@ -186,22 +186,24 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion] },
   );
 
-  await db.query(
-    `INSERT INTO configuraciones_kanban_global_log
+  if (id_plantilla) {
+    await db.query(
+      `INSERT INTO configuraciones_kanban_global_log
      (id_configuracion, id_plantilla, accion, detalle)
      VALUES (?, ?, 'eliminado', ?)`,
-    {
-      replacements: [
-        id_configuracion,
-        id_plantilla || null,
-        JSON.stringify({
-          motivo: 'reinicio_manual',
-          columnas_eliminadas: columnas.length,
-        }),
-      ],
-    },
-  );
-
+      {
+        replacements: [
+          id_configuracion,
+          id_plantilla,
+          JSON.stringify({
+            motivo: 'reinicio_manual',
+            columnas_eliminadas: columnas.length,
+          }),
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  }
   return res.json({
     success: true,
     message: 'Configuración reiniciada',
