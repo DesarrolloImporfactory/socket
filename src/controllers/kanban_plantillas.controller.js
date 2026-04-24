@@ -460,7 +460,7 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
 
   const columnas = await db.query(
     `SELECT id, nombre, estado_db, color_fondo, color_texto, icono,
-          orden, activo, es_estado_final, es_principal, activa_ia, max_tokens,
+          orden, activo, es_estado_final, es_principal, es_dropi_principal, activa_ia, max_tokens,
           instrucciones, modelo
    FROM kanban_columnas
    WHERE id_configuracion = ? AND activo = 1
@@ -491,6 +491,7 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
       activo: col.activo,
       es_estado_final: col.es_estado_final,
       es_principal: col.es_principal || 0,
+      es_dropi_principal: col.es_dropi_principal || 0,
       activa_ia: col.activa_ia,
       max_tokens: col.max_tokens,
       instrucciones: col.instrucciones || null,
