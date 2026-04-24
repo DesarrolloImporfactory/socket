@@ -9,7 +9,7 @@ const logger = require('../utils/logger');
 
 const FB_APP_ID = process.env.FB_APP_ID;
 const FB_APP_SECRET = process.env.FB_APP_SECRET;
-const GRAPH_BASE = 'https://graph.facebook.com/${process.env.GRAPH_VERSION}';
+const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
 
 // ══════════════════════════════════════════════
 // HELPERS

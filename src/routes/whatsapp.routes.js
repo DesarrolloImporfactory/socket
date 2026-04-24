@@ -1778,7 +1778,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
   try {
     console.log('[OAUTH] exchange WITH redirect_uri');
     const r = await axios.get(
-      'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token`,
       {
         params: {
           client_id: process.env.FB_APP_ID,
@@ -1797,7 +1797,7 @@ router.post('/embeddedSignupComplete', async (req, res) => {
     try {
       console.log('[OAUTH] exchange WITHOUT redirect_uri (fallback)');
       const r2 = await axios.get(
-        'https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token',
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/oauth/access_token`,
         {
           params: {
             client_id: process.env.FB_APP_ID,
