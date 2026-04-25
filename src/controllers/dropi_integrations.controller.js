@@ -853,14 +853,18 @@ function classifyDropiStatus(status) {
     .trim()
     .toUpperCase();
 
+  // ENTREGADA
   if (
     s === 'ENTREGADO' ||
     s.includes('ENTREGADA') ||
     s === 'REPORTADO ENTREGADO' ||
+    s.includes('REPORTADO ENTREGADO') ||
     s === 'ENTREGA DIGITALIZADA' ||
     s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
   )
     return 'entregada';
+
+  // DEVOLUCION
   if (
     s.includes('DEVOLUCION') ||
     s.includes('DEVOLUCIÓN') ||
@@ -869,6 +873,8 @@ function classifyDropiStatus(status) {
     s === 'DESAPLICADO'
   )
     return 'devolucion';
+
+  // CANCELADA
   if (
     s === 'CANCELADO' ||
     s.includes('CANCELADA') ||
@@ -877,28 +883,39 @@ function classifyDropiStatus(status) {
     s === 'GUIA_ANULADA'
   )
     return 'cancelada';
+
+  // PENDIENTE
   if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
+
+  // RETIRO EN AGENCIA
   if (
     s.includes('RETIRO EN AGENCIA') ||
     s.includes('ENVÍO LISTO EN OFICINA') ||
     s === 'ENVIO LISTO EN OFICINA'
   )
     return 'retiro_agencia';
+
+  // NOVEDAD
   if (
     s.includes('NOVEDAD') ||
     s.includes('SOLUCION') ||
+    s.includes('SOLUCIÓN') ||
     s === 'CON NOVEDAD' ||
     s === 'DESTINATARIO FALLECIDO' ||
     s.includes('DESTINATARIO RE-PROGRAMA') ||
     s.includes('DESTINATARIO SOLICITA') ||
+    s.includes('DESTINATARIO INDICA') ||
     s.includes('FUERA DE COBERTURA') ||
     s.includes('OBSTRUCCIÓN EN LA VÍA') ||
     s.includes('PROBLEMAS DE ORDEN') ||
     s.includes('VISITA A DESTINATARIO') ||
     s.includes('ACCIDENTE EN CARRETERA') ||
-    s.includes('EN ESPERA DE FIRMA')
+    s.includes('EN ESPERA DE FIRMA') ||
+    s.includes('INCONFORME')
   )
     return 'novedad';
+
+  // INDEMNIZADA
   if (
     s.includes('INDEMNIZ') ||
     s.includes('SINIESTRO') ||
@@ -907,13 +924,29 @@ function classifyDropiStatus(status) {
     s.includes('AVERÍA')
   )
     return 'indemnizada';
+
+  // GUIA GENERADA — guía recién creada, aún no se mueve
+  if (s === 'GUIA_GENERADA') return 'guia_generada';
+
+  // EN REPARTO — last-mile real (próximo a entregar al cliente)
   if (
-    s === 'GUIA_GENERADA' ||
+    s === 'EN REPARTO' || // GINTRACOM
+    s === 'ZONA DE ENTREGA' || // LAAR
+    s === 'EN DISTRIBUCION A CLIENTE' || // SERVIENTREGA (sin tilde)
+    s === 'EN DISTRIBUCIÓN A CLIENTE' || // SERVIENTREGA (con tilde)
+    s.includes('EN DISTRIBUCION A') ||
+    s.includes('EN DISTRIBUCIÓN A') ||
+    s === 'EN CAMINO' || // VELOCES
+    s.includes('SALIDA A REPARTO') ||
+    s.includes('REPARTIDOR ASIGNADO')
+  )
+    return 'en_reparto';
+
+  // EN TRANSITO — todo lo demás del flujo logístico interno
+  if (
     s.includes('TRÁNSITO') ||
     s.includes('TRANSITO') ||
     s.includes('EN RUTA') ||
-    s.includes('EN CAMINO') ||
-    s.includes('EN REPARTO') ||
     s.includes('BODEGA') ||
     s.includes('EMBARCANDO') ||
     s.includes('RECOLECT') ||
@@ -923,16 +956,15 @@ function classifyDropiStatus(status) {
     s.includes('PACKING') ||
     s.includes('GENERADO') ||
     s.includes('GENERADA') ||
-    s.includes('ZONA DE ENTREGA') ||
     s.includes('PREPARADO') ||
     s.includes('INVENTARIO') ||
     s.includes('INGRES') ||
     s.includes('RECIBIDO') ||
     s === 'POR RECOLECTAR' ||
-    s === 'PROCESAMIENTO' ||
-    s.includes('EN DISTRIBUCION')
+    s === 'PROCESAMIENTO'
   )
     return 'en_transito';
+
   return 'otro';
 }
 
