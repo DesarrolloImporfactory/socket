@@ -1079,7 +1079,7 @@ async function validarApiKeyOpenAI(apiKey) {
 //
 // Cascada para nombre de tienda:
 //   1. Body request `empresa` (lo que escribió el cliente en el modal)
-//   2. configuraciones.nombre_empresa (fallback automático)
+//   2. configuraciones.nombre_configuracion (fallback automático)
 //   3. null → compilador usa default huérfano "nuestra tienda"
 // ──────────────────────────────────────────────────────────────
 exports.aplicarGlobal = catchAsync(async (req, res, next) => {
@@ -1093,13 +1093,13 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   );
   if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
 
-  // ═══ Cargar API key + nombre_empresa para fallback ═══
+  // ═══ Cargar API key + nombre_configuracion para fallback ═══
   const [configRow] = await db.query(
-    `SELECT api_key_openai, nombre_empresa FROM configuraciones WHERE id = ? LIMIT 1`,
+    `SELECT api_key_openai, nombre_configuracion FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const api_key_openai = configRow?.api_key_openai || null;
-  const nombreEmpresaConfig = configRow?.nombre_empresa || null;
+  const nombreEmpresaConfig = configRow?.nombre_configuracion || null;
 
   if (!api_key_openai) {
     return next(
