@@ -1,4 +1,3 @@
-// controllers/kanban_plantillas.controller.js
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
@@ -7,7 +6,27 @@ const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
 const {
   syncCatalogoTodasColumnasConfig,
 } = require('../services/syncCatalogoKanbanColumna.service');
+
+const {
+  compilarPromptFinal,
+  validarPersonalizacion,
+} = require('../utils/promptCompiler');
+
 const axios = require('axios');
+
+// ──────────────────────────────────────────────────────────────
+// CONSTANTES
+// ──────────────────────────────────────────────────────────────
+
+// IDs de configuraciones que pueden ver plantillas internas/de pruebas.
+// Para escalar más adelante: reemplazar con un campo en BD o un flag de
+// "rol: superadmin" en la tabla configuraciones.
+const CONFIGS_INTERNAS = [312];
+
+// Nombre identificador de plantillas internas (no visibles para clientes).
+// Cualquier plantilla con este string en su nombre se filtra del listado
+// público.
+const PLANTILLA_INTERNA_TAG = 'PRUEBAS DANIEL';
 
 // ── Plantillas hardcodeadas ───────────────────────────────────
 const PLANTILLAS = {};
@@ -530,13 +549,25 @@ exports.guardarGlobal = catchAsync(async (req, res, next) => {
 });
 
 // ── Listar plantillas globales ─────────────────────────────
+// ═══ FILTRO DEFENSIVO: las plantillas con tag interno (PLANTILLA_INTERNA_TAG)
+// solo se devuelven a configs internas (CONFIGS_INTERNAS).
+// ═══
 exports.listarGlobales = catchAsync(async (req, res) => {
+  const { id_configuracion } = req.body || {};
+  const esConfigInterna = CONFIGS_INTERNAS.includes(Number(id_configuracion));
+
+  // Si la config es interna, no excluye nada. Si no, excluye plantillas internas.
+  const whereExtra = esConfigInterna
+    ? ''
+    : `AND nombre NOT LIKE '%${PLANTILLA_INTERNA_TAG}%'`;
+
   const plantillas = await db.query(
     `SELECT id, nombre, descripcion, icono, color, created_at,
             JSON_LENGTH(JSON_EXTRACT(data, '$.columnas')) AS total_columnas,
             data
      FROM kanban_plantillas_globales
      WHERE activo = 1
+       ${whereExtra}
      ORDER BY created_at DESC`,
     { type: db.QueryTypes.SELECT },
   );
@@ -1033,7 +1064,24 @@ async function validarApiKeyOpenAI(apiKey) {
   }
 }
 
-// ── Aplicar plantilla global ───────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// APLICAR PLANTILLA GLOBAL
+// ──────────────────────────────────────────────────────────────
+// Crea las columnas, asistentes, templates Meta, respuestas rápidas
+// y config Dropi para un cliente, partiendo de una plantilla global.
+//
+// IMPORTANTE — Aislamiento por cliente:
+//   - Cada cliente tiene su propio set de columnas (id_configuracion).
+//   - Cada assistant_id pertenece a la API key del cliente.
+//   - El snapshot del prompt se guarda por columna del cliente.
+//   - NUNCA se modifica la plantilla global desde aquí.
+//   - NUNCA se afecta a otros clientes.
+//
+// Cascada para nombre de tienda:
+//   1. Body request `empresa` (lo que escribió el cliente en el modal)
+//   2. configuraciones.nombre_empresa (fallback automático)
+//   3. null → compilador usa default huérfano "nuestra tienda"
+// ──────────────────────────────────────────────────────────────
 exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   const { id_configuracion, id_plantilla, empresa } = req.body;
   if (!id_configuracion || !id_plantilla)
@@ -1045,11 +1093,13 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   );
   if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
 
+  // ═══ Cargar API key + nombre_empresa para fallback ═══
   const [configRow] = await db.query(
-    `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
+    `SELECT api_key_openai, nombre_empresa FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const api_key_openai = configRow?.api_key_openai || null;
+  const nombreEmpresaConfig = configRow?.nombre_empresa || null;
 
   if (!api_key_openai) {
     return next(
@@ -1070,35 +1120,49 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     );
   }
 
-  const headers = api_key_openai
-    ? {
-        Authorization: `Bearer ${api_key_openai}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Beta': 'assistants=v2',
-      }
-    : null;
+  const headers = {
+    Authorization: `Bearer ${api_key_openai}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
 
   const { columnas } =
     typeof plantilla.data === 'string'
       ? JSON.parse(plantilla.data)
       : plantilla.data;
 
+  // ═══ Cascada para nombre de tienda ═══
+  const nombreTiendaResuelto =
+    (empresa && empresa.trim()) || nombreEmpresaConfig || null;
+
+  const personalizacionInicial = nombreTiendaResuelto
+    ? { nombre_tienda: nombreTiendaResuelto }
+    : {};
+
+  console.log(
+    `[aplicarGlobal] config=${id_configuracion} plantilla=${id_plantilla} ` +
+      `nombre_tienda="${nombreTiendaResuelto || '(default huérfano)'}"`,
+  );
+
   const resultado = [];
 
   for (const col of columnas) {
     let assistant_id = null;
 
-    if (col.instrucciones && headers) {
+    // Compilamos el prompt si la columna tiene instrucciones (placeholders)
+    const promptCompilado = col.instrucciones
+      ? compilarPromptFinal(col.instrucciones, personalizacionInicial)
+      : null;
+
+    if (promptCompilado && headers) {
       try {
         const aRes = await axios.post(
           'https://api.openai.com/v1/assistants',
           {
-            name: empresa ? `${col.nombre} - ${empresa}` : col.nombre,
-            instructions: empresa
-              ? col.instrucciones
-                  .replace(/\[empresa\]/gi, empresa)
-                  .replace(/\bimporshop\b/gi, empresa)
-              : col.instrucciones,
+            name: nombreTiendaResuelto
+              ? `${col.nombre} - ${nombreTiendaResuelto}`
+              : col.nombre,
+            instructions: promptCompilado,
             model: col.modelo || 'gpt-4o-mini',
             tools: [{ type: 'file_search' }],
           },
@@ -1131,7 +1195,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           col.es_dropi_principal || 0,
           col.activa_ia,
           col.max_tokens,
-          col.instrucciones || null,
+          promptCompilado || null,
           col.modelo || 'gpt-4o-mini',
           assistant_id,
         ],
@@ -1155,6 +1219,35 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           type: db.QueryTypes.INSERT,
         },
       );
+    }
+
+    // ═══ Guardar personalización inicial + snapshot del prompt CRUDO ═══
+    // - Se guarda SIEMPRE que la columna tenga instrucciones, incluso si
+    //   el assistant_id no se creó (para preservar trazabilidad).
+    // - El snapshot guarda el prompt CRUDO con placeholders (col.instrucciones),
+    //   NO el compilado. Esto permite re-personalizar limpio en el futuro.
+    if (col.instrucciones) {
+      try {
+        await db.query(
+          `INSERT INTO kanban_columnas_personalizaciones
+           (id_kanban_columna, id_configuracion, nombre_tienda, prompt_base_snapshot)
+           VALUES (?, ?, ?, ?)`,
+          {
+            replacements: [
+              insertResult,
+              id_configuracion,
+              nombreTiendaResuelto,
+              col.instrucciones, // ← prompt CRUDO con placeholders
+            ],
+            type: db.QueryTypes.INSERT,
+          },
+        );
+      } catch (err) {
+        console.error(
+          `Error guardando personalización inicial columna ${col.nombre}:`,
+          err.message,
+        );
+      }
     }
 
     resultado.push({
@@ -1507,75 +1600,6 @@ exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
   return res.json({ success: true, data });
 });
 
-// ── Migración masiva one-shot (ejecutar UNA vez y luego comentar) ──
-// exports.migrarTodasLasConexiones = catchAsync(async (req, res, next) => {
-//   const { secret } = req.body;
-
-//   // Cambiá este secret por algo que solo vos sepas
-//   if (secret !== 'IMPOR_MIGRA_2026_DBonilla') {
-//     return next(new AppError('No autorizado', 403));
-//   }
-
-//   const configs = await db.query(
-//     `SELECT id
-//      FROM configuraciones
-//      WHERE kanban_global_activo = 1`,
-//     { type: db.QueryTypes.SELECT },
-//   );
-
-//   if (!configs.length) {
-//     return res.json({
-//       success: true,
-//       message: 'No hay configuraciones con kanban global activo',
-//       total: 0,
-//     });
-//   }
-
-//   const resumen = [];
-
-//   for (const c of configs) {
-//     try {
-//       const templates = await _crearTemplatesMeta(c.id);
-//       const rapidas = await _crearRespuestasRapidas(c.id);
-//       const dropi = await _aplicarConfigDropiPorDefecto(c.id);
-
-//       const creadosTpl = templates.filter((t) => t.status === 'success').length;
-//       const creadosRr = rapidas.filter((r) => r.status === 'success').length;
-//       const creadosDropi = dropi.filter((d) => d.status === 'creado').length;
-
-//       resumen.push({
-//         id_configuracion: c.id,
-//         templates_creados: creadosTpl,
-//         templates_omitidos: templates.filter((t) => t.status === 'omitido')
-//           .length,
-//         templates_error: templates.filter(
-//           (t) => t.status?.startsWith('error') || t.status === 'error_media',
-//         ).length,
-//         respuestas_rapidas_creadas: creadosRr,
-//         dropi_config_creados: creadosDropi,
-//         dropi_config_omitidos: dropi.filter((d) => d.status === 'omitido')
-//           .length,
-//       });
-
-//       console.log(
-//         `[MIGRA] ${c.id} → tpl:+${creadosTpl} rr:+${creadosRr} dropi:+${creadosDropi}`,
-//       );
-//     } catch (err) {
-//       resumen.push({
-//         id_configuracion: c.id,
-//         error: err.message,
-//       });
-//       console.error(`[MIGRA] Error en ${c.id}:`, err.message);
-//     }
-//   }
-
-//   return res.json({
-//     success: true,
-//     total: configs.length,
-//     resumen,
-//   });
-// });
-
 exports.trackingRedirect = (req, res) => {
   const g = String(req.params.guide || '').trim();
   if (!g) return res.status(400).send('Guía requerida');
@@ -1600,3 +1624,379 @@ exports.trackingRedirect = (req, res) => {
 
   return res.redirect(url);
 };
+
+// ──────────────────────────────────────────────────────────────
+// Helpers para personalizaciones
+// ──────────────────────────────────────────────────────────────
+
+async function _getPromptBaseDeGlobal(id_plantilla, nombreColumna) {
+  const [plantilla] = await db.query(
+    `SELECT data FROM kanban_plantillas_globales WHERE id = ? AND activo = 1 LIMIT 1`,
+    { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
+  );
+  if (!plantilla) return null;
+
+  const data =
+    typeof plantilla.data === 'string'
+      ? JSON.parse(plantilla.data)
+      : plantilla.data;
+
+  const colPlantilla = (data?.columnas || []).find(
+    (c) => c.nombre === nombreColumna,
+  );
+  return colPlantilla?.instrucciones || null;
+}
+
+async function _getColumnasIADelCliente(id_configuracion) {
+  return db.query(
+    `SELECT kc.id, kc.nombre, kc.assistant_id, kc.estado_db
+     FROM kanban_columnas kc
+     WHERE kc.id_configuracion = ?
+       AND kc.activo = 1
+       AND kc.activa_ia = 1
+       AND kc.assistant_id IS NOT NULL`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// GET — Obtener personalización actual de una columna
+// POST /kanban_plantillas/personalizacion_obtener
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionObtener = catchAsync(async (req, res, next) => {
+  const { id_kanban_columna } = req.body;
+  if (!id_kanban_columna)
+    return next(new AppError('Falta id_kanban_columna', 400));
+
+  const [col] = await db.query(
+    `SELECT kc.id, kc.id_configuracion, kc.nombre, kc.assistant_id,
+            kc.activa_ia, kc.modelo, kc.max_tokens,
+            c.kanban_global_id
+     FROM kanban_columnas kc
+     JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? LIMIT 1`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+
+  if (!col) return next(new AppError('Columna no encontrada', 404));
+
+  const [perso] = await db.query(
+    `SELECT nombre_tienda, nombre_asistente_publico,
+            instrucciones_extra, info_envio,
+            productos_destacados, tono_personalizado,
+            updated_at
+     FROM kanban_columnas_personalizaciones
+     WHERE id_kanban_columna = ? LIMIT 1`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      columna: {
+        id: col.id,
+        nombre: col.nombre,
+        assistant_id: col.assistant_id,
+        activa_ia: !!col.activa_ia,
+        tiene_plantilla_global: !!col.kanban_global_id,
+      },
+      personalizacion: perso || {
+        nombre_tienda: null,
+        nombre_asistente_publico: null,
+        instrucciones_extra: null,
+        info_envio: null,
+        productos_destacados: null,
+        tono_personalizado: null,
+        updated_at: null,
+      },
+    },
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// PREVIEW — Compila sin guardar para que el cliente vea el resultado
+// POST /kanban_plantillas/personalizacion_preview
+// Usa snapshot guardado primero, fallback a plantilla global.
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionPreview = catchAsync(async (req, res, next) => {
+  const { id_kanban_columna, personalizacion = {} } = req.body;
+  if (!id_kanban_columna)
+    return next(new AppError('Falta id_kanban_columna', 400));
+
+  const validacion = validarPersonalizacion(personalizacion);
+  if (!validacion.valido) {
+    return next(
+      new AppError(
+        `Personalización inválida: ${validacion.errores.join(', ')}`,
+        400,
+      ),
+    );
+  }
+
+  const [col] = await db.query(
+    `SELECT kc.nombre, c.kanban_global_id
+     FROM kanban_columnas kc
+     JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? LIMIT 1`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+
+  if (!col) return next(new AppError('Columna no encontrada', 404));
+  if (!col.kanban_global_id)
+    return next(
+      new AppError('Esta configuración no usa plantilla global', 400),
+    );
+
+  // Prioridad: snapshot guardado > plantilla global
+  const [persoSnap] = await db.query(
+    `SELECT prompt_base_snapshot
+     FROM kanban_columnas_personalizaciones
+     WHERE id_kanban_columna = ? LIMIT 1`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+
+  let promptBase = persoSnap?.prompt_base_snapshot || null;
+
+  if (!promptBase) {
+    promptBase = await _getPromptBaseDeGlobal(col.kanban_global_id, col.nombre);
+  }
+
+  if (!promptBase)
+    return next(
+      new AppError(
+        `No hay prompt base disponible para la columna "${col.nombre}"`,
+        400,
+      ),
+    );
+
+  const promptCompilado = compilarPromptFinal(promptBase, personalizacion);
+
+  return res.json({
+    success: true,
+    data: {
+      prompt_base_length: promptBase.length,
+      prompt_compilado: promptCompilado,
+      prompt_compilado_length: promptCompilado.length,
+      diferencia: promptCompilado.length - promptBase.length,
+    },
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// ACTUALIZAR — Re-compila + actualiza assistant en OpenAI + guarda BD
+// POST /kanban_plantillas/personalizacion_actualizar
+//
+// IMPORTANTE — Aislamiento por cliente:
+//   - Solo afecta a las columnas IA del cliente actual (id_configuracion).
+//   - Cada llamada actualiza solo los assistants del cliente (su API key).
+//   - El snapshot del prompt NO se sobrescribe: queda fijo desde el
+//     momento en que se aplicó la plantilla. Esto garantiza que futuras
+//     personalizaciones siempre partan del mismo prompt base.
+//
+// Sincronización entre columnas IA del MISMO cliente:
+//   - Campos GLOBALES (nombre_tienda, nombre_asistente_publico, info_envio,
+//     productos_destacados, tono_personalizado) se aplican a TODAS las
+//     columnas IA del cliente.
+//   - Campo ESPECÍFICO (instrucciones_extra) se aplica SOLO a la columna
+//     que el cliente está editando.
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
+  const { id_kanban_columna, personalizacion = {} } = req.body;
+  if (!id_kanban_columna)
+    return next(new AppError('Falta id_kanban_columna', 400));
+
+  // 1. Validar personalización
+  const validacion = validarPersonalizacion(personalizacion);
+  if (!validacion.valido) {
+    return next(
+      new AppError(
+        `Personalización inválida: ${validacion.errores.join(', ')}`,
+        400,
+      ),
+    );
+  }
+
+  // 2. Cargar columna que el cliente está editando
+  const [colActual] = await db.query(
+    `SELECT kc.id, kc.id_configuracion, kc.nombre, kc.assistant_id,
+            c.kanban_global_id, c.api_key_openai
+     FROM kanban_columnas kc
+     JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? LIMIT 1`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+
+  if (!colActual) return next(new AppError('Columna no encontrada', 404));
+  if (!colActual.kanban_global_id)
+    return next(
+      new AppError('Esta configuración no usa plantilla global', 400),
+    );
+  if (!colActual.api_key_openai)
+    return next(
+      new AppError(
+        'No hay API key de OpenAI configurada en esta configuración',
+        400,
+      ),
+    );
+
+  const id_configuracion = colActual.id_configuracion;
+  const id_plantilla = colActual.kanban_global_id;
+
+  // 3. Obtener TODAS las columnas IA del cliente
+  const columnasIA = await _getColumnasIADelCliente(id_configuracion);
+
+  if (!columnasIA.length) {
+    return next(
+      new AppError('No hay columnas IA activas en esta configuración', 400),
+    );
+  }
+
+  // 4. Separar campos globales vs específicos
+  const camposGlobales = {
+    nombre_tienda: personalizacion.nombre_tienda ?? null,
+    nombre_asistente_publico: personalizacion.nombre_asistente_publico ?? null,
+    info_envio: personalizacion.info_envio ?? null,
+    productos_destacados: personalizacion.productos_destacados ?? null,
+    tono_personalizado: personalizacion.tono_personalizado ?? null,
+  };
+  const instruccionesExtraActual = personalizacion.instrucciones_extra ?? null;
+
+  // 5. Headers OpenAI (con la API key del CLIENTE, aislado de otros)
+  const headers = {
+    Authorization: `Bearer ${colActual.api_key_openai}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
+
+  // 6. Procesar cada columna IA del cliente
+  const resultados = await Promise.all(
+    columnasIA.map(async (col) => {
+      try {
+        // Cargar snapshot + instrucciones_extra en UN solo query
+        const [persoExistente] = await db.query(
+          `SELECT prompt_base_snapshot, instrucciones_extra
+           FROM kanban_columnas_personalizaciones
+           WHERE id_kanban_columna = ? LIMIT 1`,
+          { replacements: [col.id], type: db.QueryTypes.SELECT },
+        );
+
+        // 6.1) Obtener prompt base (snapshot > plantilla global)
+        let promptBase = persoExistente?.prompt_base_snapshot || null;
+
+        if (!promptBase) {
+          promptBase = await _getPromptBaseDeGlobal(id_plantilla, col.nombre);
+        }
+
+        if (!promptBase) {
+          return {
+            id_kanban_columna: col.id,
+            nombre: col.nombre,
+            status: 'omitida',
+            motivo: 'Sin prompt en plantilla ni snapshot',
+          };
+        }
+
+        // 6.2) Resolver instrucciones_extra de ESTA columna
+        // Si es la columna que el cliente edita, usa el del request.
+        // Si es otra columna IA, mantiene su valor previo.
+        const instruccionesExtraDeEstaColumna =
+          col.id === id_kanban_columna
+            ? instruccionesExtraActual
+            : (persoExistente?.instrucciones_extra ?? null);
+
+        // 6.3) Compilar
+        const promptCompilado = compilarPromptFinal(promptBase, {
+          ...camposGlobales,
+          instrucciones_extra: instruccionesExtraDeEstaColumna,
+        });
+
+        // 6.4) Actualizar assistant en OpenAI (de ESTE cliente solamente)
+        await axios.post(
+          `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+          { instructions: promptCompilado },
+          { headers, timeout: 15000 },
+        );
+
+        // 6.5) Actualizar kanban_columnas.instrucciones del cliente
+        await db.query(
+          `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
+          {
+            replacements: [promptCompilado, col.id],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+
+        // 6.6) Upsert en kanban_columnas_personalizaciones
+        // IMPORTANTE: NO sobrescribimos prompt_base_snapshot.
+        // El snapshot fue guardado al aplicar plantilla y queremos
+        // preservarlo para futuras compilaciones.
+        await db.query(
+          `INSERT INTO kanban_columnas_personalizaciones
+           (id_kanban_columna, id_configuracion,
+            nombre_tienda, nombre_asistente_publico,
+            instrucciones_extra, info_envio,
+            productos_destacados, tono_personalizado,
+            prompt_base_snapshot)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             nombre_tienda = VALUES(nombre_tienda),
+             nombre_asistente_publico = VALUES(nombre_asistente_publico),
+             instrucciones_extra = VALUES(instrucciones_extra),
+             info_envio = VALUES(info_envio),
+             productos_destacados = VALUES(productos_destacados),
+             tono_personalizado = VALUES(tono_personalizado)`,
+          {
+            replacements: [
+              col.id,
+              id_configuracion,
+              camposGlobales.nombre_tienda,
+              camposGlobales.nombre_asistente_publico,
+              instruccionesExtraDeEstaColumna,
+              camposGlobales.info_envio,
+              camposGlobales.productos_destacados,
+              camposGlobales.tono_personalizado,
+              promptBase, // snapshot solo se usa en INSERT, no en UPDATE
+            ],
+          },
+        );
+
+        return {
+          id_kanban_columna: col.id,
+          nombre: col.nombre,
+          assistant_id: col.assistant_id,
+          status: 'ok',
+          prompt_length: promptCompilado.length,
+        };
+      } catch (err) {
+        const mensaje = err?.response?.data?.error?.message || err.message;
+        console.error(
+          `[personalizacion] Error en columna ${col.nombre}: ${mensaje}`,
+        );
+        return {
+          id_kanban_columna: col.id,
+          nombre: col.nombre,
+          assistant_id: col.assistant_id,
+          status: 'error',
+          error: mensaje,
+        };
+      }
+    }),
+  );
+
+  const exitos = resultados.filter((r) => r.status === 'ok').length;
+  const errores = resultados.filter((r) => r.status === 'error').length;
+
+  return res.json({
+    success: errores === 0,
+    message:
+      errores === 0
+        ? `Personalización aplicada a ${exitos} columna(s) IA`
+        : `Aplicada parcialmente: ${exitos} ok, ${errores} con error`,
+    data: {
+      total_columnas: columnasIA.length,
+      exitos,
+      errores,
+      resultados,
+    },
+  });
+});
