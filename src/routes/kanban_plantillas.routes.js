@@ -27,5 +27,9 @@ router.get('/t/:guide', ctrl.trackingRedirect);
 router.post('/personalizacion_obtener', ctrl.personalizacionObtener);
 router.post('/personalizacion_preview', ctrl.personalizacionPreview);
 router.post('/personalizacion_actualizar', ctrl.personalizacionActualizar);
+router.post(
+  '/personalizacion_resincronizar',
+  ctrl.personalizacionResincronizar,
+);
 
 module.exports = router;

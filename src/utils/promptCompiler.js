@@ -8,22 +8,16 @@
 // personalización del cliente, y devuelve el prompt final listo
 // para enviar a OpenAI como `instructions` del assistant.
 //
-// Soporta DOS formas de personalización:
+// PLACEHOLDERS SOPORTADOS:
+//   [NOMBRE_TIENDA]              → nombre_tienda
+//   [NOMBRE_ASISTENTE]           → nombre_asistente_publico
+//   [BLOQUE_INFO_ENVIO]          → política de envío del cliente
+//                                   (si no hay, usa los DEFAULTS del prompt)
+//   [BLOQUE_TONO_PERSONALIZADO]  → ajuste de tono opcional
+//   [BLOQUE_INSTRUCCIONES_EXTRA] → reglas extra opcionales
 //
-// 1. Placeholders explícitos (forma nueva, recomendada):
-//    [NOMBRE_TIENDA]              → personalizacion.nombre_tienda
-//    [NOMBRE_ASISTENTE]           → personalizacion.nombre_asistente_publico
-//    [BLOQUE_INSTRUCCIONES_EXTRA] → bloque formateado o ''
-//    [BLOQUE_INFO_ENVIO]          → bloque formateado o ''
-//    [BLOQUE_PRODUCTOS_DESTACADOS]→ bloque formateado o ''
-//    [BLOQUE_TONO_PERSONALIZADO]  → bloque formateado o ''
-//
-// 2. Reemplazos legacy (prompts viejos con nombres hardcodeados
-//    como "Comprapor", "IMPORSHOP", "mexve", "Sara"):
-//    Solo se reemplazan si hay personalización configurada.
-//
-// Si no hay personalización, el prompt base se devuelve casi tal cual
-// (se limpian los placeholders vacíos para que no aparezcan en OpenAI).
+// Soporte legacy: si el prompt base tiene nombres hardcodeados viejos
+// (Comprapor, IMPORSHOP, mexve, Sara), también se reemplazan.
 // ════════════════════════════════════════════════════════════
 
 // ──────────────────────────────────────────────────────────────
@@ -55,10 +49,6 @@ function limpiarPlaceholdersHuerfanos(prompt) {
 // ──────────────────────────────────────────────────────────────
 // Lista de nombres LEGACY de TIENDAS
 // ──────────────────────────────────────────────────────────────
-// Si en el futuro aparece otra plantilla con otro nombre hardcodeado,
-// agregalo acá. ORDEN IMPORTA: del más específico al más genérico
-// (ej: "Comprapor TIENDA" antes que "Comprapor").
-// ──────────────────────────────────────────────────────────────
 const NOMBRES_TIENDA_LEGACY = [
   'Comprapor TIENDA',
   'Comprapor',
@@ -70,12 +60,32 @@ const NOMBRES_TIENDA_LEGACY = [
 ];
 
 // ──────────────────────────────────────────────────────────────
-// Lista de nombres LEGACY de ASISTENTES (personalidades)
-// ──────────────────────────────────────────────────────────────
-// Estos son nombres con los que el bot se presenta al cliente final.
-// Solo se reemplazan si el cliente configuró nombre_asistente_publico.
+// Lista de nombres LEGACY de ASISTENTES
 // ──────────────────────────────────────────────────────────────
 const NOMBRES_ASISTENTE_LEGACY = ['Sara'];
+
+// ──────────────────────────────────────────────────────────────
+// Bloque de envío con default exclusivo
+// ──────────────────────────────────────────────────────────────
+// Usa esta lógica EXCLUYENTE: o muestra la política específica del
+// cliente, o muestra los defaults. NUNCA las dos juntas — para que
+// el bot no se confunda con información contradictoria.
+//
+// Si la plantilla tiene [BLOQUE_INFO_ENVIO]:
+//   - Cliente personalizó info_envio → muestra "POLITICA ESPECIFICA DE ESTA TIENDA"
+//   - Cliente NO personalizó         → muestra "DEFAULTS DE LA TIENDA"
+// ──────────────────────────────────────────────────────────────
+function construirBloqueInfoEnvio(infoEnvio) {
+  const valor = (infoEnvio || '').trim();
+
+  if (valor) {
+    // Cliente personalizó: solo se muestra su política
+    return `\nPOLITICA ESPECIFICA DE ESTA TIENDA:\n${valor}\n`;
+  }
+
+  // Cliente no personalizó: se muestran defaults
+  return `\nDEFAULTS DE LA TIENDA:\n- Envio GRATIS para el cliente.\n- Pago contraentrega (COD): el cliente paga AL RECIBIR el producto.\n`;
+}
 
 // ──────────────────────────────────────────────────────────────
 // Función principal
@@ -90,7 +100,6 @@ const NOMBRES_ASISTENTE_LEGACY = ['Sara'];
  * @param {string} [personalizacion.nombre_asistente_publico]
  * @param {string} [personalizacion.instrucciones_extra]
  * @param {string} [personalizacion.info_envio]
- * @param {string} [personalizacion.productos_destacados]
  * @param {string} [personalizacion.tono_personalizado]
  * @returns {string} Prompt compilado listo para OpenAI
  */
@@ -117,7 +126,13 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     prompt = prompt.replace(/\[NOMBRE_ASISTENTE\]/g, nombreAsistente);
   }
 
-  // ── 3. Bloques opcionales ──────────────────────────────────
+  // ── 3. Bloque de envío (lógica especial: default exclusivo) ──
+  prompt = prompt.replace(
+    /\[BLOQUE_INFO_ENVIO\]/g,
+    construirBloqueInfoEnvio(perso.info_envio),
+  );
+
+  // ── 4. Bloques opcionales simples ──────────────────────────
   prompt = prompt.replace(
     /\[BLOQUE_INSTRUCCIONES_EXTRA\]/g,
     formatearBloque(
@@ -127,24 +142,15 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
   );
 
   prompt = prompt.replace(
-    /\[BLOQUE_INFO_ENVIO\]/g,
-    formatearBloque('POLITICA DE ENVIO ESPECIFICA:', perso.info_envio),
-  );
-
-  prompt = prompt.replace(
-    /\[BLOQUE_PRODUCTOS_DESTACADOS\]/g,
-    formatearBloque(
-      'PRODUCTOS A DESTACAR (mencionar cuando aplique):',
-      perso.productos_destacados,
-    ),
-  );
-
-  prompt = prompt.replace(
     /\[BLOQUE_TONO_PERSONALIZADO\]/g,
     formatearBloque('AJUSTE DE TONO:', perso.tono_personalizado),
   );
 
-  // ── 4. Reemplazos legacy de TIENDAS ────────────────────────
+  // ── 5. Eliminar bloque de productos destacados (deprecated) ─
+  // Si todavía aparece en alguna plantilla vieja, simplemente lo borramos.
+  prompt = prompt.replace(/\[BLOQUE_PRODUCTOS_DESTACADOS\]\s*\n?/g, '');
+
+  // ── 6. Reemplazos legacy de TIENDAS ────────────────────────
   if (nombreTienda) {
     for (const legacy of NOMBRES_TIENDA_LEGACY) {
       const re = new RegExp(`\\b${escapeRegex(legacy)}\\b`, 'gi');
@@ -152,9 +158,7 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     }
   }
 
-  // ── 5. Reemplazos legacy de ASISTENTES ─────────────────────
-  // Solo si el cliente cambió el nombre Y el nombre nuevo no es
-  // el mismo que el legacy (sino haríamos reemplazo inútil).
+  // ── 7. Reemplazos legacy de ASISTENTES ─────────────────────
   if (nombreAsistente) {
     for (const legacy of NOMBRES_ASISTENTE_LEGACY) {
       if (legacy.toLowerCase() === nombreAsistente.toLowerCase()) continue;
@@ -163,10 +167,10 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     }
   }
 
-  // ── 6. Limpiar placeholders huérfanos ──────────────────────
+  // ── 8. Limpiar placeholders huérfanos ──────────────────────
   prompt = limpiarPlaceholdersHuerfanos(prompt);
 
-  // ── 7. Normalizar saltos de línea (max 2 consecutivos) ─────
+  // ── 9. Normalizar saltos de línea (max 2 consecutivos) ─────
   prompt = prompt.replace(/\n{3,}/g, '\n\n');
 
   return prompt.trim();
@@ -178,12 +182,13 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
 
 /**
  * Valida los campos de personalización antes de guardar.
- * Devuelve { valido: true } o { valido: false, errores: [...] }
- *
  * REGLAS:
- * - nombre_tienda es OBLIGATORIO (no puede ser null ni vacío)
- * - nombre_asistente_publico es opcional, solo letras/espacios/'-`
+ * - nombre_tienda es OBLIGATORIO
+ * - nombre_asistente_publico es opcional (solo letras/espacios/'-`)
  * - campos largos máximo 4000 chars
+ *
+ * NOTA: productos_destacados ya no se valida (deprecated).
+ * Si viene en el payload se ignora silenciosamente.
  */
 function validarPersonalizacion(perso = {}) {
   const errores = [];
@@ -202,7 +207,7 @@ function validarPersonalizacion(perso = {}) {
   if (perso.nombre_asistente_publico != null) {
     const n = String(perso.nombre_asistente_publico).trim();
     if (n.length === 0) {
-      // Permitir vacío explícito (lo trataremos como "sin valor")
+      // Permitir vacío explícito
     } else if (n.length > 60) {
       errores.push('nombre_asistente_publico excede 60 caracteres');
     } else if (!/^[a-zA-ZÀ-ÿ\s'-]+$/.test(n)) {
@@ -215,7 +220,6 @@ function validarPersonalizacion(perso = {}) {
   const camposLargos = [
     'instrucciones_extra',
     'info_envio',
-    'productos_destacados',
     'tono_personalizado',
   ];
 

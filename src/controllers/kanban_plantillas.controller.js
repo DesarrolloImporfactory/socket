@@ -2000,3 +2000,182 @@ exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
     },
   });
 });
+
+// ──────────────────────────────────────────────────────────────
+// RESINCRONIZAR — Actualiza el snapshot desde la plantilla global
+//                 manteniendo la personalización del cliente.
+
+//   1. Lee la plantilla global ACTUAL de cada columna IA del cliente.
+//   2. Reemplaza el prompt_base_snapshot con esa versión nueva.
+//   3. Re-compila el prompt usando los CAMPOS DE PERSONALIZACIÓN
+//      que el cliente ya tenía guardados (nombre_tienda, info_envio, etc).
+//   4. Actualiza kanban_columnas.instrucciones y el assistant en OpenAI.
+//
+// QUÉ NO HACE:
+//   - NO toca los campos de personalización del cliente (los conserva).
+//   - NO afecta a otros clientes.
+//   - NO modifica la plantilla global.
+//
+// AISLAMIENTO: solo afecta al cliente que llama (id_configuracion).
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionResincronizar = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  // 1. Cargar config del cliente
+  const [config] = await db.query(
+    `SELECT api_key_openai, kanban_global_id
+     FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!config) return next(new AppError('Configuración no encontrada', 404));
+  if (!config.kanban_global_id)
+    return next(
+      new AppError('Esta configuración no usa plantilla global', 400),
+    );
+  if (!config.api_key_openai)
+    return next(
+      new AppError(
+        'No hay API key de OpenAI configurada en esta configuración',
+        400,
+      ),
+    );
+
+  const id_plantilla = config.kanban_global_id;
+
+  // 2. Cargar plantilla global actual
+  const [plantilla] = await db.query(
+    `SELECT data FROM kanban_plantillas_globales 
+     WHERE id = ? AND activo = 1 LIMIT 1`,
+    { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
+  );
+  if (!plantilla)
+    return next(new AppError('Plantilla global no encontrada o inactiva', 404));
+
+  const dataPlantilla =
+    typeof plantilla.data === 'string'
+      ? JSON.parse(plantilla.data)
+      : plantilla.data;
+
+  const colsPlantilla = dataPlantilla?.columnas || [];
+
+  // 3. Cargar columnas IA del cliente
+  const columnasIA = await _getColumnasIADelCliente(id_configuracion);
+
+  if (!columnasIA.length) {
+    return next(
+      new AppError('No hay columnas IA activas en esta configuración', 400),
+    );
+  }
+
+  // 4. Headers OpenAI (con la API key del cliente)
+  const headers = {
+    Authorization: `Bearer ${config.api_key_openai}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
+
+  // 5. Procesar cada columna IA
+  const resultados = await Promise.all(
+    columnasIA.map(async (col) => {
+      try {
+        // 5.1) Buscar el prompt actualizado en la plantilla global
+        const colPlantilla = colsPlantilla.find((c) => c.nombre === col.nombre);
+
+        if (!colPlantilla?.instrucciones) {
+          return {
+            id_kanban_columna: col.id,
+            nombre: col.nombre,
+            status: 'omitida',
+            motivo: 'Sin prompt en plantilla global para esta columna',
+          };
+        }
+
+        const promptBaseNuevo = colPlantilla.instrucciones;
+
+        // 5.2) Cargar personalización actual del cliente
+        const [persoActual] = await db.query(
+          `SELECT nombre_tienda, nombre_asistente_publico,
+                  instrucciones_extra, info_envio,
+                  productos_destacados, tono_personalizado
+           FROM kanban_columnas_personalizaciones
+           WHERE id_kanban_columna = ? LIMIT 1`,
+          { replacements: [col.id], type: db.QueryTypes.SELECT },
+        );
+
+        // 5.3) Compilar usando el prompt nuevo + personalización vieja
+        const promptCompilado = compilarPromptFinal(
+          promptBaseNuevo,
+          persoActual || {},
+        );
+
+        // 5.4) Actualizar assistant en OpenAI
+        await axios.post(
+          `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+          { instructions: promptCompilado },
+          { headers, timeout: 15000 },
+        );
+
+        // 5.5) Actualizar kanban_columnas.instrucciones (compilado)
+        await db.query(
+          `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
+          {
+            replacements: [promptCompilado, col.id],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+
+        // 5.6) ACTUALIZAR EL SNAPSHOT con el prompt nuevo
+        // Esto es el cambio CLAVE: ahora el snapshot apunta a la versión nueva.
+        await db.query(
+          `UPDATE kanban_columnas_personalizaciones 
+           SET prompt_base_snapshot = ?
+           WHERE id_kanban_columna = ?`,
+          {
+            replacements: [promptBaseNuevo, col.id],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+
+        return {
+          id_kanban_columna: col.id,
+          nombre: col.nombre,
+          assistant_id: col.assistant_id,
+          status: 'ok',
+          prompt_length: promptCompilado.length,
+        };
+      } catch (err) {
+        const mensaje = err?.response?.data?.error?.message || err.message;
+        console.error(
+          `[resincronizar] Error en columna ${col.nombre}: ${mensaje}`,
+        );
+        return {
+          id_kanban_columna: col.id,
+          nombre: col.nombre,
+          assistant_id: col.assistant_id,
+          status: 'error',
+          error: mensaje,
+        };
+      }
+    }),
+  );
+
+  const exitos = resultados.filter((r) => r.status === 'ok').length;
+  const errores = resultados.filter((r) => r.status === 'error').length;
+
+  return res.json({
+    success: errores === 0,
+    message:
+      errores === 0
+        ? `Prompt actualizado en ${exitos} columna(s) IA`
+        : `Actualización parcial: ${exitos} ok, ${errores} con error`,
+    data: {
+      total_columnas: columnasIA.length,
+      exitos,
+      errores,
+      resultados,
+    },
+  });
+});
