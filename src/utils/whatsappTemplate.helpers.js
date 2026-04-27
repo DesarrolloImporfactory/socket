@@ -906,6 +906,67 @@ function extractBearerToken(req) {
   return null;
 }
 
+const VENTANA_HORAS = 24;
+
+/**
+ * Verifica si el cliente respondió en las últimas 24h.
+ * @param {number} id_configuracion
+ * @param {string} phoneNorm - teléfono limpio (solo dígitos)
+ * @returns {Promise<boolean>}
+ */
+async function verificarVentana24h(id_configuracion, phoneNorm) {
+  const { db } = require('../database/config');
+
+  const [clienteRow] = await db.query(
+    `SELECT id, ultimo_mensaje_at, ultimo_rol_mensaje
+     FROM clientes_chat_center
+     WHERE id_configuracion = ? AND deleted_at IS NULL
+       AND (REPLACE(celular_cliente, ' ', '') = ? OR telefono_limpio = ? OR celular_cliente LIKE ?)
+     ORDER BY id DESC LIMIT 1`,
+    {
+      replacements: [
+        id_configuracion,
+        phoneNorm,
+        phoneNorm,
+        `%${phoneNorm.slice(-9)}`,
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (!clienteRow || !clienteRow.ultimo_mensaje_at) return false;
+
+  if (String(clienteRow.ultimo_rol_mensaje) === '0') {
+    const horasDiff =
+      (Date.now() - new Date(clienteRow.ultimo_mensaje_at).getTime()) /
+      (1000 * 60 * 60);
+    return horasDiff < VENTANA_HORAS;
+  }
+
+  const [msgRow] = await db.query(
+    `SELECT created_at FROM mensajes_clientes
+     WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0
+     ORDER BY created_at DESC LIMIT 1`,
+    {
+      replacements: [clienteRow.id, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (!msgRow?.created_at) return false;
+  const horasDiff =
+    (Date.now() - new Date(msgRow.created_at).getTime()) / (1000 * 60 * 60);
+  return horasDiff < VENTANA_HORAS;
+}
+
+/**
+ * Detecta si un error de Meta es por ventana de 24h cerrada.
+ */
+function isWindowClosedError(err) {
+  const code = err?.meta_error?.code || err?.response?.data?.error?.code;
+  return code === 131047 || code === 131051;
+}
+
 module.exports = {
   getConfigFromDB,
   onlyDigits,
@@ -924,4 +985,6 @@ module.exports = {
   extractGraphBodyFromRequest,
   prepareHeaderAssetForScheduling,
   extractBearerToken,
+  verificarVentana24h,
+  isWindowClosedError,
 };

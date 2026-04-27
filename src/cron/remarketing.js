@@ -9,6 +9,8 @@ const {
 const {
   getConfigFromDB,
   onlyDigits,
+  verificarVentana24h,
+  isWindowClosedError,
 } = require('../utils/whatsappTemplate.helpers');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
@@ -21,7 +23,6 @@ const {
 /* ================================================================
    Detectores de tipo de error
    ================================================================ */
-
 function isMetaRateLimit(err) {
   const s = err?.response?.status || err?.meta_status;
   const c = err?.response?.data?.error?.code || err?.meta_error?.code;
@@ -37,16 +38,6 @@ function isScontentExpiredUrl(url) {
   );
 }
 
-function isMediaError(err) {
-  const msg = String(err?.message || '').toLowerCase();
-  return (
-    msg.includes('demasiado grande') ||
-    msg.includes('no se obtuvo media_id') ||
-    msg.includes('invalid parameter') ||
-    err?.response?.data?.error?.code === 100
-  );
-}
-
 function isTemplateNotFoundError(err) {
   const msg = String(err?.message || '').toLowerCase();
   return (
@@ -57,9 +48,8 @@ function isTemplateNotFoundError(err) {
 }
 
 /* ================================================================
-   uploadMediaToMeta — con validación de tamaño
+   uploadMediaToMeta (sin cambios)
    ================================================================ */
-
 const MAX_SIZES_MB = { IMAGE: 5, VIDEO: 16, DOCUMENT: 100 };
 
 async function uploadMediaToMeta(
@@ -79,7 +69,6 @@ async function uploadMediaToMeta(
   const mimeType = MIME[fmt] || 'application/octet-stream';
   const ext = EXT[fmt] || 'bin';
 
-  // 1) Descargar con manejo de URL expirada
   let download;
   try {
     download = await axios.get(mediaUrl, {
@@ -107,7 +96,6 @@ async function uploadMediaToMeta(
   const sizeMB = sizeBytes / (1024 * 1024);
   const maxMB = MAX_SIZES_MB[fmt] || 5;
 
-  // 2) Validar tamaño ANTES de subir
   if (sizeMB > maxMB) {
     const err = new Error(
       `[uploadMedia] Archivo ${sizeMB.toFixed(2)}MB excede ${maxMB}MB para ${fmt}`,
@@ -116,7 +104,6 @@ async function uploadMediaToMeta(
     throw err;
   }
 
-  // 3) Subir a Meta
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('type', mimeType);
@@ -135,7 +122,6 @@ async function uploadMediaToMeta(
     },
   );
 
-  // Procesar header de rate limit (aunque sea exitoso)
   processBucHeader(uploadRes.headers, 'uploadMedia');
 
   if (!uploadRes.data?.id) {
@@ -150,9 +136,97 @@ async function uploadMediaToMeta(
 }
 
 /* ================================================================
+   ✨ NUEVO: enviarRespuestaRapidaUniversal
+   Envía un mensaje free-form (text/image/video/audio/document)
+   usando `link` para evitar el upload paso intermedio.
+   ================================================================ */
+async function enviarRespuestaRapidaUniversal({
+  phone_number_id,
+  access_token,
+  phoneNorm,
+  tplRapido,
+}) {
+  const tipo = String(tplRapido.tipo_mensaje || 'text').toLowerCase();
+  const texto = tplRapido.mensaje || '';
+
+  const buildLink = (ruta) => {
+    if (!ruta) return null;
+    return /^https?:\/\//i.test(ruta)
+      ? ruta
+      : `https://new.imporsuitpro.com/${String(ruta).replace(/^\//, '')}`;
+  };
+
+  let payload;
+
+  if (tipo === 'text' || !tplRapido.ruta_archivo) {
+    payload = {
+      messaging_product: 'whatsapp',
+      to: phoneNorm,
+      type: 'text',
+      text: { body: texto },
+    };
+  } else {
+    const link = buildLink(tplRapido.ruta_archivo);
+    if (!link) {
+      throw new Error('[RR] tipo media sin ruta_archivo válida');
+    }
+
+    const mediaObj = { link };
+
+    if (tipo === 'document') {
+      if (tplRapido.file_name) mediaObj.filename = tplRapido.file_name;
+      if (texto) mediaObj.caption = texto;
+    } else if (tipo === 'image' || tipo === 'video') {
+      if (texto) mediaObj.caption = texto;
+    }
+    // audio no acepta caption ni filename
+
+    payload = {
+      messaging_product: 'whatsapp',
+      to: phoneNorm,
+      type: tipo,
+      [tipo]: mediaObj,
+    };
+  }
+
+  const sendRes = await axios.post(
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phone_number_id}/messages`,
+    payload,
+    {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    },
+  );
+
+  processBucHeader(sendRes.headers, 'remarketing-rr-send');
+
+  if (sendRes.status < 200 || sendRes.status >= 300 || sendRes.data?.error) {
+    const metaErr =
+      sendRes.data?.error?.message || `Meta HTTP ${sendRes.status}`;
+    const err = new Error(`[Meta RR] ${metaErr}`);
+    err.meta_status = sendRes.status;
+    err.meta_error = sendRes.data?.error || sendRes.data;
+    throw err;
+  }
+
+  return {
+    wamid: sendRes.data?.messages?.[0]?.id || null,
+    payload,
+    tipo,
+    texto,
+    ruta_archivo: tplRapido.ruta_archivo || null,
+    file_name: tplRapido.file_name || null,
+    mime_type: tplRapido.mime_type || null,
+  };
+}
+
+/* ================================================================
    withLock
    ================================================================ */
-
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
   try {
@@ -175,32 +249,24 @@ async function withLock(lockName, fn) {
 }
 
 /* ================================================================
-   Manejador de errores centralizado
-   
-   Retorna true  = error manejado (cancelado o reintento registrado)
-   Retorna false = rate limit (debe propagarse como WABA-level)
+   handleRecordError (sin cambios)
    ================================================================ */
-
 async function handleRecordError(record, err, waba_id) {
   const intentosActuales = Number(record.intentos || 0) + 1;
   const maxIntentos = Number(record.max_intentos || 3);
 
-  // CASO 1: Rate limit → NO manejar aquí, dejar que el caller lo capture
   if (isMetaRateLimit(err)) {
     if (waba_id) markWabaThrottled(waba_id, 60);
-    return false; // señal: rate limit, caller debe manejarlo
+    return false;
   }
 
-  // CASO 2: URL expirada de scontent → CANCELAR permanentemente
   const urlExpirada =
     err?.isUrlExpired || isScontentExpiredUrl(record.header_media_url);
 
   if (err?.isDownloadError && urlExpirada) {
     await db.query(
       `UPDATE remarketing_pendientes
-       SET cancelado = 1,
-           error_message = ?,
-           ultimo_intento_at = NOW()
+       SET cancelado = 1, error_message = ?, ultimo_intento_at = NOW()
        WHERE id = ?`,
       {
         replacements: [
@@ -214,30 +280,23 @@ async function handleRecordError(record, err, waba_id) {
     return true;
   }
 
-  // CASO 3: Archivo muy grande → CANCELAR permanentemente
   if (err?.isSizeError) {
     await db.query(
       `UPDATE remarketing_pendientes
-       SET cancelado = 1,
-           error_message = ?,
-           ultimo_intento_at = NOW()
+       SET cancelado = 1, error_message = ?, ultimo_intento_at = NOW()
        WHERE id = ?`,
       {
         replacements: [err.message.slice(0, 500), record.id],
         type: db.QueryTypes.UPDATE,
       },
     );
-    console.log(`🚫 [remarketing] id=${record.id} CANCELADO (archivo grande)`);
     return true;
   }
 
-  // CASO 4: Template no existe → CANCELAR permanentemente
   if (isTemplateNotFoundError(err)) {
     await db.query(
       `UPDATE remarketing_pendientes
-       SET cancelado = 1,
-           error_message = ?,
-           ultimo_intento_at = NOW()
+       SET cancelado = 1, error_message = ?, ultimo_intento_at = NOW()
        WHERE id = ?`,
       {
         replacements: [
@@ -247,19 +306,13 @@ async function handleRecordError(record, err, waba_id) {
         type: db.QueryTypes.UPDATE,
       },
     );
-    console.log(`🚫 [remarketing] id=${record.id} CANCELADO (template)`);
     return true;
   }
 
-  // CASO 5: Error temporal → incrementar intentos
   if (intentosActuales >= maxIntentos) {
-    // Se agotaron → cancelar con error
     await db.query(
       `UPDATE remarketing_pendientes
-       SET cancelado = 1,
-           intentos = ?,
-           error_message = ?,
-           ultimo_intento_at = NOW()
+       SET cancelado = 1, intentos = ?, error_message = ?, ultimo_intento_at = NOW()
        WHERE id = ?`,
       {
         replacements: [
@@ -270,26 +323,17 @@ async function handleRecordError(record, err, waba_id) {
         type: db.QueryTypes.UPDATE,
       },
     );
-    console.log(
-      `🚫 [remarketing] id=${record.id} CANCELADO (agotó ${maxIntentos} intentos)`,
-    );
     return true;
   }
 
-  // Solo incrementar contador para reintento futuro
   await db.query(
     `UPDATE remarketing_pendientes
-     SET intentos = ?,
-         error_message = ?,
-         ultimo_intento_at = NOW()
+     SET intentos = ?, error_message = ?, ultimo_intento_at = NOW()
      WHERE id = ?`,
     {
       replacements: [intentosActuales, err.message.slice(0, 500), record.id],
       type: db.QueryTypes.UPDATE,
     },
-  );
-  console.log(
-    `🔁 [remarketing] id=${record.id} intento ${intentosActuales}/${maxIntentos}`,
   );
   return true;
 }
@@ -297,7 +341,6 @@ async function handleRecordError(record, err, waba_id) {
 /* ================================================================
    CRON
    ================================================================ */
-
 let isRunning = false;
 
 cron.schedule('*/1 * * * *', async () => {
@@ -306,10 +349,6 @@ cron.schedule('*/1 * * * *', async () => {
   isRunning = true;
   try {
     await withLock('remarketing_cron_lock', async () => {
-      // Selección con filtros anti-zombie:
-      // - Máximo 3 días de antigüedad (más viejos = zombies)
-      // - Intentos < max_intentos
-      // - Límite por ciclo para no saturar
       const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
@@ -326,21 +365,14 @@ cron.schedule('*/1 * * * *', async () => {
 
       console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
 
-      // ══════════════════════════════════════════════════════════════
-      // CIRCUIT BREAKER POR CICLO:
-      // - UNA WABA con rate limit NO detiene el ciclo (se protege y sigue)
-      // - Si MUCHAS WABAs distintas fallan (5+), pausar por precaución
-      // - Así las WABAs sanas pueden seguir enviando normalmente
-      // ══════════════════════════════════════════════════════════════
       let rateLimitHitsThisCycle = 0;
       const MAX_RATE_LIMIT_HITS = 5;
       const wabasAffectedThisCycle = new Set();
 
       for (const record of pendientes) {
-        // Safety stop: si demasiadas WABAs distintas fallaron este ciclo
         if (rateLimitHitsThisCycle >= MAX_RATE_LIMIT_HITS) {
           console.log(
-            `⏸ [remarketing] ${rateLimitHitsThisCycle} rate limits detectados en ${wabasAffectedThisCycle.size} WABAs distintas — pausando ciclo`,
+            `⏸ [remarketing] ${rateLimitHitsThisCycle} rate limits — pausando ciclo`,
           );
           break;
         }
@@ -348,7 +380,7 @@ cron.schedule('*/1 * * * *', async () => {
         let wabaIdForLog = null;
 
         try {
-          // 1) Verificar cliente
+          // 1) Cliente
           const cliente = await ClientesChatCenter.findByPk(
             record.id_cliente_chat_center,
           );
@@ -359,11 +391,10 @@ cron.schedule('*/1 * * * *', async () => {
                WHERE id = ?`,
               { replacements: [record.id], type: db.QueryTypes.UPDATE },
             );
-            console.warn(`⚠️ [remarketing] id=${record.id} cliente no existe`);
             continue;
           }
 
-          // 2) Si el estado cambió, cancelar
+          // 2) Estado cambió → cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
             await db.query(
               `UPDATE remarketing_pendientes
@@ -374,154 +405,297 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
-          // 3) Obtener config para saber la WABA (para el throttle guard)
+          // 3) Config
           const cfg = await getConfigFromDB(Number(record.id_configuracion));
           if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID || !cfg?.WABA_ID) {
             throw new Error('Config incompleta o config suspendida');
           }
           wabaIdForLog = cfg.WABA_ID;
 
-          // 4) CIRCUIT BREAKER: Si esta WABA está throttled, skip sin tocar Meta
+          // 4) WABA throttled?
           if (isWabaThrottled(cfg.WABA_ID)) {
             console.log(
               `⏸ [remarketing] id=${record.id} WABA ${cfg.WABA_ID} throttled, skip`,
             );
-            // No incrementamos intento porque no es error del record
             continue;
           }
 
-          const headerFormatNorm = String(
-            record.header_format || '',
-          ).toUpperCase();
-          const esMediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
-            headerFormatNorm,
-          );
+          const telefonoLimpio = onlyDigits(record.telefono || '');
 
           // ══════════════════════════════════════════════════════
-          // CASO A: Template con media
+          // ✨ NUEVO PASO: ¿Enviar respuesta rápida?
           // ══════════════════════════════════════════════════════
-          if (esMediaHeader) {
-            const tplData = await obtenerTextoPlantilla(
-              record.nombre_template,
-              cfg.ACCESS_TOKEN,
-              cfg.WABA_ID,
+          let envioPorRR = false;
+          let rrInfo = null;
+
+          if (record.usar_respuesta_rapida && record.id_template_rapido) {
+            const dentroVentana = await verificarVentana24h(
+              record.id_configuracion,
+              telefonoLimpio,
             );
 
-            const mediaUrlFuente = (
-              record.header_media_url || tplData?.header?.media_url
-            )?.replace(/&amp;/g, '&');
-
-            if (!mediaUrlFuente) {
-              throw new Error(
-                `No hay URL de media para "${record.nombre_template}"`,
+            if (dentroVentana) {
+              const [tplRapido] = await db.query(
+                `SELECT id_template, atajo, mensaje, tipo_mensaje, ruta_archivo, mime_type, file_name
+                 FROM templates_chat_center
+                 WHERE id_template = ? AND id_configuracion = ?
+                 LIMIT 1`,
+                {
+                  replacements: [
+                    record.id_template_rapido,
+                    record.id_configuracion,
+                  ],
+                  type: db.QueryTypes.SELECT,
+                },
               );
-            }
 
-            // Chequeo temprano: si es URL scontent, probablemente está expirada
-            // Esto ahorra intento de descarga
-            if (isScontentExpiredUrl(mediaUrlFuente)) {
-              const ageHours =
-                (Date.now() -
-                  new Date(
-                    record.creado_en || record.tiempo_disparo,
-                  ).getTime()) /
-                (1000 * 60 * 60);
-              if (ageHours > 24) {
-                const err = new Error(
-                  `URL scontent con edad ${ageHours.toFixed(1)}h, probablemente expirada`,
+              if (tplRapido) {
+                try {
+                  rrInfo = await enviarRespuestaRapidaUniversal({
+                    phone_number_id: cfg.PHONE_NUMBER_ID,
+                    access_token: cfg.ACCESS_TOKEN,
+                    phoneNorm: telefonoLimpio,
+                    tplRapido,
+                  });
+                  envioPorRR = true;
+                  console.log(
+                    `✅ [remarketing] id=${record.id} RR enviada (${rrInfo.tipo})`,
+                  );
+                } catch (rrErr) {
+                  if (isWindowClosedError(rrErr)) {
+                    console.log(
+                      `↩ [remarketing] id=${record.id} ventana cerrada, fallback a template`,
+                    );
+                    // No bloquea: cae al template Meta abajo
+                  } else if (isMetaRateLimit(rrErr)) {
+                    throw rrErr; // lo manejamos como rate limit normal
+                  } else {
+                    // Cualquier otro error de RR → fallback al template
+                    console.log(
+                      `⚠️ [remarketing] id=${record.id} RR falló (${rrErr.message}), fallback a template`,
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          // ══════════════════════════════════════════════════════
+          // Si NO se envió por RR → usar template Meta (lógica original)
+          // ══════════════════════════════════════════════════════
+          if (!envioPorRR) {
+            const headerFormatNorm = String(
+              record.header_format || '',
+            ).toUpperCase();
+            const esMediaHeader = ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
+              headerFormatNorm,
+            );
+
+            if (esMediaHeader) {
+              const tplData = await obtenerTextoPlantilla(
+                record.nombre_template,
+                cfg.ACCESS_TOKEN,
+                cfg.WABA_ID,
+              );
+
+              const mediaUrlFuente = (
+                record.header_media_url || tplData?.header?.media_url
+              )?.replace(/&amp;/g, '&');
+
+              if (!mediaUrlFuente) {
+                throw new Error(
+                  `No hay URL de media para "${record.nombre_template}"`,
                 );
-                err.isDownloadError = true;
-                err.isUrlExpired = true;
+              }
+
+              if (isScontentExpiredUrl(mediaUrlFuente)) {
+                const ageHours =
+                  (Date.now() -
+                    new Date(
+                      record.creado_en || record.tiempo_disparo,
+                    ).getTime()) /
+                  (1000 * 60 * 60);
+                if (ageHours > 24) {
+                  const err = new Error(
+                    `URL scontent con edad ${ageHours.toFixed(1)}h, probablemente expirada`,
+                  );
+                  err.isDownloadError = true;
+                  err.isUrlExpired = true;
+                  throw err;
+                }
+              }
+
+              const mediaId = await uploadMediaToMeta(
+                mediaUrlFuente,
+                headerFormatNorm,
+                cfg.ACCESS_TOKEN,
+                cfg.PHONE_NUMBER_ID,
+              );
+
+              const mediaType = headerFormatNorm.toLowerCase();
+              const mediaObj = { id: mediaId };
+              if (mediaType === 'document' && record.header_media_name) {
+                mediaObj.filename = record.header_media_name;
+              }
+
+              const components = [
+                {
+                  type: 'header',
+                  parameters: [{ type: mediaType, [mediaType]: mediaObj }],
+                },
+              ];
+
+              const bodyParams = record.template_parameters
+                ? JSON.parse(record.template_parameters || '[]')
+                : [];
+              if (bodyParams.length > 0) {
+                components.push({
+                  type: 'body',
+                  parameters: bodyParams.map((p) => ({
+                    type: 'text',
+                    text: String(p),
+                  })),
+                });
+              }
+
+              const LANGUAGE_CODE =
+                record.language_code || tplData?.language || 'es';
+
+              const payload = {
+                messaging_product: 'whatsapp',
+                to: telefonoLimpio,
+                type: 'template',
+                template: {
+                  name: record.nombre_template,
+                  language: { code: LANGUAGE_CODE },
+                  components,
+                },
+              };
+
+              const sendRes = await axios.post(
+                `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`,
+                payload,
+                {
+                  headers: {
+                    Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
+                    'Content-Type': 'application/json',
+                  },
+                  timeout: 30000,
+                  validateStatus: () => true,
+                },
+              );
+
+              processBucHeader(sendRes.headers, 'remarketing-send');
+
+              if (
+                sendRes.status < 200 ||
+                sendRes.status >= 300 ||
+                sendRes.data?.error
+              ) {
+                const metaErr =
+                  sendRes.data?.error?.message || `Meta HTTP ${sendRes.status}`;
+                const err = new Error(`[Meta Template Media] ${metaErr}`);
+                err.meta_status = sendRes.status;
+                err.meta_error = sendRes.data?.error || sendRes.data;
+
+                if (sendRes.data?.error?.code === 80008) {
+                  markWabaThrottled(cfg.WABA_ID, 60);
+                }
                 throw err;
               }
-            }
 
-            const mediaId = await uploadMediaToMeta(
-              mediaUrlFuente,
-              headerFormatNorm,
-              cfg.ACCESS_TOKEN,
-              cfg.PHONE_NUMBER_ID,
-            );
+              const wamid = sendRes.data?.messages?.[0]?.id || null;
+              const uid_whatsapp = telefonoLimpio;
 
-            const mediaType = headerFormatNorm.toLowerCase();
-            const mediaObj = { id: mediaId };
-            if (mediaType === 'document' && record.header_media_name) {
-              mediaObj.filename = record.header_media_name;
-            }
+              const [clienteRow] = await db.query(
+                `SELECT id FROM clientes_chat_center
+                 WHERE REPLACE(celular_cliente, ' ', '') = ?
+                   AND id_configuracion = ?
+                 LIMIT 1`,
+                {
+                  replacements: [telefonoLimpio, record.id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
 
-            const components = [
-              {
-                type: 'header',
-                parameters: [{ type: mediaType, [mediaType]: mediaObj }],
-              },
-            ];
+              let clienteId = clienteRow?.id || null;
+              if (!clienteId) {
+                const nuevo = await ClientesChatCenter.create({
+                  id_configuracion: record.id_configuracion,
+                  uid_cliente: cfg.PHONE_NUMBER_ID,
+                  nombre_cliente: '',
+                  apellido_cliente: '',
+                  celular_cliente: telefonoLimpio,
+                });
+                clienteId = nuevo.id;
+              }
 
-            const bodyParams = record.template_parameters
-              ? JSON.parse(record.template_parameters || '[]')
-              : [];
-            if (bodyParams.length > 0) {
-              components.push({
-                type: 'body',
-                parameters: bodyParams.map((p) => ({
-                  type: 'text',
-                  text: String(p),
-                })),
+              let id_cliente_configuracion = null;
+              const telCfg = record.telefono_configuracion
+                ? onlyDigits(record.telefono_configuracion)
+                : onlyDigits(cfg.telefono || '');
+
+              if (telCfg) {
+                const [cfgCliente] = await db.query(
+                  `SELECT id FROM clientes_chat_center
+                   WHERE REPLACE(celular_cliente, ' ', '') = ?
+                     AND id_configuracion = ?
+                   LIMIT 1`,
+                  {
+                    replacements: [telCfg, record.id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  },
+                );
+                if (cfgCliente?.id) id_cliente_configuracion = cfgCliente.id;
+              }
+
+              const ruta_archivo = {
+                body_parameters: bodyParams,
+                header: {
+                  format: headerFormatNorm,
+                  parameters: null,
+                  media_url: mediaUrlFuente,
+                  media_name: record.header_media_name || null,
+                },
+                source: 'cron_remarketing',
+              };
+
+              await MensajesClientes.create({
+                id_configuracion: record.id_configuracion,
+                id_cliente: id_cliente_configuracion || clienteId,
+                mid_mensaje: cfg.PHONE_NUMBER_ID,
+                tipo_mensaje: 'template',
+                rol_mensaje: 1,
+                celular_recibe: clienteId,
+                responsable: 'cron_remarketing_estado',
+                texto_mensaje: tplData?.text || record.nombre_template,
+                ruta_archivo: JSON.stringify(ruta_archivo),
+                visto: 1,
+                uid_whatsapp,
+                id_wamid_mensaje: wamid,
+                template_name: record.nombre_template,
+                language_code: LANGUAGE_CODE,
+              });
+            } else {
+              // Template texto puro
+              await sendWhatsappMessageTemplateScheduled({
+                telefono: record.telefono,
+                telefono_configuracion: record.telefono_configuracion || null,
+                id_configuracion: record.id_configuracion,
+                nombre_template: record.nombre_template,
+                language_code: record.language_code,
+                template_parameters: [],
+                responsable: 'cron_remarketing_estado',
+                header_format: null,
+                header_media_url: null,
+                header_media_name: null,
+                header_parameters: null,
               });
             }
-
-            const LANGUAGE_CODE =
-              record.language_code || tplData?.language || 'es';
-            const telefonoLimpio = onlyDigits(record.telefono || '');
-
-            const payload = {
-              messaging_product: 'whatsapp',
-              to: telefonoLimpio,
-              type: 'template',
-              template: {
-                name: record.nombre_template,
-                language: { code: LANGUAGE_CODE },
-                components,
-              },
-            };
-
-            const sendRes = await axios.post(
-              `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`,
-              payload,
-              {
-                headers: {
-                  Authorization: `Bearer ${cfg.ACCESS_TOKEN}`,
-                  'Content-Type': 'application/json',
-                },
-                timeout: 30000,
-                validateStatus: () => true,
-              },
-            );
-
-            // Procesar header de rate limit SIEMPRE (éxito o fallo)
-            processBucHeader(sendRes.headers, 'remarketing-send');
-
-            if (
-              sendRes.status < 200 ||
-              sendRes.status >= 300 ||
-              sendRes.data?.error
-            ) {
-              const metaErr =
-                sendRes.data?.error?.message || `Meta HTTP ${sendRes.status}`;
-              const err = new Error(`[Meta Template Media] ${metaErr}`);
-              err.meta_status = sendRes.status;
-              err.meta_error = sendRes.data?.error || sendRes.data;
-
-              // Si es 80008, marcar la WABA explícitamente
-              if (sendRes.data?.error?.code === 80008) {
-                markWabaThrottled(cfg.WABA_ID, 60);
-              }
-              throw err;
-            }
-
-            const wamid = sendRes.data?.messages?.[0]?.id || null;
-            const uid_whatsapp = telefonoLimpio;
-
-            // Guardar en mensajes_clientes (lógica original)
+          } else {
+            // ══════════════════════════════════════════════════════
+            // ✨ Guardar la RR enviada en mensajes_clientes
+            // ══════════════════════════════════════════════════════
             const [clienteRow] = await db.query(
               `SELECT id FROM clientes_chat_center
                WHERE REPLACE(celular_cliente, ' ', '') = ?
@@ -564,53 +738,38 @@ cron.schedule('*/1 * * * *', async () => {
               if (cfgCliente?.id) id_cliente_configuracion = cfgCliente.id;
             }
 
-            const ruta_archivo = {
-              body_parameters: bodyParams,
-              header: {
-                format: headerFormatNorm,
-                parameters: null,
-                media_url: mediaUrlFuente,
-                media_name: record.header_media_name || null,
-              },
-              source: 'cron_remarketing',
-            };
+            // ruta_archivo según tipo (matching tu estructura existente)
+            let rutaArchivoFinal = null;
+            if (rrInfo.tipo === 'document') {
+              rutaArchivoFinal = JSON.stringify({
+                ruta: rrInfo.ruta_archivo,
+                nombre: rrInfo.file_name || 'Documento',
+                size: 0,
+                mimeType: rrInfo.mime_type || '',
+              });
+            } else if (rrInfo.tipo !== 'text') {
+              rutaArchivoFinal = rrInfo.ruta_archivo;
+            }
 
             await MensajesClientes.create({
               id_configuracion: record.id_configuracion,
               id_cliente: id_cliente_configuracion || clienteId,
               mid_mensaje: cfg.PHONE_NUMBER_ID,
-              tipo_mensaje: 'template',
+              tipo_mensaje: rrInfo.tipo,
               rol_mensaje: 1,
               celular_recibe: clienteId,
-              responsable: 'cron_remarketing_estado',
-              texto_mensaje: tplData?.text || record.nombre_template,
-              ruta_archivo: JSON.stringify(ruta_archivo),
+              responsable: 'cron_remarketing_rr',
+              texto_mensaje: rrInfo.texto || '',
+              ruta_archivo: rutaArchivoFinal,
               visto: 1,
-              uid_whatsapp,
-              id_wamid_mensaje: wamid,
-              template_name: record.nombre_template,
-              language_code: LANGUAGE_CODE,
-            });
-          } else {
-            // ══════════════════════════════════════════════════════
-            // CASO B: Template de texto
-            // ══════════════════════════════════════════════════════
-            await sendWhatsappMessageTemplateScheduled({
-              telefono: record.telefono,
-              telefono_configuracion: record.telefono_configuracion || null,
-              id_configuracion: record.id_configuracion,
-              nombre_template: record.nombre_template,
-              language_code: record.language_code,
-              template_parameters: [],
-              responsable: 'cron_remarketing_estado',
-              header_format: null,
-              header_media_url: null,
-              header_media_name: null,
-              header_parameters: null,
+              uid_whatsapp: telefonoLimpio,
+              id_wamid_mensaje: rrInfo.wamid,
             });
           }
 
-          // ── Lógica de secuencia ──
+          // ══════════════════════════════════════════════════════
+          // Lógica de secuencia (sin cambios excepto los nuevos campos)
+          // ══════════════════════════════════════════════════════
           const secuenciaActual = Number(record.secuencia || 1);
 
           const [siguienteConfig] = await db.query(
@@ -659,8 +818,9 @@ cron.schedule('*/1 * * * *', async () => {
                 telefono_configuracion, nombre_template, language_code,
                 header_format, header_media_url, header_media_name, header_parameters,
                 estado_contacto_origen, estado_destino,
+                id_template_rapido, usar_respuesta_rapida,
                 tiempo_disparo, enviado, cancelado, secuencia)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
               {
                 replacements: [
                   record.id_cliente_chat_center,
@@ -680,6 +840,8 @@ cron.schedule('*/1 * * * *', async () => {
                   siguienteConfig.header_parameters || null,
                   record.estado_destino || record.estado_contacto_origen,
                   siguienteConfig.estado_destino || null,
+                  siguienteConfig.id_template_rapido || null,
+                  siguienteConfig.usar_respuesta_rapida ? 1 : 0,
                   tiempoDisparo,
                   secuenciaActual + 1,
                 ],
@@ -701,7 +863,6 @@ cron.schedule('*/1 * * * *', async () => {
             );
           }
 
-          // Marcar como enviado
           await db.query(
             `UPDATE remarketing_pendientes
              SET enviado = 1, ultimo_intento_at = NOW()
@@ -709,17 +870,12 @@ cron.schedule('*/1 * * * *', async () => {
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
-          console.log(`✅ [remarketing] id=${record.id} enviado`);
+          console.log(
+            `✅ [remarketing] id=${record.id} enviado (${envioPorRR ? 'RR' : 'template'})`,
+          );
 
-          // Pequeña pausa para no saturar
           await new Promise((r) => setTimeout(r, 500));
         } catch (err) {
-          // ══════════════════════════════════════════════════════════
-          // MANEJO DE ERRORES POR RECORD
-          // - Rate limit: protege SOLO esa WABA, sigue con las demás
-          // - Errores permanentes: cancela el record
-          // - Errores temporales: incrementa intentos
-          // ══════════════════════════════════════════════════════════
           if (isMetaRateLimit(err)) {
             if (wabaIdForLog) {
               markWabaThrottled(wabaIdForLog, 60);
@@ -727,21 +883,15 @@ cron.schedule('*/1 * * * *', async () => {
             }
             rateLimitHitsThisCycle++;
             console.error(
-              `🛑 [remarketing] RATE LIMIT #${rateLimitHitsThisCycle} id=${record.id} waba=${wabaIdForLog} — WABA protegida, sigo con otras`,
+              `🛑 [remarketing] RATE LIMIT #${rateLimitHitsThisCycle} id=${record.id}`,
             );
-            // NO aborta el ciclo: continúa procesando records de otras WABAs
             continue;
           }
 
-          // Otros errores: delegar al handler (cancelar o incrementar intento)
           try {
             const handled = await handleRecordError(record, err, wabaIdForLog);
             if (!handled) {
-              // handleRecordError retornó false = era rate limit
-              // (ya debería haberse detectado arriba, pero por si acaso)
-              if (wabaIdForLog) {
-                wabasAffectedThisCycle.add(wabaIdForLog);
-              }
+              if (wabaIdForLog) wabasAffectedThisCycle.add(wabaIdForLog);
               rateLimitHitsThisCycle++;
             }
           } catch (handleErr) {
@@ -751,13 +901,6 @@ cron.schedule('*/1 * * * *', async () => {
             );
           }
         }
-      }
-
-      // Resumen del ciclo
-      if (rateLimitHitsThisCycle > 0) {
-        console.log(
-          `📊 [remarketing] Ciclo terminado — ${rateLimitHitsThisCycle} rate limits en ${wabasAffectedThisCycle.size} WABAs distintas`,
-        );
       }
     });
   } finally {

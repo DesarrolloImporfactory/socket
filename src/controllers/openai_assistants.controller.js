@@ -1034,27 +1034,18 @@ exports.sync_templates_from_oia_asistentes = async (req, res) => {
 /* sicronizacion de plantillas */
 
 exports.configurar_remarketing = catchAsync(async (req, res, next) => {
-  const {
-    id_configuracion,
-    estado_contacto,
-    // ← NUEVO: array de hasta 3 remarketings
-    // [{ secuencia, tiempo_espera_horas, nombre_template, language_code,
-    //    estado_destino, header_format, header_media_url, header_media_name }]
-    remarketings = [],
-  } = req.body;
+  const { id_configuracion, estado_contacto, remarketings = [] } = req.body;
 
   if (!id_configuracion || !estado_contacto) {
     return next(new AppError('Faltan parámetros requeridos', 400));
   }
 
-  // Validar máximo 3
   const lista = remarketings.slice(0, 3);
   if (!lista.length) {
     return next(new AppError('Se requiere al menos 1 remarketing', 400));
   }
 
   try {
-    // Borrar configs existentes para este estado y reinsertarlas
     await db.query(
       `DELETE FROM configuracion_remarketing
        WHERE id_configuracion = ? AND estado_contacto = ?`,
@@ -1073,8 +1064,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
          (id_configuracion, estado_contacto, secuencia,
           tiempo_espera_horas, nombre_template, language_code,
           estado_destino, header_format, header_media_url,
-          header_media_name, header_parameters, activo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          header_media_name, header_parameters,
+          id_template_rapido, usar_respuesta_rapida,
+          activo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
@@ -1088,6 +1081,8 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             r.header_media_url || null,
             r.header_media_name || null,
             r.header_parameters ? JSON.stringify(r.header_parameters) : null,
+            r.id_template_rapido || null,
+            r.usar_respuesta_rapida ? 1 : 0,
           ],
           type: db.QueryTypes.INSERT,
         },

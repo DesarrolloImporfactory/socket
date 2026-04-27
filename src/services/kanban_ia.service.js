@@ -577,11 +577,12 @@ async function programarRemarketingKanban({
   try {
     const [configRM] = await db.query(
       `SELECT tiempo_espera_horas, nombre_template, language_code,
-          estado_destino, header_format, header_media_url,
-          header_media_name, header_parameters
-   FROM configuracion_remarketing
-   WHERE id_configuracion = ? AND estado_contacto = ? AND secuencia = 1 AND activo = 1
-   LIMIT 1`,
+              estado_destino, header_format, header_media_url,
+              header_media_name, header_parameters,
+              id_template_rapido, usar_respuesta_rapida
+       FROM configuracion_remarketing
+       WHERE id_configuracion = ? AND estado_contacto = ? AND secuencia = 1 AND activo = 1
+       LIMIT 1`,
       {
         replacements: [id_configuracion, estado_contacto],
         type: db.QueryTypes.SELECT,
@@ -590,8 +591,6 @@ async function programarRemarketingKanban({
 
     if (!configRM) return;
 
-    // ── SAFEGUARD: cancelar cualquier pendiente existente antes de programar ──
-    // Evita dobles en condiciones de carrera cron + webhook
     await db.query(
       `UPDATE remarketing_pendientes
        SET cancelado = 1
@@ -617,19 +616,19 @@ async function programarRemarketingKanban({
       Date.now() + configRM.tiempo_espera_horas * 3600000,
     );
 
-    // ✅ Decodificar &amp; antes de guardar
     const headerMediaUrl = configRM.header_media_url
       ? configRM.header_media_url.replace(/&amp;/g, '&')
       : null;
 
     await db.query(
       `INSERT INTO remarketing_pendientes
-   (telefono, telefono_configuracion, id_cliente_chat_center,
-    id_configuracion, estado_contacto_origen, nombre_template,
-    language_code, tiempo_disparo, estado_destino,
-    header_format, header_media_url, header_media_name, header_parameters,
-    enviado, cancelado, secuencia)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
+       (telefono, telefono_configuracion, id_cliente_chat_center,
+        id_configuracion, estado_contacto_origen, nombre_template,
+        language_code, tiempo_disparo, estado_destino,
+        header_format, header_media_url, header_media_name, header_parameters,
+        id_template_rapido, usar_respuesta_rapida,
+        enviado, cancelado, secuencia)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
       {
         replacements: [
           telefono,
@@ -645,6 +644,8 @@ async function programarRemarketingKanban({
           headerMediaUrl,
           configRM.header_media_name || null,
           configRM.header_parameters || null,
+          configRM.id_template_rapido || null,
+          configRM.usar_respuesta_rapida ? 1 : 0,
         ],
         type: db.QueryTypes.INSERT,
       },
