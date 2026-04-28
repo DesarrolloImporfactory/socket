@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js  — v4
+ * cron/syncDropiOrdersHourly.js  — v5
  *
  * Cron de automatización de mensajes WhatsApp por cambio de estado Dropi.
  *
@@ -9,13 +9,17 @@
  *  1. Para cada integración Dropi activa → consulta órdenes con
  *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer → hoy)
  *     y hace upsert al cache.
- *  2. Por cada orden sincronizada, mapea su status Dropi al estado
+ *  2. **PRE-PASS ENTREGADA**: actualiza estado_contacto del cliente cuando
+ *     Dropi reporta entrega, INDEPENDIENTE de si hay plantilla o se envía
+ *     mensaje. Mejora UX del kanban: todos los clientes terminan en la
+ *     columna "entregada" aunque no se les notifique.
+ *  3. Por cada orden sincronizada, mapea su status Dropi al estado
  *     configurado en dropi_plantillas_config.
- *  3. Si aún no se envió ese combo (orden + config + estado):
+ *  4. Si aún no se envió ese combo (orden + config + estado):
  *     a) Verifica si hay ventana 24h abierta → envía respuesta rápida (gratis)
  *     b) Si no hay ventana → envía template de Meta (pagado)
  *        con body params, button params resueltos desde la orden
- *  4. Registra en dropi_plantillas_enviadas (dedup) Y en mensajes_clientes
+ *  5. Registra en dropi_plantillas_enviadas (dedup) Y en mensajes_clientes
  *     (para que aparezca en el chat center con json_mensaje, ruta_archivo
  *      y texto_mensaje con el body real interpolado desde body_text).
  *
@@ -66,6 +70,10 @@ const SIEMPRE_TEMPLATE = new Set(['PENDIENTE CONFIRMACION']);
 
 // Horas de ventana (23h por margen de seguridad)
 const VENTANA_HORAS = 23;
+
+// Columna kanban por defecto cuando Dropi reporta ENTREGADA
+// (todas las plantillas descargables traen esta columna con este estado_db)
+const COLUMNA_ENTREGADA_DEFAULT = 'entregada';
 
 /* ═══════════════════════════════════════════════════════════
    Logging
@@ -614,6 +622,62 @@ async function getColumnaPrincipalDropi(id_configuracion) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Actualizar estado_contacto cuando Dropi reporta ENTREGADA.
+   - Idempotente: no escribe si ya está en el destino.
+   - Funciona aunque NO haya plantilla, NO se envíe mensaje, falle Meta, etc.
+   - Si la columna 'entregada' no existe en el kanban del cliente,
+     simplemente no afecta filas (fail-safe, no rompe).
+   ═══════════════════════════════════════════════════════════ */
+
+async function actualizarEstadoContactoEntregado({
+  id_configuracion,
+  telefono,
+  columnaDestino,
+}) {
+  const phoneNorm = normalizePhone(telefono);
+  if (!phoneNorm || !columnaDestino || !id_configuracion) return false;
+
+  try {
+    const [, meta] = await db.query(
+      `UPDATE clientes_chat_center
+         SET estado_contacto = ?
+       WHERE id_configuracion = ?
+         AND deleted_at IS NULL
+         AND (estado_contacto IS NULL OR estado_contacto != ?)
+         AND (
+           REPLACE(celular_cliente, ' ', '') = ?
+           OR telefono_limpio = ?
+           OR celular_cliente LIKE ?
+         )`,
+      {
+        replacements: [
+          columnaDestino,
+          id_configuracion,
+          columnaDestino,
+          phoneNorm,
+          phoneNorm,
+          `%${phoneNorm.slice(-9)}`,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
+    const affected = meta?.affectedRows ?? meta ?? 0;
+    if (affected > 0) {
+      await log(
+        `[hourly-dropi] 📦 ENTREGADA ${phoneNorm} → estado_contacto="${columnaDestino}" (config #${id_configuracion})`,
+      );
+    }
+    return affected > 0;
+  } catch (err) {
+    await log(
+      `[hourly-dropi] ⚠ Error actualizando entregada ${phoneNorm}: ${err?.message}`,
+    );
+    return false;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
    Dedup
    ═══════════════════════════════════════════════════════════ */
 
@@ -908,54 +972,89 @@ async function enviarRespuestaRapida({
    ═══════════════════════════════════════════════════════════ */
 
 async function procesarTemplates({ orders, id_configuracion }) {
-  if (!orders.length) return { enviados: 0, omitidos: 0, errores: 0 };
+  if (!orders.length)
+    return { enviados: 0, omitidos: 0, errores: 0, entregadas_actualizadas: 0 };
 
   const plantillas = await getPlantillasActivas(id_configuracion);
-  if (!Object.keys(plantillas).length) {
+  const hayPlantillas = Object.keys(plantillas).length > 0;
+
+  if (!hayPlantillas) {
     await log(
       `[hourly-dropi] ⚠ Config #${id_configuracion} sin plantillas activas`,
     );
-    return { enviados: 0, omitidos: 0, errores: 0 };
+  } else {
+    await log(
+      `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
+    );
   }
 
-  await log(
-    `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
-  );
-
   const creds = await getWaCredentials(id_configuracion);
-  if (!creds?.phone_number_id || !creds?.waba_token) {
+  const credsValidas = !!(creds?.phone_number_id && creds?.waba_token);
+  if (!credsValidas) {
     await log(
       `[hourly-dropi] WARNING Config #${id_configuracion} sin credenciales WA`,
     );
-    return { enviados: 0, omitidos: 0, errores: 0 };
   }
 
-  const telefonoConfig = creds.telefono || null;
+  const telefonoConfig = creds?.telefono || null;
 
-  // Columna Dropi para actualizar estado_contacto en PENDIENTE CONFIRMACION
-  const colDropiPrincipal = await getColumnaPrincipalDropi(id_configuracion);
-  if (!colDropiPrincipal) {
-    await log(
-      `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal (ni es_dropi_principal ni es_principal) — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
-    );
-  } else if (colDropiPrincipal.tipo === 'principal') {
-    await log(
-      `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback (no hay es_dropi_principal) → "${colDropiPrincipal.estado_db}"`,
-    );
-  } else {
-    await log(
-      `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
-    );
+  // Columna Dropi para PENDIENTE CONFIRMACION
+  const colDropiPrincipal = credsValidas
+    ? await getColumnaPrincipalDropi(id_configuracion)
+    : null;
+  if (credsValidas) {
+    if (!colDropiPrincipal) {
+      await log(
+        `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
+      );
+    } else if (colDropiPrincipal.tipo === 'principal') {
+      await log(
+        `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback → "${colDropiPrincipal.estado_db}"`,
+      );
+    } else {
+      await log(
+        `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
+      );
+    }
   }
 
   let enviados = 0,
     omitidos = 0,
-    errores = 0;
+    errores = 0,
+    entregadasActualizadas = 0;
 
   for (const order of orders) {
     try {
       // 1. Mapear status
       const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
+
+      // ═══════════════════════════════════════════════════════════
+      // CASO ESPECIAL — ENTREGADA por la transportadora
+      // SIEMPRE actualizar estado_contacto del cliente, INDEPENDIENTE de si:
+      //   - hay plantilla configurada
+      //   - hay credenciales WA
+      //   - ya se envió mensaje (dedup)
+      //   - hay ventana 24h
+      // Es idempotente: si ya está en "entregada" no hace nada.
+      // Mejora UX del kanban (todas las transportadoras cierran en este estado).
+      // ═══════════════════════════════════════════════════════════
+      if (estadoConfig === 'ENTREGADA' && order.phone) {
+        const columnaEntregada =
+          plantillas[estadoConfig]?.columna_destino ||
+          COLUMNA_ENTREGADA_DEFAULT;
+        const actualizado = await actualizarEstadoContactoEntregado({
+          id_configuracion,
+          telefono: order.phone,
+          columnaDestino: columnaEntregada,
+        });
+        if (actualizado) entregadasActualizadas++;
+      }
+
+      // Si no hay credenciales WA, no podemos enviar nada — saltamos
+      if (!credsValidas) {
+        omitidos++;
+        continue;
+      }
 
       if (!estadoConfig) {
         await log(
@@ -1086,13 +1185,16 @@ async function procesarTemplates({ orders, id_configuracion }) {
       }
 
       // 5.5. Mover cliente a columna destino (según estado)
+      // NOTA: ENTREGADA ya se procesó arriba en el pre-pass, igual aquí lo
+      // sobreescribimos para mantener consistencia con el log y porque la
+      // operación es idempotente.
       let columnaDestino = null;
 
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
-        // Primer contacto: columna Dropi principal del kanban
         columnaDestino = colDropiPrincipal?.estado_db || null;
+      } else if (estadoConfig === 'ENTREGADA') {
+        columnaDestino = config.columna_destino || COLUMNA_ENTREGADA_DEFAULT;
       } else if (config.columna_destino) {
-        // Otros estados: columna configurada en dropi_plantillas_config
         columnaDestino = config.columna_destino;
       }
 
@@ -1161,7 +1263,12 @@ async function procesarTemplates({ orders, id_configuracion }) {
     }
   }
 
-  return { enviados, omitidos, errores };
+  return {
+    enviados,
+    omitidos,
+    errores,
+    entregadas_actualizadas: entregadasActualizadas,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1241,15 +1348,20 @@ async function syncIntegration(integration, from, until) {
   if (allOrders.length > 0) await upsertOrders(cacheInsertFields, allOrders);
   await log(`[hourly-dropi] ${label} OK ${allOrders.length} órdenes`);
 
-  // Fase 3: Templates
-  let templateStats = { enviados: 0, omitidos: 0, errores: 0 };
+  // Fase 3: Templates + ENTREGADA pre-pass
+  let templateStats = {
+    enviados: 0,
+    omitidos: 0,
+    errores: 0,
+    entregadas_actualizadas: 0,
+  };
   if (id_config && allOrders.length > 0) {
     templateStats = await procesarTemplates({
       orders: allOrders,
       id_configuracion: id_config,
     });
     await log(
-      `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores}`,
+      `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores} | 📦entregadas: ${templateStats.entregadas_actualizadas}`,
     );
   }
 
@@ -1295,7 +1407,13 @@ async function runHourlyDropiSync() {
     });
     await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
 
-    const totals = { ordenes: 0, enviados: 0, skipped: 0, errores: 0 };
+    const totals = {
+      ordenes: 0,
+      enviados: 0,
+      skipped: 0,
+      errores: 0,
+      entregadas: 0,
+    };
 
     for (let i = 0; i < integrations.length; i++) {
       try {
@@ -1306,6 +1424,7 @@ async function runHourlyDropiSync() {
           totals.ordenes += r.synced;
           totals.enviados += r.templates?.enviados || 0;
           totals.errores += r.templates?.errores || 0;
+          totals.entregadas += r.templates?.entregadas_actualizadas || 0;
         }
       } catch (err) {
         totals.errores++;
@@ -1318,7 +1437,7 @@ async function runHourlyDropiSync() {
     }
 
     await log(
-      `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
+      `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | 📦entregadas: ${totals.entregadas} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
     );
   } catch (err) {
     await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);

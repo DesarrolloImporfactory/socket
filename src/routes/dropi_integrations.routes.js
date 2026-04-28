@@ -67,4 +67,16 @@ router.get(
 // Dashboard: requiere plan activo + valida tools_access en el controller
 router.post('/dashboard/stats', ...dropiboardGuard, ctrl.getDashboardStats);
 
+// Después de la ruta del dashboard:
+router.post(
+  '/dashboard/daily-metrics',
+  ...dropiboardGuard,
+  ctrl.getDailyMetrics,
+);
+router.put(
+  '/dashboard/daily-metrics',
+  ...dropiboardGuard,
+  ctrl.upsertDailyMetric,
+);
+
 module.exports = router;

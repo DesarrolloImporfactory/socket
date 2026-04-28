@@ -10,6 +10,7 @@ const { Op, fn, col, literal } = require('sequelize');
 const { db } = require('../database/config');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
+const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 
 /* =========================
    Helpers
@@ -2410,5 +2411,270 @@ exports.getClientStats = catchAsync(async (req, res, next) => {
           repeated_orders: bestStat.ordenes_repetidas || [],
         }
       : null,
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   Daily Metrics Dashboard
+   Combina datos manuales (gasto, mensajes) + agregados de cache
+   ═══════════════════════════════════════════════════════════ */
+
+async function resolveCacheCtxFromIntegration(req) {
+  const integration_id = toInt(req.body?.integration_id);
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const id_usuario = req.sessionUser?.id_usuario;
+
+  if (!integration_id && !id_configuracion) {
+    throw new AppError('integration_id o id_configuracion es requerido', 400);
+  }
+
+  let integration;
+
+  if (integration_id) {
+    integration = await DropiIntegrations.findOne({
+      where: { id: integration_id, deleted_at: null, is_active: 1 },
+    });
+    if (!integration) throw new AppError('Integración no encontrada', 404);
+
+    if (integration.id_configuracion) {
+      const cfg = await Configuraciones.findOne({
+        where: { id: integration.id_configuracion, id_usuario },
+      });
+      if (!cfg)
+        throw new AppError('Integración no pertenece a esta cuenta', 403);
+    } else if (Number(integration.id_usuario) !== Number(id_usuario)) {
+      throw new AppError('Integración no pertenece a esta cuenta', 403);
+    }
+  } else {
+    const cfg = await Configuraciones.findOne({
+      where: { id: id_configuracion, id_usuario },
+    });
+    if (!cfg) throw new AppError('Configuración no válida', 403);
+    integration = await getActiveIntegration(id_configuracion);
+    if (!integration)
+      throw new AppError('No hay integración Dropi activa', 404);
+  }
+
+  return integration.id_configuracion
+    ? { id_configuracion: Number(integration.id_configuracion) }
+    : { id_usuario: Number(integration.id_usuario) };
+}
+
+exports.getDailyMetrics = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+
+  if (!from || !until) {
+    return next(new AppError('from y until son requeridos', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  // Agregados desde cache, agrupados por fecha
+  const [aggRows] = await db.query(
+    `SELECT 
+       DATE(c.order_created_at) AS fecha,
+       COUNT(*) AS ordenes_dia,
+       SUM(c.total_order) AS venta_total,
+       SUM(CASE WHEN c.classified_status = 'entregada' THEN c.total_order ELSE 0 END) AS venta_entregadas,
+       SUM(CASE WHEN c.classified_status = 'entregada' THEN COALESCE(c.dropshipper_profit, 0) ELSE 0 END) AS profit_entregadas,
+       SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)) AS flete_total,
+       SUM(CASE WHEN c.classified_status = 'entregada' 
+                THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
+                ELSE 0 END) AS flete_entregadas,
+       SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
+       SUM(CASE WHEN c.classified_status IN ('cancelada','devolucion') THEN 1 ELSE 0 END) AS cancelados,
+       SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito
+     FROM dropi_orders_cache c
+     WHERE c.id_configuracion = :idCfg
+       AND c.id_usuario = :idUsr
+       AND c.order_created_at BETWEEN :from AND :until
+     GROUP BY DATE(c.order_created_at)
+     ORDER BY fecha DESC`,
+    {
+      replacements: {
+        idCfg,
+        idUsr,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  // Manuales del rango
+  const manuales = await DropiDailyMetrics.findAll({
+    where: {
+      id_configuracion: idCfg,
+      id_usuario: idUsr,
+      fecha: { [Op.between]: [from, until] },
+    },
+    raw: true,
+  });
+
+  const manualMap = new Map();
+  for (const m of manuales) {
+    const key =
+      typeof m.fecha === 'string'
+        ? m.fecha
+        : m.fecha.toISOString().slice(0, 10);
+    manualMap.set(key, m);
+  }
+
+  // Merge
+  const fechasConOrdenes = new Set();
+  const rows = aggRows.map((r) => {
+    const fechaStr =
+      typeof r.fecha === 'string'
+        ? r.fecha
+        : r.fecha.toISOString().slice(0, 10);
+    fechasConOrdenes.add(fechaStr);
+
+    const manual = manualMap.get(fechaStr) || {};
+    const gasto = Number(manual.gasto_diario || 0);
+    const mensajes = Number(manual.num_mensajes || 0);
+
+    const ventaTotal = Number(r.venta_total || 0);
+    const ventaEntregadas = Number(r.venta_entregadas || 0);
+    const profitEntregadas = Number(r.profit_entregadas || 0);
+    const fleteTotal = Number(r.flete_total || 0);
+    const fleteEntregadas = Number(r.flete_entregadas || 0);
+
+    const costoProductoEntregadas = Math.max(
+      0,
+      ventaEntregadas - fleteEntregadas - profitEntregadas,
+    );
+
+    const costXMensaje = mensajes > 0 ? gasto / mensajes : 0;
+    const rentabilidad =
+      ventaTotal - costoProductoEntregadas - fleteTotal - gasto;
+
+    return {
+      fecha: fechaStr,
+      gasto_diario: Math.round(gasto * 100) / 100,
+      num_mensajes: mensajes,
+      cost_x_mensaje: Math.round(costXMensaje * 10000) / 10000,
+      ordenes_dia: Number(r.ordenes_dia || 0),
+      venta_total: Math.round(ventaTotal * 100) / 100,
+      costo_producto_entregadas:
+        Math.round(costoProductoEntregadas * 100) / 100,
+      flete_total: Math.round(fleteTotal * 100) / 100,
+      cancelados: Number(r.cancelados || 0),
+      entregados: Number(r.entregadas || 0),
+      transito: Number(r.transito || 0),
+      rentabilidad: Math.round(rentabilidad * 100) / 100,
+    };
+  });
+
+  // Días con gasto manual pero sin órdenes ese día (también se muestran)
+  for (const m of manuales) {
+    const fechaStr =
+      typeof m.fecha === 'string'
+        ? m.fecha
+        : m.fecha.toISOString().slice(0, 10);
+    if (fechasConOrdenes.has(fechaStr)) continue;
+    const gasto = Number(m.gasto_diario || 0);
+    const mensajes = Number(m.num_mensajes || 0);
+    if (gasto === 0 && mensajes === 0) continue;
+    rows.push({
+      fecha: fechaStr,
+      gasto_diario: Math.round(gasto * 100) / 100,
+      num_mensajes: mensajes,
+      cost_x_mensaje:
+        mensajes > 0 ? Math.round((gasto / mensajes) * 10000) / 10000 : 0,
+      ordenes_dia: 0,
+      venta_total: 0,
+      costo_producto_entregadas: 0,
+      flete_total: 0,
+      cancelados: 0,
+      entregados: 0,
+      transito: 0,
+      rentabilidad: -gasto,
+    });
+  }
+
+  rows.sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+  const totales = rows.reduce(
+    (acc, r) => ({
+      gasto_diario: acc.gasto_diario + r.gasto_diario,
+      num_mensajes: acc.num_mensajes + r.num_mensajes,
+      ordenes_dia: acc.ordenes_dia + r.ordenes_dia,
+      venta_total: acc.venta_total + r.venta_total,
+      costo_producto_entregadas:
+        acc.costo_producto_entregadas + r.costo_producto_entregadas,
+      flete_total: acc.flete_total + r.flete_total,
+      cancelados: acc.cancelados + r.cancelados,
+      entregados: acc.entregados + r.entregados,
+      transito: acc.transito + r.transito,
+      rentabilidad: acc.rentabilidad + r.rentabilidad,
+    }),
+    {
+      gasto_diario: 0,
+      num_mensajes: 0,
+      ordenes_dia: 0,
+      venta_total: 0,
+      costo_producto_entregadas: 0,
+      flete_total: 0,
+      cancelados: 0,
+      entregados: 0,
+      transito: 0,
+      rentabilidad: 0,
+    },
+  );
+
+  totales.cost_x_mensaje =
+    totales.num_mensajes > 0 ? totales.gasto_diario / totales.num_mensajes : 0;
+
+  // Redondear totales
+  for (const k of Object.keys(totales)) {
+    if (
+      k === 'num_mensajes' ||
+      k === 'ordenes_dia' ||
+      k === 'cancelados' ||
+      k === 'entregados' ||
+      k === 'transito'
+    )
+      continue;
+    totales[k] = Math.round(totales[k] * 100) / 100;
+  }
+
+  return res.json({ isSuccess: true, data: { rows, totales } });
+});
+
+exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const fecha = strOrNull(req.body?.fecha);
+  const gasto_diario = req.body?.gasto_diario;
+  const num_mensajes = req.body?.num_mensajes;
+
+  if (!fecha) return next(new AppError('fecha es requerida (YYYY-MM-DD)', 400));
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  const [row] = await DropiDailyMetrics.findOrCreate({
+    where: { id_configuracion: idCfg, id_usuario: idUsr, fecha },
+    defaults: {
+      id_configuracion: idCfg,
+      id_usuario: idUsr,
+      fecha,
+      gasto_diario: 0,
+      num_mensajes: 0,
+    },
+  });
+
+  if (gasto_diario !== undefined) row.gasto_diario = Number(gasto_diario) || 0;
+  if (num_mensajes !== undefined) row.num_mensajes = Number(num_mensajes) || 0;
+  await row.save();
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      fecha: row.fecha,
+      gasto_diario: Number(row.gasto_diario),
+      num_mensajes: Number(row.num_mensajes),
+    },
   });
 });
