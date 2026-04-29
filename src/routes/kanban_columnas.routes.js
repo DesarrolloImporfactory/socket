@@ -48,4 +48,6 @@ router.post(
 );
 router.post('/eliminar_archivo', KanbanAsisteController.eliminarArchivo);
 
+router.post('/chat_prueba', KanbanAsisteController.chat_prueba);
+
 module.exports = router;

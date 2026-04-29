@@ -544,3 +544,76 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
 
   return res.status(200).json({ success: true });
 });
+
+exports.chat_prueba = catchAsync(async (req, res, next) => {
+  const { id, mensaje, previous_response_id } = req.body;
+
+  if (!id || !mensaje) return next(new AppError('Faltan campos', 400));
+
+  // Obtener datos de la columna
+  const [columna] = await db.query(
+    `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
+            c.api_key_openai
+     FROM kanban_columnas kc
+     INNER JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? AND kc.activo = 1 LIMIT 1`,
+    { replacements: [id], type: db.QueryTypes.SELECT },
+  );
+
+  if (!columna) return next(new AppError('Columna no encontrada', 404));
+  if (!columna.api_key_openai)
+    return next(new AppError('Sin API key de OpenAI', 400));
+  if (!columna.instrucciones)
+    return next(
+      new AppError('Esta columna no tiene instrucciones configuradas', 400),
+    );
+
+  const headers = {
+    Authorization: `Bearer ${columna.api_key_openai}`,
+    'Content-Type': 'application/json',
+  };
+
+  // Construir tools (file_search si tiene vector store)
+  const tools = [];
+  if (columna.vector_store_id) {
+    tools.push({
+      type: 'file_search',
+      vector_store_ids: [columna.vector_store_id],
+    });
+  }
+
+  // Construir body de la Responses API
+  const body = {
+    model: columna.modelo || 'gpt-4o-mini',
+    instructions: columna.instrucciones,
+    input: mensaje,
+    store: true,
+    ...(tools.length > 0 && { tools }),
+    ...(previous_response_id && { previous_response_id }),
+  };
+
+  const response = await axios.post(
+    'https://api.openai.com/v1/responses',
+    body,
+    { headers },
+  );
+
+  const data = response.data;
+
+  // Extraer texto de la respuesta
+  const outputText =
+    data.output_text ||
+    data.output
+      ?.filter((o) => o.type === 'message')
+      ?.flatMap((o) => o.content)
+      ?.filter((c) => c.type === 'output_text')
+      ?.map((c) => c.text)
+      ?.join('') ||
+    '';
+
+  return res.json({
+    success: true,
+    respuesta: outputText,
+    response_id: data.id, // ← el frontend guarda esto para el siguiente request
+  });
+});
