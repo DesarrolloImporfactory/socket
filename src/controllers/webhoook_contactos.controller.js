@@ -104,13 +104,17 @@ async function estaDentroVentana24h({ idCliente, idConfiguracion }) {
  * Reemplaza placeholders {nombre}, {apellido}, {email}, {telefono}.
  * Limpia espacios sobrantes cuando el placeholder queda vacío.
  */
-function resolverPlaceholders(str, contacto, { defaultValue = '' } = {}) {
+function resolverPlaceholders(str, contacto, opts = {}) {
   if (typeof str !== 'string') return String(str ?? '');
 
-  const nombre = (contacto.nombre || '').trim() || defaultValue;
-  const apellido = (contacto.apellido || '').trim() || defaultValue;
-  const email = (contacto.email || '').trim() || defaultValue;
-  const telefono = (contacto.telefono || '').trim() || defaultValue;
+  // Compatibilidad legacy: si pasan defaultValue, solo aplica a {nombre}
+  // (no a apellido/email/telefono que pueden estar legítimamente vacíos)
+  const fallbackNombre = opts.defaultValue || '';
+
+  const nombre = (contacto.nombre || '').trim() || fallbackNombre;
+  const apellido = (contacto.apellido || '').trim();
+  const email = (contacto.email || '').trim();
+  const telefono = (contacto.telefono || '').trim();
 
   return (
     str
@@ -216,9 +220,17 @@ async function enviarMensajeBienvenida({
 
     // Si tiene variables, resolver placeholders con default amigable
     // (Meta rechaza parámetros vacíos con error 132000)
-    const paramsResueltos = paramsRaw.map((p) =>
-      resolverPlaceholders(String(p ?? ''), contacto, { defaultValue: 'Hola' }),
-    );
+    const paramsResueltos = paramsRaw.map((p, idx) => {
+      const resuelto = resolverPlaceholders(String(p ?? ''), contacto);
+
+      if (!resuelto || !resuelto.trim()) {
+        console.warn(
+          `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} quedó vacío — placeholder original: "${p}". Se reemplaza por "-"`,
+        );
+        return '-';
+      }
+      return resuelto;
+    });
 
     const result = await whatsappService.sendWhatsappMessageTemplateScheduled({
       telefono,
