@@ -30,5 +30,7 @@ router.post('/password-reset/change', passwordResetController.changePassword);
 router.use(authMiddleware.protect);
 
 router.get('/renew', authController.renew);
+router.post('/logout-global', authController.logoutGlobal);
+router.get('/cross-app-status', authController.crossAppStatus);
 
 module.exports = router;

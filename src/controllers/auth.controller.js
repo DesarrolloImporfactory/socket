@@ -622,6 +622,92 @@ exports.newLogin = async (req, res) => {
   }
 };
 
+/**
+ * Single sign-out: marca users.logout_at = NOW() para forzar la invalidación
+ * de todos los JWTs anteriores del usuario en ambas apps (Imporsuit y Chatcenter).
+ *
+ * IMPORTANTE: req.sessionUser.id_usuario es el ID de Usuarios_chat_center
+ * (BD chatcenter), NO el id_users de imporsuit. Mapeamos por email, que es
+ * el identificador común entre ambas BDs.
+ */
+exports.logoutGlobal = catchAsync(async (req, res, next) => {
+  const subUser = req.sessionUser;
+  const email = subUser?.email;
+  const usuario = subUser?.usuario;
+
+  if (!email && !usuario) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'No autenticado',
+    });
+  }
+
+  try {
+    const [, affected] = await db_2.query(
+      `UPDATE users
+         SET logout_at = NOW()
+       WHERE email_users = ? OR usuario_users = ?`,
+      {
+        replacements: [email || '', usuario || email || ''],
+        type: db_2.QueryTypes.UPDATE,
+      },
+    );
+    console.log(
+      `logoutGlobal: email=${email} usuario=${usuario} → filas actualizadas=${affected}`,
+    );
+  } catch (err) {
+    console.error('logoutGlobal: error actualizando users.logout_at', err);
+    return res.status(500).json({
+      status: 'fail',
+      message: 'No se pudo cerrar sesión globalmente',
+    });
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    message: 'Sesión cerrada en todas las aplicaciones',
+  });
+});
+
+/**
+ * Devuelve qué apps del ecosistema tiene registradas el usuario autenticado.
+ * Usado por el App Switcher del chatcenter para saber si mostrar ImporSuit
+ * como disponible o bloqueada (no tiene cuenta).
+ */
+exports.crossAppStatus = catchAsync(async (req, res) => {
+  const subUser = req.sessionUser;
+  const email = subUser?.email || '';
+  const usuario = subUser?.usuario || '';
+
+  // Si llegó hasta acá, ya está autenticado en chatcenter
+  let hasChatcenter = true;
+  let hasImporsuit = false;
+
+  if (email || usuario) {
+    try {
+      const [row] = await db_2.query(
+        `SELECT 1 AS x
+           FROM users
+          WHERE email_users = ? OR usuario_users = ?
+          LIMIT 1`,
+        {
+          replacements: [email, usuario || email],
+          type: db_2.QueryTypes.SELECT,
+        },
+      );
+      hasImporsuit = !!row;
+    } catch (err) {
+      console.warn('crossAppStatus: error consultando users —', err.message);
+    }
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    hasImporsuit,
+    hasChatcenter,
+  });
+});
+
 exports.updatePassword = catchAsync(async (req, res, next) => {
   const { user } = req;
   const { currentPassword, newPassword } = req.body;
