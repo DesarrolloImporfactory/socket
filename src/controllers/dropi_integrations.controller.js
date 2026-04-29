@@ -2475,24 +2475,27 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
   // Agregados desde cache, agrupados por fecha
   const [aggRows] = await db.query(
     `SELECT 
-       DATE(c.order_created_at) AS fecha,
-       COUNT(*) AS ordenes_dia,
-       SUM(c.total_order) AS venta_total,
-       SUM(CASE WHEN c.classified_status = 'entregada' THEN c.total_order ELSE 0 END) AS venta_entregadas,
-       SUM(CASE WHEN c.classified_status = 'entregada' THEN COALESCE(c.dropshipper_profit, 0) ELSE 0 END) AS profit_entregadas,
-       SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)) AS flete_total,
-       SUM(CASE WHEN c.classified_status = 'entregada' 
-                THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
-                ELSE 0 END) AS flete_entregadas,
-       SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
-       SUM(CASE WHEN c.classified_status IN ('cancelada','devolucion') THEN 1 ELSE 0 END) AS cancelados,
-       SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito
-     FROM dropi_orders_cache c
-     WHERE c.id_configuracion = :idCfg
-       AND c.id_usuario = :idUsr
-       AND c.order_created_at BETWEEN :from AND :until
-     GROUP BY DATE(c.order_created_at)
-     ORDER BY fecha DESC`,
+      DATE(c.order_created_at) AS fecha,
+      COUNT(*) AS ordenes_dia,
+      SUM(c.total_order) AS venta_total,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN c.total_order ELSE 0 END) AS venta_entregadas,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN COALESCE(c.dropshipper_profit, 0) ELSE 0 END) AS profit_entregadas,
+      SUM(CASE WHEN c.classified_status != 'cancelada' 
+              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
+              ELSE 0 END) AS flete_total,
+      SUM(CASE WHEN c.classified_status = 'entregada' 
+              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
+              ELSE 0 END) AS flete_entregadas,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
+      SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS cancelados,
+      SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devoluciones,
+      SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito
+    FROM dropi_orders_cache c
+    WHERE c.id_configuracion = :idCfg
+      AND c.id_usuario = :idUsr
+      AND c.order_created_at BETWEEN :from AND :until
+    GROUP BY DATE(c.order_created_at)
+    ORDER BY fecha DESC`,
     {
       replacements: {
         idCfg,
@@ -2561,6 +2564,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
         Math.round(costoProductoEntregadas * 100) / 100,
       flete_total: Math.round(fleteTotal * 100) / 100,
       cancelados: Number(r.cancelados || 0),
+      devoluciones: Number(r.devoluciones || 0),
       entregados: Number(r.entregadas || 0),
       transito: Number(r.transito || 0),
       rentabilidad: Math.round(rentabilidad * 100) / 100,
@@ -2588,6 +2592,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       costo_producto_entregadas: 0,
       flete_total: 0,
       cancelados: 0,
+      devoluciones: 0,
       entregados: 0,
       transito: 0,
       rentabilidad: -gasto,
@@ -2606,6 +2611,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
         acc.costo_producto_entregadas + r.costo_producto_entregadas,
       flete_total: acc.flete_total + r.flete_total,
       cancelados: acc.cancelados + r.cancelados,
+      devoluciones: acc.devoluciones + r.devoluciones,
       entregados: acc.entregados + r.entregados,
       transito: acc.transito + r.transito,
       rentabilidad: acc.rentabilidad + r.rentabilidad,
@@ -2618,6 +2624,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       costo_producto_entregadas: 0,
       flete_total: 0,
       cancelados: 0,
+      devoluciones: 0,
       entregados: 0,
       transito: 0,
       rentabilidad: 0,
@@ -2633,6 +2640,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       k === 'num_mensajes' ||
       k === 'ordenes_dia' ||
       k === 'cancelados' ||
+      k === 'devoluciones' ||
       k === 'entregados' ||
       k === 'transito'
     )
