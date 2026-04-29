@@ -670,6 +670,72 @@ exports.logoutGlobal = catchAsync(async (req, res, next) => {
 });
 
 /**
+ * Emite un JWT corto-vivido (60s) con el secret compartido para que el
+ * usuario actual del chatcenter pueda iniciar sesión en imporsuit sin
+ * volver a poner credenciales. Validado por Acceso::sso_from_chatcenter.
+ */
+exports.issueImporsuitToken = catchAsync(async (req, res) => {
+  const subUser = req.sessionUser;
+  const email = subUser?.email || '';
+  const usuario = subUser?.usuario || '';
+
+  if (!email && !usuario) {
+    return res.status(401).json({
+      status: 'fail',
+      message: 'No autenticado',
+    });
+  }
+
+  // Verificar que el usuario tiene cuenta en imporsuit
+  let imporUser;
+  try {
+    [imporUser] = await db_2.query(
+      `SELECT email_users
+         FROM users
+        WHERE email_users = ? OR usuario_users = ?
+        LIMIT 1`,
+      {
+        replacements: [email, usuario || email],
+        type: db_2.QueryTypes.SELECT,
+      },
+    );
+  } catch (err) {
+    console.error('issueImporsuitToken: error consultando users —', err.message);
+    return res.status(500).json({
+      status: 'fail',
+      message: 'Error verificando cuenta de imporsuit',
+    });
+  }
+
+  if (!imporUser) {
+    return res.status(404).json({
+      status: 'fail',
+      code: 'NO_IMPORSUIT_ACCOUNT',
+      message: 'No tienes cuenta de ImporSuit asociada a este correo',
+    });
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const ssoToken = jwt.sign(
+    {
+      iss: 'chatcenter',
+      aud: 'imporsuit',
+      iat: now,
+      exp: now + 60, // un solo uso, 60 segundos
+      email: imporUser.email_users,
+    },
+    process.env.SECRET_JWT_SEED,
+    { algorithm: 'HS256' },
+  );
+
+  return res.status(200).json({
+    status: 'success',
+    token: ssoToken,
+    expiresIn: 60,
+  });
+});
+
+/**
  * Devuelve qué apps del ecosistema tiene registradas el usuario autenticado.
  * Usado por el App Switcher del chatcenter para saber si mostrar ImporSuit
  * como disponible o bloqueada (no tiene cuenta).

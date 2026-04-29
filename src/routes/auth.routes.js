@@ -32,5 +32,6 @@ router.use(authMiddleware.protect);
 router.get('/renew', authController.renew);
 router.post('/logout-global', authController.logoutGlobal);
 router.get('/cross-app-status', authController.crossAppStatus);
+router.post('/issue-imporsuit-token', authController.issueImporsuitToken);
 
 module.exports = router;
