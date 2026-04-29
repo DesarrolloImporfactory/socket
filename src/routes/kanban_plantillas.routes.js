@@ -31,5 +31,9 @@ router.post(
   '/personalizacion_resincronizar',
   ctrl.personalizacionResincronizar,
 );
+router.post(
+  '/personalizacion_resincronizar_masivo',
+  ctrl.personalizacionResincronizarMasivo,
+);
 
 module.exports = router;

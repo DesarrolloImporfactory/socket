@@ -1660,6 +1660,191 @@ async function _getColumnasIADelCliente(id_configuracion) {
 }
 
 // ──────────────────────────────────────────────────────────────
+// Helper interno: resincroniza UNA configuración.
+// NO lanza excepciones — siempre devuelve un objeto con el resultado.
+// Usado por: personalizacionResincronizar (single) y
+//            personalizacionResincronizarMasivo (bulk).
+// ──────────────────────────────────────────────────────────────
+async function _resincronizarUnaConfiguracion(id_configuracion) {
+  try {
+    // 1. Cargar config del cliente
+    const [config] = await db.query(
+      `SELECT api_key_openai, kanban_global_id
+       FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    if (!config) {
+      return {
+        id_configuracion,
+        success: false,
+        error: 'Configuración no encontrada',
+      };
+    }
+    if (!config.kanban_global_id) {
+      return {
+        id_configuracion,
+        success: false,
+        error: 'Esta configuración no usa plantilla global',
+      };
+    }
+    if (!config.api_key_openai) {
+      return {
+        id_configuracion,
+        success: false,
+        error: 'No hay API key de OpenAI configurada en esta configuración',
+      };
+    }
+
+    const id_plantilla = config.kanban_global_id;
+
+    // 2. Cargar plantilla global actual
+    const [plantilla] = await db.query(
+      `SELECT data FROM kanban_plantillas_globales 
+       WHERE id = ? AND activo = 1 LIMIT 1`,
+      { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
+    );
+    if (!plantilla) {
+      return {
+        id_configuracion,
+        success: false,
+        error: 'Plantilla global no encontrada o inactiva',
+      };
+    }
+
+    const dataPlantilla =
+      typeof plantilla.data === 'string'
+        ? JSON.parse(plantilla.data)
+        : plantilla.data;
+
+    const colsPlantilla = dataPlantilla?.columnas || [];
+
+    // 3. Cargar columnas IA del cliente
+    const columnasIA = await _getColumnasIADelCliente(id_configuracion);
+
+    if (!columnasIA.length) {
+      return {
+        id_configuracion,
+        success: false,
+        error: 'No hay columnas IA activas en esta configuración',
+      };
+    }
+
+    // 4. Headers OpenAI (con la API key del cliente)
+    const headers = {
+      Authorization: `Bearer ${config.api_key_openai}`,
+      'Content-Type': 'application/json',
+      'OpenAI-Beta': 'assistants=v2',
+    };
+
+    // 5. Procesar cada columna IA
+    const resultados = await Promise.all(
+      columnasIA.map(async (col) => {
+        try {
+          const colPlantilla = colsPlantilla.find(
+            (c) => c.nombre === col.nombre,
+          );
+
+          if (!colPlantilla?.instrucciones) {
+            return {
+              id_kanban_columna: col.id,
+              nombre: col.nombre,
+              status: 'omitida',
+              motivo: 'Sin prompt en plantilla global para esta columna',
+            };
+          }
+
+          const promptBaseNuevo = colPlantilla.instrucciones;
+
+          const [persoActual] = await db.query(
+            `SELECT nombre_tienda, nombre_asistente_publico,
+                    instrucciones_extra, info_envio,
+                    productos_destacados, tono_personalizado
+             FROM kanban_columnas_personalizaciones
+             WHERE id_kanban_columna = ? LIMIT 1`,
+            { replacements: [col.id], type: db.QueryTypes.SELECT },
+          );
+
+          const promptCompilado = compilarPromptFinal(
+            promptBaseNuevo,
+            persoActual || {},
+          );
+
+          await axios.post(
+            `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+            { instructions: promptCompilado },
+            { headers, timeout: 15000 },
+          );
+
+          await db.query(
+            `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
+            {
+              replacements: [promptCompilado, col.id],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+
+          await db.query(
+            `UPDATE kanban_columnas_personalizaciones 
+             SET prompt_base_snapshot = ?
+             WHERE id_kanban_columna = ?`,
+            {
+              replacements: [promptBaseNuevo, col.id],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+
+          return {
+            id_kanban_columna: col.id,
+            nombre: col.nombre,
+            assistant_id: col.assistant_id,
+            status: 'ok',
+            prompt_length: promptCompilado.length,
+          };
+        } catch (err) {
+          const mensaje = err?.response?.data?.error?.message || err.message;
+          console.error(
+            `[resincronizar] config=${id_configuracion} col=${col.nombre}: ${mensaje}`,
+          );
+          return {
+            id_kanban_columna: col.id,
+            nombre: col.nombre,
+            assistant_id: col.assistant_id,
+            status: 'error',
+            error: mensaje,
+          };
+        }
+      }),
+    );
+
+    const exitos_cols = resultados.filter((r) => r.status === 'ok').length;
+    const errores_cols = resultados.filter((r) => r.status === 'error').length;
+    const omitidas_cols = resultados.filter(
+      (r) => r.status === 'omitida',
+    ).length;
+
+    return {
+      id_configuracion,
+      success: errores_cols === 0,
+      total_columnas: columnasIA.length,
+      exitos_cols,
+      errores_cols,
+      omitidas_cols,
+      resultados_columnas: resultados,
+    };
+  } catch (err) {
+    console.error(
+      `[resincronizar] error fatal config=${id_configuracion}: ${err.message}`,
+    );
+    return {
+      id_configuracion,
+      success: false,
+      error: `Error inesperado: ${err.message}`,
+    };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
 // GET — Obtener personalización actual de una columna
 // POST /kanban_plantillas/personalizacion_obtener
 // ──────────────────────────────────────────────────────────────
@@ -2023,159 +2208,120 @@ exports.personalizacionResincronizar = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
-  // 1. Cargar config del cliente
-  const [config] = await db.query(
-    `SELECT api_key_openai, kanban_global_id
-     FROM configuraciones WHERE id = ? LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
+  const r = await _resincronizarUnaConfiguracion(id_configuracion);
 
-  if (!config) return next(new AppError('Configuración no encontrada', 404));
-  if (!config.kanban_global_id)
-    return next(
-      new AppError('Esta configuración no usa plantilla global', 400),
-    );
-  if (!config.api_key_openai)
-    return next(
-      new AppError(
-        'No hay API key de OpenAI configurada en esta configuración',
-        400,
-      ),
-    );
-
-  const id_plantilla = config.kanban_global_id;
-
-  // 2. Cargar plantilla global actual
-  const [plantilla] = await db.query(
-    `SELECT data FROM kanban_plantillas_globales 
-     WHERE id = ? AND activo = 1 LIMIT 1`,
-    { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
-  );
-  if (!plantilla)
-    return next(new AppError('Plantilla global no encontrada o inactiva', 404));
-
-  const dataPlantilla =
-    typeof plantilla.data === 'string'
-      ? JSON.parse(plantilla.data)
-      : plantilla.data;
-
-  const colsPlantilla = dataPlantilla?.columnas || [];
-
-  // 3. Cargar columnas IA del cliente
-  const columnasIA = await _getColumnasIADelCliente(id_configuracion);
-
-  if (!columnasIA.length) {
-    return next(
-      new AppError('No hay columnas IA activas en esta configuración', 400),
-    );
+  // Errores fatales de validación → mantener comportamiento original (AppError 400/404)
+  if (!r.success && !r.resultados_columnas) {
+    const code = r.error === 'Configuración no encontrada' ? 404 : 400;
+    return next(new AppError(r.error, code));
   }
 
-  // 4. Headers OpenAI (con la API key del cliente)
-  const headers = {
-    Authorization: `Bearer ${config.api_key_openai}`,
-    'Content-Type': 'application/json',
-    'OpenAI-Beta': 'assistants=v2',
-  };
-
-  // 5. Procesar cada columna IA
-  const resultados = await Promise.all(
-    columnasIA.map(async (col) => {
-      try {
-        // 5.1) Buscar el prompt actualizado en la plantilla global
-        const colPlantilla = colsPlantilla.find((c) => c.nombre === col.nombre);
-
-        if (!colPlantilla?.instrucciones) {
-          return {
-            id_kanban_columna: col.id,
-            nombre: col.nombre,
-            status: 'omitida',
-            motivo: 'Sin prompt en plantilla global para esta columna',
-          };
-        }
-
-        const promptBaseNuevo = colPlantilla.instrucciones;
-
-        // 5.2) Cargar personalización actual del cliente
-        const [persoActual] = await db.query(
-          `SELECT nombre_tienda, nombre_asistente_publico,
-                  instrucciones_extra, info_envio,
-                  productos_destacados, tono_personalizado
-           FROM kanban_columnas_personalizaciones
-           WHERE id_kanban_columna = ? LIMIT 1`,
-          { replacements: [col.id], type: db.QueryTypes.SELECT },
-        );
-
-        // 5.3) Compilar usando el prompt nuevo + personalización vieja
-        const promptCompilado = compilarPromptFinal(
-          promptBaseNuevo,
-          persoActual || {},
-        );
-
-        // 5.4) Actualizar assistant en OpenAI
-        await axios.post(
-          `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-          { instructions: promptCompilado },
-          { headers, timeout: 15000 },
-        );
-
-        // 5.5) Actualizar kanban_columnas.instrucciones (compilado)
-        await db.query(
-          `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
-          {
-            replacements: [promptCompilado, col.id],
-            type: db.QueryTypes.UPDATE,
-          },
-        );
-
-        // 5.6) ACTUALIZAR EL SNAPSHOT con el prompt nuevo
-        // Esto es el cambio CLAVE: ahora el snapshot apunta a la versión nueva.
-        await db.query(
-          `UPDATE kanban_columnas_personalizaciones 
-           SET prompt_base_snapshot = ?
-           WHERE id_kanban_columna = ?`,
-          {
-            replacements: [promptBaseNuevo, col.id],
-            type: db.QueryTypes.UPDATE,
-          },
-        );
-
-        return {
-          id_kanban_columna: col.id,
-          nombre: col.nombre,
-          assistant_id: col.assistant_id,
-          status: 'ok',
-          prompt_length: promptCompilado.length,
-        };
-      } catch (err) {
-        const mensaje = err?.response?.data?.error?.message || err.message;
-        console.error(
-          `[resincronizar] Error en columna ${col.nombre}: ${mensaje}`,
-        );
-        return {
-          id_kanban_columna: col.id,
-          nombre: col.nombre,
-          assistant_id: col.assistant_id,
-          status: 'error',
-          error: mensaje,
-        };
-      }
-    }),
-  );
-
-  const exitos = resultados.filter((r) => r.status === 'ok').length;
-  const errores = resultados.filter((r) => r.status === 'error').length;
-
   return res.json({
-    success: errores === 0,
+    success: r.success,
     message:
-      errores === 0
-        ? `Prompt actualizado en ${exitos} columna(s) IA`
-        : `Actualización parcial: ${exitos} ok, ${errores} con error`,
+      r.errores_cols === 0
+        ? `Prompt actualizado en ${r.exitos_cols} columna(s) IA`
+        : `Actualización parcial: ${r.exitos_cols} ok, ${r.errores_cols} con error`,
     data: {
-      total_columnas: columnasIA.length,
-      exitos,
-      errores,
-      resultados,
+      total_columnas: r.total_columnas,
+      exitos: r.exitos_cols,
+      errores: r.errores_cols,
+      resultados: r.resultados_columnas,
     },
   });
 });
+
+// ──────────────────────────────────────────────────────────────
+// RESINCRONIZAR MASIVO — Aplica resincronización a múltiples configs
+// POST /kanban_plantillas/personalizacion_resincronizar_masivo
+//
+// Body: { ids_configuracion: [12, 25, 47, ...], concurrencia?: 3 }
+//
+// - Procesa en lotes (concurrencia por defecto 3, máx 10).
+// - Si una config falla (sin API key, sin plantilla, etc.), se reporta
+//   como error pero NO aborta el resto.
+// - Devuelve detalle de éxitos y errores por separado.
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionResincronizarMasivo = catchAsync(
+  async (req, res, next) => {
+    const { ids_configuracion, concurrencia = 3 } = req.body;
+
+    if (!Array.isArray(ids_configuracion) || ids_configuracion.length === 0) {
+      return next(
+        new AppError(
+          'Falta ids_configuracion (debe ser un array no vacío)',
+          400,
+        ),
+      );
+    }
+
+    // Limpiar duplicados y valores no válidos
+    const idsUnicos = [
+      ...new Set(ids_configuracion.map((x) => Number(x))),
+    ].filter((x) => Number.isInteger(x) && x > 0);
+
+    if (!idsUnicos.length) {
+      return next(new AppError('No hay ids válidos en el array', 400));
+    }
+
+    // Tope de seguridad
+    const LIMITE_MAX = 200;
+    if (idsUnicos.length > LIMITE_MAX) {
+      return next(
+        new AppError(
+          `Demasiadas configuraciones (${idsUnicos.length}). Máximo: ${LIMITE_MAX}`,
+          400,
+        ),
+      );
+    }
+
+    // Concurrencia: 1-10
+    const conc = Math.max(1, Math.min(Number(concurrencia) || 3, 10));
+    const resultados = [];
+
+    for (let i = 0; i < idsUnicos.length; i += conc) {
+      const chunk = idsUnicos.slice(i, i + conc);
+      const chunkResultados = await Promise.all(
+        chunk.map((id) => _resincronizarUnaConfiguracion(id)),
+      );
+      resultados.push(...chunkResultados);
+    }
+
+    const exitos = resultados.filter((r) => r.success);
+    const errores = resultados.filter((r) => !r.success);
+
+    return res.json({
+      success: errores.length === 0,
+      message:
+        errores.length === 0
+          ? `Resincronización masiva exitosa en ${exitos.length} configuración(es)`
+          : `Resincronización parcial: ${exitos.length} ok, ${errores.length} con error`,
+      data: {
+        total: idsUnicos.length,
+        exitos_count: exitos.length,
+        errores_count: errores.length,
+        concurrencia_usada: conc,
+        exitos: exitos.map((r) => ({
+          id_configuracion: r.id_configuracion,
+          total_columnas: r.total_columnas,
+          columnas_actualizadas: r.exitos_cols,
+          columnas_omitidas: r.omitidas_cols,
+        })),
+        errores: errores.map((r) => ({
+          id_configuracion: r.id_configuracion,
+          error: r.error,
+          // Si hubo éxito parcial (algunas columnas fallaron, otras ok),
+          // incluye el detalle:
+          ...(r.resultados_columnas
+            ? {
+                total_columnas: r.total_columnas,
+                columnas_actualizadas: r.exitos_cols,
+                columnas_con_error: r.errores_cols,
+                resultados_columnas: r.resultados_columnas,
+              }
+            : {}),
+        })),
+      },
+    });
+  },
+);
