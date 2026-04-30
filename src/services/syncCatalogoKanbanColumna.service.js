@@ -26,6 +26,20 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 
   const { id_configuracion, assistant_id } = columna;
 
+  // ── 1.b Detectar si es cuenta proveedor ───────────────────
+  // Solo proveedores reciben ID Dropi y stock detallado en bloque_prompt.
+  // El resto (tiendas dropshipper como Sara) mantiene el formato original.
+  const [conf] = await db.query(
+    `SELECT COALESCE(es_proveedor, 0) AS es_proveedor
+     FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const esProveedor = Number(conf?.es_proveedor || 0) === 1;
+
+  await logger(
+    `🏷️ Modo sync: ${esProveedor ? 'PROVEEDOR (con ID Dropi y stock detallado)' : 'DROPSHIPPER (formato estándar)'}`,
+  );
+
   // ── 2. Obtener API key ────────────────────────────────────
   const apiKey = opts.apiKeyOpenAI || (await getApiKey(id_configuracion));
 
@@ -40,7 +54,6 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   };
 
   // ── 3. LIMPIAR TODOS los vector stores del asistente ──────
-  // Esto garantiza que al finalizar solo exista 1 VS con 1 archivo.
   await cleanupAllAssistantVectorStores(
     assistant_id,
     headersJson,
@@ -48,7 +61,6 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     logger,
   );
 
-  // Limpiar también los IDs viejos en BD para esta columna
   await db.query(
     `UPDATE kanban_columnas
      SET vector_store_id = NULL, catalog_file_id = NULL
@@ -57,13 +69,19 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   );
 
   // ── 4. Obtener catálogo de productos ──────────────────────
+  // Si es proveedor, traemos external_id/external_source. Si no, omitimos.
+  const selectExternal = esProveedor
+    ? ', pc.external_id, pc.external_source'
+    : '';
+
   const productos = await db.query(
     `SELECT pc.id AS id_producto, pc.id_configuracion,
             pc.nombre, pc.descripcion, pc.tipo, pc.precio,
             pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
             pc.stock, pc.nombre_upsell, pc.descripcion_upsell,
             pc.precio_upsell, pc.imagen_upsell_url, pc.combos_producto,
-            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
+            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor
+            ${selectExternal},
             cc.nombre AS nombre_categoria
      FROM   productos_chat_center pc
      LEFT JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
@@ -79,7 +97,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     return { ok: true, skipped: true, reason: 'Sin productos' };
   }
 
-  const catalogoNormalizado = normalizeCatalogProducts(productos);
+  const catalogoNormalizado = normalizeCatalogProducts(productos, esProveedor);
 
   const catalogoProductos = catalogoNormalizado.filter(
     (p) => String(p.tipo || '').toLowerCase() !== 'servicio',
@@ -92,25 +110,37 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     : catalogoServicios;
   const tipoCatalogo = catalogoProductos.length ? 'productos' : 'servicios';
 
+  // Instrucciones diferenciadas según tipo de cuenta
+  const instrucciones_uso_ia = esProveedor
+    ? [
+        'Use este catálogo como base de conocimiento.',
+        'Cada item incluye id_dropi (cuando aplica): el cliente puede pedir un producto solo con su ID Dropi (ej: "tienes el 158923?", "info del #158923", "ID 158923"). Búsquelo por id_dropi/external_id.',
+        'Cada item incluye stock al momento de la sincronización. Es referencial.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url], [upsell_imagen_url] cuando existan.',
+        'Si el sistema provee datos de stock/precio en tiempo real por base de datos, prefiera esos sobre los del catálogo.',
+      ]
+    : [
+        'Use este catálogo como base de conocimiento.',
+        'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url], [upsell_imagen_url] cuando existan.',
+        'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
+        'Priorice datos en tiempo real sobre file_search si hay diferencias.',
+      ];
+
   const catalogPayload = {
-    schema_version: '1.0',
+    schema_version: esProveedor ? '1.1-proveedor' : '1.0',
     id_configuracion: Number(id_configuracion),
     id_kanban_columna: Number(id_kanban_columna),
     columna_nombre: columna.nombre,
     tipo_catalogo: tipoCatalogo,
+    modo: esProveedor ? 'proveedor' : 'dropshipper',
     generado_en: new Date().toISOString(),
     total_items: itemsFinales.length,
     items: itemsFinales,
-    instrucciones_uso_ia: [
-      'Use este catálogo como base de conocimiento.',
-      'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
-      'Use los identificadores [producto_imagen_url], [producto_video_url], [upsell_imagen_url] cuando existan.',
-      'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
-      'Priorice datos en tiempo real sobre file_search si hay diferencias.',
-    ],
+    instrucciones_uso_ia,
   };
 
-  // ── 5. Crear vector store nuevo (siempre fresco) ──────────
+  // ── 5. Crear vector store nuevo ───────────────────────────
   const vectorStoreId = await createFreshVectorStore(
     id_configuracion,
     columna.nombre,
@@ -155,8 +185,8 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // ── 10. Guardar IDs nuevos en BD ──────────────────────────
   await db.query(
     `UPDATE kanban_columnas
-   SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
-   WHERE id = ?`,
+     SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
+     WHERE id = ?`,
     {
       replacements: [vectorStoreId, newFileId, id_kanban_columna],
       type: db.QueryTypes.UPDATE,
@@ -164,7 +194,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   );
 
   await logger(
-    `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length}`,
+    `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
   );
 
   return {
@@ -179,7 +209,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// syncCatalogoTodasColumnasConfig  (sin cambios de lógica)
+// syncCatalogoTodasColumnasConfig (sin cambios)
 // ─────────────────────────────────────────────────────────────
 async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
   const logger = opts.logger || (async (...a) => console.log(...a));
@@ -229,22 +259,14 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// NUEVO HELPER: cleanupAllAssistantVectorStores
+// cleanupAllAssistantVectorStores (sin cambios)
 // ══════════════════════════════════════════════════════════════
-// Elimina TODOS los vector stores que el asistente tenga en
-// tool_resources.file_search.vector_store_ids.
-// Por cada VS:
-//   1. Lista todos sus files → los desvincular + elimina de Files API
-//   2. Elimina el vector store de OpenAI
-// Finalmente deja al asistente con vector_store_ids: []
-// ──────────────────────────────────────────────────────────────
 async function cleanupAllAssistantVectorStores(
   assistantId,
   headersJson,
   headersBase,
   logger,
 ) {
-  // ── a) Obtener IDs actuales del asistente ──────────────────
   let existingVsIds = [];
   try {
     const res = await axios.get(
@@ -257,7 +279,7 @@ async function cleanupAllAssistantVectorStores(
     await logger(
       `⚠️ No se pudo obtener el asistente ${assistantId}: ${err?.response?.data?.error?.message || err.message}`,
     );
-    return; // Si falla, continuar igual (el VS nuevo se creará limpio)
+    return;
   }
 
   if (!existingVsIds.length) {
@@ -271,10 +293,8 @@ async function cleanupAllAssistantVectorStores(
     `🧹 Limpiando ${existingVsIds.length} vector store(s) del asistente ${assistantId}: ${existingVsIds.join(', ')}`,
   );
 
-  // ── b) Por cada vector store, eliminar sus archivos y luego el VS ──
   for (const vsId of existingVsIds) {
     try {
-      // b.1) Listar todos los files del vector store (paginado)
       let allVsFiles = [];
       let hasMore = true;
       let afterCursor = undefined;
@@ -300,11 +320,9 @@ async function cleanupAllAssistantVectorStores(
         `  📋 VS ${vsId}: ${allVsFiles.length} archivo(s) encontrado(s)`,
       );
 
-      // b.2) Desvincular cada file del VS y eliminarlo de Files API
       for (const vsFile of allVsFiles) {
         const fileId = vsFile.id;
 
-        // Desvincular del vector store
         try {
           await axios.delete(
             `https://api.openai.com/v1/vector_stores/${vsId}/files/${fileId}`,
@@ -317,7 +335,6 @@ async function cleanupAllAssistantVectorStores(
           );
         }
 
-        // Eliminar de OpenAI Files API
         try {
           await axios.delete(`https://api.openai.com/v1/files/${fileId}`, {
             headers: headersBase,
@@ -330,7 +347,6 @@ async function cleanupAllAssistantVectorStores(
         }
       }
 
-      // b.3) Eliminar el vector store en sí
       try {
         await axios.delete(`https://api.openai.com/v1/vector_stores/${vsId}`, {
           headers: headersJson,
@@ -348,7 +364,6 @@ async function cleanupAllAssistantVectorStores(
     }
   }
 
-  // ── c) Dejar al asistente con vector_store_ids vacío ──────
   try {
     const currentRes = await axios.get(
       `https://api.openai.com/v1/assistants/${assistantId}`,
@@ -373,7 +388,7 @@ async function cleanupAllAssistantVectorStores(
 }
 
 // ══════════════════════════════════════════════════════════════
-// Helpers (modificados/renombrados)
+// Helpers (sin cambios)
 // ══════════════════════════════════════════════════════════════
 
 async function getApiKey(id_configuracion) {
@@ -388,7 +403,6 @@ async function getApiKey(id_configuracion) {
   return row.api_key_openai;
 }
 
-// Renombrado: ya no "reutiliza", siempre crea uno nuevo
 async function createFreshVectorStore(
   id_configuracion,
   columnaNombre,
@@ -508,7 +522,7 @@ async function ensureAssistantHasFileSearch(
   );
 }
 
-// ── Normalizadores (sin cambios) ──────────────────────────────
+// ── Normalizadores ───────────────────────────────────────────
 function safeJSONParse(value, fallback = null) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
@@ -546,7 +560,12 @@ function formatearCombosParaCatalogo(combosProducto) {
   return { combos_json: combosNormalizados, combos_texto: combosTexto.trim() };
 }
 
-function normalizeCatalogProducts(rows) {
+// ─────────────────────────────────────────────────────────────
+// normalizeCatalogProducts
+// Si esProveedor=true: incluye id_dropi (triplicado) + stock detallado en bloque_prompt.
+// Si esProveedor=false: comportamiento idéntico al original (no rompe Sara ni dropshippers).
+// ─────────────────────────────────────────────────────────────
+function normalizeCatalogProducts(rows, esProveedor = false) {
   return rows.map((r) => {
     const { combos_json, combos_texto } = formatearCombosParaCatalogo(
       r.combos_producto,
@@ -568,8 +587,33 @@ function normalizeCatalogProducts(rows) {
     const video_url = encodeUrl(r.video_url);
     const imagen_upsell_url = encodeUrl(r.imagen_upsell_url);
 
+    // ── Solo proveedor: ID Dropi y stock detallado ──────────
+    const dropiId =
+      esProveedor && r.external_source === 'DROPI' && r.external_id != null
+        ? String(r.external_id).trim()
+        : null;
+
     let bloque_prompt = '';
     bloque_prompt += `🛒 Producto: ${r.nombre || ''}\n`;
+
+    if (esProveedor && dropiId) {
+      // ID triplicado para máxima coincidencia en file_search
+      bloque_prompt += `🆔 ID Dropi: ${dropiId}\n`;
+      bloque_prompt += `id_dropi: ${dropiId} | dropi_id: ${dropiId} | external_id: ${dropiId} | ID: ${dropiId} | #${dropiId}\n`;
+    }
+
+    if (esProveedor) {
+      // Stock detallado solo para proveedor (los dropshippers consultan stock)
+      const stockNum = r.stock != null ? Number(r.stock) : null;
+      const stockTexto =
+        stockNum == null
+          ? 'sin información de stock'
+          : stockNum > 0
+            ? `${stockNum} unidades disponibles`
+            : 'sin stock';
+      bloque_prompt += `📦 Stock: ${stockTexto}\n`;
+    }
+
     bloque_prompt += `📃 Descripción: ${r.descripcion || ''}\n`;
     bloque_prompt += `Precio: ${r.precio ?? ''}\n`;
     if (combos_texto) bloque_prompt += `${combos_texto}\n`;
@@ -587,7 +631,7 @@ function normalizeCatalogProducts(rows) {
     if (r.precio_proveedor)
       bloque_prompt += `precio_proveedor ${r.precio_proveedor}\n`;
 
-    return {
+    const baseReturn = {
       id_producto: r.id_producto,
       id_configuracion: r.id_configuracion,
       actualizado_en: r.fecha_actualizacion || null,
@@ -615,6 +659,15 @@ function normalizeCatalogProducts(rows) {
       combos_producto_texto: combos_texto,
       bloque_prompt: bloque_prompt.trim(),
     };
+
+    // Solo agregar campos Dropi si es proveedor
+    if (esProveedor) {
+      baseReturn.id_dropi = dropiId;
+      baseReturn.external_id = dropiId;
+      baseReturn.external_source = r.external_source || null;
+    }
+
+    return baseReturn;
   });
 }
 
