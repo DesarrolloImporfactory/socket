@@ -2480,16 +2480,25 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       SUM(c.total_order) AS venta_total,
       SUM(CASE WHEN c.classified_status = 'entregada' THEN c.total_order ELSE 0 END) AS venta_entregadas,
       SUM(CASE WHEN c.classified_status = 'entregada' THEN COALESCE(c.dropshipper_profit, 0) ELSE 0 END) AS profit_entregadas,
-      SUM(CASE WHEN c.classified_status != 'cancelada' 
-              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
+      SUM(CASE WHEN c.classified_status != 'cancelada'
+              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
               ELSE 0 END) AS flete_total,
-      SUM(CASE WHEN c.classified_status = 'entregada' 
-              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) 
+      SUM(CASE WHEN c.classified_status = 'entregada'
+              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
               ELSE 0 END) AS flete_entregadas,
+      -- FIX 2026-04-30: flete_movilizadas = SOLO órdenes que físicamente se movieron del courier.
+      -- Excluye 'pendiente' y 'guia_generada' (todavía en bodega) y 'cancelada'.
+      -- Incluye: entregada, devolucion, en_transito, en_reparto, novedad, retiro_agencia.
+      SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia')
+              THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
+              ELSE 0 END) AS flete_movilizadas,
       SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
       SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS cancelados,
       SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devoluciones,
-      SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito
+      SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+      -- FIX 2026-05-01: movilizadas = órdenes que el courier ya tomó (entregadas + devueltas + en transito real)
+      -- Excluye canceladas (no salieron) y excluye pendiente/guia_generada (todavía en bodega)
+      SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS movilizadas
     FROM dropi_orders_cache c
     WHERE c.id_configuracion = :idCfg
       AND c.id_usuario = :idUsr
@@ -2525,6 +2534,35 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     manualMap.set(key, m);
   }
 
+  // FIX 2026-05-01 (v4): tasa de entrega histórica del rango y % margen,
+  // para proyectar lo que VA a entregarse del tránsito actual.
+  // Esto permite mostrar una columna "rentabilidad proyectada" más amable
+  // en días donde el flete ya se gastó pero la venta aún no se cobró.
+  let _totalEntregadas = 0;
+  let _totalMovilizadas = 0;
+  let _totalVentaEnt = 0;
+  let _totalCostoEnt = 0;
+  let _totalFleteEnt = 0;
+  for (const r of aggRows) {
+    const ve = Number(r.venta_entregadas || 0);
+    const fe = Number(r.flete_entregadas || 0);
+    const pe = Number(r.profit_entregadas || 0);
+    const ce = Math.max(0, ve - fe - pe);
+    _totalEntregadas += Number(r.entregadas || 0);
+    _totalMovilizadas += Number(r.movilizadas || 0);
+    _totalVentaEnt += ve;
+    _totalCostoEnt += ce;
+    _totalFleteEnt += fe;
+  }
+  // Tasa entrega = entregadas / movilizadas (NO sobre total — canceladas no penalizan)
+  const tasaEntregaHist = _totalMovilizadas > 0 ? _totalEntregadas / _totalMovilizadas : 0.6; // default 60% si no hay data
+  // Ticket promedio (venta entregadas / órdenes entregadas)
+  const ticketPromedio = _totalEntregadas > 0 ? _totalVentaEnt / _totalEntregadas : 0;
+  // % costo histórico = costo / venta (típico 30-50% en dropshipping)
+  const pctCostoHist = _totalVentaEnt > 0 ? _totalCostoEnt / _totalVentaEnt : 0.5;
+  // % flete histórico por entrega = flete_entregadas / venta_entregadas (típico 5-15%)
+  const pctFleteHist = _totalVentaEnt > 0 ? _totalFleteEnt / _totalVentaEnt : 0.10;
+
   // Merge
   const fechasConOrdenes = new Set();
   const rows = aggRows.map((r) => {
@@ -2543,6 +2581,8 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     const profitEntregadas = Number(r.profit_entregadas || 0);
     const fleteTotal = Number(r.flete_total || 0);
     const fleteEntregadas = Number(r.flete_entregadas || 0);
+    const fleteMovilizadas = Number(r.flete_movilizadas || 0);
+    const transitoOrdenes = Number(r.transito || 0);
 
     const costoProductoEntregadas = Math.max(
       0,
@@ -2550,8 +2590,23 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     );
 
     const costXMensaje = mensajes > 0 ? gasto / mensajes : 0;
+    // Rentabilidad REAL (lo cobrado hoy)
     const rentabilidad =
-      ventaTotal - costoProductoEntregadas - fleteTotal - gasto;
+      ventaEntregadas - costoProductoEntregadas - fleteMovilizadas - gasto;
+
+    // ─────── PROYECCIÓN ───────
+    // De las órdenes en tránsito, asumimos que se entregarán según tasa histórica.
+    // Esa entrega futura genera venta extra que TODAVÍA no se contabiliza pero el flete ya se gastó.
+    const ordenesProyectadasEntregar = transitoOrdenes * tasaEntregaHist;
+    const ventaProyectadaExtra = ordenesProyectadasEntregar * ticketPromedio;
+    const costoProyectadoExtra = ventaProyectadaExtra * pctCostoHist;
+    // El flete ya está incluido en flete_movilizadas (cuenta tránsito), no lo sumamos otra vez
+    const rentabilidadProyectadaExtra = ventaProyectadaExtra - costoProyectadoExtra;
+    const rentabilidadProyectada = rentabilidad + rentabilidadProyectadaExtra;
+
+    // Tasa entrega LOCAL del día (sobre movilizadas, no sobre total)
+    const movDia = Number(r.movilizadas || 0);
+    const tasaEntregaDia = movDia > 0 ? (Number(r.entregadas || 0) / movDia) : null;
 
     return {
       fecha: fechaStr,
@@ -2560,14 +2615,24 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       cost_x_mensaje: Math.round(costXMensaje * 10000) / 10000,
       ordenes_dia: Number(r.ordenes_dia || 0),
       venta_total: Math.round(ventaTotal * 100) / 100,
+      venta_entregadas: Math.round(ventaEntregadas * 100) / 100,
       costo_producto_entregadas:
         Math.round(costoProductoEntregadas * 100) / 100,
       flete_total: Math.round(fleteTotal * 100) / 100,
+      flete_entregadas: Math.round(fleteEntregadas * 100) / 100,
+      flete_movilizadas: Math.round(fleteMovilizadas * 100) / 100,
       cancelados: Number(r.cancelados || 0),
       devoluciones: Number(r.devoluciones || 0),
       entregados: Number(r.entregadas || 0),
-      transito: Number(r.transito || 0),
+      transito: transitoOrdenes,
+      movilizadas: movDia,
+      tasa_entrega_dia: tasaEntregaDia !== null ? Math.round(tasaEntregaDia * 1000) / 10 : null, // 0..100
       rentabilidad: Math.round(rentabilidad * 100) / 100,
+      // Nuevos campos de proyección
+      rentabilidad_proyectada: Math.round(rentabilidadProyectada * 100) / 100,
+      venta_proyectada_extra: Math.round(ventaProyectadaExtra * 100) / 100,
+      ordenes_proyectadas_extra: Math.round(ordenesProyectadasEntregar * 10) / 10,
+      es_proyeccion: transitoOrdenes > 0, // si tiene tránsito, hay parte proyectada
     };
   });
 
@@ -2589,13 +2654,22 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
         mensajes > 0 ? Math.round((gasto / mensajes) * 10000) / 10000 : 0,
       ordenes_dia: 0,
       venta_total: 0,
+      venta_entregadas: 0,
       costo_producto_entregadas: 0,
       flete_total: 0,
+      flete_entregadas: 0,
+      flete_movilizadas: 0,
       cancelados: 0,
       devoluciones: 0,
       entregados: 0,
       transito: 0,
+      movilizadas: 0,
+      tasa_entrega_dia: null,
       rentabilidad: -gasto,
+      rentabilidad_proyectada: -gasto,
+      venta_proyectada_extra: 0,
+      ordenes_proyectadas_extra: 0,
+      es_proyeccion: false,
     });
   }
 
@@ -2607,29 +2681,54 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       num_mensajes: acc.num_mensajes + r.num_mensajes,
       ordenes_dia: acc.ordenes_dia + r.ordenes_dia,
       venta_total: acc.venta_total + r.venta_total,
+      venta_entregadas: acc.venta_entregadas + (r.venta_entregadas || 0),
       costo_producto_entregadas:
         acc.costo_producto_entregadas + r.costo_producto_entregadas,
       flete_total: acc.flete_total + r.flete_total,
+      flete_entregadas: acc.flete_entregadas + (r.flete_entregadas || 0),
+      flete_movilizadas: acc.flete_movilizadas + (r.flete_movilizadas || 0),
       cancelados: acc.cancelados + r.cancelados,
       devoluciones: acc.devoluciones + r.devoluciones,
       entregados: acc.entregados + r.entregados,
       transito: acc.transito + r.transito,
+      movilizadas: acc.movilizadas + (r.movilizadas || 0),
       rentabilidad: acc.rentabilidad + r.rentabilidad,
+      rentabilidad_proyectada: acc.rentabilidad_proyectada + (r.rentabilidad_proyectada || 0),
+      venta_proyectada_extra: acc.venta_proyectada_extra + (r.venta_proyectada_extra || 0),
+      ordenes_proyectadas_extra: acc.ordenes_proyectadas_extra + (r.ordenes_proyectadas_extra || 0),
     }),
     {
       gasto_diario: 0,
       num_mensajes: 0,
       ordenes_dia: 0,
       venta_total: 0,
+      venta_entregadas: 0,
       costo_producto_entregadas: 0,
       flete_total: 0,
+      flete_entregadas: 0,
+      flete_movilizadas: 0,
       cancelados: 0,
       devoluciones: 0,
       entregados: 0,
       transito: 0,
+      movilizadas: 0,
       rentabilidad: 0,
+      rentabilidad_proyectada: 0,
+      venta_proyectada_extra: 0,
+      ordenes_proyectadas_extra: 0,
     },
   );
+  // Tasa entrega global del rango (sobre movilizadas, no sobre total)
+  totales.tasa_entrega = totales.movilizadas > 0
+    ? Math.round((totales.entregados / totales.movilizadas) * 1000) / 10
+    : null;
+  // Meta info de la proyección para mostrar en frontend
+  totales._proyeccion_meta = {
+    tasa_entrega_historica: Math.round(tasaEntregaHist * 1000) / 10,
+    ticket_promedio: Math.round(ticketPromedio * 100) / 100,
+    pct_costo_historico: Math.round(pctCostoHist * 1000) / 10,
+    pct_flete_historico: Math.round(pctFleteHist * 1000) / 10,
+  };
 
   totales.cost_x_mensaje =
     totales.num_mensajes > 0 ? totales.gasto_diario / totales.num_mensajes : 0;
@@ -2683,6 +2782,601 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
       fecha: row.fecha,
       gasto_diario: Number(row.gasto_diario),
       num_mensajes: Number(row.num_mensajes),
+    },
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 2026-05-01 — Detalle por PRODUCTO de un día específico
+// Permite expandir una fila del dashboard daily-metrics y ver el
+// breakdown de qué productos se vendieron, cuántos entregados, etc.
+// ════════════════════════════════════════════════════════════════════
+exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const fecha = strOrNull(req.body?.fecha);
+
+  if (!fecha) {
+    return next(new AppError('fecha (YYYY-MM-DD) es requerida', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  // FIX 2026-05-01 (v6): vista DROPSHIPPER correcta
+  // Venta = total_order × porción del producto · Costo = qty × sale_price · Flete prorrateado
+  const [rows] = await db.query(
+    `WITH order_subtotals AS (
+      SELECT
+        c.id AS order_id,
+        c.classified_status,
+        c.total_order,
+        COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) AS shipping_amount,
+        (SELECT SUM(x.qty * x.sp) FROM JSON_TABLE(c.order_data, '$.orderdetails[*]' COLUMNS (
+          qty INT PATH '$.quantity',
+          sp DECIMAL(10,2) PATH '$.product.sale_price'
+        )) AS x) AS subtotal_items
+      FROM dropi_orders_cache c
+      WHERE c.id_configuracion = :idCfg
+        AND c.id_usuario = :idUsr
+        AND DATE(c.order_created_at) = :fecha
+    )
+    SELECT
+      jt.product_id,
+      jt.product_name,
+      jt.sku,
+      COUNT(DISTINCT os.order_id) AS ordenes,
+      SUM(jt.quantity) AS unidades_total,
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN jt.quantity ELSE 0 END) AS unidades_entregadas,
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN 1 ELSE 0 END) AS ordenes_entregadas,
+      SUM(CASE WHEN os.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS canceladas,
+      SUM(CASE WHEN os.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devoluciones,
+      SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+      -- COSTO del producto (lo que el dropshipper paga al proveedor IMPORSHOP)
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN (jt.quantity * jt.sale_price) ELSE 0 END) AS costo_entregadas,
+      -- VENTA del producto (porción del total_order según peso del item)
+      SUM(CASE WHEN os.classified_status = 'entregada' AND os.subtotal_items > 0
+              THEN os.total_order * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              ELSE 0 END) AS venta_entregadas,
+      -- FLETE prorrateado (paga el dropshipper)
+      SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia')
+                AND os.subtotal_items > 0
+              THEN os.shipping_amount * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              ELSE 0 END) AS flete_movilizadas
+    FROM order_subtotals os,
+    JSON_TABLE(
+      (SELECT order_data FROM dropi_orders_cache WHERE id = os.order_id),
+      '$.orderdetails[*]' COLUMNS (
+        product_id INT PATH '$.product.id',
+        product_name VARCHAR(300) PATH '$.product.name',
+        sku VARCHAR(100) PATH '$.product.sku',
+        sale_price DECIMAL(10,2) PATH '$.product.sale_price',
+        quantity INT PATH '$.quantity'
+      )
+    ) AS jt
+    GROUP BY jt.product_id, jt.product_name, jt.sku
+    ORDER BY ordenes DESC, unidades_entregadas DESC`,
+    {
+      replacements: { idCfg, idUsr, fecha },
+    },
+  );
+
+  const productos = rows.map((r) => {
+    const ventaEntregadas = Number(r.venta_entregadas || 0);
+    const costoEntregadas = Number(r.costo_entregadas || 0);
+    const fleteMovilizadas = Number(r.flete_movilizadas || 0);
+    return {
+      product_id: Number(r.product_id || 0),
+      sku: r.sku || '',
+      nombre: r.product_name || '(sin nombre)',
+      ordenes: Number(r.ordenes || 0),
+      unidades_total: Number(r.unidades_total || 0),
+      unidades_entregadas: Number(r.unidades_entregadas || 0),
+      ordenes_entregadas: Number(r.ordenes_entregadas || 0),
+      canceladas: Number(r.canceladas || 0),
+      devoluciones: Number(r.devoluciones || 0),
+      transito: Number(r.transito || 0),
+      venta_entregadas: Math.round(ventaEntregadas * 100) / 100,
+      costo_entregadas: Math.round(costoEntregadas * 100) / 100,
+      flete_movilizadas: Math.round(fleteMovilizadas * 100) / 100,
+      margen_bruto: Math.round((ventaEntregadas - costoEntregadas - fleteMovilizadas) * 100) / 100,
+    };
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      fecha,
+      productos,
+      total_productos: productos.length,
+    },
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 2026-05-01 (v3) — Alertas de productos con problemas
+// Identifica productos con: baja tasa entrega, alta devolución, sin movimiento
+// ════════════════════════════════════════════════════════════════════
+exports.getAlertasProductos = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  const minOrdenes = Number(req.body?.min_ordenes) || 5;
+
+  if (!from || !until) {
+    return next(new AppError('from y until son requeridos', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  const [rows] = await db.query(
+    `SELECT
+      jt.product_id,
+      jt.product_name,
+      jt.sku,
+      COUNT(DISTINCT c.id) AS ordenes_total,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
+      SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devueltas,
+      SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS canceladas,
+      SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+      SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS movilizadas,
+      -- FIX 2026-05-01: tasa entrega sobre MOVILIZADAS (entregadas+devueltas+tránsito real). Canceladas no penalizan.
+      ROUND(SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END)
+            / NULLIF(SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END), 0) * 100, 1) AS tasa_entrega,
+      -- FIX 2026-05-01: tasa devolución sobre FINALIZADAS (entregadas + devueltas) — refleja % real del ciclo cerrado
+      ROUND(SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END)
+            / NULLIF(SUM(CASE WHEN c.classified_status IN ('entregada','devolucion') THEN 1 ELSE 0 END), 0) * 100, 1) AS tasa_devolucion,
+      ROUND(SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) / COUNT(DISTINCT c.id) * 100, 1) AS tasa_cancelacion,
+      MAX(DATE(c.order_created_at)) AS ultima_orden,
+      DATEDIFF(CURDATE(), MAX(DATE(c.order_created_at))) AS dias_sin_movimiento,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN (jt.quantity * jt.sale_price) ELSE 0 END) AS venta_entregadas
+    FROM dropi_orders_cache c,
+    JSON_TABLE(c.order_data, '$.orderdetails[*]' COLUMNS (
+      product_id INT PATH '$.product.id',
+      product_name VARCHAR(300) PATH '$.product.name',
+      sku VARCHAR(100) PATH '$.product.sku',
+      sale_price DECIMAL(10,2) PATH '$.product.sale_price',
+      quantity INT PATH '$.quantity'
+    )) AS jt
+    WHERE c.id_configuracion = :idCfg
+      AND c.id_usuario = :idUsr
+      AND c.order_created_at BETWEEN :from AND :until
+    GROUP BY jt.product_id, jt.product_name, jt.sku
+    HAVING ordenes_total >= :minOrd
+    ORDER BY tasa_entrega ASC, ordenes_total DESC`,
+    {
+      replacements: {
+        idCfg, idUsr, minOrd: minOrdenes,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  const productos = rows.map((r) => {
+    const tasaEnt = Number(r.tasa_entrega || 0);
+    const tasaDev = Number(r.tasa_devolucion || 0);
+    const dias = Number(r.dias_sin_movimiento || 0);
+    const ordenes = Number(r.ordenes_total || 0);
+
+    // Clasificación (suavizada — sobre MOVILIZADAS, no sobre total)
+    let nivel = 'ok';
+    let alertas = [];
+    // Crítico: tasa entrega < 50% sobre movilizadas con masa crítica (12+ órdenes)
+    if (tasaEnt < 50 && ordenes >= 12) {
+      nivel = 'critico';
+      alertas.push(`Tasa de entrega ${tasaEnt}% — por debajo del promedio del rango`);
+    } else if (tasaEnt < 65 && ordenes >= 8) {
+      nivel = 'alto';
+      alertas.push(`Tasa de entrega ${tasaEnt}% — para revisar`);
+    }
+    // Alto: devoluciones > 25% (suavizado de 30 → 25)
+    if (tasaDev > 35) {
+      if (nivel === 'ok' || nivel === 'medio') nivel = 'alto';
+      alertas.push(`Devoluciones ${tasaDev}% — investigar causa`);
+    }
+    // Medio: inactivo más de 21 días (suavizado de 14 → 21)
+    if (dias > 21) {
+      if (nivel === 'ok') nivel = 'medio';
+      alertas.push(`Inactivo hace ${dias} días`);
+    }
+
+    return {
+      product_id: Number(r.product_id || 0),
+      sku: r.sku || '',
+      nombre: r.product_name || '(sin nombre)',
+      ordenes_total: ordenes,
+      entregadas: Number(r.entregadas || 0),
+      devueltas: Number(r.devueltas || 0),
+      canceladas: Number(r.canceladas || 0),
+      transito: Number(r.transito || 0),
+      tasa_entrega: tasaEnt,
+      tasa_devolucion: tasaDev,
+      tasa_cancelacion: Number(r.tasa_cancelacion || 0),
+      ultima_orden: r.ultima_orden ? r.ultima_orden.toString().slice(0, 10) : null,
+      dias_sin_movimiento: dias,
+      venta_entregadas: Math.round(Number(r.venta_entregadas || 0) * 100) / 100,
+      nivel_alerta: nivel,
+      alertas,
+    };
+  });
+
+  // Buckets para el frontend
+  const criticos = productos.filter((p) => p.nivel_alerta === 'critico');
+  const altos = productos.filter((p) => p.nivel_alerta === 'alto');
+  const medios = productos.filter((p) => p.nivel_alerta === 'medio');
+  const ok = productos.filter((p) => p.nivel_alerta === 'ok');
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      total_productos: productos.length,
+      criticos: criticos.length,
+      altos: altos.length,
+      medios: medios.length,
+      ok: ok.length,
+      productos,
+    },
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 2026-05-01 (v3) — Top ciudades con más devoluciones
+// ════════════════════════════════════════════════════════════════════
+exports.getCiudadesDevoluciones = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  const minOrdenes = Number(req.body?.min_ordenes) || 5;
+  const ordenarPor = (req.body?.ordenar_por || 'tasa_devolucion').toString();
+
+  if (!from || !until) {
+    return next(new AppError('from y until son requeridos', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  let orderClause;
+  if (ordenarPor === 'devueltas') orderClause = 'devueltas DESC, ordenes_total DESC';
+  else if (ordenarPor === 'tasa_entrega_asc') orderClause = 'tasa_entrega ASC, ordenes_total DESC';
+  else orderClause = 'tasa_devolucion DESC, devueltas DESC';
+
+  const [rows] = await db.query(
+    `SELECT
+      UPPER(TRIM(c.city)) AS city,
+      COUNT(*) AS ordenes_total,
+      SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END) AS entregadas,
+      SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devueltas,
+      SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS canceladas,
+      SUM(CASE WHEN c.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+      SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS movilizadas,
+      -- FIX 2026-05-01: tasa entrega sobre movilizadas, tasa devolución sobre FINALIZADAS
+      ROUND(SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END)
+            / NULLIF(SUM(CASE WHEN c.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END), 0) * 100, 1) AS tasa_entrega,
+      ROUND(SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END)
+            / NULLIF(SUM(CASE WHEN c.classified_status IN ('entregada','devolucion') THEN 1 ELSE 0 END), 0) * 100, 1) AS tasa_devolucion,
+      ROUND(SUM(CASE WHEN c.classified_status = 'cancelada' THEN 1 ELSE 0 END) / COUNT(*) * 100, 1) AS tasa_cancelacion
+    FROM dropi_orders_cache c
+    WHERE c.id_configuracion = :idCfg
+      AND c.id_usuario = :idUsr
+      AND c.order_created_at BETWEEN :from AND :until
+      AND c.city IS NOT NULL
+      AND TRIM(c.city) != ''
+    GROUP BY UPPER(TRIM(c.city))
+    HAVING ordenes_total >= :minOrd
+       AND movilizadas >= 3
+    ORDER BY ${orderClause}
+    LIMIT 30`,
+    {
+      replacements: {
+        idCfg, idUsr, minOrd: minOrdenes,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  const ciudades = rows.map((r) => ({
+    city: r.city,
+    ordenes_total: Number(r.ordenes_total || 0),
+    entregadas: Number(r.entregadas || 0),
+    devueltas: Number(r.devueltas || 0),
+    canceladas: Number(r.canceladas || 0),
+    transito: Number(r.transito || 0),
+    movilizadas: Number(r.movilizadas || 0),
+    tasa_entrega: Number(r.tasa_entrega || 0),
+    tasa_devolucion: Number(r.tasa_devolucion || 0),
+    tasa_cancelacion: Number(r.tasa_cancelacion || 0),
+  }));
+
+  return res.json({ isSuccess: true, data: { ciudades, total_ciudades: ciudades.length } });
+});
+
+
+// ════════════════════════════════════════════════════════════════════
+// FIX 2026-05-01 (v5) — Rentabilidad por PRODUCTO del rango
+// Usa el % costo histórico global (calculado del rango) para estimar
+// el costo de producto cuando no tenemos costo unitario directo en Dropi.
+// ════════════════════════════════════════════════════════════════════
+exports.getProductosRentabilidad = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  const minOrdenes = Number(req.body?.min_ordenes) || 1;
+
+  if (!from || !until) {
+    return next(new AppError('from y until son requeridos', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  // FIX 2026-05-01 (v6): vista DROPSHIPPER correcta.
+  // - Venta del producto = total_order × (porción del producto en la orden)
+  //   donde porción = (qty × sale_price) / subtotal_orden
+  // - Costo del producto = qty × sale_price (lo que el dropshipper paga al proveedor IMPORSHOP)
+  // - Flete del producto = shipping × porción
+  // - Rentabilidad = Venta − Costo − Flete (sin descontar ads, no se atribuyen a producto)
+
+  const [rows] = await db.query(
+    `WITH order_subtotals AS (
+      SELECT
+        c.id AS order_id,
+        c.classified_status,
+        c.total_order,
+        c.order_created_at,
+        COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) AS shipping_amount,
+        (SELECT SUM(x.qty * x.sp) FROM JSON_TABLE(c.order_data, '$.orderdetails[*]' COLUMNS (
+          qty INT PATH '$.quantity',
+          sp DECIMAL(10,2) PATH '$.product.sale_price'
+        )) AS x) AS subtotal_items
+      FROM dropi_orders_cache c
+      WHERE c.id_configuracion = :idCfg
+        AND c.id_usuario = :idUsr
+        AND c.order_created_at BETWEEN :from AND :until
+    )
+    SELECT
+      jt.product_id,
+      jt.product_name,
+      jt.sku,
+      COUNT(DISTINCT os.order_id) AS ordenes,
+      SUM(jt.quantity) AS unidades_total,
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN jt.quantity ELSE 0 END) AS unidades_entregadas,
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN 1 ELSE 0 END) AS ordenes_entregadas,
+      SUM(CASE WHEN os.classified_status = 'cancelada' THEN 1 ELSE 0 END) AS canceladas,
+      SUM(CASE WHEN os.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devoluciones,
+      SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+      SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS movilizadas,
+      -- COSTO del producto (lo que el dropshipper paga a IMPORSHOP) — solo entregadas
+      SUM(CASE WHEN os.classified_status = 'entregada' THEN (jt.quantity * jt.sale_price) ELSE 0 END) AS costo_entregadas,
+      -- VENTA del producto (porción del total_order según peso del item) — solo entregadas
+      SUM(CASE WHEN os.classified_status = 'entregada' AND os.subtotal_items > 0
+              THEN os.total_order * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              ELSE 0 END) AS venta_entregadas,
+      -- FLETE prorrateado entre items según peso, solo de las movilizadas (paga el dropshipper)
+      SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia')
+                AND os.subtotal_items > 0
+              THEN os.shipping_amount * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              ELSE 0 END) AS flete_movilizadas
+    FROM order_subtotals os,
+    JSON_TABLE(
+      (SELECT order_data FROM dropi_orders_cache WHERE id = os.order_id),
+      '$.orderdetails[*]' COLUMNS (
+        product_id INT PATH '$.product.id',
+        product_name VARCHAR(300) PATH '$.product.name',
+        sku VARCHAR(100) PATH '$.product.sku',
+        sale_price DECIMAL(10,2) PATH '$.product.sale_price',
+        quantity INT PATH '$.quantity'
+      )
+    ) AS jt
+    GROUP BY jt.product_id, jt.product_name, jt.sku
+    HAVING ordenes >= :minOrd`,
+    {
+      replacements: { idCfg, idUsr, minOrd: minOrdenes,
+        from: `${from} 00:00:00`, until: `${until} 23:59:59` },
+    },
+  );
+
+  const productos = rows.map((r) => {
+    const ventaEnt = Number(r.venta_entregadas || 0);   // Lo que el dropshipper cobró al cliente final
+    const costoEnt = Number(r.costo_entregadas || 0);   // Lo que pagó a IMPORSHOP por el producto
+    const fleteMov = Number(r.flete_movilizadas || 0);  // Lo que pagó al courier
+    const ordenes = Number(r.ordenes || 0);
+    const entregadas = Number(r.ordenes_entregadas || 0);
+    const movilizadas = Number(r.movilizadas || 0);
+    const rentabilidad = ventaEnt - costoEnt - fleteMov;
+    const tasaEnt = movilizadas > 0 ? Math.round((entregadas / movilizadas) * 1000) / 10 : null;
+    const ticketPromedio = entregadas > 0 ? ventaEnt / entregadas : 0;
+    const margenPorcentaje = ventaEnt > 0 ? Math.round((rentabilidad / ventaEnt) * 1000) / 10 : null;
+    return {
+      product_id: Number(r.product_id || 0),
+      sku: r.sku || '',
+      nombre: r.product_name || '(sin nombre)',
+      ordenes: ordenes,
+      unidades_total: Number(r.unidades_total || 0),
+      unidades_entregadas: Number(r.unidades_entregadas || 0),
+      ordenes_entregadas: entregadas,
+      canceladas: Number(r.canceladas || 0),
+      devoluciones: Number(r.devoluciones || 0),
+      transito: Number(r.transito || 0),
+      movilizadas: movilizadas,
+      tasa_entrega: tasaEnt,
+      venta_entregadas: Math.round(ventaEnt * 100) / 100,
+      costo_estimado: Math.round(costoEnt * 100) / 100, // mantengo el nombre por compat con frontend
+      flete_movilizadas: Math.round(fleteMov * 100) / 100,
+      rentabilidad: Math.round(rentabilidad * 100) / 100,
+      ticket_promedio: Math.round(ticketPromedio * 100) / 100,
+      margen_pct: margenPorcentaje,
+    };
+  });
+
+  productos.sort((a, b) => b.rentabilidad - a.rentabilidad);
+
+  const totalRent = productos.reduce((s, p) => s + p.rentabilidad, 0);
+  const totalVenta = productos.reduce((s, p) => s + p.venta_entregadas, 0);
+  const positivos = productos.filter(p => p.rentabilidad > 0).length;
+  const negativos = productos.filter(p => p.rentabilidad < 0).length;
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      productos,
+      meta: {
+        total_productos: productos.length,
+        positivos,
+        negativos,
+        rentabilidad_total: Math.round(totalRent * 100) / 100,
+        venta_total: Math.round(totalVenta * 100) / 100,
+        margen_pct_global: totalVenta > 0 ? Math.round((totalRent / totalVenta) * 1000) / 10 : null,
+      },
+    },
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════
+// 2026-05-02 — Ciudades + Transportadoras: tasa entrega por courier
+// Devuelve por ciudad un ranking de couriers con recomendaciones
+// ════════════════════════════════════════════════════════════════════
+exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
+  const cacheCtx = await resolveCacheCtxFromIntegration(req);
+  const from = strOrNull(req.query?.from || req.body?.from);
+  const until = strOrNull(req.query?.until || req.body?.until);
+  const minOrdenes = Number(req.query?.min_ordenes || req.body?.min_ordenes) || 5;
+  const minCourier = 5; // mínimo de órdenes por courier en una ciudad para opinar
+
+  if (!from || !until) {
+    return next(new AppError('from y until son requeridos', 400));
+  }
+
+  const idCfg = cacheCtx.id_configuracion ?? 0;
+  const idUsr = cacheCtx.id_usuario ?? 0;
+
+  // Paso 1: agrupar por (ciudad, courier)
+  const [rows] = await db.query(
+    `SELECT
+      UPPER(TRIM(c.city))                                                               AS city,
+      UPPER(TRIM(COALESCE(c.courier, 'SIN COURIER')))                                  AS courier,
+      COUNT(*)                                                                           AS total_ordenes,
+      SUM(CASE WHEN c.classified_status = 'entregada'  THEN 1 ELSE 0 END)              AS entregadas,
+      SUM(CASE WHEN c.classified_status = 'devolucion' THEN 1 ELSE 0 END)              AS devoluciones,
+      SUM(CASE WHEN c.classified_status = 'cancelada'  THEN 1 ELSE 0 END)              AS canceladas,
+      SUM(CASE WHEN c.classified_status IN (
+            'en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente'
+          ) THEN 1 ELSE 0 END)                                                          AS en_transito,
+      ROUND(AVG(c.total_order), 2)                                                      AS ticket_promedio,
+      -- tasa entrega sobre finalizadas (entregadas + devoluciones)
+      ROUND(
+        SUM(CASE WHEN c.classified_status = 'entregada' THEN 1 ELSE 0 END)
+        / NULLIF(
+            SUM(CASE WHEN c.classified_status IN ('entregada','devolucion') THEN 1 ELSE 0 END)
+          , 0) * 100
+      , 1)                                                                               AS tasa_entrega_pct
+    FROM dropi_orders_cache c
+    WHERE c.id_configuracion = :idCfg
+      AND c.id_usuario       = :idUsr
+      AND c.order_created_at BETWEEN :from AND :until
+      AND c.city IS NOT NULL AND TRIM(c.city) != ''
+    GROUP BY UPPER(TRIM(c.city)), UPPER(TRIM(COALESCE(c.courier, 'SIN COURIER')))
+    ORDER BY UPPER(TRIM(c.city)), total_ordenes DESC`,
+    {
+      replacements: {
+        idCfg, idUsr,
+        from:  `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
+
+  // Paso 2: agrupar en mapa por ciudad
+  const mapaGlobal = {};
+  for (const r of rows) {
+    const city    = r.city;
+    const courier = r.courier;
+    if (!mapaGlobal[city]) {
+      mapaGlobal[city] = {
+        ciudad: city,
+        total_ordenes: 0,
+        entregadas: 0,
+        devoluciones: 0,
+        transportadoras: [],
+      };
+    }
+    const t = {
+      courier,
+      ordenes:          Number(r.total_ordenes || 0),
+      entregadas:       Number(r.entregadas    || 0),
+      devoluciones:     Number(r.devoluciones  || 0),
+      canceladas:       Number(r.canceladas    || 0),
+      en_transito:      Number(r.en_transito   || 0),
+      ticket_promedio:  Math.round(Number(r.ticket_promedio || 0) * 100) / 100,
+      tasa_entrega_pct: Number(r.tasa_entrega_pct || 0),
+    };
+    mapaGlobal[city].total_ordenes += t.ordenes;
+    mapaGlobal[city].entregadas    += t.entregadas;
+    mapaGlobal[city].devoluciones  += t.devoluciones;
+    mapaGlobal[city].transportadoras.push(t);
+  }
+
+  // Paso 3: filtrar ciudades con >= min_ordenes y calcular mejor/peor courier + recomendacion
+  const ciudades = Object.values(mapaGlobal)
+    .filter((c) => c.total_ordenes >= minOrdenes)
+    .map((c) => {
+      // Ordenar transportadoras por tasa entrega desc
+      c.transportadoras.sort((a, b) => b.tasa_entrega_pct - a.tasa_entrega_pct);
+
+      const conMasa = c.transportadoras.filter((t) => t.ordenes >= minCourier);
+
+      const mejor = conMasa.length
+        ? conMasa.reduce((best, t) => t.tasa_entrega_pct > best.tasa_entrega_pct ? t : best, conMasa[0])
+        : null;
+
+      const peor = conMasa.length
+        ? conMasa.reduce((worst, t) => t.tasa_entrega_pct < worst.tasa_entrega_pct ? t : worst, conMasa[0])
+        : null;
+
+      // Recomendación legible
+      let recomendacion = '';
+      if (mejor && peor && mejor.courier !== peor.courier) {
+        const diff = Math.round(mejor.tasa_entrega_pct - peor.tasa_entrega_pct);
+        recomendacion =
+          `Prefiere ${mejor.courier} (${mejor.tasa_entrega_pct}% entrega) sobre ${peor.courier}` +
+          ` (${peor.tasa_entrega_pct}% entrega). Diferencia de ${diff} puntos porcentuales.`;
+      } else if (mejor) {
+        recomendacion = `${mejor.courier} es la única transportadora con datos suficientes (${mejor.tasa_entrega_pct}% entrega).`;
+      } else {
+        recomendacion = 'Insuficientes datos por courier para recomendar (mín 5 órdenes por courier).';
+      }
+
+      const finalizadas = c.entregadas + c.devoluciones;
+      const tasa_ciudad = finalizadas > 0
+        ? Math.round((c.entregadas / finalizadas) * 1000) / 10
+        : null;
+
+      return {
+        ciudad:           c.ciudad,
+        total_ordenes:    c.total_ordenes,
+        entregadas:       c.entregadas,
+        devoluciones:     c.devoluciones,
+        tasa_ciudad_pct:  tasa_ciudad,
+        mejor_courier:    mejor ? { courier: mejor.courier, tasa: mejor.tasa_entrega_pct } : null,
+        peor_courier:     peor && peor.courier !== mejor?.courier ? { courier: peor.courier, tasa: peor.tasa_entrega_pct } : null,
+        recomendacion,
+        transportadoras:  c.transportadoras,
+      };
+    })
+    .sort((a, b) => b.total_ordenes - a.total_ordenes);
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      ciudades,
+      total_ciudades: ciudades.length,
+      min_ordenes:    minOrdenes,
     },
   });
 });

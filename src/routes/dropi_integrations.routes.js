@@ -78,5 +78,37 @@ router.put(
   ...dropiboardGuard,
   ctrl.upsertDailyMetric,
 );
+// FIX 2026-05-01 — detalle por producto de un día específico (drilldown)
+router.post(
+  '/dashboard/daily-detail-by-product',
+  ...dropiboardGuard,
+  ctrl.getDailyDetailByProduct,
+);
+// FIX 2026-05-01 (v3) — alertas de productos con problemas
+router.post(
+  '/dashboard/alertas-productos',
+  ...dropiboardGuard,
+  ctrl.getAlertasProductos,
+);
+// FIX 2026-05-01 (v3) — top ciudades con devoluciones
+router.post(
+  '/dashboard/ciudades-devoluciones',
+  ...dropiboardGuard,
+  ctrl.getCiudadesDevoluciones,
+);
+// FIX 2026-05-01 (v5) — rentabilidad por producto del rango
+router.post(
+  '/dashboard/productos-rentabilidad',
+  ...dropiboardGuard,
+  ctrl.getProductosRentabilidad,
+);
+
+
+// 2026-05-02 — Ciudades + Transportadoras (GET con query params)
+router.get(
+  '/dashboard/ciudades-transportadoras',
+  ...dropiboardGuard,
+  ctrl.getCiudadesTransportadoras,
+);
 
 module.exports = router;
