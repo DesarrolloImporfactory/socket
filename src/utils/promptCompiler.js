@@ -15,7 +15,6 @@
 //                                   (si no hay, usa los DEFAULTS del prompt)
 //   [BLOQUE_TONO_PERSONALIZADO]  → ajuste de tono opcional
 //   [BLOQUE_INSTRUCCIONES_EXTRA] → reglas extra opcionales
-//
 // Soporte legacy: si el prompt base tiene nombres hardcodeados viejos
 // (Comprapor, IMPORSHOP, mexve, Sara), también se reemplazan.
 // ════════════════════════════════════════════════════════════
@@ -32,6 +31,34 @@ function formatearBloque(titulo, contenido) {
   const c = (contenido || '').trim();
   if (!c) return '';
   return `\n${titulo}\n${c}\n`;
+}
+
+// Si el cliente NO escribió nada → devuelve string vacío.
+// Si el cliente SÍ escribió reglas → devuelve:
+//
+//   INSTRUCCIONES ADICIONALES (cumplir siempre):
+//   EN TODAS LAS INTERACCIONES:
+//   <reglas del cliente>
+// Esta función ELIMINA cualquier "EN TODAS LAS INTERACCIONES:" que el
+// cliente haya escrito por su cuenta (case-insensitive) para evitar
+// duplicados — la cabecera se inyecta SOLO desde aquí.
+function construirBloqueInstruccionesExtra(instruccionesExtra) {
+  const valor = (instruccionesExtra || '').trim();
+  if (!valor) return '';
+
+  // Quitar líneas con "EN TODAS LAS INTERACCIONES:" (case-insensitive)
+  // que el cliente haya escrito manualmente, para evitar duplicación.
+  const limpio = valor
+    .split('\n')
+    .filter(
+      (linea) => !/^en\s+todas\s+las\s+interacciones:\s*$/i.test(linea.trim()),
+    )
+    .join('\n')
+    .trim();
+
+  if (!limpio) return '';
+
+  return `\nINSTRUCCIONES ADICIONALES (cumplir siempre):\nEN TODAS LAS INTERACCIONES:\n${limpio}\n`;
 }
 
 function limpiarPlaceholdersHuerfanos(prompt) {
@@ -66,14 +93,6 @@ const NOMBRES_ASISTENTE_LEGACY = ['Sara'];
 
 // ──────────────────────────────────────────────────────────────
 // Bloque de envío con default exclusivo
-// ──────────────────────────────────────────────────────────────
-// Usa esta lógica EXCLUYENTE: o muestra la política específica del
-// cliente, o muestra los defaults. NUNCA las dos juntas — para que
-// el bot no se confunda con información contradictoria.
-//
-// Si la plantilla tiene [BLOQUE_INFO_ENVIO]:
-//   - Cliente personalizó info_envio → muestra "POLITICA ESPECIFICA DE ESTA TIENDA"
-//   - Cliente NO personalizó         → muestra "DEFAULTS DE LA TIENDA"
 // ──────────────────────────────────────────────────────────────
 function construirBloqueInfoEnvio(infoEnvio) {
   const valor = (infoEnvio || '').trim();
@@ -132,25 +151,23 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     construirBloqueInfoEnvio(perso.info_envio),
   );
 
-  // ── 4. Bloques opcionales simples ──────────────────────────
+  // ── 4. Bloque de instrucciones extra (con cabecera inviolable) ──
+
   prompt = prompt.replace(
     /\[BLOQUE_INSTRUCCIONES_EXTRA\]/g,
-    formatearBloque(
-      'INSTRUCCIONES ADICIONALES (cumplir siempre):',
-      perso.instrucciones_extra,
-    ),
+    construirBloqueInstruccionesExtra(perso.instrucciones_extra),
   );
 
+  // ── 5. Bloque opcional de tono ─────────────────────────────
   prompt = prompt.replace(
     /\[BLOQUE_TONO_PERSONALIZADO\]/g,
     formatearBloque('AJUSTE DE TONO:', perso.tono_personalizado),
   );
 
-  // ── 5. Eliminar bloque de productos destacados (deprecated) ─
-  // Si todavía aparece en alguna plantilla vieja, simplemente lo borramos.
+  // ── 6. Eliminar bloque de productos destacados (deprecated) ─
   prompt = prompt.replace(/\[BLOQUE_PRODUCTOS_DESTACADOS\]\s*\n?/g, '');
 
-  // ── 6. Reemplazos legacy de TIENDAS ────────────────────────
+  // ── 7. Reemplazos legacy de TIENDAS ────────────────────────
   if (nombreTienda) {
     for (const legacy of NOMBRES_TIENDA_LEGACY) {
       const re = new RegExp(`\\b${escapeRegex(legacy)}\\b`, 'gi');
@@ -158,7 +175,7 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     }
   }
 
-  // ── 7. Reemplazos legacy de ASISTENTES ─────────────────────
+  // ── 8. Reemplazos legacy de ASISTENTES ─────────────────────
   if (nombreAsistente) {
     for (const legacy of NOMBRES_ASISTENTE_LEGACY) {
       if (legacy.toLowerCase() === nombreAsistente.toLowerCase()) continue;
@@ -167,10 +184,10 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
     }
   }
 
-  // ── 8. Limpiar placeholders huérfanos ──────────────────────
+  // ── 9. Limpiar placeholders huérfanos ──────────────────────
   prompt = limpiarPlaceholdersHuerfanos(prompt);
 
-  // ── 9. Normalizar saltos de línea (max 2 consecutivos) ─────
+  // ── 10. Normalizar saltos de línea (max 2 consecutivos) ────
   prompt = prompt.replace(/\n{3,}/g, '\n\n');
 
   return prompt.trim();
@@ -179,21 +196,9 @@ function compilarPromptFinal(promptBase, personalizacion = {}) {
 // ──────────────────────────────────────────────────────────────
 // Validación de personalización
 // ──────────────────────────────────────────────────────────────
-
-/**
- * Valida los campos de personalización antes de guardar.
- * REGLAS:
- * - nombre_tienda es OBLIGATORIO
- * - nombre_asistente_publico es opcional (solo letras/espacios/'-`)
- * - campos largos máximo 4000 chars
- *
- * NOTA: productos_destacados ya no se valida (deprecated).
- * Si viene en el payload se ignora silenciosamente.
- */
 function validarPersonalizacion(perso = {}) {
   const errores = [];
 
-  // nombre_tienda OBLIGATORIO
   if (
     perso.nombre_tienda == null ||
     String(perso.nombre_tienda).trim().length === 0
@@ -203,7 +208,6 @@ function validarPersonalizacion(perso = {}) {
     errores.push('nombre_tienda excede 100 caracteres');
   }
 
-  // nombre_asistente_publico OPCIONAL
   if (perso.nombre_asistente_publico != null) {
     const n = String(perso.nombre_asistente_publico).trim();
     if (n.length === 0) {

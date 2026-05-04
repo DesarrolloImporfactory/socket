@@ -108,7 +108,9 @@ const encuestasPublicoRouter = require('./routes/encuestas_publico.routes');
 
 const metaAdsRouter = require('./routes/meta_ads.routes');
 
-const soporteChatRoutes = require('./routes/soporte_chat.routes');
+const soporteChatRouter = require('./routes/soporte_chat.routes');
+
+const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.routes');
 
 const path = require('path');
 
@@ -250,6 +252,7 @@ app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/dropi_plantillas', dropiPlantillastRouter);
 app.use('/api/v1/kanban_plantillas', kanbanPlantillastRouter);
+app.use('/api/v1/kanban_plantillas_admin', kanbanPlantillasAdminRouter);
 app.use('/api/v1/plataformas', plataformaRouter);
 app.use('/api/v1/clientes_chat_center', clientes_chat_centerRouter);
 app.use(
@@ -298,7 +301,7 @@ app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
 app.use('/api/v1/meta_ads', metaAdsRouter);
-app.use('/api/v1/soporte_chat', soporteChatRoutes);
+app.use('/api/v1/soporte_chat', soporteChatRouter);
 
 app.all('*', (req, res, next) => {
   return next(
