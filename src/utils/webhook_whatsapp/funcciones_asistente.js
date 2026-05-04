@@ -57,6 +57,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
       '..',
       rutaLocalRelativa,
     );
+    
 
     const form = new FormData();
     form.append('file', fsSync.createReadStream(rutaLocalAbsoluta));
