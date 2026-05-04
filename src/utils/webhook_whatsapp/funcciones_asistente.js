@@ -46,14 +46,11 @@ async function transcribirAudioConWhisperDesdeArchivo(
   apiKeyOpenAI,
 ) {
   try {
-    // Elimina la parte de la URL base (https://chat.imporfactory.app) de la rutaArchivo
     const rutaLocalRelativa = rutaArchivo.replace(
       'https://chat.imporfactory.app',
       '',
     );
 
-    /* console.log('__dirname: ' + __dirname); */
-    // Aquí usamos path.join() para asegurar que la ruta esté bien construida
     const rutaLocalAbsoluta = path.join(
       __dirname,
       '..',
@@ -61,12 +58,19 @@ async function transcribirAudioConWhisperDesdeArchivo(
       rutaLocalRelativa,
     );
 
-    // Asegúrate de que la ruta sea válida y corresponde al archivo en tu servidor
-    /* console.log('Ruta local ajustada:', rutaLocalAbsoluta); */
-
     const form = new FormData();
-    form.append('file', fsSync.createReadStream(rutaLocalAbsoluta)); // Usa la ruta local absoluta
-    form.append('model', 'whisper-1');
+    form.append('file', fsSync.createReadStream(rutaLocalAbsoluta));
+
+    // 🔥 CAMBIOS CLAVE
+    form.append('model', 'gpt-4o-transcribe'); // modelo nuevo
+    form.append('language', 'es'); // fuerza español
+    form.append('response_format', 'json'); // json o text (los nuevos no soportan srt/vtt)
+
+    // Opcional pero MUY recomendado: contexto para que entienda bien tu jerga
+    form.append(
+      'prompt',
+      'Audio de WhatsApp en español. Conversación informal entre cliente y empresa.',
+    );
 
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -79,9 +83,7 @@ async function transcribirAudioConWhisperDesdeArchivo(
       },
     );
 
-    /* console.log('Respuesta completa:', response.data); */
-
-    return response.data?.text || null; // Asegúrate de que 'text' esté en la respuesta
+    return response.data?.text || null;
   } catch (err) {
     console.log(
       `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`,
