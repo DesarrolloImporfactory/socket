@@ -214,11 +214,14 @@ app.use(
 );
 
 // SOLO para webhooks de Shopify, capturar rawBody antes del parseo JSON
-app.use('/api/v2/webhooks/shopify', express.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString('utf8');
-  },
-}));
+app.use(
+  '/api/v2/webhooks/shopify',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }),
+);
 
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
@@ -229,6 +232,7 @@ app.use((req, res, next) => {
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
     '/api/v1/shopify/webhooks',
+    '/api/v2/webhooks/shopify',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -242,6 +246,7 @@ app.use((req, res, next) => {
     '/api/v1/instagram/webhook',
     '/api/v1/tiktok/webhook/receive',
     '/api/v1/shopify/webhooks',
+    '/api/v2/webhooks/shopify',
   ];
   if (skipPaths.includes(req.path)) return next();
 
