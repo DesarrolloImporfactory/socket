@@ -414,7 +414,7 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     );
   }
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey || !String(integrationKey).trim()) {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
@@ -589,7 +589,7 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
     );
   }
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
 
   if (!integrationKey || !String(integrationKey).trim()) {
     return next(new AppError('Dropi key inválida o no disponible', 400));
@@ -656,7 +656,7 @@ exports.listProductsIndex = catchAsync(async (req, res, next) => {
   if (!integration)
     return next(new AppError('No existe una integración Dropi activa', 404));
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   const payload = {
@@ -696,7 +696,7 @@ exports.listStates = catchAsync(async (req, res, next) => {
   if (!integration)
     return next(new AppError('No existe una integración Dropi activa', 404));
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   const dropiResponse = await dropiService.listStates({
@@ -723,7 +723,7 @@ exports.listCities = catchAsync(async (req, res, next) => {
   if (!integration)
     return next(new AppError('No existe una integración Dropi activa', 404));
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   const payload = { department_id, rate_type };
@@ -984,6 +984,14 @@ function buildCacheWhere(cacheCtx) {
     return { id_configuracion: cacheCtx.id_configuracion, id_usuario: 0 };
   }
   return { id_configuracion: 0, id_usuario: cacheCtx.id_usuario };
+}
+
+function getIntegrationKey(integration) {
+  try {
+    return decryptToken(integration.integration_key_enc);
+  } catch (err) {
+    return null;
+  }
 }
 
 /**
@@ -2085,7 +2093,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     }
   }
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   const from = strOrNull(req.body?.from || req.query?.from);
@@ -2253,7 +2261,7 @@ exports.getCustomerHistory = catchAsync(async (req, res, next) => {
     return next(new AppError('No existe una integración Dropi activa', 404));
   }
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   // Normalizar teléfono y generar variaciones
@@ -2382,7 +2390,7 @@ exports.getClientStats = catchAsync(async (req, res, next) => {
   if (!integration)
     return next(new AppError('No existe integración Dropi activa', 404));
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
+  const integrationKey = getIntegrationKey(integration);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
   const csResponse = await dropiService.getClientStats({

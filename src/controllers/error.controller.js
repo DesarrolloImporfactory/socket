@@ -21,7 +21,7 @@ const sendErrorDev = (err, res) => {
   });
 };
 const sendErrorProd = (err, res) => {
-  logger.info(err);
+  logger.error(err.stack || err.message);
   // Operational, trusted error: send message to client
   if (err.isOperational) {
     return res.status(err.statusCode).json({
@@ -31,7 +31,7 @@ const sendErrorProd = (err, res) => {
 
     // Programming or other unknown error: don't leak error details
   } else {
-    // Send generic message
+    logger.error('UNHANDLED ERROR:', err);
     return res.status(500).json({
       status: 'fail',
       message: 'Something went very wrong! 🧨',
