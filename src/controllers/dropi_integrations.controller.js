@@ -2424,9 +2424,18 @@ exports.getClientStats = catchAsync(async (req, res, next) => {
    ═══════════════════════════════════════════════════════════ */
 
 async function resolveCacheCtxFromIntegration(req) {
+  console.log('Resolviendo query:   ', {
+    integration_id: req.body?.integration_id ?? req.query?.integration_id,
+    id_configuracion: req.body?.id_configuracion ?? req.query?.id_configuracion,
+    id_usuario: req.sessionUser?.id_usuario,
+  });
+
+  console.log('query:', req.query);
+
   const integration_id = toInt(
     req.body?.integration_id ?? req.query?.integration_id,
   );
+  console.log('Resolviendo cacheCtx para integration_id:', integration_id);
   const id_configuracion = toInt(
     req.body?.id_configuracion ?? req.query?.id_configuracion,
   );
