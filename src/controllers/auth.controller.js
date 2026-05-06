@@ -8,26 +8,33 @@ const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Openai_assistants = require('../models/openai_assistants.model');
 const Configuraciones = require('../models/configuraciones.model');
+const Comunidad = require('../models/comunidad_chat_center.model');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
 const { db, db_2 } = require('../database/config');
 
 exports.registrarUsuario = catchAsync(async (req, res, next) => {
-  const { email, nombre_encargado, password } = req.body;
+  const {
+    email,
+    nombre_encargado,
+    password,
+    whatsapp_lead,
+    whatsapp_lead_pais,
+    id_comunidad,
+  } = req.body;
 
-  // --- Campos obligatorios (solo 3) ---
-  if (!email || !nombre_encargado || !password) {
+  // --- Campos obligatorios ahora son 4 (WhatsApp incluido) ---
+  if (!email || !nombre_encargado || !password || !whatsapp_lead) {
     return res
       .status(400)
       .json({ status: 'fail', message: 'Todos los campos son obligatorios' });
   }
 
-  // --- Auto-derivar campos que ya no vienen del form ---
-  const nombre = nombre_encargado.trim(); // empresa = nombre del encargado
-  const usuario = email.toLowerCase().trim(); // usuario = email (login ya lo soporta)
+  const nombre = nombre_encargado.trim();
+  const usuario = email.toLowerCase().trim();
 
-  // --- Validar duplicados por email (es el identificador único real) ---
+  // --- Validar duplicados por email ---
   const existeUsuario = await Usuarios_chat_center.findOne({
     where: { email_propietario: email },
   });
@@ -47,14 +54,42 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
+  // --- Normalizar y validar WhatsApp (mínimo 7 dígitos reales) ---
+  const waClean = String(whatsapp_lead).replace(/\D/g, '').slice(0, 20);
+  if (waClean.length < 7) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Número de WhatsApp inválido',
+    });
+  }
+  const waPais = whatsapp_lead_pais
+    ? String(whatsapp_lead_pais).slice(0, 8)
+    : '+593'; // default Ecuador si no viene
+
+  // --- 🛡️ Validar id_comunidad: solo aceptar si existe en BD (anti-fake) ---
+  let comunidadValida = null;
+  if (id_comunidad) {
+    const found = await Comunidad.findOne({
+      where: { id_comunidad: parseInt(id_comunidad, 10), activo: 1 },
+      attributes: ['id_comunidad'],
+    });
+    if (found) comunidadValida = found.id_comunidad;
+  }
+
   const sequelize = Usuarios_chat_center.sequelize;
 
   try {
     const { nuevoUsuario, nuevoSubUsuario, id_sub_usuario } =
       await sequelize.transaction(async (t) => {
-        // 1) Crear usuario principal — "nombre" queda poblado
+        // 1) Crear usuario principal con campos de lead
         const nuevoUsuarioInst = await Usuarios_chat_center.create(
-          { nombre, email_propietario: email },
+          {
+            nombre,
+            email_propietario: email,
+            whatsapp_lead: waClean,
+            whatsapp_lead_pais: waPais,
+            id_comunidad: comunidadValida,
+          },
           { transaction: t },
         );
 
@@ -89,11 +124,11 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           { transaction: t },
         );
 
-        // 3) Crear subusuario — "usuario" y "nombre_encargado" quedan poblados
+        // 3) Crear subusuario
         const nuevoSubUsuario = await crearSubUsuario(
           {
             id_usuario: nuevoUsuarioInst.id_usuario,
-            usuario, // ← email como username
+            usuario,
             password,
             email,
             nombre_encargado,
@@ -102,6 +137,16 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           { transaction: t },
         );
 
+        // 4) Incrementar contador de la comunidad (analytics)
+        if (comunidadValida) {
+          await sequelize.query(
+            `UPDATE comunidades_chat_center 
+             SET total_registros = total_registros + 1 
+             WHERE id_comunidad = ?`,
+            { replacements: [comunidadValida], transaction: t },
+          );
+        }
+
         return {
           nuevoUsuario: nuevoUsuarioInst.toJSON(),
           nuevoSubUsuario,
@@ -109,7 +154,6 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
         };
       });
 
-    // Token fuera de la transacción
     const token = await generarToken(id_sub_usuario);
 
     return res.status(201).json({
@@ -700,7 +744,10 @@ exports.issueImporsuitToken = catchAsync(async (req, res) => {
       },
     );
   } catch (err) {
-    console.error('issueImporsuitToken: error consultando users —', err.message);
+    console.error(
+      'issueImporsuitToken: error consultando users —',
+      err.message,
+    );
     return res.status(500).json({
       status: 'fail',
       message: 'Error verificando cuenta de imporsuit',

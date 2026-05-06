@@ -83,6 +83,26 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
       unique: true,
     },
+    // ===== CAMPOS NUEVOS (lead capture en registro) =====
+    whatsapp_lead: {
+      type: DataTypes.STRING(25),
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Número WhatsApp capturado en registro (lead/notificaciones)',
+    },
+    whatsapp_lead_pais: {
+      type: DataTypes.STRING(8),
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Código país detectado al registrar (ej: +593)',
+    },
+    id_comunidad: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Comunidad de origen al registro (atribución)',
+    },
+    // =====================================================
     id_costumer: {
       type: DataTypes.STRING,
       allowNull: true,

@@ -114,6 +114,8 @@ const soporteChatRouter = require('./routes/soporte_chat.routes');
 
 const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.routes');
 
+const ComunidadesRouter = require('./routes/comunidad.routes');
+
 const path = require('path');
 
 const app = express();
@@ -316,7 +318,7 @@ app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
 app.use('/api/v1/meta_ads', metaAdsRouter);
-app.use('/api/v1/soporte_chat', soporteChatRouter);
+app.use('/api/v1/comunidades', ComunidadesRouter);
 
 app.all('*', (req, res, next) => {
   return next(

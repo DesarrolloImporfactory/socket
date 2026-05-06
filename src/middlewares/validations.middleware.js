@@ -15,14 +15,34 @@ const validField = (req, res, next) => {
 // Validación para crear usuario (registro)
 exports.createUserValidation = [
   body('email')
-    .notEmpty().withMessage('El correo electrónico es obligatorio.')
-    .isEmail().withMessage('Debe ser un correo electrónico válido.'),
+    .notEmpty()
+    .withMessage('El correo electrónico es obligatorio.')
+    .isEmail()
+    .withMessage('Debe ser un correo electrónico válido.'),
   body('nombre_encargado')
-    .notEmpty().withMessage('El nombre es obligatorio.')
-    .isLength({ min: 3 }).withMessage('Mínimo 3 caracteres.'),
+    .notEmpty()
+    .withMessage('El nombre es obligatorio.')
+    .isLength({ min: 3 })
+    .withMessage('Mínimo 3 caracteres.'),
   body('password')
-    .notEmpty().withMessage('La contraseña es obligatoria.')
-    .isLength({ min: 6 }).withMessage('Mínimo 6 caracteres.'),
+    .notEmpty()
+    .withMessage('La contraseña es obligatoria.')
+    .isLength({ min: 6 })
+    .withMessage('Mínimo 6 caracteres.'),
+  body('whatsapp_lead')
+    .notEmpty()
+    .withMessage('El WhatsApp es obligatorio.')
+    .isString()
+    .isLength({ min: 7, max: 20 })
+    .withMessage('Número de WhatsApp inválido.'),
+  body('whatsapp_lead_pais')
+    .optional({ checkFalsy: true })
+    .isString()
+    .isLength({ max: 8 }),
+  body('id_comunidad')
+    .optional({ checkFalsy: true })
+    .isInt({ min: 1 })
+    .withMessage('Comunidad inválida.'),
   validField,
 ];
 
