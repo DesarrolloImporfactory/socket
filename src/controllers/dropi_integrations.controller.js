@@ -2424,8 +2424,12 @@ exports.getClientStats = catchAsync(async (req, res, next) => {
    ═══════════════════════════════════════════════════════════ */
 
 async function resolveCacheCtxFromIntegration(req) {
-  const integration_id = toInt(req.body?.integration_id);
-  const id_configuracion = toInt(req.body?.id_configuracion);
+  const integration_id = toInt(
+    req.body?.integration_id ?? req.query?.integration_id,
+  );
+  const id_configuracion = toInt(
+    req.body?.id_configuracion ?? req.query?.id_configuracion,
+  );
   const id_usuario = req.sessionUser?.id_usuario;
 
   if (!integration_id && !id_configuracion) {
