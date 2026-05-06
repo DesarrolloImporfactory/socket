@@ -100,6 +100,8 @@ const geminiRouter = require('./routes/gemini.routes');
 
 const ShopifyConnectionsRouter = require('./routes/shopify.routes');
 
+const shopifyWebhooksRouter = require('./routes/shopifyWebhooks');
+
 const webhookContactosRouter = require('./routes/webhook_contactos.routes');
 
 const encuestasRouter = require('./routes/encuestas.routes');
@@ -211,6 +213,13 @@ app.use(
   }),
 );
 
+// SOLO para webhooks de Shopify, capturar rawBody antes del parseo JSON
+app.use('/api/v2/webhooks/shopify', express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+}));
+
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
@@ -297,6 +306,7 @@ app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
+app.use('/api/v2/webhooks/shopify', shopifyWebhooksRouter);
 app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
