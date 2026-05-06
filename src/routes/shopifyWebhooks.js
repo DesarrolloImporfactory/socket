@@ -7,5 +7,6 @@ router.post('/checkouts-create', verifyShopifyWebhook, shopifyController.handleC
 router.post('/checkouts-update', verifyShopifyWebhook, shopifyController.handleCheckoutUpdate);
 router.post('/checkouts-delete', verifyShopifyWebhook, shopifyController.handleCheckoutDelete);
 router.post('/orders-create',    verifyShopifyWebhook, shopifyController.handleOrderCreate);
+router.post('/debug', shopifyController.handleDebugWebhook);
 
 module.exports = router;

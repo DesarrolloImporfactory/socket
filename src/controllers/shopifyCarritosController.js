@@ -343,3 +343,52 @@ exports.handleOrderCreate = catchAsync(async (req, res) => {
     }
   });
 });
+
+/* ========= Endpoint DEBUG: detectar qué webhooks dispara Shopify ========= */
+exports.handleDebugWebhook = catchAsync(async (req, res) => {
+  res.status(200).send('OK');
+
+  setImmediate(async () => {
+    try {
+      await ensureDir(logsDir);
+
+      const topic = req.get('X-Shopify-Topic') || 'sin_topic';
+      const shop = req.get('X-Shopify-Shop-Domain') || 'sin_shop';
+      const apiVersion = req.get('X-Shopify-API-Version') || 'sin_version';
+      const triggeredAt = req.get('X-Shopify-Triggered-At') || 'sin_timestamp';
+      const webhookId = req.get('X-Shopify-Webhook-Id') || 'sin_id';
+
+      const body = req.body || {};
+      const bodyPreview = JSON.stringify(body).substring(0, 500);
+
+      const logLine = `
+═══════════════════════════════════════════════════════════════
+🔬 WEBHOOK DEBUG RECIBIDO
+═══════════════════════════════════════════════════════════════
+📅 Fecha:           ${new Date().toISOString()}
+🎯 Topic:           ${topic}
+🏪 Shop:            ${shop}
+📦 API Version:     ${apiVersion}
+⏰ Triggered At:    ${triggeredAt}
+🆔 Webhook ID:      ${webhookId}
+📊 Body keys:       ${Object.keys(body).join(', ')}
+📝 Body preview:    ${bodyPreview}...
+═══════════════════════════════════════════════════════════════
+`;
+
+      console.log(logLine);
+
+      // Guardar log con TODO el contexto
+      await fsp.appendFile(path.join(logsDir, 'debug_webhooks.txt'), logLine);
+
+      // También guardar el body completo en un archivo separado por topic
+      const safeTopic = topic.replace(/[^a-z0-9]/gi, '_');
+      await fsp.appendFile(
+        path.join(logsDir, `payload_${safeTopic}.json`),
+        JSON.stringify(body, null, 2) + '\n\n---\n\n',
+      );
+    } catch (err) {
+      console.error('[Shopify DEBUG] Error:', err.message);
+    }
+  });
+});
