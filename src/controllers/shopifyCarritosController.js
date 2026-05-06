@@ -19,12 +19,15 @@ const logsDir = path.join(process.cwd(), './src/logs/logs_shopify');
 /* Helper de logging para no repetir el appendFile */
 const logShopify = async (mensaje) => {
   try {
-    console.log('SHOPIFY' + mensaje);
+    await ensureDir(logsDir); // 👈 AGREGADO: garantiza que la carpeta exista
+    console.log('[SHOPIFY]', mensaje);
     await fsp.appendFile(
       path.join(logsDir, 'debug_log.txt'),
       `[${new Date().toISOString()}] ${mensaje}\n`,
     );
-  } catch (_) {}
+  } catch (e) {
+    console.error('[Shopify] Falló log:', e.message); // 👈 ya no es silencioso
+  }
 };
 
 /* Helper: extraer datos del checkout y guardar/actualizar carrito */
