@@ -1399,6 +1399,61 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
+    name: 'remarketing_despacho_listo',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '🚛 Tu pedido ya está listo para salir\n\nBuenas noticias 👇\n\nTu paquete ya está empacado en bodega y solo espera tu ubicación exacta 📍 para entrar en la próxima ruta del día.\n\n⏰ Última salida hoy: 4:00 PM\n📦 Si confirmas ahora: lo recibes en 24 a 48 horas\n💵 Pago: contraentrega — pagas solo cuando te lo entreguen\n\nSolo necesito tu ubicación para enviarlo. ⬇',
+      },
+    ],
+  },
+  {
+    name: 'remarketing_envio_gratis',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '🎁 Envío GRATIS asignado a tu pedido\n\nTe ahorras el costo de envío ($8) — el beneficio *estará activo por hoy*\n\n📦 Tu paquete: ya empacado en bodega\n🚛 Envío: GRATIS por esta semana\n💵 Pago: contraentrega — pagas al recibir\n\n¿Realizo tu envío hoy?',
+      },
+    ],
+  },
+  {
+    name: 'remarketing_descuento_aprobado',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '🎁 Se aplicó un descuento del 10% a tu pedido\n\nEl código quedó cargado a tu contacto y se cae automático hoy a las 23:59.\n\n💸 Descuento: 10% OFF aplicado\n⏰ Vigencia: solo hoy\n\nSi el precio era lo que te frenaba → ahí está resuelto ✅\n\nSolo necesito tu ubicación para coordinar el despacho. 📍',
+      },
+    ],
+  },
+  {
+    name: 'remarketing_stock_agotado',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '⚠️ Stock casi agotado — quedan pocas unidades\n\nEn bodega quedan menos de 10 unidades y hoy se están yendo rápido.\n\nY algo más: el próximo lote llega en 3 a 4 semanas y entrará con precio más alto — subieron los costos de importación.\n\nSi lo aseguras hoy, te queda al precio actual 🔒\n\nMándame tu ubicación 📍 (sigues pagando contraentrega).',
+      },
+    ],
+  },
+  {
+    name: 'remarketing_stock_apartado',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '📦 Stock reservado a tu nombre — vence en 12 horas\n\nHoy ya despachamos 837 pedidos a nivel nacional. Tu unidad está apartada en bodega y lista para salir, pero la reserva vence hoy a medianoche ⏰\n\nDespués de hoy, la unidad regresa al stock general y se están agotando rápido.\n\n¿Realizo tu envío? 🙌 (envíame tu ubicación).',
+      },
+    ],
+  },
+  {
     name: 'antes_generar_guia_k1',
     language: 'es',
     category: 'UTILITY',
