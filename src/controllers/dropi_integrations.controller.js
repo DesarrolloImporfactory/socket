@@ -2023,10 +2023,10 @@ async function computeStatsFromCache(cacheCtx, from, until) {
 
 exports.getDashboardStats = catchAsync(async (req, res, next) => {
   const integration_id = toInt(
-    req.body?.integration_id ?? req.query?.integration_id,
+    req.body?.integration_id || req.query?.integration_id,
   );
   const id_configuracion = toInt(
-    req.body?.id_configuracion ?? req.query?.id_configuracion,
+    req.body?.id_configuracion || req.query?.id_configuracion,
   );
   const id_usuario = req.sessionUser?.id_usuario;
 
@@ -2088,8 +2088,8 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
-  const from = strOrNull(req.body?.from ?? req.query?.from);
-  const until = strOrNull(req.body?.until ?? req.query?.until);
+  const from = strOrNull(req.body?.from || req.query?.from);
+  const until = strOrNull(req.body?.until || req.query?.until);
   if (!from || !until)
     return next(new AppError('from y until son requeridos', 400));
 
@@ -2425,19 +2425,19 @@ exports.getClientStats = catchAsync(async (req, res, next) => {
 
 async function resolveCacheCtxFromIntegration(req) {
   console.log('Resolviendo query:   ', {
-    integration_id: req.body?.integration_id ?? req.query?.integration_id,
-    id_configuracion: req.body?.id_configuracion ?? req.query?.id_configuracion,
+    integration_id: req.body?.integration_id || req.query?.integration_id,
+    id_configuracion: req.body?.id_configuracion || req.query?.id_configuracion,
     id_usuario: req.sessionUser?.id_usuario,
   });
 
   console.log('query:', req.query);
 
   const integration_id = toInt(
-    req.body?.integration_id ?? req.query?.integration_id,
+    req.body?.integration_id || req.query?.integration_id,
   );
   console.log('Resolviendo cacheCtx para integration_id:', integration_id);
   const id_configuracion = toInt(
-    req.body?.id_configuracion ?? req.query?.id_configuracion,
+    req.body?.id_configuracion || req.query?.id_configuracion,
   );
   const id_usuario = req.sessionUser?.id_usuario;
 
