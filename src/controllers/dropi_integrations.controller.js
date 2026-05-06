@@ -2022,8 +2022,12 @@ async function computeStatsFromCache(cacheCtx, from, until) {
    ═══════════════════════════════════════════════════════════ */
 
 exports.getDashboardStats = catchAsync(async (req, res, next) => {
-  const integration_id = toInt(req.body?.integration_id);
-  const id_configuracion = toInt(req.body?.id_configuracion);
+  const integration_id = toInt(
+    req.body?.integration_id ?? req.query?.integration_id,
+  );
+  const id_configuracion = toInt(
+    req.body?.id_configuracion ?? req.query?.id_configuracion,
+  );
   const id_usuario = req.sessionUser?.id_usuario;
 
   if (!integration_id && !id_configuracion) {
@@ -2084,8 +2088,8 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) return next(new AppError('Dropi key inválida', 400));
 
-  const from = strOrNull(req.body?.from);
-  const until = strOrNull(req.body?.until);
+  const from = strOrNull(req.body?.from ?? req.query?.from);
+  const until = strOrNull(req.body?.until ?? req.query?.until);
   if (!from || !until)
     return next(new AppError('from y until son requeridos', 400));
 
@@ -2555,13 +2559,17 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     _totalFleteEnt += fe;
   }
   // Tasa entrega = entregadas / movilizadas (NO sobre total — canceladas no penalizan)
-  const tasaEntregaHist = _totalMovilizadas > 0 ? _totalEntregadas / _totalMovilizadas : 0.6; // default 60% si no hay data
+  const tasaEntregaHist =
+    _totalMovilizadas > 0 ? _totalEntregadas / _totalMovilizadas : 0.6; // default 60% si no hay data
   // Ticket promedio (venta entregadas / órdenes entregadas)
-  const ticketPromedio = _totalEntregadas > 0 ? _totalVentaEnt / _totalEntregadas : 0;
+  const ticketPromedio =
+    _totalEntregadas > 0 ? _totalVentaEnt / _totalEntregadas : 0;
   // % costo histórico = costo / venta (típico 30-50% en dropshipping)
-  const pctCostoHist = _totalVentaEnt > 0 ? _totalCostoEnt / _totalVentaEnt : 0.5;
+  const pctCostoHist =
+    _totalVentaEnt > 0 ? _totalCostoEnt / _totalVentaEnt : 0.5;
   // % flete histórico por entrega = flete_entregadas / venta_entregadas (típico 5-15%)
-  const pctFleteHist = _totalVentaEnt > 0 ? _totalFleteEnt / _totalVentaEnt : 0.10;
+  const pctFleteHist =
+    _totalVentaEnt > 0 ? _totalFleteEnt / _totalVentaEnt : 0.1;
 
   // Merge
   const fechasConOrdenes = new Set();
@@ -2601,12 +2609,14 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     const ventaProyectadaExtra = ordenesProyectadasEntregar * ticketPromedio;
     const costoProyectadoExtra = ventaProyectadaExtra * pctCostoHist;
     // El flete ya está incluido en flete_movilizadas (cuenta tránsito), no lo sumamos otra vez
-    const rentabilidadProyectadaExtra = ventaProyectadaExtra - costoProyectadoExtra;
+    const rentabilidadProyectadaExtra =
+      ventaProyectadaExtra - costoProyectadoExtra;
     const rentabilidadProyectada = rentabilidad + rentabilidadProyectadaExtra;
 
     // Tasa entrega LOCAL del día (sobre movilizadas, no sobre total)
     const movDia = Number(r.movilizadas || 0);
-    const tasaEntregaDia = movDia > 0 ? (Number(r.entregadas || 0) / movDia) : null;
+    const tasaEntregaDia =
+      movDia > 0 ? Number(r.entregadas || 0) / movDia : null;
 
     return {
       fecha: fechaStr,
@@ -2626,12 +2636,14 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       entregados: Number(r.entregadas || 0),
       transito: transitoOrdenes,
       movilizadas: movDia,
-      tasa_entrega_dia: tasaEntregaDia !== null ? Math.round(tasaEntregaDia * 1000) / 10 : null, // 0..100
+      tasa_entrega_dia:
+        tasaEntregaDia !== null ? Math.round(tasaEntregaDia * 1000) / 10 : null, // 0..100
       rentabilidad: Math.round(rentabilidad * 100) / 100,
       // Nuevos campos de proyección
       rentabilidad_proyectada: Math.round(rentabilidadProyectada * 100) / 100,
       venta_proyectada_extra: Math.round(ventaProyectadaExtra * 100) / 100,
-      ordenes_proyectadas_extra: Math.round(ordenesProyectadasEntregar * 10) / 10,
+      ordenes_proyectadas_extra:
+        Math.round(ordenesProyectadasEntregar * 10) / 10,
       es_proyeccion: transitoOrdenes > 0, // si tiene tránsito, hay parte proyectada
     };
   });
@@ -2693,9 +2705,12 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       transito: acc.transito + r.transito,
       movilizadas: acc.movilizadas + (r.movilizadas || 0),
       rentabilidad: acc.rentabilidad + r.rentabilidad,
-      rentabilidad_proyectada: acc.rentabilidad_proyectada + (r.rentabilidad_proyectada || 0),
-      venta_proyectada_extra: acc.venta_proyectada_extra + (r.venta_proyectada_extra || 0),
-      ordenes_proyectadas_extra: acc.ordenes_proyectadas_extra + (r.ordenes_proyectadas_extra || 0),
+      rentabilidad_proyectada:
+        acc.rentabilidad_proyectada + (r.rentabilidad_proyectada || 0),
+      venta_proyectada_extra:
+        acc.venta_proyectada_extra + (r.venta_proyectada_extra || 0),
+      ordenes_proyectadas_extra:
+        acc.ordenes_proyectadas_extra + (r.ordenes_proyectadas_extra || 0),
     }),
     {
       gasto_diario: 0,
@@ -2719,9 +2734,10 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     },
   );
   // Tasa entrega global del rango (sobre movilizadas, no sobre total)
-  totales.tasa_entrega = totales.movilizadas > 0
-    ? Math.round((totales.entregados / totales.movilizadas) * 1000) / 10
-    : null;
+  totales.tasa_entrega =
+    totales.movilizadas > 0
+      ? Math.round((totales.entregados / totales.movilizadas) * 1000) / 10
+      : null;
   // Meta info de la proyección para mostrar en frontend
   totales._proyeccion_meta = {
     tasa_entrega_historica: Math.round(tasaEntregaHist * 1000) / 10,
@@ -2785,7 +2801,6 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
     },
   });
 });
-
 
 // ════════════════════════════════════════════════════════════════════
 // FIX 2026-05-01 — Detalle por PRODUCTO de un día específico
@@ -2879,7 +2894,10 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
       venta_entregadas: Math.round(ventaEntregadas * 100) / 100,
       costo_entregadas: Math.round(costoEntregadas * 100) / 100,
       flete_movilizadas: Math.round(fleteMovilizadas * 100) / 100,
-      margen_bruto: Math.round((ventaEntregadas - costoEntregadas - fleteMovilizadas) * 100) / 100,
+      margen_bruto:
+        Math.round(
+          (ventaEntregadas - costoEntregadas - fleteMovilizadas) * 100,
+        ) / 100,
     };
   });
 
@@ -2892,7 +2910,6 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
     },
   });
 });
-
 
 // ════════════════════════════════════════════════════════════════════
 // FIX 2026-05-01 (v3) — Alertas de productos con problemas
@@ -2948,7 +2965,9 @@ exports.getAlertasProductos = catchAsync(async (req, res, next) => {
     ORDER BY tasa_entrega ASC, ordenes_total DESC`,
     {
       replacements: {
-        idCfg, idUsr, minOrd: minOrdenes,
+        idCfg,
+        idUsr,
+        minOrd: minOrdenes,
         from: `${from} 00:00:00`,
         until: `${until} 23:59:59`,
       },
@@ -2967,7 +2986,9 @@ exports.getAlertasProductos = catchAsync(async (req, res, next) => {
     // Crítico: tasa entrega < 50% sobre movilizadas con masa crítica (12+ órdenes)
     if (tasaEnt < 50 && ordenes >= 12) {
       nivel = 'critico';
-      alertas.push(`Tasa de entrega ${tasaEnt}% — por debajo del promedio del rango`);
+      alertas.push(
+        `Tasa de entrega ${tasaEnt}% — por debajo del promedio del rango`,
+      );
     } else if (tasaEnt < 65 && ordenes >= 8) {
       nivel = 'alto';
       alertas.push(`Tasa de entrega ${tasaEnt}% — para revisar`);
@@ -2995,7 +3016,9 @@ exports.getAlertasProductos = catchAsync(async (req, res, next) => {
       tasa_entrega: tasaEnt,
       tasa_devolucion: tasaDev,
       tasa_cancelacion: Number(r.tasa_cancelacion || 0),
-      ultima_orden: r.ultima_orden ? r.ultima_orden.toString().slice(0, 10) : null,
+      ultima_orden: r.ultima_orden
+        ? r.ultima_orden.toString().slice(0, 10)
+        : null,
       dias_sin_movimiento: dias,
       venta_entregadas: Math.round(Number(r.venta_entregadas || 0) * 100) / 100,
       nivel_alerta: nivel,
@@ -3022,7 +3045,6 @@ exports.getAlertasProductos = catchAsync(async (req, res, next) => {
   });
 });
 
-
 // ════════════════════════════════════════════════════════════════════
 // FIX 2026-05-01 (v3) — Top ciudades con más devoluciones
 // ════════════════════════════════════════════════════════════════════
@@ -3041,8 +3063,10 @@ exports.getCiudadesDevoluciones = catchAsync(async (req, res, next) => {
   const idUsr = cacheCtx.id_usuario ?? 0;
 
   let orderClause;
-  if (ordenarPor === 'devueltas') orderClause = 'devueltas DESC, ordenes_total DESC';
-  else if (ordenarPor === 'tasa_entrega_asc') orderClause = 'tasa_entrega ASC, ordenes_total DESC';
+  if (ordenarPor === 'devueltas')
+    orderClause = 'devueltas DESC, ordenes_total DESC';
+  else if (ordenarPor === 'tasa_entrega_asc')
+    orderClause = 'tasa_entrega ASC, ordenes_total DESC';
   else orderClause = 'tasa_devolucion DESC, devueltas DESC';
 
   const [rows] = await db.query(
@@ -3073,7 +3097,9 @@ exports.getCiudadesDevoluciones = catchAsync(async (req, res, next) => {
     LIMIT 30`,
     {
       replacements: {
-        idCfg, idUsr, minOrd: minOrdenes,
+        idCfg,
+        idUsr,
+        minOrd: minOrdenes,
         from: `${from} 00:00:00`,
         until: `${until} 23:59:59`,
       },
@@ -3093,9 +3119,11 @@ exports.getCiudadesDevoluciones = catchAsync(async (req, res, next) => {
     tasa_cancelacion: Number(r.tasa_cancelacion || 0),
   }));
 
-  return res.json({ isSuccess: true, data: { ciudades, total_ciudades: ciudades.length } });
+  return res.json({
+    isSuccess: true,
+    data: { ciudades, total_ciudades: ciudades.length },
+  });
 });
-
 
 // ════════════════════════════════════════════════════════════════════
 // FIX 2026-05-01 (v5) — Rentabilidad por PRODUCTO del rango
@@ -3176,22 +3204,31 @@ exports.getProductosRentabilidad = catchAsync(async (req, res, next) => {
     GROUP BY jt.product_id, jt.product_name, jt.sku
     HAVING ordenes >= :minOrd`,
     {
-      replacements: { idCfg, idUsr, minOrd: minOrdenes,
-        from: `${from} 00:00:00`, until: `${until} 23:59:59` },
+      replacements: {
+        idCfg,
+        idUsr,
+        minOrd: minOrdenes,
+        from: `${from} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
     },
   );
 
   const productos = rows.map((r) => {
-    const ventaEnt = Number(r.venta_entregadas || 0);   // Lo que el dropshipper cobró al cliente final
-    const costoEnt = Number(r.costo_entregadas || 0);   // Lo que pagó a IMPORSHOP por el producto
-    const fleteMov = Number(r.flete_movilizadas || 0);  // Lo que pagó al courier
+    const ventaEnt = Number(r.venta_entregadas || 0); // Lo que el dropshipper cobró al cliente final
+    const costoEnt = Number(r.costo_entregadas || 0); // Lo que pagó a IMPORSHOP por el producto
+    const fleteMov = Number(r.flete_movilizadas || 0); // Lo que pagó al courier
     const ordenes = Number(r.ordenes || 0);
     const entregadas = Number(r.ordenes_entregadas || 0);
     const movilizadas = Number(r.movilizadas || 0);
     const rentabilidad = ventaEnt - costoEnt - fleteMov;
-    const tasaEnt = movilizadas > 0 ? Math.round((entregadas / movilizadas) * 1000) / 10 : null;
+    const tasaEnt =
+      movilizadas > 0
+        ? Math.round((entregadas / movilizadas) * 1000) / 10
+        : null;
     const ticketPromedio = entregadas > 0 ? ventaEnt / entregadas : 0;
-    const margenPorcentaje = ventaEnt > 0 ? Math.round((rentabilidad / ventaEnt) * 1000) / 10 : null;
+    const margenPorcentaje =
+      ventaEnt > 0 ? Math.round((rentabilidad / ventaEnt) * 1000) / 10 : null;
     return {
       product_id: Number(r.product_id || 0),
       sku: r.sku || '',
@@ -3218,8 +3255,8 @@ exports.getProductosRentabilidad = catchAsync(async (req, res, next) => {
 
   const totalRent = productos.reduce((s, p) => s + p.rentabilidad, 0);
   const totalVenta = productos.reduce((s, p) => s + p.venta_entregadas, 0);
-  const positivos = productos.filter(p => p.rentabilidad > 0).length;
-  const negativos = productos.filter(p => p.rentabilidad < 0).length;
+  const positivos = productos.filter((p) => p.rentabilidad > 0).length;
+  const negativos = productos.filter((p) => p.rentabilidad < 0).length;
 
   return res.json({
     isSuccess: true,
@@ -3231,12 +3268,14 @@ exports.getProductosRentabilidad = catchAsync(async (req, res, next) => {
         negativos,
         rentabilidad_total: Math.round(totalRent * 100) / 100,
         venta_total: Math.round(totalVenta * 100) / 100,
-        margen_pct_global: totalVenta > 0 ? Math.round((totalRent / totalVenta) * 1000) / 10 : null,
+        margen_pct_global:
+          totalVenta > 0
+            ? Math.round((totalRent / totalVenta) * 1000) / 10
+            : null,
       },
     },
   });
 });
-
 
 // ════════════════════════════════════════════════════════════════════
 // 2026-05-02 — Ciudades + Transportadoras: tasa entrega por courier
@@ -3246,7 +3285,8 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
   const cacheCtx = await resolveCacheCtxFromIntegration(req);
   const from = strOrNull(req.query?.from || req.body?.from);
   const until = strOrNull(req.query?.until || req.body?.until);
-  const minOrdenes = Number(req.query?.min_ordenes || req.body?.min_ordenes) || 5;
+  const minOrdenes =
+    Number(req.query?.min_ordenes || req.body?.min_ordenes) || 5;
   const minCourier = 5; // mínimo de órdenes por courier en una ciudad para opinar
 
   if (!from || !until) {
@@ -3285,8 +3325,9 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
     ORDER BY UPPER(TRIM(c.city)), total_ordenes DESC`,
     {
       replacements: {
-        idCfg, idUsr,
-        from:  `${from} 00:00:00`,
+        idCfg,
+        idUsr,
+        from: `${from} 00:00:00`,
         until: `${until} 23:59:59`,
       },
     },
@@ -3295,7 +3336,7 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
   // Paso 2: agrupar en mapa por ciudad
   const mapaGlobal = {};
   for (const r of rows) {
-    const city    = r.city;
+    const city = r.city;
     const courier = r.courier;
     if (!mapaGlobal[city]) {
       mapaGlobal[city] = {
@@ -3308,17 +3349,17 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
     }
     const t = {
       courier,
-      ordenes:          Number(r.total_ordenes || 0),
-      entregadas:       Number(r.entregadas    || 0),
-      devoluciones:     Number(r.devoluciones  || 0),
-      canceladas:       Number(r.canceladas    || 0),
-      en_transito:      Number(r.en_transito   || 0),
-      ticket_promedio:  Math.round(Number(r.ticket_promedio || 0) * 100) / 100,
+      ordenes: Number(r.total_ordenes || 0),
+      entregadas: Number(r.entregadas || 0),
+      devoluciones: Number(r.devoluciones || 0),
+      canceladas: Number(r.canceladas || 0),
+      en_transito: Number(r.en_transito || 0),
+      ticket_promedio: Math.round(Number(r.ticket_promedio || 0) * 100) / 100,
       tasa_entrega_pct: Number(r.tasa_entrega_pct || 0),
     };
     mapaGlobal[city].total_ordenes += t.ordenes;
-    mapaGlobal[city].entregadas    += t.entregadas;
-    mapaGlobal[city].devoluciones  += t.devoluciones;
+    mapaGlobal[city].entregadas += t.entregadas;
+    mapaGlobal[city].devoluciones += t.devoluciones;
     mapaGlobal[city].transportadoras.push(t);
   }
 
@@ -3332,11 +3373,19 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
       const conMasa = c.transportadoras.filter((t) => t.ordenes >= minCourier);
 
       const mejor = conMasa.length
-        ? conMasa.reduce((best, t) => t.tasa_entrega_pct > best.tasa_entrega_pct ? t : best, conMasa[0])
+        ? conMasa.reduce(
+            (best, t) =>
+              t.tasa_entrega_pct > best.tasa_entrega_pct ? t : best,
+            conMasa[0],
+          )
         : null;
 
       const peor = conMasa.length
-        ? conMasa.reduce((worst, t) => t.tasa_entrega_pct < worst.tasa_entrega_pct ? t : worst, conMasa[0])
+        ? conMasa.reduce(
+            (worst, t) =>
+              t.tasa_entrega_pct < worst.tasa_entrega_pct ? t : worst,
+            conMasa[0],
+          )
         : null;
 
       // Recomendación legible
@@ -3349,24 +3398,31 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
       } else if (mejor) {
         recomendacion = `${mejor.courier} es la única transportadora con datos suficientes (${mejor.tasa_entrega_pct}% entrega).`;
       } else {
-        recomendacion = 'Insuficientes datos por courier para recomendar (mín 5 órdenes por courier).';
+        recomendacion =
+          'Insuficientes datos por courier para recomendar (mín 5 órdenes por courier).';
       }
 
       const finalizadas = c.entregadas + c.devoluciones;
-      const tasa_ciudad = finalizadas > 0
-        ? Math.round((c.entregadas / finalizadas) * 1000) / 10
-        : null;
+      const tasa_ciudad =
+        finalizadas > 0
+          ? Math.round((c.entregadas / finalizadas) * 1000) / 10
+          : null;
 
       return {
-        ciudad:           c.ciudad,
-        total_ordenes:    c.total_ordenes,
-        entregadas:       c.entregadas,
-        devoluciones:     c.devoluciones,
-        tasa_ciudad_pct:  tasa_ciudad,
-        mejor_courier:    mejor ? { courier: mejor.courier, tasa: mejor.tasa_entrega_pct } : null,
-        peor_courier:     peor && peor.courier !== mejor?.courier ? { courier: peor.courier, tasa: peor.tasa_entrega_pct } : null,
+        ciudad: c.ciudad,
+        total_ordenes: c.total_ordenes,
+        entregadas: c.entregadas,
+        devoluciones: c.devoluciones,
+        tasa_ciudad_pct: tasa_ciudad,
+        mejor_courier: mejor
+          ? { courier: mejor.courier, tasa: mejor.tasa_entrega_pct }
+          : null,
+        peor_courier:
+          peor && peor.courier !== mejor?.courier
+            ? { courier: peor.courier, tasa: peor.tasa_entrega_pct }
+            : null,
         recomendacion,
-        transportadoras:  c.transportadoras,
+        transportadoras: c.transportadoras,
       };
     })
     .sort((a, b) => b.total_ordenes - a.total_ordenes);
@@ -3376,7 +3432,7 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
     data: {
       ciudades,
       total_ciudades: ciudades.length,
-      min_ordenes:    minOrdenes,
+      min_ordenes: minOrdenes,
     },
   });
 });
