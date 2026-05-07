@@ -88,14 +88,14 @@ async function ensureDir(dir) {
 }
 
 async function log(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  process.stdout.write(line);
-  try {
-    await ensureDir(logsDir);
-    await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line, {
-      encoding: 'utf8',
-    });
-  } catch (_) {}
+  // const line = `[${new Date().toISOString()}] ${msg}\n`;
+  // process.stdout.write(line);
+  // try {
+  //   await ensureDir(logsDir);
+  //   await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line, {
+  //     encoding: 'utf8',
+  //   });
+  // } catch (_) {}
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -664,15 +664,15 @@ async function actualizarEstadoContactoEntregado({
 
     const affected = meta?.affectedRows ?? meta ?? 0;
     if (affected > 0) {
-      await log(
-        `[hourly-dropi] 📦 ENTREGADA ${phoneNorm} → estado_contacto="${columnaDestino}" (config #${id_configuracion})`,
-      );
+      // await log(
+      //   `[hourly-dropi] 📦 ENTREGADA ${phoneNorm} → estado_contacto="${columnaDestino}" (config #${id_configuracion})`,
+      // );
     }
     return affected > 0;
   } catch (err) {
-    await log(
-      `[hourly-dropi] ⚠ Error actualizando entregada ${phoneNorm}: ${err?.message}`,
-    );
+    // await log(
+    //   `[hourly-dropi] ⚠ Error actualizando entregada ${phoneNorm}: ${err?.message}`,
+    // );
     return false;
   }
 }
@@ -827,7 +827,7 @@ async function registrarMensajeEnChat({
       },
     );
   } catch (err) {
-    await log(`[hourly-dropi] WARNING chat registro: ${err?.message}`);
+    // await log(`[hourly-dropi] WARNING chat registro: ${err?.message}`);
   }
 }
 
@@ -979,21 +979,21 @@ async function procesarTemplates({ orders, id_configuracion }) {
   const hayPlantillas = Object.keys(plantillas).length > 0;
 
   if (!hayPlantillas) {
-    await log(
-      `[hourly-dropi] ⚠ Config #${id_configuracion} sin plantillas activas`,
-    );
+    // await log(
+    //   `[hourly-dropi] ⚠ Config #${id_configuracion} sin plantillas activas`,
+    // );
   } else {
-    await log(
-      `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
-    );
+    // await log(
+    //   `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
+    // );
   }
 
   const creds = await getWaCredentials(id_configuracion);
   const credsValidas = !!(creds?.phone_number_id && creds?.waba_token);
   if (!credsValidas) {
-    await log(
-      `[hourly-dropi] WARNING Config #${id_configuracion} sin credenciales WA`,
-    );
+    // await log(
+    //   `[hourly-dropi] WARNING Config #${id_configuracion} sin credenciales WA`,
+    // );
   }
 
   const telefonoConfig = creds?.telefono || null;
@@ -1004,17 +1004,17 @@ async function procesarTemplates({ orders, id_configuracion }) {
     : null;
   if (credsValidas) {
     if (!colDropiPrincipal) {
-      await log(
-        `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
-      );
+      // await log(
+      //   `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
+      // );
     } else if (colDropiPrincipal.tipo === 'principal') {
-      await log(
-        `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback → "${colDropiPrincipal.estado_db}"`,
-      );
+      // await log(
+      //   `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback → "${colDropiPrincipal.estado_db}"`,
+      // );
     } else {
-      await log(
-        `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
-      );
+      // await log(
+      //   `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
+      // );
     }
   }
 
@@ -1057,25 +1057,25 @@ async function procesarTemplates({ orders, id_configuracion }) {
       }
 
       if (!estadoConfig) {
-        await log(
-          `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" | SIN MAPEO (status no reconocido)`,
-        );
+        // await log(
+        //   `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" | SIN MAPEO (status no reconocido)`,
+        // );
         omitidos++;
         continue;
       }
 
       if (!plantillas[estadoConfig]) {
-        await log(
-          `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" → "${estadoConfig}" | SIN PLANTILLA configurada`,
-        );
+        // await log(
+        //   `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" → "${estadoConfig}" | SIN PLANTILLA configurada`,
+        // );
         omitidos++;
         continue;
       }
 
       if (!order.phone) {
-        await log(
-          `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | SIN TELEFONO`,
-        );
+        // await log(
+        //   `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | SIN TELEFONO`,
+        // );
         omitidos++;
         continue;
       }
@@ -1089,9 +1089,9 @@ async function procesarTemplates({ orders, id_configuracion }) {
       const config = plantillas[estadoConfig];
       const phoneNorm = normalizePhone(order.phone);
       if (!phoneNorm) {
-        await log(
-          `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | TELEFONO INVALIDO: "${order.phone}"`,
-        );
+        // await log(
+        //   `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | TELEFONO INVALIDO: "${order.phone}"`,
+        // );
         omitidos++;
         continue;
       }
@@ -1126,9 +1126,9 @@ async function procesarTemplates({ orders, id_configuracion }) {
           phoneNorm,
         );
 
-        await log(
-          `[hourly-dropi] 🔍 #${order.id} | ${estadoConfig} | ventana24h=${ventanaAbierta} | usar_rr=${config.usar_respuesta_rapida}`,
-        );
+        // await log(
+        //   `[hourly-dropi] 🔍 #${order.id} | ${estadoConfig} | ventana24h=${ventanaAbierta} | usar_rr=${config.usar_respuesta_rapida}`,
+        // );
 
         if (ventanaAbierta) {
           try {
@@ -1143,14 +1143,14 @@ async function procesarTemplates({ orders, id_configuracion }) {
             tipoEnvio = 'respuesta_rapida';
             textoEnviado = config.mensaje_rapido;
 
-            await log(
-              `[hourly-dropi] ✉ RR #${order.id} | ${estadoConfig} | ${order.phone}`,
-            );
+            // await log(
+            //   `[hourly-dropi] ✉ RR #${order.id} | ${estadoConfig} | ${order.phone}`,
+            // );
           } catch (rrErr) {
             if (isWindowClosedError(rrErr)) {
-              await log(
-                `[hourly-dropi] Ventana cerrada ${order.phone}, fallback template`,
-              );
+              // await log(
+              //   `[hourly-dropi] Ventana cerrada ${order.phone}, fallback template`,
+              // );
               tipoEnvio = 'template';
             } else {
               throw rrErr;
@@ -1179,9 +1179,9 @@ async function procesarTemplates({ orders, id_configuracion }) {
         );
         textoEnviado = bodyInterpolado || config.nombre_template;
 
-        await log(
-          `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
-        );
+        // await log(
+        //   `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
+        // );
       }
 
       // 5.5. Mover cliente a columna destino (según estado)
@@ -1209,13 +1209,13 @@ async function procesarTemplates({ orders, id_configuracion }) {
               type: db.QueryTypes.UPDATE,
             },
           );
-          await log(
-            `[hourly-dropi] 📌 Cliente #${clienteId} → estado_contacto="${columnaDestino}" (${estadoConfig})`,
-          );
+          // await log(
+          //   `[hourly-dropi] 📌 Cliente #${clienteId} → estado_contacto="${columnaDestino}" (${estadoConfig})`,
+          // );
         } catch (err) {
-          await log(
-            `[hourly-dropi] ⚠ Error moviendo cliente #${clienteId}: ${err?.message}`,
-          );
+          // await log(
+          //   `[hourly-dropi] ⚠ Error moviendo cliente #${clienteId}: ${err?.message}`,
+          // );
         }
       }
 
@@ -1253,12 +1253,12 @@ async function procesarTemplates({ orders, id_configuracion }) {
     } catch (err) {
       errores++;
       if (isMetaRateLimit(err)) {
-        await log(`[hourly-dropi] 🛑 Rate limit #${order?.id} — pausa 30s`);
+        // await log(`[hourly-dropi] 🛑 Rate limit #${order?.id} — pausa 30s`);
         await new Promise((r) => setTimeout(r, 30000));
       } else {
-        await log(
-          `[hourly-dropi] ❌ #${order?.id}: ${err?.message} | Meta: ${err?.response?.data?.error?.code || 'N/A'}`,
-        );
+        // await log(
+        //   `[hourly-dropi] ❌ #${order?.id}: ${err?.message} | Meta: ${err?.response?.data?.error?.code || 'N/A'}`,
+        // );
       }
     }
   }
@@ -1285,11 +1285,11 @@ async function syncIntegration(integration, from, until) {
   try {
     integrationKey = decryptToken(integration.integration_key_enc);
   } catch (e) {
-    await log(`[hourly-dropi] ${label} ERROR key: ${e.message}`);
+    // await log(`[hourly-dropi] ${label} ERROR key: ${e.message}`);
     return { label, synced: 0, skipped: true };
   }
   if (!integrationKey?.trim()) {
-    await log(`[hourly-dropi] ${label} WARNING key vacía`);
+    // await log(`[hourly-dropi] ${label} WARNING key vacía`);
     return { label, synced: 0, skipped: true };
   }
 
@@ -1324,7 +1324,7 @@ async function syncIntegration(integration, from, until) {
       retries = 0;
       delay = DELAY_BETWEEN_PAGES;
       if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) {
-        await log(`[hourly-dropi] ${label} WARNING techo`);
+        // await log(`[hourly-dropi] ${label} WARNING techo`);
         break;
       }
       if (keepGoing) await new Promise((r) => setTimeout(r, delay));
@@ -1333,20 +1333,20 @@ async function syncIntegration(integration, from, until) {
       if (status === 429) {
         if (++retries >= MAX_RETRIES_429) break;
         delay = Math.min(delay * 2, 20000);
-        await log(
-          `[hourly-dropi] ${label} 429 retry ${retries}/${MAX_RETRIES_429}`,
-        );
+        // await log(
+        //   `[hourly-dropi] ${label} 429 retry ${retries}/${MAX_RETRIES_429}`,
+        // );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      await log(`[hourly-dropi] ${label} ERROR: ${err?.message}`);
+      // await log(`[hourly-dropi] ${label} ERROR: ${err?.message}`);
       break;
     }
   }
 
   // Fase 2: Upsert cache
   if (allOrders.length > 0) await upsertOrders(cacheInsertFields, allOrders);
-  await log(`[hourly-dropi] ${label} OK ${allOrders.length} órdenes`);
+  // await log(`[hourly-dropi] ${label} OK ${allOrders.length} órdenes`);
 
   // Fase 3: Templates + ENTREGADA pre-pass
   let templateStats = {
@@ -1360,9 +1360,9 @@ async function syncIntegration(integration, from, until) {
       orders: allOrders,
       id_configuracion: id_config,
     });
-    await log(
-      `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores} | 📦entregadas: ${templateStats.entregadas_actualizadas}`,
-    );
+    // await log(
+    //   `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores} | 📦entregadas: ${templateStats.entregadas_actualizadas}`,
+    // );
   }
 
   return {
@@ -1383,16 +1383,16 @@ async function runHourlyDropiSync() {
     { type: db.QueryTypes.SELECT },
   );
   if (!row || Number(row.got) !== 1) {
-    await log('[hourly-dropi] 🔒 Lock no obtenido, skip');
+    // await log('[hourly-dropi] 🔒 Lock no obtenido, skip');
     return;
   }
 
   const t0 = Date.now();
-  await log('[hourly-dropi] >> Iniciando sync');
+  // await log('[hourly-dropi] >> Iniciando sync');
 
   try {
     const { from, until } = getDateRange();
-    await log(`[hourly-dropi] Rango ${from} → ${until}`);
+    // await log(`[hourly-dropi] Rango ${from} → ${until}`);
 
     const integrations = await DropiIntegrations.findAll({
       where: { is_active: 1, deleted_at: null },
@@ -1405,7 +1405,7 @@ async function runHourlyDropiSync() {
       ],
       raw: true,
     });
-    await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
+    // await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
 
     const totals = {
       ordenes: 0,
@@ -1428,36 +1428,36 @@ async function runHourlyDropiSync() {
         }
       } catch (err) {
         totals.errores++;
-        await log(
-          `[hourly-dropi] ERROR integ#${integrations[i].id}: ${err?.message}`,
-        );
+        // await log(
+        //   `[hourly-dropi] ERROR integ#${integrations[i].id}: ${err?.message}`,
+        // );
       }
       if (i < integrations.length - 1)
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
     }
 
-    await log(
-      `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | 📦entregadas: ${totals.entregadas} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
-    );
+    // await log(
+    //   `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | 📦entregadas: ${totals.entregadas} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
+    // );
   } catch (err) {
-    await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
+    // await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
   } finally {
     try {
       await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
         type: db.QueryTypes.RAW,
       });
     } catch (e) {
-      await log(`[hourly-dropi] ERROR liberando lock: ${e?.message}`);
+      // await log(`[hourly-dropi] ERROR liberando lock: ${e?.message}`);
     }
   }
 }
 
 cron.schedule('*/5 * * * *', () => {
-  runHourlyDropiSync().catch((err) =>
-    log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {}),
-  );
+  runHourlyDropiSync().catch((err) => {
+    // log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {});
+  });
 });
 
-log('[hourly-dropi] Cron registrado — cada minuto').catch(() => {});
+// log('[hourly-dropi] Cron registrado — cada minuto').catch(() => {});
 
 module.exports = { runHourlyDropiSync };
