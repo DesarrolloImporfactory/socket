@@ -487,6 +487,7 @@ class ChatService {
           'id_whatsapp',
           'telefono',
           'metodo_pago',
+          'meta_business_id',
         ],
       });
 

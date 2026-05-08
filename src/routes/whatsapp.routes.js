@@ -122,6 +122,23 @@ router.post('/ObtenerNumeros', async (req, res) => {
           }
         : null;
 
+      // GUARDAR BUSINESS ID
+      if (portfolioOwner?.id) {
+        await db.query(
+          `UPDATE configuraciones
+            SET meta_business_id = ?,
+                meta_business_name = ?
+            WHERE id = ?`,
+          {
+            replacements: [
+              portfolioOwner.id,
+              portfolioOwner.name || null,
+              id_configuracion,
+            ],
+          },
+        );
+      }
+
       onBehalfOf = wabaInfo?.on_behalf_of_business_info
         ? {
             id: wabaInfo.on_behalf_of_business_info.id || null,
