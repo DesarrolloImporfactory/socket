@@ -8,6 +8,10 @@ const ShopifyCarritosAbandonados = db.define(
     id_configuracion: { type: DataTypes.INTEGER, allowNull: false },
     id_cliente: { type: DataTypes.INTEGER },
     shop_domain: { type: DataTypes.STRING(255), allowNull: false },
+    source: {
+      type: DataTypes.ENUM('shopify_checkout', 'releasit_form', 'custom_landing'),
+      defaultValue: 'shopify_checkout',
+    },
     checkout_token: { type: DataTypes.STRING(255), allowNull: false },
     checkout_id: { type: DataTypes.BIGINT, allowNull: false },
     email: { type: DataTypes.STRING(255) },

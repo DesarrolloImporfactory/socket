@@ -102,6 +102,10 @@ const ShopifyConnectionsRouter = require('./routes/shopify.routes');
 
 const shopifyWebhooksRouter = require('./routes/shopifyWebhooks');
 
+const shopifyConfiguracionesRouter = require('./routes/shopifyConfiguraciones.routes');
+
+const shopifyCarritosRouter = require('./routes/shopifyCarritos.routes');
+
 const webhookContactosRouter = require('./routes/webhook_contactos.routes');
 
 const encuestasRouter = require('./routes/encuestas.routes');
@@ -316,6 +320,8 @@ app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 app.use('/api/v2/webhooks/shopify', shopifyWebhooksRouter);
+app.use('/api/v1/shopify_configuraciones', shopifyConfiguracionesRouter);
+app.use('/api/v1/shopify_carritos_abandonados', shopifyCarritosRouter);
 app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
