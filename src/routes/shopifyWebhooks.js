@@ -3,10 +3,20 @@ const router = express.Router();
 const verifyShopifyWebhook = require('../middlewares/verifyShopifyWebhook');
 const shopifyController = require('../controllers/shopifyCarritosController');
 
-router.post('/checkouts-create', verifyShopifyWebhook, shopifyController.handleCheckoutCreate);
-router.post('/checkouts-update', verifyShopifyWebhook, shopifyController.handleCheckoutUpdate);
-router.post('/checkouts-delete', verifyShopifyWebhook, shopifyController.handleCheckoutDelete);
-router.post('/orders-create',    verifyShopifyWebhook, shopifyController.handleOrderCreate);
+/* Webhook: orders/create → marca carritos abandonados como recuperados */
+router.post(
+  '/orders-create',
+  verifyShopifyWebhook,
+  shopifyController.handleOrderCreate,
+);
+
+/* Webhook: draft_orders/create → captura abandonos de Releasit COD Form */
+router.post(
+  '/abandoned-draft',
+  verifyShopifyWebhook,
+  shopifyController.handleAbandonedDraft,
+);
+
 router.post('/debug', shopifyController.handleDebugWebhook);
 
 module.exports = router;
