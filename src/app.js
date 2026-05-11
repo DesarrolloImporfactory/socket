@@ -114,6 +114,8 @@ const encuestasPublicoRouter = require('./routes/encuestas_publico.routes');
 
 const metaAdsRouter = require('./routes/meta_ads.routes');
 
+const marketingControlRouter = require('./routes/marketing_control.routes');
+
 const soporteChatRouter = require('./routes/soporte_chat.routes');
 
 const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.routes');
@@ -326,6 +328,7 @@ app.use('/api/v1/webhook_contactos', webhookContactosRouter);
 app.use('/api/v1/encuestas', encuestasRouter);
 app.use('/api/v1/encuestas_publico', encuestasPublicoRouter);
 app.use('/api/v1/meta_ads', metaAdsRouter);
+app.use('/api/v1/marketing-control', marketingControlRouter);
 app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
