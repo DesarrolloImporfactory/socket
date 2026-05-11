@@ -1135,7 +1135,9 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.ultimo_texto,
       c.ultimo_tipo_mensaje,
       c.ultimo_rol_mensaje,
-      c.ultimo_msg_id
+      c.ultimo_msg_id,
+      c.ultimo_producto_ad,
+      c.ultimo_producto_ad_at
     FROM clientes_chat_center c
     LEFT JOIN etiquetas_custom_chat_center eca
       ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
