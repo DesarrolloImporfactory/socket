@@ -173,7 +173,7 @@ exports.funnel = catchAsync(async (req, res, next) => {
 
   // 1) Meta Ads account (interno) + 2) Dropi Compra por
   const [metaData, allCp] = await Promise.all([
-    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&since=${since}&until=${until}`),
+    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
     fetchAllCompraPor(),
   ]);
 
@@ -236,8 +236,8 @@ exports.topAds = catchAsync(async (req, res, next) => {
   validateRange(since, until);
 
   const [acctResp, adsResp, allCp] = await Promise.all([
-    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&since=${since}&until=${until}`),
-    callInternal(req, `/api/v1/meta_ads/insights/top-ads?id_configuracion=${idConfig}&since=${since}&until=${until}`),
+    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
+    callInternal(req, `/api/v1/meta_ads/insights/top-ads?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
     fetchAllCompraPor(),
   ]);
 
