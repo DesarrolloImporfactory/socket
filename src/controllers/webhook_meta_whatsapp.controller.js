@@ -586,6 +586,27 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           texto_mensaje = 'Tipo de mensaje no reconocido.';
       }
 
+      // ── Detectar referral (click desde anuncio) ──────────────
+      const referral = msg0?.referral || null;
+      let mensaje_para_ia = texto_mensaje;
+
+      if (referral) {
+        const headline = referral.headline || '';
+        const body_ad = referral.body || '';
+        const source_url = referral.source_url || '';
+
+        mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
+          Nombre del producto anunciado: ${headline}
+          Descripción del anuncio: ${body_ad}
+          URL del anuncio: ${source_url}
+          Mensaje del cliente: ${texto_mensaje}`;
+
+        await fsp.appendFile(
+          path.join(logsDir, 'debug_log.txt'),
+          `[${new Date().toISOString()}] 📢 Referral detectado: ${headline}\n`,
+        );
+      }
+
       /* registrar en el log el mensaje */
       await fsp.appendFile(
         path.join(logsDir, 'debug_log.txt'),
@@ -635,6 +656,35 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       id_cliente = cliente.id;
       bot_openia = cliente.bot_openia ?? 1;
       estado_contacto = cliente.estado_contacto ?? 'contacto_inicial';
+
+      // ── Guardar historial producto ad ──────────────────────────
+      if (referral) {
+        try {
+          await db.query(
+            `INSERT INTO cliente_productos_ad
+       (id_cliente, id_configuracion, headline, body_ad, source_url, source_id, ctwa_clid, mensaje_cliente)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            {
+              replacements: [
+                id_cliente,
+                id_configuracion,
+                referral.headline || null,
+                referral.body || null,
+                referral.source_url || null,
+                referral.source_id || null,
+                referral.ctwa_clid || null,
+                texto_mensaje,
+              ],
+              type: db.QueryTypes.INSERT,
+            },
+          );
+        } catch (err) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ❌ Error guardando cliente_productos_ad: ${err.message}\n`,
+          );
+        }
+      }
 
       // ✅ si el chat estaba cerrado, reabrir
       if (cliente.chat_cerrado === 1) {
@@ -1756,7 +1806,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
             // 2. Correr IA (solo si la columna tiene activa_ia=1)
             await enviarAsistenteKanban({
-              mensaje: texto_mensaje,
+              mensaje: mensaje_para_ia,
               id_configuracion,
               id_cliente,
               telefono: phone_whatsapp_from,
