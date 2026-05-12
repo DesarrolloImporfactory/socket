@@ -23,11 +23,6 @@ async function getAdConnection(id_configuracion) {
   return rows[0] || null;
 }
 
-/**
- * parseActions — usa SOLO el action_type estándar (sin offsite_conversion.* duplicados)
- * Meta devuelve ambos: "purchase" y "offsite_conversion.fb_pixel_purchase" con el mismo valor.
- * Sumar ambos duplica los números.
- */
 function parseActions(actions) {
   const result = {
     purchases: 0,
@@ -50,9 +45,6 @@ function parseActions(actions) {
   return result;
 }
 
-/**
- * parseActionValues — solo "purchase" estándar, no el offsite_conversion variant
- */
 function parseActionValues(actionValues) {
   if (!Array.isArray(actionValues)) return 0;
   let total = 0;
@@ -64,9 +56,6 @@ function parseActionValues(actionValues) {
   return total;
 }
 
-/**
- * Extrae CPA de un action_type específico desde cost_per_action_type.
- */
 function extractCpa(costPerActionType, actionTypes) {
   if (!Array.isArray(costPerActionType)) return 0;
   const found = costPerActionType.find((c) =>
@@ -121,7 +110,6 @@ exports.conectarAdAccount = async (req, res) => {
       access_token: providedToken,
     } = req.body;
 
-    // PASO 2: Confirmar selección
     if (ad_account_id && providedToken && id_configuracion) {
       const ax = metaAx(providedToken);
       const verifyResp = await ax.get(`${GRAPH_BASE}/${ad_account_id}`, {
@@ -183,7 +171,6 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
-    // PASO 1: Exchange code → listar cuentas
     if (!code || !id_configuracion || !id_usuario) {
       return res.status(400).json({
         success: false,
@@ -284,7 +271,7 @@ exports.desconectarAdAccount = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 3) OBTENER CONEXIÓN ACTIVA
+// 3) OBTENER CONEXIÓN
 // ══════════════════════════════════════════════
 
 exports.obtenerConexion = async (req, res) => {
@@ -315,7 +302,7 @@ exports.obtenerConexion = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 4) INSIGHTS - ACCOUNT LEVEL
+// 4) INSIGHTS - ACCOUNT
 // ══════════════════════════════════════════════
 
 exports.insightsAccount = async (req, res) => {
@@ -357,23 +344,19 @@ exports.insightsAccount = async (req, res) => {
     const purchaseValue = parseActionValues(row.action_values);
     const spend = Number(row.spend) || 0;
 
-    // CPA Purchase
     let cpaPurchase = extractCpa(row.cost_per_action_type, ['purchase']);
     if (!cpaPurchase && actions.purchases > 0)
       cpaPurchase = spend / actions.purchases;
 
-    // CPA Messaging
     let cpaMessaging = extractCpa(row.cost_per_action_type, [
       'onsite_conversion.messaging_conversation_started_7d',
     ]);
     if (!cpaMessaging && actions.messaging_conversations > 0)
       cpaMessaging = spend / actions.messaging_conversations;
 
-    // CPA Lead
     let cpaLead = extractCpa(row.cost_per_action_type, ['lead']);
     if (!cpaLead && actions.leads > 0) cpaLead = spend / actions.leads;
 
-    // CPA Registration
     let cpaRegistration = extractCpa(row.cost_per_action_type, [
       'complete_registration',
     ]);
@@ -415,7 +398,7 @@ exports.insightsAccount = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 5) INSIGHTS - CAMPAIGN LEVEL
+// 5) INSIGHTS - CAMPAIGNS
 // ══════════════════════════════════════════════
 
 exports.insightsCampaigns = async (req, res) => {
@@ -530,7 +513,7 @@ exports.insightsCampaigns = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 6) TOP ADS
+// 6) TOP ADS — AGREGA effective_status por cada ad
 // ══════════════════════════════════════════════
 
 exports.insightsTopAds = async (req, res) => {
@@ -575,18 +558,26 @@ exports.insightsTopAds = async (req, res) => {
     const adIds = [
       ...new Set((data.data || []).map((r) => r.ad_id).filter(Boolean)),
     ];
+
+    // AHORA TRAEMOS creative + status/effective_status en paralelo
     const creativeMap = {};
+    const statusMap = {};
     if (adIds.length) {
       await Promise.all(
         adIds.map(async (adId) => {
           try {
             const crResp = await ax.get(`${GRAPH_BASE}/${adId}`, {
               params: {
-                fields: 'creative{effective_object_story_id,thumbnail_url}',
+                fields:
+                  'status,effective_status,creative{effective_object_story_id,thumbnail_url}',
               },
             });
             if (crResp.status >= 200 && crResp.status < 300) {
               creativeMap[adId] = crResp.data?.creative || {};
+              statusMap[adId] = {
+                status: crResp.data?.status || null,
+                effective_status: crResp.data?.effective_status || null,
+              };
             }
           } catch {}
         }),
@@ -598,6 +589,7 @@ exports.insightsTopAds = async (req, res) => {
       const purchaseValue = parseActionValues(row.action_values);
       const spend = Number(row.spend) || 0;
       const creative = creativeMap[row.ad_id] || {};
+      const st = statusMap[row.ad_id] || {};
 
       let cpaMessaging = extractCpa(row.cost_per_action_type, [
         'onsite_conversion.messaging_conversation_started_7d',
@@ -614,6 +606,8 @@ exports.insightsTopAds = async (req, res) => {
         campaign_name: row.campaign_name || null,
         post_id: creative.effective_object_story_id || null,
         thumbnail_url: creative.thumbnail_url || null,
+        status: st.status || null, // AGREGADO
+        effective_status: st.effective_status || null, // AGREGADO
         spend,
         impressions: Number(row.impressions) || 0,
         clicks: Number(row.clicks) || 0,
@@ -726,7 +720,46 @@ exports.toggleCampania = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// 9) SYNC MANUAL
+// 9) TOGGLE AD (NUEVO — pausar/activar un ad individual)
+// ══════════════════════════════════════════════
+
+exports.toggleAd = async (req, res) => {
+  try {
+    const { id_configuracion, ad_id, status } = req.body;
+    if (!ad_id || !['PAUSED', 'ACTIVE'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ad_id y status (PAUSED|ACTIVE) requeridos.',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn)
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+
+    const ax = metaAx(conn.access_token);
+    const resp = await ax.post(`${GRAPH_BASE}/${ad_id}`, { status });
+
+    if (resp.status < 200 || resp.status >= 300) {
+      return res.json({
+        success: false,
+        message:
+          'Meta rechazó el cambio. Verifica que tengas el permiso ads_management y que la campaña esté activa.',
+        meta_error: resp.data?.error || resp.data,
+      });
+    }
+
+    return res.json({ success: true, ad_id, new_status: status });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 10) SYNC MANUAL
 // ══════════════════════════════════════════════
 
 exports.syncInsights = async (req, res) => {

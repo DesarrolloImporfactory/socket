@@ -40,11 +40,6 @@ function normalizePhone(p) {
   return d.slice(-9);
 }
 
-/**
- * Internal HTTP call al mismo backend.
- * FIX: solo agrega Content-Type cuando hay body real. Antes mandaba "null"
- * como body en GETs y body-parser de express reventaba.
- */
 async function callInternal(req, path, { method = 'get', data = null } = {}) {
   const auth = req.headers.authorization || '';
   const url = `http://127.0.0.1:${process.env.PORT || 3000}${path}`;
@@ -73,10 +68,6 @@ async function callInternal(req, path, { method = 'get', data = null } = {}) {
   return resp.data;
 }
 
-/**
- * Verifica si el cache de Dropi está fresco. Si está stale, dispara sync
- * background fire-and-forget vía dashboard-stats. No bloquea.
- */
 async function ensureDropiCacheFresh({
   req,
   id_configuracion,
@@ -129,12 +120,10 @@ async function ensureDropiCacheFresh({
 }
 
 // ════════════════════════════════════════════════════════════
-// Endpoint UNIFICADO: GET /dashboard
-// Funnel + Attribution en una sola respuesta
-// 2 calls a Meta (account + top-ads), 3 queries SQL, todo en paralelo
+// GET /dashboard
 // ════════════════════════════════════════════════════════════
 
-const WINDOW_HOURS = 72; // ventana de atribución fija. No la expongas al front.
+const WINDOW_HOURS = 72;
 
 exports.dashboard = catchAsync(async (req, res, next) => {
   const id_configuracion = parseInt(req.query.id_configuracion, 10);
@@ -145,7 +134,6 @@ exports.dashboard = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
 
-  // 1) Disparar sync de Dropi si el cache está stale (no bloquea)
   const cacheStatus = await ensureDropiCacheFresh({
     req,
     id_configuracion,
@@ -153,7 +141,6 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     until,
   });
 
-  // 2) PARALELO: Meta account + Meta top-ads + queries SQL
   const tr = encodeURIComponent(JSON.stringify({ since, until }));
   const windowMs = WINDOW_HOURS * 60 * 60 * 1000;
   const sinceExt = new Date(new Date(since + 'T00:00:00').getTime() - windowMs)
@@ -171,6 +158,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
         req,
         `/api/v1/meta_ads/insights/top-ads?id_configuracion=${id_configuracion}&time_range=${tr}&limit=50`,
       ),
+      // AGREGADO: utilidad_entregada = SUM(dropshipper_profit) cuando entregada
       db.query(
         `SELECT
          COUNT(*) AS ordenes_total,
@@ -178,8 +166,9 @@ exports.dashboard = catchAsync(async (req, res, next) => {
          SUM(CASE WHEN classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devueltas,
          SUM(CASE WHEN classified_status = 'cancelada'  THEN 1 ELSE 0 END) AS canceladas,
          SUM(CASE WHEN classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS en_camino,
-         SUM(CASE WHEN classified_status = 'entregada'  THEN total_order ELSE 0 END) AS revenue_entregado,
-         SUM(total_order) AS venta_bruta
+         SUM(CASE WHEN classified_status = 'entregada'  THEN COALESCE(total_order, 0) ELSE 0 END) AS revenue_entregado,
+         SUM(CASE WHEN classified_status = 'entregada'  THEN COALESCE(dropshipper_profit, 0) ELSE 0 END) AS utilidad_entregada,
+         SUM(COALESCE(total_order, 0)) AS venta_bruta
        FROM dropi_orders_cache
        WHERE id_configuracion = :idCfg
          AND order_created_at BETWEEN :from AND :until`,
@@ -191,9 +180,10 @@ exports.dashboard = catchAsync(async (req, res, next) => {
           },
         },
       ),
+      // AGREGADO: dropshipper_profit en select de cada orden
       db.query(
         `SELECT dropi_order_id, phone, name, surname, classified_status,
-              total_order, product_names, order_created_at
+              total_order, dropshipper_profit, product_names, order_created_at
        FROM dropi_orders_cache
        WHERE id_configuracion = :idCfg
          AND order_created_at BETWEEN :from AND :until`,
@@ -236,7 +226,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
   const [orderRows] = orderResult;
   const [msgRows] = msgResult;
 
-  // 3) Index mensajes por teléfono normalizado
+  // Index mensajes por teléfono normalizado
   const msgsByPhone = new Map();
   for (const msg of msgRows) {
     const key = normalizePhone(msg.telefono_limpio || msg.celular_cliente);
@@ -253,7 +243,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     arr.sort((a, b) => b.created_at - a.created_at);
   }
 
-  // 4) Match 1:1 last-touch
+  // Match 1:1 last-touch — AHORA TAMBIÉN ACUMULA UTILIDAD (profit)
   const bySourceId = new Map();
   let matched = 0;
   let huerfanas = 0;
@@ -290,6 +280,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
         canceladas: 0,
         en_camino: 0,
         revenue: 0,
+        utilidad: 0,
         orders_sample: [],
         last_ctwa_clid: winner.ctwa_clid,
         last_headline: winner.headline,
@@ -298,10 +289,13 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     const grp = bySourceId.get(sid);
     grp.ordenes++;
     const total = Number(order.total_order || 0);
+    const profit = Number(order.dropshipper_profit || 0);
     const st = order.classified_status;
+
     if (st === 'entregada') {
       grp.entregadas++;
       grp.revenue += total;
+      grp.utilidad += profit;
     } else if (st === 'devolucion') grp.devueltas++;
     else if (st === 'cancelada') grp.canceladas++;
     else if (
@@ -321,6 +315,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
         dropi_order_id: order.dropi_order_id,
         status: st,
         total,
+        profit, // AGREGADO
         client_name: `${order.name || ''} ${order.surname || ''}`.trim(),
         ctwa_clid: winner.ctwa_clid,
         msg_at: winner.created_at.toISOString(),
@@ -331,7 +326,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     }
   }
 
-  // 5) Enriquecer top ads
+  // Enriquecer top ads — agrega utilidad_estimada, roi_estimado, effective_status
   const enriched = ads.slice(0, limit).map((ad) => {
     const adId = String(ad.ad_id);
     const real = bySourceId.get(adId) || {
@@ -341,6 +336,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       canceladas: 0,
       en_camino: 0,
       revenue: 0,
+      utilidad: 0,
       orders_sample: [],
       last_ctwa_clid: null,
       last_headline: null,
@@ -352,6 +348,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       campaign_name: ad.campaign_name,
       post_id: ad.post_id,
       thumbnail_url: ad.thumbnail_url,
+      effective_status: ad.effective_status || null, // AGREGADO
       spend: Math.round(spend * 100) / 100,
       impressions: Number(ad.impressions || 0),
       clicks: Number(ad.clicks || 0),
@@ -359,14 +356,15 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       cpc: Number(ad.cpc || 0),
       msgs: Number(ad.messaging_conversations || 0),
       cpa_msg: Number(ad.cpa_messaging || 0),
-      // Atribución 1:1 REAL — nombres con sufijo "_estimadas" mantenidos por compat front
       ordenes_estimadas: real.ordenes,
       entregadas_estimadas: real.entregadas,
       devueltas_atribuidas: real.devueltas,
       canceladas_atribuidas: real.canceladas,
       en_camino_atribuidas: real.en_camino,
       revenue_estimado: Math.round(real.revenue * 100) / 100,
+      utilidad_estimada: Math.round(real.utilidad * 100) / 100, // AGREGADO
       roas_estimado: spend ? Math.round((real.revenue / spend) * 100) / 100 : 0,
+      roi_estimado: spend ? Math.round((real.utilidad / spend) * 100) / 100 : 0, // AGREGADO
       cpa_orden_estimado: real.ordenes
         ? Math.round((spend / real.ordenes) * 100) / 100
         : 0,
@@ -378,9 +376,10 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       sample_orders: real.orders_sample,
     };
   });
-  enriched.sort((a, b) => b.roas_estimado - a.roas_estimado);
+  // Ordenar por ROI desc (antes era ROAS)
+  enriched.sort((a, b) => b.roi_estimado - a.roi_estimado);
 
-  // 6) Compose response
+  // Totales
   const agg = aggRows[0] || {};
   const gasto = Number(m.spend || 0);
   const impr = Number(m.impressions || 0);
@@ -390,8 +389,16 @@ exports.dashboard = catchAsync(async (req, res, next) => {
   const ordenesTotal = Number(agg.ordenes_total || 0);
   const entregadas = Number(agg.entregadas || 0);
   const revenue = Number(agg.revenue_entregado || 0);
+  const utilidad = Number(agg.utilidad_entregada || 0);
   const ventaBruta = Number(agg.venta_bruta || 0);
   const ticketPromedio = entregadas > 0 ? revenue / entregadas : 0;
+  const ticketUtilidad = entregadas > 0 ? utilidad / entregadas : 0;
+
+  // Suma de utilidad atribuida (para totals del banner de ads)
+  const utilidadAtribuida = enriched.reduce(
+    (s, a) => s + Number(a.utilidad_estimada || 0),
+    0,
+  );
 
   return res.json({
     rango: { since, until },
@@ -412,9 +419,12 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       dinero: {
         gasto_ads: Math.round(gasto * 100) / 100,
         revenue_entregado: Math.round(revenue * 100) / 100,
+        utilidad_entregada: Math.round(utilidad * 100) / 100, // AGREGADO
+        ticket_promedio_utilidad: Math.round(ticketUtilidad * 100) / 100, // AGREGADO
         venta_bruta: Math.round(ventaBruta * 100) / 100,
         ticket_promedio_entrega: Math.round(ticketPromedio * 100) / 100,
         roas_real: Math.round(safeDiv(revenue, gasto) * 100) / 100,
+        roi_real: Math.round(safeDiv(utilidad, gasto) * 100) / 100, // AGREGADO
         cpa_mensaje: Math.round(cpaMsg * 100) / 100,
         cpa_orden: Math.round(safeDiv(gasto, ordenesTotal) * 100) / 100,
         cpa_entrega: Math.round(safeDiv(gasto, entregadas) * 100) / 100,
@@ -443,6 +453,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
           Math.round(
             enriched.reduce((s, a) => s + Number(a.revenue_estimado), 0) * 100,
           ) / 100,
+        utilidad_entregada_atribuida: Math.round(utilidadAtribuida * 100) / 100, // AGREGADO
       },
       items: enriched,
       total_items: enriched.length,

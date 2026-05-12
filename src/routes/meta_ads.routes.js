@@ -16,8 +16,9 @@ router.get('/insights/top-ads', metaAdsCtrl.insightsTopAds); // ?id_configuracio
 router.get('/campaigns', metaAdsCtrl.listarCampanias); // ?id_configuracion=
 router.post('/campaigns/toggle', metaAdsCtrl.toggleCampania); // { id_configuracion, campaign_id, status }
 
+// ── Ads ( pausar/activar un anuncio individual) ──
+router.post('/ads/toggle', metaAdsCtrl.toggleAd);
 // ── Sync manual (fuerza re-fetch de Meta) ──
-
 router.post('/sync', metaAdsCtrl.syncInsights);
 
 module.exports = router;
