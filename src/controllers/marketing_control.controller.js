@@ -1,48 +1,21 @@
 /**
- * marketing_control.controller.js — Sala de Control de Marketing.
- *
- * Cruza Meta Ads + Dropi "Compra por" para encontrar el ÁNGULO GANADOR
- * (qué creativo trae órdenes ENTREGADAS RENTABLES vs solo mensajes baratos).
- *
- * ATRIBUCIÓN EXACTA: usa el token Dropi de la cuenta "Compra por" (sub=94375,
- * aud=IMPORSUIT) que recibe SOLO órdenes de la conexión IMPORCHAT 277 (Meta Ads).
- * 1:1 real, sin contaminación de canales orgánicos.
+ * marketing_control.controller.js — Sala de Control de Marketing
  *
  * Endpoints:
- *   GET /api/v1/marketing-control/funnel?id_configuracion&since&until
- *   GET /api/v1/marketing-control/top-ads?id_configuracion&since&until&limit
+ *   GET /api/v1/marketing-control/dashboard?id_configuracion&since&until&limit
+ *   GET /api/v1/marketing-control/healthz?id_configuracion
  */
 
 const axios = require('axios');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
+const { db } = require('../database/config');
+const DropiIntegrations = require('../models/dropi_integrations.model');
 const logger = require('../utils/logger');
 
-// ───── Config ─────
-const DROPI_BASE_EC = process.env.DROPI_BASE_URL_EC || 'https://api.dropi.ec/integrations';
-const DROPI_KEY_HEADER = process.env.DROPI_KEY_HEADER || 'dropi-integration-key';
-const COMPRA_POR_TOKEN = process.env.DROPI_COMPRA_POR_API_KEY || '';
-
-// Default conexión Meta Ads (la única con Meta hoy, verificada 2026-05-10)
-const DEFAULT_CONFIG_ID = parseInt(process.env.MC_DEFAULT_CONFIG_ID || '277', 10);
-
-// Caché in-memory del fetch all Dropi Compra por (5 min)
-const _CP_CACHE = { data: null, fetchedAt: 0, tokenHash: '' };
-const CP_CACHE_TTL_MS = 5 * 60 * 1000;
-const PAGE_SIZE = 50;
-const MAX_PAGES = 50;
-
-// Status mapping
-const STATUS_ENTREGADO = new Set(['ENTREGADO']);
-const STATUS_DEVUELTO = new Set(['DEVOLUCION', 'DEVUELTO']);
-const STATUS_CANCELADO = new Set(['CANCELADO', 'RECHAZADO']);
-const STATUS_EN_CAMINO = new Set([
-  'PENDIENTE', 'PENDIENTE CONFIRMACION', 'GUIA_GENERADA', 'GUIA GENERADA',
-  'EN DISTRIBUCIÓN A CLIENTE', 'INGRESANDO OPERATIVO A',
-  'PARA RETIRO EN AGENCIA SERVIENTREGA', 'NOVEDAD',
-]);
-
-// ───── Helpers ─────
+// ════════════════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════════════════
 
 function safeDiv(num, den) {
   return den ? Number(num) / Number(den) : 0;
@@ -51,217 +24,328 @@ function safeDiv(num, den) {
 function validateRange(since, until) {
   const re = /^\d{4}-\d{2}-\d{2}$/;
   if (!re.test(since) || !re.test(until)) {
-    throw new AppError('Formato de fecha inválido — usa YYYY-MM-DD', 400);
+    throw new AppError('Formato de fecha YYYY-MM-DD requerido', 400);
   }
-  const dSince = new Date(since + 'T00:00:00Z');
-  const dUntil = new Date(until + 'T23:59:59Z');
-  if (dSince > dUntil) throw new AppError('since debe ser <= until', 400);
-  const diffDays = Math.floor((dUntil - dSince) / 86400000);
-  if (diffDays > 180) throw new AppError('Rango máximo: 180 días', 400);
+  if (new Date(since) > new Date(until)) {
+    throw new AppError('since debe ser <= until', 400);
+  }
+  const diffDays = Math.floor((new Date(until) - new Date(since)) / 86400000);
+  if (diffDays > 180) throw new AppError('Rango máximo 180 días', 400);
 }
 
-function _hashToken(t) {
-  // simple non-crypto hash for cache key
-  let h = 0;
-  for (let i = 0; i < t.length; i++) h = (h << 5) - h + t.charCodeAt(i) | 0;
-  return String(h);
-}
-
-async function fetchDropiPage(token, start, pageSize = PAGE_SIZE) {
-  // El token IMPORSUIT tiene IP allowlist a 98.91.50.83 → este server.
-  // No hace falta SOCKS5 (a diferencia del ERP que está en otra IP).
-  const url = `${DROPI_BASE_EC}/orders/myorders?result_number=${pageSize}&start=${start}`;
-  const headers = { [DROPI_KEY_HEADER]: token };
-  const resp = await axios.get(url, { headers, timeout: 30000 });
-  if (resp.status !== 200) {
-    throw new Error(`Dropi ${resp.status}: ${JSON.stringify(resp.data).slice(0, 200)}`);
-  }
-  return (resp.data && resp.data.objects) || [];
-}
-
-async function fetchAllCompraPor() {
-  if (!COMPRA_POR_TOKEN) {
-    throw new AppError(
-      'DROPI_COMPRA_POR_API_KEY no configurado en .env del backend',
-      500,
-    );
-  }
-  const tokenHash = _hashToken(COMPRA_POR_TOKEN);
-  const now = Date.now();
-  if (
-    _CP_CACHE.data
-    && _CP_CACHE.tokenHash === tokenHash
-    && (now - _CP_CACHE.fetchedAt) < CP_CACHE_TTL_MS
-  ) {
-    return _CP_CACHE.data;
-  }
-  const all = [];
-  let start = 0;
-  for (let i = 0; i < MAX_PAGES; i++) {
-    const page = await fetchDropiPage(COMPRA_POR_TOKEN, start);
-    if (page.length === 0) break;
-    all.push(...page);
-    if (page.length < PAGE_SIZE) break;
-    start += PAGE_SIZE;
-  }
-  _CP_CACHE.data = all;
-  _CP_CACHE.fetchedAt = now;
-  _CP_CACHE.tokenHash = tokenHash;
-  if (logger && logger.info) logger.info(`compra_por_fetched count=${all.length}`);
-  return all;
-}
-
-function aggDropiOrders(orders, since, until) {
-  const sinceDt = since + 'T00:00:00';
-  const untilDt = until + 'T23:59:59';
-  const filt = orders.filter(o => {
-    const ca = o.created_at || '';
-    return ca >= sinceDt && ca <= untilDt;
-  });
-
-  let entregadas = 0, devueltas = 0, canceladas = 0, enCamino = 0;
-  let revenue = 0, ventaBruta = 0;
-  for (const o of filt) {
-    const s = o.status || '';
-    const total = parseFloat(o.total_order || 0);
-    ventaBruta += total;
-    if (STATUS_ENTREGADO.has(s)) {
-      entregadas++;
-      revenue += total;
-    } else if (STATUS_DEVUELTO.has(s)) devueltas++;
-    else if (STATUS_CANCELADO.has(s)) canceladas++;
-    else if (STATUS_EN_CAMINO.has(s)) enCamino++;
-  }
-
-  return {
-    ordenesTotal: filt.length,
-    entregadas,
-    devueltas,
-    canceladas,
-    enCamino,
-    revenueEntregado: Math.round(revenue * 100) / 100,
-    ventaBrutaTotal: Math.round(ventaBruta * 100) / 100,
-    ticketPromedio: entregadas ? Math.round((revenue / entregadas) * 100) / 100 : 0,
-  };
+function normalizePhone(p) {
+  let d = String(p || '').replace(/\D/g, '');
+  if (d.startsWith('593')) d = d.slice(3);
+  if (d.startsWith('0')) d = d.slice(1);
+  return d.slice(-9);
 }
 
 /**
- * Llama internamente al endpoint /api/v1/meta_ads/insights/account del mismo
- * backend (localhost:3000) reusando el JWT del request entrante.
+ * Internal HTTP call al mismo backend.
+ * FIX: solo agrega Content-Type cuando hay body real. Antes mandaba "null"
+ * como body en GETs y body-parser de express reventaba.
  */
-async function callInternal(req, path) {
+async function callInternal(req, path, { method = 'get', data = null } = {}) {
   const auth = req.headers.authorization || '';
   const url = `http://127.0.0.1:${process.env.PORT || 3000}${path}`;
-  const resp = await axios.get(url, {
+
+  const config = {
+    method,
+    url,
     headers: { Authorization: auth },
     timeout: 30000,
     validateStatus: () => true,
-  });
+  };
+
+  if (data !== null && data !== undefined && method.toLowerCase() !== 'get') {
+    config.data = data;
+    config.headers['Content-Type'] = 'application/json';
+  }
+
+  const resp = await axios(config);
+
   if (resp.status >= 400) {
-    throw new Error(`internal ${path} → ${resp.status}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+    throw new AppError(
+      `Internal ${path} → ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`,
+      502,
+    );
   }
   return resp.data;
 }
 
-// ───── Endpoints ─────
+/**
+ * Verifica si el cache de Dropi está fresco. Si está stale, dispara sync
+ * background fire-and-forget vía dashboard-stats. No bloquea.
+ */
+async function ensureDropiCacheFresh({
+  req,
+  id_configuracion,
+  since,
+  until,
+  maxAgeMinutes = 15,
+}) {
+  const [rows] = await db.query(
+    `SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total
+     FROM dropi_orders_cache
+     WHERE id_configuracion = :idCfg
+       AND order_created_at BETWEEN :from AND :until`,
+    {
+      replacements: {
+        idCfg: id_configuracion,
+        from: `${since} 00:00:00`,
+        until: `${until} 23:59:59`,
+      },
+    },
+  );
 
-exports.funnel = catchAsync(async (req, res, next) => {
-  const idConfig = parseInt(req.query.id_configuracion || DEFAULT_CONFIG_ID, 10);
+  const fresh = rows?.[0] || {};
+  const lastSync = fresh.last_sync ? new Date(fresh.last_sync) : null;
+  const totalCached = Number(fresh.total || 0);
+  const ageMin = lastSync
+    ? Math.floor((Date.now() - lastSync.getTime()) / 60000)
+    : null;
+  const isStale = !lastSync || ageMin > maxAgeMinutes;
+
+  if (isStale) {
+    axios
+      .post(
+        `http://127.0.0.1:${process.env.PORT || 3000}/api/v1/dropi/dashboard-stats`,
+        { id_configuracion, from: since, until },
+        {
+          headers: {
+            Authorization: req.headers.authorization || '',
+            'Content-Type': 'application/json',
+          },
+          timeout: 5000,
+          validateStatus: () => true,
+        },
+      )
+      .catch((err) => {
+        if (logger?.warn) logger.warn(`mc-sync-trigger-failed: ${err.message}`);
+      });
+  }
+
+  return { lastSync, ageMin, isStale, totalCached };
+}
+
+// ════════════════════════════════════════════════════════════
+// Endpoint UNIFICADO: GET /dashboard
+// Funnel + Attribution en una sola respuesta
+// 2 calls a Meta (account + top-ads), 3 queries SQL, todo en paralelo
+// ════════════════════════════════════════════════════════════
+
+const WINDOW_HOURS = 72; // ventana de atribución fija. No la expongas al front.
+
+exports.dashboard = catchAsync(async (req, res, next) => {
+  const id_configuracion = parseInt(req.query.id_configuracion, 10);
   const since = String(req.query.since || '');
   const until = String(req.query.until || '');
+  const limit = Math.min(50, parseInt(req.query.limit || '30', 10));
   validateRange(since, until);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
 
-  // 1) Meta Ads account (interno) + 2) Dropi Compra por
-  const [metaData, allCp] = await Promise.all([
-    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
-    fetchAllCompraPor(),
-  ]);
-
-  if (!metaData.success) {
-    return next(new AppError(`Meta Ads fail: ${(metaData.message || '').slice(0, 200)}`, 502));
-  }
-  const m = metaData.data || {};
-
-  const gasto = parseFloat(m.spend || 0);
-  const impr = parseInt(m.impressions || 0, 10);
-  const clicks = parseInt(m.clicks || 0, 10);
-  const msgs = parseInt(m.messaging_conversations || 0, 10);
-  const cpaMsg = parseFloat(m.cpa_messaging || 0);
-
-  const agg = aggDropiOrders(allCp, since, until);
-  const { ordenesTotal, entregadas, revenueEntregado: revenue } = agg;
-
-  res.json({
-    rango: { since, until },
-    config_meta: { id_configuracion: idConfig, currency: metaData.currency || 'USD' },
-    embudo: {
-      impresiones: impr,
-      clicks,
-      msgs_wa: msgs,
-      ordenes_dropi: ordenesTotal,
-      entregadas,
-      devueltas: agg.devueltas,
-      canceladas: agg.canceladas,
-      en_camino: agg.enCamino,
-    },
-    dinero: {
-      gasto_ads: Math.round(gasto * 100) / 100,
-      revenue_entregado: revenue,
-      venta_bruta: agg.ventaBrutaTotal,
-      ticket_promedio_entrega: agg.ticketPromedio,
-      roas_real: Math.round(safeDiv(revenue, gasto) * 100) / 100,
-      cpa_mensaje: Math.round(cpaMsg * 100) / 100,
-      cpa_orden: Math.round(safeDiv(gasto, ordenesTotal) * 100) / 100,
-      cpa_entrega: Math.round(safeDiv(gasto, entregadas) * 100) / 100,
-    },
-    tasas_pct: {
-      ctr: Math.round(safeDiv(clicks, impr) * 10000) / 100,
-      click_to_msg: Math.round(safeDiv(msgs, clicks) * 10000) / 100,
-      msg_to_orden: Math.round(safeDiv(ordenesTotal, msgs) * 10000) / 100,
-      orden_to_entrega: Math.round(safeDiv(entregadas, ordenesTotal) * 10000) / 100,
-    },
-    atribucion: {
-      tipo: 'exacta_canal_dropi',
-      detalle: 'Órdenes del canal Dropi "Compra por" (sub=94375 IMPORSUIT), que recibe exclusivamente tráfico de la conexión IMPORCHAT 277.',
-      total_cuenta_dropi: allCp.length,
-    },
+  // 1) Disparar sync de Dropi si el cache está stale (no bloquea)
+  const cacheStatus = await ensureDropiCacheFresh({
+    req,
+    id_configuracion,
+    since,
+    until,
   });
-});
 
-exports.topAds = catchAsync(async (req, res, next) => {
-  const idConfig = parseInt(req.query.id_configuracion || DEFAULT_CONFIG_ID, 10);
-  const since = String(req.query.since || '');
-  const until = String(req.query.until || '');
-  const limit = Math.min(50, parseInt(req.query.limit || '20', 10));
-  validateRange(since, until);
+  // 2) PARALELO: Meta account + Meta top-ads + queries SQL
+  const tr = encodeURIComponent(JSON.stringify({ since, until }));
+  const windowMs = WINDOW_HOURS * 60 * 60 * 1000;
+  const sinceExt = new Date(new Date(since + 'T00:00:00').getTime() - windowMs)
+    .toISOString()
+    .slice(0, 19)
+    .replace('T', ' ');
 
-  const [acctResp, adsResp, allCp] = await Promise.all([
-    callInternal(req, `/api/v1/meta_ads/insights/account?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
-    callInternal(req, `/api/v1/meta_ads/insights/top-ads?id_configuracion=${idConfig}&time_range=${encodeURIComponent(JSON.stringify({since, until}))}`),
-    fetchAllCompraPor(),
-  ]);
+  const [acctResp, adsResp, aggResult, orderResult, msgResult] =
+    await Promise.all([
+      callInternal(
+        req,
+        `/api/v1/meta_ads/insights/account?id_configuracion=${id_configuracion}&time_range=${tr}`,
+      ),
+      callInternal(
+        req,
+        `/api/v1/meta_ads/insights/top-ads?id_configuracion=${id_configuracion}&time_range=${tr}&limit=50`,
+      ),
+      db.query(
+        `SELECT
+         COUNT(*) AS ordenes_total,
+         SUM(CASE WHEN classified_status = 'entregada'  THEN 1 ELSE 0 END) AS entregadas,
+         SUM(CASE WHEN classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devueltas,
+         SUM(CASE WHEN classified_status = 'cancelada'  THEN 1 ELSE 0 END) AS canceladas,
+         SUM(CASE WHEN classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS en_camino,
+         SUM(CASE WHEN classified_status = 'entregada'  THEN total_order ELSE 0 END) AS revenue_entregado,
+         SUM(total_order) AS venta_bruta
+       FROM dropi_orders_cache
+       WHERE id_configuracion = :idCfg
+         AND order_created_at BETWEEN :from AND :until`,
+        {
+          replacements: {
+            idCfg: id_configuracion,
+            from: `${since} 00:00:00`,
+            until: `${until} 23:59:59`,
+          },
+        },
+      ),
+      db.query(
+        `SELECT dropi_order_id, phone, name, surname, classified_status,
+              total_order, product_names, order_created_at
+       FROM dropi_orders_cache
+       WHERE id_configuracion = :idCfg
+         AND order_created_at BETWEEN :from AND :until`,
+        {
+          replacements: {
+            idCfg: id_configuracion,
+            from: `${since} 00:00:00`,
+            until: `${until} 23:59:59`,
+          },
+        },
+      ),
+      db.query(
+        `SELECT cpa.id_cliente, cpa.source_id, cpa.ctwa_clid, cpa.headline,
+              cpa.created_at AS msg_at,
+              cc.celular_cliente, cc.telefono_limpio
+       FROM cliente_productos_ad cpa
+       INNER JOIN clientes_chat_center cc ON cc.id = cpa.id_cliente
+       WHERE cpa.id_configuracion = :idCfg
+         AND cpa.source_id IS NOT NULL
+         AND cpa.source_id != ''
+         AND cpa.created_at BETWEEN :fromExt AND :until`,
+        {
+          replacements: {
+            idCfg: id_configuracion,
+            fromExt: sinceExt,
+            until: `${until} 23:59:59`,
+          },
+        },
+      ),
+    ]);
 
-  if (!acctResp.success) {
-    return next(new AppError(`Meta acct fail: ${(acctResp.message || '').slice(0, 200)}`, 502));
-  }
-  if (!adsResp.success) {
-    return next(new AppError(`Meta ads fail: ${(adsResp.message || '').slice(0, 200)}`, 502));
-  }
+  if (!acctResp.success)
+    return next(new AppError(`Meta account: ${acctResp.message}`, 502));
+  if (!adsResp.success)
+    return next(new AppError(`Meta top-ads: ${adsResp.message}`, 502));
 
-  const acct = acctResp.data || {};
+  const m = acctResp.data || {};
   const ads = adsResp.data || [];
-  const totalMsgs = parseInt(acct.messaging_conversations || 0, 10);
+  const [aggRows] = aggResult;
+  const [orderRows] = orderResult;
+  const [msgRows] = msgResult;
 
-  const agg = aggDropiOrders(allCp, since, until);
-  const { ordenesTotal: totalOrdenes, entregadas: totalEntregadas, revenueEntregado: totalRevenue } = agg;
+  // 3) Index mensajes por teléfono normalizado
+  const msgsByPhone = new Map();
+  for (const msg of msgRows) {
+    const key = normalizePhone(msg.telefono_limpio || msg.celular_cliente);
+    if (!key) continue;
+    if (!msgsByPhone.has(key)) msgsByPhone.set(key, []);
+    msgsByPhone.get(key).push({
+      source_id: String(msg.source_id),
+      ctwa_clid: msg.ctwa_clid,
+      headline: msg.headline,
+      created_at: new Date(msg.msg_at),
+    });
+  }
+  for (const arr of msgsByPhone.values()) {
+    arr.sort((a, b) => b.created_at - a.created_at);
+  }
 
-  const enriched = ads.slice(0, limit).map(ad => {
-    const msgsAd = parseInt(ad.messaging_conversations || 0, 10);
-    const spend = parseFloat(ad.spend || 0);
-    const share = safeDiv(msgsAd, totalMsgs);
-    const ordenesEst = totalOrdenes * share;
-    const entregadasEst = totalEntregadas * share;
-    const revenueEst = totalRevenue * share;
+  // 4) Match 1:1 last-touch
+  const bySourceId = new Map();
+  let matched = 0;
+  let huerfanas = 0;
+
+  for (const order of orderRows) {
+    const phoneKey = normalizePhone(order.phone);
+    if (!phoneKey) {
+      huerfanas++;
+      continue;
+    }
+    const candidates = msgsByPhone.get(phoneKey) || [];
+    if (!candidates.length) {
+      huerfanas++;
+      continue;
+    }
+
+    const orderTime = new Date(order.order_created_at);
+    const windowStart = new Date(orderTime.getTime() - windowMs);
+    const winner = candidates.find(
+      (c) => c.created_at >= windowStart && c.created_at <= orderTime,
+    );
+    if (!winner) {
+      huerfanas++;
+      continue;
+    }
+
+    matched++;
+    const sid = winner.source_id;
+    if (!bySourceId.has(sid)) {
+      bySourceId.set(sid, {
+        ordenes: 0,
+        entregadas: 0,
+        devueltas: 0,
+        canceladas: 0,
+        en_camino: 0,
+        revenue: 0,
+        orders_sample: [],
+        last_ctwa_clid: winner.ctwa_clid,
+        last_headline: winner.headline,
+      });
+    }
+    const grp = bySourceId.get(sid);
+    grp.ordenes++;
+    const total = Number(order.total_order || 0);
+    const st = order.classified_status;
+    if (st === 'entregada') {
+      grp.entregadas++;
+      grp.revenue += total;
+    } else if (st === 'devolucion') grp.devueltas++;
+    else if (st === 'cancelada') grp.canceladas++;
+    else if (
+      [
+        'en_transito',
+        'en_reparto',
+        'novedad',
+        'retiro_agencia',
+        'guia_generada',
+        'pendiente',
+      ].includes(st)
+    )
+      grp.en_camino++;
+
+    if (grp.orders_sample.length < 5) {
+      grp.orders_sample.push({
+        dropi_order_id: order.dropi_order_id,
+        status: st,
+        total,
+        client_name: `${order.name || ''} ${order.surname || ''}`.trim(),
+        ctwa_clid: winner.ctwa_clid,
+        msg_at: winner.created_at.toISOString(),
+        order_at: orderTime.toISOString(),
+        hours_msg_to_order:
+          Math.round(((orderTime - winner.created_at) / 3600000) * 10) / 10,
+      });
+    }
+  }
+
+  // 5) Enriquecer top ads
+  const enriched = ads.slice(0, limit).map((ad) => {
+    const adId = String(ad.ad_id);
+    const real = bySourceId.get(adId) || {
+      ordenes: 0,
+      entregadas: 0,
+      devueltas: 0,
+      canceladas: 0,
+      en_camino: 0,
+      revenue: 0,
+      orders_sample: [],
+      last_ctwa_clid: null,
+      last_headline: null,
+    };
+    const spend = Number(ad.spend || 0);
     return {
       ad_id: ad.ad_id,
       ad_name: ad.ad_name,
@@ -269,47 +353,155 @@ exports.topAds = catchAsync(async (req, res, next) => {
       post_id: ad.post_id,
       thumbnail_url: ad.thumbnail_url,
       spend: Math.round(spend * 100) / 100,
-      impressions: parseInt(ad.impressions || 0, 10),
-      clicks: parseInt(ad.clicks || 0, 10),
-      ctr: Math.round(parseFloat(ad.ctr || 0) * 100) / 100,
-      cpc: Math.round(parseFloat(ad.cpc || 0) * 10000) / 10000,
-      msgs: msgsAd,
-      cpa_msg: Math.round(parseFloat(ad.cpa_messaging || 0) * 100) / 100,
-      share_msgs_pct: Math.round(share * 10000) / 100,
-      ordenes_estimadas: Math.round(ordenesEst * 10) / 10,
-      entregadas_estimadas: Math.round(entregadasEst * 10) / 10,
-      revenue_estimado: Math.round(revenueEst * 100) / 100,
-      roas_estimado: Math.round(safeDiv(revenueEst, spend) * 100) / 100,
-      cpa_orden_estimado: ordenesEst ? Math.round(safeDiv(spend, ordenesEst) * 100) / 100 : 0,
+      impressions: Number(ad.impressions || 0),
+      clicks: Number(ad.clicks || 0),
+      ctr: Number(ad.ctr || 0),
+      cpc: Number(ad.cpc || 0),
+      msgs: Number(ad.messaging_conversations || 0),
+      cpa_msg: Number(ad.cpa_messaging || 0),
+      // Atribución 1:1 REAL — nombres con sufijo "_estimadas" mantenidos por compat front
+      ordenes_estimadas: real.ordenes,
+      entregadas_estimadas: real.entregadas,
+      devueltas_atribuidas: real.devueltas,
+      canceladas_atribuidas: real.canceladas,
+      en_camino_atribuidas: real.en_camino,
+      revenue_estimado: Math.round(real.revenue * 100) / 100,
+      roas_estimado: spend ? Math.round((real.revenue / spend) * 100) / 100 : 0,
+      cpa_orden_estimado: real.ordenes
+        ? Math.round((spend / real.ordenes) * 100) / 100
+        : 0,
+      cpa_entrega: real.entregadas
+        ? Math.round((spend / real.entregadas) * 100) / 100
+        : 0,
+      product_attributed: real.last_headline,
+      last_ctwa_clid: real.last_ctwa_clid,
+      sample_orders: real.orders_sample,
     };
   });
-
   enriched.sort((a, b) => b.roas_estimado - a.roas_estimado);
 
-  res.json({
+  // 6) Compose response
+  const agg = aggRows[0] || {};
+  const gasto = Number(m.spend || 0);
+  const impr = Number(m.impressions || 0);
+  const clicks = Number(m.clicks || 0);
+  const msgs = Number(m.messaging_conversations || 0);
+  const cpaMsg = Number(m.cpa_messaging || 0);
+  const ordenesTotal = Number(agg.ordenes_total || 0);
+  const entregadas = Number(agg.entregadas || 0);
+  const revenue = Number(agg.revenue_entregado || 0);
+  const ventaBruta = Number(agg.venta_bruta || 0);
+  const ticketPromedio = entregadas > 0 ? revenue / entregadas : 0;
+
+  return res.json({
     rango: { since, until },
-    config_meta: { id_configuracion: idConfig },
-    totales_rango: {
-      msgs_meta: totalMsgs,
-      ordenes_dropi: totalOrdenes,
-      entregadas_dropi: totalEntregadas,
-      revenue_entregado: totalRevenue,
-      gasto_total: Math.round(parseFloat(acct.spend || 0) * 100) / 100,
+    window_hours: WINDOW_HOURS,
+    config: { id_configuracion, currency: acctResp.currency || 'USD' },
+
+    funnel: {
+      embudo: {
+        impresiones: impr,
+        clicks,
+        msgs_wa: msgs,
+        ordenes_dropi: ordenesTotal,
+        entregadas,
+        devueltas: Number(agg.devueltas || 0),
+        canceladas: Number(agg.canceladas || 0),
+        en_camino: Number(agg.en_camino || 0),
+      },
+      dinero: {
+        gasto_ads: Math.round(gasto * 100) / 100,
+        revenue_entregado: Math.round(revenue * 100) / 100,
+        venta_bruta: Math.round(ventaBruta * 100) / 100,
+        ticket_promedio_entrega: Math.round(ticketPromedio * 100) / 100,
+        roas_real: Math.round(safeDiv(revenue, gasto) * 100) / 100,
+        cpa_mensaje: Math.round(cpaMsg * 100) / 100,
+        cpa_orden: Math.round(safeDiv(gasto, ordenesTotal) * 100) / 100,
+        cpa_entrega: Math.round(safeDiv(gasto, entregadas) * 100) / 100,
+      },
+      tasas_pct: {
+        ctr: Math.round(safeDiv(clicks, impr) * 10000) / 100,
+        click_to_msg: Math.round(safeDiv(msgs, clicks) * 10000) / 100,
+        msg_to_orden: Math.round(safeDiv(ordenesTotal, msgs) * 10000) / 100,
+        orden_to_entrega:
+          Math.round(safeDiv(entregadas, ordenesTotal) * 10000) / 100,
+      },
     },
-    items: enriched,
-    total_items: enriched.length,
-    atribucion: {
-      tipo: 'exacta_canal + share_msgs_por_ad',
-      detalle: 'Totales del canal Compra por (1:1 Meta) repartidos entre ads por share de mensajes.',
+
+    attribution: {
+      totales_rango: {
+        msgs_meta: msgs,
+        ordenes_dropi_total: orderRows.length,
+        ordenes_atribuidas: matched,
+        ordenes_huerfanas: huerfanas,
+        pct_atribuidas: orderRows.length
+          ? Math.round((matched / orderRows.length) * 1000) / 10
+          : 0,
+        ads_con_ventas: bySourceId.size,
+        gasto_total: Math.round(gasto * 100) / 100,
+        revenue_entregado_atribuido:
+          Math.round(
+            enriched.reduce((s, a) => s + Number(a.revenue_estimado), 0) * 100,
+          ) / 100,
+      },
+      items: enriched,
+      total_items: enriched.length,
+      tipo: `1:1_telefono_ventana_${WINDOW_HOURS}h`,
+      metodo: 'last-touch',
+    },
+
+    cache: {
+      age_minutes: cacheStatus.ageMin,
+      total_orders: cacheStatus.totalCached,
+      was_stale_triggered_sync: cacheStatus.isStale,
     },
   });
 });
 
-exports.healthz = (req, res) => {
-  res.json({
-    ok: true,
-    has_compra_por_token: Boolean(COMPRA_POR_TOKEN),
-    cache_size: (_CP_CACHE.data && _CP_CACHE.data.length) || 0,
-    cache_age_seconds: _CP_CACHE.fetchedAt ? Math.floor((Date.now() - _CP_CACHE.fetchedAt) / 1000) : null,
+// ════════════════════════════════════════════════════════════
+// GET /healthz
+// ════════════════════════════════════════════════════════════
+
+exports.healthz = catchAsync(async (req, res) => {
+  const id_configuracion = parseInt(req.query.id_configuracion, 10);
+  if (!id_configuracion) {
+    return res.json({ ok: false, error: 'id_configuracion requerido' });
+  }
+
+  const integration = await DropiIntegrations.findOne({
+    where: { id_configuracion, deleted_at: null, is_active: 1 },
+    attributes: ['id', 'country_code', 'store_name', 'integration_key_last4'],
   });
-};
+
+  const [counts] = await db.query(
+    `SELECT
+       (SELECT COUNT(*) FROM dropi_orders_cache WHERE id_configuracion = :idCfg) AS cache_size,
+       (SELECT MAX(synced_at) FROM dropi_orders_cache WHERE id_configuracion = :idCfg) AS last_sync,
+       (SELECT COUNT(*) FROM cliente_productos_ad WHERE id_configuracion = :idCfg AND source_id IS NOT NULL AND source_id != '') AS msgs_with_ad`,
+    { replacements: { idCfg: id_configuracion } },
+  );
+
+  const row = counts[0] || {};
+  return res.json({
+    ok: true,
+    id_configuracion,
+    dropi_integration: integration
+      ? {
+          active: true,
+          country: integration.country_code,
+          store: integration.store_name,
+          key_last4: integration.integration_key_last4,
+        }
+      : { active: false },
+    dropi_orders_cache: {
+      total: Number(row.cache_size || 0),
+      last_sync: row.last_sync || null,
+      age_minutes: row.last_sync
+        ? Math.floor((Date.now() - new Date(row.last_sync).getTime()) / 60000)
+        : null,
+    },
+    cliente_productos_ad: {
+      msgs_with_source_id: Number(row.msgs_with_ad || 0),
+    },
+  });
+});
