@@ -563,10 +563,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   if (!columna) return next(new AppError('Columna no encontrada', 404));
   if (!columna.api_key_openai)
     return next(new AppError('Sin API key de OpenAI', 400));
-  if (!columna.instrucciones)
-    return next(
-      new AppError('Esta columna no tiene instrucciones configuradas', 400),
-    );
 
   const headers = {
     Authorization: `Bearer ${columna.api_key_openai}`,

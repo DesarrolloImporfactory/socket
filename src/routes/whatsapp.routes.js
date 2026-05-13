@@ -3604,4 +3604,6 @@ router.put('/programados_editar_fecha', whatsappCtrl.editarFechaLote);
 router.delete('/programados_cancelar_lote', whatsappCtrl.cancelarLote);
 router.post('/programados_reintentar_lote', whatsappCtrl.reintentarLote);
 
+router.get('/numero_status', whatsappCtrl.numero_status);
+
 module.exports = router;
