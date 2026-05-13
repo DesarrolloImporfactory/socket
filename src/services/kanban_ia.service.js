@@ -23,6 +23,58 @@ const servicioAppointments = require('../services/appointments.service');
 const logsDir = require('path').join(process.cwd(), './src/logs/logs_meta');
 const fs = require('fs').promises;
 
+function esSinSaldo(err) {
+  const status = err?.response?.status;
+  const code = err?.response?.data?.error?.code;
+  const msg = err?.response?.data?.error?.message || '';
+  return (
+    (status === 429 && code === 'insufficient_quota') ||
+    status === 402 ||
+    msg.toLowerCase().includes('exceeded your current quota') ||
+    msg.toLowerCase().includes('insufficient_quota')
+  );
+}
+
+async function marcarOpenAIInactivo(id_configuracion, motivo) {
+  try {
+    await db.query(
+      `UPDATE configuraciones
+       SET openai_activo = 0,
+           openai_error_at = NOW(),
+           openai_error_msg = ?
+       WHERE id = ?`,
+      {
+        replacements: [
+          motivo?.slice(0, 500) || 'Error desconocido',
+          id_configuracion,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    await log(`🔴 OpenAI marcado INACTIVO para config=${id_configuracion}`);
+  } catch (err) {
+    await log(`⚠️ No se pudo marcar openai_activo=0: ${err.message}`);
+  }
+}
+
+async function marcarOpenAIActivo(id_configuracion) {
+  try {
+    await db.query(
+      `UPDATE configuraciones
+       SET openai_activo = 1,
+           openai_error_at = NULL,
+           openai_error_msg = NULL
+       WHERE id = ? AND openai_activo = 0`,
+      {
+        replacements: [id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  } catch (err) {
+    await log(`⚠️ No se pudo marcar openai_activo=1: ${err.message}`);
+  }
+}
+
 async function log(msg) {
   await fs.mkdir(logsDir, { recursive: true });
   await fs.appendFile(
@@ -204,14 +256,27 @@ async function procesarMensajeKanban(params) {
     .catch(async (err) => log(`⚠️ Error enviando mensaje: ${err.message}`));
 
   // ── 9. Ejecutar asistente principal ───────────────────────
-  const resultado = await ejecutarAsistente({
-    id_thread,
-    assistant_id: columna.assistant_id,
-    mensaje: null, // ya enviado arriba
-    max_tokens: columna.max_tokens || 500,
-    headers,
-    skip_send_message: true, // mensaje ya fue enviado
-  });
+  let resultado;
+  try {
+    resultado = await ejecutarAsistente({
+      id_thread,
+      assistant_id: columna.assistant_id,
+      mensaje: null,
+      max_tokens: columna.max_tokens || 500,
+      headers,
+      skip_send_message: true,
+    });
+  } catch (err) {
+    if (err.code === 'sin_saldo_openai') {
+      await log(`🚨 SIN SALDO OPENAI para config=${id_configuracion}`);
+      await marcarOpenAIInactivo(
+        id_configuracion,
+        err?.response?.data?.error?.message || 'Sin saldo OpenAI',
+      );
+      return { ok: false, motivo: 'sin_saldo_openai' };
+    }
+    throw err;
+  }
 
   if (!resultado || !resultado.respuesta) {
     await log(`⚠️ Asistente sin respuesta para columna="${columna.nombre}"`);
@@ -322,6 +387,9 @@ async function procesarMensajeKanban(params) {
     });
   }
 
+  // ✅ Si llegó hasta aquí, OpenAI está funcionando
+  await marcarOpenAIActivo(id_configuracion);
+
   return { ok: true, respuesta_enviada: soloTexto, total_tokens };
 }
 
@@ -373,65 +441,76 @@ async function ejecutarAsistente({
   headers,
   skip_send_message = false,
 }) {
-  // Enviar mensaje si se requiere
-  if (!skip_send_message && mensaje) {
-    await axios.post(
+  try {
+    if (!skip_send_message && mensaje) {
+      await axios.post(
+        `https://api.openai.com/v1/threads/${id_thread}/messages`,
+        { role: 'user', content: mensaje },
+        { headers },
+      );
+    }
+
+    const runRes = await axios.post(
+      `https://api.openai.com/v1/threads/${id_thread}/runs`,
+      { assistant_id, max_completion_tokens: max_tokens },
+      { headers },
+    );
+    const run_id = runRes?.data?.id;
+    if (!run_id) throw new Error('No se pudo crear run');
+
+    let statusRun = 'queued';
+    let attempts = 0;
+    let total_tokens = 0;
+
+    while (
+      statusRun !== 'completed' &&
+      statusRun !== 'failed' &&
+      attempts < 25
+    ) {
+      await new Promise((r) => setTimeout(r, 1200));
+      attempts++;
+      const statusRes = await axios.get(
+        `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+        { headers },
+      );
+      statusRun = statusRes.data.status;
+      if (statusRes.data.usage) {
+        total_tokens = statusRes.data.usage.total_tokens || 0;
+      }
+      await log(`run ${run_id} intento=${attempts} status=${statusRun}`);
+
+      if (statusRun === 'failed') {
+        const lastErr = statusRes.data.last_error;
+        throw new Error(`Run falló: ${JSON.stringify(lastErr)}`);
+      }
+    }
+
+    if (statusRun !== 'completed')
+      throw new Error(`Run no completó (status=${statusRun})`);
+
+    const messagesRes = await axios.get(
       `https://api.openai.com/v1/threads/${id_thread}/messages`,
-      { role: 'user', content: mensaje },
       { headers },
     );
-  }
+    const mensajes = messagesRes.data.data || [];
+    const textBlock = mensajes
+      .reverse()
+      .find((m) => m.role === 'assistant' && m.run_id === run_id)
+      ?.content?.[0]?.text;
 
-  // Crear run
-  const runRes = await axios.post(
-    `https://api.openai.com/v1/threads/${id_thread}/runs`,
-    { assistant_id, max_completion_tokens: max_tokens },
-    { headers },
-  );
-  const run_id = runRes?.data?.id;
-  if (!run_id) throw new Error('No se pudo crear run');
-
-  // Polling
-  let statusRun = 'queued';
-  let attempts = 0;
-  let total_tokens = 0;
-
-  while (statusRun !== 'completed' && statusRun !== 'failed' && attempts < 25) {
-    await new Promise((r) => setTimeout(r, 1200));
-    attempts++;
-    const statusRes = await axios.get(
-      `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
-      { headers },
-    );
-    statusRun = statusRes.data.status;
-    if (statusRes.data.usage) {
-      total_tokens = statusRes.data.usage.total_tokens || 0;
+    const respuesta = limpiarCitasFileSearch(textBlock);
+    return { respuesta, total_tokens };
+  } catch (err) {
+    if (esSinSaldo(err)) {
+      await log(
+        `🚨 SIN SALDO OPENAI: ${err?.response?.data?.error?.message || err.message}`,
+      );
+      const e = new Error('sin_saldo_openai');
+      e.code = 'sin_saldo_openai';
+      throw e;
     }
-    await log(`run ${run_id} intento=${attempts} status=${statusRun}`);
-
-    if (statusRun === 'failed') {
-      const lastErr = statusRes.data.last_error;
-      throw new Error(`Run falló: ${JSON.stringify(lastErr)}`);
-    }
+    throw err;
   }
-
-  if (statusRun !== 'completed')
-    throw new Error(`Run no completó (status=${statusRun})`);
-
-  // Obtener respuesta
-  const messagesRes = await axios.get(
-    `https://api.openai.com/v1/threads/${id_thread}/messages`,
-    { headers },
-  );
-  const mensajes = messagesRes.data.data || [];
-  const textBlock = mensajes
-    .reverse()
-    .find((m) => m.role === 'assistant' && m.run_id === run_id)
-    ?.content?.[0]?.text;
-
-  const respuesta = limpiarCitasFileSearch(textBlock);
-
-  return { respuesta, total_tokens };
 }
 
 // ══════════════════════════════════════════════════════════════

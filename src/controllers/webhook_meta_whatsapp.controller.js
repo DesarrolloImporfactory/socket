@@ -507,12 +507,12 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         case 'location':
           const location = mensaje_recibido?.location;
-
+/* 
           console.log('location: ' + location);
 
           console.log('location?.latitude: ' + location?.latitude);
 
-          console.log('location?.longitude: ' + location?.longitude);
+          console.log('location?.longitude: ' + location?.longitude); */
 
           texto_mensaje = JSON.stringify({
             latitude: location?.latitude,
@@ -614,11 +614,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           texto_mensaje +
           ` \n`,
       );
-      console.log(
+      /* console.log(
         `[${new Date().toISOString()}] Mensaje procesado:` +
           texto_mensaje +
           ` \n`,
-      );
+      ); */
 
       let id_cliente = null;
       let bot_openia = 1;
@@ -705,8 +705,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       /* console.log(`Después de mensaje procesado\n`) */
 
       /* obtener id_cliente_configuracion */
-      console.log('id_configuracion: ' + id_configuracion);
-      console.log('telefono_configuracion: ' + telefono_configuracion);
       let clienteExisteConfiguracion = await ClientesChatCenter.findOne({
         where: { celular_cliente: telefono_configuracion, id_configuracion },
       });
@@ -782,11 +780,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               creacion_mensaje.id
             }\n`,
           );
-          console.log(
-            `[${new Date().toISOString()}] ✅ Mensaje guardado en DB como smb_message_echoes con ID ${
-              creacion_mensaje.id
-            }`,
-          );
           return;
         }
 
@@ -795,11 +788,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
             creacion_mensaje.id
           }\n`,
-        );
-        console.log(
-          `[${new Date().toISOString()}] ✅ Mensaje guardado en DB con ID ${
-            creacion_mensaje.id
-          }`,
         );
 
         /* enviar notificacion al socket */
@@ -908,7 +896,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 api_key_openai,
               );
 
-            console.log('texto_transcrito: ' + texto_transcrito);
+            /* console.log('texto_transcrito: ' + texto_transcrito); */
             if (texto_transcrito) {
               texto_mensaje = texto_transcrito;
               await fsp.appendFile(
@@ -926,8 +914,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           /* await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */
 
           let respuesta_asistente = '';
-
-          console.log('tipo_configuracion:' + tipo_configuracion);
 
           if (tipo_configuracion == 'imporfactory') {
             respuesta_asistente = await enviarAsistenteGptImporfactory({
@@ -1349,7 +1335,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   .utc()
                   .format();
                 // Variables listas
-                console.log('📦 Datos extraídos de la cita:');
+                /* console.log('📦 Datos extraídos de la cita:');
                 console.log({
                   nombre,
                   telefono,
@@ -1358,7 +1344,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   fecha_hora_inicio_utc,
                   fecha_hora_fin_utc,
                   precio,
-                });
+                }); */
 
                 /* consultar id del calendarios */
                 const calendars = await db.query(
@@ -1638,7 +1624,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   .utc()
                   .format();
                 // Variables listas
-                console.log('📦 Datos extraídos de la cita:');
+                /* console.log('📦 Datos extraídos de la cita:');
                 console.log({
                   nombre,
                   telefono,
@@ -1647,7 +1633,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   fecha_hora_inicio_utc,
                   fecha_hora_fin_utc,
                   precio,
-                });
+                }); */
 
                 /* consultar id del calendarios */
                 const calendars = await db.query(
@@ -1838,10 +1824,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         /* validar si el chat ah sido cerrado */
 
         if (resultado_api) {
-          console.log({
+          /* console.log({
             status: 'success',
             message: 'Datos enviados a la API correctamente.',
-          });
+          }); */
         } else {
           console.log({
             status: 'error',

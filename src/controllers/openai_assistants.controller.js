@@ -1193,3 +1193,24 @@ exports.eliminar_thread = catchAsync(async (req, res, next) => {
     message: `Thread eliminado correctamente para id_cliente_chat_center: ${id_cliente_chat_center}`,
   });
 });
+
+exports.openai_status = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.query;
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta el campo id_cliente_chat_center', 400));
+  }
+
+  const [row] = await db.query(
+    `SELECT openai_activo, openai_error_at, openai_error_msg
+     FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  res.status(200).json({
+    status: '200',
+    openai_activo: row?.openai_activo ?? 1,
+    openai_error_at: row?.openai_error_at || null,
+    openai_error_msg: row?.openai_error_msg || null,
+  });
+});

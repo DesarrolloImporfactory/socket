@@ -15,7 +15,7 @@ async function withLock(lockName, fn) {
     });
 
     if (!row || Number(row.got) !== 1) {
-      console.log('🔒 No se obtuvo lock');
+      /* console.log('🔒 No se obtuvo lock'); */
       return;
     }
 

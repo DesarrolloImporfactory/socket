@@ -12,7 +12,7 @@ async function withLock(lockName, fn) {
     type: QueryTypes.SELECT,
   });
   if (!row || Number(row.got) !== 1) {
-    console.log('[cron-encuestas] 🔒 No se obtuvo lock, skip');
+    /* console.log('[cron-encuestas] 🔒 No se obtuvo lock, skip'); */
     return;
   }
   try {

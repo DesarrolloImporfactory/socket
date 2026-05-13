@@ -59,4 +59,6 @@ router.post(
 
 router.post('/eliminar_thread', openai_assistantsController.eliminar_thread);
 
+router.get('/openai_status', openai_assistantsController.openai_status);
+
 module.exports = router;

@@ -12,7 +12,7 @@ async function withLock(lockName, fn) {
       type: db.QueryTypes.SELECT,
     });
     if (!row || Number(row.got) !== 1) {
-      console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron');
+      /* console.log('🔒 No se obtuvo lock, otro proceso está ejecutando el cron'); */
       return;
     }
     try {
