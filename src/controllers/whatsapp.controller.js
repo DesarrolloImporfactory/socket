@@ -1788,7 +1788,6 @@ exports.reintentarLote = catchAsync(async (req, res) => {
   });
 });
 
-
 // GET /whatsapp_managment/numero_status
 exports.numero_status = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.query;
@@ -1797,37 +1796,49 @@ exports.numero_status = catchAsync(async (req, res, next) => {
   const [cfg] = await db.query(
     `SELECT token, id_telefono, wa_status, wa_status_at
      FROM configuraciones WHERE id = ? LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
   if (!cfg) return res.json({ status: 'CONNECTED' });
 
+  if (!cfg.token || !cfg.id_telefono) {
+    await db.query(
+      `UPDATE configuraciones SET wa_status = 'CONNECTED', wa_status_at = NOW() WHERE id = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+    );
+    return res.json({ status: 'CONNECTED', cleaned: true });
+  }
+
   // Si el último check fue hace menos de 1 hora, devolver caché
   const unaHora = 60 * 60 * 1000;
   const ahora = Date.now();
-  const ultimoCheck = cfg.wa_status_at ? new Date(cfg.wa_status_at).getTime() : 0;
+  const ultimoCheck = cfg.wa_status_at
+    ? new Date(cfg.wa_status_at).getTime()
+    : 0;
 
-  if (cfg.wa_status && (ahora - ultimoCheck) < unaHora) {
+  if (cfg.wa_status && ahora - ultimoCheck < unaHora) {
     return res.json({
       status: cfg.wa_status,
       cached: true,
-      next_check: new Date(ultimoCheck + unaHora).toISOString()
+      next_check: new Date(ultimoCheck + unaHora).toISOString(),
     });
   }
 
   // Llamar a Meta
   try {
     const response = await axios.get(
-      `https://graph.facebook.com/v18.0/${cfg.id_telefono}`,
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.id_telefono}`,
       {
-        params: { fields: 'display_phone_number,verified_name,quality_rating,platform_type,throughput,webhook_configuration', access_token: cfg.token },
-        timeout: 8000
-      }
+        params: {
+          fields:
+            'display_phone_number,verified_name,quality_rating,platform_type,throughput,webhook_configuration',
+          access_token: cfg.token,
+        },
+        timeout: 8000,
+      },
     );
 
     const data = response.data;
-    // Meta no devuelve "status" directamente en este endpoint,
-    // pero sí quality_rating y throughput que indican problemas
     let status = 'CONNECTED';
 
     if (data?.throughput?.level === 'NOT_ALLOWED') status = 'BANNED';
@@ -1835,15 +1846,13 @@ exports.numero_status = catchAsync(async (req, res, next) => {
 
     await db.query(
       `UPDATE configuraciones SET wa_status = ?, wa_status_at = NOW() WHERE id = ?`,
-      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE }
+      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE },
     );
 
     return res.json({ status, cached: false });
-
   } catch (err) {
-    // Si Meta devuelve error de cuenta suspendida/bloqueada
     const code = err?.response?.data?.error?.code;
-    const msg  = err?.response?.data?.error?.message || '';
+    const msg = err?.response?.data?.error?.message || '';
 
     let status = 'UNKNOWN';
     if (code === 190 || msg.includes('Invalid OAuth')) status = 'TOKEN_EXPIRED';
@@ -1852,9 +1861,34 @@ exports.numero_status = catchAsync(async (req, res, next) => {
 
     await db.query(
       `UPDATE configuraciones SET wa_status = ?, wa_status_at = NOW() WHERE id = ?`,
-      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE }
+      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE },
     );
 
     return res.json({ status, cached: false });
   }
+});
+
+// POST /whatsapp_managment/limpiar_credenciales_whatsapp
+// Limpia las credenciales de WhatsApp para permitir reconexión desde /conexiones
+exports.limpiar_credenciales_whatsapp = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, message: 'id_configuracion requerido' });
+  }
+
+  await db.query(
+    `UPDATE configuraciones
+     SET id_whatsapp = NULL,
+         id_telefono = NULL,
+         token = NULL,
+         webhook_url = NULL,
+         wa_status = NULL,
+         wa_status_at = NULL
+     WHERE id = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  return res.json({ ok: true, message: 'Credenciales limpiadas' });
 });

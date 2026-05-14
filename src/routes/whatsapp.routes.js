@@ -3606,4 +3606,9 @@ router.post('/programados_reintentar_lote', whatsappCtrl.reintentarLote);
 
 router.get('/numero_status', whatsappCtrl.numero_status);
 
+router.post(
+  '/limpiar_credenciales_whatsapp',
+  whatsappCtrl.limpiar_credenciales_whatsapp,
+);
+
 module.exports = router;
