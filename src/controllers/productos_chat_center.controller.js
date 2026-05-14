@@ -369,7 +369,19 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     }
 
     producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
-  }
+  } else if (String(req.body.remove_imagen_upsell) === '1') {
+  // Usuario quitó la imagen → borrar archivo + limpiar BD
+  try {
+    if (producto.imagen_upsell_url) {
+      const absPath = path.join(
+        __dirname, '..', 'uploads', 'productos', 'imagen_upsell',
+        path.basename(producto.imagen_upsell_url),
+      );
+      if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+    }
+  } catch (_) {}
+  producto.imagen_upsell_url = null;
+}
 
   // ── Campos básicos ──
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
