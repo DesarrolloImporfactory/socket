@@ -336,6 +336,130 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           case 131051:
             debugLogMsg = '⚠️ Tipo de mensaje no soportado.';
             break;
+
+          case 131052: {
+            // Media download error - Meta no pudo descargar el archivo entrante
+            // Guardamos placeholder en MensajeCliente para que aparezca en el chat
+            try {
+              const peerPhoneFallback =
+                value?.contacts?.[0]?.wa_id || status?.recipient_id || '';
+
+              if (!peerPhoneFallback) {
+                debugLogMsg = `⚠️ 131052 sin peer phone identificable para wamid ${wamid}`;
+                break;
+              }
+
+              // Evitar duplicados si Meta reenvía el status
+              const yaExiste = await MensajeCliente.findOne({
+                where: { id_wamid_mensaje: wamid, id_configuracion },
+              });
+
+              if (yaExiste) {
+                debugLogMsg = `⚠️ 131052 wamid ${wamid} ya registrado, no se duplica`;
+                break;
+              }
+
+              // Crear/obtener cliente externo
+              const clienteFallido = await ensureUnifiedClient({
+                id_configuracion,
+                id_usuario_dueno: configuracion.id_usuario,
+                source: 'wa',
+                business_phone_id,
+                phone: peerPhoneFallback,
+                nombre_cliente: '',
+                apellido_cliente: '',
+                motivo: 'auto_media_failed_131052',
+                permiso_round_robin: configuracion.permiso_round_robin,
+              });
+
+              if (!clienteFallido) {
+                debugLogMsg = `❌ 131052 no se pudo crear cliente unificado para ${peerPhoneFallback}`;
+                break;
+              }
+
+              // Obtener/crear cliente de configuración (negocio)
+              let clienteConfigFallback = await ClientesChatCenter.findOne({
+                where: {
+                  celular_cliente: telefono_configuracion,
+                  id_configuracion,
+                },
+              });
+
+              if (!clienteConfigFallback) {
+                clienteConfigFallback = await ClientesChatCenter.create({
+                  id_configuracion,
+                  uid_cliente: business_phone_id,
+                  nombre_cliente: nombre_configuracion,
+                  apellido_cliente: '',
+                  celular_cliente: telefono_configuracion,
+                  propietario: 1,
+                });
+              }
+
+              // Timestamp del status (viene en segundos)
+              const tsSeconds = Number(status?.timestamp || 0);
+              const fechaFallo = tsSeconds
+                ? new Date(tsSeconds * 1000)
+                : new Date();
+
+              // Payload completo del error para reintento manual posterior
+              const errorPayload = JSON.stringify({
+                tipo: 'media_download_failed',
+                codigo_error,
+                title: statusTitle,
+                message: statusMsg,
+                details: error?.error_data?.details || '',
+                timestamp: status?.timestamp,
+                recipient_id: status?.recipient_id || null,
+                recipient_user_id: status?.recipient_user_id || null,
+                contacts: value?.contacts || null,
+                raw_status: status,
+              });
+
+              await MensajeCliente.create({
+                id_configuracion,
+                id_cliente: clienteConfigFallback.id,
+                mid_mensaje: business_phone_id,
+                tipo_mensaje: 'media_failed',
+                texto_mensaje:
+                  '⚠️ El cliente envió un archivo (imagen/audio/video/documento) pero Meta no pudo descargarlo. Pídele que lo reenvíe.',
+                ruta_archivo: errorPayload,
+                rol_mensaje: 0, // entrante
+                celular_recibe: clienteFallido.id,
+                uid_whatsapp: peerPhoneFallback,
+                visto: 0,
+                estado_meta: 0,
+                context_wamid: null,
+                responsable: null,
+                id_wamid_mensaje: wamid,
+                created_at: fechaFallo,
+                updated_at: fechaFallo,
+              });
+
+              // Reabrir chat si estaba cerrado
+              if (clienteFallido.chat_cerrado === 1) {
+                await asignarRoundRobinClienteExistente({
+                  id_cliente: clienteFallido.id,
+                  id_configuracion,
+                  id_usuario_dueno: configuracion.id_usuario,
+                  permiso_round_robin: configuracion.permiso_round_robin,
+                  motivo: 'auto_round_robin_reopen_media_failed',
+                });
+              }
+
+              // Notificar socket + dashboard para que aparezca como chat nuevo
+              await enviarConsultaAPI(id_configuracion, clienteFallido.id);
+              dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
+                chatsCreated: 1,
+              });
+
+              debugLogMsg = `⚠️ 131052 placeholder guardado wamid=${wamid} cliente=${peerPhoneFallback}`;
+            } catch (errMedia) {
+              debugLogMsg = `❌ Error procesando 131052: ${errMedia.message}`;
+            }
+            break;
+          }
+
           case 131053:
             debugLogMsg = '⚠️ Error al enviar el audio.';
             break;
@@ -507,7 +631,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         case 'location':
           const location = mensaje_recibido?.location;
-/* 
+          /* 
           console.log('location: ' + location);
 
           console.log('location?.latitude: ' + location?.latitude);
