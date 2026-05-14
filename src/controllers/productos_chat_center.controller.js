@@ -370,18 +370,22 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
 
     producto.imagen_upsell_url = `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`;
   } else if (String(req.body.remove_imagen_upsell) === '1') {
-  // Usuario quitó la imagen → borrar archivo + limpiar BD
-  try {
-    if (producto.imagen_upsell_url) {
-      const absPath = path.join(
-        __dirname, '..', 'uploads', 'productos', 'imagen_upsell',
-        path.basename(producto.imagen_upsell_url),
-      );
-      if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
-    }
-  } catch (_) {}
-  producto.imagen_upsell_url = null;
-}
+    // Usuario quitó la imagen → borrar archivo + limpiar BD
+    try {
+      if (producto.imagen_upsell_url) {
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'imagen_upsell',
+          path.basename(producto.imagen_upsell_url),
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+    producto.imagen_upsell_url = null;
+  }
 
   // ── Campos básicos ──
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
@@ -391,11 +395,11 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
   if (typeof nombre_upsell !== 'undefined')
-    producto.nombre_upsell = nombre_upsell;
+    producto.nombre_upsell = nombre_upsell || null;
   if (typeof descripcion_upsell !== 'undefined')
-    producto.descripcion_upsell = descripcion_upsell;
+    producto.descripcion_upsell = descripcion_upsell || null;
   if (typeof precio_upsell !== 'undefined')
-    producto.precio_upsell = precio_upsell;
+    producto.precio_upsell = precio_upsell || null;
   if (typeof combos_producto !== 'undefined')
     producto.combos_producto = combos_producto;
   if (typeof material !== 'undefined') producto.material = material || null;
