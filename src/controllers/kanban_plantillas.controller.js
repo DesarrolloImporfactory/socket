@@ -21,7 +21,7 @@ const axios = require('axios');
 // IDs de configuraciones que pueden ver plantillas internas/de pruebas.
 // Para escalar más adelante: reemplazar con un campo en BD o un flag de
 // "rol: superadmin" en la tabla configuraciones.
-const CONFIGS_INTERNAS = [312];
+const CONFIGS_INTERNAS = [277];
 
 // Nombre identificador de plantillas internas (no visibles para clientes).
 // Cualquier plantilla con este string en su nombre se filtra del listado
