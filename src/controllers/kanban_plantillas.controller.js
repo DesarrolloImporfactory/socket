@@ -19,9 +19,7 @@ const axios = require('axios');
 // ──────────────────────────────────────────────────────────────
 
 // IDs de configuraciones que pueden ver plantillas internas/de pruebas.
-// Para escalar más adelante: reemplazar con un campo en BD o un flag de
-// "rol: superadmin" en la tabla configuraciones.
-const CONFIGS_INTERNAS = [277];
+const CONFIGS_INTERNAS = [277, 10];
 
 // Nombre identificador de plantillas internas (no visibles para clientes).
 // Cualquier plantilla con este string en su nombre se filtra del listado
@@ -873,7 +871,7 @@ const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'PENDIENTE',
     nombre_template: 'antes_generar_guia_k1',
-    columna_destino: 'generar_guia',
+    columna_destino: 'guia_creada',
     activo: 1,
     usar_respuesta_rapida: 1,
     mensaje_rapido:

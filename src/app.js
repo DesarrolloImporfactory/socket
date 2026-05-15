@@ -248,9 +248,9 @@ app.use((req, res, next) => {
   return express.json()(req, res, next);
 });
 
-//Sanitizer para TODO lo demás (no tocar webhooks)
+// Sanitizer para TODO lo demás (no tocar webhooks ni rutas con prompts XML)
 app.use((req, res, next) => {
-  const skipPaths = [
+  const skipExact = [
     '/api/v1/stripe_plan/stripeWebhook',
     '/api/v1/messenger/webhook',
     '/api/v1/instagram/webhook',
@@ -258,7 +258,17 @@ app.use((req, res, next) => {
     '/api/v1/shopify/webhooks',
     '/api/v2/webhooks/shopify',
   ];
-  if (skipPaths.includes(req.path)) return next();
+
+  // Rutas donde el contenido legítimamente lleva <tags> tipo XML
+  // (prompts de asistentes IA con <ROL>, <MSG1>, etc.)
+  const skipPrefixes = [
+    '/api/v1/kanban_plantillas_admin',
+    '/api/v1/kanban_plantillas',
+    '/api/v1/openai_assistants',
+  ];
+
+  if (skipExact.includes(req.path)) return next();
+  if (skipPrefixes.some((p) => req.path.startsWith(p))) return next();
 
   return sanitizer.clean({
     xss: true,
