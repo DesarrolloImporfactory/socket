@@ -19,7 +19,8 @@ const axios = require('axios');
 // ──────────────────────────────────────────────────────────────
 
 // IDs de configuraciones que pueden ver plantillas internas/de pruebas.
-const CONFIGS_INTERNAS = [277, 10];
+// const CONFIGS_INTERNAS = [277, 10];
+const CONFIGS_INTERNAS = [10];
 
 // Nombre identificador de plantillas internas (no visibles para clientes).
 // Cualquier plantilla con este string en su nombre se filtra del listado
