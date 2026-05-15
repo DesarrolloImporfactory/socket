@@ -721,8 +721,6 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
           Nombre del producto anunciado: ${headline}
-          Descripción del anuncio: ${body_ad}
-          URL del anuncio: ${source_url}
           Mensaje del cliente: ${texto_mensaje}`;
 
         await fsp.appendFile(
@@ -872,13 +870,35 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         ruta_archivo = JSON.stringify(ruta_archivo);
       }
 
+      // ── Si viene de un anuncio, sobrescribimos tipo y metemos info en ruta_archivo
+      let tipo_mensaje_final = tipo_mensaje;
+      let ruta_archivo_final = ruta_archivo;
+
+      if (referral) {
+        ruta_archivo_final = JSON.stringify({
+          headline: referral.headline || '',
+          body_ad: referral.body || '',
+          source_url: referral.source_url || '',
+          source_id: referral.source_id || '',
+          ctwa_clid: referral.ctwa_clid || '',
+          source_type: referral.source_type || '',
+          media_type: referral.media_type || '',
+          thumbnail_url: referral.thumbnail_url || referral.image_url || '',
+          video_url: referral.video_url || '',
+          // Guardamos tipo y ruta original por si era audio/imagen
+          original_type: tipo_mensaje,
+          original_media: ruta_archivo,
+        });
+        tipo_mensaje_final = 'referral';
+      }
+
       const creacion_mensaje = await MensajeCliente.create({
         id_configuracion,
         id_cliente: clienteExisteConfiguracion.id,
         mid_mensaje: business_phone_id,
-        tipo_mensaje,
+        tipo_mensaje: tipo_mensaje_final,
         texto_mensaje,
-        ruta_archivo,
+        ruta_archivo: ruta_archivo_final,
         rol_mensaje: isSMBEcho ? 1 : 0,
         celular_recibe: id_cliente,
         uid_whatsapp: phone_whatsapp_from,
