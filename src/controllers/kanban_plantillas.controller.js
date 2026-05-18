@@ -833,9 +833,17 @@ async function _crearRespuestasRapidas(id_configuracion) {
       const [insertId] = await db.query(
         `INSERT INTO templates_chat_center
          (atajo, mensaje, id_configuracion, tipo_mensaje, ruta_archivo, mime_type, file_name)
-         VALUES (?, ?, ?, 'text', NULL, NULL, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         {
-          replacements: [rr.atajo, rr.mensaje, id_configuracion],
+          replacements: [
+            rr.atajo,
+            rr.mensaje,
+            id_configuracion,
+            rr.tipo_mensaje || 'text',
+            rr.ruta_archivo || null,
+            rr.mime_type || null,
+            rr.file_name || null,
+          ],
           type: db.QueryTypes.INSERT,
         },
       );
@@ -1600,6 +1608,7 @@ const KANBAN_TEMPLATES_META = [
 ];
 
 // ── Respuestas rápidas para Kanban ───────────────────────────
+// ── Respuestas rápidas para Kanban ───────────────────────────
 const KANBAN_RESPUESTAS_RAPIDAS = [
   {
     atajo: 'orden_aprobada',
@@ -1635,6 +1644,63 @@ const KANBAN_RESPUESTAS_RAPIDAS = [
     atajo: 'antes_generar_guia',
     mensaje:
       'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
+  },
+
+  // ── REMARKETING (priorizadas sobre plantillas Meta) ──────────
+  {
+    atajo: 'remarketing_1',
+    tipo_mensaje: 'video',
+    ruta_archivo:
+      'https://new.imporsuitpro.com/Videos/stream/3619a3291e1ccfe2388174618b50b550',
+    mime_type: 'video/mp4',
+    file_name: 'remarketing_1_despacho_listo.mp4',
+    mensaje:
+      '🚛 Tu pedido ya está listo para salir\n\nBuenas noticias 👇\n\nTu paquete ya está empacado en bodega y solo espera tu ubicación exacta 📍 para entrar en la próxima ruta del día.\n\n⏰ Última salida hoy: 4:00 PM\n📦 Si confirmas ahora: lo recibes en 24 a 48 horas\n💵 Pago: contraentrega — pagas solo cuando te lo entreguen\n\nSolo necesito tu ubicación para enviarlo. ⬇',
+  },
+  {
+    atajo: 'remarketing_2',
+    tipo_mensaje: 'image',
+    ruta_archivo:
+      'https://imp-datas.s3.amazonaws.com/images/2026-05-18T19-15-27-523Z-ENVIO_GRATIS_.png',
+    mime_type: 'image/png',
+    file_name: 'remarketing_2_envio_gratis.png',
+    mensaje:
+      '🎁 Envío GRATIS asignado a tu pedido\n\nTe ahorras el costo de envío (≈$8) — el beneficio *estará activo por hoy*\n\n📦 Tu paquete: ya empacado en bodega\n🚛 Envío: GRATIS por esta semana\n💵 Pago: contraentrega — pagas al recibir\n\n¿Realizo tu envío hoy?',
+  },
+  {
+    atajo: 'remarketing_3',
+    tipo_mensaje: 'image',
+    ruta_archivo:
+      'https://imp-datas.s3.amazonaws.com/images/2026-04-07T21-27-32-154Z-534427295_813699714500800_6839605187360868450_n.png',
+    mime_type: 'image/png',
+    file_name: 'remarketing_3_descuento.png',
+    mensaje:
+      '🎁 Se aplicó un descuento del 10% a tu pedido\n\nEl código quedó cargado a tu contacto y se cae automático hoy a las 23:59.\n\n💸 Descuento: 10% OFF aplicado\n⏰ Vigencia: solo hoy\n\nSi el precio era lo que te frenaba → ahí está resuelto ✅\n\nSolo necesito tu ubicación para coordinar el despacho. 📍',
+  },
+  {
+    atajo: 'remarketing_4',
+    tipo_mensaje: 'video',
+    ruta_archivo:
+      'https://new.imporsuitpro.com/Videos/stream/58b0a69a64359e85d12dd722f27f7afe',
+    mime_type: 'video/mp4',
+    file_name: 'remarketing_4_stock_agotado.mp4',
+    mensaje:
+      '⚠️ Stock casi agotado — quedan pocas unidades\n\nEn bodega quedan menos de 10 unidades y hoy se están yendo rápido.\n\nY algo más: el próximo lote llega en 3 a 4 semanas y entrará con precio más alto — subieron los costos de importación.\n\nSi lo aseguras hoy, te queda al precio actual 🔒\n\nMándame tu ubicación 📍 (sigues pagando contraentrega).',
+  },
+  {
+    atajo: 'remarketing_5',
+    tipo_mensaje: 'video',
+    ruta_archivo:
+      'https://new.imporsuitpro.com/Videos/stream/e8505075909c2d0bf42dde1ffad6643e',
+    mime_type: 'video/mp4',
+    file_name: 'remarketing_5_entregas_exitosas.mp4',
+    mensaje:
+      '✅ Cientos de entregas exitosas esta semana\n\nTe muestro entregas reales 👆 — clientes que recibieron su pedido, lo revisaron y recién ahí pagaron al mensajero.\n\n📦 Cientos de pedidos despachados cada semana\n🛡 Garantía por producto\n💵 Pago contraentrega — cero riesgo para ti\n\nTu pedido entra al mismo flujo. Solo me falta tu ubicación 📍',
+  },
+  {
+    atajo: 'remarketing_6',
+    mensaje:
+      '📦 Flujo diario y tu stock está reservado a tu nombre — vence en 12 horas\n\nHoy ya despachamos 837 pedidos a nivel nacional. Tu unidad está apartada en bodega y lista para salir, pero la reserva vence hoy a medianoche ⏰\n\nDespués de hoy, la unidad regresa al stock general y se están agotando rápido.\n\n¿Realizo tu envío? 🙌 (envíame tu ubicación).',
   },
 ];
 
