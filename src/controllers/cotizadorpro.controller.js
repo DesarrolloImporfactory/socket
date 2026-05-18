@@ -1634,3 +1634,40 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
     },
   });
 });
+
+exports.entregarCarga = catchAsync(async (req, res, next) => {
+  const { id_carga, contactos, fecha_entrega } = req.body;
+  if (!id_carga) return next(new AppError('id_carga es requerido', 400));
+  if (!contactos || !Array.isArray(contactos) || contactos.length === 0) {
+    return next(
+      new AppError(
+        'contactos es requerido y debe ser un arreglo con al menos un elemento',
+        400,
+      ),
+    );
+  }
+  if (!fecha_entrega) {
+    return next(new AppError('fecha_entrega es requerida', 400));
+  }
+
+  const fechaFormateada = formatearFecha(fecha_entrega);
+
+  const resultados = [];
+  for (const contacto of contactos) {
+    const { telefono, nombre } = contacto;
+    if (!telefono) {
+      resultados.push({
+        telefono,
+        nombre,
+        success: false,
+        error: 'telefono es requerido',
+      });
+      continue;
+    }
+
+    const celularFormateado = formatPhoneForWhatsApp(telefono, '593');
+    const nombreCliente = nombre || 'Estimado cliente';
+
+    
+
+});
