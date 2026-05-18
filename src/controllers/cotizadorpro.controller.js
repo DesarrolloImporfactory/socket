@@ -672,7 +672,10 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L675 — enviarCotizacion, celular:', celularLimpio);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L675 — enviarCotizacion, celular:',
+      celularLimpio,
+    );
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
       nombre_cliente: cotizacionInfo.cliente,
@@ -887,7 +890,10 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L889 — enviarCotizacionV2, celular:', celularFormateado);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L889 — enviarCotizacionV2, celular:',
+      celularFormateado,
+    );
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
       nombre_cliente: cotizacionInfo.cliente,
@@ -1028,7 +1034,10 @@ exports.enviarFechaEstimada = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1029 — enviarFechaLlegada, celular:', celularFormateado);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1029 — enviarFechaLlegada, celular:',
+      celularFormateado,
+    );
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
       nombre_cliente: clienteInfo.cliente,
@@ -1301,7 +1310,10 @@ exports.enviarVideoCotizacion = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1301 — enviarVideoCliente, celular:', celularFormateado);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1301 — enviarVideoCliente, celular:',
+      celularFormateado,
+    );
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
       nombre_cliente: 'Cliente Cotizador Pro',
@@ -1391,13 +1403,16 @@ const CRM_CONFIG = {
 };
 
 exports.registrarMensajeCRM = catchAsync(async (req, res, next) => {
-  const { celular, nombre, wamid, template_name, texto_mensaje, email } = req.body;
+  const { celular, nombre, wamid, template_name, texto_mensaje, email } =
+    req.body;
 
-  if (!celular)       return next(new AppError('celular es requerido', 400));
-  if (!nombre)        return next(new AppError('nombre es requerido', 400));
-  if (!wamid)         return next(new AppError('wamid es requerido', 400));
-  if (!template_name) return next(new AppError('template_name es requerido', 400));
-  if (!texto_mensaje) return next(new AppError('texto_mensaje es requerido', 400));
+  if (!celular) return next(new AppError('celular es requerido', 400));
+  if (!nombre) return next(new AppError('nombre es requerido', 400));
+  if (!wamid) return next(new AppError('wamid es requerido', 400));
+  if (!template_name)
+    return next(new AppError('template_name es requerido', 400));
+  if (!texto_mensaje)
+    return next(new AppError('texto_mensaje es requerido', 400));
 
   const celularLimpio = celular.replace(/[\s+()-]/g, '');
 
@@ -1412,7 +1427,10 @@ exports.registrarMensajeCRM = catchAsync(async (req, res, next) => {
   if (foundChat) {
     chatId = foundChat.id;
   } else {
-    console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1411 — enviarPlantillaContenedor, celular:', celularLimpio);
+    console.log(
+      '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1411 — enviarPlantillaContenedor, celular:',
+      celularLimpio,
+    );
     const nuevoChat = await Clientes_chat_center.create({
       id_configuracion: CRM_CONFIG.ID_CONFIGURACION,
       nombre_cliente: nombre,
@@ -1563,7 +1581,10 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
     if (foundChat) {
       chatId = foundChat.id;
     } else {
-      console.log('[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1561 — notificarContenedorCerrado, celular:', celularLimpio);
+      console.log(
+        '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1561 — notificarContenedorCerrado, celular:',
+        celularLimpio,
+      );
       const nuevoChat = await Clientes_chat_center.create({
         id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
         nombre_cliente: nombreCliente,
@@ -1635,7 +1656,7 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.entregarCarga = catchAsync(async (req, res, next) => {
+/* exports.entregarCarga = catchAsync(async (req, res, next) => {
   const { id_carga, contactos, fecha_entrega } = req.body;
   if (!id_carga) return next(new AppError('id_carga es requerido', 400));
   if (!contactos || !Array.isArray(contactos) || contactos.length === 0) {
@@ -1670,4 +1691,4 @@ exports.entregarCarga = catchAsync(async (req, res, next) => {
 
     
 
-});
+}); */
