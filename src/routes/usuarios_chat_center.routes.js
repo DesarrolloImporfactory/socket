@@ -8,46 +8,50 @@ const express = require('express');
 
 const router = express.Router();
 
-
-
-
 /* === Preferencia del tour (sin protect, usando id_usuario en body) === */
-router.post('/tour-conexiones/get', usuarios_chat_centerController.getTourConexionesPrefByBody);
-router.post('/tour-conexiones/set', usuarios_chat_centerController.updateTourConexionesPrefByBody);
-
+router.post(
+  '/tour-conexiones/get',
+  usuarios_chat_centerController.getTourConexionesPrefByBody,
+);
+router.post(
+  '/tour-conexiones/set',
+  usuarios_chat_centerController.updateTourConexionesPrefByBody,
+);
 
 router.use(protect);
 
 /* seccion administrar sub_usuarios  */
-router.post(
-  '/listarUsuarios',
-  usuarios_chat_centerController.listarUsuarios
-);
+router.post('/listarUsuarios', usuarios_chat_centerController.listarUsuarios);
 
 router.post(
   '/agregarUsuario',
   restrictToRoles('administrador'),
   limiteSub_usuarios,
-  usuarios_chat_centerController.agregarUsuario
+  usuarios_chat_centerController.agregarUsuario,
 );
 
 router.post(
   '/actualizarUsuario',
   restrictToRoles('administrador'),
-  usuarios_chat_centerController.actualizarUsuario
+  usuarios_chat_centerController.actualizarUsuario,
 );
 
 router.delete(
   '/eliminarSubUsuario',
   restrictToRoles('administrador'),
-  usuarios_chat_centerController.eliminarSubUsuario
+  usuarios_chat_centerController.eliminarSubUsuario,
 );
 /* seccion administrar sub_usuarios  */
 
 /* Importacion */
 router.post(
   '/importacion_chat_center',
-  usuarios_chat_centerController.importacion_chat_center
+  usuarios_chat_centerController.importacion_chat_center,
+);
+
+router.post(
+  '/actualizarWhatsappLead',
+  usuarios_chat_centerController.actualizarWhatsappLead,
 );
 
 module.exports = router;

@@ -497,6 +497,9 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     il_imagenes_limite: IL_TRIAL_IMAGES,
     promo_imagenes_restantes: Number(user.promo_imagenes_restantes || 0),
     promo_angulos_restantes: Number(user.promo_angulos_restantes || 0),
+    needs_whatsapp_capture:
+      !user.whatsapp_lead?.trim() || !user.whatsapp_lead_pais?.trim(),
+
     unlocked_plans: (() => {
       try {
         const arr = JSON.parse(user.unlocked_plans || '[]');

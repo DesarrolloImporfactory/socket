@@ -305,3 +305,86 @@ exports.updateTourConexionesPrefByBody = catchAsync(async (req, res) => {
 
   return res.status(200).json({ status: 'success' });
 });
+
+// ──────────────────────────────────────────────────────────────
+// POST /actualizarWhatsappLead
+// Permite a usuarios sin whatsapp_lead/whatsapp_lead_pais
+// completar esa info al ingresar al selector de herramientas.
+// ──────────────────────────────────────────────────────────────
+exports.actualizarWhatsappLead = catchAsync(async (req, res) => {
+  const { id_usuario, whatsapp_lead, whatsapp_lead_pais } = req.body;
+
+  if (!id_usuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'id_usuario es requerido',
+    });
+  }
+
+  // Limpiar y validar el número
+  const digits = String(whatsapp_lead || '').replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 20) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Número de WhatsApp inválido (7 a 20 dígitos).',
+    });
+  }
+
+  // Validar formato del código de país (+XX o +XXX o +XXXX)
+  const pais = String(whatsapp_lead_pais || '').trim();
+  if (!/^\+\d{1,4}$/.test(pais)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Código de país inválido (ej: +593, +52, +1).',
+    });
+  }
+
+  // Whitelist — los países que soportas en el Register
+  const PAISES_PERMITIDOS = [
+    '+593',
+    '+57',
+    '+51',
+    '+52',
+    '+56',
+    '+54',
+    '+55',
+    '+58',
+    '+591',
+    '+595',
+    '+598',
+    '+507',
+    '+506',
+    '+34',
+    '+1',
+  ];
+  if (!PAISES_PERMITIDOS.includes(pais)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'País no soportado.',
+    });
+  }
+
+  // Verificar que el usuario existe
+  const usuario = await Usuarios_chat_center.findByPk(id_usuario);
+  if (!usuario) {
+    return res.status(404).json({
+      status: 'fail',
+      message: 'Usuario no encontrado.',
+    });
+  }
+
+  // Update vía modelo Sequelize
+  await usuario.update({
+    whatsapp_lead: digits,
+    whatsapp_lead_pais: pais,
+  });
+
+  return res.status(200).json({
+    status: 'success',
+    message: 'WhatsApp actualizado correctamente.',
+    data: {
+      whatsapp_lead: digits,
+      whatsapp_lead_pais: pais,
+    },
+  });
+});
