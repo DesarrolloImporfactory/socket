@@ -90,9 +90,8 @@ const getPromoPlans = () => {
   return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18, PLAN_COMUNIDAD_ID]); // ✅ añadido COMUNIDAD
 };
 
-// ─────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────
+
 const getUserById = async (id_usuario) => {
   const [[u]] = await db.query(
     `SELECT
@@ -116,7 +115,10 @@ const getUserById = async (id_usuario) => {
         cancel_at_period_end,
         cancel_at,
         canceled_at,
-        unlocked_plans
+        unlocked_plans,
+        whatsapp_lead,
+        whatsapp_lead_pais,
+        id_comunidad
      FROM usuarios_chat_center
      WHERE id_usuario = ?
      LIMIT 1`,
