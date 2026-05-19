@@ -532,10 +532,54 @@ exports.newLogin = async (req, res) => {
               id_configuracion: null,
             });
           } catch (err) {
+            // 🔍 DEBUG: log detallado para diagnosticar EXACTAMENTE qué falló
+            console.error('❌ DEBUG newLogin/cursos_imporsuit catch:', {
+              name: err.name,
+              message: err.message,
+              code: err.code,
+              errors: err.errors?.map((e) => ({
+                path: e.path,
+                message: e.message,
+                type: e.type,
+                value: e.value,
+                validatorKey: e.validatorKey,
+              })),
+              sqlMessage: err.original?.sqlMessage,
+              sqlCode: err.original?.code,
+              stack: err.stack,
+            });
+
+            // Devolver mensaje detallado al cliente para ver en Postman/frontend
+            let mensajeAmigable = err.message || 'Error inesperado';
+            let detalles = null;
+
+            if (err.name === 'SequelizeUniqueConstraintError') {
+              detalles = err.errors?.map((e) => ({
+                campo: e.path,
+                valor: e.value,
+                problema: 'duplicado',
+              }));
+              mensajeAmigable = `UNIQUE constraint: ${err.errors
+                ?.map((e) => `${e.path}=${e.value}`)
+                .join(', ')}`;
+            } else if (err.name === 'SequelizeValidationError') {
+              detalles = err.errors?.map((e) => ({
+                campo: e.path,
+                valor: e.value,
+                problema: e.message,
+                validador: e.validatorKey,
+              }));
+              mensajeAmigable = `Validation: ${err.errors
+                ?.map((e) => `${e.path} → ${e.message}`)
+                .join(', ')}`;
+            }
+
             return res.status(err.httpStatus || 500).json({
               status: 'fail',
-              message: err.message || 'Error inesperado',
-              code: err.code,
+              message: mensajeAmigable,
+              code: err.code || err.name,
+              detalles,
+              sqlMessage: err.original?.sqlMessage || null,
             });
           }
         } else {
