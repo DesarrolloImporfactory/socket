@@ -12,6 +12,8 @@ const {
   enviarMensajeWhatsapp,
 } = require('../utils/webhook_whatsapp/enviarMensajes');
 
+const { sanitizarRespuestaAgente } = require('../utils/openia/sanitizador_agente');
+
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — Trae el prompt REAL cargado en OpenAI
 // Solo para debugging. Permite confirmar si Platform tiene
@@ -615,58 +617,6 @@ function limpiarTagsAcciones(texto) {
     .replace(/\[atencion_urgente\]:\s*(true|false)/gi, '')
     .replace(/\[[^\]]+\]:\s*(true|false)/gi, '') // cualquier tag booleano
     .trim();
-}
-
-// ══════════════════════════════════════════════════════════════
-// sanitizarRespuestaAgente — Convierte markdown a formato esperado
-// ══════════════════════════════════════════════════════════════
-function sanitizarRespuestaAgente(texto) {
-  if (!texto || typeof texto !== 'string') return texto;
-
-  // 1. Markdown imagen ![texto](url) → [producto_imagen_url]: url
-  texto = texto.replace(
-    /!\[([^\]]*?)\]\((https?:\/\/[^\s)]+)\)/gi,
-    '\n[producto_imagen_url]: $2',
-  );
-
-  // 2. Markdown link con URL de video → [producto_video_url]: url
-  texto = texto.replace(
-    /\[([^\]]*?)\]\((https?:\/\/[^\s)]+\.(?:mp4|mov|webm|avi|mkv)(?:\?[^\s)]*)?)\)/gi,
-    '\n[producto_video_url]: $2',
-  );
-
-  // 3. Markdown link con URL de imagen → [producto_imagen_url]: url
-  texto = texto.replace(
-    /\[([^\]]*?)\]\((https?:\/\/[^\s)]+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^\s)]*)?)\)/gi,
-    '\n[producto_imagen_url]: $2',
-  );
-
-  // 4. Markdown link cuyo texto contiene "imagen/foto/ver" → imagen
-  texto = texto.replace(
-    /\[(?:[^\]]*(?:imagen|foto|image|photo|picture|ver)[^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi,
-    '\n[producto_imagen_url]: $1',
-  );
-
-  // 5. Markdown link cuyo texto contiene "video" → video
-  texto = texto.replace(
-    /\[(?:[^\]]*video[^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi,
-    '\n[producto_video_url]: $1',
-  );
-
-  // 6. URLs sueltas precedidas por "Imagen:" / "Foto:" → formato correcto
-  texto = texto.replace(
-    /(?:imagen|foto)\s*:\s*(https?:\/\/\S+\.(?:jpg|jpeg|png|webp|gif))/gi,
-    '\n[producto_imagen_url]: $1',
-  );
-  texto = texto.replace(
-    /video\s*:\s*(https?:\/\/\S+\.(?:mp4|mov|webm))/gi,
-    '\n[producto_video_url]: $1',
-  );
-
-  // Limpieza
-  texto = texto.replace(/\n{3,}/g, '\n\n').trim();
-
-  return texto;
 }
 
 async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {

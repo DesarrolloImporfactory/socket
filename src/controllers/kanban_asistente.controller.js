@@ -9,6 +9,8 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 
+const { sanitizarRespuestaAgente } = require('../utils/openia/sanitizador_agente');
+
 // Tipos de archivo aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
 const MIME_TYPES_PERMITIDOS = new Set([
@@ -607,9 +609,12 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
       ?.join('') ||
     '';
 
+    // ✨ Sanitizar formato (markdown → tags esperados)
+  const respuestaLimpia = sanitizarRespuestaAgente(outputText);
+
   return res.json({
     success: true,
-    respuesta: outputText,
+    respuesta: respuestaLimpia,
     response_id: data.id, // ← el frontend guarda esto para el siguiente request
   });
 });

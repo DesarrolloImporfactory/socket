@@ -269,7 +269,6 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
      INNER JOIN kanban_acciones ka ON ka.id_kanban_columna = kc.id
      WHERE  kc.id_configuracion = ?
        AND  kc.activo = 1
-       AND  kc.activa_ia = 1
        AND  kc.assistant_id IS NOT NULL
        AND  ka.tipo_accion = 'contexto_productos'
        AND  ka.activo = 1`,
