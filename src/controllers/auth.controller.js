@@ -300,6 +300,41 @@ exports.validar_usuario_imporsuit = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Genera un username único para sub_usuarios_chat_center.
+ * Si la base ya existe: LUIS → LUIS2 → LUIS3 ...
+ * Sanitiza: solo alfanumérico + underscore, sin tildes, mínimo 3 chars.
+ */
+async function generarUsernameUnico(base, transaction = null) {
+  let baseLimpia = String(base || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_]/g, '')
+    .trim();
+
+  if (baseLimpia.length < 3) {
+    baseLimpia = `user${Date.now().toString().slice(-6)}`;
+  }
+
+  let candidato = baseLimpia;
+  let intento = 1;
+
+  while (intento <= 50) {
+    const existe = await Sub_usuarios_chat_center.findOne({
+      where: { usuario: candidato },
+      transaction,
+      attributes: ['id_sub_usuario'],
+    });
+
+    if (!existe) return candidato;
+
+    intento += 1;
+    candidato = `${baseLimpia}${intento}`;
+  }
+
+  return `${baseLimpia}_${Date.now().toString().slice(-6)}`;
+}
+
 exports.newLogin = async (req, res) => {
   const { token, tienda, tipo } = req.body;
 
@@ -312,7 +347,7 @@ exports.newLogin = async (req, res) => {
 
     const idPlataformaFromToken = decoded?.data?.id_plataforma;
 
-    /* id_call_center */
+    /* ===== call_center ===== */
     if (tipo == 'call_center') {
       const [call_centers] = await db_2.query(
         `SELECT id_call_center FROM call_centers WHERE id_plataforma = ?`,
@@ -327,8 +362,6 @@ exports.newLogin = async (req, res) => {
           .status(403)
           .json({ message: 'La plataforma no es call center' });
       }
-
-      /* validar si la tienda pertenece al call center */
 
       const [plataformas] = await db_2.query(
         `SELECT id_call_center FROM plataformas WHERE id_plataforma = ?`,
@@ -347,8 +380,6 @@ exports.newLogin = async (req, res) => {
         });
       }
 
-      /* usuario */
-      // Buscar configuración para obtener el id_usuario (dueño de la tienda)
       const configuracion = await Configuraciones.findOne({
         where: { id_plataforma: tienda, suspendido: 0 },
       });
@@ -359,11 +390,10 @@ exports.newLogin = async (req, res) => {
         });
       }
 
-      // Buscar subusuario administrador asociado al id_usuario
       const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
         where: {
           id_usuario: configuracion.id_usuario,
-          rol: 'administrador', // Asegúrate de que este valor exista así en tu BD
+          rol: 'administrador',
         },
       });
 
@@ -373,15 +403,11 @@ exports.newLogin = async (req, res) => {
         });
       }
 
-      // Generar token de sesión
       const sessionToken = await generarToken(usuarioEncontrado.id_sub_usuario);
-
-      // Eliminar campos sensibles
       const usuarioPlano = usuarioEncontrado.toJSON();
       const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
 
-      // Respuesta
-      res.status(200).json({
+      return res.status(200).json({
         status: 'success',
         token: sessionToken,
         user: usuarioSinPassword,
@@ -389,12 +415,19 @@ exports.newLogin = async (req, res) => {
         id_configuracion: configuracion.id,
         tipo_configuracion: configuracion.tipo_configuracion,
       });
+
+      /* ===== cursos_imporsuit ===== */
     } else if (tipo == 'cursos_imporsuit') {
       let usuarioEncontrado = null;
       const idUsuarioFromToken = decoded?.data?.id;
-      /* consultar informacion de usuario imporsuit */
+
+      // 👇 Ahora también traemos email_users
       const [user_imporauit] = await db_2.query(
-        `SELECT id_rol ,ecommerce, membresia_ecommerce, importacion, nombre_users, con_users, usuario_users FROM users WHERE id_users = ? LIMIT 1`,
+        `SELECT id_rol, ecommerce, membresia_ecommerce, importacion, 
+                nombre_users, con_users, usuario_users, email_users
+         FROM users 
+         WHERE id_users = ? 
+         LIMIT 1`,
         {
           replacements: [idUsuarioFromToken],
           type: db_2.QueryTypes.SELECT,
@@ -406,19 +439,26 @@ exports.newLogin = async (req, res) => {
           .status(403)
           .json({ message: 'El usuario de imporsuit no existe' });
       }
-      /* consultar informacion de usuario imporsuit */
+
       let ecommerce = user_imporauit.ecommerce;
       let membresia_ecommerce = user_imporauit.membresia_ecommerce;
       let importacion = user_imporauit.importacion;
       let nombre_users = user_imporauit.nombre_users;
       let con_users = user_imporauit.con_users;
       let usuario_users = user_imporauit.usuario_users;
+      let email_users = user_imporauit.email_users;
       let id_rol = user_imporauit.id_rol;
 
-      let free_trial_used = null;
+      // 🛡️ Validar email real
+      if (!email_users || !String(email_users).includes('@')) {
+        return res.status(400).json({
+          status: 'fail',
+          message:
+            'El usuario de imporsuit no tiene un email válido registrado (email_users)',
+        });
+      }
 
       let id_sub_usuario_encontrado = '';
-
       let estado_creacion = '';
 
       if (
@@ -427,8 +467,6 @@ exports.newLogin = async (req, res) => {
         importacion == 1 ||
         id_rol == 16
       ) {
-        /* usuario */
-        // Buscar configuración para obtener el id_usuario (dueño de la tienda)
         const validar_usuario_plataforma = await Usuarios_chat_center.findOne({
           where: { id_plataforma: tienda },
         });
@@ -437,12 +475,56 @@ exports.newLogin = async (req, res) => {
           !validar_usuario_plataforma ||
           !validar_usuario_plataforma.id_usuario
         ) {
+          // 🛡️ ESCENARIO B: ¿ya existe usuario en chatcenter con ese email?
+          const usuarioExistentePorEmail = await Usuarios_chat_center.findOne({
+            where: { email_propietario: email_users },
+          });
+
+          if (usuarioExistentePorEmail) {
+            if (!usuarioExistentePorEmail.id_plataforma) {
+              await usuarioExistentePorEmail.update({ id_plataforma: tienda });
+            }
+
+            const subUserExistente = await Sub_usuarios_chat_center.findOne({
+              where: {
+                id_usuario: usuarioExistentePorEmail.id_usuario,
+                rol: 'administrador',
+              },
+            });
+
+            if (!subUserExistente) {
+              return res.status(404).json({
+                status: 'fail',
+                message: 'Usuario administrador no encontrado para esta cuenta',
+              });
+            }
+
+            const sessionToken = await generarToken(
+              subUserExistente.id_sub_usuario,
+            );
+            const { password, admin_pass, ...subUserSinPassword } =
+              subUserExistente.toJSON();
+
+            return res.status(200).json({
+              status: 'success',
+              estado_creacion:
+                usuarioExistentePorEmail.estado === 'activo'
+                  ? 'completo'
+                  : 'incompleto',
+              token: sessionToken,
+              user: subUserSinPassword,
+              id_plataforma: tienda,
+              id_configuracion: null,
+            });
+          }
+
+          // 🆕 ESCENARIO A: crear desde cero
           const sequelize = Usuarios_chat_center.sequelize;
 
           try {
             const { usuarioCreado, subUsuarioCreado, id_sub_usuario } =
               await sequelize.transaction(async (t) => {
-                // 1) Crear usuario principal (BD)
+                // 1) Crear usuario principal
                 const crear_usuario = await Usuarios_chat_center.create(
                   {
                     nombre: nombre_users,
@@ -451,15 +533,15 @@ exports.newLogin = async (req, res) => {
                     fecha_inicio: null,
                     fecha_renovacion: null,
                     estado: 'inactivo',
-                    email_propietario: usuario_users, // email
+                    email_propietario: email_users,
                   },
                   { transaction: t },
                 );
 
-                // 2) Stripe (si falla => throw => rollback BD)
+                // 2) Stripe (reutiliza customer si ya existe en Stripe)
                 const resultado = await crearStripeCustomer({
                   nombre: nombre_users,
-                  email: usuario_users,
+                  email: email_users, // 👈 email REAL
                   id_usuario: crear_usuario.id_usuario,
                 });
 
@@ -491,19 +573,29 @@ exports.newLogin = async (req, res) => {
                   throw err;
                 }
 
-                // 3) Guardar stripe id (BD)
+                // 3) Guardar stripe id
                 await crear_usuario.update(
                   { id_costumer: stripe_customer_id },
                   { transaction: t },
                 );
 
-                // 4) Crear subusuario (BD)
+                // 4) Generar username único + crear subusuario
+                const usernameBase =
+                  usuario_users && String(usuario_users).trim().length >= 3
+                    ? usuario_users
+                    : nombre_users.replace(/\s+/g, '');
+
+                const usernameUnico = await generarUsernameUnico(
+                  usernameBase,
+                  t,
+                );
+
                 const crear_sub_usuario = await crearSubUsuario(
                   {
                     id_usuario: crear_usuario.id_usuario,
-                    usuario: nombre_users.replace(/\s+/g, ''),
+                    usuario: usernameUnico, // 👈 garantizado único
                     password: con_users,
-                    email: usuario_users,
+                    email: email_users, // 👈 email REAL
                     nombre_encargado: nombre_users,
                     rol: 'administrador',
                   },
@@ -512,27 +604,23 @@ exports.newLogin = async (req, res) => {
 
                 return {
                   usuarioCreado: crear_usuario.toJSON(),
-                  subUsuarioCreado: crear_sub_usuario, // ya viene sin password si usas tu helper
+                  subUsuarioCreado: crear_sub_usuario,
                   id_sub_usuario: crear_sub_usuario.id_sub_usuario,
                 };
               });
 
-            // ✅ 5) Token fuera (ya hay commit, ahora sí existe en BD)
             const sessionToken = await generarToken(id_sub_usuario);
-
-            // estado_creacion
-            const estado_creacion = 'incompleto';
 
             return res.status(200).json({
               status: 'success',
-              estado_creacion,
+              estado_creacion: 'incompleto',
               token: sessionToken,
-              user: subUsuarioCreado, // si usas helper ya viene sin password
+              user: subUsuarioCreado,
               id_plataforma: tienda,
               id_configuracion: null,
             });
           } catch (err) {
-            // 🔍 DEBUG: log detallado para diagnosticar EXACTAMENTE qué falló
+            // 🔍 Log detallado por si vuelve a fallar
             console.error('❌ DEBUG newLogin/cursos_imporsuit catch:', {
               name: err.name,
               message: err.message,
@@ -545,11 +633,8 @@ exports.newLogin = async (req, res) => {
                 validatorKey: e.validatorKey,
               })),
               sqlMessage: err.original?.sqlMessage,
-              sqlCode: err.original?.code,
-              stack: err.stack,
             });
 
-            // Devolver mensaje detallado al cliente para ver en Postman/frontend
             let mensajeAmigable = err.message || 'Error inesperado';
             let detalles = null;
 
@@ -567,7 +652,6 @@ exports.newLogin = async (req, res) => {
                 campo: e.path,
                 valor: e.value,
                 problema: e.message,
-                validador: e.validatorKey,
               }));
               mensajeAmigable = `Validation: ${err.errors
                 ?.map((e) => `${e.path} → ${e.message}`)
@@ -583,10 +667,9 @@ exports.newLogin = async (req, res) => {
             });
           }
         } else {
+          // Ya existe usuario asociado a esta plataforma
           const usuarios_chat_center = await Usuarios_chat_center.findOne({
-            where: {
-              id_plataforma: tienda,
-            },
+            where: { id_plataforma: tienda },
           });
 
           if (!usuarios_chat_center) {
@@ -595,7 +678,6 @@ exports.newLogin = async (req, res) => {
             });
           }
 
-          /* consulta id_subusuarios */
           const subusuarios_chat_center =
             await Sub_usuarios_chat_center.findOne({
               where: {
@@ -611,26 +693,20 @@ exports.newLogin = async (req, res) => {
           }
 
           id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
-
           usuarioEncontrado = subusuarios_chat_center;
 
-          if (usuarios_chat_center.estado == 'activo') {
-            estado_creacion = 'completo';
-          } else {
-            estado_creacion = 'incompleto';
-          }
+          estado_creacion =
+            usuarios_chat_center.estado === 'activo'
+              ? 'completo'
+              : 'incompleto';
 
-          // Generar token de sesión
           const sessionToken = await generarToken(id_sub_usuario_encontrado);
-
-          // Eliminar campos sensibles
           const usuarioPlano = usuarioEncontrado.toJSON();
           const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
 
-          // Respuesta
-          res.status(200).json({
+          return res.status(200).json({
             status: 'success',
-            estado_creacion: estado_creacion,
+            estado_creacion,
             token: sessionToken,
             user: usuarioSinPassword,
             id_plataforma: tienda,
@@ -638,12 +714,13 @@ exports.newLogin = async (req, res) => {
           });
         }
       } else {
+        // Usuario imporsuit sin permisos (ni ecommerce, ni membresia, ni importacion, ni rol 16)
         const configuracion = await Configuraciones.findOne({
           where: { id_plataforma: tienda, suspendido: 0 },
         });
 
         if (!configuracion || !configuracion.id_usuario) {
-          res.status(200).json({
+          return res.status(200).json({
             status: 'success',
             estado_creacion: 'nulo',
             token: null,
@@ -651,56 +728,47 @@ exports.newLogin = async (req, res) => {
             id_plataforma: tienda,
             id_configuracion: null,
           });
-        } else {
-          const usuarios_chat_center = await Usuarios_chat_center.findOne({
-            where: {
-              id_usuario: configuracion.id_usuario,
-            },
-          });
+        }
 
-          if (!usuarios_chat_center) {
-            return res.status(404).json({
-              message: 'Usuario administrador no encontrado para esta tienda',
-            });
-          }
+        const usuarios_chat_center = await Usuarios_chat_center.findOne({
+          where: { id_usuario: configuracion.id_usuario },
+        });
 
-          /* consulta id_subusuarios */
-          const subusuarios_chat_center =
-            await Sub_usuarios_chat_center.findOne({
-              where: {
-                id_usuario: usuarios_chat_center.id_usuario,
-                rol: 'administrador',
-              },
-            });
-
-          if (!subusuarios_chat_center) {
-            return res.status(404).json({
-              message: 'Usuario administrador no encontrado para esta tienda',
-            });
-          }
-
-          id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
-
-          usuarioEncontrado = subusuarios_chat_center;
-          estado_creacion = 'completo';
-
-          // Generar token de sesión
-          const sessionToken = await generarToken(id_sub_usuario_encontrado);
-
-          // Eliminar campos sensibles
-          const usuarioPlano = usuarioEncontrado.toJSON();
-          const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
-
-          // Respuesta
-          res.status(200).json({
-            status: 'success',
-            estado_creacion: estado_creacion,
-            token: sessionToken,
-            user: usuarioSinPassword,
-            id_plataforma: tienda,
-            id_configuracion: null,
+        if (!usuarios_chat_center) {
+          return res.status(404).json({
+            message: 'Usuario administrador no encontrado para esta tienda',
           });
         }
+
+        const subusuarios_chat_center = await Sub_usuarios_chat_center.findOne({
+          where: {
+            id_usuario: usuarios_chat_center.id_usuario,
+            rol: 'administrador',
+          },
+        });
+
+        if (!subusuarios_chat_center) {
+          return res.status(404).json({
+            message: 'Usuario administrador no encontrado para esta tienda',
+          });
+        }
+
+        id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
+        usuarioEncontrado = subusuarios_chat_center;
+        estado_creacion = 'completo';
+
+        const sessionToken = await generarToken(id_sub_usuario_encontrado);
+        const usuarioPlano = usuarioEncontrado.toJSON();
+        const { password, admin_pass, ...usuarioSinPassword } = usuarioPlano;
+
+        return res.status(200).json({
+          status: 'success',
+          estado_creacion,
+          token: sessionToken,
+          user: usuarioSinPassword,
+          id_plataforma: tienda,
+          id_configuracion: null,
+        });
       }
     }
   } catch (err) {
@@ -709,7 +777,6 @@ exports.newLogin = async (req, res) => {
       .json({ message: 'Token inválido o expirado', error: err.message });
   }
 };
-
 /**
  * Single sign-out: marca users.logout_at = NOW() para forzar la invalidación
  * de todos los JWTs anteriores del usuario en ambas apps (Imporsuit y Chatcenter).
