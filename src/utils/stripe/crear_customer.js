@@ -27,25 +27,56 @@ async function crearStripeCustomer({ nombre, email, id_usuario }) {
     };
   }
 
-  // Buscar si ya existe customer con ese email
-  const existentes = await stripe.customers.list({ email, limit: 1 });
+  try {
+    // 1) Buscar si ya existe customer con ese email en Stripe
+    const existentes = await stripe.customers.list({ email, limit: 1 });
+    const customerExistente = existentes.data?.[0];
 
-  if (existentes.data.length > 0) {
+    // 2) Si ya existe en Stripe → REUTILIZARLO
+    //    (en este punto del flujo ya validamos que NO existe en usuarios_chat_center,
+    //     entonces es seguro asociarlo al nuevo usuario que estamos creando)
+    if (customerExistente) {
+      // Actualizar metadata para que apunte al nuevo id_usuario de chatcenter
+      try {
+        await stripe.customers.update(customerExistente.id, {
+          name: customerExistente.name || nombre,
+          metadata: {
+            ...(customerExistente.metadata || {}),
+            id_usuario: String(id_usuario),
+            reusado_en: new Date().toISOString(),
+          },
+        });
+      } catch (e) {
+        // Si falla el update de metadata no es bloqueante, solo lo logueamos
+        console.warn(
+          `crearStripeCustomer: no se pudo actualizar metadata del customer ${customerExistente.id} —`,
+          e.message,
+        );
+      }
+
+      return {
+        ok: true,
+        id_customer: customerExistente.id,
+        reused: true, // bandera por si quieres loguear/auditar después
+      };
+    }
+
+    // 3) Si no existe → crear nuevo
+    const customer = await stripe.customers.create({
+      name: nombre,
+      email,
+      metadata: { id_usuario: String(id_usuario) },
+    });
+
+    return { ok: true, id_customer: customer.id, reused: false };
+  } catch (err) {
+    console.error('crearStripeCustomer: error con Stripe —', err.message);
     return {
       ok: false,
-      code: 'STRIPE_CUSTOMER_EMAIL_EXISTS',
-      message: `Ya existe un cliente con el email: ${email}`,
+      code: 'STRIPE_API_ERROR',
+      message: err.message || 'Error al comunicarse con Stripe',
     };
   }
-
-  // Crear si no existe
-  const customer = await stripe.customers.create({
-    name: nombre,
-    email,
-    metadata: { id_usuario: String(id_usuario) },
-  });
-
-  return { ok: true, id_customer: customer.id };
 }
 
 async function obtenerOCrearStripeCustomer({ nombre, email, id_usuario }) {
@@ -54,21 +85,12 @@ async function obtenerOCrearStripeCustomer({ nombre, email, id_usuario }) {
   // 1) Buscar customers por email
   const existentes = await stripe.customers.list({
     email,
-    limit: 1, // trae el más reciente primero (por defecto suele venir ordenado desc por creación)
+    limit: 1,
   });
 
   const customerExistente = existentes.data?.[0];
 
   if (customerExistente) {
-    // (Opcional) Si quieres asegurar metadata/id_usuario cuando ya existe:
-    // await stripe.customers.update(customerExistente.id, {
-    //   name: customerExistente.name ?? nombre,
-    //   metadata: {
-    //     ...customerExistente.metadata,
-    //     id_usuario: String(id_usuario),
-    //   },
-    // });
-
     return customerExistente.id;
   }
 
