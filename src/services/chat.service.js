@@ -402,7 +402,7 @@ class ChatService {
           console.log('Paquetes con estado:', paquetesConEstado);
 
           // OR por campo (si existe un 1 en cualquiera -> queda 1)
-          if ([265, 237, 242, 251].includes(Number(id_configuracion))) {
+          if ([265, 237, 242, 251, 261].includes(Number(id_configuracion))) {
             paquetes = paquetesConEstado.reduce(
               (acc, row) => {
                 acc.importacion =
