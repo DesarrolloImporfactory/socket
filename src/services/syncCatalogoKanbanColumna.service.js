@@ -4,6 +4,37 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { db } = require('../database/config');
 
+const fs = require('fs');
+const path = require('path');
+
+async function saveCatalogToDisk(
+  catalogPayload,
+  id_configuracion,
+  columnaNombre,
+  outputDir,
+  logger,
+) {
+  try {
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const safeNombre = String(columnaNombre || 'columna').replace(
+      /[^a-zA-Z0-9_-]/g,
+      '_',
+    );
+    const filename = `catalogo_${id_configuracion}_${safeNombre}_${Date.now()}.json`;
+    const fullPath = path.join(outputDir, filename);
+    await fs.promises.writeFile(
+      fullPath,
+      JSON.stringify(catalogPayload, null, 2),
+      'utf8',
+    );
+    await logger(`💾 JSON guardado localmente: ${fullPath}`);
+    return fullPath;
+  } catch (err) {
+    await logger(`⚠️ No se pudo guardar JSON local: ${err.message}`);
+    return null;
+  }
+}
+
 async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   const logger = opts.logger || (async (...a) => console.log(...a));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -140,6 +171,23 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     instrucciones_uso_ia,
   };
 
+  // ── 4.5 Guardar JSON localmente (opcional, por defecto activo) ──
+  /* const saveToDisk = opts.saveToDisk !== false; */ // true por defecto
+  const saveToDisk = false;
+  const outputDir =
+    opts.outputDir || path.join(process.cwd(), 'catalogos_sync');
+
+  let localFilePath = null;
+  if (saveToDisk) {
+    localFilePath = await saveCatalogToDisk(
+      catalogPayload,
+      id_configuracion,
+      columna.nombre,
+      outputDir,
+      logger,
+    );
+  }
+
   // ── 5. Crear vector store nuevo ───────────────────────────
   const vectorStoreId = await createFreshVectorStore(
     id_configuracion,
@@ -205,6 +253,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     vector_store_id: vectorStoreId,
     catalog_file_id: newFileId,
     total_items: catalogoNormalizado.length,
+    local_file_path: localFilePath, // ← NUEVO
   };
 }
 

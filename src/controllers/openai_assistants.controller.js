@@ -1059,6 +1059,12 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       const r = lista[i];
       const secuencia = i + 1;
 
+      // Validar metodo_dentro_24h (defensive)
+      const metodosValidos = ['ninguno', 'respuesta_rapida', 'ia'];
+      const metodo = metodosValidos.includes(r.metodo_dentro_24h)
+        ? r.metodo_dentro_24h
+        : 'ninguno';
+
       await db.query(
         `INSERT INTO configuracion_remarketing
          (id_configuracion, estado_contacto, secuencia,
@@ -1066,8 +1072,9 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
           estado_destino, header_format, header_media_url,
           header_media_name, header_parameters,
           id_template_rapido, usar_respuesta_rapida,
+          metodo_dentro_24h, prompt_ia,
           activo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
@@ -1081,8 +1088,10 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             r.header_media_url || null,
             r.header_media_name || null,
             r.header_parameters ? JSON.stringify(r.header_parameters) : null,
-            r.id_template_rapido || null,
-            r.usar_respuesta_rapida ? 1 : 0,
+            metodo === 'respuesta_rapida' ? r.id_template_rapido || null : null,
+            metodo === 'respuesta_rapida' ? 1 : 0,
+            metodo,
+            metodo === 'ia' ? r.prompt_ia || null : null,
           ],
           type: db.QueryTypes.INSERT,
         },
@@ -1111,7 +1120,7 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: '200',
-    data: rows.length ? rows : null, // null si no hay config
+    data: rows.length ? rows : null,
   });
 });
 

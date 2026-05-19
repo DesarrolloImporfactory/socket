@@ -90,6 +90,7 @@ exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
 const dominio = 'https://chat.imporfactory.app';
 
 // ========== AGREGAR ==========
+// ========== AGREGAR ==========
 exports.agregarProducto = catchAsync(async (req, res, next) => {
   const {
     id_configuracion,
@@ -116,6 +117,20 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
       message: 'id_configuracion, nombre, tipo y precio son obligatorios.',
     });
   }
+
+  // ── Helper: "" / undefined → null para campos numéricos ──
+  const toNullableNumber = (v) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // Normalización de numéricos
+  const precioNum = toNullableNumber(precio);
+  const precioUpsellNum = toNullableNumber(precio_upsell);
+  const precioProveedorNum = toNullableNumber(precio_proveedor);
+  const duracionNum = toNullableNumber(duracion) ?? 0;
+  const idCategoriaNum = toNullableNumber(id_categoria);
 
   const idDropiParsed =
     id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
@@ -178,21 +193,21 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const nuevoProducto = await ProductosChatCenter.create({
     id_configuracion,
     nombre,
-    descripcion,
+    descripcion: descripcion || null,
     material: material || null,
     tipo,
-    precio,
-    precio_proveedor: precio_proveedor || null,
-    duracion,
-    id_categoria,
+    precio: precioNum,
+    precio_proveedor: precioProveedorNum,
+    duracion: duracionNum,
+    id_categoria: idCategoriaNum,
     imagen_url,
     video_url,
     landing_url: landing_url || null,
     es_privado: esPrivadoParsed,
     id_dropi: Number.isFinite(idDropiParsed) ? idDropiParsed : null,
-    nombre_upsell,
-    descripcion_upsell,
-    precio_upsell,
+    nombre_upsell: nombre_upsell || null,
+    descripcion_upsell: descripcion_upsell || null,
+    precio_upsell: precioUpsellNum,
     imagen_upsell_url,
     combos_producto,
   });

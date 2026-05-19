@@ -47,8 +47,20 @@ function isTemplateNotFoundError(err) {
   );
 }
 
+function isOpenAISinSaldo(err) {
+  const status = err?.response?.status;
+  const code = err?.response?.data?.error?.code;
+  const msg = err?.response?.data?.error?.message || err?.message || '';
+  return (
+    (status === 429 && code === 'insufficient_quota') ||
+    status === 402 ||
+    msg.toLowerCase().includes('exceeded your current quota') ||
+    msg.toLowerCase().includes('insufficient_quota')
+  );
+}
+
 /* ================================================================
-   uploadMediaToMeta (sin cambios)
+   uploadMediaToMeta
    ================================================================ */
 const MAX_SIZES_MB = { IMAGE: 5, VIDEO: 16, DOCUMENT: 100 };
 
@@ -136,9 +148,7 @@ async function uploadMediaToMeta(
 }
 
 /* ================================================================
-   ✨ NUEVO: enviarRespuestaRapidaUniversal
-   Envía un mensaje free-form (text/image/video/audio/document)
-   usando `link` para evitar el upload paso intermedio.
+   enviarRespuestaRapidaUniversal
    ================================================================ */
 async function enviarRespuestaRapidaUniversal({
   phone_number_id,
@@ -179,7 +189,6 @@ async function enviarRespuestaRapidaUniversal({
     } else if (tipo === 'image' || tipo === 'video') {
       if (texto) mediaObj.caption = texto;
     }
-    // audio no acepta caption ni filename
 
     payload = {
       messaging_product: 'whatsapp',
@@ -225,6 +234,157 @@ async function enviarRespuestaRapidaUniversal({
 }
 
 /* ================================================================
+   generarMensajeRemarketingIA
+   ================================================================ */
+async function generarMensajeRemarketingIA({
+  id_thread,
+  assistant_id,
+  prompt_ia,
+  api_key_openai,
+  max_tokens = 300,
+}) {
+  console.log(
+    `🟦 [DEBUG IA] >>> Llamando OpenAI thread=${id_thread} assistant=${assistant_id} max_tokens=${max_tokens}`,
+  );
+
+  const headers = {
+    Authorization: `Bearer ${api_key_openai}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2',
+  };
+
+  const runRes = await axios.post(
+    `https://api.openai.com/v1/threads/${id_thread}/runs`,
+    {
+      assistant_id,
+      additional_instructions: prompt_ia,
+      additional_messages: [
+        {
+          role: 'user',
+          content:
+            '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados.',
+        },
+      ],
+      max_completion_tokens: max_tokens,
+    },
+    { headers, timeout: 60000 },
+  );
+  const run_id = runRes?.data?.id;
+  console.log(`🟦 [DEBUG IA] run_id=${run_id} status=${runRes?.data?.status}`);
+  if (!run_id) throw new Error('No se pudo crear run de OpenAI');
+
+  let statusRun = 'queued';
+  let attempts = 0;
+  while (statusRun !== 'completed' && statusRun !== 'failed' && attempts < 25) {
+    await new Promise((r) => setTimeout(r, 1200));
+    attempts++;
+    const statusRes = await axios.get(
+      `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
+      { headers },
+    );
+    statusRun = statusRes.data.status;
+    console.log(`🟦 [DEBUG IA] poll intento=${attempts} status=${statusRun}`);
+    if (statusRun === 'failed') {
+      throw new Error(
+        `Run falló: ${JSON.stringify(statusRes.data.last_error)}`,
+      );
+    }
+  }
+  if (statusRun !== 'completed') {
+    throw new Error(`Run no completó (status=${statusRun})`);
+  }
+
+  const messagesRes = await axios.get(
+    `https://api.openai.com/v1/threads/${id_thread}/messages`,
+    { headers },
+  );
+  const mensajes = messagesRes.data.data || [];
+  const textBlock = mensajes
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.run_id === run_id)
+    ?.content?.[0]?.text;
+
+  if (!textBlock?.value) {
+    throw new Error('Sin respuesta del asistente');
+  }
+
+  let texto = textBlock.value;
+  const anns = textBlock.annotations || [];
+  for (let i = anns.length - 1; i >= 0; i--) {
+    const a = anns[i];
+    if (
+      typeof a?.start_index === 'number' &&
+      typeof a?.end_index === 'number'
+    ) {
+      texto = texto.slice(0, a.start_index) + texto.slice(a.end_index);
+    }
+  }
+  texto = texto
+    .replace(/【[^】]*】/g, '')
+    .replace(/\[\d+:\d+†[^\]]*\]/g, '')
+    .replace(/\[source\]/gi, '')
+    .replace(/\[doc\d+\]/gi, '')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (
+    (texto.startsWith('"') && texto.endsWith('"')) ||
+    (texto.startsWith('"') && texto.endsWith('"'))
+  ) {
+    texto = texto.slice(1, -1).trim();
+  }
+
+  console.log(
+    `🟦 [DEBUG IA] texto generado len=${texto.length} preview="${texto.slice(0, 80)}..."`,
+  );
+  return texto;
+}
+
+/* ================================================================
+   enviarTextoLibreWhatsApp
+   ================================================================ */
+async function enviarTextoLibreWhatsApp({
+  phone_number_id,
+  access_token,
+  phoneNorm,
+  texto,
+}) {
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: phoneNorm,
+    type: 'text',
+    text: { body: texto },
+  };
+
+  const sendRes = await axios.post(
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phone_number_id}/messages`,
+    payload,
+    {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    },
+  );
+
+  processBucHeader(sendRes.headers, 'remarketing-ia-send');
+
+  if (sendRes.status < 200 || sendRes.status >= 300 || sendRes.data?.error) {
+    const metaErr =
+      sendRes.data?.error?.message || `Meta HTTP ${sendRes.status}`;
+    const err = new Error(`[Meta IA] ${metaErr}`);
+    err.meta_status = sendRes.status;
+    err.meta_error = sendRes.data?.error || sendRes.data;
+    throw err;
+  }
+
+  return { wamid: sendRes.data?.messages?.[0]?.id || null };
+}
+
+/* ================================================================
    withLock
    ================================================================ */
 async function withLock(lockName, fn) {
@@ -249,7 +409,7 @@ async function withLock(lockName, fn) {
 }
 
 /* ================================================================
-   handleRecordError (sin cambios)
+   handleRecordError
    ================================================================ */
 async function handleRecordError(record, err, waba_id) {
   const intentosActuales = Number(record.intentos || 0) + 1;
@@ -370,6 +530,27 @@ cron.schedule('*/1 * * * *', async () => {
       const wabasAffectedThisCycle = new Set();
 
       for (const record of pendientes) {
+        // ══════════════════════════════════════════════════════
+        // 🟦 DEBUG: Estado inicial del record
+        // ══════════════════════════════════════════════════════
+        console.log(
+          `\n🟦 [DEBUG] ━━━━━━━━━━ INICIO id=${record.id} ━━━━━━━━━━`,
+        );
+        console.log(
+          `🟦 [DEBUG] metodo_dentro_24h_RAW="${record.metodo_dentro_24h}"`,
+        );
+        console.log(
+          `🟦 [DEBUG] usar_respuesta_rapida=${record.usar_respuesta_rapida}`,
+        );
+        console.log(
+          `🟦 [DEBUG] prompt_ia=${record.prompt_ia ? `SI (${record.prompt_ia.length} chars)` : 'NO/NULL'}`,
+        );
+        console.log(
+          `🟦 [DEBUG] estado_contacto_origen="${record.estado_contacto_origen}"`,
+        );
+        console.log(`🟦 [DEBUG] id_configuracion=${record.id_configuracion}`);
+        console.log(`🟦 [DEBUG] telefono="${record.telefono}"`);
+
         if (rateLimitHitsThisCycle >= MAX_RATE_LIMIT_HITS) {
           console.log(
             `⏸ [remarketing] ${rateLimitHitsThisCycle} rate limits — pausando ciclo`,
@@ -385,6 +566,7 @@ cron.schedule('*/1 * * * *', async () => {
             record.id_cliente_chat_center,
           );
           if (!cliente) {
+            console.log(`🟦 [DEBUG] ❌ Cliente NO encontrado`);
             await db.query(
               `UPDATE remarketing_pendientes
                SET cancelado = 1, error_message = 'Cliente no encontrado'
@@ -394,8 +576,15 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
+          console.log(
+            `🟦 [DEBUG] cliente.estado_contacto="${cliente.estado_contacto}"`,
+          );
+
           // 2) Estado cambió → cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
+            console.log(
+              `🟦 [DEBUG] ❌ ESTADO CAMBIÓ (${cliente.estado_contacto} ≠ ${record.estado_contacto_origen}) — cancelando`,
+            );
             await db.query(
               `UPDATE remarketing_pendientes
                SET cancelado = 1, error_message = 'Estado cambió'
@@ -411,6 +600,7 @@ cron.schedule('*/1 * * * *', async () => {
             throw new Error('Config incompleta o config suspendida');
           }
           wabaIdForLog = cfg.WABA_ID;
+          console.log(`🟦 [DEBUG] config OK waba=${cfg.WABA_ID}`);
 
           // 4) WABA throttled?
           if (isWabaThrottled(cfg.WABA_ID)) {
@@ -423,67 +613,239 @@ cron.schedule('*/1 * * * *', async () => {
           const telefonoLimpio = onlyDigits(record.telefono || '');
 
           // ══════════════════════════════════════════════════════
-          // ✨ NUEVO PASO: ¿Enviar respuesta rápida?
+          // Detectar método dentro de 24h (con compat legacy)
           // ══════════════════════════════════════════════════════
-          let envioPorRR = false;
-          let rrInfo = null;
+          const metodo24h =
+            record.metodo_dentro_24h && record.metodo_dentro_24h !== 'ninguno'
+              ? record.metodo_dentro_24h
+              : record.usar_respuesta_rapida
+                ? 'respuesta_rapida'
+                : 'ninguno';
 
-          if (record.usar_respuesta_rapida && record.id_template_rapido) {
-            const dentroVentana = await verificarVentana24h(
+          console.log(`🟦 [DEBUG] metodo24h CALCULADO="${metodo24h}"`);
+
+          let envioPorRR = false;
+          let envioPorIA = false;
+          let rrInfo = null;
+          let iaTextoEnviado = null;
+          let iaWamid = null;
+
+          // Verificar ventana 24h una sola vez si es necesario
+          let dentroVentana = false;
+          if (metodo24h === 'respuesta_rapida' || metodo24h === 'ia') {
+            dentroVentana = await verificarVentana24h(
               record.id_configuracion,
               telefonoLimpio,
             );
+          }
 
-            if (dentroVentana) {
-              const [tplRapido] = await db.query(
-                `SELECT id_template, atajo, mensaje, tipo_mensaje, ruta_archivo, mime_type, file_name
-                 FROM templates_chat_center
-                 WHERE id_template = ? AND id_configuracion = ?
-                 LIMIT 1`,
-                {
-                  replacements: [
-                    record.id_template_rapido,
-                    record.id_configuracion,
-                  ],
-                  type: db.QueryTypes.SELECT,
-                },
-              );
+          console.log(`🟦 [DEBUG] dentroVentana=${dentroVentana}`);
+          console.log(
+            `🟦 [DEBUG] ¿Entra IA? metodo24h==='ia':${metodo24h === 'ia'} && dentroVentana:${dentroVentana} && hasPrompt:${!!record.prompt_ia}`,
+          );
 
-              if (tplRapido) {
-                try {
-                  rrInfo = await enviarRespuestaRapidaUniversal({
-                    phone_number_id: cfg.PHONE_NUMBER_ID,
-                    access_token: cfg.ACCESS_TOKEN,
-                    phoneNorm: telefonoLimpio,
-                    tplRapido,
-                  });
-                  envioPorRR = true;
+          // ══════════════════════════════════════════════════════
+          // Intento 1: RESPUESTA RÁPIDA
+          // ══════════════════════════════════════════════════════
+          if (
+            dentroVentana &&
+            metodo24h === 'respuesta_rapida' &&
+            record.id_template_rapido
+          ) {
+            console.log(`🟦 [DEBUG] >>> Entrando a bloque RR`);
+            const [tplRapido] = await db.query(
+              `SELECT id_template, atajo, mensaje, tipo_mensaje, ruta_archivo, mime_type, file_name
+               FROM templates_chat_center
+               WHERE id_template = ? AND id_configuracion = ?
+               LIMIT 1`,
+              {
+                replacements: [
+                  record.id_template_rapido,
+                  record.id_configuracion,
+                ],
+                type: db.QueryTypes.SELECT,
+              },
+            );
+
+            if (tplRapido) {
+              try {
+                rrInfo = await enviarRespuestaRapidaUniversal({
+                  phone_number_id: cfg.PHONE_NUMBER_ID,
+                  access_token: cfg.ACCESS_TOKEN,
+                  phoneNorm: telefonoLimpio,
+                  tplRapido,
+                });
+                envioPorRR = true;
+                console.log(
+                  `✅ [remarketing] id=${record.id} RR enviada (${rrInfo.tipo})`,
+                );
+              } catch (rrErr) {
+                if (isWindowClosedError(rrErr)) {
                   console.log(
-                    `✅ [remarketing] id=${record.id} RR enviada (${rrInfo.tipo})`,
+                    `↩ [remarketing] id=${record.id} ventana cerrada, fallback a template`,
                   );
-                } catch (rrErr) {
-                  if (isWindowClosedError(rrErr)) {
-                    console.log(
-                      `↩ [remarketing] id=${record.id} ventana cerrada, fallback a template`,
-                    );
-                    // No bloquea: cae al template Meta abajo
-                  } else if (isMetaRateLimit(rrErr)) {
-                    throw rrErr; // lo manejamos como rate limit normal
-                  } else {
-                    // Cualquier otro error de RR → fallback al template
-                    console.log(
-                      `⚠️ [remarketing] id=${record.id} RR falló (${rrErr.message}), fallback a template`,
-                    );
-                  }
+                } else if (isMetaRateLimit(rrErr)) {
+                  throw rrErr;
+                } else {
+                  console.log(
+                    `⚠️ [remarketing] id=${record.id} RR falló (${rrErr.message}), fallback a template`,
+                  );
                 }
               }
             }
           }
 
           // ══════════════════════════════════════════════════════
-          // Si NO se envió por RR → usar template Meta (lógica original)
+          // Intento 2: IA (solo si no fue por RR)
           // ══════════════════════════════════════════════════════
-          if (!envioPorRR) {
+          if (
+            !envioPorRR &&
+            dentroVentana &&
+            metodo24h === 'ia' &&
+            record.prompt_ia
+          ) {
+            console.log(`🟦 [DEBUG] >>> Entrando a bloque IA`);
+            try {
+              const [cfgRow] = await db.query(
+                `SELECT api_key_openai, openai_activo FROM configuraciones WHERE id = ? LIMIT 1`,
+                {
+                  replacements: [record.id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              console.log(
+                `🟦 [DEBUG IA] cfgRow: api_key=${cfgRow?.api_key_openai ? 'SI' : 'NO'} openai_activo=${cfgRow?.openai_activo}`,
+              );
+
+              if (!cfgRow?.api_key_openai) {
+                throw new Error('Sin api_key_openai en configuración');
+              }
+              if (cfgRow.openai_activo === 0) {
+                throw new Error('OpenAI marcado inactivo (sin saldo)');
+              }
+              const api_key_openai = cfgRow.api_key_openai;
+
+              const [colRow] = await db.query(
+                `SELECT assistant_id, max_tokens FROM kanban_columnas
+                 WHERE id_configuracion = ?
+                   AND LOWER(estado_db) = LOWER(?)
+                   AND activo = 1
+                 LIMIT 1`,
+                {
+                  replacements: [
+                    record.id_configuracion,
+                    record.estado_contacto_origen,
+                  ],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              console.log(
+                `🟦 [DEBUG IA] colRow: assistant_id=${colRow?.assistant_id || 'NO'} max_tokens=${colRow?.max_tokens}`,
+              );
+
+              if (!colRow?.assistant_id) {
+                throw new Error(
+                  `Columna kanban "${record.estado_contacto_origen}" sin assistant_id`,
+                );
+              }
+
+              const [threadRow] = await db.query(
+                `SELECT thread_id FROM openai_threads
+                 WHERE id_cliente_chat_center = ?
+                 LIMIT 1`,
+                {
+                  replacements: [record.id_cliente_chat_center],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              console.log(
+                `🟦 [DEBUG IA] threadRow: thread_id=${threadRow?.thread_id || 'NO'}`,
+              );
+
+              if (!threadRow?.thread_id) {
+                throw new Error('Cliente sin thread de OpenAI');
+              }
+
+              const textoIA = await generarMensajeRemarketingIA({
+                id_thread: threadRow.thread_id,
+                assistant_id: colRow.assistant_id,
+                prompt_ia: record.prompt_ia,
+                api_key_openai,
+                max_tokens: colRow.max_tokens || 300,
+              });
+
+              if (!textoIA || textoIA.trim().length < 5) {
+                throw new Error('IA devolvió texto vacío o muy corto');
+              }
+
+              const iaSent = await enviarTextoLibreWhatsApp({
+                phone_number_id: cfg.PHONE_NUMBER_ID,
+                access_token: cfg.ACCESS_TOKEN,
+                phoneNorm: telefonoLimpio,
+                texto: textoIA,
+              });
+
+              envioPorIA = true;
+              iaTextoEnviado = textoIA;
+              iaWamid = iaSent.wamid;
+              console.log(
+                `🤖 [remarketing] id=${record.id} IA enviada (${textoIA.length} chars) wamid=${iaWamid}`,
+              );
+            } catch (iaErr) {
+              console.log(
+                `🟦 [DEBUG IA] ❌ ERROR EN BLOQUE IA: ${iaErr.message}`,
+              );
+              if (iaErr.response?.data) {
+                console.log(
+                  `🟦 [DEBUG IA] OpenAI response data: ${JSON.stringify(iaErr.response.data).slice(0, 500)}`,
+                );
+              }
+
+              if (isMetaRateLimit(iaErr)) {
+                throw iaErr;
+              }
+              if (isOpenAISinSaldo(iaErr)) {
+                await db.query(
+                  `UPDATE configuraciones
+                   SET openai_activo = 0,
+                       openai_error_at = NOW(),
+                       openai_error_msg = ?
+                   WHERE id = ?`,
+                  {
+                    replacements: [
+                      'Sin saldo OpenAI (detectado en cron remarketing)',
+                      record.id_configuracion,
+                    ],
+                    type: db.QueryTypes.UPDATE,
+                  },
+                );
+                console.log(
+                  `🚨 [remarketing] id=${record.id} OpenAI SIN SALDO, marcado inactivo. Fallback a template.`,
+                );
+              } else {
+                console.log(
+                  `⚠️ [remarketing] id=${record.id} IA falló (${iaErr.message}), fallback a template`,
+                );
+              }
+            }
+          } else {
+            console.log(`🟦 [DEBUG] >>> NO entró a bloque IA. Razones:`);
+            console.log(`🟦 [DEBUG]     - !envioPorRR: ${!envioPorRR}`);
+            console.log(`🟦 [DEBUG]     - dentroVentana: ${dentroVentana}`);
+            console.log(
+              `🟦 [DEBUG]     - metodo24h === 'ia': ${metodo24h === 'ia'}`,
+            );
+            console.log(
+              `🟦 [DEBUG]     - record.prompt_ia: ${!!record.prompt_ia}`,
+            );
+          }
+
+          // ══════════════════════════════════════════════════════
+          // Intento 3: TEMPLATE META (si no fue por RR ni IA)
+          // ══════════════════════════════════════════════════════
+          if (!envioPorRR && !envioPorIA) {
+            console.log(`🟦 [DEBUG] >>> FALLBACK a template Meta`);
+
             const headerFormatNorm = String(
               record.header_format || '',
             ).toUpperCase();
@@ -677,7 +1039,6 @@ cron.schedule('*/1 * * * *', async () => {
                 language_code: LANGUAGE_CODE,
               });
             } else {
-              // Template texto puro
               await sendWhatsappMessageTemplateScheduled({
                 telefono: record.telefono,
                 telefono_configuracion: record.telefono_configuracion || null,
@@ -692,10 +1053,7 @@ cron.schedule('*/1 * * * *', async () => {
                 header_parameters: null,
               });
             }
-          } else {
-            // ══════════════════════════════════════════════════════
-            // ✨ Guardar la RR enviada en mensajes_clientes
-            // ══════════════════════════════════════════════════════
+          } else if (envioPorRR) {
             const [clienteRow] = await db.query(
               `SELECT id FROM clientes_chat_center
                WHERE REPLACE(celular_cliente, ' ', '') = ?
@@ -738,7 +1096,6 @@ cron.schedule('*/1 * * * *', async () => {
               if (cfgCliente?.id) id_cliente_configuracion = cfgCliente.id;
             }
 
-            // ruta_archivo según tipo (matching tu estructura existente)
             let rutaArchivoFinal = null;
             if (rrInfo.tipo === 'document') {
               rutaArchivoFinal = JSON.stringify({
@@ -765,10 +1122,71 @@ cron.schedule('*/1 * * * *', async () => {
               uid_whatsapp: telefonoLimpio,
               id_wamid_mensaje: rrInfo.wamid,
             });
+          } else if (envioPorIA) {
+            const [clienteRow] = await db.query(
+              `SELECT id FROM clientes_chat_center
+               WHERE REPLACE(celular_cliente, ' ', '') = ?
+                 AND id_configuracion = ?
+               LIMIT 1`,
+              {
+                replacements: [telefonoLimpio, record.id_configuracion],
+                type: db.QueryTypes.SELECT,
+              },
+            );
+
+            let clienteId = clienteRow?.id || null;
+            if (!clienteId) {
+              const nuevo = await ClientesChatCenter.create({
+                id_configuracion: record.id_configuracion,
+                uid_cliente: cfg.PHONE_NUMBER_ID,
+                nombre_cliente: '',
+                apellido_cliente: '',
+                celular_cliente: telefonoLimpio,
+              });
+              clienteId = nuevo.id;
+            }
+
+            let id_cliente_configuracion = null;
+            const telCfg = record.telefono_configuracion
+              ? onlyDigits(record.telefono_configuracion)
+              : onlyDigits(cfg.telefono || '');
+
+            if (telCfg) {
+              const [cfgCliente] = await db.query(
+                `SELECT id FROM clientes_chat_center
+                 WHERE REPLACE(celular_cliente, ' ', '') = ?
+                   AND id_configuracion = ?
+                 LIMIT 1`,
+                {
+                  replacements: [telCfg, record.id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              if (cfgCliente?.id) id_cliente_configuracion = cfgCliente.id;
+            }
+
+            await MensajesClientes.create({
+              id_configuracion: record.id_configuracion,
+              id_cliente: id_cliente_configuracion || clienteId,
+              mid_mensaje: cfg.PHONE_NUMBER_ID,
+              tipo_mensaje: 'text',
+              rol_mensaje: 1,
+              celular_recibe: clienteId,
+              responsable: 'cron_remarketing_ia',
+              texto_mensaje: iaTextoEnviado,
+              ruta_archivo: JSON.stringify({
+                source: 'cron_remarketing_ia',
+                secuencia: record.secuencia,
+                prompt_usado: String(record.prompt_ia || '').slice(0, 2000),
+              }),
+              visto: 1,
+              uid_whatsapp: telefonoLimpio,
+              id_wamid_mensaje: iaWamid,
+            });
           }
 
           // ══════════════════════════════════════════════════════
-          // Lógica de secuencia (sin cambios excepto los nuevos campos)
+          // Lógica de secuencia
           // ══════════════════════════════════════════════════════
           const secuenciaActual = Number(record.secuencia || 1);
 
@@ -819,8 +1237,9 @@ cron.schedule('*/1 * * * *', async () => {
                 header_format, header_media_url, header_media_name, header_parameters,
                 estado_contacto_origen, estado_destino,
                 id_template_rapido, usar_respuesta_rapida,
+                metodo_dentro_24h, prompt_ia,
                 tiempo_disparo, enviado, cancelado, secuencia)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
               {
                 replacements: [
                   record.id_cliente_chat_center,
@@ -842,6 +1261,8 @@ cron.schedule('*/1 * * * *', async () => {
                   siguienteConfig.estado_destino || null,
                   siguienteConfig.id_template_rapido || null,
                   siguienteConfig.usar_respuesta_rapida ? 1 : 0,
+                  siguienteConfig.metodo_dentro_24h || 'ninguno',
+                  siguienteConfig.prompt_ia || null,
                   tiempoDisparo,
                   secuenciaActual + 1,
                 ],
@@ -870,12 +1291,18 @@ cron.schedule('*/1 * * * *', async () => {
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
+          const tipoEnvio = envioPorIA ? 'IA' : envioPorRR ? 'RR' : 'template';
           console.log(
-            `✅ [remarketing] id=${record.id} enviado (${envioPorRR ? 'RR' : 'template'})`,
+            `✅ [remarketing] id=${record.id} enviado (${tipoEnvio})`,
           );
+          console.log(`🟦 [DEBUG] ━━━━━━━━━━ FIN id=${record.id} ━━━━━━━━━━\n`);
 
           await new Promise((r) => setTimeout(r, 500));
         } catch (err) {
+          console.log(
+            `🟦 [DEBUG] ❌ ERROR PRINCIPAL id=${record.id}: ${err.message}`,
+          );
+
           if (isMetaRateLimit(err)) {
             if (wabaIdForLog) {
               markWabaThrottled(wabaIdForLog, 60);
@@ -908,4 +1335,6 @@ cron.schedule('*/1 * * * *', async () => {
   }
 });
 
-console.log('🚀 [remarketing] Cron registrado (cada 1 min)');
+console.log(
+  '🚀 [remarketing] Cron registrado (cada 1 min) - VERSION DEBUG IA v2',
+);
