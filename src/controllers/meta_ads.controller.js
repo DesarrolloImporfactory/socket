@@ -10,6 +10,9 @@ const logger = require('../utils/logger');
 const FB_APP_ID = process.env.FB_APP_ID;
 const FB_APP_SECRET = process.env.FB_APP_SECRET;
 const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
+const { findAdMatchesForOrders } = require('../cron/capiSenderCron');
+const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
+const { sendPurchaseEvent } = require('../services/metaCapi.service');
 
 // ══════════════════════════════════════════════
 // HELPERS
@@ -844,6 +847,344 @@ exports.syncInsights = async (req, res) => {
     });
   } catch (err) {
     logger.error('syncInsights:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Lista pixels de la cuenta. Si hay 1 → lo guarda automático.
+exports.autoDetectPixel = async (req, res) => {
+  try {
+    const { id_configuracion } = req.body;
+    if (!id_configuracion) {
+      return res.status(400).json({
+        success: false,
+        message: 'Falta id_configuracion',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+
+    const ax = metaAx(conn.access_token);
+    const resp = await ax.get(`${GRAPH_BASE}/${conn.ad_account_id}/adspixels`, {
+      params: {
+        fields: 'id,name,is_unavailable,last_fired_time',
+        limit: 50,
+      },
+    });
+
+    const data = assertMeta(resp, 'list_pixels');
+    const allPixels = data.data || [];
+
+    // Filtrar pixels deshabilitados
+    const pixels = allPixels.filter((p) => !p.is_unavailable);
+
+    if (!pixels.length) {
+      return res.json({
+        success: false,
+        message:
+          'No se encontraron pixels en tu cuenta. Crea uno en Meta Business Suite primero.',
+        pixels: [],
+      });
+    }
+
+    // 1 pixel → auto-seleccionar y activar CAPI
+    if (pixels.length === 1) {
+      const pixel = pixels[0];
+      await db.query(
+        `UPDATE meta_ad_connections 
+         SET pixel_id = ?, pixel_name = ?, capi_enabled = 1,
+             capi_paused_reason = NULL, capi_paused_at = NULL,
+             updated_at = NOW()
+         WHERE id_configuracion = ? AND status = 'active'`,
+        { replacements: [pixel.id, pixel.name, id_configuracion] },
+      );
+
+      return res.json({
+        success: true,
+        auto_selected: true,
+        pixel: {
+          pixel_id: pixel.id,
+          pixel_name: pixel.name,
+          last_fired_time: pixel.last_fired_time || null,
+        },
+        message: `Pixel "${pixel.name}" conectado automáticamente. CAPI activado.`,
+      });
+    }
+
+    // Varios pixels → devolver lista
+    return res.json({
+      success: true,
+      auto_selected: false,
+      pixels: pixels.map((p) => ({
+        pixel_id: p.id,
+        pixel_name: p.name,
+        last_fired_time: p.last_fired_time || null,
+      })),
+      message: `Se encontraron ${pixels.length} pixels. Selecciona uno para activar CAPI.`,
+    });
+  } catch (err) {
+    logger.error('autoDetectPixel:', err.message);
+    return res.status(err.meta_status || 500).json({
+      success: false,
+      message: err.meta_error?.message || err.message,
+    });
+  }
+};
+
+// Para cuando hay varios pixels y el cliente eligió uno.
+exports.selectPixel = async (req, res) => {
+  try {
+    const { id_configuracion, pixel_id, pixel_name } = req.body;
+    if (!id_configuracion || !pixel_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y pixel_id requeridos.',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+
+    // Verificar que el pixel existe y el usuario tiene acceso
+    const ax = metaAx(conn.access_token);
+    const verifyResp = await ax.get(`${GRAPH_BASE}/${pixel_id}`, {
+      params: { fields: 'id,name' },
+    });
+
+    if (verifyResp.status < 200 || verifyResp.status >= 300) {
+      return res.json({
+        success: false,
+        message: 'El pixel no existe o no tienes acceso a él.',
+        meta_error: verifyResp.data?.error || null,
+      });
+    }
+
+    const finalName = pixel_name || verifyResp.data?.name || 'Pixel';
+
+    await db.query(
+      `UPDATE meta_ad_connections 
+       SET pixel_id = ?, pixel_name = ?, capi_enabled = 1,
+           capi_paused_reason = NULL, capi_paused_at = NULL,
+           updated_at = NOW()
+       WHERE id_configuracion = ? AND status = 'active'`,
+      { replacements: [pixel_id, finalName, id_configuracion] },
+    );
+
+    return res.json({
+      success: true,
+      pixel: { pixel_id, pixel_name: finalName },
+      message: `Pixel "${finalName}" guardado. CAPI activado.`,
+    });
+  } catch (err) {
+    logger.error('selectPixel:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Para que la UI pueda mostrar el estado actual.
+exports.getPixelStatus = async (req, res) => {
+  try {
+    const { id_configuracion } = req.query;
+    if (!id_configuracion) {
+      return res.status(400).json({
+        success: false,
+        message: 'Falta id_configuracion',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: true,
+        connected: false,
+        capi_enabled: false,
+      });
+    }
+
+    return res.json({
+      success: true,
+      connected: true,
+      capi_enabled: Boolean(conn.capi_enabled),
+      pixel_id: conn.pixel_id || null,
+      pixel_name: conn.pixel_name || null,
+      test_event_code: conn.capi_test_event_code || null,
+      paused_reason: conn.capi_paused_reason || null,
+      paused_at: conn.capi_paused_at || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// Activa/desactiva el envío manualmente o cambia el test code.
+exports.toggleCapi = async (req, res) => {
+  try {
+    const { id_configuracion, enabled, test_event_code } = req.body;
+    if (id_configuracion == null || enabled == null) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y enabled requeridos.',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+
+    if (enabled && !conn.pixel_id) {
+      return res.json({
+        success: false,
+        message: 'Debes seleccionar un pixel antes de activar CAPI.',
+      });
+    }
+
+    await db.query(
+      `UPDATE meta_ad_connections 
+       SET capi_enabled = ?, capi_test_event_code = ?,
+           capi_paused_reason = NULL, capi_paused_at = NULL,
+           updated_at = NOW()
+       WHERE id_configuracion = ? AND status = 'active'`,
+      {
+        replacements: [
+          enabled ? 1 : 0,
+          test_event_code || null,
+          id_configuracion,
+        ],
+      },
+    );
+
+    return res.json({
+      success: true,
+      capi_enabled: Boolean(enabled),
+      test_event_code: test_event_code || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.testSendCapi = async (req, res) => {
+  try {
+    const { id_configuracion, dropi_order_id, test_event_code } = req.body;
+    if (!id_configuracion || !dropi_order_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y dropi_order_id requeridos.',
+      });
+    }
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'Sin conexión Meta Ads activa.',
+      });
+    }
+    if (!conn.pixel_id) {
+      return res.json({
+        success: false,
+        message: 'Sin pixel configurado. Llama auto-detect-pixel primero.',
+      });
+    }
+
+    // ── WABA ID desde el helper centralizado ──
+    const wabaConfig = await getConfigFromDB(id_configuracion);
+    if (!wabaConfig?.WABA_ID) {
+      return res.json({
+        success: false,
+        message:
+          'Falta WABA_ID (id_whatsapp) en configuraciones. Meta lo exige para action_source=business_messaging.',
+      });
+    }
+
+    // Traer orden
+    const [orders] = await db.query(
+      `SELECT dropi_order_id, phone, name, surname, classified_status,
+              total_order, dropshipper_profit, order_created_at
+       FROM dropi_orders_cache
+       WHERE id_configuracion = ? AND dropi_order_id = ?
+       LIMIT 1`,
+      { replacements: [id_configuracion, dropi_order_id] },
+    );
+
+    if (!orders.length) {
+      return res.json({ success: false, message: 'Orden no encontrada.' });
+    }
+    const order = orders[0];
+
+    // Buscar match
+    const matches = await findAdMatchesForOrders(id_configuracion, [order]);
+    const match = matches.get(order.dropi_order_id);
+
+    if (!match) {
+      return res.json({
+        success: false,
+        message:
+          'Sin match a anuncio. Esta orden no vino de CTWA o fuera de ventana 72h.',
+        order_info: {
+          phone: order.phone,
+          order_created_at: order.order_created_at,
+          status: order.classified_status,
+        },
+      });
+    }
+
+    // Enviar
+    const eventId = `dropi_${order.dropi_order_id}_purchase`;
+    const value = Number(order.dropshipper_profit || 0);
+
+    const result = await sendPurchaseEvent({
+      pixelId: conn.pixel_id,
+      accessToken: conn.access_token,
+      eventId,
+      value,
+      currency: conn.currency || 'USD',
+      eventTime: order.order_created_at,
+      orderId: order.dropi_order_id,
+      adId: match.ad_id,
+      user: {
+        phone: order.phone,
+        firstName: order.name,
+        lastName: order.surname,
+        ctwaClid: match.ctwa_clid,
+        wabaId: wabaConfig.WABA_ID, // ← clave del fix
+      },
+      testEventCode: test_event_code || conn.capi_test_event_code || null,
+    });
+
+    return res.json({
+      ...result,
+      payload_summary: {
+        pixel_id: conn.pixel_id,
+        event_id: eventId,
+        event_name: 'Purchase',
+        value,
+        currency: conn.currency || 'USD',
+        ad_id: match.ad_id,
+        ctwa_clid: match.ctwa_clid,
+        waba_id: wabaConfig.WABA_ID,
+        order_created_at: order.order_created_at,
+        test_mode: Boolean(test_event_code || conn.capi_test_event_code),
+      },
+    });
+  } catch (err) {
+    logger.error('testSendCapi:', err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

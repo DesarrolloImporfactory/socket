@@ -18,6 +18,13 @@ router.post('/campaigns/toggle', metaAdsCtrl.toggleCampania); // { id_configurac
 
 // ── Ads ( pausar/activar un anuncio individual) ──
 router.post('/ads/toggle', metaAdsCtrl.toggleAd);
+
+// ── Pixel / CAPI ──
+router.post('/pixel/auto-detect', metaAdsCtrl.autoDetectPixel);
+router.post('/pixel/select', metaAdsCtrl.selectPixel);
+router.get('/pixel/status', metaAdsCtrl.getPixelStatus);
+router.post('/capi/toggle', metaAdsCtrl.toggleCapi);
+router.post('/capi/test-send', metaAdsCtrl.testSendCapi);
 // ── Sync manual (fuerza re-fetch de Meta) ──
 router.post('/sync', metaAdsCtrl.syncInsights);
 

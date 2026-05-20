@@ -1,44 +1,13 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js  — v5
+ * cron/syncDropiOrdersHourly.js  — v6
  *
- * Cron de automatización de mensajes WhatsApp por cambio de estado Dropi.
- *
- * Flujo:
- *  1. Para cada integración Dropi activa → consulta órdenes con
- *     filter_date_by = "FECHA DE CAMBIO DE ESTATUS" (ayer → hoy)
- *     y hace upsert al cache.
- *  2. **PRE-PASS ENTREGADA**: actualiza estado_contacto del cliente cuando
- *     Dropi reporta entrega, INDEPENDIENTE de si hay plantilla o se envía
- *     mensaje. Mejora UX del kanban: todos los clientes terminan en la
- *     columna "entregada" aunque no se les notifique.
- *  3. Por cada orden sincronizada, mapea su status Dropi al estado
- *     configurado en dropi_plantillas_config.
- *  4. Si aún no se envió ese combo (orden + config + estado):
- *     a) Verifica si hay ventana 24h abierta → envía respuesta rápida (gratis)
- *     b) Si no hay ventana → envía template de Meta (pagado)
- *        con body params, button params resueltos desde la orden
- *  5. Registra en dropi_plantillas_enviadas (dedup) Y en mensajes_clientes
- *     (para que aparezca en el chat center con json_mensaje, ruta_archivo
- *      y texto_mensaje con el body real interpolado desde body_text).
- *
- * parametros_json en dropi_plantillas_config:
- *   {
- *     "body": ["nombre", "contenido", "costo"],
- *     "buttons": [
- *       { "index": 0, "variable": "numero_guia" },
- *       { "index": 1, "variable": "numero_guia" }
- *     ]
- *   }
- *
- * body_text en dropi_plantillas_config:
- *   El body tal cual está en Meta con placeholders {{1}}, {{2}}, etc.
- *   Se interpola localmente para guardar en texto_mensaje sin llamar a Meta.
- *
- * Variables disponibles (extraídas de la orden Dropi):
- *   nombre, contenido, direccion, costo, ciudad, provincia,
- *   numero_guia, transportadora, tracking, order_id, telefono, guia_pdf
+ * NUEVO EN v6:
+ *  Fase 4: Profit Sync — rellena `dropshipper_profit` para órdenes
+ *  recientes sin profit. Necesario porque el listado masivo de Dropi
+ *  NO devuelve este campo (solo viene en getOrderDetail por orden).
+ *  Sin esto, CAPI manda value=0 a Meta.
  */
 
 const cron = require('node-cron');
@@ -65,14 +34,13 @@ const MAX_ORDERS_PER_INTEGRATION = 2000;
 const MAX_RETRIES_429 = 4;
 const META_API_VERSION = 'v22.0';
 
-// Estados que SIEMPRE envían template (primer contacto)
+// Profit sync — Dropi solo expone profit vía getOrderDetail individual
+const PROFIT_MAX_PER_RUN = 30;
+const PROFIT_DELAY_MS = 2500;
+const PROFIT_LOOKBACK_HOURS = 48;
+
 const SIEMPRE_TEMPLATE = new Set(['PENDIENTE CONFIRMACION']);
-
-// Horas de ventana (23h por margen de seguridad)
 const VENTANA_HORAS = 23;
-
-// Columna kanban por defecto cuando Dropi reporta ENTREGADA
-// (todas las plantillas descargables traen esta columna con este estado_db)
 const COLUMNA_ENTREGADA_DEFAULT = 'entregada';
 
 /* ═══════════════════════════════════════════════════════════
@@ -88,14 +56,7 @@ async function ensureDir(dir) {
 }
 
 async function log(msg) {
-  // const line = `[${new Date().toISOString()}] ${msg}\n`;
-  // process.stdout.write(line);
-  // try {
-  //   await ensureDir(logsDir);
-  //   await fsp.appendFile(path.join(logsDir, 'debug_log_dropi.txt'), line, {
-  //     encoding: 'utf8',
-  //   });
-  // } catch (_) {}
+  // logs deshabilitados
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -165,28 +126,19 @@ function mapDropiStatusToEstadoConfig(rawStatus) {
   )
     return 'NOVEDAD';
 
-  // ═══════════════════════════════════════════════════════════
-  // EN TRANSITO — SOLO last-mile real (próximo a entregar al cliente)
-  // GINTRACOM     → EN REPARTO
-  // LAAR          → ZONA DE ENTREGA
-  // SERVIENTREGA  → EN DISTRIBUCIÓN A CLIENTE
-  // VELOCES       → EN CAMINO
-  // ═══════════════════════════════════════════════════════════
   if (
-    s === 'EN REPARTO' || // GINTRACOM
-    s === 'ZONA DE ENTREGA' || // LAAR
-    s === 'EN DISTRIBUCION A CLIENTE' || // SERVIENTREGA (sin tilde)
-    s === 'EN DISTRIBUCIÓN A CLIENTE' || // SERVIENTREGA (con tilde)
+    s === 'EN REPARTO' ||
+    s === 'ZONA DE ENTREGA' ||
+    s === 'EN DISTRIBUCION A CLIENTE' ||
+    s === 'EN DISTRIBUCIÓN A CLIENTE' ||
     s.includes('EN DISTRIBUCION A') ||
     s.includes('EN DISTRIBUCIÓN A') ||
-    s === 'EN CAMINO' || // VELOCES
+    s === 'EN CAMINO' ||
     s.includes('SALIDA A REPARTO') ||
     s.includes('REPARTIDOR ASIGNADO')
   )
     return 'EN TRANSITO';
 
-  // Todo lo demás (bodega, recolección, ingresos, rutas internas,
-  // tránsito entre centros, picking, packing, etc.) → null = no envía nada
   return null;
 }
 
@@ -199,7 +151,6 @@ function classifyDropiStatus(status) {
     .trim()
     .toUpperCase();
 
-  // ENTREGADA
   if (
     s === 'ENTREGADO' ||
     s.includes('ENTREGADA') ||
@@ -210,7 +161,6 @@ function classifyDropiStatus(status) {
   )
     return 'entregada';
 
-  // DEVOLUCION
   if (
     s.includes('DEVOLUCION') ||
     s.includes('DEVOLUCIÓN') ||
@@ -220,7 +170,6 @@ function classifyDropiStatus(status) {
   )
     return 'devolucion';
 
-  // CANCELADA
   if (
     s === 'CANCELADO' ||
     s.includes('CANCELADA') ||
@@ -230,10 +179,8 @@ function classifyDropiStatus(status) {
   )
     return 'cancelada';
 
-  // PENDIENTE
   if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
 
-  // RETIRO EN AGENCIA
   if (
     s.includes('RETIRO EN AGENCIA') ||
     s.includes('ENVÍO LISTO EN OFICINA') ||
@@ -241,7 +188,6 @@ function classifyDropiStatus(status) {
   )
     return 'retiro_agencia';
 
-  // NOVEDAD
   if (
     s.includes('NOVEDAD') ||
     s.includes('SOLUCION') ||
@@ -261,7 +207,6 @@ function classifyDropiStatus(status) {
   )
     return 'novedad';
 
-  // INDEMNIZADA
   if (
     s.includes('INDEMNIZ') ||
     s.includes('SINIESTRO') ||
@@ -271,24 +216,21 @@ function classifyDropiStatus(status) {
   )
     return 'indemnizada';
 
-  // GUIA GENERADA — guía recién creada, aún no se mueve
   if (s === 'GUIA_GENERADA') return 'guia_generada';
 
-  // EN REPARTO — last-mile real (próximo a entregar al cliente)
   if (
-    s === 'EN REPARTO' || // GINTRACOM
-    s === 'ZONA DE ENTREGA' || // LAAR
-    s === 'EN DISTRIBUCION A CLIENTE' || // SERVIENTREGA (sin tilde)
-    s === 'EN DISTRIBUCIÓN A CLIENTE' || // SERVIENTREGA (con tilde)
+    s === 'EN REPARTO' ||
+    s === 'ZONA DE ENTREGA' ||
+    s === 'EN DISTRIBUCION A CLIENTE' ||
+    s === 'EN DISTRIBUCIÓN A CLIENTE' ||
     s.includes('EN DISTRIBUCION A') ||
     s.includes('EN DISTRIBUCIÓN A') ||
-    s === 'EN CAMINO' || // VELOCES
+    s === 'EN CAMINO' ||
     s.includes('SALIDA A REPARTO') ||
     s.includes('REPARTIDOR ASIGNADO')
   )
     return 'en_reparto';
 
-  // EN TRANSITO — todo lo demás del flujo logístico interno
   if (
     s.includes('TRÁNSITO') ||
     s.includes('TRANSITO') ||
@@ -379,8 +321,6 @@ function getTrackingUrl(shippingCompany, guide) {
 function getGuiaPdfUrl(order) {
   const guiaPath = order.guia_urls3;
   if (!guiaPath) return '';
-  // El template de Meta ya tiene https://d39ru7awumhhs2.cloudfront.net/ como base URL del botón
-  // Solo devolvemos el path relativo
   const CF_PREFIX = 'https://d39ru7awumhhs2.cloudfront.net/';
   if (guiaPath.startsWith(CF_PREFIX)) return guiaPath.replace(CF_PREFIX, '');
   return guiaPath;
@@ -426,11 +366,6 @@ function resolveVariable(varName, order) {
   }
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Interpolar body_text con los parámetros resueltos
-   "Hola {{1}}, pedido {{2}}" + ["Juan","123"] → "Hola Juan, pedido 123"
-   ═══════════════════════════════════════════════════════════ */
-
 function interpolarBodyText(bodyText, components) {
   if (!bodyText) return null;
   let resultado = bodyText;
@@ -442,10 +377,6 @@ function interpolarBodyText(bodyText, components) {
   }
   return resultado;
 }
-
-/* ═══════════════════════════════════════════════════════════
-   ruta_archivo — trazabilidad
-   ═══════════════════════════════════════════════════════════ */
 
 function buildRutaArchivo(order, estadoConfig) {
   const details = Array.isArray(order.orderdetails) ? order.orderdetails : [];
@@ -468,16 +399,10 @@ function buildRutaArchivo(order, estadoConfig) {
   };
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Construir components de Meta API desde parametros_json
-   ═══════════════════════════════════════════════════════════ */
-
 function buildTemplateComponents(parametrosJson, order) {
   const config = safeJsonParse(parametrosJson, null);
   if (!config) return [];
-
   const components = [];
-
   if (Array.isArray(config.body) && config.body.length > 0) {
     components.push({
       type: 'body',
@@ -487,7 +412,6 @@ function buildTemplateComponents(parametrosJson, order) {
       })),
     });
   }
-
   if (Array.isArray(config.buttons) && config.buttons.length > 0) {
     for (const btn of config.buttons) {
       const idx = btn.index != null ? btn.index : 0;
@@ -500,7 +424,6 @@ function buildTemplateComponents(parametrosJson, order) {
       });
     }
   }
-
   return components;
 }
 
@@ -552,6 +475,84 @@ async function upsertOrders(cacheInsertFields, orders) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   PROFIT SYNC (NUEVO v6)
+   Dropi NO devuelve dropshipper_profit en el listado.
+   Lo trae solo en getOrderDetail bajo el campo dropshipper_amount_to_win.
+   Acá rellenamos órdenes recientes con profit=null para que CAPI
+   tenga value real al enviar Purchase a Meta.
+   ═══════════════════════════════════════════════════════════ */
+
+async function syncProfitForRecentOrders({
+  integrationKey,
+  country_code,
+  cacheCtx,
+}) {
+  const cacheWhere = cacheCtx.id_configuracion
+    ? { id_configuracion: cacheCtx.id_configuracion, id_usuario: 0 }
+    : { id_configuracion: 0, id_usuario: cacheCtx.id_usuario };
+
+  const sinceDate = new Date(Date.now() - PROFIT_LOOKBACK_HOURS * 3600 * 1000);
+
+  const pending = await DropiOrdersCache.findAll({
+    where: {
+      ...cacheWhere,
+      dropshipper_profit: null,
+      order_created_at: { [Op.gte]: sinceDate },
+    },
+    attributes: ['id', 'dropi_order_id'],
+    order: [['order_created_at', 'DESC']],
+    limit: PROFIT_MAX_PER_RUN,
+    raw: true,
+  });
+
+  if (!pending.length) return { calculated: 0, total: 0, isProveedor: false };
+
+  let calculated = 0;
+  let errors = 0;
+  let isProveedor = false;
+
+  for (let idx = 0; idx < pending.length; idx++) {
+    const order = pending[idx];
+    try {
+      const detail = await dropiService.getOrderDetail({
+        integrationKey,
+        orderId: order.dropi_order_id,
+        country_code,
+      });
+
+      const profit = detail?.objects?.dropshipper_amount_to_win;
+
+      // Caso proveedor: primera orden sin profit → marca TODAS en 0 y corta.
+      // Evita gastar API en cuentas donde no hay profit por diseño.
+      if (idx === 0 && (profit === null || profit === undefined)) {
+        await DropiOrdersCache.update(
+          { dropshipper_profit: 0 },
+          { where: { ...cacheWhere, dropshipper_profit: null } },
+        );
+        isProveedor = true;
+        break;
+      }
+
+      await DropiOrdersCache.update(
+        { dropshipper_profit: Number(profit || 0) },
+        { where: { id: order.id } },
+      );
+      calculated++;
+
+      await new Promise((r) => setTimeout(r, PROFIT_DELAY_MS));
+    } catch (err) {
+      const status = err?.response?.status || err?.statusCode || 500;
+      if (status === 429) break;
+      errors++;
+      if (errors >= 5) break;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  return { calculated, errors, total: pending.length, isProveedor };
+}
+
+/* ═══════════════════════════════════════════════════════════
    Credenciales WA
    ═══════════════════════════════════════════════════════════ */
 
@@ -563,10 +564,6 @@ async function getWaCredentials(id_configuracion) {
   );
   return row || null;
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Plantillas activas (con parámetros y body_text)
-   ═══════════════════════════════════════════════════════════ */
 
 async function getPlantillasActivas(id_configuracion) {
   const rows = await db.query(
@@ -593,41 +590,22 @@ async function getPlantillasActivas(id_configuracion) {
   return map;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Columna destino para PENDIENTE CONFIRMACION
-   Prioridad: es_dropi_principal → es_principal → null
-   ═══════════════════════════════════════════════════════════ */
-
 async function getColumnaPrincipalDropi(id_configuracion) {
-  // 1. Intentar es_dropi_principal (configuración específica de Dropi)
   const [dropiCol] = await db.query(
     `SELECT id, estado_db, 'dropi' AS tipo FROM kanban_columnas
-     WHERE id_configuracion = ? AND es_dropi_principal = 1
-     LIMIT 1`,
+     WHERE id_configuracion = ? AND es_dropi_principal = 1 LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   if (dropiCol) return dropiCol;
 
-  // 2. Fallback a es_principal (columna principal general del kanban)
   const [principalCol] = await db.query(
     `SELECT id, estado_db, 'principal' AS tipo FROM kanban_columnas
-     WHERE id_configuracion = ? AND es_principal = 1
-     LIMIT 1`,
+     WHERE id_configuracion = ? AND es_principal = 1 LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   if (principalCol) return principalCol;
-
-  // 3. Nada configurado
   return null;
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Actualizar estado_contacto cuando Dropi reporta ENTREGADA.
-   - Idempotente: no escribe si ya está en el destino.
-   - Funciona aunque NO haya plantilla, NO se envíe mensaje, falle Meta, etc.
-   - Si la columna 'entregada' no existe en el kanban del cliente,
-     simplemente no afecta filas (fail-safe, no rompe).
-   ═══════════════════════════════════════════════════════════ */
 
 async function actualizarEstadoContactoEntregado({
   id_configuracion,
@@ -636,7 +614,6 @@ async function actualizarEstadoContactoEntregado({
 }) {
   const phoneNorm = normalizePhone(telefono);
   if (!phoneNorm || !columnaDestino || !id_configuracion) return false;
-
   try {
     const [, meta] = await db.query(
       `UPDATE clientes_chat_center
@@ -644,11 +621,9 @@ async function actualizarEstadoContactoEntregado({
        WHERE id_configuracion = ?
          AND deleted_at IS NULL
          AND (estado_contacto IS NULL OR estado_contacto != ?)
-         AND (
-           REPLACE(celular_cliente, ' ', '') = ?
-           OR telefono_limpio = ?
-           OR celular_cliente LIKE ?
-         )`,
+         AND (REPLACE(celular_cliente, ' ', '') = ?
+              OR telefono_limpio = ?
+              OR celular_cliente LIKE ?)`,
       {
         replacements: [
           columnaDestino,
@@ -661,25 +636,12 @@ async function actualizarEstadoContactoEntregado({
         type: db.QueryTypes.UPDATE,
       },
     );
-
     const affected = meta?.affectedRows ?? meta ?? 0;
-    if (affected > 0) {
-      // await log(
-      //   `[hourly-dropi] 📦 ENTREGADA ${phoneNorm} → estado_contacto="${columnaDestino}" (config #${id_configuracion})`,
-      // );
-    }
     return affected > 0;
   } catch (err) {
-    // await log(
-    //   `[hourly-dropi] ⚠ Error actualizando entregada ${phoneNorm}: ${err?.message}`,
-    // );
     return false;
   }
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Dedup
-   ═══════════════════════════════════════════════════════════ */
 
 async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   const [row] = await db.query(
@@ -718,10 +680,6 @@ async function registrarEnvio({
     },
   );
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Resolver clientes en chat center
-   ═══════════════════════════════════════════════════════════ */
 
 async function resolverClientes({
   id_configuracion,
@@ -782,10 +740,6 @@ async function resolverClientes({
   return { clienteId, idClienteConfig };
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Registrar mensaje en mensajes_clientes
-   ═══════════════════════════════════════════════════════════ */
-
 async function registrarMensajeEnChat({
   id_configuracion,
   phone_number_id,
@@ -826,14 +780,8 @@ async function registrarMensajeEnChat({
         type: db.QueryTypes.INSERT,
       },
     );
-  } catch (err) {
-    // await log(`[hourly-dropi] WARNING chat registro: ${err?.message}`);
-  }
+  } catch (err) {}
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Verificar ventana 24h
-   ═══════════════════════════════════════════════════════════ */
 
 async function verificarVentana24h(id_configuracion, phoneNorm) {
   const [clienteRow] = await db.query(
@@ -878,10 +826,6 @@ async function verificarVentana24h(id_configuracion, phoneNorm) {
   return horasDiff < VENTANA_HORAS;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Error helpers
-   ═══════════════════════════════════════════════════════════ */
-
 function isWindowClosedError(err) {
   const c = err?.response?.data?.error?.code;
   const sc = err?.response?.data?.error?.error_subcode;
@@ -893,10 +837,6 @@ function isMetaRateLimit(err) {
   const c = err?.response?.data?.error?.code;
   return s === 429 || c === 130429 || c === 80008;
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Enviar template (con components)
-   ═══════════════════════════════════════════════════════════ */
 
 async function enviarTemplate({
   phone_number_id,
@@ -910,16 +850,10 @@ async function enviarTemplate({
     messaging_product: 'whatsapp',
     to: phoneNorm,
     type: 'template',
-    template: {
-      name: templateName,
-      language: { code: languageCode || 'es' },
-    },
+    template: { name: templateName, language: { code: languageCode || 'es' } },
   };
-
-  if (components && components.length > 0) {
+  if (components && components.length > 0)
     payload.template.components = components;
-  }
-
   const { data } = await axios.post(
     `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
     payload,
@@ -931,13 +865,8 @@ async function enviarTemplate({
       timeout: 15000,
     },
   );
-
   return { wamid: data?.messages?.[0]?.id || null, payload };
 }
-
-/* ═══════════════════════════════════════════════════════════
-   Enviar respuesta rápida
-   ═══════════════════════════════════════════════════════════ */
 
 async function enviarRespuestaRapida({
   phone_number_id,
@@ -951,7 +880,6 @@ async function enviarRespuestaRapida({
     type: 'text',
     text: { body: mensaje },
   };
-
   const { data } = await axios.post(
     `https://graph.facebook.com/${META_API_VERSION}/${phone_number_id}/messages`,
     payload,
@@ -963,7 +891,6 @@ async function enviarRespuestaRapida({
       timeout: 15000,
     },
   );
-
   return { wamid: data?.messages?.[0]?.id || null, payload };
 }
 
@@ -976,47 +903,13 @@ async function procesarTemplates({ orders, id_configuracion }) {
     return { enviados: 0, omitidos: 0, errores: 0, entregadas_actualizadas: 0 };
 
   const plantillas = await getPlantillasActivas(id_configuracion);
-  const hayPlantillas = Object.keys(plantillas).length > 0;
-
-  if (!hayPlantillas) {
-    // await log(
-    //   `[hourly-dropi] ⚠ Config #${id_configuracion} sin plantillas activas`,
-    // );
-  } else {
-    // await log(
-    //   `[hourly-dropi] Plantillas activas para config #${id_configuracion}: ${JSON.stringify(Object.keys(plantillas))}`,
-    // );
-  }
-
   const creds = await getWaCredentials(id_configuracion);
   const credsValidas = !!(creds?.phone_number_id && creds?.waba_token);
-  if (!credsValidas) {
-    // await log(
-    //   `[hourly-dropi] WARNING Config #${id_configuracion} sin credenciales WA`,
-    // );
-  }
-
   const telefonoConfig = creds?.telefono || null;
 
-  // Columna Dropi para PENDIENTE CONFIRMACION
   const colDropiPrincipal = credsValidas
     ? await getColumnaPrincipalDropi(id_configuracion)
     : null;
-  if (credsValidas) {
-    if (!colDropiPrincipal) {
-      // await log(
-      //   `[hourly-dropi] ⚠ Config #${id_configuracion} sin columna principal — PENDIENTE CONFIRMACION no actualizará estado_contacto`,
-      // );
-    } else if (colDropiPrincipal.tipo === 'principal') {
-      // await log(
-      //   `[hourly-dropi] ℹ Config #${id_configuracion} usando es_principal como fallback → "${colDropiPrincipal.estado_db}"`,
-      // );
-    } else {
-      // await log(
-      //   `[hourly-dropi] ✓ Config #${id_configuracion} columna Dropi → "${colDropiPrincipal.estado_db}"`,
-      // );
-    }
-  }
 
   let enviados = 0,
     omitidos = 0,
@@ -1025,19 +918,8 @@ async function procesarTemplates({ orders, id_configuracion }) {
 
   for (const order of orders) {
     try {
-      // 1. Mapear status
       const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
 
-      // ═══════════════════════════════════════════════════════════
-      // CASO ESPECIAL — ENTREGADA por la transportadora
-      // SIEMPRE actualizar estado_contacto del cliente, INDEPENDIENTE de si:
-      //   - hay plantilla configurada
-      //   - hay credenciales WA
-      //   - ya se envió mensaje (dedup)
-      //   - hay ventana 24h
-      // Es idempotente: si ya está en "entregada" no hace nada.
-      // Mejora UX del kanban (todas las transportadoras cierran en este estado).
-      // ═══════════════════════════════════════════════════════════
       if (estadoConfig === 'ENTREGADA' && order.phone) {
         const columnaEntregada =
           plantillas[estadoConfig]?.columna_destino ||
@@ -1050,37 +932,23 @@ async function procesarTemplates({ orders, id_configuracion }) {
         if (actualizado) entregadasActualizadas++;
       }
 
-      // Si no hay credenciales WA, no podemos enviar nada — saltamos
       if (!credsValidas) {
         omitidos++;
         continue;
       }
-
       if (!estadoConfig) {
-        // await log(
-        //   `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" | SIN MAPEO (status no reconocido)`,
-        // );
         omitidos++;
         continue;
       }
-
       if (!plantillas[estadoConfig]) {
-        // await log(
-        //   `[hourly-dropi] ⏩ #${order.id} | raw="${order.status}" → "${estadoConfig}" | SIN PLANTILLA configurada`,
-        // );
         omitidos++;
         continue;
       }
-
       if (!order.phone) {
-        // await log(
-        //   `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | SIN TELEFONO`,
-        // );
         omitidos++;
         continue;
       }
 
-      // 2. Dedup
       if (await yaFueEnviado(order.id, id_configuracion, estadoConfig)) {
         omitidos++;
         continue;
@@ -1089,14 +957,10 @@ async function procesarTemplates({ orders, id_configuracion }) {
       const config = plantillas[estadoConfig];
       const phoneNorm = normalizePhone(order.phone);
       if (!phoneNorm) {
-        // await log(
-        //   `[hourly-dropi] ⏩ #${order.id} | ${estadoConfig} | TELEFONO INVALIDO: "${order.phone}"`,
-        // );
         omitidos++;
         continue;
       }
 
-      // 3. Resolver clientes
       const { clienteId, idClienteConfig } = await resolverClientes({
         id_configuracion,
         phoneNorm,
@@ -1104,11 +968,9 @@ async function procesarTemplates({ orders, id_configuracion }) {
         telefonoConfig,
       });
 
-      // 4. Construir components y ruta_archivo
       const components = buildTemplateComponents(config.parametros_json, order);
       const rutaArchivo = buildRutaArchivo(order, estadoConfig);
 
-      // 5. Decidir: respuesta rápida vs template
       let tipoEnvio = 'template';
       let waMessageId = null;
       let textoEnviado = config.nombre_template;
@@ -1125,11 +987,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
           id_configuracion,
           phoneNorm,
         );
-
-        // await log(
-        //   `[hourly-dropi] 🔍 #${order.id} | ${estadoConfig} | ventana24h=${ventanaAbierta} | usar_rr=${config.usar_respuesta_rapida}`,
-        // );
-
         if (ventanaAbierta) {
           try {
             const result = await enviarRespuestaRapida({
@@ -1142,15 +999,8 @@ async function procesarTemplates({ orders, id_configuracion }) {
             jsonMensajeEnviado = result.payload;
             tipoEnvio = 'respuesta_rapida';
             textoEnviado = config.mensaje_rapido;
-
-            // await log(
-            //   `[hourly-dropi] ✉ RR #${order.id} | ${estadoConfig} | ${order.phone}`,
-            // );
           } catch (rrErr) {
             if (isWindowClosedError(rrErr)) {
-              // await log(
-              //   `[hourly-dropi] Ventana cerrada ${order.phone}, fallback template`,
-              // );
               tipoEnvio = 'template';
             } else {
               throw rrErr;
@@ -1159,7 +1009,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
         }
       }
 
-      // Template (decisión directa o fallback)
       if (tipoEnvio === 'template') {
         const result = await enviarTemplate({
           phone_number_id: creds.phone_number_id,
@@ -1171,25 +1020,14 @@ async function procesarTemplates({ orders, id_configuracion }) {
         });
         waMessageId = result.wamid;
         jsonMensajeEnviado = result.payload;
-
-        // Interpolar body real desde config local (sin llamar a Meta)
         const bodyInterpolado = interpolarBodyText(
           config.body_text,
           components,
         );
         textoEnviado = bodyInterpolado || config.nombre_template;
-
-        // await log(
-        //   `[hourly-dropi] 📋 TPL #${order.id} | ${estadoConfig} | ${config.nombre_template} | ${components.length} comp | ${order.phone}`,
-        // );
       }
 
-      // 5.5. Mover cliente a columna destino (según estado)
-      // NOTA: ENTREGADA ya se procesó arriba en el pre-pass, igual aquí lo
-      // sobreescribimos para mantener consistencia con el log y porque la
-      // operación es idempotente.
       let columnaDestino = null;
-
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
         columnaDestino = colDropiPrincipal?.estado_db || null;
       } else if (estadoConfig === 'ENTREGADA') {
@@ -1202,24 +1040,16 @@ async function procesarTemplates({ orders, id_configuracion }) {
         try {
           await db.query(
             `UPDATE clientes_chat_center
-         SET estado_contacto = ?
-       WHERE id = ? AND id_configuracion = ?`,
+             SET estado_contacto = ?
+             WHERE id = ? AND id_configuracion = ?`,
             {
               replacements: [columnaDestino, clienteId, id_configuracion],
               type: db.QueryTypes.UPDATE,
             },
           );
-          // await log(
-          //   `[hourly-dropi] 📌 Cliente #${clienteId} → estado_contacto="${columnaDestino}" (${estadoConfig})`,
-          // );
-        } catch (err) {
-          // await log(
-          //   `[hourly-dropi] ⚠ Error moviendo cliente #${clienteId}: ${err?.message}`,
-          // );
-        }
+        } catch (err) {}
       }
 
-      // 6. Registrar en chat center
       await registrarMensajeEnChat({
         id_configuracion,
         phone_number_id: creds.phone_number_id,
@@ -1235,7 +1065,6 @@ async function procesarTemplates({ orders, id_configuracion }) {
         jsonMensaje: jsonMensajeEnviado,
       });
 
-      // 7. Dedup
       await registrarEnvio({
         dropi_order_id: order.id,
         id_configuracion,
@@ -1252,14 +1081,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
       await new Promise((r) => setTimeout(r, DELAY_BETWEEN_WA_SENDS));
     } catch (err) {
       errores++;
-      if (isMetaRateLimit(err)) {
-        // await log(`[hourly-dropi] 🛑 Rate limit #${order?.id} — pausa 30s`);
-        await new Promise((r) => setTimeout(r, 30000));
-      } else {
-        // await log(
-        //   `[hourly-dropi] ❌ #${order?.id}: ${err?.message} | Meta: ${err?.response?.data?.error?.code || 'N/A'}`,
-        // );
-      }
+      if (isMetaRateLimit(err)) await new Promise((r) => setTimeout(r, 30000));
     }
   }
 
@@ -1285,17 +1107,17 @@ async function syncIntegration(integration, from, until) {
   try {
     integrationKey = decryptToken(integration.integration_key_enc);
   } catch (e) {
-    // await log(`[hourly-dropi] ${label} ERROR key: ${e.message}`);
     return { label, synced: 0, skipped: true };
   }
-  if (!integrationKey?.trim()) {
-    // await log(`[hourly-dropi] ${label} WARNING key vacía`);
-    return { label, synced: 0, skipped: true };
-  }
+  if (!integrationKey?.trim()) return { label, synced: 0, skipped: true };
 
   const cacheInsertFields = id_config
     ? { id_configuracion: id_config, id_usuario: 0 }
     : { id_configuracion: 0, id_usuario: Number(integration.id_usuario) };
+
+  const cacheCtx = id_config
+    ? { id_configuracion: id_config }
+    : { id_usuario: Number(integration.id_usuario) };
 
   // Fase 1: Fetch Dropi
   let allOrders = [],
@@ -1323,30 +1145,22 @@ async function syncIntegration(integration, from, until) {
       start += PAGE_SIZE;
       retries = 0;
       delay = DELAY_BETWEEN_PAGES;
-      if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) {
-        // await log(`[hourly-dropi] ${label} WARNING techo`);
-        break;
-      }
+      if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) break;
       if (keepGoing) await new Promise((r) => setTimeout(r, delay));
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
       if (status === 429) {
         if (++retries >= MAX_RETRIES_429) break;
         delay = Math.min(delay * 2, 20000);
-        // await log(
-        //   `[hourly-dropi] ${label} 429 retry ${retries}/${MAX_RETRIES_429}`,
-        // );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      // await log(`[hourly-dropi] ${label} ERROR: ${err?.message}`);
       break;
     }
   }
 
   // Fase 2: Upsert cache
   if (allOrders.length > 0) await upsertOrders(cacheInsertFields, allOrders);
-  // await log(`[hourly-dropi] ${label} OK ${allOrders.length} órdenes`);
 
   // Fase 3: Templates + ENTREGADA pre-pass
   let templateStats = {
@@ -1360,9 +1174,24 @@ async function syncIntegration(integration, from, until) {
       orders: allOrders,
       id_configuracion: id_config,
     });
-    // await log(
-    //   `[hourly-dropi] ${label} mensajes: ✅${templateStats.enviados} ⏩${templateStats.omitidos} ❌${templateStats.errores} | 📦entregadas: ${templateStats.entregadas_actualizadas}`,
-    // );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // Fase 4: Profit sync (NUEVO v6)
+  // Rellena dropshipper_profit para órdenes recientes con null.
+  // Es safe-fail — si Dropi devuelve null/429/error, el cron sigue.
+  // ═══════════════════════════════════════════════════════════
+  let profitStats = { calculated: 0, total: 0, isProveedor: false };
+  if (allOrders.length > 0) {
+    try {
+      profitStats = await syncProfitForRecentOrders({
+        integrationKey,
+        country_code: integration.country_code,
+        cacheCtx,
+      });
+    } catch (err) {
+      // log silencioso, no rompe sync principal
+    }
   }
 
   return {
@@ -1370,6 +1199,7 @@ async function syncIntegration(integration, from, until) {
     synced: allOrders.length,
     skipped: false,
     templates: templateStats,
+    profit: profitStats,
   };
 }
 
@@ -1382,30 +1212,27 @@ async function runHourlyDropiSync() {
     `SELECT GET_LOCK('dropi_sync_hourly', 1) AS got`,
     { type: db.QueryTypes.SELECT },
   );
-  if (!row || Number(row.got) !== 1) {
-    // await log('[hourly-dropi] 🔒 Lock no obtenido, skip');
-    return;
-  }
+  if (!row || Number(row.got) !== 1) return;
 
   const t0 = Date.now();
-  // await log('[hourly-dropi] >> Iniciando sync');
 
   try {
     const { from, until } = getDateRange();
-    // await log(`[hourly-dropi] Rango ${from} → ${until}`);
 
-    const integrations = await DropiIntegrations.findAll({
-      where: { is_active: 1, deleted_at: null },
-      attributes: [
-        'id',
-        'id_configuracion',
-        'id_usuario',
-        'country_code',
-        'integration_key_enc',
-      ],
-      raw: true,
-    });
-    // await log(`[hourly-dropi] ${integrations.length} integraciones activas`);
+    // Solo integraciones activas + configs no suspendidas
+    const integrations = await db.query(
+      `SELECT di.id, di.id_configuracion, di.id_usuario, di.country_code, di.integration_key_enc
+       FROM dropi_integrations di
+       LEFT JOIN configuraciones c ON c.id = di.id_configuracion
+       WHERE di.is_active = 1
+         AND di.deleted_at IS NULL
+         AND (
+           di.id_configuracion IS NULL
+           OR di.id_configuracion = 0
+           OR (c.id IS NOT NULL AND COALESCE(c.suspendido, 0) = 0)
+         )`,
+      { type: db.QueryTypes.SELECT },
+    );
 
     const totals = {
       ordenes: 0,
@@ -1413,6 +1240,7 @@ async function runHourlyDropiSync() {
       skipped: 0,
       errores: 0,
       entregadas: 0,
+      profit_calculated: 0,
     };
 
     for (let i = 0; i < integrations.length; i++) {
@@ -1425,39 +1253,27 @@ async function runHourlyDropiSync() {
           totals.enviados += r.templates?.enviados || 0;
           totals.errores += r.templates?.errores || 0;
           totals.entregadas += r.templates?.entregadas_actualizadas || 0;
+          totals.profit_calculated += r.profit?.calculated || 0;
         }
       } catch (err) {
         totals.errores++;
-        // await log(
-        //   `[hourly-dropi] ERROR integ#${integrations[i].id}: ${err?.message}`,
-        // );
       }
       if (i < integrations.length - 1)
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
     }
-
-    // await log(
-    //   `[hourly-dropi] DONE ${((Date.now() - t0) / 1000).toFixed(1)}s | órdenes: ${totals.ordenes} | enviados: ${totals.enviados} | 📦entregadas: ${totals.entregadas} | saltadas: ${totals.skipped} | errores: ${totals.errores}`,
-    // );
   } catch (err) {
-    // await log(`[hourly-dropi] ERROR GENERAL: ${err?.message}`);
+    // error general silencioso
   } finally {
     try {
       await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
         type: db.QueryTypes.RAW,
       });
-    } catch (e) {
-      // await log(`[hourly-dropi] ERROR liberando lock: ${e?.message}`);
-    }
+    } catch (e) {}
   }
 }
 
 cron.schedule('*/5 * * * *', () => {
-  runHourlyDropiSync().catch((err) => {
-    // log(`[hourly-dropi] Unhandled: ${err?.message}`).catch(() => {});
-  });
+  runHourlyDropiSync().catch(() => {});
 });
-
-// log('[hourly-dropi] Cron registrado — cada minuto').catch(() => {});
 
 module.exports = { runHourlyDropiSync };
