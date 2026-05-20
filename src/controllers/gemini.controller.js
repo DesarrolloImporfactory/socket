@@ -15,6 +15,7 @@ const EtapasLanding = require('../models/etapas_landing.model');
 const TemplatesIA = require('../models/templates_ia.model');
 
 const { decryptToken } = require('../utils/cryptoToken');
+const sharp = require('sharp');
 
 // ─── constantes ─────────────────────────────────────────────────────────────
 const IL_TRIAL_IMAGES = 10;
@@ -190,14 +191,39 @@ async function callGeminiWithRetry(payload, apiKey, next) {
   }
 }
 
-async function uploadImageToS3(base64Data, userId, suffix = '') {
+/**
+ * Convierte base64 (PNG/JPEG) de Gemini → base64 WebP.
+ * Si falla por cualquier razón, devuelve el original para no romper el flujo.
+ */
+async function convertBase64ToWebp(base64Input, quality = 85) {
+  try {
+    const inputBuffer = Buffer.from(base64Input, 'base64');
+    const webpBuffer = await sharp(inputBuffer)
+      .webp({ quality, effort: 4 })
+      .toBuffer();
+    return webpBuffer.toString('base64');
+  } catch (e) {
+    console.error(
+      '[IA] WebP conversion failed, fallback a original:',
+      e.message,
+    );
+    return base64Input;
+  }
+}
+
+async function uploadImageToS3(
+  base64Data,
+  userId,
+  suffix = '',
+  format = 'webp',
+) {
   try {
     const buffer = Buffer.from(base64Data, 'base64');
-    const fileName = `ia-gen-${userId}-${Date.now()}${suffix}.png`;
+    const fileName = `ia-gen-${userId}-${Date.now()}${suffix}.${format}`;
     const form = new FormDataLib();
     form.append('file', buffer, {
       filename: `generaciones-ia/${fileName}`,
-      contentType: 'image/png',
+      contentType: `image/${format}`,
     });
     const resp = await axios.post(
       'https://uploader.imporfactory.app/api/files/upload',
@@ -916,14 +942,14 @@ exports.generar_etapa = catchAsync(async (req, res, next) => {
   const result = await callGeminiWithRetry(payload, apiKey, next);
   if (!result || !result.image_base64) return;
 
-  const image_base64 = result.image_base64;
   const model = result.model;
+  const image_base64 = await convertBase64ToWebp(result.image_base64);
   const image_url = await uploadImageToS3(
     image_base64,
     id_usuario,
     `-${etapa.slug}`,
+    'webp',
   );
-
   await GeneracionesIA.create({
     id_usuario,
     id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
@@ -1022,8 +1048,8 @@ exports.generar_multipart = catchAsync(async (req, res, next) => {
   const result = await callGeminiWithRetry(payload, apiKey, next);
   if (!result || !result.image_base64) return;
 
-  const image_base64 = result.image_base64;
   const model = result.model;
+  const image_base64 = await convertBase64ToWebp(result.image_base64);
   const image_url = await uploadImageToS3(image_base64, id_usuario);
 
   await GeneracionesIA.create({
@@ -1616,14 +1642,14 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   const result = await callGeminiWithRetry(payload, apiKey, next);
   if (!result || !result.image_base64) return;
 
-  const image_base64 = result.image_base64;
   const model = result.model;
+  const image_base64 = await convertBase64ToWebp(result.image_base64);
   const image_url = await uploadImageToS3(
     image_base64,
     id_usuario,
     `-${etapa.slug}-edit`,
+    'webp',
   );
-
   await GeneracionesIA.create({
     id_usuario,
     id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
