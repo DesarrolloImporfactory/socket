@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { Op } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const ShopifyConfiguraciones = require('../models/shopify_configuraciones.model');
@@ -6,10 +5,6 @@ const ShopifyConfiguraciones = require('../models/shopify_configuraciones.model'
 /* ============================================================
    Helpers
    ============================================================ */
-const generarWebhookSecret = () => {
-  return crypto.randomBytes(32).toString('hex');
-};
-
 const validarShopDomain = (domain) => {
   if (!domain) return false;
   const d = String(domain).trim().toLowerCase();
@@ -20,8 +15,15 @@ const normalizarShopDomain = (domain) => {
   return String(domain).trim().toLowerCase();
 };
 
+const validarWebhookSecret = (secret) => {
+  if (!secret) return false;
+  const s = String(secret).trim();
+  // Shopify usa tokens hex de 64 chars típicamente, pero validamos algo razonable
+  return s.length >= 16 && s.length <= 256;
+};
+
 /* ============================================================
-   GET / — listar configuraciones por id_configuracion
+   GET / — listar
    ============================================================ */
 exports.listar = catchAsync(async (req, res) => {
   const { id_configuracion } = req.query;
@@ -45,13 +47,17 @@ exports.listar = catchAsync(async (req, res) => {
 });
 
 /* ============================================================
-   POST / — crear nueva configuración
+   POST / — crear
    ============================================================ */
 exports.crear = catchAsync(async (req, res) => {
-  const { id_configuracion, shop_domain, prefijo_pais, tiempo_espera_horas } =
-    req.body;
+  const {
+    id_configuracion,
+    shop_domain,
+    webhook_secret,
+    prefijo_pais,
+    tiempo_espera_horas,
+  } = req.body;
 
-  // Validaciones
   if (!id_configuracion) {
     return res.status(400).json({
       isSuccess: false,
@@ -66,9 +72,17 @@ exports.crear = catchAsync(async (req, res) => {
     });
   }
 
+  if (!validarWebhookSecret(webhook_secret)) {
+    return res.status(400).json({
+      isSuccess: false,
+      message:
+        'Debes pegar el "Token de firma de webhooks" que aparece en tu Shopify (Configuración → Notificaciones → Webhooks).',
+    });
+  }
+
   const shopDomainNormalizado = normalizarShopDomain(shop_domain);
 
-  // Regla: 1 sola integración por configuración
+  // 1 sola integración por configuración
   const existeEnConfig = await ShopifyConfiguraciones.findOne({
     where: { id_configuracion: parseInt(id_configuracion, 10) },
   });
@@ -80,7 +94,7 @@ exports.crear = catchAsync(async (req, res) => {
     });
   }
 
-  // Verificar que el dominio no esté usado por otra cuenta
+  // dominio único global
   const dominioUsado = await ShopifyConfiguraciones.findOne({
     where: { shop_domain: shopDomainNormalizado },
   });
@@ -91,11 +105,10 @@ exports.crear = catchAsync(async (req, res) => {
     });
   }
 
-  // Crear con secret auto-generado
   const nuevo = await ShopifyConfiguraciones.create({
     id_configuracion: parseInt(id_configuracion, 10),
     shop_domain: shopDomainNormalizado,
-    webhook_secret: generarWebhookSecret(),
+    webhook_secret: String(webhook_secret).trim(),
     prefijo_pais: prefijo_pais || '593',
     tiempo_espera_horas: parseInt(tiempo_espera_horas, 10) || 1,
     activo: 1,
@@ -109,11 +122,17 @@ exports.crear = catchAsync(async (req, res) => {
 });
 
 /* ============================================================
-   PATCH /:id — editar configuración
+   PATCH /:id — editar
    ============================================================ */
 exports.editar = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { shop_domain, prefijo_pais, tiempo_espera_horas, activo } = req.body;
+  const {
+    shop_domain,
+    webhook_secret,
+    prefijo_pais,
+    tiempo_espera_horas,
+    activo,
+  } = req.body;
 
   const config = await ShopifyConfiguraciones.findByPk(id);
   if (!config) {
@@ -123,7 +142,6 @@ exports.editar = catchAsync(async (req, res) => {
     });
   }
 
-  // Si cambian el shop_domain, validar
   if (shop_domain !== undefined) {
     if (!validarShopDomain(shop_domain)) {
       return res.status(400).json({
@@ -134,7 +152,6 @@ exports.editar = catchAsync(async (req, res) => {
 
     const shopDomainNormalizado = normalizarShopDomain(shop_domain);
 
-    // Si es diferente al actual, verificar que no esté en otra cuenta
     if (shopDomainNormalizado !== config.shop_domain) {
       const otroDominio = await ShopifyConfiguraciones.findOne({
         where: {
@@ -151,10 +168,18 @@ exports.editar = catchAsync(async (req, res) => {
     }
   }
 
-  // Construir updates solo con campos permitidos
+  if (webhook_secret !== undefined && !validarWebhookSecret(webhook_secret)) {
+    return res.status(400).json({
+      isSuccess: false,
+      message: 'El webhook secret no es válido',
+    });
+  }
+
   const updates = {};
   if (shop_domain !== undefined)
     updates.shop_domain = normalizarShopDomain(shop_domain);
+  if (webhook_secret !== undefined)
+    updates.webhook_secret = String(webhook_secret).trim();
   if (prefijo_pais !== undefined) updates.prefijo_pais = prefijo_pais;
   if (tiempo_espera_horas !== undefined)
     updates.tiempo_espera_horas = parseInt(tiempo_espera_horas, 10) || 1;
@@ -170,7 +195,7 @@ exports.editar = catchAsync(async (req, res) => {
 });
 
 /* ============================================================
-   DELETE /:id — eliminar configuración
+   DELETE /:id
    ============================================================ */
 exports.eliminar = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -192,10 +217,20 @@ exports.eliminar = catchAsync(async (req, res) => {
 });
 
 /* ============================================================
-   POST /:id/regenerar-secret — regenerar webhook secret
+   POST /:id/actualizar-secret — el usuario pega el secret de Shopify
+   (reemplaza al regenerarSecret anterior)
    ============================================================ */
-exports.regenerarSecret = catchAsync(async (req, res) => {
+exports.actualizarSecret = catchAsync(async (req, res) => {
   const { id } = req.params;
+  const { webhook_secret } = req.body;
+
+  if (!validarWebhookSecret(webhook_secret)) {
+    return res.status(400).json({
+      isSuccess: false,
+      message:
+        'Debes pegar el token de firma de webhooks que aparece en Shopify.',
+    });
+  }
 
   const config = await ShopifyConfiguraciones.findByPk(id);
   if (!config) {
@@ -205,13 +240,11 @@ exports.regenerarSecret = catchAsync(async (req, res) => {
     });
   }
 
-  const nuevoSecret = generarWebhookSecret();
-  await config.update({ webhook_secret: nuevoSecret });
+  await config.update({ webhook_secret: String(webhook_secret).trim() });
 
   return res.json({
     isSuccess: true,
     data: config,
-    message:
-      'Webhook secret regenerado. Recuerda actualizarlo en cada webhook de Shopify.',
+    message: 'Webhook secret actualizado correctamente',
   });
 });
