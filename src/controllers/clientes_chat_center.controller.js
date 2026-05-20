@@ -576,10 +576,13 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     cursors = {},
     search = {},
     filtros = {},
+    include_orphans = false, // ← NUEVO
   } = req.body;
 
   if (!id_configuracion)
     return next(new AppError('Falta el id_configuracion', 400));
+
+  const ORPHANS_KEY = '__sin_clasificar'; // ← key fija para huérfanos
 
   // Columnas activas dinámicas
   const columnasDB = await db.query(
@@ -588,11 +591,11 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const estadosValidos = new Set(columnasDB.map((c) => c.estado_db));
+  const estadosValidosArr = [...estadosValidos];
 
-  const keys =
-    Array.isArray(columnKeys) && columnKeys.length
-      ? columnKeys
-      : [...estadosValidos];
+  // ⚠️ Cambio sutil: si llega array vacío, respetar (NO hacer fallback)
+  const keys = Array.isArray(columnKeys) ? columnKeys : [];
+
   const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 
   const {
@@ -607,30 +610,20 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   const fh = fecha_hasta && DATE_RE.test(fecha_hasta) ? fecha_hasta : null;
   const conFechas = !!(fd || fh);
 
-  const fetchColumn = async (colKey) => {
-    if (!estadosValidos.has(colKey))
-      return {
-        key: colKey,
-        items: [],
-        total: 0,
-        page: { has_more: false, next_cursor: null, limit: pageSize },
-      };
-
-    const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
-    const term = (search?.[colKey] || '').trim().toLowerCase();
-
+  // ── Builder común de joins + filtros (reutilizable para columnas y huérfanos) ──
+  const buildCommonClauses = (term) => {
     const joinParams = [];
     const joinFrags = [];
 
     if (conFechas) {
       joinFrags.push(`
-      LEFT JOIN (
-        SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
-        FROM   mensajes_clientes
-        WHERE  id_configuracion = ?
-        GROUP  BY celular_recibe
-      ) lm ON lm.mid = c.id
-    `);
+        LEFT JOIN (
+          SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
+          FROM   mensajes_clientes
+          WHERE  id_configuracion = ?
+          GROUP  BY celular_recibe
+        ) lm ON lm.mid = c.id
+      `);
       joinParams.push(id_configuracion);
     }
 
@@ -640,15 +633,13 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     whereConds.push('c.id_configuracion = ?');
     whereParams.push(id_configuracion);
     whereConds.push('c.propietario <> 1');
-    whereConds.push('LOWER(c.estado_contacto) = ?');
-    whereParams.push(colKey);
 
     if (term) {
       whereConds.push(
         '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.celular_cliente LIKE ?)',
       );
       const l = `%${term}%`;
-      whereParams.push(l, l, `%${(search[colKey] || '').trim()}%`);
+      whereParams.push(l, l, `%${term}%`);
     }
     if (
       id_encargado !== null &&
@@ -671,10 +662,33 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       whereParams.push(fh);
     }
 
+    return { joinParams, joinFrags, whereParams, whereConds };
+  };
+
+  // ── Fetch columna normal ──
+  const fetchColumn = async (colKey) => {
+    if (!estadosValidos.has(colKey))
+      return {
+        key: colKey,
+        items: [],
+        total: 0,
+        page: { has_more: false, next_cursor: null, limit: pageSize },
+      };
+
+    const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
+    const term = (search?.[colKey] || '').trim().toLowerCase();
+
+    const { joinParams, joinFrags, whereParams, whereConds } =
+      buildCommonClauses(term);
+
+    // Filtro específico de columna normal
+    whereConds.push('LOWER(c.estado_contacto) = ?');
+    whereParams.push(colKey);
+
     const whereStr = whereConds.join(' AND ');
     const joinStr = joinFrags.join(' ');
 
-    // ── COUNT total (sin cursor) ──
+    // COUNT total
     const [countRow] = await db.query(
       `SELECT COUNT(*) AS total FROM clientes_chat_center c ${joinStr} WHERE ${whereStr}`,
       {
@@ -684,7 +698,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     );
     const total = Number(countRow?.total || 0);
 
-    // ── SELECT paginado (con cursor) ──
+    // SELECT paginado (con cursor)
     const paginatedParams = [...whereParams];
     const paginatedConds = [...whereConds];
     if (cursorId) {
@@ -693,15 +707,15 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     }
 
     const sql = `
-    SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
-           c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
-           ${conFechas ? ', lm.ultimo_msg' : ''}
-    FROM   clientes_chat_center c
-    ${joinStr}
-    WHERE  ${paginatedConds.join(' AND ')}
-    ORDER  BY c.id DESC
-    LIMIT  ?
-  `;
+      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
+             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
+             ${conFechas ? ', lm.ultimo_msg' : ''}
+      FROM   clientes_chat_center c
+      ${joinStr}
+      WHERE  ${paginatedConds.join(' AND ')}
+      ORDER  BY c.id DESC
+      LIMIT  ?
+    `;
 
     const rows = await db.query(sql, {
       replacements: [...joinParams, ...paginatedParams, pageSize + 1],
@@ -724,8 +738,89 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     };
   };
 
-  // Al final del controlador, actualizar el mapeo:
-  const results = await Promise.all(keys.map(fetchColumn));
+  // ── NUEVO: Fetch huérfanos ──
+  const fetchOrphans = async () => {
+    const cursorId = decodeCursor(cursors?.[ORPHANS_KEY] || '')?.id || null;
+    const term = (search?.[ORPHANS_KEY] || '').trim().toLowerCase();
+
+    const { joinParams, joinFrags, whereParams, whereConds } =
+      buildCommonClauses(term);
+
+    // Filtro específico de huérfanos:
+    // - estado_contacto NOT IN (estados válidos)
+    // - O estado_contacto IS NULL
+    // - O estado_contacto = ''
+    if (estadosValidosArr.length > 0) {
+      const placeholders = estadosValidosArr.map(() => '?').join(',');
+      whereConds.push(
+        `(LOWER(c.estado_contacto) NOT IN (${placeholders}) OR c.estado_contacto IS NULL OR c.estado_contacto = '')`,
+      );
+      whereParams.push(
+        ...estadosValidosArr.map((s) => String(s).toLowerCase()),
+      );
+    } else {
+      // Si no hay columnas activas, TODOS son huérfanos (no aplicar filtro extra)
+    }
+
+    const whereStr = whereConds.join(' AND ');
+    const joinStr = joinFrags.join(' ');
+
+    // COUNT total
+    const [countRow] = await db.query(
+      `SELECT COUNT(*) AS total FROM clientes_chat_center c ${joinStr} WHERE ${whereStr}`,
+      {
+        replacements: [...joinParams, ...whereParams],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    const total = Number(countRow?.total || 0);
+
+    // SELECT paginado (con cursor)
+    const paginatedParams = [...whereParams];
+    const paginatedConds = [...whereConds];
+    if (cursorId) {
+      paginatedConds.push('c.id < ?');
+      paginatedParams.push(cursorId);
+    }
+
+    const sql = `
+      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
+             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
+             ${conFechas ? ', lm.ultimo_msg' : ''}
+      FROM   clientes_chat_center c
+      ${joinStr}
+      WHERE  ${paginatedConds.join(' AND ')}
+      ORDER  BY c.id DESC
+      LIMIT  ?
+    `;
+
+    const rows = await db.query(sql, {
+      replacements: [...joinParams, ...paginatedParams, pageSize + 1],
+      type: db.QueryTypes.SELECT,
+    });
+
+    const has_more = rows.length > pageSize;
+    const items = has_more ? rows.slice(0, pageSize) : rows;
+    const last = items[items.length - 1];
+
+    return {
+      key: ORPHANS_KEY,
+      items,
+      total,
+      page: {
+        has_more,
+        next_cursor: last ? encodeCursor({ id: last.id }) : null,
+        limit: pageSize,
+      },
+    };
+  };
+
+  // Ejecutar en paralelo
+  const tasks = keys.map(fetchColumn);
+  if (include_orphans) tasks.push(fetchOrphans());
+
+  const results = await Promise.all(tasks);
+
   const data = {};
   results.forEach((r) => {
     data[r.key] = { items: r.items, total: r.total, page: r.page };
