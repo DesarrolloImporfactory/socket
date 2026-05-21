@@ -1043,6 +1043,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             /* console.log('texto_transcrito: ' + texto_transcrito); */
             if (texto_transcrito) {
               texto_mensaje = texto_transcrito;
+
+              mensaje_para_ia = texto_mensaje;
+
               await fsp.appendFile(
                 path.join(logsDir, 'debug_log.txt'),
                 `[${new Date().toISOString()}] 📝 Transcripción exitosa: ${texto_mensaje}\n`,
