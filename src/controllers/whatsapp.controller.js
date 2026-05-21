@@ -22,6 +22,231 @@ const {
   extractBearerToken,
 } = require('../utils/whatsappTemplate.helpers');
 
+exports.obtener_numeros = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Falta id_configuracion' });
+  }
+
+  const [rows] = await db.query(
+    `SELECT id_whatsapp AS WABA_ID, token AS ACCESS_TOKEN
+     FROM configuraciones
+     WHERE id = ? AND suspendido = 0`,
+    { replacements: [id_configuracion] },
+  );
+
+  if (!rows.length) {
+    return res.json({
+      success: true,
+      data: [],
+      waba_info: null,
+      portfolio_owner: null,
+      on_behalf_of: null,
+    });
+  }
+
+  const { WABA_ID, ACCESS_TOKEN } = rows[0];
+
+  const ax = axios.create({
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+    timeout: 15000,
+    validateStatus: () => true,
+  });
+
+  // 0) Info WABA + dueño
+  const wabaInfoResp = await ax.get(
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}`,
+    {
+      params: {
+        fields: 'id,name,owner_business_info,on_behalf_of_business_info',
+      },
+    },
+  );
+
+  let wabaInfo = null;
+  let portfolioOwner = null;
+  let onBehalfOf = null;
+
+  if (wabaInfoResp.status >= 200 && wabaInfoResp.status < 300) {
+    wabaInfo = wabaInfoResp.data || null;
+
+    portfolioOwner = wabaInfo?.owner_business_info
+      ? {
+          id: wabaInfo.owner_business_info.id || null,
+          name: wabaInfo.owner_business_info.name || null,
+          marketing_messages_onboarding_status:
+            wabaInfo.owner_business_info.marketing_messages_onboarding_status
+              ?.status || null,
+        }
+      : null;
+
+    if (portfolioOwner?.id) {
+      await db.query(
+        `UPDATE configuraciones
+          SET meta_business_id = ?,
+              meta_business_name = ?
+          WHERE id = ?`,
+        {
+          replacements: [
+            portfolioOwner.id,
+            portfolioOwner.name || null,
+            id_configuracion,
+          ],
+        },
+      );
+    }
+
+    onBehalfOf = wabaInfo?.on_behalf_of_business_info
+      ? {
+          id: wabaInfo.on_behalf_of_business_info.id || null,
+          name: wabaInfo.on_behalf_of_business_info.name || null,
+          status: wabaInfo.on_behalf_of_business_info.status || null,
+          type: wabaInfo.on_behalf_of_business_info.type || null,
+        }
+      : null;
+  }
+
+  // 1) Números
+  const numbersResp = await ax.get(
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/phone_numbers`,
+    {
+      params: {
+        fields: [
+          'id',
+          'display_phone_number',
+          'verified_name',
+          'quality_rating',
+          'messaging_limit_tier',
+          'status',
+        ].join(','),
+      },
+    },
+  );
+
+  if (numbersResp.status === 401 || numbersResp.status === 403) {
+    return res.json({
+      success: true,
+      data: [],
+      hint: 'meta_unauthorized',
+      waba_info: wabaInfo,
+      portfolio_owner: portfolioOwner,
+      on_behalf_of: onBehalfOf,
+    });
+  }
+
+  if (numbersResp.status < 200 || numbersResp.status >= 300) {
+    const metaErr = numbersResp.data?.error || null;
+    const isRateLimit = metaErr?.code === 80008;
+
+    return res.status(200).json({
+      success: true,
+      data: [],
+      hint: isRateLimit
+        ? 'meta_rate_limited'
+        : `meta_error_${numbersResp.status}`,
+      waba_info: wabaInfo,
+      portfolio_owner: portfolioOwner,
+      on_behalf_of: onBehalfOf,
+      meta_error: metaErr
+        ? {
+            http_status: numbersResp.status,
+            code: metaErr.code,
+            type: metaErr.type,
+            message: metaErr.message,
+            fbtrace_id: metaErr.fbtrace_id,
+            error_subcode: metaErr.error_subcode,
+            error_user_title: metaErr.error_user_title,
+            error_user_msg: metaErr.error_user_msg,
+          }
+        : {
+            http_status: numbersResp.status,
+            message: 'Meta devolvió un error sin cuerpo estándar',
+          },
+      meta_headers: {
+        'x-app-usage': numbersResp.headers?.['x-app-usage'],
+        'x-business-use-case-usage':
+          numbersResp.headers?.['x-business-use-case-usage'],
+        'retry-after': numbersResp.headers?.['retry-after'],
+      },
+    });
+  }
+
+  const numbers = Array.isArray(numbersResp.data?.data)
+    ? numbersResp.data.data
+    : [];
+
+  if (numbers.length === 0) {
+    return res.json({
+      success: true,
+      data: [],
+      waba_info: wabaInfo,
+      portfolio_owner: portfolioOwner,
+      on_behalf_of: onBehalfOf,
+    });
+  }
+
+  // 2) Perfiles por número
+  const merged = await Promise.all(
+    numbers.map(async (n) => {
+      const profileResp = await ax.get(
+        `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${n.id}/whatsapp_business_profile`,
+        {
+          params: {
+            fields: [
+              'about',
+              'description',
+              'address',
+              'email',
+              'vertical',
+              'websites',
+              'profile_picture_url',
+            ].join(','),
+          },
+        },
+      );
+
+      let profile = null;
+      if (profileResp.status >= 200 && profileResp.status < 300) {
+        profile = profileResp.data?.data ?? profileResp.data ?? null;
+      }
+
+      return {
+        ...n,
+        profile,
+        portfolio_owner_id: portfolioOwner?.id || null,
+        portfolio_owner_name: portfolioOwner?.name || null,
+      };
+    }),
+  );
+
+  // 3) ★ NUEVO: sincronizar wa_status en DB con el status real del número activo
+  //    Usamos el primer número como referencia (normalmente solo hay uno por config)
+  const primaryNumber = merged[0];
+  if (primaryNumber?.status) {
+    await db.query(
+      `UPDATE configuraciones 
+       SET wa_status = ?, wa_status_at = NOW() 
+       WHERE id = ?`,
+      {
+        replacements: [primaryNumber.status.toUpperCase(), id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  }
+
+  return res.json({
+    success: true,
+    data: merged,
+    waba_info: wabaInfo
+      ? { id: wabaInfo.id || WABA_ID, name: wabaInfo.name || null }
+      : { id: WABA_ID, name: null },
+    portfolio_owner: portfolioOwner,
+    on_behalf_of: onBehalfOf,
+  });
+});
+
 /**
  * ENVÍO INMEDIATO DE TEMPLATE MASIVO (1 destinatario por request)
  * Soporta:
@@ -1830,8 +2055,9 @@ exports.numero_status = catchAsync(async (req, res, next) => {
       `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.id_telefono}`,
       {
         params: {
+          // ★ AGREGADO: status (campo oficial de Meta)
           fields:
-            'display_phone_number,verified_name,quality_rating,platform_type,throughput,webhook_configuration',
+            'status,display_phone_number,verified_name,quality_rating,platform_type,throughput,webhook_configuration',
           access_token: cfg.token,
         },
         timeout: 8000,
@@ -1841,8 +2067,18 @@ exports.numero_status = catchAsync(async (req, res, next) => {
     const data = response.data;
     let status = 'CONNECTED';
 
-    if (data?.throughput?.level === 'NOT_ALLOWED') status = 'BANNED';
-    else if (data?.quality_rating === 'RED') status = 'FLAGGED';
+    // PRIORIDAD 1: campo status oficial de Meta
+    if (data?.status && data.status.toUpperCase() !== 'CONNECTED') {
+      status = data.status.toUpperCase(); // DISCONNECTED, PENDING, MIGRATED, etc.
+    }
+    // PRIORIDAD 2: throughput bloqueado = baneado
+    else if (data?.throughput?.level === 'NOT_ALLOWED') {
+      status = 'BANNED';
+    }
+    // PRIORIDAD 3: calidad roja = flagged
+    else if (data?.quality_rating === 'RED') {
+      status = 'FLAGGED';
+    }
 
     await db.query(
       `UPDATE configuraciones SET wa_status = ?, wa_status_at = NOW() WHERE id = ?`,
