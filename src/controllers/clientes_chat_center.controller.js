@@ -1183,6 +1183,18 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(...idsEstadoContacto.map((s) => s.toLowerCase()));
   }
 
+  // ── Multi-select: Último producto Ad (IN) ──
+  const productosAd = parseCSV(req.query.ultimo_producto_ad);
+  if (productosAd.length === 1) {
+    whereParts.push('c.ultimo_producto_ad = ?');
+    params.push(productosAd[0]);
+  } else if (productosAd.length > 1) {
+    whereParts.push(
+      `c.ultimo_producto_ad IN (${productosAd.map(() => '?').join(',')})`,
+    );
+    params.push(...productosAd);
+  }
+
   // ── Filtro por fecha ──
   const fechaTipo = String(req.query.fecha_tipo ?? '').trim(); // 'created' | 'actividad'
   const fechaDesde = String(req.query.fecha_desde ?? '').trim(); // 'YYYY-MM-DD'
@@ -2532,6 +2544,18 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
     params.push(...idsEstadoContacto.map((s) => s.toLowerCase()));
   }
 
+  // ── Multi-select: Último producto Ad (IN) ──
+  const productosAd = parseCSV(req.body.ultimo_producto_ad);
+  if (productosAd.length === 1) {
+    whereParts.push('c.ultimo_producto_ad = ?');
+    params.push(productosAd[0]);
+  } else if (productosAd.length > 1) {
+    whereParts.push(
+      `c.ultimo_producto_ad IN (${productosAd.map(() => '?').join(',')})`,
+    );
+    params.push(...productosAd);
+  }
+
   const fechaTipo = String(req.body.fecha_tipo ?? '').trim();
   const fechaDesde = String(req.body.fecha_desde ?? '').trim();
   const fechaHasta = String(req.body.fecha_hasta ?? '').trim();
@@ -2699,4 +2723,45 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
 
   sheet.commit();
   await workbook.commit();
+});
+
+exports.productosAdDistintos = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  const q = String(req.query.q ?? '').trim();
+  const limit = Math.min(2000, Math.max(1, Number(req.query.limit ?? 500)));
+
+  const whereParts = [
+    'id_configuracion = ?',
+    'ultimo_producto_ad IS NOT NULL',
+    "ultimo_producto_ad != ''",
+    'deleted_at IS NULL',
+  ];
+  const params = [id_configuracion];
+
+  if (q) {
+    whereParts.push('ultimo_producto_ad LIKE ?');
+    params.push(`%${q}%`);
+  }
+
+  const sql = `
+    SELECT DISTINCT ultimo_producto_ad AS producto
+    FROM clientes_chat_center
+    WHERE ${whereParts.join(' AND ')}
+    ORDER BY ultimo_producto_ad ASC
+    LIMIT ?
+  `;
+
+  const rows = await db.query(sql, {
+    replacements: [...params, limit],
+    type: db.QueryTypes.SELECT,
+  });
+
+  return res.status(200).json({
+    status: 'success',
+    data: rows.map((r) => r.producto),
+  });
 });

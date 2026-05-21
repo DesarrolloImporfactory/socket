@@ -77,6 +77,11 @@ router.post(
 // CRUD limpio (SQL crudo)
 router.get('/listar', clientes_chat_centerController.listarClientes);
 
+router.get(
+  '/productos_ad_distintos',
+  clientes_chat_centerController.productosAdDistintos,
+);
+
 router.post(
   '/etiquetas/multiples',
   EtiquetasAsignadasController.obtenerMultiples,
