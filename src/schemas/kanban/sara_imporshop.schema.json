@@ -1,0 +1,125 @@
+{
+  "name": "respuesta_sara_imporshop",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "respuesta_usuario",
+      "interaccion_actual",
+      "accion",
+      "pedido",
+      "media",
+      "datos_faltantes",
+      "motivo_escalamiento"
+    ],
+    "properties": {
+      "respuesta_usuario": {
+        "type": "string",
+        "description": "Texto natural en espanol a enviar por WhatsApp. PROHIBIDO incluir URLs, tags [..]:true, ni frases introductorias como 'aqui tienes la imagen'. Max 30 palabras (excepto al listar combos). 0-1 emoji. Tuteo."
+      },
+      "interaccion_actual": {
+        "type": "integer",
+        "enum": [1, 2, 3, 4],
+        "description": "Etapa del flujo. 1=solo preguntar ciudad. 2=precio+foto+combos+pedir datos. 3=resolver dudas+pedir datos. 4=cierre."
+      },
+      "accion": {
+        "type": "string",
+        "enum": ["ninguna", "generar_guia", "cancelar", "escalar_asesor"],
+        "description": "Accion a ejecutar tras enviar respuesta_usuario. 'generar_guia' SOLO si pedido.nombre, pedido.telefono y pedido.direccion estan presentes y no vacios."
+      },
+      "pedido": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": [
+          "nombre",
+          "telefono",
+          "direccion",
+          "ciudad",
+          "producto",
+          "cantidad",
+          "precio_unitario",
+          "total",
+          "combo_aplicado",
+          "tipo_entrega"
+        ],
+        "properties": {
+          "nombre": {
+            "type": ["string", "null"],
+            "description": "Nombre completo del cliente, tal como lo escribio."
+          },
+          "telefono": {
+            "type": ["string", "null"],
+            "description": "Solo digitos, sin espacios ni guiones. Minimo 9 digitos."
+          },
+          "direccion": {
+            "type": ["string", "null"],
+            "description": "Direccion exacta: 2 calles + referencia. null si no se confirmo."
+          },
+          "ciudad": {
+            "type": ["string", "null"]
+          },
+          "producto": {
+            "type": ["string", "null"],
+            "description": "Nombre exacto del producto obtenido de file_search. Nunca inventar."
+          },
+          "cantidad": {
+            "type": ["integer", "null"],
+            "description": "Unidades a despachar."
+          },
+          "precio_unitario": {
+            "type": ["number", "null"],
+            "description": "Precio por unidad, exacto de file_search."
+          },
+          "total": {
+            "type": ["number", "null"],
+            "description": "Total a cobrar contra entrega."
+          },
+          "combo_aplicado": {
+            "type": ["string", "null"],
+            "description": "Nombre del combo de file_search si aplica. null si compra individual o el producto no tiene combos."
+          },
+          "tipo_entrega": {
+            "type": "string",
+            "enum": ["domicilio", "retiro_agencia"]
+          }
+        }
+      },
+      "media": {
+        "type": "array",
+        "description": "Archivos multimedia a enviar junto al texto. Vacio si no aplica. URLs SIEMPRE provenientes de file_search; jamas inventar.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tipo", "categoria", "url"],
+          "properties": {
+            "tipo": {
+              "type": "string",
+              "enum": ["imagen", "video"]
+            },
+            "categoria": {
+              "type": "string",
+              "enum": ["producto", "upsell", "servicio"]
+            },
+            "url": {
+              "type": "string",
+              "description": "URL https completa obtenida de file_search."
+            }
+          }
+        }
+      },
+      "datos_faltantes": {
+        "type": "array",
+        "description": "Datos del cliente que aun faltan para poder generar la guia. Vacio cuando ya se tienen todos.",
+        "items": {
+          "type": "string",
+          "enum": ["nombre", "telefono", "direccion", "ciudad"]
+        }
+      },
+      "motivo_escalamiento": {
+        "type": ["string", "null"],
+        "description": "Razon breve por la que se escala a humano. null cuando accion != escalar_asesor."
+      }
+    }
+  }
+}

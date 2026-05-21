@@ -1656,7 +1656,7 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
   });
 });
 
-/* exports.entregarCarga = catchAsync(async (req, res, next) => {
+exports.entregarCarga = catchAsync(async (req, res, next) => {
   const { id_carga, contactos, fecha_entrega } = req.body;
   if (!id_carga) return next(new AppError('id_carga es requerido', 400));
   if (!contactos || !Array.isArray(contactos) || contactos.length === 0) {
@@ -1689,6 +1689,121 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
     const celularFormateado = formatPhoneForWhatsApp(telefono, '593');
     const nombreCliente = nombre || 'Estimado cliente';
 
-    
+    const templateEntrega = {
+      messaging_product: 'whatsapp',
+      to: celularFormateado,
+      type: 'template',
+      template: {
+        name: 'entrega_realizada_2',
+        language: { code: 'es' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: nombreCliente },
+              { type: 'text', text: fechaFormateada },
+            ],
+          },
+        ],
+      },
+    };
+    let response;
+    try {
+      response = await enviarTemplateWhatsApp(templateEntrega);
+    } catch (err) {
+      console.error(
+        `[ENTREGAR_CARGA] Error enviando a ${celularFormateado}:`,
+        err.message,
+      );
+      resultados.push({ telefono, nombre, success: false, error: err.message });
+      continue;
+    }
+    const midMensaje = response?.messages?.[0]?.id || null;
 
-}); */
+    if (response?.messages?.[0]?.message_status !== 'accepted') {
+      resultados.push({
+        telefono,
+        nombre,
+        success: false,
+        error: 'WhatsApp no aceptó el mensaje',
+      });
+      continue;
+    }
+    // Buscar o crear chat
+    let chatId = null;
+    const celularLimpio = celularFormateado.replace(/[\s+]/g, '');
+    const foundChat = await Clientes_chat_center.findOne({
+      where: {
+        celular_cliente: { [Op.like]: `%${celularLimpio}%` },
+        id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+      },
+    });
+    if (foundChat) {
+      chatId = foundChat.id;
+    } else {
+      console.log(
+        '[clientes_chat_center INSERT] controllers/cotizadorpro.controller.js ~L1717 — notificarEntregaRealizada, celular:',
+        celularLimpio,
+      );
+      const nuevoChat = await Clientes_chat_center.create({
+        id_configuracion: COTIZADOR_CONFIG.ID_CONFIGURACION,
+        nombre_cliente: nombreCliente,
+        celular_cliente: celularLimpio,
+        uid_cliente: COTIZADOR_CONFIG.UID_CLIENTE,
+        estado_cliente: 1,
+        chat_cerrado: false,
+      });
+      chatId = nuevoChat.id;
+    }
+    const rutaArchivo = JSON.stringify({
+      placeholders: {
+        1: nombreCliente,
+        2: fechaFormateada,
+      },
+      header: null,
+      template_name: 'entrega_realizada_2',
+      language: 'es',
+      id_carga,
+    });
+    const textoMensaje = `🎉 ¡Hola ${nombreCliente} !Nos complace informarte que tu envío ha sido entregado exitosamente el ${fechaFormateada}.\nSi tienes alguna pregunta o necesitas asistencia adicional, no dudes en contactarnos. ¡Gracias por confiar en nosotros!`;
+    try {
+      await crearMensajeBD(
+        chatId,
+        celularFormateado,
+        midMensaje,
+        textoMensaje,
+        rutaArchivo,
+        'entrega_realizada_2',
+      );
+    } catch (dbErr) {
+      console.error(
+        `[ENTREGAR_CARGA] Error guardando mensaje para ${celularFormateado}:`,
+        dbErr.message,
+      );
+    }
+    resultados.push({
+      telefono,
+      nombre,
+      success: true,
+      wamid: midMensaje,
+      chatId,
+    });
+    // Delay entre mensajes para evitar rate limiting de Meta
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  const entregados = resultados.filter((r) => r.success).length;
+  const fallidos = resultados.filter((r) => !r.success).length;
+  res.status(200).json({
+    status: 200,
+    title: 'Notificación de entrega completada',
+    message: `Se notificó la entrega a ${entregados} de ${resultados.length} contactos correctamente`,
+    data: {
+      id_carga,
+      fecha_entrega: fechaFormateada,
+      total: resultados.length,
+      entregados,
+      fallidos,
+      resultados,
+    },
+  });
+});

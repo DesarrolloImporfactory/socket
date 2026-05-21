@@ -15,7 +15,7 @@ router.post('/reenviarCotizacion', cotizadorpro.reenviarCotizacion);
 
 router.post('/enviarCarga', cotizadorpro.enviarCarga);
 
-//router.post('/entregarCarga', cotizadorpro.entregarCarga);
+router.post('/entregarCarga', cotizadorpro.entregarCarga);
 
 router.post('/crm/registrarMensaje', cotizadorpro.registrarMensajeCRM);
 

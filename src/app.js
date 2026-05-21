@@ -27,6 +27,8 @@ const kanban_columnasRouter = require('./routes/kanban_columnas.routes');
 
 const kanbanAccionesRouter = require('./routes/kanban_acciones.routes');
 
+const kanbanIaV2Router = require('./routes/kanban_ia_v2.routes');
+
 const configuracionesRouter = require('./routes/configuraciones.routes');
 
 const detalle_fact_cotRouter = require('./routes/detalle_fact_cot.routes');
@@ -295,6 +297,7 @@ app.use(
 );
 app.use('/api/v1/kanban_columnas', kanban_columnasRouter);
 app.use('/api/v1/kanban_acciones', kanbanAccionesRouter);
+app.use('/api/v1/kanban_ia_v2', kanbanIaV2Router);
 app.use('/api/v1/configuraciones', configuracionesRouter);
 app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
 app.use('/api/v1/facturas_cot', facturas_cotRouter);
