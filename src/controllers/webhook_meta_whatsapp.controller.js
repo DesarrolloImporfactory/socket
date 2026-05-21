@@ -1044,7 +1044,14 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             if (texto_transcrito) {
               texto_mensaje = texto_transcrito;
 
-              mensaje_para_ia = texto_mensaje;
+              // 🔥 FIX: re-actualizar mensaje_para_ia con la transcripción
+              if (referral) {
+                mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
+              Nombre del producto anunciado: ${referral.headline || ''}
+              Mensaje del cliente: ${texto_mensaje}`;
+              } else {
+                mensaje_para_ia = texto_mensaje;
+              }
 
               await fsp.appendFile(
                 path.join(logsDir, 'debug_log.txt'),
