@@ -167,18 +167,149 @@ exports.actualizarColumna = catchAsync(async (req, res, next) => {
 
 // ─── Eliminar columna ─────────────────────────────────────────
 // POST /kanban_columnas/eliminar
+// Body: { id, id_configuracion, mover_a_estado_db? }
 exports.eliminarColumna = catchAsync(async (req, res, next) => {
-  const { id, id_configuracion } = req.body;
+  const { id, id_configuracion, mover_a_estado_db } = req.body;
   if (!id || !id_configuracion)
     return next(new AppError('Faltan id e id_configuracion', 400));
 
+  // 1. Obtener la columna a eliminar
+  const [columna] = await db.query(
+    `SELECT id, estado_db, nombre, es_principal, es_dropi_principal
+     FROM kanban_columnas
+     WHERE id = ? AND id_configuracion = ? LIMIT 1`,
+    { replacements: [id, id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!columna) return next(new AppError('Columna no encontrada', 404));
+
+  // 2. Bloquear si es principal
+  if (columna.es_principal) {
+    return next(
+      new AppError(
+        'No puedes eliminar la columna principal. Primero marca otra como principal.',
+        400,
+      ),
+    );
+  }
+
+  // 3. Bloquear si es dropi principal
+  if (columna.es_dropi_principal) {
+    return next(
+      new AppError(
+        'No puedes eliminar la conexión principal de Dropi. Primero asigna esa conexión a otra columna.',
+        400,
+      ),
+    );
+  }
+
+  // 4. Bloquear si es la única columna
+  const [{ total }] = await db.query(
+    `SELECT COUNT(*) AS total FROM kanban_columnas WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (total <= 1) {
+    return next(
+      new AppError('No puedes eliminar la única columna del kanban.', 400),
+    );
+  }
+
+  // 5. Determinar destino de los chats existentes
+  let destinoEstadoDb = mover_a_estado_db;
+
+  if (destinoEstadoDb) {
+    // Validar que la columna destino exista y NO sea la que se va a borrar
+    const [destinoOk] = await db.query(
+      `SELECT id FROM kanban_columnas
+       WHERE id_configuracion = ? AND estado_db = ? AND id != ? LIMIT 1`,
+      {
+        replacements: [id_configuracion, destinoEstadoDb, id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!destinoOk) {
+      return next(new AppError('La columna destino no es válida.', 400));
+    }
+  } else {
+    // Si no envió destino → usar la principal, o la primera disponible
+    const [principal] = await db.query(
+      `SELECT estado_db FROM kanban_columnas
+       WHERE id_configuracion = ? AND es_principal = 1 AND id != ? LIMIT 1`,
+      { replacements: [id_configuracion, id], type: db.QueryTypes.SELECT },
+    );
+    if (principal) {
+      destinoEstadoDb = principal.estado_db;
+    } else {
+      const [primera] = await db.query(
+        `SELECT estado_db FROM kanban_columnas
+         WHERE id_configuracion = ? AND id != ?
+         ORDER BY orden ASC LIMIT 1`,
+        { replacements: [id_configuracion, id], type: db.QueryTypes.SELECT },
+      );
+      destinoEstadoDb = primera?.estado_db;
+    }
+  }
+
+  if (!destinoEstadoDb) {
+    return next(
+      new AppError('No hay columna destino para mover los chats.', 400),
+    );
+  }
+
+  // 6. Mover chats existentes al destino
+  // ⚠️ AJUSTA "clientes_chat_center" y "estado" al nombre real de tu tabla/campo
+  await db.query(
+    `UPDATE clientes_chat_center
+     SET estado_contacto = ?
+     WHERE estado_contacto = ? AND id_configuracion = ?`,
+    {
+      replacements: [destinoEstadoDb, columna.estado_db, id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  // 7. Eliminar acciones asociadas (por si no hay ON DELETE CASCADE)
+  await db.query(`DELETE FROM kanban_acciones WHERE id_kanban_columna = ?`, {
+    replacements: [id],
+    type: db.QueryTypes.DELETE,
+  });
+
+  // 8. Eliminar remarketings asociados (si la tabla existe)
+  try {
+    await db.query(
+      `DELETE FROM kanban_remarketings WHERE id_kanban_columna = ?`,
+      { replacements: [id], type: db.QueryTypes.DELETE },
+    );
+  } catch (_) {
+    /* si la tabla no existe o el campo se llama distinto, ignorar */
+  }
+
+  // 9. Eliminar la columna
   await db.query(
     `DELETE FROM kanban_columnas WHERE id = ? AND id_configuracion = ?`,
     { replacements: [id, id_configuracion], type: db.QueryTypes.DELETE },
   );
 
+  // 10. Reordenar columnas restantes (orden consecutivo sin huecos)
+  const restantes = await db.query(
+    `SELECT id FROM kanban_columnas
+     WHERE id_configuracion = ? ORDER BY orden ASC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  await Promise.all(
+    restantes.map((c, i) =>
+      db.query(`UPDATE kanban_columnas SET orden = ? WHERE id = ?`, {
+        replacements: [i + 1, c.id],
+        type: db.QueryTypes.UPDATE,
+      }),
+    ),
+  );
+
   const columnas = await getColumnas(id_configuracion);
-  return res.status(200).json({ success: true, data: columnas });
+  return res.status(200).json({
+    success: true,
+    data: columnas,
+    chats_movidos_a: destinoEstadoDb,
+  });
 });
 
 // ─── Reordenar columnas ───────────────────────────────────────
