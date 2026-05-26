@@ -2765,3 +2765,163 @@ exports.productosAdDistintos = catchAsync(async (req, res, next) => {
     data: rows.map((r) => r.producto),
   });
 });
+
+exports.obtenerOrigenAnuncio = catchAsync(async (req, res, next) => {
+  const id_cliente = Number(req.query.id_cliente);
+  const id_configuracion = Number(req.query.id_configuracion);
+
+  if (!id_cliente || !id_configuracion) {
+    return next(
+      new AppError('id_cliente e id_configuracion son requeridos', 400),
+    );
+  }
+
+  // 1) Último anuncio por el que entró el cliente
+  const [anuncio] = await db.query(
+    `
+    SELECT id, headline, body_ad, source_url, source_id, ctwa_clid,
+           mensaje_cliente, created_at
+    FROM cliente_productos_ad
+    WHERE id_cliente = ? AND id_configuracion = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    {
+      replacements: [id_cliente, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (!anuncio) {
+    return res.status(200).json({ status: 200, data: null });
+  }
+
+  // 2) Productos activos del cliente (límite alto pero finito)
+  const productos = await db.query(
+    `
+    SELECT id, nombre, descripcion, precio, precio_proveedor, imagen_url,
+           external_source, external_id, id_dropi, stock
+    FROM productos_chat_center
+    WHERE id_configuracion = ? AND eliminado = 0
+    ORDER BY id DESC
+    LIMIT 5000
+    `,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  // 3) Buscar mejor match con normalización robusta
+  const mejor = encontrarMejorMatchProducto(anuncio, productos);
+
+  return res.status(200).json({
+    status: 200,
+    data: {
+      id_anuncio: anuncio.id,
+      headline: anuncio.headline,
+      body_ad: anuncio.body_ad,
+      source_url: anuncio.source_url,
+      source_id: anuncio.source_id,
+      ctwa_clid: anuncio.ctwa_clid,
+      mensaje_cliente: anuncio.mensaje_cliente,
+      anuncio_fecha: anuncio.created_at,
+
+      id_producto: mejor?.producto?.id || null,
+      producto_nombre: mejor?.producto?.nombre || null,
+      producto_descripcion: mejor?.producto?.descripcion || null,
+      producto_precio: mejor?.producto?.precio ?? null,
+      precio_proveedor: mejor?.producto?.precio_proveedor ?? null,
+      producto_imagen: mejor?.producto?.imagen_url || null,
+      external_source: mejor?.producto?.external_source || null,
+      external_id: mejor?.producto?.external_id || null,
+      id_dropi: mejor?.producto?.id_dropi || null,
+      stock: mejor?.producto?.stock ?? null,
+
+      match_tipo: mejor?.matchTipo || 'sin_match',
+      match_score: mejor ? Number(mejor.score.toFixed(2)) : 0,
+    },
+  });
+});
+
+/* ─── helpers de matching ─── */
+function normalizarTexto(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // quita acentos
+    .replace(/[^\w\s]/g, ' ') // quita puntuación
+    .split(/\s+/)
+    .map((w) => {
+      // Plurales simples: palabras largas que terminan en "es" o "s"
+      if (w.length > 4 && w.endsWith('es')) return w.slice(0, -2);
+      if (w.length > 3 && w.endsWith('s')) return w.slice(0, -1);
+      return w;
+    })
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenSetScore(a, b) {
+  const tokA = new Set(a.split(' ').filter((t) => t.length > 2));
+  const tokB = new Set(b.split(' ').filter((t) => t.length > 2));
+  if (tokA.size === 0 || tokB.size === 0) return 0;
+  const inter = [...tokA].filter((t) => tokB.has(t)).length;
+  const union = new Set([...tokA, ...tokB]).size;
+  return inter / union; // Jaccard
+}
+
+function encontrarMejorMatchProducto(anuncio, productos) {
+  const headlineNorm = normalizarTexto(anuncio.headline);
+  const bodyNorm = normalizarTexto(anuncio.body_ad);
+
+  let mejor = null;
+  let mejorScore = 0;
+  let mejorTipo = 'sin_match';
+
+  for (const prod of productos) {
+    const nombreNorm = normalizarTexto(prod.nombre);
+    if (!nombreNorm) continue;
+
+    // (1) Match exacto post-normalización
+    if (nombreNorm === headlineNorm) {
+      return { producto: prod, score: 1, matchTipo: 'exacto' };
+    }
+
+    // (2) Substring bidireccional contra headline
+    if (
+      headlineNorm.includes(nombreNorm) ||
+      nombreNorm.includes(headlineNorm)
+    ) {
+      const score =
+        Math.min(nombreNorm.length, headlineNorm.length) /
+        Math.max(nombreNorm.length, headlineNorm.length);
+      if (score > mejorScore) {
+        mejorScore = score;
+        mejor = prod;
+        mejorTipo = 'aproximado';
+      }
+      continue;
+    }
+
+    // (3) Jaccard de tokens contra headline
+    const scoreHeadline = tokenSetScore(nombreNorm, headlineNorm);
+    if (scoreHeadline > mejorScore && scoreHeadline >= 0.5) {
+      mejorScore = scoreHeadline;
+      mejor = prod;
+      mejorTipo = 'aproximado';
+    }
+
+    // (4) Jaccard contra body_ad (peso menor)
+    const scoreBody = tokenSetScore(nombreNorm, bodyNorm) * 0.7;
+    if (scoreBody > mejorScore && scoreBody >= 0.4) {
+      mejorScore = scoreBody;
+      mejor = prod;
+      mejorTipo = 'aproximado';
+    }
+  }
+
+  if (!mejor) return null;
+  return { producto: mejor, score: mejorScore, matchTipo: mejorTipo };
+}

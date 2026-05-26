@@ -118,4 +118,9 @@ router.post(
   clientes_chat_centerController.exportarContactosXLSX,
 );
 
+router.get(
+  '/origen_anuncio',
+  clientes_chat_centerController.obtenerOrigenAnuncio,
+);
+
 module.exports = router;
