@@ -552,7 +552,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   if (!id || !mensaje) return next(new AppError('Faltan campos', 400));
 
-  // Obtener datos de la columna
   const [columna] = await db.query(
     `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
             c.api_key_openai
@@ -571,7 +570,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     'Content-Type': 'application/json',
   };
 
-  // Construir tools (file_search si tiene vector store)
   const tools = [];
   if (columna.vector_store_id) {
     tools.push({
@@ -580,7 +578,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Construir body de la Responses API
   const body = {
     model: columna.modelo || 'gpt-4o-mini',
     instructions: columna.instrucciones,
@@ -590,15 +587,47 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     ...(previous_response_id && { previous_response_id }),
   };
 
-  const response = await axios.post(
-    'https://api.openai.com/v1/responses',
-    body,
-    { headers },
-  );
+  // 🔍 LOG ANTES DE LLAMAR A OPENAI
+  /* console.log('\n========== 🔵 LLAMANDO A OPENAI ==========');
+  console.log('Modelo:', body.model);
+  console.log('Vector store ID:', columna.vector_store_id || 'NINGUNO');
+  console.log('Previous response ID:', previous_response_id || 'NINGUNO');
+  console.log('Tamaño instructions:', (body.instructions || '').length, 'chars');
+  console.log('Input del usuario:', mensaje);
+  console.log('==========================================\n'); */
+
+  let response;
+  try {
+    response = await axios.post(
+      'https://api.openai.com/v1/responses',
+      body,
+      {
+        headers,
+        timeout: 140000,
+      },
+    );
+  } catch (err) {
+    // 🔴 LOG DEL ERROR REAL DE OPENAI
+    console.log('\n========== 🔴 ERROR DE OPENAI ==========');
+    console.log('HTTP Status:', err.response?.status);
+    console.log('Error code:', err.code);
+    console.log('Error message:', err.message);
+    console.log('---- BODY DE RESPUESTA DE OPENAI ----');
+    console.log(JSON.stringify(err.response?.data, null, 2));
+    console.log('========================================\n');
+
+    return next(
+      new AppError(
+        err.response?.data?.error?.message ||
+          err.message ||
+          'Error llamando a OpenAI',
+        err.response?.status || 500,
+      ),
+    );
+  }
 
   const data = response.data;
 
-  // Extraer texto de la respuesta
   const outputText =
     data.output_text ||
     data.output
@@ -609,12 +638,11 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
       ?.join('') ||
     '';
 
-    // ✨ Sanitizar formato (markdown → tags esperados)
   const respuestaLimpia = sanitizarRespuestaAgente(outputText);
 
   return res.json({
     success: true,
     respuesta: respuestaLimpia,
-    response_id: data.id, // ← el frontend guarda esto para el siguiente request
+    response_id: data.id,
   });
 });
