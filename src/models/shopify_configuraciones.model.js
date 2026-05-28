@@ -15,11 +15,23 @@ const ShopifyConfiguraciones = db.define(
       allowNull: false,
       unique: true,
     },
-    access_token: { type: DataTypes.TEXT, allowNull: true },
+    access_token: { type: DataTypes.STRING(500), allowNull: true },
     webhook_secret: { type: DataTypes.STRING(255), allowNull: false },
-    id_template_recuperacion: { type: DataTypes.INTEGER, allowNull: true },
+
+    /* Envío automático de recuperación */
+    envio_automatico: { type: DataTypes.TINYINT, defaultValue: 0 },
+
+    /* Configuración de la plantilla de recuperación */
+    nombre_template_recuperacion: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    parametros_json: { type: DataTypes.TEXT, allowNull: true },
+    body_text: { type: DataTypes.TEXT, allowNull: true },
+    language_code: { type: DataTypes.STRING(10), defaultValue: 'es' },
+
     tiempo_espera_horas: { type: DataTypes.INTEGER, defaultValue: 1 },
-    prefijo_pais: { type: DataTypes.STRING(10), defaultValue: '593' },
+    prefijo_pais: { type: DataTypes.STRING(5), defaultValue: '593' },
     activo: { type: DataTypes.TINYINT, defaultValue: 1 },
   },
   {

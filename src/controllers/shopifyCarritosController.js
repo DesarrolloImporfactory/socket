@@ -7,6 +7,9 @@ const ShopifyCarritosAbandonados = require('../models/shopify_carritos_abandonad
 const Configuraciones = require('../models/configuraciones.model');
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
 const { normalizarTelefono } = require('../utils/shopify/normalizarTelefono');
+const {
+  enviarTemplateRecuperacion,
+} = require('../utils/shopify/enviarTemplateRecuperacion');
 
 async function ensureDir(dir) {
   try {
@@ -276,6 +279,48 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
           `draft=${draft_id} phone=${phone_normalizado} ` +
           `total=${draft.total_price} (id_cliente=${id_cliente})`,
       );
+
+      /* ════════════════════════════════════════════════════
+   🆕 ENVÍO AUTOMÁTICO DE WHATSAPP
+   Si la configuración tiene envio_automatico=1 y un template,
+   envía el WhatsApp template con la Recovery URL.
+   ════════════════════════════════════════════════════ */
+      if (
+        shopifyConfig.envio_automatico &&
+        shopifyConfig.nombre_template_recuperacion &&
+        phone_normalizado &&
+        id_cliente
+      ) {
+        const resEnvio = await enviarTemplateRecuperacion({
+          datos: {
+            nombre_cliente,
+            apellido_cliente,
+            phone_normalizado,
+            line_items: lineItems,
+            shipping_address: shippingAddress,
+            total_price: draft.total_price,
+            currency: draft.currency || 'USD',
+            recovery_url: recoveryUrl || draft.invoice_url || null,
+            id_cliente,
+          },
+          shopifyConfig,
+        });
+
+        if (resEnvio.enviado) {
+          // Marcar mensaje_enviado + fecha
+          await ShopifyCarritosAbandonados.update(
+            { mensaje_enviado: 1, fecha_envio_mensaje: new Date() },
+            { where: { id_configuracion, checkout_token } },
+          );
+          await logShopify(
+            `✅ WhatsApp enviado phone=${phone_normalizado} wamid=${resEnvio.wamid}`,
+          );
+        } else {
+          await logShopify(
+            `⚠️ WhatsApp NO enviado phone=${phone_normalizado}: ${resEnvio.motivo || resEnvio.error}`,
+          );
+        }
+      }
     } catch (err) {
       await logShopify(
         `❌ Error abandoned-draft: ${err.message}\n${err.stack}`,

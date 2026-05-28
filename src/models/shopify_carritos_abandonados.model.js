@@ -9,7 +9,11 @@ const ShopifyCarritosAbandonados = db.define(
     id_cliente: { type: DataTypes.INTEGER },
     shop_domain: { type: DataTypes.STRING(255), allowNull: false },
     source: {
-      type: DataTypes.ENUM('shopify_checkout', 'releasit_form', 'custom_landing'),
+      type: DataTypes.ENUM(
+        'shopify_checkout',
+        'releasit_form',
+        'custom_landing',
+      ),
       defaultValue: 'shopify_checkout',
     },
     checkout_token: { type: DataTypes.STRING(255), allowNull: false },
@@ -22,8 +26,36 @@ const ShopifyCarritosAbandonados = db.define(
     total_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
     currency: { type: DataTypes.STRING(10), defaultValue: 'USD' },
     abandoned_checkout_url: { type: DataTypes.TEXT },
-    line_items: { type: DataTypes.JSON },
-    shipping_address: { type: DataTypes.JSON },
+    line_items: {
+      type: DataTypes.JSON,
+      get() {
+        const raw = this.getDataValue('line_items');
+        if (!raw) return [];
+        if (typeof raw === 'string') {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return [];
+          }
+        }
+        return raw;
+      },
+    },
+    shipping_address: {
+      type: DataTypes.JSON,
+      get() {
+        const raw = this.getDataValue('shipping_address');
+        if (!raw) return null;
+        if (typeof raw === 'string') {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        }
+        return raw;
+      },
+    },
     recuperado: { type: DataTypes.TINYINT, defaultValue: 0 },
     mensaje_enviado: { type: DataTypes.TINYINT, defaultValue: 0 },
     fecha_envio_mensaje: { type: DataTypes.DATE },
