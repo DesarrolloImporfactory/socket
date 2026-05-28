@@ -1773,7 +1773,6 @@ async function _getColumnasIADelCliente(id_configuracion) {
      FROM kanban_columnas kc
      WHERE kc.id_configuracion = ?
        AND kc.activo = 1
-       AND kc.activa_ia = 1
        AND kc.assistant_id IS NOT NULL`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
