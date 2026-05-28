@@ -9,7 +9,13 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 
-const { sanitizarRespuestaAgente } = require('../utils/openia/sanitizador_agente');
+const {
+  compilarPromptFinal,
+  quitarBloqueInstruccionesExtra,
+} = require('../utils/promptCompiler');
+const {
+  sanitizarRespuestaAgente,
+} = require('../utils/openia/sanitizador_agente');
 
 // Tipos de archivo aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
@@ -298,21 +304,66 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id', 400));
 
   const [col] = await db.query(
-    `SELECT id, id_configuracion, assistant_id FROM kanban_columnas WHERE id = ?`,
+    `SELECT kc.id, kc.id_configuracion, kc.assistant_id, kc.nombre,
+            c.kanban_global_id
+     FROM kanban_columnas kc
+     JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? LIMIT 1`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
 
-  // Actualizar BD siempre (activa_ia, max_tokens)
+  const usaGlobal = !!col.kanban_global_id;
+  let instruccionesFinal = instrucciones ?? null;
+
+  // ─────────────────────────────────────────────────────────
+  // Si la columna usa plantilla global y el cliente edita la
+  // estructura a mano: el texto del cliente PASA A SER el nuevo
+  // snapshot. Así el modal de personalización ya NO revierte.
+  // ─────────────────────────────────────────────────────────
+  if (usaGlobal && typeof instrucciones === 'string' && instrucciones.trim()) {
+    const [perso] = await db.query(
+      `SELECT nombre_tienda, nombre_asistente_publico, instrucciones_extra,
+              info_envio, productos_destacados, tono_personalizado
+       FROM kanban_columnas_personalizaciones
+       WHERE id_kanban_columna = ? LIMIT 1`,
+      { replacements: [id], type: db.QueryTypes.SELECT },
+    );
+
+    // 1) Quitar el bloque de reglas extra (viene marcado) → estructura limpia
+    let estructura = quitarBloqueInstruccionesExtra(instrucciones);
+
+    // 2) Garantizar el placeholder para que el modal pueda re-inyectar
+    if (!estructura.includes('[BLOQUE_INSTRUCCIONES_EXTRA]')) {
+      estructura = `${estructura.trim()}\n\n[BLOQUE_INSTRUCCIONES_EXTRA]`;
+    }
+
+    // 3) Guardar como nuevo snapshot (la estructura del cliente manda)
+    await db.query(
+      `INSERT INTO kanban_columnas_personalizaciones
+         (id_kanban_columna, id_configuracion, prompt_base_snapshot)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE prompt_base_snapshot = VALUES(prompt_base_snapshot)`,
+      {
+        replacements: [id, col.id_configuracion, estructura],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+
+    // 4) Recompilar con la personalización vigente (reinyecta reglas extra)
+    instruccionesFinal = compilarPromptFinal(estructura, perso || {});
+  }
+
+  // Actualizar BD
   await db.query(
-    `UPDATE kanban_columnas 
-   SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
-   WHERE id = ?`,
+    `UPDATE kanban_columnas
+     SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
+     WHERE id = ?`,
     {
       replacements: [
         activa_ia ?? null,
         max_tokens ?? null,
-        instrucciones ?? null, // ← aquí estaba fallando (índice 2)
+        instruccionesFinal,
         modelo ?? null,
         id,
       ],
@@ -320,8 +371,8 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
     },
   );
 
-  // Si tiene asistente, actualizar también en OpenAI
-  if (col.assistant_id && (nombre || instrucciones || modelo)) {
+  // OpenAI
+  if (col.assistant_id && (nombre || instruccionesFinal || modelo)) {
     const apiKey = await getApiKey(col.id_configuracion);
     const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
     const modeloFinal =
@@ -329,7 +380,7 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
 
     const body = {};
     if (nombre) body.name = nombre.trim();
-    if (instrucciones) body.instructions = instrucciones.trim();
+    if (instruccionesFinal) body.instructions = instruccionesFinal.trim();
     if (modeloFinal) body.model = modeloFinal;
 
     try {
@@ -598,14 +649,10 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   let response;
   try {
-    response = await axios.post(
-      'https://api.openai.com/v1/responses',
-      body,
-      {
-        headers,
-        timeout: 140000,
-      },
-    );
+    response = await axios.post('https://api.openai.com/v1/responses', body, {
+      headers,
+      timeout: 140000,
+    });
   } catch (err) {
     // 🔴 LOG DEL ERROR REAL DE OPENAI
     console.log('\n========== 🔴 ERROR DE OPENAI ==========');

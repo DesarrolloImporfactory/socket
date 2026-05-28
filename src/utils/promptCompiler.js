@@ -33,6 +33,9 @@ function formatearBloque(titulo, contenido) {
   return `\n${titulo}\n${c}\n`;
 }
 
+const MARCA_INI_EXTRA = '===== REGLAS ADICIONALES DE LA TIENDA =====';
+const MARCA_FIN_EXTRA = '===== FIN REGLAS ADICIONALES =====';
+
 // Si el cliente NO escribió nada → devuelve string vacío.
 // Si el cliente SÍ escribió reglas → devuelve:
 //
@@ -46,8 +49,6 @@ function construirBloqueInstruccionesExtra(instruccionesExtra) {
   const valor = (instruccionesExtra || '').trim();
   if (!valor) return '';
 
-  // Quitar líneas con "EN TODAS LAS INTERACCIONES:" (case-insensitive)
-  // que el cliente haya escrito manualmente, para evitar duplicación.
   const limpio = valor
     .split('\n')
     .filter(
@@ -58,7 +59,16 @@ function construirBloqueInstruccionesExtra(instruccionesExtra) {
 
   if (!limpio) return '';
 
-  return `\nINSTRUCCIONES ADICIONALES (cumplir siempre):\nEN TODAS LAS INTERACCIONES:\n${limpio}\n`;
+  return `\n${MARCA_INI_EXTRA}\nINSTRUCCIONES ADICIONALES (cumplir siempre):\nEN TODAS LAS INTERACCIONES:\n${limpio}\n${MARCA_FIN_EXTRA}\n`;
+}
+
+function quitarBloqueInstruccionesExtra(texto) {
+  if (!texto || typeof texto !== 'string') return texto || '';
+  const re = new RegExp(
+    `\\n*${escapeRegex(MARCA_INI_EXTRA)}[\\s\\S]*?${escapeRegex(MARCA_FIN_EXTRA)}\\n*`,
+    'g',
+  );
+  return texto.replace(re, '\n').trim();
 }
 
 function limpiarPlaceholdersHuerfanos(prompt) {
@@ -263,4 +273,5 @@ module.exports = {
   compilarPromptFinal,
   validarPersonalizacion,
   detectarTipoPrompt,
+  quitarBloqueInstruccionesExtra,
 };
