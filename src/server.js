@@ -64,6 +64,7 @@ async function startServer() {
     require('./cron/syncDropiStock.js');
     require('./cron/syncDropiOrdersHourly.js');
     require('./cron/cronEncuestasEnvio.js');
+    require('./cron/metricasSnapshot.js');
 
     // Server HTTP
     server = app.listen(process.env.PORT, () => {

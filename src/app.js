@@ -126,6 +126,10 @@ const comunidadesRouter = require('./routes/comunidad.routes');
 
 const webhookTriveRouter = require('./routes/webhook_trive.routes');
 
+const adminDashboardRouter = require('./routes/admin_dashboard.routes');
+
+const seguimientosRouter = require('./routes/seguimientos.routes');
+
 const path = require('path');
 
 const app = express();
@@ -345,6 +349,8 @@ app.use('/api/v1/marketing-control', marketingControlRouter);
 app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
+app.use('/api/v1/admin_dashboard', adminDashboardRouter);
+app.use('api/v1/seguimientos', seguimientosRouter);
 
 app.all('*', (req, res, next) => {
   return next(
