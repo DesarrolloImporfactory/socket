@@ -12,7 +12,9 @@ const {
   enviarMensajeWhatsapp,
 } = require('../utils/webhook_whatsapp/enviarMensajes');
 
-const { sanitizarRespuestaAgente } = require('../utils/openia/sanitizador_agente');
+const {
+  sanitizarRespuestaAgente,
+} = require('../utils/openia/sanitizador_agente');
 
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — Trae el prompt REAL cargado en OpenAI
@@ -480,10 +482,18 @@ function limpiarCitasFileSearch(textBlock) {
     .replace(/\[doc\d+\]/gi, '');
 
   // Limpiar espacios y puntuación que quedaron colgando
-  return texto
-    .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return (
+    texto
+      // quita espacios horizontales (NO enters) antes de puntuación
+      .replace(/[ \t]+([.,;:!?])/g, '$1')
+      // colapsa SOLO espacios/tabs horizontales repetidos, deja los \n
+      .replace(/[ \t]{2,}/g, ' ')
+      // opcional: máximo 2 saltos de línea seguidos (evita huecos enormes)
+      .replace(/\n{3,}/g, '\n\n')
+      // limpia espacios al final de cada línea
+      .replace(/[ \t]+$/gm, '')
+      .trim()
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
