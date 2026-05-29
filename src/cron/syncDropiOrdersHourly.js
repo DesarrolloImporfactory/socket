@@ -655,6 +655,30 @@ async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
   return !!row;
 }
 
+/* 🆕 Dedupe cross-system para PENDIENTE CONFIRMACION
+   Verifica si ya se envió por phone en últimas 24h
+   (ya sea desde Shopify webhook o desde Dropi cron previo) */
+async function yaSeEnvioPendienteConfPorPhone(id_configuracion, phone) {
+  if (!phone) return false;
+  const phoneNorm = normalizePhone(phone);
+  if (!phoneNorm) return false;
+  const phone9 = phoneNorm.slice(-9);
+
+  const [row] = await db.query(
+    `SELECT id, source FROM dropi_plantillas_enviadas
+     WHERE id_configuracion = ?
+       AND estado_dropi = 'PENDIENTE CONFIRMACION'
+       AND (phone = ? OR phone LIKE ?)
+       AND sent_at > NOW() - INTERVAL 24 HOUR
+     LIMIT 1`,
+    {
+      replacements: [id_configuracion, phoneNorm, `%${phone9}`],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  return !!row;
+}
+
 async function registrarEnvio({
   dropi_order_id,
   id_configuracion,
@@ -952,6 +976,18 @@ async function procesarTemplates({ orders, id_configuracion }) {
       if (await yaFueEnviado(order.id, id_configuracion, estadoConfig)) {
         omitidos++;
         continue;
+      }
+
+      // 🆕 Cross-system dedupe: si Shopify (u otra corrida) ya mandó, no duplicamos
+      if (estadoConfig === 'PENDIENTE CONFIRMACION') {
+        const yaShopify = await yaSeEnvioPendienteConfPorPhone(
+          id_configuracion,
+          order.phone,
+        );
+        if (yaShopify) {
+          omitidos++;
+          continue;
+        }
       }
 
       const config = plantillas[estadoConfig];

@@ -11,6 +11,10 @@ const {
   enviarTemplateRecuperacion,
 } = require('../utils/shopify/enviarTemplateRecuperacion');
 
+const {
+  procesarPedidoShopify,
+} = require('../utils/shopify/enviarPendienteConfirmacionShopify');
+
 async function ensureDir(dir) {
   try {
     await fsp.mkdir(dir, { recursive: true });
@@ -95,6 +99,37 @@ exports.handleOrderCreate = catchAsync(async (req, res) => {
           },
         },
       );
+
+      /* ════════════════════════════════════════════════════
+         🆕 PENDIENTE CONFIRMACION via Shopify (paralelo a Dropi)
+         Si Dropi aún no tiene el pedido y no se mandó antes →
+         intentamos enviar AHORA. Si falla, cron Dropi reintenta.
+         ════════════════════════════════════════════════════ */
+      try {
+        const resultado = await procesarPedidoShopify({
+          id_configuracion,
+          phone_normalizado,
+          order,
+        });
+
+        if (!resultado.procesado) {
+          await logShopify(
+            `⏭️ PENDIENTE CONFIRMACION omitido (${resultado.motivo}) phone=${phone_normalizado} order_id=${order_id}`,
+          );
+        } else if (resultado.enviado) {
+          await logShopify(
+            `✅ PENDIENTE CONFIRMACION enviado por Shopify phone=${phone_normalizado} wamid=${resultado.wamid}`,
+          );
+        } else {
+          await logShopify(
+            `⚠️ PENDIENTE CONFIRMACION falló (${resultado.error}) phone=${phone_normalizado} — cron Dropi reintentará`,
+          );
+        }
+      } catch (err) {
+        await logShopify(
+          `❌ Error procesando PENDIENTE CONFIRMACION: ${err.message}`,
+        );
+      }
 
       if (filasActualizadas > 0) {
         await logShopify(
