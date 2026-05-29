@@ -160,15 +160,17 @@ async function yaSeEnvioPendienteConfirmacion({
    Cliente: buscar o crear
    ═══════════════════════════════════════════════════════════ */
 
-async function resolverCliente({
+async function resolverClientes({
   id_configuracion,
   phone_normalizado,
   nombre,
   apellido,
   phone_number_id,
+  telefonoConfig,
 }) {
   const phone9 = phone_normalizado.slice(-9);
 
+  // 1. Cliente RECEPTOR (quien recibe el WhatsApp)
   const [clienteRow] = await db.query(
     `SELECT id FROM clientes_chat_center
      WHERE id_configuracion = ? AND deleted_at IS NULL
@@ -187,26 +189,77 @@ async function resolverCliente({
     },
   );
 
-  if (clienteRow?.id) return clienteRow.id;
+  let clienteId = clienteRow?.id || null;
 
-  const [insertResult] = await db.query(
-    `INSERT INTO clientes_chat_center
-       (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
-        celular_cliente, telefono_limpio, source)
-     VALUES (?, ?, ?, ?, ?, ?, 'wa')`,
-    {
-      replacements: [
-        id_configuracion,
-        phone_number_id,
-        nombre || '',
-        apellido || '',
-        phone_normalizado,
-        phone_normalizado,
-      ],
-      type: db.QueryTypes.INSERT,
-    },
-  );
-  return insertResult;
+  if (!clienteId) {
+    const [insertResult] = await db.query(
+      `INSERT INTO clientes_chat_center
+         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
+          celular_cliente, telefono_limpio, source)
+       VALUES (?, ?, ?, ?, ?, ?, 'wa')`,
+      {
+        replacements: [
+          id_configuracion,
+          phone_number_id,
+          nombre || '',
+          apellido || '',
+          phone_normalizado,
+          phone_normalizado,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    clienteId = insertResult;
+  }
+
+  // 2. Cliente del CONFIG (representa al negocio — dueño de la conversación)
+  let idClienteConfig = null;
+  if (telefonoConfig) {
+    const telCfgLimpio = String(telefonoConfig).replace(/\D/g, '');
+    if (telCfgLimpio) {
+      const [cfgRow] = await db.query(
+        `SELECT id FROM clientes_chat_center
+         WHERE id_configuracion = ?
+           AND (REPLACE(celular_cliente, ' ', '') = ? OR telefono_limpio = ?)
+         LIMIT 1`,
+        {
+          replacements: [id_configuracion, telCfgLimpio, telCfgLimpio],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      idClienteConfig = cfgRow?.id || null;
+    }
+  }
+
+  return { clienteId, idClienteConfig };
+}
+
+/* Construir ruta_archivo para guardar en mensajes_clientes (igual que Dropi) */
+function buildRutaArchivoShopify(ctx) {
+  const { order, shipping, billing, customer, lineItems, phone_normalizado } =
+    ctx;
+  const nombre =
+    customer.first_name || shipping.first_name || billing.first_name || '';
+  const apellido =
+    customer.last_name || shipping.last_name || billing.last_name || '';
+
+  return {
+    nombre: `${nombre} ${apellido}`.trim(),
+    direccion: shipping.address1 || billing.address1 || '',
+    email: order.email || customer.email || '',
+    celular: phone_normalizado,
+    order_id: String(order.id || ''),
+    contenido: lineItems
+      .map((p) => ` ${p.quantity || 1} x ${p.title || 'Producto'} `)
+      .join(','),
+    costo: String(order.total_price || '0'),
+    ciudad: shipping.city || billing.city || '',
+    tracking: '',
+    transportadora: '',
+    numero_guia: '',
+    estado_notificacion: 'PENDIENTE CONFIRMACION',
+    source: 'shopify',
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -298,30 +351,32 @@ async function enviarTemplate({
 async function registrarMensajeEnChat({
   id_configuracion,
   phone_number_id,
-  id_cliente,
+  clienteId,
+  idClienteConfig,
   phoneNorm,
   textoMensaje,
   templateName,
   languageCode,
   waMessageId,
+  rutaArchivo,
   jsonMensaje,
 }) {
   try {
     await db.query(
       `INSERT INTO mensajes_clientes
          (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, rol_mensaje,
-          celular_recibe, responsable, texto_mensaje,
+          celular_recibe, responsable, texto_mensaje, ruta_archivo,
           json_mensaje, visto, uid_whatsapp, id_wamid_mensaje,
           template_name, language_code, informacion_suficiente)
-       VALUES (?, ?, ?, 'template', 1, ?, 'Shopify Confirmación', ?,
-               ?, 1, ?, ?, ?, ?, 1)`,
+       VALUES (?, ?, ?, 'template', 1, ?, 'Shopify Confirmación', ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
       {
         replacements: [
           id_configuracion,
-          id_cliente,
+          idClienteConfig || clienteId,
           phone_number_id,
-          id_cliente,
+          clienteId,
           textoMensaje || '',
+          rutaArchivo ? JSON.stringify(rutaArchivo) : null,
           jsonMensaje ? JSON.stringify(jsonMensaje) : null,
           phoneNorm,
           waMessageId || null,
@@ -331,7 +386,12 @@ async function registrarMensajeEnChat({
         type: db.QueryTypes.INSERT,
       },
     );
-  } catch (_) {}
+  } catch (err) {
+    console.error(
+      '❌ [Shopify Confirmación] Error registrando mensaje:',
+      err?.original?.sqlMessage || err.message,
+    );
+  }
 }
 
 async function registrarDedupe({
@@ -427,7 +487,7 @@ async function procesarPedidoShopify({
     return { procesado: false, motivo: 'sin_creds_wa' };
   }
 
-  // 4️⃣ Buscar/crear cliente
+  // 4️⃣ Buscar/crear cliente RECEPTOR + cliente del CONFIG
   const customer = order.customer || {};
   const shipping = order.shipping_address || {};
   const billing = order.billing_address || {};
@@ -438,15 +498,16 @@ async function procesarPedidoShopify({
   const apellido =
     customer.last_name || shipping.last_name || billing.last_name || '';
 
-  const id_cliente = await resolverCliente({
+  const { clienteId, idClienteConfig } = await resolverClientes({
     id_configuracion,
     phone_normalizado,
     nombre,
     apellido,
     phone_number_id: creds.phone_number_id,
+    telefonoConfig: creds.telefono, // 🆕 viene de getWaCredentials
   });
 
-  // 5️⃣ Construir y enviar
+  // 5️⃣ Construir components + ruta_archivo + enviar Meta
   const ctx = {
     order,
     shipping,
@@ -456,6 +517,7 @@ async function procesarPedidoShopify({
     phone_normalizado,
   };
   const components = buildTemplateComponents(plantilla.parametros_json, ctx);
+  const rutaArchivo = buildRutaArchivoShopify(ctx);
 
   let result;
   try {
@@ -472,22 +534,23 @@ async function procesarPedidoShopify({
       err?.response?.data?.error?.message ||
       err?.response?.data?.error?.error_user_msg ||
       err.message;
-    // ❌ NO registramos nada → cron Dropi reintentará cuando sincronice
     return { procesado: true, enviado: false, error: metaError };
   }
 
-  // 6️⃣ ÉXITO → registrar todo
+  // 6️⃣ ÉXITO → registrar todo (mensaje en chat + dedupe + columna kanban)
   const bodyInterpolado = interpolarBodyText(plantilla.body_text, components);
 
   await registrarMensajeEnChat({
     id_configuracion,
     phone_number_id: creds.phone_number_id,
-    id_cliente,
+    clienteId,
+    idClienteConfig,
     phoneNorm: phone_normalizado,
     textoMensaje: bodyInterpolado || plantilla.nombre_template,
     templateName: plantilla.nombre_template,
     languageCode: plantilla.language_code,
     waMessageId: result.wamid,
+    rutaArchivo,
     jsonMensaje: result.payload,
   });
 
@@ -499,11 +562,11 @@ async function procesarPedidoShopify({
     wamid: result.wamid,
   });
 
-  // Columna kanban (igual que cron Dropi: usa colDropiPrincipal)
+  // Columna kanban (igual que cron Dropi: usa colDropiPrincipal para PENDIENTE CONFIRMACION)
   const colDropiPrincipal = await getColumnaPrincipalDropi(id_configuracion);
   await actualizarColumnaKanban({
     id_configuracion,
-    id_cliente,
+    id_cliente: clienteId, // 🆕 cambio: usar clienteId (no id_cliente que ya no existe en este scope)
     columnaDestino: colDropiPrincipal,
   });
 
