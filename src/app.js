@@ -353,7 +353,7 @@ app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
 app.use('/api/v1/admin_dashboard', adminDashboardRouter);
-app.use('api/v1/seguimientos', seguimientosRouter);
+app.use('/api/v1/seguimientos', seguimientosRouter);
 
 app.all('*', (req, res, next) => {
   return next(

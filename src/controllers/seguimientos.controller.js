@@ -2,6 +2,17 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 
+function toMySQLDateTime(input) {
+  if (!input) return null;
+  try {
+    const d = new Date(input);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 19).replace('T', ' ');
+  } catch {
+    return null;
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════
    GET /seguimientos/:id_usuario
    Historial completo + evidencias agrupadas
@@ -70,10 +81,31 @@ exports.crear = catchAsync(async (req, res, next) => {
   if (!contenido || !contenido.trim())
     return next(new AppError('El contenido del seguimiento es requerido', 400));
 
+  // Validación para cancelación/retención
+  if (tipo === 'cancelacion' || tipo === 'retencion') {
+    if (!motivo_cancelacion) {
+      return next(
+        new AppError(
+          'Para cancelación/retención debes seleccionar un motivo',
+          400,
+        ),
+      );
+    }
+    if (!motivo_cancelacion_detalle || !motivo_cancelacion_detalle.trim()) {
+      return next(
+        new AppError(
+          'Para cancelación/retención debes agregar un detalle del motivo',
+          400,
+        ),
+      );
+    }
+  }
+
+  const fecha_seguimiento_sql = toMySQLDateTime(fecha_seguimiento);
   // Quien lo registra (del session/middleware protect)
-  const ejecutado_por_id = req.user?.id_sub_usuario || null;
+  const ejecutado_por_id = req.sessionUser?.id_sub_usuario || null;
   const ejecutado_por_nombre =
-    req.user?.nombre_encargado || req.user?.usuario || null;
+    req.sessionUser?.nombre_encargado || req.sessionUser?.usuario || null;
 
   // INSERT seguimiento
   const [result] = await db.query(
@@ -96,7 +128,7 @@ exports.crear = catchAsync(async (req, res, next) => {
         motivo_cancelacion_detalle,
         ejecutado_por_id,
         ejecutado_por_nombre,
-        fecha_seguimiento,
+        fecha_seguimiento_sql,
         proximo_contacto,
       ],
     },
@@ -132,6 +164,29 @@ exports.editar = catchAsync(async (req, res, next) => {
   const id_seguimiento = parseInt(req.params.id_seguimiento, 10);
   if (!id_seguimiento) return next(new AppError('id requerido', 400));
 
+  // Validación para cancelación/retención
+  if (req.body.tipo === 'cancelacion' || req.body.tipo === 'retencion') {
+    if (!req.body.motivo_cancelacion) {
+      return next(
+        new AppError(
+          'Para cancelación/retención debes seleccionar un motivo',
+          400,
+        ),
+      );
+    }
+    if (
+      !req.body.motivo_cancelacion_detalle ||
+      !req.body.motivo_cancelacion_detalle.trim()
+    ) {
+      return next(
+        new AppError(
+          'Para cancelación/retención debes agregar un detalle del motivo',
+          400,
+        ),
+      );
+    }
+  }
+
   const campos = [
     'tipo',
     'resultado',
@@ -149,21 +204,27 @@ exports.editar = catchAsync(async (req, res, next) => {
   campos.forEach((k) => {
     if (req.body[k] !== undefined) {
       sets.push(`${k} = ?`);
-      reps.push(req.body[k]);
+      reps.push(
+        k === 'fecha_seguimiento' ? toMySQLDateTime(req.body[k]) : req.body[k],
+      );
     }
   });
 
-  if (sets.length === 0) return next(new AppError('Nada para actualizar', 400));
+  let updateMeta = null;
+  if (sets.length > 0) {
+    reps.push(id_seguimiento);
+    const [, meta] = await db.query(
+      `UPDATE seguimiento_clientes_chat_center
+          SET ${sets.join(', ')}
+        WHERE id_seguimiento = ?`,
+      { replacements: reps },
+    );
+    updateMeta = meta;
+    console.log('[editar] UPDATE meta:', meta);
+    console.log('[editar] SQL ejecutado:', `SET ${sets.join(', ')}`);
+  }
 
-  reps.push(id_seguimiento);
-  await db.query(
-    `UPDATE seguimiento_clientes_chat_center
-        SET ${sets.join(', ')}
-      WHERE id_seguimiento = ?`,
-    { replacements: reps },
-  );
-
-  // Si vienen nuevas evidencias, las agrega (no reemplaza)
+  let evidenciasAgregadas = 0;
   if (
     Array.isArray(req.body.evidencias_nuevas) &&
     req.body.evidencias_nuevas.length > 0
@@ -182,9 +243,16 @@ exports.editar = catchAsync(async (req, res, next) => {
        VALUES ${values.map(() => '(?,?,?,?,?,?)').join(',')}`,
       { replacements: values.flat() },
     );
+    evidenciasAgregadas = values.length;
   }
 
-  res.json({ status: 'success' });
+  res.json({
+    status: 'success',
+    campos_intentados: sets.length,
+    affected_rows: updateMeta?.affectedRows ?? updateMeta ?? 0,
+    changed_rows: updateMeta?.changedRows ?? null,
+    evidencias_agregadas: evidenciasAgregadas,
+  });
 });
 
 /* ══════════════════════════════════════════════════════════════

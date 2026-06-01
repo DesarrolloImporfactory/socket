@@ -94,49 +94,34 @@ exports.serie = catchAsync(async (req, res) => {
    Tabla de cancelaciones del mes con motivo (si hay seguimiento)
    ══════════════════════════════════════════════════════════════ */
 exports.cancelacionesMes = catchAsync(async (req, res) => {
-  const mes = req.query.mes || new Date().toISOString().slice(0, 7); // YYYY-MM
-
+  const mes = req.query.mes || new Date().toISOString().slice(0, 7);
   const rows = await db.query(
     `
     SELECT
       u.id_usuario,
       u.nombre AS empresa,
       u.email_propietario AS email,
-      u.estado,
+      u.cancel_at_period_end,
       u.canceled_at,
       u.cancel_at,
-      u.cancel_at_period_end,
-      u.fecha_inicio,
-      DATEDIFF(COALESCE(u.canceled_at, NOW()), u.fecha_inicio) AS dias_de_vida,
+      DATEDIFF(COALESCE(u.canceled_at, u.cancel_at, NOW()), u.fecha_inicio) AS dias_de_vida,
       p.nombre_plan,
       p.precio_plan,
-
-      /* Último seguimiento tipo=cancelacion (si existe) */
-      (SELECT sc.motivo_cancelacion
-         FROM seguimiento_clientes_chat_center sc
-        WHERE sc.id_usuario = u.id_usuario
-          AND sc.tipo = 'cancelacion'
-        ORDER BY sc.fecha_seguimiento DESC LIMIT 1) AS motivo_cancelacion,
-
-      (SELECT sc.motivo_cancelacion_detalle
-         FROM seguimiento_clientes_chat_center sc
-        WHERE sc.id_usuario = u.id_usuario
-          AND sc.tipo = 'cancelacion'
-        ORDER BY sc.fecha_seguimiento DESC LIMIT 1) AS motivo_detalle,
-
-      (SELECT COUNT(*)
-         FROM seguimiento_clientes_chat_center sc
-        WHERE sc.id_usuario = u.id_usuario) AS total_seguimientos
+      (SELECT c.telefono
+         FROM configuraciones c
+        WHERE c.id_usuario = u.id_usuario
+          AND c.suspendido = 0
+          AND c.telefono IS NOT NULL
+        ORDER BY c.id ASC
+        LIMIT 1) AS telefono_principal
     FROM usuarios_chat_center u
     LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
-    WHERE DATE_FORMAT(u.canceled_at, '%Y-%m') = :mes
-       OR (u.cancel_at_period_end = 1 AND DATE_FORMAT(u.cancel_at, '%Y-%m') = :mes)
-    ORDER BY u.canceled_at DESC, u.cancel_at DESC
+    WHERE DATE_FORMAT(COALESCE(u.canceled_at, u.cancel_at), '%Y-%m') = ?
+    ORDER BY COALESCE(u.canceled_at, u.cancel_at) DESC
     `,
-    { replacements: { mes }, type: db.QueryTypes.SELECT },
+    { replacements: [mes], type: db.QueryTypes.SELECT },
   );
-
-  res.json({ status: 'success', mes, total: rows.length, data: rows });
+  res.json({ status: 'success', data: rows });
 });
 
 /* ══════════════════════════════════════════════════════════════
@@ -195,13 +180,29 @@ exports.clientesPorCategoria = catchAsync(async (req, res) => {
 
   const baseSelect = `
     SELECT
-      u.id_usuario, u.nombre AS empresa, u.email_propietario AS email,
-      u.estado, u.fecha_inicio, u.fecha_renovacion,
-      u.stripe_subscription_status, u.stripe_subscription_id,
-      u.permanente, u.cancel_at_period_end,
-      p.nombre_plan, p.precio_plan, p.duracion_plan,
+      u.id_usuario,
+      u.nombre AS empresa,
+      u.email_propietario AS email,
+      u.estado,
+      u.fecha_inicio,
+      u.fecha_renovacion,
+      u.stripe_subscription_status,
+      u.stripe_subscription_id,
+      u.id_plan,
+      u.permanente,
+      u.cancel_at_period_end,
+      p.nombre_plan,
+      p.precio_plan,
+      p.duracion_plan,
       DATEDIFF(NOW(), u.fecha_inicio) AS dias_de_vida,
       DATEDIFF(u.fecha_renovacion, NOW()) AS dias_para_vencer,
+      (SELECT c.telefono
+         FROM configuraciones c
+        WHERE c.id_usuario = u.id_usuario
+          AND c.suspendido = 0
+          AND c.telefono IS NOT NULL
+        ORDER BY c.id ASC
+        LIMIT 1) AS telefono_principal,
       (SELECT MAX(mm.created_at)
          FROM mensajes_clientes mm
          INNER JOIN configuraciones cc ON cc.id = mm.id_configuracion

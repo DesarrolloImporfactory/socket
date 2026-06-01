@@ -92,11 +92,6 @@ function construirFiltros(body) {
     replacements.push(stripe_status.trim());
   }
 
-  /* Producto — EXACT MATCH:
-     "imporchat"    → solo acceso a ImporChat (exclusivo)
-     "insta_landing"→ solo acceso a Insta Landing (exclusivo)
-     "both"         → acceso a ambos productos
-  */
   if (
     tools_access &&
     ['imporchat', 'insta_landing', 'both'].includes(tools_access)
@@ -162,6 +157,13 @@ function construirFiltros(body) {
     where.push(`u.created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`);
   }
 
+  // Con seguimientos: clientes con al menos un registro de seguimiento
+  if (isTrue(body.con_seguimientos)) {
+    where.push(`EXISTS (
+      SELECT 1 FROM seguimiento_clientes_chat_center sg
+       WHERE sg.id_usuario = u.id_usuario
+    )`);
+  }
   return { where, replacements };
 }
 
@@ -241,6 +243,15 @@ function buildBaseSelect() {
           AND c.suspendido = 0
           AND COALESCE(c.api_key_openai,'') <> '')         AS total_agentes_ia,
 
+      /* ── Seguimientos del cliente ── */
+      (SELECT COUNT(*)
+         FROM seguimiento_clientes_chat_center sg
+        WHERE sg.id_usuario = u.id_usuario)                AS total_seguimientos,
+
+      (SELECT MAX(sg.fecha_seguimiento)
+         FROM seguimiento_clientes_chat_center sg
+        WHERE sg.id_usuario = u.id_usuario)                AS ultimo_seguimiento,
+     
       /* Teléfono principal (primera config conectada) */
       (SELECT c.telefono
          FROM configuraciones c
@@ -506,6 +517,8 @@ exports.exportarUsuariosAdmin = catchAsync(async (req, res, next) => {
     { header: 'Agentes IA', key: 'total_agentes_ia', width: 10 },
     { header: 'Últ. mensaje', key: 'ultimo_mensaje', width: 20 },
     { header: 'Fecha registro', key: 'fecha_registro', width: 20 },
+    { header: 'Total seguimientos', key: 'total_seguimientos', width: 12 },
+    { header: 'Últ. seguimiento', key: 'ultimo_seguimiento', width: 20 },
   ];
 
   ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };

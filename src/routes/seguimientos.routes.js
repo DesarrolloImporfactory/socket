@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middlewares/auth.middleware');
-const requireSuperAdmin = require('../middlewares/requireSuperAdmin.middleware');
+const requireGestorClientes = require('../middlewares/requireGestorClientes.middleware');
 const ctrl = require('../controllers/seguimientos.controller');
 
 router.use(protect);
-router.use(requireSuperAdmin);
+router.use(requireGestorClientes);
 
 router.get('/proximos', ctrl.proximos);
 router.get('/:id_usuario', ctrl.listar);
