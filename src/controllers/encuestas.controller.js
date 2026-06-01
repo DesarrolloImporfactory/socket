@@ -9,6 +9,7 @@ const { QueryTypes } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const crypto = require('crypto');
+const ExcelJS = require('exceljs');
 
 const DEFAULT_MENSAJE_SATISFACCION =
   '¡Hola {nombre}! 🙏\n\nGracias por comunicarte con nosotros. Nos encantaría saber cómo fue tu experiencia:\n\n👉 {link}\n\n¡Solo toma 10 segundos!';
@@ -565,4 +566,176 @@ exports.resolverEscalado = catchAsync(async (req, res, next) => {
   );
 
   return res.json({ success: true, message: 'Caso resuelto' });
+});
+
+// ── Exportar reporte a Excel (.xlsx) ──
+exports.exportarExcel = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { id_configuracion } = req.query;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  // 1. Traer la encuesta
+  const [enc] = await db.query(
+    `SELECT id, tipo, nombre, descripcion
+       FROM encuestas WHERE id = :id AND deleted_at IS NULL`,
+    { replacements: { id }, type: QueryTypes.SELECT },
+  );
+  if (!enc) return next(new AppError('Encuesta no encontrada', 404));
+
+  // 2. Traer TODAS las respuestas (sin paginar)
+  const respuestas = await db.query(
+    `SELECT
+        er.id, er.source, er.score, er.estado, er.escalado,
+        er.respuestas, er.datos_contacto, er.created_at,
+        er.resolucion_comentario, er.resolucion_fecha, er.escalado_resuelto,
+        c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
+        COALESCE(s.nombre_encargado, 'Sin asignar') AS nombre_encargado,
+        COALESCE(sr.nombre_encargado, '') AS resuelto_por_nombre
+     FROM encuestas_respuestas er
+     LEFT JOIN clientes_chat_center c ON c.id = er.id_cliente_chat_center
+     LEFT JOIN sub_usuarios_chat_center s  ON s.id_sub_usuario  = er.id_encargado
+     LEFT JOIN sub_usuarios_chat_center sr ON sr.id_sub_usuario = er.resolucion_por
+     WHERE er.id_encuesta = :id AND er.id_configuracion = :cfg
+     ORDER BY er.created_at DESC`,
+    { replacements: { id, cfg: id_configuracion }, type: QueryTypes.SELECT },
+  );
+
+  // helpers
+  const parseJson = (v) => {
+    if (!v) return {};
+    if (typeof v === 'object') return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return {};
+    }
+  };
+  const fmtFecha = (d) =>
+    d
+      ? new Date(d).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })
+      : '';
+  const nombreCompleto = (r) =>
+    `${r.nombre_cliente || ''} ${r.apellido_cliente || ''}`.trim() || '—';
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Respuestas');
+
+  if (enc.tipo === 'satisfaccion') {
+    ws.columns = [
+      { header: 'Fecha', key: 'fecha', width: 20 },
+      { header: 'Cliente', key: 'cliente', width: 28 },
+      { header: 'Teléfono', key: 'telefono', width: 16 },
+      { header: 'Encargado', key: 'encargado', width: 22 },
+      { header: 'Calificación', key: 'score', width: 12 },
+      { header: 'Estado', key: 'estado', width: 14 },
+      { header: 'Comentario del cliente', key: 'comentario', width: 40 },
+      { header: '¿Escalado?', key: 'escalado', width: 11 },
+      { header: 'Resolución dada', key: 'resolucion', width: 40 },
+      { header: 'Resuelto por', key: 'resuelto_por', width: 22 },
+      { header: 'Fecha resolución', key: 'fecha_resolucion', width: 20 },
+      { header: 'Origen', key: 'source', width: 10 },
+    ];
+
+    respuestas.forEach((r) => {
+      const data = parseJson(r.respuestas);
+      const comentario =
+        data.comentario ||
+        data.observacion ||
+        data.feedback ||
+        data.mensaje ||
+        data.texto ||
+        '';
+      ws.addRow({
+        fecha: fmtFecha(r.created_at),
+        cliente: nombreCompleto(r),
+        telefono: r.celular_cliente || '',
+        encargado: r.nombre_encargado,
+        score: r.score ?? '',
+        estado: r.estado === 'respondida' ? 'Respondida' : 'Pendiente',
+        comentario,
+        escalado: r.escalado ? 'Sí' : 'No',
+        resolucion: r.resolucion_comentario || '',
+        resuelto_por: r.escalado_resuelto ? r.resuelto_por_nombre || '—' : '',
+        fecha_resolucion: r.escalado_resuelto
+          ? fmtFecha(r.resolucion_fecha)
+          : '',
+        source: r.source === 'webhook' ? 'Webhook' : 'Link',
+      });
+    });
+  } else {
+    // webhook_lead → columnas dinámicas según el JSON de cada respuesta
+    const dynKeys = new Set();
+    const parsed = respuestas.map((r) => {
+      const resp = parseJson(r.respuestas);
+      const cont = parseJson(r.datos_contacto);
+      const merged = { ...cont, ...resp };
+      Object.keys(merged).forEach((k) => dynKeys.add(k));
+      return { r, merged };
+    });
+
+    const baseCols = [
+      { header: 'Fecha', key: 'fecha', width: 20 },
+      { header: 'Cliente', key: 'cliente', width: 28 },
+      { header: 'Teléfono', key: 'telefono', width: 16 },
+      { header: 'Origen', key: 'source', width: 10 },
+    ];
+    const dynCols = [...dynKeys].map((k) => ({
+      header: k,
+      key: `dyn_${k}`,
+      width: 24,
+    }));
+    ws.columns = [...baseCols, ...dynCols];
+
+    parsed.forEach(({ r, merged }) => {
+      const row = {
+        fecha: fmtFecha(r.created_at),
+        cliente: nombreCompleto(r),
+        telefono: r.celular_cliente || '',
+        source: r.source === 'webhook' ? 'Webhook' : 'Link',
+      };
+      [...dynKeys].forEach((k) => {
+        const val = merged[k];
+        row[`dyn_${k}`] =
+          val == null
+            ? ''
+            : typeof val === 'object'
+              ? JSON.stringify(val)
+              : String(val);
+      });
+      ws.addRow(row);
+    });
+  }
+
+  // Estilo del header (navy + texto blanco)
+  ws.getRow(1).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF1E293B' },
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+  ws.getRow(1).height = 22;
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  if (ws.columnCount > 0) {
+    ws.autoFilter = { from: 'A1', to: { row: 1, column: ws.columnCount } };
+  }
+
+  // Nombre del archivo
+  const safeName = (enc.nombre || 'encuesta')
+    .replace(/[^a-z0-9]+/gi, '_')
+    .toLowerCase();
+  const fechaStr = new Date().toISOString().slice(0, 10);
+  const filename = `reporte_${safeName}_${fechaStr}.xlsx`;
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  );
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  await wb.xlsx.write(res);
+  res.end();
 });

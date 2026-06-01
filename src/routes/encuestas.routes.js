@@ -23,4 +23,6 @@ router.delete('/:id', ctrl.eliminar);
 router.get('/cliente/:id_cliente/respuestas', ctrl.respuestasPorCliente);
 
 router.patch('/respuesta/:id_respuesta/resolver', ctrl.resolverEscalado);
+
+router.get('/:id/export', ctrl.exportarExcel);
 module.exports = router;
