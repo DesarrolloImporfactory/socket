@@ -1308,8 +1308,15 @@ async function runHourlyDropiSync() {
   }
 }
 
-cron.schedule('*/5 * * * *', () => {
-  runHourlyDropiSync().catch(() => {});
-});
+const CRONS_ENABLED = process.env.NODE_ENV === 'production';
+
+if (CRONS_ENABLED) {
+  cron.schedule('*/5 * * * *', () => {
+    runHourlyDropiSync().catch(() => {});
+  });
+  console.log('[Cron Dropi] Activo (*/5 min)');
+} else {
+  console.log('[Cron Dropi] Deshabilitado — entorno no productivo');
+}
 
 module.exports = { runHourlyDropiSync };
