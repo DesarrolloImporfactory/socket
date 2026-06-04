@@ -721,7 +721,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       if (referral) {
         const headline = referral.headline || '';
-        if ((id_configuracion == 10)) {
+        if (id_configuracion == 10) {
           // Buscar el producto exacto en la BD
           const bloqueProducto = await buscarProductoPorReferral(
             id_configuracion,
@@ -1993,13 +1993,35 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const estadoFinal =
               clienteActualizado?.estado_contacto || estado_contacto;
 
-            // 4. Programar nuevo remarketing según estado final (con o sin IA)
-            await programarRemarketingKanbanWrapper({
-              id_configuracion,
-              id_cliente,
-              telefono: phone_whatsapp_from,
-              estado_contacto: estadoFinal,
-            });
+            // 4. ⏱️ Solo para config 242: verificar si se envió un remarketing en las últimas 24h
+            let yaEnviadoReciente = null;
+            if (Number(id_configuracion) === 242) {
+              const [row] = await db.query(
+                `SELECT id FROM remarketing_pendientes
+       WHERE id_cliente_chat_center = ?
+         AND id_configuracion = ?
+         AND enviado = 1
+         AND ultimo_intento_at > NOW() - INTERVAL 24 HOUR
+       LIMIT 1`,
+                {
+                  replacements: [id_cliente, id_configuracion],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              yaEnviadoReciente = row || null;
+            }
+
+            // 5. Programar nuevo remarketing
+            //    - Para config 242: solo si NO hay envío reciente (<24h)
+            //    - Para el resto: SIEMPRE (comportamiento original)
+            if (!yaEnviadoReciente) {
+              await programarRemarketingKanbanWrapper({
+                id_configuracion,
+                id_cliente,
+                telefono: phone_whatsapp_from,
+                estado_contacto: estadoFinal,
+              });
+            }
           }
         }
         /* validar si el chat ah sido cerrado */
