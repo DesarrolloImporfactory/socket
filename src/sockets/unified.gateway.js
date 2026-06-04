@@ -672,6 +672,7 @@ module.exports = function attachUnifiedGateway(io, services) {
       // 2) ack al emisor
       // ══════════════════════════════════════════════════════
       // 📅 Programar remarketing si fue un asesor humano (solo WA)
+      //    ⏱️ Máximo 1 ciclo por cliente cada 24h
       // ══════════════════════════════════════════════════════
       try {
         const esIA = String(agent_name || '').startsWith('IA_');
@@ -683,28 +684,49 @@ module.exports = function attachUnifiedGateway(io, services) {
           esAsesorHumano &&
           Number(id_configuracion) === 242
         ) {
-          /* console.log("se programo"); */
-          const {
-            programarRemarketingKanban,
-          } = require('../services/kanban_ia.service');
-
-          // Necesitamos el estado_contacto actual del cliente
-          const [clienteRow] = await db.query(
-            `SELECT estado_contacto FROM clientes_chat_center WHERE id = :chatId LIMIT 1`,
+          // ⏱️ Anti-spam: solo programar si NO hay ya un remarketing
+          //    activo (pendiente o enviado en las últimas 24h)
+          const [yaActivo] = await db.query(
+            `SELECT id, enviado, tiempo_disparo, ultimo_intento_at
+             FROM remarketing_pendientes
+             WHERE id_cliente_chat_center = :chatId
+               AND id_configuracion = :id_configuracion
+               AND cancelado = 0
+               AND (
+                 enviado = 0
+                 OR ultimo_intento_at > NOW() - INTERVAL 24 HOUR
+               )
+             LIMIT 1`,
             {
-              replacements: { chatId },
+              replacements: { chatId, id_configuracion },
               type: db.QueryTypes.SELECT,
             },
           );
 
-          if (clienteRow?.estado_contacto) {
-            await programarRemarketingKanban({
-              id_configuracion,
-              id_cliente: chatId,
-              telefono: chatRow.celular_cliente,
-              estado_contacto: clienteRow.estado_contacto,
-            });
+          if (!yaActivo) {
+            const {
+              programarRemarketingKanban,
+            } = require('../services/kanban_ia.service');
+
+            // Estado actual del cliente
+            const [clienteRow] = await db.query(
+              `SELECT estado_contacto FROM clientes_chat_center WHERE id = :chatId LIMIT 1`,
+              {
+                replacements: { chatId },
+                type: db.QueryTypes.SELECT,
+              },
+            );
+
+            if (clienteRow?.estado_contacto) {
+              await programarRemarketingKanban({
+                id_configuracion,
+                id_cliente: chatId,
+                telefono: chatRow.celular_cliente,
+                estado_contacto: clienteRow.estado_contacto,
+              });
+            }
           }
+          // Si yaActivo existe, no hacemos nada (deja correr el ciclo que ya está)
         }
       } catch (rmErr) {
         console.error(

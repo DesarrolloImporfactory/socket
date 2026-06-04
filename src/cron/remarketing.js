@@ -860,8 +860,10 @@ cron.schedule('*/1 * * * *', async () => {
                 cfg.WABA_ID,
               );
 
+              // Preferimos la URL fresca de Meta (cache 30min) sobre la guardada en BD.
+              // Meta descarga internamente desde scontent — no hay que re-subir.
               const mediaUrlFuente = (
-                record.header_media_url || tplData?.header?.media_url
+                tplData?.header?.media_url || record.header_media_url
               )?.replace(/&amp;/g, '&');
 
               if (!mediaUrlFuente) {
@@ -870,32 +872,8 @@ cron.schedule('*/1 * * * *', async () => {
                 );
               }
 
-              if (isScontentExpiredUrl(mediaUrlFuente)) {
-                const ageHours =
-                  (Date.now() -
-                    new Date(
-                      record.creado_en || record.tiempo_disparo,
-                    ).getTime()) /
-                  (1000 * 60 * 60);
-                if (ageHours > 24) {
-                  const err = new Error(
-                    `URL scontent con edad ${ageHours.toFixed(1)}h, probablemente expirada`,
-                  );
-                  err.isDownloadError = true;
-                  err.isUrlExpired = true;
-                  throw err;
-                }
-              }
-
-              const mediaId = await uploadMediaToMeta(
-                mediaUrlFuente,
-                headerFormatNorm,
-                cfg.ACCESS_TOKEN,
-                cfg.PHONE_NUMBER_ID,
-              );
-
               const mediaType = headerFormatNorm.toLowerCase();
-              const mediaObj = { id: mediaId };
+              const mediaObj = { link: String(mediaUrlFuente).trim() };
               if (mediaType === 'document' && record.header_media_name) {
                 mediaObj.filename = record.header_media_name;
               }
