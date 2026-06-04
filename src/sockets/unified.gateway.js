@@ -670,6 +670,51 @@ module.exports = function attachUnifiedGateway(io, services) {
       // });
 
       // 2) ack al emisor
+      // ══════════════════════════════════════════════════════
+      // 📅 Programar remarketing si fue un asesor humano (solo WA)
+      // ══════════════════════════════════════════════════════
+      try {
+        const esIA = String(agent_name || '').startsWith('IA_');
+        const esCron = String(agent_name || '').startsWith('cron_');
+        const esAsesorHumano = !esIA && !esCron;
+
+        if (
+          source === 'wa' &&
+          esAsesorHumano &&
+          Number(id_configuracion) === 242
+        ) {
+          /* console.log("se programo"); */
+          const {
+            programarRemarketingKanban,
+          } = require('../services/kanban_ia.service');
+
+          // Necesitamos el estado_contacto actual del cliente
+          const [clienteRow] = await db.query(
+            `SELECT estado_contacto FROM clientes_chat_center WHERE id = :chatId LIMIT 1`,
+            {
+              replacements: { chatId },
+              type: db.QueryTypes.SELECT,
+            },
+          );
+
+          if (clienteRow?.estado_contacto) {
+            await programarRemarketingKanban({
+              id_configuracion,
+              id_cliente: chatId,
+              telefono: chatRow.celular_cliente,
+              estado_contacto: clienteRow.estado_contacto,
+            });
+          }
+        }
+      } catch (rmErr) {
+        console.error(
+          '⚠️ Error programando remarketing tras SEND_MESSAGE:',
+          rmErr.message,
+        );
+        // NO re-lanzar, el mensaje ya se envió correctamente
+      }
+
+      // 2) ack al emisor
       socket.emit('CHAT_SEND_OK', { chatId, client_tmp_id, message: msg });
 
       return { ok: true, message: msg, source, chatId };
