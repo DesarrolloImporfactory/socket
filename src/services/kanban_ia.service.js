@@ -768,6 +768,30 @@ async function programarRemarketingKanban({
   estado_contacto,
 }) {
   try {
+    // ⏱️ Solo config 242: skip si ya se envió uno en las últimas 24h
+    if (Number(id_configuracion) === 242) {
+      const [yaEnviadoReciente] = await db.query(
+        `SELECT id, ultimo_intento_at
+         FROM remarketing_pendientes
+         WHERE id_cliente_chat_center = ?
+           AND id_configuracion = ?
+           AND enviado = 1
+           AND ultimo_intento_at > NOW() - INTERVAL 24 HOUR
+         LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      if (yaEnviadoReciente) {
+        await log(
+          `⏸️ [config 242] SKIP programarRemarketing — ya se envió uno hace <24h (id=${yaEnviadoReciente.id}) cliente=${id_cliente}`,
+        );
+        return;
+      }
+    }
+
     const [configRM] = await db.query(
       `SELECT tiempo_espera_horas, nombre_template, language_code,
               estado_destino, header_format, header_media_url,
