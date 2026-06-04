@@ -502,7 +502,7 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
 
     where.push('propietario <> 1');
 
-    where.push('LOWER(estado_contacto) = ?');
+    where.push('estado_contacto = ?');
     replacements.push(estado_db);
 
     if (term) {
