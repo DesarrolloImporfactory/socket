@@ -507,8 +507,8 @@ exports.listarContactosEstado = catchAsync(async (req, res, next) => {
 
     if (term) {
       where.push(`(
-      LOWER(nombre_cliente) LIKE ? OR
-      LOWER(apellido_cliente) LIKE ? OR
+      nombre_cliente LIKE ? OR
+      apellido_cliente LIKE ? OR
       celular_cliente LIKE ?
     )`);
       const like = `%${term}%`;
