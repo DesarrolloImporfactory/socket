@@ -776,6 +776,7 @@ async function programarRemarketingKanban({
          WHERE id_cliente_chat_center = ?
            AND id_configuracion = ?
            AND enviado = 1
+           AND cancelado = 1
            AND ultimo_intento_at > NOW() - INTERVAL 24 HOUR
          LIMIT 1`,
         {
