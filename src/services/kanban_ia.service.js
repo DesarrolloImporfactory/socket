@@ -136,6 +136,7 @@ async function procesarMensajeKanban(params) {
     api_key_openai,
     business_phone_id,
     accessToken,
+    bloque_producto_referral,
   } = params;
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
@@ -299,6 +300,40 @@ async function procesarMensajeKanban(params) {
     )
     .catch(async (err) => log(`⚠️ Error enviando mensaje: ${err.message}`));
 
+  // ── Producto del anuncio: blindar precio en TODOS los turnos ──
+  // Si el webhook ya mandó el bloque (primer mensaje del click), se usa.
+  // Si no vino (mensajes siguientes), se reconstruye desde ultimo_producto_ad.
+  let instruccionesProducto = bloque_producto_referral || null;
+
+  if (!instruccionesProducto && id_configuracion == 10) {
+    const [cli] = await db.query(
+      `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    );
+    const ultimoProductoAd = (cli?.ultimo_producto_ad || '').trim();
+
+    if (ultimoProductoAd) {
+      const {
+        buscarProductoPorReferral,
+      } = require('../utils/webhook_whatsapp/buscar_producto_referral');
+
+      const bloqueProd = await buscarProductoPorReferral(
+        id_configuracion,
+        ultimoProductoAd,
+      );
+
+      if (bloqueProd) {
+        instruccionesProducto = `[CONTEXTO: el cliente llegó por un anuncio del producto "${ultimoProductoAd}"]
+
+          ${bloqueProd}
+
+          INSTRUCCIÓN: Usa SOLO estos precios y URLs para este producto. Si el cliente pregunta por CUALQUIER OTRO producto distinto, usa tu catálogo (file_search) normalmente.`;
+        await log(
+          `📎 Producto reinyectado desde ultimo_producto_ad="${ultimoProductoAd}"`,
+        );
+      }
+    }
+  }
   // ── 9. Ejecutar asistente principal ───────────────────────
   let resultado;
   try {
@@ -309,6 +344,7 @@ async function procesarMensajeKanban(params) {
       max_tokens: columna.max_tokens || 500,
       headers,
       skip_send_message: true,
+      additional_instructions: instruccionesProducto || null,
     });
   } catch (err) {
     if (err.code === 'sin_saldo_openai') {
@@ -506,6 +542,7 @@ async function ejecutarAsistente({
   max_tokens = 500,
   headers,
   skip_send_message = false,
+  additional_instructions = null,
 }) {
   try {
     if (!skip_send_message && mensaje) {
@@ -516,9 +553,20 @@ async function ejecutarAsistente({
       );
     }
 
+    const runBody = { assistant_id, max_completion_tokens: max_tokens };
+    if (additional_instructions) {
+      runBody.additional_instructions = additional_instructions;
+      await log(
+        `📎 additional_instructions inyectado (${additional_instructions.length} chars)`,
+      );
+      await log(
+        `📎 additional_instructions inyectado 2: (${additional_instructions})`,
+      );
+    }
+
     const runRes = await axios.post(
       `https://api.openai.com/v1/threads/${id_thread}/runs`,
-      { assistant_id, max_completion_tokens: max_tokens },
+      runBody,
       { headers },
     );
     const run_id = runRes?.data?.id;

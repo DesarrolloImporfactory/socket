@@ -57,7 +57,6 @@ async function transcribirAudioConWhisperDesdeArchivo(
       '..',
       rutaLocalRelativa,
     );
-    
 
     const form = new FormData();
     form.append('file', fsSync.createReadStream(rutaLocalAbsoluta));
@@ -350,6 +349,7 @@ async function enviarAsistenteKanban({
   business_phone_id,
   accessToken,
   estado_contacto,
+  bloque_producto_referral = null,
 }) {
   try {
     const resultado = await procesarMensajeKanban({
@@ -361,6 +361,7 @@ async function enviarAsistenteKanban({
       business_phone_id,
       accessToken,
       estado_contacto,
+      bloque_producto_referral,
     });
     await log(`✅ Kanban IA resultado: ${JSON.stringify(resultado)}`);
     return resultado;

@@ -27,6 +27,10 @@ const {
 } = require('../utils/webhook_whatsapp/validar_automatizador');
 
 const {
+  buscarProductoPorReferral,
+} = require('../utils/webhook_whatsapp/buscar_producto_referral');
+
+const {
   cancelarRemarketingEnNode,
   obtenerThreadId,
   transcribirAudioConWhisperDesdeArchivo,
@@ -713,9 +717,31 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       // ── Detectar referral (click desde anuncio) ──────────────
       const referral = msg0?.referral || null;
       let mensaje_para_ia = texto_mensaje;
+      let bloque_producto_referral = null;
 
       if (referral) {
         const headline = referral.headline || '';
+        if ((id_configuracion == 10)) {
+          // Buscar el producto exacto en la BD
+          const bloqueProducto = await buscarProductoPorReferral(
+            id_configuracion,
+            headline,
+          );
+
+          if (bloqueProducto) {
+            // El producto va como instrucción del run (NO contamina el thread)
+            bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
+
+          ${bloqueProducto}
+
+          INSTRUCCIÓN: Estos son los datos EXACTOS del producto del anuncio. Usa SOLO estos precios y URLs para este producto. Si el cliente pregunta por CUALQUIER OTRO producto distinto, usa tu catálogo (file_search) normalmente.`;
+          } else {
+            // Fallback: no encontró el producto en BD, manda solo el nombre del ad
+            bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
+            No se encontró este producto exacto en el catálogo. Búscalo en tu catálogo (file_search) por ese nombre.`;
+          }
+        }
+
         const body_ad = referral.body || '';
         const source_url = referral.source_url || '';
 
@@ -1954,6 +1980,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               business_phone_id,
               accessToken,
               estado_contacto,
+              bloque_producto_referral,
             });
 
             // 3. Re-leer estado actual (la IA pudo haberlo cambiado con un trigger)
