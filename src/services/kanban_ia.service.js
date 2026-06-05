@@ -579,9 +579,9 @@ async function ejecutarAsistente({
     while (
       statusRun !== 'completed' &&
       statusRun !== 'failed' &&
-      attempts < 25
+      attempts < 45
     ) {
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 2000));
       attempts++;
       const statusRes = await axios.get(
         `https://api.openai.com/v1/threads/${id_thread}/runs/${run_id}`,
