@@ -118,7 +118,12 @@ const getUserById = async (id_usuario) => {
         unlocked_plans,
         whatsapp_lead,
         whatsapp_lead_pais,
-        id_comunidad
+        id_comunidad,
+        conexiones_adicionales,
+        subusuarios_adicionales,
+        pending_plan_id,
+        pending_change,
+        pending_effective_at
      FROM usuarios_chat_center
      WHERE id_usuario = ?
      LIMIT 1`,
@@ -145,7 +150,28 @@ const getPlanById = async (id_plan) => {
   return p || null;
 };
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const getAddonByClave = async (clave) => {
+  const [[a]] = await db.query(
+    `SELECT * FROM addons_chat_center WHERE clave = ? AND activo = 1 LIMIT 1`,
+    { replacements: [clave] },
+  );
+  return a || null;
+};
+
+const getAddonPriceId = (addon) =>
+  addon ? (isProd ? addon.id_price_prod : addon.id_price_test) : null;
+
+const getAddonPriceSet = async () => {
+  const [rows] = await db.query(
+    `SELECT id_price_prod, id_price_test FROM addons_chat_center WHERE activo = 1`,
+  );
+  const set = new Set();
+  for (const a of rows || []) {
+    const pid = isProd ? a.id_price_prod : a.id_price_test;
+    if (pid) set.add(pid);
+  }
+  return set;
+};
 
 // ─────────────────────────────────────────────────────────────
 // Activar Trial por Uso (Insta Landing)
@@ -754,6 +780,11 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       ...(planDb || {}),
       tools_access: effectiveToolsAccess,
       stripe_subscription_id: user.stripe_subscription_id || null,
+      conexiones_adicionales: Number(user.conexiones_adicionales || 0),
+      subusuarios_adicionales: Number(user.subusuarios_adicionales || 0),
+      pending_plan_id: user.pending_plan_id || null,
+      pending_change: user.pending_change || null,
+      pending_effective_at: user.pending_effective_at || null,
       needs_card_capture:
         Number(user.id_plan) === 21 && !user.stripe_subscription_id,
     },
@@ -908,7 +939,7 @@ exports.portalAddPaymentMethod = catchAsync(async (req, res, next) => {
 // Cambiar Plan (upgrade / downgrade)
 // ─────────────────────────────────────────────────────────────
 exports.cambiarPlan = catchAsync(async (req, res, next) => {
-  const { id_usuario, id_plan_nuevo } = req.body;
+  const { id_usuario, id_plan_nuevo, conexiones_suspender = [] } = req.body;
 
   if (!id_usuario || !id_plan_nuevo) {
     return next(new AppError('Faltan id_usuario o id_plan_nuevo.', 400));
@@ -947,10 +978,19 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     expand: ['items.data.price'],
   });
 
-  const subItem = sub.items?.data?.[0];
+  // Distinguir el item del PLAN (no addon) para no tocar conexiones/subusuarios extra
+  const addonPriceSet = await getAddonPriceSet();
+  const subItem =
+    sub.items?.data?.find((it) => !addonPriceSet.has(it.price?.id)) ||
+    sub.items?.data?.[0];
   if (!subItem?.id) {
     return next(new AppError('Suscripción sin subscription item.', 400));
   }
+
+  // Items de addon actuales (para preservarlos en el downgrade programado)
+  const addonItemsActuales = (sub.items?.data || [])
+    .filter((it) => addonPriceSet.has(it.price?.id))
+    .map((it) => ({ price: it.price.id, quantity: Number(it.quantity || 1) }));
 
   const precioActual = Number(planActual?.precio_plan || 0);
   const precioNuevo = Number(planNuevo?.precio_plan || 0);
@@ -1037,7 +1077,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
     const updated = await stripe.subscriptions.update(sub.id, {
       items: [{ id: subItem.id, price: planNuevo.id_price }],
-      proration_behavior: 'create_prorations',
+      proration_behavior: 'always_invoice', // ← antes: 'create_prorations'
       payment_behavior: 'default_incomplete',
       ...(cortarTrial ? { trial_end: 'now' } : {}),
       metadata: {
@@ -1195,11 +1235,17 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         {
           start_date: sub.current_period_start,
           end_date: periodEnd,
-          items: [{ price: currentPriceId, quantity: 1 }],
+          items: [
+            { price: currentPriceId, quantity: 1 },
+            ...addonItemsActuales,
+          ],
         },
         {
           start_date: periodEnd,
-          items: [{ price: planNuevo.id_price, quantity: 1 }],
+          items: [
+            { price: planNuevo.id_price, quantity: 1 },
+            ...addonItemsActuales,
+          ],
         },
       ],
       metadata: {
@@ -1208,6 +1254,29 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         id_usuario: String(id_usuario),
       },
     });
+
+    // Marcar las conexiones que el cliente eligió desactivar al aplicarse el downgrade.
+    // Primero limpiamos marcas previas (por si re-programa), luego marcamos las nuevas.
+    await db.query(
+      `UPDATE configuraciones SET pending_suspension = 0 WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+
+    const idsSuspender = (
+      Array.isArray(conexiones_suspender) ? conexiones_suspender : []
+    )
+      .map((n) => Number(n))
+      .filter(Boolean);
+
+    if (idsSuspender.length) {
+      const placeholders = idsSuspender.map(() => '?').join(',');
+      await db.query(
+        `UPDATE configuraciones
+         SET pending_suspension = 1
+         WHERE id_usuario = ? AND id IN (${placeholders})`,
+        { replacements: [id_usuario, ...idsSuspender] },
+      );
+    }
 
     return res.status(200).json({
       success: true,
@@ -1786,5 +1855,265 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
       trialDays > 0
         ? `Checkout creado con ${trialDays} días de acceso incluido. Primer cobro de $29: ${fechaRenovacion.toISOString().split('T')[0]}.`
         : 'Checkout creado. Cobro de $29 inmediato (período expirado).',
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Comprar Addon (conexión / subusuario / producto creado en addons_chat_center)
+// Suma un subscription item con quantity a la sub existente y cobra prorrateo.
+// ─────────────────────────────────────────────────────────────
+exports.comprarAddon = catchAsync(async (req, res, next) => {
+  const { id_usuario, clave = 'conexion_adicional', cantidad = 1 } = req.body;
+  if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
+
+  const addon = await getAddonByClave(clave);
+  if (!addon) {
+    return next(
+      new AppError(`Addon "${clave}" no existe o está inactivo.`, 404),
+    );
+  }
+
+  const addonPriceId = getAddonPriceId(addon);
+  if (!addonPriceId) {
+    return next(
+      new AppError(`Addon "${clave}" sin price para este entorno.`, 500),
+    );
+  }
+
+  // Seguridad: nunca interpolar una columna sin validarla contra whitelist
+  const COLUMNAS_PERMITIDAS = new Set([
+    'conexiones_adicionales',
+    'subusuarios_adicionales',
+  ]);
+  const targetCol = addon.target_columna;
+  if (!COLUMNAS_PERMITIDAS.has(targetCol)) {
+    return next(new AppError(`target_columna inválida: ${targetCol}`, 500));
+  }
+
+  const addToQty = Math.max(1, Math.min(Number(cantidad) || 1, 10));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  if (!user.stripe_subscription_id) {
+    return res.status(400).json({
+      success: false,
+      code: 'NO_SUBSCRIPTION',
+      message:
+        'Necesita una suscripción activa para agregar complementos. Elija un plan primero.',
+    });
+  }
+
+  let sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+    expand: ['items.data.price'],
+  });
+
+  if (!['active', 'trialing', 'past_due'].includes(sub.status)) {
+    return res.status(400).json({
+      success: false,
+      message: `La suscripción está en estado "${sub.status}". No se puede agregar el complemento.`,
+    });
+  }
+
+  // ¿Ya existe el item de este addon? Sumamos a su quantity; si no, lo creamos.
+  const addonItem = sub.items.data.find((it) => it.price?.id === addonPriceId);
+  const currentQty = addonItem ? Number(addonItem.quantity || 0) : 0;
+  const newQty = currentQty + addToQty;
+
+  const itemsUpdate = addonItem
+    ? [{ id: addonItem.id, quantity: newQty }]
+    : [{ price: addonPriceId, quantity: addToQty }];
+
+  const enTrial = sub.status === 'trialing';
+
+  const updated = await stripe.subscriptions.update(sub.id, {
+    items: itemsUpdate,
+    // En trial NO se cobra nada ahora: el addon se factura junto al plan cuando
+    // termine la prueba. Si está activo: prorratea y cobra de inmediato.
+    proration_behavior: enTrial ? 'none' : 'create_prorations',
+    payment_behavior: 'default_incomplete',
+    // ❌ Nunca cortamos el trial al comprar un addon
+    metadata: {
+      ...(sub.metadata || {}),
+      [`addon_${clave}_qty`]: String(newQty), // el webhook sincroniza con esto
+    },
+    expand: ['latest_invoice.payment_intent'],
+  });
+
+  const aplicarEnBD = async (qty) => {
+    // targetCol viene de la whitelist → seguro interpolar
+    await db.query(
+      `UPDATE usuarios_chat_center SET ${targetCol} = ? WHERE id_usuario = ?`,
+      { replacements: [qty, id_usuario] },
+    );
+  };
+
+  // ─── EN TRIAL: se otorga el addon gratis durante la prueba; se cobra al primer pago real ───
+  if (enTrial) {
+    await aplicarEnBD(newQty);
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      clave,
+      cantidad_total: newQty,
+      en_trial: true,
+      message:
+        'Complemento agregado. Se cobrará junto con tu plan cuando termine tu período gratuito.',
+    });
+  }
+
+  const latestInvoice = updated.latest_invoice;
+
+  // Prorrateo $0 / sin invoice → aplicar directo
+  if (!latestInvoice || !latestInvoice.id) {
+    await aplicarEnBD(newQty);
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      clave,
+      cantidad_total: newQty,
+      message: 'Complemento agregado.',
+    });
+  }
+
+  const invFresh = await stripe.invoices.retrieve(latestInvoice.id, {
+    expand: ['payment_intent'],
+  });
+
+  if (invFresh.status === 'paid' || invFresh.paid === true) {
+    await aplicarEnBD(newQty);
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      clave,
+      cantidad_total: newQty,
+      invoice_id: invFresh.id,
+      message: 'Complemento agregado y cobrado.',
+    });
+  }
+
+  // Cobro inmediato con la tarjeta guardada
+  let paid = null;
+  try {
+    paid = await stripe.invoices.pay(invFresh.id, {
+      expand: ['payment_intent'],
+    });
+  } catch (e) {
+    // requiere SCA → cae al hosted invoice
+  }
+
+  if (paid && paid.status === 'paid') {
+    await aplicarEnBD(newQty);
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      clave,
+      cantidad_total: newQty,
+      invoice_id: paid.id,
+      message: 'Complemento agregado y cobrado.',
+    });
+  }
+
+  // Necesita 3DS → página de pago de Stripe; el webhook sincroniza al pagarse
+  const invForUrl = await stripe.invoices.retrieve(invFresh.id);
+  const pi = paid?.payment_intent || invFresh?.payment_intent || null;
+
+  return res.status(200).json({
+    success: true,
+    actionRequired: true,
+    hosted_invoice_url: invForUrl.hosted_invoice_url,
+    payment_intent_client_secret: pi?.client_secret || null,
+    clave,
+    cantidad_pendiente: newQty,
+    message: 'Complete el pago para activar el complemento.',
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Cancelar un downgrade programado (libera el schedule, mantiene plan actual + addons)
+// ─────────────────────────────────────────────────────────────
+exports.cancelarDowngrade = catchAsync(async (req, res, next) => {
+  const { id_usuario } = req.body;
+  if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  if (user.pending_change !== 'downgrade' || !user.pending_plan_id) {
+    return res.status(400).json({
+      success: false,
+      message: 'No tienes un cambio de plan programado para cancelar.',
+    });
+  }
+
+  if (!user.stripe_subscription_id) {
+    return next(new AppError('Usuario sin suscripción.', 400));
+  }
+
+  const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
+
+  // Liberar el schedule → la sub se queda en su fase actual (plan actual + addon)
+  if (sub.schedule) {
+    try {
+      await stripe.subscriptionSchedules.release(sub.schedule);
+    } catch (e) {
+      console.log('[cancelarDowngrade] release failed:', e?.message);
+      // si el schedule ya no existe, igual limpiamos abajo
+    }
+  }
+
+  // Limpiar metadata pending en la sub
+  try {
+    await stripe.subscriptions.update(user.stripe_subscription_id, {
+      metadata: {
+        ...(sub.metadata || {}),
+        pending_plan_id: '',
+        pending_change: '',
+      },
+    });
+  } catch (e) {
+    console.log('[cancelarDowngrade] metadata cleanup failed:', e?.message);
+  }
+
+  // Limpiar pending_* en BD
+  await db.query(
+    `UPDATE usuarios_chat_center
+     SET pending_plan_id = NULL,
+         pending_change = NULL,
+         pending_effective_at = NULL
+     WHERE id_usuario = ?`,
+    { replacements: [id_usuario] },
+  );
+
+  await db.query(
+    `UPDATE configuraciones SET pending_suspension = 0 WHERE id_usuario = ?`,
+    { replacements: [id_usuario] },
+  );
+
+  // Auditar
+  try {
+    const idPagoAudit = `downgrade_canceled_${user.stripe_subscription_id}_${Date.now()}`;
+    await db.query(
+      `INSERT IGNORE INTO transacciones_stripe_chat
+       (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+       VALUES (?, ?, ?, ?, NOW(), ?)`,
+      {
+        replacements: [
+          idPagoAudit,
+          user.stripe_subscription_id,
+          id_usuario,
+          `downgrade_canceled:${user.pending_plan_id}`,
+          user.id_costumer || null,
+        ],
+      },
+    );
+  } catch (e) {
+    console.log('[cancelarDowngrade] audit insert failed:', e?.message);
+  }
+
+  return res.status(200).json({
+    success: true,
+    message:
+      'Cambio de plan cancelado. Mantienes tu plan actual y tus complementos.',
   });
 });

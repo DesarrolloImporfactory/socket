@@ -61,4 +61,8 @@ router.get(
 // Captura de tarjeta Plan 21 (Method Ecommerce)
 router.post('/capturarTarjetaPlan21', stripeController.capturarTarjetaPlan21);
 
+router.post('/comprarAddon', stripeController.comprarAddon);
+
+router.post('/cancelarDowngrade', stripeController.cancelarDowngrade);
+
 module.exports = router;

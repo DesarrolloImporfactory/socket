@@ -56,6 +56,55 @@ const getActiveSubscriptionIdByUser = async (id_usuario) => {
   return u?.stripe_subscription_id || null;
 };
 
+// Columnas válidas para addons (seguridad: el UPDATE interpola el nombre)
+const ADDON_COLUMNS_PERMITIDAS = new Set([
+  'conexiones_adicionales',
+  'subusuarios_adicionales',
+]);
+
+// Map de priceId(entorno) -> { clave, target_columna } de todos los addons activos
+const getAddonPriceMap = async () => {
+  const [rows] = await db.query(
+    `SELECT clave, target_columna, id_price_prod, id_price_test
+     FROM addons_chat_center WHERE activo = 1`,
+  );
+  const map = new Map();
+  for (const a of rows || []) {
+    const priceId = isProd ? a.id_price_prod : a.id_price_test;
+    if (priceId) {
+      map.set(priceId, { clave: a.clave, target_columna: a.target_columna });
+    }
+  }
+  return map;
+};
+
+// Por cada item de la sub que sea un addon → escribe su quantity en su target_columna
+const sincronizarAddons = async (items, addonMap, id_usuario) => {
+  if (!addonMap || !id_usuario) return;
+  for (const it of items || []) {
+    const priceId = it.price?.id;
+    const info = priceId ? addonMap.get(priceId) : null;
+    if (!info) continue;
+
+    const col = info.target_columna;
+    if (!ADDON_COLUMNS_PERMITIDAS.has(col)) {
+      console.log('[stripe] addon target_columna inválida, skip:', col);
+      continue;
+    }
+
+    const qty = Number(it.quantity || 0);
+    try {
+      await db.query(
+        `UPDATE usuarios_chat_center SET ${col} = ? WHERE id_usuario = ?`,
+        { replacements: [qty, id_usuario] },
+      );
+      console.log(`[stripe] addon sync ${info.clave}: ${col}=${qty}`);
+    } catch (e) {
+      console.log('[stripe] addon sync failed:', e?.message);
+    }
+  }
+};
+
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -193,6 +242,8 @@ exports.stripeWebhook = async (req, res) => {
 
         let currentPriceId = null;
         let planRealByPrice = null;
+        let addonMap = null;
+        let subItemsAll = [];
 
         let metaSub = {};
         let pendingPlanId = null;
@@ -213,8 +264,15 @@ exports.stripeWebhook = async (req, res) => {
 
             id_plataforma = Number(metaSub?.id_plataforma) || null;
 
-            const item0 = subscription.items?.data?.[0] || null;
-            currentPriceId = item0?.price?.id || null;
+            addonMap = await getAddonPriceMap();
+            subItemsAll = subscription.items?.data || [];
+
+            // El plan real es el primer item que NO sea un addon
+            const planItem =
+              subItemsAll.find((it) => !addonMap.has(it.price?.id)) ||
+              subItemsAll[0] ||
+              null;
+            currentPriceId = planItem?.price?.id || null;
 
             if (currentPriceId) {
               planRealByPrice = await getPlanByPriceId(currentPriceId);
@@ -471,6 +529,9 @@ exports.stripeWebhook = async (req, res) => {
           updateResult,
         );
 
+        // Sincronizar addons (conexiones/subusuarios) con sus quantities reales en Stripe
+        await sincronizarAddons(subItemsAll, addonMap, id_usuario);
+
         // =========
         // 3.1) Si fue upgrade invoice: limpiar pending_* en BD y auditar
         // =========
@@ -657,7 +718,11 @@ exports.stripeWebhook = async (req, res) => {
                   { replacements: [id_usuario] },
                 );
 
-                const subItem = subForCheck.items?.data?.[0];
+                const addonMapRb = await getAddonPriceMap();
+                const subItem =
+                  subForCheck.items?.data?.find(
+                    (it) => !addonMapRb.has(it.price?.id),
+                  ) || subForCheck.items?.data?.[0];
 
                 if (origPlan?.id_price && subItem?.id) {
                   // Revertir suscripción en Stripe al plan/precio original
@@ -788,7 +853,16 @@ exports.stripeWebhook = async (req, res) => {
 
         const status = sub.status || null;
 
-        const currentPriceId = sub.items?.data?.[0]?.price?.id || null;
+        const addonMapUpd = await getAddonPriceMap();
+        const allItemsUpd = sub.items?.data || [];
+
+        // El plan real es el primer item que NO sea un addon
+        const planItemUpd =
+          allItemsUpd.find((it) => !addonMapUpd.has(it.price?.id)) ||
+          allItemsUpd[0] ||
+          null;
+        const currentPriceId = planItemUpd?.price?.id || null;
+
         let planRealByPrice = null;
         if (currentPriceId) {
           try {
@@ -799,9 +873,28 @@ exports.stripeWebhook = async (req, res) => {
         }
         const planRealId = Number(planRealByPrice?.id_plan || 0) || null;
 
+        // ⚠️ El pending_* se programa en el SCHEDULE y Stripe NO lo propaga a la
+        // metadata de la SUB al avanzar de fase. La fuente de verdad es la BD.
+        let pendingPlanIdDb = null;
+        let pendingChangeDb = null;
+        if (id_usuario) {
+          try {
+            const [[urow]] = await db.query(
+              `SELECT pending_plan_id, pending_change
+               FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+              { replacements: [id_usuario] },
+            );
+            pendingPlanIdDb = Number(urow?.pending_plan_id || 0) || null;
+            pendingChangeDb = urow?.pending_change || null;
+          } catch (e) {
+            console.log('[stripe] read pending from DB failed:', e?.message);
+          }
+        }
+
         const pendingPlanId =
-          Number(sub.metadata?.pending_plan_id || 0) || null;
-        const pendingChange = sub.metadata?.pending_change || null;
+          pendingPlanIdDb || Number(sub.metadata?.pending_plan_id || 0) || null;
+        const pendingChange =
+          pendingChangeDb || sub.metadata?.pending_change || null;
 
         const shouldApplyDowngradeNow =
           pendingChange === 'downgrade' &&
@@ -931,6 +1024,26 @@ exports.stripeWebhook = async (req, res) => {
               '[stripe] downgrade pending cleanup failed:',
               e?.message,
             );
+          }
+
+          // Suspender las conexiones que el cliente eligió al programar el downgrade
+          try {
+            const [resSusp] = await db.query(
+              `UPDATE configuraciones
+               SET suspendido = 1,
+                   suspended_at = NOW(),
+                   suspended_reason = 'downgrade',
+                   suspended_by_cliente = 1,
+                   pending_suspension = 0
+               WHERE id_usuario = ? AND pending_suspension = 1`,
+              { replacements: [id_usuario] },
+            );
+            console.log(
+              '[stripe] downgrade suspendió conexiones:',
+              resSusp?.affectedRows,
+            );
+          } catch (e) {
+            console.log('[stripe] downgrade suspend failed:', e?.message);
           }
 
           try {

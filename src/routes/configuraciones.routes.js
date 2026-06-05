@@ -13,6 +13,7 @@ const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const limiteConexiones = require('../middlewares/limiteConexiones.middleware');
 const limiteConversaciones = require('../middlewares/limiteConversaciones.middleware');
 const requireStripeSubscription = require('../middlewares/requireStripeSubscription.middleware');
+const restrictToRoles = require('../middlewares/restrictTo.middleware');
 
 // ── Guards ──
 const imporchatGuard = [checkPlanActivo, checkToolAccess('imporchat')];
@@ -74,6 +75,7 @@ router.post(
 router.post(
   '/agregarConfiguracion',
   ...imporchatGuard,
+  restrictToRoles('administrador'),
   requireStripeSubscription,
   limiteConexiones,
   configuracionesController.agregarConfiguracion,
@@ -81,6 +83,7 @@ router.post(
 router.post(
   '/toggle_suspension',
   ...imporchatGuard,
+  restrictToRoles('administrador'),
   validarReactivarConLimite,
   configuracionesController.toggleSuspension,
 );

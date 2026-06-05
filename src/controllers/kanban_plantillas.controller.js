@@ -1605,6 +1605,24 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
+  {
+    name: 'carritos_abandonados',
+    language: 'es',
+    category: 'MARKETING',
+    components: [
+      {
+        type: 'BODY',
+        text: '🛒 ¡Aún tienes tu pedido de {{1}} pendiente! No dejes que se agote. Completa tu compra ahora y recibe un descuento especial. 👇',
+        example: {
+          body_text: [['Contiene']],
+        },
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [{ type: 'QUICK_REPLY', text: 'Completar Compra' }],
+      },
+    ],
+  },
 ];
 
 // ── Respuestas rápidas para Kanban ───────────────────────────

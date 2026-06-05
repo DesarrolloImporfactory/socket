@@ -1314,7 +1314,7 @@ if (CRONS_ENABLED) {
   cron.schedule('*/5 * * * *', () => {
     runHourlyDropiSync().catch(() => {});
   });
-  console.log('[Cron Dropi] Activo (*/5 min)');
+  // console.log('[Cron Dropi] Activo (*/5 min)');
 } else {
   console.log('[Cron Dropi] Deshabilitado — entorno no productivo');
 }
