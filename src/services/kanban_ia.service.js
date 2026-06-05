@@ -305,7 +305,10 @@ async function procesarMensajeKanban(params) {
   // Si no vino (mensajes siguientes), se reconstruye desde ultimo_producto_ad.
   let instruccionesProducto = bloque_producto_referral || null;
 
-  if (!instruccionesProducto && id_configuracion == 10) {
+  if (
+    !instruccionesProducto &&
+    (id_configuracion == 10 || id_configuracion == 277)
+  ) {
     const [cli] = await db.query(
       `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
       { replacements: [id_cliente], type: db.QueryTypes.SELECT },
