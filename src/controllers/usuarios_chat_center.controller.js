@@ -21,7 +21,7 @@ exports.listarUsuarios = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
   const sub_usuarios_chat_center = await Sub_usuarios_chat_center.findAll({
-    where: { id_usuario },
+    where: { id_usuario, suspendido: 0 },
   });
 
   if (!sub_usuarios_chat_center || sub_usuarios_chat_center.length === 0) {

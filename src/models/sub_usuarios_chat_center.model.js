@@ -45,13 +45,36 @@ const Sub_usuarios_chat_center = db.define(
       allowNull: false,
       defaultValue: 0,
     },
+    suspendido: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    pending_suspension: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    suspended_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    suspended_reason: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+    suspended_by_cliente: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
   },
   {
     sequelize: db,
     tableName: 'sub_usuarios_chat_center',
     timestamps: false,
     freezeTableName: true,
-  }
+  },
 );
 
 module.exports = Sub_usuarios_chat_center;

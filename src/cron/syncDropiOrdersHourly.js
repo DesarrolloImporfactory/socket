@@ -1,7 +1,14 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js  — v6
+ * cron/syncDropiOrdersHourly.js  — v7
+ *
+ * NUEVO EN v7:
+ *  Teléfonos multipaís vía libphonenumber. `normalizePhone` ahora delega en
+ *  `toWhatsapp(phone, country_code)` del util, y el `country_code` de la
+ *  integración se propaga hasta cada normalización (procesarTemplates,
+ *  actualizarEstadoContactoEntregado, yaSeEnvioPendienteConfPorPhone).
+ *  Si no se pasa country_code, asume EC (comportamiento histórico).
  *
  * NUEVO EN v6:
  *  Fase 4: Profit Sync — rellena `dropshipper_profit` para órdenes
@@ -21,6 +28,9 @@ const DropiIntegrations = require('../models/dropi_integrations.model');
 const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 const dropiService = require('../services/dropi.service');
 const { decryptToken } = require('../utils/cryptoToken');
+// Normalización de teléfonos con libphonenumber (multipaís).
+// toWhatsapp(phone, country_code) → internacional en dígitos, sin "+".
+const { toWhatsapp } = require('../utils/phoneFactor');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -274,14 +284,13 @@ function getDateRange() {
   };
 }
 
-function normalizePhone(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return null;
-  if (digits.length >= 11) return digits;
-  if (digits.length === 10 && digits.startsWith('0'))
-    return '593' + digits.slice(1);
-  if (digits.length === 9) return '593' + digits;
-  return digits;
+/**
+ * Internacional para WhatsApp (sin "+"), según el país de la integración.
+ * Delega en libphonenumber (toWhatsapp). Si no se pasa countryCode, asume EC,
+ * idéntico al comportamiento histórico (962803007 → 593962803007).
+ */
+function normalizePhone(phone, countryCode = 'EC') {
+  return toWhatsapp(phone, countryCode) || null;
 }
 
 function safeJsonParse(str, fallback) {
@@ -611,8 +620,9 @@ async function actualizarEstadoContactoEntregado({
   id_configuracion,
   telefono,
   columnaDestino,
+  country_code = 'EC',
 }) {
-  const phoneNorm = normalizePhone(telefono);
+  const phoneNorm = normalizePhone(telefono, country_code);
   if (!phoneNorm || !columnaDestino || !id_configuracion) return false;
   try {
     const [, meta] = await db.query(
@@ -658,9 +668,13 @@ async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
 /* 🆕 Dedupe cross-system para PENDIENTE CONFIRMACION
    Verifica si ya se envió por phone en últimas 24h
    (ya sea desde Shopify webhook o desde Dropi cron previo) */
-async function yaSeEnvioPendienteConfPorPhone(id_configuracion, phone) {
+async function yaSeEnvioPendienteConfPorPhone(
+  id_configuracion,
+  phone,
+  country_code = 'EC',
+) {
   if (!phone) return false;
-  const phoneNorm = normalizePhone(phone);
+  const phoneNorm = normalizePhone(phone, country_code);
   if (!phoneNorm) return false;
   const phone9 = phoneNorm.slice(-9);
 
@@ -922,7 +936,11 @@ async function enviarRespuestaRapida({
    Procesar templates para un lote de órdenes
    ═══════════════════════════════════════════════════════════ */
 
-async function procesarTemplates({ orders, id_configuracion }) {
+async function procesarTemplates({
+  orders,
+  id_configuracion,
+  country_code = 'EC',
+}) {
   if (!orders.length)
     return { enviados: 0, omitidos: 0, errores: 0, entregadas_actualizadas: 0 };
 
@@ -952,6 +970,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
           id_configuracion,
           telefono: order.phone,
           columnaDestino: columnaEntregada,
+          country_code,
         });
         if (actualizado) entregadasActualizadas++;
       }
@@ -983,6 +1002,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
         const yaShopify = await yaSeEnvioPendienteConfPorPhone(
           id_configuracion,
           order.phone,
+          country_code,
         );
         if (yaShopify) {
           omitidos++;
@@ -991,7 +1011,7 @@ async function procesarTemplates({ orders, id_configuracion }) {
       }
 
       const config = plantillas[estadoConfig];
-      const phoneNorm = normalizePhone(order.phone);
+      const phoneNorm = normalizePhone(order.phone, country_code);
       if (!phoneNorm) {
         omitidos++;
         continue;
@@ -1209,6 +1229,7 @@ async function syncIntegration(integration, from, until) {
     templateStats = await procesarTemplates({
       orders: allOrders,
       id_configuracion: id_config,
+      country_code: integration.country_code,
     });
   }
 

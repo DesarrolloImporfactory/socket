@@ -939,7 +939,12 @@ exports.portalAddPaymentMethod = catchAsync(async (req, res, next) => {
 // Cambiar Plan (upgrade / downgrade)
 // ─────────────────────────────────────────────────────────────
 exports.cambiarPlan = catchAsync(async (req, res, next) => {
-  const { id_usuario, id_plan_nuevo, conexiones_suspender = [] } = req.body;
+  const {
+    id_usuario,
+    id_plan_nuevo,
+    conexiones_suspender = [],
+    subusuarios_suspender = [],
+  } = req.body;
 
   if (!id_usuario || !id_plan_nuevo) {
     return next(new AppError('Faltan id_usuario o id_plan_nuevo.', 400));
@@ -1276,6 +1281,41 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
          WHERE id_usuario = ? AND id IN (${placeholders})`,
         { replacements: [id_usuario, ...idsSuspender] },
       );
+    }
+
+    // ─── Subusuarios a suspender (protegiendo SIEMPRE al admin principal) ───
+    await db.query(
+      `UPDATE sub_usuarios_chat_center SET pending_suspension = 0 WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+
+    const idsSubSuspender = (
+      Array.isArray(subusuarios_suspender) ? subusuarios_suspender : []
+    )
+      .map((n) => Number(n))
+      .filter(Boolean);
+
+    if (idsSubSuspender.length) {
+      // El admin principal = el más antiguo con rol 'administrador'. Nunca se suspende.
+      const [[adminPrincipal]] = await db.query(
+        `SELECT id_sub_usuario FROM sub_usuarios_chat_center
+         WHERE id_usuario = ? AND rol = 'administrador'
+         ORDER BY id_sub_usuario ASC LIMIT 1`,
+        { replacements: [id_usuario] },
+      );
+      const adminId = Number(adminPrincipal?.id_sub_usuario || 0) || null;
+
+      const idsFiltrados = idsSubSuspender.filter((id) => id !== adminId);
+
+      if (idsFiltrados.length) {
+        const phSub = idsFiltrados.map(() => '?').join(',');
+        await db.query(
+          `UPDATE sub_usuarios_chat_center
+           SET pending_suspension = 1
+           WHERE id_usuario = ? AND id_sub_usuario IN (${phSub})`,
+          { replacements: [id_usuario, ...idsFiltrados] },
+        );
+      }
     }
 
     return res.status(200).json({
@@ -2090,6 +2130,10 @@ exports.cancelarDowngrade = catchAsync(async (req, res, next) => {
     { replacements: [id_usuario] },
   );
 
+  await db.query(
+    `UPDATE sub_usuarios_chat_center SET pending_suspension = 0 WHERE id_usuario = ?`,
+    { replacements: [id_usuario] },
+  );
   // Auditar
   try {
     const idPagoAudit = `downgrade_canceled_${user.stripe_subscription_id}_${Date.now()}`;

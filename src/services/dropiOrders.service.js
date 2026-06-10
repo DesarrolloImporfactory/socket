@@ -1,5 +1,8 @@
 const AppError = require('../utils/appError');
 const { decryptToken } = require('../utils/cryptoToken');
+//  Normalización de teléfonos con libphonenumber (multipaís).
+// toDropiLocal(phone, country_code) → número nacional sin código de país ni 0.
+const { toDropiLocal, resolveRegion } = require('../utils/phoneFactor');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
@@ -7,6 +10,23 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 const { Op } = require('sequelize');
 
 const dropiService = require('./dropi.service');
+
+// =========================
+// País (texto) que Dropi espera en el payload de la orden, según el ISO de la
+// integración. Lo derivamos del country_code para NO depender del front.
+// 'Ecuador' (EC) es el valor PROBADO (es el que manda hoy el front y funciona).
+//    Los demás son tentativos: confírmalos contra lo que acepta Dropi en cada
+//    país ANTES de prenderlo (crea una orden de prueba y mira qué guarda/acepta).
+// =========================
+const COUNTRY_NAME_BY_ISO = {
+  EC: 'Ecuador',
+  MX: 'Mexico',
+  CO: 'Colombia',
+  PE: 'Peru',
+  CL: 'Chile',
+  GT: 'Guatemala',
+  PA: 'Panama',
+};
 
 // =========================
 // Helpers
@@ -91,7 +111,12 @@ function buildDropiOrdersListParams(body = {}) {
   return cleanParams(params);
 }
 
-function buildDropiCreateOrderPayload(body = {}) {
+/**
+ * @param {object} body   payload de la orden
+ * @param {string} region country_code de la integración ("593", "EC", "57"...).
+ *                        Se usa para normalizar el teléfono al local del país.
+ */
+function buildDropiCreateOrderPayload(body = {}, region = 'EC') {
   // ====== básicos ======
   const type = strOrNull(body.type) || 'FINAL_ORDER';
   const type_service = strOrNull(body.type_service) || 'normal';
@@ -103,16 +128,19 @@ function buildDropiCreateOrderPayload(body = {}) {
 
   const notes = strOrNull(body.notes) || '';
 
-  // const supplier_id = toInt(body.supplier_id);
-  // const shop_id = toInt(body.shop_id);
-  // const warehouses_selected_id = toInt(body.warehouses_selected_id);
-
   const name = strOrNull(body.name);
   const surname = strOrNull(body.surname);
-  const phone = digitsOnly(body.phone);
+  //  FIX teléfono: Dropi guarda en LOCAL y recorta el campo a ~10 chars sin
+  // quitar el código de país. Mandamos el nacional según el país de la
+  const phone = toDropiLocal(body.phone, region);
   const client_email = strOrNull(body.client_email) || '';
 
-  const country = strOrNull(body.country) || 'ECUADOR';
+  //  País derivado de la integración (fuente de verdad). Se ignora body.country
+  // a propósito: así no hay que tocar el front al abrir nuevos países. Si el ISO
+  // no está en el mapa, cae a lo que mande el front y, en último caso, Ecuador.
+  const regionIso = resolveRegion(region);
+  const country =
+    COUNTRY_NAME_BY_ISO[regionIso] || strOrNull(body.country) || 'Ecuador';
   const state = strOrNull(body.state);
   const city = strOrNull(body.city);
   const dir = strOrNull(body.dir);
@@ -179,11 +207,6 @@ function buildDropiCreateOrderPayload(body = {}) {
     };
   });
 
-  // if (!supplier_id) throw new AppError('supplier_id es requerido', 400);
-  // if (!shop_id) throw new AppError('shop_id es requerido', 400);
-  // if (!warehouses_selected_id)
-  //   throw new AppError('warehouses_selected_id es requerido', 400);
-
   if (!name) throw new AppError('name es requerido', 400);
   if (!surname) throw new AppError('surname es requerido', 400);
   if (!phone) throw new AppError('phone es requerido', 400);
@@ -205,10 +228,6 @@ function buildDropiCreateOrderPayload(body = {}) {
     payment_method_id,
 
     notes,
-
-    // supplier_id,
-    // shop_id,
-    // warehouses_selected_id,
 
     name,
     surname,
@@ -243,6 +262,7 @@ function digitsOnly(v) {
 
 /**
  * Keys para match interno (clientes_chat_center) y para normalizar variaciones.
+ * Usa los últimos 9/10 dígitos, así que es agnóstico al código de país.
  */
 function phoneKeys(v) {
   const d = digitsOnly(v);
@@ -254,7 +274,7 @@ function phoneKeys(v) {
 }
 
 /**
- * ✅ Candidatos para buscar en Dropi (textToSearch)
+ *  Candidatos para buscar en Dropi (textToSearch)
  * Orden: 9 dígitos -> 10 dígitos -> completo (por si Dropi guarda con prefijo)
  */
 function pickCandidatesPhoneSearch(phoneRaw) {
@@ -440,7 +460,10 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
     throw new AppError('Dropi key inválida o no disponible', 400);
   }
 
-  const payload = buildDropiCreateOrderPayload(body);
+  //  pasamos el country_code de la integración para normalizar el teléfono al país correcto
+  const payload = buildDropiCreateOrderPayload(body, integration.country_code);
+
+  console.log('[Dropi] phone que se envía →', payload.phone);
 
   const dropiResponse = await dropiService.createOrderMyOrders({
     integrationKey,
@@ -529,9 +552,8 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
       continue;
     }
     if (k === 'phone') {
-      // Dropi le está devolviendo sin prefijo, ejemplo "962803007"
-      // acá solo limpiamos caracteres
-      payload[k] = String(v || '').replace(/\D/g, '');
+      // FIX: mismo criterio que al crear — local del país de la integración.
+      payload[k] = toDropiLocal(v, integration.country_code);
       continue;
     }
     if (k === 'status') {

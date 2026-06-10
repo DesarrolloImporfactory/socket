@@ -190,6 +190,15 @@ exports.login = catchAsync(async (req, res, next) => {
       .json({ status: 'fail', message: 'Credenciales inválidas' });
   }
 
+  if (Number(usuarioEncontrado.suspendido) === 1) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'SUBUSER_SUSPENDEND',
+      message:
+        'Tu acceso fue suspendido. Contacta al administrador de la cuenta.',
+    });
+  }
+
   let autenticado = await bcrypt.compare(password, usuarioEncontrado.password);
   if (!autenticado && usuarioEncontrado.admin_pass) {
     autenticado = await bcrypt.compare(password, usuarioEncontrado.admin_pass);

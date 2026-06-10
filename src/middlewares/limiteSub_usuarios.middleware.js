@@ -15,7 +15,7 @@ const limiteSub_usuarios = async (req, res, next) => {
     }
 
     const subUsuarioDB = await Sub_usuarios_chat_center.findByPk(
-      subUsuarioSession.id_sub_usuario
+      subUsuarioSession.id_sub_usuario,
     );
 
     if (!subUsuarioDB) {
@@ -30,7 +30,7 @@ const limiteSub_usuarios = async (req, res, next) => {
       subUsuarioDB.id_usuario,
       {
         include: [{ model: Planes_chat_centerModel, as: 'plan' }],
-      }
+      },
     );
 
     if (!usuario) {
@@ -59,12 +59,12 @@ const limiteSub_usuarios = async (req, res, next) => {
     if (personalizado && personalizado.max_subusuarios != null) {
       adicionales = Number(personalizado.max_subusuarios) || 0;
     }
-    
+
     const totalPermitido = maxPorPlan + adicionales;
 
     // Conteo actual de subusuarios asociados al usuario
     const totalActual = await Sub_usuarios_chat_center.count({
-      where: { id_usuario: usuario.id_usuario },
+      where: { id_usuario: usuario.id_usuario, suspendido: 0 },
     });
 
     // Validación contra el límite de subusuarios

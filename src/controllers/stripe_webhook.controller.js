@@ -1046,6 +1046,29 @@ exports.stripeWebhook = async (req, res) => {
             console.log('[stripe] downgrade suspend failed:', e?.message);
           }
 
+          // Suspender los subusuarios que el cliente eligió al programar el downgrade
+          try {
+            const [resSub] = await db.query(
+              `UPDATE sub_usuarios_chat_center
+               SET suspendido = 1,
+                   suspended_at = NOW(),
+                   suspended_reason = 'downgrade',
+                   suspended_by_cliente = 1,
+                   pending_suspension = 0
+               WHERE id_usuario = ? AND pending_suspension = 1`,
+              { replacements: [id_usuario] },
+            );
+            console.log(
+              '[stripe] downgrade suspendió subusuarios:',
+              resSub?.affectedRows,
+            );
+          } catch (e) {
+            console.log(
+              '[stripe] downgrade suspend subusuarios failed:',
+              e?.message,
+            );
+          }
+
           try {
             await stripe.subscriptions.update(subscriptionId, {
               metadata: {

@@ -10,6 +10,7 @@ const { Op, fn, col, literal } = require('sequelize');
 const { db } = require('../database/config');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
+const dropiOrdersService = require('../services/dropiOrders.service');
 const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 
 /* =========================
@@ -74,129 +75,6 @@ function strOrNull(v) {
   if (v === null || v === undefined) return null;
   const s = String(v);
   return s.trim().length ? s.trim() : null;
-}
-
-/**
- * Construye el payload EXCLUSIVAMENTE con el body que funciona en Postman.
- */
-function buildDropiOrderPayload(body = {}) {
-  const required = {
-    type: strOrNull(body.type),
-    type_service: strOrNull(body.type_service),
-    rate_type: strOrNull(body.rate_type),
-
-    total_order: toInt(body.total_order),
-    shipping_amount: toInt(body.shipping_amount),
-    payment_method_id: toInt(body.payment_method_id),
-
-    name: strOrNull(body.name),
-    surname: strOrNull(body.surname),
-    phone: strOrNull(body.phone),
-
-    country: strOrNull(body.country),
-    state: strOrNull(body.state),
-    city: strOrNull(body.city),
-    dir: strOrNull(body.dir),
-
-    products: Array.isArray(body.products) ? body.products : null,
-  };
-
-  const missing = [];
-  for (const [k, v] of Object.entries(required)) {
-    if (v === null || v === undefined || v === '' || (k === 'products' && !v)) {
-      missing.push(k);
-    }
-  }
-
-  if (missing.length) {
-    throw new AppError(
-      `Faltan campos requeridos para crear la orden en Dropi: ${missing.join(
-        ', ',
-      )}`,
-      400,
-    );
-  }
-
-  if (!Array.isArray(required.products) || required.products.length === 0) {
-    throw new AppError('products debe ser un arreglo con al menos 1 item', 400);
-  }
-
-  const products = required.products.map((p, idx) => {
-    const id = toInt(p?.id);
-    const quantity = toInt(p?.quantity);
-    const price = toInt(p?.price);
-
-    if (!id) {
-      throw new AppError(`products[${idx}].id es requerido`, 400);
-    }
-    if (!quantity || quantity <= 0) {
-      throw new AppError(`products[${idx}].quantity inválido`, 400);
-    }
-    if (price === null || price < 0) {
-      throw new AppError(`products[${idx}].price inválido`, 400);
-    }
-
-    return {
-      id,
-      name: str(p?.name),
-      type: str(p?.type),
-
-      variation_id:
-        p?.variation_id === null || p?.variation_id === undefined
-          ? null
-          : toInt(p.variation_id),
-
-      variations: Array.isArray(p?.variations) ? p.variations : [],
-
-      quantity,
-      price,
-
-      sale_price: p?.sale_price ?? null,
-      suggested_price: p?.suggested_price ?? null,
-    };
-  });
-
-  const distributionCompany =
-    body.distributionCompany && typeof body.distributionCompany === 'object'
-      ? {
-          id: toInt(body.distributionCompany.id),
-          name: str(body.distributionCompany.name),
-        }
-      : null;
-
-  return {
-    type: required.type,
-    type_service: required.type_service,
-    rate_type: required.rate_type,
-
-    total_order: required.total_order,
-    shipping_amount: required.shipping_amount,
-    payment_method_id: required.payment_method_id,
-
-    notes: body.notes ?? '',
-
-    name: required.name,
-    surname: required.surname,
-    phone: required.phone,
-    client_email: body.client_email ?? '',
-
-    country: required.country,
-    state: required.state,
-    city: required.city,
-    dir: required.dir,
-    zip_code: body.zip_code ?? null,
-    colonia: body.colonia ?? '',
-
-    dni: body.dni ?? '',
-    dni_type: body.dni_type ?? '',
-
-    insurance: body.insurance ?? null,
-    shalom_data: body.shalom_data ?? null,
-
-    distributionCompany: distributionCompany ?? null,
-
-    products,
-  };
 }
 
 function toIntOrDefault(v, def) {
@@ -404,41 +282,18 @@ exports.createOrderMyOrders = catchAsync(async (req, res, next) => {
     return next(new AppError('id_configuracion es requerido', 400));
   }
 
-  const integration = await getActiveIntegration(id_configuracion);
-  if (!integration) {
-    return next(
-      new AppError(
-        'No existe una integración Dropi activa para esta configuración',
-        404,
-      ),
-    );
-  }
-
-  const integrationKey = getIntegrationKey(integration);
-  if (!integrationKey || !String(integrationKey).trim()) {
-    return next(new AppError('Dropi key inválida o no disponible', 400));
-  }
-
   const raw = { ...req.body };
   delete raw.id_configuracion;
 
-  let payload;
-  try {
-    payload = buildDropiOrderPayload(raw);
-  } catch (e) {
-    return next(e);
-  }
-
-  const dropiResponse = await dropiService.createOrderMyOrders({
-    integrationKey,
-    payload,
-    country_code: integration.country_code,
+  const data = await dropiOrdersService.createOrderForClient({
+    id_configuracion,
+    body: raw,
   });
 
   return res.json({
     isSuccess: true,
     message: 'Orden enviada a Dropi correctamente',
-    data: dropiResponse,
+    data,
   });
 });
 
