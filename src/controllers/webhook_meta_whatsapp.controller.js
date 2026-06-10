@@ -721,7 +721,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       if (referral) {
         const headline = referral.headline || '';
-        if (id_configuracion == 10 || id_configuracion == 277) {
+        if (id_configuracion == 10 || id_configuracion == 277 || id_configuracion == 392) {
           // Buscar el producto exacto en la BD
           const bloqueProducto = await buscarProductoPorReferral(
             id_configuracion,
