@@ -1655,7 +1655,7 @@ exports.enviarCarga = catchAsync(async (req, res, next) => {
     },
   });
 });
-
+/* 
 exports.entregarCarga = catchAsync(async (req, res, next) => {
   const { id_carga, contactos, fecha_entrega } = req.body;
   if (!id_carga) return next(new AppError('id_carga es requerido', 400));
@@ -1807,3 +1807,4 @@ exports.entregarCarga = catchAsync(async (req, res, next) => {
     },
   });
 });
+ */
