@@ -14,6 +14,13 @@
  *  2. Si faltan campos clave → extractor IA (gpt-4o-mini) sobre los
  *     últimos mensajes de la conversación, con la api_key del cliente.
  *
+ * IDENTIFICACIÓN DE PRODUCTO (cascada):
+ *  a) Nombre que el bot escribió en el resumen (venta real)
+ *  b) headline del último anuncio CTWA (cliente_productos_ad)
+ *  c) ultimo_producto_ad del cliente
+ *  Matcher de 3 capas: exacto → contains → tokens significativos
+ *  (ignora COMBO/KIT/números; en empate prefiere fallar a manual).
+ *
  * CANTIDADES/COMBOS:
  *  - qty 1 → producto base (external_id), quantity 1
  *  - qty N + combo con id_dropi en combos_producto → producto COMBO, quantity 1
@@ -49,16 +56,88 @@ function parsearPrecio(s) {
   return m ? Number(m[1]) : 0;
 }
 
+const STOPWORDS_MATCH = new Set([
+  'COMBO',
+  'KIT',
+  'PACK',
+  'PROMO',
+  'PROMOCION',
+  'OFERTA',
+  'SET',
+  'X',
+  'DE',
+  'DEL',
+  'EL',
+  'LA',
+  'LOS',
+  'LAS',
+  'UN',
+  'UNA',
+  'PARA',
+  'CON',
+  'Y',
+  'O',
+  'POR',
+  'UNIDAD',
+  'UNIDADES',
+  'PAR',
+  'PARES',
+  'PZA',
+  'PZAS',
+]);
+
+function tokensSignificativos(s) {
+  return normalizarTexto(s)
+    .split(' ')
+    .filter((t) => t && !STOPWORDS_MATCH.has(t) && !/^\d+$/.test(t));
+}
+
 function matchEnLista(lista, objetivo, pickName) {
   const target = normalizarTexto(objetivo);
   if (!target) return null;
+
+  // 1) Match exacto
   let found = lista.find((x) => normalizarTexto(pickName(x)) === target);
   if (found) return found;
+
+  // 2) Contains bidireccional
   found = lista.find((x) => {
     const n = normalizarTexto(pickName(x));
     return n.includes(target) || target.includes(n);
   });
-  return found || null;
+  if (found) return found;
+
+  // 3) Solapamiento de tokens significativos
+  //    (ignora COMBO/KIT/numeros: "Aceite Batana Combo 1" -> [ACEITE, BATANA])
+  const tTokens = tokensSignificativos(objetivo);
+  if (!tTokens.length) return null;
+
+  let best = null;
+  let bestScore = 0;
+  let bestInter = 0;
+  let empate = false;
+
+  for (const x of lista) {
+    const nTokens = tokensSignificativos(pickName(x));
+    if (!nTokens.length) continue;
+    const setN = new Set(nTokens);
+    const inter = tTokens.filter((t) => setN.has(t)).length;
+    if (!inter) continue;
+    // prioriza mas tokens coincidentes; desempata por cobertura del nombre
+    const score = inter * 2 + inter / nTokens.length;
+    if (score > bestScore) {
+      best = x;
+      bestScore = score;
+      bestInter = inter;
+      empate = false;
+    } else if (score === bestScore) {
+      empate = true; // dos productos igual de parecidos -> mejor no adivinar
+    }
+  }
+
+  const minInter = Math.min(2, tTokens.length);
+  if (best && !empate && bestInter >= minInter) return best;
+  return null;
 }
 
 async function logAuto({
@@ -232,6 +311,11 @@ async function autoCrearOrdenDropi({
     if (!datosBot.cantidad) datosBot.cantidad = '1';
 
     // 1. Producto local con vínculo a Dropi (external_id)
+    //    Cascada de identificación:
+    //    a) Lo que el bot puso en el resumen (refleja la venta real)
+    //    b) Headline del último anuncio CTWA (sistema referral: el dueño
+    //       configura el headline = nombre EXACTO del producto)
+    //    c) ultimo_producto_ad del cliente (respaldo del mismo sistema)
     const productos = await db.query(
       `SELECT id, nombre, precio, external_id, combos_producto
        FROM productos_chat_center
@@ -239,15 +323,45 @@ async function autoCrearOrdenDropi({
          AND external_source = 'DROPI' AND external_id IS NOT NULL`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
-    const prodLocal = matchEnLista(
-      productos,
-      datosBot.producto,
-      (p) => p.nombre,
-    );
+
+    let prodLocal = matchEnLista(productos, datosBot.producto, (p) => p.nombre);
+    let fuenteProducto = 'bot';
+
+    if (!prodLocal) {
+      // b) headline del último anuncio por el que entró este cliente
+      const [ad] = await db.query(
+        `SELECT headline FROM cliente_productos_ad
+         WHERE id_cliente = ? AND id_configuracion = ?
+         ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const headline = String(ad?.headline || '').trim();
+      if (headline) {
+        prodLocal = matchEnLista(productos, headline, (p) => p.nombre);
+        if (prodLocal) fuenteProducto = `headline_ad ("${headline}")`;
+      }
+    }
+
+    if (!prodLocal) {
+      // c) respaldo: ultimo_producto_ad guardado en el cliente
+      const [cli] = await db.query(
+        `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+        { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+      );
+      const upa = String(cli?.ultimo_producto_ad || '').trim();
+      if (upa) {
+        prodLocal = matchEnLista(productos, upa, (p) => p.nombre);
+        if (prodLocal) fuenteProducto = `ultimo_producto_ad ("${upa}")`;
+      }
+    }
+
     if (!prodLocal) {
       return fail(
         'producto',
-        `Sin match para "${datosBot.producto}". Vinculados: ${productos.length}`,
+        `Sin match para "${datosBot.producto}" (ni headline/producto_ad). Vinculados: ${productos.length}`,
       );
     }
 
@@ -509,7 +623,7 @@ async function autoCrearOrdenDropi({
       dropi_order_id: orderId,
       detalle:
         `Transportadora: ${distributionCompany.name} ($${mejor?.objects?.precioEnvio}) | ` +
-        `total: ${totalOrder} | qty: ${cantidad}` +
+        `total: ${totalOrder} | qty: ${cantidad} | producto via ${fuenteProducto}` +
         (comboUsado
           ? ` | COMBO #${dropiProductId}`
           : cantidadOrden > 1
