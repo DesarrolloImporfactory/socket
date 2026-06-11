@@ -42,7 +42,7 @@ const DELAY_BETWEEN_INTEGRATIONS = 4000;
 const DELAY_BETWEEN_WA_SENDS = 800;
 const MAX_ORDERS_PER_INTEGRATION = 2000;
 const MAX_RETRIES_429 = 4;
-const META_API_VERSION = 'v22.0';
+const META_API_VERSION = process.env.GRAPH_VERSION;
 
 // Profit sync — Dropi solo expone profit vía getOrderDetail individual
 const PROFIT_MAX_PER_RUN = 30;

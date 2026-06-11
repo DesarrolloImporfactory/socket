@@ -2,7 +2,11 @@ const AppError = require('../utils/appError');
 const { decryptToken } = require('../utils/cryptoToken');
 //  Normalización de teléfonos con libphonenumber (multipaís).
 // toDropiLocal(phone, country_code) → número nacional sin código de país ni 0.
-const { toDropiLocal, resolveRegion } = require('../utils/phoneFactor');
+const {
+  toDropiLocal,
+  resolveRegion,
+  toWhatsapp,
+} = require('../utils/phoneFactor');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
@@ -10,6 +14,7 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 const { Op } = require('sequelize');
 
 const dropiService = require('./dropi.service');
+const { db } = require('../database/config');
 
 // =========================
 // País (texto) que Dropi espera en el payload de la orden, según el ISO de la
@@ -81,6 +86,31 @@ function normalizeDropiResult(raw) {
   return { ok, status, message, data: dropi };
 }
 
+async function bloquearPlantillaPendienteConf({
+  id_configuracion,
+  dropi_order_id,
+  phone,
+  country_code = 'EC',
+}) {
+  if (!id_configuracion || !dropi_order_id) return false;
+  try {
+    const phoneNorm = toWhatsapp(phone, country_code) || strOrNull(phone);
+    await db.query(
+      `INSERT IGNORE INTO dropi_plantillas_enviadas
+         (dropi_order_id, id_configuracion, estado_dropi, phone, template_name, source, sent_at)
+       VALUES (?, ?, 'PENDIENTE CONFIRMACION', ?, '[SKIP] creada en sistema', 'sistema_local', NOW())`,
+      {
+        replacements: [dropi_order_id, id_configuracion, phoneNorm],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    return true;
+  } catch (e) {
+    console.log('[Dropi] error registrando bloqueo plantilla:', e?.message);
+    return false;
+  }
+}
+
 function buildDropiOrdersListParams(body = {}) {
   const result_number = toIntOrDefault(body.result_number, 10);
 
@@ -127,6 +157,8 @@ function buildDropiCreateOrderPayload(body = {}, region = 'EC') {
   const payment_method_id = toInt(body.payment_method_id) ?? 1;
 
   const notes = strOrNull(body.notes) || '';
+
+  const status = strOrNull(body.status); // 'PENDIENTE CONFIRMACION' para órdenes del sistema
 
   const name = strOrNull(body.name);
   const surname = strOrNull(body.surname);
@@ -222,6 +254,7 @@ function buildDropiCreateOrderPayload(body = {}, region = 'EC') {
     type,
     type_service,
     rate_type,
+    ...(status ? { status } : {}),
 
     total_order,
     shipping_amount,
@@ -476,6 +509,36 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
   if (!norm.ok) {
     // lanza error con el mensaje real de Dropi
     throw new AppError(norm.message, norm.status || 400);
+  }
+
+  const created =
+    norm.data?.objects ?? norm.data?.order ?? norm.data?.data ?? norm.data;
+  const nuevoOrderId = toInt(created?.id) ?? toInt(norm.data?.id);
+
+  console.log(
+    '[Dropi] orden creada → id:',
+    nuevoOrderId,
+    '| status:',
+    created?.status,
+  );
+
+  const creaComoPendienteConf =
+    String(body.status || '')
+      .trim()
+      .toUpperCase() === 'PENDIENTE CONFIRMACION';
+
+  if (nuevoOrderId && creaComoPendienteConf) {
+    await bloquearPlantillaPendienteConf({
+      id_configuracion,
+      dropi_order_id: nuevoOrderId,
+      phone: body.phone,
+      country_code: integration.country_code,
+    });
+  } else if (!nuevoOrderId) {
+    console.log(
+      '[Dropi] ⚠ sin id en respuesta create:',
+      JSON.stringify(norm.data)?.slice(0, 600),
+    );
   }
 
   return norm.data; // devuelve solo la data limpia
