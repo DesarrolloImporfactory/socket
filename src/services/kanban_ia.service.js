@@ -16,6 +16,9 @@ const {
   sanitizarRespuestaAgente,
 } = require('../utils/openia/sanitizador_agente');
 
+// Auto-creación de órdenes en Dropi cuando el bot confirma la venta
+const { autoCrearOrdenDropi } = require('./dropiAutoOrder.service');
+
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — Trae el prompt REAL cargado en OpenAI
 // Solo para debugging. Permite confirmar si Platform tiene
@@ -307,7 +310,9 @@ async function procesarMensajeKanban(params) {
 
   if (
     !instruccionesProducto &&
-    (id_configuracion == 10 || id_configuracion == 277 || id_configuracion == 392)
+    (id_configuracion == 10 ||
+      id_configuracion == 277 ||
+      id_configuracion == 392)
   ) {
     const [cli] = await db.query(
       `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
@@ -410,6 +415,35 @@ async function procesarMensajeKanban(params) {
       await log(
         `🔄 Estado cambiado a "${estadoDestino}" (trigger="${trigger}")`,
       );
+
+      //  Auto-orden Dropi: el trigger movió al cliente a generar_guia.
+      // Se extraen los datos del resumen del bot con regex (emoji opcional);
+      // si faltan campos, dropiAutoOrder.service los completa con un
+      // extractor IA sobre la conversación (usa la api_key del cliente).
+      // Cualquier resultado queda en dropi_auto_ordenes_log.
+      if (estadoDestino === 'generar_guia') {
+        try {
+          const g = (re) => respuestaRaw.match(re)?.[1]?.trim() || '';
+          autoCrearOrdenDropi({
+            id_configuracion,
+            id_cliente,
+            api_key_openai,
+            datosBot: {
+              nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
+              telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i) || telefono,
+              provincia: g(/📍?\s*Provincia:\s*(.+)/i),
+              ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
+              direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
+              producto: g(/📦?\s*Producto:\s*(.+)/i),
+              precio: g(/💰?\s*Precio total:\s*(.+)/i),
+              cantidad: g(/🔢?\s*Cantidad:\s*(.+)/i) || '',
+            },
+          }).catch(() => {});
+          await log(`🛒 Auto-orden Dropi disparada para cliente=${id_cliente}`);
+        } catch (e) {
+          await log(`⚠️ Error disparando auto-orden: ${e.message}`);
+        }
+      }
       // No break — puede haber múltiples cambios de estado (poco común pero posible)
     }
   }
