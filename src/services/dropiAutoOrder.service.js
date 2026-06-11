@@ -199,20 +199,54 @@ function pickRemitCodDaneFromProduct(rawProduct) {
 }
 
 /**
- * Réplica backend de pickWarehouseCityId (front: utils/orderHelper.js).
+ * Réplica de buildDepartment del socket handler (GET_DROPI_COTIZA_ENVIO_V2):
+ * Dropi espera ciudad_destino/ciudad_remitente como objetos de ciudad
+ * COMPLETOS con su department embebido.
  */
-function pickWarehouseCityId(rawProduct) {
-  if (!rawProduct) return null;
-  const fromWP =
-    rawProduct?.warehouse_product?.[0]?.warehouse?.[0]?.city_id ||
-    rawProduct?.warehouse_product?.[0]?.warehouse?.city_id ||
-    null;
-  if (fromWP) return Number(fromWP);
-  const fromVar =
-    rawProduct?.variations?.[0]?.warehouse_product_variation?.[0]?.warehouse
-      ?.city?.id || null;
-  if (fromVar) return Number(fromVar);
+function buildDepartment(dept) {
+  return {
+    id: dept.id || dept.department_id,
+    country_id: dept.country_id || 1,
+    name: dept.name || dept.department || dept.nombre,
+    created_at: dept.created_at || null,
+    updated_at: dept.updated_at || null,
+    deleted_at: dept.deleted_at || null,
+    department_code: dept.department_code || null,
+  };
+}
+
+/**
+ * Objeto ciudad de la bodega remitente, directo del producto crudo
+ * de /products/index (SIMPLE → warehouse_product[0].warehouse.city;
+ * fallback VARIABLE → variations[].warehouse_product_variation[].warehouse.city).
+ */
+function pickWarehouseCityFromProduct(rawProduct) {
+  const c = rawProduct?.warehouse_product?.[0]?.warehouse?.city;
+  if (c) return c;
+  if (Array.isArray(rawProduct?.variations)) {
+    for (const v of rawProduct.variations) {
+      for (const wpv of v?.warehouse_product_variation || []) {
+        if (wpv?.warehouse?.city) return wpv.warehouse.city;
+      }
+    }
+  }
   return null;
+}
+
+/**
+ * warehouse_id del producto crudo (SIMPLE → warehouse_product[0];
+ * fallback VARIABLE), como lo resuelve el socket handler.
+ */
+function pickWarehouseIdFromProduct(rawProduct) {
+  return (
+    Number(
+      rawProduct?.warehouse_product?.[0]?.warehouse_id ||
+        rawProduct?.warehouse_product?.[0]?.warehouse?.id ||
+        rawProduct?.variations?.[0]?.warehouse_product_variation?.[0]
+          ?.warehouse_id ||
+        0,
+    ) || null
+  );
 }
 
 /* ─────────────── extractor IA de respaldo ─────────────── */
@@ -594,23 +628,60 @@ async function autoCrearOrdenDropi({
       );
     }
 
-    // 5. Cotizar transportadoras → la más barata disponible
+    // 5. Cotizar transportadoras → la más barata disponible.
+    //    Payload CALCADO del socket handler GET_DROPI_COTIZA_ENVIO_V2:
+    //    Dropi espera ciudad_destino y ciudad_remitente como objetos de
+    //    ciudad COMPLETOS (con department embebido) + warehouse {id}.
+
+    // ciudad_destino: la ciudad de /trajectory/bycity + su department
+    const ciudad_destino = {
+      ...city,
+      department:
+        city.department || (state ? buildDepartment(state) : undefined),
+    };
+
+    // ciudad_remitente: si la bodega está en la misma ciudad, se reutiliza
+    // el destino (mismo atajo del handler). Si no, sale del producto crudo
+    // y se le embebe su department buscándolo en states por department_id.
+    let ciudad_remitente;
+    if (remitCodDane === destCodDane) {
+      ciudad_remitente = { ...ciudad_destino };
+    } else {
+      const remitCityRaw = pickWarehouseCityFromProduct(prodDropi);
+      if (!remitCityRaw) {
+        return fail(
+          'remitente',
+          `Producto #${dropiProductId} sin objeto warehouse.city para armar ciudad_remitente`,
+        );
+      }
+      const deptRemit = states.find(
+        (d) =>
+          Number(d.id || d.department_id) ===
+          Number(remitCityRaw.department_id),
+      );
+      ciudad_remitente = {
+        ...remitCityRaw,
+        department:
+          remitCityRaw.department ||
+          (deptRemit ? buildDepartment(deptRemit) : undefined),
+      };
+    }
+
+    const warehouseId = pickWarehouseIdFromProduct(prodDropi);
+
     let quoteResp;
     try {
       quoteResp = await dropiService.cotizaEnvioTransportadora({
         integrationKey,
         payload: {
           EnvioConCobro: true,
-          ciudad_destino_cod_dane: destCodDane,
-          ciudad_remitente_cod_dane: remitCodDane,
-          // mismo payload que el front (GET_DROPI_COTIZA_ENVIO_V2):
-          // sin ciudad_destino_full Dropi no resuelve el trayecto
-          ciudad_destino_full: city,
-          warehouse_city_id: pickWarehouseCityId(prodDropi),
+          ciudad_destino,
+          ciudad_remitente,
           products: [
             { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
           ],
           amount: precioVenta,
+          ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
         },
         country_code,
       });
@@ -680,7 +751,7 @@ async function autoCrearOrdenDropi({
         total_order: totalOrder,
         shipping_amount: 0,
         payment_method_id: 1,
-        notes: `🤖 Orden generada automáticamente por IA (pedido confirmado en chat). Qty solicitada: ${cantidad}${comboUsado ? ` | combo Dropi #${dropiProductId}` : ''}`,
+        notes: '',
         name: nombre || 'Cliente',
         surname,
         phone: datosBot.telefono,
