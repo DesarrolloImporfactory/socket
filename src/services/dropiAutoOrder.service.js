@@ -14,6 +14,7 @@
  *  2. Si faltan campos clave → extractor IA (gpt-4o-mini) sobre los
  *     últimos mensajes de la conversación, con la api_key del cliente.
  *
+ *
  * IDENTIFICACIÓN DE PRODUCTO (cascada):
  *  a) Nombre que el bot escribió en el resumen (venta real)
  *  b) headline del último anuncio CTWA (cliente_productos_ad)
@@ -170,6 +171,28 @@ async function logAuto({
       },
     );
   } catch (_) {}
+}
+
+/**
+ * Réplica backend de pickRemitCodDaneFromProduct (front: utils/orderHelper.js).
+ * Extrae el cod_dane de la bodega remitente desde el producto crudo
+ * de /products/index. SIMPLE primero, fallback a variations.
+ */
+function pickRemitCodDaneFromProduct(rawProduct) {
+  if (!rawProduct) return '';
+  const cod = rawProduct?.warehouse_product?.[0]?.warehouse?.city?.cod_dane;
+  if (cod) return String(cod).trim();
+  if (Array.isArray(rawProduct?.variations)) {
+    for (const v of rawProduct.variations) {
+      if (Array.isArray(v?.warehouse_product_variation)) {
+        for (const wpv of v.warehouse_product_variation) {
+          const c = wpv?.warehouse?.city?.cod_dane;
+          if (c) return String(c).trim();
+        }
+      }
+    }
+  }
+  return '';
 }
 
 /* ─────────────── extractor IA de respaldo ─────────────── */
@@ -396,21 +419,52 @@ async function autoCrearOrdenDropi({
       }
     }
 
-    // 2. Detalle del producto a despachar en Dropi
-    const prodDetail = await dropiService.getProductDetail({
-      integrationKey,
-      productId: dropiProductId,
-      country_code,
-    });
-    const prodDropi =
-      prodDetail?.objects ||
-      prodDetail?.data?.objects ||
-      prodDetail?.data ||
-      null;
+    // 2. Producto crudo desde POST /products/index — el MISMO endpoint que
+    //    usa el flujo manual del front (GET_DROPI_PRODUCTS), probado en batalla.
+    //    Buscamos por keywords y filtramos por id exacto.
+    const buscarEnIndex = async (keywords, pageSize) => {
+      const resp = await dropiService.listProductsIndex({
+        integrationKey,
+        payload: {
+          pageSize,
+          startData: 0,
+          no_count: true,
+          order_by: 'id',
+          order_type: 'desc',
+          keywords,
+          favorite: false,
+          privated_product: false,
+        },
+        country_code,
+      });
+      const lista =
+        resp?.objects || resp?.data?.objects || resp?.data?.products || [];
+      return (Array.isArray(lista) ? lista : []).find(
+        (p) => Number(p?.id) === dropiProductId,
+      );
+    };
+
+    let prodDropi = null;
+    try {
+      const kw =
+        tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
+        prodLocal.nombre;
+      prodDropi = await buscarEnIndex(kw, 60);
+      if (!prodDropi) {
+        // segundo intento sin keywords (cubre combos con nombre muy distinto)
+        prodDropi = await buscarEnIndex('', 100);
+      }
+    } catch (e) {
+      return fail(
+        'producto_detalle',
+        `listProductsIndex /products/index: ${e?.message || e} (status ${e?.statusCode || '?'})`,
+      );
+    }
+
     if (!prodDropi?.id)
       return fail(
-        'producto',
-        `getProductDetail sin datos para #${dropiProductId}`,
+        'producto_detalle',
+        `Producto #${dropiProductId} no apareció en /products/index`,
       );
     if (String(prodDropi.type || 'SIMPLE') !== 'SIMPLE') {
       return fail(
@@ -418,13 +472,14 @@ async function autoCrearOrdenDropi({
         `Producto #${dropiProductId} es ${prodDropi.type}; auto-orden solo soporta SIMPLE`,
       );
     }
-    if (
-      prodDropi.stock !== undefined &&
-      Number(prodDropi.stock) < cantidadOrden
-    ) {
+
+    const stockDropi = Number(
+      prodDropi.stock ?? prodDropi.warehouse_product?.[0]?.stock ?? NaN,
+    );
+    if (Number.isFinite(stockDropi) && stockDropi < cantidadOrden) {
       return fail(
         'producto',
-        `Stock insuficiente #${dropiProductId}: ${prodDropi.stock} < ${cantidadOrden}`,
+        `Stock insuficiente #${dropiProductId}: ${stockDropi} < ${cantidadOrden}`,
       );
     }
 
@@ -435,7 +490,10 @@ async function autoCrearOrdenDropi({
     if (precioVenta <= 0)
       return fail('precio', `Precio inválido del bot: "${datosBot.precio}"`);
 
-    const costoProveedor = Number(prodDropi.sale_price || 0) * cantidadOrden;
+    const costoProveedor =
+      Number(
+        prodDropi.sale_price ?? prodDropi.variations?.[0]?.sale_price ?? 0,
+      ) * cantidadOrden;
     if (costoProveedor > 0 && precioVenta < costoProveedor) {
       return fail(
         'precio',
@@ -445,11 +503,19 @@ async function autoCrearOrdenDropi({
     }
 
     // 3. Provincia → ciudad (catálogo Dropi) + cod_dane destino
-    const statesResp = await dropiService.listStates({
-      integrationKey,
-      country_id: 1,
-      country_code,
-    });
+    let statesResp;
+    try {
+      statesResp = await dropiService.listStates({
+        integrationKey,
+        country_id: 1,
+        country_code,
+      });
+    } catch (e) {
+      return fail(
+        'provincia',
+        `listStates /department: ${e?.message || e} (status ${e?.statusCode || '?'})`,
+      );
+    }
     const states =
       statesResp?.objects ||
       statesResp?.data?.objects ||
@@ -463,11 +529,19 @@ async function autoCrearOrdenDropi({
     if (!state)
       return fail('provincia', `Sin match provincia "${datosBot.provincia}"`);
 
-    const citiesResp = await dropiService.listCities({
-      integrationKey,
-      payload: { department_id: Number(state.id), rate_type: 'CON RECAUDO' },
-      country_code,
-    });
+    let citiesResp;
+    try {
+      citiesResp = await dropiService.listCities({
+        integrationKey,
+        payload: { department_id: Number(state.id), rate_type: 'CON RECAUDO' },
+        country_code,
+      });
+    } catch (e) {
+      return fail(
+        'ciudad',
+        `listCities /trajectory/bycity (dep ${state.id}): ${e?.message || e} (status ${e?.statusCode || '?'})`,
+      );
+    }
     const cities =
       citiesResp?.objects?.cities ||
       citiesResp?.data?.objects?.cities ||
@@ -490,47 +564,38 @@ async function autoCrearOrdenDropi({
     if (!destCodDane)
       return fail('ciudad', `Ciudad "${city.name}" sin cod_dane`);
 
-    // 4. Ciudad remitente (bodega del producto a despachar)
-    const originResp = await dropiService.getOriginCityForShipping({
-      integrationKey,
-      productId: dropiProductId,
-      productType: 'SIMPLE',
-      destination: destCodDane,
-      country_code,
-    });
-    const origin =
-      originResp?.objects ||
-      originResp?.data?.objects ||
-      originResp?.data ||
-      originResp;
-    const remitCodDane = String(
-      origin?.cod_dane ||
-        origin?.codDane ||
-        origin?.city?.cod_dane ||
-        origin?.origin_cod_dane ||
-        '',
-    );
+    // 4. Ciudad remitente: directo del producto crudo, igual que el front
+    //    (pickRemitCodDaneFromProduct en utils/orderHelper.js).
+    const remitCodDane = pickRemitCodDaneFromProduct(prodDropi);
     if (!remitCodDane) {
       return fail(
         'remitente',
-        `Sin cod_dane remitente. Respuesta: ${JSON.stringify(origin).slice(0, 300)}`,
+        `Producto #${dropiProductId} sin warehouse_product[].warehouse.city.cod_dane en /products/index`,
       );
     }
 
     // 5. Cotizar transportadoras → la más barata disponible
-    const quoteResp = await dropiService.cotizaEnvioTransportadora({
-      integrationKey,
-      payload: {
-        EnvioConCobro: true,
-        ciudad_destino_cod_dane: destCodDane,
-        ciudad_remitente_cod_dane: remitCodDane,
-        products: [
-          { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
-        ],
-        amount: precioVenta,
-      },
-      country_code,
-    });
+    let quoteResp;
+    try {
+      quoteResp = await dropiService.cotizaEnvioTransportadora({
+        integrationKey,
+        payload: {
+          EnvioConCobro: true,
+          ciudad_destino_cod_dane: destCodDane,
+          ciudad_remitente_cod_dane: remitCodDane,
+          products: [
+            { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
+          ],
+          amount: precioVenta,
+        },
+        country_code,
+      });
+    } catch (e) {
+      return fail(
+        'cotizacion',
+        `cotizaEnvioTransportadoraV2 ${remitCodDane}->${destCodDane}: ${e?.message || e} (status ${e?.statusCode || '?'})`,
+      );
+    }
     const quotes = quoteResp?.objects || quoteResp?.data?.objects || [];
     const validas = (Array.isArray(quotes) ? quotes : [])
       .filter((q) => Number(q?.objects?.precioEnvio) > 0)
@@ -634,7 +699,16 @@ async function autoCrearOrdenDropi({
 
     return { orderId, data };
   } catch (err) {
-    await fail('create', err?.message || String(err));
+    const url = err?.config?.url || '';
+    const respData = err?.response?.data
+      ? JSON.stringify(err.response.data).slice(0, 300)
+      : '';
+    await fail(
+      'create',
+      `${err?.message || String(err)}` +
+        (url ? ` | url: ${url}` : '') +
+        (respData ? ` | resp: ${respData}` : ''),
+    );
     return null;
   }
 }
