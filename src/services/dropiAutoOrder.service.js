@@ -630,28 +630,59 @@ async function autoCrearOrdenDropi({
     if (!destCodDane)
       return fail('ciudad', `Ciudad "${city.name}" sin cod_dane`);
 
-    // 4. Ciudad remitente: del objeto warehouse.city del producto crudo
-    //    (forma objeto o array, ambas cubiertas). Si es un COMBO y el
-    //    detalle no trae la city, se rescata con la bodega del producto
-    //    BASE vía /products/index (mismo proveedor → misma bodega).
+    // 4. Ciudad remitente: del objeto warehouse.city del producto crudo.
+    //    /products/v2 NO siempre trae la city anidada (el index sí) → si
+    //    falta, se rescata de /products/index buscando por el nombre REAL
+    //    del producto en Dropi (el que devolvió el detalle, typos
+    //    incluidos), luego por el nombre local, luego página amplia.
+    //    Último recurso para combos: la bodega del producto BASE.
     let remitCityObj = pickWarehouseCityFromProduct(prodDropi);
     let remitCodDane = remitCityObj?.cod_dane
       ? String(remitCityObj.cod_dane).trim()
       : '';
 
-    if (!remitCodDane && Number(prodLocal.external_id) !== dropiProductId) {
+    if (!remitCodDane) {
+      const aplicarRaw = (raw) => {
+        if (!raw) return false;
+        // merge: que los pasos siguientes (warehouse id) tengan data completa
+        prodDropi = {
+          ...prodDropi,
+          warehouse_product:
+            raw.warehouse_product || prodDropi.warehouse_product,
+        };
+        remitCityObj = pickWarehouseCityFromProduct(raw);
+        remitCodDane = remitCityObj?.cod_dane
+          ? String(remitCityObj.cod_dane).trim()
+          : '';
+        return Boolean(remitCodDane);
+      };
+
       try {
-        const kwBase =
-          tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
-          prodLocal.nombre;
-        const baseRaw =
-          (await buscarEnIndex(kwBase, 60, Number(prodLocal.external_id))) ||
-          (await buscarEnIndex('', 100, Number(prodLocal.external_id)));
-        if (baseRaw) {
-          remitCityObj = pickWarehouseCityFromProduct(baseRaw);
-          remitCodDane = remitCityObj?.cod_dane
-            ? String(remitCityObj.cod_dane).trim()
-            : '';
+        const intentos = [
+          ...new Set([
+            tokensSignificativos(prodDropi.name || '')
+              .slice(0, 3)
+              .join(' '),
+            tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' '),
+            '',
+          ]),
+        ].filter((kw, i, a) => kw !== '' || i === a.length - 1);
+
+        for (const kw of intentos) {
+          const raw = await buscarEnIndex(kw, kw ? 60 : 100, dropiProductId);
+          if (aplicarRaw(raw)) break;
+        }
+
+        // combos que no aparecen en index: bodega del producto BASE
+        if (!remitCodDane && Number(prodLocal.external_id) !== dropiProductId) {
+          for (const kw of intentos) {
+            const raw = await buscarEnIndex(
+              kw,
+              kw ? 60 : 100,
+              Number(prodLocal.external_id),
+            );
+            if (aplicarRaw(raw)) break;
+          }
         }
       } catch (_) {}
     }
@@ -659,7 +690,7 @@ async function autoCrearOrdenDropi({
     if (!remitCodDane) {
       return fail(
         'remitente',
-        `Producto #${dropiProductId} sin warehouse city (ni en /products/v2 ni vía producto base #${prodLocal.external_id})`,
+        `Producto #${dropiProductId} sin warehouse city (detalle e index agotados)`,
       );
     }
 
