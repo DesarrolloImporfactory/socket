@@ -499,26 +499,44 @@ async function autoCrearOrdenDropi({
     };
 
     let prodDropi = null;
+
+    // Intento 1: detalle directo por ID — GET /products/v2/:id.
+    // Endpoint PROBADO en producción: el socket handler de cotización
+    // (GET_DROPI_COTIZA_ENVIO_V2) lo usa para resolver warehouse_id.
+    // Es la única forma confiable de traer un COMBO (otro ID con otro nombre).
     try {
-      const kw =
-        tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
-        prodLocal.nombre;
-      prodDropi = await buscarEnIndex(kw, 60);
-      if (!prodDropi) {
-        // segundo intento sin keywords (cubre combos con nombre muy distinto)
-        prodDropi = await buscarEnIndex('', 100);
-      }
+      const det = await dropiService.getProductDetail({
+        integrationKey,
+        productId: dropiProductId,
+        country_code,
+      });
+      const obj = det?.objects || det?.data?.objects || det?.data || null;
+      if (Number(obj?.id) === dropiProductId) prodDropi = obj;
     } catch (e) {
-      return fail(
-        'producto_detalle',
-        `listProductsIndex /products/index: ${e?.message || e} (status ${e?.statusCode || '?'})`,
-      );
+      // sigue al fallback por /products/index
+    }
+
+    // Intento 2/3: /products/index por keywords del nombre local,
+    // luego sin keywords (página amplia).
+    if (!prodDropi) {
+      try {
+        const kw =
+          tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
+          prodLocal.nombre;
+        prodDropi = await buscarEnIndex(kw, 60);
+        if (!prodDropi) prodDropi = await buscarEnIndex('', 100);
+      } catch (e) {
+        return fail(
+          'producto_detalle',
+          `listProductsIndex /products/index: ${e?.message || e} (status ${e?.statusCode || '?'})`,
+        );
+      }
     }
 
     if (!prodDropi?.id)
       return fail(
         'producto_detalle',
-        `Producto #${dropiProductId} no apareció en /products/index`,
+        `Producto #${dropiProductId} no apareció ni en /products/v2/:id ni en /products/index`,
       );
     if (String(prodDropi.type || 'SIMPLE') !== 'SIMPLE') {
       return fail(
@@ -751,7 +769,7 @@ async function autoCrearOrdenDropi({
         total_order: totalOrder,
         shipping_amount: 0,
         payment_method_id: 1,
-        notes: '',
+        notes: `🤖 Orden generada automáticamente por IA (pedido confirmado en chat). Qty solicitada: ${cantidad}${comboUsado ? ` | combo Dropi #${dropiProductId}` : ''}`,
         name: nombre || 'Cliente',
         surname,
         phone: datosBot.telefono,
