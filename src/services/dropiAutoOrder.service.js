@@ -177,25 +177,12 @@ async function logAuto({
 }
 
 /**
- * Réplica backend de pickRemitCodDaneFromProduct (front: utils/orderHelper.js).
- * Extrae el cod_dane de la bodega remitente desde el producto crudo
- * de /products/index. SIMPLE primero, fallback a variations.
+ * Dropi devuelve warehouse a veces como OBJETO (/products/index) y a veces
+ * como ARRAY (/products/v2/:id — ver getWarehouseName en el front).
+ * Este normalizador cubre ambas formas.
  */
-function pickRemitCodDaneFromProduct(rawProduct) {
-  if (!rawProduct) return '';
-  const cod = rawProduct?.warehouse_product?.[0]?.warehouse?.city?.cod_dane;
-  if (cod) return String(cod).trim();
-  if (Array.isArray(rawProduct?.variations)) {
-    for (const v of rawProduct.variations) {
-      if (Array.isArray(v?.warehouse_product_variation)) {
-        for (const wpv of v.warehouse_product_variation) {
-          const c = wpv?.warehouse?.city?.cod_dane;
-          if (c) return String(c).trim();
-        }
-      }
-    }
-  }
-  return '';
+function normWarehouse(w) {
+  return Array.isArray(w) ? w[0] || null : w || null;
 }
 
 /**
@@ -221,12 +208,13 @@ function buildDepartment(dept) {
  * fallback VARIABLE → variations[].warehouse_product_variation[].warehouse.city).
  */
 function pickWarehouseCityFromProduct(rawProduct) {
-  const c = rawProduct?.warehouse_product?.[0]?.warehouse?.city;
-  if (c) return c;
+  const w = normWarehouse(rawProduct?.warehouse_product?.[0]?.warehouse);
+  if (w?.city) return w.city;
   if (Array.isArray(rawProduct?.variations)) {
     for (const v of rawProduct.variations) {
       for (const wpv of v?.warehouse_product_variation || []) {
-        if (wpv?.warehouse?.city) return wpv.warehouse.city;
+        const wv = normWarehouse(wpv?.warehouse);
+        if (wv?.city) return wv.city;
       }
     }
   }
@@ -238,10 +226,12 @@ function pickWarehouseCityFromProduct(rawProduct) {
  * fallback VARIABLE), como lo resuelve el socket handler.
  */
 function pickWarehouseIdFromProduct(rawProduct) {
+  const wp = rawProduct?.warehouse_product?.[0];
+  const w = normWarehouse(wp?.warehouse);
   return (
     Number(
-      rawProduct?.warehouse_product?.[0]?.warehouse_id ||
-        rawProduct?.warehouse_product?.[0]?.warehouse?.id ||
+      wp?.warehouse_id ||
+        w?.id ||
         rawProduct?.variations?.[0]?.warehouse_product_variation?.[0]
           ?.warehouse_id ||
         0,
@@ -476,7 +466,11 @@ async function autoCrearOrdenDropi({
     // 2. Producto crudo desde POST /products/index — el MISMO endpoint que
     //    usa el flujo manual del front (GET_DROPI_PRODUCTS), probado en batalla.
     //    Buscamos por keywords y filtramos por id exacto.
-    const buscarEnIndex = async (keywords, pageSize) => {
+    const buscarEnIndex = async (
+      keywords,
+      pageSize,
+      targetId = dropiProductId,
+    ) => {
       const resp = await dropiService.listProductsIndex({
         integrationKey,
         payload: {
@@ -494,7 +488,7 @@ async function autoCrearOrdenDropi({
       const lista =
         resp?.objects || resp?.data?.objects || resp?.data?.products || [];
       return (Array.isArray(lista) ? lista : []).find(
-        (p) => Number(p?.id) === dropiProductId,
+        (p) => Number(p?.id) === Number(targetId),
       );
     };
 
@@ -636,13 +630,36 @@ async function autoCrearOrdenDropi({
     if (!destCodDane)
       return fail('ciudad', `Ciudad "${city.name}" sin cod_dane`);
 
-    // 4. Ciudad remitente: directo del producto crudo, igual que el front
-    //    (pickRemitCodDaneFromProduct en utils/orderHelper.js).
-    const remitCodDane = pickRemitCodDaneFromProduct(prodDropi);
+    // 4. Ciudad remitente: del objeto warehouse.city del producto crudo
+    //    (forma objeto o array, ambas cubiertas). Si es un COMBO y el
+    //    detalle no trae la city, se rescata con la bodega del producto
+    //    BASE vía /products/index (mismo proveedor → misma bodega).
+    let remitCityObj = pickWarehouseCityFromProduct(prodDropi);
+    let remitCodDane = remitCityObj?.cod_dane
+      ? String(remitCityObj.cod_dane).trim()
+      : '';
+
+    if (!remitCodDane && Number(prodLocal.external_id) !== dropiProductId) {
+      try {
+        const kwBase =
+          tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
+          prodLocal.nombre;
+        const baseRaw =
+          (await buscarEnIndex(kwBase, 60, Number(prodLocal.external_id))) ||
+          (await buscarEnIndex('', 100, Number(prodLocal.external_id)));
+        if (baseRaw) {
+          remitCityObj = pickWarehouseCityFromProduct(baseRaw);
+          remitCodDane = remitCityObj?.cod_dane
+            ? String(remitCityObj.cod_dane).trim()
+            : '';
+        }
+      } catch (_) {}
+    }
+
     if (!remitCodDane) {
       return fail(
         'remitente',
-        `Producto #${dropiProductId} sin warehouse_product[].warehouse.city.cod_dane en /products/index`,
+        `Producto #${dropiProductId} sin warehouse city (ni en /products/v2 ni vía producto base #${prodLocal.external_id})`,
       );
     }
 
@@ -665,22 +682,15 @@ async function autoCrearOrdenDropi({
     if (remitCodDane === destCodDane) {
       ciudad_remitente = { ...ciudad_destino };
     } else {
-      const remitCityRaw = pickWarehouseCityFromProduct(prodDropi);
-      if (!remitCityRaw) {
-        return fail(
-          'remitente',
-          `Producto #${dropiProductId} sin objeto warehouse.city para armar ciudad_remitente`,
-        );
-      }
       const deptRemit = states.find(
         (d) =>
           Number(d.id || d.department_id) ===
-          Number(remitCityRaw.department_id),
+          Number(remitCityObj.department_id),
       );
       ciudad_remitente = {
-        ...remitCityRaw,
+        ...remitCityObj,
         department:
-          remitCityRaw.department ||
+          remitCityObj.department ||
           (deptRemit ? buildDepartment(deptRemit) : undefined),
       };
     }
@@ -769,7 +779,7 @@ async function autoCrearOrdenDropi({
         total_order: totalOrder,
         shipping_amount: 0,
         payment_method_id: 1,
-        notes: `🤖 Orden generada automáticamente por IA (pedido confirmado en chat). Qty solicitada: ${cantidad}${comboUsado ? ` | combo Dropi #${dropiProductId}` : ''}`,
+        notes: '',
         name: nombre || 'Cliente',
         surname,
         phone: datosBot.telefono,
