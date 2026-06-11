@@ -14,6 +14,10 @@
  *  2. Si faltan campos clave → extractor IA (gpt-4o-mini) sobre los
  *     últimos mensajes de la conversación, con la api_key del cliente.
  *
+ * ENDPOINTS DROPI: usa exclusivamente los endpoints ya probados por el
+ * flujo manual del front: /products/index, /department, /trajectory/bycity,
+ * /orders/cotizaEnvioTransportadoraV2 y /orders/myorders (create).
+ * El remitente sale del producto crudo (warehouse_product[].warehouse.city.cod_dane).
  *
  * IDENTIFICACIÓN DE PRODUCTO (cascada):
  *  a) Nombre que el bot escribió en el resumen (venta real)
@@ -35,7 +39,6 @@ const { db } = require('../database/config');
 const { decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('./dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
-// ⚠️ Verifica que el nombre del archivo coincida con tu services/dropiOrders.service.js
 const { createOrderForClient } = require('./dropiOrders.service');
 
 /* ────────────────────────── helpers ────────────────────────── */
@@ -193,6 +196,23 @@ function pickRemitCodDaneFromProduct(rawProduct) {
     }
   }
   return '';
+}
+
+/**
+ * Réplica backend de pickWarehouseCityId (front: utils/orderHelper.js).
+ */
+function pickWarehouseCityId(rawProduct) {
+  if (!rawProduct) return null;
+  const fromWP =
+    rawProduct?.warehouse_product?.[0]?.warehouse?.[0]?.city_id ||
+    rawProduct?.warehouse_product?.[0]?.warehouse?.city_id ||
+    null;
+  if (fromWP) return Number(fromWP);
+  const fromVar =
+    rawProduct?.variations?.[0]?.warehouse_product_variation?.[0]?.warehouse
+      ?.city?.id || null;
+  if (fromVar) return Number(fromVar);
+  return null;
 }
 
 /* ─────────────── extractor IA de respaldo ─────────────── */
@@ -583,6 +603,10 @@ async function autoCrearOrdenDropi({
           EnvioConCobro: true,
           ciudad_destino_cod_dane: destCodDane,
           ciudad_remitente_cod_dane: remitCodDane,
+          // mismo payload que el front (GET_DROPI_COTIZA_ENVIO_V2):
+          // sin ciudad_destino_full Dropi no resuelve el trayecto
+          ciudad_destino_full: city,
+          warehouse_city_id: pickWarehouseCityId(prodDropi),
           products: [
             { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
           ],
@@ -605,19 +629,29 @@ async function autoCrearOrdenDropi({
     if (!validas.length)
       return fail(
         'cotizacion',
-        `Sin transportadoras disponibles ${remitCodDane}→${destCodDane}`,
+        `Sin transportadoras disponibles ${remitCodDane}→${destCodDane} | resp: ${JSON.stringify(quoteResp).slice(0, 400)}`,
       );
 
     const mejor = validas[0];
-    const distributionCompany = {
-      id: Number(mejor.transportadora_id ?? mejor?.objects?.transportadora_id),
-      name: String(
-        mejor.transportadora ??
-          mejor?.objects?.transportadora ??
-          mejor?.name ??
-          '',
-      ),
-    };
+    // réplica de pickDistributionCompanyFromQuote (front: utils/orderHelper.js)
+    const distributionCompany =
+      mejor?.distributionCompany?.id && mejor?.distributionCompany?.name
+        ? {
+            id: Number(mejor.distributionCompany.id),
+            name: String(mejor.distributionCompany.name),
+          }
+        : {
+            id:
+              Number(
+                mejor?.transportadora_id ?? mejor?.distribution_company_id ?? 0,
+              ) || null,
+            name: String(
+              mejor?.transportadora ??
+                mejor?.distribution_company?.name ??
+                mejor?.name ??
+                '',
+            ).trim(),
+          };
     if (!distributionCompany.id || !distributionCompany.name) {
       return fail(
         'cotizacion',
