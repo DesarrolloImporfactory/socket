@@ -95,4 +95,19 @@ router.post(
   configuracionesController.exportarMensajesXLSX,
 );
 
+router.post(
+  '/obtener_auto_orden_dropi',
+  ...imporchatGuard,
+  protectConfigOwner,
+  configuracionesController.obtenerAutoOrdenDropi,
+);
+
+router.post(
+  '/actualizar_auto_orden_dropi',
+  ...imporchatGuard,
+  protectConfigOwner,
+  restrictToRoles('administrador'),
+  configuracionesController.actualizarAutoOrdenDropi,
+);
+
 module.exports = router;
