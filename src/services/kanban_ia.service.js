@@ -312,7 +312,8 @@ async function procesarMensajeKanban(params) {
     !instruccionesProducto &&
     (id_configuracion == 10 ||
       id_configuracion == 277 ||
-      id_configuracion == 392)
+      id_configuracion == 392 ||
+      id_configuracion == 569)
   ) {
     const [cli] = await db.query(
       `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
