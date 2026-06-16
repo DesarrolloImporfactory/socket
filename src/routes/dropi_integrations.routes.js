@@ -36,6 +36,13 @@ router.post(
   auth.protectConfigOwner, // ← valida ownership
   dropiAutoOrderController.probarAutoOrden,
 );
+
+router.post(
+  '/auto-orders/pendientes',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.listPendientesGenerarGuia,
+);
+
 //Consultar ordenes (post hacia dropi con filtros)
 router.post(
   '/orders/myorders/list',

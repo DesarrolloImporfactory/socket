@@ -6,7 +6,7 @@
  *
  * Best-effort: si CUALQUIER paso falla, loguea en dropi_auto_ordenes_log
  * y el flujo manual sigue como siempre.
- * Gate: configuraciones.auto_crear_orden_dropi = 1.
+ * Gate: configuraciones.auto_crear_orden_dropi = 1 (force=true lo salta).
  *
  * EXTRACCIÓN DE DATOS (híbrida):
  *  1. Regex sobre el mensaje final del bot (gratis/exacto, requiere
@@ -371,6 +371,7 @@ async function autoCrearOrdenDropi({
   id_cliente,
   datosBot,
   api_key_openai = null,
+  force = false,
 }) {
   // datosBot: { nombre, telefono, provincia, ciudad, direccion, producto, precio, cantidad }
   const ctx = {
@@ -383,12 +384,14 @@ async function autoCrearOrdenDropi({
     logAuto({ ...ctx, resultado: 'fallida', paso_fallo: paso, detalle });
 
   try {
-    // 0. Gate por config
-    const [cfg] = await db.query(
-      `SELECT auto_crear_orden_dropi FROM configuraciones WHERE id = ? LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
-    if (!cfg || Number(cfg.auto_crear_orden_dropi) !== 1) return null;
+    // 0. Gate por config (force=true lo salta: creación/retry manual desde el panel)
+    if (!force) {
+      const [cfg] = await db.query(
+        `SELECT auto_crear_orden_dropi FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (!cfg || Number(cfg.auto_crear_orden_dropi) !== 1) return null;
+    }
 
     const integration = await DropiIntegrations.findOne({
       where: { id_configuracion, deleted_at: null, is_active: 1 },
