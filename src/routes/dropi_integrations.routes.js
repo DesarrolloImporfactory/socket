@@ -5,6 +5,7 @@ const auth = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const ctrl = require('../controllers/dropi_integrations.controller');
+const dropiAutoOrderController = require('../controllers/dropi_auto_orders.controller');
 
 const dropiboardGuard = [checkPlanActivo, checkToolAccess('dropiboard')];
 
@@ -26,6 +27,13 @@ router.post(
   '/orders/myorders',
   auth.protectConfigOwner,
   ctrl.createOrderMyOrders,
+);
+
+//Crear orden automatica -> solo para repetir flujo desde front o debuguear
+router.post(
+  '/orders/myorders/auto-order',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.probarAutoOrden,
 );
 
 //Consultar ordenes (post hacia dropi con filtros)
@@ -102,7 +110,6 @@ router.post(
   ...dropiboardGuard,
   ctrl.getProductosRentabilidad,
 );
-
 
 // 2026-05-02 — Ciudades + Transportadoras (GET con query params)
 router.get(

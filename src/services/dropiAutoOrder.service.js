@@ -32,6 +32,12 @@
  *  - qty N sin combo configurado → producto base, quantity N, unitario = total/N
  *  - Cinturón de margen: si el total del bot < costo proveedor del despacho,
  *    NO se crea la orden (cae a manual).
+ *
+ * RESILIENCIA (fixes):
+ *  - Rate limit 429 de Dropi → conReintento429 espera y reintenta
+ *    (solo en este flujo background, nunca en el service compartido).
+ *  - Productos privatizados para el cliente (privated_product:true) →
+ *    buscarEnIndexAmbos prueba catálogo público y privado.
  */
 
 const axios = require('axios');
@@ -58,6 +64,38 @@ function parsearPrecio(s) {
     .replace(',', '.')
     .match(/(\d+(?:\.\d{1,2})?)/);
   return m ? Number(m[1]) : 0;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Reintenta una llamada a Dropi SOLO cuando responde 429 (rate limit).
+ * 429 = la petición NO se ejecutó → reintentar es seguro (no duplica).
+ */
+async function conReintento429(fn, { intentos = 3, esperaMs = 120000 } = {}) {
+  let ultimoErr;
+  for (let i = 1; i <= intentos; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      ultimoErr = e;
+      const status = e?.statusCode || e?.response?.status;
+      const is429 =
+        status === 429 ||
+        /exceeded the allowed number of requests/i.test(e?.message || '');
+      if (is429 && i < intentos) {
+        console.log(
+          `[AutoOrden] Dropi 429 (rate limit). Reintento ${i}/${intentos - 1} en ${Math.round(
+            esperaMs / 1000,
+          )}s`,
+        );
+        await sleep(esperaMs);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw ultimoErr;
 }
 
 const STOPWORDS_MATCH = new Set([
@@ -466,31 +504,46 @@ async function autoCrearOrdenDropi({
     // 2. Producto crudo desde POST /products/index — el MISMO endpoint que
     //    usa el flujo manual del front (GET_DROPI_PRODUCTS), probado en batalla.
     //    Buscamos por keywords y filtramos por id exacto.
+    //    privated: false = catálogo público; true = productos privatizados
+    //    para el cliente (los que estos dropshippers COD suelen vender).
+    //    Va con reintento 429.
     const buscarEnIndex = async (
       keywords,
       pageSize,
       targetId = dropiProductId,
+      privated = false,
     ) => {
-      const resp = await dropiService.listProductsIndex({
-        integrationKey,
-        payload: {
-          pageSize,
-          startData: 0,
-          no_count: true,
-          order_by: 'id',
-          order_type: 'desc',
-          keywords,
-          favorite: false,
-          privated_product: false,
-        },
-        country_code,
-      });
+      const resp = await conReintento429(() =>
+        dropiService.listProductsIndex({
+          integrationKey,
+          payload: {
+            pageSize,
+            startData: 0,
+            no_count: true,
+            order_by: 'id',
+            order_type: 'desc',
+            keywords,
+            favorite: false,
+            privated_product: privated,
+          },
+          country_code,
+        }),
+      );
       const lista =
         resp?.objects || resp?.data?.objects || resp?.data?.products || [];
       return (Array.isArray(lista) ? lista : []).find(
         (p) => Number(p?.id) === Number(targetId),
       );
     };
+
+    // Prueba catálogo público y, si no aparece, privado. Corta en el primer hit.
+    const buscarEnIndexAmbos = async (
+      keywords,
+      pageSize,
+      targetId = dropiProductId,
+    ) =>
+      (await buscarEnIndex(keywords, pageSize, targetId, false)) ||
+      (await buscarEnIndex(keywords, pageSize, targetId, true));
 
     let prodDropi = null;
 
@@ -499,11 +552,13 @@ async function autoCrearOrdenDropi({
     // (GET_DROPI_COTIZA_ENVIO_V2) lo usa para resolver warehouse_id.
     // Es la única forma confiable de traer un COMBO (otro ID con otro nombre).
     try {
-      const det = await dropiService.getProductDetail({
-        integrationKey,
-        productId: dropiProductId,
-        country_code,
-      });
+      const det = await conReintento429(() =>
+        dropiService.getProductDetail({
+          integrationKey,
+          productId: dropiProductId,
+          country_code,
+        }),
+      );
       const obj = det?.objects || det?.data?.objects || det?.data || null;
       if (Number(obj?.id) === dropiProductId) prodDropi = obj;
     } catch (e) {
@@ -511,14 +566,14 @@ async function autoCrearOrdenDropi({
     }
 
     // Intento 2/3: /products/index por keywords del nombre local,
-    // luego sin keywords (página amplia).
+    // luego sin keywords (página amplia). Ambos prueban público y privado.
     if (!prodDropi) {
       try {
         const kw =
           tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' ') ||
           prodLocal.nombre;
-        prodDropi = await buscarEnIndex(kw, 60);
-        if (!prodDropi) prodDropi = await buscarEnIndex('', 100);
+        prodDropi = await buscarEnIndexAmbos(kw, 60);
+        if (!prodDropi) prodDropi = await buscarEnIndexAmbos('', 100);
       } catch (e) {
         return fail(
           'producto_detalle',
@@ -571,11 +626,13 @@ async function autoCrearOrdenDropi({
     // 3. Provincia → ciudad (catálogo Dropi) + cod_dane destino
     let statesResp;
     try {
-      statesResp = await dropiService.listStates({
-        integrationKey,
-        country_id: 1,
-        country_code,
-      });
+      statesResp = await conReintento429(() =>
+        dropiService.listStates({
+          integrationKey,
+          country_id: 1,
+          country_code,
+        }),
+      );
     } catch (e) {
       return fail(
         'provincia',
@@ -597,11 +654,16 @@ async function autoCrearOrdenDropi({
 
     let citiesResp;
     try {
-      citiesResp = await dropiService.listCities({
-        integrationKey,
-        payload: { department_id: Number(state.id), rate_type: 'CON RECAUDO' },
-        country_code,
-      });
+      citiesResp = await conReintento429(() =>
+        dropiService.listCities({
+          integrationKey,
+          payload: {
+            department_id: Number(state.id),
+            rate_type: 'CON RECAUDO',
+          },
+          country_code,
+        }),
+      );
     } catch (e) {
       return fail(
         'ciudad',
@@ -635,6 +697,7 @@ async function autoCrearOrdenDropi({
     //    falta, se rescata de /products/index buscando por el nombre REAL
     //    del producto en Dropi (el que devolvió el detalle, typos
     //    incluidos), luego por el nombre local, luego página amplia.
+    //    Cada intento prueba público Y privado (buscarEnIndexAmbos).
     //    Último recurso para combos: la bodega del producto BASE.
     let remitCityObj = pickWarehouseCityFromProduct(prodDropi);
     let remitCodDane = remitCityObj?.cod_dane
@@ -669,14 +732,18 @@ async function autoCrearOrdenDropi({
         ].filter((kw, i, a) => kw !== '' || i === a.length - 1);
 
         for (const kw of intentos) {
-          const raw = await buscarEnIndex(kw, kw ? 60 : 100, dropiProductId);
+          const raw = await buscarEnIndexAmbos(
+            kw,
+            kw ? 60 : 100,
+            dropiProductId,
+          );
           if (aplicarRaw(raw)) break;
         }
 
         // combos que no aparecen en index: bodega del producto BASE
         if (!remitCodDane && Number(prodLocal.external_id) !== dropiProductId) {
           for (const kw of intentos) {
-            const raw = await buscarEnIndex(
+            const raw = await buscarEnIndexAmbos(
               kw,
               kw ? 60 : 100,
               Number(prodLocal.external_id),
@@ -730,20 +797,22 @@ async function autoCrearOrdenDropi({
 
     let quoteResp;
     try {
-      quoteResp = await dropiService.cotizaEnvioTransportadora({
-        integrationKey,
-        payload: {
-          EnvioConCobro: true,
-          ciudad_destino,
-          ciudad_remitente,
-          products: [
-            { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
-          ],
-          amount: precioVenta,
-          ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
-        },
-        country_code,
-      });
+      quoteResp = await conReintento429(() =>
+        dropiService.cotizaEnvioTransportadora({
+          integrationKey,
+          payload: {
+            EnvioConCobro: true,
+            ciudad_destino,
+            ciudad_remitente,
+            products: [
+              { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
+            ],
+            amount: precioVenta,
+            ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
+          },
+          country_code,
+        }),
+      );
     } catch (e) {
       return fail(
         'cotizacion',
