@@ -409,7 +409,11 @@ async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
 /**
  * Convierte video a MP4 (H.264/AAC) compatible con WhatsApp.
  */
-async function convertVideoForWhatsApp(fileBuffer, originalName, targetSizeMB = 15) {
+async function convertVideoForWhatsApp(
+  fileBuffer,
+  originalName,
+  targetSizeMB = 15,
+) {
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `input-${Date.now()}-${originalName}`);
   const outputPath = path.join(tempDir, `output-${Date.now()}.mp4`);
@@ -439,44 +443,66 @@ async function convertVideoForWhatsApp(fileBuffer, originalName, targetSizeMB = 
     const totalKbps = Math.floor((MAX_BYTES * 8) / duration / 1000);
     const videoKbps = Math.max(100, totalKbps - AUDIO_KBPS);
 
-    console.log(`[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k | Target: ${targetSizeMB}MB`);
+    console.log(
+      `[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k | Target: ${targetSizeMB}MB`,
+    );
 
     // Helper interno: construye el comando ffmpeg con los parámetros dados
     // - Escala manteniendo aspect ratio al máximo maxW x maxH
     // - Redondea ancho/alto a número par (libx264 lo exige)
-    const buildCmd = (vKbps, maxW, maxH, aKbps) => [
-      `ffmpeg -i "${inputPath}"`,
-      `-f lavfi -i anullsrc=r=44100:cl=mono`,
-      `-c:v libx264 -preset ultrafast`,
-      `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
-      `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
-      `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
-      `-map 0:v -map "[aout]"`,
-      `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
-      `-movflags +faststart -y "${outputPath}"`,
-    ].join(' ');
+    const buildCmd = (vKbps, maxW, maxH, aKbps) =>
+      [
+        `ffmpeg -i "${inputPath}"`,
+        `-f lavfi -i anullsrc=r=44100:cl=mono`,
+        `-c:v libx264 -preset ultrafast`,
+        `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
+        `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
+        `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
+        `-map 0:v -map "[aout]"`,
+        `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
+        `-movflags +faststart -y "${outputPath}"`,
+      ].join(' ');
 
     // 3) Intento 1 — 720p, bitrate calculado
-    await execAsync(buildCmd(videoKbps, 1280, 720, AUDIO_KBPS), { maxBuffer: 50 * 1024 * 1024 });
+    await execAsync(buildCmd(videoKbps, 1280, 720, AUDIO_KBPS), {
+      maxBuffer: 50 * 1024 * 1024,
+    });
     let statOut = await fs.stat(outputPath);
-    console.log(`[VIDEO_CONVERT] Intento 1 (720p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(
+      `[VIDEO_CONVERT] Intento 1 (720p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`,
+    );
 
     // 4) Intento 2 — 480p, bitrate reducido al 55%, audio 64k
     if (statOut.size > MAX_BYTES) {
       const vKbps2 = Math.max(80, Math.floor(videoKbps * 0.55));
-      console.warn(`[VIDEO_CONVERT] Supera límite → compresión agresiva 480p (${vKbps2}k)...`);
-      await execAsync(buildCmd(vKbps2, 854, 480, 64), { maxBuffer: 50 * 1024 * 1024 });
+      console.warn(
+        `[VIDEO_CONVERT] Supera límite → compresión agresiva 480p (${vKbps2}k)...`,
+      );
+      await execAsync(buildCmd(vKbps2, 854, 480, 64), {
+        maxBuffer: 50 * 1024 * 1024,
+      });
       statOut = await fs.stat(outputPath);
-      console.log(`[VIDEO_CONVERT] Intento 2 (480p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+      console.log(
+        `[VIDEO_CONVERT] Intento 2 (480p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`,
+      );
     }
 
     // 5) Intento 3 — 360p, bitrate mínimo, audio 48k
     if (statOut.size > MAX_BYTES) {
-      const vKbps3 = Math.max(60, Math.floor(((MAX_BYTES * 8) / duration / 1000) * 0.8 - 48));
-      console.warn(`[VIDEO_CONVERT] Aún supera límite → compresión máxima 360p (${vKbps3}k)...`);
-      await execAsync(buildCmd(vKbps3, 640, 360, 48), { maxBuffer: 50 * 1024 * 1024 });
+      const vKbps3 = Math.max(
+        60,
+        Math.floor(((MAX_BYTES * 8) / duration / 1000) * 0.8 - 48),
+      );
+      console.warn(
+        `[VIDEO_CONVERT] Aún supera límite → compresión máxima 360p (${vKbps3}k)...`,
+      );
+      await execAsync(buildCmd(vKbps3, 640, 360, 48), {
+        maxBuffer: 50 * 1024 * 1024,
+      });
       statOut = await fs.stat(outputPath);
-      console.log(`[VIDEO_CONVERT] Intento 3 (360p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`);
+      console.log(
+        `[VIDEO_CONVERT] Intento 3 (360p): ${(statOut.size / (1024 * 1024)).toFixed(2)} MB`,
+      );
     }
 
     // 6) Si aún supera el límite, lanzar error descriptivo
@@ -967,6 +993,167 @@ function isWindowClosedError(err) {
   return code === 131047 || code === 131051;
 }
 
+/**
+ * Sube un archivo vía upload session resumable y devuelve el handle (h)
+ * para usarlo en example.header_handle al crear plantillas con HEADER media.
+ * Requiere process.env.FB_APP_ID y process.env.GRAPH_VERSION.
+ */
+async function uploadResumableAndGetHandle({
+  accessToken,
+  fileBuffer,
+  mimeType,
+  fileName,
+}) {
+  const FB_APP_ID = process.env.FB_APP_ID;
+  if (!FB_APP_ID) {
+    throw new Error('Falta FB_APP_ID');
+  }
+
+  const ax = axios.create({
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  // 1) Crear sesión de subida (upload session)
+  const startUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${FB_APP_ID}/uploads`;
+  const startResp = await ax.post(startUrl, null, {
+    params: {
+      file_length: fileBuffer.length,
+      file_type: mimeType,
+      file_name: fileName,
+    },
+  });
+
+  if (startResp.status < 200 || startResp.status >= 300) {
+    throw new Error(
+      `No se pudo iniciar upload session: ${startResp.status} ${JSON.stringify(startResp.data)}`,
+    );
+  }
+
+  const uploadSessionId = startResp.data?.id;
+  if (!uploadSessionId) {
+    throw new Error(`Upload session sin id: ${JSON.stringify(startResp.data)}`);
+  }
+
+  // 2) Subir binario
+  const uploadUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${uploadSessionId}`;
+  const uploadResp = await axios.post(uploadUrl, fileBuffer, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/octet-stream',
+      file_offset: '0',
+    },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (uploadResp.status < 200 || uploadResp.status >= 300) {
+    throw new Error(
+      `No se pudo subir archivo: ${uploadResp.status} ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  const handle = uploadResp.data?.h;
+  if (!handle) {
+    throw new Error(
+      `Respuesta sin handle (h): ${JSON.stringify(uploadResp.data)}`,
+    );
+  }
+
+  return handle;
+}
+
+/**
+ * Genera una clave única (timestamp + random).
+ */
+function generarClaveUnica() {
+  const randomStr = Math.random().toString(36).substring(2, 8);
+  return `key_${Date.now()}_${randomStr}`;
+}
+
+/**
+ * Propietario único por config:
+ *  - Si existe (propietario=1, deleted_at NULL) → UPDATE
+ *  - Si no existe → INSERT
+ * Devuelve el id del propietario.
+ */
+async function upsertOwnerByConfig({
+  id_configuracion,
+  uid_cliente = null,
+  nombre_cliente = null,
+  celular_cliente = null,
+  source = 'owner',
+  page_id = null,
+  external_id = null,
+  id_plataforma = null,
+}) {
+  // 1) Buscar propietario existente (único por config)
+  const [owner] = await db.query(
+    `SELECT id
+       FROM clientes_chat_center
+      WHERE id_configuracion = ?
+        AND propietario = 1
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  // 2) Si existe -> actualizar
+  if (owner?.id) {
+    await db.query(
+      `UPDATE clientes_chat_center
+          SET uid_cliente     = COALESCE(?, uid_cliente),
+              nombre_cliente  = COALESCE(?, nombre_cliente),
+              celular_cliente = COALESCE(?, celular_cliente),
+              source          = COALESCE(?, source),
+              page_id         = COALESCE(?, page_id),
+              external_id     = COALESCE(?, external_id),
+              id_plataforma   = COALESCE(?, id_plataforma),
+              updated_at      = NOW()
+        WHERE id = ?`,
+      {
+        replacements: [
+          uid_cliente,
+          nombre_cliente,
+          celular_cliente,
+          source,
+          page_id,
+          external_id,
+          id_plataforma,
+          owner.id,
+        ],
+      },
+    );
+
+    return owner.id;
+  }
+
+  // 3) Si no existe -> crear
+  const [ins] = await db.query(
+    `INSERT INTO clientes_chat_center
+      (id_configuracion, id_plataforma, uid_cliente, nombre_cliente, celular_cliente,
+       propietario, source, page_id, external_id, created_at, updated_at)
+     VALUES
+      (?, ?, ?, ?, ?, 1, ?, ?, ?, NOW(), NOW())`,
+    {
+      replacements: [
+        id_configuracion,
+        id_plataforma,
+        uid_cliente,
+        nombre_cliente,
+        celular_cliente,
+        source,
+        page_id,
+        external_id,
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  return ins?.insertId ?? ins;
+}
+
 module.exports = {
   getConfigFromDB,
   onlyDigits,
@@ -987,4 +1174,7 @@ module.exports = {
   extractBearerToken,
   verificarVentana24h,
   isWindowClosedError,
+  uploadResumableAndGetHandle,
+  generarClaveUnica,
+  upsertOwnerByConfig,
 };

@@ -344,6 +344,31 @@ async function generarUsernameUnico(base, transaction = null) {
   return `${baseLimpia}_${Date.now().toString().slice(-6)}`;
 }
 
+// Plan cortesía para usuarios que llegan con id_rol = 16 (3 meses gratis) --> ESTUDIANTES
+const PLAN_CORTESIA_ROL16 = 21;
+
+const aplicarPlanCortesiaRol16 = async (email) => {
+  if (!email) return null;
+
+  const sequelize = Usuarios_chat_center.sequelize;
+
+  const result = await sequelize.query(
+    `UPDATE usuarios_chat_center
+        SET id_plan = :idPlan,
+            estado = 'activo',
+            fecha_inicio = NOW(),
+            fecha_renovacion = DATE_ADD(NOW(), INTERVAL 3 MONTH)
+      WHERE email_propietario = :email
+        AND (stripe_subscription_id IS NULL OR stripe_subscription_id = '')`,
+    {
+      replacements: { idPlan: PLAN_CORTESIA_ROL16, email },
+      type: sequelize.QueryTypes.UPDATE,
+    },
+  );
+
+  return result;
+};
+
 exports.newLogin = async (req, res) => {
   const { token, tienda, tipo } = req.body;
 
@@ -508,6 +533,18 @@ exports.newLogin = async (req, res) => {
               });
             }
 
+            // Plan cortesía rol 16 -> ESTUDIANTE
+            if (id_rol == 16) {
+              try {
+                await aplicarPlanCortesiaRol16(email_users);
+              } catch (e) {
+                console.error(
+                  '⚠️ No se pudo aplicar plan cortesía rol 16 (escenario B):',
+                  e.message,
+                );
+              }
+            }
+
             const sessionToken = await generarToken(
               subUserExistente.id_sub_usuario,
             );
@@ -517,9 +554,11 @@ exports.newLogin = async (req, res) => {
             return res.status(200).json({
               status: 'success',
               estado_creacion:
-                usuarioExistentePorEmail.estado === 'activo'
+                id_rol == 16
                   ? 'completo'
-                  : 'incompleto',
+                  : usuarioExistentePorEmail.estado === 'activo'
+                    ? 'completo'
+                    : 'incompleto',
               token: sessionToken,
               user: subUserSinPassword,
               id_plataforma: tienda,
@@ -618,11 +657,23 @@ exports.newLogin = async (req, res) => {
                 };
               });
 
+            //  Plan cortesía rol 16 (después del commit, best-effort)
+            if (id_rol == 16) {
+              try {
+                await aplicarPlanCortesiaRol16(email_users);
+              } catch (e) {
+                console.error(
+                  '⚠️ No se pudo aplicar plan cortesía rol 16 (escenario A):',
+                  e.message,
+                );
+              }
+            }
+
             const sessionToken = await generarToken(id_sub_usuario);
 
             return res.status(200).json({
               status: 'success',
-              estado_creacion: 'incompleto',
+              estado_creacion: id_rol == 16 ? 'completo' : 'incompleto',
               token: sessionToken,
               user: subUsuarioCreado,
               id_plataforma: tienda,
@@ -704,10 +755,26 @@ exports.newLogin = async (req, res) => {
           id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
           usuarioEncontrado = subusuarios_chat_center;
 
+          //  Plan cortesía rol 16
+          if (id_rol == 16) {
+            try {
+              await aplicarPlanCortesiaRol16(
+                usuarios_chat_center.email_propietario || email_users,
+              );
+            } catch (e) {
+              console.error(
+                '⚠️ No se pudo aplicar plan cortesía rol 16 (ya asociado):',
+                e.message,
+              );
+            }
+          }
+
           estado_creacion =
-            usuarios_chat_center.estado === 'activo'
+            id_rol == 16
               ? 'completo'
-              : 'incompleto';
+              : usuarios_chat_center.estado === 'activo'
+                ? 'completo'
+                : 'incompleto';
 
           const sessionToken = await generarToken(id_sub_usuario_encontrado);
           const usuarioPlano = usuarioEncontrado.toJSON();
