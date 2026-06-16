@@ -3,7 +3,7 @@ const AppError = require('../utils/appError');
 const { promisify } = require('util');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
-const { db_2 } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 
 const jwt = require('jsonwebtoken');
 
@@ -118,6 +118,22 @@ exports.protectConfigOwner = catchAsync(async (req, res, next) => {
     return next(
       new AppError('Configuración no válida o no pertenece a esta cuenta', 403),
     );
+  }
+  next();
+});
+
+// Si viene id_log, resuelve su id_configuracion y lo inyecta al body
+// para que protectConfigOwner valide la propiedad normalmente.
+// (el flujo retry desde el front manda solo { id_log })
+exports.resolverConfigDesdeLog = catchAsync(async (req, res, next) => {
+  const idLog = Number(req.body?.id_log);
+  if (idLog && !req.body?.id_configuracion) {
+    const [row] = await db.query(
+      `SELECT id_configuracion FROM dropi_auto_ordenes_log WHERE id = ? LIMIT 1`,
+      { replacements: [idLog], type: db.QueryTypes.SELECT },
+    );
+    if (!row) return next(new AppError(`No existe log #${idLog}`, 404));
+    req.body.id_configuracion = row.id_configuracion;
   }
   next();
 });

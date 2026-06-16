@@ -32,10 +32,10 @@ router.post(
 //Crear orden automatica -> solo para repetir flujo desde front o debuguear
 router.post(
   '/orders/myorders/auto-order',
-  auth.protectConfigOwner,
+  auth.resolverConfigDesdeLog, // ← resuelve id_configuracion desde id_log
+  auth.protectConfigOwner, // ← valida ownership
   dropiAutoOrderController.probarAutoOrden,
 );
-
 //Consultar ordenes (post hacia dropi con filtros)
 router.post(
   '/orders/myorders/list',
