@@ -31,6 +31,10 @@ const DropiDailyMetrics = db.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    gastos_adicionales: {
+      type: DataTypes.DECIMAL(10, 2),
+      defaultValue: 0,
+    },
   },
   {
     tableName: 'dropi_daily_metrics',

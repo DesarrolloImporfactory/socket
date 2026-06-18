@@ -12,6 +12,11 @@ const AppError = require('../utils/appError');
 const { db } = require('../database/config');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const logger = require('../utils/logger');
+const {
+  _internal: { syncFromDropi, getActiveIntegration, getIntegrationKey },
+} = require('./dropi_integrations.controller');
+
+const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
 
 // ════════════════════════════════════════════════════════════
 // Helpers
@@ -40,36 +45,164 @@ function normalizePhone(p) {
   return d.slice(-9);
 }
 
-async function callInternal(req, path, { method = 'get', data = null } = {}) {
-  const auth = req.headers.authorization || '';
-  const url = `http://127.0.0.1:${process.env.PORT || 3000}${path}`;
+async function getAdConnection(id_configuracion) {
+  const rows = await db.query(
+    `SELECT * FROM meta_ad_connections WHERE id_configuracion = ? AND status = 'active' LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return rows[0] || null;
+}
 
-  const config = {
-    method,
-    url,
-    headers: { Authorization: auth },
-    timeout: 30000,
+function metaAx(token) {
+  return axios.create({
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 20000,
     validateStatus: () => true,
-  };
+  });
+}
 
-  if (data !== null && data !== undefined && method.toLowerCase() !== 'get') {
-    config.data = data;
-    config.headers['Content-Type'] = 'application/json';
+function parseActions(actions) {
+  const result = { purchases: 0, messaging_conversations: 0 };
+  if (!Array.isArray(actions)) return result;
+  for (const a of actions) {
+    if (a.action_type === 'purchase') result.purchases += Number(a.value) || 0;
+    if (a.action_type === 'onsite_conversion.messaging_conversation_started_7d')
+      result.messaging_conversations += Number(a.value) || 0;
   }
+  return result;
+}
 
-  const resp = await axios(config);
+function extractCpa(costPerActionType, actionTypes) {
+  if (!Array.isArray(costPerActionType)) return 0;
+  const found = costPerActionType.find((c) =>
+    actionTypes.includes(c.action_type),
+  );
+  return Number(found?.value) || 0;
+}
+
+async function fetchAccountInsights(conn, timeRange) {
+  const ax = metaAx(conn.access_token);
+  const resp = await ax.get(`${GRAPH_BASE}/${conn.ad_account_id}/insights`, {
+    params: {
+      fields:
+        'spend,impressions,clicks,ctr,cpc,cpm,actions,action_values,cost_per_action_type',
+      time_range: timeRange,
+      level: 'account',
+    },
+  });
 
   if (resp.status >= 400) {
     throw new AppError(
-      `Internal ${path} → ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`,
+      `Meta account insights: ${resp.status} - ${JSON.stringify(resp.data?.error || resp.data)}`,
       502,
     );
   }
-  return resp.data;
+
+  const row = resp.data?.data?.[0] || {};
+  const actions = parseActions(row.actions);
+  const spend = Number(row.spend) || 0;
+  let cpaMessaging = extractCpa(row.cost_per_action_type, [
+    'onsite_conversion.messaging_conversation_started_7d',
+  ]);
+  if (!cpaMessaging && actions.messaging_conversations > 0)
+    cpaMessaging = spend / actions.messaging_conversations;
+
+  return {
+    success: true,
+    currency: conn.currency,
+    data: {
+      spend,
+      impressions: Number(row.impressions) || 0,
+      clicks: Number(row.clicks) || 0,
+      ctr: Number(row.ctr) || 0,
+      cpc: Number(row.cpc) || 0,
+      cpm: Number(row.cpm) || 0,
+      messaging_conversations: actions.messaging_conversations,
+      cpa_messaging: +cpaMessaging.toFixed(2),
+    },
+  };
+}
+
+async function fetchTopAds(conn, timeRange, limit) {
+  const ax = metaAx(conn.access_token);
+  const resp = await ax.get(`${GRAPH_BASE}/${conn.ad_account_id}/insights`, {
+    params: {
+      fields:
+        'ad_id,ad_name,campaign_name,spend,impressions,clicks,ctr,cpc,actions,cost_per_action_type',
+      time_range: timeRange,
+      level: 'ad',
+      sort: ['spend_descending'],
+      limit,
+    },
+  });
+
+  if (resp.status >= 400) {
+    throw new AppError(
+      `Meta top-ads: ${resp.status} - ${JSON.stringify(resp.data?.error || resp.data)}`,
+      502,
+    );
+  }
+
+  const adsData = resp.data?.data || [];
+  const adIds = [...new Set(adsData.map((r) => r.ad_id).filter(Boolean))];
+
+  const creativeMap = {};
+  const statusMap = {};
+  if (adIds.length) {
+    await Promise.all(
+      adIds.map(async (adId) => {
+        try {
+          const crResp = await ax.get(`${GRAPH_BASE}/${adId}`, {
+            params: {
+              fields:
+                'status,effective_status,creative{effective_object_story_id,thumbnail_url}',
+            },
+          });
+          if (crResp.status >= 200 && crResp.status < 300) {
+            creativeMap[adId] = crResp.data?.creative || {};
+            statusMap[adId] = {
+              status: crResp.data?.status || null,
+              effective_status: crResp.data?.effective_status || null,
+            };
+          }
+        } catch {}
+      }),
+    );
+  }
+
+  const ads = adsData.map((row) => {
+    const actions = parseActions(row.actions);
+    const spend = Number(row.spend) || 0;
+    const creative = creativeMap[row.ad_id] || {};
+    const st = statusMap[row.ad_id] || {};
+    let cpaMessaging = extractCpa(row.cost_per_action_type, [
+      'onsite_conversion.messaging_conversation_started_7d',
+    ]);
+    if (!cpaMessaging && actions.messaging_conversations > 0)
+      cpaMessaging = spend / actions.messaging_conversations;
+
+    return {
+      ad_id: row.ad_id,
+      ad_name: row.ad_name,
+      campaign_name: row.campaign_name || null,
+      post_id: creative.effective_object_story_id || null,
+      thumbnail_url: creative.thumbnail_url || null,
+      status: st.status || null,
+      effective_status: st.effective_status || null,
+      spend,
+      impressions: Number(row.impressions) || 0,
+      clicks: Number(row.clicks) || 0,
+      ctr: Number(row.ctr) || 0,
+      cpc: Number(row.cpc) || 0,
+      messaging_conversations: actions.messaging_conversations,
+      cpa_messaging: +cpaMessaging.toFixed(2),
+    };
+  });
+
+  return { success: true, currency: conn.currency, data: ads };
 }
 
 async function ensureDropiCacheFresh({
-  req,
   id_configuracion,
   since,
   until,
@@ -98,22 +231,22 @@ async function ensureDropiCacheFresh({
   const isStale = !lastSync || ageMin > maxAgeMinutes;
 
   if (isStale) {
-    axios
-      .post(
-        `http://127.0.0.1:${process.env.PORT || 3000}/api/v1/dropi/dashboard-stats`,
-        { id_configuracion, from: since, until },
-        {
-          headers: {
-            Authorization: req.headers.authorization || '',
-            'Content-Type': 'application/json',
-          },
-          timeout: 5000,
-          validateStatus: () => true,
-        },
-      )
-      .catch((err) => {
-        if (logger?.warn) logger.warn(`mc-sync-trigger-failed: ${err.message}`);
-      });
+    const integration = await getActiveIntegration(id_configuracion);
+    if (integration) {
+      const integrationKey = getIntegrationKey(integration);
+      if (integrationKey) {
+        syncFromDropi({
+          integrationKey,
+          country_code: integration.country_code,
+          cacheCtx: { id_configuracion },
+          from: since,
+          until,
+        }).catch((err) => {
+          if (logger?.warn)
+            logger.warn(`mc-sync-trigger-failed: ${err.message}`);
+        });
+      }
+    }
   }
 
   return { lastSync, ageMin, isStale, totalCached };
@@ -135,29 +268,25 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     return next(new AppError('id_configuracion es requerido', 400));
 
   const cacheStatus = await ensureDropiCacheFresh({
-    req,
     id_configuracion,
     since,
     until,
   });
 
-  const tr = encodeURIComponent(JSON.stringify({ since, until }));
+  const timeRange = JSON.stringify({ since, until });
   const windowMs = WINDOW_HOURS * 60 * 60 * 1000;
   const sinceExt = new Date(new Date(since + 'T00:00:00').getTime() - windowMs)
     .toISOString()
     .slice(0, 19)
     .replace('T', ' ');
 
+  const conn = await getAdConnection(id_configuracion);
+  if (!conn) return next(new AppError('No hay cuenta de ads conectada.', 400));
+
   const [acctResp, adsResp, aggResult, orderResult, msgResult] =
     await Promise.all([
-      callInternal(
-        req,
-        `/api/v1/meta_ads/insights/account?id_configuracion=${id_configuracion}&time_range=${tr}`,
-      ),
-      callInternal(
-        req,
-        `/api/v1/meta_ads/insights/top-ads?id_configuracion=${id_configuracion}&time_range=${tr}&limit=50`,
-      ),
+      fetchAccountInsights(conn, timeRange),
+      fetchTopAds(conn, timeRange, 50),
       // AGREGADO: utilidad_entregada = SUM(dropshipper_profit) cuando entregada
       db.query(
         `SELECT

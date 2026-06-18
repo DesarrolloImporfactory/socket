@@ -2459,6 +2459,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     const manual = manualMap.get(fechaStr) || {};
     const gasto = Number(manual.gasto_diario || 0);
     const mensajes = Number(manual.num_mensajes || 0);
+    const gastosAdicionales = Number(manual.gastos_adicionales || 0);
 
     const ventaTotal = Number(r.venta_total || 0);
     const ventaEntregadas = Number(r.venta_entregadas || 0);
@@ -2476,7 +2477,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     const costXMensaje = mensajes > 0 ? gasto / mensajes : 0;
     // Rentabilidad REAL (lo cobrado hoy)
     const rentabilidad =
-      ventaEntregadas - costoProductoEntregadas - fleteMovilizadas - gasto;
+      ventaEntregadas - costoProductoEntregadas - fleteMovilizadas - gasto - gastosAdicionales;
 
     // ─────── PROYECCIÓN ───────
     // De las órdenes en tránsito, asumimos que se entregarán según tasa histórica.
@@ -2498,6 +2499,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       fecha: fechaStr,
       gasto_diario: Math.round(gasto * 100) / 100,
       num_mensajes: mensajes,
+      gastos_adicionales: Math.round(gastosAdicionales * 100) / 100,
       cost_x_mensaje: Math.round(costXMensaje * 10000) / 10000,
       ordenes_dia: Number(r.ordenes_dia || 0),
       venta_total: Math.round(ventaTotal * 100) / 100,
@@ -2533,11 +2535,13 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     if (fechasConOrdenes.has(fechaStr)) continue;
     const gasto = Number(m.gasto_diario || 0);
     const mensajes = Number(m.num_mensajes || 0);
-    if (gasto === 0 && mensajes === 0) continue;
+    const gastosAdic = Number(m.gastos_adicionales || 0);
+    if (gasto === 0 && mensajes === 0 && gastosAdic === 0) continue;
     rows.push({
       fecha: fechaStr,
       gasto_diario: Math.round(gasto * 100) / 100,
       num_mensajes: mensajes,
+      gastos_adicionales: Math.round(gastosAdic * 100) / 100,
       cost_x_mensaje:
         mensajes > 0 ? Math.round((gasto / mensajes) * 10000) / 10000 : 0,
       ordenes_dia: 0,
@@ -2553,8 +2557,8 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
       transito: 0,
       movilizadas: 0,
       tasa_entrega_dia: null,
-      rentabilidad: -gasto,
-      rentabilidad_proyectada: -gasto,
+      rentabilidad: -(gasto + gastosAdic),
+      rentabilidad_proyectada: -(gasto + gastosAdic),
       venta_proyectada_extra: 0,
       ordenes_proyectadas_extra: 0,
       es_proyeccion: false,
@@ -2567,6 +2571,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     (acc, r) => ({
       gasto_diario: acc.gasto_diario + r.gasto_diario,
       num_mensajes: acc.num_mensajes + r.num_mensajes,
+      gastos_adicionales: acc.gastos_adicionales + (r.gastos_adicionales || 0),
       ordenes_dia: acc.ordenes_dia + r.ordenes_dia,
       venta_total: acc.venta_total + r.venta_total,
       venta_entregadas: acc.venta_entregadas + (r.venta_entregadas || 0),
@@ -2591,6 +2596,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     {
       gasto_diario: 0,
       num_mensajes: 0,
+      gastos_adicionales: 0,
       ordenes_dia: 0,
       venta_total: 0,
       venta_entregadas: 0,
@@ -2647,6 +2653,7 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
   const fecha = strOrNull(req.body?.fecha);
   const gasto_diario = req.body?.gasto_diario;
   const num_mensajes = req.body?.num_mensajes;
+  const gastos_adicionales = req.body?.gastos_adicionales;
 
   if (!fecha) return next(new AppError('fecha es requerida (YYYY-MM-DD)', 400));
 
@@ -2666,6 +2673,7 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
 
   if (gasto_diario !== undefined) row.gasto_diario = Number(gasto_diario) || 0;
   if (num_mensajes !== undefined) row.num_mensajes = Number(num_mensajes) || 0;
+  if (gastos_adicionales !== undefined) row.gastos_adicionales = Number(gastos_adicionales) || 0;
   await row.save();
 
   return res.json({
@@ -2674,6 +2682,7 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
       fecha: row.fecha,
       gasto_diario: Number(row.gasto_diario),
       num_mensajes: Number(row.num_mensajes),
+      gastos_adicionales: Number(row.gastos_adicionales),
     },
   });
 });
@@ -3312,3 +3321,12 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
     },
   });
 });
+
+// ── Helpers exportados para uso interno (marketing_control) ──
+exports._internal = {
+  syncFromDropi,
+  getActiveIntegration,
+  getIntegrationKey,
+  buildCacheKey,
+  buildCacheWhere,
+};
