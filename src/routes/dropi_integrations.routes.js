@@ -125,4 +125,11 @@ router.get(
   ctrl.getCiudadesTransportadoras,
 );
 
+// Dashboard por conexión (resumen KPIs + top productos)
+router.post(
+  '/dashboard/connection-summary',
+  auth.protectConfigOwner,
+  ctrl.getConnectionSummary,
+);
+
 module.exports = router;

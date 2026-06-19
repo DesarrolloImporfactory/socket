@@ -3322,6 +3322,134 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
   });
 });
 
+/* ═══════════════════════════════════════════════════════════
+   getConnectionSummary
+   KPIs + top productos para una conexión en un rango de fechas.
+   No requiere integración Dropi activa.
+   ═══════════════════════════════════════════════════════════ */
+
+exports.getConnectionSummary = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+
+  if (!id_configuracion) return next(new AppError('id_configuracion es requerido', 400));
+  if (!from || !until) return next(new AppError('from y until son requeridos', 400));
+
+  const dateRange = { [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`] };
+
+  const [orderRows, totalConversaciones] = await Promise.all([
+    DropiOrdersCache.findAll({
+      where: {
+        id_configuracion,
+        id_usuario: 0,
+        order_created_at: dateRange,
+      },
+      attributes: ['total_order', 'dropshipper_profit', 'product_names', 'classified_status', 'order_created_at'],
+      raw: true,
+    }),
+    ClientesChatCenter.count({
+      where: {
+        id_configuracion,
+        created_at: dateRange,
+      },
+    }),
+  ]);
+
+  let totalFacturado = 0;
+  let totalGanancia = 0;
+  const productMap = {};
+  const dailyMap = {};
+  const statusMap = {};
+
+  for (const o of orderRows) {
+    const total = Number(o.total_order || 0);
+    const profit = o.dropshipper_profit !== null && o.dropshipper_profit !== undefined
+      ? Number(o.dropshipper_profit) : 0;
+    const cat = o.classified_status || 'otro';
+
+    totalFacturado += total;
+    totalGanancia += profit;
+
+    // Status breakdown
+    if (!statusMap[cat]) statusMap[cat] = { status: cat, count: 0, total: 0 };
+    statusMap[cat].count += 1;
+    statusMap[cat].total += total;
+
+    // Daily chart
+    const day = o.order_created_at
+      ? new Date(o.order_created_at).toISOString().slice(0, 10)
+      : null;
+    if (day) {
+      if (!dailyMap[day]) dailyMap[day] = { day, pedidos: 0, facturado: 0, ganancia: 0, entregadas: 0 };
+      dailyMap[day].pedidos += 1;
+      dailyMap[day].facturado += total;
+      dailyMap[day].ganancia += profit;
+      if (cat === 'entregada') dailyMap[day].entregadas += 1;
+    }
+
+    // Products
+    let names = [];
+    try { names = JSON.parse(o.product_names || '[]'); } catch (_) {}
+    if (!names.length) names = ['(sin producto)'];
+
+    const share = names.length;
+    for (const name of names) {
+      if (!productMap[name]) productMap[name] = { name, ordenes: 0, ingresoBruto: 0, gananciaNeta: 0 };
+      productMap[name].ordenes += 1;
+      productMap[name].ingresoBruto += total / share;
+      productMap[name].gananciaNeta += profit / share;
+    }
+  }
+
+  const totalPedidos = orderRows.length;
+  const entregadas = statusMap.entregada?.count || 0;
+  const pctConfirmacion = totalConversaciones > 0
+    ? Math.round((totalPedidos / totalConversaciones) * 10000) / 100
+    : 0;
+  const tasaEntrega = totalPedidos > 0
+    ? Math.round((entregadas / totalPedidos) * 10000) / 100
+    : 0;
+
+  const topProducts = Object.values(productMap)
+    .sort((a, b) => b.gananciaNeta - a.gananciaNeta)
+    .slice(0, 10)
+    .map(p => ({
+      ...p,
+      ingresoBruto: Math.round(p.ingresoBruto * 100) / 100,
+      gananciaNeta: Math.round(p.gananciaNeta * 100) / 100,
+    }));
+
+  const dailyChart = Object.values(dailyMap)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map(d => ({
+      ...d,
+      facturado: Math.round(d.facturado * 100) / 100,
+      ganancia: Math.round(d.ganancia * 100) / 100,
+    }));
+
+  const statusBreakdown = Object.values(statusMap).map(s => ({
+    ...s,
+    total: Math.round(s.total * 100) / 100,
+  }));
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      totalFacturado: Math.round(totalFacturado * 100) / 100,
+      totalGanancia: Math.round(totalGanancia * 100) / 100,
+      totalPedidos,
+      entregadas,
+      totalConversaciones,
+      pctConfirmacion,
+      tasaEntrega,
+      topProducts,
+      dailyChart,
+      statusBreakdown,
+    },
+  });
+});
+
 // ── Helpers exportados para uso interno (marketing_control) ──
 exports._internal = {
   syncFromDropi,
