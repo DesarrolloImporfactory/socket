@@ -947,6 +947,9 @@ async function upsertOrdersToCache(cacheCtx, orders) {
       order_data: JSON.stringify(o),
       synced_at: new Date(),
       devolution_alert: computeDevolutionAlert(o),
+      shop_id: o.shop_id ?? o.shop?.id ?? null,
+      shop_type: o.shop?.type ?? null,
+      shop_name: o.shop?.name ?? null,
     };
   });
 
@@ -967,6 +970,9 @@ async function upsertOrdersToCache(cacheCtx, orders) {
         'order_data',
         'synced_at',
         'devolution_alert',
+        'shop_id',
+        'shop_type',
+        'shop_name',
       ],
     });
   }
@@ -2477,7 +2483,11 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     const costXMensaje = mensajes > 0 ? gasto / mensajes : 0;
     // Rentabilidad REAL (lo cobrado hoy)
     const rentabilidad =
-      ventaEntregadas - costoProductoEntregadas - fleteMovilizadas - gasto - gastosAdicionales;
+      ventaEntregadas -
+      costoProductoEntregadas -
+      fleteMovilizadas -
+      gasto -
+      gastosAdicionales;
 
     // ─────── PROYECCIÓN ───────
     // De las órdenes en tránsito, asumimos que se entregarán según tasa histórica.
@@ -2673,7 +2683,8 @@ exports.upsertDailyMetric = catchAsync(async (req, res, next) => {
 
   if (gasto_diario !== undefined) row.gasto_diario = Number(gasto_diario) || 0;
   if (num_mensajes !== undefined) row.num_mensajes = Number(num_mensajes) || 0;
-  if (gastos_adicionales !== undefined) row.gastos_adicionales = Number(gastos_adicionales) || 0;
+  if (gastos_adicionales !== undefined)
+    row.gastos_adicionales = Number(gastos_adicionales) || 0;
   await row.save();
 
   return res.json({
@@ -3323,9 +3334,70 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
+   Conversaciones por producto
+   orden.phone → clientes_chat_center.celular_cliente (últimos 9 díg)
+   = # de chats distintos que pidieron ese producto
+   ═══════════════════════════════════════════════════════════ */
+async function attachProductConversations({
+  id_configuracion,
+  orderRows,
+  productos,
+}) {
+  const productKeys = new Map(); // name → Set(phoneKey)
+  const allKeys = new Set();
+
+  for (const o of orderRows) {
+    if (!o.phone) continue;
+    const ks = phoneKeys(o.phone);
+    if (!ks.length) continue;
+    let names = [];
+    try {
+      names = JSON.parse(o.product_names || '[]');
+    } catch (_) {}
+    for (const name of names) {
+      if (!productKeys.has(name)) productKeys.set(name, new Set());
+      ks.forEach((k) => {
+        productKeys.get(name).add(k);
+        allKeys.add(k);
+      });
+    }
+  }
+  if (!allKeys.size) return;
+
+  const orConditions = [...allKeys].map((k) => ({
+    celular_cliente: { [Op.like]: `%${k}` },
+  }));
+  const clientes = await ClientesChatCenter.findAll({
+    where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
+    attributes: ['id', 'celular_cliente'],
+    raw: true,
+  });
+
+  const clientByKey = new Map();
+  for (const c of clientes) {
+    for (const k of phoneKeys(c.celular_cliente)) {
+      if (!clientByKey.has(k)) clientByKey.set(k, c.id);
+    }
+  }
+
+  for (const p of productos) {
+    const keys = productKeys.get(p.name);
+    if (!keys) {
+      p.conversaciones = 0;
+      continue;
+    }
+    const cset = new Set();
+    for (const k of keys) {
+      const cid = clientByKey.get(k);
+      if (cid) cset.add(cid);
+    }
+    p.conversaciones = cset.size;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
    getConnectionSummary
    KPIs + top productos para una conexión en un rango de fechas.
-   No requiere integración Dropi activa.
    ═══════════════════════════════════════════════════════════ */
 
 exports.getConnectionSummary = catchAsync(async (req, res, next) => {
@@ -3333,119 +3405,293 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
   const from = strOrNull(req.body?.from);
   const until = strOrNull(req.body?.until);
 
-  if (!id_configuracion) return next(new AppError('id_configuracion es requerido', 400));
-  if (!from || !until) return next(new AppError('from y until son requeridos', 400));
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!from || !until)
+    return next(new AppError('from y until son requeridos', 400));
 
-  const dateRange = { [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`] };
+  const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+  const fromDt = `${from} 00:00:00`;
+  const untilDt = `${until} 23:59:59`;
+  const dateRange = { [Op.between]: [fromDt, untilDt] };
+  const repl = { idCfg: id_configuracion, from: fromDt, until: untilDt };
 
-  const [orderRows, totalConversaciones] = await Promise.all([
+  const [
+    orderRows,
+    [botRows],
+    [convRows],
+    [msgRows],
+    [carritoRows],
+    [dailyRows],
+    [prodRows],
+  ] = await Promise.all([
     DropiOrdersCache.findAll({
-      where: {
-        id_configuracion,
-        id_usuario: 0,
-        order_created_at: dateRange,
-      },
-      attributes: ['total_order', 'dropshipper_profit', 'product_names', 'classified_status', 'order_created_at'],
+      where: { id_configuracion, id_usuario: 0, order_created_at: dateRange },
+      attributes: [
+        'dropi_order_id',
+        'total_order',
+        'dropshipper_profit',
+        'status',
+        'classified_status',
+        'shop_type',
+        'phone',
+        'product_names',
+      ],
       raw: true,
     }),
-    ClientesChatCenter.count({
-      where: {
-        id_configuracion,
-        created_at: dateRange,
-      },
-    }),
+    // Órdenes creadas por el bot (venta WA)
+    db.query(
+      `SELECT DISTINCT dropi_order_id FROM dropi_auto_ordenes_log
+        WHERE id_configuracion = :idCfg AND resultado = 'creada'
+          AND dropi_order_id IS NOT NULL AND created_at BETWEEN :from AND :until`,
+      { replacements: repl },
+    ),
+    // Conversaciones nuevas por día
+    db.query(
+      `SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS dia, COUNT(*) AS n FROM clientes_chat_center
+        WHERE id_configuracion = :idCfg AND deleted_at IS NULL
+          AND created_at BETWEEN :from AND :until GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')`,
+      { replacements: repl },
+    ),
+    // Mensajes entrantes por día (rol_mensaje = 0 → escribió el cliente)
+    db.query(
+      `SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS dia, COUNT(*) AS n FROM mensajes_clientes
+        WHERE id_configuracion = :idCfg AND deleted_at IS NULL AND rol_mensaje = 0
+          AND created_at BETWEEN :from AND :until GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')`,
+      { replacements: repl },
+    ),
+    // Carritos abandonados Shopify
+    db.query(
+      `SELECT COUNT(*) AS abandonados, SUM(recuperado = 1) AS recuperados,
+              SUM(CASE WHEN recuperado = 1 THEN total_price ELSE 0 END) AS valor_recuperado
+         FROM shopify_carritos_abandonados
+        WHERE id_configuracion = :idCfg AND shopify_created_at BETWEEN :from AND :until`,
+      { replacements: repl },
+    ),
+    // Serie diaria (fechas locales con DATE_FORMAT → sin desfase de zona horaria)
+    db.query(
+      `SELECT DATE_FORMAT(order_created_at,'%Y-%m-%d') AS dia,
+              COUNT(*) AS pedidos,
+              SUM(CASE WHEN shop_type = 'SHOPIFY' THEN 1 ELSE 0 END) AS pedidos_shopify,
+              SUM(total_order) AS facturado,
+              SUM(COALESCE(dropshipper_profit,0)) AS ganancia,
+              SUM(CASE WHEN classified_status='entregada' THEN 1 ELSE 0 END) AS entregadas
+         FROM dropi_orders_cache
+        WHERE id_configuracion = :idCfg AND id_usuario = 0 AND order_created_at BETWEEN :from AND :until
+        GROUP BY DATE_FORMAT(order_created_at,'%Y-%m-%d')`,
+      { replacements: repl },
+    ),
+    // Productos vendidos en el periodo (prorrateo dropshipper + imagen)
+    db.query(
+      `WITH order_subtotals AS (
+        SELECT c.id AS order_id, c.classified_status, c.total_order,
+          COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data,'$.shipping_amount')) AS DECIMAL(10,2)),0) AS shipping_amount,
+          (SELECT SUM(x.qty * x.sp) FROM JSON_TABLE(c.order_data,'$.orderdetails[*]' COLUMNS (
+            qty INT PATH '$.quantity', sp DECIMAL(10,2) PATH '$.product.sale_price')) AS x) AS subtotal_items
+        FROM dropi_orders_cache c
+        WHERE c.id_configuracion = :idCfg AND c.id_usuario = 0 AND c.order_created_at BETWEEN :from AND :until
+      )
+      SELECT jt.product_id, jt.product_name, jt.sku,
+        MAX(jt.image) AS image,
+        COUNT(DISTINCT os.order_id) AS ordenes,
+        SUM(jt.quantity) AS unidades,
+        SUM(CASE WHEN os.classified_status='entregada' THEN 1 ELSE 0 END) AS ordenes_entregadas,
+        SUM(CASE WHEN os.classified_status='devolucion' THEN 1 ELSE 0 END) AS devoluciones,
+        SUM(CASE WHEN os.classified_status='cancelada' THEN 1 ELSE 0 END) AS canceladas,
+        SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
+        SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS movilizadas,
+        SUM(CASE WHEN os.classified_status='entregada' THEN (jt.quantity*jt.sale_price) ELSE 0 END) AS costo_entregadas,
+        SUM(CASE WHEN os.classified_status='entregada' AND os.subtotal_items>0
+                THEN os.total_order*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS venta_entregadas,
+        SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') AND os.subtotal_items>0
+                THEN os.shipping_amount*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS flete_movilizadas
+      FROM order_subtotals os,
+      JSON_TABLE((SELECT order_data FROM dropi_orders_cache WHERE id = os.order_id),
+        '$.orderdetails[*]' COLUMNS (
+          product_id INT PATH '$.product.id', product_name VARCHAR(300) PATH '$.product.name',
+          sku VARCHAR(100) PATH '$.product.sku', sale_price DECIMAL(10,2) PATH '$.product.sale_price',
+          quantity INT PATH '$.quantity',
+          image VARCHAR(500) PATH '$.product.gallery[0].urlS3')) AS jt
+      GROUP BY jt.product_id, jt.product_name, jt.sku`,
+      { replacements: repl },
+    ),
   ]);
 
-  let totalFacturado = 0;
-  let totalGanancia = 0;
-  const productMap = {};
-  const dailyMap = {};
+  const botOrderIds = new Set(botRows.map((r) => String(r.dropi_order_id)));
+  const convByDay = new Map(
+    convRows.map((r) => [String(r.dia), Number(r.n || 0)]),
+  );
+  const msgByDay = new Map(
+    msgRows.map((r) => [String(r.dia), Number(r.n || 0)]),
+  );
+  const totalConversaciones = convRows.reduce(
+    (s, r) => s + Number(r.n || 0),
+    0,
+  );
+  const totalMensajes = msgRows.reduce((s, r) => s + Number(r.n || 0), 0);
+
+  // ── Totales por canal (clasificación por shop_type) ──
+  const blankCanal = () => ({
+    pedidos: 0,
+    facturado: 0,
+    ganancia: 0,
+    entregadas: 0,
+    confirmados: 0,
+    bot: 0,
+  });
+  const canales = { wa: blankCanal(), shopify: blankCanal() };
+  let totalFacturado = 0,
+    totalGanancia = 0;
   const statusMap = {};
 
   for (const o of orderRows) {
     const total = Number(o.total_order || 0);
-    const profit = o.dropshipper_profit !== null && o.dropshipper_profit !== undefined
-      ? Number(o.dropshipper_profit) : 0;
+    const profit =
+      o.dropshipper_profit != null ? Number(o.dropshipper_profit) : 0;
     const cat = o.classified_status || 'otro';
+    const rawStatus = String(o.status || '').toUpperCase();
+    const esShopify = o.shop_type === 'SHOPIFY'; // ← solo Shopify real
+    const C = canales[esShopify ? 'shopify' : 'wa'];
 
     totalFacturado += total;
     totalGanancia += profit;
+    C.pedidos += 1;
+    C.facturado += total;
+    C.ganancia += profit;
+    if (cat === 'entregada') C.entregadas += 1;
+    if (rawStatus !== 'PENDIENTE CONFIRMACION') C.confirmados += 1;
+    if (botOrderIds.has(String(o.dropi_order_id))) C.bot += 1;
 
-    // Status breakdown
     if (!statusMap[cat]) statusMap[cat] = { status: cat, count: 0, total: 0 };
     statusMap[cat].count += 1;
     statusMap[cat].total += total;
-
-    // Daily chart
-    const day = o.order_created_at
-      ? new Date(o.order_created_at).toISOString().slice(0, 10)
-      : null;
-    if (day) {
-      if (!dailyMap[day]) dailyMap[day] = { day, pedidos: 0, facturado: 0, ganancia: 0, entregadas: 0 };
-      dailyMap[day].pedidos += 1;
-      dailyMap[day].facturado += total;
-      dailyMap[day].ganancia += profit;
-      if (cat === 'entregada') dailyMap[day].entregadas += 1;
-    }
-
-    // Products
-    let names = [];
-    try { names = JSON.parse(o.product_names || '[]'); } catch (_) {}
-    if (!names.length) names = ['(sin producto)'];
-
-    const share = names.length;
-    for (const name of names) {
-      if (!productMap[name]) productMap[name] = { name, ordenes: 0, ingresoBruto: 0, gananciaNeta: 0 };
-      productMap[name].ordenes += 1;
-      productMap[name].ingresoBruto += total / share;
-      productMap[name].gananciaNeta += profit / share;
-    }
   }
+
+  // ── Serie diaria (todas las fechas en 'YYYY-MM-DD') ──
+  const dayMap = {};
+  const ensureDay = (dia) => {
+    if (!dayMap[dia])
+      dayMap[dia] = {
+        day: dia,
+        pedidos: 0,
+        pedidos_wa: 0,
+        pedidos_shopify: 0,
+        facturado: 0,
+        ganancia: 0,
+        entregadas: 0,
+        mensajes: msgByDay.get(dia) || 0,
+        conversaciones: convByDay.get(dia) || 0,
+      };
+    return dayMap[dia];
+  };
+  for (const r of dailyRows) {
+    const d = ensureDay(String(r.dia));
+    d.pedidos = Number(r.pedidos || 0);
+    d.pedidos_shopify = Number(r.pedidos_shopify || 0);
+    d.pedidos_wa = d.pedidos - d.pedidos_shopify;
+    d.facturado = r2(r.facturado);
+    d.ganancia = r2(r.ganancia);
+    d.entregadas = Number(r.entregadas || 0);
+  }
+  for (const dia of msgByDay.keys()) ensureDay(dia);
+  for (const dia of convByDay.keys()) ensureDay(dia);
+  const dailyChart = Object.values(dayMap).sort((a, b) =>
+    a.day.localeCompare(b.day),
+  );
 
   const totalPedidos = orderRows.length;
   const entregadas = statusMap.entregada?.count || 0;
-  const pctConfirmacion = totalConversaciones > 0
-    ? Math.round((totalPedidos / totalConversaciones) * 10000) / 100
-    : 0;
-  const tasaEntrega = totalPedidos > 0
-    ? Math.round((entregadas / totalPedidos) * 10000) / 100
-    : 0;
 
-  const topProducts = Object.values(productMap)
-    .sort((a, b) => b.gananciaNeta - a.gananciaNeta)
-    .slice(0, 10)
-    .map(p => ({
-      ...p,
-      ingresoBruto: Math.round(p.ingresoBruto * 100) / 100,
-      gananciaNeta: Math.round(p.gananciaNeta * 100) / 100,
-    }));
+  const buildCanal = (key, pctConf) => {
+    const c = canales[key];
+    return {
+      pedidos: c.pedidos,
+      facturado: r2(c.facturado),
+      ganancia: r2(c.ganancia),
+      entregadas: c.entregadas,
+      confirmados: c.confirmados,
+      bot: c.bot,
+      tasaEntrega: c.pedidos > 0 ? r2((c.entregadas / c.pedidos) * 100) : 0,
+      pctConfirmacion: pctConf,
+    };
+  };
+  const pctConfWa =
+    totalConversaciones > 0
+      ? r2((canales.wa.pedidos / totalConversaciones) * 100)
+      : 0;
+  const pctConfShopify =
+    canales.shopify.pedidos > 0
+      ? r2((canales.shopify.confirmados / canales.shopify.pedidos) * 100)
+      : 0;
 
-  const dailyChart = Object.values(dailyMap)
-    .sort((a, b) => a.day.localeCompare(b.day))
-    .map(d => ({
-      ...d,
-      facturado: Math.round(d.facturado * 100) / 100,
-      ganancia: Math.round(d.ganancia * 100) / 100,
-    }));
+  const carrito = carritoRows?.[0] || {};
+  const abandonados = Number(carrito.abandonados || 0);
+  const recuperados = Number(carrito.recuperados || 0);
 
-  const statusBreakdown = Object.values(statusMap).map(s => ({
-    ...s,
-    total: Math.round(s.total * 100) / 100,
-  }));
+  const productos = (prodRows || [])
+    .map((r) => {
+      const ventaEnt = Number(r.venta_entregadas || 0),
+        costoEnt = Number(r.costo_entregadas || 0);
+      const fleteMov = Number(r.flete_movilizadas || 0),
+        entregadasP = Number(r.ordenes_entregadas || 0);
+      const movilizadas = Number(r.movilizadas || 0),
+        rent = ventaEnt - costoEnt - fleteMov;
+      return {
+        product_id: Number(r.product_id || 0),
+        sku: r.sku || '',
+        name: r.product_name || '(sin nombre)',
+        image: r.image || null,
+        ordenes: Number(r.ordenes || 0),
+        unidades: Number(r.unidades || 0),
+        entregadas: entregadasP,
+        devoluciones: Number(r.devoluciones || 0),
+        canceladas: Number(r.canceladas || 0),
+        transito: Number(r.transito || 0),
+        tasaEntrega:
+          movilizadas > 0 ? r2((entregadasP / movilizadas) * 100) : null,
+        ingresoBruto: r2(ventaEnt),
+        costo: r2(costoEnt),
+        flete: r2(fleteMov),
+        gananciaNeta: r2(rent),
+        margenPct: ventaEnt > 0 ? r2((rent / ventaEnt) * 100) : null,
+        ticketPromedio: entregadasP > 0 ? r2(ventaEnt / entregadasP) : 0,
+      };
+    })
+    .sort((a, b) => b.gananciaNeta - a.gananciaNeta);
+
+  // Conversaciones por producto (sin conteo de mensajes)
+  await attachProductConversations({ id_configuracion, orderRows, productos });
 
   return res.json({
     isSuccess: true,
     data: {
-      totalFacturado: Math.round(totalFacturado * 100) / 100,
-      totalGanancia: Math.round(totalGanancia * 100) / 100,
+      totalFacturado: r2(totalFacturado),
+      totalGanancia: r2(totalGanancia),
       totalPedidos,
       entregadas,
       totalConversaciones,
-      pctConfirmacion,
-      tasaEntrega,
-      topProducts,
+      totalMensajes,
+      pctConfirmacion:
+        totalConversaciones > 0
+          ? r2((totalPedidos / totalConversaciones) * 100)
+          : 0,
+      tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
+      canales: {
+        wa: buildCanal('wa', pctConfWa),
+        shopify: buildCanal('shopify', pctConfShopify),
+      },
+      carritos: {
+        abandonados,
+        recuperados,
+        tasaRecuperacion:
+          abandonados > 0 ? r2((recuperados / abandonados) * 100) : 0,
+        valorRecuperado: r2(carrito.valor_recuperado),
+      },
       dailyChart,
-      statusBreakdown,
+      statusBreakdown: Object.values(statusMap)
+        .map((s) => ({ ...s, total: r2(s.total) }))
+        .sort((a, b) => b.count - a.count),
+      productos,
     },
   });
 });
