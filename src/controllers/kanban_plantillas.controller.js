@@ -1100,7 +1100,6 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   );
   if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
 
-  // ═══ Cargar API key + nombre_configuracion para fallback ═══
   const [configRow] = await db.query(
     `SELECT api_key_openai, nombre_configuracion FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -1138,10 +1137,8 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       ? JSON.parse(plantilla.data)
       : plantilla.data;
 
-  // ═══ Cascada para nombre de tienda ═══
   const nombreTiendaResuelto =
     (empresa && empresa.trim()) || nombreEmpresaConfig || null;
-
   const personalizacionInicial = nombreTiendaResuelto
     ? { nombre_tienda: nombreTiendaResuelto }
     : {};
@@ -1151,12 +1148,28 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       `nombre_tienda="${nombreTiendaResuelto || '(default huérfano)'}"`,
   );
 
+  // ═══ IDEMPOTENCIA: columnas que YA existen para esta config ═══
+  const columnasExistentes = await db.query(
+    `SELECT estado_db FROM kanban_columnas WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const estadosExistentes = new Set(columnasExistentes.map((c) => c.estado_db));
+
   const resultado = [];
 
   for (const col of columnas) {
-    let assistant_id = null;
+    // Si ya existe (re-aplicación o corrida previa que terminó en server), saltar.
+    if (estadosExistentes.has(col.estado_db)) {
+      resultado.push({
+        columna: col.nombre,
+        estado_db: col.estado_db,
+        assistant_id: null,
+        omitida: true,
+      });
+      continue;
+    }
 
-    // Compilamos el prompt si la columna tiene instrucciones (placeholders)
+    let assistant_id = null;
     const promptCompilado = col.instrucciones
       ? compilarPromptFinal(col.instrucciones, personalizacionInicial)
       : null;
@@ -1173,7 +1186,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
             model: col.modelo || 'gpt-4o-mini',
             tools: [{ type: 'file_search' }],
           },
-          { headers },
+          { headers, timeout: 20000 }, // ← evita que una llamada colgada infle el tiempo
         );
         assistant_id = aRes.data?.id || null;
       } catch (err) {
@@ -1181,34 +1194,54 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       }
     }
 
-    const [insertResult] = await db.query(
-      `INSERT INTO kanban_columnas
+    // INSERT con guard anti-carrera: si justo se duplicó, lo ignoramos.
+    let insertResult;
+    try {
+      [insertResult] = await db.query(
+        `INSERT INTO kanban_columnas
    (id_configuracion, nombre, estado_db, color_fondo, color_texto,
     icono, orden, activo, es_estado_final, es_principal, es_dropi_principal, activa_ia, max_tokens,
     instrucciones, modelo, assistant_id)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      {
-        replacements: [
-          id_configuracion,
-          col.nombre,
-          col.estado_db,
-          col.color_fondo,
-          col.color_texto,
-          col.icono,
-          col.orden,
-          col.activo,
-          col.es_estado_final,
-          col.es_principal || 0,
-          col.es_dropi_principal || 0,
-          col.activa_ia,
-          col.max_tokens,
-          promptCompilado || null,
-          col.modelo || 'gpt-4o-mini',
+        {
+          replacements: [
+            id_configuracion,
+            col.nombre,
+            col.estado_db,
+            col.color_fondo,
+            col.color_texto,
+            col.icono,
+            col.orden,
+            col.activo,
+            col.es_estado_final,
+            col.es_principal || 0,
+            col.es_dropi_principal || 0,
+            col.activa_ia,
+            col.max_tokens,
+            promptCompilado || null,
+            col.modelo || 'gpt-4o-mini',
+            assistant_id,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    } catch (err) {
+      if (err?.parent?.code === 'ER_DUP_ENTRY') {
+        console.warn(
+          `[aplicarGlobal] columna duplicada ignorada: ${col.estado_db}`,
+        );
+        resultado.push({
+          columna: col.nombre,
+          estado_db: col.estado_db,
           assistant_id,
-        ],
-        type: db.QueryTypes.INSERT,
-      },
-    );
+          omitida: true,
+        });
+        continue;
+      }
+      throw err; // cualquier otro error sí lo dejamos subir
+    }
+
+    estadosExistentes.add(col.estado_db);
 
     for (const accion of col.acciones || []) {
       await db.query(
@@ -1228,11 +1261,6 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       );
     }
 
-    // ═══ Guardar personalización inicial + snapshot del prompt CRUDO ═══
-    // - Se guarda SIEMPRE que la columna tenga instrucciones, incluso si
-    //   el assistant_id no se creó (para preservar trazabilidad).
-    // - El snapshot guarda el prompt CRUDO con placeholders (col.instrucciones),
-    //   NO el compilado. Esto permite re-personalizar limpio en el futuro.
     if (col.instrucciones) {
       try {
         await db.query(
@@ -1244,7 +1272,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
               insertResult,
               id_configuracion,
               nombreTiendaResuelto,
-              col.instrucciones, // ← prompt CRUDO con placeholders
+              col.instrucciones,
             ],
             type: db.QueryTypes.INSERT,
           },
@@ -1269,50 +1297,76 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
 
-  const resultadoTemplates = await _crearTemplatesMeta(id_configuracion);
+  // Estos ya son idempotentes (chequean existentes / upsert) y rápidos → foreground
   const resultadoRapidas = await _crearRespuestasRapidas(id_configuracion);
   const resultadoDropiConfig =
     await _aplicarConfigDropiPorDefecto(id_configuracion);
 
   await db.query(
-    `UPDATE configuraciones 
-   SET kanban_global_activo = 1, kanban_global_id = ?
-   WHERE id = ?`,
+    `UPDATE configuraciones
+       SET kanban_global_activo = 1, kanban_global_id = ?
+     WHERE id = ?`,
     { replacements: [id_plantilla, id_configuracion] },
   );
 
   await db.query(
     `INSERT INTO configuraciones_kanban_global_log
-   (id_configuracion, id_plantilla, accion, detalle)
-   VALUES (?, ?, 'aplicado', ?)`,
+       (id_configuracion, id_plantilla, accion, detalle)
+     VALUES (?, ?, 'aplicado', ?)`,
     {
       replacements: [
         id_configuracion,
         id_plantilla,
         JSON.stringify({
           columnas: resultado,
-          templates_meta: resultadoTemplates,
           respuestas_rapidas: resultadoRapidas,
           dropi_config: resultadoDropiConfig,
+          templates_meta: 'en_proceso_async',
         }),
       ],
     },
   );
 
-  syncCatalogoTodasColumnasConfig(id_configuracion, {
-    logger: async (...args) => console.log('[sync-catalogo]', ...args),
-  }).catch((err) =>
-    console.error('[sync-catalogo] Error en sync automático:', err.message),
-  );
-
-  return res.json({
+  // ═══ RESPONDER YA: el Kanban ya es usable ═══
+  res.json({
     success: true,
     data: {
       columnas: resultado,
-      templates_meta: resultadoTemplates,
       respuestas_rapidas: resultadoRapidas,
       dropi_config: resultadoDropiConfig,
+      templates_meta: 'procesando_en_segundo_plano',
     },
+  });
+
+  // ═══ SEGUNDO PLANO: templates Meta + sync catálogo ═══
+  setImmediate(async () => {
+    try {
+      const resultadoTemplates = await _crearTemplatesMeta(id_configuracion);
+      await db.query(
+        `INSERT INTO configuraciones_kanban_global_log
+           (id_configuracion, id_plantilla, accion, detalle)
+         VALUES (?, ?, 'templates_meta', ?)`,
+        {
+          replacements: [
+            id_configuracion,
+            id_plantilla,
+            JSON.stringify({ templates_meta: resultadoTemplates }),
+          ],
+        },
+      );
+      console.log(`[aplicarGlobal][cfg=${id_configuracion}] templates Meta OK`);
+    } catch (err) {
+      console.error(
+        `[aplicarGlobal][cfg=${id_configuracion}] error templates Meta async:`,
+        err.message,
+      );
+    }
+
+    syncCatalogoTodasColumnasConfig(id_configuracion, {
+      logger: async (...args) => console.log('[sync-catalogo]', ...args),
+    }).catch((err) =>
+      console.error('[sync-catalogo] Error en sync automático:', err.message),
+    );
   });
 });
 
