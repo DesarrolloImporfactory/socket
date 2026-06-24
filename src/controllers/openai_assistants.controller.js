@@ -1065,22 +1065,36 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
         ? r.metodo_dentro_24h
         : 'ninguno';
 
+      // Minutos es el campo canónico. Fallback a horas*60 por compat.
+      const minutos =
+        r.tiempo_espera_minutos != null
+          ? Number(r.tiempo_espera_minutos)
+          : Number(r.tiempo_espera_horas || 0) * 60;
+
+      // Mantener horas coherente (puede quedar fraccionario, no se usa para agendar)
+      const horas =
+        r.tiempo_espera_horas != null
+          ? Number(r.tiempo_espera_horas)
+          : minutos / 60;
+
       await db.query(
         `INSERT INTO configuracion_remarketing
          (id_configuracion, estado_contacto, secuencia,
-          tiempo_espera_horas, nombre_template, language_code,
+          tiempo_espera_horas, tiempo_espera_minutos,
+          nombre_template, language_code,
           estado_destino, header_format, header_media_url,
           header_media_name, header_parameters,
           id_template_rapido, usar_respuesta_rapida,
           metodo_dentro_24h, prompt_ia,
           activo)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         {
           replacements: [
             id_configuracion,
             estado_contacto,
             secuencia,
-            r.tiempo_espera_horas,
+            horas,
+            minutos,
             r.nombre_template,
             r.language_code || 'es',
             r.estado_destino || null,

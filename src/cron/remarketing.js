@@ -243,9 +243,9 @@ async function generarMensajeRemarketingIA({
   api_key_openai,
   max_tokens = 300,
 }) {
-  /* console.log(
+  console.log(
     `🟦 [DEBUG IA] >>> Llamando OpenAI thread=${id_thread} assistant=${assistant_id} max_tokens=${max_tokens}`,
-  ); */
+  );
 
   const headers = {
     Authorization: `Bearer ${api_key_openai}`,
@@ -270,7 +270,7 @@ async function generarMensajeRemarketingIA({
     { headers, timeout: 60000 },
   );
   const run_id = runRes?.data?.id;
-  /* console.log(`🟦 [DEBUG IA] run_id=${run_id} status=${runRes?.data?.status}`); */
+  console.log(`🟦 [DEBUG IA] run_id=${run_id} status=${runRes?.data?.status}`);
   if (!run_id) throw new Error('No se pudo crear run de OpenAI');
 
   let statusRun = 'queued';
@@ -283,7 +283,7 @@ async function generarMensajeRemarketingIA({
       { headers },
     );
     statusRun = statusRes.data.status;
-    /* console.log(`🟦 [DEBUG IA] poll intento=${attempts} status=${statusRun}`); */
+    console.log(`🟦 [DEBUG IA] poll intento=${attempts} status=${statusRun}`);
     if (statusRun === 'failed') {
       throw new Error(
         `Run falló: ${JSON.stringify(statusRes.data.last_error)}`,
@@ -335,9 +335,9 @@ async function generarMensajeRemarketingIA({
     texto = texto.slice(1, -1).trim();
   }
 
-  /* console.log(
+  console.log(
     `🟦 [DEBUG IA] texto generado len=${texto.length} preview="${texto.slice(0, 80)}..."`,
-  ); */
+  );
   return texto;
 }
 
@@ -509,6 +509,24 @@ cron.schedule('*/1 * * * *', async () => {
   isRunning = true;
   try {
     await withLock('remarketing_cron_lock', async () => {
+      // ⚠️ SOLO PRUEBA LOCAL — quitar antes de prod
+      /* const TEST_CLIENTE_ID = 410;
+      const pendientes = await db.query(
+        `SELECT * FROM remarketing_pendientes 
+         WHERE enviado = 0 
+           AND cancelado = 0 
+           AND tiempo_disparo <= NOW()
+           AND tiempo_disparo > NOW() - INTERVAL 3 DAY
+           AND intentos < max_intentos
+           AND id_cliente_chat_center = ?
+         ORDER BY tiempo_disparo ASC
+         LIMIT 50`,
+        {
+          replacements: [TEST_CLIENTE_ID],
+          type: db.QueryTypes.SELECT,
+        },
+      ); */
+
       const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
@@ -523,7 +541,7 @@ cron.schedule('*/1 * * * *', async () => {
 
       if (!pendientes.length) return;
 
-      /* console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`); */
+      console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
 
       let rateLimitHitsThisCycle = 0;
       const MAX_RATE_LIMIT_HITS = 5;
@@ -533,7 +551,7 @@ cron.schedule('*/1 * * * *', async () => {
         // ══════════════════════════════════════════════════════
         // 🟦 DEBUG: Estado inicial del record
         // ══════════════════════════════════════════════════════
-        /* console.log(
+        console.log(
           `\n🟦 [DEBUG] ━━━━━━━━━━ INICIO id=${record.id} ━━━━━━━━━━`,
         );
         console.log(
@@ -549,7 +567,7 @@ cron.schedule('*/1 * * * *', async () => {
           `🟦 [DEBUG] estado_contacto_origen="${record.estado_contacto_origen}"`,
         );
         console.log(`🟦 [DEBUG] id_configuracion=${record.id_configuracion}`);
-        console.log(`🟦 [DEBUG] telefono="${record.telefono}"`); */
+        console.log(`🟦 [DEBUG] telefono="${record.telefono}"`);
 
         if (rateLimitHitsThisCycle >= MAX_RATE_LIMIT_HITS) {
           console.log(
@@ -576,9 +594,9 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
-          /* console.log(
+          console.log(
             `🟦 [DEBUG] cliente.estado_contacto="${cliente.estado_contacto}"`,
-          ); */
+          );
 
           // 2) Estado cambió → cancelar
           if (cliente.estado_contacto !== record.estado_contacto_origen) {
@@ -600,13 +618,13 @@ cron.schedule('*/1 * * * *', async () => {
             throw new Error('Config incompleta o config suspendida');
           }
           wabaIdForLog = cfg.WABA_ID;
-          /* console.log(`🟦 [DEBUG] config OK waba=${cfg.WABA_ID}`); */
+          console.log(`🟦 [DEBUG] config OK waba=${cfg.WABA_ID}`);
 
           // 4) WABA throttled?
           if (isWabaThrottled(cfg.WABA_ID)) {
-            /* console.log(
+            console.log(
               `⏸ [remarketing] id=${record.id} WABA ${cfg.WABA_ID} throttled, skip`,
-            ); */
+            );
             continue;
           }
 
@@ -622,7 +640,7 @@ cron.schedule('*/1 * * * *', async () => {
                 ? 'respuesta_rapida'
                 : 'ninguno';
 
-          /* console.log(`🟦 [DEBUG] metodo24h CALCULADO="${metodo24h}"`); */
+          console.log(`🟦 [DEBUG] metodo24h CALCULADO="${metodo24h}"`);
 
           let envioPorRR = false;
           let envioPorIA = false;
@@ -639,10 +657,10 @@ cron.schedule('*/1 * * * *', async () => {
             );
           }
 
-          /* console.log(`🟦 [DEBUG] dentroVentana=${dentroVentana}`);
+          console.log(`🟦 [DEBUG] dentroVentana=${dentroVentana}`);
           console.log(
             `🟦 [DEBUG] ¿Entra IA? metodo24h==='ia':${metodo24h === 'ia'} && dentroVentana:${dentroVentana} && hasPrompt:${!!record.prompt_ia}`,
-          ); */
+          );
 
           // ══════════════════════════════════════════════════════
           // Intento 1: RESPUESTA RÁPIDA
@@ -652,7 +670,7 @@ cron.schedule('*/1 * * * *', async () => {
             metodo24h === 'respuesta_rapida' &&
             record.id_template_rapido
           ) {
-            /* console.log(`🟦 [DEBUG] >>> Entrando a bloque RR`); */
+            console.log(`🟦 [DEBUG] >>> Entrando a bloque RR`);
             const [tplRapido] = await db.query(
               `SELECT id_template, atajo, mensaje, tipo_mensaje, ruta_archivo, mime_type, file_name
                FROM templates_chat_center
@@ -676,14 +694,14 @@ cron.schedule('*/1 * * * *', async () => {
                   tplRapido,
                 });
                 envioPorRR = true;
-                /* console.log(
+                console.log(
                   `✅ [remarketing] id=${record.id} RR enviada (${rrInfo.tipo})`,
-                ); */
+                );
               } catch (rrErr) {
                 if (isWindowClosedError(rrErr)) {
-                  /* console.log(
+                  console.log(
                     `↩ [remarketing] id=${record.id} ventana cerrada, fallback a template`,
-                  ); */
+                  );
                 } else if (isMetaRateLimit(rrErr)) {
                   throw rrErr;
                 } else {
@@ -704,7 +722,7 @@ cron.schedule('*/1 * * * *', async () => {
             metodo24h === 'ia' &&
             record.prompt_ia
           ) {
-            /* console.log(`🟦 [DEBUG] >>> Entrando a bloque IA`); */
+            console.log(`🟦 [DEBUG] >>> Entrando a bloque IA`);
             try {
               const [cfgRow] = await db.query(
                 `SELECT api_key_openai, openai_activo FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -713,9 +731,9 @@ cron.schedule('*/1 * * * *', async () => {
                   type: db.QueryTypes.SELECT,
                 },
               );
-              /* console.log(
+              console.log(
                 `🟦 [DEBUG IA] cfgRow: api_key=${cfgRow?.api_key_openai ? 'SI' : 'NO'} openai_activo=${cfgRow?.openai_activo}`,
-              ); */
+              );
 
               if (!cfgRow?.api_key_openai) {
                 throw new Error('Sin api_key_openai en configuración');
@@ -739,9 +757,9 @@ cron.schedule('*/1 * * * *', async () => {
                   type: db.QueryTypes.SELECT,
                 },
               );
-              /* console.log(
+              console.log(
                 `🟦 [DEBUG IA] colRow: assistant_id=${colRow?.assistant_id || 'NO'} max_tokens=${colRow?.max_tokens}`,
-              ); */
+              );
 
               if (!colRow?.assistant_id) {
                 throw new Error(
@@ -758,9 +776,9 @@ cron.schedule('*/1 * * * *', async () => {
                   type: db.QueryTypes.SELECT,
                 },
               );
-              /* console.log(
+              console.log(
                 `🟦 [DEBUG IA] threadRow: thread_id=${threadRow?.thread_id || 'NO'}`,
-              ); */
+              );
 
               if (!threadRow?.thread_id) {
                 throw new Error('Cliente sin thread de OpenAI');
@@ -788,9 +806,9 @@ cron.schedule('*/1 * * * *', async () => {
               envioPorIA = true;
               iaTextoEnviado = textoIA;
               iaWamid = iaSent.wamid;
-              /* console.log(
+              console.log(
                 `🤖 [remarketing] id=${record.id} IA enviada (${textoIA.length} chars) wamid=${iaWamid}`,
-              ); */
+              );
             } catch (iaErr) {
               console.log(
                 `🟦 [DEBUG IA] ❌ ERROR EN BLOQUE IA: ${iaErr.message}`,
@@ -829,7 +847,7 @@ cron.schedule('*/1 * * * *', async () => {
               }
             }
           } else {
-            /* console.log(`🟦 [DEBUG] >>> NO entró a bloque IA. Razones:`);
+            console.log(`🟦 [DEBUG] >>> NO entró a bloque IA. Razones:`);
             console.log(`🟦 [DEBUG]     - !envioPorRR: ${!envioPorRR}`);
             console.log(`🟦 [DEBUG]     - dentroVentana: ${dentroVentana}`);
             console.log(
@@ -837,14 +855,43 @@ cron.schedule('*/1 * * * *', async () => {
             );
             console.log(
               `🟦 [DEBUG]     - record.prompt_ia: ${!!record.prompt_ia}`,
-            ); */
+            );
           }
 
           // ══════════════════════════════════════════════════════
           // Intento 3: TEMPLATE META (si no fue por RR ni IA)
           // ══════════════════════════════════════════════════════
           if (!envioPorRR && !envioPorIA) {
-            /* console.log(`🟦 [DEBUG] >>> FALLBACK a template Meta`); */
+            console.log(`🟦 [DEBUG] >>> FALLBACK a template Meta`);
+
+            // Sin plantilla configurada → no hay fallback de pago posible.
+            if (!record.nombre_template) {
+              if (!dentroVentana) {
+                // Ventana 24h cerrada y sin plantilla → nada que enviar.
+                // Cancelar limpio (NO es error, NO reintentar).
+                await db.query(
+                  `UPDATE remarketing_pendientes
+                   SET cancelado = 1, error_message = ?, ultimo_intento_at = NOW()
+                   WHERE id = ?`,
+                  {
+                    replacements: [
+                      'Sin plantilla y fuera de ventana 24h (no se envió nada)',
+                      record.id,
+                    ],
+                    type: db.QueryTypes.UPDATE,
+                  },
+                );
+                console.log(
+                  `⏭️ [remarketing] id=${record.id} sin plantilla + ventana cerrada — cancelado sin envío`,
+                );
+                continue;
+              }
+              // Ventana abierta pero RR/IA falló y no hay respaldo:
+              // error transitorio → que reintente vía handleRecordError.
+              throw new Error(
+                'RR/IA no se envió y no hay plantilla de respaldo (reintentar)',
+              );
+            }
 
             const headerFormatNorm = String(
               record.header_format || '',
@@ -1226,9 +1273,12 @@ cron.schedule('*/1 * * * *', async () => {
               },
             );
 
-            const tiempoDisparo = new Date(
-              Date.now() + siguienteConfig.tiempo_espera_horas * 60 * 60 * 1000,
-            );
+            const minutos =
+              siguienteConfig.tiempo_espera_minutos != null
+                ? Number(siguienteConfig.tiempo_espera_minutos)
+                : Number(siguienteConfig.tiempo_espera_horas || 0) * 60;
+
+            const tiempoDisparo = new Date(Date.now() + minutos * 60 * 1000);
 
             await db.query(
               `INSERT INTO remarketing_pendientes
@@ -1271,15 +1321,11 @@ cron.schedule('*/1 * * * *', async () => {
             );
           }
 
-          // Mover columna
+          // Mover columna SOLO si hay estado_destino explícito.
+          // Si no, el cliente se queda en su columna actual.
           if (record.estado_destino) {
             await ClientesChatCenter.update(
               { estado_contacto: record.estado_destino },
-              { where: { id: record.id_cliente_chat_center } },
-            );
-          } else if (!siguienteConfig) {
-            await ClientesChatCenter.update(
-              { estado_contacto: 'seguimiento' },
               { where: { id: record.id_cliente_chat_center } },
             );
           }
@@ -1292,10 +1338,10 @@ cron.schedule('*/1 * * * *', async () => {
           );
 
           const tipoEnvio = envioPorIA ? 'IA' : envioPorRR ? 'RR' : 'template';
-          /* console.log(
+          console.log(
             `✅ [remarketing] id=${record.id} enviado (${tipoEnvio})`,
           );
-          console.log(`🟦 [DEBUG] ━━━━━━━━━━ FIN id=${record.id} ━━━━━━━━━━\n`); */
+          console.log(`🟦 [DEBUG] ━━━━━━━━━━ FIN id=${record.id} ━━━━━━━━━━\n`);
 
           await new Promise((r) => setTimeout(r, 500));
         } catch (err) {
@@ -1335,6 +1381,6 @@ cron.schedule('*/1 * * * *', async () => {
   }
 });
 
-/* console.log(
+console.log(
   '🚀 [remarketing] Cron registrado (cada 1 min) - VERSION DEBUG IA v2',
-); */
+);

@@ -313,7 +313,10 @@ async function procesarMensajeKanban(params) {
     (id_configuracion == 10 ||
       id_configuracion == 277 ||
       id_configuracion == 392 ||
-      id_configuracion == 569)
+      id_configuracion == 569 ||
+      id_configuracion == 360 ||
+      id_configuracion == 324 ||
+      id_configuracion == 476)
   ) {
     const [cli] = await db.query(
       `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
@@ -831,7 +834,7 @@ async function programarRemarketingKanban({
     }
 
     const [configRM] = await db.query(
-      `SELECT tiempo_espera_horas, nombre_template, language_code,
+      `SELECT tiempo_espera_horas, tiempo_espera_minutos, nombre_template, language_code,
               estado_destino, header_format, header_media_url,
               header_media_name, header_parameters,
               id_template_rapido, usar_respuesta_rapida,
@@ -868,9 +871,12 @@ async function programarRemarketingKanban({
     const telefono_configuracion = cfg?.telefono ? String(cfg.telefono) : null;
     if (!telefono_configuracion) return;
 
-    const tiempoDisparo = new Date(
-      Date.now() + configRM.tiempo_espera_horas * 3600000,
-    );
+    const minutos =
+      configRM.tiempo_espera_minutos != null
+        ? Number(configRM.tiempo_espera_minutos)
+        : Number(configRM.tiempo_espera_horas || 0) * 60;
+
+    const tiempoDisparo = new Date(Date.now() + minutos * 60 * 1000);
 
     const headerMediaUrl = configRM.header_media_url
       ? configRM.header_media_url.replace(/&amp;/g, '&')
@@ -910,7 +916,7 @@ async function programarRemarketingKanban({
       },
     );
     await log(
-      `📅 Remarketing programado en ${configRM.tiempo_espera_horas}h — estado=${estado_contacto} método=${configRM.metodo_dentro_24h || 'ninguno'}`,
+      `📅 Remarketing programado en ${minutos}min — estado=${estado_contacto} método=${configRM.metodo_dentro_24h || 'ninguno'}`,
     );
   } catch (err) {
     await log(`⚠️ Error programando remarketing: ${err.message}`);
