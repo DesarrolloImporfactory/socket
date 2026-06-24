@@ -14,6 +14,22 @@ const {
 
 const axios = require('axios');
 
+// Catálogo Kanban (fuente única de verdad, compartida con el admin controller)
+const {
+  KANBAN_TEMPLATES_META,
+  KANBAN_RESPUESTAS_RAPIDAS,
+  DROPI_CONFIG_POR_DEFECTO,
+  REMARKETING_POR_DEFECTO,
+} = require('../utils/kanban_catalogo.data');
+
+const {
+  getTemplatesMetaMerged,
+  getRespuestasRapidasMerged,
+  getDropiConfigMerged,
+  getRemarketingMerged,
+  getTemplateLookups,
+} = require('../utils/kanban_catalogo.provider');
+
 // ──────────────────────────────────────────────────────────────
 // CONSTANTES
 // ──────────────────────────────────────────────────────────────
@@ -194,6 +210,11 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
 
   await db.query(
     `DELETE FROM configuracion_remarketing WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
+  );
+
+  await db.query(
+    `DELETE FROM dropi_plantillas_config WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
   );
 
@@ -734,13 +755,14 @@ async function prepareComponentsWithHandles(components, ACCESS_TOKEN) {
   return newComponents;
 }
 
-// ── Helpers internos ( solo retornan data) ──
-async function _crearTemplatesMeta(id_configuracion) {
+async function _crearTemplatesMeta(id_configuracion, soloKeys = null) {
   const wabaConfig = await getConfigFromDB(id_configuracion);
   if (!wabaConfig?.WABA_ID || !wabaConfig?.ACCESS_TOKEN)
     return [{ status: 'skipped', mensaje: 'Sin config WABA' }];
 
   const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+
+  const templates = await getTemplatesMetaMerged(); // ← fábrica + custom
 
   let existentes = [];
   try {
@@ -754,7 +776,8 @@ async function _crearTemplatesMeta(id_configuracion) {
 
   const resultados = [];
 
-  for (const tpl of KANBAN_TEMPLATES_META) {
+  for (const tpl of templates) {
+    if (soloKeys && !soloKeys.has(tpl.name)) continue;
     if (existentes.includes(tpl.name)) {
       resultados.push({ nombre: tpl.name, status: 'omitido' });
       continue;
@@ -762,7 +785,6 @@ async function _crearTemplatesMeta(id_configuracion) {
 
     try {
       let componentsPrepared;
-
       try {
         componentsPrepared = await prepareComponentsWithHandles(
           tpl.components,
@@ -795,11 +817,7 @@ async function _crearTemplatesMeta(id_configuracion) {
         },
       );
 
-      resultados.push({
-        nombre: tpl.name,
-        status: 'success',
-        id: r.data?.id,
-      });
+      resultados.push({ nombre: tpl.name, status: 'success', id: r.data?.id });
     } catch (err) {
       resultados.push({
         nombre: tpl.name,
@@ -811,7 +829,8 @@ async function _crearTemplatesMeta(id_configuracion) {
   return resultados;
 }
 
-async function _crearRespuestasRapidas(id_configuracion) {
+// ── (A) Respuestas rápidas ──────────────────────────────────────
+async function _crearRespuestasRapidas(id_configuracion, soloKeys = null) {
   let existentes = [];
   try {
     const rows = await db.query(
@@ -823,13 +842,23 @@ async function _crearRespuestasRapidas(id_configuracion) {
     console.error('Error consultando existentes:', e.message);
   }
 
+  const rapidas = await getRespuestasRapidasMerged();
+
   const resultados = [];
-  for (const rr of KANBAN_RESPUESTAS_RAPIDAS) {
+  for (const rr of rapidas) {
+    if (soloKeys && !soloKeys.has(rr.atajo)) continue;
     if (existentes.includes(rr.atajo)) {
       resultados.push({ atajo: rr.atajo, status: 'omitido' });
       continue;
     }
     try {
+      // ── defaults seguros ──
+      const mensaje = rr.mensaje ?? null;
+      const tipo_mensaje = rr.tipo_mensaje || 'text';
+      const ruta_archivo = rr.ruta_archivo || null;
+      const mime_type = rr.mime_type || null;
+      const file_name = rr.file_name || null;
+
       const [insertId] = await db.query(
         `INSERT INTO templates_chat_center
          (atajo, mensaje, id_configuracion, tipo_mensaje, ruta_archivo, mime_type, file_name)
@@ -837,12 +866,12 @@ async function _crearRespuestasRapidas(id_configuracion) {
         {
           replacements: [
             rr.atajo,
-            rr.mensaje,
+            mensaje,
             id_configuracion,
-            rr.tipo_mensaje || 'text',
-            rr.ruta_archivo || null,
-            rr.mime_type || null,
-            rr.file_name || null,
+            tipo_mensaje,
+            ruta_archivo,
+            mime_type,
+            file_name,
           ],
           type: db.QueryTypes.INSERT,
         },
@@ -855,95 +884,31 @@ async function _crearRespuestasRapidas(id_configuracion) {
   return resultados;
 }
 
-// ── Helper: extraer body_text de un template del catálogo ──
-function _getBodyTextFromKanbanTemplate(templateName) {
-  const tpl = KANBAN_TEMPLATES_META.find((t) => t.name === templateName);
-  if (!tpl) return null;
-  const body = tpl.components.find((c) => c.type === 'BODY');
-  return body?.text || null;
-}
-
-// ── Configuración por defecto de dropi_plantillas_config || Espejo exacto del setup necesario dropshipping───────
-const DROPI_CONFIG_POR_DEFECTO = [
-  {
-    estado_dropi: 'PENDIENTE CONFIRMACION',
-    nombre_template: 'confirmacion_pedido_k1',
-    columna_destino: null,
-    activo: 1,
-    usar_respuesta_rapida: 1,
-    mensaje_rapido: null,
-    parametros: {
-      body: ['nombre', 'costo', 'contenido', 'nombre', 'telefono', 'direccion'],
-      buttons: [],
-    },
-  },
-  {
-    estado_dropi: 'PENDIENTE',
-    nombre_template: 'antes_generar_guia_k1',
-    columna_destino: 'guia_creada',
-    activo: 1,
-    usar_respuesta_rapida: 1,
-    mensaje_rapido:
-      'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
-    parametros: null,
-  },
-  {
-    estado_dropi: 'GUIA GENERADA',
-    nombre_template: 'guia_generada_k1',
-    columna_destino: 'guia_generada',
-    activo: 1,
-    usar_respuesta_rapida: 0,
-    mensaje_rapido: null,
-    parametros: {
-      body: [],
-      buttons: [
-        { index: 0, variable: 'guia_pdf' },
-        { index: 1, variable: 'numero_guia' },
-      ],
-    },
-  },
-  {
-    estado_dropi: 'EN TRANSITO',
-    nombre_template: 'zona_entrega_k1',
-    columna_destino: 'en_transito',
-    activo: 1,
-    usar_respuesta_rapida: 0,
-    mensaje_rapido: null,
-    parametros: {
-      body: ['ciudad', 'direccion', 'costo', 'tracking'],
-      buttons: [],
-    },
-  },
-  {
-    estado_dropi: 'RETIRO EN AGENCIA',
-    nombre_template: 'retiro_agencia_k1',
-    columna_destino: 'retiro_agencia',
-    activo: 1,
-    usar_respuesta_rapida: 0,
-    mensaje_rapido: null,
-    parametros: { body: ['direccion'], buttons: [] },
-  },
-  {
-    estado_dropi: 'NOVEDAD',
-    nombre_template: 'novedadk2',
-    columna_destino: 'novedad',
-    activo: 1,
-    usar_respuesta_rapida: 0,
-    mensaje_rapido: null,
-    parametros: null,
-  },
-];
-
-// ── Aplicar config dropi por defecto (UPSERT — siempre sobreescribe) ──
-async function _aplicarConfigDropiPorDefecto(id_configuracion) {
+// ── (B) Config Dropi ────────────────────────────────────────────
+async function _aplicarConfigDropiPorDefecto(
+  id_configuracion,
+  soloKeys = null,
+) {
   const resultados = [];
 
-  for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
+  const [dropiCfgs, { bodyByName }] = await Promise.all([
+    getDropiConfigMerged(),
+    getTemplateLookups(),
+  ]);
+
+  for (const cfg of dropiCfgs) {
+    if (soloKeys && !soloKeys.has(cfg.estado_dropi)) continue;
     try {
+      // ── defaults seguros ──
+      const activo = cfg.activo == null ? 1 : cfg.activo;
+      const mensaje_rapido = cfg.mensaje_rapido ?? null;
+      const usar_respuesta_rapida = cfg.usar_respuesta_rapida ? 1 : 0;
+      const columna_destino = cfg.columna_destino || null;
+      const parametros_json = cfg.parametros
+        ? JSON.stringify(cfg.parametros)
+        : null;
       const body_text =
-        cfg.body_text ||
-        _getBodyTextFromKanbanTemplate(cfg.nombre_template) ||
-        null;
+        cfg.body_text || bodyByName.get(cfg.nombre_template) || null;
 
       const [existe] = await db.query(
         `SELECT id FROM dropi_plantillas_config
@@ -957,35 +922,28 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
       if (existe) {
         await db.query(
           `UPDATE dropi_plantillas_config
-           SET nombre_template = ?,
-               columna_destino = ?,
-               language_code = 'es',
-               activo = ?,
-               mensaje_rapido = ?,
-               usar_respuesta_rapida = ?,
-               parametros_json = ?,
-               body_text = ?,
-               updated_at = NOW()
+           SET nombre_template = ?, columna_destino = ?, language_code = 'es',
+               activo = ?, mensaje_rapido = ?, usar_respuesta_rapida = ?,
+               parametros_json = ?, body_text = ?, updated_at = NOW()
            WHERE id = ?`,
           {
             replacements: [
               cfg.nombre_template,
-              cfg.columna_destino || null,
-              cfg.activo,
-              cfg.mensaje_rapido,
-              cfg.usar_respuesta_rapida,
-              cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+              columna_destino,
+              activo,
+              mensaje_rapido,
+              usar_respuesta_rapida,
+              parametros_json,
               body_text,
               existe.id,
             ],
             type: db.QueryTypes.UPDATE,
           },
         );
-
         resultados.push({
           estado: cfg.estado_dropi,
           template: cfg.nombre_template,
-          columna_destino: cfg.columna_destino || null,
+          columna_destino,
           status: 'actualizado',
         });
       } else {
@@ -999,21 +957,20 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
               id_configuracion,
               cfg.estado_dropi,
               cfg.nombre_template,
-              cfg.columna_destino || null,
-              cfg.activo,
-              cfg.mensaje_rapido,
-              cfg.usar_respuesta_rapida,
-              cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+              columna_destino,
+              activo,
+              mensaje_rapido,
+              usar_respuesta_rapida,
+              parametros_json,
               body_text,
             ],
             type: db.QueryTypes.INSERT,
           },
         );
-
         resultados.push({
           estado: cfg.estado_dropi,
           template: cfg.nombre_template,
-          columna_destino: cfg.columna_destino || null,
+          columna_destino,
           status: 'creado',
         });
       }
@@ -1023,6 +980,108 @@ async function _aplicarConfigDropiPorDefecto(id_configuracion) {
         status: 'error',
         error: err.message,
       });
+    }
+  }
+
+  return resultados;
+}
+
+// ── (C) Remarketing ─────────────────────────────────────────────
+async function _aplicarRemarketingPorDefecto(
+  id_configuracion,
+  soloKeys = null,
+) {
+  const resultados = [];
+
+  const [grupos, { headerMediaByName }] = await Promise.all([
+    getRemarketingMerged(),
+    getTemplateLookups(),
+  ]);
+
+  for (const grupo of grupos) {
+    const { estado_contacto, secuencias: secuenciasTodas } = grupo;
+    const secuencias = soloKeys
+      ? secuenciasTodas.filter((s) => soloKeys.has(s.nombre_template))
+      : secuenciasTodas;
+
+    try {
+      await db.query(
+        `DELETE FROM configuracion_remarketing
+         WHERE id_configuracion = ? AND estado_contacto = ?`,
+        {
+          replacements: [id_configuracion, estado_contacto],
+          type: db.QueryTypes.DELETE,
+        },
+      );
+    } catch (err) {
+      resultados.push({
+        estado_contacto,
+        status: 'error_limpieza',
+        error: err.message,
+      });
+      continue;
+    }
+
+    for (const sec of secuencias) {
+      try {
+        // ── defaults seguros ──
+        const secuencia = sec.secuencia == null ? 1 : sec.secuencia;
+        const tiempo_espera_horas =
+          sec.tiempo_espera_horas == null ? 24 : sec.tiempo_espera_horas;
+        const language_code = sec.language_code || 'es';
+        const estado_destino = sec.estado_destino || null;
+        const header_format = sec.header_format || null;
+        const metodo_dentro_24h = sec.metodo_dentro_24h || 'ia';
+        const prompt_ia =
+          metodo_dentro_24h === 'ia' ? sec.prompt_ia || null : null;
+        const header_media_url =
+          headerMediaByName.get(sec.nombre_template) || null;
+
+        await db.query(
+          `INSERT INTO configuracion_remarketing
+           (id_configuracion, estado_contacto, secuencia,
+            tiempo_espera_horas, nombre_template, language_code,
+            estado_destino, header_format, header_media_url,
+            header_media_name, header_parameters,
+            id_template_rapido, usar_respuesta_rapida,
+            metodo_dentro_24h, prompt_ia, activo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          {
+            replacements: [
+              id_configuracion,
+              estado_contacto,
+              secuencia,
+              tiempo_espera_horas,
+              sec.nombre_template,
+              language_code,
+              estado_destino,
+              header_format,
+              header_media_url,
+              null,
+              null,
+              null,
+              0,
+              metodo_dentro_24h,
+              prompt_ia,
+            ],
+            type: db.QueryTypes.INSERT,
+          },
+        );
+
+        resultados.push({
+          estado_contacto,
+          secuencia,
+          template: sec.nombre_template,
+          status: 'creado',
+        });
+      } catch (err) {
+        resultados.push({
+          estado_contacto,
+          secuencia: sec.secuencia,
+          status: 'error',
+          error: err.message,
+        });
+      }
     }
   }
 
@@ -1071,6 +1130,26 @@ async function validarApiKeyOpenAI(apiKey) {
   }
 }
 
+// ── Resuelve el bloque setup de una plantilla con defaults retrocompatibles ──
+// Plantillas viejas SIN setup → todo true (comportamiento histórico).
+function _resolverSetup(dataPlantilla) {
+  const s = dataPlantilla?.setup || {};
+  // Arrays de selección por ítem. null/undefined = "todos" (retrocompatible).
+  const arr = (v) => (Array.isArray(v) ? v : null);
+  return {
+    // ── Master toggles por bloque ──
+    templates_meta: s.templates_meta !== false,
+    dropi_config: s.dropi_config !== false,
+    remarketing: s.remarketing !== false,
+    respuestas_rapidas: s.respuestas_rapidas !== false,
+    // ── Selección granular por ítem (null = todos los del catálogo) ──
+    templates_meta_items: arr(s.templates_meta_items),
+    respuestas_rapidas_items: arr(s.respuestas_rapidas_items),
+    remarketing_items: arr(s.remarketing_items),
+    dropi_config_items: arr(s.dropi_config_items),
+  };
+}
+
 // ──────────────────────────────────────────────────────────────
 // APLICAR PLANTILLA GLOBAL
 // ──────────────────────────────────────────────────────────────
@@ -1083,6 +1162,12 @@ async function validarApiKeyOpenAI(apiKey) {
 //   - El snapshot del prompt se guarda por columna del cliente.
 //   - NUNCA se modifica la plantilla global desde aquí.
 //   - NUNCA se afecta a otros clientes.
+//
+// SETUP VARIABLE POR PLANTILLA:
+//   - El bloque `setup` del JSON de la plantilla decide qué se aplica:
+//       templates_meta · dropi_config · remarketing · respuestas_rapidas
+//   - Si la plantilla NO trae setup → todo true (retrocompatible).
+//   - El cliente NO ve ni edita esto: lo define el superadmin en el editor.
 //
 // Cascada para nombre de tienda:
 //   1. Body request `empresa` (lo que escribió el cliente en el modal)
@@ -1132,10 +1217,18 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     'OpenAI-Beta': 'assistants=v2',
   };
 
-  const { columnas } =
+  // ═══ Parse data + resolver setup variable de la plantilla ═══
+  const dataPlantilla =
     typeof plantilla.data === 'string'
       ? JSON.parse(plantilla.data)
       : plantilla.data;
+  const { columnas } = dataPlantilla;
+  const setup = _resolverSetup(dataPlantilla);
+
+  console.log(
+    `[aplicarGlobal] cfg=${id_configuracion} setup=`,
+    JSON.stringify(setup),
+  );
 
   const nombreTiendaResuelto =
     (empresa && empresa.trim()) || nombreEmpresaConfig || null;
@@ -1297,10 +1390,29 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
 
-  // Estos ya son idempotentes (chequean existentes / upsert) y rápidos → foreground
-  const resultadoRapidas = await _crearRespuestasRapidas(id_configuracion);
-  const resultadoDropiConfig =
-    await _aplicarConfigDropiPorDefecto(id_configuracion);
+  // ═══ Foreground condicionado por setup ═══
+  // Cada bloque se ejecuta SOLO si la plantilla lo tiene encendido.
+  // Lo apagado devuelve { skipped: true } y simplemente no se crea.
+  const resultadoRapidas = setup.respuestas_rapidas
+    ? await _crearRespuestasRapidas(
+        id_configuracion,
+        setup.respuestas_rapidas_items
+          ? new Set(setup.respuestas_rapidas_items)
+          : null,
+      )
+    : { skipped: true };
+  const resultadoDropiConfig = setup.dropi_config
+    ? await _aplicarConfigDropiPorDefecto(
+        id_configuracion,
+        setup.dropi_config_items ? new Set(setup.dropi_config_items) : null,
+      )
+    : { skipped: true };
+  const resultadoRemarketing = setup.remarketing
+    ? await _aplicarRemarketingPorDefecto(
+        id_configuracion,
+        setup.remarketing_items ? new Set(setup.remarketing_items) : null,
+      )
+    : { skipped: true };
 
   await db.query(
     `UPDATE configuraciones
@@ -1318,10 +1430,14 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
         id_configuracion,
         id_plantilla,
         JSON.stringify({
+          setup,
           columnas: resultado,
           respuestas_rapidas: resultadoRapidas,
           dropi_config: resultadoDropiConfig,
-          templates_meta: 'en_proceso_async',
+          remarketing: resultadoRemarketing,
+          templates_meta: setup.templates_meta
+            ? 'en_proceso_async'
+            : 'desactivado_en_setup',
         }),
       ],
     },
@@ -1331,17 +1447,28 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
   res.json({
     success: true,
     data: {
+      setup,
       columnas: resultado,
       respuestas_rapidas: resultadoRapidas,
       dropi_config: resultadoDropiConfig,
-      templates_meta: 'procesando_en_segundo_plano',
+      remarketing: resultadoRemarketing,
+      templates_meta: setup.templates_meta
+        ? 'procesando_en_segundo_plano'
+        : 'desactivado_en_setup',
     },
   });
 
   // ═══ SEGUNDO PLANO: templates Meta + sync catálogo ═══
   setImmediate(async () => {
     try {
-      const resultadoTemplates = await _crearTemplatesMeta(id_configuracion);
+      const resultadoTemplates = setup.templates_meta
+        ? await _crearTemplatesMeta(
+            id_configuracion,
+            setup.templates_meta_items
+              ? new Set(setup.templates_meta_items)
+              : null,
+          )
+        : [{ status: 'skipped', mensaje: 'Desactivado en setup de plantilla' }];
       await db.query(
         `INSERT INTO configuraciones_kanban_global_log
            (id_configuracion, id_plantilla, accion, detalle)
@@ -1384,397 +1511,7 @@ exports.eliminarGlobal = catchAsync(async (req, res, next) => {
 });
 /* seccion de plantillas globales */
 
-const KANBAN_TEMPLATES_META = [
-  {
-    name: 'remarketing_k1',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'VIDEO',
-        example: {
-          header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/3619a3291e1ccfe2388174618b50b550',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Tu pedido ya está listo para salir. Compárteme tu ubicación para coordinar el envío de inmediato.',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_k2',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'VIDEO',
-        example: {
-          header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/58b0a69a64359e85d12dd722f27f7afe',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Tu pedido está listo y tenemos cupos de envío GRATIS disponibles por poco tiempo.\nRecuerda, el pago lo realizas directamente al transportista al momento de la entrega.',
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Quiero envío hoy' },
-          { type: 'QUICK_REPLY', text: 'Tengo una consulta' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'remarketing_k3',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'IMAGE',
-        example: {
-          header_handle: [
-            'https://imp-datas.s3.amazonaws.com/images/2026-04-07T21-27-32-154Z-534427295_813699714500800_6839605187360868450_n.png',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Se aplicó un ajuste especial del 10% a tu pedido. Envíame tu ubicación para coordinar el despacho.',
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Quiero mi descuento' },
-          { type: 'QUICK_REPLY', text: 'Enviar ubicación' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'remarketing_despacho_listo',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '🚛 Tu pedido ya está listo para salir\n\nBuenas noticias 👇\n\nTu paquete ya está empacado en bodega y solo espera tu ubicación exacta 📍 para entrar en la próxima ruta del día.\n\n⏰ Última salida hoy: 4:00 PM\n📦 Si confirmas ahora: lo recibes en 24 a 48 horas\n💵 Pago: contraentrega — pagas solo cuando te lo entreguen\n\nSolo necesito tu ubicación para enviarlo. ⬇',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_envio_gratis',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '🎁 Envío GRATIS asignado a tu pedido\n\nTe ahorras el costo de envío ($8) — el beneficio *estará activo por hoy*\n\n📦 Tu paquete: ya empacado en bodega\n🚛 Envío: GRATIS por esta semana\n💵 Pago: contraentrega — pagas al recibir\n\n¿Realizo tu envío hoy?',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_descuento_aprobado',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '🎁 Se aplicó un descuento del 10% a tu pedido\n\nEl código quedó cargado a tu contacto y se cae automático hoy a las 23:59.\n\n💸 Descuento: 10% OFF aplicado\n⏰ Vigencia: solo hoy\n\nSi el precio era lo que te frenaba → ahí está resuelto ✅\n\nSolo necesito tu ubicación para coordinar el despacho. 📍',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_stock_agotado',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '⚠️ Stock casi agotado — quedan pocas unidades\n\nEn bodega quedan menos de 10 unidades y hoy se están yendo rápido.\n\nY algo más: el próximo lote llega en 3 a 4 semanas y entrará con precio más alto — subieron los costos de importación.\n\nSi lo aseguras hoy, te queda al precio actual 🔒\n\nMándame tu ubicación 📍 (sigues pagando contraentrega).',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_stock_apartado',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '📦 Stock reservado a tu nombre — vence en 12 horas\n\nHoy ya despachamos 837 pedidos a nivel nacional. Tu unidad está apartada en bodega y lista para salir, pero la reserva vence hoy a medianoche ⏰\n\nDespués de hoy, la unidad regresa al stock general y se están agotando rápido.\n\n¿Realizo tu envío? 🙌 (envíame tu ubicación).',
-      },
-    ],
-  },
-  {
-    name: 'antes_generar_guia_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'BODY',
-        text: 'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
-      },
-    ],
-  },
-  {
-    name: 'guia_generada_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'BODY',
-        text: 'La guía de envío de tu pedido ha sido generada. El tiempo estimado de entrega es de 2 a 3 días hábiles.',
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          {
-            type: 'URL',
-            text: 'Descargar Guía',
-            url: 'https://d39ru7awumhhs2.cloudfront.net/{{1}}',
-            example: [
-              'https://d39ru7awumhhs2.cloudfront.net/guias/ejemplo.pdf',
-            ],
-          },
-          {
-            type: 'URL',
-            text: 'Seguimiento del pedido',
-            url: 'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/{{1}}',
-            example: [
-              'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/LC123456',
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'novedad_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'BODY',
-        text: 'Te comento que se ha gestionado un nuevo intento de entrega con la transportadora. Por favor, estar atento para que puedas recibir tu pedido sin inconvenientes.',
-      },
-    ],
-  },
-  {
-    name: 'novedadk2',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'BODY',
-        text: 'Estimado cliente, le recordamos que al seleccionar pago contraentrega, usted se comprometió a recibir y pagar el pedido, conforme a la ley 67 del 2022 de Comercio Electrónico.\n\nEl costo del envío ya fue asumido por nuestra empresa.\nNecesitamos programar un nuevo intento de entrega lo antes posible por favor.\n\nEs importante contar con su disponibilidad para evitar cancelación del pedido y posibles restricciones en futuras compras.',
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Confirmo recepción' },
-          { type: 'QUICK_REPLY', text: 'Reprogramar entrega' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'retiro_agencia_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'TEXT',
-        text: 'AVISO IMPORTANTE',
-      },
-      {
-        type: 'BODY',
-        text: 'Estimado Cliente:\nServientrega le notifica que su pedido esta listo para ser retirado en agencia: {{1}}\nPor favor acercarse lo más pronto posible.',
-        example: { body_text: [['Agencia Norte Quito']] },
-      },
-    ],
-  },
-  {
-    name: 'confirmacion_pedido_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'BODY',
-        text: 'Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\nPor favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
-        example: {
-          body_text: [
-            [
-              'Daniel',
-              '35.00',
-              'Audífonos Bluetooth',
-              'Daniel Bonilla',
-              '0987654321',
-              'Av. Simón Bolívar y Mariscal Sucre',
-            ],
-          ],
-        },
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'CONFIRMAR PEDIDO' },
-          { type: 'QUICK_REPLY', text: 'ACTUALIZAR INFORMACIÓN' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'zona_entrega_k1',
-    language: 'es',
-    category: 'UTILITY',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'TEXT',
-        text: 'Llego el día de entrega',
-      },
-      {
-        type: 'BODY',
-        text: 'Hoy tu pedido ha llegado 📦✅ a {{1}} y está próximo a ser entregado en {{2}}, en el horario de 9 am a 6 pm. ¡Te recordamos tener el valor total de {{3}} en efectivo! Agradecemos estar atento a las llamadas del courier 🚚 Revisa el estado de tu guía aquí {{4}} 😊.',
-        example: {
-          body_text: [
-            [
-              'Quito',
-              'Av. Amazonas 123',
-              '$20.00',
-              'https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=LC123',
-            ],
-          ],
-        },
-      },
-    ],
-  },
-  {
-    name: 'carritos_abandonados',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'BODY',
-        text: '🛒 ¡Aún tienes tu pedido de {{1}} pendiente! No dejes que se agote. Completa tu compra ahora y recibe un descuento especial. 👇',
-        example: {
-          body_text: [['Contiene']],
-        },
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [{ type: 'QUICK_REPLY', text: 'Completar Compra' }],
-      },
-    ],
-  },
-];
-
-// ── Respuestas rápidas para Kanban ───────────────────────────
-// ── Respuestas rápidas para Kanban ───────────────────────────
-const KANBAN_RESPUESTAS_RAPIDAS = [
-  {
-    atajo: 'orden_aprobada',
-    mensaje:
-      'Tu orden ya ha sido aprobada correctamente.\nEstamos a la espera de que la transportadora genere la guía de envío. 📦 Apenas esté disponible, te la compartiré de inmediato para que puedas hacer el seguimiento.',
-  },
-  {
-    atajo: 'agradecimiento',
-    mensaje:
-      'Muchas gracias por confiar en nosotros y bienvenid@ a la familia 🙌🛍 espero disfrutes de nuestros productos.',
-  },
-  {
-    atajo: 'pago_contraentrega',
-    mensaje:
-      'El pago es CONTRA-ENTREGA 💵, es decir, que vas a pagar tu pedido en efectivo cuando el transportista te lo entregue.',
-  },
-  {
-    atajo: 'genera_preguntas',
-    mensaje:
-      '¿Tienes alguna pregunta específica sobre el producto? 🤔\nEstoy aquí para proporcionarte más información y aclarar cualquier duda que puedas tener. 😊',
-  },
-  {
-    atajo: 'despedida',
-    mensaje:
-      'Agradezco tu tiempo y consideración. 🙌\nEspero con ansias tu respuesta y la oportunidad de brindarte una solución de calidad. ¡Que tengas un maravilloso día! ✨',
-  },
-  {
-    atajo: 'ubicacion_incorrecta',
-    mensaje:
-      'Genial, en este momento procedo con el empaque de su pedido. 📦\nPor favor si me ayuda con la ubicación por Google Maps 📍 para que el transportista llegue con facilidad.',
-  },
-  {
-    atajo: 'antes_generar_guia',
-    mensaje:
-      'Perfecto, en este momento procedemos con su despacho, en un momento le comparto su guía de envío. 😊\nCualquier duda que tenga estoy para ayudarle 📦',
-  },
-
-  // ── REMARKETING (priorizadas sobre plantillas Meta) ──────────
-  {
-    atajo: 'remarketing_1',
-    tipo_mensaje: 'video',
-    ruta_archivo:
-      'https://new.imporsuitpro.com/Videos/stream/3619a3291e1ccfe2388174618b50b550',
-    mime_type: 'video/mp4',
-    file_name: 'remarketing_1_despacho_listo.mp4',
-    mensaje:
-      '🚛 Tu pedido ya está listo para salir\n\nBuenas noticias 👇\n\nTu paquete ya está empacado en bodega y solo espera tu ubicación exacta 📍 para entrar en la próxima ruta del día.\n\n⏰ Última salida hoy: 4:00 PM\n📦 Si confirmas ahora: lo recibes en 24 a 48 horas\n💵 Pago: contraentrega — pagas solo cuando te lo entreguen\n\nSolo necesito tu ubicación para enviarlo. ⬇',
-  },
-  {
-    atajo: 'remarketing_2',
-    tipo_mensaje: 'image',
-    ruta_archivo:
-      'https://imp-datas.s3.amazonaws.com/images/2026-05-18T19-15-27-523Z-ENVIO_GRATIS_.png',
-    mime_type: 'image/png',
-    file_name: 'remarketing_2_envio_gratis.png',
-    mensaje:
-      '🎁 Envío GRATIS asignado a tu pedido\n\nTe ahorras el costo de envío (≈$8) — el beneficio *estará activo por hoy*\n\n📦 Tu paquete: ya empacado en bodega\n🚛 Envío: GRATIS por esta semana\n💵 Pago: contraentrega — pagas al recibir\n\n¿Realizo tu envío hoy?',
-  },
-  {
-    atajo: 'remarketing_3',
-    tipo_mensaje: 'image',
-    ruta_archivo:
-      'https://imp-datas.s3.amazonaws.com/images/2026-04-07T21-27-32-154Z-534427295_813699714500800_6839605187360868450_n.png',
-    mime_type: 'image/png',
-    file_name: 'remarketing_3_descuento.png',
-    mensaje:
-      '🎁 Se aplicó un descuento del 10% a tu pedido\n\nEl código quedó cargado a tu contacto y se cae automático hoy a las 23:59.\n\n💸 Descuento: 10% OFF aplicado\n⏰ Vigencia: solo hoy\n\nSi el precio era lo que te frenaba → ahí está resuelto ✅\n\nSolo necesito tu ubicación para coordinar el despacho. 📍',
-  },
-  {
-    atajo: 'remarketing_4',
-    tipo_mensaje: 'video',
-    ruta_archivo:
-      'https://new.imporsuitpro.com/Videos/stream/58b0a69a64359e85d12dd722f27f7afe',
-    mime_type: 'video/mp4',
-    file_name: 'remarketing_4_stock_agotado.mp4',
-    mensaje:
-      '⚠️ Stock casi agotado — quedan pocas unidades\n\nEn bodega quedan menos de 10 unidades y hoy se están yendo rápido.\n\nY algo más: el próximo lote llega en 3 a 4 semanas y entrará con precio más alto — subieron los costos de importación.\n\nSi lo aseguras hoy, te queda al precio actual 🔒\n\nMándame tu ubicación 📍 (sigues pagando contraentrega).',
-  },
-  {
-    atajo: 'remarketing_5',
-    tipo_mensaje: 'video',
-    ruta_archivo:
-      'https://new.imporsuitpro.com/Videos/stream/e8505075909c2d0bf42dde1ffad6643e',
-    mime_type: 'video/mp4',
-    file_name: 'remarketing_5_entregas_exitosas.mp4',
-    mensaje:
-      '✅ Cientos de entregas exitosas esta semana\n\nTe muestro entregas reales 👆 — clientes que recibieron su pedido, lo revisaron y recién ahí pagaron al mensajero.\n\n📦 Cientos de pedidos despachados cada semana\n🛡 Garantía por producto\n💵 Pago contraentrega — cero riesgo para ti\n\nTu pedido entra al mismo flujo. Solo me falta tu ubicación 📍',
-  },
-  {
-    atajo: 'remarketing_6',
-    mensaje:
-      '📦 Flujo diario y tu stock está reservado a tu nombre — vence en 12 horas\n\nHoy ya despachamos 837 pedidos a nivel nacional. Tu unidad está apartada en bodega y lista para salir, pero la reserva vence hoy a medianoche ⏰\n\nDespués de hoy, la unidad regresa al stock general y se están agotando rápido.\n\n¿Realizo tu envío? 🙌 (envíame tu ubicación).',
-  },
-];
+// KANBAN_TEMPLATES_META y KANBAN_RESPUESTAS_RAPIDAS viven en utils/kanban_catalogo.data.js
 
 exports.crearTemplatesMeta = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
@@ -1791,6 +1528,9 @@ exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
   const data = await _crearRespuestasRapidas(id_configuracion);
   return res.json({ success: true, data });
 });
+
+// catalogoSetup ahora vive en kanban_plantillas_admin.controller.js
+// (ruta: POST /kanban_plantillas_admin/catalogo_setup)
 
 exports.trackingRedirect = (req, res) => {
   const g = String(req.params.guide || '').trim();

@@ -4,6 +4,12 @@ const ctrl = require('../controllers/kanban_plantillas_admin.controller');
 const { protect } = require('../middlewares/auth.middleware');
 const requireSuperAdmin = require('../middlewares/requireSuperAdmin.middleware');
 
+const multer = require('multer');
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 120 * 1024 * 1024 },
+});
+
 router.use(protect);
 router.use(requireSuperAdmin);
 
@@ -11,6 +17,22 @@ router.use(requireSuperAdmin);
 router.post('/listar', ctrl.listar);
 router.post('/obtener', ctrl.obtener);
 router.post('/uso', ctrl.uso);
+
+// Catálogo de ítems para las checklists del editor (setup variable).
+router.post('/catalogo_setup', ctrl.catalogoSetup);
+
+// ── Catálogo de items (CRUD del setup) ──
+router.post('/catalogo_item_listar', ctrl.catalogoItemListar);
+router.post('/catalogo_item_crear', ctrl.catalogoItemCrear);
+router.post('/catalogo_item_actualizar', ctrl.catalogoItemActualizar);
+router.post('/catalogo_item_eliminar', ctrl.catalogoItemEliminar);
+
+// ── Subir media (respuestas rápidas / templates) ──
+router.post(
+  '/catalogo_subir_media',
+  upload.single('file'),
+  ctrl.catalogoSubirMedia,
+);
 
 // ── Escritura ─────────────────────────────────────────────────
 router.post('/crear', ctrl.crear);

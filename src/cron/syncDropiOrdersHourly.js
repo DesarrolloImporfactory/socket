@@ -461,6 +461,11 @@ async function upsertOrders(cacheInsertFields, orders) {
       order_created_at: o.created_at || null,
       order_data: JSON.stringify(o),
       synced_at: new Date(),
+      // shop: origen de la orden (IMPORSUIT/SHOPIFY/null). Antes no se
+      // persistían y quedaban NULL aunque el JSON sí los traía.
+      shop_id: o.shop_id ?? o.shop?.id ?? null,
+      shop_type: o.shop?.type ?? null,
+      shop_name: o.shop?.name ?? null,
     };
   });
   for (let i = 0; i < bulk.length; i += 200) {
@@ -478,6 +483,9 @@ async function upsertOrders(cacheInsertFields, orders) {
         'product_names',
         'order_data',
         'synced_at',
+        'shop_id',
+        'shop_type',
+        'shop_name',
       ],
     });
   }

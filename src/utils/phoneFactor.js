@@ -33,6 +33,19 @@ const CALLING_TO_ISO = {
 };
 
 /**
+ * Inverso de CALLING_TO_ISO: región ISO-2 → calling code ("EC" → "593").
+ * Se usa en el fallback de toDropiLocal para poder quitar el código de país
+ * de un número que libphonenumber no logró validar.
+ */
+const ISO_TO_CALLING = Object.entries(CALLING_TO_ISO).reduce(
+  (acc, [calling, iso]) => {
+    acc[iso] = String(calling);
+    return acc;
+  },
+  {},
+);
+
+/**
  * Resuelve tu country_code a una región ISO-2.
  * Acepta tanto ISO ("EC") como calling code ("593").
  */
@@ -75,7 +88,18 @@ function parseAny(raw, countryCode) {
 function toDropiLocal(raw, countryCode = 'EC') {
   const p = parseAny(raw, countryCode);
   if (p) return p.nationalNumber;
-  return String(raw || '').replace(/\D/g, ''); // fallback: no rompemos el flujo
+
+  // Fallback: libphonenumber NO validó el número (malformado, o el quirk de
+  // Ecuador donde WhatsApp entrega 593 + 8 dígitos). NO devolver el
+  // internacional crudo: si arranca con el calling code del país, quitarlo,
+  // porque Dropi recorta el campo a ~10 chars sin quitar el código de país y
+  // deja teléfonos fantasma (ej. "5939827263" = 593 + 7 dígitos).
+  let digits = String(raw || '').replace(/\D/g, '');
+  const calling = ISO_TO_CALLING[resolveRegion(countryCode)]; // EC → "593"
+  if (calling && digits.length > calling.length && digits.startsWith(calling)) {
+    digits = digits.slice(calling.length);
+  }
+  return digits.replace(/^0+/, ''); // y el 0 de marcación local, por si acaso
 }
 
 /**
