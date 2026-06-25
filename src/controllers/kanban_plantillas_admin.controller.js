@@ -27,6 +27,7 @@ const {
   getDropiConfigMerged,
   getRemarketingMerged,
   getTemplateLookups,
+  remarketingKey,
 } = require('../utils/kanban_catalogo.provider');
 
 const {
@@ -621,19 +622,28 @@ exports.catalogoSetup = catchAsync(async (req, res) => {
   const remarketing = [];
   for (const grupo of remarketingMerged) {
     for (const sec of grupo.secuencias) {
+      const minutos =
+        sec.tiempo_espera_minutos != null
+          ? Number(sec.tiempo_espera_minutos)
+          : sec.tiempo_espera_horas != null
+            ? Number(sec.tiempo_espera_horas) * 60
+            : null;
+
       remarketing.push({
-        key: sec.nombre_template,
+        key: remarketingKey(grupo.estado_contacto, sec),
         label: `Secuencia ${sec.secuencia}`,
         estado_contacto: grupo.estado_contacto,
         secuencia: sec.secuencia,
-        tiempo_espera_horas: sec.tiempo_espera_horas,
+        tiempo_espera_minutos: minutos,
         estado_destino: sec.estado_destino || null,
         header_format: sec.header_format || null,
         metodo: sec.metodo_dentro_24h || 'ia',
-        template_fuera_24h: sec.nombre_template,
-        template_fuera_24h_body: findBody(sec.nombre_template),
+        template_fuera_24h: sec.nombre_template || null,
+        template_fuera_24h_body: sec.nombre_template
+          ? findBody(sec.nombre_template)
+          : null,
         prompt_ia: sec.prompt_ia || null,
-        depende_template_meta: sec.nombre_template,
+        depende_template_meta: sec.nombre_template || null,
         preview: preview(sec.prompt_ia, 110),
         custom: !!sec._custom,
         custom_id: sec._catalogo_id || null,
@@ -674,7 +684,12 @@ function _deriveItemKey(tipo, data) {
   const d = data || {};
   if (tipo === 'templates_meta') return d.name || null;
   if (tipo === 'respuestas_rapidas') return d.atajo || null;
-  if (tipo === 'remarketing') return d.nombre_template || null;
+  if (tipo === 'remarketing') {
+    // Antes: d.nombre_template. Ahora la plantilla puede ir vacía →
+    // la identidad es estado_contacto + secuencia.
+    if (!d.estado_contacto) return null;
+    return remarketingKey(d.estado_contacto, d);
+  }
   if (tipo === 'dropi_config') return d.estado_dropi || null;
   return null;
 }
@@ -706,14 +721,41 @@ function _validarCatalogoItem(tipo, data) {
       if (!d.mensaje && !d.ruta_archivo)
         errores.push('data.mensaje (o ruta_archivo para media) es obligatorio');
       break;
-    case 'remarketing':
+    case 'remarketing': {
       if (!d.estado_contacto)
         errores.push('data.estado_contacto es obligatorio');
-      if (!d.nombre_template)
-        errores.push('data.nombre_template es obligatorio');
-      if (d.tiempo_espera_horas == null || isNaN(Number(d.tiempo_espera_horas)))
-        errores.push('data.tiempo_espera_horas es obligatorio (número)');
+
+      const metodo = d.metodo_dentro_24h || 'ia';
+
+      // La plantilla SOLO es obligatoria en modo "solo plantilla" (ninguno).
+      // Con IA o respuesta rápida dentro de 24h, puede ir vacía.
+      if (metodo === 'ninguno' && !d.nombre_template)
+        errores.push(
+          'data.nombre_template es obligatorio en modo "solo plantilla" (metodo_dentro_24h = ninguno)',
+        );
+
+      if (metodo === 'ia' && !String(d.prompt_ia || '').trim())
+        errores.push(
+          'data.prompt_ia es obligatorio cuando metodo_dentro_24h = ia',
+        );
+
+      // Sin plantilla necesitamos la secuencia para identificar el paso.
+      if (!d.nombre_template && d.secuencia == null)
+        errores.push(
+          'data.secuencia es obligatorio (1, 2 o 3) cuando no hay nombre_template',
+        );
+
+      // Tiempo en minutos (acepta horas como fallback legacy).
+      const min =
+        d.tiempo_espera_minutos != null
+          ? Number(d.tiempo_espera_minutos)
+          : d.tiempo_espera_horas != null
+            ? Number(d.tiempo_espera_horas) * 60
+            : null;
+      if (min == null || isNaN(min) || min <= 0)
+        errores.push('data.tiempo_espera_minutos es obligatorio (número > 0)');
       break;
+    }
     case 'dropi_config':
       if (!d.estado_dropi) errores.push('data.estado_dropi es obligatorio');
       if (!d.nombre_template && !d.usar_respuesta_rapida)

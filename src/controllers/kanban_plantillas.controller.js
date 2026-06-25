@@ -28,6 +28,7 @@ const {
   getDropiConfigMerged,
   getRemarketingMerged,
   getTemplateLookups,
+  remarketingKey,
 } = require('../utils/kanban_catalogo.provider');
 
 // ──────────────────────────────────────────────────────────────
@@ -755,6 +756,7 @@ async function prepareComponentsWithHandles(components, ACCESS_TOKEN) {
   return newComponents;
 }
 
+// ── _crearTemplatesMeta ─────────────────────────────────────────
 async function _crearTemplatesMeta(id_configuracion, soloKeys = null) {
   const wabaConfig = await getConfigFromDB(id_configuracion);
   if (!wabaConfig?.WABA_ID || !wabaConfig?.ACCESS_TOKEN)
@@ -777,7 +779,13 @@ async function _crearTemplatesMeta(id_configuracion, soloKeys = null) {
   const resultados = [];
 
   for (const tpl of templates) {
-    if (soloKeys && !soloKeys.has(tpl.name)) continue;
+    // null = solo fábrica; custom es opt-in por tablero
+    if (soloKeys) {
+      if (!soloKeys.has(tpl.name)) continue;
+    } else if (tpl._custom) {
+      continue;
+    }
+
     if (existentes.includes(tpl.name)) {
       resultados.push({ nombre: tpl.name, status: 'omitido' });
       continue;
@@ -829,7 +837,7 @@ async function _crearTemplatesMeta(id_configuracion, soloKeys = null) {
   return resultados;
 }
 
-// ── (A) Respuestas rápidas ──────────────────────────────────────
+// ── _crearRespuestasRapidas ─────────────────────────────────────
 async function _crearRespuestasRapidas(id_configuracion, soloKeys = null) {
   let existentes = [];
   try {
@@ -846,13 +854,18 @@ async function _crearRespuestasRapidas(id_configuracion, soloKeys = null) {
 
   const resultados = [];
   for (const rr of rapidas) {
-    if (soloKeys && !soloKeys.has(rr.atajo)) continue;
+    // null = solo fábrica; custom es opt-in por tablero
+    if (soloKeys) {
+      if (!soloKeys.has(rr.atajo)) continue;
+    } else if (rr._custom) {
+      continue;
+    }
+
     if (existentes.includes(rr.atajo)) {
       resultados.push({ atajo: rr.atajo, status: 'omitido' });
       continue;
     }
     try {
-      // ── defaults seguros ──
       const mensaje = rr.mensaje ?? null;
       const tipo_mensaje = rr.tipo_mensaje || 'text';
       const ruta_archivo = rr.ruta_archivo || null;
@@ -884,7 +897,7 @@ async function _crearRespuestasRapidas(id_configuracion, soloKeys = null) {
   return resultados;
 }
 
-// ── (B) Config Dropi ────────────────────────────────────────────
+// ── _aplicarConfigDropiPorDefecto ───────────────────────────────
 async function _aplicarConfigDropiPorDefecto(
   id_configuracion,
   soloKeys = null,
@@ -897,9 +910,14 @@ async function _aplicarConfigDropiPorDefecto(
   ]);
 
   for (const cfg of dropiCfgs) {
-    if (soloKeys && !soloKeys.has(cfg.estado_dropi)) continue;
+    // null = solo fábrica; custom es opt-in por tablero
+    if (soloKeys) {
+      if (!soloKeys.has(cfg.estado_dropi)) continue;
+    } else if (cfg._custom) {
+      continue;
+    }
+
     try {
-      // ── defaults seguros ──
       const activo = cfg.activo == null ? 1 : cfg.activo;
       const mensaje_rapido = cfg.mensaje_rapido ?? null;
       const usar_respuesta_rapida = cfg.usar_respuesta_rapida ? 1 : 0;
@@ -986,7 +1004,6 @@ async function _aplicarConfigDropiPorDefecto(
   return resultados;
 }
 
-// ── (C) Remarketing ─────────────────────────────────────────────
 async function _aplicarRemarketingPorDefecto(
   id_configuracion,
   soloKeys = null,
@@ -998,11 +1015,29 @@ async function _aplicarRemarketingPorDefecto(
     getTemplateLookups(),
   ]);
 
+  const minutosDe = (s) =>
+    s.tiempo_espera_minutos != null
+      ? Number(s.tiempo_espera_minutos)
+      : s.tiempo_espera_horas != null
+        ? Number(s.tiempo_espera_horas) * 60
+        : 60;
+
   for (const grupo of grupos) {
     const { estado_contacto, secuencias: secuenciasTodas } = grupo;
-    const secuencias = soloKeys
-      ? secuenciasTodas.filter((s) => soloKeys.has(s.nombre_template))
-      : secuenciasTodas;
+
+    // null = solo fábrica; custom es opt-in por tablero
+    const seleccionadas = soloKeys
+      ? secuenciasTodas.filter((s) =>
+          soloKeys.has(remarketingKey(estado_contacto, s)),
+        )
+      : secuenciasTodas.filter((s) => !s._custom);
+
+    if (!seleccionadas.length) continue;
+
+    // Re-numerar por tiempo ascendente → secuencia 1,2,3… sin colisiones.
+    const secuencias = [...seleccionadas]
+      .sort((a, b) => minutosDe(a) - minutosDe(b))
+      .map((s, i) => ({ ...s, secuencia: i + 1 }));
 
     try {
       await db.query(
@@ -1024,43 +1059,75 @@ async function _aplicarRemarketingPorDefecto(
 
     for (const sec of secuencias) {
       try {
-        // ── defaults seguros ──
-        const secuencia = sec.secuencia == null ? 1 : sec.secuencia;
-        const tiempo_espera_horas =
-          sec.tiempo_espera_horas == null ? 24 : sec.tiempo_espera_horas;
+        const tiempo_espera_minutos = minutosDe(sec);
+
+        // ⚠️ LEGACY HORAS — columna NOT NULL en proceso de eliminación.
+        const tiempo_espera_horas = Math.max(
+          1,
+          Math.round(tiempo_espera_minutos / 60),
+        );
+
+        const secuencia = sec.secuencia; // ya re-numerada 1..N
         const language_code = sec.language_code || 'es';
         const estado_destino = sec.estado_destino || null;
         const header_format = sec.header_format || null;
         const metodo_dentro_24h = sec.metodo_dentro_24h || 'ia';
         const prompt_ia =
           metodo_dentro_24h === 'ia' ? sec.prompt_ia || null : null;
-        const header_media_url =
-          headerMediaByName.get(sec.nombre_template) || null;
+
+        let id_template_rapido = null;
+        let usar_respuesta_rapida = 0;
+
+        if (
+          metodo_dentro_24h === 'respuesta_rapida' &&
+          sec.atajo_respuesta_rapida
+        ) {
+          const [rr] = await db.query(
+            `SELECT id_template
+               FROM templates_chat_center
+              WHERE id_configuracion = ? AND atajo = ?
+              LIMIT 1`,
+            {
+              replacements: [id_configuracion, sec.atajo_respuesta_rapida],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+          if (rr?.id_template) {
+            id_template_rapido = rr.id_template;
+            usar_respuesta_rapida = 1;
+          }
+        }
+
+        const nombre_template = sec.nombre_template || '';
+        const header_media_url = nombre_template
+          ? headerMediaByName.get(nombre_template) || null
+          : null;
 
         await db.query(
           `INSERT INTO configuracion_remarketing
            (id_configuracion, estado_contacto, secuencia,
-            tiempo_espera_horas, nombre_template, language_code,
+            tiempo_espera_horas, tiempo_espera_minutos, nombre_template, language_code,
             estado_destino, header_format, header_media_url,
             header_media_name, header_parameters,
             id_template_rapido, usar_respuesta_rapida,
             metodo_dentro_24h, prompt_ia, activo)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
           {
             replacements: [
               id_configuracion,
               estado_contacto,
               secuencia,
-              tiempo_espera_horas,
-              sec.nombre_template,
+              tiempo_espera_horas, // ⚠️ LEGACY HORAS
+              tiempo_espera_minutos,
+              nombre_template,
               language_code,
               estado_destino,
               header_format,
               header_media_url,
               null,
               null,
-              null,
-              0,
+              id_template_rapido,
+              usar_respuesta_rapida,
               metodo_dentro_24h,
               prompt_ia,
             ],
@@ -1071,7 +1138,11 @@ async function _aplicarRemarketingPorDefecto(
         resultados.push({
           estado_contacto,
           secuencia,
-          template: sec.nombre_template,
+          minutos: tiempo_espera_minutos,
+          template: nombre_template || '(sin plantilla · IA)',
+          metodo: metodo_dentro_24h,
+          rapida: id_template_rapido || null,
+          custom: !!sec._custom,
           status: 'creado',
         });
       } catch (err) {

@@ -13,6 +13,20 @@ const TIPOS_VALIDOS = [
   'dropi_config',
 ];
 
+// ════════════════════════════════════════════════════════════════
+// Identidad de una secuencia de remarketing.
+// Antes se usaba nombre_template, pero ahora puede venir vacío (cuando
+// el seguimiento usa IA dentro de 24h). La identidad real es
+// estado_contacto + secuencia (igual que la UNIQUE KEY de la tabla).
+// ════════════════════════════════════════════════════════════════
+function remarketingKey(estado_contacto, sec) {
+  // Custom = aditivo y único por fila del catálogo (NUNCA pisa una de fábrica).
+  if (sec?._catalogo_id) return `custom_${sec._catalogo_id}`;
+  // Fábrica: identidad por plantilla, o por estado+secuencia si va sin plantilla.
+  if (sec?.nombre_template) return sec.nombre_template;
+  return `${estado_contacto}_seq${sec?.secuencia ?? ''}`;
+}
+
 async function _getCustomItems(tipo) {
   try {
     const rows = await db.query(
@@ -87,7 +101,7 @@ async function getDropiConfigMerged() {
   return [...map.values()];
 }
 
-// ── Remarketing (agrupado por estado_contacto; key de secuencia = nombre_template) ──
+// ── Remarketing (agrupado por estado_contacto; key de secuencia = estado+secuencia) ──
 async function getRemarketingMerged() {
   const custom = await _getCustomItems('remarketing');
   const grupos = new Map();
@@ -109,7 +123,6 @@ async function getRemarketingMerged() {
     if (!estado) continue; // remarketing custom requiere estado_contacto
     const sec = {
       ...d,
-      nombre_template: d.nombre_template || c.item_key,
       _custom: true,
       _catalogo_id: c.id,
     };
@@ -117,12 +130,18 @@ async function getRemarketingMerged() {
       grupos.set(estado, { estado_contacto: estado, secuencias: [] });
     }
     const grp = grupos.get(estado);
+    // Override por estado+secuencia (o por nombre_template si lo tiene).
     const idx = grp.secuencias.findIndex(
-      (x) => x.nombre_template === sec.nombre_template,
+      (x) => remarketingKey(estado, x) === remarketingKey(estado, sec),
     );
     if (idx >= 0)
       grp.secuencias[idx] = sec; // override
     else grp.secuencias.push(sec);
+  }
+
+  // Ordenar cada grupo por secuencia para que se apliquen en orden.
+  for (const grp of grupos.values()) {
+    grp.secuencias.sort((a, b) => (a.secuencia || 0) - (b.secuencia || 0));
   }
 
   return [...grupos.values()];
@@ -151,6 +170,7 @@ async function getTemplateLookups() {
 
 module.exports = {
   TIPOS_VALIDOS,
+  remarketingKey,
   getTemplatesMetaMerged,
   getRespuestasRapidasMerged,
   getDropiConfigMerged,
