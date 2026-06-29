@@ -48,6 +48,12 @@ const DropiOrdersCache = db.define(
     },
     order_data: DataTypes.TEXT('long'),
     synced_at: DataTypes.DATE,
+    // Origen de la orden (IMPORSUIT/SHOPIFY/null). Las columnas existen en la
+    // tabla, pero sin declararlas aquí Sequelize las descarta en silencio al
+    // hacer bulkCreate/update → quedaban vacías aunque order_data sí traía shop.
+    shop_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, defaultValue: null },
+    shop_type: { type: DataTypes.STRING(50), allowNull: true, defaultValue: null },
+    shop_name: { type: DataTypes.STRING(255), allowNull: true, defaultValue: null },
   },
   {
     tableName: 'dropi_orders_cache',

@@ -701,18 +701,23 @@ async function yaSeEnvioPendienteConfPorPhone(
   return !!row;
 }
 
-async function registrarEnvio({
+/* Reclama el envío ANTES de mandar el mensaje. Atómico gracias al UNIQUE
+   uk_order_config_estado (dropi_order_id, id_configuracion, estado_dropi).
+   Devuelve true si ESTA corrida ganó el derecho a enviar; false si ya estaba
+   reclamado/enviado por otra corrida (→ no reenviar).
+   Cierra el hueco de duplicados: aunque fallen las escrituras DB POST-envío,
+   el registro anti-duplicado ya existe, así que nunca se reenvía. */
+async function reclamarEnvio({
   dropi_order_id,
   id_configuracion,
   estado_dropi,
   phone,
   template_name,
-  wa_message_id,
 }) {
-  await db.query(
+  const [res] = await db.query(
     `INSERT IGNORE INTO dropi_plantillas_enviadas
-       (dropi_order_id, id_configuracion, estado_dropi, phone, template_name, wa_message_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+       (dropi_order_id, id_configuracion, estado_dropi, phone, template_name)
+     VALUES (?, ?, ?, ?, ?)`,
     {
       replacements: [
         dropi_order_id,
@@ -720,9 +725,48 @@ async function registrarEnvio({
         estado_dropi,
         phone || null,
         template_name || null,
-        wa_message_id || null,
       ],
-      type: db.QueryTypes.INSERT,
+    },
+  );
+  // mysql2 ResultSetHeader: affectedRows=1 → insertó (reclamó);
+  // 0 → ya existía (INSERT IGNORE lo ignoró) → NO reenviar.
+  return Number(res?.affectedRows || 0) === 1;
+}
+
+/* Libera el reclamo SOLO si el envío a Meta falló, para reintentar luego. */
+async function liberarEnvio({ dropi_order_id, id_configuracion, estado_dropi }) {
+  await db.query(
+    `DELETE FROM dropi_plantillas_enviadas
+     WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ?`,
+    {
+      replacements: [dropi_order_id, id_configuracion, estado_dropi],
+      type: db.QueryTypes.DELETE,
+    },
+  );
+}
+
+/* Completa wa_message_id/template_name del reclamo tras un envío exitoso.
+   Best-effort: si falla, no pasa nada (el mensaje ya salió y está marcado). */
+async function completarEnvio({
+  dropi_order_id,
+  id_configuracion,
+  estado_dropi,
+  template_name,
+  wa_message_id,
+}) {
+  await db.query(
+    `UPDATE dropi_plantillas_enviadas
+     SET wa_message_id = ?, template_name = ?
+     WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ?`,
+    {
+      replacements: [
+        wa_message_id || null,
+        template_name || null,
+        dropi_order_id,
+        id_configuracion,
+        estado_dropi,
+      ],
+      type: db.QueryTypes.UPDATE,
     },
   );
 }
@@ -1000,6 +1044,8 @@ async function procesarTemplates({
         continue;
       }
 
+      // Skip barato si ya se envió (evita armar payloads). La barrera REAL
+      // contra duplicados es el reclamo atómico de más abajo.
       if (await yaFueEnviado(order.id, id_configuracion, estadoConfig)) {
         omitidos++;
         continue;
@@ -1025,71 +1071,105 @@ async function procesarTemplates({
         continue;
       }
 
-      const { clienteId, idClienteConfig } = await resolverClientes({
+      // ── RECLAMO ANTES DE ENVIAR (atómico vía UNIQUE uk_order_config_estado).
+      // Si otra corrida ya reclamó/envió → affectedRows=0 → no reenviamos.
+      // Clave del fix: aunque fallen las escrituras DB POST-envío, el registro
+      // anti-duplicado ya quedó y la orden nunca se reenvía.
+      const reclamado = await reclamarEnvio({
+        dropi_order_id: order.id,
         id_configuracion,
-        phoneNorm,
-        phone_number_id: creds.phone_number_id,
-        telefonoConfig,
+        estado_dropi: estadoConfig,
+        phone: order.phone,
+        template_name: config.nombre_template,
       });
+      if (!reclamado) {
+        omitidos++;
+        continue;
+      }
 
-      const components = buildTemplateComponents(config.parametros_json, order);
-      const rutaArchivo = buildRutaArchivo(order, estadoConfig);
-
+      let clienteId = null;
+      let idClienteConfig = null;
       let tipoEnvio = 'template';
       let waMessageId = null;
       let textoEnviado = config.nombre_template;
       let jsonMensajeEnviado = null;
+      const components = buildTemplateComponents(config.parametros_json, order);
 
-      const forzarTemplate = SIEMPRE_TEMPLATE.has(estadoConfig);
-
-      if (
-        !forzarTemplate &&
-        config.usar_respuesta_rapida &&
-        config.mensaje_rapido
-      ) {
-        const ventanaAbierta = await verificarVentana24h(
+      // ── BLOQUE DE ENVÍO. Si algo aquí falla, el mensaje NO salió:
+      // liberamos el reclamo para reintentar en la próxima corrida.
+      try {
+        const resolved = await resolverClientes({
           id_configuracion,
           phoneNorm,
-        );
-        if (ventanaAbierta) {
-          try {
-            const result = await enviarRespuestaRapida({
-              phone_number_id: creds.phone_number_id,
-              waba_token: creds.waba_token,
-              phoneNorm,
-              mensaje: config.mensaje_rapido,
-            });
-            waMessageId = result.wamid;
-            jsonMensajeEnviado = result.payload;
-            tipoEnvio = 'respuesta_rapida';
-            textoEnviado = config.mensaje_rapido;
-          } catch (rrErr) {
-            if (isWindowClosedError(rrErr)) {
-              tipoEnvio = 'template';
-            } else {
-              throw rrErr;
+          phone_number_id: creds.phone_number_id,
+          telefonoConfig,
+        });
+        clienteId = resolved.clienteId;
+        idClienteConfig = resolved.idClienteConfig;
+
+        const forzarTemplate = SIEMPRE_TEMPLATE.has(estadoConfig);
+
+        if (
+          !forzarTemplate &&
+          config.usar_respuesta_rapida &&
+          config.mensaje_rapido
+        ) {
+          const ventanaAbierta = await verificarVentana24h(
+            id_configuracion,
+            phoneNorm,
+          );
+          if (ventanaAbierta) {
+            try {
+              const result = await enviarRespuestaRapida({
+                phone_number_id: creds.phone_number_id,
+                waba_token: creds.waba_token,
+                phoneNorm,
+                mensaje: config.mensaje_rapido,
+              });
+              waMessageId = result.wamid;
+              jsonMensajeEnviado = result.payload;
+              tipoEnvio = 'respuesta_rapida';
+              textoEnviado = config.mensaje_rapido;
+            } catch (rrErr) {
+              if (isWindowClosedError(rrErr)) {
+                tipoEnvio = 'template';
+              } else {
+                throw rrErr;
+              }
             }
           }
         }
+
+        if (tipoEnvio === 'template') {
+          const result = await enviarTemplate({
+            phone_number_id: creds.phone_number_id,
+            waba_token: creds.waba_token,
+            phoneNorm,
+            templateName: config.nombre_template,
+            languageCode: config.language_code,
+            components,
+          });
+          waMessageId = result.wamid;
+          jsonMensajeEnviado = result.payload;
+          const bodyInterpolado = interpolarBodyText(
+            config.body_text,
+            components,
+          );
+          textoEnviado = bodyInterpolado || config.nombre_template;
+        }
+      } catch (sendErr) {
+        // El envío falló → liberar el reclamo para que reintente.
+        await liberarEnvio({
+          dropi_order_id: order.id,
+          id_configuracion,
+          estado_dropi: estadoConfig,
+        });
+        throw sendErr;
       }
 
-      if (tipoEnvio === 'template') {
-        const result = await enviarTemplate({
-          phone_number_id: creds.phone_number_id,
-          waba_token: creds.waba_token,
-          phoneNorm,
-          templateName: config.nombre_template,
-          languageCode: config.language_code,
-          components,
-        });
-        waMessageId = result.wamid;
-        jsonMensajeEnviado = result.payload;
-        const bodyInterpolado = interpolarBodyText(
-          config.body_text,
-          components,
-        );
-        textoEnviado = bodyInterpolado || config.nombre_template;
-      }
+      // ✅ A partir de aquí el mensaje YA SALIÓ. El reclamo se queda.
+      // Todo lo siguiente es best-effort: si falla, NO se reenvía.
+      const rutaArchivo = buildRutaArchivo(order, estadoConfig);
 
       let columnaDestino = null;
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
@@ -1114,32 +1194,37 @@ async function procesarTemplates({
         } catch (err) {}
       }
 
-      await registrarMensajeEnChat({
-        id_configuracion,
-        phone_number_id: creds.phone_number_id,
-        clienteId,
-        idClienteConfig,
-        phoneNorm,
-        tipoEnvio,
-        textoMensaje: textoEnviado,
-        templateName: tipoEnvio === 'template' ? config.nombre_template : null,
-        languageCode: config.language_code,
-        waMessageId,
-        rutaArchivo,
-        jsonMensaje: jsonMensajeEnviado,
-      });
+      try {
+        await registrarMensajeEnChat({
+          id_configuracion,
+          phone_number_id: creds.phone_number_id,
+          clienteId,
+          idClienteConfig,
+          phoneNorm,
+          tipoEnvio,
+          textoMensaje: textoEnviado,
+          templateName:
+            tipoEnvio === 'template' ? config.nombre_template : null,
+          languageCode: config.language_code,
+          waMessageId,
+          rutaArchivo,
+          jsonMensaje: jsonMensajeEnviado,
+        });
+      } catch (err) {}
 
-      await registrarEnvio({
-        dropi_order_id: order.id,
-        id_configuracion,
-        estado_dropi: estadoConfig,
-        phone: order.phone,
-        template_name:
-          tipoEnvio === 'respuesta_rapida'
-            ? `[RR] ${config.mensaje_rapido.slice(0, 80)}`
-            : config.nombre_template,
-        wa_message_id: waMessageId,
-      });
+      // Completa wa_message_id/template_name del reclamo (best-effort).
+      try {
+        await completarEnvio({
+          dropi_order_id: order.id,
+          id_configuracion,
+          estado_dropi: estadoConfig,
+          template_name:
+            tipoEnvio === 'respuesta_rapida'
+              ? `[RR] ${config.mensaje_rapido.slice(0, 80)}`
+              : config.nombre_template,
+          wa_message_id: waMessageId,
+        });
+      } catch (err) {}
 
       enviados++;
       await new Promise((r) => setTimeout(r, DELAY_BETWEEN_WA_SENDS));

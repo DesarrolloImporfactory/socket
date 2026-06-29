@@ -388,23 +388,38 @@ async function enviarTextoLibreWhatsApp({
    withLock
    ================================================================ */
 async function withLock(lockName, fn) {
-  const conn = await db.connectionManager.getConnection({ type: 'read' });
+  // GET_LOCK/RELEASE_LOCK son por SESIÓN (conexión). Antes se pedía una conexión
+  // 'read' que NO se usaba y el lock corría por el pool en conexiones distintas
+  // → lock poco fiable. Usamos una transacción para FIJAR una sola conexión:
+  // GET_LOCK y RELEASE_LOCK van en esa misma sesión; fn() trabaja con el pool.
+  const t = await db.transaction();
   try {
     const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
       replacements: [lockName],
       type: db.QueryTypes.SELECT,
+      transaction: t,
     });
-    if (!row || Number(row.got) !== 1) return;
+    if (!row || Number(row.got) !== 1) {
+      await t.rollback();
+      return;
+    }
     try {
       await fn();
     } finally {
-      await db.query(`DO RELEASE_LOCK(?)`, {
-        replacements: [lockName],
-        type: db.QueryTypes.RAW,
-      });
+      try {
+        await db.query(`DO RELEASE_LOCK(?)`, {
+          replacements: [lockName],
+          type: db.QueryTypes.RAW,
+          transaction: t,
+        });
+      } catch (_) {}
+      await t.commit();
     }
-  } finally {
-    db.connectionManager.releaseConnection(conn);
+  } catch (e) {
+    try {
+      await t.rollback();
+    } catch (_) {}
+    throw e;
   }
 }
 
@@ -577,6 +592,9 @@ cron.schedule('*/1 * * * *', async () => {
         }
 
         let wabaIdForLog = null;
+        // true en cuanto el mensaje SALE a Meta. Gobierna si, ante un error,
+        // se libera el reclamo (enviado=0) para reintentar o NO (ya salió).
+        let mensajeEnviado = false;
 
         try {
           // 1) Cliente
@@ -624,6 +642,23 @@ cron.schedule('*/1 * * * *', async () => {
           if (isWabaThrottled(cfg.WABA_ID)) {
             console.log(
               `⏸ [remarketing] id=${record.id} WABA ${cfg.WABA_ID} throttled, skip`,
+            );
+            continue;
+          }
+
+          // ── RECLAMO ATÓMICO: gano el derecho a enviar ESTE registro.
+          // Cierra el hueco de duplicados: una vez reclamado (enviado=1),
+          // aunque fallen las escrituras DB POST-envío NO se reenvía. Si el
+          // envío no llega a salir, el catch revierte a enviado=0 (reintenta).
+          const [claimRes] = await db.query(
+            `UPDATE remarketing_pendientes
+             SET enviado = 1, ultimo_intento_at = NOW()
+             WHERE id = ? AND enviado = 0 AND cancelado = 0`,
+            { replacements: [record.id] },
+          );
+          if (Number(claimRes?.affectedRows || 0) !== 1) {
+            console.log(
+              `🟦 [DEBUG] id=${record.id} ya reclamado/cancelado por otra corrida — skip`,
             );
             continue;
           }
@@ -694,6 +729,7 @@ cron.schedule('*/1 * * * *', async () => {
                   tplRapido,
                 });
                 envioPorRR = true;
+                mensajeEnviado = true;
                 console.log(
                   `✅ [remarketing] id=${record.id} RR enviada (${rrInfo.tipo})`,
                 );
@@ -804,6 +840,7 @@ cron.schedule('*/1 * * * *', async () => {
               });
 
               envioPorIA = true;
+              mensajeEnviado = true;
               iaTextoEnviado = textoIA;
               iaWamid = iaSent.wamid;
               console.log(
@@ -1014,6 +1051,7 @@ cron.schedule('*/1 * * * *', async () => {
               }
 
               const wamid = sendRes.data?.messages?.[0]?.id || null;
+              mensajeEnviado = true;
               const uid_whatsapp = telefonoLimpio;
 
               const [clienteRow] = await db.query(
@@ -1099,6 +1137,7 @@ cron.schedule('*/1 * * * *', async () => {
                 header_media_name: null,
                 header_parameters: null,
               });
+              mensajeEnviado = true;
             }
           } else if (envioPorRR) {
             const [clienteRow] = await db.query(
@@ -1348,6 +1387,20 @@ cron.schedule('*/1 * * * *', async () => {
           console.log(
             `🟦 [DEBUG] ❌ ERROR PRINCIPAL id=${record.id}: ${err.message}`,
           );
+
+          // Reclamé el registro pero el mensaje NO llegó a salir → libero
+          // (enviado=0) para que reintente en el próximo ciclo. Si YA salió,
+          // NO se toca: enviado=1 se queda y nunca se reenvía.
+          if (!mensajeEnviado) {
+            try {
+              await db.query(
+                `UPDATE remarketing_pendientes
+                 SET enviado = 0
+                 WHERE id = ? AND cancelado = 0`,
+                { replacements: [record.id] },
+              );
+            } catch (_) {}
+          }
 
           if (isMetaRateLimit(err)) {
             if (wabaIdForLog) {
