@@ -1,5 +1,7 @@
 const axios = require('axios');
 const AppError = require('../utils/appError');
+// Limitador GLOBAL de salidas a Dropi (rate-limit por IP del servidor).
+const { getLimiter } = require('../utils/dropiRateLimiter');
 
 // Map de baseURL por country_code
 const DROPI_BASE_URLS = {
@@ -21,10 +23,35 @@ function getDropiHttp(country_code) {
   }
 
   if (!httpInstances[code]) {
-    httpInstances[code] = axios.create({
+    const instance = axios.create({
       baseURL,
       timeout: 20000,
     });
+
+    // Toda petición de esta instancia pasa por el limitador global del país:
+    // adquiere un slot antes de salir y lo libera al recibir respuesta o error.
+    // Esto espacia/serializa el tráfico agregado hacia Dropi (cron + syncs +
+    // socket + historial) para no reventar el rate-limit por IP.
+    const limiter = getLimiter(code);
+
+    instance.interceptors.request.use(async (config) => {
+      await limiter.acquire();
+      config.__dropiSlot = true;
+      return config;
+    });
+
+    instance.interceptors.response.use(
+      (response) => {
+        if (response?.config?.__dropiSlot) limiter.release();
+        return response;
+      },
+      (error) => {
+        if (error?.config?.__dropiSlot) limiter.release();
+        return Promise.reject(error);
+      },
+    );
+
+    httpInstances[code] = instance;
   }
 
   return httpInstances[code];

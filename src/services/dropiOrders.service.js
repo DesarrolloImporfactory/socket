@@ -16,6 +16,10 @@ const { Op } = require('sequelize');
 const dropiService = require('./dropi.service');
 const { db } = require('../database/config');
 
+// Espera entre candidatos de teléfono al buscar órdenes en Dropi. Evita ráfagas
+// que disparan el rate-limit por IP. Configurable vía env.
+const CANDIDATE_DELAY_MS = Number(process.env.DROPI_CANDIDATE_DELAY_MS) || 700;
+
 // =========================
 // País (texto) que Dropi espera en el payload de la orden, según el ISO de la
 // integración. Lo derivamos del country_code para NO depender del front.
@@ -455,11 +459,18 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
   let dropiResponse = null;
   let objects = [];
 
-  for (const cand of candidates) {
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i];
     const params = cleanParams({
       ...baseParams,
       textToSearch: cand,
     });
+
+    // Delay entre candidatos para no disparar ráfagas hacia Dropi (rate-limit
+    // por IP del servidor). El primer candidato no espera.
+    if (i > 0) {
+      await new Promise((r) => setTimeout(r, CANDIDATE_DELAY_MS));
+    }
 
     dropiResponse = await dropiService.listMyOrders({
       integrationKey,
