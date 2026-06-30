@@ -1053,20 +1053,40 @@ function parseSort(sortRaw) {
     'ultimo_msg_id',
   ]);
 
+  // Alias que envía el front (FilterBar.jsx / TablaContactos.jsx) -> [columna, dir]
+  // Antes estos valores NO matcheaban el formato `col:dir` y TODOS caían al
+  // default, dejando el ordenamiento de la vista de contactos inservible.
+  const ALIASES = {
+    recientes: ['created_at', 'DESC'],
+    antiguos: ['created_at', 'ASC'],
+    actividad_desc: ['ultimo_mensaje_at', 'DESC'],
+    actividad_asc: ['ultimo_mensaje_at', 'ASC'],
+  };
+
   let col = 'ultimo_mensaje_at';
   let dir = 'DESC';
 
-  if (sortRaw && String(sortRaw).trim()) {
-    const [c, d] = String(sortRaw).trim().split(':');
-    if (c && allowed.has(c)) col = c;
+  const raw = (sortRaw ? String(sortRaw) : '').trim();
+  if (raw) {
+    if (ALIASES[raw]) {
+      [col, dir] = ALIASES[raw];
+    } else {
+      const [c, d] = raw.split(':');
+      if (c && allowed.has(c)) col = c;
 
-    const dd = (d || '').toUpperCase();
-    if (dd === 'ASC' || dd === 'DESC') dir = dd;
+      const dd = (d || '').toUpperCase();
+      if (dd === 'ASC' || dd === 'DESC') dir = dd;
+    }
   }
 
-  // Empujar nulos al final cuando ordena por ultimo_mensaje_at
+  // Empujar nulos al final cuando ordena por ultimo_mensaje_at (en ambos sentidos)
   if (col === 'ultimo_mensaje_at') {
     return `(${col} IS NULL) ASC, ${col} ${dir}, ultimo_msg_id ${dir}`;
+  }
+
+  // Tiebreaker estable por id para que la paginación no repita/omita filas
+  if (col === 'created_at') {
+    return `created_at ${dir}, c.id ${dir}`;
   }
 
   return `${col} ${dir}`;
@@ -1103,6 +1123,21 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const q = String(req.query.q ?? '').trim();
   const estadoParsed = parseEstado(req.query.estado);
   const orderBy = parseSort(req.query.sort);
+
+  // ── Búsqueda por teléfono (search_mode=phone) ──
+  // El front (Contactos.jsx) manda search_mode=phone, phone=<solo dígitos> y q ya
+  // normalizado a dígitos. Antes el backend ignoraba search_mode/phone y hacía un
+  // LIKE crudo sobre celular_cliente, por lo que números guardados con espacios,
+  // guiones, '+', paréntesis o prefijo de país NO se encontraban.
+  // telefono_limpio fue deprecado: todo vive en celular_cliente.
+  const searchMode = String(req.query.search_mode ?? '')
+    .trim()
+    .toLowerCase();
+  const phoneDigits = String(req.query.phone ?? req.query.q ?? '').replace(
+    /\D/g,
+    '',
+  );
+  const isPhoneSearch = searchMode === 'phone' && phoneDigits.length >= 5;
 
   // ── Helper: parsear comma-separated a array limpio ──
   const parseCSV = (raw) => {
@@ -1214,13 +1249,22 @@ exports.listarClientes = catchAsync(async (req, res) => {
     }
   }
 
-  if (q) {
+  if (isPhoneSearch) {
+    // Normalizamos celular_cliente quitando separadores comunes (espacio, guion,
+    // paréntesis y '+') para tolerar números guardados con formato, y comparamos
+    // por los últimos 9 dígitos (el front teclea el número nacional sin prefijo).
+    const last9 = phoneDigits.slice(-9);
+    whereParts.push(
+      `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.celular_cliente, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE ?`,
+    );
+    params.push(`%${last9}`);
+  } else if (q) {
     const like = `%${q}%`;
     whereParts.push(`(
       c.nombre_cliente   LIKE ? OR
       c.apellido_cliente LIKE ? OR
       c.email_cliente    LIKE ? OR
-      c.celular_cliente  LIKE ? 
+      c.celular_cliente  LIKE ?
     )`);
     params.push(like, like, like, like);
   }
