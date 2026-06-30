@@ -1250,14 +1250,16 @@ exports.listarClientes = catchAsync(async (req, res) => {
   }
 
   if (isPhoneSearch) {
-    // Normalizamos celular_cliente quitando separadores comunes (espacio, guion,
-    // paréntesis y '+') para tolerar números guardados con formato, y comparamos
-    // por los últimos 9 dígitos (el front teclea el número nacional sin prefijo).
+    // Búsqueda por teléfono vía la columna generada INDEXADA celular_rev
+    //   celular_rev = LEFT(REVERSE(REGEXP_REPLACE(celular_cliente,'[^0-9]','')), 32)
+    // Buscar por sufijo nacional se convierte en un PREFIJO sobre el reverso, así
+    // que usa idx_ccc_cfg_celrev (id_configuracion, celular_rev) -> rango, ~0ms en
+    // servidor (antes era un full scan de cientos de miles de filas).
+    // Tolera celular_cliente con espacios/guiones/+/() y prefijo de país.
     const last9 = phoneDigits.slice(-9);
-    whereParts.push(
-      `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.celular_cliente, ' ', ''), '-', ''), '(', ''), ')', ''), '+', '') LIKE ?`,
-    );
-    params.push(`%${last9}`);
+    const revPrefix = last9.split('').reverse().join('');
+    whereParts.push(`c.celular_rev LIKE ?`);
+    params.push(`${revPrefix}%`);
   } else if (q) {
     const like = `%${q}%`;
     whereParts.push(`(
