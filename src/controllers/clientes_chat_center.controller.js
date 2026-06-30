@@ -1107,6 +1107,7 @@ function parseEstado(raw) {
    &estado_contacto=nuevo,en_proceso  (multi-select, comma-separated)
    ============================================================ */
 exports.listarClientes = catchAsync(async (req, res) => {
+  const _t0 = process.hrtime.bigint();
   const page = Math.max(1, Number(req.query.page ?? 1));
   const MAX_LIMIT = 2000;
   const limit = Math.max(1, Math.min(MAX_LIMIT, Number(req.query.limit ?? 25)));
@@ -1249,18 +1250,8 @@ exports.listarClientes = catchAsync(async (req, res) => {
     }
   }
 
-  if (isPhoneSearch) {
-    // Búsqueda por teléfono vía la columna generada INDEXADA celular_rev
-    //   celular_rev = LEFT(REVERSE(REGEXP_REPLACE(celular_cliente,'[^0-9]','')), 32)
-    // Buscar por sufijo nacional se convierte en un PREFIJO sobre el reverso, así
-    // que usa idx_ccc_cfg_celrev (id_configuracion, celular_rev) -> rango, ~0ms en
-    // servidor (antes era un full scan de cientos de miles de filas).
-    // Tolera celular_cliente con espacios/guiones/+/() y prefijo de país.
-    const last9 = phoneDigits.slice(-9);
-    const revPrefix = last9.split('').reverse().join('');
-    whereParts.push(`c.celular_rev LIKE ?`);
-    params.push(`${revPrefix}%`);
-  } else if (q) {
+  // Búsqueda de TEXTO (no teléfono): nombre/apellido/email/celular
+  if (!isPhoneSearch && q) {
     const like = `%${q}%`;
     whereParts.push(`(
       c.nombre_cliente   LIKE ? OR
@@ -1271,9 +1262,18 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(like, like, like, like);
   }
 
-  const whereClause = `WHERE ${whereParts.join(' AND ')}`;
+  const baseWhere = whereParts.join(' AND ');
 
-  const dataSql = `
+  // ── Timer de diagnóstico: mide cada zona del endpoint (ms) ──
+  const timings = {};
+  const mark = async (label, fn) => {
+    const s = process.hrtime.bigint();
+    const r = await fn();
+    timings[label] = Math.round((Number(process.hrtime.bigint() - s) / 1e6) * 10) / 10;
+    return r;
+  };
+
+  const buildDataSql = (whereSql) => `
     SELECT
       c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
       c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente,
@@ -1296,29 +1296,62 @@ exports.listarClientes = catchAsync(async (req, res) => {
       ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
     LEFT JOIN etiquetas_custom_chat_center ecc
       ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
-    ${whereClause}
+    WHERE ${whereSql}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?;
   `;
 
-  const countSql = `
-    SELECT COUNT(*) AS total
-    FROM clientes_chat_center c
-    ${whereClause};
-  `;
+  let rows = [];
+  let total = null;
+  let mode = 'list';
 
-  const rows = await db.query(dataSql, {
-    replacements: [...params, limit, offset],
-    type: db.QueryTypes.SELECT,
-  });
+  if (isPhoneSearch) {
+    // celular_rev = REVERSE(digitos). Buscar por sufijo = prefijo sobre el reverso.
+    const rev = phoneDigits.split('').reverse().join('');
 
-  const countRows = await db.query(countSql, {
-    replacements: params,
-    type: db.QueryTypes.SELECT,
-  });
+    // 1) RÁPIDO (índice idx_ccc_cfg_celrev): el número TERMINA en lo tecleado.
+    mode = 'phone:suffix';
+    rows = await mark('data_suffix_ms', () =>
+      db.query(buildDataSql(`${baseWhere} AND c.celular_rev LIKE ?`), {
+        replacements: [...params, `${rev}%`, limit, offset],
+        type: db.QueryTypes.SELECT,
+      }),
+    );
 
-  const total = Number(countRows?.[0]?.total ?? 0);
-  const totalPages = Math.max(1, Math.ceil(total / limit));
+    // 2) FALLBACK (scan, lento): CONTIENE lo tecleado en cualquier parte del número.
+    if (rows.length === 0) {
+      mode = 'phone:contains';
+      rows = await mark('data_contains_ms', () =>
+        db.query(buildDataSql(`${baseWhere} AND c.celular_rev LIKE ?`), {
+          replacements: [...params, `%${rev}%`, limit, offset],
+          type: db.QueryTypes.SELECT,
+        }),
+      );
+    }
+    // En modo phone NO contamos total (el COUNT es full scan caro y el front no lo usa).
+  } else {
+    rows = await mark('data_ms', () =>
+      db.query(buildDataSql(baseWhere), {
+        replacements: [...params, limit, offset],
+        type: db.QueryTypes.SELECT,
+      }),
+    );
+    const countRows = await mark('count_ms', () =>
+      db.query(
+        `SELECT COUNT(*) AS total FROM clientes_chat_center c WHERE ${baseWhere};`,
+        { replacements: params, type: db.QueryTypes.SELECT },
+      ),
+    );
+    total = Number(countRows?.[0]?.total ?? 0);
+  }
+
+  timings.endpoint_ms =
+    Math.round((Number(process.hrtime.bigint() - _t0) / 1e6) * 10) / 10;
+  const totalPages = total == null ? null : Math.max(1, Math.ceil(total / limit));
+
+  console.log(
+    `[listar] cfg=${id_configuracion} mode=${mode} q="${q}" rows=${rows.length} ${JSON.stringify(timings)}`,
+  );
 
   return res.status(200).json({
     status: 'success',
@@ -1327,6 +1360,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
     page,
     limit,
     totalPages,
+    _diag: { mode, timings_ms: timings },
   });
 });
 
