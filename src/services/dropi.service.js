@@ -71,6 +71,36 @@ function dropiHeaders(integrationKey) {
   };
 }
 
+// Mensajes empáticos hacia el cliente para situaciones donde el error NO es
+// culpa suya ni nuestra, sino de Dropi (saturado, rate-limit, o caído). Se
+// mapea aquí, en el único punto por el que pasan todas las llamadas a Dropi,
+// para que cualquier consumidor (socket o HTTP) muestre el texto amigable sin
+// tener que repetir la detección en el front.
+const DROPI_BUSY_MESSAGE =
+  'Dropi está recibiendo muchas solicitudes en este momento. Por favor, vuelve a intentarlo en unos minutos o realiza la acción directamente en Dropi.';
+const DROPI_DOWN_MESSAGE =
+  'Dropi está presentando interferencias en este momento. Por favor, vuelve a intentarlo en unos minutos o realiza la acción directamente en Dropi.';
+
+// ¿El error corresponde a rate-limit / demasiadas peticiones a Dropi?
+function isDropiRateLimit(status, rawMsg) {
+  if (status === 429) return true;
+  const m = String(rawMsg || '').toLowerCase();
+  return (
+    m.includes('rate limit') ||
+    m.includes('too many request') ||
+    m.includes('demasiadas peticiones') ||
+    m.includes('límite de peticiones') ||
+    m.includes('limite de peticiones')
+  );
+}
+
+// ¿Dropi no respondió / está caído? (timeout de axios, sin respuesta, o 5xx)
+function isDropiUnavailable(err, status) {
+  if (err?.code === 'ECONNABORTED') return true; // timeout de axios
+  if (!err?.response) return true; // no hubo respuesta (network/DNS/down)
+  return status === 502 || status === 503 || status === 504;
+}
+
 function normalizeDropiError(err) {
   const status = err?.response?.status || 500;
   const data = err?.response?.data;
@@ -80,13 +110,28 @@ function normalizeDropiError(err) {
     `[Dropi Error] ${status} - ${err?.config?.method?.toUpperCase()} ${err?.config?.url} - ${JSON.stringify(data)}`,
   );
 
-  const msg =
+  const rawMsg =
     (data && (data.message || data.msg || data.error)) ||
     err?.message ||
     'Error desconocido en Dropi';
 
-  const appError = new AppError(`Dropi: ${msg}`, status);
+  // Por defecto, se mantiene el comportamiento anterior (mensaje crudo de Dropi).
+  let userMessage = `Dropi: ${rawMsg}`;
+  let code = null;
+
+  if (isDropiRateLimit(status, rawMsg)) {
+    userMessage = DROPI_BUSY_MESSAGE;
+    code = 'DROPI_RATE_LIMIT';
+  } else if (isDropiUnavailable(err, status)) {
+    userMessage = DROPI_DOWN_MESSAGE;
+    code = 'DROPI_UNAVAILABLE';
+  }
+
+  const appError = new AppError(userMessage, status);
   appError.statusCode = status;
+  // Metadatos opcionales para que el front pueda detectar/estilizar el caso.
+  appError.code = code;
+  appError.dropiRawMessage = rawMsg;
   return appError;
 }
 
