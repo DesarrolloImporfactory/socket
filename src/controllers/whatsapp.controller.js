@@ -1353,7 +1353,8 @@ exports.obtenerConfiguracion = async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia
+      `SELECT COALESCE(template_generar_guia, '') AS template_generar_guia,
+              COALESCE(template_notificar_calendario, '') AS template_notificar_calendario
        FROM configuraciones
        WHERE id = ? AND suspendido = 0`,
       { replacements: [id_configuracion] },
