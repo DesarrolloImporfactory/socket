@@ -13,6 +13,13 @@ const { db } = require('../database/config');
 
 const { pushUpsertEvent, pushCancelEvent } = require('../utils/googleSync');
 
+// Escribe UTC real como 'YYYY-MM-DD HH:MM:SS', mismo criterio que el PULL (toMysqlDateTime).
+// Evita que MySQL (time_zone=SYSTEM) reinterprete el Date y reste horas al guardar.
+function toUtcMysql(v) {
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 1. VERIFY OVERLAPS                                                   ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
@@ -100,6 +107,16 @@ async function syncOutCancel(appt, opts) {
   }
 }
 
+// Toma lo que haya en la columna (Date o 'YYYY-MM-DD HH:MM:SS' que ES UTC)
+// y devuelve ISO con 'Z' para que el front lo convierta a la zona correcta.
+function utcColumnToIso(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  // string tipo '2026-07-01 22:30:00' (UTC) → '2026-07-01T22:30:00Z'
+  const s = String(v).replace(' ', 'T');
+  return /[zZ]|[+-]\d{2}:\d{2}$/.test(s) ? s : s + 'Z';
+}
+
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 2. LIST                                                             ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
@@ -122,8 +139,8 @@ async function listAppointments({
   const rawIds = Array.isArray(user_ids)
     ? user_ids
     : typeof user_ids === 'string'
-    ? user_ids.split(',')
-    : [];
+      ? user_ids.split(',')
+      : [];
 
   // Acepta "7", 7; filtra vacíos; conserva número si aplica
   const ids = rawIds
@@ -144,7 +161,7 @@ async function listAppointments({
     ids,
     incUnassigned,
     start,
-    end
+    end,
   );
 
   // ── Reglas de filtrado por assigned_user_id ─────────────────────
@@ -216,8 +233,8 @@ async function listAppointments({
     return {
       id: r.id,
       title: r.title,
-      start: r.start_utc, // Si prefieres ISO: r.start_utc.toISOString()
-      end: r.end_utc,
+      start: utcColumnToIso(r.start_utc),
+      end: utcColumnToIso(r.end_utc),
       created_at: r.created_at,
       extendedProps: {
         status: r.status,
@@ -270,14 +287,14 @@ async function createAppointment(payload, currentUserId, opts = {}) {
         status: payload.status ?? 'Agendado',
         assigned_user_id: assigned,
         contact_id: payload.contact_id ?? null,
-        start_utc: startUtc,
-        end_utc: endUtc,
+        start_utc: toUtcMysql(startUtc),
+        end_utc: toUtcMysql(endUtc),
         booked_tz: payload.booked_tz || 'America/Guayaquil',
         location_text: payload.location_text ?? null,
         meeting_url: payload.meeting_url ?? null,
         created_by_user_id: creator,
       },
-      { transaction: t }
+      { transaction: t },
     );
 
     let firstInviteeId = null;
@@ -290,7 +307,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
           phone: inv.phone || null,
           response_status: 'needsAction',
         },
-        { transaction: t }
+        { transaction: t },
       );
       if (idx === 0) firstInviteeId = row.id;
     }
@@ -318,7 +335,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
     } catch (e) {
       await appt.update(
         { last_sync_error: e.message || String(e) },
-        { silent: true }
+        { silent: true },
       );
       console.warn('Google push upsert (create_meet) failed:', e?.message || e);
     }
@@ -330,7 +347,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
         start: payload.start,
         end: payload.end,
         timeZone: tz,
-      })
+      }),
     );
   }
   return appt;
@@ -367,8 +384,8 @@ async function updateAppointment(id, payload, opts = {}) {
     if (isNaN(startUtc) || isNaN(endUtc) || endUtc <= startUtc) {
       throw new AppError('Rango de fechas inválido.', 400);
     }
-    up.start_utc = startUtc;
-    up.end_utc = endUtc;
+    up.start_utc = toUtcMysql(startUtc);
+    up.end_utc = toUtcMysql(endUtc);
   }
 
   await assertNoOverlap({
@@ -428,7 +445,7 @@ async function updateAppointment(id, payload, opts = {}) {
               response_status: 'needsAction',
               ...data,
             },
-            { transaction: t }
+            { transaction: t },
           );
           keptIds.add(created.id);
         }
@@ -492,12 +509,12 @@ async function updateAppointment(id, payload, opts = {}) {
             last_synced_at: new Date(),
             last_sync_error: null,
           },
-          { silent: true }
+          { silent: true },
         );
       } else {
         await updated.update(
           { last_synced_at: new Date(), last_sync_error: null },
-          { silent: true }
+          { silent: true },
         );
       }
     } else {
@@ -508,19 +525,19 @@ async function updateAppointment(id, payload, opts = {}) {
           start: payload.start, // si no vinieron, quedarán undefined
           end: payload.end, // y pushUpsertEvent cae a appt.start_utc/end_utc
           timeZone: tz,
-        })
+        }),
       );
     }
   } catch (e) {
     try {
       await updated.update(
         { last_sync_error: e.message || String(e) },
-        { silent: true }
+        { silent: true },
       );
     } catch (_) {}
     console.warn(
       'Google push upsert (update/create_meet) failed:',
-      e?.message || e
+      e?.message || e,
     );
   }
   return updated;

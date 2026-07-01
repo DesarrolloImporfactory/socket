@@ -24,7 +24,7 @@ function oauth2(redirectUri = getRedirectUri()) {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    redirectUri
+    redirectUri,
   );
 }
 
@@ -107,16 +107,33 @@ function buildGoogleDateField({ fromFront, tz, fromDb }) {
 }
 
 /* ===================== Vínculos de cuenta/cliente Google ===================== */
-
 async function getActiveLink(id_sub_usuario, calendar_id) {
-  const rows = await db.query(
-    `SELECT *
-       FROM users_google_accounts
-      WHERE id_sub_usuario = ? AND calendar_id = ? AND is_active = 1
+  // 1) Si el asignado tiene Google conectado EN ESTE calendario, úsalo
+  if (id_sub_usuario != null) {
+    const rows = await db.query(
+      `SELECT * FROM users_google_accounts
+        WHERE id_sub_usuario = ? AND calendar_id = ? AND is_active = 1
+          AND refresh_token IS NOT NULL
+        LIMIT 1`,
+      {
+        replacements: [id_sub_usuario, calendar_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (rows[0]) return rows[0];
+  }
+
+  // 2) Fallback: cualquier cuenta activa ligada a ESE calendario
+  //    (la conexión de Google pertenece al calendario, no a quién esté asignado)
+  const rows2 = await db.query(
+    `SELECT * FROM users_google_accounts
+      WHERE calendar_id = ? AND is_active = 1
+        AND refresh_token IS NOT NULL
+      ORDER BY id DESC
       LIMIT 1`,
-    { replacements: [id_sub_usuario, calendar_id], type: db.QueryTypes.SELECT }
+    { replacements: [calendar_id], type: db.QueryTypes.SELECT },
   );
-  return rows[0] || null;
+  return rows2[0] || null;
 }
 
 async function getOAuthClientForLink(link) {
@@ -141,7 +158,7 @@ async function getOAuthClientForLink(link) {
             link.id,
           ],
           type: db.QueryTypes.UPDATE,
-        }
+        },
       );
     } catch (e) {
       console.error('persist tokens error', e);
@@ -220,7 +237,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
   // ¿ya existe mapeo?
   const [map] = await db.query(
     `SELECT id, google_event_id FROM google_events_links WHERE appointment_id = ? LIMIT 1`,
-    { replacements: [appointment.id], type: db.QueryTypes.SELECT }
+    { replacements: [appointment.id], type: db.QueryTypes.SELECT },
   );
 
   // Si está cancelado, borra en Google
@@ -237,7 +254,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
       }
       await db.query(
         `UPDATE google_events_links SET is_deleted = 1, last_synced_at = NOW() WHERE id = ?`,
-        { replacements: [map.id], type: db.QueryTypes.UPDATE }
+        { replacements: [map.id], type: db.QueryTypes.UPDATE },
       );
     }
     return { ok: true };
@@ -261,7 +278,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
         {
           replacements: [data.etag || null, map.id],
           type: db.QueryTypes.UPDATE,
-        }
+        },
       );
       if (!appointment.meeting_url && data.hangoutLink) {
         await db.query(`UPDATE appointments SET meeting_url = ? WHERE id = ?`, {
@@ -300,7 +317,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
             data.etag || null,
           ],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
       if (!appointment.meeting_url && data.hangoutLink) {
         await db.query(`UPDATE appointments SET meeting_url = ? WHERE id = ?`, {
@@ -339,7 +356,7 @@ async function deleteGoogleEvent({
 
   const [map] = await db.query(
     `SELECT id, google_event_id FROM google_events_links WHERE appointment_id = ? LIMIT 1`,
-    { replacements: [appointment_id], type: db.QueryTypes.SELECT }
+    { replacements: [appointment_id], type: db.QueryTypes.SELECT },
   );
   if (!map) return { ok: true };
 
@@ -354,7 +371,7 @@ async function deleteGoogleEvent({
   }
   await db.query(
     `UPDATE google_events_links SET is_deleted = 1, last_synced_at = NOW() WHERE id = ?`,
-    { replacements: [map.id], type: db.QueryTypes.UPDATE }
+    { replacements: [map.id], type: db.QueryTypes.UPDATE },
   );
   return { ok: true };
 }
@@ -390,7 +407,7 @@ async function startWatch({ id_sub_usuario, calendar_id }) {
         link.id,
       ],
       type: db.QueryTypes.UPDATE,
-    }
+    },
   );
 
   // Primer pull para obtener sync_token
@@ -417,7 +434,7 @@ async function stopWatch({ id_sub_usuario, calendar_id }) {
     `UPDATE users_google_accounts
         SET watch_channel_id = NULL, watch_resource_id = NULL, watch_expiration = NULL
       WHERE id = ?`,
-    { replacements: [link.id], type: db.QueryTypes.UPDATE }
+    { replacements: [link.id], type: db.QueryTypes.UPDATE },
   );
   return { ok: true };
 }
@@ -427,7 +444,7 @@ async function stopWatch({ id_sub_usuario, calendar_id }) {
 async function importChanges({ linkId, reset = false }) {
   const [link] = await db.query(
     `SELECT * FROM users_google_accounts WHERE id = ? LIMIT 1`,
-    { replacements: [linkId], type: db.QueryTypes.SELECT }
+    { replacements: [linkId], type: db.QueryTypes.SELECT },
   );
   if (!link) return { ok: false, reason: 'no_link' };
 
@@ -442,7 +459,7 @@ async function importChanges({ linkId, reset = false }) {
   try {
     const [calRow] = await db.query(
       `SELECT time_zone FROM calendars WHERE id = ? LIMIT 1`,
-      { replacements: [link.calendar_id], type: db.QueryTypes.SELECT }
+      { replacements: [link.calendar_id], type: db.QueryTypes.SELECT },
     );
     if (calRow?.time_zone) calendarTz = calRow.time_zone;
   } catch {}
@@ -458,7 +475,7 @@ async function importChanges({ linkId, reset = false }) {
     params.syncToken = link.sync_token;
   } else {
     params.timeMin = new Date(
-      Date.now() - 90 * 24 * 60 * 60 * 1000
+      Date.now() - 90 * 24 * 60 * 60 * 1000,
     ).toISOString();
   }
 
@@ -479,7 +496,7 @@ async function importChanges({ linkId, reset = false }) {
     if (nextSyncToken) {
       await db.query(
         `UPDATE users_google_accounts SET sync_token = ? WHERE id = ?`,
-        { replacements: [nextSyncToken, link.id], type: db.QueryTypes.UPDATE }
+        { replacements: [nextSyncToken, link.id], type: db.QueryTypes.UPDATE },
       );
     }
     return { ok: true };
@@ -488,7 +505,7 @@ async function importChanges({ linkId, reset = false }) {
       // token inválido → reset
       await db.query(
         `UPDATE users_google_accounts SET sync_token = NULL WHERE id = ?`,
-        { replacements: [link.id], type: db.QueryTypes.UPDATE }
+        { replacements: [link.id], type: db.QueryTypes.UPDATE },
       );
       return importChanges({ linkId: link.id, reset: true });
     }
@@ -505,18 +522,18 @@ async function applyGoogleEventToLocal({ link, ev }) {
 
   const [map] = await db.query(
     `SELECT * FROM google_events_links WHERE google_event_id = ? LIMIT 1`,
-    { replacements: [googleId], type: db.QueryTypes.SELECT }
+    { replacements: [googleId], type: db.QueryTypes.SELECT },
   );
 
   if (isDeleted) {
     if (map?.appointment_id) {
       await db.query(
         `UPDATE appointments SET status = 'Cancelado' WHERE id = ?`,
-        { replacements: [map.appointment_id], type: db.QueryTypes.UPDATE }
+        { replacements: [map.appointment_id], type: db.QueryTypes.UPDATE },
       );
       await db.query(
         `UPDATE google_events_links SET is_deleted = 1, last_synced_at = NOW() WHERE id = ?`,
-        { replacements: [map.id], type: db.QueryTypes.UPDATE }
+        { replacements: [map.id], type: db.QueryTypes.UPDATE },
       );
     }
     return;
@@ -573,23 +590,23 @@ async function applyGoogleEventToLocal({ link, ev }) {
           map.appointment_id,
         ],
         type: db.QueryTypes.UPDATE,
-      }
+      },
     );
 
     await db.query(
       `UPDATE google_events_links SET google_etag = ?, is_deleted = 0, last_synced_at = NOW() WHERE id = ?`,
-      { replacements: [ev.etag || null, map.id], type: db.QueryTypes.UPDATE }
+      { replacements: [ev.etag || null, map.id], type: db.QueryTypes.UPDATE },
     );
 
     // Upsert de invitados por email
     if (attendees.length) {
       const current = await db.query(
         `SELECT id, email FROM appointment_invitees WHERE appointment_id = ?`,
-        { replacements: [map.appointment_id], type: db.QueryTypes.SELECT }
+        { replacements: [map.appointment_id], type: db.QueryTypes.SELECT },
       );
 
       const byEmail = new Map(
-        current.map((i) => [String(i.email || '').toLowerCase(), i])
+        current.map((i) => [String(i.email || '').toLowerCase(), i]),
       );
       const kept = new Set();
 
@@ -603,7 +620,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
             {
               replacements: [a.name, a.response_status, exists.id],
               type: db.QueryTypes.UPDATE,
-            }
+            },
           );
           kept.add(exists.id);
         } else {
@@ -620,7 +637,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
                 a.response_status,
               ],
               type: db.QueryTypes.INSERT,
-            }
+            },
           );
           kept.add(iid);
         }
@@ -636,7 +653,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
           {
             replacements: toRemove.map((i) => i.id),
             type: db.QueryTypes.DELETE,
-          }
+          },
         );
       }
 
@@ -650,7 +667,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
         {
           replacements: [map.appointment_id, map.appointment_id],
           type: db.QueryTypes.UPDATE,
-        }
+        },
       );
     }
   } else {
@@ -672,7 +689,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
           tz,
         ],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
     const newId = insertId;
 
@@ -685,7 +702,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
         {
           replacements: [newId, a.name, a.email, a.phone, a.response_status],
           type: db.QueryTypes.INSERT,
-        }
+        },
       );
       if (idx === 0) firstInviteeId = iid;
     }
@@ -714,7 +731,7 @@ async function applyGoogleEventToLocal({ link, ev }) {
           ev.etag || null,
         ],
         type: db.QueryTypes.INSERT,
-      }
+      },
     );
   }
 }
@@ -726,7 +743,7 @@ async function findLinkByHeaders({ channelId, resourceId }) {
     `SELECT * FROM users_google_accounts
       WHERE watch_channel_id = ? AND watch_resource_id = ?
       LIMIT 1`,
-    { replacements: [channelId, resourceId], type: db.QueryTypes.SELECT }
+    { replacements: [channelId, resourceId], type: db.QueryTypes.SELECT },
   );
   return rows?.[0] || null;
 }
