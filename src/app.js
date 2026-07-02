@@ -240,6 +240,19 @@ app.use(
   }),
 );
 
+// Dropi Webhook: registrar en logs/dropi_webhook/ TODA petición (incluidas
+// las 401 y los JSON inválidos) y capturar el raw body antes del parseo
+const dropiWebhookLogger = require('./middlewares/dropi_webhook_logger.middleware');
+app.use('/api/v1/dropi_webhook', dropiWebhookLogger);
+app.use(
+  '/api/v1/dropi_webhook',
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }),
+);
+
 // Solo aplicar express.json a todo EXCEPTO al webhook de Stripe y Messenger e Instagram
 app.use((req, res, next) => {
   // Usa req.path para no fallar por querystrings
@@ -250,6 +263,7 @@ app.use((req, res, next) => {
     '/api/v1/tiktok/webhook/receive',
     '/api/v1/shopify/webhooks',
     '/api/v2/webhooks/shopify',
+    '/api/v1/dropi_webhook/orders',
   ];
   if (skipPaths.includes(req.path)) return next();
   return express.json()(req, res, next);
@@ -264,6 +278,7 @@ app.use((req, res, next) => {
     '/api/v1/tiktok/webhook/receive',
     '/api/v1/shopify/webhooks',
     '/api/v2/webhooks/shopify',
+    '/api/v1/dropi_webhook/orders',
   ];
 
   // Rutas donde el contenido legítimamente lleva <tags> tipo XML
