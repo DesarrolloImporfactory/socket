@@ -11,18 +11,37 @@ function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
 }
 
+// Dropi no permite configurar headers personalizados en sus webhooks, así que
+// se valida por estructura: el body debe tener forma de evento de orden Dropi
+// (id numérico, status, y al menos 3 campos típicos de sus payloads).
+const DROPI_ORDER_FIELDS = [
+  'type',
+  'supplier_id',
+  'shop_id',
+  'shop',
+  'rate_type',
+  'shipping_company',
+  'shipping_guide',
+  'orderdetails',
+  'warehouse_id',
+  'country',
+];
+
+function esEventoDropi(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  if (!Number.isFinite(Number(body.id)) || Number(body.id) <= 0) return false;
+  if (!body.status || typeof body.status !== 'string') return false;
+  const presentes = DROPI_ORDER_FIELDS.filter((f) => f in body).length;
+  return presentes >= 3;
+}
+
 exports.dropiOrdersWebhook = catchAsync(async (req, res, next) => {
-  // 1) Validación de secreto
-  const expected = process.env.DROPI_WEBHOOK_SECRET;
-  const got = req.headers['x-dropi-webhook-secret'];
-
-  if (expected && String(expected).trim()) {
-    if (!got || String(got).trim() !== String(expected).trim()) {
-      return next(new AppError('Unauthorized webhook', 401));
-    }
-  }
-
   const body = req.body || {};
+
+  // 1) Validación por patrón del payload
+  if (!esEventoDropi(body)) {
+    return next(new AppError('Unauthorized webhook', 401));
+  }
 
   console.log('📦 Dropi webhook recibido:', JSON.stringify(body, null, 2));
 
