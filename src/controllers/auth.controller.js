@@ -738,7 +738,7 @@ exports.newLogin = async (req, res) => {
             });
           }
 
-          const subusuarios_chat_center =
+          let subusuarios_chat_center =
             await Sub_usuarios_chat_center.findOne({
               where: {
                 id_usuario: usuarios_chat_center.id_usuario,
@@ -746,10 +746,26 @@ exports.newLogin = async (req, res) => {
               },
             });
 
+          // 🩹 Self-heal: la plataforma existe pero quedó SIN sub-usuario admin
+          // (cuenta creada sin sub). En vez de fallar el SSO, lo creamos desde
+          // los datos de imporsuit — mismo criterio que ESCENARIO A (crear desde cero).
           if (!subusuarios_chat_center) {
-            return res.status(404).json({
-              message: 'Usuario administrador no encontrado para esta tienda',
+            const usernameBaseHeal =
+              usuario_users && String(usuario_users).trim().length >= 3
+                ? usuario_users
+                : String(nombre_users || 'admin').replace(/\s+/g, '');
+            const usernameUnicoHeal = await generarUsernameUnico(usernameBaseHeal);
+            const adminCreadoHeal = await crearSubUsuario({
+              id_usuario: usuarios_chat_center.id_usuario,
+              usuario: usernameUnicoHeal,
+              password: con_users,
+              email: usuarios_chat_center.email_propietario || email_users,
+              nombre_encargado: nombre_users,
+              rol: 'administrador',
             });
+            subusuarios_chat_center = await Sub_usuarios_chat_center.findByPk(
+              adminCreadoHeal.id_sub_usuario,
+            );
           }
 
           id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
