@@ -43,6 +43,23 @@ function mapGeminiQuotaMessage(rawMsg = '') {
   const msg = String(rawMsg);
   console.error(`[IA] RAW ERROR: ${msg}`);
 
+  // ── Bloqueo por facturación / cobranza de Google Cloud ──
+  const isBilling =
+    msg.includes('dunning') ||
+    msg.includes('billing') ||
+    msg.includes('Billing') ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('consumer') ||
+    msg.includes('SERVICE_DISABLED');
+
+  if (isBilling) {
+    return {
+      statusCode: 402,
+      retryable: false,
+      message: 'servicio fact inhabilitado, contacta a soporte por favor',
+    };
+  }
+
   const isQuota =
     msg.includes('exceeded your current quota') ||
     msg.includes('Quota exceeded') ||
@@ -53,9 +70,7 @@ function mapGeminiQuotaMessage(rawMsg = '') {
     return {
       statusCode: 402,
       retryable: false,
-      message:
-        'El motor de generación no tiene cuota disponible o no tiene facturación activada. ' +
-        'Contacta al administrador para activar la facturación.',
+      message: 'servicio fact inhabilitado, contacta a soporte por favor',
     };
   }
 
