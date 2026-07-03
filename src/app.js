@@ -156,6 +156,8 @@ const allowlist = [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://dev.imporfactory.app',
+  'https://imporfactory.app',
+  'https://www.imporfactory.app',
 ];
 
 app.use(

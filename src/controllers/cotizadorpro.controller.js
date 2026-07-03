@@ -542,7 +542,7 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   // Crear y enviar las dos plantillas de WhatsApp
   // plantilla1: descargar video predeterminado → convertir → subir a Meta → header con mediaId
   const VIDEO_DEFAULT_URL =
-    'https://new.imporsuitpro.com/Videos/stream/142a81defb7d52ee043640df1c8e2efc';
+    'https://new.imporsuitpro.com/Videos/stream/b464b1a9f35d92ce25290e26a94af7b2';
 
   let videoMediaId = null;
   try {
@@ -784,7 +784,7 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
   );
 
   const VIDEO_DEFAULT_URL =
-    'https://new.imporsuitpro.com/Videos/stream/142a81defb7d52ee043640df1c8e2efc';
+    'https://new.imporsuitpro.com/Videos/stream/b464b1a9f35d92ce25290e26a94af7b2';
 
   let videoMediaId = null;
   try {
