@@ -42,6 +42,15 @@ const DropiIntegrations = db.define(
       defaultValue: null,
     },
 
+    // user_id de la cuenta Dropi dueña de la key (dropshipper). NULL =
+    // desconocido o cuenta proveedor. Lo aprende el cron (aprenderDropiUserId)
+    // y lo usa el webhook para mapear eventos de órdenes aún no cacheadas.
+    dropi_user_id: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
+      defaultValue: null,
+    },
+
     is_active: {
       type: DataTypes.TINYINT,
       allowNull: false,

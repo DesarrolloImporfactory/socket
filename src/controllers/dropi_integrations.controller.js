@@ -51,6 +51,53 @@ async function assertConfigBelongsToOwner(req, id_configuracion) {
 }
 
 /**
+ * Descubre el dropi_user_id (cuenta Dropi dueña de la key) al registrar la
+ * integración: pide UNA página de órdenes recientes y, si todas pertenecen
+ * al mismo user_id, esa es la cuenta (dropshipper). Proveedores (varios
+ * user_ids) o cuentas sin órdenes quedan NULL — el cron los aprende después
+ * (aprenderDropiUserId) en cuanto tengan movimiento.
+ *
+ * Best-effort y fire-and-forget: si Dropi falla o hay 429, no afecta el
+ * registro del cliente. El webhook usa esta columna para mapear eventos de
+ * órdenes nuevas aún no cacheadas.
+ */
+async function descubrirDropiUserId(integrationId) {
+  try {
+    const row = await DropiIntegrations.findOne({
+      where: { id: integrationId, deleted_at: null },
+    });
+    if (!row || row.dropi_user_id) return;
+
+    const integrationKey = decryptToken(row.integration_key_enc);
+    if (!integrationKey?.trim()) return;
+
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const resp = await dropiService.listMyOrders({
+      integrationKey,
+      params: {
+        result_number: 50,
+        start: 0,
+        filter_date_by: 'FECHA DE CAMBIO DE ESTATUS',
+        from: fmt(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+        until: fmt(new Date()),
+      },
+      country_code: row.country_code,
+    });
+
+    const orders = resp?.objects || [];
+    const uids = new Set(
+      orders.map((o) => o?.user_id).filter((v) => Number(v) > 0),
+    );
+    if (uids.size === 1) {
+      row.dropi_user_id = Number([...uids][0]);
+      await row.save();
+    }
+  } catch (_) {
+    // sin drama: el cron lo aprenderá en la próxima corrida
+  }
+}
+
+/**
  * Obtiene la integración activa más reciente para una configuración.
  */
 async function getActiveIntegration(id_configuracion) {
@@ -139,6 +186,9 @@ exports.create = catchAsync(async (req, res, next) => {
     deleted_at: null,
   });
 
+  // Descubrir la cuenta Dropi dueña de la key (async, no bloquea la respuesta)
+  setImmediate(() => descubrirDropiUserId(created.id));
+
   return res.status(201).json({ isSuccess: true, data: safeRow(created) });
 });
 
@@ -171,14 +221,20 @@ exports.update = catchAsync(async (req, res, next) => {
   if (country_code !== undefined)
     row.country_code = String(country_code).trim().toUpperCase();
 
+  let tokenCambiado = false;
   if (token !== undefined && String(token).trim()) {
     row.integration_key_enc = encryptToken(token);
     row.integration_key_last4 = last4(token);
+    // La nueva key puede ser de OTRA cuenta Dropi: invalidar y redescubrir
+    row.dropi_user_id = null;
+    tokenCambiado = true;
   }
 
   if (is_active !== undefined) row.is_active = is_active ? 1 : 0;
 
   await row.save();
+
+  if (tokenCambiado) setImmediate(() => descubrirDropiUserId(row.id));
 
   return res.json({ isSuccess: true, data: safeRow(row) });
 });
@@ -245,6 +301,9 @@ exports.createMyIntegration = catchAsync(async (req, res, next) => {
     is_active: 1,
     deleted_at: null,
   });
+
+  // Descubrir la cuenta Dropi dueña de la key (async, no bloquea la respuesta)
+  setImmediate(() => descubrirDropiUserId(nueva.id));
 
   return res.status(201).json({ isSuccess: true, data: safeRow(nueva) });
 });

@@ -2,6 +2,14 @@ const crypto = require('crypto');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const DropiWebhookEvents = require('../models/dropi_webhook_events.model');
+const {
+  encolarEventoWebhook,
+} = require('../services/dropi_webhook_processor.service');
+
+// Kill-switch del procesamiento en tiempo real (envío de templates al
+// recibir el evento). Con '0' el webhook vuelve a ser solo-almacenamiento
+// y el cron sigue cubriendo todo, sin deploy.
+const REALTIME_ENABLED = process.env.DROPI_WEBHOOK_REALTIME !== '0';
 
 function digitsOnly(v) {
   return String(v || '').replace(/\D/g, '');
@@ -84,11 +92,18 @@ exports.dropiOrdersWebhook = catchAsync(async (req, res, next) => {
       event_hash,
     });
   } catch (err) {
-    // Duplicado por hash
+    // Duplicado por hash: Dropi reintentó el mismo evento → no reprocesar
     if (err?.name === 'SequelizeUniqueConstraintError') {
       return res.status(200).json({ ok: true, duplicated: true });
     }
     return next(err);
+  }
+
+  // Procesamiento en tiempo real (upsert cache + template WA), en cola
+  // async: se responde 200 a Dropi de inmediato. Anti-duplicados con el
+  // cron garantizado por reclamarEnvio (UNIQUE en dropi_plantillas_enviadas).
+  if (REALTIME_ENABLED) {
+    encolarEventoWebhook(body);
   }
 
   return res.status(200).json({ ok: true });
