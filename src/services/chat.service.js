@@ -20,6 +20,9 @@ const CoberturaGintracom = require('../models/cobertura_gintracom.model');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
+
+const { normalizarTelefono } = require('../utils/normalizarTelefono');
+
 const {
   normalizePhoneNumber,
   generatePhoneVariations,
@@ -774,17 +777,68 @@ class ChatService {
       }
 
       const wamid = responseData?.messages?.[0]?.id || null;
+      console.log(
+        '[SEND_DB] 1) wamid:',
+        wamid,
+        '| to(entrante):',
+        to,
+        '| typeof:',
+        typeof to,
+      );
 
       const cliente = await ClientesChatCenter.findOne({
         where: { propietario: '1', id_configuracion },
       });
+      console.log(
+        '[SEND_DB] 2) cliente propietario id:',
+        cliente ? cliente.id : null,
+        '| id_configuracion:',
+        id_configuracion,
+      );
 
-      const receptor = await ClientesChatCenter.findOne({
-        where: { celular_cliente: to, id_configuracion },
-      });
+      // Canónico para escribir (con guard por si el import quedó mal)
+      let toCanonico, soloDigitos;
+      try {
+        toCanonico = normalizarTelefono(to);
+        soloDigitos = String(toCanonico).replace(/\D/g, '');
+      } catch (eNorm) {
+        console.error(
+          '[SEND_DB] ✖ normalizarTelefono FALLÓ:',
+          eNorm.message,
+          '| typeof normalizarTelefono =',
+          typeof normalizarTelefono,
+        );
+        throw eNorm;
+      }
+      console.log(
+        '[SEND_DB] 3) toCanonico:',
+        toCanonico,
+        '| soloDigitos:',
+        soloDigitos,
+      );
+
+      const [receptor] = await db.query(
+        `SELECT id
+           FROM clientes_chat_center
+          WHERE id_configuracion = :id_configuracion
+            AND REPLACE(REPLACE(celular_cliente,' ',''),'+','') = :phone
+          ORDER BY id DESC
+          LIMIT 1`,
+        {
+          replacements: { id_configuracion, phone: soloDigitos },
+          type: Sequelize.QueryTypes.SELECT,
+        },
+      );
+      console.log('[SEND_DB] 4) receptor crudo:', receptor);
 
       const id_cliente = cliente ? cliente.id : null;
       const id_recibe = receptor ? receptor.id : null;
+      console.log(
+        '[SEND_DB] 5) id_cliente:',
+        id_cliente,
+        '| id_recibe:',
+        id_recibe,
+      );
 
       const mensajeCliente = {
         id_configuracion: dataAdmin.id,
@@ -793,7 +847,7 @@ class ChatService {
           requestData?.type ?? (tipo === 'file' ? 'document' : tipo),
         rol_mensaje: 1,
         id_cliente,
-        uid_whatsapp: to,
+        uid_whatsapp: toCanonico,
         id_wamid_mensaje: wamid,
         responsable: nombre_encargado,
         texto_mensaje: mensaje || '',
@@ -806,13 +860,31 @@ class ChatService {
 
       if (ruta_archivo) mensajeCliente.ruta_archivo = ruta_archivo;
 
+      console.log('[SEND_DB] 6) a insertar:', JSON.stringify(mensajeCliente));
+
       const mensajeAgregado = await MensajesClientes.create(mensajeCliente);
+      console.log(
+        '[SEND_DB] 7) ✅ insertado id:',
+        mensajeAgregado ? mensajeAgregado.id : null,
+      );
+
       if (!mensajeAgregado) throw new Error('Error al guardar en BD');
 
       responseData.mensajeNuevo = mensajeAgregado;
       return responseData;
     } catch (error) {
-      console.error('Error en la solicitud:', error);
+      // 🔎 ERROR REAL (no el genérico)
+      console.error('[SEND_DB] ✖ ERROR REAL message:', error?.message);
+      console.error('[SEND_DB] ✖ name:', error?.name);
+      console.error(
+        '[SEND_DB] ✖ sqlMessage:',
+        error?.original?.sqlMessage || error?.parent?.sqlMessage,
+      );
+      console.error(
+        '[SEND_DB] ✖ sequelize errors:',
+        JSON.stringify(error?.errors),
+      );
+      console.error('[SEND_DB] ✖ stack:', error?.stack);
       throw new Error('Ocurrió un error al enviar el mensaje.');
     }
   }

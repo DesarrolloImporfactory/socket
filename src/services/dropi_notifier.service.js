@@ -25,6 +25,7 @@ const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 // Normalización de teléfonos con libphonenumber (multipaís).
 // toWhatsapp(phone, country_code) → internacional en dígitos, sin "+".
 const { toWhatsapp } = require('../utils/phoneFactor');
+const { normalizarTelefono } = require('../utils/normalizarTelefono');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -654,7 +655,11 @@ async function reclamarEnvio({
 }
 
 /* Libera el reclamo SOLO si el envío a Meta falló, para reintentar luego. */
-async function liberarEnvio({ dropi_order_id, id_configuracion, estado_dropi }) {
+async function liberarEnvio({
+  dropi_order_id,
+  id_configuracion,
+  estado_dropi,
+}) {
   await db.query(
     `DELETE FROM dropi_plantillas_enviadas
      WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ?`,
@@ -726,7 +731,12 @@ async function resolverClientes({
           celular_cliente, telefono_limpio, source)
        VALUES (?, ?, '', '', ?, ?, 'wa')`,
       {
-        replacements: [id_configuracion, phone_number_id, phoneNorm, phoneNorm],
+        replacements: [
+          id_configuracion,
+          phone_number_id,
+          normalizarTelefono(phoneNorm),
+          phoneNorm,
+        ],
         type: db.QueryTypes.INSERT,
       },
     );
@@ -786,7 +796,7 @@ async function registrarMensajeEnChat({
           textoMensaje || '',
           rutaArchivo ? JSON.stringify(rutaArchivo) : null,
           jsonMensaje ? JSON.stringify(jsonMensaje) : null,
-          phoneNorm,
+          normalizarTelefono(phoneNorm),
           waMessageId || null,
           tipoEnvio === 'template' ? templateName || null : null,
           tipoEnvio === 'template' ? languageCode || null : null,

@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { db } = require('../../database/config');
 const ClientesChatCenter = require('../../models/clientes_chat_center.model');
+const { normalizarTelefono } = require('../normalizarTelefono');
 
 const presenceStore = require('../../sockets/presence/presenceStore');
 
@@ -37,6 +38,7 @@ async function crearClienteConRoundRobinUnDepto({
   external_id = null, // ms/ig PSID/IGSID
   permiso_round_robin,
 }) {
+  phone_whatsapp_from = normalizarTelefono(phone_whatsapp_from);
   const lockKey = `rr:${id_configuracion}`;
 
   // Lock para concurrencia
@@ -60,7 +62,12 @@ async function crearClienteConRoundRobinUnDepto({
 
     // ✅ Si NO tiene permiso, crear cliente SIN round robin, SIN historial
     if (rrDisabled) {
-      console.log('[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L63 — rrDisabled, celular:', source === 'wa' ? phone_whatsapp_from : external_id, 'id_configuracion:', id_configuracion);
+      console.log(
+        '[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L63 — rrDisabled, celular:',
+        source === 'wa' ? phone_whatsapp_from : external_id,
+        'id_configuracion:',
+        id_configuracion,
+      );
       const cliente = await ClientesChatCenter.create({
         id_configuracion,
         uid_cliente: business_phone_id,
@@ -111,7 +118,12 @@ async function crearClienteConRoundRobinUnDepto({
 
     // ✅ Si NO hay departamento, crear cliente SIN encargado y SIN historial (como rrDisabled)
     if (!id_departamento_asginado) {
-      console.log('[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L113 — sin departamento, celular:', source === 'wa' ? phone_whatsapp_from : external_id, 'id_configuracion:', id_configuracion);
+      console.log(
+        '[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L113 — sin departamento, celular:',
+        source === 'wa' ? phone_whatsapp_from : external_id,
+        'id_configuracion:',
+        id_configuracion,
+      );
       const cliente = await ClientesChatCenter.create({
         id_configuracion,
         uid_cliente: business_phone_id,
@@ -173,7 +185,12 @@ async function crearClienteConRoundRobinUnDepto({
 
     // Si no hay nadie, crear sin encargado
     if (!lista.length) {
-      console.log('[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L174 — sin encargado online, celular:', source === 'wa' ? phone_whatsapp_from : external_id, 'id_configuracion:', id_configuracion);
+      console.log(
+        '[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L174 — sin encargado online, celular:',
+        source === 'wa' ? phone_whatsapp_from : external_id,
+        'id_configuracion:',
+        id_configuracion,
+      );
       const cliente = await ClientesChatCenter.create({
         id_configuracion,
         uid_cliente: business_phone_id,
@@ -236,7 +253,14 @@ async function crearClienteConRoundRobinUnDepto({
     }
 
     // 5) Crear cliente con encargado
-    console.log('[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L236 — con encargado RR, celular:', source === 'wa' ? phone_whatsapp_from : external_id, 'id_configuracion:', id_configuracion, 'encargado:', id_encargado_nuevo);
+    console.log(
+      '[clientes_chat_center INSERT] utils/webhook_whatsapp/round_robin.js ~L236 — con encargado RR, celular:',
+      source === 'wa' ? phone_whatsapp_from : external_id,
+      'id_configuracion:',
+      id_configuracion,
+      'encargado:',
+      id_encargado_nuevo,
+    );
     const cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,

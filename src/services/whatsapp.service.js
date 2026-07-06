@@ -2,6 +2,8 @@ const axios = require('axios');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const { db } = require('../database/config');
+const { normalizarTelefono } = require('../utils/normalizarTelefono');
+
 const {
   getConfigFromDB,
   onlyDigits,
@@ -321,6 +323,8 @@ exports.sendWhatsappMessage = async ({
 }) => {
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
+  telefono = normalizarTelefono(telefono);
+
   const data = {
     messaging_product: 'whatsapp',
     to: telefono,
@@ -348,7 +352,12 @@ exports.sendWhatsappMessage = async ({
   });
 
   if (!cliente) {
-    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L351 — enviarMensajeWhatsappCliente, celular:', telefono, 'id_configuracion:', id_configuracion);
+    console.log(
+      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L351 — enviarMensajeWhatsappCliente, celular:',
+      telefono,
+      'id_configuracion:',
+      id_configuracion,
+    );
     cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -399,6 +408,11 @@ exports.sendWhatsappMessageTemplate = async ({
     };
   }
 
+  telefono = normalizarTelefono(telefono);
+  if (telefono_configuracion) {
+    telefono_configuracion = normalizarTelefono(telefono_configuracion);
+  }
+
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
   if (!Array.isArray(template_parameters)) {
@@ -443,7 +457,12 @@ exports.sendWhatsappMessageTemplate = async ({
   });
 
   if (!cliente) {
-    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L445 — enviarPlantillaWhatsapp, celular:', telefono, 'id_configuracion:', id_configuracion);
+    console.log(
+      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L445 — enviarPlantillaWhatsapp, celular:',
+      telefono,
+      'id_configuracion:',
+      id_configuracion,
+    );
     cliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -524,7 +543,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   if (!id_configuracion) throw new Error('id_configuracion es requerido');
   if (!nombre_template) throw new Error('nombre_template es requerido');
 
-  const telefonoLimpio = onlyDigits(telefono || '');
+  const telefonoLimpio = normalizarTelefono(telefono || '');
   if (!telefonoLimpio || telefonoLimpio.length < 8) {
     throw new Error('Teléfono destino inválido');
   }
@@ -739,7 +758,12 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   let clienteId = clienteRow?.id || null;
 
   if (!clienteId) {
-    console.log('[clientes_chat_center INSERT] services/whatsapp.service.js ~L740 — crearChatRemarketingWS, celular:', telefonoLimpio, 'id_configuracion:', id_configuracion);
+    console.log(
+      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L740 — crearChatRemarketingWS, celular:',
+      telefonoLimpio,
+      'id_configuracion:',
+      id_configuracion,
+    );
     const nuevoCliente = await ClientesChatCenter.create({
       id_configuracion,
       uid_cliente: business_phone_id,
@@ -754,7 +778,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   let id_cliente_configuracion = null;
 
   if (telefono_configuracion) {
-    const telCfgLimpio = onlyDigits(telefono_configuracion);
+    const telCfgLimpio = normalizarTelefono(telefono_configuracion);
 
     if (telCfgLimpio) {
       const [clienteConfiguracionExistente] = await db.query(

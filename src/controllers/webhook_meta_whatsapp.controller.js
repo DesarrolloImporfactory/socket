@@ -14,6 +14,9 @@ const logger = require('../utils/logger');
 const dashboardEmitter = require('./dashboardEmitter');
 
 const servicioAppointments = require('../services/appointments.service');
+
+const { normalizarTelefono } = require('../utils/normalizarTelefono');
+
 const {
   descargarAudioWhatsapp,
   descargarImagenWhatsapp,
@@ -197,7 +200,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         for (const ev of value.state_sync) {
           if (ev?.type !== 'contact') continue;
 
-          const phone = (ev?.contact?.phone_number || '').trim();
+          const phone = normalizarTelefono(ev?.contact?.phone_number);
           const fullName = (
             ev?.contact?.full_name ||
             ev?.contact?.first_name ||
@@ -256,7 +259,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const accessToken = configuracion.token;
       const waba_id = configuracion.id_whatsapp;
       const id_configuracion = configuracion.id;
-      const telefono_configuracion = configuracion.telefono;
+      const telefono_configuracion = normalizarTelefono(configuracion.telefono);
       const nombre_configuracion = configuracion.nombre_configuracion;
       const api_key_openai = configuracion.api_key_openai;
       const tipo_configuracion = configuracion.tipo_configuracion;
@@ -345,8 +348,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             // Media download error - Meta no pudo descargar el archivo entrante
             // Guardamos placeholder en MensajeCliente para que aparezca en el chat
             try {
-              const peerPhoneFallback =
-                value?.contacts?.[0]?.wa_id || status?.recipient_id || '';
+              const peerPhoneFallback = normalizarTelefono(
+                value?.contacts?.[0]?.wa_id || status?.recipient_id || '',
+              );
 
               if (!peerPhoneFallback) {
                 debugLogMsg = `⚠️ 131052 sin peer phone identificable para wamid ${wamid}`;
@@ -509,7 +513,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         : msg0?.from || ''; // si es inbound, "from" es el cliente
 
       // por si lo usas con tu mismo nombre de variable:
-      const phone_whatsapp_from = peer_phone;
+      const phone_whatsapp_from = normalizarTelefono(peer_phone);
 
       /* obtenemos el remitente */
 
@@ -1025,7 +1029,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const countMensajes = await MensajeCliente.count({
               where: {
                 id_configuracion,
-                celular_recibe: phone_whatsapp_from,
+                celular_recibe: id_cliente,
+                rol_mensaje: 0,
               },
             });
 

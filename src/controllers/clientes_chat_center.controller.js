@@ -16,6 +16,7 @@ const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { intentarEnviarEncuesta } = require('../utils/encuestaSatisfaccion');
+const { normalizarTelefono } = require('../utils/normalizarTelefono');
 const ExcelJS = require('exceljs');
 
 // controllers/clientes_chat_centerController.js
@@ -162,8 +163,8 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
   } = req.body;
 
   try {
-    // Limpiar teléfono: quitar caracteres especiales y espacios
-    const telefono = telefonoRaw?.replace(/[^0-9]/g, '') ?? '';
+    // Normalizar teléfono al canónico "+<dígitos>"
+    const telefono = normalizarTelefono(telefonoRaw);
 
     // 1. Obtener id_telefono desde configuraciones
     const [configuracion] = await db.query(
@@ -236,12 +237,16 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
 
 exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
   const { telefono, id_configuracion } = req.body;
+  const soloDigitos = String(telefono ?? '').replace(/\D/g, '');
 
   try {
     const [clientes_chat_center] = await db.query(
-      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ?',
+      `SELECT id FROM clientes_chat_center
+        WHERE id_configuracion = ?
+          AND REPLACE(REPLACE(celular_cliente,' ',''),'+','') = ?
+        ORDER BY id DESC LIMIT 1`,
       {
-        replacements: [telefono, id_configuracion],
+        replacements: [id_configuracion, soloDigitos],
         type: db.QueryTypes.SELECT,
       },
     );
@@ -286,6 +291,10 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
   } = req.body;
 
   try {
+    // Normalizar teléfonos al canónico "+<dígitos>"
+    const telefonoConfigNorm = normalizarTelefono(telefono_configuracion);
+    const telefonoRecibeNorm = normalizarTelefono(telefono_recibe);
+
     // 1) Obtener datos desde configuraciones (para armar el "cliente propietario")
     const [config] = await db.query(
       'SELECT id_telefono, nombre_configuracion FROM configuraciones WHERE id = ? AND suspendido = 0',
@@ -312,7 +321,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
     );
 
     let clientePropietario = await ClientesChatCenter.findOne({
-      where: { celular_cliente: telefono_configuracion, id_configuracion },
+      where: { celular_cliente: telefonoConfigNorm, id_configuracion },
     });
 
     if (!clientePropietario?.id) {
@@ -322,7 +331,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
         uid_cliente: uid_cliente,
         nombre_cliente: nombre_cliente,
         apellido_cliente: '',
-        celular_cliente: telefono_configuracion,
+        celular_cliente: telefonoConfigNorm,
         propietario: 1,
       });
     }
@@ -351,7 +360,7 @@ exports.agregarMensajeEnviado = catchAsync(async (req, res, next) => {
           texto: texto_mensaje ?? '',
           ruta: ruta_archivo ?? null,
           visto: 1,
-          uid_whatsapp: telefono_recibe,
+          uid_whatsapp: telefonoRecibeNorm,
           wamid: id_wamid_mensaje ?? null,
           template: template_name ?? '',
           lang: language_code ?? '',
@@ -1269,7 +1278,8 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const mark = async (label, fn) => {
     const s = process.hrtime.bigint();
     const r = await fn();
-    timings[label] = Math.round((Number(process.hrtime.bigint() - s) / 1e6) * 10) / 10;
+    timings[label] =
+      Math.round((Number(process.hrtime.bigint() - s) / 1e6) * 10) / 10;
     return r;
   };
 
@@ -1347,7 +1357,8 @@ exports.listarClientes = catchAsync(async (req, res) => {
 
   timings.endpoint_ms =
     Math.round((Number(process.hrtime.bigint() - _t0) / 1e6) * 10) / 10;
-  const totalPages = total == null ? null : Math.max(1, Math.ceil(total / limit));
+  const totalPages =
+    total == null ? null : Math.max(1, Math.ceil(total / limit));
 
   console.log(
     `[listar] cfg=${id_configuracion} mode=${mode} q="${q}" rows=${rows.length} ${JSON.stringify(timings)}`,
@@ -1436,7 +1447,7 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
       nombre_cliente ?? '',
       apellido_cliente ?? '',
       email_cliente ?? '',
-      celular_cliente ?? '',
+      celular_cliente ? normalizarTelefono(celular_cliente) : '',
       imagePath ?? '',
       mensajes_por_dia_cliente ?? 0,
       estado_cliente ?? 1,
@@ -1496,7 +1507,13 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
   for (const f of fields) {
     if (req.body.hasOwnProperty(f)) {
       setParts.push(`${f} = ?`);
-      params.push(req.body[f]);
+      if (f === 'celular_cliente') {
+        params.push(
+          req.body[f] ? normalizarTelefono(req.body[f]) : req.body[f],
+        );
+      } else {
+        params.push(req.body[f]);
+      }
     }
   }
   // nada que actualizar
@@ -2051,12 +2068,19 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
   for (let i = 0; i < filas.length; i++) {
     const row = filas[i] || {};
 
-    const tel = String(
+    const telRaw = String(
       row.telefono || row.celular_cliente || row.celular || '',
     ).trim();
 
-    if (!tel) {
+    if (!telRaw) {
       errores.push({ index: i, error: 'Teléfono vacío o inválido', row });
+      continue;
+    }
+
+    // Normalizar al canónico "+<dígitos>"
+    const tel = normalizarTelefono(telRaw);
+    if (!tel) {
+      errores.push({ index: i, error: 'Teléfono sin dígitos válidos', row });
       continue;
     }
 

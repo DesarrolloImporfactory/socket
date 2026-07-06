@@ -4,6 +4,8 @@ const path = require('path');
 const ClientesChatCenter = require('../../models/clientes_chat_center.model');
 const MensajeCliente = require('../../models/mensaje_cliente.model');
 
+const { normalizarTelefono } = require('../../utils/normalizarTelefono');
+
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 
 async function procesarMensajeTexto({
@@ -22,6 +24,10 @@ async function procesarMensajeTexto({
 }) {
   try {
     await fs.mkdir(logsDir, { recursive: true });
+
+    // Normalizar ambos teléfonos a "+"
+    telefono_configuracion = normalizarTelefono(telefono_configuracion);
+    phone_whatsapp_to = normalizarTelefono(phone_whatsapp_to);
 
     // Buscar o crear cliente emisor
     let cliente = await ClientesChatCenter.findOne({
@@ -71,7 +77,7 @@ async function procesarMensajeTexto({
     });
 
     await logInfo(
-      `💬 Mensaje insertado correctamente para ${phone_whatsapp_to}`
+      `💬 Mensaje insertado correctamente para ${phone_whatsapp_to}`,
     );
   } catch (err) {
     await logError(`❌ Error en procesarMensajeTexto: ${err.message}`);
@@ -81,14 +87,14 @@ async function procesarMensajeTexto({
 async function logInfo(msg) {
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
-    `[${new Date().toISOString()}] ${msg}\n`
+    `[${new Date().toISOString()}] ${msg}\n`,
   );
 }
 
 async function logError(msg) {
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
-    `[${new Date().toISOString()}] ${msg}\n`
+    `[${new Date().toISOString()}] ${msg}\n`,
   );
 }
 

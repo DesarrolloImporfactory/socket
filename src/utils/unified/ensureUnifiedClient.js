@@ -3,6 +3,8 @@ const {
   crearClienteConRoundRobinUnDepto,
 } = require('../webhook_whatsapp/round_robin');
 
+const { normalizarTelefono } = require('../normalizarTelefono');
+
 async function ensureUnifiedClient({
   id_configuracion,
   id_usuario_dueno,
@@ -17,6 +19,11 @@ async function ensureUnifiedClient({
   metaClienteTimestamps = {},
   permiso_round_robin,
 }) {
+  // Normalizar el teléfono WA al canónico con "+"
+  if (source === 'wa') {
+    phone = normalizarTelefono(phone);
+  }
+
   // 1) WHERE por canal
   let where = null;
 
