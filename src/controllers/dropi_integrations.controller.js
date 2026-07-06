@@ -3454,6 +3454,66 @@ async function attachProductConversations({
   }
 }
 
+/* Conversaciones por canal: clientes de chat distintos vinculados por
+   teléfono a las órdenes de cada canal (WA vs Shopify). Así el KPI de
+   conversaciones del front cambia al filtrar por canal. */
+async function countCanalConversaciones({
+  id_configuracion,
+  orderRows,
+  esOrdenShopify,
+}) {
+  const keysByCanal = { wa: new Set(), shopify: new Set() };
+  const allKeys = new Set();
+  const isShopify = esOrdenShopify || ((o) => o.shop_type === 'SHOPIFY');
+
+  for (const o of orderRows) {
+    if (!o.phone) continue;
+    const ks = phoneKeys(o.phone);
+    if (!ks.length) continue;
+    const canal = isShopify(o) ? 'shopify' : 'wa';
+    ks.forEach((k) => {
+      keysByCanal[canal].add(k);
+      allKeys.add(k);
+    });
+  }
+
+  const out = { wa: 0, shopify: 0 };
+  if (!allKeys.size) return out;
+
+  const orConditions = [...allKeys].map((k) => ({
+    celular_cliente: { [Op.like]: `%${k}` },
+  }));
+  const clientes = await ClientesChatCenter.findAll({
+    where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
+    attributes: ['id', 'celular_cliente'],
+    raw: true,
+  });
+
+  const clientByKey = new Map();
+  for (const c of clientes) {
+    for (const k of phoneKeys(c.celular_cliente)) {
+      if (!clientByKey.has(k)) clientByKey.set(k, c.id);
+    }
+  }
+
+  for (const canal of ['wa', 'shopify']) {
+    const cset = new Set();
+    for (const k of keysByCanal[canal]) {
+      const cid = clientByKey.get(k);
+      if (cid) cset.add(cid);
+    }
+    out[canal] = cset.size;
+  }
+  return out;
+}
+
+/* ⚙️ Validación de canal Shopify contra el webhook real.
+   false → canal = shop_type crudo de Dropi (comportamiento original),
+           para comparar métricas mientras shopify_ordenes_webhook se llena.
+   true  → una orden solo cuenta como Shopify si hace match con una orden
+           real del webhook (teléfono + total ±0.5 + ventana 72h). */
+const VALIDAR_SHOPIFY_CON_WEBHOOK = false;
+
 /* ═══════════════════════════════════════════════════════════
    getConnectionSummary
    KPIs + top productos para una conexión en un rango de fechas.
@@ -3483,6 +3543,8 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     [carritoRows],
     [dailyRows],
     [prodRows],
+    [metaAdsRows],
+    [shopifyOrdRows],
   ] = await Promise.all([
     DropiOrdersCache.findAll({
       where: { id_configuracion, id_usuario: 0, order_created_at: dateRange },
@@ -3495,6 +3557,8 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
         'shop_type',
         'phone',
         'product_names',
+        'order_created_at',
+        [fn('DATE_FORMAT', col('order_created_at'), '%Y-%m-%d'), 'dia'],
       ],
       raw: true,
     }),
@@ -3574,6 +3638,27 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       GROUP BY jt.product_id, jt.product_name, jt.sku`,
       { replacements: repl },
     ),
+    // Estado de vinculación Meta Ads (para CTA / anuncios ganadores en el front)
+    db.query(
+      `SELECT ad_account_name FROM meta_ad_connections
+        WHERE id_configuracion = :idCfg AND status = 'active'
+        ORDER BY id DESC LIMIT 1`,
+      { replacements: repl },
+    ),
+    // Fuente de verdad Shopify: órdenes reales recibidas por el webhook
+    // orders/create. Si hay filas, el canal se valida contra esto (el
+    // shop_type de Dropi marca SHOPIFY órdenes que entraron por WA).
+    // .catch → la tabla puede no existir aún en este entorno.
+    db
+      .query(
+        `SELECT phone_normalizado, total_price, shopify_created_at, created_at
+           FROM shopify_ordenes_webhook
+          WHERE id_configuracion = :idCfg
+            AND created_at BETWEEN DATE_SUB(:from, INTERVAL 3 DAY)
+                               AND DATE_ADD(:until, INTERVAL 1 DAY)`,
+        { replacements: repl },
+      )
+      .catch(() => [[]]),
   ]);
 
   const botOrderIds = new Set(botRows.map((r) => String(r.dropi_order_id)));
@@ -3589,6 +3674,46 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
   );
   const totalMensajes = msgRows.reduce((s, r) => s + Number(r.n || 0), 0);
 
+  // ── Clasificador de canal ──
+  // Si la tienda tiene órdenes reales del webhook Shopify en la ventana,
+  // una orden Dropi solo cuenta como Shopify si hace match con una de
+  // ellas (teléfono + total ±0.5 + ventana 72h). Sin datos del webhook,
+  // se usa el shop_type de Dropi tal cual (tiendas sin webhook activo).
+  const phone9 = (p) =>
+    String(p || '')
+      .replace(/\D/g, '')
+      .slice(-9);
+  const shopifyTruthMap = new Map(); // phone9 → [{total, t}]
+  for (const s of shopifyOrdRows || []) {
+    const k = phone9(s.phone_normalizado);
+    if (!k) continue;
+    if (!shopifyTruthMap.has(k)) shopifyTruthMap.set(k, []);
+    const ts = s.shopify_created_at || s.created_at;
+    shopifyTruthMap.get(k).push({
+      total: Number(s.total_price || 0),
+      t: ts ? new Date(ts).getTime() : null,
+    });
+  }
+  const hasShopifyTruth =
+    VALIDAR_SHOPIFY_CON_WEBHOOK && (shopifyOrdRows || []).length > 0;
+  const SHOPIFY_MATCH_WINDOW_MS = 72 * 3600 * 1000;
+  const esOrdenShopify = (o) => {
+    if (!hasShopifyTruth) return o.shop_type === 'SHOPIFY';
+    const list = shopifyTruthMap.get(phone9(o.phone));
+    if (!list) return false;
+    const total = Number(o.total_order || 0);
+    const t = o.order_created_at
+      ? new Date(o.order_created_at).getTime()
+      : null;
+    return list.some(
+      (s) =>
+        Math.abs(s.total - total) < 0.5 &&
+        (t == null ||
+          s.t == null ||
+          Math.abs(s.t - t) <= SHOPIFY_MATCH_WINDOW_MS),
+    );
+  };
+
   // ── Totales por canal (clasificación por shop_type) ──
   const blankCanal = () => ({
     pedidos: 0,
@@ -3602,6 +3727,7 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
   let totalFacturado = 0,
     totalGanancia = 0;
   const statusMap = {};
+  const shopifyPorDia = new Map(); // dia → n pedidos shopify (validados)
 
   for (const o of orderRows) {
     const total = Number(o.total_order || 0);
@@ -3609,8 +3735,12 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       o.dropshipper_profit != null ? Number(o.dropshipper_profit) : 0;
     const cat = o.classified_status || 'otro';
     const rawStatus = String(o.status || '').toUpperCase();
-    const esShopify = o.shop_type === 'SHOPIFY'; // ← solo Shopify real
+    const esShopify = esOrdenShopify(o);
     const C = canales[esShopify ? 'shopify' : 'wa'];
+
+    if (esShopify && o.dia) {
+      shopifyPorDia.set(o.dia, (shopifyPorDia.get(o.dia) || 0) + 1);
+    }
 
     totalFacturado += total;
     totalGanancia += profit;
@@ -3646,8 +3776,9 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
   for (const r of dailyRows) {
     const d = ensureDay(String(r.dia));
     d.pedidos = Number(r.pedidos || 0);
-    d.pedidos_shopify = Number(r.pedidos_shopify || 0);
-    d.pedidos_wa = d.pedidos - d.pedidos_shopify;
+    // Split por canal con el clasificador validado (no el shop_type crudo)
+    d.pedidos_shopify = shopifyPorDia.get(String(r.dia)) || 0;
+    d.pedidos_wa = Math.max(0, d.pedidos - d.pedidos_shopify);
     d.facturado = r2(r.facturado);
     d.ganancia = r2(r.ganancia);
     d.entregadas = Number(r.entregadas || 0);
@@ -3718,8 +3849,11 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     })
     .sort((a, b) => b.gananciaNeta - a.gananciaNeta);
 
-  // Conversaciones por producto (sin conteo de mensajes)
-  await attachProductConversations({ id_configuracion, orderRows, productos });
+  // Conversaciones por producto (sin conteo de mensajes) + por canal
+  const [, convPorCanal] = await Promise.all([
+    attachProductConversations({ id_configuracion, orderRows, productos }),
+    countCanalConversaciones({ id_configuracion, orderRows, esOrdenShopify }),
+  ]);
 
   return res.json({
     isSuccess: true,
@@ -3736,8 +3870,11 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
           : 0,
       tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
       canales: {
-        wa: buildCanal('wa', pctConfWa),
-        shopify: buildCanal('shopify', pctConfShopify),
+        wa: { ...buildCanal('wa', pctConfWa), conversaciones: convPorCanal.wa },
+        shopify: {
+          ...buildCanal('shopify', pctConfShopify),
+          conversaciones: convPorCanal.shopify,
+        },
       },
       carritos: {
         abandonados,
@@ -3748,9 +3885,19 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       },
       dailyChart,
       statusBreakdown: Object.values(statusMap)
-        .map((s) => ({ ...s, total: r2(s.total) }))
+        .map((s) => ({
+          ...s,
+          total: r2(s.total),
+          pct: totalPedidos > 0 ? r2((s.count / totalPedidos) * 100) : 0,
+        }))
         .sort((a, b) => b.count - a.count),
       productos,
+      metaAds: {
+        conectado: !!metaAdsRows?.length,
+        accountName: metaAdsRows?.[0]?.ad_account_name || null,
+      },
+      // true → el split WA/Shopify está validado contra el webhook real
+      shopifyTruth: hasShopifyTruth,
     },
   });
 });

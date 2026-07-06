@@ -14,6 +14,9 @@ const {
 const {
   procesarPedidoShopify,
 } = require('../utils/shopify/enviarPendienteConfirmacionShopify');
+const {
+  registrarOrdenWebhook,
+} = require('../utils/shopify/registrarOrdenWebhook');
 
 async function ensureDir(dir) {
   try {
@@ -69,6 +72,21 @@ exports.handleOrderCreate = catchAsync(async (req, res) => {
         billingAddress.phone ||
         null;
 
+      /* 🆕 FUENTE DE VERDAD: persistimos TODA orden del webhook
+         (con o sin teléfono) en shopify_ordenes_webhook. Los
+         dashboards la cruzan con Dropi para clasificar el canal. */
+      const phone_norm_raw = phone_raw
+        ? normalizarTelefono(phone_raw, req.shopifyConfig.prefijo_pais)
+        : null;
+      const phone_normalizado =
+        phone_norm_raw && phone_norm_raw.length >= 10 ? phone_norm_raw : null;
+
+      await registrarOrdenWebhook({
+        id_configuracion,
+        order,
+        phone_normalizado,
+      });
+
       if (!phone_raw) {
         await logShopify(
           `ℹ️ orders/create sin teléfono (order_id=${order_id})`,
@@ -76,12 +94,7 @@ exports.handleOrderCreate = catchAsync(async (req, res) => {
         return;
       }
 
-      const phone_normalizado = normalizarTelefono(
-        phone_raw,
-        req.shopifyConfig.prefijo_pais,
-      );
-
-      if (!phone_normalizado || phone_normalizado.length < 10) {
+      if (!phone_normalizado) {
         await logShopify(
           `ℹ️ orders/create teléfono inválido (order_id=${order_id})`,
         );
