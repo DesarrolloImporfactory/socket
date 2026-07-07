@@ -12,6 +12,7 @@ const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
 const dropiOrdersService = require('../services/dropiOrders.service');
 const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
+const ProductosChatCenter = require('../models/productos_chat_center.model');
 
 /* =========================
    Helpers
@@ -558,6 +559,260 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
   return res.json({
     isSuccess: true,
     data: final,
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   listOrdersFromCache
+   Vista Pedidos: lee dropi_orders_cache (NO golpea la API de
+   Dropi en cada búsqueda/página). Enriquece con chat/agente,
+   imagen del catálogo (productos_chat_center.id_dropi), estado
+   del pedido (confirmado vs pendiente confirmación + bot) y
+   origen (shop_type). Si el cache está viejo dispara un sync
+   en background (con los locks y el skip de 10 min existentes).
+   ═══════════════════════════════════════════════════════════ */
+
+exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const page = Math.max(1, toInt(req.body?.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, toInt(req.body?.page_size) || 10));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    // Sin plataforma de pedidos conectada: NO es un error — el front
+    // muestra la vista con CTA para vincular alguna plataforma.
+    return res.json({
+      isSuccess: true,
+      data: {
+        rows: [],
+        total: 0,
+        page: 1,
+        page_size: pageSize,
+        total_pages: 1,
+        sync: null,
+        sin_integracion: true,
+      },
+    });
+  }
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  const status = strOrNull(req.body?.status);
+  const origen = strOrNull(req.body?.origen); // imporsuit | shopify | otros
+  const texto = strOrNull(req.body?.textToSearch);
+  const forceSync = req.body?.force_sync === true;
+
+  const cacheCtx = integration.id_configuracion
+    ? { id_configuracion: Number(integration.id_configuracion) }
+    : { id_usuario: Number(integration.id_usuario) };
+  const cacheWhere = buildCacheWhere(cacheCtx);
+
+  const where = { ...cacheWhere };
+  if (from && until) {
+    where.order_created_at = {
+      [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+    };
+  }
+  if (status) where.status = status;
+  if (origen === 'imporsuit') where.shop_type = 'IMPORSUIT';
+  else if (origen === 'shopify') where.shop_type = 'SHOPIFY';
+  else if (origen === 'otros') {
+    where.shop_type = {
+      [Op.or]: [
+        { [Op.is]: null },
+        { [Op.notIn]: ['IMPORSUIT', 'SHOPIFY'] },
+      ],
+    };
+  }
+  if (texto) {
+    const like = { [Op.like]: `%${texto}%` };
+    const orText = [
+      { name: like },
+      { surname: like },
+      { phone: like },
+      { shipping_guide: like },
+      { product_names: like },
+      { city: like },
+    ];
+    if (/^\d+$/.test(texto)) orText.push({ dropi_order_id: Number(texto) });
+    where[Op.or] = orText;
+  }
+
+  // ── Sync si el cache está viejo (nunca bloquea salvo force_sync) ──
+  const integrationKey = getIntegrationKey(integration);
+  let syncInfo = { syncedAt: null, ageMinutes: null, syncing: false };
+  if (integrationKey && from && until) {
+    const lastSync = await DropiOrdersCache.findOne({
+      where: {
+        ...cacheWhere,
+        order_created_at: {
+          [Op.between]: [`${from} 00:00:00`, `${until} 23:59:59`],
+        },
+      },
+      order: [['synced_at', 'DESC']],
+      attributes: ['synced_at'],
+      raw: true,
+    });
+    const syncedAt = lastSync?.synced_at || null;
+    const ageMin = syncedAt
+      ? (Date.now() - new Date(syncedAt).getTime()) / 60000
+      : null;
+    syncInfo = { syncedAt, ageMinutes: ageMin != null ? Math.round(ageMin) : null, syncing: false };
+
+    const stale = ageMin == null || ageMin >= 10;
+    const syncArgs = {
+      integrationKey,
+      country_code: integration.country_code,
+      cacheCtx,
+      from,
+      until,
+    };
+    if (forceSync && stale) {
+      // El botón Actualizar espera el sync (protegido por lock + skip 10min)
+      await syncFromDropi(syncArgs).catch((e) =>
+        console.error('[pedidos-cache] force sync error:', e?.message),
+      );
+      syncInfo.ageMinutes = 0;
+    } else if (stale) {
+      syncInfo.syncing = true;
+      setImmediate(() =>
+        syncFromDropi(syncArgs).catch((e) =>
+          console.error('[pedidos-cache] bg sync error:', e?.message),
+        ),
+      );
+    }
+  }
+
+  const { rows, count } = await DropiOrdersCache.findAndCountAll({
+    where,
+    order: [['order_created_at', 'DESC']],
+    limit: pageSize,
+    offset: (page - 1) * pageSize,
+    attributes: [
+      'dropi_order_id',
+      'status',
+      'classified_status',
+      'total_order',
+      'name',
+      'surname',
+      'phone',
+      'city',
+      'shipping_company',
+      'shipping_guide',
+      'order_created_at',
+      'shop_type',
+      'shop_name',
+      'order_data',
+    ],
+    raw: true,
+  });
+
+  // ── Parsear productos del order_data ──
+  const productIds = new Set();
+  const parsed = rows.map((r) => {
+    let od = null;
+    try {
+      od = JSON.parse(r.order_data || 'null');
+    } catch (_) {}
+    const details = Array.isArray(od?.orderdetails) ? od.orderdetails : [];
+    const productos = details.map((d) => {
+      const pid = Number(d?.product?.id || 0);
+      if (pid) productIds.add(pid);
+      return {
+        product_id: pid,
+        name: d?.product?.name || '',
+        sku: d?.product?.sku || '',
+        quantity: Number(d?.quantity || 1),
+        image: d?.product?.gallery?.[0]?.urlS3 || null, // relativa CDN Dropi
+        imagen_catalogo: null, // se llena abajo con productos_chat_center
+      };
+    });
+    return {
+      id: Number(r.dropi_order_id),
+      name: r.name || '',
+      surname: r.surname || '',
+      phone: r.phone || '',
+      email: od?.client_email || od?.email || '',
+      city: r.city || '',
+      status: r.status || '',
+      classified_status: r.classified_status || '',
+      total_order: Number(r.total_order || 0),
+      shipping_guide: r.shipping_guide || '',
+      shipping_company: r.shipping_company || '',
+      order_created_at: r.order_created_at,
+      shop_type: r.shop_type || null,
+      shop_name: r.shop_name || null,
+      productos,
+    };
+  });
+
+  // ── Imagen del catálogo propio (productos_chat_center.id_dropi) ──
+  if (productIds.size) {
+    try {
+      const cat = await ProductosChatCenter.findAll({
+        where: {
+          id_configuracion,
+          eliminado: 0,
+          id_dropi: { [Op.in]: [...productIds] },
+        },
+        attributes: ['id_dropi', 'imagen_url'],
+        raw: true,
+      });
+      const imgByDropiId = new Map(
+        cat
+          .filter((c) => c.imagen_url)
+          .map((c) => [Number(c.id_dropi), c.imagen_url]),
+      );
+      for (const o of parsed) {
+        for (const p of o.productos) {
+          p.imagen_catalogo = imgByDropiId.get(p.product_id) || null;
+        }
+      }
+    } catch (e) {
+      console.error('[pedidos-cache] catálogo imgs:', e?.message);
+    }
+  }
+
+  // ── Estado del pedido: confirmado vs pendiente + creado por el bot ──
+  const orderIds = parsed.map((o) => o.id).filter(Boolean);
+  let botIds = new Set();
+  if (orderIds.length) {
+    try {
+      const [botRows] = await db.query(
+        `SELECT DISTINCT dropi_order_id FROM dropi_auto_ordenes_log
+          WHERE id_configuracion = :idCfg AND resultado = 'creada'
+            AND dropi_order_id IN (:ids)`,
+        { replacements: { idCfg: id_configuracion, ids: orderIds } },
+      );
+      botIds = new Set(botRows.map((b) => String(b.dropi_order_id)));
+    } catch (_) {}
+  }
+  for (const o of parsed) {
+    o.estado_pedido =
+      String(o.status).toUpperCase() === 'PENDIENTE CONFIRMACION'
+        ? 'pendiente_confirmacion'
+        : 'confirmado';
+    o.creado_por_bot = botIds.has(String(o.id));
+  }
+
+  // ── Chat + agente (mismo enricher del listado en vivo) ──
+  const enriched = await enrichOrdersWithChatAndAgent({
+    id_configuracion,
+    objects: parsed,
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      rows: enriched,
+      total: count,
+      page,
+      page_size: pageSize,
+      total_pages: Math.max(1, Math.ceil(count / pageSize)),
+      sync: syncInfo,
+    },
   });
 });
 

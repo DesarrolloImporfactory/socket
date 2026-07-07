@@ -50,6 +50,15 @@ router.post(
   ctrl.listMyOrders,
 );
 
+// Consultar ordenes desde el CACHE local (sin golpear la API de Dropi).
+// Vista Pedidos: filtros + paginación real + enriquecimiento (chat, agente,
+// imagen de producto del catálogo, estado del pedido, origen).
+router.post(
+  '/orders/cache/list',
+  auth.protectConfigOwner,
+  ctrl.listOrdersFromCache,
+);
+
 //Obtener Productos Dropi
 router.post('/products/index', auth.protectConfigOwner, ctrl.listProductsIndex);
 
