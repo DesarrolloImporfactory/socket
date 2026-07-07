@@ -2,7 +2,6 @@ const axios = require('axios');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const { db } = require('../database/config');
-const { normalizarTelefono } = require('../utils/normalizarTelefono');
 
 const {
   getConfigFromDB,
@@ -323,8 +322,6 @@ exports.sendWhatsappMessage = async ({
 }) => {
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
 
-  telefono = normalizarTelefono(telefono);
-
   const data = {
     messaging_product: 'whatsapp',
     to: telefono,
@@ -406,11 +403,6 @@ exports.sendWhatsappMessageTemplate = async ({
       success: false,
       error: 'No se encontró el contenido de la plantilla',
     };
-  }
-
-  telefono = normalizarTelefono(telefono);
-  if (telefono_configuracion) {
-    telefono_configuracion = normalizarTelefono(telefono_configuracion);
   }
 
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
@@ -543,7 +535,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   if (!id_configuracion) throw new Error('id_configuracion es requerido');
   if (!nombre_template) throw new Error('nombre_template es requerido');
 
-  const telefonoLimpio = normalizarTelefono(telefono || '');
+  const telefonoLimpio = onlyDigits(telefono || '');
   if (!telefonoLimpio || telefonoLimpio.length < 8) {
     throw new Error('Teléfono destino inválido');
   }
@@ -778,7 +770,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   let id_cliente_configuracion = null;
 
   if (telefono_configuracion) {
-    const telCfgLimpio = normalizarTelefono(telefono_configuracion);
+    const telCfgLimpio = onlyDigits(telefono_configuracion);
 
     if (telCfgLimpio) {
       const [clienteConfiguracionExistente] = await db.query(

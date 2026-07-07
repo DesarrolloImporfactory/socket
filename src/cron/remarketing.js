@@ -20,8 +20,6 @@ const {
   processBucHeader,
 } = require('../utils/wabaThrottleGuard');
 
-const { normalizarTelefono } = require('../utils/normalizarTelefono');
-
 /* ================================================================
    Detectores de tipo de error
    ================================================================ */
@@ -665,7 +663,7 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
-          const telefonoLimpio = normalizarTelefono(record.telefono);
+          const telefonoLimpio = onlyDigits(record.telefono || '');
 
           // ══════════════════════════════════════════════════════
           // Detectar método dentro de 24h (con compat legacy)
@@ -1127,10 +1125,8 @@ cron.schedule('*/1 * * * *', async () => {
               });
             } else {
               await sendWhatsappMessageTemplateScheduled({
-                telefono: normalizarTelefono(record.telefono),
-                telefono_configuracion: record.telefono_configuracion
-                  ? normalizarTelefono(record.telefono_configuracion)
-                  : null,
+                telefono: record.telefono,
+                telefono_configuracion: record.telefono_configuracion || null,
                 id_configuracion: record.id_configuracion,
                 nombre_template: record.nombre_template,
                 language_code: record.language_code,
@@ -1169,8 +1165,8 @@ cron.schedule('*/1 * * * *', async () => {
 
             let id_cliente_configuracion = null;
             const telCfg = record.telefono_configuracion
-              ? normalizarTelefono(record.telefono_configuracion)
-              : normalizarTelefono(cfg.telefono || '');
+              ? onlyDigits(record.telefono_configuracion)
+              : onlyDigits(cfg.telefono || '');
 
             if (telCfg) {
               const [cfgCliente] = await db.query(

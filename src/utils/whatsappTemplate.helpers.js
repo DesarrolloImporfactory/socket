@@ -9,8 +9,6 @@ const execAsync = promisify(exec);
 const fs = require('fs').promises;
 const os = require('os');
 
-const { normalizarTelefono } = require('../utils/normalizarTelefono');
-
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id.
  * Devuelve: { WABA_ID, ACCESS_TOKEN, PHONE_NUMBER_ID }
@@ -1090,11 +1088,6 @@ async function upsertOwnerByConfig({
   external_id = null,
   id_plataforma = null,
 }) {
-  // Normalizar a "+" solo si viene un teléfono (no romper el null del COALESCE)
-  if (celular_cliente) {
-    celular_cliente = normalizarTelefono(celular_cliente);
-  }
-
   // 1) Buscar propietario existente (único por config)
   const [owner] = await db.query(
     `SELECT id

@@ -2,7 +2,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const { db } = require('../../database/config');
 const ClientesChatCenter = require('../../models/clientes_chat_center.model');
-const { normalizarTelefono } = require('../normalizarTelefono');
 
 const presenceStore = require('../../sockets/presence/presenceStore');
 
@@ -38,7 +37,6 @@ async function crearClienteConRoundRobinUnDepto({
   external_id = null, // ms/ig PSID/IGSID
   permiso_round_robin,
 }) {
-  phone_whatsapp_from = normalizarTelefono(phone_whatsapp_from);
   const lockKey = `rr:${id_configuracion}`;
 
   // Lock para concurrencia
