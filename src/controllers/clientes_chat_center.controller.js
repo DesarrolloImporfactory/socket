@@ -207,7 +207,8 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
         id_configuracion,
         nombre ?? '',
         apellido ?? '',
-        telefono ?? '',
+        // Solo dígitos: nunca guardar con '+' ni espacios (evita duplicados)
+        String(telefono ?? '').replace(/\D/g, ''),
         uid_cliente,
       ],
       type: db.QueryTypes.INSERT,
@@ -1438,7 +1439,8 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
       nombre_cliente ?? '',
       apellido_cliente ?? '',
       email_cliente ?? '',
-      celular_cliente ?? '',
+      // Solo dígitos: nunca guardar con '+' ni espacios (evita duplicados)
+      String(celular_cliente ?? '').replace(/\D/g, ''),
       imagePath ?? '',
       mensajes_por_dia_cliente ?? 0,
       estado_cliente ?? 1,
@@ -2222,7 +2224,8 @@ exports.importacionMasiva = catchAsync(async (req, res, next) => {
           c.nombre || '',
           c.apellido || '',
           c.email_cliente || '',
-          c.celular_cliente || '',
+          // Solo dígitos: nunca guardar con '+' ni espacios (evita duplicados)
+          String(c.celular_cliente || '').replace(/\D/g, ''),
           0, // propietario
           idAsesor,
           idCiclo,

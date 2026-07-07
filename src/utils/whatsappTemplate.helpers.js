@@ -1088,6 +1088,11 @@ async function upsertOwnerByConfig({
   external_id = null,
   id_plataforma = null,
 }) {
+  // Solo dígitos: nunca guardar con '+' ni espacios (evita duplicados)
+  if (celular_cliente != null) {
+    celular_cliente = String(celular_cliente).replace(/\D/g, '');
+  }
+
   // 1) Buscar propietario existente (único por config)
   const [owner] = await db.query(
     `SELECT id

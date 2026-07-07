@@ -1,6 +1,18 @@
 const { DataTypes } = require('sequelize');
 const { db } = require('../database/config');
 
+// Normaliza el teléfono a SOLO DÍGITOS antes de guardar: nunca debe entrar con
+// '+' (ni espacios) porque genera clientes duplicados (+593… vs 593…). Se
+// preserva null (clientes MS/IG sin celular).
+function normalizarCelular(instance) {
+  if (instance && instance.celular_cliente != null) {
+    instance.celular_cliente = String(instance.celular_cliente).replace(
+      /\D/g,
+      '',
+    );
+  }
+}
+
 const ClientesChatCenter = db.define(
   'clientes_chat_center',
   {
@@ -96,6 +108,14 @@ const ClientesChatCenter = db.define(
     tableName: 'clientes_chat_center',
     timestamps: false,
     freezeTableName: true,
+    hooks: {
+      // Cubre TODOS los .create()/.save()/.update() de Sequelize del modelo
+      beforeCreate: normalizarCelular,
+      beforeUpdate: normalizarCelular,
+      beforeSave: normalizarCelular,
+      beforeBulkCreate: (instances) =>
+        (instances || []).forEach(normalizarCelular),
+    },
   },
 );
 
