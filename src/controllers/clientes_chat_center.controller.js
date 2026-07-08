@@ -1500,7 +1500,13 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
   for (const f of fields) {
     if (req.body.hasOwnProperty(f)) {
       setParts.push(`${f} = ?`);
-      params.push(req.body[f]);
+      // celular_cliente: solo dígitos, nunca guardar con '+' ni espacios
+      // (este UPDATE es SQL crudo y no pasa por el hook del modelo)
+      if (f === 'celular_cliente') {
+        params.push(String(req.body[f] ?? '').replace(/\D/g, ''));
+      } else {
+        params.push(req.body[f]);
+      }
     }
   }
   // nada que actualizar
