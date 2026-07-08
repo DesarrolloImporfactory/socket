@@ -308,7 +308,7 @@ async function procesarMensajeKanban(params) {
   // Si no vino (mensajes siguientes), se reconstruye desde ultimo_producto_ad.
   let instruccionesProducto = bloque_producto_referral || null;
 
-  if (
+  /* if (
     !instruccionesProducto &&
     (id_configuracion == 10 ||
       id_configuracion == 277 ||
@@ -317,35 +317,35 @@ async function procesarMensajeKanban(params) {
       id_configuracion == 360 ||
       id_configuracion == 324 ||
       id_configuracion == 476)
-  ) {
-    const [cli] = await db.query(
-      `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
-      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+  ) { */
+  const [cli] = await db.query(
+    `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+    { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+  );
+  const ultimoProductoAd = (cli?.ultimo_producto_ad || '').trim();
+
+  if (ultimoProductoAd) {
+    const {
+      buscarProductoPorReferral,
+    } = require('../utils/webhook_whatsapp/buscar_producto_referral');
+
+    const bloqueProd = await buscarProductoPorReferral(
+      id_configuracion,
+      ultimoProductoAd,
     );
-    const ultimoProductoAd = (cli?.ultimo_producto_ad || '').trim();
 
-    if (ultimoProductoAd) {
-      const {
-        buscarProductoPorReferral,
-      } = require('../utils/webhook_whatsapp/buscar_producto_referral');
-
-      const bloqueProd = await buscarProductoPorReferral(
-        id_configuracion,
-        ultimoProductoAd,
-      );
-
-      if (bloqueProd) {
-        instruccionesProducto = `[CONTEXTO: el cliente llegó por un anuncio del producto "${ultimoProductoAd}"]
+    if (bloqueProd) {
+      instruccionesProducto = `[CONTEXTO: el cliente llegó por un anuncio del producto "${ultimoProductoAd}"]
 
           ${bloqueProd}
 
           INSTRUCCIÓN: Usa SOLO estos precios y URLs para este producto. Si el cliente pregunta por CUALQUIER OTRO producto distinto, usa tu catálogo (file_search) normalmente.`;
-        await log(
-          `📎 Producto reinyectado desde ultimo_producto_ad="${ultimoProductoAd}"`,
-        );
-      }
+      await log(
+        `📎 Producto reinyectado desde ultimo_producto_ad="${ultimoProductoAd}"`,
+      );
     }
   }
+  /* } */
   // ── 9. Ejecutar asistente principal ───────────────────────
   let resultado;
   try {
