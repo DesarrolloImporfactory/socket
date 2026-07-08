@@ -111,6 +111,8 @@ const shopifyPlantillaRouter = require('./routes/shopifyPlantilla.routes');
 
 const webhookContactosRouter = require('./routes/webhook_contactos.routes');
 
+const tutorialesRouter = require('./routes/tutoriales.routes');
+
 const encuestasRouter = require('./routes/encuestas.routes');
 
 const encuestasPublicoRouter = require('./routes/encuestas_publico.routes');
@@ -309,6 +311,7 @@ app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/dropi_plantillas', dropiPlantillastRouter);
+app.use('/api/v1/tutoriales', tutorialesRouter);
 app.use('/api/v1/kanban_plantillas', kanbanPlantillastRouter);
 app.use('/api/v1/kanban_plantillas_admin', kanbanPlantillasAdminRouter);
 app.use('/api/v1/plataformas', plataformaRouter);

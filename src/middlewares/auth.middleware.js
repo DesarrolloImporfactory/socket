@@ -122,6 +122,18 @@ exports.protectConfigOwner = catchAsync(async (req, res, next) => {
   next();
 });
 
+// Restringe a super_administrador (usa la columna `rol` del sub-usuario).
+// Requiere haber pasado antes por auth.protect (setea req.sessionUser).
+exports.requireSuperAdmin = catchAsync(async (req, res, next) => {
+  const rol = req.sessionUser?.rol;
+  if (rol !== 'super_administrador') {
+    return next(
+      new AppError('Acción permitida solo para super administradores', 403),
+    );
+  }
+  next();
+});
+
 // Si viene id_log, resuelve su id_configuracion y lo inyecta al body
 // para que protectConfigOwner valide la propiedad normalmente.
 // (el flujo retry desde el front manda solo { id_log })
