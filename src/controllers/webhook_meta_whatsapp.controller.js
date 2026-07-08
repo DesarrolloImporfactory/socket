@@ -722,7 +722,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       if (referral) {
         const headline = referral.headline || '';
-        if (
+        /* if (
           id_configuracion == 10 ||
           id_configuracion == 277 ||
           id_configuracion == 392 ||
@@ -730,7 +730,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_configuracion == 360 ||
           id_configuracion == 324 ||
           id_configuracion == 476
-        ) {
+        ) { */
           // Buscar el producto exacto en la BD
           const bloqueProducto = await buscarProductoPorReferral(
             id_configuracion,
@@ -749,7 +749,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
             No se encontró este producto exacto en el catálogo. Búscalo en tu catálogo (file_search) por ese nombre.`;
           }
-        }
+        /* } */
 
         const body_ad = referral.body || '';
         const source_url = referral.source_url || '';
