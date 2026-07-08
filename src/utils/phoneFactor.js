@@ -112,8 +112,19 @@ function toWhatsapp(raw, countryCode = 'EC') {
   return String(raw || '').replace(/\D/g, '');
 }
 
+/**
+ * ¿El teléfono es válido y COMPLETO para el país? true solo si libphonenumber
+ * logra parsearlo como número válido. Un número al que le falta un dígito (el
+ * quirk de Ecuador 593 + 8, o un mocho del front) devuelve false → sirve como
+ * guard antes de crear órdenes en Dropi y así no emitir teléfonos truncados.
+ */
+function isValidPhone(raw, countryCode = 'EC') {
+  return parseAny(raw, countryCode) !== null;
+}
+
 module.exports = {
   resolveRegion,
   toDropiLocal,
   toWhatsapp,
+  isValidPhone,
 };

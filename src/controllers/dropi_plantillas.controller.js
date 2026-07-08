@@ -66,20 +66,23 @@ exports.guardar = catchAsync(async (req, res) => {
       .json({ success: false, message: 'Faltan campos obligatorios' });
   }
 
-  // Validar: si se activa, debe tener template seleccionado
-  if (activo && (!nombre_template || !nombre_template.trim())) {
-    return res.status(400).json({
-      success: false,
-      message:
-        'Debes seleccionar una plantilla de WhatsApp para activar este estado',
-    });
-  }
-
   // Normalizar columna_destino: string vacío → null
   const columnaDestinoClean =
     columna_destino && String(columna_destino).trim() !== ''
       ? String(columna_destino).trim()
       : null;
+
+  const tieneTemplate = !!(nombre_template && nombre_template.trim());
+
+  // Validar: si se activa, debe tener una plantilla seleccionada O estar en
+  // modo "solo mover de columna" (sin plantilla, pero con columna destino).
+  if (activo && !tieneTemplate && !columnaDestinoClean) {
+    return res.status(400).json({
+      success: false,
+      message:
+        'Selecciona una plantilla de WhatsApp o una columna destino para activar este estado',
+    });
+  }
 
   const [existe] = await db.query(
     `SELECT id FROM dropi_plantillas_config

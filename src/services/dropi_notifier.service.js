@@ -505,19 +505,26 @@ async function getPlantillasActivas(id_configuracion) {
             columna_destino
      FROM dropi_plantillas_config
      WHERE id_configuracion = ? AND activo = 1
-       AND nombre_template IS NOT NULL AND nombre_template != ''`,
+       AND (
+         (nombre_template IS NOT NULL AND nombre_template != '')
+         OR (columna_destino IS NOT NULL AND columna_destino != '')
+       )`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const map = {};
   for (const r of rows) {
+    const nombreTemplate = r.nombre_template || null;
     map[r.estado_dropi] = {
-      nombre_template: r.nombre_template,
+      nombre_template: nombreTemplate,
       language_code: r.language_code || 'es',
       mensaje_rapido: r.mensaje_rapido || null,
       usar_respuesta_rapida: !!r.usar_respuesta_rapida,
       parametros_json: r.parametros_json || null,
       body_text: r.body_text || null,
       columna_destino: r.columna_destino || null,
+      // Estado configurado para SOLO reubicar al cliente en el kanban cuando
+      // Dropi notifica, sin enviar ningún mensaje (plantilla ni resp. rápida).
+      solo_mover: !nombreTemplate && !!r.columna_destino,
     };
   }
   return map;
@@ -957,6 +964,25 @@ async function procesarTemplates({
           country_code,
         });
         if (actualizado) entregadasActualizadas++;
+      }
+
+      // ── SOLO MOVER DE COLUMNA (sin plantilla) ──
+      // Estados que el cliente configuró únicamente para reubicar el contacto
+      // en el kanban cuando Dropi notifica, SIN enviar ningún mensaje. No pasa
+      // por el path de envío (ni WA creds, ni reclamo, ni template).
+      const cfgEstado = estadoConfig ? plantillas[estadoConfig] : null;
+      if (cfgEstado?.solo_mover) {
+        // ENTREGADA ya se reubicó en el bloque de arriba; el resto se mueve aquí.
+        if (estadoConfig !== 'ENTREGADA' && order.phone) {
+          await actualizarEstadoContactoEntregado({
+            id_configuracion,
+            telefono: order.phone,
+            columnaDestino: cfgEstado.columna_destino,
+            country_code,
+          });
+        }
+        omitidos++;
+        continue;
       }
 
       if (!credsValidas) {

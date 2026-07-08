@@ -6,9 +6,11 @@ const {
   toDropiLocal,
   resolveRegion,
   toWhatsapp,
+  isValidPhone,
 } = require('../utils/phoneFactor');
 
 const DropiIntegrations = require('../models/dropi_integrations.model');
+const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const { Op } = require('sequelize');
@@ -16,9 +18,6 @@ const { Op } = require('sequelize');
 const dropiService = require('./dropi.service');
 const { db } = require('../database/config');
 
-// Espera entre candidatos de teléfono al buscar órdenes en Dropi. Evita ráfagas
-// que disparan el rate-limit por IP. Configurable vía env.
-const CANDIDATE_DELAY_MS = Number(process.env.DROPI_CANDIDATE_DELAY_MS) || 700;
 
 // =========================
 // País (texto) que Dropi espera en el payload de la orden, según el ISO de la
@@ -113,36 +112,6 @@ async function bloquearPlantillaPendienteConf({
     console.log('[Dropi] error registrando bloqueo plantilla:', e?.message);
     return false;
   }
-}
-
-function buildDropiOrdersListParams(body = {}) {
-  const result_number = toIntOrDefault(body.result_number, 10);
-
-  const filter_date_by = strOrNull(body.filter_date_by) || 'FECHA DE CREADO';
-  const from = strOrNull(body.from);
-  const until = strOrNull(body.until);
-  const status = strOrNull(body.status);
-  const textToSearch = strOrNull(body.textToSearch);
-
-  if (!result_number || !filter_date_by) {
-    throw new AppError(
-      'filter_date_by y result_number son obligatorios para consultar órdenes',
-      400,
-    );
-  }
-
-  const params = {
-    result_number,
-    filter_date_by,
-    from,
-    until,
-  };
-
-  if (status) params.status = status;
-  if (textToSearch) params.textToSearch = textToSearch;
-
-  // ✅ importante: limpiar nulos antes de enviarlos
-  return cleanParams(params);
 }
 
 /**
@@ -310,22 +279,6 @@ function phoneKeys(v) {
   return Array.from(new Set(keys));
 }
 
-/**
- *  Candidatos para buscar en Dropi (textToSearch)
- * Orden: 9 dígitos -> 10 dígitos -> completo (por si Dropi guarda con prefijo)
- */
-function pickCandidatesPhoneSearch(phoneRaw) {
-  const d = digitsOnly(phoneRaw);
-  if (!d) return [];
-
-  const c = [];
-  if (d.length >= 9) c.push(d.slice(-9));
-  if (d.length >= 10) c.push(d.slice(-10));
-  c.push(d); // fallback: completo
-
-  return Array.from(new Set(c));
-}
-
 // =========================
 // Enriquecer órdenes (bulk, 1 query clientes + 1 query subusuarios)
 // =========================
@@ -442,52 +395,50 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
     );
   }
 
-  const integrationKey = decryptToken(integration.integration_key_enc);
-  if (!integrationKey || !String(integrationKey).trim()) {
-    throw new AppError('Dropi key inválida o no disponible', 400);
+  // ✅ Leemos del cache local (dropi_orders_cache), ya sincronizado. Antes esto
+  // pegaba en vivo a GET /orders/myorders con textToSearch, lo que devolvía
+  // vacío (sin rango de fechas) y encima disparaba 429. El cache guarda el JSON
+  // crudo de la orden en order_data, así que reconstruimos los mismos objetos
+  // que el socket devolvía y los enriquecemos igual con chat/agente.
+  const keys = phoneKeys(phone); // últimos 9/10 dígitos (agnóstico al país)
+  if (!keys.length) {
+    throw new AppError('Teléfono inválido para buscar órdenes', 400);
   }
 
-  // params base (limpios)
-  const baseParams = buildDropiOrdersListParams(body);
+  const resultNumber = toIntOrDefault(body?.result_number, 20);
+  const status = strOrNull(body?.status);
 
-  // ✅ probar candidatos del teléfono para que Dropi encuentre (9 / 10 / completo)
-  const candidates = pickCandidatesPhoneSearch(phone);
-  if (!candidates.length) {
-    throw new AppError('Teléfono inválido para buscar en Dropi', 400);
-  }
+  const where = {
+    id_configuracion: Number(id_configuracion),
+    id_usuario: 0,
+    [Op.or]: keys.map((k) => ({ phone: { [Op.like]: `%${k}%` } })),
+  };
+  if (status) where.status = status;
 
-  let dropiResponse = null;
-  let objects = [];
+  const rows = await DropiOrdersCache.findAll({
+    where,
+    order: [['order_created_at', 'DESC']],
+    limit: resultNumber,
+    attributes: ['order_data'],
+    raw: true,
+  });
 
-  for (let i = 0; i < candidates.length; i++) {
-    const cand = candidates[i];
-    const params = cleanParams({
-      ...baseParams,
-      textToSearch: cand,
-    });
-
-    // Delay entre candidatos para no disparar ráfagas hacia Dropi (rate-limit
-    // por IP del servidor). El primer candidato no espera.
-    if (i > 0) {
-      await new Promise((r) => setTimeout(r, CANDIDATE_DELAY_MS));
-    }
-
-    dropiResponse = await dropiService.listMyOrders({
-      integrationKey,
-      params,
-      country_code: integration.country_code,
-    });
-
-    objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
-    if (Array.isArray(objects) && objects.length) break; // ✅ encontró: salimos
-  }
+  const objects = rows
+    .map((r) => {
+      try {
+        return JSON.parse(r.order_data);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
 
   const enrichedObjects = await enrichOrdersWithChatAndAgent({
     id_configuracion,
-    objects: Array.isArray(objects) ? objects : [],
+    objects,
   });
 
-  return { ...(dropiResponse || {}), objects: enrichedObjects };
+  return { isSuccess: true, status: 200, objects: enrichedObjects };
 }
 
 async function createOrderForClient({ id_configuracion, body = {} }) {
@@ -502,6 +453,16 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey || !String(integrationKey).trim()) {
     throw new AppError('Dropi key inválida o no disponible', 400);
+  }
+
+  // ✅ Guard anti-teléfono-mocho: rechazamos ANTES de crear en Dropi si el
+  // número no es válido/completo para el país. Evita órdenes con teléfono
+  // truncado (que Dropi no puede entregar y ensucian la cuenta del cliente).
+  if (!isValidPhone(body.phone, integration.country_code)) {
+    throw new AppError(
+      'El teléfono del cliente no es válido o está incompleto. Revísalo antes de crear la orden.',
+      400,
+    );
   }
 
   //  pasamos el country_code de la integración para normalizar el teléfono al país correcto
