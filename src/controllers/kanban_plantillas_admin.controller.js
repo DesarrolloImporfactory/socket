@@ -51,6 +51,27 @@ const {
  *                   instrucciones, modelo, acciones: [...] } ],
  *     setup: { ... } }  ← opcional, ver normalizarSetup
  */
+// Países soportados por el auto-orden. Una plantilla puede cubrir uno o varios
+// (multipaís): en ese caso el cliente elige el país al aplicarla.
+const PAISES_VALIDOS = ['EC', 'CO', 'MX', 'PE', 'CL', 'PA', 'GT', 'AR'];
+
+// Normaliza la lista de países a un array de ISOs válidos y únicos. Acepta
+// array (["EC","CO"]) o CSV ("EC,CO"). Si queda vacío, usa el fallback.
+function normalizarPaises(input, fallbackPais = 'EC') {
+  let arr = [];
+  if (Array.isArray(input)) arr = input;
+  else if (typeof input === 'string' && input.trim()) arr = input.split(',');
+  arr = arr
+    .map((s) => String(s).trim().toUpperCase())
+    .filter((s) => PAISES_VALIDOS.includes(s));
+  arr = [...new Set(arr)];
+  if (!arr.length) {
+    const fb = String(fallbackPais || 'EC').toUpperCase();
+    arr = [PAISES_VALIDOS.includes(fb) ? fb : 'EC'];
+  }
+  return arr;
+}
+
 function validarDataPlantilla(data) {
   const errores = [];
 
@@ -183,7 +204,7 @@ exports.listar = catchAsync(async (req, res) => {
   const where = incluir_inactivas ? '' : 'WHERE activo = 1';
 
   const plantillas = await db.query(
-    `SELECT id, nombre, descripcion, icono, color, activo,
+    `SELECT id, nombre, descripcion, icono, color, pais, paises, grupo, activo,
             creado_por, created_at, updated_at,
             JSON_LENGTH(JSON_EXTRACT(data, '$.columnas')) AS total_columnas,
             data
@@ -204,6 +225,9 @@ exports.listar = catchAsync(async (req, res) => {
       icono: p.icono,
       color: p.color,
       activo: !!p.activo,
+      pais: p.pais || 'EC',
+      paises: normalizarPaises(p.paises, p.pais),
+      grupo: p.grupo || null,
       creado_por: p.creado_por,
       created_at: p.created_at,
       updated_at: p.updated_at,
@@ -237,7 +261,7 @@ exports.obtener = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id', 400));
 
   const [p] = await db.query(
-    `SELECT id, nombre, descripcion, icono, color, activo,
+    `SELECT id, nombre, descripcion, icono, color, pais, paises, grupo, activo,
             creado_por, created_at, updated_at, data
      FROM kanban_plantillas_globales
      WHERE id = ? LIMIT 1`,
@@ -256,6 +280,9 @@ exports.obtener = catchAsync(async (req, res, next) => {
       descripcion: p.descripcion,
       icono: p.icono,
       color: p.color,
+      pais: p.pais || 'EC',
+      paises: normalizarPaises(p.paises, p.pais),
+      grupo: p.grupo || null,
       activo: !!p.activo,
       creado_por: p.creado_por,
       created_at: p.created_at,
@@ -275,11 +302,18 @@ exports.crear = catchAsync(async (req, res, next) => {
     descripcion = null,
     icono = 'bx bx-layout',
     color = '#6366f1',
+    pais = 'EC',
+    paises,
+    grupo = null,
     data,
   } = req.body || {};
 
   if (!nombre || !nombre.trim())
     return next(new AppError('El nombre es obligatorio', 400));
+
+  // Lista de países soportados. El primero es el país por defecto.
+  const listaPaises = normalizarPaises(paises ?? pais, pais);
+  const grupoNorm = grupo && String(grupo).trim() ? String(grupo).trim() : null;
 
   if (!data) return next(new AppError('El campo data es obligatorio', 400));
 
@@ -302,14 +336,17 @@ exports.crear = catchAsync(async (req, res, next) => {
 
   const [insertId] = await db.query(
     `INSERT INTO kanban_plantillas_globales
-     (nombre, descripcion, icono, color, data, creado_por, activo)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`,
+     (nombre, descripcion, icono, color, pais, paises, grupo, data, creado_por, activo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     {
       replacements: [
         nombre.trim(),
         descripcion?.trim() || null,
         icono || 'bx bx-layout',
         color || '#6366f1',
+        listaPaises[0],
+        listaPaises.join(','),
+        grupoNorm,
         JSON.stringify(dataNormalizada),
         id_creador,
       ],
@@ -329,7 +366,8 @@ exports.crear = catchAsync(async (req, res, next) => {
 // POST /kanban_plantillas_admin/actualizar_metadata
 // ═════════════════════════════════════════════════════════════
 exports.actualizarMetadata = catchAsync(async (req, res, next) => {
-  const { id, nombre, descripcion, icono, color } = req.body || {};
+  const { id, nombre, descripcion, icono, color, pais, paises, grupo } =
+    req.body || {};
   if (!id) return next(new AppError('Falta id', 400));
 
   const sets = [];
@@ -352,6 +390,20 @@ exports.actualizarMetadata = catchAsync(async (req, res, next) => {
   if (color !== undefined) {
     sets.push('color = ?');
     params.push(color || '#6366f1');
+  }
+  // País: cada plantilla es de un país (su propio prompt/tablero).
+  if (paises !== undefined || pais !== undefined) {
+    const lista = normalizarPaises(paises ?? pais, pais);
+    sets.push('pais = ?');
+    params.push(lista[0]);
+    sets.push('paises = ?');
+    params.push(lista.join(','));
+  }
+  // Grupo: plantillas del mismo grupo se muestran juntas al cliente (una por
+  // país). Cadena vacía → NULL (plantilla suelta).
+  if (grupo !== undefined) {
+    sets.push('grupo = ?');
+    params.push(grupo && String(grupo).trim() ? String(grupo).trim() : null);
   }
 
   if (!sets.length)
@@ -397,18 +449,27 @@ exports.actualizarData = catchAsync(async (req, res, next) => {
   );
   if (!existe) return next(new AppError('Plantilla no encontrada', 404));
 
+  // version + 1: cambiar la data cambia el prompt, así los clientes ven que
+  // hay una versión más nueva disponible en su tablero.
   await db.query(
-    `UPDATE kanban_plantillas_globales SET data = ? WHERE id = ?`,
+    `UPDATE kanban_plantillas_globales
+       SET data = ?, version = version + 1 WHERE id = ?`,
     {
       replacements: [JSON.stringify(dataNormalizada), id],
       type: db.QueryTypes.UPDATE,
     },
   );
 
+  const [row] = await db.query(
+    `SELECT version FROM kanban_plantillas_globales WHERE id = ? LIMIT 1`,
+    { replacements: [id], type: db.QueryTypes.SELECT },
+  );
+
   return res.json({
     success: true,
     message: 'Data actualizada',
     total_columnas: dataNormalizada.columnas.length,
+    version: row?.version || null,
   });
 });
 
@@ -487,7 +548,7 @@ exports.duplicar = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id', 400));
 
   const [original] = await db.query(
-    `SELECT nombre, descripcion, icono, color, data
+    `SELECT nombre, descripcion, icono, color, pais, paises, grupo, data
      FROM kanban_plantillas_globales WHERE id = ? LIMIT 1`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
@@ -496,17 +557,21 @@ exports.duplicar = catchAsync(async (req, res, next) => {
 
   const id_creador = req.sessionUser?.id_sub_usuario || null;
   const nombreFinal = nombre_nuevo?.trim() || `${original.nombre} (copia)`;
+  const listaPaises = normalizarPaises(original.paises, original.pais);
 
   const [insertId] = await db.query(
     `INSERT INTO kanban_plantillas_globales
-     (nombre, descripcion, icono, color, data, creado_por, activo)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`,
+     (nombre, descripcion, icono, color, pais, paises, grupo, data, creado_por, activo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     {
       replacements: [
         nombreFinal,
         original.descripcion,
         original.icono,
         original.color,
+        listaPaises[0],
+        listaPaises.join(','),
+        original.grupo || null,
         typeof original.data === 'string'
           ? original.data
           : JSON.stringify(original.data),

@@ -435,12 +435,23 @@ async function procesarMensajeKanban(params) {
             datosBot: {
               nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
               telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i) || telefono,
-              provincia: g(/📍?\s*Provincia:\s*(.+)/i),
+              // Acepta el término regional según el país (provincia EC/PA,
+              // departamento CO/PE/GT, estado MX, región CL).
+              provincia: g(
+                /📍?\s*(?:Provincia|Departamento|Depto\.?|Estado|Regi[oó]n):\s*(.+)/i,
+              ),
               ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
               direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
               producto: g(/📦?\s*Producto:\s*(.+)/i),
               precio: g(/💰?\s*Precio total:\s*(.+)/i),
               cantidad: g(/🔢?\s*Cantidad:\s*(.+)/i) || '',
+              // Modalidad de envío (opcional): "domicilio" o "agencia
+              // servientrega". Si el bot la incluye, el auto-orden fuerza
+              // Servientrega cuando es agencia.
+              modalidad_envio:
+                g(/🚚?\s*Env[ií]o:\s*(.+)/i) ||
+                g(/📦?\s*Modalidad:\s*(.+)/i) ||
+                '',
             },
           }).catch(() => {});
           await log(`🛒 Auto-orden Dropi disparada para cliente=${id_cliente}`);

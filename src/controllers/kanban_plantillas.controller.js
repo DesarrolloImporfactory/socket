@@ -583,7 +583,7 @@ exports.listarGlobales = catchAsync(async (req, res) => {
     : `AND nombre NOT LIKE '%${PLANTILLA_INTERNA_TAG}%'`;
 
   const plantillas = await db.query(
-    `SELECT id, nombre, descripcion, icono, color, created_at,
+    `SELECT id, nombre, descripcion, icono, color, pais, paises, grupo, created_at,
             JSON_LENGTH(JSON_EXTRACT(data, '$.columnas')) AS total_columnas,
             data
      FROM kanban_plantillas_globales
@@ -619,6 +619,12 @@ exports.listarGlobales = catchAsync(async (req, res) => {
       descripcion: p.descripcion,
       icono: p.icono,
       color: p.color,
+      pais: p.pais || 'EC',
+      paises: (p.paises || p.pais || 'EC')
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean),
+      grupo: p.grupo || null,
       created_at: p.created_at,
       total_columnas: p.total_columnas,
       columnas_ia,
@@ -1246,15 +1252,60 @@ function _resolverSetup(dataPlantilla) {
 //   3. null → compilador usa default huérfano "nuestra tienda"
 // ──────────────────────────────────────────────────────────────
 exports.aplicarGlobal = catchAsync(async (req, res, next) => {
-  const { id_configuracion, id_plantilla, empresa } = req.body;
+  const { id_configuracion, id_plantilla, empresa, pais } = req.body;
   if (!id_configuracion || !id_plantilla)
     return next(new AppError('Faltan campos obligatorios', 400));
 
   const [plantilla] = await db.query(
-    `SELECT data FROM kanban_plantillas_globales WHERE id = ? AND activo = 1 LIMIT 1`,
+    `SELECT data, pais, paises, version FROM kanban_plantillas_globales WHERE id = ? AND activo = 1 LIMIT 1`,
     { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
   );
   if (!plantilla) return next(new AppError('Plantilla no encontrada', 404));
+
+  // País final: si la plantilla es multipaís, el cliente elige uno de la lista
+  // soportada. Si es de país único, se usa el de la plantilla.
+  const paisesSoportados = String(plantilla.paises || plantilla.pais || 'EC')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  const paisElegido = String(pais || '').trim().toUpperCase();
+  let paisFinal;
+  if (paisesSoportados.length > 1) {
+    // Multipaís: el país elegido es obligatorio y debe estar soportado.
+    if (!paisElegido || !paisesSoportados.includes(paisElegido)) {
+      return next(
+        new AppError(
+          'Debes seleccionar un país válido para esta plantilla multipaís.',
+          400,
+        ),
+      );
+    }
+    paisFinal = paisElegido;
+  } else {
+    paisFinal = paisesSoportados[0] || 'EC';
+  }
+
+  // Guardar en la config el país (para que el auto-orden NO asuma Ecuador) y la
+  // versión de prompt aplicada (para que el cliente vea en su tablero si está
+  // en la última versión).
+  try {
+    await db.query(
+      `UPDATE configuraciones SET pais_plantilla = ?, prompt_version = ? WHERE id = ?`,
+      {
+        replacements: [
+          paisFinal,
+          Number(plantilla.version) || 1,
+          id_configuracion,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  } catch (e) {
+    console.warn(
+      '[aplicarGlobal] no se pudo guardar pais_plantilla/prompt_version:',
+      e.message,
+    );
+  }
 
   const [configRow] = await db.query(
     `SELECT api_key_openai, nombre_configuracion FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -1702,7 +1753,7 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
 
     // 2. Cargar plantilla global actual
     const [plantilla] = await db.query(
-      `SELECT data FROM kanban_plantillas_globales 
+      `SELECT data, version FROM kanban_plantillas_globales
        WHERE id = ? AND activo = 1 LIMIT 1`,
       { replacements: [id_plantilla], type: db.QueryTypes.SELECT },
     );
@@ -1825,6 +1876,24 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
       (r) => r.status === 'omitida',
     ).length;
 
+    // Quedó sincronizado con la versión actual de la plantilla global.
+    if (errores_cols === 0) {
+      try {
+        await db.query(
+          `UPDATE configuraciones SET prompt_version = ? WHERE id = ?`,
+          {
+            replacements: [Number(plantilla.version) || 1, id_configuracion],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+      } catch (e) {
+        console.warn(
+          `[resincronizar] no se pudo guardar prompt_version cfg=${id_configuracion}:`,
+          e.message,
+        );
+      }
+    }
+
     return {
       id_configuracion,
       success: errores_cols === 0,
@@ -1832,6 +1901,7 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
       exitos_cols,
       errores_cols,
       omitidas_cols,
+      version: Number(plantilla.version) || 1,
       resultados_columnas: resultados,
     };
   } catch (err) {
@@ -2229,6 +2299,58 @@ exports.personalizacionResincronizar = catchAsync(async (req, res, next) => {
       exitos: r.exitos_cols,
       errores: r.errores_cols,
       resultados: r.resultados_columnas,
+    },
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// VERSIÓN DEL PROMPT — Estado de versión de una configuración
+// POST /kanban_plantillas/personalizacion_version
+//
+// Body: { id_configuracion }
+// Devuelve la versión de prompt aplicada vs. la última publicada, para que el
+// cliente vea en su tablero si está al día o si hay una versión más nueva.
+// ──────────────────────────────────────────────────────────────
+exports.personalizacionVersion = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const [config] = await db.query(
+    `SELECT kanban_global_id, prompt_version FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!config) return next(new AppError('Configuración no encontrada', 404));
+
+  // Sin plantilla global → no aplica el versionado (prompt propio/heredado).
+  if (!config.kanban_global_id) {
+    return res.json({
+      success: true,
+      data: { usa_plantilla_global: false },
+    });
+  }
+
+  const [plantilla] = await db.query(
+    `SELECT nombre, version, pais FROM kanban_plantillas_globales WHERE id = ? LIMIT 1`,
+    { replacements: [config.kanban_global_id], type: db.QueryTypes.SELECT },
+  );
+
+  const ultima = Number(plantilla?.version) || 1;
+  // Si nunca se guardó (aplicada antes de este feature), asumimos la última
+  // publicada para no marcar como "desactualizado" sin fundamento.
+  const aplicada =
+    config.prompt_version == null ? ultima : Number(config.prompt_version);
+
+  return res.json({
+    success: true,
+    data: {
+      usa_plantilla_global: true,
+      id_plantilla: config.kanban_global_id,
+      nombre_plantilla: plantilla?.nombre || null,
+      pais: config.pais_plantilla || plantilla?.pais || 'EC',
+      aplicada,
+      ultima,
+      desactualizada: aplicada < ultima,
     },
   });
 });

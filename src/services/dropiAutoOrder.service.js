@@ -46,8 +46,47 @@ const { decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('./dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { createOrderForClient } = require('./dropiOrders.service');
+const { resolveRegion } = require('../utils/phoneFactor');
 
 /* ────────────────────────── helpers ────────────────────────── */
+
+// Nombre del país (para el prompt del extractor). NO se asume Ecuador: sale del
+// país de la plantilla global aplicada, o del país de la integración Dropi.
+const PAIS_NOMBRE_POR_ISO = {
+  EC: 'Ecuador',
+  CO: 'Colombia',
+  MX: 'México',
+  PE: 'Perú',
+  CL: 'Chile',
+  GT: 'Guatemala',
+  PA: 'Panamá',
+  AR: 'Argentina',
+};
+function nombrePais(countryCode) {
+  const iso = resolveRegion(countryCode); // acepta ISO ("EC") o calling ("593")
+  return PAIS_NOMBRE_POR_ISO[iso] || 'Ecuador';
+}
+
+// ¿El cliente pidió envío a agencia/oficina Servientrega? Se lee de la línea
+// "Envío:" del resumen del bot (datosBot.modalidad_envio). Si aplica, el
+// auto-orden fuerza Servientrega en vez de la transportadora más barata.
+function esEnvioAgenciaServientrega(datosBot) {
+  const t = String(datosBot?.modalidad_envio || '').toLowerCase();
+  if (!t) return false;
+  return /servientrega|servi\s?entrega/.test(t) || /agenc|oficin|retiro/.test(t);
+}
+
+function nombreTransportadora(q) {
+  return String(
+    q?.distributionCompany?.name ??
+      q?.transportadora ??
+      q?.distribution_company?.name ??
+      q?.name ??
+      '',
+  )
+    .trim()
+    .toUpperCase();
+}
 
 function normalizarTexto(s) {
   return String(s || '')
@@ -292,6 +331,7 @@ async function completarDatosConIA({
   id_cliente,
   datosBot,
   api_key_openai,
+  paisNombre = 'Ecuador',
 }) {
   try {
     const msgs = await db.query(
@@ -327,12 +367,13 @@ async function completarDatosConIA({
           {
             role: 'system',
             content:
-              'Extrae los datos del pedido confirmado de esta conversación de ventas COD en Ecuador. ' +
-              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad. ' +
+              `Extrae los datos del pedido confirmado de esta conversación de ventas COD en ${paisNombre}. ` +
+              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad, modalidad_envio. ' +
               'producto = nombre del producto tal como lo menciona el VENDEDOR. ' +
               'precio_total = número, el total que el cliente acordó pagar. ' +
               'cantidad = número de unidades (1 si no se especifica). ' +
-              'provincia = provincia de Ecuador a la que pertenece la ciudad. ' +
+              `provincia = provincia de ${paisNombre} a la que pertenece la ciudad. ` +
+              'modalidad_envio = "agencia servientrega" si el cliente pidió retirar en una agencia/oficina Servientrega; si es envío normal a domicilio, "domicilio". ' +
               'Si un dato no aparece en la conversación, usa null. NO inventes.',
           },
           { role: 'user', content: transcript },
@@ -356,6 +397,8 @@ async function completarDatosConIA({
       producto: datosBot.producto || ia.producto || '',
       precio: datosBot.precio || String(ia.precio_total ?? '') || '',
       cantidad: datosBot.cantidad || String(ia.cantidad ?? '') || '1',
+      modalidad_envio:
+        datosBot.modalidad_envio || ia.modalidad_envio || '',
       _fuente_ia: true,
     };
   } catch (err) {
@@ -402,6 +445,15 @@ async function autoCrearOrdenDropi({
     const integrationKey = decryptToken(integration.integration_key_enc);
     const country_code = integration.country_code;
 
+    // País para el prompt del extractor: el de la plantilla global aplicada
+    // (si el cliente aplicó una) o, en su defecto, el de la integración Dropi.
+    // Así NO se asume Ecuador cuando el cliente trabaja en otro país.
+    const [cfgPais] = await db.query(
+      `SELECT pais_plantilla FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const paisNombre = nombrePais(cfgPais?.pais_plantilla || country_code);
+
     // 0.5 Si el regex no extrajo los campos clave (prompt del cliente sin
     // resumen estructurado), completar con extractor IA sobre la conversación.
     const faltanClaves = ['producto', 'ciudad', 'direccion', 'precio'].some(
@@ -413,6 +465,7 @@ async function autoCrearOrdenDropi({
         id_cliente,
         datosBot,
         api_key_openai,
+        paisNombre,
       });
       ctx.datos_bot = datosBot; // que el log refleje lo que realmente se usó
     }
@@ -834,7 +887,26 @@ async function autoCrearOrdenDropi({
         `Sin transportadoras disponibles ${remitCodDane}→${destCodDane} | resp: ${JSON.stringify(quoteResp).slice(0, 400)}`,
       );
 
-    const mejor = validas[0];
+    // Por defecto: la más barata. Si el cliente pidió agencia/oficina
+    // Servientrega (línea "Envío:" del resumen), forzamos esa transportadora;
+    // si Servientrega NO está entre las cotizaciones de esa ruta, caemos a la
+    // más barata para no bloquear la venta.
+    let mejor = validas[0];
+    if (esEnvioAgenciaServientrega(datosBot)) {
+      const servi = validas.find((q) =>
+        nombreTransportadora(q).includes('SERVIENTREGA'),
+      );
+      if (servi) {
+        mejor = servi;
+        console.log(
+          `[AutoOrden] Envío a agencia Servientrega → forzando transportadora "${nombreTransportadora(servi)}"`,
+        );
+      } else {
+        console.log(
+          '[AutoOrden] Agencia Servientrega solicitada pero no cotizó Servientrega; usando la más barata (fallback)',
+        );
+      }
+    }
     // réplica de pickDistributionCompanyFromQuote (front: utils/orderHelper.js)
     const distributionCompany =
       mejor?.distributionCompany?.id && mejor?.distributionCompany?.name
