@@ -24,7 +24,7 @@ const { db } = require('../database/config');
 const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 // Normalización de teléfonos con libphonenumber (multipaís).
 // toWhatsapp(phone, country_code) → internacional en dígitos, sin "+".
-const { toWhatsapp } = require('../utils/phoneFactor');
+const { toWhatsapp, isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -245,6 +245,81 @@ function classifyDropiStatus(status) {
  */
 function normalizePhone(phone, countryCode = 'EC') {
   return toWhatsapp(phone, countryCode) || null;
+}
+
+/**
+ * Teléfono CONFIABLE de la orden, siempre dentro de la misma configuración.
+ *
+ * Si el phone que trae Dropi está incompleto (le faltan dígitos), intenta
+ * recuperar el número real SIN salirse de la config:
+ *   1) la orden REEMPLAZADA gemela en el cache (el clon que Dropi crea al
+ *      editar/regenerar hereda el order_created_at exacto de la original);
+ *   2) un contacto de ESA config cuyo número nacional empiece con los
+ *      dígitos mochos.
+ * Devuelve el número recuperado (formato nacional) o null si no hay forma
+ * segura de saberlo. null = NO notificar: un número mocho matchearía por
+ * sufijo (LIKE %) al contacto de OTRA persona y el seguimiento le llegaría
+ * al cliente equivocado.
+ */
+async function resolverTelefonoConfiable({
+  order,
+  id_configuracion,
+  country_code = 'EC',
+}) {
+  const raw = order?.phone || '';
+  if (!raw) return null;
+  if (isValidPhone(raw, country_code)) return raw;
+
+  const bad = String(raw).replace(/\D/g, '');
+  if (!bad || bad.length < 7) return null;
+
+  // 1) gemela REEMPLAZADA — se compara cache contra cache (mismo
+  //    order_created_at) para no pelear con formatos/zonas horarias.
+  try {
+    const twins = await db.query(
+      `SELECT b.phone
+         FROM dropi_orders_cache a
+         JOIN dropi_orders_cache b
+           ON b.id_configuracion = a.id_configuracion
+          AND b.order_created_at = a.order_created_at
+          AND b.dropi_order_id <> a.dropi_order_id
+        WHERE a.id_configuracion = ? AND a.dropi_order_id = ?
+          AND b.status = 'REEMPLAZADA'`,
+      {
+        replacements: [id_configuracion, order.id || 0],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    for (const t of twins) {
+      const local = toDropiLocal(t.phone, country_code);
+      if (isValidPhone(local, country_code) && local.startsWith(bad)) {
+        return local;
+      }
+    }
+  } catch (err) {}
+
+  // 2) contacto de ESTA config que empiece con los dígitos mochos
+  try {
+    const rows = await db.query(
+      `SELECT celular_cliente
+         FROM clientes_chat_center
+        WHERE id_configuracion = ? AND deleted_at IS NULL
+          AND REPLACE(celular_cliente, ' ', '') LIKE ?
+        LIMIT 20`,
+      {
+        replacements: [id_configuracion, `%${bad}%`],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    for (const r of rows) {
+      const local = toDropiLocal(r.celular_cliente, country_code);
+      if (isValidPhone(local, country_code) && local.startsWith(bad)) {
+        return local;
+      }
+    }
+  } catch (err) {}
+
+  return null;
 }
 
 function safeJsonParse(str, fallback) {
@@ -953,13 +1028,31 @@ async function procesarTemplates({
     try {
       const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
 
-      if (estadoConfig === 'ENTREGADA' && order.phone) {
+      // Teléfono confiable de la orden (scoped a esta config). Si Dropi trae
+      // un número incompleto y no se puede recuperar, telefonoOrden = null y
+      // la orden se omite: mejor no enviar que enviarle a otra persona.
+      const telefonoOrden = await resolverTelefonoConfiable({
+        order,
+        id_configuracion,
+        country_code,
+      });
+      if (order.phone && !telefonoOrden) {
+        console.log(
+          `[dropi-notifier] tel incompleto no recuperable → skip orden ${order.id} (cfg ${id_configuracion}, tel "${order.phone}")`,
+        );
+      } else if (telefonoOrden && telefonoOrden !== order.phone) {
+        console.log(
+          `[dropi-notifier] tel recuperado para orden ${order.id} (cfg ${id_configuracion}): "${order.phone}" → "${telefonoOrden}"`,
+        );
+      }
+
+      if (estadoConfig === 'ENTREGADA' && telefonoOrden) {
         const columnaEntregada =
           plantillas[estadoConfig]?.columna_destino ||
           COLUMNA_ENTREGADA_DEFAULT;
         const actualizado = await actualizarEstadoContactoEntregado({
           id_configuracion,
-          telefono: order.phone,
+          telefono: telefonoOrden,
           columnaDestino: columnaEntregada,
           country_code,
         });
@@ -973,10 +1066,10 @@ async function procesarTemplates({
       const cfgEstado = estadoConfig ? plantillas[estadoConfig] : null;
       if (cfgEstado?.solo_mover) {
         // ENTREGADA ya se reubicó en el bloque de arriba; el resto se mueve aquí.
-        if (estadoConfig !== 'ENTREGADA' && order.phone) {
+        if (estadoConfig !== 'ENTREGADA' && telefonoOrden) {
           await actualizarEstadoContactoEntregado({
             id_configuracion,
-            telefono: order.phone,
+            telefono: telefonoOrden,
             columnaDestino: cfgEstado.columna_destino,
             country_code,
           });
@@ -997,7 +1090,7 @@ async function procesarTemplates({
         omitidos++;
         continue;
       }
-      if (!order.phone) {
+      if (!telefonoOrden) {
         omitidos++;
         continue;
       }
@@ -1013,7 +1106,7 @@ async function procesarTemplates({
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
         const yaShopify = await yaSeEnvioPendienteConfPorPhone(
           id_configuracion,
-          order.phone,
+          telefonoOrden,
           country_code,
         );
         if (yaShopify) {
@@ -1023,7 +1116,7 @@ async function procesarTemplates({
       }
 
       const config = plantillas[estadoConfig];
-      const phoneNorm = normalizePhone(order.phone, country_code);
+      const phoneNorm = normalizePhone(telefonoOrden, country_code);
       if (!phoneNorm) {
         omitidos++;
         continue;
@@ -1037,7 +1130,7 @@ async function procesarTemplates({
         dropi_order_id: order.id,
         id_configuracion,
         estado_dropi: estadoConfig,
-        phone: order.phone,
+        phone: telefonoOrden,
         template_name: config.nombre_template,
       });
       if (!reclamado) {
@@ -1051,7 +1144,16 @@ async function procesarTemplates({
       let waMessageId = null;
       let textoEnviado = config.nombre_template;
       let jsonMensajeEnviado = null;
-      const components = buildTemplateComponents(config.parametros_json, order);
+      // Las variables del mensaje ({{telefono}}, ruta_archivo) también deben
+      // llevar el número confiable, no el mocho que trae la orden.
+      const orderParaMsg =
+        telefonoOrden === order.phone
+          ? order
+          : { ...order, phone: telefonoOrden };
+      const components = buildTemplateComponents(
+        config.parametros_json,
+        orderParaMsg,
+      );
 
       // ── BLOQUE DE ENVÍO. Si algo aquí falla, el mensaje NO salió:
       // liberamos el reclamo para reintentar en la próxima corrida.
@@ -1127,7 +1229,7 @@ async function procesarTemplates({
 
       // ✅ A partir de aquí el mensaje YA SALIÓ. El reclamo se queda.
       // Todo lo siguiente es best-effort: si falla, NO se reenvía.
-      const rutaArchivo = buildRutaArchivo(order, estadoConfig);
+      const rutaArchivo = buildRutaArchivo(orderParaMsg, estadoConfig);
 
       let columnaDestino = null;
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
@@ -1206,6 +1308,7 @@ module.exports = {
   classifyDropiStatus,
   // helpers
   normalizePhone,
+  resolverTelefonoConfiable,
   safeJsonParse,
   getTrackingUrl,
   getGuiaPdfUrl,

@@ -74,9 +74,15 @@ function parseAny(raw, countryCode) {
   let p = parsePhoneNumberFromString(String(raw || ''), region);
   if (p && p.isValid()) return p;
 
-  // 2) como internacional, anteponiendo "+" (cubre "593962803007" sin el +)
-  p = parsePhoneNumberFromString('+' + digits);
-  if (p && p.isValid()) return p;
+  // 2) como internacional, anteponiendo "+" (cubre "593962803007" sin el +).
+  //    SOLO si empieza con el calling code de la región: sin este candado un
+  //    nacional EC mocho que empiece con "98" (ej. "98115472") se interpreta
+  //    como Irán (+98) y pasa por válido, colándose por el guard isValidPhone.
+  const calling = ISO_TO_CALLING[region];
+  if (calling && digits.length > calling.length && digits.startsWith(calling)) {
+    p = parsePhoneNumberFromString('+' + digits);
+    if (p && p.isValid()) return p;
+  }
 
   return null;
 }

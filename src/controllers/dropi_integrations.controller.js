@@ -13,6 +13,7 @@ const dropiService = require('../services/dropi.service');
 const dropiOrdersService = require('../services/dropiOrders.service');
 const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
+const { isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
 
 /* =========================
    Helpers
@@ -616,6 +617,10 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     };
   }
   if (status) where.status = status;
+  else where.status = { [Op.ne]: 'REEMPLAZADA' };
+  // ↑ Por defecto NO mostramos las REEMPLAZADA: son la versión vieja de una
+  //   orden que Dropi clonó al editarla/generar guía y duplican la vista
+  //   (confunden al cliente). Siguen accesibles filtrando por ese estado.
   if (origen === 'imporsuit') where.shop_type = 'IMPORSUIT';
   else if (origen === 'shopify') where.shop_type = 'SHOPIFY';
   else if (origen === 'otros') {
@@ -748,6 +753,83 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     };
   });
 
+  // ── Teléfono incompleto: alerta + número correcto sugerido ──
+  // Dropi no valida el teléfono al editar órdenes pendientes (su form corta el
+  // último dígito si lo escriben con el 0 adelante). El clon (la orden que
+  // reemplaza a la REEMPLAZADA) queda con número mocho: la transportadora no
+  // contacta y el seguimiento no matchea el chat. Detectamos el caso y
+  // recuperamos el número desde la gemela REEMPLAZADA (mismo order_created_at)
+  // o desde el contacto del chat center cuyo número empieza con esos dígitos.
+  const region = integration.country_code;
+  for (const o of parsed) {
+    o.telefono_incompleto = Boolean(o.phone && !isValidPhone(o.phone, region));
+    o.telefono_sugerido = null;
+    o.telefono_sugerido_fuente = null;
+  }
+  const flagged = parsed.filter((o) => o.telefono_incompleto);
+  if (flagged.length) {
+    const timeOf = (d) => new Date(d).getTime();
+
+    // 1) gemela REEMPLAZADA (el clon hereda el order_created_at exacto)
+    try {
+      const fechas = [...new Set(flagged.map((o) => o.order_created_at))];
+      const twins = await DropiOrdersCache.findAll({
+        where: {
+          ...cacheWhere,
+          status: 'REEMPLAZADA',
+          order_created_at: { [Op.in]: fechas },
+        },
+        attributes: ['phone', 'order_created_at'],
+        raw: true,
+      });
+      for (const o of flagged) {
+        const bad = digitsOnly(o.phone);
+        const candidates = twins.filter(
+          (t) => timeOf(t.order_created_at) === timeOf(o.order_created_at),
+        );
+        const best =
+          candidates.find((t) => {
+            const local = toDropiLocal(t.phone, region);
+            return isValidPhone(local, region) && local.startsWith(bad);
+          }) || candidates.find((t) => isValidPhone(t.phone, region));
+        if (best) {
+          o.telefono_sugerido = toDropiLocal(best.phone, region);
+          o.telefono_sugerido_fuente = 'orden_reemplazada';
+        }
+      }
+    } catch (e) {
+      console.error('[pedidos-cache] tel sugerido (gemela):', e?.message);
+    }
+
+    // 2) contacto del chat center cuyo número contiene esos dígitos
+    const sinSugerencia = flagged.filter((o) => !o.telefono_sugerido);
+    if (sinSugerencia.length) {
+      try {
+        const ors = sinSugerencia.map((o) => ({
+          celular_cliente: { [Op.like]: `%${digitsOnly(o.phone)}%` },
+        }));
+        const contactos = await ClientesChatCenter.findAll({
+          where: { id_configuracion, deleted_at: null, [Op.or]: ors },
+          attributes: ['celular_cliente'],
+          raw: true,
+        });
+        for (const o of sinSugerencia) {
+          const bad = digitsOnly(o.phone);
+          const c = contactos.find((x) => {
+            const local = toDropiLocal(x.celular_cliente, region);
+            return isValidPhone(local, region) && local.startsWith(bad);
+          });
+          if (c) {
+            o.telefono_sugerido = toDropiLocal(c.celular_cliente, region);
+            o.telefono_sugerido_fuente = 'contacto';
+          }
+        }
+      } catch (e) {
+        console.error('[pedidos-cache] tel sugerido (contacto):', e?.message);
+      }
+    }
+  }
+
   // ── Imagen del catálogo propio (productos_chat_center.id_dropi) ──
   if (productIds.size) {
     try {
@@ -798,10 +880,20 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   }
 
   // ── Chat + agente (mismo enricher del listado en vivo) ──
-  const enriched = await enrichOrdersWithChatAndAgent({
-    id_configuracion,
-    objects: parsed,
-  });
+  // Para el match usamos el número sugerido cuando el de la orden está
+  // incompleto: así la orden truncada recupera su conversación/agente en vez
+  // de quedar "Sin conversación". El phone visible sigue siendo el de Dropi.
+  const paraMatch = parsed.map((o) =>
+    o.telefono_incompleto && o.telefono_sugerido
+      ? { ...o, phone: o.telefono_sugerido }
+      : o,
+  );
+  const enriched = (
+    await enrichOrdersWithChatAndAgent({
+      id_configuracion,
+      objects: paraMatch,
+    })
+  ).map((o, i) => ({ ...o, phone: parsed[i].phone }));
 
   return res.json({
     isSuccess: true,

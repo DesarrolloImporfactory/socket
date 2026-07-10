@@ -535,6 +535,16 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
   const integrationKey = decryptToken(integration.integration_key_enc);
   if (!integrationKey) throw new AppError('Dropi key inválida', 400);
 
+  // ✅ Guard anti-teléfono-mocho (mismo criterio que en create): si el update
+  // trae phone, debe ser válido/completo para el país. Solo aplica cuando
+  // viene el campo — los updates de solo status no se ven afectados.
+  if (body?.phone !== undefined && !isValidPhone(body.phone, integration.country_code)) {
+    throw new AppError(
+      'El teléfono del cliente no es válido o está incompleto. Revísalo antes de actualizar la orden.',
+      400,
+    );
+  }
+
   //  Whitelist de campos editables (para no mandar basura)
   const allowed = new Set([
     'name',
