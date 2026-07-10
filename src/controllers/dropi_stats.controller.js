@@ -4,14 +4,15 @@
  * solo cubre ~22%).
  *
  *  - semaforoTransportadoras: efectividad (entregas vs devoluciones) por
- *    transportadora en una provincia/ciudad, en una ventana de tiempo (último
- *    mes / últimos 3 meses). GLOBAL por zona (todas las tiendas). Ayuda al
- *    cliente a elegir transportadora antes de crear la orden.
+ *    transportadora SOLO en la ciudad seleccionada, en una ventana de tiempo
+ *    (1/3/6 meses). GLOBAL por ciudad (todas las tiendas). Ayuda al cliente a
+ *    elegir transportadora antes de crear la orden. (Se descartó agregar por
+ *    provincia: el valor salía demasiado general y no servía para decidir.)
  *  - rankingTiendas: top tiendas por VENTA entregada (no utilidad). SOLO tiendas
  *    que usan el sistema (tienen configuración), mostrando el nombre de la
  *    configuración. Para inspirar a los vendedores.
- *  - transportadorasHistorico: vista analítica de transportadoras por ciudad/
- *    provincia con costo de flete promedio y rango de fechas. TODAS las órdenes
+ *  - transportadorasHistorico: vista analítica de transportadoras por CIUDAD
+ *    con costo de flete promedio y rango de fechas. TODAS las órdenes
  *    (no requiere que la tienda tenga configuración en el sistema).
  */
 const { db } = require('../database/config');
@@ -49,12 +50,12 @@ const MIN_MUESTRA = 8; // mínimo entregadas+devoluciones para calificar color
 // Ventana de tiempo en meses según el filtro pedido.
 const MESES_POR_PERIODO = { '1mes': 1, '3meses': 3, '6meses': 6, '12meses': 12 };
 
-// Columnas generadas PERSISTENT (ver migración add_dropi_cache_geo_indexes.js):
-//   provincia     = order_data.$.state  (indexada)
+// Columna generada PERSISTENT (ver migración add_dropi_cache_geo_indexes.js):
 //   flete_amount  = order_data.$.shipping_amount  (numérico, 0 → NULL)
 // Antes esto se hacía con JSON_EXTRACT por fila → full scans lentos.
+// (La columna generada `provincia` sigue existiendo en la tabla, pero ya no se
+// usa: toda la tasa de entrega se mide por CIUDAD.)
 const FLETE_SQL = `AVG(flete_amount)`;
-const PROVINCIA_COL = `provincia`;
 
 /**
  * Convierte una fila agregada (entregadas/devoluciones/…) al objeto de
@@ -138,66 +139,39 @@ async function configsDePais(paisRaw) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// SEMÁFORO DE TRANSPORTADORAS por provincia/ciudad
-// POST /api/v1/dropi_stats/semaforo_transportadoras  { provincia, ciudad, periodo }
-//   periodo: '1mes' (default) | '3meses'
+// SEMÁFORO DE TRANSPORTADORAS — SOLO por ciudad seleccionada
+// POST /api/v1/dropi_stats/semaforo_transportadoras  { ciudad, periodo }
+//   periodo: '1mes' (default) | '3meses' | '6meses'
+// Sin fallback a provincia: la tasa provincial salía muy general y confundía.
 // ───────────────────────────────────────────────────────────────
 exports.semaforoTransportadoras = catchAsync(async (req, res, next) => {
-  const provincia = String(req.body?.provincia || '').trim();
   const ciudad = String(req.body?.ciudad || '').trim();
-  if (!ciudad && !provincia)
-    return next(new AppError('Falta provincia o ciudad', 400));
+  if (!ciudad) return next(new AppError('Falta la ciudad', 400));
 
   const periodo = MESES_POR_PERIODO[req.body?.periodo] ? req.body.periodo : '1mes';
   const meses = MESES_POR_PERIODO[periodo];
-  const MIN_ZONA_CIUDAD = 15; // si la ciudad tiene menos, cae a provincia
 
-  const consultaSegura = async (modo) => {
-    const cond = [
-      `shipping_company IS NOT NULL AND TRIM(shipping_company) <> ''`,
-      `order_created_at >= (NOW() - INTERVAL ${meses} MONTH)`,
-    ];
-    const repl = [];
-    if (modo === 'ciudad') {
-      cond.push('city = ?');
-      repl.push(ciudad);
-    } else {
-      cond.push(`${PROVINCIA_COL} = ?`);
-      repl.push(provincia);
-    }
-    return db.query(
-      `SELECT shipping_company AS transportadora,
-              SUM(classified_status = 'entregada')  AS entregadas,
-              SUM(classified_status = 'devolucion') AS devoluciones,
-              SUM(classified_status = 'novedad')    AS novedades,
-              SUM(classified_status IN (${EN_CURSO_SQL})) AS en_curso,
-              COUNT(*)                              AS total,
-              ${FLETE_SQL}                          AS flete_promedio
-         FROM dropi_orders_cache
-        WHERE ${cond.join(' AND ')}
-        GROUP BY shipping_company`,
-      { replacements: repl, type: db.QueryTypes.SELECT },
-    );
-  };
-
-  let nivel = ciudad ? 'ciudad' : 'provincia';
-  let rows = ciudad ? await consultaSegura('ciudad') : [];
-  const sumaCiudad = rows.reduce((a, r) => a + Number(r.total || 0), 0);
-
-  if ((!ciudad || sumaCiudad < MIN_ZONA_CIUDAD) && provincia) {
-    const rowsProv = await consultaSegura('provincia');
-    const sumaProv = rowsProv.reduce((a, r) => a + Number(r.total || 0), 0);
-    if (sumaProv > sumaCiudad) {
-      rows = rowsProv;
-      nivel = 'provincia';
-    }
-  }
+  const rows = await db.query(
+    `SELECT shipping_company AS transportadora,
+            SUM(classified_status = 'entregada')  AS entregadas,
+            SUM(classified_status = 'devolucion') AS devoluciones,
+            SUM(classified_status = 'novedad')    AS novedades,
+            SUM(classified_status IN (${EN_CURSO_SQL})) AS en_curso,
+            COUNT(*)                              AS total,
+            ${FLETE_SQL}                          AS flete_promedio
+       FROM dropi_orders_cache
+      WHERE shipping_company IS NOT NULL AND TRIM(shipping_company) <> ''
+        AND order_created_at >= (NOW() - INTERVAL ${meses} MONTH)
+        AND city = ?
+      GROUP BY shipping_company`,
+    { replacements: [ciudad], type: db.QueryTypes.SELECT },
+  );
 
   const transportadoras = rows.map(armarTransportadora).sort(ordenarTransportadoras);
 
   return res.json({
     success: true,
-    data: { nivel, provincia, ciudad, periodo, meses, transportadoras },
+    data: { nivel: 'ciudad', ciudad, periodo, meses, transportadoras },
   });
 });
 
@@ -386,15 +360,15 @@ exports.rankingTiendas = catchAsync(async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────
-// TRANSPORTADORAS — vista analítica por ciudad/provincia + flete promedio
+// TRANSPORTADORAS — vista analítica SOLO por ciudad + flete promedio
 // POST /api/v1/dropi_stats/transportadoras_historico
-//   { provincia?, ciudad?, desde?, hasta?, id_configuracion? }
-// Todas las tiendas (proveedoras incluidas) PERO acotado al PAÍS del que mira
-// (un cliente MX no debe ver transportadoras de EC). Las 3 consultas corren en
-// paralelo y usan índices cubridores → ~0.9s en vez de ~5s.
+//   { ciudad?, desde?, hasta?, id_configuracion? }
+// La tasa de entrega se mide por CIUDAD (la provincial daba un valor demasiado
+// general). Todas las tiendas (proveedoras incluidas) PERO acotado al PAÍS del
+// que mira (un cliente MX no debe ver transportadoras de EC). Las 3 consultas
+// corren en paralelo y usan índices cubridores → ~0.9s en vez de ~5s.
 // ───────────────────────────────────────────────────────────────
 exports.transportadorasHistorico = catchAsync(async (req, res) => {
-  const provincia = String(req.body?.provincia || '').trim();
   const ciudad = String(req.body?.ciudad || '').trim();
   const desde = String(req.body?.desde || '').trim(); // YYYY-MM-DD
   const hasta = String(req.body?.hasta || '').trim();
@@ -427,10 +401,6 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
     cond.push('c.city = ?');
     repl.push(ciudad);
   }
-  if (provincia) {
-    cond.push(`c.${PROVINCIA_COL} = ?`);
-    repl.push(provincia);
-  }
   if (fechaOk(desde)) {
     cond.push('c.order_created_at >= ?');
     repl.push(`${desde} 00:00:00`);
@@ -441,8 +411,8 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
   }
   const where = cond.join(' AND ');
 
-  const nivelZona = provincia || ciudad ? 'ciudad' : 'provincia';
-  const zonaExpr = nivelZona === 'ciudad' ? 'c.city' : `c.${PROVINCIA_COL}`;
+  // El desglose de zonas es SIEMPRE por ciudad (nada de provincias).
+  const zonaExpr = 'c.city';
 
   // Las 3 consultas en paralelo (misma selección, distinto GROUP BY).
   const [filas, [{ flete_global } = {}], zonasRows] = await Promise.all([
@@ -513,11 +483,10 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
     success: true,
     data: {
       pais: paisIso,
-      provincia,
       ciudad,
       desde: fechaOk(desde) ? desde : null,
       hasta: fechaOk(hasta) ? hasta : null,
-      nivel_zona: nivelZona,
+      nivel_zona: 'ciudad',
       resumen,
       transportadoras,
       zonas,
@@ -526,8 +495,8 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
 });
 
 // ───────────────────────────────────────────────────────────────
-// Listas para los filtros de la vista Transportadoras (provincias/ciudades
-// con datos). GET /api/v1/dropi_stats/zonas_disponibles
+// Lista para el filtro de la vista Transportadoras (ciudades con datos).
+// GET /api/v1/dropi_stats/zonas_disponibles
 // ───────────────────────────────────────────────────────────────
 exports.zonasDisponibles = catchAsync(async (req, res) => {
   // Acotado al país del que mira (no mostrar ciudades de otros países).
@@ -547,30 +516,18 @@ exports.zonasDisponibles = catchAsync(async (req, res) => {
     ? `c.id_configuracion IN (${configIds.join(',')})`
     : '0';
 
-  const [provincias, ciudades] = await Promise.all([
-    db.query(
-      `SELECT c.${PROVINCIA_COL} AS zona, COUNT(*) AS total
-         FROM dropi_orders_cache c
-        WHERE ${inPais} AND c.${PROVINCIA_COL} IS NOT NULL AND TRIM(c.${PROVINCIA_COL}) <> ''
-        GROUP BY zona
-        ORDER BY total DESC
-        LIMIT 60`,
-      { type: db.QueryTypes.SELECT },
-    ),
-    db.query(
-      `SELECT c.city AS zona, COUNT(*) AS total
-         FROM dropi_orders_cache c
-        WHERE ${inPais} AND c.city IS NOT NULL AND TRIM(c.city) <> ''
-        GROUP BY zona
-        ORDER BY total DESC
-        LIMIT 200`,
-      { type: db.QueryTypes.SELECT },
-    ),
-  ]);
+  const ciudades = await db.query(
+    `SELECT c.city AS zona, COUNT(*) AS total
+       FROM dropi_orders_cache c
+      WHERE ${inPais} AND c.city IS NOT NULL AND TRIM(c.city) <> ''
+      GROUP BY zona
+      ORDER BY total DESC
+      LIMIT 300`,
+    { type: db.QueryTypes.SELECT },
+  );
   return res.json({
     success: true,
     data: {
-      provincias: provincias.map((r) => ({ nombre: r.zona, total: Number(r.total) })),
       ciudades: ciudades.map((r) => ({ nombre: r.zona, total: Number(r.total) })),
     },
   });
