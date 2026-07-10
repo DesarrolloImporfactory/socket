@@ -26,6 +26,12 @@ router.post(
   openai_assistantsController.actualizar_api_key_openai,
 );
 
+// Elimina la API Key y suspende (soft delete) los asistentes de la config
+router.post(
+  '/eliminar_api_key_openai',
+  openai_assistantsController.eliminar_api_key_openai,
+);
+
 router.post(
   '/actualizar_ia_logisctica',
   openai_assistantsController.actualizar_ia_logisctica,

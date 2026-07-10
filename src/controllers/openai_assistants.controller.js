@@ -291,9 +291,9 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
 
     api_key_openai = configuracion.api_key_openai;
 
-    // Traer ambos tipos de asistentes
+    // Traer ambos tipos de asistentes (excluye suspendidos por soft delete)
     const asistentes = await db.query(
-      'SELECT * FROM openai_assistants WHERE id_configuracion = ? AND tipo IN ("logistico", "ventas")',
+      'SELECT * FROM openai_assistants WHERE id_configuracion = ? AND tipo IN ("logistico", "ventas") AND deleted_at IS NULL',
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
@@ -580,11 +580,32 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     );
   }
 
-  // 2) Guardar key
-  await db.query(`UPDATE configuraciones SET api_key_openai = ? WHERE id = ?`, {
-    replacements: [api_key, id_configuracion],
-    type: db.QueryTypes.UPDATE,
-  });
+  // 2) Guardar key. Se limpia también el estado de error de la key ANTERIOR
+  //    (openai_activo=0 / "sin saldo"): la nueva key ya fue validada arriba y
+  //    ese error pertenece a la llave vieja — si no, el banner seguía saliendo.
+  await db.query(
+    `UPDATE configuraciones
+        SET api_key_openai = ?,
+            openai_activo = 1,
+            openai_error_at = NULL,
+            openai_error_msg = NULL
+      WHERE id = ?`,
+    {
+      replacements: [api_key, id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  // 2.b) Si los assistants estaban suspendidos (soft delete por eliminar la
+  //      key), se reviven — el cliente vuelve a conectar y todo queda como antes.
+  await db.query(
+    `UPDATE openai_assistants SET deleted_at = NULL
+      WHERE id_configuracion = ? AND deleted_at IS NOT NULL`,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
 
   // 3) Bootstrap assistants (crear clones en la cuenta del cliente)
   const bootstrap = await bootstrapAssistantsForClient(
@@ -601,6 +622,48 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
   });
 });
 
+// Elimina la API Key de OpenAI de la configuración y SUSPENDE los asistentes
+// (soft delete: activo = 0 + deleted_at = NOW()). Sin key el bot no puede
+// responder de todas formas; así el estado queda consistente y auditable.
+// POST /api/v1/openai_assistants/eliminar_api_key_openai { id_configuracion }
+exports.eliminar_api_key_openai = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return next(new AppError('Falta id_configuracion', 400));
+  }
+
+  // Borra la key Y el estado de error que dejó (openai_activo=0 / mensaje de
+  // "sin saldo"): ese diagnóstico era de la key eliminada, no debe quedar
+  // colgado en la vista.
+  await db.query(
+    `UPDATE configuraciones
+        SET api_key_openai = NULL,
+            openai_activo = 1,
+            openai_error_at = NULL,
+            openai_error_msg = NULL
+      WHERE id = ?`,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  await db.query(
+    `UPDATE openai_assistants
+        SET activo = 0, deleted_at = NOW()
+      WHERE id_configuracion = ? AND deleted_at IS NULL`,
+    {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  return res.status(200).json({
+    status: '200',
+    message: 'API Key eliminada y asistentes suspendidos correctamente',
+  });
+});
+
 exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
   const { id_configuracion, nombre_bot, assistant_id, activo } = req.body;
 
@@ -614,9 +677,9 @@ exports.actualizar_ia_logisctica = catchAsync(async (req, res, next) => {
     );
 
     if (existe) {
-      // Ya existe, entonces actualiza
+      // Ya existe, entonces actualiza (y revive si estaba suspendido)
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ? 
+        `UPDATE openai_assistants SET nombre_bot = ?, assistant_id = ?, activo = ?, deleted_at = NULL
          WHERE id_configuracion = ? AND tipo = "logistico"`,
         {
           replacements: [nombre_bot, assistant_id, activo, id_configuracion],
@@ -658,9 +721,9 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
     );
 
     if (existe) {
-      // Ya existe, entonces actualiza
+      // Ya existe, entonces actualiza (y revive si estaba suspendido)
       await db.query(
-        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ? 
+        `UPDATE openai_assistants SET nombre_bot = ?, activo = ?, ofrecer = ?, deleted_at = NULL
          WHERE id_configuracion = ? AND tipo = "ventas"`,
         {
           replacements: [nombre_bot, activo, tipo_venta, id_configuracion],
