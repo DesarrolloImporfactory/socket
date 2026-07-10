@@ -527,7 +527,7 @@ cron.schedule('*/1 * * * *', async () => {
   try {
     await withLock('remarketing_cron_lock', async () => {
       // ⚠️ SOLO PRUEBA LOCAL — quitar antes de prod
-      const TEST_CLIENTE_ID = 410;
+      /* const TEST_CLIENTE_ID = 410;
       const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
@@ -542,9 +542,9 @@ cron.schedule('*/1 * * * *', async () => {
           replacements: [TEST_CLIENTE_ID],
           type: db.QueryTypes.SELECT,
         },
-      );
+      ); */
 
-      /* const pendientes = await db.query(
+      const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
            AND cancelado = 0 
@@ -554,7 +554,7 @@ cron.schedule('*/1 * * * *', async () => {
          ORDER BY tiempo_disparo ASC
          LIMIT 50`,
         { type: db.QueryTypes.SELECT },
-      ); */
+      );
 
       console.log(
         `📋 [remarketing] query devolvió: ${pendientes.length} filas`,
