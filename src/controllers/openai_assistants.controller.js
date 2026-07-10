@@ -322,6 +322,9 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
           productos: asistente.productos,
           tomar_productos: asistente.tomar_productos,
           tiempo_remarketing: asistente.tiempo_remarketing,
+          // tipo de venta guardado (productos/servicios): sin esto el front
+          // siempre mostraba "Productos" aunque el cliente guardó "Servicios".
+          ofrecer: asistente.ofrecer,
         };
       }
     });
