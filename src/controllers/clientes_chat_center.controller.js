@@ -153,6 +153,27 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
   }
 });
 
+exports.actualizar_enviar_remarketing = catchAsync(async (req, res, next) => {
+  const { chatId, nuevoEstado } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE clientes_chat_center SET enviar_remarketing = ? WHERE id = ?`,
+      {
+        replacements: [nuevoEstado, chatId],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
+    res.status(200).json({
+      status: '200',
+      message: 'Estado de remarketing actualizado correctamente',
+    });
+  } catch (error) {
+    return next(new AppError('Error al actualizar enviar_remarketing', 500));
+  }
+});
+
 exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
   const {
     telefono: telefonoRaw,

@@ -74,6 +74,7 @@ const ClientesChatCenter = db.define(
       defaultValue: 0,
     },
     bot_openia: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    enviar_remarketing: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
 
     id_departamento: { type: DataTypes.INTEGER, allowNull: true },
     id_encargado: { type: DataTypes.INTEGER, allowNull: true },

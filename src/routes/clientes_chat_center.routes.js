@@ -23,6 +23,11 @@ router.post(
 );
 
 router.post(
+  '/actualizar_enviar_remarketing',
+  clientes_chat_centerController.actualizar_enviar_remarketing,
+);
+
+router.post(
   '/agregarNumeroChat',
   clientes_chat_centerController.agregarNumeroChat,
 );

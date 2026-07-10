@@ -791,6 +791,22 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
 // ══════════════════════════════════════════════════════════════
 async function cancelarRemarketingKanban(id_cliente, id_configuracion) {
   try {
+    // 1) Verificar si YA se le envió un remarketing a este cliente
+    //    (para saber si está respondiendo a un remarketing o iniciando conversación)
+    const [remarketingEnviado] = await db.query(
+      `SELECT id FROM remarketing_pendientes
+       WHERE id_cliente_chat_center = ?
+         AND id_configuracion = ?
+         AND enviado = 1
+         AND cancelado = 0
+       LIMIT 1`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    // 2) Cancelar los remarketings pendientes (los que aún no salieron)
     await db.query(
       `UPDATE remarketing_pendientes
        SET cancelado = 1
@@ -803,7 +819,28 @@ async function cancelarRemarketingKanban(id_cliente, id_configuracion) {
         type: db.QueryTypes.UPDATE,
       },
     );
-    await log(`✅ Remarketing cancelado para cliente=${id_cliente}`);
+
+    // 3) Si ya se le había enviado remarketing → el cliente está respondiendo
+    //    a ese remarketing → apagar flag para no seguir persiguiéndolo.
+    //    Si no había enviado nada → dejar el flag como está.
+    if (remarketingEnviado) {
+      await db.query(
+        `UPDATE clientes_chat_center
+         SET enviar_remarketing = 0
+         WHERE id = ?`,
+        {
+          replacements: [id_cliente],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+      await log(
+        `✅ Remarketing cancelado + enviar_remarketing=0 (respondió a RMK id=${remarketingEnviado.id}) cliente=${id_cliente}`,
+      );
+    } else {
+      await log(
+        `✅ Remarketing pendientes cancelados (sin envío previo, flag no tocado) cliente=${id_cliente}`,
+      );
+    }
   } catch (err) {
     await log(`⚠️ Error cancelando remarketing: ${err.message}`);
   }
@@ -820,28 +857,17 @@ async function programarRemarketingKanban({
   estado_contacto,
 }) {
   try {
-    // ⏱️ Solo config 242: skip si ya hay UN remarketing CREADO en las últimas 24h
-    //    (sin importar si fue cancelado, enviado o sigue pendiente)
-    if (Number(id_configuracion) === 242) {
-      const [yaProgramadoReciente] = await db.query(
-        `SELECT id, creado_en, enviado, cancelado
-         FROM remarketing_pendientes
-         WHERE id_cliente_chat_center = ?
-           AND id_configuracion = ?
-           AND creado_en > NOW() - INTERVAL 24 HOUR
-         LIMIT 1`,
-        {
-          replacements: [id_cliente, id_configuracion],
-          type: db.QueryTypes.SELECT,
-        },
-      );
+    // 🚫 Verificar si el cliente tiene el remarketing desactivado
+    const [clienteRM] = await db.query(
+      `SELECT enviar_remarketing FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    );
 
-      if (yaProgramadoReciente) {
-        await log(
-          `⏸️ [config 242] SKIP programarRemarketing — ya hay uno creado hace <24h (id=${yaProgramadoReciente.id}, enviado=${yaProgramadoReciente.enviado}, cancelado=${yaProgramadoReciente.cancelado}) cliente=${id_cliente}`,
-        );
-        return;
-      }
+    if (clienteRM && Number(clienteRM.enviar_remarketing) === 0) {
+      await log(
+        `🚫 SKIP programarRemarketing — cliente=${id_cliente} tiene enviar_remarketing=0`,
+      );
+      return;
     }
 
     const [configRM] = await db.query(

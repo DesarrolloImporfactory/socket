@@ -400,6 +400,7 @@ async function withLock(lockName, fn) {
       transaction: t,
     });
     if (!row || Number(row.got) !== 1) {
+      console.log(`🔒 [remarketing] NO adquirí lock "${lockName}"`);
       await t.rollback();
       return;
     }
@@ -519,13 +520,14 @@ async function handleRecordError(record, err, waba_id) {
 let isRunning = false;
 
 cron.schedule('*/1 * * * *', async () => {
+  console.log(`⏰ [remarketing] TICK ${new Date().toISOString()}`);
   if (isRunning) return;
 
   isRunning = true;
   try {
     await withLock('remarketing_cron_lock', async () => {
       // ⚠️ SOLO PRUEBA LOCAL — quitar antes de prod
-      /* const TEST_CLIENTE_ID = 410;
+      const TEST_CLIENTE_ID = 410;
       const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
@@ -540,9 +542,9 @@ cron.schedule('*/1 * * * *', async () => {
           replacements: [TEST_CLIENTE_ID],
           type: db.QueryTypes.SELECT,
         },
-      ); */
+      );
 
-      const pendientes = await db.query(
+      /* const pendientes = await db.query(
         `SELECT * FROM remarketing_pendientes 
          WHERE enviado = 0 
            AND cancelado = 0 
@@ -552,6 +554,10 @@ cron.schedule('*/1 * * * *', async () => {
          ORDER BY tiempo_disparo ASC
          LIMIT 50`,
         { type: db.QueryTypes.SELECT },
+      ); */
+
+      console.log(
+        `📋 [remarketing] query devolvió: ${pendientes.length} filas`,
       );
 
       if (!pendientes.length) return;
@@ -624,6 +630,22 @@ cron.schedule('*/1 * * * *', async () => {
             await db.query(
               `UPDATE remarketing_pendientes
                SET cancelado = 1, error_message = 'Estado cambió'
+               WHERE id = ?`,
+              { replacements: [record.id], type: db.QueryTypes.UPDATE },
+            );
+            continue;
+          }
+
+          // 2.5) Cliente con remarketing desactivado → cancelar sin enviar
+          if (Number(cliente.enviar_remarketing) === 0) {
+            console.log(
+              `🟦 [DEBUG] 🚫 Cliente id=${cliente.id} tiene enviar_remarketing=0 — cancelando`,
+            );
+            await db.query(
+              `UPDATE remarketing_pendientes
+               SET cancelado = 1,
+                   error_message = 'Cliente con enviar_remarketing=0',
+                   ultimo_intento_at = NOW()
                WHERE id = ?`,
               { replacements: [record.id], type: db.QueryTypes.UPDATE },
             );
@@ -1276,6 +1298,19 @@ cron.schedule('*/1 * * * *', async () => {
           // ══════════════════════════════════════════════════════
           const secuenciaActual = Number(record.secuencia || 1);
 
+          console.log(
+            `🟩 [SEQ] id=${record.id} secuenciaActual=${secuenciaActual} → buscando secuencia=${secuenciaActual + 1}`,
+          );
+          console.log(
+            `🟩 [SEQ]     id_configuracion=${record.id_configuracion}`,
+          );
+          console.log(
+            `🟩 [SEQ]     estado_contacto_origen="${record.estado_contacto_origen}"`,
+          );
+          console.log(
+            `🟩 [SEQ]     estado_destino_actual="${record.estado_destino || 'NULL'}"`,
+          );
+
           const [siguienteConfig] = await db.query(
             `SELECT * FROM configuracion_remarketing
              WHERE id_configuracion = ? 
@@ -1293,7 +1328,18 @@ cron.schedule('*/1 * * * *', async () => {
             },
           );
 
+          console.log(
+            `🟩 [SEQ] siguienteConfig=${siguienteConfig ? `ENCONTRADA (id=${siguienteConfig.id}, tiempo=${siguienteConfig.tiempo_espera_horas}h)` : 'NO ENCONTRADA'}`,
+          );
+
           if (siguienteConfig) {
+            console.log(
+              `🟩 [SEQ] ✅ Programando secuencia=${secuenciaActual + 1} para cliente=${record.id_cliente_chat_center}`,
+            );
+            console.log(
+              `🟩 [SEQ]     estado_contacto_origen del NUEVO record="${record.estado_destino || record.estado_contacto_origen}"`,
+            );
+
             await db.query(
               `UPDATE remarketing_pendientes
                SET cancelado = 1
@@ -1312,12 +1358,13 @@ cron.schedule('*/1 * * * *', async () => {
               },
             );
 
-            const minutos =
-              siguienteConfig.tiempo_espera_minutos != null
-                ? Number(siguienteConfig.tiempo_espera_minutos)
-                : Number(siguienteConfig.tiempo_espera_horas || 0) * 60;
+            const tiempoDisparo = new Date(
+              Date.now() + siguienteConfig.tiempo_espera_horas * 60 * 60 * 1000,
+            );
 
-            const tiempoDisparo = new Date(Date.now() + minutos * 60 * 1000);
+            console.log(
+              `🟩 [SEQ]     tiempo_disparo=${tiempoDisparo.toISOString()}`,
+            );
 
             await db.query(
               `INSERT INTO remarketing_pendientes
@@ -1357,6 +1404,33 @@ cron.schedule('*/1 * * * *', async () => {
                 ],
                 type: db.QueryTypes.INSERT,
               },
+            );
+
+            console.log(
+              `🟩 [SEQ] ✅ INSERT completado para secuencia=${secuenciaActual + 1}`,
+            );
+          } else {
+            console.log(
+              `🟩 [SEQ] ❌ NO se programó siguiente (query no encontró config para secuencia=${secuenciaActual + 1})`,
+            );
+            console.log(
+              `🟩 [SEQ] 🏁 Ciclo completo terminado → apagando enviar_remarketing del cliente=${record.id_cliente_chat_center}`,
+            );
+
+            // Fin del ciclo → apagar enviar_remarketing para que no se
+            // vuelva a programar nada hasta que el asesor lo reactive manualmente.
+            await db.query(
+              `UPDATE clientes_chat_center
+               SET enviar_remarketing = 0
+               WHERE id = ?`,
+              {
+                replacements: [record.id_cliente_chat_center],
+                type: db.QueryTypes.UPDATE,
+              },
+            );
+
+            console.log(
+              `🟩 [SEQ] ✅ enviar_remarketing=0 aplicado a cliente=${record.id_cliente_chat_center}`,
             );
           }
 
