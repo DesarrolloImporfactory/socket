@@ -494,6 +494,41 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
     created?.status,
   );
 
+  // ── Verificación post-creación: ¿Dropi guardó el número completo? ──
+  // El guard de arriba garantiza que NOSOTROS enviamos un teléfono válido,
+  // pero la API de Dropi a veces lo guarda con un dígito menos. Comparamos
+  // lo enviado contra lo que Dropi devolvió (o el detalle de la orden si el
+  // create no trae phone) y avisamos al front para que el agente lo corrija
+  // en Dropi de inmediato. Best-effort: nunca tumba la creación.
+  let telefono_alterado = null;
+  try {
+    const soloDigitos = (v) => String(v ?? '').replace(/\D/g, '');
+    const enviado = soloDigitos(payload.phone);
+    let guardado = created?.phone != null ? soloDigitos(created.phone) : null;
+
+    if (guardado === null && nuevoOrderId) {
+      const detalle = await dropiService.getOrderDetail({
+        integrationKey,
+        orderId: nuevoOrderId,
+        country_code: integration.country_code,
+      });
+      const objDet = detalle?.objects ?? detalle?.data ?? detalle;
+      if (objDet?.phone != null) guardado = soloDigitos(objDet.phone);
+    }
+
+    if (enviado && guardado !== null && guardado !== enviado) {
+      telefono_alterado = { enviado, guardado, orden: nuevoOrderId };
+      console.log(
+        `[Dropi] ⚠ Dropi alteró el teléfono en la orden ${nuevoOrderId}: enviado "${enviado}" → guardado "${guardado}"`,
+      );
+    }
+  } catch (verifyErr) {
+    console.log(
+      '[Dropi] verificación de teléfono post-create falló:',
+      verifyErr?.message,
+    );
+  }
+
   const creaComoPendienteConf =
     String(body.status || '')
       .trim()
@@ -513,7 +548,11 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
     );
   }
 
-  return norm.data; // devuelve solo la data limpia
+  // devuelve la data limpia + el aviso de teléfono alterado (si aplica)
+  if (telefono_alterado && norm.data && typeof norm.data === 'object') {
+    norm.data.telefono_alterado = telefono_alterado;
+  }
+  return norm.data;
 }
 
 /**
