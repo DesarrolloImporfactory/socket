@@ -9,6 +9,11 @@ const { protect } = require('../middlewares/auth.middleware');
 
 const { uploadExcel } = require('../middlewares/uploadExcel');
 
+const {
+  requireIdConfiguracion,
+  rejectNullIdConfiguracion,
+} = require('../middlewares/requireIdConfiguracion.middleware');
+
 router.use(protect);
 
 // routes/clientes_chat_center.routes.js
@@ -29,6 +34,7 @@ router.post(
 
 router.post(
   '/agregarNumeroChat',
+  requireIdConfiguracion,
   clientes_chat_centerController.agregarNumeroChat,
 );
 
@@ -97,8 +103,16 @@ router.get(
   '/listar_por_etiqueta',
   clientes_chat_centerController.listarClientesPorEtiqueta,
 );
-router.post('/agregar', clientes_chat_centerController.agregarCliente);
-router.put('/actualizar/:id', clientes_chat_centerController.actualizarCliente);
+router.post(
+  '/agregar',
+  requireIdConfiguracion,
+  clientes_chat_centerController.agregarCliente,
+);
+router.put(
+  '/actualizar/:id',
+  rejectNullIdConfiguracion,
+  clientes_chat_centerController.actualizarCliente,
+);
 router.delete('/eliminar/:id', clientes_chat_centerController.eliminarCliente);
 router.post('/eliminar', clientes_chat_centerController.eliminarClientesBulk); // bulk
 
