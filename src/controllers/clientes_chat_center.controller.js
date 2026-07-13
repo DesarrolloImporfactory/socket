@@ -17,6 +17,9 @@ const crypto = require('crypto');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { intentarEnviarEncuesta } = require('../utils/encuestaSatisfaccion');
 const ExcelJS = require('exceljs');
+const {
+  rellenarEmailClienteSiVacio,
+} = require('../services/imporsuitEmailSync.service');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -239,6 +242,10 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
     const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
       type: db.QueryTypes.SELECT,
     });
+
+    // Hook "al crear cliente": rellena email_cliente desde imporsuit si el
+    // número coincide con el whatsapp de una plataforma. No rompe si falla.
+    await rellenarEmailClienteSiVacio({ id: lastId, celular: telefono });
 
     return res.status(200).json({
       status: 200,
@@ -1156,11 +1163,14 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const searchMode = String(req.query.search_mode ?? '')
     .trim()
     .toLowerCase();
-  const phoneDigits = String(req.query.phone ?? req.query.q ?? '').replace(
-    /\D/g,
-    '',
-  );
-  const isPhoneSearch = searchMode === 'phone' && phoneDigits.length >= 5;
+  const qRaw = String(req.query.q ?? '').trim();
+  const phoneDigits = String(req.query.phone ?? qRaw).replace(/\D/g, '');
+  // Estilo WhatsApp: buscar por número si el front marcó phone O si lo tecleado
+  // "parece teléfono" (solo dígitos/espacios/+()-.) con al menos 4 dígitos. Un
+  // nombre con números (ej. "Ana2024") lleva letras → NO entra a modo teléfono.
+  const looksLikePhone = qRaw !== '' && /^[\d\s+()\-.]+$/.test(qRaw);
+  const isPhoneSearch =
+    (searchMode === 'phone' || looksLikePhone) && phoneDigits.length >= 4;
 
   // ── Helper: parsear comma-separated a array limpio ──
   const parseCSV = (raw) => {
@@ -1296,7 +1306,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
     return r;
   };
 
-  const buildDataSql = (whereSql) => `
+  const buildDataSql = (whereSql, orderPrefix = '') => `
     SELECT
       c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
       c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente,
@@ -1320,7 +1330,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
     LEFT JOIN etiquetas_custom_chat_center ecc
       ON ecc.id = c.id_etiqueta_ciclo AND ecc.deleted_at IS NULL
     WHERE ${whereSql}
-    ORDER BY ${orderBy}
+    ORDER BY ${orderPrefix}${orderBy}
     LIMIT ? OFFSET ?;
   `;
 
@@ -1329,19 +1339,34 @@ exports.listarClientes = catchAsync(async (req, res) => {
   let mode = 'list';
 
   if (isPhoneSearch) {
-    // celular_rev = REVERSE(digitos). Buscar por sufijo = prefijo sobre el reverso.
+    // Búsqueda de número tipo WhatsApp, RÁPIDA (por índice):
+    //  - PREFIJO: el número EMPIEZA por lo tecleado → celular_cliente LIKE 'dig%'
+    //             (índice idx_celular_cliente)
+    //  - SUFIJO:  el número TERMINA en lo tecleado   → celular_rev LIKE 'rev%'
+    //             (índice idx_ccc_cfg_celrev; celular_rev = dígitos invertidos)
+    // Ambos usan índice → instantáneo aun en configs con decenas de miles de
+    // contactos. Cubre la gran mayoría de búsquedas (empieza/termina), incluidos
+    // los casos donde antes el número DESAPARECÍA al ir borrando dígitos.
+    //
+    // Solo si esto da 0 filas se cae al SUBSTRING (contiene en el medio), que es
+    // full scan y poco frecuente.
     const rev = phoneDigits.split('').reverse().join('');
 
-    // 1) RÁPIDO (índice idx_ccc_cfg_celrev): el número TERMINA en lo tecleado.
-    mode = 'phone:suffix';
-    rows = await mark('data_suffix_ms', () =>
-      db.query(buildDataSql(`${baseWhere} AND c.celular_rev LIKE ?`), {
-        replacements: [...params, `${rev}%`, limit, offset],
-        type: db.QueryTypes.SELECT,
-      }),
+    // 1) RÁPIDO: empieza-por O termina-en (ambos por índice)
+    mode = 'phone:prefix_suffix';
+    rows = await mark('data_pref_suf_ms', () =>
+      db.query(
+        buildDataSql(
+          `${baseWhere} AND (c.celular_cliente LIKE ? OR c.celular_rev LIKE ?)`,
+        ),
+        {
+          replacements: [...params, `${phoneDigits}%`, `${rev}%`, limit, offset],
+          type: db.QueryTypes.SELECT,
+        },
+      ),
     );
 
-    // 2) FALLBACK (scan, lento): CONTIENE lo tecleado en cualquier parte del número.
+    // 2) FALLBACK (full scan, raro): contiene en cualquier parte del número
     if (rows.length === 0) {
       mode = 'phone:contains';
       rows = await mark('data_contains_ms', () =>
@@ -1478,6 +1503,12 @@ exports.agregarCliente = catchAsync(async (req, res, next) => {
   const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
     type: db.QueryTypes.SELECT,
   });
+
+  // Hook "al crear cliente": si no se envió email, intenta rellenarlo desde
+  // imporsuit cuando el número coincide con el whatsapp de una plataforma.
+  if (!email_cliente) {
+    await rellenarEmailClienteSiVacio({ id: lastId, celular: celular_cliente });
+  }
 
   const [created] = await db.query(
     `SELECT *

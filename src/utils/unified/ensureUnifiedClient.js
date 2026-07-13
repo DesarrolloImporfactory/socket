@@ -2,6 +2,9 @@ const ClientesChatCenter = require('../../models/clientes_chat_center.model');
 const {
   crearClienteConRoundRobinUnDepto,
 } = require('../webhook_whatsapp/round_robin');
+const {
+  rellenarEmailClienteSiVacio,
+} = require('../../services/imporsuitEmailSync.service');
 
 async function ensureUnifiedClient({
   id_configuracion,
@@ -56,6 +59,13 @@ async function ensureUnifiedClient({
     });
 
     cliente = rr?.cliente || null;
+
+    // Hook "al crear cliente": si es WA y se acaba de crear, intenta rellenar
+    // email_cliente desde imporsuit (match por whatsapp de plataforma). No bloquea
+    // ni rompe el flujo si falla.
+    if (cliente?.id && source === 'wa' && phone) {
+      await rellenarEmailClienteSiVacio({ id: cliente.id, celular: phone });
+    }
   } else {
     // 4) Completar nombre si vino vacío
     const n = (nombre_cliente || '').trim();
