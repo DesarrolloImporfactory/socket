@@ -56,6 +56,41 @@ const getActiveSubscriptionIdByUser = async (id_usuario) => {
   return u?.stripe_subscription_id || null;
 };
 
+//  Helper: fallback para resolver id_usuario cuando la sub NO trae metadata.id_usuario
+//  (subs creadas a mano en el dashboard de Stripe llegan con metadata vacía).
+//  stripe_subscription_id es único por usuario en BD, así que el match es confiable.
+const resolverIdUsuarioPorStripe = async (subscriptionId, customerId) => {
+  if (subscriptionId) {
+    const [[u]] = await db.query(
+      `SELECT id_usuario
+       FROM usuarios_chat_center
+       WHERE stripe_subscription_id = ?
+       LIMIT 1`,
+      { replacements: [subscriptionId] },
+    );
+    if (u?.id_usuario) return Number(u.id_usuario);
+  }
+  if (customerId) {
+    const [[u]] = await db.query(
+      `SELECT id_usuario, stripe_subscription_id
+       FROM usuarios_chat_center
+       WHERE id_costumer = ?
+       LIMIT 1`,
+      { replacements: [customerId] },
+    );
+    // Por customer solo si el usuario no apunta a OTRA suscripción distinta
+    if (
+      u?.id_usuario &&
+      (!u.stripe_subscription_id ||
+        !subscriptionId ||
+        u.stripe_subscription_id === subscriptionId)
+    ) {
+      return Number(u.id_usuario);
+    }
+  }
+  return null;
+};
+
 // Columnas válidas para addons (seguridad: el UPDATE interpola el nombre)
 const ADDON_COLUMNS_PERMITIDAS = new Set([
   'conexiones_adicionales',
@@ -327,6 +362,19 @@ exports.stripeWebhook = async (req, res) => {
         }
 
         if (!id_usuario) {
+          id_usuario = await resolverIdUsuarioPorStripe(
+            subscriptionId,
+            customerId,
+          );
+          if (id_usuario) {
+            console.log(
+              '[stripe] id_usuario fallback(BD sub/customer):',
+              id_usuario,
+            );
+          }
+        }
+
+        if (!id_usuario) {
           console.log(
             '[stripe] WARNING: id_usuario not found. Skipping usuarios_chat_center update.',
           );
@@ -473,7 +521,7 @@ exports.stripeWebhook = async (req, res) => {
         // =========
         const sqlUserUpdate = `
           UPDATE usuarios_chat_center
-          SET id_plan = ?,
+          SET id_plan = COALESCE(?, id_plan),
               estado = 'activo',
               fecha_inicio = COALESCE(fecha_inicio, ?),
               fecha_renovacion = ?,
@@ -652,6 +700,19 @@ exports.stripeWebhook = async (req, res) => {
               : null;
           } catch (e) {
             console.log('[stripe] subscriptions.retrieve failed:', e?.message);
+          }
+        }
+
+        if (!id_usuario) {
+          id_usuario = await resolverIdUsuarioPorStripe(
+            subscriptionId,
+            customerId,
+          );
+          if (id_usuario) {
+            console.log(
+              '[stripe] id_usuario fallback(BD sub/customer):',
+              id_usuario,
+            );
           }
         }
 
@@ -839,7 +900,19 @@ exports.stripeWebhook = async (req, res) => {
         const subscriptionId = sub.id || null;
         const customerId = sub.customer || null;
 
-        const id_usuario = Number(sub.metadata?.id_usuario) || null;
+        let id_usuario = Number(sub.metadata?.id_usuario) || null;
+        if (!id_usuario) {
+          id_usuario = await resolverIdUsuarioPorStripe(
+            subscriptionId,
+            customerId,
+          );
+          if (id_usuario) {
+            console.log(
+              '[stripe] id_usuario fallback(BD sub/customer):',
+              id_usuario,
+            );
+          }
+        }
 
         const cancelAtPeriodEnd = sub.cancel_at_period_end ? 1 : 0;
         const cancelAt = sub.cancel_at ? new Date(sub.cancel_at * 1000) : null;
