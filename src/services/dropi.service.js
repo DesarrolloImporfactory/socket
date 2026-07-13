@@ -34,19 +34,41 @@ function getDropiHttp(country_code) {
     // socket + historial) para no reventar el rate-limit por IP.
     const limiter = getLimiter(code);
 
+    // Diagnóstico: separar tiempo en cola (limitador) vs tiempo HTTP real.
+    const SLOW_MS = Number(process.env.DROPI_LOG_SLOW_MS) || 1500;
+    const logSlow = (config, httpMs, extra = '') => {
+      const queueMs = config?.__queueMs ?? 0;
+      if (queueMs >= SLOW_MS || httpMs >= SLOW_MS) {
+        console.log(
+          `[dropi ${code}] ${config?.method?.toUpperCase()} ${config?.url} cola=${queueMs}ms http=${httpMs}ms${extra}`,
+        );
+      }
+    };
+
     instance.interceptors.request.use(async (config) => {
-      await limiter.acquire();
+      const t0 = Date.now();
+      await limiter.acquire(
+        `${config?.method?.toUpperCase()} ${config?.url}`,
+      );
       config.__dropiSlot = true;
+      config.__queueMs = Date.now() - t0;
+      config.__sentAt = Date.now();
       return config;
     });
 
     instance.interceptors.response.use(
       (response) => {
         if (response?.config?.__dropiSlot) limiter.release();
+        logSlow(response?.config, Date.now() - (response?.config?.__sentAt || Date.now()));
         return response;
       },
       (error) => {
         if (error?.config?.__dropiSlot) limiter.release();
+        logSlow(
+          error?.config,
+          Date.now() - (error?.config?.__sentAt || Date.now()),
+          ` ERROR=${error?.response?.status || error?.code || error?.message}`,
+        );
         return Promise.reject(error);
       },
     );

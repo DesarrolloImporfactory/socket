@@ -24,21 +24,27 @@
 
 const MAX_CONCURRENT = Number(process.env.DROPI_MAX_CONCURRENT) || 2;
 const MIN_TIME_MS = Number(process.env.DROPI_MIN_TIME_MS) || 400;
+// Umbral para loggear esperas largas en cola (diagnóstico de lentitud)
+const LOG_WAIT_MS = Number(process.env.DROPI_LOG_WAIT_MS) || 1500;
 
 class RateLimiter {
-  constructor({ maxConcurrent, minTime }) {
+  constructor({ maxConcurrent, minTime, name }) {
     this.maxConcurrent = Math.max(1, maxConcurrent);
     this.minTime = Math.max(0, minTime);
+    this.name = name || 'default';
     this.active = 0;
     this.lastStart = 0;
     this.queue = [];
     this.timer = null;
   }
 
-  /** Devuelve una promesa que resuelve cuando hay un slot disponible. */
-  acquire() {
+  /**
+   * Devuelve una promesa que resuelve cuando hay un slot disponible.
+   * `label` es opcional, solo para diagnóstico en logs (ej. "POST /products/index").
+   */
+  acquire(label = '') {
     return new Promise((resolve) => {
-      this.queue.push(resolve);
+      this.queue.push({ resolve, label, enqueuedAt: Date.now() });
       this._drain();
     });
   }
@@ -65,10 +71,18 @@ class RateLimiter {
       return;
     }
 
-    const resolve = this.queue.shift();
+    const item = this.queue.shift();
     this.active++;
     this.lastStart = Date.now();
-    resolve();
+
+    const waited = this.lastStart - item.enqueuedAt;
+    if (waited >= LOG_WAIT_MS) {
+      console.log(
+        `[dropiLimiter ${this.name}] espera en cola ${waited}ms | pendientes=${this.queue.length} activos=${this.active} | ${item.label}`,
+      );
+    }
+
+    item.resolve();
 
     // Intentar arrancar el siguiente respetando minTime (se auto-agenda).
     this._drain();
@@ -83,6 +97,7 @@ function getLimiter(country_code) {
     limiters[code] = new RateLimiter({
       maxConcurrent: MAX_CONCURRENT,
       minTime: MIN_TIME_MS,
+      name: code,
     });
   }
   return limiters[code];

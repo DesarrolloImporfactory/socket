@@ -20,6 +20,7 @@ const {
   syncCatalogoTodasColumnasConfig,
 } = require('../services/syncCatalogoKanbanColumna.service');
 const dropiService = require('../services/dropi.service');
+const { getProductosConCache } = require('../utils/dropiProductsCache');
 
 const {
   convertLocalFileToJpg,
@@ -717,6 +718,8 @@ const toInt = (v) => {
 const str = (v) => (v == null ? '' : String(v));
 
 exports.listarProductosDropi = catchAsync(async (req, res, next) => {
+  const t0 = Date.now();
+
   const id_configuracion = toInt(req.body?.id_configuracion);
   if (!id_configuracion)
     return next(new AppError('id_configuracion es requerido', 400));
@@ -737,12 +740,26 @@ exports.listarProductosDropi = catchAsync(async (req, res, next) => {
     keywords: str(req.body?.keywords || ''),
   };
 
-  const dropiResponse = await dropiService.listProductsIndex({
-    integrationKey,
-    payload,
-    country_code: integration.country_code,
-  });
-  return res.json({ isSuccess: true, data: dropiResponse });
+  // Key por integración (no por país): la respuesta de /products/index puede
+  // variar según la key (productos privados del dueño), así que no se comparte
+  // caché entre integraciones distintas.
+  const cacheKey = `prod|${integration.id}|${JSON.stringify(payload)}`;
+
+  const { data: dropiResponse, source } = await getProductosConCache(
+    cacheKey,
+    () =>
+      dropiService.listProductsIndex({
+        integrationKey,
+        payload,
+        country_code: integration.country_code,
+      }),
+  );
+
+  console.log(
+    `[listarProductosDropi] conf=${id_configuracion} fuente=${source} total=${Date.now() - t0}ms`,
+  );
+
+  return res.json({ isSuccess: true, data: dropiResponse, cache: source });
 });
 
 const DROPI_SOURCE = 'DROPI';
