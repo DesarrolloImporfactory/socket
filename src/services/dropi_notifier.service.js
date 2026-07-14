@@ -477,6 +477,20 @@ function buildRutaArchivo(order, estadoConfig) {
   };
 }
 
+/**
+ * Meta rechaza parámetros de template con \n, \t o 4+ espacios seguidos
+ * (error 132000) y con texto vacío. Las direcciones de agencia que manda
+ * Dropi a veces traen TABs (caso real: orden 6077513, "AGENCIA CUENCA_...\t...")
+ * y tumbaban el envío en silencio para ESA orden en cada corrida.
+ */
+function sanitizeParamText(text) {
+  return String(text ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/ {4,}/g, '   ')
+    .trim()
+    .slice(0, 1024);
+}
+
 function buildTemplateComponents(parametrosJson, order) {
   const config = safeJsonParse(parametrosJson, null);
   if (!config) return [];
@@ -486,14 +500,16 @@ function buildTemplateComponents(parametrosJson, order) {
       type: 'body',
       parameters: config.body.map((varName) => ({
         type: 'text',
-        text: resolveVariable(varName, order) || '',
+        // '-' porque Meta también rechaza params vacíos
+        text: sanitizeParamText(resolveVariable(varName, order)) || '-',
       })),
     });
   }
   if (Array.isArray(config.buttons) && config.buttons.length > 0) {
     for (const btn of config.buttons) {
       const idx = btn.index != null ? btn.index : 0;
-      const value = resolveVariable(btn.variable || '', order) || '';
+      const value =
+        sanitizeParamText(resolveVariable(btn.variable || '', order)) || '';
       components.push({
         type: 'button',
         sub_type: 'url',
@@ -1290,6 +1306,15 @@ async function procesarTemplates({
       await new Promise((r) => setTimeout(r, DELAY_BETWEEN_WA_SENDS));
     } catch (err) {
       errores++;
+      // Sin este log era imposible saber POR QUÉ una orden nunca envió:
+      // el reclamo se libera al fallar y no queda rastro en la BD.
+      const metaErr = err?.response?.data?.error;
+      console.error(
+        `[dropi-notifier] fallo envío orden ${order.id} (cfg ${id_configuracion}, estado "${order.status}"):`,
+        metaErr
+          ? `code=${metaErr.code} subcode=${metaErr.error_subcode || '-'} ${metaErr.message}`
+          : err.message,
+      );
       if (isMetaRateLimit(err)) await new Promise((r) => setTimeout(r, 30000));
     }
   }
