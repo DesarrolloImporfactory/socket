@@ -9,6 +9,7 @@ const Etiquetas_asignadas = require('../models/etiquetas_asignadas.model');
 const Etiquetas_chat_center = require('../models/etiquetas_chat_center.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
 
+const bcrypt = require('bcrypt');
 const {
   obtenerOCrearStripeCustomer,
 } = require('./../utils/stripe/crear_customer');
@@ -18,7 +19,8 @@ const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
 const catchAsync = require('../utils/catchAsync');
 
 exports.listarUsuarios = catchAsync(async (req, res, next) => {
-  const { id_usuario } = req.body;
+  // El id_usuario sale de la sesión, no del body (evita listar cuentas ajenas)
+  const id_usuario = req.sessionUser.id_usuario;
 
   const sub_usuarios_chat_center = await Sub_usuarios_chat_center.findAll({
     where: { id_usuario, suspendido: 0 },
@@ -44,8 +46,8 @@ exports.listarUsuarios = catchAsync(async (req, res, next) => {
 });
 
 exports.agregarUsuario = catchAsync(async (req, res, next) => {
-  const { id_usuario, usuario, password, email, nombre_encargado, rol } =
-    req.body;
+  const { usuario, password, email, nombre_encargado, rol } = req.body;
+  const id_usuario = req.sessionUser.id_usuario;
 
   // Validar campos obligatorios
   if (
@@ -104,6 +106,55 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
+  // El subusuario debe existir y pertenecer a la cuenta del admin logueado
+  const target = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
+  if (!target) {
+    return res.status(404).json({
+      status: 'fail',
+      message: 'Subusuario no encontrado',
+    });
+  }
+  if (Number(target.id_usuario) !== Number(req.sessionUser.id_usuario)) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'Este usuario no pertenece a tu cuenta',
+    });
+  }
+
+  const esSelf =
+    Number(id_sub_usuario) === Number(req.sessionUser.id_sub_usuario);
+  const cambiaRol = String(rol) !== String(target.rol);
+
+  // Un admin no puede bajarse su propio rol (se quedaría fuera de /usuarios)
+  if (esSelf && cambiaRol) {
+    return res.status(400).json({
+      status: 'fail',
+      code: 'SELF_ROLE_CHANGE',
+      message:
+        'No puedes cambiar tu propio rol. Pídele a otro administrador que lo haga.',
+    });
+  }
+
+  // No dejar la cuenta sin administradores al degradar a otro admin
+  if (cambiaRol && target.rol === 'administrador') {
+    const otrosAdmins = await Sub_usuarios_chat_center.count({
+      where: {
+        id_usuario: target.id_usuario,
+        rol: 'administrador',
+        suspendido: 0,
+        id_sub_usuario: { [Op.ne]: id_sub_usuario },
+      },
+    });
+    if (otrosAdmins === 0) {
+      return res.status(400).json({
+        status: 'fail',
+        code: 'LAST_ADMIN',
+        message:
+          'No puedes quitar el rol al último administrador de la cuenta.',
+      });
+    }
+  }
+
   // Validar usuario o email en uso por otro subusuario
   const existeSubUsuario = await Sub_usuarios_chat_center.findOne({
     where: {
@@ -129,7 +180,32 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
   };
 
   // ✅ Solo incluir password si viene con contenido
+  // Cambiar una contraseña exige confirmar la contraseña actual del admin
+  // logueado (evita que alguien con la sesión abierta cambie claves).
   if (typeof password === 'string' && password.trim().length > 0) {
+    const { password_actual } = req.body;
+    if (
+      typeof password_actual !== 'string' ||
+      password_actual.trim().length === 0
+    ) {
+      return res.status(400).json({
+        status: 'fail',
+        code: 'CURRENT_PASSWORD_REQUIRED',
+        message:
+          'Para cambiar la contraseña debes confirmar tu contraseña actual.',
+      });
+    }
+    const coincide = await bcrypt.compare(
+      password_actual,
+      req.sessionUser.password || '',
+    );
+    if (!coincide) {
+      return res.status(401).json({
+        status: 'fail',
+        code: 'CURRENT_PASSWORD_INVALID',
+        message: 'Tu contraseña actual no es correcta.',
+      });
+    }
     dataToUpdate.password = password.trim();
   }
 
@@ -152,6 +228,16 @@ exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Un admin no puede eliminarse a sí mismo (quedaría fuera del sistema)
+  if (Number(id_sub_usuario) === Number(req.sessionUser.id_sub_usuario)) {
+    return res.status(400).json({
+      status: 'fail',
+      code: 'SELF_DELETE',
+      message:
+        'No puedes eliminar tu propio usuario. Pídele a otro administrador que lo haga.',
+    });
+  }
+
   const subUsuario = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
 
   if (!subUsuario) {
@@ -159,6 +245,34 @@ exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
       status: 'fail',
       message: 'Subusuario no encontrado',
     });
+  }
+
+  // Solo se pueden eliminar subusuarios de la propia cuenta
+  if (Number(subUsuario.id_usuario) !== Number(req.sessionUser.id_usuario)) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'Este usuario no pertenece a tu cuenta',
+    });
+  }
+
+  // No dejar la cuenta sin administradores
+  if (subUsuario.rol === 'administrador') {
+    const otrosAdmins = await Sub_usuarios_chat_center.count({
+      where: {
+        id_usuario: subUsuario.id_usuario,
+        rol: 'administrador',
+        suspendido: 0,
+        id_sub_usuario: { [Op.ne]: id_sub_usuario },
+      },
+    });
+    if (otrosAdmins === 0) {
+      return res.status(400).json({
+        status: 'fail',
+        code: 'LAST_ADMIN',
+        message:
+          'No puedes eliminar al último administrador de la cuenta.',
+      });
+    }
   }
 
   await subUsuario.destroy();
