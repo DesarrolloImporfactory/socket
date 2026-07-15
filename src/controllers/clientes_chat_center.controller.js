@@ -605,28 +605,73 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     cursors = {},
     search = {},
     filtros = {},
-    include_orphans = false, // ← NUEVO
+    include_orphans = false,
   } = req.body;
 
   if (!id_configuracion)
     return next(new AppError('Falta el id_configuracion', 400));
 
-  const ORPHANS_KEY = '__sin_clasificar'; // ← key fija para huérfanos
+  const ORPHANS_KEY = '__sin_clasificar';
+  const FT_MIN_TOKEN = 3; // innodb_ft_min_token_size (default 3)
 
-  // Columnas activas dinámicas
+  const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
+
+  // ── Helpers de búsqueda ──────────────────────────────────────────
+  const revStr = (s) => [...s].reverse().join('');
+
+  const toBooleanTerm = (term) =>
+    term
+      .replace(/[+\-><()~*"@]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= FT_MIN_TOKEN)
+      .map((w) => `+${w}*`)
+      .join(' ');
+
+  /** Elige la mejor estrategia según el término. null si no hay búsqueda. */
+  const buildSearchClause = (rawTerm) => {
+    const term = String(rawTerm || '').trim();
+    if (!term) return null;
+
+    const digits = term.replace(/\D/g, '');
+    const esTelefono = digits.length >= 4 && digits.length >= term.length - 3;
+
+    // Teléfono → sufijo invertido, usa idx_ccc_cfg_celrev
+    if (esTelefono) {
+      const clean = digits.replace(/^0+/, ''); // 0999… → 999…
+      return { frag: 'c.celular_rev LIKE ?', params: [`${revStr(clean)}%`] };
+    }
+
+    // Texto ≥3 chars → FULLTEXT (usa full_search_contact)
+    const bool = toBooleanTerm(term);
+    if (bool) {
+      return {
+        frag: `MATCH(c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente, c.telefono_limpio)
+               AGAINST (? IN BOOLEAN MODE)`,
+        params: [bool],
+      };
+    }
+
+    // 1-2 chars → LIKE por PREFIJO (barato, no infix)
+    return {
+      frag: '(c.nombre_cliente LIKE ? OR c.apellido_cliente LIKE ?)',
+      params: [`${term}%`, `${term}%`],
+    };
+  };
+
+  // ── Columnas activas ─────────────────────────────────────────────
   const columnasDB = await db.query(
     `SELECT estado_db FROM kanban_columnas
      WHERE id_configuracion = ? AND activo = 1 ORDER BY orden ASC`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const estadosValidos = new Set(columnasDB.map((c) => c.estado_db));
-  const estadosValidosArr = [...estadosValidos];
+  const estadosValidosArr = columnasDB.map((c) => c.estado_db);
+  const estadosValidos = new Set(estadosValidosArr);
 
-  // ⚠️ Cambio sutil: si llega array vacío, respetar (NO hacer fallback)
-  const keys = Array.isArray(columnKeys) ? columnKeys : [];
+  const keys = (Array.isArray(columnKeys) ? columnKeys : []).filter((k) =>
+    estadosValidos.has(k),
+  );
 
-  const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
-
+  // ── Filtros ──────────────────────────────────────────────────────
   const {
     id_encargado = null,
     bot_openia = null,
@@ -637,119 +682,192 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const fd = fecha_desde && DATE_RE.test(fecha_desde) ? fecha_desde : null;
   const fh = fecha_hasta && DATE_RE.test(fecha_hasta) ? fecha_hasta : null;
-  const conFechas = !!(fd || fh);
+  const has = (v) => v !== null && v !== '' && v !== undefined;
 
-  // ── Builder común de joins + filtros (reutilizable para columnas y huérfanos) ──
-  const buildCommonClauses = (term) => {
-    const joinParams = [];
-    const joinFrags = [];
+  // ultimo_msg se mantiene como alias por compatibilidad con el front
+  const SELECT_COLS = `
+    c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
+    c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado,
+    c.ultimo_mensaje_at, c.ultimo_mensaje_at AS ultimo_msg
+  `;
 
-    if (conFechas) {
-      joinFrags.push(`
-        LEFT JOIN (
-          SELECT celular_recibe AS mid, MAX(created_at) AS ultimo_msg
-          FROM   mensajes_clientes
-          WHERE  id_configuracion = ?
-          GROUP  BY celular_recibe
-        ) lm ON lm.mid = c.id
-      `);
-      joinParams.push(id_configuracion);
+  /** WHERE común. Sin LOWER(): la collation utf8mb4_unicode_ci ya es case-insensitive. */
+  const buildBaseWhere = (term) => {
+    const conds = [
+      'c.id_configuracion = ?',
+      'c.deleted_at IS NULL',
+      'c.propietario <> 1',
+    ];
+    const params = [id_configuracion];
+
+    const s = buildSearchClause(term);
+    if (s) {
+      conds.push(s.frag);
+      params.push(...s.params);
     }
-
-    const whereParams = [];
-    const whereConds = [];
-
-    whereConds.push('c.id_configuracion = ?');
-    whereParams.push(id_configuracion);
-    whereConds.push('c.propietario <> 1');
-
-    if (term) {
-      whereConds.push(
-        '(LOWER(c.nombre_cliente) LIKE ? OR LOWER(c.apellido_cliente) LIKE ? OR c.celular_cliente LIKE ?)',
-      );
-      const l = `%${term}%`;
-      whereParams.push(l, l, `%${term}%`);
+    if (has(id_encargado)) {
+      conds.push('c.id_encargado = ?');
+      params.push(Number(id_encargado));
     }
-    if (
-      id_encargado !== null &&
-      id_encargado !== '' &&
-      id_encargado !== undefined
-    ) {
-      whereConds.push('c.id_encargado = ?');
-      whereParams.push(Number(id_encargado));
-    }
-    if (bot_openia !== null && bot_openia !== '' && bot_openia !== undefined) {
-      whereConds.push('c.bot_openia = ?');
-      whereParams.push(Number(bot_openia));
+    if (has(bot_openia)) {
+      conds.push('c.bot_openia = ?');
+      params.push(Number(bot_openia));
     }
     if (fd) {
-      whereConds.push('DATE(lm.ultimo_msg) >= ?');
-      whereParams.push(fd);
+      conds.push('c.ultimo_mensaje_at >= ?');
+      params.push(`${fd} 00:00:00`);
     }
     if (fh) {
-      whereConds.push('DATE(lm.ultimo_msg) <= ?');
-      whereParams.push(fh);
+      conds.push('c.ultimo_mensaje_at < DATE_ADD(?, INTERVAL 1 DAY)');
+      params.push(fh);
     }
-
-    return { joinParams, joinFrags, whereParams, whereConds };
+    return { conds, params };
   };
 
-  // ── Fetch columna normal ──
-  const fetchColumn = async (colKey) => {
-    if (!estadosValidos.has(colKey))
-      return {
-        key: colKey,
-        items: [],
-        total: 0,
-        page: { has_more: false, next_cursor: null, limit: pageSize },
-      };
+  /** Condición de huérfano: estado fuera de las columnas activas */
+  const orphanCond = (params) => {
+    if (!estadosValidosArr.length) return '1=1';
+    const ph = estadosValidosArr.map(() => '?').join(',');
+    params.push(...estadosValidosArr);
+    return `(c.estado_contacto IS NULL OR c.estado_contacto = '' OR c.estado_contacto NOT IN (${ph}))`;
+  };
 
-    const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
-    const term = (search?.[colKey] || '').trim().toLowerCase();
+  const emptyCol = () => ({
+    items: [],
+    total: 0,
+    page: { has_more: false, next_cursor: null, limit: pageSize },
+  });
 
-    const { joinParams, joinFrags, whereParams, whereConds } =
-      buildCommonClauses(term);
+  const hayCursores = Object.values(cursors || {}).some(Boolean);
 
-    // Filtro específico de columna normal
-    whereConds.push('LOWER(c.estado_contacto) = ?');
-    whereParams.push(colKey);
+  // ═════════════════════════════════════════════════════════════════
+  // RUTA A · sin cursores → 1 SOLA QUERY para todo el tablero
+  //          (carga inicial + búsqueda global = el 95% del tráfico)
+  // ═════════════════════════════════════════════════════════════════
+  if (!hayCursores) {
+    const term = String(
+      search?.[keys[0]] ?? search?.[ORPHANS_KEY] ?? '',
+    ).trim();
 
-    const whereStr = whereConds.join(' AND ');
-    const joinStr = joinFrags.join(' ');
+    const wantedBuckets = include_orphans ? [...keys, ORPHANS_KEY] : keys;
+    if (!wantedBuckets.length)
+      return res.status(200).json({ success: true, data: {} });
 
-    // COUNT total
-    const [countRow] = await db.query(
-      `SELECT COUNT(*) AS total FROM clientes_chat_center c ${joinStr} WHERE ${whereStr}`,
-      {
-        replacements: [...joinParams, ...whereParams],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-    const total = Number(countRow?.total || 0);
+    const { conds, params: whereParams } = buildBaseWhere(term);
+    const params = [...whereParams];
 
-    // SELECT paginado (con cursor)
-    const paginatedParams = [...whereParams];
-    const paginatedConds = [...whereConds];
-    if (cursorId) {
-      paginatedConds.push('c.id < ?');
-      paginatedParams.push(cursorId);
+    // Restringimos en el WHERE interno para NO rankear filas que no queremos
+    const bucketWhere = [];
+    if (keys.length) {
+      const ph = keys.map(() => '?').join(',');
+      bucketWhere.push(`c.estado_contacto IN (${ph})`);
+      params.push(...keys);
+    }
+    if (include_orphans) bucketWhere.push(orphanCond(params));
+    if (bucketWhere.length) conds.push(`(${bucketWhere.join(' OR ')})`);
+
+    // Expresión "bucket" = a qué columna pertenece cada fila
+    const bucketParams = [];
+    let bucketExpr = `'${ORPHANS_KEY}'`;
+    if (keys.length) {
+      const ph = keys.map(() => '?').join(',');
+      bucketExpr = `CASE WHEN c.estado_contacto IN (${ph})
+                         THEN c.estado_contacto ELSE '${ORPHANS_KEY}' END`;
+      bucketParams.push(...keys);
     }
 
     const sql = `
-      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
-             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
-             ${conFechas ? ', lm.ultimo_msg' : ''}
-      FROM   clientes_chat_center c
-      ${joinStr}
-      WHERE  ${paginatedConds.join(' AND ')}
-      ORDER  BY c.id DESC
-      LIMIT  ?
+      SELECT * FROM (
+        SELECT ${SELECT_COLS},
+               ${bucketExpr} AS bucket,
+               ROW_NUMBER() OVER (PARTITION BY ${bucketExpr} ORDER BY c.id DESC) AS rn,
+               COUNT(*)     OVER (PARTITION BY ${bucketExpr})                    AS total
+        FROM   clientes_chat_center c
+        WHERE  ${conds.join(' AND ')}
+      ) t
+      WHERE t.rn <= ?
+      ORDER BY t.bucket, t.id DESC
     `;
 
+    // ⚠️ Orden de params: bucket(SELECT) → bucket(ROW_NUMBER) → bucket(COUNT) → WHERE → LIMIT
     const rows = await db.query(sql, {
-      replacements: [...joinParams, ...paginatedParams, pageSize + 1],
+      replacements: [
+        ...bucketParams,
+        ...bucketParams,
+        ...bucketParams,
+        ...params,
+        pageSize + 1,
+      ],
       type: db.QueryTypes.SELECT,
     });
+
+    const data = {};
+    wantedBuckets.forEach((k) => {
+      data[k] = emptyCol();
+    });
+
+    const porBucket = {};
+    rows.forEach((r) => {
+      if (!porBucket[r.bucket]) porBucket[r.bucket] = [];
+      porBucket[r.bucket].push(r);
+    });
+
+    Object.entries(porBucket).forEach(([k, arr]) => {
+      const total = Number(arr[0]?.total || 0);
+      const has_more = arr.length > pageSize;
+      const items = (has_more ? arr.slice(0, pageSize) : arr).map((row) => {
+        const { bucket, rn, total: _t, ...rest } = row;
+        return rest;
+      });
+      const last = items[items.length - 1];
+      data[k] = {
+        items,
+        total,
+        page: {
+          has_more,
+          next_cursor: last ? encodeCursor({ id: last.id }) : null,
+          limit: pageSize,
+        },
+      };
+    });
+
+    return res.status(200).json({ success: true, data });
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // RUTA B · con cursor → loadMore de columna puntual.
+  //          1 query por columna pedida, sin COUNT.
+  // ═════════════════════════════════════════════════════════════════
+  const fetchOne = async (colKey) => {
+    const esOrphan = colKey === ORPHANS_KEY;
+    if (!esOrphan && !estadosValidos.has(colKey))
+      return { key: colKey, ...emptyCol() };
+
+    const cursorId = decodeCursor(cursors?.[colKey] || '')?.id || null;
+    const term = String(search?.[colKey] || '').trim();
+
+    const { conds, params } = buildBaseWhere(term);
+
+    if (esOrphan) {
+      conds.push(orphanCond(params));
+    } else {
+      conds.push('c.estado_contacto = ?'); // sin LOWER → usa idx_ccc_conf_estado_id
+      params.push(colKey);
+    }
+
+    if (cursorId) {
+      conds.push('c.id < ?');
+      params.push(cursorId);
+    }
+
+    const rows = await db.query(
+      `SELECT ${SELECT_COLS}
+       FROM   clientes_chat_center c
+       WHERE  ${conds.join(' AND ')}
+       ORDER  BY c.id DESC
+       LIMIT  ?`,
+      { replacements: [...params, pageSize + 1], type: db.QueryTypes.SELECT },
+    );
 
     const has_more = rows.length > pageSize;
     const items = has_more ? rows.slice(0, pageSize) : rows;
@@ -758,7 +876,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     return {
       key: colKey,
       items,
-      total,
+      total: null, // el front conserva el total de la carga inicial
       page: {
         has_more,
         next_cursor: last ? encodeCursor({ id: last.id }) : null,
@@ -767,88 +885,8 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     };
   };
 
-  // ── NUEVO: Fetch huérfanos ──
-  const fetchOrphans = async () => {
-    const cursorId = decodeCursor(cursors?.[ORPHANS_KEY] || '')?.id || null;
-    const term = (search?.[ORPHANS_KEY] || '').trim().toLowerCase();
-
-    const { joinParams, joinFrags, whereParams, whereConds } =
-      buildCommonClauses(term);
-
-    // Filtro específico de huérfanos:
-    // - estado_contacto NOT IN (estados válidos)
-    // - O estado_contacto IS NULL
-    // - O estado_contacto = ''
-    if (estadosValidosArr.length > 0) {
-      const placeholders = estadosValidosArr.map(() => '?').join(',');
-      whereConds.push(
-        `(LOWER(c.estado_contacto) NOT IN (${placeholders}) OR c.estado_contacto IS NULL OR c.estado_contacto = '')`,
-      );
-      whereParams.push(
-        ...estadosValidosArr.map((s) => String(s).toLowerCase()),
-      );
-    } else {
-      // Si no hay columnas activas, TODOS son huérfanos (no aplicar filtro extra)
-    }
-
-    const whereStr = whereConds.join(' AND ');
-    const joinStr = joinFrags.join(' ');
-
-    // COUNT total
-    const [countRow] = await db.query(
-      `SELECT COUNT(*) AS total FROM clientes_chat_center c ${joinStr} WHERE ${whereStr}`,
-      {
-        replacements: [...joinParams, ...whereParams],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-    const total = Number(countRow?.total || 0);
-
-    // SELECT paginado (con cursor)
-    const paginatedParams = [...whereParams];
-    const paginatedConds = [...whereConds];
-    if (cursorId) {
-      paginatedConds.push('c.id < ?');
-      paginatedParams.push(cursorId);
-    }
-
-    const sql = `
-      SELECT c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
-             c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado
-             ${conFechas ? ', lm.ultimo_msg' : ''}
-      FROM   clientes_chat_center c
-      ${joinStr}
-      WHERE  ${paginatedConds.join(' AND ')}
-      ORDER  BY c.id DESC
-      LIMIT  ?
-    `;
-
-    const rows = await db.query(sql, {
-      replacements: [...joinParams, ...paginatedParams, pageSize + 1],
-      type: db.QueryTypes.SELECT,
-    });
-
-    const has_more = rows.length > pageSize;
-    const items = has_more ? rows.slice(0, pageSize) : rows;
-    const last = items[items.length - 1];
-
-    return {
-      key: ORPHANS_KEY,
-      items,
-      total,
-      page: {
-        has_more,
-        next_cursor: last ? encodeCursor({ id: last.id }) : null,
-        limit: pageSize,
-      },
-    };
-  };
-
-  // Ejecutar en paralelo
-  const tasks = keys.map(fetchColumn);
-  if (include_orphans) tasks.push(fetchOrphans());
-
-  const results = await Promise.all(tasks);
+  const keysConCursor = Object.keys(cursors).filter((k) => cursors[k]);
+  const results = await Promise.all(keysConCursor.map(fetchOne));
 
   const data = {};
   results.forEach((r) => {
@@ -1360,7 +1398,13 @@ exports.listarClientes = catchAsync(async (req, res) => {
           `${baseWhere} AND (c.celular_cliente LIKE ? OR c.celular_rev LIKE ?)`,
         ),
         {
-          replacements: [...params, `${phoneDigits}%`, `${rev}%`, limit, offset],
+          replacements: [
+            ...params,
+            `${phoneDigits}%`,
+            `${rev}%`,
+            limit,
+            offset,
+          ],
           type: db.QueryTypes.SELECT,
         },
       ),
