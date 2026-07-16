@@ -1021,4 +1021,4 @@ async function autoCrearOrdenDropi({
   }
 }
 
-module.exports = { autoCrearOrdenDropi };
+module.exports = { autoCrearOrdenDropi, matchEnLista };

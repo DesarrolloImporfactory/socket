@@ -14,6 +14,7 @@ const dropiOrdersService = require('../services/dropiOrders.service');
 const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 const { isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
+const { matchEnLista } = require('../services/dropiAutoOrder.service');
 
 /* =========================
    Helpers
@@ -3741,15 +3742,30 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
 
 /* ═══════════════════════════════════════════════════════════
    Conversaciones por producto
-   orden.phone → clientes_chat_center.celular_cliente (últimos 9 díg)
-   = # de chats distintos que pidieron ese producto
+   conversaciones      → orden.phone → clientes_chat_center.celular_cliente
+                         (últimos 9 díg) = chats distintos que PIDIERON el
+                         producto (solo compradores, por eso ≈ ordenes)
+   conversacionesTotal → lo anterior ∪ chats que ENTRARON por un anuncio
+                         del producto en el periodo (cliente_productos_ad).
+                         El anuncio se atribuye a un producto en cascada:
+                         a) headline = nombre del producto,
+                         b) mayoría: qué compraron los clientes de ese
+                            anuncio (headlines genéricos tipo "envío
+                            gratis" quedan cubiertos por esta vía),
+                         c) mensaje prellenado del CTWA ("Quiero comprar
+                            el ..."), fila por fila.
+   pctConfirmacion     → conversaciones ÷ conversacionesTotal × 100
+                         (de los que escribieron, cuántos pidieron)
    ═══════════════════════════════════════════════════════════ */
 async function attachProductConversations({
   id_configuracion,
   orderRows,
   productos,
+  from,
+  until,
 }) {
   const productKeys = new Map(); // name → Set(phoneKey)
+  const productsByKey = new Map(); // phoneKey → Set(product name)
   const allKeys = new Set();
 
   for (const o of orderRows) {
@@ -3765,40 +3781,136 @@ async function attachProductConversations({
       ks.forEach((k) => {
         productKeys.get(name).add(k);
         allKeys.add(k);
+        if (!productsByKey.has(k)) productsByKey.set(k, new Set());
+        productsByKey.get(k).add(name);
       });
     }
   }
-  if (!allKeys.size) return;
-
-  const orConditions = [...allKeys].map((k) => ({
-    celular_cliente: { [Op.like]: `%${k}` },
-  }));
-  const clientes = await ClientesChatCenter.findAll({
-    where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
-    attributes: ['id', 'celular_cliente'],
-    raw: true,
-  });
 
   const clientByKey = new Map();
-  for (const c of clientes) {
-    for (const k of phoneKeys(c.celular_cliente)) {
-      if (!clientByKey.has(k)) clientByKey.set(k, c.id);
+  if (allKeys.size) {
+    const orConditions = [...allKeys].map((k) => ({
+      celular_cliente: { [Op.like]: `%${k}` },
+    }));
+    const clientes = await ClientesChatCenter.findAll({
+      where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
+      attributes: ['id', 'celular_cliente'],
+      raw: true,
+    });
+    for (const c of clientes) {
+      for (const k of phoneKeys(c.celular_cliente)) {
+        if (!clientByKey.has(k)) clientByKey.set(k, c.id);
+      }
+    }
+  }
+
+  // ── Chats que entraron por anuncio en el periodo (CTWA) ──
+  // .catch → la tabla puede no existir aún en este entorno.
+  const [adRows] = await db
+    .query(
+      `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
+              cpa.mensaje_cliente, cc.celular_cliente
+         FROM cliente_productos_ad cpa
+         JOIN clientes_chat_center cc
+           ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
+        WHERE cpa.id_configuracion = :idCfg
+          AND cpa.created_at BETWEEN :from AND :until`,
+      { replacements: { idCfg: id_configuracion, from, until } },
+    )
+    .catch(() => [[]]);
+
+  // Agrupar filas por anuncio (source_id; sin él, por headline)
+  const adGroups = new Map(); // adKey → { headline, rows, clients: Map(id → keys) }
+  for (const r of adRows) {
+    if (!r.id_cliente) continue;
+    const adKey = r.source_id || `h:${r.headline || ''}`;
+    if (!adGroups.has(adKey))
+      adGroups.set(adKey, { headline: r.headline, rows: [], clients: new Map() });
+    const g = adGroups.get(adKey);
+    g.rows.push(r);
+    if (!g.clients.has(r.id_cliente))
+      g.clients.set(r.id_cliente, phoneKeys(r.celular_cliente));
+  }
+
+  const totalByProduct = new Map(); // product name → Set(id_cliente)
+  const addConv = (name, cid) => {
+    if (!totalByProduct.has(name)) totalByProduct.set(name, new Set());
+    totalByProduct.get(name).add(cid);
+  };
+  const msgMatch = new Map(); // mensaje → product name | null (cache)
+  const matchMensaje = (msg) => {
+    const key = String(msg || '').trim();
+    if (!key) return null;
+    if (!msgMatch.has(key)) {
+      const prod = matchEnLista(productos, key, (p) => p.name);
+      msgMatch.set(key, prod ? prod.name : null);
+    }
+    return msgMatch.get(key);
+  };
+
+  for (const g of adGroups.values()) {
+    // a) headline = nombre del producto
+    let prodName =
+      matchEnLista(productos, g.headline, (p) => p.name)?.name || null;
+
+    // b) mayoría: producto que compraron los clientes de este anuncio
+    if (!prodName) {
+      const tally = new Map();
+      let links = 0;
+      for (const ks of g.clients.values()) {
+        const bought = new Set();
+        for (const k of ks) {
+          for (const name of productsByKey.get(k) || []) bought.add(name);
+        }
+        for (const name of bought) {
+          tally.set(name, (tally.get(name) || 0) + 1);
+          links += 1;
+        }
+      }
+      let best = null;
+      let bestN = 0;
+      for (const [name, n] of tally) {
+        if (n > bestN) {
+          best = name;
+          bestN = n;
+        }
+      }
+      if (best && bestN >= 2 && bestN / links >= 0.6) prodName = best;
+    }
+
+    if (prodName) {
+      for (const cid of g.clients.keys()) addConv(prodName, cid);
+      continue;
+    }
+
+    // c) anuncio sin resolver → mensaje prellenado, fila por fila
+    for (const r of g.rows) {
+      const name = matchMensaje(r.mensaje_cliente);
+      if (name) addConv(name, r.id_cliente);
     }
   }
 
   for (const p of productos) {
-    const keys = productKeys.get(p.name);
-    if (!keys) {
-      p.conversaciones = 0;
-      continue;
-    }
-    const cset = new Set();
-    for (const k of keys) {
+    const buyers = new Set();
+    for (const k of productKeys.get(p.name) || []) {
       const cid = clientByKey.get(k);
-      if (cid) cset.add(cid);
+      if (cid) buyers.add(cid);
     }
-    p.conversaciones = cset.size;
+    p.conversaciones = buyers.size;
+
+    const total = new Set(buyers);
+    for (const cid of totalByProduct.get(p.name) || []) total.add(cid);
+    p.conversacionesTotal = total.size;
+    p.pctConfirmacion =
+      p.conversacionesTotal > 0
+        ? Math.round((p.conversaciones / p.conversacionesTotal) * 10000) / 100
+        : null;
   }
+
+  // true → hubo tráfico de anuncios CTWA en el periodo; sin esto,
+  // conversacionesTotal ≈ compradores y el % de confirmación engaña
+  // (el front oculta esas columnas e invita a conectar la cuenta ads).
+  return adRows.length > 0;
 }
 
 /* Conversaciones por canal: clientes de chat distintos vinculados por
@@ -3858,8 +3970,15 @@ async function countCanalConversaciones({
    false → canal = shop_type crudo de Dropi (comportamiento original),
            para comparar métricas mientras shopify_ordenes_webhook se llena.
    true  → una orden solo cuenta como Shopify si hace match con una orden
-           real del webhook (teléfono + total ±0.5 + ventana 72h). */
-const VALIDAR_SHOPIFY_CON_WEBHOOK = false;
+           real del webhook (teléfono + total ±0.5 + ventana 72h).
+   Encendido 2026-07-16: el shop_type de Dropi dejó de ser confiable en
+   ambos sentidos — marca SHOPIFY ventas de WA y, peor, órdenes que SÍ son
+   de Shopify llegan como LUCIDBOT/null cuando entran por integradores
+   (cfg 277: 0 órdenes 'SHOPIFY' desde el 1/jul pese a vender por Shopify;
+   con el webhook matchean 13/77 en 48h). Solo aplica a tiendas con filas
+   en shopify_ordenes_webhook dentro del rango; el resto sigue con el
+   shop_type crudo. */
+const VALIDAR_SHOPIFY_CON_WEBHOOK = true;
 
 /* ═══════════════════════════════════════════════════════════
    getConnectionSummary
@@ -3886,6 +4005,7 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     orderRows,
     [botRows],
     [convRows],
+    [activeConvRows],
     [msgRows],
     [carritoRows],
     [dailyRows],
@@ -3921,6 +4041,17 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       `SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS dia, COUNT(*) AS n FROM clientes_chat_center
         WHERE id_configuracion = :idCfg AND deleted_at IS NULL
           AND created_at BETWEEN :from AND :until GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')`,
+      { replacements: repl },
+    ),
+    // Conversaciones ACTIVAS: clientes distintos que escribieron en el
+    // periodo (celular_recibe = id del cliente, pese al nombre). El KPI
+    // usa esto y no solo "nuevas": los clientes antiguos que vuelven a
+    // escribir también cuentan (los productos de abajo los incluyen, y
+    // sin esto la suma por producto podía superar al total del hero).
+    db.query(
+      `SELECT COUNT(DISTINCT celular_recibe) AS n FROM mensajes_clientes
+        WHERE id_configuracion = :idCfg AND deleted_at IS NULL AND rol_mensaje = 0
+          AND created_at BETWEEN :from AND :until`,
       { replacements: repl },
     ),
     // Mensajes entrantes por día (rol_mensaje = 0 → escribió el cliente)
@@ -4015,9 +4146,15 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
   const msgByDay = new Map(
     msgRows.map((r) => [String(r.dia), Number(r.n || 0)]),
   );
-  const totalConversaciones = convRows.reduce(
+  // Nuevas del periodo (para la serie diaria) vs activas (KPI del hero):
+  // activas ⊇ nuevas porque incluye antiguos que volvieron a escribir.
+  const nuevasConversaciones = convRows.reduce(
     (s, r) => s + Number(r.n || 0),
     0,
+  );
+  const totalConversaciones = Math.max(
+    Number(activeConvRows?.[0]?.n || 0),
+    nuevasConversaciones,
   );
   const totalMensajes = msgRows.reduce((s, r) => s + Number(r.n || 0), 0);
 
@@ -4197,8 +4334,14 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     .sort((a, b) => b.gananciaNeta - a.gananciaNeta);
 
   // Conversaciones por producto (sin conteo de mensajes) + por canal
-  const [, convPorCanal] = await Promise.all([
-    attachProductConversations({ id_configuracion, orderRows, productos }),
+  const [ctwaActivo, convPorCanal] = await Promise.all([
+    attachProductConversations({
+      id_configuracion,
+      orderRows,
+      productos,
+      from: fromDt,
+      until: untilDt,
+    }),
     countCanalConversaciones({ id_configuracion, orderRows, esOrdenShopify }),
   ]);
 
@@ -4239,6 +4382,9 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
         }))
         .sort((a, b) => b.count - a.count),
       productos,
+      // true → hubo conversaciones desde anuncios CTWA en el periodo;
+      // false → el front no muestra conv. totales/% conf. por producto
+      ctwaActivo,
       metaAds: {
         conectado: !!metaAdsRows?.length,
         accountName: metaAdsRows?.[0]?.ad_account_name || null,
@@ -4256,4 +4402,5 @@ exports._internal = {
   getIntegrationKey,
   buildCacheKey,
   buildCacheWhere,
+  attachProductConversations,
 };
