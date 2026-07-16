@@ -1204,22 +1204,6 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
   });
 });
 
-// desactivar_remarketing — igual que antes
-exports.desactivar_remarketing = catchAsync(async (req, res, next) => {
-  const { id_configuracion, estado_contacto } = req.body;
-
-  await db.query(
-    `DELETE FROM configuracion_remarketing
-     WHERE id_configuracion = ? AND estado_contacto = ?`,
-    {
-      replacements: [id_configuracion, estado_contacto],
-      type: db.QueryTypes.DELETE,
-    },
-  );
-
-  res.status(200).json({ status: '200', message: 'Remarketing desactivado' });
-});
-
 exports.desactivar_remarketing = catchAsync(async (req, res, next) => {
   const { id_configuracion, estado_contacto } = req.body;
 

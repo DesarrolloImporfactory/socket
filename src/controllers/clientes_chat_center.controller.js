@@ -160,6 +160,7 @@ exports.actualizar_enviar_remarketing = catchAsync(async (req, res, next) => {
   const { chatId, nuevoEstado } = req.body;
 
   try {
+    // Actualizar el flag
     await db.query(
       `UPDATE clientes_chat_center SET enviar_remarketing = ? WHERE id = ?`,
       {
@@ -167,6 +168,19 @@ exports.actualizar_enviar_remarketing = catchAsync(async (req, res, next) => {
         type: db.QueryTypes.UPDATE,
       },
     );
+
+    // Si se ACTIVÓ (0 → 1): limpiar historial de remarketing del cliente
+    // para que el sistema empiece un ciclo nuevo desde cero.
+    if (Number(nuevoEstado) === 1) {
+      await db.query(
+        `DELETE FROM remarketing_pendientes 
+         WHERE id_cliente_chat_center = ?`,
+        {
+          replacements: [chatId],
+          type: db.QueryTypes.DELETE,
+        },
+      );
+    }
 
     res.status(200).json({
       status: '200',
