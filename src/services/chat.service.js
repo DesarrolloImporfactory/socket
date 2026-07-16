@@ -127,6 +127,15 @@ class ChatService {
         whereClause += ` AND id_encargado = :selectedAsesor`;
       }
 
+      // Filtro producto del anuncio  ← NUEVO
+      if (filtros.selectedProductoAd?.value) {
+        if (filtros.selectedProductoAd.value === '__sin_producto__') {
+          whereClause += ` AND (ultimo_producto_ad IS NULL OR ultimo_producto_ad = '')`;
+        } else {
+          whereClause += ` AND ultimo_producto_ad = :selectedProductoAd`;
+        }
+      }
+
       if (filtros.selectedTab) {
         if (filtros.selectedTab === 'abierto') {
           whereClause += ` AND chat_cerrado = 0`;
@@ -249,6 +258,10 @@ class ChatService {
         ...(filtros.selectedAsesor?.value && {
           selectedAsesor: filtros.selectedAsesor.value,
         }),
+        ...(filtros.selectedProductoAd?.value &&
+          filtros.selectedProductoAd.value !== '__sin_producto__' && {
+            selectedProductoAd: filtros.selectedProductoAd.value,
+          }),
       };
 
       // Solo agregar id_sub_usuario si el rol no es 'administrador' o 'admin_limitado'

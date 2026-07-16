@@ -2912,6 +2912,9 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
   await workbook.commit();
 });
 
+const cacheProductosAd = new Map(); // id_configuracion -> { data, exp }
+const TTL_MS = 3 * 60 * 1000; // 3 min
+
 exports.productosAdDistintos = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.query.id_configuracion);
   if (!id_configuracion) {
@@ -2919,6 +2922,15 @@ exports.productosAdDistintos = catchAsync(async (req, res, next) => {
   }
 
   const q = String(req.query.q ?? '').trim();
+
+  // caché solo para la lista completa (sin q)
+  if (!q) {
+    const hit = cacheProductosAd.get(id_configuracion);
+    if (hit && hit.exp > Date.now()) {
+      return res.status(200).json({ status: 'success', data: hit.data });
+    }
+  }
+
   const limit = Math.min(2000, Math.max(1, Number(req.query.limit ?? 500)));
 
   const whereParts = [
@@ -2942,15 +2954,19 @@ exports.productosAdDistintos = catchAsync(async (req, res, next) => {
     LIMIT ?
   `;
 
+  // ← esto es lo que faltaba
   const rows = await db.query(sql, {
     replacements: [...params, limit],
     type: db.QueryTypes.SELECT,
   });
 
-  return res.status(200).json({
-    status: 'success',
-    data: rows.map((r) => r.producto),
-  });
+  const data = rows.map((r) => r.producto);
+
+  if (!q) {
+    cacheProductosAd.set(id_configuracion, { data, exp: Date.now() + TTL_MS });
+  }
+
+  return res.status(200).json({ status: 'success', data });
 });
 
 exports.obtenerOrigenAnuncio = catchAsync(async (req, res, next) => {
