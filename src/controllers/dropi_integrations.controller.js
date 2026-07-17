@@ -377,6 +377,31 @@ function phoneKeys(v) {
   return Array.from(new Set(keys));
 }
 
+/* Mapa teléfono→id_cliente del chat en UNA consulta: compara por los
+   últimos 9 dígitos (la misma semántica efectiva de phoneKeys: el
+   sufijo de 9 decide el match) en vez de cientos de LIKE '%...' en OR,
+   que obligaban a evaluar N patrones por cada fila de la config
+   (~1.4s vs ~0.1s medido en prod). Además tolera teléfonos guardados
+   con formato (+593 99...), que el LIKE crudo no matcheaba. */
+async function fetchClientPhoneMap(id_configuracion, keys) {
+  const keys9 = [...new Set([...keys].filter((k) => k.length === 9))];
+  const map = new Map();
+  if (!keys9.length) return map;
+  const [rows] = await db.query(
+    `SELECT id, celular_cliente FROM clientes_chat_center
+      WHERE id_configuracion = :idCfg AND deleted_at IS NULL
+        AND RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) IN (:keys)
+      ORDER BY id`,
+    { replacements: { idCfg: id_configuracion, keys: keys9 } },
+  );
+  for (const c of rows) {
+    for (const k of phoneKeys(c.celular_cliente)) {
+      if (!map.has(k)) map.set(k, c.id);
+    }
+  }
+  return map;
+}
+
 // =========================
 // Enriquecer órdenes (bulk)
 // =========================
@@ -2244,6 +2269,37 @@ async function computeStatsFromCache(cacheCtx, from, until) {
   // ── Análisis de devoluciones (escaneo bodega) ──
   const devolucionAnalysis = await analyzeDevolutions(cacheWhere, from, until);
 
+  // ── chat_id_cliente por teléfono para el botón "Abrir chat" del board.
+  // Solo aplica a integraciones con configuración (el chat vive por
+  // config); las user-level no tienen chat center asociado. Las entradas
+  // de retiroAgencia comparten referencia con ordersByStatus, pero las
+  // recorremos aparte por las que exceden el tope de 25 por estado.
+  if (cacheCtx.id_configuracion) {
+    const chatKeys = new Set();
+    const listas = [...Object.values(ordersByStatus), retiroAgencia];
+    for (const list of listas) {
+      for (const o of list) for (const k of phoneKeys(o.phone)) chatKeys.add(k);
+    }
+    if (chatKeys.size) {
+      const chatMap = await fetchClientPhoneMap(
+        cacheCtx.id_configuracion,
+        chatKeys,
+      );
+      for (const list of listas) {
+        for (const o of list) {
+          if (o.chat_id_cliente) continue;
+          for (const k of phoneKeys(o.phone)) {
+            const cid = chatMap.get(k);
+            if (cid) {
+              o.chat_id_cliente = cid;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   return {
     totalOrders,
     totalMoney,
@@ -3754,8 +3810,24 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
                             gratis" quedan cubiertos por esta vía),
                          c) mensaje prellenado del CTWA ("Quiero comprar
                             el ..."), fila por fila.
-   pctConfirmacion     → conversaciones ÷ conversacionesTotal × 100
-                         (de los que escribieron, cuántos pidieron)
+   pctConfirmacion     → depende del rubro del producto:
+     · con anuncios CTWA (el cliente escribe primero):
+         conversaciones ÷ conversacionesTotal
+         "de los que escribieron, cuántos pidieron"
+     · Shopify con webhook (NOSOTROS escribimos primero a confirmar):
+         confirmadas ÷ ordenes  (status ≠ PENDIENTE CONFIRMACION)
+         "de los pedidos, cuántos se confirmaron"; conversacionesTotal
+         = contactados (chats vinculados a órdenes del producto)
+     · sin ninguna de las dos señales → null ("—" en el front)
+     · FAMILIA de variantes: si los clientes de un mismo anuncio
+       compraron VARIOS productos (unidad + combos del mismo
+       producto), cada comprador cuenta en la fila de lo que
+       realmente compró (dato real del order_data) y el total de
+       conversaciones del anuncio se comparte a nivel familia:
+       pct = compraron alguna presentación ÷ escribieron.
+   pctConfirmacionTipo → 'chat' | 'ordenes' | 'familia' | null
+   familia / familiaN   → nombre del anuncio y nº de presentaciones
+                          (solo en filas tipo 'familia')
    ═══════════════════════════════════════════════════════════ */
 async function attachProductConversations({
   id_configuracion,
@@ -3763,6 +3835,9 @@ async function attachProductConversations({
   productos,
   from,
   until,
+  hasShopifyTruth = false,
+  clientByKey = null,
+  adRows = null,
 }) {
   const productKeys = new Map(); // name → Set(phoneKey)
   const productsByKey = new Map(); // phoneKey → Set(product name)
@@ -3787,37 +3862,28 @@ async function attachProductConversations({
     }
   }
 
-  const clientByKey = new Map();
-  if (allKeys.size) {
-    const orConditions = [...allKeys].map((k) => ({
-      celular_cliente: { [Op.like]: `%${k}` },
-    }));
-    const clientes = await ClientesChatCenter.findAll({
-      where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
-      attributes: ['id', 'celular_cliente'],
-      raw: true,
-    });
-    for (const c of clientes) {
-      for (const k of phoneKeys(c.celular_cliente)) {
-        if (!clientByKey.has(k)) clientByKey.set(k, c.id);
-      }
-    }
+  if (!clientByKey) {
+    clientByKey = await fetchClientPhoneMap(id_configuracion, allKeys);
   }
 
   // ── Chats que entraron por anuncio en el periodo (CTWA) ──
-  // .catch → la tabla puede no existir aún en este entorno.
-  const [adRows] = await db
-    .query(
-      `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
-              cpa.mensaje_cliente, cc.celular_cliente
-         FROM cliente_productos_ad cpa
-         JOIN clientes_chat_center cc
-           ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
-        WHERE cpa.id_configuracion = :idCfg
-          AND cpa.created_at BETWEEN :from AND :until`,
-      { replacements: { idCfg: id_configuracion, from, until } },
-    )
-    .catch(() => [[]]);
+  // Normalmente viene prefetcheada desde el Promise.all principal de
+  // getConnectionSummary (para no sumar su latencia en serie); el
+  // fallback consulta aquí. .catch → la tabla puede no existir aún.
+  if (!adRows) {
+    [adRows] = await db
+      .query(
+        `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
+                cpa.mensaje_cliente, cc.celular_cliente
+           FROM cliente_productos_ad cpa
+           JOIN clientes_chat_center cc
+             ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
+          WHERE cpa.id_configuracion = :idCfg
+            AND cpa.created_at BETWEEN :from AND :until`,
+        { replacements: { idCfg: id_configuracion, from, until } },
+      )
+      .catch(() => [[]]);
+  }
 
   // Agrupar filas por anuncio (source_id; sin él, por headline)
   const adGroups = new Map(); // adKey → { headline, rows, clients: Map(id → keys) }
@@ -3848,20 +3914,28 @@ async function attachProductConversations({
     return msgMatch.get(key);
   };
 
+  const familias = []; // { nombre, members:Set(name), clients:Set(cid) }
+
   for (const g of adGroups.values()) {
     // a) headline = nombre del producto
     let prodName =
       matchEnLista(productos, g.headline, (p) => p.name)?.name || null;
 
+    // compras REALES de cada cliente del anuncio (order_data)
+    const boughtByClient = new Map(); // cid → Set(product name)
+    for (const [cid, ks] of g.clients) {
+      const bought = new Set();
+      for (const k of ks) {
+        for (const name of productsByKey.get(k) || []) bought.add(name);
+      }
+      boughtByClient.set(cid, bought);
+    }
+
     // b) mayoría: producto que compraron los clientes de este anuncio
     if (!prodName) {
       const tally = new Map();
       let links = 0;
-      for (const ks of g.clients.values()) {
-        const bought = new Set();
-        for (const k of ks) {
-          for (const name of productsByKey.get(k) || []) bought.add(name);
-        }
+      for (const bought of boughtByClient.values()) {
         for (const name of bought) {
           tally.set(name, (tally.get(name) || 0) + 1);
           links += 1;
@@ -3879,7 +3953,27 @@ async function attachProductConversations({
     }
 
     if (prodName) {
-      for (const cid of g.clients.keys()) addConv(prodName, cid);
+      // ¿El anuncio vende una FAMILIA? (los clientes compraron otras
+      // presentaciones además de la que matchea el headline: unidad
+      // + combos del mismo producto)
+      const members = new Set([prodName]);
+      for (const bought of boughtByClient.values()) {
+        for (const name of bought) members.add(name);
+      }
+
+      if (members.size >= 2) {
+        // comprador → su producto REAL; el total del anuncio se
+        // comparte a nivel familia (los que no compraron no se
+        // pueden asignar a una presentación específica)
+        const fam = { nombre: g.headline || prodName, members, clients: new Set() };
+        for (const [cid, bought] of boughtByClient) {
+          fam.clients.add(cid);
+          for (const name of bought) addConv(name, cid);
+        }
+        familias.push(fam);
+      } else {
+        for (const cid of g.clients.keys()) addConv(prodName, cid);
+      }
       continue;
     }
 
@@ -3890,21 +3984,85 @@ async function attachProductConversations({
     }
   }
 
+  // Fusionar familias que comparten alguna presentación (varios
+  // anuncios del mismo producto → una sola familia)
+  const familiasMerged = [];
+  for (const fam of familias) {
+    const hit = familiasMerged.find((f) =>
+      [...fam.members].some((m) => f.members.has(m)),
+    );
+    if (hit) {
+      for (const m of fam.members) hit.members.add(m);
+      for (const c of fam.clients) hit.clients.add(c);
+    } else {
+      familiasMerged.push(fam);
+    }
+  }
+  const famByProduct = new Map(); // name → familia
+  for (const fam of familiasMerged) {
+    for (const name of fam.members) famByProduct.set(name, fam);
+  }
+
+  const buyersByProduct = new Map(); // name → Set(id_cliente con orden)
   for (const p of productos) {
     const buyers = new Set();
     for (const k of productKeys.get(p.name) || []) {
       const cid = clientByKey.get(k);
       if (cid) buyers.add(cid);
     }
+    buyersByProduct.set(p.name, buyers);
     p.conversaciones = buyers.size;
+  }
 
-    const total = new Set(buyers);
-    for (const cid of totalByProduct.get(p.name) || []) total.add(cid);
-    p.conversacionesTotal = total.size;
-    p.pctConfirmacion =
-      p.conversacionesTotal > 0
-        ? Math.round((p.conversaciones / p.conversacionesTotal) * 10000) / 100
+  for (const p of productos) {
+    const buyers = buyersByProduct.get(p.name);
+    const fam = famByProduct.get(p.name);
+    const adSet = totalByProduct.get(p.name);
+    if (fam) {
+      // Familia de variantes: el total del anuncio se comparte entre
+      // las presentaciones; el % mide cuántos de los que escribieron
+      // compraron ALGUNA presentación. "Con pedido" sigue siendo el
+      // dato real de ESTA fila.
+      const total = new Set(fam.clients);
+      const conAlguna = new Set();
+      for (const name of fam.members) {
+        for (const cid of buyersByProduct.get(name) || []) {
+          total.add(cid);
+          conAlguna.add(cid);
+        }
+      }
+      p.conversacionesTotal = total.size;
+      p.pctConfirmacion = total.size
+        ? Math.round((conAlguna.size / total.size) * 10000) / 100
         : null;
+      p.pctConfirmacionTipo = 'familia';
+      p.familia = fam.nombre;
+      p.familiaN = [...fam.members].filter((n) =>
+        buyersByProduct.has(n),
+      ).length;
+    } else if (adSet && adSet.size) {
+      // Rubro CTWA: el cliente escribe primero. Embudo:
+      // escribieron → pidieron.
+      const total = new Set(buyers);
+      for (const cid of adSet) total.add(cid);
+      p.conversacionesTotal = total.size;
+      p.pctConfirmacion = Math.round((buyers.size / total.size) * 10000) / 100;
+      p.pctConfirmacionTipo = 'chat';
+    } else if (hasShopifyTruth && p.ordenes > 0) {
+      // Rubro Shopify: NOSOTROS escribimos primero para confirmar el
+      // pedido COD. conversacionesTotal = contactados en el chat;
+      // el % mide cuántos pedidos quedaron confirmados.
+      p.conversacionesTotal = buyers.size;
+      p.pctConfirmacion =
+        Math.round(((p.confirmadas || 0) / p.ordenes) * 10000) / 100;
+      p.pctConfirmacionTipo = 'ordenes';
+    } else {
+      // Sin anuncios del producto ni webhook Shopify: no hay embudo
+      // medible; conv. totales ≈ compradores daría un 100% falso.
+      p.conversacionesTotal = null;
+      p.pctConfirmacion = null;
+      p.pctConfirmacionTipo = null;
+    }
   }
 
   // true → hubo tráfico de anuncios CTWA en el periodo; sin esto,
@@ -3920,6 +4078,7 @@ async function countCanalConversaciones({
   id_configuracion,
   orderRows,
   esOrdenShopify,
+  clientByKey = null,
 }) {
   const keysByCanal = { wa: new Set(), shopify: new Set() };
   const allKeys = new Set();
@@ -3939,20 +4098,8 @@ async function countCanalConversaciones({
   const out = { wa: 0, shopify: 0 };
   if (!allKeys.size) return out;
 
-  const orConditions = [...allKeys].map((k) => ({
-    celular_cliente: { [Op.like]: `%${k}` },
-  }));
-  const clientes = await ClientesChatCenter.findAll({
-    where: { id_configuracion, deleted_at: null, [Op.or]: orConditions },
-    attributes: ['id', 'celular_cliente'],
-    raw: true,
-  });
-
-  const clientByKey = new Map();
-  for (const c of clientes) {
-    for (const k of phoneKeys(c.celular_cliente)) {
-      if (!clientByKey.has(k)) clientByKey.set(k, c.id);
-    }
+  if (!clientByKey) {
+    clientByKey = await fetchClientPhoneMap(id_configuracion, allKeys);
   }
 
   for (const canal of ['wa', 'shopify']) {
@@ -4012,6 +4159,8 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     [prodRows],
     [metaAdsRows],
     [shopifyOrdRows],
+    [clientPhoneRows],
+    [ctwaAdRows],
   ] = await Promise.all([
     DropiOrdersCache.findAll({
       where: { id_configuracion, id_usuario: 0, order_created_at: dateRange },
@@ -4085,7 +4234,7 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     // Productos vendidos en el periodo (prorrateo dropshipper + imagen)
     db.query(
       `WITH order_subtotals AS (
-        SELECT c.id AS order_id, c.classified_status, c.total_order,
+        SELECT c.id AS order_id, c.classified_status, c.status, c.total_order,
           COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data,'$.shipping_amount')) AS DECIMAL(10,2)),0) AS shipping_amount,
           (SELECT SUM(x.qty * x.sp) FROM JSON_TABLE(c.order_data,'$.orderdetails[*]' COLUMNS (
             qty INT PATH '$.quantity', sp DECIMAL(10,2) PATH '$.product.sale_price')) AS x) AS subtotal_items
@@ -4095,6 +4244,7 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       SELECT jt.product_id, jt.product_name, jt.sku,
         MAX(jt.image) AS image,
         COUNT(DISTINCT os.order_id) AS ordenes,
+        COUNT(DISTINCT CASE WHEN os.status <> 'PENDIENTE CONFIRMACION' THEN os.order_id END) AS ordenes_confirmadas,
         SUM(jt.quantity) AS unidades,
         SUM(CASE WHEN os.classified_status='entregada' THEN 1 ELSE 0 END) AS ordenes_entregadas,
         SUM(CASE WHEN os.classified_status='devolucion' THEN 1 ELSE 0 END) AS devoluciones,
@@ -4137,7 +4287,47 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
         { replacements: repl },
       )
       .catch(() => [[]]),
+    // Clientes del chat cuyos teléfonos (últimos 9 dígitos) aparecen en
+    // las órdenes del rango. Mapa COMPARTIDO por attachProductConversations
+    // y countCanalConversaciones: antes cada una lanzaba su propio
+    // LIKE-OR de ~1.4s sobre clientes_chat_center.
+    db.query(
+      `SELECT cc.id, cc.celular_cliente
+         FROM clientes_chat_center cc
+        WHERE cc.id_configuracion = :idCfg AND cc.deleted_at IS NULL
+          AND RIGHT(REGEXP_REPLACE(cc.celular_cliente,'[^0-9]',''),9) IN (
+            SELECT DISTINCT RIGHT(REGEXP_REPLACE(o.phone,'[^0-9]',''),9)
+                     COLLATE utf8mb4_unicode_ci
+              FROM dropi_orders_cache o
+             WHERE o.id_configuracion = :idCfg AND o.id_usuario = 0
+               AND o.order_created_at BETWEEN :from AND :until
+               AND o.phone IS NOT NULL)
+        ORDER BY cc.id`,
+      { replacements: repl },
+    ),
+    // Chats entrados por anuncio CTWA (los usa attachProductConversations;
+    // prefetch aquí para que su ~0.5-1s corra en paralelo y no en serie).
+    // .catch → la tabla puede no existir aún en este entorno.
+    db
+      .query(
+        `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
+                cpa.mensaje_cliente, cc.celular_cliente
+           FROM cliente_productos_ad cpa
+           JOIN clientes_chat_center cc
+             ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
+          WHERE cpa.id_configuracion = :idCfg
+            AND cpa.created_at BETWEEN :from AND :until`,
+        { replacements: repl },
+      )
+      .catch(() => [[]]),
   ]);
+
+  const clientByKey = new Map();
+  for (const c of clientPhoneRows) {
+    for (const k of phoneKeys(c.celular_cliente)) {
+      if (!clientByKey.has(k)) clientByKey.set(k, c.id);
+    }
+  }
 
   const botOrderIds = new Set(botRows.map((r) => String(r.dropi_order_id)));
   const convByDay = new Map(
@@ -4316,6 +4506,7 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
         name: r.product_name || '(sin nombre)',
         image: r.image || null,
         ordenes: Number(r.ordenes || 0),
+        confirmadas: Number(r.ordenes_confirmadas || 0),
         unidades: Number(r.unidades || 0),
         entregadas: entregadasP,
         devoluciones: Number(r.devoluciones || 0),
@@ -4341,8 +4532,16 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       productos,
       from: fromDt,
       until: untilDt,
+      hasShopifyTruth,
+      clientByKey,
+      adRows: ctwaAdRows,
     }),
-    countCanalConversaciones({ id_configuracion, orderRows, esOrdenShopify }),
+    countCanalConversaciones({
+      id_configuracion,
+      orderRows,
+      esOrdenShopify,
+      clientByKey,
+    }),
   ]);
 
   return res.json({
@@ -4403,4 +4602,6 @@ exports._internal = {
   buildCacheKey,
   buildCacheWhere,
   attachProductConversations,
+  fetchClientPhoneMap,
+  computeStatsFromCache,
 };
