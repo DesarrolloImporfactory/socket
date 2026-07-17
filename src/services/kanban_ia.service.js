@@ -37,8 +37,8 @@ async function fetchAssistantInfo(assistant_id, api_key_openai) {
     );
     return {
       name: res.data?.name || 'sin_nombre',
-      model: res.data?.model || 'sin_modelo',
-      instructions_preview: (res.data?.instructions || '').slice(0, 300),
+      model: res.data?.model || 'gpt-4o-mini',
+      instructions: res.data?.instructions || '',
       instructions_length: (res.data?.instructions || '').length,
       tools: (res.data?.tools || []).map((t) => t.type).join(','),
     };
@@ -51,7 +51,10 @@ const {
   enviarMedioWhatsapp,
 } = require('../utils/webhook_whatsapp/enviarMultimedia');
 
-const { obtenerOCrearThreadId } = require('../services/obtener_thread.service');
+const {
+  obtenerUltimoResponseId,
+  guardarResponseId,
+} = require('../services/obtener_response.service');
 
 const servicioAppointments = require('../services/appointments.service');
 
@@ -141,6 +144,10 @@ async function procesarMensajeKanban(params) {
     accessToken,
     bloque_producto_referral,
   } = params;
+
+  // ── 0. Decidir qué API usar ───────────────────────────────
+  const USAR_RESPONSES_API = [10].includes(Number(id_configuracion));
+
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.nombre, kc.assistant_id, kc.activa_ia,
@@ -178,9 +185,7 @@ async function procesarMensajeKanban(params) {
   await log(
     `🤖 DEBUG ASSISTANT — columna="${columna.nombre}" id=${columna.assistant_id} name="${assistantInfo.name}" model="${assistantInfo.model}" tools=[${assistantInfo.tools}] instructions_len=${assistantInfo.instructions_length}`,
   );
-  await log(
-    `📝 DEBUG PROMPT (primeros 300 chars): ${assistantInfo.instructions_preview}`,
-  );
+  await log(`📝 Instructions len=${assistantInfo.instructions_length}`);
 
   // ── 2. Obtener acciones configuradas para esta columna ────
   const acciones = await db.query(
@@ -210,18 +215,34 @@ async function procesarMensajeKanban(params) {
     }
   };
 
-  // ── 3. Obtener thread del cliente ─────────────────────────
-  const id_thread = await obtenerOCrearThreadId(id_cliente, api_key_openai);
-  if (!id_thread) {
-    await log(`⚠️ No se pudo obtener thread para id_cliente=${id_cliente}`);
-    return { ok: false, motivo: 'sin_thread' };
-  }
+  // ── 3. Obtener contexto del cliente según API ─────────────
+  let previous_response_id = null;
+  let id_thread = null;
+  let headers_assistants = null;
 
-  const headers = {
-    Authorization: `Bearer ${api_key_openai}`,
-    'Content-Type': 'application/json',
-    'OpenAI-Beta': 'assistants=v2',
-  };
+  if (USAR_RESPONSES_API) {
+    previous_response_id = await obtenerUltimoResponseId(id_cliente);
+    await log(
+      previous_response_id
+        ? `🔗 Encadenando con previous_response_id=${previous_response_id}`
+        : `🆕 Primer mensaje del cliente, sin previous_response_id`,
+    );
+  } else {
+    const {
+      obtenerOCrearThreadId,
+    } = require('../services/obtener_thread.service');
+    id_thread = await obtenerOCrearThreadId(id_cliente, api_key_openai);
+    if (!id_thread) {
+      await log(`⚠️ No se pudo obtener thread para id_cliente=${id_cliente}`);
+      return { ok: false, motivo: 'sin_thread' };
+    }
+    headers_assistants = {
+      Authorization: `Bearer ${api_key_openai}`,
+      'Content-Type': 'application/json',
+      'OpenAI-Beta': 'assistants=v2',
+    };
+    await log(`🧵 Thread obtenido: ${id_thread}`);
+  }
 
   let bloqueContexto = '';
   let total_tokens = 0;
@@ -280,28 +301,36 @@ async function procesarMensajeKanban(params) {
     }
   }
 
-  // ── 7. Enviar contexto al thread (si hay) ─────────────────
-  if (bloqueContexto.trim()) {
+  // ── 7. Construir input / enviar al thread ─────────────────
+  let inputFinal = mensajeFinal;
+
+  if (USAR_RESPONSES_API) {
+    if (bloqueContexto.trim()) {
+      inputFinal = `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n${mensajeFinal}`;
+    }
+  } else {
+    if (bloqueContexto.trim()) {
+      await axios
+        .post(
+          `https://api.openai.com/v1/threads/${id_thread}/messages`,
+          {
+            role: 'user',
+            content: `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}`,
+          },
+          { headers: headers_assistants },
+        )
+        .catch(async (err) =>
+          log(`⚠️ Error enviando contexto: ${err.message}`),
+        );
+    }
     await axios
       .post(
         `https://api.openai.com/v1/threads/${id_thread}/messages`,
-        {
-          role: 'user',
-          content: `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}`,
-        },
-        { headers },
+        { role: 'user', content: mensajeFinal },
+        { headers: headers_assistants },
       )
-      .catch(async (err) => log(`⚠️ Error enviando contexto: ${err.message}`));
+      .catch(async (err) => log(`⚠️ Error enviando mensaje: ${err.message}`));
   }
-
-  // ── 8. Enviar mensaje del usuario ─────────────────────────
-  await axios
-    .post(
-      `https://api.openai.com/v1/threads/${id_thread}/messages`,
-      { role: 'user', content: mensajeFinal },
-      { headers },
-    )
-    .catch(async (err) => log(`⚠️ Error enviando mensaje: ${err.message}`));
 
   // ── Producto del anuncio: blindar precio en TODOS los turnos ──
   // Si el webhook ya mandó el bloque (primer mensaje del click), se usa.
@@ -345,21 +374,36 @@ async function procesarMensajeKanban(params) {
       );
     }
   }
-  /* } */
-  // ── 9. Ejecutar asistente principal ───────────────────────
+
+  // ── 9. Ejecutar ───────────────────────────────────────────
   let resultado;
   try {
-    resultado = await ejecutarAsistente({
-      id_thread,
-      assistant_id: columna.assistant_id,
-      mensaje: null,
-      max_tokens: columna.max_tokens || 500,
-      headers,
-      skip_send_message: true,
-      additional_instructions: instruccionesProducto || null,
-    });
+    if (USAR_RESPONSES_API) {
+      await log(`🚨 entro sin polling NUEVO SISTEMA`);
+      resultado = await ejecutarConResponsesAPI({
+        previous_response_id,
+        instructions: assistantInfo.instructions,
+        additional_instructions: instruccionesProducto || null,
+        input: inputFinal,
+        model: assistantInfo.model,
+        max_tokens: columna.max_tokens || 500,
+        vector_store_id: columna.vector_store_id || null,
+        api_key_openai,
+      });
+    } else {
+      await log(`🚨 entro con polling VIEJO SISTEMA`);
+      resultado = await ejecutarAsistente({
+        id_thread,
+        assistant_id: columna.assistant_id,
+        mensaje: null,
+        max_tokens: columna.max_tokens || 500,
+        headers: headers_assistants,
+        skip_send_message: true,
+        additional_instructions: instruccionesProducto || null,
+      });
+    }
   } catch (err) {
-    if (err.code === 'sin_saldo_openai') {
+    if (esSinSaldo(err) || err.code === 'sin_saldo_openai') {
       await log(`🚨 SIN SALDO OPENAI para config=${id_configuracion}`);
       await marcarOpenAIInactivo(
         id_configuracion,
@@ -367,12 +411,19 @@ async function procesarMensajeKanban(params) {
       );
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
+    await log(`❌ Error ejecutando asistente: ${err.message}`);
     throw err;
   }
 
   if (!resultado || !resultado.respuesta) {
     await log(`⚠️ Asistente sin respuesta para columna="${columna.nombre}"`);
     return { ok: false, motivo: 'sin_respuesta_asistente' };
+  }
+
+  // Guardar contexto según API
+  if (USAR_RESPONSES_API) {
+    await guardarResponseId(id_cliente, resultado.response_id);
+    await log(`💾 response_id guardado: ${resultado.response_id}`);
   }
 
   total_tokens += resultado.total_tokens;
@@ -584,6 +635,36 @@ function limpiarCitasFileSearch(textBlock) {
   );
 }
 
+function limpiarCitasResponsesAPI(text, annotations = []) {
+  if (!text) return '';
+  let texto = text;
+
+  const sortedAnns = [...annotations].sort(
+    (a, b) => (b.start_index || 0) - (a.start_index || 0),
+  );
+  for (const a of sortedAnns) {
+    if (
+      typeof a?.start_index === 'number' &&
+      typeof a?.end_index === 'number'
+    ) {
+      texto = texto.slice(0, a.start_index) + texto.slice(a.end_index);
+    }
+  }
+
+  texto = texto
+    .replace(/【[^】]*】/g, '')
+    .replace(/\[\d+:\d+†[^\]]*\]/g, '')
+    .replace(/\[source\]/gi, '')
+    .replace(/\[doc\d+\]/gi, '');
+
+  return texto
+    .replace(/[ \t]+([.,;:!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
 // ══════════════════════════════════════════════════════════════
 // ejecutarAsistente — polling OpenAI
 // ══════════════════════════════════════════════════════════════
@@ -677,6 +758,69 @@ async function ejecutarAsistente({
     }
     throw err;
   }
+}
+
+async function ejecutarConResponsesAPI({
+  previous_response_id,
+  instructions,
+  additional_instructions,
+  input,
+  model,
+  max_tokens,
+  vector_store_id,
+  api_key_openai,
+}) {
+  const headers = {
+    Authorization: `Bearer ${api_key_openai}`,
+    'Content-Type': 'application/json',
+  };
+
+  let finalInstructions = instructions || '';
+  if (additional_instructions) {
+    finalInstructions += '\n\n' + additional_instructions;
+  }
+
+  const tools = [];
+  if (vector_store_id) {
+    tools.push({ type: 'file_search', vector_store_ids: [vector_store_id] });
+  }
+
+  const body = {
+    model: model || 'gpt-4o-mini',
+    instructions: finalInstructions,
+    input,
+    store: true,
+    max_output_tokens: max_tokens || 500,
+  };
+
+  if (previous_response_id) {
+    body.previous_response_id = previous_response_id;
+  }
+
+  if (tools.length > 0) {
+    body.tools = tools;
+  }
+
+  const res = await axios.post('https://api.openai.com/v1/responses', body, {
+    headers,
+    timeout: 60000,
+  });
+
+  const response_id = res.data.id;
+  const total_tokens = res.data.usage?.total_tokens || 0;
+
+  const outputItems = res.data.output || [];
+  const messageItem = outputItems.find((item) => item.type === 'message');
+  const textContent = messageItem?.content?.find(
+    (c) => c.type === 'output_text',
+  );
+
+  const rawText = textContent?.text || '';
+  const annotations = textContent?.annotations || [];
+
+  const respuesta = limpiarCitasResponsesAPI(rawText, annotations);
+
+  return { respuesta, response_id, total_tokens };
 }
 
 // ══════════════════════════════════════════════════════════════
