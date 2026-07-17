@@ -1125,6 +1125,13 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       const r = lista[i];
       const secuencia = i + 1;
 
+      // Solo el ÚLTIMO mueve de columna (el cliente elige a dónde); los
+      // intermedios se quedan en su origen para no romper la cadena.
+      const esUltimo = secuencia === lista.length;
+      const estadoDestino = esUltimo
+        ? r.estado_destino || 'remarketing'
+        : estado_contacto;
+
       // Validar metodo_dentro_24h (defensive)
       const metodosValidos = ['ninguno', 'respuesta_rapida', 'ia'];
       const metodo = metodosValidos.includes(r.metodo_dentro_24h)
@@ -1163,7 +1170,7 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
             minutos,
             r.nombre_template,
             r.language_code || 'es',
-            r.estado_destino || null,
+            estadoDestino,
             r.header_format || null,
             r.header_media_url || null,
             r.header_media_name || null,

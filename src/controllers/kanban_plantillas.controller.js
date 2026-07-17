@@ -1075,7 +1075,12 @@ async function _aplicarRemarketingPorDefecto(
 
         const secuencia = sec.secuencia; // ya re-numerada 1..N
         const language_code = sec.language_code || 'es';
-        const estado_destino = sec.estado_destino || null;
+        // Solo el ÚLTIMO remarketing mueve de columna; los intermedios se
+        // quedan en su origen para no romper la cadena de secuencias.
+        const esUltimo = secuencia === secuencias.length;
+        const estado_destino = esUltimo
+          ? sec.estado_destino || 'remarketing'
+          : estado_contacto;
         const header_format = sec.header_format || null;
         const metodo_dentro_24h = sec.metodo_dentro_24h || 'ia';
         const prompt_ia =

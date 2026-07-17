@@ -564,6 +564,33 @@ cron.schedule('*/1 * * * *', async () => {
 
       console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
 
+      // ── Bot apagado → no ejecutar remarketing (saltar y esperar) ──
+      // Si el usuario apagó el bot en la vista Asistentes
+      // (openai_assistants.activo = 0, tipo 'ventas'), se entiende que no
+      // quiere que el asistente actúe en nada, remarketing incluido. Los
+      // pendientes de esas conexiones NO se envían ni se cancelan: quedan
+      // en cola y se reanudan solos cuando el bot se reactive (mientras
+      // sigan dentro de la ventana de 3 días del SELECT de arriba). Se
+      // resuelve en UNA consulta para no pegarle a la BD por cada record.
+      const configIdsPend = [
+        ...new Set(pendientes.map((p) => p.id_configuracion).filter(Boolean)),
+      ];
+      let botsApagados = new Set();
+      if (configIdsPend.length) {
+        const rowsApagados = await db.query(
+          `SELECT DISTINCT id_configuracion
+             FROM openai_assistants
+            WHERE id_configuracion IN (:ids)
+              AND tipo = 'ventas'
+              AND activo = 0
+              AND deleted_at IS NULL`,
+          { replacements: { ids: configIdsPend }, type: db.QueryTypes.SELECT },
+        );
+        botsApagados = new Set(
+          rowsApagados.map((r) => Number(r.id_configuracion)),
+        );
+      }
+
       let rateLimitHitsThisCycle = 0;
       const MAX_RATE_LIMIT_HITS = 5;
       const wabasAffectedThisCycle = new Set();
@@ -595,6 +622,16 @@ cron.schedule('*/1 * * * *', async () => {
             `⏸ [remarketing] ${rateLimitHitsThisCycle} rate limits — pausando ciclo`,
           );
           break;
+        }
+
+        // Bot apagado para esta conexión → saltar sin tocar el record
+        // (no enviado, no cancelado, no suma intentos): se reanuda solo
+        // cuando el bot se vuelva a encender.
+        if (botsApagados.has(Number(record.id_configuracion))) {
+          console.log(
+            `🟦 [DEBUG] ⏸ Bot apagado (openai_assistants.activo=0) para config=${record.id_configuracion} — se salta y espera`,
+          );
+          continue;
         }
 
         let wabaIdForLog = null;

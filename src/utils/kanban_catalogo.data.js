@@ -495,7 +495,8 @@ const REMARKETING_POR_DEFECTO = [
         tiempo_espera_minutos: 60, // 1h
         nombre_template: '', // sin plantilla → dentro de 24h usa IA
         language_code: 'es',
-        estado_destino: 'remarketing',
+        // Intermedio: no mueve de columna (solo el último va a remarketing).
+        estado_destino: 'contacto_inicial',
         header_format: null,
         metodo_dentro_24h: 'ia',
         prompt_ia:
@@ -529,7 +530,8 @@ const REMARKETING_POR_DEFECTO = [
         tiempo_espera_minutos: 180, // 3h
         nombre_template: '',
         language_code: 'es',
-        estado_destino: 'remarketing',
+        // Intermedio: no mueve de columna.
+        estado_destino: 'contacto_inicial',
         header_format: null,
         metodo_dentro_24h: 'ia',
         prompt_ia:
@@ -563,6 +565,7 @@ const REMARKETING_POR_DEFECTO = [
         tiempo_espera_minutos: 300, // 5h
         nombre_template: '',
         language_code: 'es',
+        // ÚLTIMO: este sí mueve al cliente a la columna remarketing.
         estado_destino: 'remarketing',
         header_format: null,
         metodo_dentro_24h: 'ia',
