@@ -419,6 +419,40 @@ exports.agregarConfiguracion = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Regla de unicidad: un número solo puede estar en UNA configuración
+  // activa a la vez (globalmente, no por usuario). El webhook de WhatsApp y
+  // el auto-orden enrutan por número; dos conexiones activas con el mismo
+  // número mandan los mensajes/órdenes a la conexión equivocada. Al
+  // suspender una conexión (ícono eliminar → suspendido = 1) el número queda
+  // libre de nuevo, para el mismo usuario o para cualquier otro.
+  // Comparación directa sobre la columna (usa el índice idx_telefono →
+  // ~1 fila) en vez de envolverla en REGEXP_REPLACE, que forzaba un full
+  // scan de ~1s y hacía que la petición se demorara / diera timeout. El
+  // front ya manda el número como solo-dígitos con prefijo de país, igual
+  // que como se guarda, así que la igualdad exacta es suficiente.
+  const telefonoDigitos = String(telefono).replace(/\D/g, '');
+  if (telefonoDigitos) {
+    const enUso = await db.query(
+      `SELECT id, id_usuario
+         FROM configuraciones
+        WHERE suspendido = 0
+          AND telefono = ?
+        LIMIT 1`,
+      { replacements: [telefonoDigitos], type: db.QueryTypes.SELECT },
+    );
+
+    if (enUso && enUso.length > 0) {
+      const mismoUsuario = Number(enUso[0].id_usuario) === Number(id_usuario);
+      return res.status(409).json({
+        status: 409,
+        code: 'TELEFONO_EN_USO',
+        message: mismoUsuario
+          ? 'Ya tienes una conexión activa con este número. Elimina la existente antes de volver a registrarlo.'
+          : 'Este número ya está en uso por otra cuenta. Debe eliminarse antes de poder registrarlo aquí.',
+      });
+    }
+  }
+
   try {
     // Generar clave única
     const key_imporsuit = generarClaveUnica();
@@ -453,6 +487,106 @@ function generarClaveUnica() {
   const randomStr = Math.random().toString(36).substring(2, 8);
   return `key_${Date.now()}_${randomStr}`;
 }
+
+// Editar SOLO nombre y teléfono de una conexión (para corregir un número
+// mal escrito sin tener que eliminarla y recrearla). Restricciones:
+//  - la conexión debe pertenecer al usuario y estar activa,
+//  - NO se puede editar el número si ya está vinculada a WhatsApp/Meta
+//    (id_telefono + id_whatsapp), porque el número ya está en uso real,
+//  - el nuevo número no puede chocar con otra conexión activa (misma regla
+//    de unicidad de agregarConfiguracion, excluyéndose a sí misma).
+exports.editarConexion = catchAsync(async (req, res, next) => {
+  const { id_configuracion, id_usuario, nombre_configuracion, telefono } =
+    req.body;
+
+  if (!id_configuracion || !id_usuario || !nombre_configuracion || !telefono) {
+    return res.status(400).json({
+      status: 400,
+      message: 'Faltan campos obligatorios para editar la conexión.',
+    });
+  }
+
+  // 1) Traer la conexión y validar pertenencia + estado
+  const rows = await db.query(
+    `SELECT id, id_usuario, id_telefono, id_whatsapp
+       FROM configuraciones
+      WHERE id = ? AND suspendido = 0`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!rows || rows.length === 0) {
+    return res.status(404).json({
+      status: 404,
+      message: 'No existe la conexión o fue eliminada.',
+    });
+  }
+  const cfg = rows[0];
+  if (Number(cfg.id_usuario) !== Number(id_usuario)) {
+    return res.status(403).json({
+      status: 403,
+      message: 'La conexión no pertenece a este usuario.',
+    });
+  }
+
+  // 2) Solo editable si NO está vinculada a WhatsApp (Meta)
+  const conectado = Boolean(
+    String(cfg.id_telefono || '').trim() &&
+      String(cfg.id_whatsapp || '').trim(),
+  );
+  if (conectado) {
+    return res.status(409).json({
+      status: 409,
+      code: 'CONEXION_CONECTADA',
+      message:
+        'No puedes cambiar el número de una conexión ya vinculada a WhatsApp. Desvincúlala primero.',
+    });
+  }
+
+  // 3) Unicidad del número (comparación directa con índice; excluye la
+  //    propia conexión). El front manda el número como solo-dígitos.
+  const telefonoDigitos = String(telefono).replace(/\D/g, '');
+  if (!telefonoDigitos) {
+    return res.status(400).json({
+      status: 400,
+      message: 'El número de teléfono no es válido.',
+    });
+  }
+  const enUso = await db.query(
+    `SELECT id
+       FROM configuraciones
+      WHERE suspendido = 0 AND telefono = ? AND id <> ?
+      LIMIT 1`,
+    {
+      replacements: [telefonoDigitos, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (enUso && enUso.length > 0) {
+    return res.status(409).json({
+      status: 409,
+      code: 'TELEFONO_EN_USO',
+      message:
+        'Este número ya está en uso por otra conexión activa. Debe eliminarse antes de poder registrarlo aquí.',
+    });
+  }
+
+  // 4) Update SOLO nombre y teléfono
+  await db.query(
+    `UPDATE configuraciones
+        SET nombre_configuracion = ?, telefono = ?, updated_at = NOW()
+      WHERE id = ?`,
+    { replacements: [nombre_configuracion, telefonoDigitos, id_configuracion] },
+  );
+
+  return res.status(200).json({
+    status: 200,
+    message: 'Conexión actualizada correctamente.',
+    data: {
+      id: id_configuracion,
+      nombre_configuracion,
+      telefono: telefonoDigitos,
+    },
+  });
+});
 
 exports.toggleSuspension = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion, suspendido } = req.body;

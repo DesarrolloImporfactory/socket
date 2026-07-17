@@ -88,6 +88,15 @@ router.post(
   configuracionesController.toggleSuspension,
 );
 
+// Editar nombre + teléfono de una conexión no vinculada (sin límite de
+// cupo: no crea conexión, solo corrige una existente).
+router.post(
+  '/editar_conexion',
+  ...imporchatGuard,
+  restrictToRoles('administrador'),
+  configuracionesController.editarConexion,
+);
+
 router.post(
   '/exportar_mensajes_xlsx',
   ...imporchatGuard,
