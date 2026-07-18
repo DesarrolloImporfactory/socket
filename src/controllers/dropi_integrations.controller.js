@@ -647,15 +647,44 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   // ↑ Por defecto NO mostramos las REEMPLAZADA: son la versión vieja de una
   //   orden que Dropi clonó al editarla/generar guía y duplican la vista
   //   (confunden al cliente). Siguen accesibles filtrando por ese estado.
-  if (origen === 'imporsuit') where.shop_type = 'IMPORSUIT';
-  else if (origen === 'shopify') where.shop_type = 'SHOPIFY';
-  else if (origen === 'otros') {
-    where.shop_type = {
-      [Op.or]: [
-        { [Op.is]: null },
-        { [Op.notIn]: ['IMPORSUIT', 'SHOPIFY'] },
-      ],
-    };
+  // Filtro de origen consistente con el badge: el shop_type crudo de Dropi no
+  // es confiable, así que resolvemos qué órdenes del cache matchean una orden
+  // real del webhook Shopify (teléfono + total + ventana) y filtramos por id.
+  if (origen === 'imporsuit' || origen === 'shopify' || origen === 'otros') {
+    let shopifyIds = [];
+    try {
+      const matched = await db.query(
+        `SELECT DISTINCT oc.dropi_order_id
+           FROM dropi_orders_cache oc
+           JOIN shopify_ordenes_webhook sow
+             ON sow.id_configuracion = oc.id_configuracion
+            AND sow.phone_normalizado IS NOT NULL
+            AND RIGHT(REGEXP_REPLACE(oc.phone,'[^0-9]',''),9)
+                = RIGHT(sow.phone_normalizado COLLATE utf8mb4_unicode_ci, 9)
+            AND ABS(oc.total_order - sow.total_price) < 0.5
+            AND oc.order_created_at BETWEEN
+                  DATE_SUB(sow.shopify_created_at, INTERVAL 3 DAY)
+              AND DATE_ADD(sow.shopify_created_at, INTERVAL 3 DAY)
+          WHERE oc.id_configuracion = :idCfg AND oc.id_usuario = 0`,
+        { replacements: { idCfg: id_configuracion }, type: db.QueryTypes.SELECT },
+      );
+      shopifyIds = matched.map((m) => Number(m.dropi_order_id)).filter(Boolean);
+    } catch (_) {
+      shopifyIds = [];
+    }
+
+    if (origen === 'shopify') {
+      where.dropi_order_id = { [Op.in]: shopifyIds.length ? shopifyIds : [-1] };
+    } else if (origen === 'imporsuit') {
+      where.shop_type = 'IMPORSUIT';
+      if (shopifyIds.length) where.dropi_order_id = { [Op.notIn]: shopifyIds };
+    } else {
+      // otros: ni Shopify (por webhook) ni IMPORSUIT
+      where.shop_type = {
+        [Op.or]: [{ [Op.is]: null }, { [Op.notIn]: ['IMPORSUIT', 'SHOPIFY'] }],
+      };
+      if (shopifyIds.length) where.dropi_order_id = { [Op.notIn]: shopifyIds };
+    }
   }
   if (texto) {
     const like = { [Op.like]: `%${texto}%` };
@@ -903,6 +932,48 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
         ? 'pendiente_confirmacion'
         : 'confirmado';
     o.creado_por_bot = botIds.has(String(o.id));
+  }
+
+  // ── Origen real: cruce con shopify_ordenes_webhook. El shop_type crudo de
+  // Dropi no es confiable (marca SHOPIFY ventas de WA y deja LUCIDBOT/null a
+  // órdenes que sí entraron por Shopify). Marca es_shopify por teléfono
+  // (últimos 9) + total (±0.5) + ventana ±3d. ──
+  try {
+    const whRows = await db.query(
+      `SELECT phone_normalizado, total_price, shopify_created_at
+         FROM shopify_ordenes_webhook
+        WHERE id_configuracion = :idCfg AND phone_normalizado IS NOT NULL
+          AND shopify_created_at >= DATE_SUB(NOW(), INTERVAL 120 DAY)`,
+      { replacements: { idCfg: id_configuracion }, type: db.QueryTypes.SELECT },
+    );
+    const whByPhone = new Map();
+    for (const w of whRows) {
+      const p9 = String(w.phone_normalizado).slice(-9);
+      if (!whByPhone.has(p9)) whByPhone.set(p9, []);
+      whByPhone.get(p9).push({
+        total: Number(w.total_price),
+        t: w.shopify_created_at ? new Date(w.shopify_created_at).getTime() : null,
+      });
+    }
+    const WIN = 3 * 24 * 60 * 60 * 1000;
+    for (const o of parsed) {
+      const p9 = String(o.phone || '')
+        .replace(/\D/g, '')
+        .slice(-9);
+      const list = p9 ? whByPhone.get(p9) : null;
+      const t = o.order_created_at
+        ? new Date(o.order_created_at).getTime()
+        : null;
+      o.es_shopify = list
+        ? list.some(
+            (w) =>
+              Math.abs(w.total - o.total_order) < 0.5 &&
+              (t == null || w.t == null || Math.abs(w.t - t) <= WIN),
+          )
+        : false;
+    }
+  } catch (_) {
+    for (const o of parsed) if (o.es_shopify == null) o.es_shopify = false;
   }
 
   // ── Chat + agente (mismo enricher del listado en vivo) ──

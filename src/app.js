@@ -60,6 +60,7 @@ const usuarios_chat_centerRouter = require('./routes/usuarios_chat_center.routes
 const usuarios_admin_chat_centerRouter = require('./routes/admin_usuarios.routes');
 
 const departamentos_chat_centerRouter = require('./routes/departamentos_chat_center.routes');
+const incidencias_chat_centerRouter = require('./routes/incidencias_chat_center.routes');
 
 const stripeRouter = require('./routes/stripe_plan.routes');
 
@@ -335,6 +336,7 @@ app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
 app.use('/api/v1/admin_usuarios', usuarios_admin_chat_centerRouter);
 app.use('/api/v1/departamentos_chat_center', departamentos_chat_centerRouter);
+app.use('/api/v1/incidencias_chat_center', incidencias_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);

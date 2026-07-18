@@ -162,6 +162,200 @@ exports.probarAutoOrden = async (req, res) => {
  *    Shopify), contando solo órdenes creadas DESPUÉS del intento del bot.
  * Cruza con el último log para mostrar el motivo del fallo y prellenar el form.
  */
+// Órdenes que entraron por el webhook de Shopify pero NO llegaron a Dropi
+// (huérfanas): shopify_ordenes_webhook sin match en dropi_orders_cache por
+// teléfono (últimos 9 díg) + total (±0.5) dentro de una ventana. Para
+// recrearlas manualmente en Dropi desde la vista de pedidos.
+exports.listShopifyHuerfanas = async (req, res) => {
+  try {
+    const id_configuracion = Number(
+      req.body?.id_configuracion ?? req.query?.id_configuracion,
+    );
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ ok: false, message: 'id_configuracion requerido' });
+    }
+    const dias = Math.min(Math.max(Number(req.body?.dias) || 15, 1), 60);
+    // Margen para que Dropi alcance a sincronizar la orden antes de marcarla
+    // huérfana (Dropi suele subirla en ~15 min). La lista se recalcula en cada
+    // carga, así que apenas Dropi la crea, desaparece sola.
+    const graciaMin = Math.min(
+      Math.max(Number(req.body?.gracia_min) || 45, 0),
+      1440,
+    );
+
+    const rows = await db.query(
+      `SELECT sow.id, sow.shopify_order_id, sow.order_number,
+              sow.phone_normalizado, sow.total_price, sow.financial_status,
+              sow.datos_orden, sow.shopify_created_at
+         FROM shopify_ordenes_webhook sow
+        WHERE sow.id_configuracion = :cfg
+          AND sow.phone_normalizado IS NOT NULL
+          AND sow.shopify_created_at >= DATE_SUB(NOW(), INTERVAL :dias DAY)
+          AND sow.shopify_created_at <= DATE_SUB(NOW(), INTERVAL :gracia MINUTE)
+          AND NOT EXISTS (
+            SELECT 1 FROM dropi_orders_cache oc
+             WHERE oc.id_configuracion = :cfg AND oc.id_usuario = 0
+               AND RIGHT(REGEXP_REPLACE(oc.phone,'[^0-9]',''),9)
+                   = RIGHT(sow.phone_normalizado COLLATE utf8mb4_unicode_ci, 9)
+               AND ABS(oc.total_order - sow.total_price) < 0.5
+               AND oc.order_created_at BETWEEN
+                     DATE_SUB(sow.shopify_created_at, INTERVAL 3 DAY)
+                 AND DATE_ADD(sow.shopify_created_at, INTERVAL 3 DAY)
+          )
+        ORDER BY sow.shopify_created_at DESC
+        LIMIT 100`,
+      {
+        replacements: { cfg: id_configuracion, dias, gracia: graciaMin },
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    // Resolver id_cliente por teléfono (el webhook Shopify crea el chat) para
+    // reusar el mismo flujo de crear que las huérfanas de WhatsApp.
+    const tels = [
+      ...new Set(rows.map((r) => r.phone_normalizado).filter(Boolean)),
+    ];
+    const clienteByTel = new Map();
+    if (tels.length) {
+      const clientes = await db.query(
+        `SELECT id, RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) AS tel9
+           FROM clientes_chat_center
+          WHERE id_configuracion = :cfg AND deleted_at IS NULL
+            AND RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) IN (:tels)
+          ORDER BY id`,
+        {
+          replacements: { cfg: id_configuracion, tels: tels.map((t) => t.slice(-9)) },
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      for (const c of clientes)
+        if (!clienteByTel.has(c.tel9)) clienteByTel.set(c.tel9, c.id);
+    }
+
+    const data = rows.map((r) => {
+      let datos = null;
+      if (r.datos_orden) {
+        try {
+          datos =
+            typeof r.datos_orden === 'string'
+              ? JSON.parse(r.datos_orden)
+              : r.datos_orden;
+        } catch (_) {}
+      }
+      const tel9 = String(r.phone_normalizado || '').slice(-9);
+      return {
+        id: r.id,
+        id_cliente: clienteByTel.get(tel9) || null,
+        shopify_order_id: r.shopify_order_id,
+        order_number: r.order_number,
+        telefono: r.phone_normalizado,
+        total: r.total_price,
+        financial_status: r.financial_status,
+        shopify_created_at: r.shopify_created_at,
+        datos, // null en órdenes viejas (antes del snapshot)
+      };
+    });
+
+    return res.json({ ok: true, total: data.length, data });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err?.message });
+  }
+};
+
+// Lista los productos vinculados a Dropi de una configuración (para el select
+// del formulario de "pedidos sin subir"). Misma fuente que usa autoCrearOrden.
+exports.listarProductosVinculados = async (req, res) => {
+  try {
+    const id_configuracion = Number(
+      req.body?.id_configuracion ?? req.query?.id_configuracion,
+    );
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ ok: false, message: 'id_configuracion requerido' });
+    }
+    const rows = await db.query(
+      `SELECT id, nombre, precio, external_id, imagen_url
+         FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0
+          AND external_source = 'DROPI' AND external_id IS NOT NULL
+        ORDER BY nombre ASC`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    return res.json({ ok: true, data: rows });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err?.message });
+  }
+};
+
+// Datos del bot (resumen de cierre parseado) de UN cliente, para prellenar
+// el panel de crear orden. Sale del último dropi_auto_ordenes_log.datos_bot;
+// si no hay log, cae al contacto (clientes_chat_center).
+exports.datosBotCliente = async (req, res) => {
+  try {
+    const id_configuracion = Number(
+      req.body?.id_configuracion ?? req.query?.id_configuracion,
+    );
+    const id_cliente = Number(req.body?.id_cliente ?? req.query?.id_cliente);
+    if (!id_configuracion || !id_cliente) {
+      return res
+        .status(400)
+        .json({ ok: false, message: 'id_configuracion e id_cliente requeridos' });
+    }
+
+    const rows = await db.query(
+      `SELECT c.id AS id_cliente, c.nombre_cliente, c.apellido_cliente,
+              c.celular_cliente, c.direccion,
+              l.id AS id_log, l.datos_bot
+         FROM clientes_chat_center c
+         LEFT JOIN (
+           SELECT x.* FROM dropi_auto_ordenes_log x
+           JOIN ( SELECT id_cliente, MAX(id) AS max_id
+                    FROM dropi_auto_ordenes_log
+                   WHERE id_configuracion = :cfg AND id_cliente = :cli
+                   GROUP BY id_cliente ) m ON m.max_id = x.id
+         ) l ON l.id_cliente = c.id
+        WHERE c.id = :cli AND c.id_configuracion = :cfg
+        LIMIT 1`,
+      {
+        replacements: { cfg: id_configuracion, cli: id_cliente },
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!rows.length) return res.json({ ok: true, data: null });
+
+    const r = rows[0];
+    let datosLog = null;
+    if (r.datos_bot) {
+      try {
+        datosLog = JSON.parse(r.datos_bot);
+      } catch (_) {}
+    }
+    const datos = datosLog || {
+      nombre: [r.nombre_cliente, r.apellido_cliente]
+        .filter(Boolean)
+        .join(' ')
+        .trim(),
+      telefono: r.celular_cliente || '',
+      provincia: '',
+      ciudad: '',
+      direccion: r.direccion || '',
+      producto: '',
+      precio: '',
+      cantidad: '1',
+    };
+
+    return res.json({
+      ok: true,
+      data: { id_cliente: r.id_cliente, tiene_log: !!datosLog, datos },
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err?.message });
+  }
+};
+
 exports.listPendientesGenerarGuia = async (req, res) => {
   try {
     const id_configuracion = Number(

@@ -252,7 +252,7 @@ const KANBAN_TEMPLATES_META = [
     components: [
       {
         type: 'BODY',
-        text: 'Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n\nPor favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
+        text: 'Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n🏙️Ciudad: {{7}}\n\nPor favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
         example: {
           body_text: [
             [
@@ -262,6 +262,7 @@ const KANBAN_TEMPLATES_META = [
               'Daniel Bonilla',
               '0987654321',
               'Av. Simón Bolívar y Mariscal Sucre',
+              'Quito',
             ],
           ],
         },
@@ -425,7 +426,15 @@ const DROPI_CONFIG_POR_DEFECTO = [
     usar_respuesta_rapida: 1,
     mensaje_rapido: null,
     parametros: {
-      body: ['nombre', 'costo', 'contenido', 'nombre', 'telefono', 'direccion'],
+      body: [
+        'nombre',
+        'costo',
+        'contenido',
+        'nombre',
+        'telefono',
+        'direccion',
+        'ciudad',
+      ],
       buttons: [],
     },
   },

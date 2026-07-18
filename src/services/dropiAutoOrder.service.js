@@ -485,8 +485,18 @@ async function autoCrearOrdenDropi({
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
 
-    let prodLocal = matchEnLista(productos, datosBot.producto, (p) => p.nombre);
+    // Si el front mandó un producto_id explícito (select del catálogo), se
+    // usa directo — evita los errores del match por nombre.
+    let prodLocal = null;
     let fuenteProducto = 'bot';
+    const prodIdDirecto = Number(datosBot.producto_id) || null;
+    if (prodIdDirecto) {
+      prodLocal = productos.find((p) => Number(p.id) === prodIdDirecto) || null;
+      if (prodLocal) fuenteProducto = 'producto_id (select)';
+    }
+
+    if (!prodLocal)
+      prodLocal = matchEnLista(productos, datosBot.producto, (p) => p.nombre);
 
     if (!prodLocal) {
       // b) headline del último anuncio por el que entró este cliente

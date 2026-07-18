@@ -43,6 +43,27 @@ router.post(
   dropiAutoOrderController.listPendientesGenerarGuia,
 );
 
+// Datos del bot de un cliente (prellenar panel de crear orden)
+router.post(
+  '/auto-orders/datos-cliente',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.datosBotCliente,
+);
+
+// Productos vinculados a Dropi (select del formulario de pedidos sin subir)
+router.post(
+  '/auto-orders/productos-vinculados',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.listarProductosVinculados,
+);
+
+// Órdenes Shopify que entraron por webhook y no llegaron a Dropi (huérfanas)
+router.post(
+  '/auto-orders/shopify-huerfanas',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.listShopifyHuerfanas,
+);
+
 //Consultar ordenes (post hacia dropi con filtros)
 router.post(
   '/orders/myorders/list',
