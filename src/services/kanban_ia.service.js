@@ -17,7 +17,10 @@ const {
 } = require('../utils/openia/sanitizador_agente');
 
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
-const { autoCrearOrdenDropi } = require('./dropiAutoOrder.service');
+const {
+  autoCrearOrdenDropi,
+  autoActualizarOrdenDropi,
+} = require('./dropiAutoOrder.service');
 
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — Trae el prompt REAL cargado en OpenAI
@@ -151,7 +154,7 @@ async function procesarMensajeKanban(params) {
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.nombre, kc.assistant_id, kc.activa_ia,
-            kc.max_tokens, kc.vector_store_id
+            kc.max_tokens, kc.vector_store_id, kc.es_dropi_principal
      FROM   kanban_columnas kc
      WHERE  kc.id_configuracion = ?
        AND  LOWER(kc.estado_db) = LOWER(?)
@@ -298,6 +301,59 @@ async function procesarMensajeKanban(params) {
       }
     } catch (err) {
       await log(`⚠️ Error contexto_calendario: ${err.message}`);
+    }
+  }
+
+  // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
+  // La plantilla de confirmación se envió por fuera del thread, así que el
+  // asistente no la ve. Le pasamos los datos reales de la orden (del cache)
+  // para que confirme/edite sin inventar y pueda responder "¿qué dirección
+  // tengo?".
+  if (columna.es_dropi_principal) {
+    try {
+      const tel9 = String(telefono || '').replace(/\D/g, '').slice(-9);
+      if (tel9.length >= 9) {
+        const [ord] = await db.query(
+          `SELECT name, surname, phone, city, provincia, total_order,
+                  product_names, order_data
+             FROM dropi_orders_cache
+            WHERE id_configuracion = ?
+              AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 9) = ?
+              AND UPPER(status) = 'PENDIENTE CONFIRMACION'
+            ORDER BY order_created_at DESC LIMIT 1`,
+          {
+            replacements: [id_configuracion, tel9],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        if (ord) {
+          let dir = '';
+          try {
+            dir = JSON.parse(ord.order_data || '{}').dir || '';
+          } catch (_) {}
+          let prod = ord.product_names || '';
+          try {
+            const a = JSON.parse(ord.product_names || '[]');
+            if (Array.isArray(a)) prod = a.join(', ');
+          } catch (_) {}
+          bloqueContexto +=
+            `📦 Pedido del cliente (ya registrado, en Pendiente confirmación):\n` +
+            `- Nombre: ${[ord.name, ord.surname].filter(Boolean).join(' ')}\n` +
+            `- Teléfono: ${ord.phone || ''}\n` +
+            `- Ciudad: ${ord.city || ''}\n` +
+            `- Provincia: ${ord.provincia || ''}\n` +
+            `- Dirección: ${dir}\n` +
+            `- Producto: ${prod}\n` +
+            `- Valor a pagar: ${ord.total_order || ''}\n\n`;
+          await log(`📦 Contexto orden Dropi inyectado cliente=${id_cliente}`);
+        } else {
+          await log(
+            `ℹ️ Sin orden PENDIENTE CONFIRMACION en cache cliente=${id_cliente}`,
+          );
+        }
+      }
+    } catch (e) {
+      await log(`⚠️ Error inyectando contexto orden Dropi: ${e.message}`);
     }
   }
 
@@ -476,36 +532,61 @@ async function procesarMensajeKanban(params) {
       // si faltan campos, dropiAutoOrder.service los completa con un
       // extractor IA sobre la conversación (usa la api_key del cliente).
       // Cualquier resultado queda en dropi_auto_ordenes_log.
+      // Ruta según origen: si el cliente confirma desde la columna principal
+      // de Dropi (pendiente_confirmacion), la orden YA existe → se ACTUALIZA a
+      // PENDIENTE; en cualquier otra columna (contacto_inicial) se CREA nueva.
       if (estadoDestino === 'generar_guia') {
         try {
           const g = (re) => respuestaRaw.match(re)?.[1]?.trim() || '';
-          autoCrearOrdenDropi({
-            id_configuracion,
-            id_cliente,
-            api_key_openai,
-            datosBot: {
-              nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
-              telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i) || telefono,
-              // Acepta el término regional según el país (provincia EC/PA,
-              // departamento CO/PE/GT, estado MX, región CL).
-              provincia: g(
-                /📍?\s*(?:Provincia|Departamento|Depto\.?|Estado|Regi[oó]n):\s*(.+)/i,
-              ),
-              ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
-              direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
-              producto: g(/📦?\s*Producto:\s*(.+)/i),
-              precio: g(/💰?\s*Precio total:\s*(.+)/i),
-              cantidad: g(/🔢?\s*Cantidad:\s*(.+)/i) || '',
-              // Modalidad de envío (opcional): "domicilio" o "agencia
-              // servientrega". Si el bot la incluye, el auto-orden fuerza
-              // Servientrega cuando es agencia.
-              modalidad_envio:
-                g(/🚚?\s*Env[ií]o:\s*(.+)/i) ||
-                g(/📦?\s*Modalidad:\s*(.+)/i) ||
-                '',
-            },
-          }).catch(() => {});
-          await log(`🛒 Auto-orden Dropi disparada para cliente=${id_cliente}`);
+          const datosBot = {
+            nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
+            telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i) || telefono,
+            // Acepta el término regional según el país (provincia EC/PA,
+            // departamento CO/PE/GT, estado MX, región CL).
+            provincia: g(
+              /📍?\s*(?:Provincia|Departamento|Depto\.?|Estado|Regi[oó]n):\s*(.+)/i,
+            ),
+            ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
+            direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
+            producto: g(/📦?\s*Producto:\s*(.+)/i),
+            precio: g(/💰?\s*Precio total:\s*(.+)/i),
+            cantidad: g(/🔢?\s*Cantidad:\s*(.+)/i) || '',
+            // Modalidad de envío (opcional): "domicilio" o "agencia
+            // servientrega". Si el bot la incluye, el auto-orden fuerza
+            // Servientrega cuando es agencia.
+            modalidad_envio:
+              g(/🚚?\s*Env[ií]o:\s*(.+)/i) ||
+              g(/📦?\s*Modalidad:\s*(.+)/i) ||
+              '',
+          };
+
+          if (columna.es_dropi_principal) {
+            // La orden ya existe → solo se actualiza. Se busca por teléfono y
+            // se empujan SOLO los datos que el bot escribió (los que el cliente
+            // cambió); si no escribió ninguno, únicamente status → PENDIENTE.
+            autoActualizarOrdenDropi({
+              id_configuracion,
+              id_cliente,
+              telefono, // número del cliente, para localizar la orden
+              cambios: {
+                nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
+                telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i),
+                ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
+                direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
+              },
+            }).catch(() => {});
+            await log(
+              `🔁 Actualización orden Dropi disparada (confirmación) cliente=${id_cliente}`,
+            );
+          } else {
+            autoCrearOrdenDropi({
+              id_configuracion,
+              id_cliente,
+              api_key_openai,
+              datosBot,
+            }).catch(() => {});
+            await log(`🛒 Auto-orden Dropi disparada para cliente=${id_cliente}`);
+          }
         } catch (e) {
           await log(`⚠️ Error disparando auto-orden: ${e.message}`);
         }

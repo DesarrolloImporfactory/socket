@@ -829,3 +829,27 @@ exports.actualizarAutoOrdenDropi = catchAsync(async (req, res) => {
   );
   res.json({ status: 'success', activo: !!val });
 });
+
+// Switch de la columna "Pendiente Confirmación": al confirmar el cliente, el
+// bot actualiza la orden existente de PENDIENTE CONFIRMACION → PENDIENTE.
+exports.obtenerAutoActualizarOrdenDropi = catchAsync(async (req, res) => {
+  const { id_configuracion } = req.body;
+  const [row] = await db.query(
+    'SELECT auto_actualizar_orden_dropi FROM configuraciones WHERE id = ? AND suspendido = 0 LIMIT 1',
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  res.json({
+    status: 'success',
+    activo: Number(row?.auto_actualizar_orden_dropi) === 1,
+  });
+});
+
+exports.actualizarAutoActualizarOrdenDropi = catchAsync(async (req, res) => {
+  const { id_configuracion, activo } = req.body;
+  const val = activo === true || activo === 1 || activo === '1' ? 1 : 0;
+  await db.query(
+    'UPDATE configuraciones SET auto_actualizar_orden_dropi = ?, updated_at = NOW() WHERE id = ?',
+    { replacements: [val, id_configuracion] },
+  );
+  res.json({ status: 'success', activo: !!val });
+});

@@ -119,4 +119,19 @@ router.post(
   configuracionesController.actualizarAutoOrdenDropi,
 );
 
+router.post(
+  '/obtener_auto_actualizar_orden_dropi',
+  ...imporchatGuard,
+  protectConfigOwner,
+  configuracionesController.obtenerAutoActualizarOrdenDropi,
+);
+
+router.post(
+  '/actualizar_auto_actualizar_orden_dropi',
+  ...imporchatGuard,
+  protectConfigOwner,
+  restrictToRoles('administrador'),
+  configuracionesController.actualizarAutoActualizarOrdenDropi,
+);
+
 module.exports = router;

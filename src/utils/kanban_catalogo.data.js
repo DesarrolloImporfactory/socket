@@ -607,6 +607,74 @@ const REMARKETING_POR_DEFECTO = [
       },
     ],
   },
+  {
+    // Remarketing de la columna principal Dropi (Shopify/landing). El cliente
+    // YA tiene su pedido creado en Dropi (PENDIENTE CONFIRMACION) y no ha
+    // confirmado. Los nudges lo DEJAN en pendiente_confirmacion: si responde,
+    // lo atiende el bot de confirmación (no el de ventas) y no se duplica orden.
+    estado_contacto: 'pendiente_confirmacion',
+    secuencias: [
+      {
+        secuencia: 1,
+        tiempo_espera_minutos: 120, // 2h
+        nombre_template: '', // dentro de 24h → IA
+        language_code: 'es',
+        estado_destino: 'pendiente_confirmacion', // se queda
+        header_format: null,
+        metodo_dentro_24h: 'ia',
+        prompt_ia:
+          dedent(`Genera UN mensaje corto para un cliente que YA hizo un pedido y solo falta que lo CONFIRME por WhatsApp para despacharlo. PRIMER recordatorio.
+
+        CONTEXTO
+        - El cliente ya tiene su pedido registrado (llegó desde una tienda/landing).
+        - Pago contra entrega. No estás vendiendo, solo confirmando.
+
+        ESTRUCTURA DEL MENSAJE
+        1. Emoji 📦 + recordatorio amable de que su pedido está reservado y listo
+        2. Una línea pidiendo que confirme para despacharlo
+        3. Cierre corto: puede responder "confirmo" o pedir corregir algún dato
+
+        REGLAS
+        - Tuteo natural LATAM, cálido y breve (3-4 líneas)
+        - NO inventes precios, productos ni descuentos
+        - NO pidas todos los datos de nuevo
+        - Máximo 1 emoji
+
+        Solo devuelve el texto del mensaje, sin comillas.`),
+      },
+      {
+        secuencia: 2,
+        tiempo_espera_minutos: 480, // 8h
+        nombre_template: '',
+        language_code: 'es',
+        estado_destino: 'pendiente_confirmacion', // se queda
+        header_format: null,
+        metodo_dentro_24h: 'ia',
+        prompt_ia:
+          dedent(`Genera UN mensaje corto para un cliente que hizo un pedido y aún no lo confirma. SEGUNDO y último recordatorio.
+
+        CONTEXTO
+        - El pedido sigue reservado, esperando su confirmación para salir a despacho.
+        - Pago contra entrega. No estás vendiendo, solo confirmando.
+
+        ÁNGULO
+        "Tu pedido está por liberarse". Si no confirma, el cupo se libera; darle una razón amable para responder ya.
+
+        ESTRUCTURA DEL MENSAJE
+        1. Emoji ⏳ + aviso amable de que su pedido está por liberarse si no confirma
+        2. Una línea pidiendo que confirme para asegurarlo
+        3. Cierre corto: responde "confirmo" o dime si quieres corregir algo
+
+        REGLAS
+        - Tuteo natural LATAM, breve (3-4 líneas)
+        - NO uses falsa urgencia agresiva ni supliques
+        - NO inventes precios, productos ni descuentos
+        - Máximo 1 emoji
+
+        Solo devuelve el texto del mensaje, sin comillas.`),
+      },
+    ],
+  },
 ];
 
 module.exports = {

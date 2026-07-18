@@ -45,7 +45,10 @@ const { db } = require('../database/config');
 const { decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('./dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
-const { createOrderForClient } = require('./dropiOrders.service');
+const {
+  createOrderForClient,
+  updateOrderForClient,
+} = require('./dropiOrders.service');
 const { resolveRegion } = require('../utils/phoneFactor');
 
 /* ────────────────────────── helpers ────────────────────────── */
@@ -1031,4 +1034,104 @@ async function autoCrearOrdenDropi({
   }
 }
 
-module.exports = { autoCrearOrdenDropi, matchEnLista };
+/* ──────────────── actualización de orden existente ──────────────── */
+
+/**
+ * Actualiza una orden Dropi que YA existe cuando el cliente confirma su
+ * pedido en la columna "Pendiente Confirmación" (es_dropi_principal). La
+ * orden entró desde landing/Shopify en estado PENDIENTE CONFIRMACION; aquí
+ * la pasamos a PENDIENTE (+ los datos que el cliente haya corregido).
+ * Gate: configuraciones.auto_actualizar_orden_dropi = 1 (force lo salta).
+ * Si NO se encuentra la orden en el cache, se deja como está (no crea nada).
+ */
+async function autoActualizarOrdenDropi({
+  id_configuracion,
+  id_cliente,
+  telefono, // número del cliente, para localizar la orden en el cache
+  cambios = {}, // solo los datos que el cliente pidió cambiar (opcional)
+  force = false,
+}) {
+  const ctx = { id_configuracion, id_cliente, telefono, datos_bot: cambios };
+  const fail = (paso, detalle) =>
+    logAuto({ ...ctx, resultado: 'fallida', paso_fallo: paso, detalle });
+
+  try {
+    // 0. Gate por config
+    if (!force) {
+      const [cfg] = await db.query(
+        `SELECT auto_actualizar_orden_dropi FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (!cfg || Number(cfg.auto_actualizar_orden_dropi) !== 1) return null;
+    }
+
+    // 1. Localizar la orden PENDIENTE CONFIRMACION del cliente en el cache Dropi
+    const tel9 = String(telefono || '').replace(/\D/g, '').slice(-9);
+    if (tel9.length < 9) return fail('telefono', 'Teléfono incompleto');
+
+    const [orden] = await db.query(
+      `SELECT dropi_order_id
+         FROM dropi_orders_cache
+        WHERE id_configuracion = ?
+          AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 9) = ?
+          AND UPPER(status) = 'PENDIENTE CONFIRMACION'
+        ORDER BY order_created_at DESC
+        LIMIT 1`,
+      { replacements: [id_configuracion, tel9], type: db.QueryTypes.SELECT },
+    );
+    if (!orden?.dropi_order_id) {
+      // Sin orden que actualizar → se queda en PENDIENTE CONFIRMACION.
+      return logAuto({
+        ...ctx,
+        resultado: 'omitida',
+        paso_fallo: 'sin_orden_existente',
+        detalle: 'No hay orden PENDIENTE CONFIRMACION en el cache para el teléfono',
+      });
+    }
+
+    // 2. status → PENDIENTE + SOLO los datos que el cliente cambió (si los hay).
+    //    NO se toca provincia/state (el bot la deduce y ya viene bien en Dropi).
+    const body = { status: 'PENDIENTE' };
+    const set = (k, v) => {
+      const s = String(v ?? '').trim();
+      if (s) body[k] = s;
+    };
+    if (String(cambios.nombre || '').trim()) {
+      const partes = String(cambios.nombre).trim().split(/\s+/);
+      set('name', partes[0]);
+      set('surname', partes.slice(1).join(' '));
+    }
+    set('phone', cambios.telefono);
+    set('dir', cambios.direccion);
+    set('city', cambios.ciudad);
+
+    // 3. Actualizar en Dropi. Si el update con datos corregidos falla (p.ej.
+    //    Dropi rechaza el teléfono), reintenta con solo status para no perder
+    //    la confirmación de la orden.
+    const orderId = orden.dropi_order_id;
+    try {
+      await updateOrderForClient({ id_configuracion, orderId, body });
+    } catch (e1) {
+      await updateOrderForClient({
+        id_configuracion,
+        orderId,
+        body: { status: 'PENDIENTE' },
+      });
+    }
+
+    return logAuto({
+      ...ctx,
+      resultado: 'actualizada',
+      dropi_order_id: orderId,
+      detalle: 'PENDIENTE CONFIRMACION → PENDIENTE',
+    });
+  } catch (e) {
+    return fail('actualizar', e?.message || String(e));
+  }
+}
+
+module.exports = {
+  autoCrearOrdenDropi,
+  autoActualizarOrdenDropi,
+  matchEnLista,
+};
