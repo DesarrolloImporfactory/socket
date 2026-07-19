@@ -1,6 +1,68 @@
 const { Op, literal, fn, col, where } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
+const { db } = require('../database/config');
 const ShopifyCarritosAbandonados = require('../models/shopify_carritos_abandonados.model');
+
+/* Normaliza un nombre para emparejar título del carrito ↔ catálogo */
+function normNombre(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function primerTitulo(carrito) {
+  try {
+    const items =
+      typeof carrito.line_items === 'string'
+        ? JSON.parse(carrito.line_items)
+        : carrito.line_items;
+    return Array.isArray(items) ? items[0]?.title || '' : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/* Enriquece cada carrito con la imagen del producto emparejando el primer
+   producto del carrito contra el catálogo local (productos_chat_center). Es
+   best-effort: si no hay match, el front muestra un placeholder. */
+async function adjuntarImagenProducto(id_configuracion, carritos) {
+  const titulos = carritos.map(primerTitulo).filter(Boolean);
+  if (!titulos.length) return carritos;
+
+  const productos = await db.query(
+    `SELECT nombre, imagen_url FROM productos_chat_center
+      WHERE id_configuracion = ? AND eliminado = 0
+        AND imagen_url IS NOT NULL AND imagen_url <> ''`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!productos.length) return carritos;
+
+  const mapa = new Map(); // nombre normalizado → imagen
+  for (const p of productos) {
+    const k = normNombre(p.nombre);
+    if (k && !mapa.has(k)) mapa.set(k, p.imagen_url);
+  }
+
+  return carritos.map((c) => {
+    const plain = c.toJSON ? c.toJSON() : c;
+    const t = normNombre(primerTitulo(c));
+    let img = t ? mapa.get(t) : null;
+    if (!img && t) {
+      // match laxo: el catálogo contiene el título o viceversa
+      for (const [k, v] of mapa) {
+        if (k.includes(t) || t.includes(k)) {
+          img = v;
+          break;
+        }
+      }
+    }
+    return { ...plain, producto_imagen: img || null };
+  });
+}
 
 /* ============================================================
    GET / — listar carritos con filtros y paginación
@@ -64,9 +126,11 @@ exports.listar = catchAsync(async (req, res) => {
     offset,
   });
 
+  const data = await adjuntarImagenProducto(idConf, rows);
+
   return res.json({
     isSuccess: true,
-    data: rows,
+    data,
     pagination: {
       total: count,
       page: pageNum,
@@ -134,6 +198,10 @@ exports.estadisticas = catchAsync(async (req, res) => {
    ============================================================ */
 exports.marcarMensajeEnviado = catchAsync(async (req, res) => {
   const { id } = req.params;
+  const id_configuracion = parseInt(
+    req.body?.id_configuracion ?? req.query?.id_configuracion,
+    10,
+  );
 
   const carrito = await ShopifyCarritosAbandonados.findByPk(id);
   if (!carrito) {
@@ -141,6 +209,11 @@ exports.marcarMensajeEnviado = catchAsync(async (req, res) => {
       isSuccess: false,
       message: 'Carrito no encontrado',
     });
+  }
+
+  // Ownership: el carrito debe pertenecer a la config que hace la petición.
+  if (id_configuracion && carrito.id_configuracion !== id_configuracion) {
+    return res.status(403).json({ isSuccess: false, message: 'No autorizado' });
   }
 
   await carrito.update({

@@ -3,6 +3,7 @@ const fsp = fs.promises;
 const path = require('path');
 
 const catchAsync = require('../utils/catchAsync');
+const { db } = require('../database/config');
 const ShopifyCarritosAbandonados = require('../models/shopify_carritos_abandonados.model');
 const Configuraciones = require('../models/configuraciones.model');
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
@@ -327,6 +328,22 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
           `draft=${draft_id} phone=${phone_normalizado} ` +
           `total=${draft.total_price} (id_cliente=${id_cliente})`,
       );
+
+      /* Guardar el producto del carrito en el cliente para que el bot de
+         contacto_inicial reconstruya su contexto (ultimo_producto_ad) y NO
+         pregunte "¿qué producto?" cuando el cliente responda "completar compra". */
+      const productoCarrito = lineItems[0]?.title || '';
+      if (id_cliente && productoCarrito) {
+        try {
+          await db.query(
+            `UPDATE clientes_chat_center SET ultimo_producto_ad = ?
+              WHERE id = ? AND id_configuracion = ?`,
+            { replacements: [productoCarrito, id_cliente, id_configuracion] },
+          );
+        } catch (err) {
+          await logShopify(`⚠️ No se pudo setear ultimo_producto_ad: ${err.message}`);
+        }
+      }
 
       /* ════════════════════════════════════════════════════
    🆕 ENVÍO AUTOMÁTICO DE WHATSAPP

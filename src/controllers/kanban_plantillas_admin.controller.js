@@ -157,6 +157,9 @@ function normalizarColumna(col, indiceFallback) {
           tipo_accion: String(a.tipo_accion || '').trim(),
           config: a.config || {},
           orden: Number.isInteger(a.orden) ? a.orden : j + 1,
+          // preserva el on/off (ej. acciones Dropi que se instalan apagadas);
+          // por defecto 1 para no cambiar el comportamiento de las demás.
+          activo: Number(a.activo) === 0 ? 0 : 1,
         }))
       : [],
   };

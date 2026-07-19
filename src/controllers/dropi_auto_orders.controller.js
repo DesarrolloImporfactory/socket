@@ -372,6 +372,9 @@ exports.listPendientesGenerarGuia = async (req, res) => {
     const WHERE = `
       c.id_configuracion = :cfg
       AND c.deleted_at IS NULL
+      -- Solo ventas por WhatsApp: el bot cerró (generar_guia) pero la orden no
+      -- llegó a crearse. Las órdenes de Shopify que no subieron a Dropi salen
+      -- en su propio bucket (huérfanas Shopify), no aquí.
       AND c.estado_contacto = 'generar_guia'
       -- el bot NO la creó (excluye 'creada'); incluye 'fallida' y sin intento
       AND (l.id IS NULL OR l.resultado <> 'creada')
@@ -396,7 +399,7 @@ exports.listPendientesGenerarGuia = async (req, res) => {
     const rows = await db.query(
       `SELECT
          c.id AS id_cliente, c.nombre_cliente, c.apellido_cliente,
-         c.celular_cliente, c.direccion, c.ultimo_mensaje_at,
+         c.celular_cliente, c.direccion, c.ultimo_mensaje_at, c.estado_contacto,
          l.id AS id_log, l.resultado, l.paso_fallo, l.detalle,
          l.datos_bot, l.created_at AS log_at
        FROM clientes_chat_center c
@@ -435,7 +438,10 @@ exports.listPendientesGenerarGuia = async (req, res) => {
         detalle: r.detalle || null,
         telefono: datos.telefono,
         datos,
-        created_at: r.log_at || null,
+        // fecha "esperando desde": el intento del bot, o el último mensaje
+        // del cliente si nunca hubo intento (caso pendiente_confirmacion).
+        created_at: r.log_at || r.ultimo_mensaje_at || null,
+        estado_contacto: r.estado_contacto,
       };
     });
 

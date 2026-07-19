@@ -560,32 +560,80 @@ async function procesarMensajeKanban(params) {
               '',
           };
 
-          if (columna.es_dropi_principal) {
-            // La orden ya existe → solo se actualiza. Se busca por teléfono y
-            // se empujan SOLO los datos que el bot escribió (los que el cliente
-            // cambió); si no escribió ninguno, únicamente status → PENDIENTE.
+          // Datos que el cliente pudo corregir (para el flujo de actualizar).
+          const cambios = {
+            nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
+            telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i),
+            ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
+            direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
+          };
+
+          // MODELO PER-COLUMNA (full pro): la acción Dropi de la columna decide
+          // qué hacer y su `activo` es el gate. Si la columna no tiene ninguna
+          // acción Dropi → FALLBACK al modelo viejo (flag config + es_dropi_principal),
+          // para no romper configs no migradas.
+          const dropiAcc = await db.query(
+            `SELECT tipo_accion, activo FROM kanban_acciones
+             WHERE id_kanban_columna = ?
+               AND tipo_accion IN ('crear_orden_dropi','actualizar_orden_dropi')
+             ORDER BY id DESC LIMIT 1`,
+            { replacements: [columna.id], type: db.QueryTypes.SELECT },
+          );
+          const acc = dropiAcc[0];
+
+          if (acc) {
+            // Nuevo modelo: la acción es el gate (force salta el flag config).
+            if (Number(acc.activo) === 1) {
+              if (acc.tipo_accion === 'actualizar_orden_dropi') {
+                autoActualizarOrdenDropi({
+                  id_configuracion,
+                  id_cliente,
+                  telefono,
+                  cambios,
+                  force: true,
+                }).catch(() => {});
+                await log(
+                  `🔁 Actualizar orden Dropi (acción columna) cliente=${id_cliente}`,
+                );
+              } else {
+                autoCrearOrdenDropi({
+                  id_configuracion,
+                  id_cliente,
+                  api_key_openai,
+                  datosBot,
+                  force: true,
+                }).catch(() => {});
+                await log(
+                  `🛒 Crear orden Dropi (acción columna) cliente=${id_cliente}`,
+                );
+              }
+            } else {
+              await log(
+                `⏸️ Acción Dropi apagada en la columna, sin acción cliente=${id_cliente}`,
+              );
+            }
+          } else if (columna.es_dropi_principal) {
+            // Fallback viejo: columna principal Dropi → actualizar (gate: flag).
             autoActualizarOrdenDropi({
               id_configuracion,
               id_cliente,
-              telefono, // número del cliente, para localizar la orden
-              cambios: {
-                nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
-                telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i),
-                ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
-                direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
-              },
+              telefono,
+              cambios,
             }).catch(() => {});
             await log(
-              `🔁 Actualización orden Dropi disparada (confirmación) cliente=${id_cliente}`,
+              `🔁 Actualización orden Dropi (fallback flag) cliente=${id_cliente}`,
             );
           } else {
+            // Fallback viejo: cualquier otra columna → crear (gate: flag).
             autoCrearOrdenDropi({
               id_configuracion,
               id_cliente,
               api_key_openai,
               datosBot,
             }).catch(() => {});
-            await log(`🛒 Auto-orden Dropi disparada para cliente=${id_cliente}`);
+            await log(
+              `🛒 Auto-orden Dropi (fallback flag) cliente=${id_cliente}`,
+            );
           }
         } catch (e) {
           await log(`⚠️ Error disparando auto-orden: ${e.message}`);

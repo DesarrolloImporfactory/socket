@@ -692,27 +692,35 @@ async function yaFueEnviado(dropi_order_id, id_configuracion, estado_dropi) {
 }
 
 /* Dedupe cross-system para PENDIENTE CONFIRMACION
-   Verifica si ya se envió por phone en últimas 24h
-   (ya sea desde Shopify webhook o desde Dropi cron previo) */
+   Verifica si ya se envió la MISMA orden (mismo phone + mismo total) en las
+   últimas 72h, ya sea desde Shopify webhook o desde el cron de Dropi. La
+   ventana es de 72h porque la orden de Shopify se confirma al instante pero
+   en Dropi puede aparecer ~1 día después (antes eran 24h y se colaban dobles).
+   El total distingue un 2º pedido REAL del mismo cliente (que sí debe
+   confirmarse) de la misma orden vista por los dos sistemas. Filas viejas sin
+   total (pre-fix) caen al dedupe por phone. */
 async function yaSeEnvioPendienteConfPorPhone(
   id_configuracion,
   phone,
   country_code = 'EC',
+  total = null,
 ) {
   if (!phone) return false;
   const phoneNorm = normalizePhone(phone, country_code);
   if (!phoneNorm) return false;
   const phone9 = phoneNorm.slice(-9);
+  const tot = Number(total) || 0;
 
   const [row] = await db.query(
     `SELECT id, source FROM dropi_plantillas_enviadas
      WHERE id_configuracion = ?
        AND estado_dropi = 'PENDIENTE CONFIRMACION'
        AND (phone = ? OR phone LIKE ?)
-       AND sent_at > NOW() - INTERVAL 24 HOUR
+       AND (total_order IS NULL OR ? = 0 OR ABS(total_order - ?) < 0.5)
+       AND sent_at > NOW() - INTERVAL 72 HOUR
      LIMIT 1`,
     {
-      replacements: [id_configuracion, phoneNorm, `%${phone9}`],
+      replacements: [id_configuracion, phoneNorm, `%${phone9}`, tot, tot],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -731,11 +739,12 @@ async function reclamarEnvio({
   estado_dropi,
   phone,
   template_name,
+  total = null,
 }) {
   const [res] = await db.query(
     `INSERT IGNORE INTO dropi_plantillas_enviadas
-       (dropi_order_id, id_configuracion, estado_dropi, phone, template_name)
-     VALUES (?, ?, ?, ?, ?)`,
+       (dropi_order_id, id_configuracion, estado_dropi, phone, template_name, total_order)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     {
       replacements: [
         dropi_order_id,
@@ -743,6 +752,7 @@ async function reclamarEnvio({
         estado_dropi,
         phone || null,
         template_name || null,
+        Number(total) || null,
       ],
     },
   );
@@ -1118,12 +1128,14 @@ async function procesarTemplates({
         continue;
       }
 
-      // Cross-system dedupe: si Shopify (u otra corrida) ya mandó, no duplicamos
+      // Cross-system dedupe: si Shopify (u otra corrida) ya mandó, no duplicamos.
+      // Se cruza por phone + total en 72h (cubre el desfase Shopify→Dropi).
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
         const yaShopify = await yaSeEnvioPendienteConfPorPhone(
           id_configuracion,
           telefonoOrden,
           country_code,
+          order.total_order,
         );
         if (yaShopify) {
           omitidos++;
@@ -1148,6 +1160,7 @@ async function procesarTemplates({
         estado_dropi: estadoConfig,
         phone: telefonoOrden,
         template_name: config.nombre_template,
+        total: order.total_order,
       });
       if (!reclamado) {
         omitidos++;

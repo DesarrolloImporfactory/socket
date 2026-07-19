@@ -137,19 +137,25 @@ async function existeEnDropiCache({
 async function yaSeEnvioPendienteConfirmacion({
   id_configuracion,
   phone_normalizado,
+  total = null,
 }) {
   if (!phone_normalizado) return false;
   const phone9 = phone_normalizado.slice(-9);
+  const tot = Number(total) || 0;
 
+  // Cruce por phone + total en 72h: cubre el desfase Shopify→Dropi (la orden
+  // aparece en Dropi ~1 día después) sin suprimir un 2º pedido real (otro
+  // total) del mismo cliente. Filas viejas sin total caen al dedupe por phone.
   const [row] = await db.query(
     `SELECT id, source FROM dropi_plantillas_enviadas
      WHERE id_configuracion = ?
        AND estado_dropi = 'PENDIENTE CONFIRMACION'
        AND (phone = ? OR phone LIKE ?)
-       AND sent_at > NOW() - INTERVAL 24 HOUR
+       AND (total_order IS NULL OR ? = 0 OR ABS(total_order - ?) < 0.5)
+       AND sent_at > NOW() - INTERVAL 72 HOUR
      LIMIT 1`,
     {
-      replacements: [id_configuracion, phone_normalizado, `%${phone9}`],
+      replacements: [id_configuracion, phone_normalizado, `%${phone9}`, tot, tot],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -400,13 +406,14 @@ async function registrarDedupe({
   phone_normalizado,
   template_name,
   wamid,
+  total = null,
 }) {
   try {
     await db.query(
       `INSERT IGNORE INTO dropi_plantillas_enviadas
          (dropi_order_id, id_configuracion, estado_dropi, phone,
-          template_name, wa_message_id, source, shopify_order_id)
-       VALUES (?, ?, 'PENDIENTE CONFIRMACION', ?, ?, ?, 'shopify_webhook', ?)`,
+          template_name, wa_message_id, source, shopify_order_id, total_order)
+       VALUES (?, ?, 'PENDIENTE CONFIRMACION', ?, ?, ?, 'shopify_webhook', ?, ?)`,
       {
         replacements: [
           shopify_order_id,
@@ -415,6 +422,7 @@ async function registrarDedupe({
           template_name,
           wamid,
           shopify_order_id,
+          Number(total) || null,
         ],
         type: db.QueryTypes.INSERT,
       },
@@ -475,6 +483,7 @@ async function procesarPedidoShopify({
   const yaEnviado = await yaSeEnvioPendienteConfirmacion({
     id_configuracion,
     phone_normalizado,
+    total: order.total_price,
   });
   if (yaEnviado) return { procesado: false, motivo: 'ya_enviado_dedupe' };
 
@@ -560,6 +569,7 @@ async function procesarPedidoShopify({
     phone_normalizado,
     template_name: plantilla.nombre_template,
     wamid: result.wamid,
+    total: order.total_price,
   });
 
   // Columna kanban (igual que cron Dropi: usa colDropiPrincipal para PENDIENTE CONFIRMACION)

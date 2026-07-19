@@ -1417,7 +1417,23 @@ class ChatService {
       });
 
       // OJO: QueryTypes.SELECT devuelve array
-      return (Array.isArray(chat) ? chat[0] : chat) || null;
+      const encontrado = (Array.isArray(chat) ? chat[0] : chat) || null;
+      if (encontrado) return encontrado;
+
+      // Fallback: el cliente existe pero aún NO tiene mensajes, así que no
+      // aparece en vista_chats (la vista requiere conversación). Devolvemos su
+      // ficha base para abrir un chat vacío en vez de 404 (p. ej. contactos que
+      // entraron por un pedido/carrito de Shopify y no han recibido mensaje).
+      if (isExternal) return null; // sin fallback para external_id
+      const base = await db.query(
+        `SELECT * FROM clientes_chat_center
+          WHERE id_configuracion = :id_configuracion ${where}
+            AND deleted_at IS NULL
+          ORDER BY id DESC
+          LIMIT 1`,
+        { replacements, type: Sequelize.QueryTypes.SELECT },
+      );
+      return (Array.isArray(base) ? base[0] : base) || null;
     } catch (err) {
       throw new AppError(err.message, 500);
     }

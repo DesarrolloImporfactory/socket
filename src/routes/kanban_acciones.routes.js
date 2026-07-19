@@ -10,6 +10,10 @@ router.post('/crear', KanbanAccionesController.crear);
 router.post('/actualizar', KanbanAccionesController.actualizar);
 router.post('/eliminar', KanbanAccionesController.eliminar);
 
+// Acciones Dropi por columna (toggle on/off del bot)
+router.post('/obtener_dropi_accion', KanbanAccionesController.obtenerDropiAccion);
+router.post('/set_dropi_accion', KanbanAccionesController.setDropiAccion);
+
 module.exports = router;
 
 // ─── Registro en app.js / index.js ───────────────────────────

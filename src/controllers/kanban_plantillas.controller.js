@@ -1467,13 +1467,14 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       await db.query(
         `INSERT INTO kanban_acciones
          (id_kanban_columna, id_configuracion, tipo_accion, config, activo, orden)
-         VALUES (?, ?, ?, ?, 1, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?)`,
         {
           replacements: [
             insertResult,
             id_configuracion,
             accion.tipo_accion,
             JSON.stringify(accion.config),
+            accion.activo ?? 1, // la plantilla puede instalar acciones apagadas
             accion.orden,
           ],
           type: db.QueryTypes.INSERT,
@@ -1723,6 +1724,240 @@ async function _getColumnasIADelCliente(id_configuracion) {
 // Usado por: personalizacionResincronizar (single) y
 //            personalizacionResincronizarMasivo (bulk).
 // ──────────────────────────────────────────────────────────────
+// Clave única de una acción para comparar plantilla vs config. cambiar_estado
+// se distingue por su estado_destino; el resto por su tipo (uno por columna).
+function claveAccion(tipo_accion, config) {
+  if (tipo_accion === 'cambiar_estado') {
+    let c = config;
+    try {
+      while (typeof c === 'string') c = JSON.parse(c);
+    } catch {
+      c = {};
+    }
+    return `cambiar_estado:${c?.estado_destino || ''}`;
+  }
+  return tipo_accion;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Sincroniza la ESTRUCTURA de columnas (no solo prompts):
+//  a) agrega columnas de la plantilla global que la config no tenga
+//  b) "enciende" columnas que existen pero la plantilla ahora marca como IA
+//     (caso pendiente_confirmacion: existía sin bot, ahora tiene prompt+acciones)
+// Es aditivo y va envuelto en try/catch: si algo falla, el resync de prompts
+// sigue igual. Devuelve { agregadas:[], actualizadas:[] }.
+// ──────────────────────────────────────────────────────────────
+async function _sincronizarEstructuraColumnas(
+  id_configuracion,
+  colsPlantilla,
+  api_key_openai,
+) {
+  const cambios = { agregadas: [], actualizadas: [] };
+
+  const actuales = await db.query(
+    `SELECT id, nombre, estado_db, activa_ia, assistant_id
+     FROM kanban_columnas WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const porEstado = new Map(
+    actuales.map((c) => [String(c.estado_db).toLowerCase(), c]),
+  );
+
+  // Personalización del cliente (para compilar el prompt con su nombre de tienda)
+  const [perso] = await db.query(
+    `SELECT nombre_tienda, nombre_asistente_publico, instrucciones_extra,
+            info_envio, productos_destacados, tono_personalizado
+     FROM kanban_columnas_personalizaciones
+     WHERE id_configuracion = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const personalizacion = perso || {};
+  const nombreTienda = perso?.nombre_tienda || null;
+  const headers = api_key_openai
+    ? {
+        Authorization: `Bearer ${api_key_openai}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2',
+      }
+    : null;
+
+  const crearAsistente = async (col, prompt) => {
+    if (!prompt || !headers) return null;
+    try {
+      const r = await axios.post(
+        'https://api.openai.com/v1/assistants',
+        {
+          name: nombreTienda ? `${col.nombre} - ${nombreTienda}` : col.nombre,
+          instructions: prompt,
+          model: col.modelo || 'gpt-4o-mini',
+          tools: [{ type: 'file_search' }],
+        },
+        { headers, timeout: 20000 },
+      );
+      return r.data?.id || null;
+    } catch (e) {
+      console.error(`[resync estructura] asistente ${col.nombre}: ${e.message}`);
+      return null;
+    }
+  };
+
+  const insertarAcciones = async (idCol, acciones) => {
+    for (const a of acciones || []) {
+      await db.query(
+        `INSERT INTO kanban_acciones
+           (id_kanban_columna, id_configuracion, tipo_accion, config, activo, orden)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            idCol,
+            id_configuracion,
+            a.tipo_accion,
+            JSON.stringify(a.config),
+            a.activo ?? 1,
+            a.orden ?? null,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    }
+  };
+
+  const guardarSnapshot = async (idCol, promptBase) => {
+    const existe = await db.query(
+      `SELECT id FROM kanban_columnas_personalizaciones
+       WHERE id_kanban_columna = ? LIMIT 1`,
+      { replacements: [idCol], type: db.QueryTypes.SELECT },
+    );
+    if (existe.length) {
+      await db.query(
+        `UPDATE kanban_columnas_personalizaciones
+         SET prompt_base_snapshot = ? WHERE id_kanban_columna = ?`,
+        { replacements: [promptBase, idCol], type: db.QueryTypes.UPDATE },
+      );
+    } else {
+      await db.query(
+        `INSERT INTO kanban_columnas_personalizaciones
+           (id_kanban_columna, id_configuracion, nombre_tienda, prompt_base_snapshot)
+         VALUES (?, ?, ?, ?)`,
+        {
+          replacements: [idCol, id_configuracion, nombreTienda, promptBase],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    }
+  };
+
+  for (const col of colsPlantilla) {
+    if (!col.estado_db) continue;
+    const existente = porEstado.get(String(col.estado_db).toLowerCase());
+    const prompt = col.instrucciones
+      ? compilarPromptFinal(col.instrucciones, personalizacion)
+      : null;
+
+    try {
+      if (!existente) {
+        // (a) columna nueva → crear igual que aplicarGlobal
+        const assistant_id = await crearAsistente(col, prompt);
+        const [nuevaId] = await db.query(
+          `INSERT INTO kanban_columnas
+             (id_configuracion, nombre, estado_db, color_fondo, color_texto,
+              icono, orden, activo, es_estado_final, es_principal,
+              es_dropi_principal, activa_ia, max_tokens, instrucciones, modelo,
+              assistant_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          {
+            replacements: [
+              id_configuracion,
+              col.nombre,
+              col.estado_db,
+              col.color_fondo,
+              col.color_texto,
+              col.icono,
+              col.orden,
+              col.activo,
+              col.es_estado_final,
+              col.es_principal || 0,
+              col.es_dropi_principal || 0,
+              col.activa_ia,
+              col.max_tokens,
+              prompt || null,
+              col.modelo || 'gpt-4o-mini',
+              assistant_id,
+            ],
+            type: db.QueryTypes.INSERT,
+          },
+        );
+        await insertarAcciones(nuevaId, col.acciones);
+        if (col.instrucciones) await guardarSnapshot(nuevaId, col.instrucciones);
+        cambios.agregadas.push({ nombre: col.nombre, estado_db: col.estado_db });
+      } else {
+        // (b) columna existente. Puede necesitar: encenderse (si la plantilla
+        // ahora la marca IA) y/o recibir acciones que le falten.
+        const debeEncender =
+          col.instrucciones &&
+          (!Number(existente.activa_ia) || !existente.assistant_id);
+
+        if (debeEncender) {
+          const assistant_id = await crearAsistente(col, prompt);
+          await db.query(
+            `UPDATE kanban_columnas
+             SET activa_ia = 1, instrucciones = ?, assistant_id = ?,
+                 modelo = ?, max_tokens = ?
+             WHERE id = ?`,
+            {
+              replacements: [
+                prompt,
+                assistant_id,
+                col.modelo || 'gpt-4o-mini',
+                col.max_tokens || 500,
+                existente.id,
+              ],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+          await guardarSnapshot(existente.id, col.instrucciones);
+        }
+
+        // SIEMPRE: agregar las acciones de la plantilla que falten (por clave).
+        // Repara columnas encendidas sin sus tags/contexto (bug: la migración
+        // sembró la acción Dropi primero y el sync antiguo saltaba el resto).
+        const accActuales = await db.query(
+          `SELECT tipo_accion, config FROM kanban_acciones
+           WHERE id_kanban_columna = ?`,
+          { replacements: [existente.id], type: db.QueryTypes.SELECT },
+        );
+        const yaTiene = new Set(
+          accActuales.map((a) => claveAccion(a.tipo_accion, a.config)),
+        );
+        // Excluye las acciones Dropi: su on/off lo maneja la migración desde los
+        // flags. Aquí solo se restauran las de lógica del tablero (tags/contexto).
+        const faltan = (col.acciones || []).filter(
+          (a) =>
+            !yaTiene.has(claveAccion(a.tipo_accion, a.config)) &&
+            a.tipo_accion !== 'crear_orden_dropi' &&
+            a.tipo_accion !== 'actualizar_orden_dropi',
+        );
+        if (faltan.length) await insertarAcciones(existente.id, faltan);
+
+        if (debeEncender || faltan.length) {
+          cambios.actualizadas.push({
+            nombre: col.nombre,
+            estado_db: col.estado_db,
+          });
+        }
+      }
+    } catch (e) {
+      if (e?.parent?.code !== 'ER_DUP_ENTRY') {
+        console.error(
+          `[resync estructura] cfg=${id_configuracion} col=${col.estado_db}: ${e.message}`,
+        );
+      }
+    }
+  }
+
+  return cambios;
+}
+
 async function _resincronizarUnaConfiguracion(id_configuracion) {
   try {
     // 1. Cargar config del cliente
@@ -1777,7 +2012,23 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
 
     const colsPlantilla = dataPlantilla?.columnas || [];
 
-    // 3. Cargar columnas IA del cliente
+    // 2.5 Sincronizar ESTRUCTURA: agrega columnas nuevas de la plantilla y
+    // enciende las que pasaron a ser IA (p. ej. pendiente_confirmacion). Aditivo
+    // y aislado: si falla, el resync de prompts sigue igual.
+    let cambiosEstructura = { agregadas: [], actualizadas: [] };
+    try {
+      cambiosEstructura = await _sincronizarEstructuraColumnas(
+        id_configuracion,
+        colsPlantilla,
+        config.api_key_openai,
+      );
+    } catch (e) {
+      console.error(
+        `[resincronizar] estructura cfg=${id_configuracion}: ${e.message}`,
+      );
+    }
+
+    // 3. Cargar columnas IA del cliente (ya incluye las recién agregadas/encendidas)
     const columnasIA = await _getColumnasIADelCliente(id_configuracion);
 
     if (!columnasIA.length) {
@@ -1908,6 +2159,7 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
       omitidas_cols,
       version: Number(plantilla.version) || 1,
       resultados_columnas: resultados,
+      estructura: cambiosEstructura, // columnas agregadas/encendidas
     };
   } catch (err) {
     console.error(
@@ -2293,17 +2545,26 @@ exports.personalizacionResincronizar = catchAsync(async (req, res, next) => {
     return next(new AppError(r.error, code));
   }
 
+  const nAgregadas = r.estructura?.agregadas?.length || 0;
+  const nEncendidas = r.estructura?.actualizadas?.length || 0;
+  const extra =
+    nAgregadas || nEncendidas
+      ? ` · ${nAgregadas} columna(s) nueva(s), ${nEncendidas} activada(s)`
+      : '';
+
   return res.json({
     success: r.success,
     message:
-      r.errores_cols === 0
+      (r.errores_cols === 0
         ? `Prompt actualizado en ${r.exitos_cols} columna(s) IA`
-        : `Actualización parcial: ${r.exitos_cols} ok, ${r.errores_cols} con error`,
+        : `Actualización parcial: ${r.exitos_cols} ok, ${r.errores_cols} con error`) +
+      extra,
     data: {
       total_columnas: r.total_columnas,
       exitos: r.exitos_cols,
       errores: r.errores_cols,
       resultados: r.resultados_columnas,
+      estructura: r.estructura || { agregadas: [], actualizadas: [] },
     },
   });
 });

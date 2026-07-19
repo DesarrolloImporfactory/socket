@@ -32,7 +32,7 @@ exports.crear = catchAsync(async (req, res, next) => {
   const { id_kanban_columna, id_configuracion, tipo_accion, config = {}, orden = 0 } = req.body;
   if (!id_kanban_columna || !tipo_accion) return next(new AppError('Faltan campos obligatorios', 400));
 
-  const TIPOS_VALIDOS = ['cambiar_estado','contexto_productos','contexto_calendario','enviar_media','agendar_cita','separador_productos'];
+  const TIPOS_VALIDOS = ['cambiar_estado','contexto_productos','contexto_calendario','enviar_media','agendar_cita','separador_productos','crear_orden_dropi','actualizar_orden_dropi'];
   if (!TIPOS_VALIDOS.includes(tipo_accion)) return next(new AppError(`tipo_accion inválido: ${tipo_accion}`, 400));
 
   const [result] = await db.query(
@@ -68,4 +68,62 @@ exports.eliminar = catchAsync(async (req, res, next) => {
   );
 
   return res.status(200).json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════════
+// Acciones Dropi por columna (crear/actualizar orden). El toggle on/off es el
+// gate real del bot. Encapsulan find-or-create para que el front solo mande
+// { id_kanban_columna, id_configuracion, tipo, activo }.
+// ════════════════════════════════════════════════════════════
+const TIPOS_DROPI = ['crear_orden_dropi', 'actualizar_orden_dropi'];
+
+exports.obtenerDropiAccion = catchAsync(async (req, res, next) => {
+  const { id_kanban_columna, tipo } = req.body;
+  if (!id_kanban_columna || !TIPOS_DROPI.includes(tipo))
+    return next(new AppError('Parámetros inválidos', 400));
+
+  const [row] = await db.query(
+    `SELECT id, activo FROM kanban_acciones
+     WHERE id_kanban_columna = ? AND tipo_accion = ? LIMIT 1`,
+    { replacements: [id_kanban_columna, tipo], type: db.QueryTypes.SELECT },
+  );
+
+  return res.status(200).json({
+    success: true,
+    existe: !!row,
+    activo: Number(row?.activo) === 1,
+  });
+});
+
+exports.setDropiAccion = catchAsync(async (req, res, next) => {
+  const { id_kanban_columna, id_configuracion, tipo, activo } = req.body;
+  if (!id_kanban_columna || !id_configuracion || !TIPOS_DROPI.includes(tipo))
+    return next(new AppError('Parámetros inválidos', 400));
+
+  const val = activo === true || activo === 1 || activo === '1' ? 1 : 0;
+
+  const [row] = await db.query(
+    `SELECT id FROM kanban_acciones
+     WHERE id_kanban_columna = ? AND tipo_accion = ? LIMIT 1`,
+    { replacements: [id_kanban_columna, tipo], type: db.QueryTypes.SELECT },
+  );
+
+  if (row) {
+    await db.query(`UPDATE kanban_acciones SET activo = ? WHERE id = ?`, {
+      replacements: [val, row.id],
+      type: db.QueryTypes.UPDATE,
+    });
+  } else {
+    await db.query(
+      `INSERT INTO kanban_acciones
+         (id_kanban_columna, id_configuracion, tipo_accion, config, orden, activo)
+       VALUES (?, ?, ?, '{}', 0, ?)`,
+      {
+        replacements: [id_kanban_columna, id_configuracion, tipo, val],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  }
+
+  return res.status(200).json({ success: true, activo: !!val });
 });
