@@ -374,8 +374,40 @@ exports.datosBotCliente = async (req, res) => {
           if (!datos.direccion && d.direccion) datos.direccion = d.direccion;
           if (!datos.nombre && (d.nombre || d.apellido))
             datos.nombre = [d.nombre, d.apellido].filter(Boolean).join(' ');
+          if (!datos.producto && d.producto) datos.producto = d.producto;
           if (d.provincia || d.ciudad) origenGeo = origenGeo || 'shopify';
         }
+      }
+    }
+
+    // Resolver el producto a un external_id de Dropi (para buscarlo por ID en el
+    // panel, como hace WA con el anuncio). Matchea el nombre del producto
+    // (bot/Shopify) contra el catálogo DROPI vinculado del config.
+    let producto_external_id = null;
+    if (datos.producto) {
+      const norm = (s) =>
+        String(s || '')
+          .toUpperCase()
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '')
+          .replace(/[^A-Z0-9 ]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const prods = await db.query(
+        `SELECT nombre, external_id FROM productos_chat_center
+          WHERE id_configuracion = :cfg AND eliminado = 0
+            AND external_source = 'DROPI' AND external_id IS NOT NULL`,
+        { replacements: { cfg: id_configuracion }, type: db.QueryTypes.SELECT },
+      );
+      const t = norm(datos.producto);
+      if (t) {
+        let m = prods.find((p) => norm(p.nombre) === t);
+        if (!m)
+          m = prods.find((p) => {
+            const n = norm(p.nombre);
+            return n && (n.includes(t) || t.includes(n));
+          });
+        if (m) producto_external_id = String(m.external_id);
       }
     }
 
@@ -385,6 +417,7 @@ exports.datosBotCliente = async (req, res) => {
         id_cliente: r.id_cliente,
         tiene_log: !!datosLog,
         origen_geo: origenGeo,
+        producto_external_id,
         datos,
       },
     });
