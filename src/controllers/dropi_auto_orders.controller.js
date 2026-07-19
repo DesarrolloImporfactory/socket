@@ -347,9 +347,46 @@ exports.datosBotCliente = async (req, res) => {
       cantidad: '1',
     };
 
+    // Fallback Shopify: si el bot no dejó provincia/ciudad (cliente que entró por
+    // una orden de Shopify), tomarlas del snapshot datos_orden del webhook. Así
+    // el panel puede preseleccionar geo también para pedidos de Shopify.
+    let origenGeo = datosLog ? 'bot' : null;
+    if ((!datos.provincia || !datos.ciudad) && r.celular_cliente) {
+      const tel9 = String(r.celular_cliente).replace(/\D/g, '').slice(-9);
+      if (tel9.length >= 9) {
+        const sh = await db.query(
+          `SELECT datos_orden FROM shopify_ordenes_webhook
+            WHERE id_configuracion = :cfg AND datos_orden IS NOT NULL
+              AND RIGHT(REGEXP_REPLACE(phone_normalizado, '[^0-9]', ''), 9) = :t9
+            ORDER BY created_at DESC LIMIT 1`,
+          {
+            replacements: { cfg: id_configuracion, t9: tel9 },
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        if (sh[0]?.datos_orden) {
+          let d = {};
+          try {
+            d = JSON.parse(sh[0].datos_orden);
+          } catch (_) {}
+          if (!datos.provincia && d.provincia) datos.provincia = d.provincia;
+          if (!datos.ciudad && d.ciudad) datos.ciudad = d.ciudad;
+          if (!datos.direccion && d.direccion) datos.direccion = d.direccion;
+          if (!datos.nombre && (d.nombre || d.apellido))
+            datos.nombre = [d.nombre, d.apellido].filter(Boolean).join(' ');
+          if (d.provincia || d.ciudad) origenGeo = origenGeo || 'shopify';
+        }
+      }
+    }
+
     return res.json({
       ok: true,
-      data: { id_cliente: r.id_cliente, tiene_log: !!datosLog, datos },
+      data: {
+        id_cliente: r.id_cliente,
+        tiene_log: !!datosLog,
+        origen_geo: origenGeo,
+        datos,
+      },
     });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message });
