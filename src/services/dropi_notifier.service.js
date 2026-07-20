@@ -585,11 +585,46 @@ async function upsertOrders(cacheInsertFields, orders) {
 
 async function getWaCredentials(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id_telefono AS phone_number_id, token AS waba_token, telefono
+    `SELECT id_telefono AS phone_number_id, token AS waba_token, telefono,
+            id_whatsapp AS waba_id
      FROM configuraciones WHERE id = ? AND id_telefono IS NOT NULL AND token IS NOT NULL LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   return row || null;
+}
+
+/* Plantillas APROBADAS de la WABA, cacheadas 30 min por cuenta.
+   Sin esto, una config con plantillas copiadas de otra cuenta reintenta el
+   mismo envío fallido cada 15 min contra Meta, para siempre. */
+const CACHE_TEMPLATES = new Map();
+const TTL_TEMPLATES_MS = 30 * 60 * 1000;
+
+async function getTemplatesAprobadas(waba_id, token) {
+  if (!waba_id || !token) return null; // null = no se pudo saber → no filtrar
+  const hit = CACHE_TEMPLATES.get(waba_id);
+  if (hit && Date.now() - hit.at < TTL_TEMPLATES_MS) return hit.set;
+
+  try {
+    const url = `https://graph.facebook.com/${META_API_VERSION}/${waba_id}/message_templates?fields=name,status&limit=500`;
+    const resp = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15000,
+    });
+    const set = new Set(
+      (resp.data?.data || [])
+        .filter((t) => String(t.status).toUpperCase() === 'APPROVED')
+        .map((t) => t.name),
+    );
+    CACHE_TEMPLATES.set(waba_id, { at: Date.now(), set });
+    return set;
+  } catch (e) {
+    // Si Meta no responde no bloqueamos los envíos: se intenta como antes.
+    console.error(
+      `[notifier] no se pudo listar templates de WABA ${waba_id}:`,
+      e?.response?.data?.error?.message || e.message,
+    );
+    return null;
+  }
 }
 
 async function getPlantillasActivas(id_configuracion) {
@@ -810,11 +845,15 @@ async function completarEnvio({
    Clientes / mensajes del chat center
    ═══════════════════════════════════════════════════════════ */
 
+/* crearSiNoExiste=false → solo busca. Se usa ANTES de enviar: si creáramos el
+   contacto ahí y el envío fallaba, quedaba un contacto sin un solo mensaje
+   ensuciando la columna del kanban. */
 async function resolverClientes({
   id_configuracion,
   phoneNorm,
   phone_number_id,
   telefonoConfig,
+  crearSiNoExiste = true,
 }) {
   const [clienteRow] = await db.query(
     `SELECT id FROM clientes_chat_center
@@ -834,7 +873,7 @@ async function resolverClientes({
 
   let clienteId = clienteRow?.id || null;
 
-  if (!clienteId) {
+  if (!clienteId && crearSiNoExiste) {
     const [insertResult] = await db.query(
       `INSERT INTO clientes_chat_center
          (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
@@ -1048,6 +1087,13 @@ async function procesarTemplates({
     ? await getColumnaPrincipalDropi(id_configuracion)
     : null;
 
+  // Plantillas que realmente existen en la WABA de esta config (null = no se
+  // pudo consultar → no se filtra nada).
+  const aprobadas = credsValidas
+    ? await getTemplatesAprobadas(creds.waba_id, creds.waba_token)
+    : null;
+  const faltantesAvisadas = new Set();
+
   let enviados = 0,
     omitidos = 0,
     errores = 0,
@@ -1163,6 +1209,23 @@ async function procesarTemplates({
         continue;
       }
 
+      // La plantilla configurada no existe en esta WABA (típico: se copió de
+      // otra cuenta). Se omite ANTES de reclamar y de tocar el chat.
+      if (
+        aprobadas &&
+        config.nombre_template &&
+        !aprobadas.has(config.nombre_template)
+      ) {
+        if (!faltantesAvisadas.has(config.nombre_template)) {
+          faltantesAvisadas.add(config.nombre_template);
+          console.error(
+            `[notifier] cfg ${id_configuracion}: la plantilla "${config.nombre_template}" (${estadoConfig}) no existe o no está aprobada en su WhatsApp. Se omiten esos envíos.`,
+          );
+        }
+        omitidos++;
+        continue;
+      }
+
       // ── RECLAMO ANTES DE ENVIAR (atómico vía UNIQUE uk_order_config_estado).
       // Si otra corrida ya reclamó/envió → affectedRows=0 → no reenviamos.
       // Clave del fix: aunque fallen las escrituras DB POST-envío, el registro
@@ -1200,11 +1263,13 @@ async function procesarTemplates({
       // ── BLOQUE DE ENVÍO. Si algo aquí falla, el mensaje NO salió:
       // liberamos el reclamo para reintentar en la próxima corrida.
       try {
+        // Solo BUSCA: el contacto se crea después, si el mensaje sale.
         const resolved = await resolverClientes({
           id_configuracion,
           phoneNorm,
           phone_number_id: creds.phone_number_id,
           telefonoConfig,
+          crearSiNoExiste: false,
         });
         clienteId = resolved.clienteId;
         idClienteConfig = resolved.idClienteConfig;
@@ -1271,6 +1336,22 @@ async function procesarTemplates({
 
       // ✅ A partir de aquí el mensaje YA SALIÓ. El reclamo se queda.
       // Todo lo siguiente es best-effort: si falla, NO se reenvía.
+
+      // Recién ahora se crea el contacto del chat: hay un mensaje real que
+      // lo justifica. Si el envío hubiera fallado, no queda nada.
+      if (!clienteId) {
+        try {
+          const creado = await resolverClientes({
+            id_configuracion,
+            phoneNorm,
+            phone_number_id: creds.phone_number_id,
+            telefonoConfig,
+          });
+          clienteId = creado.clienteId;
+          idClienteConfig = idClienteConfig || creado.idClienteConfig;
+        } catch (_) {}
+      }
+
       const rutaArchivo = buildRutaArchivo(orderParaMsg, estadoConfig);
 
       let columnaDestino = null;

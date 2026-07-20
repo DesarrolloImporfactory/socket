@@ -375,6 +375,9 @@ app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
 app.use('/api/v1/admin_dashboard', adminDashboardRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
+// API pública para terceros (auth por API key) + gestión de llaves
+app.use('/api/public/v1', require('./routes/public_api.routes'));
+app.use('/api/v1/api_keys', require('./routes/api_keys.routes'));
 
 app.all('*', (req, res, next) => {
   return next(

@@ -258,14 +258,12 @@ async function ensureDropiCacheFresh({
 
 const WINDOW_HOURS = 72;
 
-exports.dashboard = catchAsync(async (req, res, next) => {
-  const id_configuracion = parseInt(req.query.id_configuracion, 10);
-  const since = String(req.query.since || '');
-  const until = String(req.query.until || '');
-  const limit = Math.min(50, parseInt(req.query.limit || '30', 10));
+/* Cuerpo del dashboard separado del handler para que la API pública
+   (public_api.controller) lo reuse tal cual. */
+async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
   validateRange(since, until);
   if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
+    throw new AppError('id_configuracion es requerido', 400);
 
   const cacheStatus = await ensureDropiCacheFresh({
     id_configuracion,
@@ -345,9 +343,9 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     ]);
 
   if (!acctResp.success)
-    return next(new AppError(`Meta account: ${acctResp.message}`, 502));
+    throw new AppError(`Meta account: ${acctResp.message}`, 502);
   if (!adsResp.success)
-    return next(new AppError(`Meta top-ads: ${adsResp.message}`, 502));
+    throw new AppError(`Meta top-ads: ${adsResp.message}`, 502);
 
   const m = acctResp.data || {};
   const ads = adsResp.data || [];
@@ -529,7 +527,7 @@ exports.dashboard = catchAsync(async (req, res, next) => {
     0,
   );
 
-  return res.json({
+  return {
     rango: { since, until },
     window_hours: WINDOW_HOURS,
     config: { id_configuracion, currency: acctResp.currency || 'USD' },
@@ -595,7 +593,20 @@ exports.dashboard = catchAsync(async (req, res, next) => {
       total_orders: cacheStatus.totalCached,
       was_stale_triggered_sync: cacheStatus.isStale,
     },
-  });
+  };
+}
+
+exports.buildAdsDashboard = buildAdsDashboard;
+
+exports.dashboard = catchAsync(async (req, res) => {
+  return res.json(
+    await buildAdsDashboard({
+      id_configuracion: parseInt(req.query.id_configuracion, 10),
+      since: String(req.query.since || ''),
+      until: String(req.query.until || ''),
+      limit: Math.min(50, parseInt(req.query.limit || '30', 10)),
+    }),
+  );
 });
 
 // ════════════════════════════════════════════════════════════

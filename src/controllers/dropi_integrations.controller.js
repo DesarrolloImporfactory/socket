@@ -4472,7 +4472,8 @@ async function countCanalConversaciones({
     });
   }
 
-  const out = { wa: 0, shopify: 0 };
+  // ids = compradores de cada canal (los usa el % de confirmación)
+  const out = { wa: 0, shopify: 0, waIds: new Set(), shopifyIds: new Set() };
   if (!allKeys.size) return out;
 
   if (!clientByKey) {
@@ -4486,6 +4487,7 @@ async function countCanalConversaciones({
       if (cid) cset.add(cid);
     }
     out[canal] = cset.size;
+    out[`${canal}Ids`] = cset;
   }
   return out;
 }
@@ -4509,15 +4511,11 @@ const VALIDAR_SHOPIFY_CON_WEBHOOK = true;
    KPIs + top productos para una conexión en un rango de fechas.
    ═══════════════════════════════════════════════════════════ */
 
-exports.getConnectionSummary = catchAsync(async (req, res, next) => {
-  const id_configuracion = toInt(req.body?.id_configuracion);
-  const from = strOrNull(req.body?.from);
-  const until = strOrNull(req.body?.until);
-
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-  if (!from || !until)
-    return next(new AppError('from y until son requeridos', 400));
+/* Devuelve el objeto `data` del resumen. Separado del handler para que la
+   API pública (public_api.controller) lo reuse sin duplicar consultas. */
+async function buildConnectionSummary({ id_configuracion, from, until }) {
+  if (!id_configuracion) throw new AppError('id_configuracion es requerido', 400);
+  if (!from || !until) throw new AppError('from y until son requeridos', 400);
 
   const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
   const fromDt = `${from} 00:00:00`;
@@ -4562,11 +4560,18 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
           AND dropi_order_id IS NOT NULL AND created_at BETWEEN :from AND :until`,
       { replacements: repl },
     ),
-    // Conversaciones nuevas por día
+    // Conversaciones nuevas por día. El EXISTS es clave: al conectar una
+    // tienda, la sync crea un contacto por teléfono de orden importada;
+    // sin escribir no son conversaciones (inflaban el KPI y el %).
     db.query(
-      `SELECT DATE_FORMAT(created_at,'%Y-%m-%d') AS dia, COUNT(*) AS n FROM clientes_chat_center
-        WHERE id_configuracion = :idCfg AND deleted_at IS NULL
-          AND created_at BETWEEN :from AND :until GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')`,
+      `SELECT DATE_FORMAT(cc.created_at,'%Y-%m-%d') AS dia, COUNT(*) AS n
+         FROM clientes_chat_center cc
+        WHERE cc.id_configuracion = :idCfg AND cc.deleted_at IS NULL
+          AND cc.created_at BETWEEN :from AND :until
+          AND EXISTS (SELECT 1 FROM mensajes_clientes m
+                       WHERE m.id_configuracion = :idCfg AND m.celular_recibe = cc.id
+                         AND m.rol_mensaje = 0 AND m.deleted_at IS NULL)
+        GROUP BY DATE_FORMAT(cc.created_at,'%Y-%m-%d')`,
       { replacements: repl },
     ),
     // Conversaciones ACTIVAS: clientes distintos que escribieron en el
@@ -4574,8 +4579,10 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     // usa esto y no solo "nuevas": los clientes antiguos que vuelven a
     // escribir también cuentan (los productos de abajo los incluyen, y
     // sin esto la suma por producto podía superar al total del hero).
+    // Devuelve los ids (no un COUNT) porque el % de confirmación necesita
+    // cruzarlos con los compradores; son pocos (≈4k en la config más grande).
     db.query(
-      `SELECT COUNT(DISTINCT celular_recibe) AS n FROM mensajes_clientes
+      `SELECT DISTINCT celular_recibe AS id FROM mensajes_clientes
         WHERE id_configuracion = :idCfg AND deleted_at IS NULL AND rol_mensaje = 0
           AND created_at BETWEEN :from AND :until`,
       { replacements: repl },
@@ -4719,8 +4726,13 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     (s, r) => s + Number(r.n || 0),
     0,
   );
+  // Quiénes escribieron en el periodo. El Set se reusa para el % de
+  // confirmación (compradores que además escribieron).
+  const escribieron = new Set(
+    (activeConvRows || []).map((r) => Number(r.id)).filter(Boolean),
+  );
   const totalConversaciones = Math.max(
-    Number(activeConvRows?.[0]?.n || 0),
+    escribieron.size,
     nuevasConversaciones,
   );
   const totalMensajes = msgRows.reduce((s, r) => s + Number(r.n || 0), 0);
@@ -4856,10 +4868,18 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
       pctConfirmacion: pctConf,
     };
   };
-  const pctConfWa =
-    totalConversaciones > 0
-      ? r2((canales.wa.pedidos / totalConversaciones) * 100)
-      : 0;
+  // % confirmación = de los que ESCRIBIERON, cuántos compraron. Contar
+  // pedidos en vez de personas daba >100% en tiendas que crean órdenes
+  // fuera del chat (historial importado, Shopify, carga manual).
+  const conPedido = (compradores) => {
+    let n = 0;
+    for (const cid of compradores) if (escribieron.has(cid)) n += 1;
+    return n;
+  };
+  const pctConfDeConv = (compradores) =>
+    totalConversaciones
+      ? r2((conPedido(compradores) / totalConversaciones) * 100)
+      : null;
   const pctConfShopify =
     canales.shopify.pedidos > 0
       ? r2((canales.shopify.confirmados / canales.shopify.pedidos) * 100)
@@ -4921,54 +4941,69 @@ exports.getConnectionSummary = catchAsync(async (req, res, next) => {
     }),
   ]);
 
-  return res.json({
-    isSuccess: true,
-    data: {
-      totalFacturado: r2(totalFacturado),
-      totalGanancia: r2(totalGanancia),
-      totalPedidos,
-      entregadas,
-      totalConversaciones,
-      totalMensajes,
-      pctConfirmacion:
-        totalConversaciones > 0
-          ? r2((totalPedidos / totalConversaciones) * 100)
-          : 0,
-      tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
-      canales: {
-        wa: { ...buildCanal('wa', pctConfWa), conversaciones: convPorCanal.wa },
-        shopify: {
-          ...buildCanal('shopify', pctConfShopify),
-          conversaciones: convPorCanal.shopify,
-        },
+  // Compradores del periodo = clientes de chat con al menos un pedido
+  const compradores = new Set([
+    ...convPorCanal.waIds,
+    ...convPorCanal.shopifyIds,
+  ]);
+
+  return {
+    totalFacturado: r2(totalFacturado),
+    totalGanancia: r2(totalGanancia),
+    totalPedidos,
+    entregadas,
+    totalConversaciones,
+    totalMensajes,
+    pctConfirmacion: pctConfDeConv(compradores),
+    conversacionesConPedido: conPedido(compradores),
+    tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
+    canales: {
+      wa: {
+        ...buildCanal('wa', pctConfDeConv(convPorCanal.waIds)),
+        conversaciones: convPorCanal.wa,
+        conversacionesConPedido: conPedido(convPorCanal.waIds),
       },
-      carritos: {
-        abandonados,
-        recuperados,
-        tasaRecuperacion:
-          abandonados > 0 ? r2((recuperados / abandonados) * 100) : 0,
-        valorRecuperado: r2(carrito.valor_recuperado),
+      shopify: {
+        ...buildCanal('shopify', pctConfShopify),
+        conversaciones: convPorCanal.shopify,
+        conversacionesConPedido: conPedido(convPorCanal.shopifyIds),
       },
-      dailyChart,
-      statusBreakdown: Object.values(statusMap)
-        .map((s) => ({
-          ...s,
-          total: r2(s.total),
-          pct: totalPedidos > 0 ? r2((s.count / totalPedidos) * 100) : 0,
-        }))
-        .sort((a, b) => b.count - a.count),
-      productos,
-      // true → hubo conversaciones desde anuncios CTWA en el periodo;
-      // false → el front no muestra conv. totales/% conf. por producto
-      ctwaActivo,
-      metaAds: {
-        conectado: !!metaAdsRows?.length,
-        accountName: metaAdsRows?.[0]?.ad_account_name || null,
-      },
-      // true → el split WA/Shopify está validado contra el webhook real
-      shopifyTruth: hasShopifyTruth,
     },
+    carritos: {
+      abandonados,
+      recuperados,
+      tasaRecuperacion:
+        abandonados > 0 ? r2((recuperados / abandonados) * 100) : 0,
+      valorRecuperado: r2(carrito.valor_recuperado),
+    },
+    dailyChart,
+    statusBreakdown: Object.values(statusMap)
+      .map((s) => ({
+        ...s,
+        total: r2(s.total),
+        pct: totalPedidos > 0 ? r2((s.count / totalPedidos) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count),
+    productos,
+    // true → hubo conversaciones desde anuncios CTWA en el periodo;
+    // false → el front no muestra conv. totales/% conf. por producto
+    ctwaActivo,
+    metaAds: {
+      conectado: !!metaAdsRows?.length,
+      accountName: metaAdsRows?.[0]?.ad_account_name || null,
+    },
+    // true → el split WA/Shopify está validado contra el webhook real
+    shopifyTruth: hasShopifyTruth,
+  };
+}
+
+exports.getConnectionSummary = catchAsync(async (req, res) => {
+  const data = await buildConnectionSummary({
+    id_configuracion: toInt(req.body?.id_configuracion),
+    from: strOrNull(req.body?.from),
+    until: strOrNull(req.body?.until),
   });
+  return res.json({ isSuccess: true, data });
 });
 
 // ── Helpers exportados para uso interno (marketing_control) ──
@@ -4981,4 +5016,5 @@ exports._internal = {
   attachProductConversations,
   fetchClientPhoneMap,
   computeStatsFromCache,
+  buildConnectionSummary,
 };

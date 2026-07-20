@@ -179,6 +179,58 @@ exports.semaforoTransportadoras = catchAsync(async (req, res, next) => {
 // RANKING DE TIENDAS por venta entregada — SOLO tiendas del sistema
 // POST /api/v1/dropi_stats/ranking_tiendas  { periodo, id_configuracion }
 // ───────────────────────────────────────────────────────────────
+/* El ranking es idéntico para todos los usuarios de un país: se cachea por
+   `pais|periodo` unos minutos en vez de recalcularlo en cada apertura. */
+const CACHE_RANKING = new Map();
+const TTL_RANKING_MS = 5 * 60 * 1000;
+
+/* Todas las tiendas activas del país con sus ventas del periodo, ordenadas.
+   Clave del rendimiento: la caché se agrega PRIMERO por fecha (derivada `t`)
+   y recién ahí se cruza con las tablas chicas. Al revés, el optimizador
+   entraba por id_configuracion y leía el histórico completo de cada tienda. */
+async function tiendasDelPais(paisRaw, periodo, fechaCond) {
+  const clave = `${paisRaw}|${periodo}`;
+  const hit = CACHE_RANKING.get(clave);
+  if (hit && Date.now() - hit.at < TTL_RANKING_MS) return hit.filas;
+
+  const rows = await db.query(
+    `SELECT t.id_configuracion, cfg.nombre_configuracion AS nombre,
+            t.shop_name, t.pedidos, t.monto
+       FROM (SELECT id_configuracion,
+                    COUNT(*)           AS pedidos,
+                    SUM(total_order)   AS monto,
+                    MAX(shop_name)     AS shop_name
+               FROM dropi_orders_cache
+              WHERE ${fechaCond}
+              GROUP BY id_configuracion) t
+       JOIN configuraciones cfg ON cfg.id = t.id_configuracion
+       JOIN usuarios_chat_center u ON u.id_usuario = cfg.id_usuario
+       JOIN (SELECT id_configuracion, MAX(country_code) cc
+               FROM dropi_integrations WHERE deleted_at IS NULL
+              GROUP BY id_configuracion) di
+         ON di.id_configuracion = t.id_configuracion
+      WHERE di.cc = ?
+        AND (cfg.suspendido = 0 OR cfg.suspendido IS NULL)
+        AND u.estado IN ('activo','trial_usage','promo_usage')
+        AND (cfg.es_proveedor IS NULL OR cfg.es_proveedor <> 1)
+        AND LOWER(cfg.nombre_configuracion) NOT LIKE '%proveedor%'
+        AND (t.shop_name IS NULL OR LOWER(t.shop_name) NOT LIKE '%proveedor%')
+      ORDER BY t.monto DESC`,
+    { replacements: [paisRaw], type: db.QueryTypes.SELECT },
+  );
+
+  const filas = rows.map((r) => ({
+    id_configuracion: Number(r.id_configuracion),
+    nombre: r.nombre || null,
+    shop_name: r.shop_name || null,
+    pedidos: Number(r.pedidos) || 0,
+    monto: Number(r.monto) || 0,
+  }));
+
+  CACHE_RANKING.set(clave, { at: Date.now(), filas });
+  return filas;
+}
+
 exports.rankingTiendas = catchAsync(async (req, res) => {
   const idUsuario = req.sessionUser?.id_usuario || -1;
   const idConfig = Number(req.body?.id_configuracion) || null;
@@ -199,9 +251,6 @@ exports.rankingTiendas = catchAsync(async (req, res) => {
   )
     .map((r) => Number(r.id))
     .filter(Boolean);
-  const inMias = misConfigs.length
-    ? `c.id_configuracion IN (${misConfigs.join(',')})`
-    : '0';
 
   // 1. País del que mira: country_code de su integración Dropi (donde conectó y
   //    eligió el país). configuraciones.pais está hardcodeado "ec", NO sirve.
@@ -234,124 +283,52 @@ exports.rankingTiendas = catchAsync(async (req, res) => {
   // 2. Rango de fechas según periodo
   let fechaCond;
   if (periodo === 'mes_anterior') {
-    fechaCond = `c.order_created_at >= DATE_FORMAT(NOW() - INTERVAL 1 MONTH, '%Y-%m-01')
-                 AND c.order_created_at < DATE_FORMAT(NOW(), '%Y-%m-01')`;
+    fechaCond = `order_created_at >= DATE_FORMAT(NOW() - INTERVAL 1 MONTH, '%Y-%m-01')
+                 AND order_created_at < DATE_FORMAT(NOW(), '%Y-%m-01')`;
   } else if (periodo === '30dias') {
-    fechaCond = `c.order_created_at >= (NOW() - INTERVAL 30 DAY)`;
+    fechaCond = `order_created_at >= (NOW() - INTERVAL 30 DAY)`;
   } else {
-    fechaCond = `c.order_created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')`;
+    fechaCond = `order_created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')`;
   }
 
-  // JOIN a configuraciones = SOLO tiendas que existen en el sistema (evita
-  // "basura" de proveedores que generan guías de cualquier tienda). País por
-  // dropi_integrations. Agrupamos por configuración y mostramos su nombre.
-  const joins = `
-      JOIN configuraciones cfg ON cfg.id = c.id_configuracion
-      JOIN usuarios_chat_center u ON u.id_usuario = cfg.id_usuario
-      JOIN (
-        SELECT id_configuracion, MAX(country_code) cc
-          FROM dropi_integrations WHERE deleted_at IS NULL
-         GROUP BY id_configuracion
-      ) di ON di.id_configuracion = c.id_configuracion`;
+  // Una sola agregación con TODAS las tiendas del país (~330 filas); el top,
+  // el resumen y la posición propia salen de ahí en JS. Antes eran 4 consultas
+  // pesadas idénticas por request.
+  const filas = await tiendasDelPais(paisRaw, periodo, fechaCond);
 
-  // Excluir tiendas PROVEEDORAS: matan el ánimo del resto (una sola proveedora
-  // vende más que todas). Por la marca manual `es_proveedor=1` y, como esa marca
-  // está incompleta, también por heurística de nombre ("...proveedor...").
-  const noProveedor = `(cfg.es_proveedor IS NULL OR cfg.es_proveedor <> 1)
-      AND LOWER(cfg.nombre_configuracion) NOT LIKE '%proveedor%'
-      AND (c.shop_name IS NULL OR LOWER(c.shop_name) NOT LIKE '%proveedor%')`;
-
-  // VENTA TOTAL (todas las órdenes del periodo, no solo entregadas: la venta
-  // entregada daba números muy bajos y no motivaba). Solo cuentas ACTIVAS:
-  //  - config NO suspendida
-  //  - usuario con estado activo/trial/promo en usuarios_chat_center (una cuenta
-  //    CANCELADA seguía apareciendo en el top aunque no paga).
-  const base = `${fechaCond}
-      AND di.cc = ?
-      AND (cfg.suspendido = 0 OR cfg.suspendido IS NULL)
-      AND u.estado IN ('activo','trial_usage','promo_usage')
-      AND ${noProveedor}`;
-
-  // top, resumen del país y "mi tienda" en PARALELO (independientes entre sí).
-  const [top, [tot = {}], [propia = null]] = await Promise.all([
-    db.query(
-      // GROUP BY solo por configuración (una tienda = una config). Si se agrupa
-      // también por shop_name, una tienda con 2 nombres de shop en el periodo
-      // aparecía DUPLICADA (bug "mes pasado repetía tiendas").
-      `SELECT c.id_configuracion,
-              cfg.nombre_configuracion AS nombre,
-              MAX(c.shop_name)    AS shop_name,
-              COUNT(*)            AS pedidos,
-              SUM(c.total_order)  AS monto,
-              MAX(${inMias})      AS es_mia
-         FROM dropi_orders_cache c ${joins}
-        WHERE ${base}
-        GROUP BY c.id_configuracion, cfg.nombre_configuracion
-        ORDER BY monto DESC
-        LIMIT ${LIMIT}`,
-      { replacements: [paisRaw], type: db.QueryTypes.SELECT },
-    ),
-    db.query(
-      `SELECT COUNT(DISTINCT c.id_configuracion) AS tiendas, SUM(c.total_order) AS monto
-         FROM dropi_orders_cache c ${joins}
-        WHERE ${base}`,
-      { replacements: [paisRaw], type: db.QueryTypes.SELECT },
-    ),
-    misConfigs.length
-      ? db.query(
-          `SELECT c.id_configuracion, cfg.nombre_configuracion AS nombre,
-                  COUNT(*) AS pedidos, SUM(c.total_order) AS monto
-             FROM dropi_orders_cache c ${joins}
-            WHERE ${base} AND ${inMias}
-            GROUP BY c.id_configuracion, cfg.nombre_configuracion
-            ORDER BY monto DESC LIMIT 1`,
-          { replacements: [paisRaw], type: db.QueryTypes.SELECT },
-        )
-      : Promise.resolve([null]),
-  ]);
-
-  const ranking = top.map((r, i) => ({
+  const mias = new Set(misConfigs);
+  const ranking = filas.slice(0, LIMIT).map((r, i) => ({
     posicion: i + 1,
-    id_configuracion: Number(r.id_configuracion),
+    id_configuracion: r.id_configuracion,
     nombre: r.nombre || r.shop_name || `Tienda ${r.id_configuracion}`,
     shop_name: r.shop_name || null,
-    pedidos: Number(r.pedidos) || 0,
-    monto: Number(r.monto) || 0,
-    es_mia: !!Number(r.es_mia),
+    pedidos: r.pedidos,
+    monto: r.monto,
+    es_mia: mias.has(r.id_configuracion),
   }));
 
   const resumen = {
-    total_tiendas: Number(tot.tiendas) || ranking.length,
-    total_pais: Number(tot.monto) || 0,
+    total_tiendas: filas.length || ranking.length,
+    total_pais: filas.reduce((s, r) => s + r.monto, 0),
   };
 
-  // Posición del que mira dentro de su país (por si no está en el top)
-  let mi_tienda = null;
-
-  if (propia) {
-    const [{ pos } = { pos: null }] = await db.query(
-      `SELECT COUNT(*) + 1 AS pos FROM (
-          SELECT c.id_configuracion, SUM(c.total_order) AS monto
-            FROM dropi_orders_cache c ${joins}
-           WHERE ${base}
-           GROUP BY c.id_configuracion
-          HAVING monto > ?
-       ) t`,
-      {
-        replacements: [paisRaw, Number(propia.monto) || 0],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-    mi_tienda = {
-      posicion: Number(pos) || null,
-      id_configuracion: Number(propia.id_configuracion),
-      nombre: propia.nombre || `Tienda ${propia.id_configuracion}`,
-      pedidos: Number(propia.pedidos) || 0,
-      monto: Number(propia.monto) || 0,
-      es_mia: true,
-      en_top: ranking.some((r) => r.es_mia),
-    };
-  }
+  // Posición del que mira dentro de su país (por si no está en el top):
+  // como `filas` viene ordenada por monto, es su índice + 1.
+  const iPropia = filas.findIndex((r) => mias.has(r.id_configuracion));
+  const mi_tienda =
+    iPropia === -1
+      ? null
+      : {
+          posicion: iPropia + 1,
+          id_configuracion: filas[iPropia].id_configuracion,
+          nombre:
+            filas[iPropia].nombre ||
+            `Tienda ${filas[iPropia].id_configuracion}`,
+          pedidos: filas[iPropia].pedidos,
+          monto: filas[iPropia].monto,
+          es_mia: true,
+          en_top: ranking.some((r) => r.es_mia),
+        };
 
   return res.json({
     success: true,
