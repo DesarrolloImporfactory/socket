@@ -5,6 +5,7 @@ const {
   updateOrderForClient,
 } = require('../services/dropiOrders.service');
 const AppError = require('../utils/appError');
+const { db } = require('../database/config');
 const {
   enlazarOrdenContactoOrigen,
 } = require('../services/contactoOrigenEnlace.service');
@@ -730,6 +731,25 @@ class Sockets {
             orderId,
             body,
           });
+
+          // Reflejar el nuevo estado en el cache (el front lo lee primero, si no
+          // seguiría mostrando PENDIENTE CONFIRMACION tras confirmar).
+          try {
+            if (body?.status) {
+              await db.query(
+                `UPDATE dropi_orders_cache
+                    SET status = ?, updated_at = NOW()
+                  WHERE id_configuracion = ? AND dropi_order_id = ?`,
+                {
+                  replacements: [
+                    String(body.status).trim().toUpperCase(),
+                    id_configuracion,
+                    orderId,
+                  ],
+                },
+              );
+            }
+          } catch (_) {}
 
           socket.emit('DROPI_UPDATE_ORDER_OK', {
             isSuccess: true,

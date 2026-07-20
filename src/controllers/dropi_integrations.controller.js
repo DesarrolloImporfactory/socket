@@ -249,6 +249,15 @@ exports.cotizarTransportadorasOrden = catchAsync(async (req, res, next) => {
           '',
       ).trim(),
       price: Number(q?.objects?.precioEnvio ?? q?.precioEnvio ?? 0) || 0,
+      // slug para la imagen: app.dropi.ec/assets/images/delivery/{slug}.png
+      slug: String(
+        q?.transportadora_minuscula ||
+          q?.distributionCompany?.name ||
+          q?.transportadora ||
+          '',
+      )
+        .toLowerCase()
+        .trim(),
     }))
     .filter((t) => t.id && t.name)
     .sort((a, b) => a.price - b.price);
@@ -256,6 +265,130 @@ exports.cotizarTransportadorasOrden = catchAsync(async (req, res, next) => {
   return res.json({
     ok: true,
     data: { transportadoras, actual: ord?.distributionCompany || null },
+  });
+});
+
+// Cambia la transportadora de una orden existente replicando el flujo REAL de
+// Dropi: NO edita la orden (Dropi ignora distributionCompany en el update).
+// Crea una orden NUEVA (is_edit_order + id_old_order + la transportadora nueva)
+// y marca la vieja como REEMPLAZADA. Devuelve la orden nueva.
+exports.reemplazarOrdenTransportadora = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion);
+  const dropi_order_id = Number(req.body?.dropi_order_id);
+  const dc = req.body?.distributionCompany || {};
+  const nuevoStatus = String(req.body?.status || 'PENDIENTE CONFIRMACION')
+    .trim()
+    .toUpperCase();
+  // Datos editados opcionales (si el agente cambió nombre/dir/etc.)
+  const edit = req.body?.edit || {};
+
+  if (!id_configuracion || !dropi_order_id || !Number(dc.id))
+    return next(
+      new AppError(
+        'id_configuracion, dropi_order_id y distributionCompany.id requeridos',
+        400,
+      ),
+    );
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('Sin integración Dropi activa', 404));
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  const country_code = integration.country_code;
+
+  // 1. Orden actual desde Dropi
+  const ordResp = await dropiService.getOrderDetail({
+    integrationKey,
+    orderId: dropi_order_id,
+    country_code,
+  });
+  const o =
+    ordResp?.objects || ordResp?.data?.objects || ordResp?.data || ordResp || {};
+
+  const products = (o.orderdetails || []).map((d) => ({
+    id: d?.product?.id || d?.product_id,
+    name: d?.product?.name || d?.integration_product_name || 'Producto',
+    weight: d?.product?.weight || '1.00',
+    stock: d?.product?.warehouse_product?.[0]?.stock ?? undefined,
+    variation_id: d?.variation_id || null,
+    variations: [],
+    quantity: Number(d?.quantity) || 1,
+    price: Number(d?.price) || 0,
+    sale_price: d?.product?.sale_price ?? null,
+    suggested_price: d?.product?.suggested_price ?? null,
+  }));
+  if (!products.length)
+    return next(new AppError('La orden no tiene productos', 422));
+
+  const warehousesSelectedId =
+    o?.warehouse_id || o?.warehouse?.id || products[0]?.warehouse_id || null;
+
+  // 2. Payload de la orden NUEVA (reemplazo), calcado del flujo manual de Dropi
+  const payload = {
+    total_order: Number(o.total_order) || 0,
+    notes: o.notes || '',
+    name: (edit.name ?? o.name) || 'Cliente',
+    surname: (edit.surname ?? o.surname) || '',
+    country: o.country || 'ECUADOR',
+    state: o.state,
+    city: o.city,
+    dir: (edit.dir ?? o.dir) || '',
+    phone: (edit.phone ?? o.phone) || '',
+    client_email: o.client_email || '',
+    colonia: o.colonia || '',
+    zip_code: o.zip_code || '',
+    dni: o.dni || '',
+    dni_type: o.dni_type || '',
+    payment_method_id: o.payment_method_id || 1,
+    rate_type: o.rate_type || 'CON RECAUDO',
+    type: 'FINAL_ORDER',
+    type_service: o.type_service || 'normal',
+    insurance: false,
+    status: nuevoStatus,
+    distributionCompany: { id: Number(dc.id), name: dc.name || '' },
+    warehouses_selected_id: warehousesSelectedId,
+    is_edit_order: true,
+    id_old_order: dropi_order_id,
+    reasonComment: `Esta orden reemplaza a la orden ${dropi_order_id} que fue editada por el usuario.`,
+    products,
+  };
+
+  // 3. Crear la orden nueva
+  const created = await dropiService.createOrderMyOrders({
+    integrationKey,
+    payload,
+    country_code,
+  });
+  const nueva = created?.objects || created?.data?.objects || created;
+  const nuevoId = Number(nueva?.id) || null;
+
+  // 4. Marcar la vieja como REEMPLAZADA (mismo criterio de Dropi)
+  try {
+    await dropiService.updateMyOrder({
+      integrationKey,
+      orderId: dropi_order_id,
+      payload: {
+        status: 'REEMPLAZADA',
+        reasonComment: 'Cancelación por edición de orden',
+        replaced: true,
+      },
+      country_code,
+    });
+  } catch (_) {}
+
+  // 5. Reflejar en el cache: la vieja pasa a REEMPLAZADA (se filtra del listado);
+  //    la nueva la sincroniza el cron.
+  try {
+    await db.query(
+      `UPDATE dropi_orders_cache SET status = 'REEMPLAZADA', updated_at = NOW()
+        WHERE id_configuracion = ? AND dropi_order_id = ?`,
+      { replacements: [id_configuracion, dropi_order_id] },
+    );
+  } catch (_) {}
+
+  return res.json({
+    ok: true,
+    data: { nuevo_dropi_order_id: nuevoId, status: nuevoStatus, order: nueva },
   });
 });
 

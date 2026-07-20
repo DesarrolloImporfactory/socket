@@ -57,6 +57,13 @@ router.post(
   ctrl.cotizarTransportadorasOrden,
 );
 
+// Cambiar transportadora de una orden existente (reemplazo estilo Dropi)
+router.post(
+  '/reemplazar-orden-transportadora',
+  auth.protectConfigOwner,
+  ctrl.reemplazarOrdenTransportadora,
+);
+
 // Productos vinculados a Dropi (select del formulario de pedidos sin subir)
 router.post(
   '/auto-orders/productos-vinculados',

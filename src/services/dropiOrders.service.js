@@ -413,7 +413,10 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
     id_usuario: 0,
     [Op.or]: keys.map((k) => ({ phone: { [Op.like]: `%${k}%` } })),
   };
+  // Por defecto NO mostrar las REEMPLAZADA (versión vieja de una orden editada;
+  // Dropi tampoco las muestra). Solo aparecen si se pide ese status explícito.
   if (status) where.status = status;
+  else where.status = { [Op.ne]: 'REEMPLAZADA' };
 
   const rows = await DropiOrdersCache.findAll({
     where,
