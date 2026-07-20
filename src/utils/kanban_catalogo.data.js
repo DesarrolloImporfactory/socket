@@ -493,6 +493,30 @@ const DROPI_CONFIG_POR_DEFECTO = [
     mensaje_rapido: null,
     parametros: null,
   },
+  {
+    // Devolución: sin plantilla → solo mueve al cliente a la columna
+    // 'devolucion' (sin IA ni mensaje). Cubre las ~13 variantes de estado que
+    // Dropi manda (todas mapean a 'DEVOLUCION' en mapDropiStatusToEstadoConfig).
+    estado_dropi: 'DEVOLUCION',
+    nombre_template: '',
+    columna_destino: 'devolucion',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: null,
+  },
+  {
+    // Entregada: igual que devolucion, sin plantilla → solo mueve al cliente a
+    // 'entregada' (sin IA ni mensaje). Si el cliente elige mandar template o
+    // mensaje rápido, lo configura y deja de ser solo-mover.
+    estado_dropi: 'ENTREGADA',
+    nombre_template: '',
+    columna_destino: 'entregada',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: null,
+  },
 ];
 
 const REMARKETING_POR_DEFECTO = [
