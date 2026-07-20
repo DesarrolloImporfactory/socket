@@ -4624,11 +4624,17 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
             qty INT PATH '$.quantity', sp DECIMAL(10,2) PATH '$.product.sale_price')) AS x) AS subtotal_items
         FROM dropi_orders_cache c
         WHERE c.id_configuracion = :idCfg AND c.id_usuario = 0 AND c.order_created_at BETWEEN :from AND :until
+          AND c.status <> 'REEMPLAZADA'
       )
       SELECT jt.product_id, jt.product_name, jt.sku,
         MAX(jt.image) AS image,
-        COUNT(DISTINCT os.order_id) AS ordenes,
-        COUNT(DISTINCT CASE WHEN os.status <> 'PENDIENTE CONFIRMACION' THEN os.order_id END) AS ordenes_confirmadas,
+        -- Pedidos NETOS: sin canceladas (las reemplazadas ya salieron arriba).
+        -- 'confirmadas' excluye lo mismo: si no, al ser el numerador del % de
+        -- confirmación, una cancelada lo empujaba por encima de 100%.
+        COUNT(DISTINCT CASE WHEN os.classified_status <> 'cancelada' THEN os.order_id END) AS ordenes,
+        COUNT(DISTINCT CASE WHEN os.status <> 'PENDIENTE CONFIRMACION'
+                             AND os.classified_status <> 'cancelada'
+                            THEN os.order_id END) AS ordenes_confirmadas,
         SUM(jt.quantity) AS unidades,
         SUM(CASE WHEN os.classified_status='entregada' THEN 1 ELSE 0 END) AS ordenes_entregadas,
         SUM(CASE WHEN os.classified_status='devolucion' THEN 1 ELSE 0 END) AS devoluciones,
