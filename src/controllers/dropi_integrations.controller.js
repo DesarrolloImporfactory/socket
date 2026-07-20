@@ -110,6 +110,155 @@ async function getActiveIntegration(id_configuracion) {
   });
 }
 
+// Cotiza transportadoras para una orden EXISTENTE (para elegir/cambiar la
+// transportadora al confirmar una orden en PENDIENTE CONFIRMACION). Reusa los
+// endpoints Dropi ya probados: getOrderDetail, department, trajectory/bycity,
+// getOriginCityForCalculateShipping y cotizaEnvioTransportadoraV2.
+const _buildDept = (d) =>
+  d
+    ? {
+        id: d.id || d.department_id,
+        country_id: d.country_id || 1,
+        name: d.name || d.department || d.nombre,
+        department_code: d.department_code || null,
+      }
+    : undefined;
+
+exports.cotizarTransportadorasOrden = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion);
+  const dropi_order_id = Number(req.body?.dropi_order_id);
+  if (!id_configuracion || !dropi_order_id)
+    return next(
+      new AppError('id_configuracion y dropi_order_id requeridos', 400),
+    );
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration)
+    return next(new AppError('Sin integración Dropi activa', 404));
+  const integrationKey = decryptToken(integration.integration_key_enc);
+  const country_code = integration.country_code;
+
+  // 1. Orden desde Dropi (producto, cantidad, destino, monto)
+  const ordResp = await dropiService.getOrderDetail({
+    integrationKey,
+    orderId: dropi_order_id,
+    country_code,
+  });
+  const ord =
+    ordResp?.objects || ordResp?.data?.objects || ordResp?.data || ordResp || {};
+  const det = (ord.orderdetails || [])[0] || {};
+  const productId = Number(det?.product?.id || det?.product_id) || null;
+  const productType = det?.product?.type || 'SIMPLE';
+  const quantity = Number(det?.quantity) || 1;
+  const amount = Number(ord?.total_order) || 0;
+  const stateName = ord?.state;
+  const cityName = ord?.city;
+  if (!productId || !stateName || !cityName)
+    return next(
+      new AppError('La orden no tiene producto o destino para cotizar', 422),
+    );
+
+  // 2. Destino → objeto ciudad completo + cod_dane
+  const statesResp = await dropiService.listStates({
+    integrationKey,
+    country_id: 1,
+    country_code,
+  });
+  const states =
+    statesResp?.objects || statesResp?.data?.objects || statesResp?.data || [];
+  const state = matchEnLista(
+    states,
+    stateName,
+    (x) => x.name || x.department || x.nombre,
+  );
+  if (!state)
+    return next(new AppError(`No se resolvió la provincia "${stateName}"`, 422));
+
+  const citiesResp = await dropiService.listCities({
+    integrationKey,
+    payload: { department_id: Number(state.id), rate_type: 'CON RECAUDO' },
+    country_code,
+  });
+  const cities =
+    citiesResp?.objects?.cities ||
+    citiesResp?.data?.objects?.cities ||
+    citiesResp?.cities ||
+    citiesResp?.data?.cities ||
+    [];
+  const city = matchEnLista(cities, cityName, (x) => x.name || x.city || x.nombre);
+  if (!city)
+    return next(new AppError(`No se resolvió la ciudad "${cityName}"`, 422));
+  const destCodDane = String(city.cod_dane || city.codDane || city.code_dane || '');
+  const ciudad_destino = { ...city, department: city.department || _buildDept(state) };
+
+  // 3. Remitente (origen) → getOriginCityForShipping por el producto
+  let ciudad_remitente = null;
+  try {
+    const origResp = await dropiService.getOriginCityForShipping({
+      integrationKey,
+      productId,
+      productType,
+      destination: destCodDane,
+      country_code,
+    });
+    const oc =
+      origResp?.objects || origResp?.data?.objects || origResp?.data || origResp;
+    if (oc && (oc.cod_dane || oc.id)) {
+      ciudad_remitente = oc.department
+        ? oc
+        : {
+            ...oc,
+            department: _buildDept(
+              states.find(
+                (s) =>
+                  Number(s.id || s.department_id) === Number(oc.department_id),
+              ),
+            ),
+          };
+    }
+  } catch (_) {}
+  if (!ciudad_remitente) ciudad_remitente = { ...ciudad_destino };
+
+  // 4. Cotizar transportadoras
+  const quoteResp = await dropiService.cotizaEnvioTransportadora({
+    integrationKey,
+    payload: {
+      EnvioConCobro: true,
+      ciudad_destino,
+      ciudad_remitente,
+      products: [{ id: productId, quantity, type: productType }],
+      amount,
+    },
+    country_code,
+  });
+  const quotes = quoteResp?.objects || quoteResp?.data?.objects || [];
+  const transportadoras = (Array.isArray(quotes) ? quotes : [])
+    .map((q) => ({
+      id:
+        Number(
+          q?.distributionCompany?.id ??
+            q?.transportadora_id ??
+            q?.distribution_company_id ??
+            0,
+        ) || null,
+      name: String(
+        q?.distributionCompany?.name ??
+          q?.transportadora ??
+          q?.distribution_company?.name ??
+          q?.name ??
+          '',
+      ).trim(),
+      price: Number(q?.objects?.precioEnvio ?? q?.precioEnvio ?? 0) || 0,
+    }))
+    .filter((t) => t.id && t.name)
+    .sort((a, b) => a.price - b.price);
+
+  return res.json({
+    ok: true,
+    data: { transportadoras, actual: ord?.distributionCompany || null },
+  });
+});
+
 function toInt(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);

@@ -604,6 +604,9 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
     'coordinates',
     'sticker',
 
+    // transportadora (objeto { id, name }) — para fijar/cambiar al confirmar
+    'distributionCompany',
+
     // status (para confirmar/cancelar)
     'status',
   ]);
@@ -611,6 +614,13 @@ async function updateOrderForClient({ id_configuracion, orderId, body }) {
   const payload = {};
   for (const [k, v] of Object.entries(body || {})) {
     if (!allowed.has(k)) continue;
+    // distributionCompany: objeto { id, name }; solo si trae id válido.
+    if (k === 'distributionCompany') {
+      const dc = v || {};
+      const id = Number(dc.id) || null;
+      if (id) payload.distributionCompany = { id, name: dc.name || '' };
+      continue;
+    }
     // normalización simple
     if (
       [

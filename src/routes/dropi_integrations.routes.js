@@ -50,6 +50,13 @@ router.post(
   dropiAutoOrderController.datosBotCliente,
 );
 
+// Cotizar transportadoras para una orden existente (PENDIENTE CONFIRMACION)
+router.post(
+  '/cotizar-transportadoras-orden',
+  auth.protectConfigOwner,
+  ctrl.cotizarTransportadorasOrden,
+);
+
 // Productos vinculados a Dropi (select del formulario de pedidos sin subir)
 router.post(
   '/auto-orders/productos-vinculados',
