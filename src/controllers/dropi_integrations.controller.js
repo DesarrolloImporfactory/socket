@@ -376,8 +376,7 @@ exports.reemplazarOrdenTransportadora = catchAsync(async (req, res, next) => {
     });
   } catch (_) {}
 
-  // 5. Reflejar en el cache: la vieja pasa a REEMPLAZADA (se filtra del listado);
-  //    la nueva la sincroniza el cron.
+  // 5a. La vieja pasa a REEMPLAZADA en el cache (se filtra del listado).
   try {
     await db.query(
       `UPDATE dropi_orders_cache SET status = 'REEMPLAZADA', updated_at = NOW()
@@ -385,6 +384,31 @@ exports.reemplazarOrdenTransportadora = catchAsync(async (req, res, next) => {
       { replacements: [id_configuracion, dropi_order_id] },
     );
   } catch (_) {}
+
+  // 5b. Insertar YA la orden nueva al cache (no esperar al cron): el panel lee
+  //     del cache, así muestra en tiempo real la orden vigente con su
+  //     transportadora y status reales. Base = detalle viejo + overrides.
+  try {
+    if (nuevoId) {
+      const ordenNueva = {
+        ...o,
+        ...(nueva && typeof nueva === 'object' ? nueva : {}),
+        id: nuevoId,
+        status: nuevoStatus,
+        distributionCompany: { id: Number(dc.id), name: dc.name || '' },
+        shipping_company: dc.name || o.shipping_company || null,
+        shipping_guide: null, // orden nueva aún sin guía
+        name: (edit.name ?? o.name) || o.name,
+        surname: edit.surname ?? o.surname,
+        phone: (edit.phone ?? o.phone) || o.phone,
+        dir: edit.dir ?? o.dir,
+        orderdetails: o.orderdetails || nueva?.orderdetails || [],
+      };
+      await upsertOrdersToCache({ id_configuracion }, [ordenNueva]);
+    }
+  } catch (e) {
+    console.error('[reemplazar] upsert cache orden nueva falló:', e?.message);
+  }
 
   return res.json({
     ok: true,
