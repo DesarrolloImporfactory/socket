@@ -25,6 +25,9 @@ const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 // Normalización de teléfonos con libphonenumber (multipaís).
 // toWhatsapp(phone, country_code) → internacional en dígitos, sin "+".
 const { toWhatsapp, isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
+const {
+  moverContactoOrigenPorOrden,
+} = require('./contactoOrigenEnlace.service');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -1083,6 +1086,11 @@ async function procesarTemplates({
           country_code,
         });
         if (actualizado) entregadasActualizadas++;
+        await moverContactoOrigenPorOrden({
+          id_configuracion,
+          dropi_order_id: order.id,
+          columnaDestino: columnaEntregada,
+        }).catch(() => {});
       }
 
       // ── SOLO MOVER DE COLUMNA (sin plantilla) ──
@@ -1099,6 +1107,11 @@ async function procesarTemplates({
             columnaDestino: cfgEstado.columna_destino,
             country_code,
           });
+          await moverContactoOrigenPorOrden({
+            id_configuracion,
+            dropi_order_id: order.id,
+            columnaDestino: cfgEstado.columna_destino,
+          }).catch(() => {});
         }
         omitidos++;
         continue;
@@ -1281,6 +1294,14 @@ async function procesarTemplates({
             },
           );
         } catch (err) {}
+
+        // Mueve TAMBIÉN al contacto origen enlazado (silencioso), si la orden se
+        // creó desde nuestro sistema con otro teléfono.
+        await moverContactoOrigenPorOrden({
+          id_configuracion,
+          dropi_order_id: order.id,
+          columnaDestino,
+        }).catch(() => {});
       }
 
       try {

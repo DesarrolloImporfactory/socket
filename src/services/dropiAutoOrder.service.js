@@ -49,6 +49,9 @@ const {
   createOrderForClient,
   updateOrderForClient,
 } = require('./dropiOrders.service');
+const {
+  enlazarOrdenContactoOrigen,
+} = require('./contactoOrigenEnlace.service');
 const { resolveRegion } = require('../utils/phoneFactor');
 
 /* ────────────────────────── helpers ────────────────────────── */
@@ -1002,6 +1005,18 @@ async function autoCrearOrdenDropi({
 
     const created = data?.objects ?? data?.order ?? data?.data ?? data;
     const orderId = Number(created?.id || data?.id) || null;
+
+    // Enlace contacto origen ↔ orden: el notifier moverá TAMBIÉN a este contacto
+    // (el que el bot capturó) por las columnas aunque la orden tenga otro
+    // teléfono. Los mensajes siguen yendo solo al número de la orden.
+    if (orderId && id_cliente) {
+      await enlazarOrdenContactoOrigen({
+        id_configuracion,
+        dropi_order_id: orderId,
+        id_cliente_origen: id_cliente,
+        telefono_orden: datosBot.telefono,
+      }).catch(() => {});
+    }
 
     await logAuto({
       ...ctx,

@@ -5,6 +5,9 @@ const {
   updateOrderForClient,
 } = require('../services/dropiOrders.service');
 const AppError = require('../utils/appError');
+const {
+  enlazarOrdenContactoOrigen,
+} = require('../services/contactoOrigenEnlace.service');
 const dropiService = require('../services/dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { decryptToken } = require('../utils/cryptoToken');
@@ -685,6 +688,23 @@ class Sockets {
             id_configuracion,
             body: payload,
           });
+
+          // Enlace contacto origen ↔ orden: si el panel mandó el id del contacto
+          // del chat, el notifier moverá también a ese contacto por las columnas
+          // aunque la orden se haya creado con otro teléfono.
+          try {
+            const created = data?.objects ?? data?.order ?? data?.data ?? data;
+            const orderId = Number(created?.id || data?.id) || null;
+            const idOrigen = toInt(payload?.id_cliente_origen);
+            if (orderId && idOrigen) {
+              await enlazarOrdenContactoOrigen({
+                id_configuracion,
+                dropi_order_id: orderId,
+                id_cliente_origen: idOrigen,
+                telefono_orden: payload?.phone,
+              });
+            }
+          } catch (_) {}
 
           socket.emit('DROPI_CREATE_ORDER_OK', { isSuccess: true, data });
         } catch (e) {

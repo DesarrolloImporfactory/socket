@@ -497,6 +497,99 @@ exports.findFullByPhone = catchAsync(async (req, res, next) => {
   return res.json({ status: 200, data: chat });
 });
 
+// Enlace contacto ↔ orden Dropi (cuando la orden se creó con otro teléfono).
+// Devuelve:
+//  - como_origen: este contacto generó una orden que corre en OTRO número
+//    (las automatizaciones/mensajes van allá; este contacto solo se mueve).
+//  - como_orden: este contacto ES el de una orden creada desde OTRO chat.
+exports.enlaceOrdenContacto = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(
+    req.body?.id_configuracion ?? req.query?.id_configuracion,
+  );
+  const id_cliente = Number(req.body?.id_cliente ?? req.query?.id_cliente);
+  if (!id_configuracion || !id_cliente)
+    return next(new AppError('Faltan parámetros', 400));
+
+  const [cli] = await db.query(
+    `SELECT celular_cliente FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+    { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+  );
+  const tel9Self = String(cli?.celular_cliente || '')
+    .replace(/\D/g, '')
+    .slice(-9);
+
+  // como_origen: solo si la orden corre en un número DISTINTO al suyo. Se
+  // resuelve el CONTACTO real de la orden (para mostrar su número limpio y
+  // habilitar "abrir chat").
+  const origenRows = await db.query(
+    `SELECT dropi_order_id, telefono_orden
+       FROM dropi_orden_contacto_origen
+      WHERE id_configuracion = ? AND id_cliente_origen = ?
+        AND RIGHT(REGEXP_REPLACE(telefono_orden, '[^0-9]', ''), 9) <> ?
+      ORDER BY id DESC LIMIT 1`,
+    {
+      replacements: [id_configuracion, id_cliente, tel9Self || '000000000'],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  let comoOrigen = null;
+  if (origenRows[0]) {
+    const tel9Ord = String(origenRows[0].telefono_orden || '')
+      .replace(/\D/g, '')
+      .slice(-9);
+    const ordCli = await db.query(
+      `SELECT id, nombre_cliente, apellido_cliente, celular_cliente, estado_contacto
+         FROM clientes_chat_center
+        WHERE id_configuracion = ? AND deleted_at IS NULL
+          AND RIGHT(REGEXP_REPLACE(celular_cliente, '[^0-9]', ''), 9) = ?
+        ORDER BY ultimo_mensaje_at DESC LIMIT 1`,
+      { replacements: [id_configuracion, tel9Ord], type: db.QueryTypes.SELECT },
+    );
+    const oc = ordCli[0];
+    comoOrigen = {
+      dropi_order_id: origenRows[0].dropi_order_id,
+      id_cliente_orden: oc?.id || null,
+      nombre_orden:
+        [oc?.nombre_cliente, oc?.apellido_cliente].filter(Boolean).join(' ') ||
+        null,
+      // número limpio del contacto de la orden (con código país si lo tiene);
+      // si no existe el contacto, cae al telefono_orden guardado.
+      celular_orden: String(
+        oc?.celular_cliente || origenRows[0].telefono_orden || '',
+      ).replace(/\D/g, ''),
+      estado_contacto_orden: oc?.estado_contacto || null,
+    };
+  }
+
+  // como_orden: su teléfono coincide con un telefono_orden enlazado a OTRO origen.
+  let comoOrden = null;
+  if (tel9Self) {
+    const ordRows = await db.query(
+      `SELECT e.id_cliente_origen, c.nombre_cliente, c.apellido_cliente,
+              c.celular_cliente
+         FROM dropi_orden_contacto_origen e
+         JOIN clientes_chat_center c ON c.id = e.id_cliente_origen
+        WHERE e.id_configuracion = ?
+          AND RIGHT(REGEXP_REPLACE(e.telefono_orden, '[^0-9]', ''), 9) = ?
+          AND e.id_cliente_origen <> ?
+        ORDER BY e.id DESC LIMIT 1`,
+      {
+        replacements: [id_configuracion, tel9Self, id_cliente],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    comoOrden = ordRows[0] || null;
+  }
+
+  return res.json({
+    ok: true,
+    data: {
+      como_origen: comoOrigen,
+      como_orden: comoOrden,
+    },
+  });
+});
+
 exports.listarContactosEstado = catchAsync(async (req, res, next) => {
   const {
     id_configuracion,

@@ -58,6 +58,11 @@ router.get(
   clientes_chat_centerController.findFullByPhone,
 );
 
+router.get(
+  '/enlace_orden_contacto',
+  clientes_chat_centerController.enlaceOrdenContacto,
+);
+
 router.post(
   '/listar_contactos_estado',
   clientes_chat_centerController.listarContactosEstado,
