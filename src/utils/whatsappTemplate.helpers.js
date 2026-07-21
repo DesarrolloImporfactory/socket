@@ -104,7 +104,19 @@ function metaLimitsByFormat(format) {
   };
 }
 
-function validateMetaMediaOrThrow({ file, format }) {
+// Tope duro para el VIDEO *antes* de convertir: el conversor lo va a
+// recomprimir por debajo del límite de Meta, así que validar los 16MB sobre el
+// original solo bloquea videos que sí se podían enviar. Igual se corta lo
+// absurdo para no quemar CPU/disco en un archivo gigante.
+const VIDEO_PRE_CONVERT_MAX = 200 * 1024 * 1024;
+
+/**
+ * @param {'pre'|'final'} [stage] 'pre' = antes del conversor de video. En esa
+ *   etapa, para VIDEO no se valida ni peso ni MIME (el conversor normaliza
+ *   ambos a mp4/h264 dentro del límite); solo se corta el tamaño absurdo.
+ *   La validación real corre en 'final', con el buffer ya convertido.
+ */
+function validateMetaMediaOrThrow({ file, format, stage = 'final' }) {
   if (!file?.buffer?.length) {
     const err = new Error('Archivo vacío o inválido.');
     err.statusCode = 400;
@@ -114,6 +126,19 @@ function validateMetaMediaOrThrow({ file, format }) {
 
   const f = String(format || '').toUpperCase();
   const { max, allowed } = metaLimitsByFormat(f);
+
+  if (stage === 'pre' && f === 'VIDEO') {
+    if (file.buffer.length > VIDEO_PRE_CONVERT_MAX) {
+      const err = new Error(
+        `El video es demasiado grande para procesarlo. ` +
+          `Tamaño: ${bytesMB(file.buffer.length)}. Máximo: ${bytesMB(VIDEO_PRE_CONVERT_MAX)}.`,
+      );
+      err.statusCode = 400;
+      err.code = 'META_SIZE_LIMIT';
+      throw err;
+    }
+    return;
+  }
 
   if (file.buffer.length > max) {
     const err = new Error(
@@ -756,7 +781,7 @@ async function prepareHeaderAssetForScheduling({
       throw err;
     }
 
-    validateMetaMediaOrThrow({ file: req.file, format: fmt });
+    validateMetaMediaOrThrow({ file: req.file, format: fmt, stage: 'pre' });
 
     processedBuffer = req.file.buffer;
     processedMimetype = req.file.mimetype;
@@ -778,6 +803,17 @@ async function prepareHeaderAssetForScheduling({
         );
       }
     }
+
+    // Validación real: sobre lo que efectivamente se va a subir.
+    validateMetaMediaOrThrow({
+      file: {
+        buffer: processedBuffer,
+        mimetype: processedMimetype,
+        originalname: processedFilename,
+        size: processedBuffer.length,
+      },
+      format: fmt,
+    });
 
     // ── VIDEO → Video API | IMAGE/DOCUMENT → S3 ──
     if (fmt === 'VIDEO') {
@@ -902,6 +938,7 @@ async function prepareHeaderAssetForScheduling({
         size: downloadedBuffer.length,
       },
       format: fmtDefault,
+      stage: 'pre',
     });
 
     // Lo que finalmente se sube. Cambia solo si el conversor devuelve un buffer
@@ -944,6 +981,16 @@ async function prepareHeaderAssetForScheduling({
           );
         }
       }
+
+      validateMetaMediaOrThrow({
+        file: {
+          buffer: defaultBufferFinal,
+          mimetype: defaultMimeFinal,
+          originalname: defaultFilenameFinal,
+          size: defaultBufferFinal.length,
+        },
+        format: fmtDefault,
+      });
 
       videoApiResult = await uploadVideoToVideoAPI({
         buffer: defaultBufferFinal,

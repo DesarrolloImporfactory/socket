@@ -2593,7 +2593,9 @@ exports.enviarTemplateMasivo = async (req, res) => {
 
       // 2.1) Validar límites Meta
       try {
-        validateMetaMediaOrThrow({ file: req.file, format: fmt });
+        // 'pre': para VIDEO no se valida peso/MIME acá — el conversor de más
+        // abajo lo normaliza a mp4 por debajo del límite. Se revalida después.
+        validateMetaMediaOrThrow({ file: req.file, format: fmt, stage: 'pre' });
       } catch (err) {
         return res.status(err.statusCode || 400).json({
           success: false,
@@ -2641,6 +2643,26 @@ exports.enviarTemplateMasivo = async (req, res) => {
             convErr.message,
           );
         }
+      }
+
+      // 2.1.2) Validación real: sobre el buffer que efectivamente se sube.
+      try {
+        validateMetaMediaOrThrow({
+          file: {
+            buffer: processedBuffer,
+            mimetype: processedMimetype,
+            originalname: processedFilename,
+            size: processedBuffer.length,
+          },
+          format: fmt,
+        });
+      } catch (err) {
+        return res.status(err.statusCode || 400).json({
+          success: false,
+          step: 'validate_media',
+          code: err.code || null,
+          message: err.message || 'Archivo inválido',
+        });
       }
 
       // 2.2) Subir histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3
@@ -2844,6 +2866,9 @@ exports.enviarTemplateMasivo = async (req, res) => {
               size: downloadedBuffer.length,
             },
             format: fmtDefault,
+            // Para VIDEO la validación real corre después de convertir: el
+            // asset guardado puede pesar >16MB y aun así ser enviable.
+            stage: 'pre',
           });
         } catch (err) {
           return res.status(err.statusCode || 400).json({
@@ -2888,6 +2913,25 @@ exports.enviarTemplateMasivo = async (req, res) => {
               '[TEMPLATE][VIDEO][default_asset] No se pudo convertir. Se sube original:',
               convErr.message,
             );
+          }
+
+          try {
+            validateMetaMediaOrThrow({
+              file: {
+                buffer: bufDefault,
+                mimetype: mimeDefault,
+                originalname: nameDefault,
+                size: bufDefault.length,
+              },
+              format: fmtDefault,
+            });
+          } catch (err) {
+            return res.status(err.statusCode || 400).json({
+              success: false,
+              step: 'validate_default_header_asset',
+              code: err.code || null,
+              message: err.message || 'Adjunto predeterminado inválido',
+            });
           }
 
           try {
