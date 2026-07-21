@@ -845,8 +845,43 @@ exports.stripeWebhook = async (req, res) => {
               );
             }
 
+            // No suspender si la suscripción SIGUE vigente en Stripe.
+            const subVigente =
+              subStatus === 'trialing' || subStatus === 'active';
+
+            if (subVigente) {
+              console.log(
+                '[stripe] IGNORE payment_failed (suscripción vigente en Stripe):',
+                {
+                  id_usuario,
+                  subscriptionId,
+                  subStatus,
+                  invoiceId: invoice.id,
+                },
+              );
+
+              // Sincronizar flags sin tocar el estado de acceso.
+              await db.query(
+                `UPDATE usuarios_chat_center
+                 SET stripe_subscription_status = COALESCE(?, stripe_subscription_status),
+                     cancel_at_period_end = COALESCE(?, cancel_at_period_end),
+                     cancel_at = COALESCE(?, cancel_at),
+                     canceled_at = COALESCE(?, canceled_at)
+                 WHERE id_usuario = ?`,
+                {
+                  replacements: [
+                    subStatus,
+                    cancelAtPeriodEnd,
+                    cancelAt,
+                    canceledAt,
+                    id_usuario,
+                  ],
+                },
+              );
+            }
+
             // Solo suspender si NO fue un upgrade fallido
-            if (!isFailedUpgrade) {
+            if (!isFailedUpgrade && !subVigente) {
               await db.query(
                 `UPDATE usuarios_chat_center
                  SET estado = 'suspendido',
