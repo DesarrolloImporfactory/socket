@@ -142,18 +142,32 @@ async function cargarMapaEmailsImporsuit() {
   return mapa;
 }
 
+/** Mayor id actual de clientes_chat_center (cursor para pasadas incrementales). */
+async function maxIdCliente() {
+  const [row] = await db.query(
+    `SELECT COALESCE(MAX(id), 0) AS maxId FROM clientes_chat_center`,
+    { type: db.QueryTypes.SELECT },
+  );
+  return Number(row?.maxId || 0);
+}
+
 /**
- * BACKFILL idempotente para datos existentes: recorre clientes_chat_center con
- * celular y email vacío, y rellena el email desde el mapa de imporsuit.
- * Re-ejecutable las veces que sea. Con { dryRun:true } no escribe, solo cuenta.
+ * BACKFILL idempotente: recorre clientes_chat_center con celular y email vacío,
+ * y rellena el email desde el mapa de imporsuit. Re-ejecutable las veces que sea.
+ *
+ * - Pasada COMPLETA: desdeId = 0 (revisa todo; capta también los casos nuevos
+ *   del lado imporsuit, p.ej. tiendas nuevas o emails cambiados).
+ * - Pasada INCREMENTAL: desdeId = último id ya procesado (solo clientes nuevos).
+ *
+ * Con { dryRun:true } no escribe, solo cuenta.
  */
-async function backfill({ dryRun = false, pageSize = 1000 } = {}) {
+async function backfill({ dryRun = false, pageSize = 1000, desdeId = 0 } = {}) {
   const mapa = await cargarMapaEmailsImporsuit();
 
   let candidatos = 0;
   let actualizados = 0;
   let revisados = 0;
-  let lastId = 0;
+  let lastId = Number(desdeId) || 0;
 
   for (;;) {
     const clientes = await db.query(
@@ -190,6 +204,7 @@ async function backfill({ dryRun = false, pageSize = 1000 } = {}) {
 
   return {
     dryRun,
+    desde_id: Number(desdeId) || 0,
     imporsuit_pares: mapa.size,
     clientes_revisados: revisados,
     candidatos,
@@ -202,5 +217,6 @@ module.exports = {
   resolverEmailImporsuitPorCelular,
   rellenarEmailClienteSiVacio,
   cargarMapaEmailsImporsuit,
+  maxIdCliente,
   backfill,
 };
