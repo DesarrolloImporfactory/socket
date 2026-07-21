@@ -112,6 +112,13 @@ router.post(
 /* ════════════════════════════════════════════════
    ENVÍO MASIVO / PROGRAMADOS
    ════════════════════════════════════════════════ */
+// Convierte + sube el header UNA vez y devuelve el media_id que el front
+// reparte a todo el lote (evita N conversiones idénticas en un masivo).
+router.post(
+  '/preparar_header_masivo',
+  uploadSingle('header_file'),
+  whatsappCtrl.prepararHeaderMasivo,
+);
 router.post(
   '/enviar_template_masivo',
   uploadSingle('header_file'),

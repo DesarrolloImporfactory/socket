@@ -2459,6 +2459,277 @@ exports.enviarAudioCompleto = async (req, res) => {
  * Para VIDEO → sube a Video API (/Videos/*) en vez de S3.
  *         Para IMAGE / DOCUMENT → sigue usando S3 (uploadToUploader).
  */
+/**
+ * POST /whatsapp_managment/preparar_header_masivo
+ *
+ * Convierte + sube el header media UNA sola vez y devuelve el media_id de Meta.
+ * El front lo llama antes del bucle de un masivo y reparte ese media_id entre
+ * todos los destinatarios vía `header_media_id` en /enviar_template_masivo.
+ *
+ * Antes cada destinatario re-subía el archivo y re-corría ffmpeg: para N
+ * contactos eran N conversiones y N uploads idénticos. Ahora es 1 y 1.
+ *
+ * El media_id de Meta es reutilizable dentro del mismo PHONE_NUMBER_ID
+ * (Meta lo retiene 30 días), así que sirve para todo el lote.
+ *
+ * Acepta multipart (`header_file`) o JSON (`header_default_asset`).
+ */
+exports.prepararHeaderMasivo = async (req, res) => {
+  try {
+    const id_configuracion = req.body?.id_configuracion;
+
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Falta id_configuracion' });
+    }
+
+    const cfg = await getConfigFromDB(Number(id_configuracion));
+    if (!cfg) {
+      return res.status(200).json({
+        success: false,
+        message: 'Configuración inválida o sin token/phone_number_id',
+      });
+    }
+
+    // ── 1) Resolver la fuente: archivo subido o asset predeterminado ──
+    let header_format = req.body?.header_format ?? null;
+    let buffer = null;
+    let mimetype = null;
+    let filename = null;
+
+    const rawDefault = req.body?.header_default_asset;
+    let header_default_asset = null;
+    if (rawDefault) {
+      header_default_asset =
+        typeof rawDefault === 'object' ? rawDefault : parseMaybeJSON(rawDefault);
+    }
+
+    if (req.file) {
+      if (!header_format) {
+        header_format = inferHeaderFormatFromMime(req.file.mimetype);
+      }
+      buffer = req.file.buffer;
+      mimetype = req.file.mimetype;
+      filename = req.file.originalname;
+    } else if (header_default_asset?.url) {
+      header_format = header_format || header_default_asset.format || null;
+
+      const decodedUrl = String(header_default_asset.url || '')
+        .trim()
+        .replace(/&amp;/g, '&')
+        .replace(/&#38;/g, '&');
+
+      const dl = await axios.get(decodedUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        validateStatus: () => true,
+      });
+
+      if (dl.status < 200 || dl.status >= 300 || !dl.data) {
+        return res.status(200).json({
+          success: false,
+          step: 'download_default_header_asset',
+          message: 'No se pudo descargar el adjunto predeterminado',
+          http_status: dl.status,
+          url: decodedUrl,
+        });
+      }
+
+      buffer = Buffer.from(dl.data);
+      mimetype = String(dl.headers?.['content-type'] || '')
+        .split(';')[0]
+        .trim();
+
+      const fmtTmp = String(header_format || '').toUpperCase();
+      if (!mimetype) {
+        if (fmtTmp === 'IMAGE') mimetype = 'image/jpeg';
+        else if (fmtTmp === 'VIDEO') mimetype = 'video/mp4';
+        else mimetype = 'application/pdf';
+      }
+
+      const ext =
+        fmtTmp === 'IMAGE' ? 'jpg' : fmtTmp === 'VIDEO' ? 'mp4' : 'pdf';
+      filename =
+        (header_default_asset?.name &&
+          String(header_default_asset.name).trim()) ||
+        `template_header_default.${ext}`;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Se requiere header_file o header_default_asset.url',
+      });
+    }
+
+    const fmt = String(header_format || '').toUpperCase();
+
+    if (!['IMAGE', 'VIDEO', 'DOCUMENT'].includes(fmt)) {
+      return res.status(400).json({
+        success: false,
+        message: 'header_format inválido (IMAGE|VIDEO|DOCUMENT)',
+      });
+    }
+
+    // ── 2) Validar (para VIDEO, solo el tope duro: convierte más abajo) ──
+    try {
+      validateMetaMediaOrThrow({
+        file: { buffer, mimetype, originalname: filename, size: buffer.length },
+        format: fmt,
+        stage: 'pre',
+      });
+    } catch (err) {
+      return res.status(err.statusCode || 400).json({
+        success: false,
+        step: 'validate_header_media',
+        code: err.code || null,
+        message: err.message || 'Archivo inválido',
+      });
+    }
+
+    // ── 3) Convertir video (una sola vez para todo el lote) ──
+    let finalBuffer = buffer;
+    let finalMime = mimetype;
+    let finalName = filename;
+
+    if (fmt === 'VIDEO') {
+      try {
+        const converted = await convertVideoForWhatsApp(buffer, filename);
+        if (converted !== buffer) {
+          finalBuffer = converted;
+          finalMime = 'video/mp4';
+          finalName = filename.replace(/\.[^.]+$/, '.mp4');
+        }
+      } catch (convErr) {
+        console.warn(
+          '[PREPARE_HEADER][VIDEO] No se pudo convertir. Se usa original:',
+          convErr.message,
+        );
+      }
+    }
+
+    // Validación real: sobre lo que efectivamente se sube.
+    try {
+      validateMetaMediaOrThrow({
+        file: {
+          buffer: finalBuffer,
+          mimetype: finalMime,
+          originalname: finalName,
+          size: finalBuffer.length,
+        },
+        format: fmt,
+      });
+    } catch (err) {
+      return res.status(err.statusCode || 400).json({
+        success: false,
+        step: 'validate_header_media',
+        code: err.code || null,
+        message: err.message || 'Archivo inválido',
+      });
+    }
+
+    // ── 4) Histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3 ──
+    let fileUrl = null;
+    let videoApiResult = null;
+
+    if (fmt === 'VIDEO') {
+      const jwtToken = extractBearerToken(req);
+
+      if (!jwtToken) {
+        return res.status(401).json({
+          success: false,
+          step: 'upload_video_api',
+          message: 'Se requiere JWT para subir video a la Video API.',
+        });
+      }
+
+      try {
+        videoApiResult = await uploadVideoToVideoAPI({
+          buffer: finalBuffer,
+          originalname: finalName,
+          mimetype: finalMime,
+          jwtToken,
+        });
+        fileUrl = videoApiResult.fileUrl;
+      } catch (err) {
+        return res.status(err.statusCode || 502).json({
+          success: false,
+          step: 'upload_video_api',
+          code: err.code || null,
+          message: err.message || 'No se pudo subir video a la Video API',
+        });
+      }
+    } else {
+      const folder =
+        fmt === 'IMAGE'
+          ? 'whatsapp/templates/header/images'
+          : 'whatsapp/templates/header/documents';
+
+      try {
+        const upHist = await uploadToUploader({
+          buffer: finalBuffer,
+          originalname: finalName,
+          mimetype: finalMime,
+          folder,
+        });
+        fileUrl = upHist?.fileUrl || null;
+      } catch (err) {
+        return res.status(err.statusCode || 502).json({
+          success: false,
+          step: 'upload_history_s3',
+          message: err.message || 'No se pudo subir a histórico (S3)',
+        });
+      }
+    }
+
+    // ── 5) Subir a Meta y obtener el media_id que se reparte al lote ──
+    const upMeta = await uploadMediaToMeta(
+      { ACCESS_TOKEN: cfg.ACCESS_TOKEN, PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID },
+      { buffer: finalBuffer, mimetype: finalMime, originalname: finalName },
+    );
+
+    if (!upMeta.ok) {
+      return res.status(200).json({
+        success: false,
+        step: 'upload_media_meta',
+        meta_status: upMeta.meta_status,
+        error: upMeta.error,
+        fileUrl,
+      });
+    }
+
+    // Meta procesa el video de forma asíncrona: si se manda el media_id al
+    // instante, los primeros envíos del lote pueden fallar.
+    if (fmt === 'VIDEO') {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    return res.json({
+      success: true,
+      header_format: fmt,
+      meta_media_id: upMeta.mediaId,
+      header_media_url: fileUrl,
+      file_info: {
+        name: finalName,
+        mime: finalMime,
+        size: finalBuffer.length,
+        converted: finalBuffer !== buffer,
+      },
+      video_api: videoApiResult
+        ? {
+            video_id: videoApiResult.video_id,
+            stream_url: videoApiResult.stream_url,
+          }
+        : null,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno preparando el header del masivo',
+      error: e.message,
+    });
+  }
+};
+
 exports.enviarTemplateMasivo = async (req, res) => {
   try {
     // 1) id_configuracion
@@ -2576,7 +2847,37 @@ exports.enviarTemplateMasivo = async (req, res) => {
       }
     }
 
-    if (req.file) {
+    // ── CAMINO RÁPIDO: media_id ya preparado ──
+    // En un masivo el front llama antes a /preparar_header_masivo UNA vez y
+    // reparte el media_id resultante entre todos los destinatarios. Acá no hay
+    // que convertir ni subir nada: solo inyectarlo en el header.
+    const headerMediaIdReuse = String(req.body?.header_media_id || '').trim();
+
+    if (headerMediaIdReuse) {
+      fmt = String(header_format || '').toUpperCase();
+
+      if (!['IMAGE', 'VIDEO', 'DOCUMENT'].includes(fmt)) {
+        return res.status(400).json({
+          success: false,
+          step: 'reuse_header_media_id',
+          message:
+            'header_media_id requiere header_format válido (IMAGE|VIDEO|DOCUMENT)',
+        });
+      }
+
+      meta_media_id = headerMediaIdReuse;
+      fileUrl = req.body?.header_media_url || null;
+
+      const compsReuse = Array.isArray(payload.template.components)
+        ? payload.template.components
+        : [];
+
+      payload.template.components = injectHeaderMediaId(
+        compsReuse,
+        fmt,
+        meta_media_id,
+      );
+    } else if (req.file) {
       if (!header_format) {
         header_format = inferHeaderFormatFromMime(req.file.mimetype);
       }
