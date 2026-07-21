@@ -273,6 +273,11 @@ exports.listarApiKeys = catchAsync(async (req, res, next) => {
   return res.json({ isSuccess: true, data: keys });
 });
 
+/* Reutilizable desde otros controladores (la cartera Imporchat del panel del
+   chat arma el mismo bloque de KPIs, pero autenticada con la sesión del asesor
+   en vez de con una API key). */
+exports._internal = { formatearResumen, resolverRango, leerTablero };
+
 exports.revocarApiKey = catchAsync(async (req, res, next) => {
   const id = Number(req.body?.id || req.params?.id);
   const id_configuracion = Number(req.body?.id_configuracion);

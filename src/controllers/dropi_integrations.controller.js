@@ -1219,7 +1219,49 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   }
 
   // ── Estado del pedido: confirmado vs pendiente + creado por el bot ──
-  const orderIds = parsed.map((o) => o.id).filter(Boolean);
+  // Dropi no edita una orden en sitio: cuando el cliente le cambia algo
+  // (transportadora, cantidad, datos) marca la vieja como REEMPLAZADA y crea
+  // una nueva con otro dropi_order_id que hereda el order_created_at exacto.
+  // El log del bot apunta a la vieja, así que la nueva quedaba sin la marca de
+  // "creada por el bot" y el pedido parecía manual. Buscamos la gemela
+  // REEMPLAZADA: si la creó el bot, la nueva hereda la marca y explicamos qué
+  // fue lo que el cliente cambió después.
+  const timeOfDate = (d) => (d ? new Date(d).getTime() : null);
+  const fechasParsed = [
+    ...new Set(parsed.map((o) => o.order_created_at).filter(Boolean)),
+  ];
+  let reemplazadas = [];
+  if (fechasParsed.length) {
+    try {
+      reemplazadas = await DropiOrdersCache.findAll({
+        where: {
+          ...cacheWhere,
+          status: 'REEMPLAZADA',
+          order_created_at: { [Op.in]: fechasParsed },
+        },
+        attributes: [
+          'dropi_order_id',
+          'order_created_at',
+          'phone',
+          'total_order',
+          'shipping_company',
+          'product_names',
+        ],
+        raw: true,
+      });
+    } catch (e) {
+      console.error('[pedidos-cache] gemelas reemplazadas:', e?.message);
+    }
+  }
+
+  const orderIds = [
+    ...new Set(
+      [
+        ...parsed.map((o) => o.id),
+        ...reemplazadas.map((r) => Number(r.dropi_order_id)),
+      ].filter(Boolean),
+    ),
+  ];
   let botIds = new Set();
   if (orderIds.length) {
     try {
@@ -1238,6 +1280,50 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
         ? 'pendiente_confirmacion'
         : 'confirmado';
     o.creado_por_bot = botIds.has(String(o.id));
+    o.reemplaza_a = null;
+    o.cambios_del_cliente = null;
+
+    if (String(o.status).toUpperCase() === 'REEMPLAZADA') continue;
+    const prev = reemplazadas.find(
+      (r) =>
+        String(r.dropi_order_id) !== String(o.id) &&
+        timeOfDate(r.order_created_at) === timeOfDate(o.order_created_at) &&
+        botIds.has(String(r.dropi_order_id)),
+    );
+    if (!prev) continue;
+
+    const cambios = [];
+    if (
+      (prev.shipping_company || '') !== (o.shipping_company || '') &&
+      prev.shipping_company
+    ) {
+      cambios.push({
+        campo: 'transportadora',
+        antes: prev.shipping_company,
+        despues: o.shipping_company || '',
+      });
+    }
+    const totalPrev = Number(prev.total_order || 0);
+    if (Math.abs(totalPrev - Number(o.total_order || 0)) >= 0.01) {
+      cambios.push({
+        campo: 'total',
+        antes: totalPrev,
+        despues: Number(o.total_order || 0),
+      });
+    }
+    if (digitsOnly(prev.phone) !== digitsOnly(o.phone)) {
+      cambios.push({ campo: 'telefono', antes: prev.phone, despues: o.phone });
+    }
+    if (!cambios.length) cambios.push({ campo: 'otro', antes: null, despues: null });
+
+    o.creado_por_bot = true;
+    o.reemplaza_a = {
+      dropi_order_id: Number(prev.dropi_order_id),
+      total_order: totalPrev,
+      shipping_company: prev.shipping_company || '',
+      phone: prev.phone || '',
+    };
+    o.cambios_del_cliente = cambios;
   }
 
   // ── Origen real: cruce con shopify_ordenes_webhook. El shop_type crudo de

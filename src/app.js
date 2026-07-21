@@ -378,6 +378,11 @@ app.use('/api/v1/seguimientos', seguimientosRouter);
 // API pública para terceros (auth por API key) + gestión de llaves
 app.use('/api/public/v1', require('./routes/public_api.routes'));
 app.use('/api/v1/api_keys', require('./routes/api_keys.routes'));
+// Cartera Imporchat del panel del chat (solo conexiones de soporte)
+app.use(
+  '/api/v1/imporchat_cartera',
+  require('./routes/imporchat_cartera.routes'),
+);
 
 app.all('*', (req, res, next) => {
   return next(
