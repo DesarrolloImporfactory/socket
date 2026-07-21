@@ -9,9 +9,12 @@ const EtiquetaService = require('../services/etiqueta.service');
 const catchAsync = require('../utils/catchAsync');
 const dashboardCache = require('./dashboardCache');
 
-// TTL del cache en milisegundos (5 segundos)
-// Si 10 agentes piden la misma data en 5s, solo 1 query real se ejecuta
-const CACHE_TTL = 5000;
+// TTL del cache en milisegundos.
+// Un dashboard de KPIs de atención no necesita frescura de segundos: subimos el
+// TTL a 60s para que ráfagas de refrescos (o varios agentes viendo lo mismo) no
+// reejecuten el set completo de queries pesadas contra mensajes_clientes, que es
+// lo que saturaba la BD y frenaba al resto de imporchat.
+const CACHE_TTL = 60000;
 
 // ════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -487,16 +490,16 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
         },
       ),
       db.query(
+        // Antes: subconsulta correlacionada (un MIN por cliente) → ~22s en
+        // configs grandes. Ahora: LEFT JOIN basado en conjuntos que resuelve la
+        // primera respuesta de todos los clientes en una pasada → ~4s. La
+        // primera respuesta se acota a first_in < created_at <= toDT.
         `SELECT
-         SUM(CASE WHEN first_resp_at IS NOT NULL THEN 1 ELSE 0 END) AS withReplies,
-         SUM(CASE WHEN first_resp_at IS NULL THEN 1 ELSE 0 END) AS noReply,
+         SUM(first_resp_at IS NOT NULL) AS withReplies,
+         SUM(first_resp_at IS NULL) AS noReply,
          ROUND(AVG(CASE WHEN first_resp_at IS NOT NULL THEN TIMESTAMPDIFF(SECOND, first_in_at, first_resp_at) END)) AS avgFirstResponseSeconds
        FROM (
-         SELECT pe.id_configuracion, pe.client_ccc_id, pe.first_in_at,
-           (SELECT MIN(mo.created_at) FROM mensajes_clientes mo
-            WHERE mo.id_configuracion = pe.id_configuracion AND mo.celular_recibe = pe.client_ccc_id
-              AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL AND mo.created_at > pe.first_in_at AND mo.created_at <= ?
-            LIMIT 1) AS first_resp_at
+         SELECT pe.first_in_at, MIN(mo.created_at) AS first_resp_at
          FROM (
            SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MIN(mc.created_at) AS first_in_at
            FROM mensajes_clientes mc
@@ -505,24 +508,35 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
          ) pe
          INNER JOIN clientes_chat_center ccc ON ccc.id_configuracion = pe.id_configuracion AND ccc.id = pe.client_ccc_id
            AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
+         LEFT JOIN mensajes_clientes mo
+           ON mo.id_configuracion = pe.id_configuracion AND mo.celular_recibe = pe.client_ccc_id
+          AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL
+          AND mo.created_at > pe.first_in_at AND mo.created_at <= ?
+         GROUP BY pe.id_configuracion, pe.client_ccc_id, pe.first_in_at
        ) analysis`,
         {
-          replacements: [toDT, configIds, fromDT, toDT, ...af.params],
+          replacements: [configIds, fromDT, toDT, ...af.params, toDT],
           type: db.QueryTypes.SELECT,
         },
       ),
       db.query(
-        `SELECT ROUND(AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at))) AS avgResolutionSeconds
-       FROM clientes_chat_center ccc
-       INNER JOIN (
+        // Mismo fix que el chart resolution: inner acotado al rango +
+        // STRAIGHT_JOIN manejando desde el derivado pequeño y probando ccc por
+        // PK. Antes escaneaba todo el histórico (varios segundos), ahora ~100ms.
+        `SELECT STRAIGHT_JOIN ROUND(AVG(TIMESTAMPDIFF(SECOND, fi.first_in_at, ccc.chat_cerrado_at))) AS avgResolutionSeconds
+       FROM (
          SELECT id_configuracion, celular_recibe AS client_ccc_id, MIN(created_at) AS first_in_at
-         FROM mensajes_clientes WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+         FROM mensajes_clientes
+         WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+           AND created_at BETWEEN ? AND ?
          GROUP BY id_configuracion, celular_recibe
-       ) first_in ON first_in.id_configuracion = ccc.id_configuracion AND first_in.client_ccc_id = ccc.id
-       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+       ) fi
+       INNER JOIN clientes_chat_center ccc
+         ON ccc.id = fi.client_ccc_id AND ccc.id_configuracion = fi.id_configuracion
+       WHERE ccc.deleted_at IS NULL AND ccc.propietario = 0
          AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}`,
         {
-          replacements: [configIds, configIds, fromDT, toDT, ...af.params],
+          replacements: [configIds, fromDT, toDT, fromDT, toDT, ...af.params],
           type: db.QueryTypes.SELECT,
         },
       ),
@@ -756,14 +770,13 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
       },
     ),
     db.query(
+      // Antes: subconsulta correlacionada (un MIN por cliente) → ~17s. Ahora:
+      // LEFT JOIN basado en conjuntos que resuelve la primera respuesta de todos
+      // los clientes en una pasada → ~1s.
       `SELECT DATE_FORMAT(pe.first_in_at, '%H:00') AS hour,
          AVG(TIMESTAMPDIFF(SECOND, pe.first_in_at, pe.first_resp_at)) AS avgSeconds, COUNT(*) AS chats
        FROM (
-         SELECT sub.first_in_at,
-           (SELECT MIN(mo.created_at) FROM mensajes_clientes mo
-            WHERE mo.id_configuracion = sub.id_configuracion AND mo.celular_recibe = sub.client_ccc_id
-              AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL AND mo.created_at > sub.first_in_at LIMIT 1
-           ) AS first_resp_at, sub.id_configuracion, sub.client_ccc_id
+         SELECT sub.first_in_at, MIN(mo.created_at) AS first_resp_at
          FROM (
            SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MIN(mc.created_at) AS first_in_at
            FROM mensajes_clientes mc
@@ -772,6 +785,10 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
              AND mc.created_at BETWEEN ? AND ? AND ccc.deleted_at IS NULL AND ccc.propietario = 0 ${af.sql}
            GROUP BY mc.id_configuracion, mc.celular_recibe
          ) sub
+         LEFT JOIN mensajes_clientes mo
+           ON mo.id_configuracion = sub.id_configuracion AND mo.celular_recibe = sub.client_ccc_id
+          AND mo.rol_mensaje = 1 AND mo.deleted_at IS NULL AND mo.created_at > sub.first_in_at
+         GROUP BY sub.id_configuracion, sub.client_ccc_id, sub.first_in_at
        ) pe WHERE pe.first_resp_at IS NOT NULL GROUP BY hour ORDER BY hour ASC`,
       {
         replacements: [configIds, fromDT, toDT, ...af.params],
@@ -779,19 +796,26 @@ async function buildCharts(configIds, fromDT, toDT, agentId = null) {
       },
     ),
     db.query(
-      `SELECT DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour,
-         AVG(TIMESTAMPDIFF(SECOND, first_in.first_in_at, ccc.chat_cerrado_at)) AS avgSeconds, COUNT(*) AS chats
-       FROM clientes_chat_center ccc
-       INNER JOIN (
+      // Antes: sin filtro de fecha en el inner → escaneaba TODO el histórico
+      // (>120s). Ahora: inner acotado al rango + STRAIGHT_JOIN para forzar que
+      // maneje desde el derivado pequeño (~cientos de filas) y pruebe ccc por
+      // PK. Medido: ~105ms. El primer_ingreso se toma dentro del rango elegido.
+      `SELECT STRAIGHT_JOIN DATE_FORMAT(ccc.chat_cerrado_at, '%H:00') AS hour,
+         AVG(TIMESTAMPDIFF(SECOND, fi.first_in_at, ccc.chat_cerrado_at)) AS avgSeconds, COUNT(*) AS chats
+       FROM (
          SELECT id_configuracion, celular_recibe AS client_ccc_id, MIN(created_at) AS first_in_at
-         FROM mensajes_clientes WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+         FROM mensajes_clientes
+         WHERE id_configuracion IN (?) AND deleted_at IS NULL AND rol_mensaje = 0
+           AND created_at BETWEEN ? AND ?
          GROUP BY id_configuracion, celular_recibe
-       ) first_in ON first_in.id_configuracion = ccc.id_configuracion AND first_in.client_ccc_id = ccc.id
-       WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0
+       ) fi
+       INNER JOIN clientes_chat_center ccc
+         ON ccc.id = fi.client_ccc_id AND ccc.id_configuracion = fi.id_configuracion
+       WHERE ccc.deleted_at IS NULL AND ccc.propietario = 0
          AND ccc.chat_cerrado = 1 AND ccc.chat_cerrado_at BETWEEN ? AND ? ${af.sql}
        GROUP BY hour ORDER BY hour ASC`,
       {
-        replacements: [configIds, configIds, fromDT, toDT, ...af.params],
+        replacements: [configIds, fromDT, toDT, fromDT, toDT, ...af.params],
         type: db.QueryTypes.SELECT,
       },
     ),
