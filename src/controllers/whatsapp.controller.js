@@ -2867,11 +2867,34 @@ exports.enviarTemplateMasivo = async (req, res) => {
             });
           }
 
+          // Antes se subía el asset TAL CUAL: si ese video nunca se convirtió
+          // (o su conversión falló al guardarlo), llegaba crudo a WhatsApp.
+          // convertVideoForWhatsApp NO re-encodea si el video ya es compatible.
+          let bufDefault = downloadedBuffer;
+          let mimeDefault = defaultMime;
+          let nameDefault = defaultFilename;
+          try {
+            const buf = await convertVideoForWhatsApp(
+              downloadedBuffer,
+              defaultFilename,
+            );
+            if (buf !== downloadedBuffer) {
+              bufDefault = buf;
+              mimeDefault = 'video/mp4';
+              nameDefault = defaultFilename.replace(/\.[^.]+$/, '.mp4');
+            }
+          } catch (convErr) {
+            console.warn(
+              '[TEMPLATE][VIDEO][default_asset] No se pudo convertir. Se sube original:',
+              convErr.message,
+            );
+          }
+
           try {
             videoApiResult = await uploadVideoToVideoAPI({
-              buffer: downloadedBuffer,
-              originalname: defaultFilename,
-              mimetype: defaultMime,
+              buffer: bufDefault,
+              originalname: nameDefault,
+              mimetype: mimeDefault,
               jwtToken,
             });
 

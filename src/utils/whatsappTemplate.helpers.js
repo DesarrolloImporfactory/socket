@@ -407,7 +407,45 @@ async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
 }
 
 /**
+ * ¿El video YA cumple lo que exige WhatsApp? (MP4 + H.264 + pista de audio AAC
+ * y dentro del límite de peso). Si es así no hay que re-encodear: volver a
+ * convertir solo degrada la calidad (re-encode con pérdida) y quema CPU.
+ *
+ * Se apoya en ffprobe y es CONSERVADOR: ante cualquier duda o error devuelve
+ * false, de modo que se convierta igual. Nunca deja pasar un video dudoso.
+ */
+async function videoYaCompatibleWhatsApp(inputPath, sizeBytes, targetSizeMB) {
+  try {
+    // Si pesa de más hay que recomprimir sí o sí.
+    if (sizeBytes > targetSizeMB * 1024 * 1024) return false;
+
+    const probe = await execAsync(
+      `ffprobe -v error -print_format json -show_format -show_streams "${inputPath}"`,
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    const info = JSON.parse(probe.stdout);
+    const streams = Array.isArray(info?.streams) ? info.streams : [];
+
+    const video = streams.find((s) => s.codec_type === 'video');
+    const audio = streams.find((s) => s.codec_type === 'audio');
+
+    const esMp4 = /mp4|m4a|isom/i.test(String(info?.format?.format_name || ''));
+    const esH264 = String(video?.codec_name || '').toLowerCase() === 'h264';
+    // WhatsApp NO acepta video sin audio: por eso el conversor inyecta una
+    // pista silenciosa. Si no hay audio AAC, hay que convertir.
+    const audioOk = String(audio?.codec_name || '').toLowerCase() === 'aac';
+
+    return esMp4 && esH264 && audioOk;
+  } catch (_) {
+    return false; // ante la duda, convertir
+  }
+}
+
+/**
  * Convierte video a MP4 (H.264/AAC) compatible con WhatsApp.
+ *
+ * Si el video YA es compatible, lo devuelve tal cual SIN re-encodear (evita
+ * perder calidad y CPU al reutilizar el video de una plantilla).
  */
 async function convertVideoForWhatsApp(
   fileBuffer,
@@ -425,6 +463,17 @@ async function convertVideoForWhatsApp(
       await execAsync('ffmpeg -version');
     } catch (e) {
       throw new Error('FFmpeg no está instalado en el servidor');
+    }
+
+    // Corto-circuito: ya cumple → se reutiliza sin tocar.
+    if (
+      await videoYaCompatibleWhatsApp(inputPath, fileBuffer.length, targetSizeMB)
+    ) {
+      console.log(
+        '[VIDEO_CONVERT] El video ya es compatible (mp4/h264 + audio y dentro del límite): se reutiliza SIN re-encodear.',
+      );
+      await fs.unlink(inputPath).catch(() => {});
+      return fileBuffer;
     }
 
     // 1) Obtener duración con ffprobe para calcular bitrate dinámico
@@ -855,6 +904,12 @@ async function prepareHeaderAssetForScheduling({
       format: fmtDefault,
     });
 
+    // Lo que finalmente se sube. Cambia solo si el conversor devuelve un buffer
+    // distinto (es decir, si el video NO era ya compatible y hubo que convertir).
+    let defaultBufferFinal = downloadedBuffer;
+    let defaultMimeFinal = defaultMime;
+    let defaultFilenameFinal = defaultFilename;
+
     // ── VIDEO → Video API | IMAGE/DOCUMENT → S3 ──
     if (fmtDefault === 'VIDEO') {
       const token = jwtToken || extractBearerToken(req);
@@ -868,10 +923,32 @@ async function prepareHeaderAssetForScheduling({
         throw err;
       }
 
+      // Antes este camino subía el video TAL CUAL: si el asset guardado nunca
+      // se convirtió (o su conversión falló), llegaba crudo a WhatsApp. Ahora
+      // pasa por el conversor, que NO re-encodea si el video ya es compatible.
+      if (preferVideoConversion) {
+        try {
+          const buf = await convertVideoForWhatsApp(
+            downloadedBuffer,
+            defaultFilename,
+          );
+          if (buf !== downloadedBuffer) {
+            defaultBufferFinal = buf;
+            defaultMimeFinal = 'video/mp4';
+            defaultFilenameFinal = defaultFilename.replace(/\.[^.]+$/, '.mp4');
+          }
+        } catch (convErr) {
+          console.warn(
+            '[SCHEDULE][VIDEO][default_asset] No se pudo convertir. Se sube original:',
+            convErr.message,
+          );
+        }
+      }
+
       videoApiResult = await uploadVideoToVideoAPI({
-        buffer: downloadedBuffer,
-        originalname: defaultFilename,
-        mimetype: defaultMime,
+        buffer: defaultBufferFinal,
+        originalname: defaultFilenameFinal,
+        mimetype: defaultMimeFinal,
         jwtToken: token,
       });
 
@@ -895,13 +972,14 @@ async function prepareHeaderAssetForScheduling({
     return {
       header_format: fmtDefault,
       header_media_url: fileUrl,
-      header_media_name: defaultFilename,
+      header_media_name: defaultFilenameFinal,
       file_info: {
-        name: defaultFilename,
-        mime: defaultMime,
-        size: downloadedBuffer.length,
+        name: defaultFilenameFinal,
+        mime: defaultMimeFinal,
+        size: defaultBufferFinal.length,
         header_format: fmtDefault,
-        converted: false,
+        // true solo si realmente hubo re-encode (buffer distinto al descargado)
+        converted: defaultBufferFinal !== downloadedBuffer,
         default_asset: true,
         video_api: videoApiResult
           ? {
