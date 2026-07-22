@@ -219,6 +219,213 @@ exports.todo = catchAsync(async (req, res) => {
   });
 });
 
+// ── GET /ventas/respuestas ──────────────────────────────────
+// Retorna envíos salientes (scope ventas por defecto) y marca si el cliente
+// respondió después del envío. Señal primaria: context_wamid; fallback: teléfono.
+exports.ventasRespuestas = catchAsync(async (req, res) => {
+  const { from, until } = resolverRango(req);
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+  const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
+
+  // Modo prueba: permitir consultar explícitamente la configuración 242
+  // sin depender de la API key dueña, pero solo fuera de producción o
+  // cuando se habilite por env.
+  const requestedCfg = Number(req.query.id_configuracion || 0);
+  const allow242 =
+    String(process.env.PUBLIC_API_ALLOW_CONFIG_242 || '0') === '1' ||
+    process.env.NODE_ENV !== 'production';
+  const idConfiguracionObjetivo =
+    allow242 && requestedCfg === 242 ? 242 : Number(req.id_configuracion);
+
+  const scope = String(req.query.scope || 'ventas').trim().toLowerCase();
+  const responsableLike = String(req.query.responsable_like || '').trim();
+  const responsables = String(req.query.responsables || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const fromTs = `${from} 00:00:00`;
+  const untilTs = `${until} 23:59:59`;
+
+  const norm = (col) =>
+    `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), ' ', ''), '+', ''), '-', ''), '(', ''), ')', '')`;
+
+  const where = [
+    'm.id_configuracion = ?',
+    'm.deleted_at IS NULL',
+    'm.rol_mensaje = 1',
+    '(m.source = \'wa\' OR m.source IS NULL)',
+    'm.created_at BETWEEN ? AND ?',
+    `${norm('m.uid_whatsapp')} <> ''`,
+  ];
+
+  const replacements = [idConfiguracionObjetivo, fromTs, untilTs];
+
+  // Scope por defecto: mensajes de ventas (asistente + remarketing).
+  if (scope === 'ventas') {
+    where.push("(m.responsable LIKE '%ventas%' OR m.responsable LIKE 'cron_remarketing_%')");
+  }
+
+  if (responsableLike) {
+    where.push('m.responsable LIKE ?');
+    replacements.push(`%${responsableLike}%`);
+  }
+
+  if (responsables.length) {
+    where.push(`m.responsable IN (${responsables.map(() => '?').join(',')})`);
+    replacements.push(...responsables);
+  }
+
+  const whereSql = where.join(' AND ');
+
+  const listSql = `
+    SELECT
+      m.id,
+      m.created_at AS fecha_envio,
+      m.uid_whatsapp AS telefono,
+      m.id_wamid_mensaje AS wamid,
+      m.responsable,
+      m.template_name,
+      m.tipo_mensaje,
+      LEFT(COALESCE(m.texto_mensaje, ''), 180) AS preview_mensaje,
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND m.id_wamid_mensaje IS NOT NULL
+            AND m.id_wamid_mensaje <> ''
+            AND r.context_wamid = m.id_wamid_mensaje
+        ) THEN 1
+        WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND ${norm('r.uid_whatsapp')} = ${norm('m.uid_whatsapp')}
+        ) THEN 1
+        ELSE 0
+      END AS si_respondio,
+      (
+        SELECT MIN(r.created_at)
+        FROM mensajes_clientes r
+        WHERE r.id_configuracion = m.id_configuracion
+          AND r.deleted_at IS NULL
+          AND r.rol_mensaje = 0
+          AND r.created_at >= m.created_at
+          AND (
+            (m.id_wamid_mensaje IS NOT NULL AND m.id_wamid_mensaje <> '' AND r.context_wamid = m.id_wamid_mensaje)
+            OR ${norm('r.uid_whatsapp')} = ${norm('m.uid_whatsapp')}
+          )
+      ) AS fecha_respuesta,
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND m.id_wamid_mensaje IS NOT NULL
+            AND m.id_wamid_mensaje <> ''
+            AND r.context_wamid = m.id_wamid_mensaje
+        ) THEN 'context_wamid'
+        WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND ${norm('r.uid_whatsapp')} = ${norm('m.uid_whatsapp')}
+        ) THEN 'telefono'
+        ELSE NULL
+      END AS criterio_respuesta
+    FROM mensajes_clientes m
+    WHERE ${whereSql}
+    ORDER BY m.created_at DESC
+    LIMIT ? OFFSET ?`;
+
+  const listRows = await db.query(listSql, {
+    replacements: [...replacements, limit, offset],
+    type: db.QueryTypes.SELECT,
+  });
+
+  const resumenSql = `
+    SELECT
+      COUNT(*) AS total_envios,
+      SUM(
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND (
+              (m.id_wamid_mensaje IS NOT NULL AND m.id_wamid_mensaje <> '' AND r.context_wamid = m.id_wamid_mensaje)
+              OR ${norm('r.uid_whatsapp')} = ${norm('m.uid_whatsapp')}
+            )
+        ) THEN 1 ELSE 0 END
+      ) AS total_respondidos,
+      COUNT(DISTINCT ${norm('m.uid_whatsapp')}) AS telefonos_enviados,
+      COUNT(
+        DISTINCT CASE WHEN EXISTS (
+          SELECT 1
+          FROM mensajes_clientes r
+          WHERE r.id_configuracion = m.id_configuracion
+            AND r.deleted_at IS NULL
+            AND r.rol_mensaje = 0
+            AND r.created_at >= m.created_at
+            AND (
+              (m.id_wamid_mensaje IS NOT NULL AND m.id_wamid_mensaje <> '' AND r.context_wamid = m.id_wamid_mensaje)
+              OR ${norm('r.uid_whatsapp')} = ${norm('m.uid_whatsapp')}
+            )
+        ) THEN ${norm('m.uid_whatsapp')} ELSE NULL END
+      ) AS telefonos_respondieron
+    FROM mensajes_clientes m
+    WHERE ${whereSql}`;
+
+  const [resumenRaw] = await db.query(resumenSql, {
+    replacements,
+    type: db.QueryTypes.SELECT,
+  });
+
+  const totalEnvios = Number(resumenRaw?.total_envios || 0);
+  const totalRespondidos = Number(resumenRaw?.total_respondidos || 0);
+  const telefonosEnviados = Number(resumenRaw?.telefonos_enviados || 0);
+  const telefonosRespondieron = Number(resumenRaw?.telefonos_respondieron || 0);
+
+  return res.json({
+    rango: { from, until },
+    scope,
+    id_configuracion_consultada: idConfiguracionObjetivo,
+    filtros: {
+      responsable_like: responsableLike || null,
+      responsables,
+      limit,
+      offset,
+    },
+    resumen: {
+      total_envios: totalEnvios,
+      total_respondidos: totalRespondidos,
+      tasa_respuesta_envio_pct: totalEnvios > 0 ? Number(((totalRespondidos * 100) / totalEnvios).toFixed(1)) : 0,
+      telefonos_enviados: telefonosEnviados,
+      telefonos_respondieron: telefonosRespondieron,
+      tasa_respuesta_telefonos_pct:
+        telefonosEnviados > 0
+          ? Number(((telefonosRespondieron * 100) / telefonosEnviados).toFixed(1))
+          : 0,
+    },
+    data: listRows,
+  });
+});
+
 /* ═══════════════════════════════════════════════════════════
    Administración de llaves (panel, con sesión — NO con API key)
    ═══════════════════════════════════════════════════════════ */

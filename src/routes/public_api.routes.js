@@ -26,5 +26,6 @@ router.get('/resumen', ctrl.resumen);
 router.get('/dropi', ctrl.dropiDashboard);
 router.get('/ads', ctrl.adsDashboard);
 router.get('/tablero', ctrl.tablero);
+router.get('/ventas/respuestas', ctrl.ventasRespuestas);
 
 module.exports = router;
