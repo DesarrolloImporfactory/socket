@@ -48,7 +48,12 @@ const UMBRAL_AMARILLO = 55;
 const MIN_MUESTRA = 8; // mínimo entregadas+devoluciones para calificar color
 
 // Ventana de tiempo en meses según el filtro pedido.
-const MESES_POR_PERIODO = { '1mes': 1, '3meses': 3, '6meses': 6, '12meses': 12 };
+const MESES_POR_PERIODO = {
+  '1mes': 1,
+  '3meses': 3,
+  '6meses': 6,
+  '12meses': 12,
+};
 
 // Columna generada PERSISTENT (ver migración add_dropi_cache_geo_indexes.js):
 //   flete_amount  = order_data.$.shipping_amount  (numérico, 0 → NULL)
@@ -76,8 +81,8 @@ function armarTransportadora(r) {
       efectividad >= UMBRAL_VERDE
         ? 'verde'
         : efectividad >= UMBRAL_AMARILLO
-        ? 'amarillo'
-        : 'rojo';
+          ? 'amarillo'
+          : 'rojo';
   }
   return {
     transportadora: r.transportadora,
@@ -148,7 +153,9 @@ exports.semaforoTransportadoras = catchAsync(async (req, res, next) => {
   const ciudad = String(req.body?.ciudad || '').trim();
   if (!ciudad) return next(new AppError('Falta la ciudad', 400));
 
-  const periodo = MESES_POR_PERIODO[req.body?.periodo] ? req.body.periodo : '1mes';
+  const periodo = MESES_POR_PERIODO[req.body?.periodo]
+    ? req.body.periodo
+    : '1mes';
   const meses = MESES_POR_PERIODO[periodo];
 
   const rows = await db.query(
@@ -167,7 +174,9 @@ exports.semaforoTransportadoras = catchAsync(async (req, res, next) => {
     { replacements: [ciudad], type: db.QueryTypes.SELECT },
   );
 
-  const transportadoras = rows.map(armarTransportadora).sort(ordenarTransportadoras);
+  const transportadoras = rows
+    .map(armarTransportadora)
+    .sort(ordenarTransportadoras);
 
   return res.json({
     success: true,
@@ -439,7 +448,8 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
     total: totalPedidos,
     entregadas: totalEntregadas,
     devoluciones: totalDevol,
-    efectividad: finGlobal > 0 ? Math.round((totalEntregadas / finGlobal) * 100) : null,
+    efectividad:
+      finGlobal > 0 ? Math.round((totalEntregadas / finGlobal) * 100) : null,
     flete_promedio: flete_global != null ? Number(flete_global) : null,
   };
 
@@ -452,7 +462,8 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
       total: Number(r.total) || 0,
       entregadas,
       efectividad: fin > 0 ? Math.round((entregadas / fin) * 100) : null,
-      flete_promedio: r.flete_promedio != null ? Number(r.flete_promedio) : null,
+      flete_promedio:
+        r.flete_promedio != null ? Number(r.flete_promedio) : null,
     };
   });
 
@@ -505,7 +516,94 @@ exports.zonasDisponibles = catchAsync(async (req, res) => {
   return res.json({
     success: true,
     data: {
-      ciudades: ciudades.map((r) => ({ nombre: r.zona, total: Number(r.total) })),
+      ciudades: ciudades.map((r) => ({
+        nombre: r.zona,
+        total: Number(r.total),
+      })),
     },
   });
+});
+
+// ───────────────────────────────────────────────────────────────
+// RANKING PÚBLICO — Top tiendas de Ecuador por venta entregada.
+// GET /api/v1/dropi_stats/ranking_publico_ec?periodo=mes_actual
+// SIN autenticación. País fijo: EC. Incluye proveedores.
+// Solo exige configuración activa (no suspendida) y usuario activo.
+// Pensado para mostrar en la página de inicio pública de Imporsuit.
+// ───────────────────────────────────────────────────────────────
+const CACHE_RANKING_PUB = new Map();
+const TTL_RANKING_PUB_MS = 5 * 60 * 1000;
+
+exports.rankingPublicoEc = catchAsync(async (req, res) => {
+  const periodo = ['mes_actual', 'mes_anterior', '30dias'].includes(
+    req.query?.periodo,
+  )
+    ? req.query.periodo
+    : 'mes_actual';
+  const LIMIT =
+    Number(req.query?.limit) > 0 ? Math.min(Number(req.query.limit), 50) : 10;
+  const paisRaw = 'EC';
+
+  // Rango de fechas según periodo
+  let fechaCond;
+  if (periodo === 'mes_anterior') {
+    fechaCond = `order_created_at >= DATE_FORMAT(NOW() - INTERVAL 1 MONTH, '%Y-%m-01')
+                 AND order_created_at < DATE_FORMAT(NOW(), '%Y-%m-01')`;
+  } else if (periodo === '30dias') {
+    fechaCond = `order_created_at >= (NOW() - INTERVAL 30 DAY)`;
+  } else {
+    fechaCond = `order_created_at >= DATE_FORMAT(NOW(), '%Y-%m-01')`;
+  }
+
+  const clave = `${paisRaw}|${periodo}|${LIMIT}`;
+  const hit = CACHE_RANKING_PUB.get(clave);
+  if (hit && Date.now() - hit.at < TTL_RANKING_PUB_MS) {
+    return res.json({ success: true, data: hit.data });
+  }
+
+  // Igual que tiendasDelPais pero SIN excluir proveedores.
+  // Solo valida: config no suspendida + usuario activo.
+  const rows = await db.query(
+    `SELECT t.id_configuracion, cfg.nombre_configuracion AS nombre,
+            t.shop_name, t.pedidos, t.monto
+       FROM (SELECT id_configuracion,
+                    COUNT(*)         AS pedidos,
+                    SUM(total_order) AS monto,
+                    MAX(shop_name)   AS shop_name
+               FROM dropi_orders_cache
+              WHERE ${fechaCond}
+              GROUP BY id_configuracion) t
+       JOIN configuraciones cfg ON cfg.id = t.id_configuracion
+       JOIN usuarios_chat_center u ON u.id_usuario = cfg.id_usuario
+       JOIN (SELECT id_configuracion, MAX(country_code) cc
+               FROM dropi_integrations WHERE deleted_at IS NULL
+              GROUP BY id_configuracion) di
+         ON di.id_configuracion = t.id_configuracion
+      WHERE di.cc = ?
+        AND (cfg.suspendido = 0 OR cfg.suspendido IS NULL)
+        AND u.estado IN ('activo','trial_usage','promo_usage')
+      ORDER BY t.monto DESC
+      LIMIT ?`,
+    { replacements: [paisRaw, LIMIT], type: db.QueryTypes.SELECT },
+  );
+
+  const ranking = rows.map((r, i) => ({
+    posicion: i + 1,
+    id_configuracion: Number(r.id_configuracion),
+    nombre: r.nombre || r.shop_name || `Tienda ${r.id_configuracion}`,
+    shop_name: r.shop_name || null,
+    pedidos: Number(r.pedidos) || 0,
+    monto: Number(r.monto) || 0,
+  }));
+
+  const data = {
+    periodo,
+    pais: 'EC',
+    moneda: 'USD',
+    ranking,
+    resumen: { total_tiendas: ranking.length },
+  };
+
+  CACHE_RANKING_PUB.set(clave, { at: Date.now(), data });
+  return res.json({ success: true, data });
 });

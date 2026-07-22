@@ -4,6 +4,9 @@ const router = express.Router();
 const auth = require('../middlewares/auth.middleware');
 const ctrl = require('../controllers/dropi_stats.controller');
 
+// Ranking público de Ecuador para la home de Imporsuit
+router.get('/ranking_publico_ec', ctrl.rankingPublicoEc);
+
 router.use(auth.protect);
 
 // Semáforo de transportadoras por provincia/ciudad (para el panel de crear orden)
