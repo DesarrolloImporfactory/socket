@@ -224,7 +224,10 @@ exports.todo = catchAsync(async (req, res) => {
 // respondió después del envío. Señal primaria: context_wamid; fallback: teléfono.
 exports.ventasRespuestas = catchAsync(async (req, res) => {
   const { from, until } = resolverRango(req);
-  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)));
+  const limit = Math.min(
+    500,
+    Math.max(1, parseInt(req.query.limit || '100', 10)),
+  );
   const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
 
   // Modo prueba: permitir consultar explícitamente la configuración 242
@@ -237,7 +240,9 @@ exports.ventasRespuestas = catchAsync(async (req, res) => {
   const idConfiguracionObjetivo =
     allow242 && requestedCfg === 242 ? 242 : Number(req.id_configuracion);
 
-  const scope = String(req.query.scope || 'ventas').trim().toLowerCase();
+  const scope = String(req.query.scope || 'ventas')
+    .trim()
+    .toLowerCase();
   const responsableLike = String(req.query.responsable_like || '').trim();
   const responsables = String(req.query.responsables || '')
     .split(',')
@@ -254,7 +259,7 @@ exports.ventasRespuestas = catchAsync(async (req, res) => {
     'm.id_configuracion = ?',
     'm.deleted_at IS NULL',
     'm.rol_mensaje = 1',
-    '(m.source = \'wa\' OR m.source IS NULL)',
+    "(m.source = 'wa' OR m.source IS NULL)",
     'm.created_at BETWEEN ? AND ?',
     `${norm('m.uid_whatsapp')} <> ''`,
   ];
@@ -263,7 +268,9 @@ exports.ventasRespuestas = catchAsync(async (req, res) => {
 
   // Scope por defecto: mensajes de ventas (asistente + remarketing).
   if (scope === 'ventas') {
-    where.push("(m.responsable LIKE '%ventas%' OR m.responsable LIKE 'cron_remarketing_%')");
+    where.push(
+      "(m.responsable LIKE '%ventas%' OR m.responsable LIKE 'cron_remarketing_%')",
+    );
   }
 
   if (responsableLike) {
@@ -414,12 +421,17 @@ exports.ventasRespuestas = catchAsync(async (req, res) => {
     resumen: {
       total_envios: totalEnvios,
       total_respondidos: totalRespondidos,
-      tasa_respuesta_envio_pct: totalEnvios > 0 ? Number(((totalRespondidos * 100) / totalEnvios).toFixed(1)) : 0,
+      tasa_respuesta_envio_pct:
+        totalEnvios > 0
+          ? Number(((totalRespondidos * 100) / totalEnvios).toFixed(1))
+          : 0,
       telefonos_enviados: telefonosEnviados,
       telefonos_respondieron: telefonosRespondieron,
       tasa_respuesta_telefonos_pct:
         telefonosEnviados > 0
-          ? Number(((telefonosRespondieron * 100) / telefonosEnviados).toFixed(1))
+          ? Number(
+              ((telefonosRespondieron * 100) / telefonosEnviados).toFixed(1),
+            )
           : 0,
     },
     data: listRows,
