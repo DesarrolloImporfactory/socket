@@ -533,6 +533,7 @@ exports.zonasDisponibles = catchAsync(async (req, res) => {
 // ───────────────────────────────────────────────────────────────
 const CACHE_RANKING_PUB = new Map();
 const TTL_RANKING_PUB_MS = 5 * 60 * 1000;
+const EXCLUIR_RANKING_PUB = [261]; //Proveedor Imporshop
 
 exports.rankingPublicoEc = catchAsync(async (req, res) => {
   const periodo = ['mes_actual', 'mes_anterior', '30dias'].includes(
@@ -582,6 +583,7 @@ exports.rankingPublicoEc = catchAsync(async (req, res) => {
       WHERE di.cc = ?
         AND (cfg.suspendido = 0 OR cfg.suspendido IS NULL)
         AND u.estado IN ('activo','trial_usage','promo_usage')
+        AND t.id_configuracion NOT IN (${EXCLUIR_RANKING_PUB.join(',')})
       ORDER BY t.monto DESC
       LIMIT ?`,
     { replacements: [paisRaw, LIMIT], type: db.QueryTypes.SELECT },
