@@ -338,11 +338,22 @@ exports.conectarAdAccount = async (req, res) => {
           `tipo=${info?.tipo || '?'} scopes=[${(info?.scopes || []).join(',')}] ` +
           `intentos=${JSON.stringify(intentos || {})}`,
       );
+      // Caso muy frecuente: el cliente acaba de dar de alta WhatsApp y, al
+      // pulsar "Conectar Meta Ads" en la misma sesión, el SDK de Facebook
+      // reutiliza esa autorización y devuelve un código de WhatsApp. El token
+      // llega con whatsapp_* pero sin ads_*, y antes eso terminaba en un
+      // "(#100) Unsupported get request" imposible de interpretar.
+      const soloWhatsapp =
+        !permisosAds.length &&
+        (info?.scopes || []).some((s) => String(s).startsWith('whatsapp_'));
+
       return res.status(400).json({
         success: false,
-        message: permisosAds.length
-          ? 'Tu usuario autorizó la app pero no compartió ninguna cuenta publicitaria. Vuelve a conectar y, en la pantalla de Meta, marca la cuenta de anuncios que quieres vincular.'
-          : 'Meta no entregó los permisos de anuncios (ads_read / ads_management). Al conectar, en la pantalla de Meta elige el portafolio y marca la casilla de la cuenta publicitaria; si no aparece, pide al administrador del portafolio que te dé acceso a esa cuenta.',
+        message: soloWhatsapp
+          ? 'Meta devolvió la autorización de WhatsApp, no la de anuncios: el navegador reutilizó la sesión del alta de WhatsApp. Vuelve a pulsar "Conectar Meta Ads" y, en la ventana de Meta, elige el portafolio y marca la cuenta publicitaria. Si vuelve a pasar, cierra sesión de Facebook en este navegador e inténtalo de nuevo.'
+          : permisosAds.length
+            ? 'Tu usuario autorizó la app pero no compartió ninguna cuenta publicitaria. Vuelve a conectar y, en la pantalla de Meta, marca la cuenta de anuncios que quieres vincular.'
+            : 'Meta no entregó los permisos de anuncios (ads_read / ads_management). Al conectar, en la pantalla de Meta elige el portafolio y marca la casilla de la cuenta publicitaria; si no aparece, pide al administrador del portafolio que te dé acceso a esa cuenta.',
         diagnostico: {
           token_tipo: info?.tipo || null,
           permisos_otorgados: info?.scopes || [],
