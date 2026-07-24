@@ -27,27 +27,19 @@ const {
 // Solo para debugging. Permite confirmar si Platform tiene
 // el prompt que crees que tiene.
 // ══════════════════════════════════════════════════════════════
-async function fetchAssistantInfo(assistant_id, api_key_openai) {
-  try {
-    const res = await axios.get(
-      `https://api.openai.com/v1/assistants/${assistant_id}`,
-      {
-        headers: {
-          Authorization: `Bearer ${api_key_openai}`,
-          'OpenAI-Beta': 'assistants=v2',
-        },
-      },
-    );
-    return {
-      name: res.data?.name || 'sin_nombre',
-      model: res.data?.model || 'gpt-4o-mini',
-      instructions: res.data?.instructions || '',
-      instructions_length: (res.data?.instructions || '').length,
-      tools: (res.data?.tools || []).map((t) => t.type).join(','),
-    };
-  } catch (err) {
-    return { error: err.message };
-  }
+async function fetchAssistantInfo(id_columna) {
+  const [col] = await db.query(
+    `SELECT instrucciones, modelo FROM kanban_columnas 
+     WHERE id = ? AND activo = 1 LIMIT 1`,
+    { replacements: [id_columna], type: db.QueryTypes.SELECT },
+  );
+  return {
+    instructions: col?.instrucciones || '',
+    model: col?.modelo || 'gpt-4o-mini',
+    instructions_length: (col?.instrucciones || '').length,
+    tools: '',
+    name: 'asistente',
+  };
 }
 
 const {
@@ -181,10 +173,7 @@ async function procesarMensajeKanban(params) {
   }
 
   // 🔍 DEBUG: ver qué assistant está corriendo REALMENTE
-  const assistantInfo = await fetchAssistantInfo(
-    columna.assistant_id,
-    api_key_openai,
-  );
+  const assistantInfo = await fetchAssistantInfo(columna.id);
   await log(
     `🤖 DEBUG ASSISTANT — columna="${columna.nombre}" id=${columna.assistant_id} name="${assistantInfo.name}" model="${assistantInfo.model}" tools=[${assistantInfo.tools}] instructions_len=${assistantInfo.instructions_length}`,
   );
@@ -311,7 +300,9 @@ async function procesarMensajeKanban(params) {
   // tengo?".
   if (columna.es_dropi_principal) {
     try {
-      const tel9 = String(telefono || '').replace(/\D/g, '').slice(-9);
+      const tel9 = String(telefono || '')
+        .replace(/\D/g, '')
+        .slice(-9);
       if (tel9.length >= 9) {
         const [ord] = await db.query(
           `SELECT name, surname, phone, city, provincia, total_order,

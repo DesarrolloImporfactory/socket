@@ -294,8 +294,23 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
       });
       resultados.push(r);
     } catch (err) {
-      await logger(`⚠️ Error sync columna id=${id}: ${err.message}`);
-      resultados.push({ ok: false, id_kanban_columna: id, error: err.message });
+      console.error(err.response?.data);
+      console.error(err.response?.status);
+      console.error(err.config?.url);
+
+      await logger(
+        `⚠️ Error sync columna id=${id}: ${
+          err.response?.status || ''
+        } ${err.message}
+    URL: ${err.config?.url}
+    DATA: ${JSON.stringify(err.response?.data)}`,
+      );
+
+      resultados.push({
+        ok: false,
+        id_kanban_columna: id,
+        error: err.message,
+      });
     }
   }
 
@@ -457,17 +472,34 @@ async function createFreshVectorStore(
   headersJson,
   logger,
 ) {
-  const res = await axios.post(
-    'https://api.openai.com/v1/vector_stores',
-    {
-      name: `kanban_catalogo_${id_configuracion}_${columnaNombre}_${Date.now()}`,
-    },
-    { headers: headersJson },
-  );
-  const vsId = res?.data?.id;
-  if (!vsId) throw new Error('No se pudo crear vector_store');
-  await logger(`✅ Vector store nuevo creado: ${vsId}`);
-  return vsId;
+  await logger('➡️ Voy a crear Vector Store');
+
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/vector_stores',
+      {
+        name: `kanban_catalogo_${id_configuracion}_${columnaNombre}_${Date.now()}`,
+      },
+      {
+        headers: headersJson,
+        timeout: 60000,
+      },
+    );
+
+    await logger('⬅️ OpenAI respondió create vector store');
+
+    const vsId = res.data.id;
+
+    await logger(`✅ Vector store creado ${vsId}`);
+
+    return vsId;
+  } catch (err) {
+    console.error(err.response?.status);
+    console.error(err.response?.data);
+    console.error(err.config?.url);
+
+    throw err;
+  }
 }
 
 async function uploadCatalogFile(

@@ -88,7 +88,6 @@ function parsearErrorOpenAI(err) {
     const tipo = data.error.type || '';
     const code = data.error.code || '';
 
-    // Errores comunes de archivos
     if (msg.includes('unsupported'))
       return `Tipo de archivo no soportado por OpenAI. Usa PDF, DOCX, TXT, CSV, JSON, MD, XLSX o PPTX.`;
     if (msg.includes('too large') || msg.includes('size'))
@@ -106,7 +105,7 @@ function parsearErrorOpenAI(err) {
     if (msg.includes('vector_store'))
       return `Error en el almacén vectorial de OpenAI: ${msg}`;
 
-    return msg; // mensaje original si no matchea ningún patrón conocido
+    return msg;
   }
 
   if (status === 404)
@@ -145,7 +144,9 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id', 400));
 
   const [col] = await db.query(
-    `SELECT id, assistant_id, vector_store_id, id_configuracion FROM kanban_columnas WHERE id = ?`,
+    `SELECT id, assistant_id, instrucciones, modelo, nombre,
+            vector_store_id, id_configuracion
+     FROM kanban_columnas WHERE id = ? LIMIT 1`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
@@ -155,72 +156,88 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
   }
 
   const apiKey = await getApiKey(col.id_configuracion);
+  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
 
-  try {
-    // Obtener datos del asistente
-    const asstRes = await withRetry(() =>
-      axios.get(`https://api.openai.com/v1/assistants/${col.assistant_id}`, {
-        headers: headersJson(apiKey),
-      }),
-    );
+  let asistenteData;
 
-    const asst = asstRes.data;
+  if (USAR_RESPONSES_API) {
+    // Nuevo sistema: no hay objeto Assistant en OpenAI, todo vive en BD.
+    asistenteData = {
+      assistant_id: col.assistant_id,
+      nombre: col.nombre,
+      instrucciones: col.instrucciones,
+      modelo: col.modelo,
+    };
 
-    // Obtener archivos del vector store (si existe)
-    let archivos = [];
-    if (col.vector_store_id) {
-      try {
-        const vsFiles = await axios.get(
-          `https://api.openai.com/v1/vector_stores/${col.vector_store_id}/files?limit=20`,
-          { headers: headersJson(apiKey) },
-        );
-        const files = vsFiles.data?.data || [];
-
-        // Para cada archivo, obtener su nombre desde /v1/files
-        archivos = await Promise.all(
-          files.map(async (f) => {
-            try {
-              const fileRes = await axios.get(
-                `https://api.openai.com/v1/files/${f.id}`,
-                { headers: headersBase(apiKey) },
-              );
-              return {
-                id: f.id,
-                nombre: fileRes.data?.filename || f.id,
-                bytes: fileRes.data?.bytes || 0,
-                status: f.status,
-                created: f.created_at,
-              };
-            } catch {
-              return { id: f.id, nombre: f.id, bytes: 0, status: f.status };
-            }
-          }),
-        );
-      } catch (_) {
-        /* ignorar error de archivos, no romper el flujo */
-      }
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: {
+    console.log('SISTEMA NUEVO SIN ASSISTANTS');
+  } else {
+    console.log('SISTEMA VIEJO CON ASSISTANTS');
+    try {
+      const asstRes = await withRetry(() =>
+        axios.get(`https://api.openai.com/v1/assistants/${col.assistant_id}`, {
+          headers: headersJson(apiKey),
+        }),
+      );
+      const asst = asstRes.data;
+      asistenteData = {
         assistant_id: asst.id,
         nombre: asst.name,
         instrucciones: asst.instructions,
         modelo: asst.model,
-        vector_store_id: col.vector_store_id,
-        archivos,
-      },
-    });
-  } catch (err) {
-    const mensaje = parsearErrorOpenAI(err);
-    return next(
-      new AppError(
-        `Error al obtener asistente: ${mensaje}`,
-        err?.response?.status || 500,
-      ),
-    );
+      };
+    } catch (err) {
+      const mensaje = parsearErrorOpenAI(err);
+      return next(
+        new AppError(
+          `Error al obtener asistente: ${mensaje}`,
+          err?.response?.status || 500,
+        ),
+      );
+    }
   }
+
+  // Archivos del vector store — común a ambos sistemas
+  let archivos = [];
+  if (col.vector_store_id) {
+    try {
+      const vsFiles = await axios.get(
+        `https://api.openai.com/v1/vector_stores/${col.vector_store_id}/files?limit=20`,
+        { headers: headersJson(apiKey) },
+      );
+      const files = vsFiles.data?.data || [];
+
+      archivos = await Promise.all(
+        files.map(async (f) => {
+          try {
+            const fileRes = await axios.get(
+              `https://api.openai.com/v1/files/${f.id}`,
+              { headers: headersBase(apiKey) },
+            );
+            return {
+              id: f.id,
+              nombre: fileRes.data?.filename || f.id,
+              bytes: fileRes.data?.bytes || 0,
+              status: f.status,
+              created: f.created_at,
+            };
+          } catch {
+            return { id: f.id, nombre: f.id, bytes: 0, status: f.status };
+          }
+        }),
+      );
+    } catch (_) {
+      /* ignorar error de archivos, no romper el flujo */
+    }
+  }
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      ...asistenteData,
+      vector_store_id: col.vector_store_id,
+      archivos,
+    },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -244,8 +261,6 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
       ),
     );
 
-  const apiKey = await getApiKey(col.id_configuracion);
-
   const nombreFinal = nombre?.trim() || `Asistente - ${col.col_nombre}`;
   const instruccionesFinal =
     instrucciones?.trim() ||
@@ -260,6 +275,36 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
       ),
     );
 
+  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+
+  if (USAR_RESPONSES_API) {
+    console.log('SISTEMA NUEVO SIN ASSISTANTS');
+    // Nuevo sistema: id local, sin llamar a OpenAI
+    const assistant_id = `local_${id}_${Date.now()}`;
+
+    await db.query(
+      `UPDATE kanban_columnas 
+       SET assistant_id = ?, instrucciones = ?, modelo = ?
+       WHERE id = ?`,
+      {
+        replacements: [assistant_id, instruccionesFinal, modelo, id],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
+    return res.status(200).json({
+      success: true,
+      assistant_id,
+      nombre: nombreFinal,
+      instrucciones: instruccionesFinal,
+      modelo,
+    });
+  }
+  console.log('SISTEMA VIEJO CON ASSISTANTS');
+
+  // Sistema viejo: Assistant real en OpenAI
+  const apiKey = await getApiKey(col.id_configuracion);
+
   try {
     const asstRes = await axios.post(
       'https://api.openai.com/v1/assistants',
@@ -270,11 +315,10 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
     const assistant_id = asstRes.data?.id;
     if (!assistant_id) throw new Error('OpenAI no devolvió un assistant_id');
 
-    // Guardar en BD
     await db.query(
       `UPDATE kanban_columnas 
-   SET assistant_id = ?, instrucciones = ?, modelo = ?
-   WHERE id = ?`,
+       SET assistant_id = ?, instrucciones = ?, modelo = ?
+       WHERE id = ?`,
       {
         replacements: [assistant_id, instrucciones, modelo, id],
         type: db.QueryTypes.UPDATE,
@@ -330,15 +374,12 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
       { replacements: [id], type: db.QueryTypes.SELECT },
     );
 
-    // 1) Quitar el bloque de reglas extra (viene marcado) → estructura limpia
     let estructura = quitarBloqueInstruccionesExtra(instrucciones);
 
-    // 2) Garantizar el placeholder para que el modal pueda re-inyectar
     if (!estructura.includes('[BLOQUE_INSTRUCCIONES_EXTRA]')) {
       estructura = `${estructura.trim()}\n\n[BLOQUE_INSTRUCCIONES_EXTRA]`;
     }
 
-    // 3) Guardar como nuevo snapshot (la estructura del cliente manda)
     await db.query(
       `INSERT INTO kanban_columnas_personalizaciones
          (id_kanban_columna, id_configuracion, prompt_base_snapshot)
@@ -350,11 +391,9 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
       },
     );
 
-    // 4) Recompilar con la personalización vigente (reinyecta reglas extra)
     instruccionesFinal = compilarPromptFinal(estructura, perso || {});
   }
 
-  // Actualizar BD
   await db.query(
     `UPDATE kanban_columnas
      SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
@@ -371,8 +410,15 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
     },
   );
 
-  // OpenAI
-  if (col.assistant_id && (nombre || instruccionesFinal || modelo)) {
+  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+
+  // OpenAI: solo sistema viejo (hay Assistant real que sincronizar)
+  if (
+    !USAR_RESPONSES_API &&
+    col.assistant_id &&
+    (nombre || instruccionesFinal || modelo)
+  ) {
+    console.log('SISTEMA VIEJO CON ASSISTANTS');
     const apiKey = await getApiKey(col.id_configuracion);
     const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
     const modeloFinal =
@@ -398,6 +444,8 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
         ),
       );
     }
+  } else {
+    console.log('SISTEMA NUEVO SIN ASSISTANTS');
   }
 
   return res.status(200).json({ success: true });
@@ -415,7 +463,6 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id de columna', 400));
   if (!archivo) return next(new AppError('No se recibió ningún archivo', 400));
 
-  // Validar tipo MIME antes de llamar a OpenAI
   if (!MIME_TYPES_PERMITIDOS.has(archivo.mimetype)) {
     const formatoRecibido = archivo.mimetype || 'desconocido';
     const formatosOk = [
@@ -437,7 +484,6 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     );
   }
 
-  // Validar tamaño (512 MB límite OpenAI, usamos 100 MB como límite práctico)
   const MAX_BYTES = 100 * 1024 * 1024;
   if (archivo.size > MAX_BYTES) {
     const mb = (archivo.size / (1024 * 1024)).toFixed(1);
@@ -457,6 +503,7 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     );
 
   const apiKey = await getApiKey(col.id_configuracion);
+  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   try {
@@ -521,21 +568,32 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     }
 
     // 5. Asegurar file_search en el asistente
-    const asstRes = await axios.get(
-      `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-      { headers: headersJson(apiKey) },
-    );
-    const tools = Array.isArray(asstRes.data?.tools) ? asstRes.data.tools : [];
-    const tieneFileSearch = tools.some((t) => t?.type === 'file_search');
+    // OJO: solo sistema viejo. En el nuevo, assistant_id es local_...
+    // (no existe en OpenAI) y este GET tiraría 404.
+    if (!USAR_RESPONSES_API) {
+      console.log('SISTEMA VIEJO CON ASSISTANTS');
+      const asstRes = await axios.get(
+        `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+        { headers: headersJson(apiKey) },
+      );
+      const tools = Array.isArray(asstRes.data?.tools)
+        ? asstRes.data.tools
+        : [];
+      const tieneFileSearch = tools.some((t) => t?.type === 'file_search');
 
-    await axios.post(
-      `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-      {
-        tools: tieneFileSearch ? tools : [...tools, { type: 'file_search' }],
-        tool_resources: { file_search: { vector_store_ids: [vectorStoreId] } },
-      },
-      { headers: headersJson(apiKey) },
-    );
+      await axios.post(
+        `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+        {
+          tools: tieneFileSearch ? tools : [...tools, { type: 'file_search' }],
+          tool_resources: {
+            file_search: { vector_store_ids: [vectorStoreId] },
+          },
+        },
+        { headers: headersJson(apiKey) },
+      );
+    } else {
+      console.log('SISTEMA NUEVO SIN ASSISTANTS');
+    }
 
     return res.status(200).json({
       success: true,
@@ -568,7 +626,6 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
   const apiKey = await getApiKey(col.id_configuracion);
   const errores = [];
 
-  // Quitar del vector store
   if (col.vector_store_id) {
     try {
       await axios.delete(
@@ -582,7 +639,6 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Eliminar el archivo de OpenAI
   try {
     await axios.delete(`https://api.openai.com/v1/files/${file_id}`, {
       headers: headersBase(apiKey),
@@ -638,15 +694,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     ...(previous_response_id && { previous_response_id }),
   };
 
-  // 🔍 LOG ANTES DE LLAMAR A OPENAI
-  /* console.log('\n========== 🔵 LLAMANDO A OPENAI ==========');
-  console.log('Modelo:', body.model);
-  console.log('Vector store ID:', columna.vector_store_id || 'NINGUNO');
-  console.log('Previous response ID:', previous_response_id || 'NINGUNO');
-  console.log('Tamaño instructions:', (body.instructions || '').length, 'chars');
-  console.log('Input del usuario:', mensaje);
-  console.log('==========================================\n'); */
-
   let response;
   try {
     response = await axios.post('https://api.openai.com/v1/responses', body, {
@@ -654,7 +701,6 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
       timeout: 140000,
     });
   } catch (err) {
-    // 🔴 LOG DEL ERROR REAL DE OPENAI
     console.log('\n========== 🔴 ERROR DE OPENAI ==========');
     console.log('HTTP Status:', err.response?.status);
     console.log('Error code:', err.code);
