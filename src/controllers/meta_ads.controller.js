@@ -106,6 +106,7 @@ async function inspeccionarToken(userToken) {
   const granular = {};
   for (const g of d.granular_scopes || [])
     granular[g.scope] = g.target_ids || [];
+  const fecha = (s) => (s ? new Date(s * 1000).toISOString() : null);
   return {
     tipo: d.type || null, // USER, PAGE, SYSTEM_USER…
     app_id: d.app_id || null,
@@ -113,7 +114,14 @@ async function inspeccionarToken(userToken) {
     es_valido: !!d.is_valid,
     scopes: d.scopes || [],
     granular, // { ads_management: ['act_123'], … }
-    expira: d.expires_at || null,
+    /* Cuándo se emitió el permiso que respalda este token. Es el dato que
+       distingue "Meta no otorgó el permiso ahora mismo" de "el SDK devolvió
+       un código de una autorización anterior": si `emitido` coincide con el
+       alta de WhatsApp y no con el intento de ads, el consentimiento nuevo
+       no llegó a generar código propio. */
+    emitido: fecha(d.issued_at),
+    expira: fecha(d.expires_at),
+    acceso_datos_expira: fecha(d.data_access_expires_at),
   };
 }
 
@@ -338,11 +346,14 @@ exports.conectarAdAccount = async (req, res) => {
           `tipo=${info?.tipo || '?'} scopes=[${(info?.scopes || []).join(',')}] ` +
           `intentos=${JSON.stringify(intentos || {})}`,
       );
-      // Caso muy frecuente: el cliente acaba de dar de alta WhatsApp y, al
-      // pulsar "Conectar Meta Ads" en la misma sesión, el SDK de Facebook
-      // reutiliza esa autorización y devuelve un código de WhatsApp. El token
-      // llega con whatsapp_* pero sin ads_*, y antes eso terminaba en un
-      // "(#100) Unsupported get request" imposible de interpretar.
+      /* Caso muy frecuente: en la pantalla "Activos comerciales" de Meta, la
+         cuenta publicitaria viene marcada como OPCIONAL. Si el cliente ya
+         había dado de alta WhatsApp en ese mismo portafolio y termina el
+         flujo sin elegirla en el desplegable, Meta no otorga ningún permiso
+         nuevo y devuelve el token del usuario de sistema que ya existía: solo
+         con whatsapp_*. La ventana igual dice "Se conectó … a IMPORCHAT",
+         así que parece que salió bien. Antes esto terminaba en un
+         "(#100) Unsupported get request" imposible de interpretar. */
       const soloWhatsapp =
         !permisosAds.length &&
         (info?.scopes || []).some((s) => String(s).startsWith('whatsapp_'));
@@ -350,14 +361,26 @@ exports.conectarAdAccount = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: soloWhatsapp
-          ? 'Meta devolvió la autorización de WhatsApp, no la de anuncios: el navegador reutilizó la sesión del alta de WhatsApp. Vuelve a pulsar "Conectar Meta Ads" y, en la ventana de Meta, elige el portafolio y marca la cuenta publicitaria. Si vuelve a pasar, cierra sesión de Facebook en este navegador e inténtalo de nuevo.'
+          ? 'En la ventana de Meta la "Cuenta publicitaria" es opcional y quedó sin seleccionar, así que Meta solo devolvió el permiso de WhatsApp. Vuelve a pulsar "Conectar Meta Ads" y, en la pantalla "Activos comerciales", abre el desplegable de Cuenta publicitaria y elige la cuenta antes de continuar.'
           : permisosAds.length
             ? 'Tu usuario autorizó la app pero no compartió ninguna cuenta publicitaria. Vuelve a conectar y, en la pantalla de Meta, marca la cuenta de anuncios que quieres vincular.'
             : 'Meta no entregó los permisos de anuncios (ads_read / ads_management). Al conectar, en la pantalla de Meta elige el portafolio y marca la casilla de la cuenta publicitaria; si no aparece, pide al administrador del portafolio que te dé acceso a esa cuenta.',
         diagnostico: {
           token_tipo: info?.tipo || null,
+          // A qué nodo resuelve el token: si aquí aparece el "System User" de
+          // IMPORCHAT, el alta en el portafolio del cliente sí se completó y
+          // lo único que faltó fue compartir la cuenta publicitaria.
+          token_me: await (async () => {
+            const r = await ax.get(`${GRAPH_BASE}/me`, {
+              params: { fields: 'id,name' },
+            });
+            return r.status >= 200 && r.status < 300
+              ? r.data
+              : r.data?.error?.message || `HTTP ${r.status}`;
+          })().catch(() => null),
           permisos_otorgados: info?.scopes || [],
           activos_ads: info?.granular || {},
+          token_emitido: info?.emitido || null,
           intentos: intentos || {},
         },
       });
