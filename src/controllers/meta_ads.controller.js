@@ -85,6 +85,111 @@ function assertMeta(resp, label) {
   throw err;
 }
 
+/* ── Diagnóstico del token de usuario ──
+   Con Facebook Login for Business los permisos NO se piden con `scope`: salen
+   de la configuración de login (config_id) y, sobre todo, de los activos que
+   el usuario elige dentro del flujo. Si no seleccionó la cuenta publicitaria
+   —o su rol en el portafolio no se lo permite— el token llega sin
+   ads_read/ads_management y Meta responde a /me/adaccounts con
+   "(#100) Unsupported get request", que no le dice nada a nadie.
+   debug_token es la única forma de ver qué otorgó de verdad. */
+async function inspeccionarToken(userToken) {
+  const resp = await axios.get(`${GRAPH_BASE}/debug_token`, {
+    params: {
+      input_token: userToken,
+      access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
+    },
+    validateStatus: () => true,
+    timeout: 15000,
+  });
+  const d = resp.data?.data || {};
+  const granular = {};
+  for (const g of d.granular_scopes || [])
+    granular[g.scope] = g.target_ids || [];
+  return {
+    tipo: d.type || null, // USER, PAGE, SYSTEM_USER…
+    app_id: d.app_id || null,
+    user_id: d.user_id || null,
+    es_valido: !!d.is_valid,
+    scopes: d.scopes || [],
+    granular, // { ads_management: ['act_123'], … }
+    expira: d.expires_at || null,
+  };
+}
+
+const ACT = (id) => (String(id).startsWith('act_') ? String(id) : `act_${id}`);
+const CAMPOS_CUENTA = 'id,name,account_status,currency,timezone_name';
+
+/* Busca las cuentas publicitarias del usuario por los tres caminos que Meta
+   ofrece, en orden de fiabilidad. El primero basta en el 99% de los casos;
+   los otros dos cubren los tokens de Login for Business, donde /me/adaccounts
+   no siempre está disponible pero los activos otorgados sí vienen en el
+   propio token (granular_scopes) o colgando del portafolio. */
+async function obtenerCuentasPublicitarias(ax, info) {
+  const via = {};
+
+  // 1) Camino clásico
+  const r1 = await ax.get(`${GRAPH_BASE}/me/adaccounts`, {
+    params: { fields: CAMPOS_CUENTA, limit: 50 },
+  });
+  if (r1.status >= 200 && r1.status < 300) {
+    const cuentas = r1.data?.data || [];
+    if (cuentas.length) return { cuentas, via: 'me/adaccounts' };
+    via['me/adaccounts'] = 'sin cuentas';
+  } else {
+    via['me/adaccounts'] = r1.data?.error?.message || `HTTP ${r1.status}`;
+  }
+
+  // 2) Activos que el usuario otorgó, leídos del propio token
+  const ids = [
+    ...new Set([
+      ...(info?.granular?.ads_management || []),
+      ...(info?.granular?.ads_read || []),
+    ]),
+  ];
+  if (ids.length) {
+    const cuentas = (
+      await Promise.all(
+        ids.map(async (id) => {
+          const r = await ax.get(`${GRAPH_BASE}/${ACT(id)}`, {
+            params: { fields: CAMPOS_CUENTA },
+          });
+          return r.status >= 200 && r.status < 300 ? r.data : null;
+        }),
+      )
+    ).filter(Boolean);
+    if (cuentas.length) return { cuentas, via: 'granular_scopes' };
+    via.granular_scopes = `${ids.length} ids otorgados, ninguno legible`;
+  } else {
+    via.granular_scopes = 'el token no trae activos de ads';
+  }
+
+  // 3) Por portafolio (owned + client)
+  const rb = await ax.get(`${GRAPH_BASE}/me/businesses`, {
+    params: { limit: 25 },
+  });
+  if (rb.status >= 200 && rb.status < 300) {
+    const negocios = rb.data?.data || [];
+    const cuentas = [];
+    for (const b of negocios) {
+      for (const edge of ['owned_ad_accounts', 'client_ad_accounts']) {
+        const r = await ax.get(`${GRAPH_BASE}/${b.id}/${edge}`, {
+          params: { fields: CAMPOS_CUENTA, limit: 50 },
+        });
+        if (r.status >= 200 && r.status < 300)
+          cuentas.push(...(r.data?.data || []));
+      }
+    }
+    const unicas = [...new Map(cuentas.map((c) => [c.id, c])).values()];
+    if (unicas.length) return { cuentas: unicas, via: 'businesses' };
+    via.businesses = `${negocios.length} portafolios, sin cuentas visibles`;
+  } else {
+    via.businesses = rb.data?.error?.message || `HTTP ${rb.status}`;
+  }
+
+  return { cuentas: [], via: null, intentos: via };
+}
+
 function buildDateParams(query) {
   if (query.time_range) {
     try {
@@ -211,21 +316,45 @@ exports.conectarAdAccount = async (req, res) => {
     if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
     const ax = metaAx(userToken);
-    const adResp = await ax.get(`${GRAPH_BASE}/me/adaccounts`, {
-      params: {
-        fields: 'id,name,account_status,currency,timezone_name',
-        limit: 50,
-      },
-    });
-    const adData = assertMeta(adResp, 'adaccounts');
-    const accounts = adData.data || [];
+
+    // Qué otorgó realmente el usuario (ver inspeccionarToken)
+    const info = await inspeccionarToken(userToken).catch(() => null);
+    const permisosAds = (info?.scopes || []).filter((s) =>
+      ['ads_read', 'ads_management'].includes(s),
+    );
+
+    const { cuentas: accounts, via, intentos } = await obtenerCuentasPublicitarias(
+      ax,
+      info,
+    );
 
     if (!accounts.length) {
-      return res.json({
+      // Sin ads_read/ads_management el usuario simplemente no autorizó el
+      // permiso: pasa cuando su rol en el portafolio no le deja compartir la
+      // cuenta, o cuando en el flujo de Meta no marcó ninguna. Decirlo así
+      // evita el "(#100) Unsupported get request", que no orienta a nadie.
+      logger.error(
+        `metaAds.conectar sin cuentas | cfg=${id_configuracion} user=${info?.user_id || '?'} ` +
+          `tipo=${info?.tipo || '?'} scopes=[${(info?.scopes || []).join(',')}] ` +
+          `intentos=${JSON.stringify(intentos || {})}`,
+      );
+      return res.status(400).json({
         success: false,
-        message: 'No se encontraron cuentas publicitarias.',
+        message: permisosAds.length
+          ? 'Tu usuario autorizó la app pero no compartió ninguna cuenta publicitaria. Vuelve a conectar y, en la pantalla de Meta, marca la cuenta de anuncios que quieres vincular.'
+          : 'Meta no entregó los permisos de anuncios (ads_read / ads_management). Al conectar, en la pantalla de Meta elige el portafolio y marca la casilla de la cuenta publicitaria; si no aparece, pide al administrador del portafolio que te dé acceso a esa cuenta.',
+        diagnostico: {
+          token_tipo: info?.tipo || null,
+          permisos_otorgados: info?.scopes || [],
+          activos_ads: info?.granular || {},
+          intentos: intentos || {},
+        },
       });
     }
+
+    logger.info(
+      `metaAds.conectar ok | cfg=${id_configuracion} via=${via} cuentas=${accounts.length}`,
+    );
 
     return res.json({
       success: true,
