@@ -20,6 +20,45 @@ const { matchEnLista } = require('../services/dropiAutoOrder.service');
    Helpers
 ========================= */
 
+/* ── Emparejamiento pedido Dropi ↔ checkout Shopify ──
+   Un pedido salió de la tienda si existe un checkout del MISMO teléfono, por
+   un monto equivalente y dentro de la ventana. Lo usan el listado de órdenes
+   y el resumen del dashboard, así que vive acá para que no se separen.
+
+   · Tolerancia del total = máx($5, 10%). El checkout guarda el total con
+     envío/descuento y a Dropi llega otro número. Con el ±$0.50 anterior, 44
+     de 54 pedidos de la cfg 277 fallaban por menos de $2 (el envío) y se
+     contaban como ventas de WhatsApp cuando eran de la tienda.
+   · Ventana de 7 días (antes 72h/3d): con la recuperación de carritos el
+     pedido puede subirse a Dropi varios días después del checkout.
+
+   El total se sigue exigiendo a propósito: es lo único que distingue dos
+   compras distintas del mismo cliente (una en la tienda y otra por el chat).
+   Quien cierra la clasificación es el bot: si la orden la creó él
+   (dropi_auto_ordenes_log), es WhatsApp aunque coincida con un checkout. */
+const SHOPIFY_MATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function shopifyTotalCoincide(totalCheckout, totalOrden) {
+  const a = Number(totalCheckout || 0);
+  const b = Number(totalOrden || 0);
+  return Math.abs(a - b) <= Math.max(5, Math.max(a, b) * 0.1);
+}
+
+/* list: [{ total, t }] checkouts del teléfono; tOrden: ms o null. */
+function matchCheckoutShopify(
+  list,
+  totalOrden,
+  tOrden,
+  ventanaMs = SHOPIFY_MATCH_WINDOW_MS,
+) {
+  if (!list || !list.length) return false;
+  return list.some(
+    (s) =>
+      shopifyTotalCoincide(s.total, totalOrden) &&
+      (tOrden == null || s.t == null || Math.abs(s.t - tOrden) <= ventanaMs),
+  );
+}
+
 function safeRow(row) {
   return {
     id: row.id,
@@ -1329,7 +1368,7 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   // ── Origen real: cruce con shopify_ordenes_webhook. El shop_type crudo de
   // Dropi no es confiable (marca SHOPIFY ventas de WA y deja LUCIDBOT/null a
   // órdenes que sí entraron por Shopify). Marca es_shopify por teléfono
-  // (últimos 9) + total (±0.5) + ventana ±3d. ──
+  // (últimos 9) + total + ventana → matchCheckoutShopify. ──
   try {
     const whRows = await db.query(
       `SELECT phone_normalizado, total_price, shopify_created_at
@@ -1347,7 +1386,6 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
         t: w.shopify_created_at ? new Date(w.shopify_created_at).getTime() : null,
       });
     }
-    const WIN = 3 * 24 * 60 * 60 * 1000;
     for (const o of parsed) {
       const p9 = String(o.phone || '')
         .replace(/\D/g, '')
@@ -1356,13 +1394,10 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       const t = o.order_created_at
         ? new Date(o.order_created_at).getTime()
         : null;
-      o.es_shopify = list
-        ? list.some(
-            (w) =>
-              Math.abs(w.total - o.total_order) < 0.5 &&
-              (t == null || w.t == null || Math.abs(w.t - t) <= WIN),
-          )
-        : false;
+      // La creó el bot → es venta de WhatsApp, no de la tienda.
+      o.es_shopify = o.creado_por_bot
+        ? false
+        : matchCheckoutShopify(list, o.total_order, t);
     }
   } catch (_) {
     for (const o of parsed) if (o.es_shopify == null) o.es_shopify = false;
@@ -4333,8 +4368,10 @@ async function attachProductConversations({
   hasShopifyTruth = false,
   clientByKey = null,
   adRows = null,
+  esOrdenShopify = null,
 }) {
   const productKeys = new Map(); // name → Set(phoneKey)
+  const productKeysWa = new Map(); // name → Set(phoneKey) solo canal WA
   const productsByKey = new Map(); // phoneKey → Set(product name)
   const allKeys = new Set();
 
@@ -4346,10 +4383,14 @@ async function attachProductConversations({
     try {
       names = JSON.parse(o.product_names || '[]');
     } catch (_) {}
+    // Sin clasificador (llamadas antiguas) todo cuenta como WA.
+    const esWa = esOrdenShopify ? !esOrdenShopify(o) : true;
     for (const name of names) {
       if (!productKeys.has(name)) productKeys.set(name, new Set());
+      if (esWa && !productKeysWa.has(name)) productKeysWa.set(name, new Set());
       ks.forEach((k) => {
         productKeys.get(name).add(k);
+        if (esWa) productKeysWa.get(name).add(k);
         allKeys.add(k);
         if (!productsByKey.has(k)) productsByKey.set(k, new Set());
         productsByKey.get(k).add(name);
@@ -4499,6 +4540,7 @@ async function attachProductConversations({
   }
 
   const buyersByProduct = new Map(); // name → Set(id_cliente con orden)
+  const buyersWaByProduct = new Map(); // idem, solo compradores por WA
   for (const p of productos) {
     const buyers = new Set();
     for (const k of productKeys.get(p.name) || []) {
@@ -4507,12 +4549,41 @@ async function attachProductConversations({
     }
     buyersByProduct.set(p.name, buyers);
     p.conversaciones = buyers.size;
+
+    const buyersWa = new Set();
+    for (const k of productKeysWa.get(p.name) || []) {
+      const cid = clientByKey.get(k);
+      if (cid) buyersWa.add(cid);
+    }
+    buyersWaByProduct.set(p.name, buyersWa);
   }
 
+  const atribuidos = new Set(); // id_cliente que sí cae en alguna fila
   for (const p of productos) {
     const buyers = buyersByProduct.get(p.name);
     const fam = famByProduct.get(p.name);
     const adSet = totalByProduct.get(p.name);
+
+    /* Conversaciones del producto para el canal WhatsApp: chats que
+       ENTRARON preguntando por él (anuncio CTWA) ∪ los que terminaron
+       comprándolo por WA. Es el denominador del % de confirmación WA de la
+       tabla de productos (mismo embudo del hero: pedidos ÷ conversaciones).
+       Sin señal de entrada queda en null: contar solo compradores daría
+       100% siempre, porque en WA el bot marca como confirmado todo lo que
+       sube a Dropi. */
+    const entradas = fam ? fam.clients : adSet;
+    if (entradas && entradas.size) {
+      const totalWa = new Set(buyersWaByProduct.get(p.name) || []);
+      for (const cid of entradas) totalWa.add(cid);
+      p.conversacionesWa = totalWa.size;
+      // Unión (sin doble conteo) de todo lo que la tabla puede mostrar: el
+      // front la usa para explicar cuántas conversaciones del periodo NO
+      // caen en ninguna fila.
+      for (const cid of totalWa) atribuidos.add(cid);
+    } else {
+      p.conversacionesWa = null;
+    }
+
     if (fam) {
       // Familia de variantes: el total del anuncio se comparte entre
       // las presentaciones; el % mide cuántos de los que escribieron
@@ -4560,10 +4631,11 @@ async function attachProductConversations({
     }
   }
 
-  // true → hubo tráfico de anuncios CTWA en el periodo; sin esto,
+  // ctwaActivo → hubo tráfico de anuncios CTWA en el periodo; sin esto,
   // conversacionesTotal ≈ compradores y el % de confirmación engaña
   // (el front oculta esas columnas e invita a conectar la cuenta ads).
-  return adRows.length > 0;
+  // atribuidos → chats que sí quedan representados en alguna fila.
+  return { ctwaActivo: adRows.length > 0, atribuidos };
 }
 
 /* Conversaciones por canal: clientes de chat distintos vinculados por
@@ -4654,6 +4726,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     [shopifyOrdRows],
     [ctwaAdRows],
     [shopifyCfgRows],
+    [shopifyDesdeRows],
   ] = await Promise.all([
     DropiOrdersCache.findAll({
       // Excluimos las REEMPLAZADA: son la versión vieja de una orden que se
@@ -4724,12 +4797,21 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
           AND created_at BETWEEN :from AND :until GROUP BY DATE_FORMAT(created_at,'%Y-%m-%d')`,
       { replacements: repl },
     ),
-    // Carritos abandonados Shopify
+    // Carritos abandonados Shopify — agrupados por día para alimentar el
+    // gráfico del dashboard; los totales del rango se suman en JS a partir
+    // de estas mismas filas (antes era una query de solo totales).
+    // COALESCE: los carritos de releasit/landing pueden llegar sin
+    // shopify_created_at y quedaban fuera del conteo.
     db.query(
-      `SELECT COUNT(*) AS abandonados, SUM(recuperado = 1) AS recuperados,
+      `SELECT DATE_FORMAT(COALESCE(shopify_created_at, created_at),'%Y-%m-%d') AS dia,
+              COUNT(*) AS abandonados,
+              SUM(recuperado = 1) AS recuperados,
+              SUM(total_price) AS valor_total,
               SUM(CASE WHEN recuperado = 1 THEN total_price ELSE 0 END) AS valor_recuperado
          FROM shopify_carritos_abandonados
-        WHERE id_configuracion = :idCfg AND shopify_created_at BETWEEN :from AND :until`,
+        WHERE id_configuracion = :idCfg
+          AND COALESCE(shopify_created_at, created_at) BETWEEN :from AND :until
+        GROUP BY DATE_FORMAT(COALESCE(shopify_created_at, created_at),'%Y-%m-%d')`,
       { replacements: repl },
     ),
     // Serie diaria (fechas locales con DATE_FORMAT → sin desfase de zona horaria)
@@ -4800,10 +4882,13 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     // .catch → la tabla puede no existir aún en este entorno.
     db
       .query(
+        // 7 días de holgura hacia atrás = la ventana de matchCheckoutShopify:
+        // un pedido del primer día del rango puede venir de un checkout de
+        // hasta una semana antes.
         `SELECT phone_normalizado, total_price, shopify_created_at, created_at
            FROM shopify_ordenes_webhook
           WHERE id_configuracion = :idCfg
-            AND created_at BETWEEN DATE_SUB(:from, INTERVAL 3 DAY)
+            AND created_at BETWEEN DATE_SUB(:from, INTERVAL 7 DAY)
                                AND DATE_ADD(:until, INTERVAL 1 DAY)`,
         { replacements: repl },
       )
@@ -4829,6 +4914,16 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       .query(
         `SELECT 1 FROM shopify_configuraciones
           WHERE id_configuracion = :idCfg AND activo = 1 LIMIT 1`,
+        { replacements: repl },
+      )
+      .catch(() => [[]]),
+    // Primer checkout recibido por el webhook: antes de esa fecha no hay
+    // contra qué cruzar, así que TODO cae en WhatsApp y el separado por
+    // canal no es medible. El front lo avisa cuando el rango la incluye.
+    db
+      .query(
+        `SELECT MIN(COALESCE(shopify_created_at, created_at)) AS desde
+           FROM shopify_ordenes_webhook WHERE id_configuracion = :idCfg`,
         { replacements: repl },
       )
       .catch(() => [[]]),
@@ -4890,9 +4985,10 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
 
   // ── Clasificador de canal ──
   // Si la tienda tiene órdenes reales del webhook Shopify en la ventana,
-  // una orden Dropi solo cuenta como Shopify si hace match con una de
-  // ellas (teléfono + total ±0.5 + ventana 72h). Sin datos del webhook,
-  // se usa el shop_type de Dropi tal cual (tiendas sin webhook activo).
+  // una orden Dropi solo cuenta como Shopify si hace match con una de ellas
+  // (matchCheckoutShopify: teléfono + total ±máx($5,10%) + 7 días). Sin
+  // datos del webhook, se usa el shop_type de Dropi tal cual (tiendas sin
+  // webhook activo). Las que creó el bot son WhatsApp pase lo que pase.
   const phone9 = (p) =>
     String(p || '')
       .replace(/\D/g, '')
@@ -4910,21 +5006,19 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   }
   const hasShopifyTruth =
     VALIDAR_SHOPIFY_CON_WEBHOOK && (shopifyOrdRows || []).length > 0;
-  const SHOPIFY_MATCH_WINDOW_MS = 72 * 3600 * 1000;
   const esOrdenShopify = (o) => {
+    // Señal positiva de WhatsApp: la orden la creó el bot desde el chat.
+    // Manda sobre el cruce con el checkout (el cliente pudo haber comprado
+    // antes en la tienda y su teléfono seguiría apareciendo ahí).
+    if (botOrderIds.has(String(o.dropi_order_id))) return false;
     if (!hasShopifyTruth) return o.shop_type === 'SHOPIFY';
-    const list = shopifyTruthMap.get(phone9(o.phone));
-    if (!list) return false;
-    const total = Number(o.total_order || 0);
     const t = o.order_created_at
       ? new Date(o.order_created_at).getTime()
       : null;
-    return list.some(
-      (s) =>
-        Math.abs(s.total - total) < 0.5 &&
-        (t == null ||
-          s.t == null ||
-          Math.abs(s.t - t) <= SHOPIFY_MATCH_WINDOW_MS),
+    return matchCheckoutShopify(
+      shopifyTruthMap.get(phone9(o.phone)),
+      o.total_order,
+      t,
     );
   };
 
@@ -5044,21 +5138,12 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   // shop_type). Así nunca contamos dos veces la misma venta.
   const fromMs = new Date(fromDt).getTime();
   const untilMs = new Date(untilDt).getTime();
-  const matchWebhook = (o) => {
-    const list = shopifyTruthMap.get(phone9(o.phone));
-    if (!list) return false;
-    const total = Number(o.total_order || 0);
-    const t = o.order_created_at
-      ? new Date(o.order_created_at).getTime()
-      : null;
-    return list.some(
-      (s) =>
-        Math.abs(s.total - total) < 0.5 &&
-        (t == null ||
-          s.t == null ||
-          Math.abs(s.t - t) <= SHOPIFY_MATCH_WINDOW_MS),
+  const matchWebhook = (o) =>
+    matchCheckoutShopify(
+      shopifyTruthMap.get(phone9(o.phone)),
+      o.total_order,
+      o.order_created_at ? new Date(o.order_created_at).getTime() : null,
     );
-  };
   let shopifyLeads = 0;
   for (const s of shopifyOrdRows || []) {
     const ts = s.shopify_created_at || s.created_at;
@@ -5112,9 +5197,41 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       ? r2((conPedido(compradores) / totalConversaciones) * 100)
       : null;
 
-  const carrito = carritoRows?.[0] || {};
-  const abandonados = Number(carrito.abandonados || 0);
-  const recuperados = Number(carrito.recuperados || 0);
+  // ── Carritos abandonados: totales del rango + serie diaria ──
+  // La serie cubre TODOS los días del rango (aunque no haya carritos) para
+  // que el gráfico del dashboard no salga con huecos.
+  const carritoPorDia = new Map(
+    (carritoRows || []).map((r) => [String(r.dia), r]),
+  );
+  let abandonados = 0,
+    recuperados = 0,
+    carritoValorTotal = 0,
+    carritoValorRecuperado = 0;
+  for (const r of carritoRows || []) {
+    abandonados += Number(r.abandonados || 0);
+    recuperados += Number(r.recuperados || 0);
+    carritoValorTotal += Number(r.valor_total || 0);
+    carritoValorRecuperado += Number(r.valor_recuperado || 0);
+  }
+  const carritosSerie = [];
+  const cursorDia = new Date(`${from}T00:00:00`);
+  const ultimoDia = new Date(`${until}T00:00:00`);
+  for (let i = 0; cursorDia <= ultimoDia && i < 400; i += 1) {
+    const dia =
+      `${cursorDia.getFullYear()}-` +
+      `${String(cursorDia.getMonth() + 1).padStart(2, '0')}-` +
+      `${String(cursorDia.getDate()).padStart(2, '0')}`;
+    const r = carritoPorDia.get(dia);
+    const ab = Number(r?.abandonados || 0);
+    const rec = Number(r?.recuperados || 0);
+    carritosSerie.push({
+      day: dia,
+      abandonados: ab,
+      recuperados: rec,
+      pendientes: Math.max(0, ab - rec),
+    });
+    cursorDia.setDate(cursorDia.getDate() + 1);
+  }
 
   const productos = (prodRows || [])
     .map((r) => {
@@ -5149,7 +5266,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     .sort((a, b) => b.gananciaNeta - a.gananciaNeta);
 
   // Conversaciones por producto (sin conteo de mensajes) + por canal
-  const [ctwaActivo, convPorCanal] = await Promise.all([
+  const [convProducto, convPorCanal] = await Promise.all([
     attachProductConversations({
       id_configuracion,
       orderRows,
@@ -5159,6 +5276,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       hasShopifyTruth,
       clientByKey,
       adRows: ctwaAdRows,
+      esOrdenShopify,
     }),
     countCanalConversaciones({
       id_configuracion,
@@ -5167,6 +5285,20 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       clientByKey,
     }),
   ]);
+
+  const ctwaActivo = convProducto.ctwaActivo;
+
+  /* Cuadre de conversaciones para la tabla de productos: de todos los que
+     escribieron en el periodo, cuántos quedan representados en alguna fila.
+     El resto entró por productos que no registraron ventas en el rango (no
+     hay fila que los muestre, porque la tabla nace de las órdenes Dropi) o
+     no vino de un anuncio. Se cuenta la UNIÓN de los chats por producto:
+     sumar la columna daría de más, porque varias presentaciones comparten
+     el mismo anuncio. */
+  let conversacionesEnTabla = 0;
+  for (const cid of convProducto.atribuidos) {
+    if (escribieron.has(cid)) conversacionesEnTabla += 1;
+  }
 
   // Compradores del periodo = clientes de chat con al menos un pedido
   const compradores = new Set([
@@ -5232,15 +5364,25 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   }
 
   // Adjuntar a cada producto su desglose por canal.
-  const mkCanal = (c) => ({
-    ordenes: c.ordenes,
-    confirmadas: c.confirmadas,
-    canceladas: c.canceladas,
-    entregadas: c.entregadas,
-    devoluciones: c.devoluciones,
-    tasaEntrega:
-      c.movilizadas > 0 ? r2((c.entregadas / c.movilizadas) * 100) : null,
-  });
+  // `pedidosTienda` = TODOS los pedidos del producto que llegaron a Dropi,
+  // incluidos los cancelados. Es el denominador del % de confirmación, igual
+  // que en el hero: confirmados + por confirmar + cancelados = pedidos.
+  const mkCanal = (c, extra = {}) => {
+    const pedidosTienda = c.ordenes + c.canceladas;
+    return {
+      ordenes: c.ordenes,
+      confirmadas: c.confirmadas,
+      canceladas: c.canceladas,
+      entregadas: c.entregadas,
+      devoluciones: c.devoluciones,
+      pedidosTienda,
+      pctConfirmacion:
+        pedidosTienda > 0 ? r2((c.confirmadas / pedidosTienda) * 100) : null,
+      tasaEntrega:
+        c.movilizadas > 0 ? r2((c.entregadas / c.movilizadas) * 100) : null,
+      ...extra,
+    };
+  };
   for (const p of productos) {
     const pc = prodCanalMap.get(p.name) || {
       wa: blankProdCanal(),
@@ -5254,10 +5396,19 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       devoluciones: pc.wa.devoluciones + pc.shopify.devoluciones,
       movilizadas: pc.wa.movilizadas + pc.shopify.movilizadas,
     };
+    // WhatsApp mide OTRO embudo: el bot marca como confirmado todo lo que
+    // sube a Dropi, así que "confirmadas ÷ pedidos" siempre daría 100%. El
+    // dato útil es el del hero: de las conversaciones que entraron por ese
+    // producto, cuántas terminaron en pedido. Sin señal de entrada (sin
+    // anuncios CTWA) no hay embudo medible → null y el front muestra "—".
+    const convWa = p.conversacionesWa ?? null;
     p.canal = {
-      wa: mkCanal(pc.wa),
+      wa: mkCanal(pc.wa, {
+        conversaciones: convWa,
+        pctConfirmacion: convWa ? r2((pc.wa.ordenes / convWa) * 100) : null,
+      }),
       shopify: mkCanal(pc.shopify),
-      todos: mkCanal(todos),
+      todos: mkCanal(todos, { conversaciones: p.conversacionesTotal ?? null }),
     };
   }
 
@@ -5275,6 +5426,20 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     canceladas,
     shopifyLeads,
     shopifyConectado,
+    /* Desde cuándo se puede separar WhatsApp vs tienda: es la fecha del
+       primer checkout que recibió el webhook. Antes de eso no existe el dato
+       con el que cruzar, así que esos pedidos caen todos en WhatsApp sin que
+       eso signifique que se vendieron por el chat. YYYY-MM-DD o null. */
+    shopifySplitDesde: (() => {
+      const d = shopifyDesdeRows?.[0]?.desde;
+      if (!d) return null;
+      const f = new Date(d); // en local: toISOString correría un día
+      return (
+        `${f.getFullYear()}-` +
+        `${String(f.getMonth() + 1).padStart(2, '0')}-` +
+        `${String(f.getDate()).padStart(2, '0')}`
+      );
+    })(),
     canales: {
       wa: {
         ...buildCanal('wa', pctConfDeConv(convPorCanal.waIds)),
@@ -5290,9 +5455,14 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     carritos: {
       abandonados,
       recuperados,
+      pendientes: Math.max(0, abandonados - recuperados),
       tasaRecuperacion:
         abandonados > 0 ? r2((recuperados / abandonados) * 100) : 0,
-      valorRecuperado: r2(carrito.valor_recuperado),
+      valorTotal: r2(carritoValorTotal),
+      valorRecuperado: r2(carritoValorRecuperado),
+      // Lo que sigue "en juego": carritos que aún no se recuperaron.
+      valorPendiente: r2(carritoValorTotal - carritoValorRecuperado),
+      serie: carritosSerie,
     },
     dailyChart,
     statusBreakdown: Object.values(statusMap)
@@ -5303,6 +5473,13 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       }))
       .sort((a, b) => b.count - a.count),
     productos,
+    // Cuadre de la tabla de productos: total del periodo, cuántas caen en
+    // alguna fila y cuántas no (productos sin ventas / chats sin anuncio).
+    conversacionesProducto: {
+      total: totalConversaciones,
+      enTabla: conversacionesEnTabla,
+      sinProducto: Math.max(0, totalConversaciones - conversacionesEnTabla),
+    },
     // true → hubo conversaciones desde anuncios CTWA en el periodo;
     // false → el front no muestra conv. totales/% conf. por producto
     ctwaActivo,
@@ -5330,16 +5507,16 @@ const _connSummaryCleanup = setInterval(() => {
 }, 60_000);
 if (_connSummaryCleanup.unref) _connSummaryCleanup.unref();
 
-exports.getConnectionSummary = catchAsync(async (req, res) => {
-  const id_configuracion = toInt(req.body?.id_configuracion);
-  const from = strOrNull(req.body?.from);
-  const until = strOrNull(req.body?.until);
+/* Resumen con caché. Lo usa el panel Y la API pública para que ambos vean
+   EXACTAMENTE la misma foto (si la API recalculara por su cuenta, un tercero
+   podía leer números distintos a los del dashboard dentro de la ventana del
+   TTL) y para no repetir ~12 queries pesadas por cada llamada externa.
+   Devuelve { data, cached }. */
+async function getConnectionSummaryCached({ id_configuracion, from, until }) {
   const key = `${id_configuracion}:${from}:${until}`;
-  const now = Date.now();
-
   const cached = connSummaryCache.get(key);
-  if (cached && now - cached.ts < CONN_SUMMARY_TTL) {
-    return res.json({ isSuccess: true, data: cached.data, cached: true });
+  if (cached && Date.now() - cached.ts < CONN_SUMMARY_TTL) {
+    return { data: cached.data, cached: true };
   }
 
   // Dedupe de peticiones concurrentes: si ya hay una en vuelo, esperarla.
@@ -5353,8 +5530,18 @@ exports.getConnectionSummary = catchAsync(async (req, res) => {
       .finally(() => connSummaryInflight.delete(key));
     connSummaryInflight.set(key, promise);
   }
-  const data = await promise;
-  return res.json({ isSuccess: true, data });
+  return { data: await promise, cached: false };
+}
+
+exports.getConnectionSummary = catchAsync(async (req, res) => {
+  const { data, cached } = await getConnectionSummaryCached({
+    id_configuracion: toInt(req.body?.id_configuracion),
+    from: strOrNull(req.body?.from),
+    until: strOrNull(req.body?.until),
+  });
+  return cached
+    ? res.json({ isSuccess: true, data, cached: true })
+    : res.json({ isSuccess: true, data });
 });
 
 // ── Helpers exportados para uso interno (marketing_control) ──
@@ -5368,4 +5555,6 @@ exports._internal = {
   fetchClientPhoneMap,
   computeStatsFromCache,
   buildConnectionSummary,
+  getConnectionSummaryCached,
+  matchCheckoutShopify,
 };

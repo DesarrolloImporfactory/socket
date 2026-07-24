@@ -13,7 +13,12 @@ const { db } = require('../database/config');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const logger = require('../utils/logger');
 const {
-  _internal: { syncFromDropi, getActiveIntegration, getIntegrationKey },
+  _internal: {
+    syncFromDropi,
+    getActiveIntegration,
+    getIntegrationKey,
+    matchCheckoutShopify,
+  },
 } = require('./dropi_integrations.controller');
 
 const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
@@ -258,7 +263,14 @@ async function ensureDropiCacheFresh({
 // GET /dashboard
 // ════════════════════════════════════════════════════════════
 
-const WINDOW_HOURS = 72;
+/* Ventana de atribución chat → orden (last-touch por teléfono).
+   Medido sobre 1 223 órdenes con chat de anuncio previo en 7 conexiones:
+   mediana 5.9 h, p90 46.8 h, p95 90.2 h. Con 72 h se cubría el 93.7% y se
+   perdían ventas normales de 4-5 días (la cfg 610 atribuía 1 de 4 pedidos
+   del mismo anuncio). Con 168 h se cubre el 97.1%; más allá el retorno es
+   marginal (336 h → 98.4%) y crece el riesgo de colgarle la venta a un clic
+   viejo. Es la misma ventana que usa el cruce con checkouts de Shopify. */
+const WINDOW_HOURS = 168;
 
 /* Cuerpo del dashboard separado del handler para que la API pública
    (public_api.controller) lo reuse tal cual. */
@@ -283,7 +295,7 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
   const conn = await getAdConnection(id_configuracion);
   if (!conn) return next(new AppError('No hay cuenta de ads conectada.', 400));
 
-  const [acctResp, adsResp, aggResult, orderResult, msgResult] =
+  const [acctResp, adsResp, aggResult, orderResult, msgResult, whResult] =
     await Promise.all([
       fetchAccountInsights(conn, timeRange),
       fetchTopAds(conn, timeRange, 50),
@@ -346,6 +358,19 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
           },
         },
       ),
+      // Checkouts de la tienda: un pedido que salió del checkout de Shopify
+      // no puede venir de un anuncio de clic a WhatsApp. Se excluyen del
+      // denominador del % de atribución (si no, una tienda que vende por
+      // Shopify mostraba 0-2% "conectadas" para siempre). Mismo cruce que
+      // usa el resumen de la conexión. .catch → la tabla puede no existir.
+      db
+        .query(
+          `SELECT phone_normalizado, total_price, shopify_created_at, created_at
+             FROM shopify_ordenes_webhook
+            WHERE id_configuracion = :idCfg`,
+          { replacements: { idCfg: id_configuracion } },
+        )
+        .catch(() => [[]]),
     ]);
 
   if (!acctResp.success)
@@ -358,6 +383,28 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
   const [aggRows] = aggResult;
   const [orderRows] = orderResult;
   const [msgRows] = msgResult;
+  const [whRows] = whResult;
+
+  /* Índice de checkouts de la tienda por teléfono, para saber qué pedidos
+     nacieron en Shopify y no pueden atribuirse a un anuncio de WhatsApp. */
+  const checkoutsPorTel = new Map();
+  for (const w of whRows || []) {
+    const k = normalizePhone(w.phone_normalizado);
+    if (!k) continue;
+    if (!checkoutsPorTel.has(k)) checkoutsPorTel.set(k, []);
+    const ts = w.shopify_created_at || w.created_at;
+    checkoutsPorTel.get(k).push({
+      total: Number(w.total_price || 0),
+      t: ts ? new Date(ts).getTime() : null,
+    });
+  }
+  const esPedidoDeTienda = (o) =>
+    checkoutsPorTel.size > 0 &&
+    matchCheckoutShopify(
+      checkoutsPorTel.get(normalizePhone(o.phone)),
+      o.total_order,
+      o.order_created_at ? new Date(o.order_created_at).getTime() : null,
+    );
 
   // Index mensajes por teléfono normalizado
   const msgsByPhone = new Map();
@@ -380,8 +427,16 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
   const bySourceId = new Map();
   let matched = 0;
   let huerfanas = 0;
+  let ordenesTienda = 0;
 
   for (const order of orderRows) {
+    // Salió del checkout de la tienda: no es candidata a venir de un anuncio
+    // de clic a WhatsApp, así que no cuenta ni como atribuida ni como
+    // huérfana (si contara, el % quedaba pisado para siempre).
+    if (esPedidoDeTienda(order)) {
+      ordenesTienda++;
+      continue;
+    }
     const phoneKey = normalizePhone(order.phone);
     if (!phoneKey) {
       huerfanas++;
@@ -459,8 +514,18 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
     }
   }
 
+  /* El corte por `limit` es de presentación (top por gasto), pero un anuncio
+     con ventas atribuidas nunca se cae de la lista: si no, el encabezado
+     decía "N órdenes atribuidas" y las filas visibles sumaban menos. */
+  const aMostrar = ads.slice(0, limit);
+  const visibles = new Set(aMostrar.map((a) => String(a.ad_id)));
+  for (const ad of ads.slice(limit)) {
+    if (bySourceId.has(String(ad.ad_id)) && !visibles.has(String(ad.ad_id)))
+      aMostrar.push(ad);
+  }
+
   // Enriquecer top ads — agrega utilidad_estimada, roi_estimado, effective_status
-  const enriched = ads.slice(0, limit).map((ad) => {
+  const enriched = aMostrar.map((ad) => {
     const adId = String(ad.ad_id);
     const real = bySourceId.get(adId) || {
       ordenes: 0,
@@ -575,11 +640,25 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
       totales_rango: {
         msgs_meta: msgs,
         ordenes_dropi_total: orderRows.length,
+        // Pedidos que nacieron en el checkout de la tienda (no atribuibles a
+        // un anuncio de WhatsApp) y la base real sobre la que se mide el %.
+        ordenes_tienda: ordenesTienda,
+        ordenes_atribuibles: Math.max(0, orderRows.length - ordenesTienda),
         ordenes_atribuidas: matched,
+        // Cuántas de esas órdenes caen en un anuncio que sí se lista abajo.
+        // Si es menor que `ordenes_atribuidas`, la diferencia pertenece a
+        // anuncios que Meta ya no devuelve (borrados o fuera del top 50).
+        ordenes_atribuidas_en_lista: enriched.reduce(
+          (s, a) => s + Number(a.ordenes_estimadas || 0),
+          0,
+        ),
         ordenes_huerfanas: huerfanas,
-        pct_atribuidas: orderRows.length
-          ? Math.round((matched / orderRows.length) * 1000) / 10
-          : 0,
+        // % sobre los pedidos que SÍ podían venir de un anuncio.
+        pct_atribuidas:
+          orderRows.length - ordenesTienda > 0
+            ? Math.round((matched / (orderRows.length - ordenesTienda)) * 1000) /
+              10
+            : 0,
         ads_con_ventas: bySourceId.size,
         gasto_total: Math.round(gasto * 100) / 100,
         revenue_entregado_atribuido:

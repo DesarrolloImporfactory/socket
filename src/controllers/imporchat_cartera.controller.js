@@ -234,7 +234,13 @@ exports.resumen = catchAsync(async (req, res, next) => {
   );
   if (!cfg) return next(new AppError('La conexión no existe.', 404));
 
-  const d = await dropi.buildConnectionSummary({ id_configuracion, from, until });
+  // Misma caché que el dashboard y la API pública: los tres leen la misma
+  // foto, así soporte no ve números distintos a los del cliente.
+  const { data: d } = await dropi.getConnectionSummaryCached({
+    id_configuracion,
+    from,
+    until,
+  });
 
   return res.json({
     conexion: {

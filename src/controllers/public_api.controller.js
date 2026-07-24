@@ -75,30 +75,69 @@ async function leerTablero(id_configuracion) {
   };
 }
 
-/* Arma el bloque `resumen` a partir del summary crudo. */
-const formatearResumen = (d) => ({
-  ventas: {
-    pedidos: d.totalPedidos,
-    facturado: d.totalFacturado,
-    ganancia: d.totalGanancia,
-    entregadas: d.entregadas,
-    tasa_entrega_pct: d.tasaEntrega,
-  },
-  conversaciones: {
-    total: d.totalConversaciones,
-    mensajes_recibidos: d.totalMensajes,
-    con_pedido: d.conversacionesConPedido,
-    // null = en el periodo nadie escribió, no hay embudo que medir
-    pct_confirmacion: d.pctConfirmacion,
-  },
-  canales: d.canales,
-  carritos_abandonados: d.carritos,
-  integraciones: {
-    meta_ads: d.metaAds,
-    shopify_webhook: d.shopifyTruth,
-    anuncios_ctwa_activos: d.ctwaActivo,
-  },
-});
+/* Arma el bloque `resumen` a partir del summary crudo.
+   Todo sale del mismo objeto que pinta el dashboard de la conexión: si el
+   panel muestra un KPI, acá tiene que estar el mismo número. */
+const formatearResumen = (d) => {
+  // El dashboard encabeza con los pedidos NETOS (sin cancelados) y con la
+  // tasa de entrega sobre esa base; sin `canceladas` el tercero no podía
+  // reproducir esas dos cifras y le salían distintas a las del panel.
+  const pedidosNeto = Math.max(
+    0,
+    Number(d.totalPedidos || 0) - Number(d.canceladas || 0),
+  );
+  return {
+    ventas: {
+      pedidos: d.totalPedidos,
+      canceladas: d.canceladas,
+      pedidos_neto: pedidosNeto,
+      facturado: d.totalFacturado,
+      ganancia: d.totalGanancia,
+      entregadas: d.entregadas,
+      tasa_entrega_pct: d.tasaEntrega,
+      // Igual que el panel: entregadas ÷ pedidos vivos (sin cancelados).
+      tasa_entrega_real_pct:
+        pedidosNeto > 0
+          ? Math.round((d.entregadas / pedidosNeto) * 10000) / 100
+          : 0,
+    },
+    conversaciones: {
+      total: d.totalConversaciones,
+      mensajes_recibidos: d.totalMensajes,
+      con_pedido: d.conversacionesConPedido,
+      // null = en el periodo nadie escribió, no hay embudo que medir
+      pct_confirmacion: d.pctConfirmacion,
+    },
+    canales: d.canales,
+    carritos_abandonados: d.carritos,
+    shopify: {
+      conectado: d.shopifyConectado,
+      // Checkouts detectados por el webhook + ventas Shopify que solo
+      // aparecen en Dropi (el mismo dato del KPI "Pedidos Shopify").
+      leads: d.shopifyLeads,
+      // true → el split WA/Shopify está validado contra el webhook real
+      validado_con_webhook: d.shopifyTruth,
+    },
+    integraciones: {
+      meta_ads: d.metaAds,
+      shopify_webhook: d.shopifyTruth,
+      anuncios_ctwa_activos: d.ctwaActivo,
+    },
+  };
+};
+
+/* Mismo resumen (y misma caché de 5 min) que sirve al dashboard del panel.
+   Va por la caché a propósito: garantiza que el tercero lea la MISMA foto
+   que ve el cliente en pantalla y evita repetir ~12 queries pesadas en cada
+   llamada externa (el rate limit permite 60 por minuto por llave). */
+const leerResumen = async (id_configuracion, from, until) => {
+  const { data } = await dropi.getConnectionSummaryCached({
+    id_configuracion,
+    from,
+    until,
+  });
+  return data;
+};
 
 // ── GET /ping ──────────────────────────────────────────────
 exports.ping = catchAsync(async (req, res) => {
@@ -122,11 +161,7 @@ exports.ping = catchAsync(async (req, res) => {
 // KPIs del periodo: ventas, conversaciones, embudo y canales.
 exports.resumen = catchAsync(async (req, res) => {
   const { from, until } = resolverRango(req);
-  const d = await dropi.buildConnectionSummary({
-    id_configuracion: req.id_configuracion,
-    from,
-    until,
-  });
+  const d = await leerResumen(req.id_configuracion, from, until);
 
   return res.json({ rango: { from, until }, ...formatearResumen(d) });
 });
@@ -135,11 +170,7 @@ exports.resumen = catchAsync(async (req, res) => {
 // Detalle de operación: estados de las órdenes, productos y serie diaria.
 exports.dropiDashboard = catchAsync(async (req, res) => {
   const { from, until } = resolverRango(req);
-  const d = await dropi.buildConnectionSummary({
-    id_configuracion: req.id_configuracion,
-    from,
-    until,
-  });
+  const d = await leerResumen(req.id_configuracion, from, until);
 
   return res.json({
     rango: { from, until },
@@ -184,11 +215,7 @@ exports.todo = catchAsync(async (req, res) => {
   const limit = Math.min(50, parseInt(req.query.limit || '30', 10));
 
   const [summary, tablero, ads] = await Promise.all([
-    dropi.buildConnectionSummary({
-      id_configuracion: req.id_configuracion,
-      from,
-      until,
-    }),
+    leerResumen(req.id_configuracion, from, until),
     leerTablero(req.id_configuracion),
     // Sin cuenta de Meta conectada el resto igual debe responder
     buildAdsDashboard({
