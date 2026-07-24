@@ -110,6 +110,15 @@ exports.listConnections = async (req, res) => {
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
     );
 
+    // Modo liviano: solo estado de conexión (puro SQL, SIN llamar a Graph).
+    // Para chequeos rápidos como "¿hay Messenger conectado?" y no gastar rate limit.
+    if (String(req.query.light || '') === '1') {
+      const safeLight = (pages || []).map(
+        ({ page_access_token, ...rest }) => rest
+      );
+      return res.json({ success: true, data: safeLight });
+    }
+
     const now = Date.now();
     const toRefresh = pages.filter((p) => {
       const last = p.profile_refreshed_at

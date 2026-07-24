@@ -68,6 +68,53 @@ function esSinSaldo(err) {
   );
 }
 
+// La Responses API acumula historial vía previous_response_id; con muchos
+// turnos + file_search el contexto puede superar la ventana del modelo.
+function esContextoExcedido(err) {
+  const code = err?.response?.data?.error?.code;
+  const msg = err?.response?.data?.error?.message || err?.message || '';
+  return (
+    code === 'context_length_exceeded' ||
+    /context window|context_length|maximum context/i.test(msg)
+  );
+}
+
+// Reconstruye un transcript compacto de la conversación desde NUESTRA BD.
+// Se usa para re-sembrar el contexto cuando se resetea el hilo por
+// context_length_exceeded, de modo que el asistente NO pierda de qué producto
+// se habló ni los datos del cliente (nombre, dirección, etapa de la venta).
+// Lo que infla el contexto son los trozos de file_search, no este diálogo.
+async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
+  try {
+    const limite = Number(maxMsgs) || 30;
+    const rows = await db.query(
+      `SELECT rol_mensaje, texto_mensaje
+         FROM mensajes_clientes
+        WHERE celular_recibe = ?
+          AND texto_mensaje IS NOT NULL
+          AND texto_mensaje <> ''
+          AND deleted_at IS NULL
+        ORDER BY id DESC
+        LIMIT ${limite}`,
+      { replacements: [String(id_cliente)], type: db.QueryTypes.SELECT },
+    );
+    if (!rows.length) return '';
+    return rows
+      .reverse()
+      .map((m) => {
+        const quien = Number(m.rol_mensaje) === 1 ? 'Asistente' : 'Cliente';
+        const txt = String(m.texto_mensaje || '')
+          .slice(0, 500)
+          .trim();
+        return txt ? `${quien}: ${txt}` : null;
+      })
+      .filter(Boolean)
+      .join('\n');
+  } catch (_) {
+    return '';
+  }
+}
+
 async function marcarOpenAIInactivo(id_configuracion, motivo) {
   try {
     await db.query(
@@ -139,6 +186,36 @@ async function procesarMensajeKanban(params) {
     accessToken,
     bloque_producto_referral,
   } = params;
+
+  // ── Canal de salida ───────────────────────────────────────
+  // Por defecto = WhatsApp (mismo comportamiento estable de siempre).
+  // Otros canales (Instagram, Messenger…) inyectan su propio adaptador
+  // vía params.canal para reutilizar TODO el cerebro de la IA kanban.
+  //   canal.enviarTexto({ texto, responsable, total_tokens })
+  //   canal.enviarMedia({ tipo: 'image'|'video', url, responsable })
+  const canal = params.canal || {
+    source: 'wa',
+    enviarTexto: async ({ texto, responsable, total_tokens }) =>
+      enviarMensajeWhatsapp({
+        phone_whatsapp_to: telefono,
+        texto_mensaje: texto,
+        business_phone_id,
+        accessToken,
+        id_configuracion,
+        responsable,
+        total_tokens,
+      }),
+    enviarMedia: async ({ tipo, url, responsable }) =>
+      enviarMedioWhatsapp({
+        tipo,
+        url_archivo: url,
+        phone_whatsapp_to: telefono,
+        business_phone_id,
+        accessToken,
+        id_configuracion,
+        responsable,
+      }),
+  };
 
   // ── 0. Decidir qué API usar ───────────────────────────────
   const USAR_RESPONSES_API = [10].includes(Number(id_configuracion));
@@ -458,8 +535,46 @@ async function procesarMensajeKanban(params) {
       );
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
-    await log(`❌ Error ejecutando asistente: ${err.message}`);
-    throw err;
+
+    // Contexto excedido (solo Responses API): reintentar UNA vez SIN encadenar,
+    // pero RE-SEMBRANDO el hilo con un resumen de la conversación (desde nuestra
+    // BD) para no perder el producto ni los datos del cliente. Se auto-cura.
+    if (USAR_RESPONSES_API && previous_response_id && esContextoExcedido(err)) {
+      const recap = await construirRecapConversacion(id_cliente);
+      await log(
+        `♻️ context_length_exceeded — reset de hilo con recap (${recap.length} chars) cliente=${id_cliente}`,
+      );
+
+      const inputConRecap = recap
+        ? `[CONTEXTO DE LA CONVERSACIÓN PREVIA — retómala, NO saludes de nuevo ni pidas datos ya dados]\n${recap}\n\n[MENSAJE ACTUAL DEL CLIENTE]\n${inputFinal}`
+        : inputFinal;
+
+      try {
+        resultado = await ejecutarConResponsesAPI({
+          previous_response_id: null,
+          instructions: assistantInfo.instructions,
+          additional_instructions: instruccionesProducto || null,
+          input: inputConRecap,
+          model: assistantInfo.model,
+          max_tokens: columna.max_tokens || 500,
+          vector_store_id: columna.vector_store_id || null,
+          api_key_openai,
+        });
+      } catch (err2) {
+        if (esSinSaldo(err2)) {
+          await marcarOpenAIInactivo(
+            id_configuracion,
+            err2?.response?.data?.error?.message || 'Sin saldo OpenAI',
+          );
+          return { ok: false, motivo: 'sin_saldo_openai' };
+        }
+        await log(`❌ Error tras reset de hilo: ${err2.message}`);
+        throw err2;
+      }
+    } else {
+      await log(`❌ Error ejecutando asistente: ${err.message}`);
+      throw err;
+    }
   }
 
   if (!resultado || !resultado.respuesta) {
@@ -655,15 +770,13 @@ async function procesarMensajeKanban(params) {
   soloTexto = texto;
 
   for (const url of imagenes) {
-    await enviarMedioWhatsapp({
-      tipo: 'image',
-      url_archivo: url,
-      phone_whatsapp_to: telefono,
-      business_phone_id,
-      accessToken,
-      id_configuracion,
-      responsable: `IA_${columna.nombre}`,
-    }).catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
+    await canal
+      .enviarMedia({
+        tipo: 'image',
+        url,
+        responsable: `IA_${columna.nombre}`,
+      })
+      .catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
   }
   for (const url of videos) {
     await log(`🎥 Intentando enviar video URL: ${url}`);
@@ -675,17 +788,15 @@ async function procesarMensajeKanban(params) {
     } catch (e) {
       await log(`⚠️ No se pudo verificar tamaño: ${e.message}`);
     }
-    await enviarMedioWhatsapp({
-      tipo: 'video',
-      url_archivo: url,
-      phone_whatsapp_to: telefono,
-      business_phone_id,
-      accessToken,
-      id_configuracion,
-      responsable: `IA_${columna.nombre}`,
-    }).catch(async (err) =>
-      log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
-    );
+    await canal
+      .enviarMedia({
+        tipo: 'video',
+        url,
+        responsable: `IA_${columna.nombre}`,
+      })
+      .catch(async (err) =>
+        log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
+      );
   }
 
   // ── 13. Enviar texto final ────────────────────────────────
@@ -693,12 +804,8 @@ async function procesarMensajeKanban(params) {
   soloTexto = limpiarTagsAcciones(soloTexto).trim();
 
   if (soloTexto) {
-    await enviarMensajeWhatsapp({
-      phone_whatsapp_to: telefono,
-      texto_mensaje: soloTexto,
-      business_phone_id,
-      accessToken,
-      id_configuracion,
+    await canal.enviarTexto({
+      texto: soloTexto,
       responsable: `IA_${columna.nombre}`,
       total_tokens,
     });
@@ -1228,4 +1335,8 @@ module.exports = {
   procesarMensajeKanban,
   cancelarRemarketingKanban,
   programarRemarketingKanban,
+  // Exportados para reutilizar la generación IA desde el remarketing de IG
+  // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
+  ejecutarAsistente,
+  ejecutarConResponsesAPI,
 };

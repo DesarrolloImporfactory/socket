@@ -56,6 +56,15 @@ exports.listConnections = async (req, res) => {
       { replacements: [id_configuracion] }
     );
 
+    // Modo liviano: solo estado de conexión (puro SQL, SIN llamar a Graph).
+    // Para chequeos rápidos como "¿hay IG conectado?" y no gastar rate limit de Meta.
+    if (String(req.query.light || '') === '1') {
+      const safeLight = (rows || []).map(
+        ({ page_access_token, ...rest }) => rest
+      );
+      return res.json({ success: true, data: safeLight });
+    }
+
     // enrich IG profile data en paralelo
     const enriched = await Promise.all(
       (rows || []).map(async (r) => {

@@ -59,6 +59,8 @@ async function startServer() {
 
     // Cron
     require('./cron/remarketing');
+    require('./cron/remarketing_ig');
+    require('./cron/remarketing_ms');
     require('./cron/aviso_calendarios');
     require('./cron/templateProgramadoMasivo.js');
     require('./cron/syncDropiStock.js');

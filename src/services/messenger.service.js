@@ -1,9 +1,52 @@
+const axios = require('axios');
+const FormData = require('form-data');
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 const FB_APP_ID = process.env.FB_APP_ID;
+
+/**
+ * Transcribe un audio de Messenger (URL pública del CDN de Meta) con Whisper.
+ * Equivalente al de Instagram; descarga desde URL y transcribe.
+ */
+async function transcribirAudioMsUrl(url, apiKeyOpenAI) {
+  try {
+    const audioRes = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+
+    const form = new FormData();
+    form.append('file', Buffer.from(audioRes.data), {
+      filename: 'audio_ms.mp4',
+    });
+    form.append('model', 'gpt-4o-transcribe');
+    form.append('language', 'es');
+    form.append('response_format', 'json');
+    form.append(
+      'prompt',
+      'Audio de Messenger en español. Conversación informal entre cliente y empresa.',
+    );
+
+    const response = await axios.post(
+      'https://api.openai.com/v1/audio/transcriptions',
+      form,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKeyOpenAI}`,
+          ...form.getHeaders(),
+        },
+      },
+    );
+
+    return response.data?.text || null;
+  } catch (err) {
+    console.error('[MS][WHISPER][ERROR]', err.response?.data || err.message);
+    return null;
+  }
+}
 
 // Socket.IO (inyectado desde server.js)
 let IO = null;
@@ -102,6 +145,170 @@ async function getConfigIdByPageId(page_id) {
     { replacements: [page_id], type: db.QueryTypes.SELECT },
   );
   return row?.id_configuracion || null;
+}
+
+/**
+ * Corre la MISMA IA kanban de WhatsApp sobre un mensaje entrante de Messenger.
+ * Reutiliza procesarMensajeKanban con un "canal" MS (fb.sendText/sendAttachment
+ * + persistencia unificada + emit socket) y engancha el remarketing MS.
+ *
+ * v1: solo texto y audios (transcritos). Remarketing solo IA, dentro de 24h.
+ * Nunca lanza: cualquier error se loguea para no romper la recepción.
+ */
+async function runKanbanIaMS({
+  id_configuracion,
+  idClienteDueno,
+  idClienteContacto,
+  psid,
+  pageId,
+  pageAccessToken,
+  message,
+  uni,
+}) {
+  try {
+    if (!pageAccessToken) return;
+
+    // 1) ¿La configuración es de tipo kanban? ¿Tiene API key de OpenAI?
+    const [cfg] = await db.query(
+      `SELECT tipo_configuracion, api_key_openai
+         FROM configuraciones
+        WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (!cfg || cfg.tipo_configuracion !== 'kanban') return;
+
+    const api_key_openai = cfg.api_key_openai;
+    if (!api_key_openai) return;
+
+    // 2) Estado del contacto + gate del bot (igual que en WhatsApp)
+    const [contacto] = await db.query(
+      `SELECT bot_openia, estado_contacto
+         FROM clientes_chat_center
+        WHERE id = ? LIMIT 1`,
+      { replacements: [idClienteContacto], type: db.QueryTypes.SELECT },
+    );
+    if (!contacto) return;
+    if (Number(contacto.bot_openia) !== 1) return; // IA apagada para este chat
+    const estado_contacto = contacto.estado_contacto || 'contacto_inicial';
+
+    // 3) Construir el mensaje para la IA (texto o audio transcrito)
+    let mensajeIA = (message.text || '').trim();
+    if (!mensajeIA) {
+      const audioUrl = (message.attachments || []).find(
+        (a) => a?.type === 'audio' && a?.payload?.url,
+      )?.payload?.url;
+
+      if (audioUrl) {
+        const transcrito = await transcribirAudioMsUrl(audioUrl, api_key_openai);
+        if (transcrito) mensajeIA = transcrito.trim();
+      }
+    }
+    if (!mensajeIA) return; // v1: solo texto/audio disparan la IA
+
+    // 4) Adaptador de canal Messenger (envío + persistencia + socket)
+    const persistirYEmitir = async ({
+      fbRes,
+      text,
+      attachments,
+      responsable,
+    }) => {
+      const mid = fbRes?.message_id || fbRes?.messages?.[0]?.id || null;
+      const saved = await Store.saveOutgoingMessageUnified({
+        id_configuracion,
+        id_plataforma: null,
+        id_cliente: idClienteDueno,
+        celular_recibe: idClienteContacto,
+        source: 'ms',
+        page_id: pageId,
+        external_id: psid,
+        mid,
+        text: text || null,
+        attachments: attachments || null,
+        status_unificado: 'sent',
+        responsable,
+        meta: { ia: true, response: fbRes },
+        id_encargado: uni?.id_encargado ?? null,
+      });
+
+      emitUpdateChatMS({
+        id_configuracion,
+        chatId: idClienteContacto,
+        pageId,
+        external_id: psid,
+        uni,
+        saved,
+        rawMessage: {
+          mid,
+          text: text || null,
+          attachments: attachments || null,
+        },
+        kind: 'out-echo',
+      });
+    };
+
+    const canal = {
+      source: 'ms',
+      enviarTexto: async ({ texto, responsable }) => {
+        const fbRes = await fb.sendText(psid, texto, pageAccessToken);
+        await persistirYEmitir({ fbRes, text: texto, responsable });
+      },
+      enviarMedia: async ({ tipo, url, responsable }) => {
+        const fbType =
+          tipo === 'video' ? 'video' : tipo === 'image' ? 'image' : 'file';
+        const fbRes = await fb.sendAttachment(
+          psid,
+          { type: fbType, url },
+          pageAccessToken,
+        );
+        await persistirYEmitir({
+          fbRes,
+          text: null,
+          attachments: [{ type: fbType, payload: { url } }],
+          responsable,
+        });
+      },
+    };
+
+    const {
+      procesarMensajeKanban,
+      cancelarRemarketingKanban,
+    } = require('./kanban_ia.service');
+    const { programarRemarketingMS } = require('./remarketing_ms.service');
+
+    // 1. Cliente respondió → cancelar remarketing pendiente SIEMPRE
+    await cancelarRemarketingKanban(idClienteContacto, id_configuracion);
+
+    // 2. Ejecutar el MISMO cerebro kanban de WhatsApp
+    await procesarMensajeKanban({
+      id_configuracion,
+      id_cliente: idClienteContacto,
+      telefono: '', // MS no tiene teléfono; Dropi por teléfono no aplica
+      mensaje: mensajeIA,
+      estado_contacto,
+      api_key_openai,
+      business_phone_id: null,
+      accessToken: null,
+      canal,
+    });
+
+    // 3. Re-leer estado (la IA pudo cambiarlo con un trigger cambiar_estado)
+    const [clienteAct] = await db.query(
+      `SELECT estado_contacto FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [idClienteContacto], type: db.QueryTypes.SELECT },
+    );
+    const estadoFinal = clienteAct?.estado_contacto || estado_contacto;
+
+    // 4. Programar remarketing MS (solo IA, solo dentro de 24h) según estado final
+    await programarRemarketingMS({
+      id_configuracion,
+      id_cliente: idClienteContacto,
+      page_id: pageId,
+      external_id: psid,
+      estado_contacto: estadoFinal,
+    });
+  } catch (err) {
+    console.error('[MS][KANBAN_IA][ERROR]', err.response?.data || err.message);
+  }
 }
 
 class MessengerService {
@@ -371,6 +578,18 @@ class MessengerService {
       });
       return;
     }
+
+    // ✅ IA kanban (mismo cerebro que WhatsApp). No bloquea la recepción.
+    await runKanbanIaMS({
+      id_configuracion,
+      idClienteDueno,
+      idClienteContacto,
+      psid: senderPsid,
+      pageId,
+      pageAccessToken,
+      message,
+      uni,
+    });
   }
 
   static async handlePostback(

@@ -545,9 +545,10 @@ cron.schedule('*/1 * * * *', async () => {
       ); */
 
       const pendientes = await db.query(
-        `SELECT * FROM remarketing_pendientes 
-         WHERE enviado = 0 
-           AND cancelado = 0 
+        `SELECT * FROM remarketing_pendientes
+         WHERE enviado = 0
+           AND cancelado = 0
+           AND (source = 'wa' OR source IS NULL)
            AND tiempo_disparo <= NOW()
            AND tiempo_disparo > NOW() - INTERVAL 3 DAY
            AND intentos < max_intentos

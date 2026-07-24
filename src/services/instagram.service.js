@@ -1,9 +1,54 @@
+const axios = require('axios');
+const FormData = require('form-data');
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 let IO = null;
+
+/**
+ * Transcribe un audio de Instagram (URL pública del CDN de Meta) usando Whisper.
+ * Equivalente a transcribirAudioConWhisperDesdeArchivo de WhatsApp, pero
+ * descargando desde URL en vez de leer un archivo local.
+ */
+async function transcribirAudioIgUrl(url, apiKeyOpenAI) {
+  try {
+    const audioRes = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+
+    const form = new FormData();
+    form.append('file', Buffer.from(audioRes.data), { filename: 'audio_ig.mp4' });
+    form.append('model', 'gpt-4o-transcribe');
+    form.append('language', 'es');
+    form.append('response_format', 'json');
+    form.append(
+      'prompt',
+      'Audio de Instagram en español. Conversación informal entre cliente y empresa.',
+    );
+
+    const response = await axios.post(
+      'https://api.openai.com/v1/audio/transcriptions',
+      form,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKeyOpenAI}`,
+          ...form.getHeaders(),
+        },
+      },
+    );
+
+    return response.data?.text || null;
+  } catch (err) {
+    console.error(
+      '[IG][WHISPER][ERROR]',
+      err.response?.data || err.message,
+    );
+    return null;
+  }
+}
 
 /** Busca conexión IG activa por IG Business ID */
 async function getPageRowByIgId(ig_id) {
@@ -123,6 +168,166 @@ function emitUpdateChatIG({
     message: messageForFront,
     chat: chatForFront,
   });
+}
+
+/**
+ * Corre la MISMA IA kanban de WhatsApp sobre un mensaje entrante de Instagram.
+ * Reutiliza procesarMensajeKanban inyectándole un "canal" IG (envío por
+ * ig.sendText/sendAttachment + persistencia unificada + emit socket).
+ *
+ * v1: solo texto y audios (transcritos). Sin remarketing (IG no tiene el
+ * sistema de plantillas de WhatsApp).
+ * Nunca lanza: cualquier error se loguea para no romper la recepción.
+ */
+async function runKanbanIaIG({
+  id_configuracion,
+  idClienteDueno,
+  idClienteContacto,
+  igsid,
+  pageId,
+  pageAccessToken,
+  message,
+  uni,
+}) {
+  try {
+    if (!pageAccessToken) return;
+
+    // 1) ¿La configuración es de tipo kanban? ¿Tiene API key de OpenAI?
+    const [cfg] = await db.query(
+      `SELECT tipo_configuracion, api_key_openai
+         FROM configuraciones
+        WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (!cfg || cfg.tipo_configuracion !== 'kanban') return;
+
+    const api_key_openai = cfg.api_key_openai;
+    if (!api_key_openai) return;
+
+    // 2) Estado del contacto + gate del bot (igual que en WhatsApp)
+    const [contacto] = await db.query(
+      `SELECT bot_openia, estado_contacto
+         FROM clientes_chat_center
+        WHERE id = ? LIMIT 1`,
+      { replacements: [idClienteContacto], type: db.QueryTypes.SELECT },
+    );
+    if (!contacto) return;
+    if (Number(contacto.bot_openia) !== 1) return; // IA apagada para este chat
+    const estado_contacto = contacto.estado_contacto || 'contacto_inicial';
+
+    // 3) Construir el mensaje para la IA (texto o audio transcrito)
+    let mensajeIA = (message.text || '').trim();
+    if (!mensajeIA) {
+      const audioUrl = (message.attachments || []).find(
+        (a) => a?.type === 'audio' && a?.payload?.url,
+      )?.payload?.url;
+
+      if (audioUrl) {
+        const transcrito = await transcribirAudioIgUrl(audioUrl, api_key_openai);
+        if (transcrito) mensajeIA = transcrito.trim();
+      }
+    }
+    if (!mensajeIA) return; // v1: solo texto/audio disparan la IA
+
+    // 4) Adaptador de canal Instagram (envío + persistencia + socket)
+    const persistirYEmitir = async ({ igRes, text, attachments, responsable }) => {
+      const mid = igRes?.message_id || igRes?.messages?.[0]?.id || null;
+      const saved = await Store.saveOutgoingMessageUnified({
+        id_configuracion,
+        id_plataforma: null,
+        id_cliente: idClienteDueno,
+        celular_recibe: idClienteContacto,
+        source: 'ig',
+        page_id: pageId,
+        external_id: igsid,
+        mid,
+        text: text || null,
+        attachments: attachments || null,
+        status_unificado: 'sent',
+        responsable,
+        meta: { ia: true, response: igRes },
+        id_encargado: uni?.id_encargado ?? null,
+      });
+
+      emitUpdateChatIG({
+        id_configuracion,
+        chatId: idClienteContacto,
+        pageId,
+        external_id: igsid,
+        uni,
+        saved,
+        rawMessage: {
+          mid,
+          text: text || null,
+          attachments: attachments || null,
+        },
+        kind: 'out-echo',
+      });
+    };
+
+    const canal = {
+      source: 'ig',
+      enviarTexto: async ({ texto, responsable }) => {
+        const igRes = await ig.sendText(igsid, texto, pageAccessToken);
+        await persistirYEmitir({ igRes, text: texto, responsable });
+      },
+      enviarMedia: async ({ tipo, url, responsable }) => {
+        const igType =
+          tipo === 'video' ? 'video' : tipo === 'image' ? 'image' : 'file';
+        const igRes = await ig.sendAttachment(
+          igsid,
+          { type: igType, url },
+          pageAccessToken,
+        );
+        await persistirYEmitir({
+          igRes,
+          text: null,
+          attachments: [{ type: igType, payload: { url } }],
+          responsable,
+        });
+      },
+    };
+
+    const {
+      procesarMensajeKanban,
+      cancelarRemarketingKanban,
+    } = require('./kanban_ia.service');
+    const { programarRemarketingIG } = require('./remarketing_ig.service');
+
+    // 1. Cliente respondió → cancelar remarketing pendiente SIEMPRE
+    await cancelarRemarketingKanban(idClienteContacto, id_configuracion);
+
+    // 2. Ejecutar el MISMO cerebro kanban de WhatsApp
+    await procesarMensajeKanban({
+      id_configuracion,
+      id_cliente: idClienteContacto,
+      telefono: '', // IG no tiene teléfono; Dropi por teléfono no aplica
+      mensaje: mensajeIA,
+      estado_contacto,
+      api_key_openai,
+      business_phone_id: null,
+      accessToken: null,
+      canal,
+    });
+
+    // 3. Re-leer estado (la IA pudo cambiarlo con un trigger cambiar_estado)
+    const [clienteAct] = await db.query(
+      `SELECT estado_contacto FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [idClienteContacto], type: db.QueryTypes.SELECT },
+    );
+    const estadoFinal = clienteAct?.estado_contacto || estado_contacto;
+
+    // 4. Programar remarketing IG (solo IA, solo dentro de 24h) según estado final
+    await programarRemarketingIG({
+      id_configuracion,
+      id_cliente: idClienteContacto,
+      page_id: pageId,
+      external_id: igsid,
+      estado_contacto: estadoFinal,
+    });
+  } catch (err) {
+    console.error('[IG][KANBAN_IA][ERROR]', err.response?.data || err.message);
+  }
 }
 
 class InstagramService {
@@ -258,6 +463,7 @@ class InstagramService {
         event.message,
         pageId,
         id_configuracion,
+        pageAccessToken,
       );
       return;
     }
@@ -274,7 +480,13 @@ class InstagramService {
     }
   }
 
-  static async handleMessage(userIgsid, message, pageId, id_configuracion) {
+  static async handleMessage(
+    userIgsid,
+    message,
+    pageId,
+    id_configuracion,
+    pageAccessToken = null,
+  ) {
     const normalizedAttachments = normalizeAttachments(message);
 
     // ✅ Asegura conversación unificada: devuelve dueño + contacto
@@ -338,6 +550,18 @@ class InstagramService {
     // Dashboard real-time
     dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
       chatsCreated: 1,
+    });
+
+    // ✅ IA kanban (mismo cerebro que WhatsApp). No bloquea la recepción.
+    await runKanbanIaIG({
+      id_configuracion,
+      idClienteDueno,
+      idClienteContacto,
+      igsid: userIgsid,
+      pageId,
+      pageAccessToken,
+      message,
+      uni,
     });
   }
 
