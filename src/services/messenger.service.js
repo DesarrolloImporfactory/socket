@@ -4,6 +4,7 @@ const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
+const { rehostAttachments } = require('../utils/rehostMediaMeta');
 
 const FB_APP_ID = process.env.FB_APP_ID;
 
@@ -524,6 +525,12 @@ class MessengerService {
       return;
     }
 
+    // Re-hospedar media entrante (las URLs de Meta expiran) en nuestro dominio.
+    let attsRehosted = message.attachments || null;
+    if (attsRehosted) {
+      attsRehosted = await rehostAttachments(attsRehosted);
+    }
+
     let saved = null;
     try {
       saved = await Store.saveIncomingMessageUnified({
@@ -539,7 +546,7 @@ class MessengerService {
 
         mid: message.mid || null,
         text: message.text || null,
-        attachments: message.attachments || null,
+        attachments: attsRehosted,
         quick_reply_payload: message.quick_reply?.payload || null,
         sticker_id: message.sticker_id || null,
         meta: { raw: message },
@@ -560,7 +567,7 @@ class MessengerService {
         external_id: senderPsid,
         uni,
         saved,
-        rawMessage: message,
+        rawMessage: { ...message, attachments: attsRehosted },
         kind: 'in',
       });
     } catch (err) {

@@ -4,6 +4,7 @@ const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
+const { rehostAttachments } = require('../utils/rehostMediaMeta');
 
 let IO = null;
 
@@ -487,7 +488,12 @@ class InstagramService {
     id_configuracion,
     pageAccessToken = null,
   ) {
-    const normalizedAttachments = normalizeAttachments(message);
+    let normalizedAttachments = normalizeAttachments(message);
+
+    // Re-hospedar media entrante (las URLs de Meta expiran) en nuestro dominio.
+    if (normalizedAttachments) {
+      normalizedAttachments = await rehostAttachments(normalizedAttachments);
+    }
 
     // ✅ Asegura conversación unificada: devuelve dueño + contacto
     const uni = await Store.ensureUnifiedConversation({
