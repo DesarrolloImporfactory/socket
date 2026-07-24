@@ -2592,7 +2592,7 @@ async function analyzeDevolutions(cacheWhere, from, until) {
 async function computeStatsFromCache(cacheCtx, from, until) {
   const cacheWhere = buildCacheWhere(cacheCtx);
 
-  const rows = await DropiOrdersCache.findAll({
+  const rowsRaw = await DropiOrdersCache.findAll({
     where: {
       ...cacheWhere,
       order_created_at: {
@@ -2616,6 +2616,12 @@ async function computeStatsFromCache(cacheCtx, from, until) {
     ],
     raw: true,
   });
+  // Excluir REEMPLAZADA (duplicados de órdenes reemplazadas): no deben
+  // contar en el total ni en los estados, igual que en el listado y el
+  // resumen de conexión.
+  const rows = rowsRaw.filter(
+    (o) => String(o.status || '').toUpperCase() !== 'REEMPLAZADA',
+  );
 
   const statusStats = {};
   const dailyMap = {};
@@ -4620,11 +4626,23 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     [prodRows],
     [metaAdsRows],
     [shopifyOrdRows],
-    [clientPhoneRows],
     [ctwaAdRows],
+    [shopifyCfgRows],
   ] = await Promise.all([
     DropiOrdersCache.findAll({
-      where: { id_configuracion, id_usuario: 0, order_created_at: dateRange },
+      // Excluimos las REEMPLAZADA: son la versión vieja de una orden que se
+      // reemplazó (duplicados). El listado y la tabla de productos ya las
+      // ocultan; el resumen debe hacer lo mismo para no inflar los totales.
+      // (Op.or para conservar las de status NULL, que no son duplicados.)
+      where: {
+        id_configuracion,
+        id_usuario: 0,
+        order_created_at: dateRange,
+        [Op.or]: [
+          { status: { [Op.ne]: 'REEMPLAZADA' } },
+          { status: { [Op.is]: null } },
+        ],
+      },
       attributes: [
         'dropi_order_id',
         'total_order',
@@ -4698,6 +4716,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
               SUM(CASE WHEN classified_status='entregada' THEN 1 ELSE 0 END) AS entregadas
          FROM dropi_orders_cache
         WHERE id_configuracion = :idCfg AND id_usuario = 0 AND order_created_at BETWEEN :from AND :until
+          AND (status <> 'REEMPLAZADA' OR status IS NULL)
         GROUP BY DATE_FORMAT(order_created_at,'%Y-%m-%d')`,
       { replacements: repl },
     ),
@@ -4763,24 +4782,6 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         { replacements: repl },
       )
       .catch(() => [[]]),
-    // Clientes del chat cuyos teléfonos (últimos 9 dígitos) aparecen en
-    // las órdenes del rango. Mapa COMPARTIDO por attachProductConversations
-    // y countCanalConversaciones: antes cada una lanzaba su propio
-    // LIKE-OR de ~1.4s sobre clientes_chat_center.
-    db.query(
-      `SELECT cc.id, cc.celular_cliente
-         FROM clientes_chat_center cc
-        WHERE cc.id_configuracion = :idCfg AND cc.deleted_at IS NULL
-          AND RIGHT(REGEXP_REPLACE(cc.celular_cliente,'[^0-9]',''),9) IN (
-            SELECT DISTINCT RIGHT(REGEXP_REPLACE(o.phone,'[^0-9]',''),9)
-                     COLLATE utf8mb4_unicode_ci
-              FROM dropi_orders_cache o
-             WHERE o.id_configuracion = :idCfg AND o.id_usuario = 0
-               AND o.order_created_at BETWEEN :from AND :until
-               AND o.phone IS NOT NULL)
-        ORDER BY cc.id`,
-      { replacements: repl },
-    ),
     // Chats entrados por anuncio CTWA (los usa attachProductConversations;
     // prefetch aquí para que su ~0.5-1s corra en paralelo y no en serie).
     // .catch → la tabla puede no existir aún en este entorno.
@@ -4796,7 +4797,39 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         { replacements: repl },
       )
       .catch(() => [[]]),
+    // ¿La conexión está vinculada a una tienda Shopify? (para mostrar la
+    // pestaña Shopify en el dashboard). .catch → la tabla puede no existir.
+    db
+      .query(
+        `SELECT 1 FROM shopify_configuraciones
+          WHERE id_configuracion = :idCfg AND activo = 1 LIMIT 1`,
+        { replacements: repl },
+      )
+      .catch(() => [[]]),
   ]);
+
+  // Cruce teléfono contacto ↔ orden. Los últimos 9 dígitos de las órdenes
+  // salen de orderRows (ya en memoria) y consultamos con literales →
+  // `celular_last9 IN ('123',...)` usa el índice con seeks directos. Antes
+  // era un IN-subquery que MySQL re-ejecutaba por cada contacto (~8.6s).
+  const orderPhones9 = new Set();
+  for (const o of orderRows) {
+    const p9 = String(o.phone || '')
+      .replace(/\D/g, '')
+      .slice(-9);
+    if (p9) orderPhones9.add(p9);
+  }
+  let clientPhoneRows = [];
+  if (orderPhones9.size) {
+    [clientPhoneRows] = await db.query(
+      `SELECT cc.id, cc.celular_cliente
+         FROM clientes_chat_center cc
+        WHERE cc.id_configuracion = :idCfg AND cc.deleted_at IS NULL
+          AND cc.celular_last9 IN (:phones)
+        ORDER BY cc.id`,
+      { replacements: { idCfg: id_configuracion, phones: [...orderPhones9] } },
+    );
+  }
 
   const clientByKey = new Map();
   for (const c of clientPhoneRows) {
@@ -4875,7 +4908,12 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     facturado: 0,
     ganancia: 0,
     entregadas: 0,
+    canceladas: 0,
     confirmados: 0,
+    // confirmadas = superaron "pendiente confirmación" (y no canceladas).
+    // Es la confirmación REAL: un pedido puede estar en Dropi pero seguir
+    // pendiente de que el cliente confirme.
+    confirmadas: 0,
     bot: 0,
   });
   const canales = { wa: blankCanal(), shopify: blankCanal() };
@@ -4883,6 +4921,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     totalGanancia = 0;
   const statusMap = {};
   const shopifyPorDia = new Map(); // dia → n pedidos shopify (validados)
+  const entregadasShopifyPorDia = new Map(); // dia → n entregadas shopify
 
   for (const o of orderRows) {
     const total = Number(o.total_order || 0);
@@ -4895,6 +4934,11 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
 
     if (esShopify && o.dia) {
       shopifyPorDia.set(o.dia, (shopifyPorDia.get(o.dia) || 0) + 1);
+      if (cat === 'entregada')
+        entregadasShopifyPorDia.set(
+          o.dia,
+          (entregadasShopifyPorDia.get(o.dia) || 0) + 1,
+        );
     }
 
     totalFacturado += total;
@@ -4903,7 +4947,16 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     C.facturado += total;
     C.ganancia += profit;
     if (cat === 'entregada') C.entregadas += 1;
+    if (cat === 'cancelada') C.canceladas += 1;
     if (rawStatus !== 'PENDIENTE CONFIRMACION') C.confirmados += 1;
+    // Confirmadas (real): Shopify solo cuenta si superó "pendiente
+    // confirmación"; WhatsApp cuenta aunque siga ahí, porque el bot ya
+    // capturó los datos en el chat (el cliente solo confirma).
+    if (
+      cat !== 'cancelada' &&
+      (!esShopify || rawStatus !== 'PENDIENTE CONFIRMACION')
+    )
+      C.confirmadas += 1;
     if (botOrderIds.has(String(o.dropi_order_id))) C.bot += 1;
 
     if (!statusMap[cat]) statusMap[cat] = { status: cat, count: 0, total: 0 };
@@ -4923,6 +4976,8 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         facturado: 0,
         ganancia: 0,
         entregadas: 0,
+        entregadas_wa: 0,
+        entregadas_shopify: 0,
         mensajes: msgByDay.get(dia) || 0,
         conversaciones: convByDay.get(dia) || 0,
       };
@@ -4937,6 +4992,8 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     d.facturado = r2(r.facturado);
     d.ganancia = r2(r.ganancia);
     d.entregadas = Number(r.entregadas || 0);
+    d.entregadas_shopify = entregadasShopifyPorDia.get(String(r.dia)) || 0;
+    d.entregadas_wa = Math.max(0, d.entregadas - d.entregadas_shopify);
   }
   for (const dia of msgByDay.keys()) ensureDay(dia);
   for (const dia of convByDay.keys()) ensureDay(dia);
@@ -4946,17 +5003,73 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
 
   const totalPedidos = orderRows.length;
   const entregadas = statusMap.entregada?.count || 0;
+  const canceladas = statusMap.cancelada?.count || 0;
+
+  // ── Métricas "reales" del dashboard ──
+  // Cada canal mide sus PROPIOS pedidos Dropi vivos (sin cancelados): la
+  // tasa de entrega y el % de confirmación salen de esa base, y NO del
+  // total global (antes WA y Shopify mostraban el mismo número).
+
+  // "Pedidos de Shopify" (denominador de la confirmación) = checkouts
+  // reales del webhook en el rango + órdenes Dropi del canal Shopify que
+  // el webhook NO capturó. El match teléfono+total+ventana evita
+  // duplicar: si hay webhook, el clasificador ya cuenta solo lo matcheado,
+  // así que el 2º término suma únicamente cuando NO hay webhook (se cae al
+  // shop_type). Así nunca contamos dos veces la misma venta.
+  const fromMs = new Date(fromDt).getTime();
+  const untilMs = new Date(untilDt).getTime();
+  const matchWebhook = (o) => {
+    const list = shopifyTruthMap.get(phone9(o.phone));
+    if (!list) return false;
+    const total = Number(o.total_order || 0);
+    const t = o.order_created_at
+      ? new Date(o.order_created_at).getTime()
+      : null;
+    return list.some(
+      (s) =>
+        Math.abs(s.total - total) < 0.5 &&
+        (t == null ||
+          s.t == null ||
+          Math.abs(s.t - t) <= SHOPIFY_MATCH_WINDOW_MS),
+    );
+  };
+  let shopifyLeads = 0;
+  for (const s of shopifyOrdRows || []) {
+    const ts = s.shopify_created_at || s.created_at;
+    const m = ts ? new Date(ts).getTime() : null;
+    if (m != null && m >= fromMs && m <= untilMs) shopifyLeads += 1;
+  }
+  for (const o of orderRows) {
+    if (esOrdenShopify(o) && !matchWebhook(o)) shopifyLeads += 1;
+  }
+  // % confirmación Shopify = pedidos que YA se confirmaron (superaron
+  // "pendiente confirmación") ÷ TODOS los pedidos Shopify en Dropi (incl.
+  // cancelados). Sobre esta base el desglose cuadra exacto:
+  // confirmados + por confirmar + cancelados = total. El denominador NO es
+  // el checkout porque el webhook no captura todas las ventas (hay más
+  // pedidos en Dropi que checkouts detectados).
+  const pctConfirmacionShopify =
+    canales.shopify.pedidos > 0
+      ? r2((canales.shopify.confirmadas / canales.shopify.pedidos) * 100)
+      : null;
+  const shopifyConectado = (shopifyCfgRows || []).length > 0;
 
   const buildCanal = (key, pctConf) => {
     const c = canales[key];
+    // Pedidos vivos del canal (sin cancelados): base de la tasa "real".
+    const neto = Math.max(0, c.pedidos - c.canceladas);
     return {
       pedidos: c.pedidos,
       facturado: r2(c.facturado),
       ganancia: r2(c.ganancia),
       entregadas: c.entregadas,
+      canceladas: c.canceladas,
+      pedidosNeto: neto,
       confirmados: c.confirmados,
+      confirmadas: c.confirmadas,
       bot: c.bot,
       tasaEntrega: c.pedidos > 0 ? r2((c.entregadas / c.pedidos) * 100) : 0,
+      tasaEntregaReal: neto > 0 ? r2((c.entregadas / neto) * 100) : 0,
       pctConfirmacion: pctConf,
     };
   };
@@ -4972,10 +5085,6 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     totalConversaciones
       ? r2((conPedido(compradores) / totalConversaciones) * 100)
       : null;
-  const pctConfShopify =
-    canales.shopify.pedidos > 0
-      ? r2((canales.shopify.confirmados / canales.shopify.pedidos) * 100)
-      : 0;
 
   const carrito = carritoRows?.[0] || {};
   const abandonados = Number(carrito.abandonados || 0);
@@ -5039,6 +5148,93 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     ...convPorCanal.shopifyIds,
   ]);
 
+  // ── Desglose por producto y por canal (la tabla sigue la pestaña) ──
+  // Contamos las órdenes en JS desde orderRows (ya traen canal + estado +
+  // nombres), así WA + Shopify suma el total del producto. Todo sale de
+  // Dropi (confiable); no usamos checkouts por producto porque el nombre
+  // que guarda Shopify casi nunca coincide con el de Dropi.
+  const MOVIL = new Set([
+    'entregada',
+    'devolucion',
+    'en_transito',
+    'en_reparto',
+    'novedad',
+    'retiro_agencia',
+  ]);
+  const blankProdCanal = () => ({
+    ordenes: 0,
+    confirmadas: 0,
+    canceladas: 0,
+    entregadas: 0,
+    devoluciones: 0,
+    movilizadas: 0,
+  });
+  const prodCanalMap = new Map(); // name → { wa, shopify }
+  const ensureProdCanal = (name) => {
+    if (!prodCanalMap.has(name))
+      prodCanalMap.set(name, { wa: blankProdCanal(), shopify: blankProdCanal() });
+    return prodCanalMap.get(name);
+  };
+  for (const o of orderRows) {
+    if (String(o.status || '').toUpperCase() === 'REEMPLAZADA') continue;
+    let names = [];
+    try {
+      names = JSON.parse(o.product_names || '[]');
+    } catch (_) {}
+    if (!names.length) continue;
+    const canalKey = esOrdenShopify(o) ? 'shopify' : 'wa';
+    const cat = o.classified_status || 'otro';
+    const rawStatus = String(o.status || '').toUpperCase();
+    const seen = new Set();
+    for (const name of names) {
+      if (seen.has(name)) continue; // 1 orden cuenta 1 vez por producto
+      seen.add(name);
+      const C = ensureProdCanal(name)[canalKey];
+      if (cat !== 'cancelada') C.ordenes += 1;
+      // confirmada: Shopify solo si superó "pendiente confirmación";
+      // WhatsApp cuenta aunque siga ahí (el bot ya capturó los datos).
+      if (
+        cat !== 'cancelada' &&
+        (canalKey !== 'shopify' || rawStatus !== 'PENDIENTE CONFIRMACION')
+      )
+        C.confirmadas += 1;
+      if (cat === 'cancelada') C.canceladas += 1;
+      if (cat === 'entregada') C.entregadas += 1;
+      if (cat === 'devolucion') C.devoluciones += 1;
+      if (MOVIL.has(cat)) C.movilizadas += 1;
+    }
+  }
+
+  // Adjuntar a cada producto su desglose por canal.
+  const mkCanal = (c) => ({
+    ordenes: c.ordenes,
+    confirmadas: c.confirmadas,
+    canceladas: c.canceladas,
+    entregadas: c.entregadas,
+    devoluciones: c.devoluciones,
+    tasaEntrega:
+      c.movilizadas > 0 ? r2((c.entregadas / c.movilizadas) * 100) : null,
+  });
+  for (const p of productos) {
+    const pc = prodCanalMap.get(p.name) || {
+      wa: blankProdCanal(),
+      shopify: blankProdCanal(),
+    };
+    const todos = {
+      ordenes: pc.wa.ordenes + pc.shopify.ordenes,
+      confirmadas: pc.wa.confirmadas + pc.shopify.confirmadas,
+      canceladas: pc.wa.canceladas + pc.shopify.canceladas,
+      entregadas: pc.wa.entregadas + pc.shopify.entregadas,
+      devoluciones: pc.wa.devoluciones + pc.shopify.devoluciones,
+      movilizadas: pc.wa.movilizadas + pc.shopify.movilizadas,
+    };
+    p.canal = {
+      wa: mkCanal(pc.wa),
+      shopify: mkCanal(pc.shopify),
+      todos: mkCanal(todos),
+    };
+  }
+
   return {
     totalFacturado: r2(totalFacturado),
     totalGanancia: r2(totalGanancia),
@@ -5049,6 +5245,10 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     pctConfirmacion: pctConfDeConv(compradores),
     conversacionesConPedido: conPedido(compradores),
     tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
+    // Totales/flags globales; el detalle "real" por canal va en `canales`.
+    canceladas,
+    shopifyLeads,
+    shopifyConectado,
     canales: {
       wa: {
         ...buildCanal('wa', pctConfDeConv(convPorCanal.waIds)),
@@ -5056,7 +5256,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         conversacionesConPedido: conPedido(convPorCanal.waIds),
       },
       shopify: {
-        ...buildCanal('shopify', pctConfShopify),
+        ...buildCanal('shopify', pctConfirmacionShopify),
         conversaciones: convPorCanal.shopify,
         conversacionesConPedido: conPedido(convPorCanal.shopifyIds),
       },
@@ -5089,12 +5289,45 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   };
 }
 
+/* ── Caché del resumen de conexión (TTL 5 min) ──
+   El cálculo hace ~12 queries; el mismo resumen se pide al abrir el
+   dashboard, al cambiar de tab y desde /conexiones y /conexion-dashboard.
+   Guardamos por config+rango. `inflight` evita que peticiones simultáneas
+   disparen el cálculo en paralelo (la 2ª espera a la 1ª). */
+const CONN_SUMMARY_TTL = 5 * 60 * 1000;
+const connSummaryCache = new Map(); // key → { data, ts }
+const connSummaryInflight = new Map(); // key → Promise
+const _connSummaryCleanup = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of connSummaryCache)
+    if (now - v.ts > CONN_SUMMARY_TTL) connSummaryCache.delete(k);
+}, 60_000);
+if (_connSummaryCleanup.unref) _connSummaryCleanup.unref();
+
 exports.getConnectionSummary = catchAsync(async (req, res) => {
-  const data = await buildConnectionSummary({
-    id_configuracion: toInt(req.body?.id_configuracion),
-    from: strOrNull(req.body?.from),
-    until: strOrNull(req.body?.until),
-  });
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const from = strOrNull(req.body?.from);
+  const until = strOrNull(req.body?.until);
+  const key = `${id_configuracion}:${from}:${until}`;
+  const now = Date.now();
+
+  const cached = connSummaryCache.get(key);
+  if (cached && now - cached.ts < CONN_SUMMARY_TTL) {
+    return res.json({ isSuccess: true, data: cached.data, cached: true });
+  }
+
+  // Dedupe de peticiones concurrentes: si ya hay una en vuelo, esperarla.
+  let promise = connSummaryInflight.get(key);
+  if (!promise) {
+    promise = buildConnectionSummary({ id_configuracion, from, until })
+      .then((data) => {
+        connSummaryCache.set(key, { data, ts: Date.now() });
+        return data;
+      })
+      .finally(() => connSummaryInflight.delete(key));
+    connSummaryInflight.set(key, promise);
+  }
+  const data = await promise;
   return res.json({ isSuccess: true, data });
 });
 
