@@ -572,11 +572,13 @@ async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
      INNER JOIN (
        SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MAX(mc.created_at) AS ultima_entrada_at
        FROM mensajes_clientes mc WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+         AND mc.created_at >= ?
        GROUP BY mc.id_configuracion, mc.celular_recibe
      ) ultimo_in ON ultimo_in.id_configuracion = ccc.id_configuracion AND ultimo_in.client_ccc_id = ccc.id
      LEFT JOIN (
        SELECT mc2.id_configuracion, mc2.celular_recibe AS client_ccc_id, MAX(mc2.created_at) AS ultima_salida_at
        FROM mensajes_clientes mc2 WHERE mc2.id_configuracion IN (?) AND mc2.deleted_at IS NULL AND mc2.rol_mensaje = 1
+         AND mc2.created_at >= ?
        GROUP BY mc2.id_configuracion, mc2.celular_recibe
      ) ultimo_out ON ultimo_out.id_configuracion = ccc.id_configuracion AND ultimo_out.client_ccc_id = ccc.id
      LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = ccc.id_encargado
@@ -588,7 +590,9 @@ async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
     {
       replacements: [
         configIds,
+        fromDT, // acota ultimo_in al periodo (antes escaneaba todo el historial)
         configIds,
+        fromDT, // acota ultimo_out al periodo
         configIds,
         fromDT,
         toDT,
@@ -642,11 +646,13 @@ async function buildSLA(configIds, fromDT, toDT, agentId = null) {
        INNER JOIN (
          SELECT mc.id_configuracion, mc.celular_recibe AS client_ccc_id, MAX(mc.created_at) AS ultima_entrada_at
          FROM mensajes_clientes mc WHERE mc.id_configuracion IN (?) AND mc.deleted_at IS NULL AND mc.rol_mensaje = 0
+           AND mc.created_at >= ?
          GROUP BY mc.id_configuracion, mc.celular_recibe
        ) ultimo_in ON ultimo_in.id_configuracion = ccc.id_configuracion AND ultimo_in.client_ccc_id = ccc.id
        LEFT JOIN (
          SELECT mc2.id_configuracion, mc2.celular_recibe AS client_ccc_id, MAX(mc2.created_at) AS ultima_salida_at
          FROM mensajes_clientes mc2 WHERE mc2.id_configuracion IN (?) AND mc2.deleted_at IS NULL AND mc2.rol_mensaje = 1
+           AND mc2.created_at >= ?
          GROUP BY mc2.id_configuracion, mc2.celular_recibe
        ) ultimo_out ON ultimo_out.id_configuracion = ccc.id_configuracion AND ultimo_out.client_ccc_id = ccc.id
        WHERE ccc.id_configuracion IN (?) AND ccc.deleted_at IS NULL AND ccc.propietario = 0 AND ccc.chat_cerrado = 0
@@ -658,7 +664,9 @@ async function buildSLA(configIds, fromDT, toDT, agentId = null) {
       {
         replacements: [
           configIds,
+          fromDT, // acota ultimo_in al periodo
           configIds,
+          fromDT, // acota ultimo_out al periodo
           configIds,
           fromDT,
           toDT,

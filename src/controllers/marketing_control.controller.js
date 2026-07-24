@@ -212,6 +212,8 @@ async function ensureDropiCacheFresh({
     `SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total
      FROM dropi_orders_cache
      WHERE id_configuracion = :idCfg
+       AND id_usuario = 0
+       AND (status <> 'REEMPLAZADA' OR status IS NULL)
        AND order_created_at BETWEEN :from AND :until`,
     {
       replacements: {
@@ -298,6 +300,8 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
          SUM(COALESCE(total_order, 0)) AS venta_bruta
        FROM dropi_orders_cache
        WHERE id_configuracion = :idCfg
+         AND id_usuario = 0
+         AND (status <> 'REEMPLAZADA' OR status IS NULL)
          AND order_created_at BETWEEN :from AND :until`,
         {
           replacements: {
@@ -313,6 +317,8 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
               total_order, dropshipper_profit, product_names, order_created_at
        FROM dropi_orders_cache
        WHERE id_configuracion = :idCfg
+         AND id_usuario = 0
+         AND (status <> 'REEMPLAZADA' OR status IS NULL)
          AND order_created_at BETWEEN :from AND :until`,
         {
           replacements: {

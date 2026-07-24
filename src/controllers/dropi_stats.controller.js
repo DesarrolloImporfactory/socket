@@ -168,6 +168,7 @@ exports.semaforoTransportadoras = catchAsync(async (req, res, next) => {
             ${FLETE_SQL}                          AS flete_promedio
        FROM dropi_orders_cache
       WHERE shipping_company IS NOT NULL AND TRIM(shipping_company) <> ''
+        AND (status <> 'REEMPLAZADA' OR status IS NULL)
         AND order_created_at >= (NOW() - INTERVAL ${meses} MONTH)
         AND city = ?
       GROUP BY shipping_company`,
@@ -211,6 +212,7 @@ async function tiendasDelPais(paisRaw, periodo, fechaCond) {
                     MAX(shop_name)     AS shop_name
                FROM dropi_orders_cache
               WHERE ${fechaCond}
+                AND (status <> 'REEMPLAZADA' OR status IS NULL)
               GROUP BY id_configuracion) t
        JOIN configuraciones cfg ON cfg.id = t.id_configuracion
        JOIN usuarios_chat_center u ON u.id_usuario = cfg.id_usuario
@@ -380,6 +382,7 @@ exports.transportadorasHistorico = catchAsync(async (req, res) => {
 
   const cond = [
     `c.shipping_company IS NOT NULL AND TRIM(c.shipping_company) <> ''`,
+    `(c.status <> 'REEMPLAZADA' OR c.status IS NULL)`, // sin duplicados de reemplazo
     inPais,
   ];
   const repl = [];
@@ -508,6 +511,7 @@ exports.zonasDisponibles = catchAsync(async (req, res) => {
     `SELECT c.city AS zona, COUNT(*) AS total
        FROM dropi_orders_cache c
       WHERE ${inPais} AND c.city IS NOT NULL AND TRIM(c.city) <> ''
+        AND (c.status <> 'REEMPLAZADA' OR c.status IS NULL)
       GROUP BY zona
       ORDER BY total DESC
       LIMIT 300`,
@@ -573,6 +577,7 @@ exports.rankingPublicoEc = catchAsync(async (req, res) => {
                     MAX(shop_name)   AS shop_name
                FROM dropi_orders_cache
               WHERE ${fechaCond}
+                AND (status <> 'REEMPLAZADA' OR status IS NULL)
               GROUP BY id_configuracion) t
        JOIN configuraciones cfg ON cfg.id = t.id_configuracion
        JOIN usuarios_chat_center u ON u.id_usuario = cfg.id_usuario
