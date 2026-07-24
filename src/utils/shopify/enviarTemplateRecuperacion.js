@@ -52,6 +52,10 @@ function resolveVariableShopify(varName, datos) {
       return datos.currency || 'USD';
     case 'recovery_url':
       return datos.recovery_url || '';
+    // Token del carrito para el botón URL dinámico (/carrito/:token → landing
+    // real). Se usa en el botón; recovery_url queda por compatibilidad.
+    case 'recovery_token':
+      return datos.checkout_token || '';
     case 'ciudad':
       return shipping.city || '';
     case 'provincia':

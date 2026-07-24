@@ -366,6 +366,7 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
             total_price: draft.total_price,
             currency: draft.currency || 'USD',
             recovery_url: recoveryUrl || draft.invoice_url || null,
+            checkout_token, // para el botón URL dinámico (/carrito/:token)
             id_cliente,
           },
           shopifyConfig,

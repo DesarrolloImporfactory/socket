@@ -303,7 +303,9 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
-    name: 'carritos_abandonados',
+    // v2: botón URL dinámico (la vieja 'carritos_abandonados' tenía botón
+    // quemado). Nombre nuevo para no chocar con la ya aprobada en Meta.
+    name: 'carritos_abandonados_v2',
     language: 'es',
     category: 'MARKETING',
     components: [
@@ -315,8 +317,20 @@ const KANBAN_TEMPLATES_META = [
         },
       },
       {
+        // Botón URL DINÁMICO: {{1}} = checkout_token del carrito. Apunta a
+        // /kanban_plantillas/carrito/:token, que redirige a la landing real
+        // (abandoned_checkout_url) de ESE cliente. Ya no es un botón quemado.
         type: 'BUTTONS',
-        buttons: [{ type: 'QUICK_REPLY', text: 'Completar Compra' }],
+        buttons: [
+          {
+            type: 'URL',
+            text: 'Finalizar compra',
+            url: 'https://chat.imporfactory.app/api/v1/kanban_plantillas/carrito/{{1}}',
+            example: [
+              'https://chat.imporfactory.app/api/v1/kanban_plantillas/carrito/abc123token',
+            ],
+          },
+        ],
       },
     ],
   },

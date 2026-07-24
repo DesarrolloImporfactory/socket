@@ -2,6 +2,9 @@ const { Op, literal, fn, col, where } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const ShopifyCarritosAbandonados = require('../models/shopify_carritos_abandonados.model');
+const {
+  reconciliarCarritosRecuperados,
+} = require('../utils/shopify/reconciliarCarritosRecuperados');
 
 /* Normaliza un nombre para emparejar título del carrito ↔ catálogo */
 function normNombre(s) {
@@ -95,6 +98,15 @@ exports.listar = catchAsync(async (req, res) => {
   const pageNum = Math.max(parseInt(page, 10) || 1, 1);
   const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
   const offset = (pageNum - 1) * limitNum;
+
+  // Antes de listar, reconciliar "recuperado" contra órdenes Dropi por
+  // teléfono (recupera las que se cerraron por WhatsApp/otro canal y que el
+  // webhook de Shopify no detecta). Barato: son pocos carritos por config.
+  try {
+    await reconciliarCarritosRecuperados(idConf);
+  } catch (_) {
+    /* no bloquear el listado si falla la reconciliación */
+  }
 
   /* Construir filtros */
   const whereClause = { id_configuracion: idConf };

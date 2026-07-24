@@ -23,6 +23,10 @@ const {
 } = require('../utils/kanban_catalogo.data');
 
 const {
+  configurarRecuperacionShopifyV2,
+} = require('../utils/shopify/configurarRecuperacionShopifyV2');
+
+const {
   getTemplatesMetaMerged,
   getRespuestasRapidasMerged,
   getDropiConfigMerged,
@@ -840,6 +844,16 @@ async function _crearTemplatesMeta(id_configuracion, soloKeys = null) {
       });
     }
   }
+
+  // Si la config tiene Shopify conectado, dejar la recuperación de carritos
+  // apuntando a la plantilla v2 con botón URL dinámico (automático). Corre al
+  // crear plantillas (install completo o solo la de carritos). No-op sin Shopify.
+  try {
+    await configurarRecuperacionShopifyV2(id_configuracion);
+  } catch (_) {
+    /* no romper el flujo por esto */
+  }
+
   return resultados;
 }
 
@@ -1009,6 +1023,10 @@ async function _aplicarConfigDropiPorDefecto(
 
   return resultados;
 }
+
+// Exportado para scripts de backfill (crear una sola plantilla sin re-instalar
+// el tablero, respetando la personalización de cada cliente).
+exports._crearTemplatesMeta = _crearTemplatesMeta;
 
 async function _aplicarRemarketingPorDefecto(
   id_configuracion,
@@ -1684,6 +1702,28 @@ exports.trackingRedirect = (req, res) => {
 
   return res.redirect(url);
 };
+
+// GET /kanban_plantillas/carrito/:token
+// El botón "Finalizar compra" del template de carritos abandonados apunta
+// aquí (URL fija con {{1}} = checkout_token). Buscamos el carrito y
+// redirigimos a SU landing real (abandoned_checkout_url), así el botón deja
+// de ser quemado y lleva a cada cliente a donde cayó su carrito.
+exports.carritoRedirect = catchAsync(async (req, res) => {
+  const token = String(req.params.token || '').trim();
+  if (!token) return res.status(400).send('Token requerido');
+
+  const [row] = await db.query(
+    `SELECT abandoned_checkout_url
+       FROM shopify_carritos_abandonados
+      WHERE checkout_token = ?
+      ORDER BY id DESC LIMIT 1`,
+    { replacements: [token], type: db.QueryTypes.SELECT },
+  );
+
+  const url = row?.abandoned_checkout_url;
+  if (!url) return res.status(404).send('Carrito no encontrado o expirado');
+  return res.redirect(url);
+});
 
 // ──────────────────────────────────────────────────────────────
 // Helpers para personalizaciones

@@ -33,6 +33,8 @@ router.post(
 router.post('/crear_templates_meta', ctrl.crearTemplatesMeta);
 router.post('/crear_respuestas_rapidas', ctrl.crearRespuestasRapidas);
 router.get('/t/:guide', ctrl.trackingRedirect);
+// Redirect del botón de carritos abandonados → landing real del carrito
+router.get('/carrito/:token', ctrl.carritoRedirect);
 
 /* personalización por columna */
 router.post('/personalizacion_obtener', ctrl.personalizacionObtener);

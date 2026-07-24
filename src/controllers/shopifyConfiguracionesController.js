@@ -1,6 +1,9 @@
 const { Op } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const ShopifyConfiguraciones = require('../models/shopify_configuraciones.model');
+const {
+  _crearTemplatesMeta,
+} = require('./kanban_plantillas.controller');
 
 /* ============================================================
    Helpers
@@ -105,14 +108,27 @@ exports.crear = catchAsync(async (req, res) => {
     });
   }
 
+  const cfgId = parseInt(id_configuracion, 10);
   const nuevo = await ShopifyConfiguraciones.create({
-    id_configuracion: parseInt(id_configuracion, 10),
+    id_configuracion: cfgId,
     shop_domain: shopDomainNormalizado,
     webhook_secret: String(webhook_secret).trim(),
     prefijo_pais: prefijo_pais || '593',
     tiempo_espera_horas: parseInt(tiempo_espera_horas, 10) || 1,
     activo: 1,
   });
+
+  // Al vincular Shopify dejamos lista la recuperación de carritos con la
+  // plantilla v2 (botón URL dinámico). El cliente normalmente aplica el
+  // tablero ANTES de conectar Shopify, así que la config no existía en ese
+  // momento; aquí aseguramos la plantilla en Meta y — vía el hook interno de
+  // _crearTemplatesMeta — dejamos la recuperación apuntando a v2.
+  // Idempotente y no bloqueante: si algo falla, la integración igual se crea.
+  try {
+    await _crearTemplatesMeta(cfgId, new Set(['carritos_abandonados_v2']));
+  } catch (_) {
+    /* no romper la creación de la integración por esto */
+  }
 
   return res.status(201).json({
     isSuccess: true,
