@@ -1627,7 +1627,7 @@ function classifyDropiStatus(status) {
 
   // CANCELADA
   if (
-    s === 'CANCELADO' ||
+    s.includes('CANCELADO') ||
     s.includes('CANCELADA') ||
     s === 'ANULADA' ||
     s === 'RECHAZADO' ||
@@ -1641,10 +1641,16 @@ function classifyDropiStatus(status) {
   // RETIRO EN AGENCIA
   if (
     s.includes('RETIRO EN AGENCIA') ||
+    s.includes('ENTREGA EN AGENCIA') ||
     s.includes('ENVÍO LISTO EN OFICINA') ||
     s === 'ENVIO LISTO EN OFICINA'
   )
     return 'retiro_agencia';
+
+  // Novedad ya resuelta ("SOLUCIONADA" / "SOLUCION APROBADA") → sigue en ruta,
+  // no cuenta como novedad. "SOLUCION INCORRECTA" NO entra (sigue en novedad).
+  if (s.includes('SOLUCIONAD') || s.includes('SOLUCION APROBADA'))
+    return 'en_transito';
 
   // NOVEDAD
   if (
@@ -1689,7 +1695,10 @@ function classifyDropiStatus(status) {
     s.includes('EN DISTRIBUCIÓN A') ||
     s === 'EN CAMINO' || // VELOCES
     s.includes('SALIDA A REPARTO') ||
-    s.includes('REPARTIDOR ASIGNADO')
+    s.includes('REPARTIDOR ASIGNADO') ||
+    s === 'INTENTO DE ENTREGA' ||
+    s === 'LISTO PARA ENTREGAR' ||
+    s.includes('SALIO A RUTA')
   )
     return 'en_reparto';
 
@@ -1712,7 +1721,24 @@ function classifyDropiStatus(status) {
     s.includes('INGRES') ||
     s.includes('RECIBIDO') ||
     s === 'POR RECOLECTAR' ||
-    s === 'PROCESAMIENTO'
+    s === 'PROCESAMIENTO' ||
+    // Estados logísticos de transportadoras que antes caían en 'otro'
+    s.includes('CENTRO DE') ||
+    s.includes('DISTRIBUCION') ||
+    s.includes('DISTRIBUCIÓN') ||
+    s.includes('CIUDAD DE') ||
+    s.includes('ARRIBAD') ||
+    s.includes('DESEMBARQUE') ||
+    s.includes('RECEPCION') ||
+    s.includes('RECEPCIÓN') ||
+    s.includes('INSTALACION') ||
+    s.includes('INSTALACIÓN') ||
+    s.includes('DESPACHAD') ||
+    s.includes('A TRANSPORTADORA') ||
+    s.includes('LLEGANDO') ||
+    s.includes('CEDIS') ||
+    s.includes('CIRCUITO') ||
+    s.includes('PREPARANDO RUTA')
   )
     return 'en_transito';
 
