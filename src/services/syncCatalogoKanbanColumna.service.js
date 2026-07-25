@@ -162,6 +162,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     : [
         'Use este catálogo como base de conocimiento.',
         'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
+        'IMPORTANTE: este catálogo es información INTERNA de consulta. NUNCA copie el formato de estos bloques (🛒 Producto, 📃 Descripción, etc.) en sus mensajes ni en el resumen del pedido: el formato del resumen lo define el prompt del agente, no este archivo.',
         'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
         'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
         'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
