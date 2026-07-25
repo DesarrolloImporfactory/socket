@@ -4451,6 +4451,7 @@ async function attachProductConversations({
   };
 
   const familias = []; // { nombre, members:Set(name), clients:Set(cid) }
+  const chatsSinProducto = new Map(); // headline → Set(id_cliente)
 
   for (const g of adGroups.values()) {
     // a) headline = nombre del producto
@@ -4514,9 +4515,26 @@ async function attachProductConversations({
     }
 
     // c) anuncio sin resolver → mensaje prellenado, fila por fila
+    let resueltos = 0;
     for (const r of g.rows) {
       const name = matchMensaje(r.mensaje_cliente);
-      if (name) addConv(name, r.id_cliente);
+      if (name) {
+        addConv(name, r.id_cliente);
+        resueltos += 1;
+      }
+    }
+
+    /* Anuncio que no cayó en ningún producto: casi siempre es un artículo
+       que se está promocionando pero todavía no vendió (no hay orden en
+       Dropi, así que no existe fila en la tabla de productos). Se guarda por
+       headline para poder mostrarlo igual: el chat que entró es el único
+       dato real que hay de ese producto. */
+    if (!resueltos) {
+      const clave = String(g.headline || '').trim();
+      if (clave) {
+        if (!chatsSinProducto.has(clave)) chatsSinProducto.set(clave, new Set());
+        for (const cid of g.clients.keys()) chatsSinProducto.get(clave).add(cid);
+      }
     }
   }
 
@@ -4635,7 +4653,9 @@ async function attachProductConversations({
   // conversacionesTotal ≈ compradores y el % de confirmación engaña
   // (el front oculta esas columnas e invita a conectar la cuenta ads).
   // atribuidos → chats que sí quedan representados en alguna fila.
-  return { ctwaActivo: adRows.length > 0, atribuidos };
+  // chatsSinProducto → anuncios que trajeron chats de un producto que aún no
+  //   vendió: el resumen los agrega como filas "sin ventas".
+  return { ctwaActivo: adRows.length > 0, atribuidos, chatsSinProducto };
 }
 
 /* Conversaciones por canal: clientes de chat distintos vinculados por
@@ -5408,9 +5428,105 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         pctConfirmacion: convWa ? r2((pc.wa.ordenes / convWa) * 100) : null,
       }),
       shopify: mkCanal(pc.shopify),
-      todos: mkCanal(todos, { conversaciones: p.conversacionesTotal ?? null }),
+      todos: mkCanal(todos, {
+        // Solo cuando conversacionesTotal representa chats que ENTRARON por
+        // el producto (anuncio o familia). Con el tipo 'ordenes' ese número
+        // son los compradores y mostrarlo como "conversaciones" engaña.
+        conversaciones: ['chat', 'familia'].includes(p.pctConfirmacionTipo)
+          ? (p.conversacionesTotal ?? null)
+          : null,
+      }),
     };
   }
+
+  /* Productos que recibieron chats por anuncio pero todavía no vendieron.
+     No tienen orden en Dropi, así que no salían en ninguna parte y el
+     tráfico que se está pagando por ellos quedaba invisible. Se agregan al
+     final con lo único que se sabe de verdad —cuántas conversaciones
+     entraron— y el resto en null para que el front pinte "—". */
+  const sinVentas = [];
+  for (const [headline, clientes] of convProducto.chatsSinProducto || []) {
+    let enPeriodo = 0;
+    for (const cid of clientes) if (escribieron.has(cid)) enPeriodo += 1;
+    if (!enPeriodo) continue;
+    const vacio = {
+      ordenes: 0,
+      confirmadas: 0,
+      canceladas: 0,
+      entregadas: 0,
+      devoluciones: 0,
+      pedidosTienda: 0,
+      pctConfirmacion: null,
+      tasaEntrega: null,
+    };
+    sinVentas.push({
+      product_id: 0,
+      sku: '',
+      name: headline,
+      image: null,
+      // El front lo usa para marcar la fila y explicar por qué va vacía.
+      sinVentas: true,
+      ordenes: 0,
+      confirmadas: 0,
+      unidades: 0,
+      gananciaNeta: 0,
+      margenPct: null,
+      ticketPromedio: 0,
+      conversaciones: 0,
+      conversacionesTotal: enPeriodo,
+      conversacionesWa: enPeriodo,
+      pctConfirmacion: 0,
+      pctConfirmacionTipo: 'chat',
+      canal: {
+        wa: { ...vacio, conversaciones: enPeriodo, pctConfirmacion: 0 },
+        shopify: { ...vacio },
+        todos: { ...vacio, conversaciones: enPeriodo, pctConfirmacion: 0 },
+      },
+    });
+  }
+  /* Estos productos no tienen orden en Dropi, así que tampoco imagen. La
+     sacamos del catálogo de la conexión emparejando por nombre: el headline
+     del anuncio suele ser el mismo nombre con el que está cargado. */
+  if (sinVentas.length) {
+    const [catRows] = await db
+      .query(
+        `SELECT nombre, imagen_url FROM productos_chat_center
+          WHERE id_configuracion = :idCfg AND eliminado = 0
+            AND imagen_url IS NOT NULL AND imagen_url <> ''`,
+        { replacements: repl },
+      )
+      .catch(() => [[]]);
+    const norm = (s) =>
+      String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9 ]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const porNombre = new Map();
+    for (const c of catRows || []) {
+      const k = norm(c.nombre);
+      if (k && !porNombre.has(k)) porNombre.set(k, c.imagen_url);
+    }
+    for (const p of sinVentas) {
+      const k = norm(p.name);
+      let img = k ? porNombre.get(k) || null : null;
+      if (!img && k) {
+        // match laxo: el catálogo contiene el headline o al revés
+        for (const [ck, v] of porNombre) {
+          if (ck.includes(k) || k.includes(ck)) {
+            img = v;
+            break;
+          }
+        }
+      }
+      p.image = img;
+    }
+  }
+
+  // Al final de la lista: primero lo que vendió, después lo que solo trajo chats.
+  productos.push(...sinVentas.sort((a, b) => b.conversacionesWa - a.conversacionesWa));
 
   return {
     totalFacturado: r2(totalFacturado),

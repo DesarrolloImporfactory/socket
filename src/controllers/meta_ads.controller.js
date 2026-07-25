@@ -346,14 +346,15 @@ exports.conectarAdAccount = async (req, res) => {
           `tipo=${info?.tipo || '?'} scopes=[${(info?.scopes || []).join(',')}] ` +
           `intentos=${JSON.stringify(intentos || {})}`,
       );
-      /* Caso muy frecuente: en la pantalla "Activos comerciales" de Meta, la
-         cuenta publicitaria viene marcada como OPCIONAL. Si el cliente ya
-         había dado de alta WhatsApp en ese mismo portafolio y termina el
-         flujo sin elegirla en el desplegable, Meta no otorga ningún permiso
-         nuevo y devuelve el token del usuario de sistema que ya existía: solo
-         con whatsapp_*. La ventana igual dice "Se conectó … a IMPORCHAT",
-         así que parece que salió bien. Antes esto terminaba en un
-         "(#100) Unsupported get request" imposible de interpretar. */
+      /* Meta acuña un token nuevo para la autorización (lo confirma
+         `emitido`), el usuario de sistema queda creado en el portafolio del
+         cliente y la ventana dice "Se conectó … a IMPORCHAT" — pero el token
+         llega solo con whatsapp_*. En Login for Business los permisos del
+         token los define la CONFIGURACIÓN de login, no los activos que se
+         eligen: seleccionar la cuenta publicitaria comparte el activo, pero
+         si la configuración no entrega ads_read/ads_management el token sale
+         sin ellos y /me/adaccounts responde "(#100) Unsupported get request".
+         Por eso el mensaje apunta a la configuración y no al usuario. */
       const soloWhatsapp =
         !permisosAds.length &&
         (info?.scopes || []).some((s) => String(s).startsWith('whatsapp_'));
@@ -361,7 +362,7 @@ exports.conectarAdAccount = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: soloWhatsapp
-          ? 'En la ventana de Meta la "Cuenta publicitaria" es opcional y quedó sin seleccionar, así que Meta solo devolvió el permiso de WhatsApp. Vuelve a pulsar "Conectar Meta Ads" y, en la pantalla "Activos comerciales", abre el desplegable de Cuenta publicitaria y elige la cuenta antes de continuar.'
+          ? 'Meta completó la conexión pero no entregó los permisos de anuncios: ads_read y ads_management están inactivos en nuestra app a la espera de la verificación de negocio que exige Meta. No es algo que puedas corregir reintentando ni cambiando tu configuración. Ya lo estamos gestionando; escríbenos y te avisamos en cuanto quede habilitado.'
           : permisosAds.length
             ? 'Tu usuario autorizó la app pero no compartió ninguna cuenta publicitaria. Vuelve a conectar y, en la pantalla de Meta, marca la cuenta de anuncios que quieres vincular.'
             : 'Meta no entregó los permisos de anuncios (ads_read / ads_management). Al conectar, en la pantalla de Meta elige el portafolio y marca la casilla de la cuenta publicitaria; si no aparece, pide al administrador del portafolio que te dé acceso a esa cuenta.',
