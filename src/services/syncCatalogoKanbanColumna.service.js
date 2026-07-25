@@ -111,15 +111,13 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
             pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
             pc.stock, pc.combos_producto, pc.es_variable,
             pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
-            -- El stock solo se muestra si se conoce: las variantes cargadas a
-            -- mano no lo llevan y un "(stock 0)" le haría creer al bot que no
-            -- hay disponibilidad.
-            (SELECT GROUP_CONCAT(
-                      CONCAT(pv.atributo, ': ', pv.valor,
-                             CASE WHEN pv.stock > 0
-                                  THEN CONCAT(' (stock ', pv.stock, ')')
-                                  ELSE '' END)
-                      ORDER BY pv.id SEPARATOR ' | ')
+            -- Solo el nombre del atributo y sus valores: "Color: Negro, Cafe".
+            -- Sin stock y sin repetir el atributo en cada opción, porque el
+            -- bot copia literal lo que ve y terminaba recitándole al cliente
+            -- "Variante: Negro (stock 387)".
+            (SELECT CONCAT(
+                      MAX(pv.atributo), ': ',
+                      GROUP_CONCAT(pv.valor ORDER BY pv.id SEPARATOR ', '))
                FROM productos_variaciones pv
               WHERE pv.id_producto = pc.id AND pv.activo = 1) AS variantes_texto
             ${selectExternal},
@@ -716,8 +714,8 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
        "a secas" y el asesor tenía que reescribir al cliente por el color o
        la talla, y el auto-orden fallaba por no saber qué variante subir. */
     if (Number(r.es_variable) === 1 && r.variantes_texto) {
-      bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta la variedad antes de cerrar y agrega la línea "🎨 Variedad:" al resumen.\n`;
-      bloque_prompt += `Variedades disponibles: ${r.variantes_texto}\n`;
+      bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta cuál quiere antes de cerrar y ponla en "🎨 Variedad:" del resumen. NUNCA menciones el stock ni listes las opciones numeradas.\n`;
+      bloque_prompt += `Variedades disponibles → ${r.variantes_texto}\n`;
     } else {
       // Se dice explícitamente para que el bot NO agregue la línea de más:
       // el resumen ya es largo y en productos simples no aporta nada.

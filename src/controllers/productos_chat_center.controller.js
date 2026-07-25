@@ -888,9 +888,15 @@ function normalizarVariacionesDropi(prod) {
   return vars
     .map((v) => {
       const attrs = Array.isArray(v.attribute_values) ? v.attribute_values : [];
-      // "Color" / "Talla"… Dropi lo manda anidado o plano según el endpoint.
+      /* "Color" / "Talla"… El listado lo manda plano en `attribute_name`;
+         otros endpoints lo anidan bajo `attribute`. Se prueban ambos y, si
+         ninguno viene, queda un rótulo neutro que el cliente puede corregir
+         desde el formulario. */
       const atributo =
-        attrs[0]?.attribute?.name || attrs[0]?.attribute_name || 'Variante';
+        attrs[0]?.attribute_name ||
+        attrs[0]?.attribute?.name ||
+        attrs[0]?.name ||
+        'Variedad';
       const valor =
         attrs
           .map((a) => a?.value)
