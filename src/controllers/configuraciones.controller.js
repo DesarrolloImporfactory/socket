@@ -221,6 +221,17 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
         ELSE 0
       END AS conectado,
 
+      -- ¿Alguna vez estuvo vinculada a WhatsApp? Si sí, su número y nombre
+      -- quedan bloqueados para siempre: cambiarlos partiría el historial
+      -- entre el número viejo y el nuevo. Un número desconectado o
+      -- suspendido sigue contando como vinculado.
+      CASE
+        WHEN COALESCE(c.wa_status,'') <> ''
+          OR COALESCE(c.id_telefono,'') <> ''
+          OR COALESCE(c.id_whatsapp,'') <> '' THEN 1
+        ELSE 0
+      END AS ya_vinculado,
+
       EXISTS (
         SELECT 1
         FROM messenger_pages mp
@@ -508,7 +519,7 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
 
   // 1) Traer la conexión y validar pertenencia + estado
   const rows = await db.query(
-    `SELECT id, id_usuario, id_telefono, id_whatsapp
+    `SELECT id, id_usuario, id_telefono, id_whatsapp, wa_status
        FROM configuraciones
       WHERE id = ? AND suspendido = 0`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -527,17 +538,24 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 2) Solo editable si NO está vinculada a WhatsApp (Meta)
-  const conectado = Boolean(
-    String(cfg.id_telefono || '').trim() &&
+  /* 2) Solo editable si la conexión NUNCA estuvo vinculada a WhatsApp.
+     No basta con mirar si está conectada AHORA: cuando un número se
+     desconecta o queda suspendido, la conexión se "libera" y el cliente
+     podía editarla para poner otro número. Eso es justo lo que rompe el
+     historial — los mensajes ya guardados quedan colgando del contacto
+     viejo y el chat se mezcla con el número nuevo. Basta con que haya
+     habido un estado previo (wa_status) o que queden los ids de Meta. */
+  const tuvoVinculo = Boolean(
+    String(cfg.wa_status || '').trim() ||
+      String(cfg.id_telefono || '').trim() ||
       String(cfg.id_whatsapp || '').trim(),
   );
-  if (conectado) {
+  if (tuvoVinculo) {
     return res.status(409).json({
       status: 409,
       code: 'CONEXION_CONECTADA',
       message:
-        'No puedes cambiar el número de una conexión ya vinculada a WhatsApp. Desvincúlala primero.',
+        'Esta conexión ya estuvo vinculada a WhatsApp, así que su número y nombre no se pueden cambiar: el historial de conversaciones quedaría partido entre el número viejo y el nuevo. Si necesitas otro número, crea una conexión nueva.',
     });
   }
 
