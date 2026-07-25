@@ -50,12 +50,21 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 
   if (!columna)
     throw new Error(`kanban_columna id=${id_kanban_columna} no encontrada`);
-  if (!columna.assistant_id)
-    throw new Error(
-      `La columna "${columna.nombre}" no tiene assistant_id configurado`,
-    );
 
   const { id_configuracion, assistant_id } = columna;
+
+  // IDs viejos: NO se borran todavía. Solo se limpian al final, cuando el
+  // reemplazo ya está creado y guardado en BD (ver paso 11).
+  const vsAnterior = columna.vector_store_id || null;
+
+  // El assistant_id es opcional: las columnas que corren por Responses API no
+  // usan asistentes (las instrucciones salen de la BD). Sin él se sincroniza
+  // el catálogo igual y solo se saltan los pasos que tocan al asistente.
+  if (!assistant_id) {
+    await logger(
+      `ℹ️ La columna "${columna.nombre}" no tiene assistant_id: se sincroniza solo el vector store`,
+    );
+  }
 
   // ── 1.b Detectar si es cuenta proveedor ───────────────────
   // Solo proveedores reciben ID Dropi y stock detallado en bloque_prompt.
@@ -84,20 +93,12 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     'OpenAI-Beta': 'assistants=v2',
   };
 
-  // ── 3. LIMPIAR TODOS los vector stores del asistente ──────
-  await cleanupAllAssistantVectorStores(
-    assistant_id,
-    headersJson,
-    headersBase,
-    logger,
-  );
-
-  await db.query(
-    `UPDATE kanban_columnas
-     SET vector_store_id = NULL, catalog_file_id = NULL
-     WHERE id = ?`,
-    { replacements: [id_kanban_columna], type: db.QueryTypes.UPDATE },
-  );
+  // ── 3. (movido al final) ──────────────────────────────────
+  // Antes aquí se borraban los vector stores viejos y se ponía la columna en
+  // vector_store_id = NULL. Eso dejaba a la columna SIN catálogo si cualquier
+  // paso posterior fallaba, y el store recién creado quedaba huérfano en
+  // OpenAI porque el UPDATE final nunca llegaba a ejecutarse.
+  // Ahora la limpieza va en el paso 11, después de guardar el reemplazo.
 
   // ── 4. Obtener catálogo de productos ──────────────────────
   // Si es proveedor, traemos external_id/external_source. Si no, omitimos.
@@ -233,15 +234,31 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     sleep,
   );
 
-  // ── 9. Actualizar asistente con el nuevo VS ───────────────
-  await ensureAssistantHasFileSearch(
-    assistant_id,
-    vectorStoreId,
-    headersJson,
-    logger,
-  );
+  // ── 9. Actualizar asistente con el nuevo VS (NO fatal) ────
+  // Las columnas por Responses API no usan asistente, y un asistente borrado
+  // en OpenAI no debe tumbar un catálogo que ya está creado e indexado.
+  let assistantActualizado = false;
+  if (assistant_id) {
+    try {
+      await ensureAssistantHasFileSearch(
+        assistant_id,
+        vectorStoreId,
+        headersJson,
+        logger,
+      );
+      assistantActualizado = true;
+    } catch (err) {
+      await logger(
+        `⚠️ No se pudo actualizar el asistente ${assistant_id}: ` +
+          `${err?.response?.data?.error?.message || err.message} ` +
+          `— el catálogo se guarda igual`,
+      );
+    }
+  }
 
   // ── 10. Guardar IDs nuevos en BD ──────────────────────────
+  // Va ANTES de cualquier borrado: si el proceso muere aquí, la columna ya
+  // apunta a un vector store válido.
   await db.query(
     `UPDATE kanban_columnas
      SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
@@ -251,6 +268,22 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
       type: db.QueryTypes.UPDATE,
     },
   );
+
+  // ── 11. Recién ahora, limpiar lo viejo (NO fatal) ─────────
+  // Se le pasa el vector store que tenía la columna en BD para poder borrarlo
+  // aunque el asistente ya no exista; si solo se preguntara al asistente, los
+  // stores viejos quedarían acumulándose en la cuenta de OpenAI.
+  try {
+    await cleanupAllAssistantVectorStores(
+      assistant_id,
+      headersJson,
+      headersBase,
+      logger,
+      { extraVsIds: [vsAnterior], conservarVsIds: [vectorStoreId] },
+    );
+  } catch (err) {
+    await logger(`⚠️ Limpieza de vector stores viejos falló: ${err.message}`);
+  }
 
   await logger(
     `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
@@ -335,36 +368,49 @@ async function syncCatalogoTodasColumnasConfig(id_configuracion, opts = {}) {
 // ══════════════════════════════════════════════════════════════
 // cleanupAllAssistantVectorStores (sin cambios)
 // ══════════════════════════════════════════════════════════════
+// Borra vector stores viejos. Los candidatos salen de DOS fuentes que se
+// suman: los que tenga adjuntos el asistente (si existe) y los que se pasen
+// explícitamente en opts.extraVsIds — normalmente el que la columna tenía
+// guardado en BD. Esa segunda fuente es la que evita dejar basura cuando el
+// asistente ya no existe en OpenAI.
+// opts.conservarVsIds nunca se borra (el reemplazo recién creado).
 async function cleanupAllAssistantVectorStores(
   assistantId,
   headersJson,
   headersBase,
   logger,
+  opts = {},
 ) {
-  let existingVsIds = [];
-  try {
-    const res = await axios.get(
-      `https://api.openai.com/v1/assistants/${assistantId}`,
-      { headers: headersJson },
-    );
-    existingVsIds =
-      res.data?.tool_resources?.file_search?.vector_store_ids || [];
-  } catch (err) {
-    await logger(
-      `⚠️ No se pudo obtener el asistente ${assistantId}: ${err?.response?.data?.error?.message || err.message}`,
-    );
-    return;
+  const conservar = new Set((opts.conservarVsIds || []).filter(Boolean));
+  const candidatos = new Set((opts.extraVsIds || []).filter(Boolean));
+
+  if (assistantId) {
+    try {
+      const res = await axios.get(
+        `https://api.openai.com/v1/assistants/${assistantId}`,
+        { headers: headersJson },
+      );
+      for (const id of res.data?.tool_resources?.file_search
+        ?.vector_store_ids || []) {
+        candidatos.add(id);
+      }
+    } catch (err) {
+      // No es fatal: se sigue con los IDs que vinieron por BD.
+      await logger(
+        `⚠️ No se pudo obtener el asistente ${assistantId}: ${err?.response?.data?.error?.message || err.message}`,
+      );
+    }
   }
 
+  const existingVsIds = [...candidatos].filter((id) => !conservar.has(id));
+
   if (!existingVsIds.length) {
-    await logger(
-      `ℹ️ Asistente ${assistantId} no tiene vector stores. Nada que limpiar.`,
-    );
+    await logger(`ℹ️ No hay vector stores viejos que limpiar.`);
     return;
   }
 
   await logger(
-    `🧹 Limpiando ${existingVsIds.length} vector store(s) del asistente ${assistantId}: ${existingVsIds.join(', ')}`,
+    `🧹 Limpiando ${existingVsIds.length} vector store(s) viejo(s): ${existingVsIds.join(', ')}`,
   );
 
   for (const vsId of existingVsIds) {

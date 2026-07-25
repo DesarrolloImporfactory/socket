@@ -871,3 +871,27 @@ exports.actualizarAutoActualizarOrdenDropi = catchAsync(async (req, res) => {
   );
   res.json({ status: 'success', activo: !!val });
 });
+
+// Switch de respuestas divididas: la IA contesta en 2-3 mensajes naturales
+// en vez de un solo bloque de texto. Encendido por defecto.
+exports.obtenerIaSplitMensajes = catchAsync(async (req, res) => {
+  const { id_configuracion } = req.body;
+  const [row] = await db.query(
+    'SELECT ia_split_mensajes FROM configuraciones WHERE id = ? AND suspendido = 0 LIMIT 1',
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  res.json({
+    status: 'success',
+    activo: Number(row?.ia_split_mensajes) === 1,
+  });
+});
+
+exports.actualizarIaSplitMensajes = catchAsync(async (req, res) => {
+  const { id_configuracion, activo } = req.body;
+  const val = activo === true || activo === 1 || activo === '1' ? 1 : 0;
+  await db.query(
+    'UPDATE configuraciones SET ia_split_mensajes = ?, updated_at = NOW() WHERE id = ?',
+    { replacements: [val, id_configuracion] },
+  );
+  res.json({ status: 'success', activo: !!val });
+});

@@ -16,6 +16,12 @@ const {
   sanitizarRespuestaAgente,
 } = require('../utils/openia/sanitizador_agente');
 
+// Envío de la respuesta repartida en 2-3 mensajes (gated por configuración)
+const {
+  enviarEnBloques,
+  nuevoTurno,
+} = require('../utils/openia/envioEnBloques');
+
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
 const {
   autoCrearOrdenDropi,
@@ -219,6 +225,10 @@ async function procesarMensajeKanban(params) {
 
   // ── 0. Decidir qué API usar ───────────────────────────────
   const USAR_RESPONSES_API = [10].includes(Number(id_configuracion));
+
+  // Llegó un mensaje nuevo de este cliente: invalida cualquier ráfaga que
+  // haya quedado pendiente de la respuesta anterior.
+  const turno = nuevoTurno(id_cliente);
 
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
@@ -814,11 +824,34 @@ async function procesarMensajeKanban(params) {
   soloTexto = limpiarTagsAcciones(soloTexto).trim();
 
   if (soloTexto) {
-    await canal.enviarTexto({
-      texto: soloTexto,
-      responsable: `IA_${columna.nombre}`,
-      total_tokens,
-    });
+    // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
+    // naturales. Si no, se mantiene el envío de siempre en un solo bloque.
+    const [cfgSplit] = await db.query(
+      `SELECT ia_split_mensajes FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    if (cfgSplit?.ia_split_mensajes) {
+      const r = await enviarEnBloques({
+        canal,
+        texto: soloTexto,
+        responsable: `IA_${columna.nombre}`,
+        total_tokens,
+        id_cliente,
+        turno,
+        log,
+      });
+      await log(
+        `✉️ Respuesta enviada en ${r.bloques} mensaje(s)` +
+          (r.enSegundoPlano ? ` (${r.enSegundoPlano} en segundo plano)` : ''),
+      );
+    } else {
+      await canal.enviarTexto({
+        texto: soloTexto,
+        responsable: `IA_${columna.nombre}`,
+        total_tokens,
+      });
+    }
   }
 
   // ✅ Si llegó hasta aquí, OpenAI está funcionando

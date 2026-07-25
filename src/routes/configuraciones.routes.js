@@ -134,4 +134,19 @@ router.post(
   configuracionesController.actualizarAutoActualizarOrdenDropi,
 );
 
+router.post(
+  '/obtener_ia_split_mensajes',
+  ...imporchatGuard,
+  protectConfigOwner,
+  configuracionesController.obtenerIaSplitMensajes,
+);
+
+router.post(
+  '/actualizar_ia_split_mensajes',
+  ...imporchatGuard,
+  protectConfigOwner,
+  restrictToRoles('administrador'),
+  configuracionesController.actualizarIaSplitMensajes,
+);
+
 module.exports = router;
