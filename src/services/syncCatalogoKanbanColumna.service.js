@@ -1,4 +1,4 @@
-// services/syncCatalogoKanbanColumna.service.js
+﻿// services/syncCatalogoKanbanColumna.service.js
 
 const axios = require('axios');
 const FormData = require('form-data');
@@ -109,9 +109,19 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     `SELECT pc.id AS id_producto, pc.id_configuracion,
             pc.nombre, pc.descripcion, pc.tipo, pc.precio,
             pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
-            pc.stock, pc.nombre_upsell, pc.descripcion_upsell,
-            pc.precio_upsell, pc.imagen_upsell_url, pc.combos_producto,
-            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor
+            pc.stock, pc.combos_producto, pc.es_variable,
+            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
+            -- El stock solo se muestra si se conoce: las variantes cargadas a
+            -- mano no lo llevan y un "(stock 0)" le haría creer al bot que no
+            -- hay disponibilidad.
+            (SELECT GROUP_CONCAT(
+                      CONCAT(pv.atributo, ': ', pv.valor,
+                             CASE WHEN pv.stock > 0
+                                  THEN CONCAT(' (stock ', pv.stock, ')')
+                                  ELSE '' END)
+                      ORDER BY pv.id SEPARATOR ' | ')
+               FROM productos_variaciones pv
+              WHERE pv.id_producto = pc.id AND pv.activo = 1) AS variantes_texto
             ${selectExternal},
             cc.nombre AS nombre_categoria
      FROM   productos_chat_center pc
@@ -147,13 +157,15 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
         'Use este catálogo como base de conocimiento.',
         'Cada item incluye id_dropi (cuando aplica): el cliente puede pedir un producto solo con su ID Dropi (ej: "tienes el 158923?", "info del #158923", "ID 158923"). Búsquelo por id_dropi/external_id.',
         'Cada item incluye stock al momento de la sincronización. Es referencial.',
-        'Use los identificadores [producto_imagen_url], [producto_video_url], [upsell_imagen_url] cuando existan.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
+        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
         'Si el sistema provee datos de stock/precio en tiempo real por base de datos, prefiera esos sobre los del catálogo.',
       ]
     : [
         'Use este catálogo como base de conocimiento.',
         'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
-        'Use los identificadores [producto_imagen_url], [producto_video_url], [upsell_imagen_url] cuando existan.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
+        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
         'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
         'Priorice datos en tiempo real sobre file_search si hay diferencias.',
       ];
@@ -665,7 +677,6 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
 
     const imagen_url = encodeUrl(r.imagen_url);
     const video_url = encodeUrl(r.video_url);
-    const imagen_upsell_url = encodeUrl(r.imagen_upsell_url);
 
     // ── Solo proveedor: ID Dropi y stock detallado ──────────
     const dropiId =
@@ -700,12 +711,23 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
     if (imagen_url) bloque_prompt += `[producto_imagen_url]: ${imagen_url}\n`;
     if (video_url) bloque_prompt += `[producto_video_url]: ${video_url}\n`;
     bloque_prompt += `Tipo: ${r.tipo || ''}\n`;
+    /* Producto variable: se listan las variedades para que el asistente
+       PREGUNTE cuál quiere antes de cerrar. Sin esto el bot cerraba la venta
+       "a secas" y el asesor tenía que reescribir al cliente por el color o
+       la talla, y el auto-orden fallaba por no saber qué variante subir. */
+    if (Number(r.es_variable) === 1 && r.variantes_texto) {
+      bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta la variedad antes de cerrar y agrega la línea "🎨 Variedad:" al resumen.\n`;
+      bloque_prompt += `Variedades disponibles: ${r.variantes_texto}\n`;
+    } else {
+      // Se dice explícitamente para que el bot NO agregue la línea de más:
+      // el resumen ya es largo y en productos simples no aporta nada.
+      bloque_prompt += `Producto simple: NO incluyas la línea "🎨 Variedad:" en el resumen.\n`;
+    }
     bloque_prompt += `Categoría: ${r.nombre_categoria || ''}\n`;
-    bloque_prompt += `Nombre_upsell: ${r.nombre_upsell || ''}\n`;
-    bloque_prompt += `Descripcion_upsell: ${r.descripcion_upsell || ''}\n`;
-    bloque_prompt += `Precio_upsell: ${r.precio_upsell ?? ''}\n`;
-    if (imagen_upsell_url)
-      bloque_prompt += `[upsell_imagen_url]: ${imagen_upsell_url}\n`;
+    /* Upsell fuera del catálogo: ningún prompt pide ofrecerlo (la única
+       mención era la regla de formato de la imagen) y la mayoría de estos
+       campos venían vacíos, así que solo gastaban tokens en cada consulta a
+       file_search. Las columnas siguen en la base con lo ya cargado. */
     if (r.material) bloque_prompt += `[ficha_tecnica_url]: ${r.material}\n`;
     if (r.landing_url) bloque_prompt += `[landing_url]: ${r.landing_url}\n`;
     if (r.precio_proveedor)
@@ -728,13 +750,11 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
       precio_producto: r.precio ?? null,
       producto_imagen_url: imagen_url,
       producto_video_url: video_url,
-      nombre_upsell: r.nombre_upsell || null,
-      descripcion_upsell: r.descripcion_upsell || null,
-      precio_upsell: r.precio_upsell ?? null,
       material: r.material || null,
       landing_url: r.landing_url || null,
       precio_proveedor: r.precio_proveedor || null,
-      upsell_imagen_url: imagen_upsell_url,
+      es_variable: Number(r.es_variable) === 1,
+      variedades: r.variantes_texto || null,
       combos_producto: combos_json,
       combos_producto_texto: combos_texto,
       bloque_prompt: bloque_prompt.trim(),

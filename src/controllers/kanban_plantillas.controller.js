@@ -223,9 +223,15 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
   );
 
+  /* Al borrar el tablero se limpia TODO el rastro de la plantilla, no solo el
+     vínculo: si `prompt_version` y `pais_plantilla` se quedan con el valor
+     viejo, al reinstalar sigue habiendo una versión aplicada de una plantilla
+     que ya no existe y el aviso de "actualización disponible" reaparece sin
+     motivo. */
   await db.query(
-    `UPDATE configuraciones 
-     SET kanban_global_activo = 0, kanban_global_id = NULL
+    `UPDATE configuraciones
+     SET kanban_global_activo = 0, kanban_global_id = NULL,
+         prompt_version = NULL, pais_plantilla = NULL
      WHERE id = ?`,
     { replacements: [id_configuracion] },
   );

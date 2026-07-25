@@ -664,6 +664,16 @@ async function procesarMensajeKanban(params) {
               g(/🚚?\s*Env[ií]o:\s*(.+)/i) ||
               g(/📦?\s*Modalidad:\s*(.+)/i) ||
               '',
+            // Variedad elegida en productos variables (talla/color). Sin esto
+            // el auto-orden no sabe qué variante subir y Dropi rechaza la
+            // orden. Se aceptan varios rótulos porque el prompt de cada
+            // cliente los escribe distinto.
+            variedad:
+              g(/🎨?\s*Variedad:\s*(.+)/i) ||
+              g(/🎨?\s*Variante:\s*(.+)/i) ||
+              g(/🎨?\s*Color:\s*(.+)/i) ||
+              g(/📏?\s*Talla:\s*(.+)/i) ||
+              '',
           };
 
           // Datos que el cliente pudo corregir (para el flujo de actualizar).

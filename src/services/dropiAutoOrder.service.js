@@ -374,7 +374,8 @@ async function completarDatosConIA({
             role: 'system',
             content:
               `Extrae los datos del pedido confirmado de esta conversación de ventas COD en ${paisNombre}. ` +
-              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad, modalidad_envio. ' +
+              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad, modalidad_envio, variedad. ' +
+              'variedad = la opción del producto que eligió el cliente (color, talla, sabor o modelo), tal como se nombró en la conversación; si el producto no tiene opciones o no se mencionó, null. ' +
               'producto = nombre del producto tal como lo menciona el VENDEDOR. ' +
               'precio_total = número, el total que el cliente acordó pagar. ' +
               'cantidad = número de unidades (1 si no se especifica). ' +
@@ -405,6 +406,7 @@ async function completarDatosConIA({
       cantidad: datosBot.cantidad || String(ia.cantidad ?? '') || '1',
       modalidad_envio:
         datosBot.modalidad_envio || ia.modalidad_envio || '',
+      variedad: datosBot.variedad || ia.variedad || '',
       _fuente_ia: true,
     };
   } catch (err) {
@@ -659,16 +661,102 @@ async function autoCrearOrdenDropi({
         'producto_detalle',
         `Producto #${dropiProductId} no apareció ni en /products/v2/:id ni en /products/index`,
       );
-    if (String(prodDropi.type || 'SIMPLE') !== 'SIMPLE') {
-      return fail(
-        'producto',
-        `Producto #${dropiProductId} es ${prodDropi.type}; auto-orden solo soporta SIMPLE`,
-      );
+    /* Producto variable: hasta ahora se rechazaba en seco y la orden quedaba
+       sin subir. Ahora se resuelve la variante que pidió el cliente:
+         1) la que el bot capturó (datosBot.variedad / variacion),
+         2) si no la dijo pero solo hay una con stock, esa,
+         3) si hay varias y no eligió → manual, pero diciendo cuáles son
+            para que el asesor la elija en el selector de pedidos. */
+    const esVariable = String(prodDropi.type || 'SIMPLE') !== 'SIMPLE';
+    let variacionElegida = null;
+
+    if (esVariable) {
+      const variantes = (
+        Array.isArray(prodDropi.variations) ? prodDropi.variations : []
+      ).map((v) => {
+        const attrs = Array.isArray(v.attribute_values) ? v.attribute_values : [];
+        const etiqueta =
+          attrs
+            .map((a) => a?.value)
+            .filter(Boolean)
+            .join(' / ') ||
+          v.sku ||
+          `#${v.id}`;
+        const stockBodegas = Array.isArray(v.warehouse_product_variation)
+          ? v.warehouse_product_variation.reduce(
+              (a, wpv) => a + (Number(wpv?.stock) || 0),
+              0,
+            )
+          : 0;
+        return {
+          id: v.id,
+          etiqueta,
+          stock: Number(v.stock) > 0 ? Number(v.stock) : stockBodegas,
+          sale_price: v.sale_price,
+        };
+      });
+
+      if (!variantes.length) {
+        return fail(
+          'producto',
+          `Producto #${dropiProductId} es ${prodDropi.type} pero Dropi no devolvió variantes`,
+        );
+      }
+
+      let pedida = String(
+        datosBot?.variedad ?? datosBot?.variacion ?? datosBot?.variante ?? '',
+      )
+        .trim()
+        .toLowerCase();
+
+      /* Si el resumen del bot no trajo la variedad, se relee la conversación
+         con el extractor IA. Solo acá: para un producto simple sería un gasto
+         inútil, pero en uno variable es la diferencia entre subir la orden o
+         dejarla manual. */
+      if (!pedida && api_key_openai && !datosBot?._fuente_ia) {
+        datosBot = await completarDatosConIA({
+          id_configuracion,
+          id_cliente,
+          datosBot,
+          api_key_openai,
+          paisNombre,
+        });
+        ctx.datos_bot = datosBot;
+        pedida = String(datosBot?.variedad || '')
+          .trim()
+          .toLowerCase();
+      }
+
+      const conStock = variantes.filter((v) => v.stock >= cantidadOrden);
+
+      if (pedida) {
+        variacionElegida =
+          variantes.find((v) => v.etiqueta.toLowerCase() === pedida) ||
+          variantes.find((v) => v.etiqueta.toLowerCase().includes(pedida)) ||
+          null;
+      }
+      if (!variacionElegida && conStock.length === 1)
+        variacionElegida = conStock[0];
+
+      if (!variacionElegida) {
+        return fail(
+          'producto',
+          `Producto #${dropiProductId} es variable y falta elegir la variedad. ` +
+            `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
+        );
+      }
+      if (variacionElegida.stock < cantidadOrden) {
+        return fail(
+          'producto',
+          `Stock insuficiente de "${variacionElegida.etiqueta}": ${variacionElegida.stock} < ${cantidadOrden}`,
+        );
+      }
     }
 
-    const stockDropi = Number(
-      prodDropi.stock ?? prodDropi.warehouse_product?.[0]?.stock ?? NaN,
-    );
+    // En variables el stock que manda es el de la variante elegida.
+    const stockDropi = esVariable
+      ? Number(variacionElegida.stock)
+      : Number(prodDropi.stock ?? prodDropi.warehouse_product?.[0]?.stock ?? NaN);
     if (Number.isFinite(stockDropi) && stockDropi < cantidadOrden) {
       return fail(
         'producto',
@@ -988,12 +1076,21 @@ async function autoCrearOrdenDropi({
         products: [
           {
             id: dropiProductId,
-            name: comboUsado
-              ? `${prodLocal.nombre} (combo x${cantidad})`
-              : prodLocal.nombre,
-            type: 'SIMPLE',
-            variation_id: null,
-            variations: [],
+            name: (() => {
+              const base = comboUsado
+                ? `${prodLocal.nombre} (combo x${cantidad})`
+                : prodLocal.nombre;
+              // La variedad va en el nombre para que se lea en Dropi y en la
+              // guía sin tener que abrir el detalle.
+              return variacionElegida
+                ? `${base} — ${variacionElegida.etiqueta}`
+                : base;
+            })(),
+            type: variacionElegida ? 'VARIABLE' : 'SIMPLE',
+            variation_id: variacionElegida ? variacionElegida.id : null,
+            variations: variacionElegida
+              ? [{ id: variacionElegida.id, quantity: cantidadOrden }]
+              : [],
             quantity: cantidadOrden,
             price: precioUnitario,
             sale_price: null,

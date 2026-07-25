@@ -49,9 +49,33 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
     });
   }
 
+  /* Variantes de los productos marcados como variables. Van adjuntas al
+     listado para que el formulario las cargue sin una segunda llamada. */
+  const idsVariables = productos
+    .filter((p) => Number(p.es_variable) === 1)
+    .map((p) => p.id);
+  let porProducto = new Map();
+  if (idsVariables.length) {
+    const vars = await db.query(
+      `SELECT id, id_producto, dropi_variation_id, atributo, valor, stock,
+              precio_proveedor, precio_sugerido
+         FROM productos_variaciones
+        WHERE id_producto IN (:ids) AND activo = 1
+        ORDER BY id`,
+      { replacements: { ids: idsVariables }, type: db.QueryTypes.SELECT },
+    );
+    for (const v of vars) {
+      if (!porProducto.has(v.id_producto)) porProducto.set(v.id_producto, []);
+      porProducto.get(v.id_producto).push(v);
+    }
+  }
+
   res.status(200).json({
     status: 'success',
-    data: productos,
+    data: productos.map((p) => ({
+      ...p.toJSON(),
+      variaciones: porProducto.get(p.id) || [],
+    })),
   });
 });
 
@@ -439,6 +463,65 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.es_privado = parsed;
   }
 
+  /* ── Producto variable (talla/color) ──
+     `variaciones` llega como JSON desde el formulario. Se guarda solo si el
+     producto quedó marcado como variable; al desmarcarlo se borran, porque
+     un producto simple con variantes colgando confunde al bot y al
+     auto-orden. */
+  if (typeof req.body.es_variable !== 'undefined') {
+    const marcado =
+      req.body.es_variable === true ||
+      String(req.body.es_variable).toLowerCase() === 'true' ||
+      Number(req.body.es_variable) === 1;
+    producto.es_variable = marcado ? 1 : 0;
+
+    let lista = [];
+    if (marcado && typeof req.body.variaciones !== 'undefined') {
+      try {
+        const crudo =
+          typeof req.body.variaciones === 'string'
+            ? JSON.parse(req.body.variaciones)
+            : req.body.variaciones;
+        lista = (Array.isArray(crudo) ? crudo : [])
+          .map((v) => ({
+            dropi_variation_id: v.dropi_variation_id
+              ? String(v.dropi_variation_id).trim()
+              : null,
+            atributo: String(v.atributo || 'Variante').trim().slice(0, 60),
+            valor: String(v.valor || '').trim().slice(0, 120),
+            stock: Number(v.stock) || 0,
+            precio_proveedor:
+              v.precio_proveedor === '' || v.precio_proveedor == null
+                ? null
+                : Number(v.precio_proveedor),
+            precio_sugerido:
+              v.precio_sugerido === '' || v.precio_sugerido == null
+                ? null
+                : Number(v.precio_sugerido),
+          }))
+          .filter((v) => v.valor);
+      } catch (e) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'El formato de las variantes no es válido.',
+        });
+      }
+      if (!lista.length) {
+        return res.status(400).json({
+          status: 'fail',
+          message:
+            'Marcaste el producto como variable: agrega al menos una variedad (ej. Color: Negro).',
+        });
+      }
+    }
+
+    await guardarVariaciones({
+      id_producto: producto.id,
+      id_configuracion: producto.id_configuracion,
+      variaciones: marcado ? lista : [],
+    });
+  }
+
   producto.fecha_actualizacion = new Date();
   const idConfigSync = producto.id_configuracion;
   const productoId = producto.id;
@@ -794,6 +877,86 @@ function resolveDropiPrices(prod) {
   };
 }
 
+/* ── Variantes de un producto Dropi ──
+   Dropi devuelve `variations[]` con el id que exige al crear la orden, los
+   valores del atributo ("Color: Negro") y el stock por bodega. Hasta ahora
+   ese arreglo solo se usaba para sacar precio y stock total y la identidad
+   se perdía: por eso el bot no podía preguntar la variedad y el auto-orden
+   mandaba type='SIMPLE' con variation_id null, que Dropi rechaza. */
+function normalizarVariacionesDropi(prod) {
+  const vars = Array.isArray(prod?.variations) ? prod.variations : [];
+  return vars
+    .map((v) => {
+      const attrs = Array.isArray(v.attribute_values) ? v.attribute_values : [];
+      // "Color" / "Talla"… Dropi lo manda anidado o plano según el endpoint.
+      const atributo =
+        attrs[0]?.attribute?.name || attrs[0]?.attribute_name || 'Variante';
+      const valor =
+        attrs
+          .map((a) => a?.value)
+          .filter(Boolean)
+          .join(' / ') ||
+        v.sku ||
+        (v.id != null ? `#${v.id}` : null);
+      if (!valor) return null;
+
+      // El stock vive en la variante o repartido por bodegas.
+      const stockBodegas = Array.isArray(v.warehouse_product_variation)
+        ? v.warehouse_product_variation.reduce(
+            (a, wpv) => a + (Number(wpv?.stock) || 0),
+            0,
+          )
+        : 0;
+      const stock = Number(v.stock) > 0 ? Number(v.stock) : stockBodegas;
+
+      return {
+        dropi_variation_id: v.id != null ? String(v.id) : null,
+        atributo: String(atributo).slice(0, 60),
+        valor: String(valor).slice(0, 120),
+        stock,
+        precio_proveedor: v.sale_price != null ? Number(v.sale_price) : null,
+        precio_sugerido:
+          v.suggested_price != null ? Number(v.suggested_price) : null,
+      };
+    })
+    .filter(Boolean);
+}
+
+/* Reemplaza las variantes de un producto (import y re-sync son idempotentes). */
+async function guardarVariaciones({ id_producto, id_configuracion, variaciones }) {
+  await db.query(`DELETE FROM productos_variaciones WHERE id_producto = ?`, {
+    replacements: [id_producto],
+    type: db.QueryTypes.DELETE,
+  });
+  if (!variaciones?.length) return 0;
+
+  const valores = [];
+  const marcas = variaciones
+    .map((v) => {
+      valores.push(
+        id_producto,
+        id_configuracion,
+        v.dropi_variation_id,
+        v.atributo,
+        v.valor,
+        v.stock ?? 0,
+        v.precio_proveedor,
+        v.precio_sugerido,
+      );
+      return '(?, ?, ?, ?, ?, ?, ?, ?)';
+    })
+    .join(', ');
+
+  await db.query(
+    `INSERT INTO productos_variaciones
+       (id_producto, id_configuracion, dropi_variation_id, atributo, valor,
+        stock, precio_proveedor, precio_sugerido)
+     VALUES ${marcas}`,
+    { replacements: valores, type: db.QueryTypes.INSERT },
+  );
+  return variaciones.length;
+}
+
 function getDropiTotalStock(prod) {
   if (Array.isArray(prod?.variations) && prod.variations.length > 0) {
     return prod.variations.reduce((acc, v) => {
@@ -977,11 +1140,15 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
   }
 
   // 8) crear producto en su tabla
+  const variaciones = normalizarVariacionesDropi(prod);
   const nuevo = await ProductosChatCenter.create({
     id_configuracion,
     nombre: prod.name || 'Producto Dropi',
     descripcion: descripcion_final,
     tipo: 'producto',
+    // Si Dropi lo entrega con variantes, queda marcado como variable: de eso
+    // dependen la pregunta del bot y el variation_id del auto-orden.
+    es_variable: variaciones.length > 0 ? 1 : 0,
     precio: precio_final,
     precio_proveedor: precio_prov,
     duracion: 0,
@@ -999,6 +1166,22 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
     external_id: dropi_product_id,
   });
 
+  // 8.b) variantes (talla/color) tal como las entrega Dropi
+  if (variaciones.length) {
+    try {
+      await guardarVariaciones({
+        id_producto: nuevo.id,
+        id_configuracion,
+        variaciones,
+      });
+    } catch (e) {
+      // No abortamos el import por esto: el producto ya quedó creado.
+      console.error(
+        `⚠️ [IMPORT_DROPI] no se pudieron guardar variantes de ${dropi_product_id}: ${e.message}`,
+      );
+    }
+  }
+
   // sync kanban catálogo
   syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) =>
     console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
@@ -1007,7 +1190,9 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
   return res.status(201).json({
     status: 'success',
     data: nuevo,
-    message:
-      'Producto importado desde Dropi correctamente (detalle + categorías sincronizadas).',
+    variaciones: variaciones.length,
+    message: variaciones.length
+      ? `Producto importado desde Dropi con ${variaciones.length} variante(s).`
+      : 'Producto importado desde Dropi correctamente (detalle + categorías sincronizadas).',
   });
 });

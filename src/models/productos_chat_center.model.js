@@ -32,6 +32,12 @@ const ProductosChatCenter = db.define(
       type: DataTypes.STRING(50),
       allowNull: false,
     },
+    // 1 = tiene variantes (talla/color) en productos_variaciones
+    es_variable: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
     precio: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false,
