@@ -678,6 +678,24 @@ function formatearCombosParaCatalogo(combosProducto) {
   let combosTexto = '';
 
   try {
+    if (Array.isArray(combosNormalizados)) {
+      // Al catálogo del bot solo van nombre/cantidad/precio: el id_dropi del
+      // combo es dato interno del auto-pedido y los combos vacíos son ruido.
+      combosNormalizados = combosNormalizados
+        .filter(
+          (c) =>
+            (c?.cantidad ?? '') !== '' || (c?.precio ?? c?.valor ?? '') !== '',
+        )
+        .map((c) => {
+          const limpio = {};
+          const nombre = c?.nombre || c?.titulo;
+          if (nombre) limpio.nombre = nombre;
+          if ((c?.cantidad ?? '') !== '') limpio.cantidad = c.cantidad;
+          const precio = c?.precio ?? c?.valor;
+          if (precio != null && precio !== '') limpio.precio = precio;
+          return limpio;
+        });
+    }
     if (Array.isArray(combosNormalizados) && combosNormalizados.length > 0) {
       combosTexto += `Combos disponibles:\n`;
       combosNormalizados.forEach((c, i) => {
@@ -689,7 +707,7 @@ function formatearCombosParaCatalogo(combosProducto) {
         if (precio !== '') combosTexto += ` | Precio: ${precio}`;
         combosTexto += `\n`;
       });
-    } else if (typeof combosNormalizados === 'object') {
+    } else if (!Array.isArray(combosNormalizados) && typeof combosNormalizados === 'object') {
       combosTexto += `Combos disponibles:\n${JSON.stringify(combosNormalizados, null, 2)}`;
     }
   } catch (_) {}
