@@ -1,6 +1,5 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
-const { promisify } = require('util');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const { db, db_2 } = require('../database/config');
@@ -8,8 +7,15 @@ const { db, db_2 } = require('../database/config');
 const jwt = require('jsonwebtoken');
 
 /*  Este middleware protege las rutas privadas
- *  — lee primero el header Authorization: Bearer <token>
- *  — si no existe, intenta con la cookie chat_token
+ *  — lee el header Authorization: Bearer <token>
+ *
+ *  IMPORTANTE: todos los 401 de sesión de este middleware devuelven un `code`
+ *  explícito (TOKEN_MISSING | TOKEN_EXPIRED | TOKEN_INVALID | USER_NOT_FOUND |
+ *  TOKEN_REVOKED). El front (interceptor de chatcenter.js) se apoya en ese
+ *  `code` para saber que la sesión murió y avisar + limpiar + redirigir.
+ *  NO depender del error handler global para esto: hay 401 en la app que NO son
+ *  de sesión (contraseña actual incorrecta, token de Shopify inválido,
+ *  permisos de configuración…) y esos no deben expulsar al usuario.
  */
 exports.protect = catchAsync(async (req, res, next) => {
   let token;
@@ -22,15 +28,28 @@ exports.protect = catchAsync(async (req, res, next) => {
   }
 
   if (!token) {
-    return next(
-      new AppError('You are not logged in! Please log in to get access.', 401),
-    );
+    return res.status(401).json({
+      status: 'fail',
+      code: 'TOKEN_MISSING',
+      message: 'No has iniciado sesión. Inicia sesión para continuar.',
+    });
   }
+
   // 3) Decode token (Verification token)
-  const decoded = await promisify(jwt.verify)(
-    token,
-    process.env.SECRET_JWT_SEED,
-  );
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.SECRET_JWT_SEED);
+  } catch (err) {
+    const expirado = err.name === 'TokenExpiredError';
+    return res.status(401).json({
+      status: 'fail',
+      code: expirado ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID',
+      message: expirado
+        ? 'Tu sesión ha caducado. Vuelve a iniciar sesión.'
+        : 'Sesión inválida. Vuelve a iniciar sesión.',
+    });
+  }
+
   // 4) Check if user still exists
   const user = await Sub_usuarios_chat_center.findOne({
     where: {
@@ -38,12 +57,11 @@ exports.protect = catchAsync(async (req, res, next) => {
     },
   });
   if (!user) {
-    return next(
-      new AppError(
-        'The user belonging to this token does no longer exist.',
-        401,
-      ),
-    );
+    return res.status(401).json({
+      status: 'fail',
+      code: 'USER_NOT_FOUND',
+      message: 'El usuario de esta sesión ya no existe.',
+    });
   }
 
   // 5) Single sign-out: si users.logout_at > iat, el token fue revocado.

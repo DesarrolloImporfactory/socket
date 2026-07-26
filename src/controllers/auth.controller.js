@@ -1045,26 +1045,50 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
   });
 });
 
+/*  Renovación deslizante de la sesión.
+ *  Va detrás de authMiddleware.protect, así que sólo funciona con un token
+ *  todavía válido y no revocado (single sign-out ya validado ahí).
+ *  Emite un token nuevo con 7 días completos: mientras el usuario siga usando
+ *  la plataforma, la sesión nunca caduca en medio del trabajo.
+ *
+ *  Antes esto estaba roto: leía `req.sessionUser.id_users`, pero `protect` deja
+ *  un Sub_usuarios_chat_center (id_sub_usuario / id_usuario), nunca id_users.
+ */
 exports.renew = catchAsync(async (req, res, next) => {
-  const { id_users } = req.sessionUser;
-  const user = await User.findOne({
-    where: {
-      id_users: id_users,
-    },
-  });
-  if (!user) {
-    return next(new AppError('User not found! 🧨', 404));
+  const { id_sub_usuario } = req.sessionUser;
+
+  if (!id_sub_usuario) {
+    return res.status(401).json({
+      status: 'fail',
+      code: 'TOKEN_INVALID',
+      message: 'Sesión inválida. Vuelve a iniciar sesión.',
+    });
   }
-  const token = await generarToken(id_users);
+
+  const subUsuario = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
+
+  if (!subUsuario) {
+    return res.status(401).json({
+      status: 'fail',
+      code: 'USER_NOT_FOUND',
+      message: 'El usuario de esta sesión ya no existe.',
+    });
+  }
+
+  const token = await generarToken(id_sub_usuario);
+  const { exp } = jwt.decode(token) || {};
 
   res.status(200).json({
     status: 'success',
     token,
+    exp, // epoch en segundos — el front lo usa para reprogramar el próximo chequeo
     user: {
-      id: user.id_users,
-      nombre: user.nombre_users,
-      usuario: user.usuario_users,
-      email: user.email_users,
+      id_sub_usuario: subUsuario.id_sub_usuario,
+      id_usuario: subUsuario.id_usuario,
+      nombre_encargado: subUsuario.nombre_encargado,
+      usuario: subUsuario.usuario,
+      email: subUsuario.email,
+      rol: subUsuario.rol,
     },
   });
 });
