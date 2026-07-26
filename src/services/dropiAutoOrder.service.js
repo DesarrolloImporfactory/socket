@@ -687,7 +687,10 @@ async function autoCrearOrdenDropi({
          3) si hay varias y no eligió → manual, pero diciendo cuáles son
             para que el asesor la elija en el selector de pedidos. */
     const esVariable = String(prodDropi.type || 'SIMPLE') !== 'SIMPLE';
-    let variacionElegida = null;
+    // Variantes a despachar: lo normal es una sola con toda la cantidad, pero
+    // "una negra y una café" es venta legítima → un renglón por variante,
+    // igual que el selector manual del panel.
+    let variacionesElegidas = []; // [{ id, etiqueta, stock, qty }]
 
     if (esVariable) {
       const variantes = (
@@ -749,30 +752,44 @@ async function autoCrearOrdenDropi({
       const conStock = variantes.filter((v) => v.stock >= cantidadOrden);
 
       if (pedida) {
-        variacionElegida =
+        const unica =
           variantes.find((v) => v.etiqueta.toLowerCase() === pedida) ||
           variantes.find((v) => v.etiqueta.toLowerCase().includes(pedida)) ||
           null;
-        /* El bot a veces adorna la línea ("Negro (2 unidades)") o el cliente
-           pide varias ("Negro y Cafe"). Se busca qué etiquetas aparecen
-           DENTRO del texto: exactamente una → esa es; varias → ambiguo (el
-           pedido mezcla variedades y Dropi solo acepta una por orden) →
-           manual con el detalle. */
-        if (!variacionElegida) {
+        if (unica) {
+          variacionesElegidas = [{ ...unica, qty: cantidadOrden }];
+        } else {
+          /* El bot a veces adorna la línea ("Negro (2 unidades)") o el cliente
+             pide varias ("Negro y Cafe"). Se busca qué etiquetas aparecen
+             DENTRO del texto: una sola → esa con toda la cantidad; varias y
+             coinciden con las unidades pedidas → una unidad de cada una;
+             varias sin cómo repartirlas (ej. 3 unidades, 2 colores) → manual,
+             el resumen no dice cuántas van de cada color. */
           const dentro = variantes.filter((v) =>
             pedida.includes(v.etiqueta.toLowerCase()),
           );
-          if (dentro.length === 1) variacionElegida = dentro[0];
+          if (dentro.length === 1) {
+            variacionesElegidas = [{ ...dentro[0], qty: cantidadOrden }];
+          } else if (dentro.length > 1 && dentro.length === cantidadOrden) {
+            variacionesElegidas = dentro.map((v) => ({ ...v, qty: 1 }));
+          } else if (dentro.length > 1) {
+            return fail(
+              'producto',
+              `El pedido mezcla ${dentro.length} variedades (${dentro.map((v) => v.etiqueta).join(' y ')}) ` +
+                `en ${cantidadOrden} unidad(es) y no se puede repartir solo. ` +
+                `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
+            );
+          }
         }
       }
       /* ── Candado anti-alucinación ──
          La variedad del resumen la escribe el BOT, y a veces la inventa
          ("Has elegido Negro" sin que el cliente lo dijera). Antes de confiar,
-         se verifica que la etiqueta aparezca en algún mensaje DEL CLIENTE.
-         Si no aparece, se descarta y la orden cae a manual con las opciones
+         se verifica que CADA etiqueta elegida aparezca en algún mensaje DEL
+         CLIENTE. Si alguna no aparece, la orden cae a manual con las opciones
          listadas: mil veces mejor un pedido manual que uno del color
          equivocado. */
-      if (variacionElegida) {
+      if (variacionesElegidas.length) {
         const sinAcentos = (s) =>
           String(s || '')
             .toLowerCase()
@@ -791,44 +808,52 @@ async function autoCrearOrdenDropi({
         const textoCliente = sinAcentos(
           msgsCliente.map((m) => m.texto_mensaje).join(' '),
         );
-        const etiquetaNorm = sinAcentos(variacionElegida.etiqueta);
-        if (!textoCliente.includes(etiquetaNorm)) {
-          return fail(
-            'producto',
-            `Variedad "${variacionElegida.etiqueta}" no confirmada por el cliente ` +
-              `(no aparece en sus mensajes; posible invento del bot). ` +
-              `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
-          );
+        for (const v of variacionesElegidas) {
+          if (!textoCliente.includes(sinAcentos(v.etiqueta))) {
+            return fail(
+              'producto',
+              `Variedad "${v.etiqueta}" no confirmada por el cliente ` +
+                `(no aparece en sus mensajes; posible invento del bot). ` +
+                `Opciones: ${variantes.map((x) => `${x.etiqueta} (stock ${x.stock})`).join(', ')}`,
+            );
+          }
         }
       }
 
-      if (!variacionElegida && conStock.length === 1)
-        variacionElegida = conStock[0];
+      /* Única variante con stock como default SOLO cuando el cliente no
+         nombró ninguna: si nombró y no se pudo resolver, jamás sustituirla
+         en silencio por otra (eso despacha el color equivocado). */
+      if (!variacionesElegidas.length && !pedida && conStock.length === 1)
+        variacionesElegidas = [{ ...conStock[0], qty: cantidadOrden }];
 
-      if (!variacionElegida) {
+      if (!variacionesElegidas.length) {
         return fail(
           'producto',
           `Producto #${dropiProductId} es variable y falta elegir la variedad. ` +
             `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
         );
       }
-      if (variacionElegida.stock < cantidadOrden) {
-        return fail(
-          'producto',
-          `Stock insuficiente de "${variacionElegida.etiqueta}": ${variacionElegida.stock} < ${cantidadOrden}`,
-        );
+      for (const v of variacionesElegidas) {
+        if (v.stock < v.qty) {
+          return fail(
+            'producto',
+            `Stock insuficiente de "${v.etiqueta}": ${v.stock} < ${v.qty}`,
+          );
+        }
       }
     }
 
-    // En variables el stock que manda es el de la variante elegida.
-    const stockDropi = esVariable
-      ? Number(variacionElegida.stock)
-      : Number(prodDropi.stock ?? prodDropi.warehouse_product?.[0]?.stock ?? NaN);
-    if (Number.isFinite(stockDropi) && stockDropi < cantidadOrden) {
-      return fail(
-        'producto',
-        `Stock insuficiente #${dropiProductId}: ${stockDropi} < ${cantidadOrden}`,
+    // En variables el stock ya se validó por variante elegida.
+    if (!esVariable) {
+      const stockDropi = Number(
+        prodDropi.stock ?? prodDropi.warehouse_product?.[0]?.stock ?? NaN,
       );
+      if (Number.isFinite(stockDropi) && stockDropi < cantidadOrden) {
+        return fail(
+          'producto',
+          `Stock insuficiente #${dropiProductId}: ${stockDropi} < ${cantidadOrden}`,
+        );
+      }
     }
 
     // 2.5 🛡️ Cinturón de margen: precio del bot vs costo proveedor.
@@ -1140,30 +1165,40 @@ async function autoCrearOrdenDropi({
         insurance: null,
         shalom_data: null,
         distributionCompany,
-        products: [
-          {
+        products: (() => {
+          const base = comboUsado
+            ? `${prodLocal.nombre} (combo x${cantidad})`
+            : prodLocal.nombre;
+          if (!variacionesElegidas.length) {
+            return [
+              {
+                id: dropiProductId,
+                name: base,
+                type: 'SIMPLE',
+                variation_id: null,
+                variations: [],
+                quantity: cantidadOrden,
+                price: precioUnitario,
+                sale_price: null,
+                suggested_price: null,
+              },
+            ];
+          }
+          // Un renglón por variante (igual que el selector manual del panel).
+          // La variedad va en el nombre para que se lea en Dropi y en la
+          // guía sin tener que abrir el detalle.
+          return variacionesElegidas.map((v) => ({
             id: dropiProductId,
-            name: (() => {
-              const base = comboUsado
-                ? `${prodLocal.nombre} (combo x${cantidad})`
-                : prodLocal.nombre;
-              // La variedad va en el nombre para que se lea en Dropi y en la
-              // guía sin tener que abrir el detalle.
-              return variacionElegida
-                ? `${base} — ${variacionElegida.etiqueta}`
-                : base;
-            })(),
-            type: variacionElegida ? 'VARIABLE' : 'SIMPLE',
-            variation_id: variacionElegida ? variacionElegida.id : null,
-            variations: variacionElegida
-              ? [{ id: variacionElegida.id, quantity: cantidadOrden }]
-              : [],
-            quantity: cantidadOrden,
+            name: `${base} — ${v.etiqueta}`,
+            type: 'VARIABLE',
+            variation_id: v.id,
+            variations: [{ id: v.id, quantity: v.qty }],
+            quantity: v.qty,
             price: precioUnitario,
             sale_price: null,
             suggested_price: null,
-          },
-        ],
+          }));
+        })(),
       },
     });
 
@@ -1194,6 +1229,9 @@ async function autoCrearOrdenDropi({
           : cantidadOrden > 1
             ? ` | base x${cantidadOrden}`
             : '') +
+        (variacionesElegidas.length
+          ? ` | var: ${variacionesElegidas.map((v) => `${v.etiqueta} x${v.qty}`).join(' + ')}`
+          : '') +
         (datosBot._fuente_ia ? ' | datos via extractor IA' : ''),
     });
 
