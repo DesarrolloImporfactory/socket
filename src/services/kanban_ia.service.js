@@ -22,6 +22,27 @@ const {
   nuevoTurno,
 } = require('../utils/openia/envioEnBloques');
 
+// Tope para mandar el catálogo dentro de las instrucciones en vez de usar
+// file_search.
+//
+// ⏸️ EN PAUSA (0 = desactivado): todas las columnas usan file_search, igual
+// que antes.
+//
+// La generación del texto inline también está en pausa, del otro lado:
+// GENERAR_CATALOGO_INLINE en syncCatalogoKanbanColumna.service.js. Para
+// reactivar hacen falta las TRES cosas, en este orden:
+//   1. GENERAR_CATALOGO_INLINE = true en el sync
+//   2. re-sincronizar los catálogos (si no, kanban_columnas.catalogo_inline
+//      está vacío o con texto viejo y esto igual cae a file_search)
+//   3. subir este tope
+//
+// Valores de referencia, medidos sobre los catálogos actuales:
+//   16000 → 233 de 238 conexiones usan inline (punto de equilibrio con
+//           file_search, que inyecta ~16.000 tokens por llamada)
+//   30000 → 237 de 238 (entran cfg 285, 403, 277 y 666)
+//   Infinity → las 238 (cfg 261, con 181 productos, costaría ~3x más)
+const TOPE_CATALOGO_INLINE = 0;
+
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
 const {
   autoCrearOrdenDropi,
@@ -233,7 +254,8 @@ async function procesarMensajeKanban(params) {
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.nombre, kc.assistant_id, kc.activa_ia,
-            kc.max_tokens, kc.vector_store_id, kc.es_dropi_principal
+            kc.max_tokens, kc.vector_store_id, kc.es_dropi_principal,
+            kc.catalogo_inline, kc.catalogo_inline_tokens
      FROM   kanban_columnas kc
      WHERE  kc.id_configuracion = ?
        AND  LOWER(kc.estado_db) = LOWER(?)
@@ -514,14 +536,44 @@ async function procesarMensajeKanban(params) {
   try {
     if (USAR_RESPONSES_API) {
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
+
+      // ── Catálogo: inline vs file_search ────────────────────
+      // file_search trocea el catálogo en fragmentos de 800 tokens con 400 de
+      // solapamiento y por defecto devuelve hasta 20, así que termina
+      // inyectando el catálogo entero DUPLICADO. Medido en config 10: 16.230
+      // tokens por llamada, contra 2.221 del mismo catálogo en texto plano.
+      //
+      // Por eso, si el catálogo en texto cabe holgadamente se manda inline:
+      // sale más barato Y el modelo ve el catálogo COMPLETO, sin depender de
+      // que la búsqueda semántica acierte. Solo los catálogos que superan el
+      // punto de equilibrio siguen con file_search, donde sí conviene.
+      //
+      // Subir TOPE_CATALOGO_INLINE a Infinity fuerza inline para todos.
+      const catalogoInline = (columna.catalogo_inline || '').trim();
+      const inlineTokens = Number(columna.catalogo_inline_tokens || 0);
+      const usarInline =
+        !!catalogoInline && inlineTokens > 0 && inlineTokens <= TOPE_CATALOGO_INLINE;
+
+      let instruccionesFinales = assistantInfo.instructions;
+      if (usarInline) {
+        instruccionesFinales = `${assistantInfo.instructions}\n\n${catalogoInline}`;
+        await log(
+          `📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`,
+        );
+      } else if (columna.vector_store_id) {
+        await log(
+          `🔎 Catálogo por file_search (inline=${inlineTokens || 'n/d'} tokens, tope=${TOPE_CATALOGO_INLINE})`,
+        );
+      }
+
       resultado = await ejecutarConResponsesAPI({
         previous_response_id,
-        instructions: assistantInfo.instructions,
+        instructions: instruccionesFinales,
         additional_instructions: instruccionesProducto || null,
         input: inputFinal,
         model: assistantInfo.model,
         max_tokens: columna.max_tokens || 500,
-        vector_store_id: columna.vector_store_id || null,
+        vector_store_id: usarInline ? null : columna.vector_store_id || null,
         api_key_openai,
       });
     } else {

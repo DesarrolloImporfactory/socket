@@ -7,6 +7,19 @@ const { db } = require('../database/config');
 const fs = require('fs');
 const path = require('path');
 
+// ⏸️ EN PAUSA (false): generación del catálogo en texto plano para mandarlo
+// dentro de las instrucciones en vez de usar file_search.
+//
+// Va de la mano con TOPE_CATALOGO_INLINE en kanban_ia.service.js:
+//   - aquí se GENERA y se guarda en kanban_columnas.catalogo_inline
+//   - allá se DECIDE si se usa (tope 0 = nunca, todo por file_search)
+//
+// Mientras esté en false, la sincronización se comporta exactamente igual que
+// antes: solo vector store + file_search. Para reactivar el inline hay que
+// poner esto en true, subir el tope en kanban_ia.service.js y re-sincronizar
+// los catálogos (si no, las columnas quedan con el texto viejo o vacío).
+const GENERAR_CATALOGO_INLINE = false;
+
 async function saveCatalogToDisk(
   catalogPayload,
   id_configuracion,
@@ -259,15 +272,37 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // ── 10. Guardar IDs nuevos en BD ──────────────────────────
   // Va ANTES de cualquier borrado: si el proceso muere aquí, la columna ya
   // apunta a un vector store válido.
+  //
+  // El catálogo inline (si está activo) se guarda en el mismo UPDATE para que
+  // el texto y el vector store queden siempre de la misma sincronización.
+  const inline = GENERAR_CATALOGO_INLINE
+    ? construirCatalogoInline(catalogPayload)
+    : null;
+
   await db.query(
     `UPDATE kanban_columnas
      SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
+         ${inline ? ', catalogo_inline = ?, catalogo_inline_tokens = ?' : ''}
      WHERE id = ?`,
     {
-      replacements: [vectorStoreId, newFileId, id_kanban_columna],
+      replacements: inline
+        ? [
+            vectorStoreId,
+            newFileId,
+            inline.texto,
+            inline.tokens,
+            id_kanban_columna,
+          ]
+        : [vectorStoreId, newFileId, id_kanban_columna],
       type: db.QueryTypes.UPDATE,
     },
   );
+
+  if (inline) {
+    await logger(
+      `📄 Catálogo inline guardado: ~${inline.tokens} tokens (${inline.texto.length} caracteres)`,
+    );
+  }
 
   // ── 11. Recién ahora, limpiar lo viejo (NO fatal) ─────────
   // Se le pasa el vector store que tenía la columna en BD para poder borrarlo
@@ -657,6 +692,38 @@ async function ensureAssistantHasFileSearch(
   await logger(
     `✅ Assistant ${assistantId} actualizado con file_search + vector_store ${vectorStoreId}`,
   );
+}
+
+// ─────────────────────────────────────────────────────────────
+// construirCatalogoInline
+// Arma el MISMO catálogo pero en texto plano, para poder pegarlo al final de
+// las instrucciones en vez de dárselo al modelo por file_search.
+//
+// Sale mucho más barato: file_search trocea el archivo en fragmentos de 800
+// tokens con 400 de solapamiento y devuelve hasta 20, así que termina
+// inyectando el catálogo entero DUPLICADO en cada llamada. Medido en la
+// config 10: 16.230 tokens por file_search contra 2.221 del mismo catálogo en
+// texto. Y de paso el modelo ve el catálogo COMPLETO, sin depender de que la
+// búsqueda semántica acierte.
+//
+// Solo se llama si GENERAR_CATALOGO_INLINE está en true.
+// ─────────────────────────────────────────────────────────────
+function construirCatalogoInline(catalogPayload) {
+  const encabezado = [
+    '=== CATÁLOGO (información interna de consulta) ===',
+    ...(catalogPayload.instrucciones_uso_ia || []).map((i) => `- ${i}`),
+  ].join('\n');
+
+  const bloques = (catalogPayload.items || [])
+    .map((it) => String(it.bloque_prompt || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  const texto = `${encabezado}\n\n${bloques}`.trim();
+
+  // Estimación, NO tokenizador real: ~4 caracteres por token en español.
+  // Solo sirve para compararla contra TOPE_CATALOGO_INLINE, no para facturar.
+  return { texto, tokens: Math.ceil(texto.length / 4) };
 }
 
 // ── Normalizadores ───────────────────────────────────────────

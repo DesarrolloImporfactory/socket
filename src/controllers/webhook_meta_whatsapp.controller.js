@@ -31,6 +31,11 @@ const {
   buscarProductoPorReferral,
 } = require('../utils/webhook_whatsapp/buscar_producto_referral');
 
+// Lectura de imágenes del cliente (equivalente visual de la transcripción)
+const {
+  describirImagenDesdeArchivo,
+} = require('../utils/openia/describirImagen');
+
 const {
   cancelarRemarketingEnNode,
   obtenerThreadId,
@@ -1098,6 +1103,39 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 `[${new Date().toISOString()}] ⚠️ No se pudo transcribir el audio\n`,
               );
             }
+          }
+
+          // Si es imagen, describirla para que la IA pueda "leerla".
+          // Mismo criterio que el audio: sin flag, siempre que la IA esté activa.
+          if (tipo_mensaje === 'image' && ruta_archivo) {
+            const descripcion = await describirImagenDesdeArchivo(
+              ruta_archivo,
+              api_key_openai,
+            );
+
+            // El caption del cliente, si escribió algo junto a la foto
+            const caption = (texto_mensaje || '').trim();
+
+            // Si la visión falla se avisa igual: es mejor que la IA sepa que
+            // llegó una imagen a que le entre un mensaje vacío y responda
+            // cualquier cosa.
+            const leido = descripcion || '[El cliente envió una imagen]';
+            texto_mensaje = caption ? `${leido}\nCliente: ${caption}` : leido;
+
+            if (referral) {
+              mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
+              Nombre del producto anunciado: ${referral.headline || ''}
+              Mensaje del cliente: ${texto_mensaje}`;
+            } else {
+              mensaje_para_ia = texto_mensaje;
+            }
+
+            await fsp.appendFile(
+              path.join(logsDir, 'debug_log.txt'),
+              `[${new Date().toISOString()}] ${
+                descripcion ? '🖼️ Imagen descrita' : '⚠️ No se pudo leer la imagen'
+              }: ${texto_mensaje}\n`,
+            );
           }
 
           /* await enviarEscribiendoWhatsapp(phone_whatsapp_from,business_phone_id,accessToken); */

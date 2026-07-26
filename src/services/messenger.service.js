@@ -5,6 +5,7 @@ const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { rehostAttachments } = require('../utils/rehostMediaMeta');
+const { describirImagenDesdeUrl } = require('../utils/openia/describirImagen');
 
 const FB_APP_ID = process.env.FB_APP_ID;
 
@@ -192,7 +193,7 @@ async function runKanbanIaMS({
     if (Number(contacto.bot_openia) !== 1) return; // IA apagada para este chat
     const estado_contacto = contacto.estado_contacto || 'contacto_inicial';
 
-    // 3) Construir el mensaje para la IA (texto o audio transcrito)
+    // 3) Construir el mensaje para la IA (texto, audio transcrito o imagen leída)
     let mensajeIA = (message.text || '').trim();
     if (!mensajeIA) {
       const audioUrl = (message.attachments || []).find(
@@ -204,7 +205,22 @@ async function runKanbanIaMS({
         if (transcrito) mensajeIA = transcrito.trim();
       }
     }
-    if (!mensajeIA) return; // v1: solo texto/audio disparan la IA
+    if (!mensajeIA) {
+      const imagenUrl = (message.attachments || []).find(
+        (a) => a?.type === 'image' && a?.payload?.url,
+      )?.payload?.url;
+
+      if (imagenUrl) {
+        const descripcion = await describirImagenDesdeUrl(
+          imagenUrl,
+          api_key_openai,
+          'MS',
+        );
+        // Si la visión falla se avisa igual, para que la IA no reciba vacío.
+        mensajeIA = (descripcion || '[El cliente envió una imagen]').trim();
+      }
+    }
+    if (!mensajeIA) return; // solo texto/audio/imagen disparan la IA
 
     // 4) Adaptador de canal Messenger (envío + persistencia + socket)
     const persistirYEmitir = async ({
