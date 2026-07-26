@@ -4406,32 +4406,44 @@ async function attachProductConversations({
   // Normalmente viene prefetcheada desde el Promise.all principal de
   // getConnectionSummary (para no sumar su latencia en serie); el
   // fallback consulta aquí. .catch → la tabla puede no existir aún.
+  // Lookback 7 días: sirve solo para RESOLVER el producto del anuncio (un
+  // cliente pudo entrar por el ad antes del rango y comprar dentro); las
+  // conversaciones se cuentan solo con filas en_rango.
   if (!adRows) {
     [adRows] = await db
       .query(
         `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
-                cpa.mensaje_cliente, cc.celular_cliente
+                cpa.mensaje_cliente, cc.celular_cliente,
+                (cpa.created_at BETWEEN :from AND :until) AS en_rango
            FROM cliente_productos_ad cpa
            JOIN clientes_chat_center cc
              ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
           WHERE cpa.id_configuracion = :idCfg
-            AND cpa.created_at BETWEEN :from AND :until`,
+            AND cpa.created_at BETWEEN DATE_SUB(:from, INTERVAL 7 DAY) AND :until`,
         { replacements: { idCfg: id_configuracion, from, until } },
       )
       .catch(() => [[]]);
   }
+  // Filas viejas / llamadas sin la columna → cuentan como del rango
+  const filaEnRango = (r) => r.en_rango === undefined || Number(r.en_rango) === 1;
 
   // Agrupar filas por anuncio (source_id; sin él, por headline)
-  const adGroups = new Map(); // adKey → { headline, rows, clients: Map(id → keys) }
+  const adGroups = new Map(); // adKey → { headline, rows, clients, enRango }
   for (const r of adRows) {
     if (!r.id_cliente) continue;
     const adKey = r.source_id || `h:${r.headline || ''}`;
     if (!adGroups.has(adKey))
-      adGroups.set(adKey, { headline: r.headline, rows: [], clients: new Map() });
+      adGroups.set(adKey, {
+        headline: r.headline,
+        rows: [],
+        clients: new Map(),
+        enRango: new Set(), // ids que sí entraron dentro del rango
+      });
     const g = adGroups.get(adKey);
     g.rows.push(r);
     if (!g.clients.has(r.id_cliente))
       g.clients.set(r.id_cliente, phoneKeys(r.celular_cliente));
+    if (filaEnRango(r)) g.enRango.add(r.id_cliente);
   }
 
   const totalByProduct = new Map(); // product name → Set(id_cliente)
@@ -4453,26 +4465,27 @@ async function attachProductConversations({
   const familias = []; // { nombre, members:Set(name), clients:Set(cid) }
   const chatsSinProducto = new Map(); // headline → Set(id_cliente)
 
+  // Pasada 1 — resolver el producto de cada anuncio:
+  // a) headline = nombre del producto, b) mayoría de compras.
   for (const g of adGroups.values()) {
-    // a) headline = nombre del producto
-    let prodName =
-      matchEnLista(productos, g.headline, (p) => p.name)?.name || null;
-
     // compras REALES de cada cliente del anuncio (order_data)
-    const boughtByClient = new Map(); // cid → Set(product name)
+    g.boughtByClient = new Map(); // cid → Set(product name)
     for (const [cid, ks] of g.clients) {
       const bought = new Set();
       for (const k of ks) {
         for (const name of productsByKey.get(k) || []) bought.add(name);
       }
-      boughtByClient.set(cid, bought);
+      g.boughtByClient.set(cid, bought);
     }
 
+    g.prodName =
+      matchEnLista(productos, g.headline, (p) => p.name)?.name || null;
+
     // b) mayoría: producto que compraron los clientes de este anuncio
-    if (!prodName) {
+    if (!g.prodName) {
       const tally = new Map();
       let links = 0;
-      for (const bought of boughtByClient.values()) {
+      for (const bought of g.boughtByClient.values()) {
         for (const name of bought) {
           tally.set(name, (tally.get(name) || 0) + 1);
           links += 1;
@@ -4486,8 +4499,30 @@ async function attachProductConversations({
           bestN = n;
         }
       }
-      if (best && bestN >= 2 && bestN / links >= 0.6) prodName = best;
+      if (best && bestN >= 2 && bestN / links >= 0.6) g.prodName = best;
     }
+  }
+
+  // Contagio por headline: varios ads comparten el mismo headline (cfg 610:
+  // "Onn Watch TV" en 6 ads). Si uno resolvió por mayoría, los demás heredan
+  // el producto; ambiguo (2 productos distintos) → mejor no adivinar.
+  const prodPorHeadline = new Map(); // headline norm → Set(prodName)
+  const headKey = (h) => String(h || '').trim().toLowerCase();
+  for (const g of adGroups.values()) {
+    const h = headKey(g.headline);
+    if (!h || !g.prodName) continue;
+    if (!prodPorHeadline.has(h)) prodPorHeadline.set(h, new Set());
+    prodPorHeadline.get(h).add(g.prodName);
+  }
+  for (const g of adGroups.values()) {
+    if (g.prodName) continue;
+    const s = prodPorHeadline.get(headKey(g.headline));
+    if (s && s.size === 1) g.prodName = [...s][0];
+  }
+
+  // Pasada 2 — contar conversaciones (solo clientes que entraron en el rango)
+  for (const g of adGroups.values()) {
+    const { prodName, boughtByClient } = g;
 
     if (prodName) {
       // ¿El anuncio vende una FAMILIA? (los clientes compraron otras
@@ -4501,15 +4536,17 @@ async function attachProductConversations({
       if (members.size >= 2) {
         // comprador → su producto REAL; el total del anuncio se
         // comparte a nivel familia (los que no compraron no se
-        // pueden asignar a una presentación específica)
+        // pueden asignar a una presentación específica).
+        // Solo cuentan los que entraron dentro del rango.
         const fam = { nombre: g.headline || prodName, members, clients: new Set() };
         for (const [cid, bought] of boughtByClient) {
+          if (!g.enRango.has(cid)) continue;
           fam.clients.add(cid);
           for (const name of bought) addConv(name, cid);
         }
         familias.push(fam);
       } else {
-        for (const cid of g.clients.keys()) addConv(prodName, cid);
+        for (const cid of g.enRango) addConv(prodName, cid);
       }
       continue;
     }
@@ -4518,7 +4555,7 @@ async function attachProductConversations({
     let resueltos = 0;
     for (const r of g.rows) {
       const name = matchMensaje(r.mensaje_cliente);
-      if (name) {
+      if (name && filaEnRango(r)) {
         addConv(name, r.id_cliente);
         resueltos += 1;
       }
@@ -4533,7 +4570,7 @@ async function attachProductConversations({
       const clave = String(g.headline || '').trim();
       if (clave) {
         if (!chatsSinProducto.has(clave)) chatsSinProducto.set(clave, new Set());
-        for (const cid of g.clients.keys()) chatsSinProducto.get(clave).add(cid);
+        for (const cid of g.enRango) chatsSinProducto.get(clave).add(cid);
       }
     }
   }
@@ -4655,7 +4692,7 @@ async function attachProductConversations({
   // atribuidos → chats que sí quedan representados en alguna fila.
   // chatsSinProducto → anuncios que trajeron chats de un producto que aún no
   //   vendió: el resumen los agrega como filas "sin ventas".
-  return { ctwaActivo: adRows.length > 0, atribuidos, chatsSinProducto };
+  return { ctwaActivo: adRows.some(filaEnRango), atribuidos, chatsSinProducto };
 }
 
 /* Conversaciones por canal: clientes de chat distintos vinculados por
@@ -4915,16 +4952,21 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       .catch(() => [[]]),
     // Chats entrados por anuncio CTWA (los usa attachProductConversations;
     // prefetch aquí para que su ~0.5-1s corra en paralelo y no en serie).
-    // .catch → la tabla puede no existir aún en este entorno.
+    // Lookback 7 días con flag en_rango: las filas previas al rango solo
+    // sirven para resolver a qué producto pertenece cada anuncio (cfg 610:
+    // los compradores de FIRE TV entraron por el ad un día antes del rango
+    // y sin ellas el anuncio quedaba sin producto). .catch → la tabla
+    // puede no existir aún en este entorno.
     db
       .query(
         `SELECT cpa.id_cliente, cpa.source_id, cpa.headline,
-                cpa.mensaje_cliente, cc.celular_cliente
+                cpa.mensaje_cliente, cc.celular_cliente,
+                (cpa.created_at BETWEEN :from AND :until) AS en_rango
            FROM cliente_productos_ad cpa
            JOIN clientes_chat_center cc
              ON cc.id = cpa.id_cliente AND cc.deleted_at IS NULL
           WHERE cpa.id_configuracion = :idCfg
-            AND cpa.created_at BETWEEN :from AND :until`,
+            AND cpa.created_at BETWEEN DATE_SUB(:from, INTERVAL 7 DAY) AND :until`,
         { replacements: repl },
       )
       .catch(() => [[]]),
@@ -5309,15 +5351,15 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   const ctwaActivo = convProducto.ctwaActivo;
 
   /* Cuadre de conversaciones para la tabla de productos: de todos los que
-     escribieron en el periodo, cuántos quedan representados en alguna fila.
-     El resto entró por productos que no registraron ventas en el rango (no
-     hay fila que los muestre, porque la tabla nace de las órdenes Dropi) o
-     no vino de un anuncio. Se cuenta la UNIÓN de los chats por producto:
-     sumar la columna daría de más, porque varias presentaciones comparten
-     el mismo anuncio. */
-  let conversacionesEnTabla = 0;
+     escribieron en el periodo, cuántos quedan representados en alguna fila
+     (incluidas las filas "solo anuncios", que se agregan más abajo). Se
+     cuenta la UNIÓN de los chats por producto: sumar la columna daría de
+     más, porque varias presentaciones comparten el mismo anuncio. Lo que
+     queda fuera son chats sin señal de producto (no entraron por anuncio o
+     el anuncio no se pudo ligar a nada). */
+  const enTablaIds = new Set();
   for (const cid of convProducto.atribuidos) {
-    if (escribieron.has(cid)) conversacionesEnTabla += 1;
+    if (escribieron.has(cid)) enTablaIds.add(cid);
   }
 
   // Compradores del periodo = clientes de chat con al menos un pedido
@@ -5447,7 +5489,11 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   const sinVentas = [];
   for (const [headline, clientes] of convProducto.chatsSinProducto || []) {
     let enPeriodo = 0;
-    for (const cid of clientes) if (escribieron.has(cid)) enPeriodo += 1;
+    for (const cid of clientes)
+      if (escribieron.has(cid)) {
+        enPeriodo += 1;
+        enTablaIds.add(cid); // su fila "solo anuncios" sí está en la tabla
+      }
     if (!enPeriodo) continue;
     const vacio = {
       ordenes: 0,
@@ -5590,11 +5636,12 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       .sort((a, b) => b.count - a.count),
     productos,
     // Cuadre de la tabla de productos: total del periodo, cuántas caen en
-    // alguna fila y cuántas no (productos sin ventas / chats sin anuncio).
+    // alguna fila (con ventas o "solo anuncios") y cuántas quedan sin
+    // señal de producto (no entraron por anuncio).
     conversacionesProducto: {
       total: totalConversaciones,
-      enTabla: conversacionesEnTabla,
-      sinProducto: Math.max(0, totalConversaciones - conversacionesEnTabla),
+      enTabla: enTablaIds.size,
+      sinProducto: Math.max(0, totalConversaciones - enTablaIds.size),
     },
     // true → hubo conversaciones desde anuncios CTWA en el periodo;
     // false → el front no muestra conv. totales/% conf. por producto

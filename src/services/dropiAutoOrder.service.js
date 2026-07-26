@@ -375,7 +375,7 @@ async function completarDatosConIA({
             content:
               `Extrae los datos del pedido confirmado de esta conversación de ventas COD en ${paisNombre}. ` +
               'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad, modalidad_envio, variedad. ' +
-              'variedad = la opción del producto que eligió el cliente (color, talla, sabor o modelo), tal como se nombró en la conversación; si el producto no tiene opciones o no se mencionó, null. ' +
+              'variedad = la opción del producto (color, talla, sabor o modelo) que el CLIENTE escribió en SUS mensajes. Solo cuenta si la escribió el CLIENTE; lo que diga el VENDEDOR no vale. Si el cliente nunca la nombró, null. ' +
               'producto = nombre del producto tal como lo menciona el VENDEDOR. ' +
               'precio_total = número, el total que el cliente acordó pagar. ' +
               'cantidad = número de unidades (1 si no se especifica). ' +
@@ -478,6 +478,25 @@ async function autoCrearOrdenDropi({
       ctx.datos_bot = datosBot; // que el log refleje lo que realmente se usó
     }
     if (!datosBot.cantidad) datosBot.cantidad = '1';
+
+    // 0.6 Candado de datos reales: si el bot cerró antes de tiempo, el resumen
+    // trae relleno tipo "(pendiente)" / "(no proporcionado)" en vez de datos.
+    // Mejor caer a orden manual que mandar basura a Dropi.
+    const RELLENO =
+      /pendiente|no proporcionad|falta|\[nombre|\[tel[eé]fono|\[direcci|tu n[uú]mero/i;
+    for (const campo of ['nombre', 'telefono', 'direccion']) {
+      if (RELLENO.test(String(datosBot[campo] || '')))
+        return fail(
+          'datos',
+          `Campo ${campo} sin dato real: "${String(datosBot[campo]).slice(0, 80)}"`,
+        );
+    }
+    const digitosTel = String(datosBot.telefono || '').replace(/\D/g, '');
+    if (digitosTel.length < 9)
+      return fail(
+        'datos',
+        `Teléfono inválido: "${String(datosBot.telefono || '').slice(0, 40)}"`,
+      );
 
     // 1. Producto local con vínculo a Dropi (external_id)
     //    Cascada de identificación:
@@ -734,7 +753,55 @@ async function autoCrearOrdenDropi({
           variantes.find((v) => v.etiqueta.toLowerCase() === pedida) ||
           variantes.find((v) => v.etiqueta.toLowerCase().includes(pedida)) ||
           null;
+        /* El bot a veces adorna la línea ("Negro (2 unidades)") o el cliente
+           pide varias ("Negro y Cafe"). Se busca qué etiquetas aparecen
+           DENTRO del texto: exactamente una → esa es; varias → ambiguo (el
+           pedido mezcla variedades y Dropi solo acepta una por orden) →
+           manual con el detalle. */
+        if (!variacionElegida) {
+          const dentro = variantes.filter((v) =>
+            pedida.includes(v.etiqueta.toLowerCase()),
+          );
+          if (dentro.length === 1) variacionElegida = dentro[0];
+        }
       }
+      /* ── Candado anti-alucinación ──
+         La variedad del resumen la escribe el BOT, y a veces la inventa
+         ("Has elegido Negro" sin que el cliente lo dijera). Antes de confiar,
+         se verifica que la etiqueta aparezca en algún mensaje DEL CLIENTE.
+         Si no aparece, se descarta y la orden cae a manual con las opciones
+         listadas: mil veces mejor un pedido manual que uno del color
+         equivocado. */
+      if (variacionElegida) {
+        const sinAcentos = (s) =>
+          String(s || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[̀-ͯ]/g, '');
+        const msgsCliente = await db.query(
+          `SELECT texto_mensaje FROM mensajes_clientes
+            WHERE celular_recibe = ? AND id_configuracion = ?
+              AND rol_mensaje = 0 AND deleted_at IS NULL
+            ORDER BY id DESC LIMIT 30`,
+          {
+            replacements: [id_cliente, id_configuracion],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        const textoCliente = sinAcentos(
+          msgsCliente.map((m) => m.texto_mensaje).join(' '),
+        );
+        const etiquetaNorm = sinAcentos(variacionElegida.etiqueta);
+        if (!textoCliente.includes(etiquetaNorm)) {
+          return fail(
+            'producto',
+            `Variedad "${variacionElegida.etiqueta}" no confirmada por el cliente ` +
+              `(no aparece en sus mensajes; posible invento del bot). ` +
+              `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
+          );
+        }
+      }
+
       if (!variacionElegida && conStock.length === 1)
         variacionElegida = conStock[0];
 
