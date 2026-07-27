@@ -949,6 +949,9 @@ async function registrarMensajeEnChat({
   waMessageId,
   rutaArchivo,
   jsonMensaje,
+  // Quién aparece como emisor en el chat. Por defecto el notifier de Dropi;
+  // otros orígenes de seguimiento (bot de WhatsApp) mandan el suyo.
+  responsable = 'Dropi Status',
 }) {
   try {
     await db.query(
@@ -957,7 +960,7 @@ async function registrarMensajeEnChat({
           celular_recibe, responsable, texto_mensaje, ruta_archivo,
           json_mensaje, visto, uid_whatsapp, id_wamid_mensaje,
           template_name, language_code, informacion_suficiente)
-       VALUES (?, ?, ?, ?, 1, ?, 'Dropi Status', ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1)`,
       {
         replacements: [
           id_configuracion,
@@ -965,6 +968,7 @@ async function registrarMensajeEnChat({
           phone_number_id,
           tipoEnvio === 'template' ? 'template' : 'text',
           clienteId,
+          responsable || 'Dropi Status',
           textoMensaje || '',
           rutaArchivo ? JSON.stringify(rutaArchivo) : null,
           jsonMensaje ? JSON.stringify(jsonMensaje) : null,
@@ -1483,6 +1487,15 @@ module.exports = {
   reconstructGuiaPdfPath,
   resolveVariable,
   buildTemplateComponents,
+  buildRutaArchivo,
+  interpolarBodyText,
+  // piezas reutilizables por otros orígenes de seguimiento
+  // (services/seguimiento_plantillas.service.js). Se exportan para NO volver a
+  // duplicar el envío/registro como pasó con el webhook de Shopify.
+  getWaCredentials,
+  resolverClientes,
+  registrarMensajeEnChat,
+  enviarTemplate,
   // persistencia / envío
   upsertOrders,
   getPlantillasActivas,

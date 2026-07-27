@@ -52,6 +52,9 @@ const {
 const {
   enlazarOrdenContactoOrigen,
 } = require('./contactoOrigenEnlace.service');
+const {
+  enviarConfirmacionOrdenBot,
+} = require('./seguimiento_plantillas.service');
 const { resolveRegion } = require('../utils/phoneFactor');
 
 /* ────────────────────────── helpers ────────────────────────── */
@@ -1140,6 +1143,43 @@ async function autoCrearOrdenDropi({
       .split(/\s+/);
     const surname = resto.join(' ') || nombre || 'Cliente';
 
+    // Renglones de la orden. Se arman fuera del payload porque también
+    // alimentan las variables de la plantilla de seguimiento ({{contenido}}).
+    const productosOrden = (() => {
+      const base = comboUsado
+        ? `${prodLocal.nombre} (combo x${cantidad})`
+        : prodLocal.nombre;
+      if (!variacionesElegidas.length) {
+        return [
+          {
+            id: dropiProductId,
+            name: base,
+            type: 'SIMPLE',
+            variation_id: null,
+            variations: [],
+            quantity: cantidadOrden,
+            price: precioUnitario,
+            sale_price: null,
+            suggested_price: null,
+          },
+        ];
+      }
+      // Un renglón por variante (igual que el selector manual del panel).
+      // La variedad va en el nombre para que se lea en Dropi y en la
+      // guía sin tener que abrir el detalle.
+      return variacionesElegidas.map((v) => ({
+        id: dropiProductId,
+        name: `${base} — ${v.etiqueta}`,
+        type: 'VARIABLE',
+        variation_id: v.id,
+        variations: [{ id: v.id, quantity: v.qty }],
+        quantity: v.qty,
+        price: precioUnitario,
+        sale_price: null,
+        suggested_price: null,
+      }));
+    })();
+
     const data = await createOrderForClient({
       id_configuracion,
       body: {
@@ -1165,40 +1205,7 @@ async function autoCrearOrdenDropi({
         insurance: null,
         shalom_data: null,
         distributionCompany,
-        products: (() => {
-          const base = comboUsado
-            ? `${prodLocal.nombre} (combo x${cantidad})`
-            : prodLocal.nombre;
-          if (!variacionesElegidas.length) {
-            return [
-              {
-                id: dropiProductId,
-                name: base,
-                type: 'SIMPLE',
-                variation_id: null,
-                variations: [],
-                quantity: cantidadOrden,
-                price: precioUnitario,
-                sale_price: null,
-                suggested_price: null,
-              },
-            ];
-          }
-          // Un renglón por variante (igual que el selector manual del panel).
-          // La variedad va en el nombre para que se lea en Dropi y en la
-          // guía sin tener que abrir el detalle.
-          return variacionesElegidas.map((v) => ({
-            id: dropiProductId,
-            name: `${base} — ${v.etiqueta}`,
-            type: 'VARIABLE',
-            variation_id: v.id,
-            variations: [{ id: v.id, quantity: v.qty }],
-            quantity: v.qty,
-            price: precioUnitario,
-            sale_price: null,
-            suggested_price: null,
-          }));
-        })(),
+        products: productosOrden,
       },
     });
 
@@ -1215,6 +1222,37 @@ async function autoCrearOrdenDropi({
         id_cliente_origen: id_cliente,
         telefono_orden: datosBot.telefono,
       }).catch(() => {});
+    }
+
+    // Plantilla de seguimiento "PENDIENTE CONFIRMACION" para la venta que
+    // cerró el bot. El service decide si corresponde (estado activo + gate
+    // enviar_en_orden_bot del cliente) y NO mueve de columna: el contacto se
+    // queda en generar_guia. Best-effort: nunca tumba la creación de la orden.
+    if (orderId) {
+      const resSeg = await enviarConfirmacionOrdenBot({
+        id_configuracion,
+        dropi_order_id: orderId,
+        country_code,
+        order: {
+          id: orderId,
+          name: nombre || 'Cliente',
+          surname,
+          phone: datosBot.telefono,
+          dir: datosBot.direccion,
+          city: city.name || city.city || city.nombre,
+          state: state.name || state.department || state.nombre,
+          total_order: totalOrder,
+          orderdetails: productosOrden.map((p) => ({
+            quantity: p.quantity,
+            product: { name: p.name },
+          })),
+        },
+      });
+      if (!resSeg?.enviado && resSeg?.motivo) {
+        console.log(
+          `[AutoOrden] confirmación WhatsApp no enviada (orden ${orderId}): ${resSeg.motivo}`,
+        );
+      }
     }
 
     await logAuto({
