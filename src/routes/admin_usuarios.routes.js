@@ -18,5 +18,11 @@ router.get(
 // Exportar → solo super_administrador
 router.post('/exportar', requireSuperAdmin, ctrl.exportarUsuariosAdmin);
 router.get('/kpis', requireGestorClientes, ctrl.kpisUsuariosAdmin);
+// Métricas de gestión del asesor (evolución, embudo, cobertura, agenda)
+router.get(
+  '/metricas_gestion',
+  requireGestorClientes,
+  ctrl.metricasGestionAdmin,
+);
 
 module.exports = router;

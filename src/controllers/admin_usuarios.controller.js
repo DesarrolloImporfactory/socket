@@ -104,6 +104,22 @@ function construirFiltros(body) {
     where.push('u.cancel_at_period_end = 1');
   }
 
+  // Cancelación programada AÚN SALVABLE: pidió irse pero todavía no se va.
+  // Es la lista de trabajo real del asesor de retención — distinta de
+  // cancel_at_period_end a secas, que incluye a los que ya se fueron.
+  if (isTrue(body.cancelacion_programada)) {
+    where.push(`
+      u.cancel_at_period_end = 1
+      AND (u.cancel_at IS NULL OR u.cancel_at > NOW())
+      AND u.estado NOT IN ('cancelado')
+    `);
+  }
+
+  // Sin WhatsApp personal registrado: para campañas de completar el dato.
+  if (isTrue(body.sin_whatsapp_personal)) {
+    where.push(`(u.whatsapp_lead IS NULL OR TRIM(u.whatsapp_lead) = '')`);
+  }
+
   if (isTrue(body.permanente)) {
     where.push('u.permanente = 1');
   }
@@ -195,6 +211,22 @@ function buildBaseSelect() {
       u.conexiones_adicionales,
       u.created_at                AS fecha_registro,
       u.updated_at                AS ultima_actualizacion,
+
+      /* ── WhatsApp PERSONAL del dueño (el del registro) ──
+         Ojo: NO confundir con telefono_principal, que es el número de
+         WhatsApp Business de la conexión. Para llamar a un cliente que se
+         está yendo, el que sirve es este. Se captura en el alta
+         (auth.controller) y es obligatorio desde entonces; los usuarios
+         antiguos lo tienen vacío. */
+      u.whatsapp_lead,
+      u.whatsapp_lead_pais,
+      CASE
+        WHEN COALESCE(TRIM(u.whatsapp_lead),'') = '' THEN NULL
+        ELSE CONCAT(
+          COALESCE(NULLIF(TRIM(u.whatsapp_lead_pais),''), '+593'),
+          REGEXP_REPLACE(TRIM(u.whatsapp_lead), '^0+', '')
+        )
+      END AS whatsapp_personal_e164,
       u.il_trial_used,
       u.il_imagenes_usadas,
       u.promo_imagenes_restantes,
@@ -274,6 +306,17 @@ function buildBaseSelect() {
         ELSE DATEDIFF(u.fecha_renovacion, NOW())
       END AS dias_hasta_vencimiento,
 
+      /* ── Cancelación programada ──
+         El cliente ya pidió irse pero su suscripción SIGUE viva hasta
+         cancel_at. Es la ventana en la que todavía se puede retener, y por
+         eso se expone aparte: filtrar por stripe_status='canceled' llega
+         tarde, cuando ya se fue. */
+      CASE
+        WHEN u.cancel_at_period_end = 1 AND u.cancel_at IS NOT NULL
+          THEN DATEDIFF(u.cancel_at, NOW())
+        ELSE NULL
+      END AS dias_para_cancelar,
+
       /* Semáforo */
       CASE
         WHEN u.permanente = 1 AND u.estado = 'activo'                    THEN 'verde'
@@ -318,8 +361,21 @@ exports.listarUsuariosAdmin = catchAsync(async (req, res, next) => {
     ultimo_mensaje: 'ultimo_mensaje',
     total_whatsapp_activos: 'total_whatsapp_activos',
     dias_hasta_vencimiento: 'dias_hasta_vencimiento',
+    // Urgencia de retención: los que cancelan primero, arriba.
+    dias_para_cancelar: 'dias_para_cancelar',
+    ultimo_seguimiento: 'ultimo_seguimiento',
   };
   const orderCol = ORDER_COLS[order_by] || 'fecha_registro';
+
+  // MySQL pone los NULL primero al ordenar ASC. En las columnas donde NULL
+  // significa "no aplica" (nunca contactado, sin cancelación programada) eso
+  // llenaría la primera página de filas irrelevantes, justo lo contrario de
+  // lo que busca el asesor.
+  const nullsLast = ['dias_para_cancelar', 'ultimo_seguimiento'].includes(
+    orderCol,
+  )
+    ? `t.${orderCol} IS NULL,`
+    : '';
 
   const { where, replacements } = construirFiltros(req.body || {});
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -337,7 +393,7 @@ exports.listarUsuariosAdmin = catchAsync(async (req, res, next) => {
       ${whereSql}
     ) AS t
     ${semaforoFiltro ? 'WHERE t.semaforo = ?' : ''}
-    ORDER BY t.${orderCol} ${order_dir}
+    ORDER BY ${nullsLast} t.${orderCol} ${order_dir}
     LIMIT ? OFFSET ?
   `;
 
@@ -495,6 +551,8 @@ exports.exportarUsuariosAdmin = catchAsync(async (req, res, next) => {
     { header: 'Empresa', key: 'empresa', width: 30 },
     { header: 'Email', key: 'email', width: 32 },
     { header: 'Teléfono principal', key: 'telefono_principal', width: 16 },
+    // El personal del dueño: es con el que se le llama, no el de la conexión.
+    { header: 'WhatsApp personal', key: 'whatsapp_personal_e164', width: 18 },
     { header: 'Estado', key: 'estado', width: 14 },
     { header: 'Semáforo', key: 'semaforo', width: 10 },
     { header: 'Plan', key: 'nombre_plan', width: 22 },
@@ -507,6 +565,7 @@ exports.exportarUsuariosAdmin = catchAsync(async (req, res, next) => {
     { header: 'Días p/ vencer', key: 'dias_hasta_vencimiento', width: 10 },
     { header: 'Stripe status', key: 'stripe_subscription_status', width: 16 },
     { header: 'Cancel at period end', key: 'cancel_at_period_end', width: 10 },
+    { header: 'Días p/ cancelar', key: 'dias_para_cancelar', width: 12 },
     { header: 'Subusuarios', key: 'total_subusuarios', width: 10 },
     {
       header: 'Conexiones activas',
@@ -601,4 +660,131 @@ exports.kpisUsuariosAdmin = catchAsync(async (req, res, next) => {
   );
 
   return res.json({ status: 'success', data: rows?.[0] || {} });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   MÉTRICAS DE GESTIÓN (para los gráficos del asesor)
+
+   Mide el trabajo de retención sobre seguimiento_clientes_chat_center.
+   IMPORTANTE al leer estos números: miden lo que se REGISTRA, no
+   necesariamente lo que se hace. Un asesor que llama y no anota aparece
+   igual que uno que no llama. Antes de usarlos para evaluar a alguien hay
+   que acordar que todo contacto se registra.
+   ══════════════════════════════════════════════════════════════ */
+
+exports.metricasGestionAdmin = catchAsync(async (req, res, next) => {
+  const meses = Math.min(Math.max(Number(req.query?.meses) || 6, 1), 24);
+
+  /* 1. Evolución mensual: volumen y efectividad del contacto */
+  const evolucion = await db.query(
+    `SELECT DATE_FORMAT(fecha_seguimiento, '%Y-%m')            AS mes,
+            COUNT(*)                                           AS total,
+            SUM(resultado = 'contactado_exitoso')              AS contactados,
+            SUM(resultado = 'no_contesto')                     AS no_contesto,
+            SUM(resultado = 'numero_invalido')                 AS numero_invalido,
+            SUM(resultado IN ('retenido','convertido'))        AS recuperados,
+            SUM(resultado = 'cancelado')                       AS perdidos,
+            COUNT(DISTINCT id_usuario)                         AS clientes_tocados
+       FROM seguimiento_clientes_chat_center
+      WHERE fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+      GROUP BY 1
+      ORDER BY 1 ASC`,
+    { replacements: [meses], type: db.QueryTypes.SELECT },
+  );
+
+  /* 2. Embudo de resultados */
+  const embudo = await db.query(
+    `SELECT resultado, COUNT(*) AS total
+       FROM seguimiento_clientes_chat_center
+      WHERE fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+      GROUP BY 1
+      ORDER BY total DESC`,
+    { replacements: [meses], type: db.QueryTypes.SELECT },
+  );
+
+  /* 3. Por canal usado */
+  const canales = await db.query(
+    `SELECT tipo, COUNT(*) AS total
+       FROM seguimiento_clientes_chat_center
+      WHERE fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+      GROUP BY 1
+      ORDER BY total DESC`,
+    { replacements: [meses], type: db.QueryTypes.SELECT },
+  );
+
+  /* 4. Desempeño por asesor. `vencidos` = compromisos de próximo contacto
+     que ya pasaron sin registrar nada después: es la métrica que delata
+     seguimiento abandonado, más que el volumen. */
+  const asesores = await db.query(
+    `SELECT sg.ejecutado_por_nombre                            AS asesor,
+            COUNT(*)                                           AS seguimientos,
+            COUNT(DISTINCT sg.id_usuario)                      AS clientes,
+            SUM(sg.resultado = 'contactado_exitoso')           AS contactados,
+            SUM(sg.resultado IN ('retenido','convertido'))     AS recuperados,
+            SUM(sg.proximo_contacto IS NOT NULL
+                AND sg.proximo_contacto < CURDATE())           AS compromisos_vencidos,
+            MAX(sg.fecha_seguimiento)                          AS ultimo
+       FROM seguimiento_clientes_chat_center sg
+      WHERE sg.fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+      GROUP BY 1
+      ORDER BY seguimientos DESC`,
+    { replacements: [meses], type: db.QueryTypes.SELECT },
+  );
+
+  /* 5. Motivos de cancelación */
+  const motivos = await db.query(
+    `SELECT COALESCE(NULLIF(TRIM(motivo_cancelacion),''), 'Sin motivo') AS motivo,
+            COUNT(*) AS total
+       FROM seguimiento_clientes_chat_center
+      WHERE motivo_cancelacion IS NOT NULL AND TRIM(motivo_cancelacion) <> ''
+        AND fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL ? MONTH)
+      GROUP BY 1
+      ORDER BY total DESC
+      LIMIT 10`,
+    { replacements: [meses], type: db.QueryTypes.SELECT },
+  );
+
+  /* 6. Cobertura: de los que se están yendo, ¿a cuántos se contactó?
+     Es la pregunta que de verdad importa — no cuántas llamadas se hicieron,
+     sino si se atendió a los que estaban en riesgo. */
+  const [cobertura] = await db.query(
+    `SELECT
+        COUNT(*) AS en_riesgo,
+        SUM(EXISTS (
+          SELECT 1 FROM seguimiento_clientes_chat_center sg
+           WHERE sg.id_usuario = u.id_usuario
+             AND sg.fecha_seguimiento >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        )) AS contactados_30d
+       FROM usuarios_chat_center u
+      WHERE u.cancel_at_period_end = 1
+        AND (u.cancel_at IS NULL OR u.cancel_at > NOW())
+        AND u.estado <> 'cancelado'`,
+    { type: db.QueryTypes.SELECT },
+  );
+
+  /* 7. Agenda: compromisos de contacto pendientes */
+  const [agenda] = await db.query(
+    `SELECT
+        SUM(proximo_contacto < CURDATE())                      AS vencidos,
+        SUM(proximo_contacto = CURDATE())                      AS hoy,
+        SUM(proximo_contacto BETWEEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                                 AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)) AS proximos_7d
+       FROM seguimiento_clientes_chat_center
+      WHERE proximo_contacto IS NOT NULL`,
+    { type: db.QueryTypes.SELECT },
+  );
+
+  return res.json({
+    status: 'success',
+    data: {
+      meses,
+      evolucion,
+      embudo,
+      canales,
+      asesores,
+      motivos,
+      cobertura: cobertura || { en_riesgo: 0, contactados_30d: 0 },
+      agenda: agenda || { vencidos: 0, hoy: 0, proximos_7d: 0 },
+    },
+  });
 });
