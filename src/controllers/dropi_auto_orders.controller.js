@@ -155,12 +155,15 @@ exports.probarAutoOrden = async (req, res) => {
  * POST /dropi_integrations/auto-orders/pendientes
  * Body: { id_configuracion, limit?, offset? }
  *
- * Clientes en estado_contacto='generar_guia' a los que AÚN les falta la orden.
- * Excluye:
- *  - los que el bot SÍ creó (último log 'creada')
- *  - los que ya tienen orden en Dropi por otra vía (cache del cron: manual /
- *    Shopify), contando solo órdenes creadas DESPUÉS del intento del bot.
- * Cruza con el último log para mostrar el motivo del fallo y prellenar el form.
+ * Ventas por WhatsApp donde el bot INTENTÓ crear la orden y falló: contacto en
+ * estado_contacto='generar_guia' cuyo último dropi_auto_ordenes_log dice
+ * 'fallida'. Exige el log a propósito — es la prueba de que hubo un intento
+ * automático. Sin log no hay pedido que resubir: el contacto llegó a la
+ * columna por otra vía (arrastrado a mano, o el trigger con la automatización
+ * apagada) y solo ensuciaba la lista.
+ * Excluye además los que ya tienen orden en Dropi por otra vía (cache del
+ * cron: manual / Shopify), contando solo órdenes creadas DESPUÉS del intento.
+ * El log también sirve para mostrar el motivo del fallo y prellenar el form.
  */
 // Órdenes que entraron por el webhook de Shopify pero NO llegaron a Dropi
 // (huérfanas): shopify_ordenes_webhook sin match en dropi_orders_cache por
@@ -446,19 +449,27 @@ exports.listPendientesGenerarGuia = async (req, res) => {
       -- llegó a crearse. Las órdenes de Shopify que no subieron a Dropi salen
       -- en su propio bucket (huérfanas Shopify), no aquí.
       AND c.estado_contacto = 'generar_guia'
-      -- el bot NO la creó (excluye 'creada'); incluye 'fallida' y sin intento
-      AND (l.id IS NULL OR l.resultado <> 'creada')
-      -- y NADIE la creó por otro lado (cache del cron: manual / Shopify)
+      -- HUBO un intento automático y falló. El log es la evidencia del intento:
+      -- sin fila, nadie trató de subir nada (contacto arrastrado a mano a la
+      -- columna, o trigger disparado con la automatización apagada) y eso NO es
+      -- un pedido pendiente de subir. Antes se colaban ~1.800 contactos así.
+      -- Se filtra por 'fallida' explícito y no por "distinto de creada", porque
+      -- el log también escribe 'actualizada' y 'omitida' — ambos son éxitos del
+      -- flujo de actualizar orden y no deben salir en esta lista.
+      AND l.resultado = 'fallida'
+      -- y NADIE la creó por otro lado después del intento (cache del cron:
+      -- manual / Shopify)
       AND NOT EXISTS (
         SELECT 1 FROM dropi_orders_cache oc
          WHERE oc.id_configuracion = :cfg
            AND oc.phone COLLATE utf8mb4_unicode_ci
                LIKE CONCAT('%', RIGHT(REPLACE(c.celular_cliente, ' ', ''), 9))
-           AND (l.id IS NULL OR oc.order_created_at >= l.created_at)
+           AND oc.order_created_at >= l.created_at
       )`;
 
+    // INNER JOIN a propósito: sin intento registrado el contacto no entra.
     const LATEST_LOG = `
-      LEFT JOIN (
+      JOIN (
         SELECT x.* FROM dropi_auto_ordenes_log x
         JOIN ( SELECT id_cliente, MAX(id) AS max_id
                  FROM dropi_auto_ordenes_log
@@ -475,7 +486,7 @@ exports.listPendientesGenerarGuia = async (req, res) => {
        FROM clientes_chat_center c
        ${LATEST_LOG}
        WHERE ${WHERE}
-       ORDER BY (l.resultado = 'fallida') DESC, c.ultimo_mensaje_at DESC
+       ORDER BY l.created_at DESC, c.ultimo_mensaje_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
       { replacements: { cfg: id_configuracion }, type: db.QueryTypes.SELECT },
     );
@@ -508,8 +519,8 @@ exports.listPendientesGenerarGuia = async (req, res) => {
         detalle: r.detalle || null,
         telefono: datos.telefono,
         datos,
-        // fecha "esperando desde": el intento del bot, o el último mensaje
-        // del cliente si nunca hubo intento (caso pendiente_confirmacion).
+        // fecha "esperando desde": el intento fallido del bot (siempre existe
+        // ahora que la lista exige log). El último mensaje queda de respaldo.
         created_at: r.log_at || r.ultimo_mensaje_at || null,
         estado_contacto: r.estado_contacto,
       };

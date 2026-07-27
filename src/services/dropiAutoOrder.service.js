@@ -947,74 +947,82 @@ async function autoCrearOrdenDropi({
     if (!destCodDane)
       return fail('ciudad', `Ciudad "${city.name}" sin cod_dane`);
 
-    // 4. Ciudad remitente: del objeto warehouse.city del producto crudo.
-    //    /products/v2 NO siempre trae la city anidada (el index sí) → si
-    //    falta, se rescata de /products/index buscando por el nombre REAL
-    //    del producto en Dropi (el que devolvió el detalle, typos
-    //    incluidos), luego por el nombre local, luego página amplia.
-    //    Cada intento prueba público Y privado (buscarEnIndexAmbos).
-    //    Último recurso para combos: la bodega del producto BASE.
-    let remitCityObj = pickWarehouseCityFromProduct(prodDropi);
-    let remitCodDane = remitCityObj?.cod_dane
-      ? String(remitCityObj.cod_dane).trim()
-      : '';
+    // 4. Ciudad remitente (bodega de origen) — SIEMPRE por ID de producto.
+    //
+    //    Se le pregunta a Dropi con getOriginCityForCalculateShipping, el
+    //    mismo endpoint y la misma secuencia que el flujo manual de cotizar
+    //    una orden existente (controllers/dropi_integrations.controller.js →
+    //    cotizarTransportadorasOrden).
+    //
+    //    Antes esto se reconstruía desde el producto crudo y, si venía sin
+    //    city anidada, se rescataba buscando el producto por NOMBRE en
+    //    /products/index. Esa búsqueda armaba frases que no existen en el
+    //    nombre real (quitaba las stopwords de en medio: "Alarma para Motos"
+    //    → "ALARMA MOTOS") y no encontraba nada, así que ventas legítimas
+    //    morían con "sin warehouse city". El id ya lo teníamos desde el
+    //    principio: no hay por qué buscar por texto.
+    let remitCityObj = null;
+    let fuenteRemitente = 'dropi_api';
 
-    if (!remitCodDane) {
-      const aplicarRaw = (raw) => {
-        if (!raw) return false;
-        // merge: que los pasos siguientes (warehouse id) tengan data completa
-        prodDropi = {
-          ...prodDropi,
-          warehouse_product:
-            raw.warehouse_product || prodDropi.warehouse_product,
-        };
-        remitCityObj = pickWarehouseCityFromProduct(raw);
-        remitCodDane = remitCityObj?.cod_dane
-          ? String(remitCityObj.cod_dane).trim()
-          : '';
-        return Boolean(remitCodDane);
-      };
-
-      try {
-        const intentos = [
-          ...new Set([
-            tokensSignificativos(prodDropi.name || '')
-              .slice(0, 3)
-              .join(' '),
-            tokensSignificativos(prodLocal.nombre).slice(0, 3).join(' '),
-            '',
-          ]),
-        ].filter((kw, i, a) => kw !== '' || i === a.length - 1);
-
-        for (const kw of intentos) {
-          const raw = await buscarEnIndexAmbos(
-            kw,
-            kw ? 60 : 100,
-            dropiProductId,
-          );
-          if (aplicarRaw(raw)) break;
-        }
-
-        // combos que no aparecen en index: bodega del producto BASE
-        if (!remitCodDane && Number(prodLocal.external_id) !== dropiProductId) {
-          for (const kw of intentos) {
-            const raw = await buscarEnIndexAmbos(
-              kw,
-              kw ? 60 : 100,
-              Number(prodLocal.external_id),
-            );
-            if (aplicarRaw(raw)) break;
-          }
-        }
-      } catch (_) {}
-    }
-
-    if (!remitCodDane) {
-      return fail(
-        'remitente',
-        `Producto #${dropiProductId} sin warehouse city (detalle e index agotados)`,
+    try {
+      const origResp = await conReintento429(() =>
+        dropiService.getOriginCityForShipping({
+          integrationKey,
+          productId: dropiProductId,
+          // el type lo manda Dropi en el propio producto; si no vino, se
+          // deduce de si el bot eligió variantes (igual criterio que el
+          // payload de cotización de más abajo).
+          productType:
+            prodDropi?.type ||
+            (variacionesElegidas.length ? 'VARIABLE' : 'SIMPLE'),
+          destination: destCodDane,
+          country_code,
+        }),
+      );
+      const oc =
+        origResp?.objects ||
+        origResp?.data?.objects ||
+        origResp?.data ||
+        origResp;
+      if (oc && (oc.cod_dane || oc.id)) {
+        const deptOrigen = states.find(
+          (s) => Number(s.id || s.department_id) === Number(oc.department_id),
+        );
+        remitCityObj = oc.department
+          ? oc
+          : {
+              ...oc,
+              department: deptOrigen ? buildDepartment(deptOrigen) : undefined,
+            };
+      }
+    } catch (e) {
+      console.log(
+        `[AutoOrden] getOriginCityForShipping falló (producto ${dropiProductId}): ${e?.message || e}`,
       );
     }
+
+    // Respaldo 1: la bodega embebida en el producto crudo, si Dropi la mandó
+    // en el detalle. Es gratis (ya está en memoria) y evita el último recurso.
+    if (!remitCityObj?.cod_dane) {
+      const wCity = pickWarehouseCityFromProduct(prodDropi);
+      if (wCity?.cod_dane) {
+        remitCityObj = wCity;
+        fuenteRemitente = 'producto';
+      }
+    }
+
+    // Último recurso: cotizar como si la bodega estuviera en la misma ciudad
+    // del destino — mismo criterio que cotizarTransportadorasOrden. Nunca
+    // tumba la venta por no haber podido resolver el origen.
+    if (!remitCityObj?.cod_dane) {
+      remitCityObj = { ...city };
+      fuenteRemitente = 'fallback_destino';
+      console.log(
+        `[AutoOrden] origen sin resolver para producto ${dropiProductId} → se cotiza desde la ciudad de destino (${city.name || ''})`,
+      );
+    }
+
+    const remitCodDane = String(remitCityObj.cod_dane || '').trim();
 
     // 5. Cotizar transportadoras → la más barata disponible.
     //    Payload CALCADO del socket handler GET_DROPI_COTIZA_ENVIO_V2:
@@ -1029,8 +1037,9 @@ async function autoCrearOrdenDropi({
     };
 
     // ciudad_remitente: si la bodega está en la misma ciudad, se reutiliza
-    // el destino (mismo atajo del handler). Si no, sale del producto crudo
-    // y se le embebe su department buscándolo en states por department_id.
+    // el destino (mismo atajo del handler; también es el caso del último
+    // recurso de arriba). Si no, se le embebe su department buscándolo en
+    // states por department_id.
     let ciudad_remitente;
     if (remitCodDane === destCodDane) {
       ciudad_remitente = { ...ciudad_destino };
@@ -1262,6 +1271,12 @@ async function autoCrearOrdenDropi({
       detalle:
         `Transportadora: ${distributionCompany.name} ($${mejor?.objects?.precioEnvio}) | ` +
         `total: ${totalOrder} | qty: ${cantidad} | producto via ${fuenteProducto}` +
+        // deja rastro de cómo se resolvió la bodega: si aparece
+        // "fallback_destino" es que Dropi no devolvió el origen y se cotizó
+        // desde la ciudad del cliente.
+        (fuenteRemitente !== 'dropi_api'
+          ? ` | origen via ${fuenteRemitente}`
+          : '') +
         (comboUsado
           ? ` | COMBO #${dropiProductId}`
           : cantidadOrden > 1
