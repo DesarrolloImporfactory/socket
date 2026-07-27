@@ -222,6 +222,52 @@ async function saveIncomingMessageUnified({
 }) {
   const external_mid = mid || null;
 
+  // ── Idempotencia: Meta entrega "al menos una vez" ──────────────────────────
+  // A diferencia del webhook de WhatsApp (que responde 200 antes de procesar),
+  // los webhooks de Messenger e Instagram procesan TODO y recién después
+  // responden. Si el procesamiento se demora o falla, Meta reenvía el evento y
+  // sin esta guarda se insertaba el mensaje de nuevo, se volvía a transcribir el
+  // audio —se paga otra vez— y la IA le respondía dos veces al cliente.
+  //
+  // Devolvemos el mensaje ya existente marcado como duplicado para que quien
+  // llama se saltee el emit por socket y la IA.
+  //
+  // La tabla ya tiene UNIQUE (id_cliente, external_mid) [uq_mc_cliente_external_mid],
+  // así que la base venía rechazando el duplicado por su cuenta, pero lanzando
+  // un error de constraint que terminaba en [MS][SAVE_INCOMING][ERROR]. Esta
+  // guarda lo convierte en un skip limpio y registrado.
+  //
+  // Buscamos por (id_cliente, external_mid) —no por id_configuracion— justamente
+  // para pegarle a ese índice: al ser compuesto, MySQL sólo lo usa si se filtra
+  // por su primera columna. id_cliente es el dueño de la configuración, así que
+  // es equivalente y no hace falta ningún índice nuevo.
+  if (external_mid) {
+    const [yaExiste] = await db.query(
+      `SELECT id, created_at
+         FROM mensajes_clientes
+        WHERE id_cliente = ? AND external_mid = ?
+        LIMIT 1`,
+      {
+        replacements: [id_cliente, external_mid],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    if (yaExiste) {
+      console.log('[STORE][DUPLICADO] evento reenviado por Meta, se ignora', {
+        source,
+        mid: external_mid,
+        id_configuracion,
+        message_id: yaExiste.id,
+      });
+      return {
+        message_id: yaExiste.id,
+        created_at: yaExiste.created_at,
+        duplicado: true,
+      };
+    }
+  }
+
   const tipo_mensaje = postback_payload
     ? 'postback'
     : attachments?.length
@@ -239,8 +285,10 @@ async function saveIncomingMessageUnified({
     : null;
   const meta_unificado = meta ? JSON.stringify(meta) : null;
 
-  const [ins] = await db.query(
-    `INSERT INTO mensajes_clientes
+  let ins;
+  try {
+    [ins] = await db.query(
+      `INSERT INTO mensajes_clientes
       (id_plataforma, id_configuracion, id_cliente, celular_recibe, source, page_id,
        mid_mensaje, external_mid, tipo_mensaje, rol_mensaje, direction,
        status_unificado, texto_mensaje, uid_whatsapp,
@@ -250,29 +298,65 @@ async function saveIncomingMessageUnified({
        ?, ?, ?, 0, 'in',
        ?, ?, ?,
        ?, ?, NOW(), NOW(), 0)`,
-    {
-      replacements: [
-        id_plataforma,
-        id_configuracion,
-        id_cliente,
-        celular_recibe,
-        source,
-        page_id,
+      {
+        replacements: [
+          id_plataforma,
+          id_configuracion,
+          id_cliente,
+          celular_recibe,
+          source,
+          page_id,
 
-        mid,
-        external_mid,
-        tipo_mensaje,
+          mid,
+          external_mid,
+          tipo_mensaje,
 
-        status_unificado,
-        texto_mensaje,
-        external_id, // PSID/IGSID o phone WA
+          status_unificado,
+          texto_mensaje,
+          external_id, // PSID/IGSID o phone WA
 
-        attachments_unificado,
-        meta_unificado,
-      ],
-      type: db.QueryTypes.INSERT,
-    },
-  );
+          attachments_unificado,
+          meta_unificado,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch (err) {
+    // Caso de carrera: si Meta reenvía el evento y los dos llegan casi juntos,
+    // ambos pasan el SELECT de arriba y el segundo choca contra el UNIQUE
+    // (id_cliente, external_mid). Lo tratamos como duplicado en vez de dejar
+    // que la excepción suba y aborte el procesamiento con un error feo.
+    const esDuplicado =
+      err?.parent?.code === 'ER_DUP_ENTRY' ||
+      err?.original?.code === 'ER_DUP_ENTRY' ||
+      err?.name === 'SequelizeUniqueConstraintError';
+
+    if (!esDuplicado) throw err;
+
+    const [yaExiste] = await db.query(
+      `SELECT id, created_at
+         FROM mensajes_clientes
+        WHERE id_cliente = ? AND external_mid = ?
+        LIMIT 1`,
+      {
+        replacements: [id_cliente, external_mid],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    console.log('[STORE][DUPLICADO] carrera detectada por UNIQUE, se ignora', {
+      source,
+      mid: external_mid,
+      id_configuracion,
+      message_id: yaExiste?.id ?? null,
+    });
+
+    return {
+      message_id: yaExiste?.id ?? null,
+      created_at: yaExiste?.created_at ?? null,
+      duplicado: true,
+    };
+  }
 
   const insertedId = ins?.insertId ?? ins;
 

@@ -1,8 +1,7 @@
-const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
-const FormData = require('form-data');
-const fsSync = require('fs'); // Para `fs.createReadStream`
+// axios, form-data y fs.createReadStream se fueron con la transcripción a
+// utils/openia/transcribirAudio.js
 
 const {
   cancelRemarketingWithResponse,
@@ -41,59 +40,8 @@ async function cancelarRemarketingEnNode(telefono, id_configuracion) {
   }
 }
 
-async function transcribirAudioConWhisperDesdeArchivo(
-  rutaArchivo,
-  apiKeyOpenAI,
-) {
-  try {
-    const rutaLocalRelativa = rutaArchivo.replace(
-      'https://chat.imporfactory.app',
-      '',
-    );
-
-    const rutaLocalAbsoluta = path.join(
-      __dirname,
-      '..',
-      '..',
-      rutaLocalRelativa,
-    );
-
-    const form = new FormData();
-    form.append('file', fsSync.createReadStream(rutaLocalAbsoluta));
-
-    // 🔥 CAMBIOS CLAVE
-    form.append('model', 'gpt-4o-transcribe'); // modelo nuevo
-    form.append('language', 'es'); // fuerza español
-    form.append('response_format', 'json'); // json o text (los nuevos no soportan srt/vtt)
-
-    // Opcional pero MUY recomendado: contexto para que entienda bien tu jerga
-    form.append(
-      'prompt',
-      'Audio de WhatsApp en español. Conversación informal entre cliente y empresa.',
-    );
-
-    const response = await axios.post(
-      'https://api.openai.com/v1/audio/transcriptions',
-      form,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKeyOpenAI}`,
-          ...form.getHeaders(),
-        },
-      },
-    );
-
-    return response.data?.text || null;
-  } catch (err) {
-    console.log(
-      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`,
-    );
-    await log(
-      `❌ Error en transcribirAudioConWhisperDesdeArchivo: ${err.message}`,
-    );
-    return null;
-  }
-}
+// La transcripción de audios se movió a utils/openia/transcribirAudio.js
+// (transcribirAudioDesdeArchivo), compartida con Instagram y Messenger.
 
 async function enviarAsistenteGptVentas({
   mensaje,
@@ -389,7 +337,6 @@ async function programarRemarketingKanbanWrapper(params) {
 
 module.exports = {
   cancelarRemarketingEnNode,
-  transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
   enviarAsistenteGptEventos,
   separador_productos,

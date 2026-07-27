@@ -1,52 +1,37 @@
-const axios = require('axios');
-const FormData = require('form-data');
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { rehostAttachments } = require('../utils/rehostMediaMeta');
 const { describirImagenDesdeUrl } = require('../utils/openia/describirImagen');
+const {
+  transcribirAudioDesdeUrl,
+  TEXTO_AUDIO_ILEGIBLE,
+} = require('../utils/openia/transcribirAudio');
 
 const FB_APP_ID = process.env.FB_APP_ID;
 
 /**
- * Transcribe un audio de Messenger (URL pública del CDN de Meta) con Whisper.
- * Equivalente al de Instagram; descarga desde URL y transcribe.
+ * Guarda la transcripción en el mensaje entrante ya insertado.
+ *
+ * Igual que en WhatsApp e Instagram: construirRecapConversacion()
+ * (kanban_ia.service.js) reconstruye el historial leyendo texto_mensaje de la
+ * BD, así que si la transcripción vive sólo en memoria la IA pierde lo que el
+ * cliente dijo por audio en cuanto se resetea el hilo.
+ *
+ * Para audios, saveIncomingMessageUnified guarda texto_mensaje = null (no hay
+ * caption que pisar), así que esto sólo agrega información.
+ * Nunca lanza: un fallo acá no debe impedir que la IA responda.
  */
-async function transcribirAudioMsUrl(url, apiKeyOpenAI) {
+async function guardarTranscripcionMS(idMensaje, texto) {
+  if (!idMensaje || !texto) return;
   try {
-    const audioRes = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-
-    const form = new FormData();
-    form.append('file', Buffer.from(audioRes.data), {
-      filename: 'audio_ms.mp4',
-    });
-    form.append('model', 'gpt-4o-transcribe');
-    form.append('language', 'es');
-    form.append('response_format', 'json');
-    form.append(
-      'prompt',
-      'Audio de Messenger en español. Conversación informal entre cliente y empresa.',
+    await db.query(
+      `UPDATE mensajes_clientes SET texto_mensaje = ?, updated_at = NOW() WHERE id = ?`,
+      { replacements: [texto, idMensaje], type: db.QueryTypes.UPDATE },
     );
-
-    const response = await axios.post(
-      'https://api.openai.com/v1/audio/transcriptions',
-      form,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKeyOpenAI}`,
-          ...form.getHeaders(),
-        },
-      },
-    );
-
-    return response.data?.text || null;
   } catch (err) {
-    console.error('[MS][WHISPER][ERROR]', err.response?.data || err.message);
-    return null;
+    console.error('[MS][WHISPER][GUARDAR_TRANSCRIPCION]', err.message);
   }
 }
 
@@ -166,6 +151,7 @@ async function runKanbanIaMS({
   pageAccessToken,
   message,
   uni,
+  idMensaje = null, // id del mensaje entrante ya guardado (para la transcripción)
 }) {
   try {
     if (!pageAccessToken) return;
@@ -201,8 +187,25 @@ async function runKanbanIaMS({
       )?.payload?.url;
 
       if (audioUrl) {
-        const transcrito = await transcribirAudioMsUrl(audioUrl, api_key_openai);
-        if (transcrito) mensajeIA = transcrito.trim();
+        const transcrito = await transcribirAudioDesdeUrl(
+          audioUrl,
+          api_key_openai,
+          'MS',
+          // mid de Meta + id del mensaje en nuestra BD: con eso se ubica el
+          // audio exacto en debug_log.txt si la transcripción falla.
+          `mid=${message.mid || 's/n'} msg=${idMensaje || 's/n'}`,
+        );
+
+        if (transcrito) {
+          mensajeIA = transcrito.trim();
+          await guardarTranscripcionMS(idMensaje, mensajeIA);
+        } else {
+          // Antes, si la transcripción fallaba, mensajeIA quedaba vacío y el
+          // `return` de más abajo dejaba al cliente sin ninguna respuesta y sin
+          // rastro. Mismo criterio que las imágenes: se avisa a la IA.
+          console.log('[MS][WHISPER] audio no transcrito — se avisa a la IA');
+          mensajeIA = TEXTO_AUDIO_ILEGIBLE;
+        }
       }
     }
     if (!mensajeIA) {
@@ -570,6 +573,11 @@ class MessengerService {
 
       console.log('[MS][SAVE_INCOMING][OK]', saved);
 
+      // Meta reenvió un evento que ya habíamos procesado: no re-emitimos al
+      // front ni volvemos a disparar la IA (evita mensaje duplicado en el chat,
+      // segunda transcripción y respuesta doble al cliente).
+      if (saved?.duplicado) return;
+
       // Dashboard real-time
       dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
         chatsCreated: 1,
@@ -612,6 +620,7 @@ class MessengerService {
       pageAccessToken,
       message,
       uni,
+      idMensaje: saved?.message_id ?? null, // para persistir la transcripción
     });
   }
 

@@ -36,10 +36,15 @@ const {
   describirImagenDesdeArchivo,
 } = require('../utils/openia/describirImagen');
 
+// Transcripción de notas de voz (compartida con Instagram y Messenger)
+const {
+  transcribirAudioDesdeArchivo,
+  TEXTO_AUDIO_ILEGIBLE,
+} = require('../utils/openia/transcribirAudio');
+
 const {
   cancelarRemarketingEnNode,
   obtenerThreadId,
-  transcribirAudioConWhisperDesdeArchivo,
   enviarAsistenteGptVentas,
   enviarAsistenteGptEventos,
   separador_productos,
@@ -546,6 +551,46 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       // Obtener el objeto de mensaje completo (por si se necesita)
       const mensaje_recibido = msg0 || {};
 
+      // ── Idempotencia: Meta entrega "al menos una vez" ────────────────────
+      // El mismo mensaje puede llegar más de una vez (si nuestro 200 no llegó,
+      // si el proceso se reinició a mitad del post-procesamiento, o si hay más
+      // de una suscripción apuntando a este webhook). Sin esta guarda el
+      // mensaje se insertaba de nuevo, el audio se volvía a descargar y
+      // transcribir —se paga otra vez— y la IA le respondía dos veces al
+      // cliente.
+      //
+      // Va ANTES del switch para ahorrarse también la descarga del multimedia.
+      //
+      // Sólo aplica a mensajes ENTRANTES: los echoes de WhatsApp Business
+      // (isSMBEcho) comparten wamid con el mensaje que la plataforma ya guardó
+      // al enviarlo, así que filtrarlos acá cambiaría cómo se registran los
+      // envíos hechos desde el celular. Eso se evalúa aparte.
+      //
+      // La consulta se apoya en el índice `idx_wamid` (id_wamid_mensaje), que
+      // ya existe en la tabla.
+      //
+      // ⚠️ SOLO EN PRODUCCIÓN, a propósito: en local se prueba el webhook
+      // reenviando a mano el mismo payload que mandó WhatsApp, y con la guarda
+      // activa ese reenvío se descartaría (no se descargaría el audio, no se
+      // transcribiría, no respondería la IA) y no se podría probar nada.
+      // Si NODE_ENV no es 'production', el comportamiento es el de siempre.
+      const esProduccion = process.env.NODE_ENV === 'production';
+      const wamid_entrante = msg0?.id || null;
+      if (esProduccion && wamid_entrante && !isSMBEcho) {
+        const yaProcesado = await MensajeCliente.findOne({
+          where: { id_wamid_mensaje: wamid_entrante, id_configuracion },
+          attributes: ['id'],
+        });
+
+        if (yaProcesado) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ♻️ Mensaje duplicado ignorado (wamid=${wamid_entrante}, ya guardado como msg=${yaProcesado.id})\n`,
+          );
+          return;
+        }
+      }
+
       switch (tipo_mensaje) {
         case 'text':
           texto_mensaje = mensaje_recibido?.text?.body || '';
@@ -611,12 +656,16 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         case 'audio':
           const audioId = mensaje_recibido?.audio?.id;
-          texto_mensaje = `Audio recibido con ID: ${audioId}`;
           ruta_archivo = await descargarAudioWhatsapp(audioId, accessToken);
-          /* console.log('ruta_archivo: ' + ruta_archivo); */
-          texto_mensaje += ruta_archivo
-            ? `. Archivo guardado en: ${ruta_archivo}`
-            : `. Error al descargar el archivo.`;
+          // texto_mensaje queda vacío a propósito: el wamid y la ruta del
+          // archivo ya viven en sus propias columnas (id_wamid_mensaje y
+          // ruta_archivo), así que este campo queda libre para la
+          // transcripción, que se escribe más abajo si la IA está activa.
+          // Antes guardaba "Audio recibido con ID: X. Archivo guardado en: URL"
+          // y ese texto terminaba llegándole a la IA como si el cliente lo
+          // hubiera escrito. Los errores de descarga ya se loguean dentro de
+          // descargarAudioWhatsapp.
+          texto_mensaje = '';
           break;
 
         case 'document': {
@@ -1070,27 +1119,33 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           // Si es audio y tienes ruta de archivo, intentar transcribir
           if (tipo_mensaje === 'audio' && ruta_archivo) {
-            const ruta_absoluta = ruta_archivo;
-            /* console.log('tipo audio para conversion');
-            console.log('ruta audio: ' + ruta_absoluta); */
-
-            const texto_transcrito =
-              await transcribirAudioConWhisperDesdeArchivo(
-                ruta_absoluta,
-                api_key_openai,
-              );
+            const texto_transcrito = await transcribirAudioDesdeArchivo(
+              ruta_archivo,
+              api_key_openai,
+              msg0?.id, // wamid: si falla, queda en debug_log.txt qué audio fue
+            );
 
             /* console.log('texto_transcrito: ' + texto_transcrito); */
             if (texto_transcrito) {
               texto_mensaje = texto_transcrito;
 
-              // 🔥 FIX: re-actualizar mensaje_para_ia con la transcripción
-              if (referral) {
-                mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
-              Nombre del producto anunciado: ${referral.headline || ''}
-              Mensaje del cliente: ${texto_mensaje}`;
-              } else {
-                mensaje_para_ia = texto_mensaje;
+              // Persistimos la transcripción en el mensaje ya creado.
+              // Es necesario porque construirRecapConversacion()
+              // (kanban_ia.service.js) reconstruye el historial leyendo
+              // texto_mensaje de la BD: sin esto, al resetearse el hilo por
+              // context_length_exceeded la IA perdía todo lo que el cliente
+              // dijo por audio. No cambia nada visualmente: para tipo_mensaje
+              // 'audio' el front sólo renderiza el reproductor con ruta_archivo.
+              try {
+                await MensajeCliente.update(
+                  { texto_mensaje },
+                  { where: { id: creacion_mensaje.id } },
+                );
+              } catch (errUpd) {
+                await fsp.appendFile(
+                  path.join(logsDir, 'debug_log.txt'),
+                  `[${new Date().toISOString()}] ⚠️ No se pudo guardar la transcripción en BD: ${errUpd.message}\n`,
+                );
               }
 
               await fsp.appendFile(
@@ -1098,10 +1153,25 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 `[${new Date().toISOString()}] 📝 Transcripción exitosa: ${texto_mensaje}\n`,
               );
             } else {
+              // Sin este aviso la IA recibía el texto crudo del audio (antes el
+              // ID y la URL del archivo) y respondía cualquier cosa. Mismo
+              // criterio que las imágenes: es mejor que sepa que llegó un audio
+              // ilegible y le pida al cliente que escriba.
+              texto_mensaje = TEXTO_AUDIO_ILEGIBLE;
+
               await fsp.appendFile(
                 path.join(logsDir, 'debug_log.txt'),
                 `[${new Date().toISOString()}] ⚠️ No se pudo transcribir el audio\n`,
               );
+            }
+
+            // En ambos casos la IA debe recibir el texto actualizado.
+            if (referral) {
+              mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
+              Nombre del producto anunciado: ${referral.headline || ''}
+              Mensaje del cliente: ${texto_mensaje}`;
+            } else {
+              mensaje_para_ia = texto_mensaje;
             }
           }
 

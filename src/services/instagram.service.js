@@ -1,54 +1,37 @@
-const axios = require('axios');
-const FormData = require('form-data');
 const ig = require('../utils/instagramGraph');
 const { db } = require('../database/config');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { rehostAttachments } = require('../utils/rehostMediaMeta');
 const { describirImagenDesdeUrl } = require('../utils/openia/describirImagen');
+const {
+  transcribirAudioDesdeUrl,
+  TEXTO_AUDIO_ILEGIBLE,
+} = require('../utils/openia/transcribirAudio');
 
 let IO = null;
 
 /**
- * Transcribe un audio de Instagram (URL pública del CDN de Meta) usando Whisper.
- * Equivalente a transcribirAudioConWhisperDesdeArchivo de WhatsApp, pero
- * descargando desde URL en vez de leer un archivo local.
+ * Guarda la transcripción en el mensaje entrante ya insertado.
+ *
+ * Igual que en WhatsApp: construirRecapConversacion() (kanban_ia.service.js)
+ * reconstruye el historial de la conversación leyendo texto_mensaje de la BD,
+ * así que si la transcripción vive sólo en memoria la IA pierde lo que el
+ * cliente dijo por audio en cuanto se resetea el hilo.
+ *
+ * Para audios, saveIncomingMessageUnified guarda texto_mensaje = null (no hay
+ * caption que pisar), así que esto sólo agrega información.
+ * Nunca lanza: un fallo acá no debe impedir que la IA responda.
  */
-async function transcribirAudioIgUrl(url, apiKeyOpenAI) {
+async function guardarTranscripcionIG(idMensaje, texto) {
+  if (!idMensaje || !texto) return;
   try {
-    const audioRes = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-
-    const form = new FormData();
-    form.append('file', Buffer.from(audioRes.data), { filename: 'audio_ig.mp4' });
-    form.append('model', 'gpt-4o-transcribe');
-    form.append('language', 'es');
-    form.append('response_format', 'json');
-    form.append(
-      'prompt',
-      'Audio de Instagram en español. Conversación informal entre cliente y empresa.',
+    await db.query(
+      `UPDATE mensajes_clientes SET texto_mensaje = ?, updated_at = NOW() WHERE id = ?`,
+      { replacements: [texto, idMensaje], type: db.QueryTypes.UPDATE },
     );
-
-    const response = await axios.post(
-      'https://api.openai.com/v1/audio/transcriptions',
-      form,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKeyOpenAI}`,
-          ...form.getHeaders(),
-        },
-      },
-    );
-
-    return response.data?.text || null;
   } catch (err) {
-    console.error(
-      '[IG][WHISPER][ERROR]',
-      err.response?.data || err.message,
-    );
-    return null;
+    console.error('[IG][WHISPER][GUARDAR_TRANSCRIPCION]', err.message);
   }
 }
 
@@ -190,6 +173,7 @@ async function runKanbanIaIG({
   pageAccessToken,
   message,
   uni,
+  idMensaje = null, // id del mensaje entrante ya guardado (para la transcripción)
 }) {
   try {
     if (!pageAccessToken) return;
@@ -225,8 +209,25 @@ async function runKanbanIaIG({
       )?.payload?.url;
 
       if (audioUrl) {
-        const transcrito = await transcribirAudioIgUrl(audioUrl, api_key_openai);
-        if (transcrito) mensajeIA = transcrito.trim();
+        const transcrito = await transcribirAudioDesdeUrl(
+          audioUrl,
+          api_key_openai,
+          'IG',
+          // mid de Meta + id del mensaje en nuestra BD: con eso se ubica el
+          // audio exacto en debug_log.txt si la transcripción falla.
+          `mid=${message.mid || 's/n'} msg=${idMensaje || 's/n'}`,
+        );
+
+        if (transcrito) {
+          mensajeIA = transcrito.trim();
+          await guardarTranscripcionIG(idMensaje, mensajeIA);
+        } else {
+          // Antes, si la transcripción fallaba, mensajeIA quedaba vacío y el
+          // `return` de más abajo dejaba al cliente sin ninguna respuesta y sin
+          // rastro. Mismo criterio que las imágenes: se avisa a la IA.
+          console.log('[IG][WHISPER] audio no transcrito — se avisa a la IA');
+          mensajeIA = TEXTO_AUDIO_ILEGIBLE;
+        }
       }
     }
     if (!mensajeIA) {
@@ -553,6 +554,11 @@ class InstagramService {
       meta: { raw: message },
     });
 
+    // Meta reenvió un evento que ya habíamos procesado: no re-emitimos al
+    // front ni volvemos a disparar la IA (evita mensaje duplicado en el chat,
+    // segunda transcripción y respuesta doble al cliente).
+    if (saved?.duplicado) return;
+
     //  UPDATE_CHAT (IG IN)
     emitUpdateChatIG({
       id_configuracion,
@@ -584,6 +590,7 @@ class InstagramService {
       pageAccessToken,
       message,
       uni,
+      idMensaje: saved?.message_id ?? null, // para persistir la transcripción
     });
   }
 
