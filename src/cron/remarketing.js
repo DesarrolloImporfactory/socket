@@ -15,6 +15,9 @@ const {
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const {
+  obtenerOCrearContactoWa,
+} = require('../utils/unified/dedupeContacto');
+const {
   isWabaThrottled,
   markWabaThrottled,
   processBucHeader,
@@ -1114,28 +1117,16 @@ cron.schedule('*/1 * * * *', async () => {
               mensajeEnviado = true;
               const uid_whatsapp = telefonoLimpio;
 
-              const [clienteRow] = await db.query(
-                `SELECT id FROM clientes_chat_center
-                 WHERE REPLACE(celular_cliente, ' ', '') = ?
-                   AND id_configuracion = ?
-                 LIMIT 1`,
-                {
-                  replacements: [telefonoLimpio, record.id_configuracion],
-                  type: db.QueryTypes.SELECT,
-                },
-              );
-
-              let clienteId = clienteRow?.id || null;
-              if (!clienteId) {
-                const nuevo = await ClientesChatCenter.create({
-                  id_configuracion: record.id_configuracion,
-                  uid_cliente: cfg.PHONE_NUMBER_ID,
-                  nombre_cliente: '',
-                  apellido_cliente: '',
-                  celular_cliente: telefonoLimpio,
-                });
-                clienteId = nuevo.id;
-              }
+              // El mensaje YA salió al cliente unas líneas arriba. Si esto
+              // fallara, el catch más cercano está muy lejos y se saltaría el
+              // registro en mensajes_clientes: el cliente vería un WhatsApp
+              // que no existe en el chat. Por eso el buscar-o-crear va por
+              // identidad y tolera la carrera en vez de propagar el error.
+              const clienteId = await obtenerOCrearContactoWa({
+                id_configuracion: record.id_configuracion,
+                telefono: telefonoLimpio,
+                uid_cliente: cfg.PHONE_NUMBER_ID,
+              });
 
               let id_cliente_configuracion = null;
               const telCfg = record.telefono_configuracion
@@ -1200,28 +1191,12 @@ cron.schedule('*/1 * * * *', async () => {
               mensajeEnviado = true;
             }
           } else if (envioPorRR) {
-            const [clienteRow] = await db.query(
-              `SELECT id FROM clientes_chat_center
-               WHERE REPLACE(celular_cliente, ' ', '') = ?
-                 AND id_configuracion = ?
-               LIMIT 1`,
-              {
-                replacements: [telefonoLimpio, record.id_configuracion],
-                type: db.QueryTypes.SELECT,
-              },
-            );
-
-            let clienteId = clienteRow?.id || null;
-            if (!clienteId) {
-              const nuevo = await ClientesChatCenter.create({
-                id_configuracion: record.id_configuracion,
-                uid_cliente: cfg.PHONE_NUMBER_ID,
-                nombre_cliente: '',
-                apellido_cliente: '',
-                celular_cliente: telefonoLimpio,
-              });
-              clienteId = nuevo.id;
-            }
+            // buscar-o-crear por identidad (celular_last9 + tolerante a la carrera)
+            const clienteId = await obtenerOCrearContactoWa({
+              id_configuracion: record.id_configuracion,
+              telefono: telefonoLimpio,
+              uid_cliente: cfg.PHONE_NUMBER_ID,
+            });
 
             let id_cliente_configuracion = null;
             const telCfg = record.telefono_configuracion
@@ -1269,28 +1244,12 @@ cron.schedule('*/1 * * * *', async () => {
               id_wamid_mensaje: rrInfo.wamid,
             });
           } else if (envioPorIA) {
-            const [clienteRow] = await db.query(
-              `SELECT id FROM clientes_chat_center
-               WHERE REPLACE(celular_cliente, ' ', '') = ?
-                 AND id_configuracion = ?
-               LIMIT 1`,
-              {
-                replacements: [telefonoLimpio, record.id_configuracion],
-                type: db.QueryTypes.SELECT,
-              },
-            );
-
-            let clienteId = clienteRow?.id || null;
-            if (!clienteId) {
-              const nuevo = await ClientesChatCenter.create({
-                id_configuracion: record.id_configuracion,
-                uid_cliente: cfg.PHONE_NUMBER_ID,
-                nombre_cliente: '',
-                apellido_cliente: '',
-                celular_cliente: telefonoLimpio,
-              });
-              clienteId = nuevo.id;
-            }
+            // buscar-o-crear por identidad (celular_last9 + tolerante a la carrera)
+            const clienteId = await obtenerOCrearContactoWa({
+              id_configuracion: record.id_configuracion,
+              telefono: telefonoLimpio,
+              uid_cliente: cfg.PHONE_NUMBER_ID,
+            });
 
             let id_cliente_configuracion = null;
             const telCfg = record.telefono_configuracion

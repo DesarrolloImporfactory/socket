@@ -28,6 +28,9 @@ const { toWhatsapp, isValidPhone, toDropiLocal } = require('../utils/phoneFactor
 const {
   moverContactoOrigenPorOrden,
 } = require('./contactoOrigenEnlace.service');
+const {
+  obtenerOCrearContactoWa,
+} = require('../utils/unified/dedupeContacto');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -902,17 +905,14 @@ async function resolverClientes({
   let clienteId = clienteRow?.id || null;
 
   if (!clienteId && crearSiNoExiste) {
-    const [insertResult] = await db.query(
-      `INSERT INTO clientes_chat_center
-         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
-          celular_cliente, telefono_limpio, source)
-       VALUES (?, ?, '', '', ?, ?, 'wa')`,
-      {
-        replacements: [id_configuracion, phone_number_id, phoneNorm, phoneNorm],
-        type: db.QueryTypes.INSERT,
-      },
-    );
-    clienteId = insertResult;
+    // Buscar-o-crear por identidad: tolera perder la carrera contra otro
+    // proceso (el índice uq_ccc_dedupe rechaza al segundo). Aquí el template
+    // ya se envió, así que reventar dejaría el mensaje fuera del chat.
+    clienteId = await obtenerOCrearContactoWa({
+      id_configuracion,
+      telefono: phoneNorm,
+      uid_cliente: phone_number_id,
+    });
   }
 
   let idClienteConfig = null;

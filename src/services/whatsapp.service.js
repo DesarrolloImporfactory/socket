@@ -2,6 +2,9 @@ const axios = require('axios');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const { db } = require('../database/config');
+const {
+  obtenerOCrearContactoWa,
+} = require('../utils/unified/dedupeContacto');
 
 const {
   getConfigFromDB,
@@ -341,39 +344,23 @@ exports.sendWhatsappMessage = async ({
   const uid_whatsapp = telefono;
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  let cliente = await ClientesChatCenter.findOne({
-    where: {
-      celular_cliente: telefono,
-      id_configuracion,
-    },
+  // buscar-o-crear por identidad (celular_last9 + tolerante a la carrera)
+  const clienteId = await obtenerOCrearContactoWa({
+    id_configuracion,
+    telefono,
+    uid_cliente: business_phone_id,
   });
-
-  if (!cliente) {
-    console.log(
-      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L351 — enviarMensajeWhatsappCliente, celular:',
-      telefono,
-      'id_configuracion:',
-      id_configuracion,
-    );
-    cliente = await ClientesChatCenter.create({
-      id_configuracion,
-      uid_cliente: business_phone_id,
-      nombre_cliente: '',
-      apellido_cliente: '',
-      celular_cliente: telefono,
-    });
-  }
 
   await MensajesClientes.create({
     id_configuracion,
-    id_cliente: cliente.id,
+    id_cliente: clienteId,
     mid_mensaje: business_phone_id,
     tipo_mensaje: 'text',
     responsable,
     texto_mensaje: mensaje,
     ruta_archivo: null,
     rol_mensaje: 1,
-    celular_recibe: cliente.id,
+    celular_recibe: clienteId,
     uid_whatsapp,
     id_wamid_mensaje: wamid,
   });
@@ -444,25 +431,12 @@ exports.sendWhatsappMessageTemplate = async ({
   const uid_whatsapp = telefono;
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  let cliente = await ClientesChatCenter.findOne({
-    where: { celular_cliente: telefono, id_configuracion },
+  // buscar-o-crear por identidad (celular_last9 + tolerante a la carrera)
+  const clienteId = await obtenerOCrearContactoWa({
+    id_configuracion,
+    telefono,
+    uid_cliente: business_phone_id,
   });
-
-  if (!cliente) {
-    console.log(
-      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L445 — enviarPlantillaWhatsapp, celular:',
-      telefono,
-      'id_configuracion:',
-      id_configuracion,
-    );
-    cliente = await ClientesChatCenter.create({
-      id_configuracion,
-      uid_cliente: business_phone_id,
-      nombre_cliente: '',
-      apellido_cliente: '',
-      celular_cliente: telefono,
-    });
-  }
 
   let id_cliente_configuracion = '';
 
@@ -486,7 +460,7 @@ exports.sendWhatsappMessageTemplate = async ({
     mid_mensaje: business_phone_id,
     tipo_mensaje: 'template',
     rol_mensaje: 1,
-    celular_recibe: cliente.id,
+    celular_recibe: clienteId,
     responsable,
     texto_mensaje: templateText,
     ruta_archivo: JSON.stringify(ruta_archivo),
@@ -730,41 +704,14 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   const uid_whatsapp = telefonoLimpio;
   const wamid = response.data?.messages?.[0]?.id || null;
 
-  // ══════════════════════════════════════════════════════════════
-  // FIX 4: Búsquedas con REPLACE(celular_cliente, ' ', '') para
-  //        manejar números guardados con espacios (ej: "52 6699207031")
-  // ══════════════════════════════════════════════════════════════
-
-  // 5) Cliente destino
-  const [clienteRow] = await db.query(
-    `SELECT id FROM clientes_chat_center
-     WHERE REPLACE(celular_cliente, ' ', '') = ?
-       AND id_configuracion = ?
-     LIMIT 1`,
-    {
-      replacements: [telefonoLimpio, id_configuracion],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-
-  let clienteId = clienteRow?.id || null;
-
-  if (!clienteId) {
-    console.log(
-      '[clientes_chat_center INSERT] services/whatsapp.service.js ~L740 — crearChatRemarketingWS, celular:',
-      telefonoLimpio,
-      'id_configuracion:',
-      id_configuracion,
-    );
-    const nuevoCliente = await ClientesChatCenter.create({
-      id_configuracion,
-      uid_cliente: business_phone_id,
-      nombre_cliente: '',
-      apellido_cliente: '',
-      celular_cliente: telefonoLimpio,
-    });
-    clienteId = nuevoCliente.id;
-  }
+  // 5) Cliente destino — buscar-o-crear por identidad. El REPLACE(' ') que
+  //    había aquí solo cubría números guardados con espacios; celular_last9
+  //    cubre además prefijo local vs internacional y el signo +.
+  const clienteId = await obtenerOCrearContactoWa({
+    id_configuracion,
+    telefono: telefonoLimpio,
+    uid_cliente: business_phone_id,
+  });
 
   // 6) Cliente configuración
   let id_cliente_configuracion = null;

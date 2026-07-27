@@ -2,6 +2,7 @@
 
 const axios = require('axios');
 const { db } = require('../../database/config');
+const { obtenerOCrearContactoWa } = require('../unified/dedupeContacto');
 
 const META_API_VERSION = 'v22.0';
 
@@ -198,24 +199,15 @@ async function resolverClientes({
   let clienteId = clienteRow?.id || null;
 
   if (!clienteId) {
-    const [insertResult] = await db.query(
-      `INSERT INTO clientes_chat_center
-         (id_configuracion, uid_cliente, nombre_cliente, apellido_cliente,
-          celular_cliente, telefono_limpio, source)
-       VALUES (?, ?, ?, ?, ?, ?, 'wa')`,
-      {
-        replacements: [
-          id_configuracion,
-          phone_number_id,
-          nombre || '',
-          apellido || '',
-          phone_normalizado,
-          phone_normalizado,
-        ],
-        type: db.QueryTypes.INSERT,
-      },
-    );
-    clienteId = insertResult;
+    // Buscar-o-crear por identidad: tolera perder la carrera contra otro
+    // proceso (el índice uq_ccc_dedupe rechaza al segundo).
+    clienteId = await obtenerOCrearContactoWa({
+      id_configuracion,
+      telefono: phone_normalizado,
+      uid_cliente: phone_number_id,
+      nombre_cliente: nombre || '',
+      apellido_cliente: apellido || '',
+    });
   }
 
   // 2. Cliente del CONFIG (representa al negocio — dueño de la conversación)

@@ -119,4 +119,60 @@ function esErrorDuplicado(err) {
   );
 }
 
-module.exports = { claveDedupe, buscarContactoWa, esErrorDuplicado, last9 };
+/**
+ * Contacto de WhatsApp por teléfono; lo crea si no existe. Devuelve el id.
+ *
+ * Es la forma segura de hacer el "buscar o crear" que hasta ahora estaba
+ * repetido a mano en ~10 sitios, cada uno con su propio criterio de búsqueda:
+ *  - busca por celular_last9, así que no se le escapa un contacto guardado en
+ *    otro formato (0969…, 593969…, +593969…);
+ *  - si pierde la carrera contra otro proceso, relee en vez de propagar el
+ *    error. Sin esto, con el índice uq_ccc_dedupe activo, el segundo en llegar
+ *    revienta — y en flujos como el cron de remarketing eso significa un
+ *    mensaje ya enviado al cliente que nunca queda registrado en el chat.
+ *
+ * @returns {Promise<number|null>} id del contacto, o null si no hay teléfono
+ *          utilizable (no se inventa un contacto sin identidad).
+ */
+async function obtenerOCrearContactoWa({
+  id_configuracion,
+  telefono,
+  uid_cliente = null,
+  nombre_cliente = '',
+  apellido_cliente = '',
+}) {
+  const tel = String(telefono || '').trim();
+  if (!id_configuracion || last9(tel).length < 8) return null;
+
+  const existente = await buscarContactoWa({ id_configuracion, telefono: tel });
+  if (existente) return existente;
+
+  // require perezoso: el modelo arrastra la config de Sequelize y este módulo
+  // lo cargan utilidades muy tempranas del arranque.
+  const ClientesChatCenter = require('../../models/clientes_chat_center.model');
+
+  try {
+    const creado = await ClientesChatCenter.create({
+      id_configuracion,
+      uid_cliente,
+      nombre_cliente: nombre_cliente || '',
+      apellido_cliente: apellido_cliente || '',
+      celular_cliente: tel,
+    });
+    return creado?.id || null;
+  } catch (err) {
+    if (!esErrorDuplicado(err)) throw err;
+    // Otro proceso lo creó entre nuestro SELECT y nuestro INSERT.
+    const ganador = await buscarContactoWa({ id_configuracion, telefono: tel });
+    if (ganador) return ganador;
+    throw err; // colisión que no sabemos explicar → que se vea
+  }
+}
+
+module.exports = {
+  claveDedupe,
+  buscarContactoWa,
+  obtenerOCrearContactoWa,
+  esErrorDuplicado,
+  last9,
+};
