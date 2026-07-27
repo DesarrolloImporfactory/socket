@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const { db } = require('../database/config');
+const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const {
   sendWhatsappMessageTemplateScheduled,
   prefetchTemplates,
@@ -218,6 +219,19 @@ cron.schedule('* * * * *', async () => {
           const itemStart = Date.now();
 
           try {
+            // Corta-fuegos por plan. Va ANTES de la toma atómica para no
+            // consumir un intento del registro: si el cliente paga, el envío
+            // programado sigue pendiente y sale, en vez de haberse quemado.
+            const accesoTpl = await verificarAccesoAutomatizaciones(
+              item.id_configuracion,
+            );
+            if (!accesoTpl.permitido) {
+              console.log(
+                `[templateProgramado] cfg ${item.id_configuracion}: automatizaciones cortadas (${accesoTpl.motivo}), se omite el envío ${item.id}`,
+              );
+              continue;
+            }
+
             // Retraso siempre 5s entre un item y el anterior
             if (index > 0) {
               await new Promise((resolve) => setTimeout(resolve, 5000));

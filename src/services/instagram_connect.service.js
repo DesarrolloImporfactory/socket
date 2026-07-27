@@ -1,5 +1,8 @@
 const axios = require('axios');
 const { db } = require('../database/config');
+const {
+  verificarCuentaInstagramDisponible,
+} = require('../utils/unified/conexionCanal');
 
 const FB_VERSION = 'v23.0';
 
@@ -45,6 +48,15 @@ module.exports = {
     const pageName = page.name;
     const igId = page.connected_instagram_account.id;
     const igUser = page.connected_instagram_account.username;
+
+    // 2.5) Ni la cuenta de IG ni su página pueden estar ya conectadas a otra
+    // conexión activa: el webhook enruta por ig_id con LIMIT 1 y la segunda
+    // tarjeta se quedaría muda. Se valida ANTES de suscribir en Meta.
+    await verificarCuentaInstagramDisponible({
+      page_id,
+      ig_id: igId,
+      id_configuracion,
+    });
 
     // 3) Suscribir app a la Page con campos válidos para IG Messaging
     // Recomendado para IG: messages, messaging_postbacks, message_reactions, message_edit

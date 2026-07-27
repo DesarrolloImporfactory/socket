@@ -2,6 +2,9 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const ExcelJS = require('exceljs');
 const { db } = require('../database/config');
+const {
+  liberarConexionesDeConfiguracion,
+} = require('../utils/unified/conexionCanal');
 
 exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
@@ -648,6 +651,16 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
      WHERE id = ?`,
     { replacements: [setSusp, setSusp, id_configuracion] },
   );
+
+  // 3) Al suspender, liberar también las páginas de Messenger/Instagram. El
+  // número de WhatsApp queda libre solo con suspendido=1 (así lo valida el
+  // alta), pero messenger_pages/instagram_pages tienen su propio `status` y
+  // se quedaban en 'active' para siempre: el enrutado del webhook (LIMIT 1
+  // por page_id / ig_id) seguía entregando los mensajes a la conexión
+  // suspendida y la conexión nueva del mismo cliente no recibía nada.
+  if (setSusp === 1) {
+    await liberarConexionesDeConfiguracion(id_configuracion);
+  }
 
   return res.status(200).json({
     status: 200,

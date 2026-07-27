@@ -7,6 +7,7 @@
 const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
+const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 
 const {
   enviarMensajeWhatsapp,
@@ -244,7 +245,23 @@ async function procesarMensajeKanban(params) {
       }),
   };
 
-  // ── 0. Decidir qué API usar ───────────────────────────────
+  // ── 0. Corta-fuegos por plan ──────────────────────────────
+  // El webhook de Meta no pasa por checkPlanActivo (lo llama Meta, no el
+  // cliente), así que este es el único punto donde se puede cortar el bot.
+  // Es punto de entrada único de los 3 canales (WA, MS e IG lo reusan), así
+  // que con este gate queda cubierto todo el cerebro de la IA y, de paso, las
+  // auto-órdenes de Dropi que dispara. El mensaje entrante YA se guardó antes
+  // de llegar aquí: el cliente no pierde la conversación, solo deja de
+  // responderse solo.
+  const acceso = await verificarAccesoAutomatizaciones(id_configuracion);
+  if (!acceso.permitido) {
+    await log(
+      `🚫 Automatizaciones cortadas para config=${id_configuracion} (${acceso.motivo}). No se ejecuta la IA.`,
+    );
+    return { ok: false, motivo: `plan_bloqueado:${acceso.motivo}` };
+  }
+
+  // ── 0.1 Decidir qué API usar ──────────────────────────────
   const USAR_RESPONSES_API = [10].includes(Number(id_configuracion));
 
   // Llegó un mensaje nuevo de este cliente: invalida cualquier ráfaga que

@@ -17,6 +17,7 @@ const MensajesClientes = require('../models/mensaje_cliente.model');
 const {
   obtenerOCrearContactoWa,
 } = require('../utils/unified/dedupeContacto');
+const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const {
   isWabaThrottled,
   markWabaThrottled,
@@ -634,6 +635,20 @@ cron.schedule('*/1 * * * *', async () => {
         if (botsApagados.has(Number(record.id_configuracion))) {
           console.log(
             `🟦 [DEBUG] ⏸ Bot apagado (openai_assistants.activo=0) para config=${record.id_configuracion} — se salta y espera`,
+          );
+          continue;
+        }
+
+        // Corta-fuegos por plan: sin plan vigente no se envía remarketing.
+        // Se salta con la misma semántica que el bot apagado (no enviado, no
+        // cancelado, no suma intentos): si el cliente paga, la secuencia se
+        // reanuda sola donde quedó en vez de haberse quemado.
+        const accesoRmk = await verificarAccesoAutomatizaciones(
+          record.id_configuracion,
+        );
+        if (!accesoRmk.permitido) {
+          console.log(
+            `🟦 [DEBUG] 🚫 Remarketing cortado para config=${record.id_configuracion} (${accesoRmk.motivo}) — se salta y espera`,
           );
           continue;
         }

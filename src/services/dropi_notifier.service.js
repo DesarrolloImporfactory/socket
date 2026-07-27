@@ -31,6 +31,7 @@ const {
 const {
   obtenerOCrearContactoWa,
 } = require('../utils/unified/dedupeContacto');
+const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -1109,6 +1110,22 @@ async function procesarTemplates({
 }) {
   if (!orders.length)
     return { enviados: 0, omitidos: 0, errores: 0, entregadas_actualizadas: 0 };
+
+  // Corta-fuegos por plan: las notificaciones de estado son automatización.
+  // Sin plan vigente no salen — ni por el cron ni por el webhook de Dropi,
+  // que es el otro consumidor de esta función.
+  const acceso = await verificarAccesoAutomatizaciones(id_configuracion);
+  if (!acceso.permitido) {
+    console.log(
+      `[dropi-notifier] cfg ${id_configuracion}: automatizaciones cortadas (${acceso.motivo}), no se envían templates`,
+    );
+    return {
+      enviados: 0,
+      omitidos: orders.length,
+      errores: 0,
+      entregadas_actualizadas: 0,
+    };
+  }
 
   const plantillas = await getPlantillasActivas(id_configuracion);
   const creds = await getWaCredentials(id_configuracion);

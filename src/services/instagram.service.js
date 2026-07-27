@@ -37,11 +37,17 @@ async function guardarTranscripcionIG(idMensaje, texto) {
 
 /** Busca conexión IG activa por IG Business ID */
 async function getPageRowByIgId(ig_id) {
+  // Igual que en Messenger: se excluyen las conexiones suspendidas y, ante
+  // empate, gana la más reciente. Una fila 'active' de una tarjeta ya
+  // suspendida se quedaba con el LIMIT 1 y dejaba muda a la conexión viva.
   const [row] = await db.query(
-    `SELECT id_configuracion, page_id, page_access_token
-       FROM instagram_pages
-      WHERE ig_id = ?
-        AND status = 'active'
+    `SELECT ip.id_configuracion, ip.page_id, ip.page_access_token
+       FROM instagram_pages ip
+       JOIN configuraciones c ON c.id = ip.id_configuracion
+      WHERE ip.ig_id = ?
+        AND ip.status = 'active'
+        AND c.suspendido = 0
+      ORDER BY ip.id_instagram_page DESC
       LIMIT 1`,
     { replacements: [ig_id], type: db.QueryTypes.SELECT },
   );

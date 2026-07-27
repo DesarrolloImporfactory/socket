@@ -1,6 +1,9 @@
 const axios = require('axios');
 const { db } = require('../database/config');
 const MessengerOAuthService = require('./messenger_oauth.service');
+const {
+  verificarPaginaMessengerDisponible,
+} = require('../utils/unified/conexionCanal');
 
 const FB_VERSION = 'v22.0';
 
@@ -70,6 +73,12 @@ async function upsertMessengerPage({
 class MessengerConnectService {
   // Conecta (suscribe) una página usando la sesión OAuth del usuario
   static async connect({ oauth_session_id, id_configuracion, page_id }) {
+    // 0) La página no puede estar ya conectada a otra conexión activa: el
+    // webhook enruta por page_id con LIMIT 1, así que la segunda tarjeta se
+    // quedaría sin recibir nada. Se valida ANTES de suscribir en Meta para no
+    // dejar la app suscrita a una página que al final no vamos a guardar.
+    await verificarPaginaMessengerDisponible({ page_id, id_configuracion });
+
     // 1) Page token + nombre desde la sesión
     const { page_access_token, page_name } =
       await MessengerOAuthService.getPageTokenFromSession(

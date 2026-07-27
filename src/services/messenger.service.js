@@ -127,8 +127,20 @@ function emitUpdateChatMS({
 }
 
 async function getConfigIdByPageId(page_id) {
+  // Se excluyen las conexiones suspendidas y, ante empate, gana la más
+  // reciente. Sin esto, una fila 'active' de una tarjeta ya suspendida se
+  // quedaba con el LIMIT 1 y los mensajes nunca llegaban a la conexión viva
+  // del mismo cliente (caso real: página en las configs 491 suspendida y 626
+  // activa; todo se iba a la 491).
   const [row] = await db.query(
-    `SELECT id_configuracion FROM messenger_pages WHERE page_id = ? AND status='active' LIMIT 1`,
+    `SELECT mp.id_configuracion
+       FROM messenger_pages mp
+       JOIN configuraciones c ON c.id = mp.id_configuracion
+      WHERE mp.page_id = ?
+        AND mp.status = 'active'
+        AND c.suspendido = 0
+      ORDER BY mp.id_messenger_page DESC
+      LIMIT 1`,
     { replacements: [page_id], type: db.QueryTypes.SELECT },
   );
   return row?.id_configuracion || null;
