@@ -1338,6 +1338,11 @@ async function programarRemarketingKanban({
   id_cliente,
   telefono,
   estado_contacto,
+  // Valores del body de la plantilla, YA resueltos. Se reciben aquí porque
+  // quien agenda (p. ej. el notifier de Dropi) tiene el pedido a la vista;
+  // el cron dispara horas después, cuando ese contexto ya no existe.
+  // Array de strings en el orden de {{1}}, {{2}}, {{3}}…
+  template_parameters = null,
 }) {
   try {
     // 🚫 Verificar si el cliente tiene el remarketing desactivado
@@ -1409,9 +1414,9 @@ async function programarRemarketingKanban({
         language_code, tiempo_disparo, estado_destino,
         header_format, header_media_url, header_media_name, header_parameters,
         id_template_rapido, usar_respuesta_rapida,
-        metodo_dentro_24h, prompt_ia,
+        metodo_dentro_24h, prompt_ia, template_parameters,
         enviado, cancelado, secuencia)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
       {
         replacements: [
           telefono,
@@ -1431,6 +1436,9 @@ async function programarRemarketingKanban({
           configRM.usar_respuesta_rapida ? 1 : 0,
           configRM.metodo_dentro_24h || 'ninguno',
           configRM.prompt_ia || null,
+          Array.isArray(template_parameters) && template_parameters.length
+            ? JSON.stringify(template_parameters.map((v) => String(v ?? '')))
+            : null,
         ],
         type: db.QueryTypes.INSERT,
       },

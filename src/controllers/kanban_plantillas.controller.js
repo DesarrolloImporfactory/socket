@@ -2598,19 +2598,41 @@ exports.personalizacionResincronizar = catchAsync(async (req, res, next) => {
       ? ` · ${nAgregadas} columna(s) nueva(s), ${nEncendidas} activada(s)`
       : '';
 
+  // Además de columnas y prompts, instalar lo que le falte del catálogo:
+  // plantillas Meta, estados de Dropi y secuencias de remarketing. Es aditivo
+  // — no pisa nada de lo que el cliente ya tenga configurado (ver
+  // _instalarFaltantes). Va después de la estructura porque las secuencias y
+  // los estados apuntan a columnas que pueden acabar de crearse.
+  let instalado = { templates_meta: [], dropi_estados: [], remarketing_estados: [] };
+  try {
+    instalado = await _instalarFaltantes(id_configuracion);
+  } catch (e) {
+    console.error('[resincronizar] instalarFaltantes:', e.message);
+  }
+
+  const nuevasMeta = (instalado.templates_meta || []).filter(
+    (t) => t.status === 'success',
+  ).length;
+  const extraInstal =
+    nuevasMeta || instalado.dropi_estados.length || instalado.remarketing_estados.length
+      ? ` · ${nuevasMeta} plantilla(s), ${instalado.dropi_estados.length} estado(s) de envío, ${instalado.remarketing_estados.length} secuencia(s)`
+      : '';
+
   return res.json({
     success: r.success,
     message:
       (r.errores_cols === 0
         ? `Prompt actualizado en ${r.exitos_cols} columna(s) IA`
         : `Actualización parcial: ${r.exitos_cols} ok, ${r.errores_cols} con error`) +
-      extra,
+      extra +
+      extraInstal,
     data: {
       total_columnas: r.total_columnas,
       exitos: r.exitos_cols,
       errores: r.errores_cols,
       resultados: r.resultados_columnas,
       estructura: r.estructura || { agregadas: [], actualizadas: [] },
+      instalado,
     },
   });
 });
@@ -2761,3 +2783,299 @@ exports.personalizacionResincronizarMasivo = catchAsync(
     });
   },
 );
+
+/* ══════════════════════════════════════════════════════════════
+   Instaladores reutilizables
+
+   Se exponen para que el resincronizador (y scripts puntuales) puedan
+   instalar lo que falta sin duplicar la lógica de "consultar antes de crear".
+   ══════════════════════════════════════════════════════════════ */
+exports._crearTemplatesMeta = _crearTemplatesMeta;
+exports._crearRespuestasRapidas = _crearRespuestasRapidas;
+
+/* ══════════════════════════════════════════════════════════════
+   INSTALACIÓN ADITIVA (para el botón "Actualizar tablero")
+
+   Instala lo que FALTA y no toca nada de lo que el cliente ya tenga.
+   Es la diferencia entre "actualizar" y "reinstalar": los instaladores de
+   aplicarGlobal hacen DELETE+INSERT (remarketing) y UPDATE (config Dropi),
+   así que meterlos tal cual en el botón le borraría al cliente los tiempos,
+   prompts y plantillas que ajustó a mano.
+
+   Los prompts NO entran aquí: de eso ya se encarga el resincronizador, que
+   recompila la base nueva junto con la personalización del cliente
+   (nombre_tienda, tono, instrucciones_extra…), así que esa parte ya se
+   actualiza sin perder nada.
+   ══════════════════════════════════════════════════════════════ */
+async function _instalarFaltantes(id_configuracion) {
+  const resumen = {
+    templates_meta: [],
+    dropi_estados: [],
+    remarketing_estados: [],
+  };
+
+  // ── 1. Plantillas Meta ──
+  // _crearTemplatesMeta ya consulta las existentes y salta las que están,
+  // así que es idempotente: 1 GET y POST solo de lo que falte.
+  //
+  // Se le pasa un filtro con SOLO las plantillas que las automatizaciones
+  // realmente referencian, en vez del catálogo completo. Una cuenta antigua
+  // puede no tener media docena de plantillas que nunca usó; crearlas todas
+  // le llenaría la WABA de plantillas que no pidió y le consumiría cupo (Meta
+  // limita cuántas puede tener una cuenta). Lo que no se usa, no se crea.
+  const referenciadas = new Set();
+  for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
+    if (cfg.nombre_template) referenciadas.add(cfg.nombre_template);
+  }
+  for (const bloque of REMARKETING_POR_DEFECTO) {
+    for (const sec of bloque.secuencias || []) {
+      if (sec.nombre_template) referenciadas.add(sec.nombre_template);
+    }
+  }
+
+  try {
+    resumen.templates_meta = await _crearTemplatesMeta(
+      id_configuracion,
+      referenciadas,
+    );
+  } catch (e) {
+    resumen.templates_meta = [{ status: 'error', error: e.message }];
+  }
+
+  // ── 2. Estados de Dropi que el cliente NO tenga ──
+  // Solo INSERT. Si la fila existe se respeta tal cual, aunque su plantilla
+  // difiera del catálogo: esa diferencia se ofrece aparte como "mejora
+  // disponible" para que el cliente decida, no se le impone.
+  try {
+    const existentes = await db.query(
+      `SELECT estado_dropi FROM dropi_plantillas_config WHERE id_configuracion = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const yaTiene = new Set(existentes.map((r) => r.estado_dropi));
+
+    for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
+      if (yaTiene.has(cfg.estado_dropi)) continue;
+      await db.query(
+        `INSERT INTO dropi_plantillas_config
+           (id_configuracion, estado_dropi, nombre_template, columna_destino,
+            language_code, activo, mensaje_rapido, usar_respuesta_rapida,
+            parametros_json, body_text)
+         VALUES (?, ?, ?, ?, 'es', ?, ?, ?, ?, NULL)`,
+        {
+          replacements: [
+            id_configuracion,
+            cfg.estado_dropi,
+            cfg.nombre_template || null,
+            cfg.columna_destino || null,
+            cfg.activo == null ? 1 : cfg.activo,
+            cfg.mensaje_rapido ?? null,
+            cfg.usar_respuesta_rapida ? 1 : 0,
+            cfg.parametros ? JSON.stringify(cfg.parametros) : null,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+      resumen.dropi_estados.push(cfg.estado_dropi);
+    }
+  } catch (e) {
+    console.error('[instalarFaltantes] dropi:', e.message);
+  }
+
+  // ── 3. Secuencias de remarketing de columnas que el cliente NO tenga ──
+  // Se evalúa por estado_contacto completo: si tiene AL MENOS una secuencia
+  // para esa columna, no se toca ninguna. Insertar "las que faltan" dentro de
+  // una secuencia existente rompería la numeración y el encadenado.
+  try {
+    for (const bloque of REMARKETING_POR_DEFECTO) {
+      const [tiene] = await db.query(
+        `SELECT 1 AS x FROM configuracion_remarketing
+          WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
+        {
+          replacements: [id_configuracion, bloque.estado_contacto],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      if (tiene) continue;
+
+      for (const sec of bloque.secuencias || []) {
+        const minutos = Number(sec.tiempo_espera_minutos) || 0;
+        await db.query(
+          `INSERT INTO configuracion_remarketing
+             (id_configuracion, estado_contacto, secuencia,
+              tiempo_espera_horas, tiempo_espera_minutos,
+              nombre_template, language_code, estado_destino,
+              header_format, metodo_dentro_24h, prompt_ia, activo)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          {
+            replacements: [
+              id_configuracion,
+              bloque.estado_contacto,
+              sec.secuencia,
+              // Ambos campos se mantienen coherentes: el encadenado del cron
+              // usa horas y el primer agendado usa minutos.
+              Math.round(minutos / 60),
+              minutos,
+              sec.nombre_template || '',
+              sec.language_code || 'es',
+              sec.estado_destino || null,
+              sec.header_format || null,
+              sec.metodo_dentro_24h || 'ninguno',
+              sec.prompt_ia || null,
+            ],
+            type: db.QueryTypes.INSERT,
+          },
+        );
+      }
+      resumen.remarketing_estados.push(bloque.estado_contacto);
+    }
+  } catch (e) {
+    console.error('[instalarFaltantes] remarketing:', e.message);
+  }
+
+  // ── 4. Respuestas rápidas ──
+  try {
+    await _crearRespuestasRapidas(id_configuracion);
+  } catch (e) {
+    console.error('[instalarFaltantes] respuestas rapidas:', e.message);
+  }
+
+  return resumen;
+}
+
+exports._instalarFaltantes = _instalarFaltantes;
+
+/* ══════════════════════════════════════════════════════════════
+   MEJORAS DISPONIBLES
+
+   POST /kanban_plantillas/mejoras_disponibles  { id_configuracion }
+
+   Compara lo que el cliente tiene configurado contra el catálogo actual y
+   devuelve las diferencias, con ambos textos, para que ÉL decida cuáles
+   aplicar. Nunca se aplica solo: una diferencia puede ser una mejora del
+   catálogo o un cambio deliberado suyo, y desde aquí no hay forma de
+   distinguirlo — por eso decide viendo los dos lados.
+   ══════════════════════════════════════════════════════════════ */
+exports.mejorasDisponibles = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const actuales = await db.query(
+    `SELECT estado_dropi, nombre_template, columna_destino, activo,
+            usar_respuesta_rapida, mensaje_rapido
+       FROM dropi_plantillas_config
+      WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const porEstado = new Map(actuales.map((r) => [r.estado_dropi, r]));
+
+  const mejoras = [];
+
+  for (const cat of DROPI_CONFIG_POR_DEFECTO) {
+    const mio = porEstado.get(cat.estado_dropi);
+    if (!mio) continue; // no lo tiene → lo instala el modo aditivo, no es "mejora"
+
+    const cambios = [];
+    const catTpl = cat.nombre_template || '';
+    const mioTpl = mio.nombre_template || '';
+    if (catTpl !== mioTpl) {
+      cambios.push({
+        campo: 'nombre_template',
+        etiqueta: 'Plantilla de WhatsApp',
+        actual: mioTpl || '(sin plantilla)',
+        sugerido: catTpl || '(sin plantilla)',
+      });
+    }
+
+    const catCol = cat.columna_destino || '';
+    const mioCol = mio.columna_destino || '';
+    if (catCol !== mioCol) {
+      cambios.push({
+        campo: 'columna_destino',
+        etiqueta: 'Mover al cliente a',
+        actual: mioCol || '(no mueve)',
+        sugerido: catCol || '(no mueve)',
+      });
+    }
+
+    if (cambios.length) {
+      mejoras.push({ estado_dropi: cat.estado_dropi, cambios });
+    }
+  }
+
+  return res.json({
+    success: true,
+    data: {
+      total: mejoras.length,
+      mejoras,
+    },
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   APLICAR MEJORAS SELECCIONADAS
+
+   POST /kanban_plantillas/aplicar_mejoras
+   Body: { id_configuracion, estados: ['CANCELADO', 'EN TRANSITO'] }
+
+   Aplica el catálogo SOLO a los estados que el cliente marcó. Lo que no
+   marcó no se toca. Es la única vía por la que se sobreescribe configuración
+   existente, y siempre a pedido explícito.
+   ══════════════════════════════════════════════════════════════ */
+exports.aplicarMejoras = catchAsync(async (req, res, next) => {
+  const { id_configuracion, estados } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+  if (!Array.isArray(estados) || !estados.length)
+    return next(new AppError('Selecciona al menos una mejora', 400));
+
+  const pedidos = new Set(estados.map(String));
+  const aplicados = [];
+
+  for (const cat of DROPI_CONFIG_POR_DEFECTO) {
+    if (!pedidos.has(cat.estado_dropi)) continue;
+
+    await db.query(
+      `UPDATE dropi_plantillas_config
+          SET nombre_template = ?, columna_destino = ?,
+              usar_respuesta_rapida = ?, mensaje_rapido = ?,
+              parametros_json = ?, updated_at = NOW()
+        WHERE id_configuracion = ? AND estado_dropi = ?`,
+      {
+        replacements: [
+          cat.nombre_template || null,
+          cat.columna_destino || null,
+          cat.usar_respuesta_rapida ? 1 : 0,
+          cat.mensaje_rapido ?? null,
+          cat.parametros ? JSON.stringify(cat.parametros) : null,
+          id_configuracion,
+          cat.estado_dropi,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    aplicados.push(cat.estado_dropi);
+  }
+
+  // Las plantillas que las mejoras recién aplicadas necesitan pueden no
+  // existir todavía en la WABA del cliente.
+  const nuevas = new Set(
+    DROPI_CONFIG_POR_DEFECTO.filter(
+      (c) => pedidos.has(c.estado_dropi) && c.nombre_template,
+    ).map((c) => c.nombre_template),
+  );
+  let templates = [];
+  if (nuevas.size) {
+    try {
+      templates = await _crearTemplatesMeta(id_configuracion, nuevas);
+    } catch (e) {
+      console.error('[aplicarMejoras] templates:', e.message);
+    }
+  }
+
+  return res.json({
+    success: true,
+    message: `${aplicados.length} mejora(s) aplicada(s)`,
+    data: { aplicados, templates },
+  });
+});

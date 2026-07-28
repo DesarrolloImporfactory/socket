@@ -50,4 +50,9 @@ router.post(
   ctrl.personalizacionResincronizarMasivo,
 );
 
+/* mejoras del catálogo sobre estados que el cliente YA tiene configurados:
+   se listan para que elija, nunca se aplican solas */
+router.post('/mejoras_disponibles', ctrl.mejorasDisponibles);
+router.post('/aplicar_mejoras', ctrl.aplicarMejoras);
+
 module.exports = router;

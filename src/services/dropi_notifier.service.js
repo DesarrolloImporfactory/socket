@@ -41,6 +41,65 @@ const DELAY_BETWEEN_WA_SENDS = 800;
 const META_API_VERSION = process.env.GRAPH_VERSION;
 
 const SIEMPRE_TEMPLATE = new Set(['PENDIENTE CONFIRMACION']);
+
+/**
+ * Columnas donde, al mover el contacto, se agenda la secuencia de seguimiento
+ * configurada en `configuracion_remarketing`. Es opt-in por partida doble: la
+ * columna tiene que estar aquí Y el cliente tiene que haber configurado la
+ * secuencia (activo=1). Sin ambas cosas no se envía nada.
+ */
+const COLUMNAS_CON_SEGUIMIENTO = new Set(['retiro_agencia']);
+
+/**
+ * Agenda el primer paso de la secuencia. Va con require perezoso porque
+ * kanban_ia → dropiAutoOrder → seguimiento_plantillas → este archivo forman
+ * un ciclo: pedirlo arriba deja el módulo a medio cargar según quién entre
+ * primero.
+ */
+/**
+ * Valores del body para las plantillas de recordatorio de agencia:
+ *   {{1}} nombre · {{2}} agencia/ciudad · {{3}} guía · {{4}} días de permanencia
+ *
+ * Si un dato falta se manda un guion: Meta rechaza parámetros vacíos (132000)
+ * y es preferible un "-" a que no salga el recordatorio.
+ */
+async function construirParamsRetiroAgencia({ id_configuracion, order }) {
+  let dias = 7; // lo que realmente guarda Servientrega
+  try {
+    const [cfg] = await db.query(
+      `SELECT dias_retiro_agencia FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (cfg?.dias_retiro_agencia) dias = Number(cfg.dias_retiro_agencia);
+  } catch (_) {
+    // columna aún no migrada → se usa el default
+  }
+
+  const nombre = `${order?.name || ''} ${order?.surname || ''}`.trim();
+  // La dirección de la agencia viene en `dir` cuando el envío es a oficina;
+  // si no, la ciudad ya orienta al cliente sobre dónde retirar.
+  const agencia = String(order?.dir || order?.city || '').trim();
+
+  return [
+    nombre || 'Hola',
+    agencia || '-',
+    String(order?.shipping_guide || '').trim() || '-',
+    String(dias),
+  ];
+}
+
+async function programarSeguimientoColumna(params) {
+  try {
+    const { programarRemarketingKanban } = require('./kanban_ia.service');
+    await programarRemarketingKanban(params);
+  } catch (e) {
+    // Best-effort: el mensaje de estado ya salió; no se cae por esto.
+    console.log(
+      `[dropi-notifier] no se pudo agendar seguimiento (cfg ${params?.id_configuracion}, ${params?.estado_contacto}):`,
+      e?.message,
+    );
+  }
+}
 const VENTANA_HORAS = 23;
 const COLUMNA_ENTREGADA_DEFAULT = 'entregada';
 
@@ -1432,6 +1491,35 @@ async function procesarTemplates({
           dropi_order_id: order.id,
           columnaDestino,
         }).catch(() => {});
+
+        // ── Seguimiento automático tras el movimiento de columna ──
+        // El motor de secuencias (configuracion_remarketing) ya existía pero
+        // solo lo agendaba el bot al responder; un contacto movido por el
+        // notifier nunca entraba. Caso que lo motiva: RETIRO EN AGENCIA — la
+        // orden queda esperando a que la persona vaya a la agencia y, si no
+        // va, termina en devolución.
+        //
+        // Alcance deliberadamente corto: el notifier mueve a 9 columnas
+        // distintas y varias tienen secuencias cargadas de otras épocas
+        // (generar_guia, novedad, guia_creada). Agendar en todas encendería
+        // envíos en cuentas que nunca lo pidieron. Se amplía agregando a esta
+        // lista, no por accidente.
+        if (COLUMNAS_CON_SEGUIMIENTO.has(columnaDestino)) {
+          await programarSeguimientoColumna({
+            id_configuracion,
+            id_cliente: clienteId,
+            telefono: phoneNorm,
+            estado_contacto: columnaDestino,
+            // Datos del pedido resueltos AQUÍ, que es donde están a la vista.
+            // El cron dispara 24h después y ya no tiene la orden; por eso los
+            // recordatorios los reciben ya listos. Orden = {{1}}..{{4}} de las
+            // plantillas retiro_agencia_recordatorio_k1/k2/k3.
+            template_parameters: await construirParamsRetiroAgencia({
+              id_configuracion,
+              order: orderParaMsg,
+            }),
+          });
+        }
       }
 
       try {

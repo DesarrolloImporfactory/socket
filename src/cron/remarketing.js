@@ -1385,9 +1385,9 @@ cron.schedule('*/1 * * * *', async () => {
                 header_format, header_media_url, header_media_name, header_parameters,
                 estado_contacto_origen, estado_destino,
                 id_template_rapido, usar_respuesta_rapida,
-                metodo_dentro_24h, prompt_ia,
+                metodo_dentro_24h, prompt_ia, template_parameters,
                 tiempo_disparo, enviado, cancelado, secuencia)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
               {
                 replacements: [
                   record.id_cliente_chat_center,
@@ -1411,6 +1411,11 @@ cron.schedule('*/1 * * * *', async () => {
                   siguienteConfig.usar_respuesta_rapida ? 1 : 0,
                   siguienteConfig.metodo_dentro_24h || 'ninguno',
                   siguienteConfig.prompt_ia || null,
+                  // Se arrastran los del paso anterior: son datos del pedido
+                  // (nombre, agencia, guía) y no cambian entre recordatorios.
+                  // Resolverlos de nuevo aquí obligaría a este cron genérico a
+                  // saber de órdenes Dropi, que no es su trabajo.
+                  record.template_parameters || null,
                   tiempoDisparo,
                   secuenciaActual + 1,
                 ],

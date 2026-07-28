@@ -156,6 +156,72 @@ const KANBAN_TEMPLATES_META = [
       },
     ],
   },
+  /* ── Seguimiento de retiro en agencia (3 pasos, 24h entre cada uno) ──
+     Van SÍ o SÍ como plantilla aprobada: a las 24h la ventana de 24h de Meta
+     está cerrada (un template que nosotros enviamos NO la abre; solo la abre
+     una respuesta del cliente), así que sin plantilla el motor cancela el
+     envío y no manda nada. Tres textos distintos y no uno repetido, porque
+     mandar el mismo mensaje tres veces castiga la calidad del número.
+     Variables en las tres: {{1}} nombre · {{2}} agencia/ciudad · {{3}} guía. */
+  {
+    // Nombre distinto de "…_recordatorio_k1" a propósito: esa primera versión
+    // salió rechazada por categoría, se eliminó, y Meta bloquea el nombre de
+    // una plantilla eliminada. Un rechazo se corrige EDITANDO la plantilla,
+    // no borrándola.
+    name: 'retiro_agencia_disponible_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        // Registro calcado de las UTILITY que YA están aprobadas en producción
+        // (confirmacion_pedido_k1, zona_entrega_k1): datos en bloque con
+        // emoji-viñeta, tono cordial, sin lenguaje promocional.
+        text: 'Hola {{1}}, tu pedido ya llegó y está listo para que lo retires 🎉\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n🗓️Plazo para retirar: {{4}} días\n\nSolo acércate con tu cédula y el número de guía 😊\nSi ya lo retiraste, respóndenos y actualizamos tu pedido.',
+        example: {
+          body_text: [
+            ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'retiro_agencia_recordatorio_k2',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        // {{4}} = días de permanencia. Va como variable y NO quemado: la
+        // agencia guarda 7 días, pero cada dropshipper decide qué plazo
+        // comunica (varios dicen 3 para apurar el retiro). Sale de
+        // configuraciones.dias_retiro_agencia, que por defecto trae el real.
+        text: 'Hola {{1}}, tu pedido sigue esperándote en la agencia 📦\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n\n⏳Te recordamos que la agencia guarda los envíos {{4}} días; cumplido ese plazo el paquete regresa al remitente.\n\n¿Podrás acercarte a retirarlo? Cuéntanos y te ayudamos 😊',
+        example: {
+          body_text: [
+            ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'retiro_agencia_recordatorio_k3',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}}, no queremos que pierdas tu pedido 💙\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n\n⚠️El plazo de {{4}} días está por cumplirse y después el envío regresa al remitente.\n\nSi no puedes acercarte, respóndenos y buscamos una alternativa contigo 🤝',
+        example: {
+          body_text: [
+            ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
+          ],
+        },
+      },
+    ],
+  },
   {
     name: 'antes_generar_guia_k1',
     language: 'es',
@@ -531,9 +597,97 @@ const DROPI_CONFIG_POR_DEFECTO = [
     mensaje_rapido: null,
     parametros: null,
   },
+  {
+    // A propósito sin plantilla: avisarle a alguien que su pedido se canceló
+    estado_dropi: 'CANCELADO',
+    nombre_template: '',
+    columna_destino: 'cancelados',
+    activo: 1,
+    usar_respuesta_rapida: 0,
+    mensaje_rapido: null,
+    parametros: null,
+  },
 ];
 
 const REMARKETING_POR_DEFECTO = [
+  {
+    /* Retiro en agencia: 3 recordatorios, 24h entre cada uno.
+       El tiempo se cuenta desde el envío ANTERIOR (así encadena el cron), por
+       eso los tres van con 24h y no 24/48/72.
+       Los tres llevan plantilla obligatoria: a las 24h la ventana de Meta ya
+       está cerrada y sin plantilla el motor cancela sin enviar. `metodo_dentro_24h:'ia'`
+       es el caso bueno — si el cliente respondió, contesta el bot con contexto;
+       si no, sale la plantilla.
+       estado_destino se deja en la misma columna: mientras el paquete siga en
+       la agencia el contacto no debe moverse. */
+    estado_contacto: 'retiro_agencia',
+    secuencias: [
+      {
+        secuencia: 1,
+        tiempo_espera_minutos: 1440, // 24h
+        nombre_template: 'retiro_agencia_disponible_k1',
+        language_code: 'es',
+        estado_destino: 'retiro_agencia',
+        header_format: null,
+        metodo_dentro_24h: 'ia',
+        prompt_ia: dedent(`El cliente tiene un pedido esperándolo en una agencia y ya respondió, así que estás DENTRO de la conversación.
+
+        OBJETIVO
+        Confirmar si ya retiró el pedido o ayudarlo a hacerlo.
+
+        REGLAS
+        - Tuteo natural LATAM, tono de servicio, NO de venta
+        - Si dice que ya lo retiró: agradece y cierra, no insistas
+        - Si dice que no ha podido: pregunta qué lo detiene y ofrece ayuda concreta
+        - NO inventes plazos, direcciones ni números de guía: usa solo lo que aparezca en la conversación
+        - Máximo 3 líneas
+
+        Solo devuelve el texto del mensaje, sin comillas.`),
+      },
+      {
+        secuencia: 2,
+        tiempo_espera_minutos: 1440, // 24h
+        nombre_template: 'retiro_agencia_recordatorio_k2',
+        language_code: 'es',
+        estado_destino: 'retiro_agencia',
+        header_format: null,
+        metodo_dentro_24h: 'ia',
+        prompt_ia: dedent(`Segundo contacto sobre un pedido que sigue en la agencia sin retirar.
+
+        OBJETIVO
+        Explicar que la agencia guarda el paquete por tiempo limitado y que después se devuelve, sin sonar amenazante.
+
+        REGLAS
+        - Tuteo natural LATAM, tono de servicio
+        - NO inventes el número de días: si no aparece en la conversación, habla de "un tiempo limitado"
+        - Pregunta si puede acercarse o si necesita otra alternativa
+        - Máximo 3 líneas
+
+        Solo devuelve el texto del mensaje, sin comillas.`),
+      },
+      {
+        secuencia: 3,
+        tiempo_espera_minutos: 1440, // 24h
+        nombre_template: 'retiro_agencia_recordatorio_k3',
+        language_code: 'es',
+        estado_destino: 'retiro_agencia',
+        header_format: null,
+        metodo_dentro_24h: 'ia',
+        prompt_ia: dedent(`Último contacto sobre un pedido en agencia a punto de devolverse.
+
+        OBJETIVO
+        Abrir una salida antes de perder la venta: que responda para coordinar alternativa.
+
+        REGLAS
+        - Tuteo natural LATAM, cero presión agresiva
+        - Ofrece alternativa concreta (reprogramar, enviar a otra dirección, que lo retire otra persona)
+        - NO inventes políticas de la transportadora
+        - Máximo 3 líneas
+
+        Solo devuelve el texto del mensaje, sin comillas.`),
+      },
+    ],
+  },
   {
     estado_contacto: 'contacto_inicial',
     secuencias: [

@@ -20,6 +20,30 @@ function toUtcMysql(v) {
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
+
+// Normaliza cualquier valor de fecha al MISMO formato en que está guardada la
+// columna: 'YYYY-MM-DD HH:MM:SS' en UTC real.
+// Es obligatorio para comparar en el WHERE: si se le pasa un Date a Sequelize,
+// mysql2 lo serializa usando el timezone de la conexión ('-05:00'), con lo que
+// la comparación quedaría corrida 5 horas respecto de lo almacenado.
+function toUtcMysqlParam(v) {
+  if (v == null) return null;
+  if (v instanceof Date) return toUtcMysql(v);
+  const s = String(v).trim();
+  // ya viene como la columna ('2026-07-29 19:00:00' = UTC) → no tocar
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(s))
+    return s.replace('T', ' ');
+  // ISO con zona ('2026-07-29T14:00:00-05:00' / '...Z') → pasar a UTC
+  return toUtcMysql(s);
+}
+
+// Valor de la columna (UTC) → objeto Date correcto.
+function utcColumnToDate(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v;
+  const d = new Date(utcColumnToIso(v));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 /* ╔═══════════════════════════════════════════════════════════════════════╗
    ║ 1. VERIFY OVERLAPS                                                   ║
    ╚═══════════════════════════════════════════════════════════════════════╝ */
@@ -28,20 +52,50 @@ async function assertNoOverlap({
   start_utc,
   end_utc,
   ignoreId = null, // ← al actualizar excluimos la propia cita
-  /* assigned_user_id */ // ← descomenta si quieres solape por usuario
+  assigned_user_id = null, // ← encargado de la cita que se está guardando
 }) {
+  // Comparar SIEMPRE con strings UTC, igual que como se escribe la columna.
+  const startStr = toUtcMysqlParam(start_utc);
+  const endStr = toUtcMysqlParam(end_utc);
+  if (!startStr || !endStr) throw new AppError('Rango de fechas inválido.', 400);
+
   const where = {
     calendar_id,
     status: { [Op.in]: ['Agendado', 'Confirmado', 'Bloqueado'] },
-    start_utc: { [Op.lt]: end_utc }, // empieza antes de que termine la nueva
-    end_utc: { [Op.gt]: start_utc }, // termina después de que empieza la nueva
+    start_utc: { [Op.lt]: endStr }, // empieza antes de que termine la nueva
+    end_utc: { [Op.gt]: startStr }, // termina después de que empieza la nueva
   };
   if (ignoreId) where.id = { [Op.ne]: ignoreId };
-  // if (assigned_user_id != null) where.assigned_user_id = assigned_user_id;
+
+  // ── Solape POR ENCARGADO ────────────────────────────────────────
+  // Varios asesores del mismo calendario pueden atender a la misma hora:
+  // solo choca si el horario ya está ocupado por el MISMO encargado.
+  const asesor =
+    assigned_user_id === null || assigned_user_id === undefined
+      ? null
+      : Number(assigned_user_id);
+
+  if (asesor === null) {
+    // Cita sin encargado → solo choca con otras sin encargado.
+    where.assigned_user_id = { [Op.is]: null };
+  } else {
+    where[Op.or] = [
+      { assigned_user_id: asesor },
+      // Un 'Bloqueado' sin encargado bloquea el calendario completo
+      // (feriados, cierres), así que aplica a todos los asesores.
+      { assigned_user_id: { [Op.is]: null }, status: 'Bloqueado' },
+    ];
+  }
 
   const conflict = await Appointment.findOne({ where });
-  if (conflict)
-    throw new AppError('Conflicto de horario en el calendario.', 409);
+  if (conflict) {
+    throw new AppError(
+      asesor === null
+        ? 'Conflicto de horario: ya existe una cita sin encargado en ese rango.'
+        : 'Conflicto de horario: el encargado ya tiene una cita en ese rango.',
+      409,
+    );
+  }
 }
 
 /* ================= ENGANCHE: push out (evita bucles) ================= */
@@ -276,6 +330,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
     calendar_id: payload.calendar_id,
     start_utc: startUtc,
     end_utc: endUtc,
+    assigned_user_id: assigned,
   });
 
   const appt = await db.transaction(async (t) => {
@@ -375,24 +430,39 @@ async function updateAppointment(id, payload, opts = {}) {
     if (payload[f] !== undefined) up[f] = payload[f];
   });
 
-  let startUtc = appt.start_utc;
-  let endUtc = appt.end_utc;
+  // La columna guarda strings UTC → convertir a Date para poder comparar
+  // cuando el update trae solo uno de los dos extremos.
+  let startUtc = utcColumnToDate(appt.start_utc);
+  let endUtc = utcColumnToDate(appt.end_utc);
   if (payload.start) startUtc = new Date(payload.start);
   if (payload.end) endUtc = new Date(payload.end);
 
   if (payload.start || payload.end) {
-    if (isNaN(startUtc) || isNaN(endUtc) || endUtc <= startUtc) {
+    if (
+      !startUtc ||
+      !endUtc ||
+      isNaN(startUtc) ||
+      isNaN(endUtc) ||
+      endUtc <= startUtc
+    ) {
       throw new AppError('Rango de fechas inválido.', 400);
     }
     up.start_utc = toUtcMysql(startUtc);
     up.end_utc = toUtcMysql(endUtc);
   }
 
+  // Encargado resultante tras el update (puede venir en el payload o no)
+  const nextAssigned =
+    up.assigned_user_id !== undefined
+      ? up.assigned_user_id
+      : appt.assigned_user_id;
+
   await assertNoOverlap({
     calendar_id: appt.calendar_id,
     start_utc: up.start_utc ?? startUtc,
     end_utc: up.end_utc ?? endUtc,
     ignoreId: appt.id,
+    assigned_user_id: nextAssigned,
   });
 
   const updated = await db.transaction(async (t) => {
