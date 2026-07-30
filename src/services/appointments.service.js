@@ -53,6 +53,7 @@ async function assertNoOverlap({
   end_utc,
   ignoreId = null, // ← al actualizar excluimos la propia cita
   assigned_user_id = null, // ← encargado de la cita que se está guardando
+  id_profesional = null, // ← quién la atiende, si la sede tiene profesionales
 }) {
   // Comparar SIEMPRE con strings UTC, igual que como se escribe la columna.
   const startStr = toUtcMysqlParam(start_utc);
@@ -66,6 +67,27 @@ async function assertNoOverlap({
     end_utc: { [Op.gt]: startStr }, // termina después de que empieza la nueva
   };
   if (ignoreId) where.id = { [Op.ne]: ignoreId };
+
+  /* ── Solape POR PROFESIONAL ──────────────────────────────────────
+     Cuando la sede tiene profesionales cargados, la capacidad la define quién
+     atiende y no quién gestiona la cita: tres esteticistas son tres citas
+     simultáneas. Un 'Bloqueado' sin profesional (feriado, cierre) cierra el
+     local entero y por eso también choca. */
+  if (id_profesional != null) {
+    where[Op.or] = [
+      { id_profesional: Number(id_profesional) },
+      { id_profesional: { [Op.is]: null }, status: 'Bloqueado' },
+    ];
+
+    const conflictoProf = await Appointment.findOne({ where });
+    if (conflictoProf) {
+      throw new AppError(
+        'Conflicto de horario: quien atiende ya tiene una cita en ese rango.',
+        409,
+      );
+    }
+    return;
+  }
 
   // ── Solape POR ENCARGADO ────────────────────────────────────────
   // Varios asesores del mismo calendario pueden atender a la misma hora:
@@ -244,6 +266,7 @@ async function listAppointments({
       'title',
       'status',
       'assigned_user_id',
+      'id_profesional',
       'contact_id',
       'start_utc',
       'end_utc',
@@ -293,6 +316,7 @@ async function listAppointments({
       extendedProps: {
         status: r.status,
         assigned_user_id: r.assigned_user_id,
+        id_profesional: r.id_profesional,
         contact_id: r.contact_id,
         contact, // invitado que quedó como contacto principal
         booked_tz: r.booked_tz,
@@ -331,6 +355,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
     start_utc: startUtc,
     end_utc: endUtc,
     assigned_user_id: assigned,
+    id_profesional: payload.id_profesional ?? null,
   });
 
   const appt = await db.transaction(async (t) => {
@@ -341,6 +366,7 @@ async function createAppointment(payload, currentUserId, opts = {}) {
         description: payload.description ?? null,
         status: payload.status ?? 'Agendado',
         assigned_user_id: assigned,
+        id_profesional: payload.id_profesional ?? null,
         contact_id: payload.contact_id ?? null,
         start_utc: toUtcMysql(startUtc),
         end_utc: toUtcMysql(endUtc),

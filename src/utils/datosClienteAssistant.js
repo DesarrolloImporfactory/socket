@@ -124,18 +124,29 @@ const obtenerDatosClienteParaAssistant = async (
 };
 
 const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
-  // Consulta combinada para obtener datos con guía o pedido
+  /* La zona del calendario, no una fija: el bloque se lee en hora local del
+     negocio y hay cuentas fuera de Ecuador. */
+  const [cal] = await db.query(
+    `SELECT time_zone FROM calendars
+      WHERE account_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const tz = cal?.time_zone || 'America/Guayaquil';
+
   const sql = `
-  SELECT 
+  SELECT
     ap.start_utc AS inicio_cita,
-    ap.end_utc AS fin_cita
+    ap.end_utc AS fin_cita,
+    ap.id_establecimiento,
+    est.nombre AS sede
   FROM calendars ca
   LEFT JOIN appointments ap ON ap.calendar_id = ca.id
-  WHERE 
-    ca.account_id = ? 
-    AND ap.start_utc > NOW()
+  LEFT JOIN establecimientos_chat_center est ON est.id = ap.id_establecimiento
+  WHERE
+    ca.account_id = ?
+    AND ap.start_utc > UTC_TIMESTAMP()
     AND ap.status NOT IN ('Completado', 'Cancelado', 'Bloqueado')
-  ORDER BY ap.start_utc DESC 
+  ORDER BY ap.start_utc ASC
 `;
 
   // Ejecutar la consulta SQL
@@ -144,35 +155,94 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     type: db.QueryTypes.SELECT,
   });
 
-  // Verificar si no hay datos
+  /* Cuánta gente atiende en cada sede. Es lo que convierte "ese horario está
+     ocupado" en "de tres esteticistas, dos están ocupadas": sin esto el bot
+     descartaba una hora en la que todavía quedaban cupos. */
+  const capacidad = new Map();
+  const profs = await db.query(
+    `SELECT id_establecimiento, COUNT(*) AS n
+       FROM profesionales_chat_center
+      WHERE id_configuracion = ? AND activo = 1 AND eliminado = 0
+      GROUP BY id_establecimiento`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  profs.forEach((p) => capacidad.set(Number(p.id_establecimiento), Number(p.n)));
+
+  /* Qué día es hoy. Va SIEMPRE, con citas o sin ellas.
+     Antes solo se incluía cuando había citas agendadas, así que una agenda
+     recién creada dejaba al asistente sin ninguna referencia temporal: al
+     pedirle "el martes" resolvía con la fecha que le quedara del entrenamiento
+     y agendaba en un año pasado, sin que nada fallara al crearse. */
+  const ahora = moment().tz(tz);
+  const DIAS = [
+    'domingo',
+    'lunes',
+    'martes',
+    'miércoles',
+    'jueves',
+    'viernes',
+    'sábado',
+  ];
+
+  let bloque =
+    `🗓️ HOY es ${DIAS[ahora.day()]} ${ahora.format('YYYY-MM-DD')} y son las ` +
+    `${ahora.format('HH:mm')} (hora de ${tz}).\n` +
+    `Cualquier fecha relativa que diga el cliente ("mañana", "el martes", ` +
+    `"la próxima semana") la resuelves contra ESTA fecha, y siempre hacia ` +
+    `adelante. Nunca propongas ni agendes una fecha ya pasada.\n\n`;
+
   if (!calendario || calendario.length === 0) {
     return {
-      bloque: 'No hay citas programadas.',
+      bloque: `${bloque}No hay ninguna cita agendada todavía: la agenda está libre.`,
       tipo: 'datos_servicio',
     };
   }
 
-  // Crear un bloque organizado con las citas
-  let tipoDato = 'datos_servicio';
-  let fechaActual = moment()
-    .tz('America/Guayaquil')
-    .format('YYYY-MM-DD HH:mm:ss');
-  let bloque = `🧾 **Fecha actual (${fechaActual}), Citas ocupadas datos_servicio detectadas:**\n\n`;
+  /* Se agrupan las citas que caen en el mismo horario y la misma sede: lo que
+     el bot necesita saber no es cuántas citas hay, sino si queda alguien libre. */
+  const franjas = new Map();
+  calendario.forEach((cita) => {
+    // start_utc llega como texto UTC: hay que convertirlo, no leerlo como local.
+    const ini = moment.utc(cita.inicio_cita).tz(tz);
+    const fin = moment.utc(cita.fin_cita).tz(tz);
+    const sedeId = Number(cita.id_establecimiento) || 0;
+    const clave = `${ini.format('YYYY-MM-DD HH:mm')}|${fin.format('HH:mm')}|${sedeId}`;
 
-  // Formatear y agregar cada cita al bloque
-  calendario.forEach((cita, index) => {
-    // Convertir las fechas a un formato legible
-    const inicioCita = new Date(cita.inicio_cita).toLocaleString();
-    const finCita = new Date(cita.fin_cita).toLocaleString();
-
-    bloque += `Cita ${index + 1}:\n`;
-    bloque += `- **Inicio:** ${inicioCita}\n`;
-    bloque += `- **Fin:** ${finCita}\n\n`;
+    if (!franjas.has(clave)) {
+      franjas.set(clave, {
+        ini,
+        fin,
+        sedeId,
+        sede: cita.sede || null,
+        ocupadas: 0,
+      });
+    }
+    franjas.get(clave).ocupadas += 1;
   });
+
+  bloque += `Ocupación de la agenda (solo ofrece horarios donde quede cupo):\n`;
+
+  for (const f of franjas.values()) {
+    const total = capacidad.get(f.sedeId) || 1;
+    const libres = Math.max(0, total - f.ocupadas);
+    const cuando = `${DIAS[f.ini.day()]} ${f.ini.format('YYYY-MM-DD')} de ${f.ini.format('HH:mm')} a ${f.fin.format('HH:mm')}`;
+    const donde = f.sede ? ` · ${f.sede}` : '';
+
+    bloque +=
+      libres > 0
+        ? `- ${cuando}${donde}: ${f.ocupadas} de ${total} ocupadas, quedan ${libres} — SÍ puedes agendar\n`
+        : `- ${cuando}${donde}: LLENO (${total} de ${total}) — no lo ofrezcas\n`;
+  }
+
+  if (capacidad.size) {
+    bloque +=
+      `\nVarias personas atienden a la vez, así que un horario con citas NO ` +
+      `está necesariamente lleno: fíjate en cuántos cupos quedan.\n`;
+  }
 
   return {
     bloque,
-    tipo: tipoDato,
+    tipo: 'datos_servicio',
   };
 };
 

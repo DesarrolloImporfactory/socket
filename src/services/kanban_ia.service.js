@@ -8,6 +8,7 @@ const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+const { construirContextoColumna } = require('../utils/contextoColumna');
 
 const {
   enviarMensajeWhatsapp,
@@ -402,22 +403,14 @@ async function procesarMensajeKanban(params) {
     );
   }
 
-  // ── 6. ACCIÓN: contexto_calendario ────────────────────────
-  if (tieneAccion('contexto_calendario')) {
-    try {
-      const {
-        obtenerDatosCalendarioParaAssistant,
-      } = require('../utils/datosClienteAssistant');
-      const datosCalendario =
-        await obtenerDatosCalendarioParaAssistant(id_configuracion);
-      if (datosCalendario?.bloque) {
-        bloqueContexto += `📅 Información del calendario:\n${datosCalendario.bloque}\n\n`;
-        await log(`✅ Contexto calendario inyectado`);
-      }
-    } catch (err) {
-      await log(`⚠️ Error contexto_calendario: ${err.message}`);
-    }
-  }
+  // ── 6. ACCIONES: contexto_establecimientos + contexto_calendario ──
+  // Lo arma construirContextoColumna(), compartido con el chat de prueba para
+  // que la prueba responda con la misma información que producción.
+  bloqueContexto += await construirContextoColumna(
+    id_configuracion,
+    acciones,
+    log,
+  );
 
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
   // La plantilla de confirmación se envió por fuera del thread, así que el
@@ -845,11 +838,44 @@ async function procesarMensajeKanban(params) {
     const trigger = cfg.trigger || '[cita_confirmada]: true';
 
     if (respuestaRaw.toLowerCase().includes(trigger.toLowerCase())) {
-      await procesarAgendarCita(
+      const res = await procesarAgendarCita(
         respuestaRaw,
         id_configuracion,
         id_cliente,
-      ).catch(async (err) => log(`⚠️ Error agendar_cita: ${err.message}`));
+      ).catch(async (err) => {
+        await log(`⚠️ Error agendar_cita: ${err.message}`);
+        return { ok: false, motivo: err.message };
+      });
+
+      /* Si la cita no se creó, la tarjeta NO se puede quedar en "Cita
+         agendada": cambiar_estado ya corrió (paso 10) y la movió igual, así que
+         quedaba una cita fantasma — visible en el tablero, inexistente en la
+         agenda, y sin nada que lo delate hasta que el cliente llega al local.
+         Pasa de verdad: si el horario choca con otra cita del mismo encargado,
+         createAppointment responde 409 y el error se quedaba en un log.
+         Va a "asesor" porque el cliente ya recibió un mensaje diciéndole que su
+         cita quedó confirmada: eso lo tiene que resolver una persona. */
+      if (res && res.ok === false) {
+        const [colAsesor] = await db.query(
+          `SELECT id FROM kanban_columnas
+            WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
+            LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (colAsesor) {
+          await db.query(
+            `UPDATE clientes_chat_center SET estado_contacto = 'asesor' WHERE id = ?`,
+            { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+          );
+          await log(
+            `🚨 La cita NO se creó (${res.motivo}) pero el bot ya la confirmó al cliente ${id_cliente}: movido a "asesor" para que lo resuelva una persona`,
+          );
+        } else {
+          await log(
+            `🚨 La cita NO se creó (${res.motivo}) y la configuración ${id_configuracion} no tiene columna "asesor": la tarjeta queda en "cita_agendada" sin cita real`,
+          );
+        }
+      }
     }
   }
 
@@ -1212,26 +1238,170 @@ function limpiarTagsAcciones(texto) {
     .trim();
 }
 
+/**
+ * Elige a quién le toca la cita entre los profesionales de la sede.
+ *
+ * Devuelve el id, `null` si la sede no tiene profesionales cargados (y entonces
+ * todo funciona como antes), o `{ error }` si no queda nadie libre.
+ *
+ * Si el bot escribió una línea "Atiende: <nombre>" —porque la clienta la pidió—
+ * se respeta o se falla: cambiarla en silencio por otra persona es peor que no
+ * agendar, la clienta llegaría esperando a alguien que no la va a atender.
+ */
+async function elegirProfesionalLibre({
+  id_configuracion,
+  establecimiento,
+  calendarId,
+  inicio_utc,
+  fin_utc,
+  pedido,
+}) {
+  if (!establecimiento?.id) return null;
+
+  const profesionales = await db.query(
+    `SELECT id, nombre FROM profesionales_chat_center
+      WHERE id_configuracion = ? AND id_establecimiento = ?
+        AND activo = 1 AND eliminado = 0
+      ORDER BY orden ASC, id ASC`,
+    {
+      replacements: [id_configuracion, establecimiento.id],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!profesionales.length) return null;
+
+  // Ocupados en ese rango. 'Bloqueado' sin profesional cierra el local entero.
+  const ocupados = await db.query(
+    `SELECT DISTINCT id_profesional FROM appointments
+      WHERE calendar_id = ?
+        AND status IN ('Agendado', 'Confirmado', 'Bloqueado')
+        AND start_utc < ? AND end_utc > ?
+        AND id_profesional IS NOT NULL`,
+    {
+      replacements: [calendarId, fin_utc, inicio_utc],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  const ocupadosSet = new Set(ocupados.map((o) => Number(o.id_profesional)));
+
+  const norm = (s) =>
+    String(s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  if (pedido) {
+    const buscado = norm(pedido);
+    const elegido =
+      profesionales.find((p) => norm(p.nombre) === buscado) ||
+      profesionales.find(
+        (p) =>
+          norm(p.nombre).includes(buscado) || buscado.includes(norm(p.nombre)),
+      );
+    if (!elegido) {
+      return { error: `no existe "${pedido}" entre quienes atienden en la sede` };
+    }
+    if (ocupadosSet.has(Number(elegido.id))) {
+      return { error: `${elegido.nombre} ya tiene una cita a esa hora` };
+    }
+    return elegido.id;
+  }
+
+  const libre = profesionales.find((p) => !ocupadosSet.has(Number(p.id)));
+  if (!libre) {
+    return {
+      error: `no queda nadie libre en "${establecimiento.nombre}" a esa hora (${profesionales.length} atienden)`,
+    };
+  }
+  return libre.id;
+}
+
 async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   const moment = require('moment-timezone');
 
-  const nombre = mensajeGPT.match(/🧑 Nombre:\s*(.+)/)?.[1]?.trim() || '';
-  const telefono = mensajeGPT.match(/📞 Teléfono:\s*(.+)/)?.[1]?.trim() || '';
-  const correo = mensajeGPT.match(/📍 Correo:\s*(.+)/)?.[1]?.trim() || '';
-  const servicio =
-    mensajeGPT.match(/📍 Servicio que desea:\s*(.+)/)?.[1]?.trim() || '';
-  const fechaIni =
-    mensajeGPT.match(/🕒 Fecha y hora de inicio:\s*(.+)/)?.[1]?.trim() || '';
-  const fechaFin =
-    mensajeGPT.match(/🕒 Fecha y hora de fin:\s*(.+)/)?.[1]?.trim() || '';
+  /* El bloque llega tal como lo escribió el modelo, y el modelo pone negritas
+     cuando le parece: "🧑 **Nombre:** Ana". Con el emoji y los asteriscos
+     obligatorios en el patrón, ese bloque no matcheaba NADA — la cita se creaba
+     con los campos vacíos y una fecha inválida, sin un solo error a la vista.
+     Se quita el énfasis antes de leer y el emoji queda opcional. */
+  const limpio = String(mensajeGPT || '').replace(/[*_]{1,2}/g, '');
+  const campo = (etiqueta) =>
+    limpio
+      .match(new RegExp(`${etiqueta}\\s*:\\s*(.+)`, 'i'))?.[1]
+      ?.trim() || '';
 
-  const inicio_utc = moment.tz(fechaIni, 'America/Guayaquil').utc().format();
-  const fin_utc = moment.tz(fechaFin, 'America/Guayaquil').utc().format();
+  const nombre = campo('Nombre');
+  const telefono = campo('Tel[eé]fono');
+  const correo = campo('Correo');
+  const servicio = campo('Servicio que desea');
+  const fechaIni = campo('Fecha y hora de inicio');
+  const fechaFin = campo('Fecha y hora de fin');
 
-  const [calendar] = await db.query(
-    `SELECT id FROM calendars WHERE account_id = ? LIMIT 1`,
+  const mIni = moment.tz(fechaIni, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
+  const mFin = moment.tz(fechaFin, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
+
+  /* Sin fechas legibles no hay cita. Antes se seguía adelante con "Invalid
+     date" y quedaba una fila basura en la agenda. */
+  if (!mIni.isValid() || !mFin.isValid()) {
+    await log(
+      `❌ agendar_cita: fechas ilegibles en el bloque (inicio="${fechaIni}" fin="${fechaFin}"); la cita NO se creó`,
+    );
+    return { ok: false, motivo: 'fechas ilegibles en el bloque' };
+  }
+
+  const inicio_utc = mIni.utc().format();
+  const fin_utc = mFin.utc().format();
+
+  /* Sede elegida por el bot. Si la cuenta tiene varias sucursales, la cita va al
+     calendario de ESA sede; si no, al único que exista. Antes siempre se tomaba
+     el primer calendario de la cuenta (LIMIT 1 sin orden), así que una cuenta
+     con dos sedes agendaba todo en la misma agenda. */
+  const sedeNombre = campo('Sede');
+
+  const sedes = await db.query(
+    `SELECT id, nombre, ciudad, direccion, id_calendario
+       FROM establecimientos_chat_center
+      WHERE id_configuracion = ? AND eliminado = 0 AND activo = 1
+      ORDER BY orden ASC, id ASC`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
+
+  let establecimiento = null;
+
+  if (sedes.length === 1) {
+    // Con una sola sede no hay nada que elegir, escriba lo que escriba el bot.
+    establecimiento = sedes[0];
+  } else if (sedeNombre && sedes.length) {
+    // Sin tildes ni dobles espacios: "Sede La Carolína" y "la carolina" son la misma.
+    const norm = (s) =>
+      String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{M}/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const buscado = norm(sedeNombre);
+
+    /* Coincidencia flexible a propósito: el bot abrevia ("La Carolina" por
+       "Sede La Carolina"). Con igualdad exacta eso caía al calendario por
+       defecto y una cuenta de varias sedes agendaba en la sucursal equivocada
+       sin avisar. */
+    establecimiento =
+      sedes.find((s) => norm(s.nombre) === buscado) ||
+      sedes.find(
+        (s) =>
+          norm(s.nombre).includes(buscado) || buscado.includes(norm(s.nombre)),
+      ) ||
+      null;
+
+    if (!establecimiento) {
+      await log(
+        `⚠️ agendar_cita: el bot mencionó la sede "${sedeNombre}" y no coincide con ninguna de la configuración ${id_configuracion}`,
+      );
+    }
+  }
 
   const [usuario] = await db.query(
     `SELECT sb.id_sub_usuario, sb.id_usuario
@@ -1241,31 +1411,126 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
-  if (!calendar || !usuario) {
+  if (!usuario) {
     await log(
-      `⚠️ agendar_cita: no se encontró calendar o usuario para config=${id_configuracion}`,
+      `❌ agendar_cita: la configuración ${id_configuracion} no tiene sub-usuario administrador; la cita NO se creó`,
     );
-    return;
+    return { ok: false, motivo: 'sin sub-usuario administrador' };
+  }
+
+  /* La agenda se crea al vuelo si no existe.
+     Antes esto se abandonaba con un log y la cita no se creaba nunca. Y como la
+     acción `cambiar_estado` corre por separado, la tarjeta igual se movía a
+     "Cita agendada": quedaba una cita fantasma, visible en el tablero e
+     inexistente en el calendario, sin ningún error a la vista.
+     Pasaba siempre en cuentas recién montadas, porque la fila de `calendars`
+     solo nacía cuando alguien abría la pantalla de Calendario (/calendars/ensure). */
+  let calendarId = null;
+
+  if (establecimiento?.id_calendario) {
+    const [c] = await db.query(`SELECT id FROM calendars WHERE id = ? LIMIT 1`, {
+      replacements: [establecimiento.id_calendario],
+      type: db.QueryTypes.SELECT,
+    });
+    calendarId = c?.id || null;
+  }
+
+  if (!calendarId) {
+    const [c] = await db.query(
+      `SELECT id FROM calendars WHERE account_id = ? AND is_active = 1
+        ORDER BY id ASC LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    calendarId = c?.id || null;
+  }
+
+  if (!calendarId) {
+    try {
+      const { ensureDefaultCalendar } = require('./calendars.service');
+      const creado = await ensureDefaultCalendar({
+        account_id: Number(id_configuracion),
+        name: 'Agenda principal',
+        created_by: usuario.id_usuario,
+      });
+      calendarId = creado?.id || null;
+      await log(
+        `📅 agendar_cita: la configuración ${id_configuracion} no tenía agenda; se creó la ${calendarId}`,
+      );
+    } catch (e) {
+      await log(`❌ agendar_cita: no se pudo crear la agenda: ${e.message}`);
+      return { ok: false, motivo: `no se pudo crear la agenda: ${e.message}` };
+    }
+  }
+
+  /* ── Quién atiende ────────────────────────────────────────────────
+     Sin esto el bot mandaba todas las citas al mismo sub-usuario administrador,
+     así que un centro con tres esteticistas solo podía recibir UNA cita por
+     hora: la segunda moría con "el encargado ya tiene una cita".
+     Con profesionales cargados, la capacidad la da cuánta gente atiende. Si la
+     sede no tiene ninguno, todo sigue como antes. */
+  const idProfesional = await elegirProfesionalLibre({
+    id_configuracion,
+    establecimiento,
+    calendarId,
+    inicio_utc,
+    fin_utc,
+    pedido: campo('Atiende'),
+  });
+
+  if (idProfesional && idProfesional.error) {
+    await log(`❌ agendar_cita: ${idProfesional.error}`);
+    return { ok: false, motivo: idProfesional.error };
   }
 
   const payload = {
     assigned_user_id: usuario.id_sub_usuario,
+    id_profesional: idProfesional || null,
     booked_tz: 'America/Guayaquil',
-    calendar_id: calendar.id,
+    calendar_id: calendarId,
     create_meet: true,
     created_by_user_id: usuario.id_usuario,
     description: '',
     end: fin_utc,
     invitees: [{ name: nombre, email: correo, phone: telefono }],
-    location_text: 'online',
+    // Para un servicio presencial la ubicación es la sede, no "online".
+    location_text: establecimiento
+      ? [
+          establecimiento.nombre,
+          establecimiento.direccion,
+          establecimiento.ciudad,
+        ]
+          .filter(Boolean)
+          .join(' — ')
+          .slice(0, 255)
+      : 'online',
     meeting_url: null,
     start: inicio_utc,
     status: 'Agendado',
     title: `${nombre} - ${servicio}`,
   };
 
-  await servicioAppointments.createAppointment(payload, usuario.id_usuario);
-  await log(`✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}`);
+  const cita = await servicioAppointments.createAppointment(
+    payload,
+    usuario.id_usuario,
+  );
+
+  // La sede se guarda aparte: createAppointment no la conoce y no vale la pena
+  // meterle un campo que solo usa este flujo.
+  if (establecimiento?.id && cita?.id) {
+    await db.query(
+      `UPDATE appointments SET id_establecimiento = ? WHERE id = ?`,
+      {
+        replacements: [establecimiento.id, cita.id],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  }
+
+  await log(
+    `✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}${establecimiento ? ` · sede "${establecimiento.nombre}"` : ''}`,
+  );
+
+  return { ok: true, id: cita?.id || null };
 }
 
 /**
@@ -1526,4 +1791,8 @@ module.exports = {
   // una columna pueden traer tags de acción, y ahí nadie los interpretaba ni los
   // limpiaba (ver cron/remarketing.js → generarMensajeRemarketingIA).
   limpiarTagsAcciones,
+  // Expuesta para poder verificar el agendamiento sin levantar toda la
+  // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
+  // igual aunque la cita no se cree).
+  procesarAgendarCita,
 };

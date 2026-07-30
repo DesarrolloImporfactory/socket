@@ -134,6 +134,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     id_dropi,
     es_privado,
     precio_proveedor,
+    stock,
   } = req.body;
 
   if (!id_configuracion || !nombre || !tipo || !precio) {
@@ -156,6 +157,11 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const precioProveedorNum = toNullableNumber(precio_proveedor);
   const duracionNum = toNullableNumber(duracion) ?? 0;
   const idCategoriaNum = toNullableNumber(id_categoria);
+  // Un servicio no tiene unidades: se presta, no se agota.
+  const stockNum =
+    String(tipo).toLowerCase().startsWith('ser')
+      ? 0
+      : Math.max(0, Math.round(toNullableNumber(stock) ?? 0));
 
   const idDropiParsed =
     id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
@@ -224,6 +230,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     precio: precioNum,
     precio_proveedor: precioProveedorNum,
     duracion: duracionNum,
+    stock: stockNum,
     id_categoria: idCategoriaNum,
     imagen_url,
     video_url,
@@ -282,6 +289,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     es_privado,
     precio_proveedor,
     remove_video,
+    remove_imagen,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -327,6 +335,26 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     }
 
     producto.imagen_url = `${dominio}/uploads/productos/imagen/${imagenFile.filename}`;
+  } else if (String(remove_imagen) === '1') {
+    // Usuario quitó la imagen → borrar archivo + limpiar BD.
+    // Sin esta rama, quitar la imagen en el modal no hacía NADA: como solo se
+    // tocaba imagen_url cuando llegaba un archivo nuevo, la ruta anterior se
+    // quedaba guardada y la imagen reaparecía al recargar. El video y la imagen
+    // de upsell ya se borraban así; a la imagen principal le faltaba.
+    try {
+      if (producto.imagen_url) {
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'imagen',
+          path.basename(producto.imagen_url),
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+    producto.imagen_url = null;
   }
 
   // ── VIDEO ──
@@ -447,6 +475,24 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     producto.landing_url = landing_url || null;
   if (typeof precio_proveedor !== 'undefined')
     producto.precio_proveedor = precio_proveedor || null;
+
+  /* Unidades.
+     - Un servicio no tiene: si el ítem pasó a ser servicio se pone en 0 para que
+       el listado no muestre un stock que no significa nada.
+     - Un producto de Dropi tampoco se toca a mano: su stock lo escribe el cron
+       syncDropiStock desde las bodegas del proveedor (mismo criterio que usa
+       ese cron para elegir qué sincronizar). Aceptar el valor del formulario
+       dejaría un número inventado hasta la próxima corrida. */
+  const esProductoDropi =
+    String(producto.external_source || '').toLowerCase() === 'dropi' &&
+    producto.external_id != null;
+
+  if (String(producto.tipo || '').toLowerCase().startsWith('ser')) {
+    producto.stock = 0;
+  } else if (!esProductoDropi && typeof req.body.stock !== 'undefined') {
+    const n = Number(req.body.stock);
+    producto.stock = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+  }
 
   if (typeof id_dropi !== 'undefined') {
     const p = id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;

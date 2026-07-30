@@ -62,6 +62,7 @@ async function startServer() {
     require('./cron/remarketing_ig');
     require('./cron/remarketing_ms');
     require('./cron/aviso_calendarios');
+    require('./cron/seguimiento_citas.js');
     require('./cron/templateProgramadoMasivo.js');
     require('./cron/syncDropiStock.js');
     require('./cron/syncDropiOrdersHourly.js');

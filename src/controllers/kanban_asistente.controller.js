@@ -16,6 +16,7 @@ const {
 const {
   sanitizarRespuestaAgente,
 } = require('../utils/openia/sanitizador_agente');
+const { construirContextoColumna } = require('../utils/contextoColumna');
 
 // Tipos de archivo aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
@@ -661,7 +662,7 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   const [columna] = await db.query(
     `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
-            c.api_key_openai
+            kc.id_configuracion, c.api_key_openai
      FROM kanban_columnas kc
      INNER JOIN configuraciones c ON c.id = kc.id_configuracion
      WHERE kc.id = ? AND kc.activo = 1 LIMIT 1`,
@@ -671,6 +672,20 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   if (!columna) return next(new AppError('Columna no encontrada', 404));
   if (!columna.api_key_openai)
     return next(new AppError('Sin API key de OpenAI', 400));
+
+  /* Mismo contexto que en producción (sedes, disponibilidad de la agenda). Sin
+     esto la prueba mentía: el prompt decide la cobertura con la lista de sedes
+     y aquí esa lista no llegaba, así que el bot mandaba fuera de zona hasta a
+     la ciudad donde el negocio tiene local. */
+  const acciones = await db.query(
+    `SELECT tipo_accion, config FROM kanban_acciones
+      WHERE id_kanban_columna = ? AND activo = 1 ORDER BY orden ASC`,
+    { replacements: [id], type: db.QueryTypes.SELECT },
+  );
+  const bloqueContexto = await construirContextoColumna(
+    columna.id_configuracion,
+    acciones,
+  );
 
   const headers = {
     Authorization: `Bearer ${columna.api_key_openai}`,
@@ -688,7 +703,9 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   const body = {
     model: columna.modelo || 'gpt-4o-mini',
     instructions: columna.instrucciones,
-    input: mensaje,
+    input: bloqueContexto.trim()
+      ? `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n${mensaje}`
+      : mensaje,
     store: true,
     ...(tools.length > 0 && { tools }),
     ...(previous_response_id && { previous_response_id }),
@@ -733,9 +750,53 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   const respuestaLimpia = sanitizarRespuestaAgente(outputText);
 
+  /* Qué habría hecho el tablero con esta respuesta.
+     Probar el bot sin ver esto es probar a medias: la conversación puede sonar
+     perfecta y no mover la tarjeta porque el asistente nunca escribió el tag, y
+     desde la pantalla no hay forma de distinguir un caso del otro. */
+  const acciones_detectadas = [];
+  const texto = String(outputText || '').toLowerCase();
+
+  for (const ac of acciones) {
+    let cfg = ac.config;
+    if (typeof cfg === 'string') {
+      try {
+        cfg = JSON.parse(cfg);
+      } catch (_) {
+        cfg = {};
+      }
+    }
+    const trigger = cfg?.trigger;
+    if (!trigger || !texto.includes(String(trigger).toLowerCase())) continue;
+
+    acciones_detectadas.push({
+      trigger,
+      tipo_accion: ac.tipo_accion,
+      estado_destino: cfg.estado_destino || null,
+    });
+  }
+
   return res.json({
     success: true,
     respuesta: respuestaLimpia,
     response_id: data.id,
+    acciones_detectadas,
+    // Los triggers que esta columna sabe reconocer, para poder decir "esperaba
+    // uno de estos y no llegó ninguno" en vez de solo callar.
+    triggers_disponibles: [
+      ...new Set(
+        acciones
+          .map((a) => {
+            try {
+              const c =
+                typeof a.config === 'string' ? JSON.parse(a.config) : a.config;
+              return c?.trigger || null;
+            } catch (_) {
+              return null;
+            }
+          })
+          .filter(Boolean),
+      ),
+    ],
   });
 });

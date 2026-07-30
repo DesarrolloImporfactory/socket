@@ -24,6 +24,9 @@ const Appointment = db.define(
       defaultValue: 'Agendado',
     },
     assigned_user_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+    // Quién atiende (profesionales_chat_center). Distinto de assigned_user_id,
+    // que es quién gestiona la cita en el sistema.
+    id_profesional: { type: DataTypes.INTEGER, allowNull: true },
     contact_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     start_utc: { type: DataTypes.DATE, allowNull: false },
     end_utc: { type: DataTypes.DATE, allowNull: false },

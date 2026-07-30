@@ -158,10 +158,23 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   const catalogoServicios = catalogoNormalizado.filter(
     (p) => String(p.tipo || '').toLowerCase() === 'servicio',
   );
-  const itemsFinales = catalogoProductos.length
-    ? catalogoProductos
-    : catalogoServicios;
-  const tipoCatalogo = catalogoProductos.length ? 'productos' : 'servicios';
+
+  /* Van SIEMPRE los dos. Antes era `productos.length ? productos : servicios`,
+     o sea que un solo producto suelto dejaba al asistente sin ver ningún
+     servicio: una estética que además vende una plancha de cabello perdía todo
+     su catálogo de tratamientos y el bot respondía que no ofrecen nada.
+
+     Los negocios de servicios que también venden algo (estéticas, barberías,
+     veterinarias, talleres) son la norma, no la excepción. Lo que sí cambia es
+     QUÉ se hace con cada uno: un servicio se agenda, un producto se despacha.
+     Por eso van juntos pero etiquetados, y las instrucciones se lo explican. */
+  const itemsFinales = [...catalogoServicios, ...catalogoProductos];
+  const tipoCatalogo =
+    catalogoServicios.length && catalogoProductos.length
+      ? 'mixto'
+      : catalogoProductos.length
+        ? 'productos'
+        : 'servicios';
 
   // Instrucciones diferenciadas según tipo de cuenta
   const instrucciones_uso_ia = esProveedor
@@ -182,6 +195,19 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
         'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
         'Priorice datos en tiempo real sobre file_search si hay diferencias.',
       ];
+
+  /* Con catálogo mixto hay que decirle explícitamente qué hacer con cada tipo:
+     si no, ofrece agendar una cita para comprar una plancha, o intenta vender
+     un tratamiento como si se lo llevara a casa. */
+  if (tipoCatalogo === 'mixto') {
+    instrucciones_uso_ia.push(
+      'Este catálogo tiene SERVICIOS y PRODUCTOS mezclados. Cada item trae su campo "tipo": respételo.',
+      'Un item con tipo "servicio" se PRESTA en el local y se AGENDA (cita con fecha y hora).',
+      'Un item con tipo "producto" se VENDE y se entrega o se despacha: NO se agenda cita para comprarlo.',
+      'Si el cliente pregunta por algo que se vende, respóndale con el producto; no lo redirija a agendar una cita salvo que él lo pida.',
+      'Si un cliente quiere las dos cosas (por ejemplo un tratamiento y llevarse un producto), atienda primero lo que agenda y mencione el producto al cerrar.',
+    );
+  }
 
   const catalogPayload = {
     schema_version: esProveedor ? '1.1-proveedor' : '1.0',

@@ -68,6 +68,9 @@ const stripe_webhookController = require('./controllers/stripe_webhook.controlle
 
 const categorias_chat_centerRouter = require('./routes/categorias_chat_center.routes');
 
+const establecimientos_chat_centerRouter = require('./routes/establecimientos_chat_center.routes');
+const profesionales_chat_centerRouter = require('./routes/profesionales_chat_center.routes');
+
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
 
 const catalogos_chat_centerRouter = require('./routes/catalogos_chat_center.routes');
@@ -339,6 +342,8 @@ app.use('/api/v1/departamentos_chat_center', departamentos_chat_centerRouter);
 app.use('/api/v1/incidencias_chat_center', incidencias_chat_centerRouter);
 app.use('/api/v1/stripe_plan', stripeRouter);
 app.use('/api/v1/categorias', categorias_chat_centerRouter);
+app.use('/api/v1/establecimientos', establecimientos_chat_centerRouter);
+app.use('/api/v1/profesionales', profesionales_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
 app.use('/api/v1/catalogos', catalogos_chat_centerRouter);
 app.use('/api/v1/public', catalogos_publicRouter);
