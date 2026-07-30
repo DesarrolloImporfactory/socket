@@ -973,6 +973,7 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   const until = strOrNull(req.body?.until);
   const status = strOrNull(req.body?.status);
   const origen = strOrNull(req.body?.origen); // imporsuit | shopify | otros
+  const producto = strOrNull(req.body?.producto); // nombre exacto del producto
   const texto = strOrNull(req.body?.textToSearch);
   const forceSync = req.body?.force_sync === true;
 
@@ -995,6 +996,10 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   // Filtro de origen consistente con el badge: el shop_type crudo de Dropi no
   // es confiable, así que resolvemos qué órdenes del cache matchean una orden
   // real del webhook Shopify (teléfono + total + ventana) y filtramos por id.
+  // La tolerancia y la ventana son LAS MISMAS que usa el resumen del dashboard
+  // (matchCheckoutShopify: máx($5,10%) y ±7 días). Con el ±$0.50 / ±3 días
+  // anteriores esta vista mostraba 38 pedidos Shopify donde el dashboard
+  // contaba 44 (cfg 277, 30/jul): el envío movía el total y no matcheaba.
   if (origen === 'imporsuit' || origen === 'shopify' || origen === 'otros') {
     let shopifyIds = [];
     try {
@@ -1006,11 +1011,19 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
             AND sow.phone_normalizado IS NOT NULL
             AND RIGHT(REGEXP_REPLACE(oc.phone,'[^0-9]',''),9)
                 = RIGHT(sow.phone_normalizado COLLATE utf8mb4_unicode_ci, 9)
-            AND ABS(oc.total_order - sow.total_price) < 0.5
+            AND ABS(oc.total_order - sow.total_price)
+                <= GREATEST(5, GREATEST(oc.total_order, sow.total_price) * 0.1)
             AND oc.order_created_at BETWEEN
-                  DATE_SUB(sow.shopify_created_at, INTERVAL 3 DAY)
-              AND DATE_ADD(sow.shopify_created_at, INTERVAL 3 DAY)
-          WHERE oc.id_configuracion = :idCfg AND oc.id_usuario = 0`,
+                  DATE_SUB(COALESCE(sow.shopify_created_at, sow.created_at), INTERVAL 7 DAY)
+              AND DATE_ADD(COALESCE(sow.shopify_created_at, sow.created_at), INTERVAL 7 DAY)
+          WHERE oc.id_configuracion = :idCfg AND oc.id_usuario = 0
+            -- Las que creó el bot son WhatsApp aunque el cliente ya hubiera
+            -- comprado antes en la tienda (mismo criterio que el dashboard).
+            AND NOT EXISTS (
+              SELECT 1 FROM dropi_auto_ordenes_log l
+               WHERE l.id_configuracion = oc.id_configuracion
+                 AND l.resultado = 'creada'
+                 AND l.dropi_order_id = oc.dropi_order_id)`,
         { replacements: { idCfg: id_configuracion }, type: db.QueryTypes.SELECT },
       );
       shopifyIds = matched.map((m) => Number(m.dropi_order_id)).filter(Boolean);
@@ -1043,6 +1056,24 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     ];
     if (/^\d+$/.test(texto)) orText.push({ dropi_order_id: Number(texto) });
     where[Op.or] = orText;
+  }
+
+  /* Opciones del desplegable de producto: se calculan con TODOS los filtros
+     activos menos el de producto (si no, al elegir uno la lista se quedaría
+     con esa sola opción). Snapshot antes de agregar el filtro de producto —
+     el spread copia también las claves Symbol (Op.or, Op.and). */
+  const whereSinProducto = { ...where };
+
+  // Filtro por producto: product_names es un JSON array de nombres, así que
+  // JSON_CONTAINS empareja por nombre EXACTO (un LIKE haría que "Gafas
+  // bluetooth tactil" también trajera las de "GAFAS BLUETOOH PR").
+  if (producto) {
+    where[Op.and] = [
+      ...(Array.isArray(where[Op.and]) ? where[Op.and] : []),
+      literal(
+        `JSON_CONTAINS(product_names, JSON_QUOTE(${db.escape(producto)}))`,
+      ),
+    ];
   }
 
   // ── Sync si el cache está viejo (nunca bloquea salvo force_sync) ──
@@ -1419,6 +1450,37 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     })
   ).map((o, i) => ({ ...o, phone: parsed[i].phone }));
 
+  /* ── Opciones del filtro por producto ──
+     Se agrupan en JS sobre EXACTAMENTE las mismas órdenes que devuelve el
+     listado (mismos filtros de fecha, estado, origen y texto), así el número
+     del desplegable es el que se ve al elegir ese producto. Antes salía de
+     una consulta aparte sin el filtro de origen y decía 32 donde la lista
+     mostraba 30 (los 2 de más eran de WhatsApp). */
+  let productosDisponibles = [];
+  try {
+    const paraFiltro = await DropiOrdersCache.findAll({
+      where: whereSinProducto,
+      attributes: ['dropi_order_id', 'product_names'],
+      raw: true,
+    });
+    const conteo = new Map();
+    for (const r of paraFiltro) {
+      let names = [];
+      try {
+        names = JSON.parse(r.product_names || '[]');
+      } catch (_) {}
+      // 1 orden cuenta 1 vez por producto (igual que la tabla del dashboard)
+      for (const n of new Set(names)) {
+        if (n) conteo.set(n, (conteo.get(n) || 0) + 1);
+      }
+    }
+    productosDisponibles = [...conteo.entries()]
+      .map(([nombre, pedidos]) => ({ nombre, pedidos }))
+      .sort((a, b) => b.pedidos - a.pedidos);
+  } catch (e) {
+    console.error('[pedidos-cache] productos filtro:', e?.message);
+  }
+
   return res.json({
     isSuccess: true,
     data: {
@@ -1428,6 +1490,7 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       page_size: pageSize,
       total_pages: Math.max(1, Math.ceil(count / pageSize)),
       sync: syncInfo,
+      productos_disponibles: productosDisponibles,
     },
   });
 });
@@ -5215,6 +5278,64 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   for (const o of orderRows) {
     if (esOrdenShopify(o) && !matchWebhook(o)) shopifyLeads += 1;
   }
+
+  /* ── Desfase compra → subida a Dropi ──
+     Las dos cards de la pestaña Shopify cuentan sobre ejes de fecha
+     distintos: "Pedidos" es la fecha en que el cliente compró en la tienda y
+     "Pedidos Dropi" la fecha en que la orden se creó en Dropi. Como la tienda
+     sube lo del día anterior, un día puede tener 22 checkouts y 44 órdenes
+     Dropi sin que nada esté mal (cfg 277, 30/jul: 20 de esas 44 venían de
+     checkouts del 29). Contamos el cruce para poder decirlo en pantalla. */
+  const checkoutDe = (o) => {
+    const lista = shopifyTruthMap.get(phone9(o.phone));
+    if (!lista || !lista.length) return null;
+    const t = o.order_created_at
+      ? new Date(o.order_created_at).getTime()
+      : null;
+    return (
+      lista.find(
+        (s) =>
+          shopifyTotalCoincide(s.total, o.total_order) &&
+          (t == null || s.t == null || Math.abs(s.t - t) <= SHOPIFY_MATCH_WINDOW_MS),
+      ) || null
+    );
+  };
+  const desfaseShopify = {
+    compraPrevia: 0,
+    compraEnRango: 0,
+    sinCheckout: 0,
+    checkoutsSinOrden: 0,
+  };
+  for (const o of orderRows) {
+    if (!esOrdenShopify(o)) continue;
+    const ck = checkoutDe(o);
+    if (!ck || ck.t == null) desfaseShopify.sinCheckout += 1;
+    else if (ck.t < fromMs) desfaseShopify.compraPrevia += 1;
+    else desfaseShopify.compraEnRango += 1;
+  }
+  /* El otro lado del desfase: compras del rango que TODAVÍA no aparecen en
+     Dropi. Es la respuesta a "la tienda dice 22 y en Dropi veo 18": los 4
+     que faltan siguen en cola (cfg 277, 30/jul, pedidos Shopify 2474-2495).
+     Cruce por teléfono + total, sin ventana: acá la fecha es justo lo que se
+     está midiendo. */
+  {
+    const ordenesPorTel = new Map();
+    for (const o of orderRows) {
+      const k = phone9(o.phone);
+      if (!k) continue;
+      if (!ordenesPorTel.has(k)) ordenesPorTel.set(k, []);
+      ordenesPorTel.get(k).push(Number(o.total_order || 0));
+    }
+    for (const s of shopifyOrdRows || []) {
+      const ts = s.shopify_created_at || s.created_at;
+      const m = ts ? new Date(ts).getTime() : null;
+      if (m == null || m < fromMs || m > untilMs) continue;
+      const totales = ordenesPorTel.get(phone9(s.phone_normalizado)) || [];
+      const total = Number(s.total_price || 0);
+      if (!totales.some((t) => shopifyTotalCoincide(total, t)))
+        desfaseShopify.checkoutsSinOrden += 1;
+    }
+  }
   // % confirmación Shopify = pedidos que YA se confirmaron (superaron
   // "pendiente confirmación") ÷ TODOS los pedidos Shopify en Dropi (incl.
   // cancelados). Sobre esta base el desglose cuadra exacto:
@@ -5581,13 +5702,48 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     entregadas,
     totalConversaciones,
     totalMensajes,
-    pctConfirmacion: pctConfDeConv(compradores),
+    /* % de confirmación = de las conversaciones que entraron, cuántas
+       terminaron en pedido. El numerador son SOLO los pedidos del canal
+       WhatsApp: un pedido que el cliente hizo en la tienda no salió de una
+       conversación, y meterlo acá daba 115% en cfg 277 (396 pedidos, casi
+       todos Shopify, contra 81 conversaciones).
+       Se mantiene la lectura "pedidos ÷ conversaciones" que se quiere en
+       pantalla: en cuentas sin Shopify no cambia nada (cfg 822 sigue en
+       1.39% / 1.28%), y en las que venden por tienda deja de dispararse. */
+    pctConfirmacion: totalConversaciones
+      ? Math.min(
+          100,
+          r2(
+            (Math.max(0, canales.wa.pedidos - canales.wa.canceladas) /
+              totalConversaciones) *
+              100,
+          ),
+        )
+      : null,
+    /* true → hay más pedidos que conversaciones, así que el % está tocando
+       el techo de 100 y no es una conversión real: esa conexión sube a Dropi
+       órdenes que nunca pasaron por el chat (carga manual, otra plataforma).
+       cfg 815: 184 pedidos contra 1 conversación. El front lo avisa en vez
+       de mostrar un 18400% que no significa nada. */
+    pctConfirmacionTope:
+      totalConversaciones > 0 &&
+      Math.max(0, canales.wa.pedidos - canales.wa.canceladas) >
+        totalConversaciones,
+    confirmadas: canales.wa.confirmadas + canales.shopify.confirmadas,
     conversacionesConPedido: conPedido(compradores),
+    // Cruce por teléfono (compradores que además escribieron). Se queda como
+    // dato de contraste: solo es fiable si el teléfono de la orden coincide.
+    pctConfirmacionCruce: pctConfDeConv(compradores),
     tasaEntrega: totalPedidos > 0 ? r2((entregadas / totalPedidos) * 100) : 0,
     // Totales/flags globales; el detalle "real" por canal va en `canales`.
     canceladas,
     shopifyLeads,
     shopifyConectado,
+    /* De los pedidos Dropi del canal tienda: cuántos se compraron ANTES del
+       rango (llegaron a Dropi después), cuántos dentro y cuántos no cruzan
+       con ningún checkout. Explica que "checkouts" y "pedidos Dropi" no den
+       lo mismo el mismo día. */
+    shopifyDesfase: desfaseShopify,
     /* Desde cuándo se puede separar WhatsApp vs tienda: es la fecha del
        primer checkout que recibió el webhook. Antes de eso no existe el dato
        con el que cruzar, así que esos pedidos caen todos en WhatsApp sin que
@@ -5604,9 +5760,23 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     })(),
     canales: {
       wa: {
-        ...buildCanal('wa', pctConfDeConv(convPorCanal.waIds)),
+        // Misma lectura que el global: pedidos netos del canal ÷ las
+        // conversaciones que entraron.
+        ...buildCanal(
+          'wa',
+          totalConversaciones
+            ? r2(
+                (Math.max(0, canales.wa.pedidos - canales.wa.canceladas) /
+                  totalConversaciones) *
+                  100,
+              )
+            : null,
+        ),
         conversaciones: convPorCanal.wa,
         conversacionesConPedido: conPedido(convPorCanal.waIds),
+        // Cruce por teléfono (compradores que además escribieron): acotado a
+        // 0-100, sirve de contraste cuando el % de arriba se dispara.
+        pctConfirmacionCruce: pctConfDeConv(convPorCanal.waIds),
       },
       shopify: {
         ...buildCanal('shopify', pctConfirmacionShopify),
