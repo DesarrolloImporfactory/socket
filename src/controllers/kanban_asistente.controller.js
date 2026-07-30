@@ -776,11 +776,40 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     });
   }
 
+  /* A dónde pasaría la conversación. En producción, tras un cambio de estado el
+     siguiente mensaje lo contesta el asistente de ESA columna; el chat de prueba
+     seguía hablando con el mismo y hacía creer que Contacto Inicial agenda
+     citas, cuando en realidad ya no le tocaba a él. */
+  let siguiente = null;
+  const destino = acciones_detectadas.find(
+    (a) => a.tipo_accion === 'cambiar_estado' && a.estado_destino,
+  );
+  if (destino) {
+    const [col] = await db.query(
+      `SELECT id, nombre, activa_ia FROM kanban_columnas
+        WHERE id_configuracion = ? AND estado_db = ? AND activo = 1 LIMIT 1`,
+      {
+        replacements: [columna.id_configuracion, destino.estado_destino],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (col) {
+      siguiente = {
+        id: col.id,
+        nombre: col.nombre,
+        estado_db: destino.estado_destino,
+        // Sin IA la conversación la sigue una persona: no hay a quién escribirle.
+        activa_ia: Number(col.activa_ia) === 1,
+      };
+    }
+  }
+
   return res.json({
     success: true,
     respuesta: respuestaLimpia,
     response_id: data.id,
     acciones_detectadas,
+    siguiente_columna: siguiente,
     // Los triggers que esta columna sabe reconocer, para poder decir "esperaba
     // uno de estos y no llegó ninguno" en vez de solo callar.
     triggers_disponibles: [

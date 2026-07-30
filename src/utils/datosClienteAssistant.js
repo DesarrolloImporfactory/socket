@@ -184,16 +184,32 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     'sábado',
   ];
 
+  /* Los próximos días, ya resueltos. El modelo calcula fechas fatal: con solo
+     "hoy es jueves 30" ofrecía "lunes 2026-08-01" (que es sábado) y armaba
+     citas en días que no existen. Dándole la tabla hecha no tiene que sumar. */
+  const proximos = [];
+  for (let i = 0; i <= 13; i += 1) {
+    const d = ahora.clone().add(i, 'day');
+    const etiqueta = i === 0 ? ' (hoy)' : i === 1 ? ' (mañana)' : '';
+    proximos.push(`${DIAS[d.day()]} ${d.format('YYYY-MM-DD')}${etiqueta}`);
+  }
+
   let bloque =
     `🗓️ HOY es ${DIAS[ahora.day()]} ${ahora.format('YYYY-MM-DD')} y son las ` +
     `${ahora.format('HH:mm')} (hora de ${tz}).\n` +
-    `Cualquier fecha relativa que diga el cliente ("mañana", "el martes", ` +
-    `"la próxima semana") la resuelves contra ESTA fecha, y siempre hacia ` +
-    `adelante. Nunca propongas ni agendes una fecha ya pasada.\n\n`;
+    `Los próximos días son exactamente estos — úsalos tal cual, no calcules ` +
+    `fechas por tu cuenta ni inventes el día de la semana:\n` +
+    proximos.map((d) => `  ${d}`).join('\n') +
+    `\n\nCualquier fecha relativa que diga el cliente ("mañana", "el martes", ` +
+    `"la próxima semana") la resuelves con esa lista, y siempre hacia ` +
+    `adelante. Nunca propongas ni agendes una fecha que no esté ahí.\n\n`;
 
   if (!calendario || calendario.length === 0) {
     return {
-      bloque: `${bloque}No hay ninguna cita agendada todavía: la agenda está libre.`,
+      bloque:
+        `${bloque}La agenda está COMPLETAMENTE LIBRE: no hay ninguna cita ` +
+        `todavía. Cualquier hora dentro del horario de la sede está disponible, ` +
+        `así que nunca digas que no tienes cupo.`,
       tipo: 'datos_servicio',
     };
   }

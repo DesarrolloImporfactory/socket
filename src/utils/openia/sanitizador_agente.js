@@ -46,6 +46,18 @@ function sanitizarRespuestaAgente(texto) {
     '\n[producto_video_url]: $1',
   );
 
+  /* WhatsApp no entiende Markdown: **negrita** se ve literal con los asteriscos
+     y ### queda como basura al inicio de la línea. Al modelo se le pide que no
+     lo use, pero lo usa igual en cuanto enumera precios, así que se corrige
+     aquí — es el único punto por el que pasan todas las respuestas.
+     El negrita de WhatsApp es *un* asterisco, y el de Markdown son dos. */
+  texto = texto.replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '*$1*');
+  texto = texto.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '*$1*');
+  // Títulos Markdown al inicio de línea: se quedan solo con el texto.
+  texto = texto.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  // Enlaces [texto](url) → la URL sola, que es lo único que WhatsApp abre.
+  texto = texto.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '$2');
+
   // Limpieza
   texto = texto.replace(/\n{3,}/g, '\n\n').trim();
 
