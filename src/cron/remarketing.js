@@ -14,9 +14,7 @@ const {
 } = require('../utils/whatsappTemplate.helpers');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
-const {
-  obtenerOCrearContactoWa,
-} = require('../utils/unified/dedupeContacto');
+const { obtenerOCrearContactoWa } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const {
   isWabaThrottled,
@@ -331,6 +329,15 @@ async function generarMensajeRemarketingIA({
     .replace(/\s+([.,;:!?])/g, '$1')
     .replace(/\s{2,}/g, ' ')
     .trim();
+
+  // Quitar los tags de acción ([asesor]:true, [pedido_retirado]:true…).
+  // Este texto lo redacta el asistente DE LA COLUMNA, que los conoce y los usa
+  // al conversar; pero aquí es un recordatorio proactivo: nadie evalúa las
+  // acciones, así que si se cuela un tag viaja tal cual al cliente.
+  // Require perezoso para no arrastrar todo el árbol de kanban_ia al arrancar el
+  // server, que es cuando se carga este cron.
+  const { limpiarTagsAcciones } = require('../services/kanban_ia.service');
+  texto = limpiarTagsAcciones(texto);
 
   if (
     (texto.startsWith('"') && texto.endsWith('"')) ||

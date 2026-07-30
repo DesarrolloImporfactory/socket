@@ -127,6 +127,76 @@ async function verificar(id_configuracion) {
   // 5. Los días que se le comunican al cliente
   console.log(`${OK} 5. Plazo que se comunica: ${cfg.dias_retiro_agencia} días`);
 
+  // 6. El asistente que cierra el seguimiento
+  // Sin él la secuencia sale pero nadie lee la respuesta: el cliente contesta
+  // "ya lo retiré" y al día siguiente le llega el mismo recordatorio.
+  if (col) {
+    const [colIA] = await db.query(
+      `SELECT activa_ia, assistant_id FROM kanban_columnas WHERE id = ? LIMIT 1`,
+      { replacements: [col.id], type: db.QueryTypes.SELECT },
+    );
+    const conIA = Number(colIA?.activa_ia) === 1 && !!colIA?.assistant_id;
+    console.log(
+      conIA
+        ? `${OK} 6. Asistente de cierre activo (${colIA.assistant_id})`
+        : `${NO} 6. La columna no tiene asistente (se instala con "Actualizar tablero")`,
+    );
+    if (!conIA) completo = false;
+
+    const acc = await db.query(
+      `SELECT config FROM kanban_acciones
+        WHERE id_kanban_columna = ? AND tipo_accion = 'cambiar_estado' AND activo = 1`,
+      { replacements: [col.id], type: db.QueryTypes.SELECT },
+    );
+    const cfgs = acc.map((a) => {
+      let c = a.config;
+      try {
+        while (typeof c === 'string') c = JSON.parse(c);
+      } catch {
+        return {};
+      }
+      return c || {};
+    });
+    const buscar = (tag) =>
+      cfgs.find((c) => String(c.trigger || '').includes(tag));
+
+    const cierre = buscar('pedido_retirado');
+    console.log(
+      cierre
+        ? `${OK} 6b. Acción de cierre configurada (mueve a "${cierre.estado_destino}" al confirmar el retiro)`
+        : `${NO} 6b. Falta la acción que cierra el seguimiento al confirmar el retiro`,
+    );
+    if (!cierre) completo = false;
+
+    const escalar = buscar('asesor');
+    console.log(
+      escalar
+        ? `${OK} 6c. Escalado a asesor configurado (mueve a "${escalar.estado_destino}")`
+        : `${NO} 6c. Falta la acción que pasa a un asesor las preguntas que el bot no debe contestar`,
+    );
+    if (!escalar) completo = false;
+
+    // 7. Las columnas a donde el bot mueve el contacto tienen que existir.
+    // Si no, lo deja en un estado sin columna: el bot dejará de responderle y la
+    // tarjeta desaparece del tablero. Falla en silencio, así que se revisa aquí.
+    const destinos = [
+      ...new Set([cierre?.estado_destino, escalar?.estado_destino].filter(Boolean)),
+    ];
+    for (const d of destinos) {
+      const [existe] = await db.query(
+        `SELECT id FROM kanban_columnas
+          WHERE id_configuracion = ? AND estado_db = ? AND activo = 1 LIMIT 1`,
+        { replacements: [cfg.id, d], type: db.QueryTypes.SELECT },
+      );
+      console.log(
+        existe
+          ? `${OK} 7. Columna destino "${d}" existe`
+          : `${NO} 7. NO existe la columna "${d}": el contacto quedaría en un estado sin columna`,
+      );
+      if (!existe) completo = false;
+    }
+  }
+
   // Evidencia real: gente que ya pasó por ahí
   const [uso] = await db.query(
     `SELECT COUNT(*) AS agendados,

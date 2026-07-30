@@ -161,8 +161,7 @@ const KANBAN_TEMPLATES_META = [
      está cerrada (un template que nosotros enviamos NO la abre; solo la abre
      una respuesta del cliente), así que sin plantilla el motor cancela el
      envío y no manda nada. Tres textos distintos y no uno repetido, porque
-     mandar el mismo mensaje tres veces castiga la calidad del número.
-     Variables en las tres: {{1}} nombre · {{2}} agencia/ciudad · {{3}} guía. */
+     mandar el mismo mensaje tres veces castiga la calidad del número. */
   {
     // Nombre distinto de "…_recordatorio_k1" a propósito: esa primera versión
     // salió rechazada por categoría, se eliminó, y Meta bloquea el nombre de
@@ -174,10 +173,7 @@ const KANBAN_TEMPLATES_META = [
     components: [
       {
         type: 'BODY',
-        // Registro calcado de las UTILITY que YA están aprobadas en producción
-        // (confirmacion_pedido_k1, zona_entrega_k1): datos en bloque con
-        // emoji-viñeta, tono cordial, sin lenguaje promocional.
-        text: 'Hola {{1}}, tu pedido ya llegó y está listo para que lo retires 🎉\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n🗓️Plazo para retirar: {{4}} días\n\nSolo acércate con tu cédula y el número de guía 😊\nSi ya lo retiraste, respóndenos y actualizamos tu pedido.',
+        text: 'Hola {{1}} 😊, tu pedido ya está disponible para retiro en {{2}}.\n\nGuía: {{3}}\nPlazo de retiro: {{4}} días\n\nPor favor acércate con tu cédula y el número de guía. Si ya lo retiraste, respóndenos este mensaje y actualizamos tu pedido.',
         example: {
           body_text: [
             ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
@@ -197,7 +193,7 @@ const KANBAN_TEMPLATES_META = [
         // agencia guarda 7 días, pero cada dropshipper decide qué plazo
         // comunica (varios dicen 3 para apurar el retiro). Sale de
         // configuraciones.dias_retiro_agencia, que por defecto trae el real.
-        text: 'Hola {{1}}, tu pedido sigue esperándote en la agencia 📦\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n\n⏳Te recordamos que la agencia guarda los envíos {{4}} días; cumplido ese plazo el paquete regresa al remitente.\n\n¿Podrás acercarte a retirarlo? Cuéntanos y te ayudamos 😊',
+        text: 'Hola {{1}} 📦, tu pedido sigue esperándote en {{2}} con la guía {{3}}.\n\nLa agencia guarda los envíos {{4}} días; cumplido ese plazo el paquete se devuelve al remitente.\n\n¿Podrás acercarte a retirarlo, por favor?',
         example: {
           body_text: [
             ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
@@ -213,7 +209,7 @@ const KANBAN_TEMPLATES_META = [
     components: [
       {
         type: 'BODY',
-        text: 'Hola {{1}}, no queremos que pierdas tu pedido 💙\n\n📍Agencia: {{2}}\n🔖Guía: {{3}}\n\n⚠️El plazo de {{4}} días está por cumplirse y después el envío regresa al remitente.\n\nSi no puedes acercarte, respóndenos y buscamos una alternativa contigo 🤝',
+        text: 'Hola {{1}} 💙, te escribimos por última vez sobre tu pedido en {{2}} (guía {{3}}).\n\nEl plazo de {{4}} días está por cumplirse y después el envío regresa automáticamente al remitente.\n\nSi todavía puedes pasar por él, por favor acércate antes de que se cumpla el plazo.',
         example: {
           body_text: [
             ['Daniel', 'Servientrega Guayaquil Centro', 'V123456789', '7'],
@@ -371,6 +367,17 @@ const KANBAN_TEMPLATES_META = [
   {
     // v2: botón URL dinámico (la vieja 'carritos_abandonados' tenía botón
     // quemado). Nombre nuevo para no chocar con la ya aprobada en Meta.
+    //
+    // NO se instala con el tablero kanban: la crea el flujo de Shopify al
+    // vincular la tienda (shopifyConfiguracionesController → _crearTemplatesMeta
+    // con esta sola plantilla) y configurarRecuperacionShopifyV2 apunta
+    // shopify_configuraciones.nombre_template_recuperacion aquí. Por eso en el
+    // editor de la plantilla global aparece DESMARCADA y así debe quedarse: una
+    // cuenta sin Shopify no la necesita y crearla le gasta cupo de la WABA.
+    //
+    // Pero tiene que seguir EN el catálogo: _crearTemplatesMeta resuelve la
+    // definición por nombre desde aquí. Si se borra, vincular Shopify deja de
+    // crear la plantilla y la recuperación de carritos se rompe sin avisar.
     name: 'carritos_abandonados_v2',
     language: 'es',
     category: 'MARKETING',
@@ -630,7 +637,8 @@ const REMARKETING_POR_DEFECTO = [
         estado_destino: 'retiro_agencia',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`El cliente tiene un pedido esperándolo en una agencia y ya respondió, así que estás DENTRO de la conversación.
+        prompt_ia:
+          dedent(`El cliente tiene un pedido esperándolo en una agencia y ya respondió, así que estás DENTRO de la conversación.
 
         OBJETIVO
         Confirmar si ya retiró el pedido o ayudarlo a hacerlo.
@@ -652,7 +660,8 @@ const REMARKETING_POR_DEFECTO = [
         estado_destino: 'retiro_agencia',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Segundo contacto sobre un pedido que sigue en la agencia sin retirar.
+        prompt_ia:
+          dedent(`Segundo contacto sobre un pedido que sigue en la agencia sin retirar.
 
         OBJETIVO
         Explicar que la agencia guarda el paquete por tiempo limitado y que después se devuelve, sin sonar amenazante.
@@ -660,7 +669,8 @@ const REMARKETING_POR_DEFECTO = [
         REGLAS
         - Tuteo natural LATAM, tono de servicio
         - NO inventes el número de días: si no aparece en la conversación, habla de "un tiempo limitado"
-        - Pregunta si puede acercarse o si necesita otra alternativa
+        - Pregunta si podrá acercarse a retirarlo
+        - NO ofrezcas alternativas (reprogramar, cambiar de dirección, extender el plazo): no existen, el paquete se devuelve
         - Máximo 3 líneas
 
         Solo devuelve el texto del mensaje, sin comillas.`),
@@ -673,14 +683,15 @@ const REMARKETING_POR_DEFECTO = [
         estado_destino: 'retiro_agencia',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Último contacto sobre un pedido en agencia a punto de devolverse.
+        prompt_ia:
+          dedent(`Último contacto sobre un pedido en agencia a punto de devolverse.
 
         OBJETIVO
-        Abrir una salida antes de perder la venta: que responda para coordinar alternativa.
+        Avisarle que el plazo se cumple y que después el paquete se devuelve, para que alcance a retirarlo.
 
         REGLAS
         - Tuteo natural LATAM, cero presión agresiva
-        - Ofrece alternativa concreta (reprogramar, enviar a otra dirección, que lo retire otra persona)
+        - NO ofrezcas alternativas de ningún tipo (reprogramar el envío, mandarlo a otra dirección, extender el plazo, que lo retire otra persona): no existen. La agencia no espera más y el paquete regresa al remitente. Prometer una salida que no podemos cumplir es peor que no decir nada.
         - NO inventes políticas de la transportadora
         - Máximo 3 líneas
 
@@ -869,9 +880,144 @@ const REMARKETING_POR_DEFECTO = [
   },
 ];
 
+/* ════════════════════════════════════════════════════════════════
+   COLUMNA "RETIRO EN AGENCIA" — asistente de cierre
+
+   Las columnas del tablero NO viven aquí: viven en el `data` JSON de
+   `kanban_plantillas_globales`, que se edita desde el admin. Esta constante es
+   la excepción: es la definición canónica de UNA columna que necesita un prompt
+   revisable en código, y la instala en las plantillas globales el script
+   `scripts/instalar_columna_retiro_agencia.js`. De ahí en adelante el flujo es
+   el normal — cada cliente la recibe al pulsar "Actualizar tablero", que le
+   crea el asistente con SU api_key y le inserta la acción.
+
+   Por qué existe: la secuencia de recordatorios de agencia (ver
+   REMARKETING_POR_DEFECTO más arriba) le escribe al cliente hasta 3 veces, pero
+   sin asistente en la columna nadie lee la respuesta. El cliente contesta "ya lo
+   retiré" y no solo se queda sin respuesta: como el webhook reprograma la
+   secuencia con el estado en el que sigue estando, vuelve a recibir el mismo
+   recordatorio al día siguiente.
+
+   Alcance a propósito mínimo: este bot NO vende ni toma pedidos. Solo cierra el
+   seguimiento — confirma el retiro (y con eso mueve al contacto a 'entregada',
+   que no tiene secuencia, así que ahí se apaga todo) o averigua qué lo detiene.
+   ════════════════════════════════════════════════════════════════ */
+const COLUMNA_RETIRO_AGENCIA = {
+  nombre: 'Retiro en agencia',
+  estado_db: 'retiro_agencia',
+  color_fondo: '#FEF3C7',
+  color_texto: '#B45309',
+  icono: 'bx bx-store',
+  activo: 1,
+  es_estado_final: 0,
+  es_principal: 0,
+  es_dropi_principal: 0,
+  activa_ia: 1,
+  max_tokens: 500,
+  modelo: 'gpt-4o-mini',
+  instrucciones:
+    dedent(`Eres [NOMBRE_ASISTENTE], del equipo de [NOMBRE_TIENDA], y escribes por WhatsApp.
+
+  CONTEXTO
+  El cliente ya compró. Su pedido llegó a una agencia de la transportadora y lo
+  espera ahí para que lo retire en persona. Le enviamos recordatorios y él
+  respondió: por eso estás en esta conversación.
+
+  TU ÚNICA MISIÓN
+  Saber si ya retiró el pedido. Nada más: no vendes, no tomas pedidos nuevos y no
+  resuelves dudas.
+
+  LAS TRES SALIDAS — elige UNA en cada mensaje
+
+  1) YA LO RETIRÓ
+  Agradece en una línea y agrega al final, en línea aparte:
+  [pedido_retirado]:true
+  Solo cuando el pedido YA está en sus manos: "ya lo retiré", "ya lo tengo",
+  "lo recogí ayer", "todo perfecto, ya me llegó".
+
+  2) TODAVÍA NO LO RETIRÓ
+  Responde amable, dile que ahí lo esperan, y NO pongas ningún tag.
+  Aquí entra toda intención o promesa: "hoy paso", "mañana voy", "esta semana lo
+  retiro", "estoy en camino", "va a ir mi hermano". Prometer NO es retirar. Si
+  pones el tag de retiro aquí, el pedido queda como entregado sin estarlo y
+  dejamos de recordárselo.
+
+  3) PREGUNTA, DUDA O RECLAMO
+  Responde UNA línea amable diciendo que un asesor lo ayuda enseguida y agrega al
+  final, en línea aparte:
+  [asesor]:true
+  Aquí entra TODO lo que no sea "ya lo retiré" o "todavía no": si aceptan pago en
+  efectivo, formas de pago, precios, dirección u horario de la agencia, cambiar la
+  dirección, devolver, reclamar, comprar otra cosa, o cualquier pregunta que no
+  puedas contestar con lo que ya está en esta conversación. No adivines ni
+  improvises: pásalo a un asesor.
+
+  NUNCA INVENTES
+  No inventes dirección de agencia, horarios, número de guía, plazos, formas de
+  pago ni políticas de la transportadora. Si el dato no está en la conversación,
+  es caso de asesor (salida 3).
+
+  Y NUNCA PROMETAS ALTERNATIVAS
+  No ofrezcas reprogramar el envío, mandarlo a otra dirección, extender el plazo
+  ni nada parecido: no existe ninguna de esas opciones. La agencia no espera más
+  y, cumplido el plazo, el paquete regresa al remitente. Si el cliente dice que
+  no puede acercarse, no le prometas una salida — es caso de asesor (salida 3).
+
+  ESTILO
+  - Tuteo natural LATAM, cálido y agradecido — nunca de venta ni de cobro.
+  - Máximo 3 líneas y 1 emoji.
+  - Una sola pregunta por mensaje.
+  - Si el cliente ya se despidió, responde corto y no preguntes más.
+
+  CUANDO TE PIDAN REDACTAR UN RECORDATORIO
+  A veces se te pide escribir un recordatorio proactivo, sin que el cliente acabe
+  de escribir. En ese caso NUNCA uses tags: son solo para responderle a él.
+
+  [BLOQUE_TONO_PERSONALIZADO]
+  [BLOQUE_INSTRUCCIONES_EXTRA]`),
+  acciones: [
+    {
+      // El trigger es un `includes` sobre la respuesta del bot
+      // (kanban_ia.service → acción cambiar_estado) y el tag se limpia del texto
+      // antes de enviarlo, así que el cliente nunca lo ve. Sin espacio tras los
+      // dos puntos, igual que [asesor]:true y el resto de los tags del sistema:
+      // dos formatos distintos en un mismo prompt invitan al modelo a
+      // normalizarlos y romper uno.
+      //
+      // Destino 'entregada' a propósito: no tiene secuencia de remarketing, así
+      // que al mover ahí el seguimiento se apaga solo.
+      tipo_accion: 'cambiar_estado',
+      config: {
+        trigger: '[pedido_retirado]:true',
+        estado_destino: 'entregada',
+      },
+      activo: 1,
+      orden: 1,
+    },
+    {
+      // Mismo mecanismo que en contacto_inicial y pendiente_confirmacion: lo que
+      // el bot no puede resolver se manda a la columna del asesor, que NO tiene
+      // IA — el humano toma la conversación y el bot se calla.
+      //
+      // Aquí es más importante que en las columnas de venta: de un pedido que ya
+      // está en la agencia no sabemos casi nada (formas de pago, horarios,
+      // dirección exacta), así que cualquier pregunta es caso de asesor. Es
+      // preferible eso a un bot que improvisa datos de la transportadora.
+      tipo_accion: 'cambiar_estado',
+      config: {
+        trigger: '[asesor]:true',
+        estado_destino: 'asesor',
+      },
+      activo: 1,
+      orden: 2,
+    },
+  ],
+};
+
 module.exports = {
   KANBAN_TEMPLATES_META,
   KANBAN_RESPUESTAS_RAPIDAS,
   DROPI_CONFIG_POR_DEFECTO,
   REMARKETING_POR_DEFECTO,
+  COLUMNA_RETIRO_AGENCIA,
 };

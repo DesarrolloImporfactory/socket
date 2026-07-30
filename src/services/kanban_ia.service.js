@@ -1268,6 +1268,22 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   await log(`✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}`);
 }
 
+/**
+ * Columnas donde el seguimiento NO se apaga porque el cliente conteste.
+ *
+ * En las columnas de venta, una respuesta significa "ya reaccionó, deja de
+ * perseguirlo" y por eso cancelarRemarketingKanban apaga enviar_remarketing.
+ * En retiro en agencia significa lo contrario: el paquete sigue físicamente en
+ * la agencia y "mañana paso" no es haberlo retirado. Aquí el seguimiento solo
+ * termina cuando el contacto SALE de la columna — porque el bot confirmó el
+ * retiro (y lo movió a entregada), porque pasó a un asesor, o porque Dropi
+ * cambió el estado del envío.
+ *
+ * El cron respeta ese límite por su lado: si el estado_contacto ya no coincide
+ * con el de la fila, la cancela sin enviar.
+ */
+const COLUMNAS_SEGUIMIENTO_PERSISTENTE = new Set(['retiro_agencia']);
+
 // ══════════════════════════════════════════════════════════════
 // cancelarRemarketingKanban
 // Se llama SIEMPRE que el cliente envía un mensaje en modo kanban
@@ -1351,11 +1367,27 @@ async function programarRemarketingKanban({
       { replacements: [id_cliente], type: db.QueryTypes.SELECT },
     );
 
+    const persistente = COLUMNAS_SEGUIMIENTO_PERSISTENTE.has(estado_contacto);
+
     if (clienteRM && Number(clienteRM.enviar_remarketing) === 0) {
-      await log(
-        `🚫 SKIP programarRemarketing — cliente=${id_cliente} tiene enviar_remarketing=0`,
+      if (!persistente) {
+        await log(
+          `🚫 SKIP programarRemarketing — cliente=${id_cliente} tiene enviar_remarketing=0`,
+        );
+        return;
+      }
+      // Columna de seguimiento persistente: hay que volver a encenderlo. Lo
+      // apagó cancelarRemarketingKanban hace un instante, al ver que el cliente
+      // respondía a un recordatorio ya enviado — y el cron descarta las filas de
+      // clientes con el flag en 0, así que sin esto el seguimiento moriría con
+      // la primera respuesta, incluso si fue "mañana paso a retirarlo".
+      await db.query(
+        `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
+        { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
       );
-      return;
+      await log(
+        `🔁 enviar_remarketing reactivado (columna persistente "${estado_contacto}") cliente=${id_cliente}`,
+      );
     }
 
     const [configRM] = await db.query(
@@ -1374,6 +1406,37 @@ async function programarRemarketingKanban({
     );
 
     if (!configRM) return;
+
+    // Si quien reagenda no trae parámetros (el bot, que no conoce el pedido)
+    // se heredan los del último pendiente de ESTA MISMA columna. Sin esto, una
+    // respuesta del cliente en la columna de agencia reinicia la secuencia sin
+    // nombre/agencia/guía, y Meta rechaza el siguiente envío por número de
+    // parámetros (132000).
+    //
+    // NO se filtra por enviado/cancelado a propósito: el webhook llama a
+    // cancelarRemarketingKanban ANTES de reprogramar, así que para cuando se
+    // llega aquí la fila que tiene los datos ya quedó en cancelado=1 —
+    // filtrarla dejaría el heredado siempre en null.
+    //
+    // Sí se filtra por columna: cada secuencia usa su propia plantilla y
+    // heredar los parámetros de otra rompería igual el conteo de variables.
+    // La ventana evita revivir datos de un pedido viejo (guía ya entregada).
+    let paramsHeredados = null;
+    if (!Array.isArray(template_parameters) || !template_parameters.length) {
+      const [previo] = await db.query(
+        `SELECT template_parameters FROM remarketing_pendientes
+          WHERE id_cliente_chat_center = ? AND id_configuracion = ?
+            AND estado_contacto_origen = ?
+            AND template_parameters IS NOT NULL
+            AND creado_en > NOW() - INTERVAL 30 DAY
+          ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion, estado_contacto],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      paramsHeredados = previo?.template_parameters || null;
+    }
 
     await db.query(
       `UPDATE remarketing_pendientes
@@ -1438,7 +1501,7 @@ async function programarRemarketingKanban({
           configRM.prompt_ia || null,
           Array.isArray(template_parameters) && template_parameters.length
             ? JSON.stringify(template_parameters.map((v) => String(v ?? '')))
-            : null,
+            : paramsHeredados,
         ],
         type: db.QueryTypes.INSERT,
       },
@@ -1459,4 +1522,8 @@ module.exports = {
   // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
   ejecutarAsistente,
   ejecutarConResponsesAPI,
+  // Lo usa el cron de remarketing: los mensajes que redacta con el asistente de
+  // una columna pueden traer tags de acción, y ahí nadie los interpretaba ni los
+  // limpiaba (ver cron/remarketing.js → generarMensajeRemarketingIA).
+  limpiarTagsAcciones,
 };

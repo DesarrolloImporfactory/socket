@@ -2096,9 +2096,21 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
     const resultados = await Promise.all(
       columnasIA.map(async (col) => {
         try {
-          const colPlantilla = colsPlantilla.find(
-            (c) => c.nombre === col.nombre,
-          );
+          // Se empareja por estado_db, que es la identidad real de la columna, y
+          // solo se cae al nombre por compatibilidad con columnas viejas sin
+          // estado_db. Antes era al revés y bastaba una diferencia de
+          // mayúsculas ("Retiro en Agencia" vs "Retiro en agencia") o que el
+          // cliente hubiera renombrado su columna para que el prompt quedara
+          // fuera del resync: se reportaba "omitida" y el asistente se quedaba
+          // con el prompt viejo para siempre.
+          const colPlantilla =
+            colsPlantilla.find(
+              (c) =>
+                c.estado_db &&
+                col.estado_db &&
+                String(c.estado_db).toLowerCase() ===
+                  String(col.estado_db).toLowerCase(),
+            ) || colsPlantilla.find((c) => c.nombre === col.nombre);
 
           if (!colPlantilla?.instrucciones) {
             return {

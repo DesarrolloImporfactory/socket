@@ -752,22 +752,12 @@ exports.crearPlantillasAutomaticas = async (req, res) => {
         },
       ],
     },
-    {
-      name: 'carritos_abandonados',
-      language: 'es',
-      category: 'MARKETING',
-      components: [
-        {
-          type: 'BODY',
-          text: '🛒 ¡Aún tienes tu pedido de {{1}} pendiente! No dejes que se agote. Completa tu compra ahora y recibe un descuento especial. 👇',
-          example: { body_text: [['Contiene']] },
-        },
-        {
-          type: 'BUTTONS',
-          buttons: [{ type: 'QUICK_REPLY', text: 'Completar Compra' }],
-        },
-      ],
-    },
+    /* Se quitó 'carritos_abandonados': su botón era un QUICK_REPLY que no
+       llevaba a ninguna parte, así que la plantilla no servía para recuperar el
+       carrito y solo ocupaba cupo de plantillas en la WABA del cliente.
+       La que se usa es 'carritos_abandonados_v2' (catálogo kanban), con botón
+       URL dinámico al checkout real, y NO va aquí: la crea el flujo de Shopify
+       al vincular la tienda, solo en las cuentas que lo tienen. */
   ];
 
   try {
