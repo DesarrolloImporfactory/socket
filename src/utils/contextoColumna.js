@@ -106,6 +106,53 @@ async function construirContextoColumna(id_configuracion, acciones, log) {
     }
   }
 
+  /* ── Productos que exigen variedad ──────────────────────────
+     Qué producto es VARIABLE es un dato binario del que depende una regla
+     absoluta del prompt ("jamás cierres sin la variedad"), pero hasta ahora ese
+     dato solo viajaba dentro del catálogo que se consulta con file_search.
+     Recuperar un fragmento es probabilístico: si el trozo que vuelve no incluye
+     la línea "PRODUCTO VARIABLE" —o si el bot ya habló del producto antes y no
+     vuelve a buscar al cerrar— concluye que es simple, cierra sin preguntar el
+     color, y el auto-orden se cae con "falta elegir la variedad".
+
+     Acá va por el canal determinista: la lista completa siempre viaja en el
+     mensaje, cueste lo que cueste el retrieval. Es corta (son pocos productos
+     variables por cuenta) y evita el modo de fallo más caro del sistema. */
+  if (tiene('contexto_productos')) {
+    try {
+      const variables = await db.query(
+        `SELECT pc.nombre,
+                (SELECT CONCAT(MAX(pv.atributo), ': ',
+                               GROUP_CONCAT(pv.valor ORDER BY pv.id SEPARATOR ', '))
+                   FROM productos_variaciones pv
+                  WHERE pv.id_producto = pc.id AND pv.activo = 1) AS opciones
+           FROM productos_chat_center pc
+          WHERE pc.id_configuracion = ? AND pc.eliminado = 0
+            AND pc.es_variable = 1
+          ORDER BY pc.nombre`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+
+      const conOpciones = variables.filter((v) => v.opciones);
+      if (conOpciones.length) {
+        bloque +=
+          `🎨 Productos que SÍ o SÍ necesitan variedad antes de cerrar:\n` +
+          conOpciones.map((v) => `- ${v.nombre} → ${v.opciones}`).join('\n') +
+          `\n` +
+          `Si el pedido es de uno de estos, el cliente tiene que nombrar la ` +
+          `variedad CON SUS PALABRAS antes del cierre, y va en la línea ` +
+          `"🎨 Variedad:" del resumen. No la elijas tú ni la deduzcas. ` +
+          `Si pide varias, escribe cuántas unidades de cada una ` +
+          `("🎨 Variedad: Negro x2, Cafe x1") y que sumen la cantidad total del ` +
+          `pedido. Cualquier otro producto es simple: no preguntes variedad ni ` +
+          `pongas esa línea.\n\n`;
+        say(`✅ Contexto productos variables inyectado (${conOpciones.length})`);
+      }
+    } catch (err) {
+      say(`⚠️ Error contexto productos variables: ${err.message}`);
+    }
+  }
+
   // ── Disponibilidad de la agenda ─────────────────────────────
   if (tiene('contexto_calendario')) {
     try {

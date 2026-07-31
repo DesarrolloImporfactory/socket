@@ -184,6 +184,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
         'Cada item incluye stock al momento de la sincronización. Es referencial.',
         'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
         'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
+        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
         'Si el sistema provee datos de stock/precio en tiempo real por base de datos, prefiera esos sobre los del catálogo.',
       ]
     : [
@@ -192,6 +193,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
         'IMPORTANTE: este catálogo es información INTERNA de consulta. NUNCA copie el formato de estos bloques (🛒 Producto, 📃 Descripción, etc.) en sus mensajes ni en el resumen del pedido: el formato del resumen lo define el prompt del agente, no este archivo.',
         'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
         'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
+        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
         'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
         'Priorice datos en tiempo real sobre file_search si hay diferencias.',
       ];
@@ -882,7 +884,7 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
        "a secas" y el asesor tenía que reescribir al cliente por el color o
        la talla, y el auto-orden fallaba por no saber qué variante subir. */
     if (Number(r.es_variable) === 1 && r.variantes_texto) {
-      bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta cuál quiere antes de cerrar y ponla en "🎨 Variedad:" del resumen. NUNCA menciones el stock ni listes las opciones numeradas.\n`;
+      bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta cuál quiere antes de cerrar y ponla en "🎨 Variedad:" del resumen. Si pide varias, escribe cuántas de cada una ("Negro x2, Cafe x1") y que sumen la cantidad total. NUNCA menciones el stock ni listes las opciones numeradas.\n`;
       bloque_prompt += `Variedades disponibles → ${r.variantes_texto}\n`;
     } else {
       // Se dice explícitamente para que el bot NO agregue la línea de más:

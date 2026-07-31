@@ -184,6 +184,62 @@ function tokensSignificativos(s) {
     .filter((t) => t && !STOPWORDS_MATCH.has(t) && !/^\d+$/.test(t));
 }
 
+/**
+ * Lee un reparto de unidades por variedad dentro del texto de la variedad.
+ *
+ * Acepta las formas en que lo escriben de verdad un bot o un asesor:
+ *   "Negro x2, Cafe x1"   ·   "2 Negro y 1 Cafe"   ·   "Negro (2), Cafe (1)"
+ *
+ * Devuelve [] cuando NINGUNA variedad trae número: ese caso lo sigue
+ * resolviendo la lógica de siempre (una variedad se lleva todo, o tantas
+ * variedades como unidades y una de cada una). Así lo nuevo no cambia el
+ * comportamiento de los pedidos que ya venían funcionando.
+ *
+ * Si alguna trae número, TODAS las mencionadas tienen que traerlo: un
+ * "Negro x2 y Cafe" es ambiguo (¿cuántos cafés?) y es preferible mandarlo a
+ * manual que adivinar y despachar de menos.
+ *
+ * @param {string} texto        variedad tal como vino ("negro x2, cafe x1")
+ * @param {Array<{etiqueta:string}>} variantes  variantes reales del producto
+ * @returns {Array} [{ ...variante, qty }] o []
+ */
+function leerRepartoExplicito(texto, variantes) {
+  const t = String(texto || '').toLowerCase();
+  if (!t) return [];
+
+  const escapar = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const mencionadas = [];
+  for (const v of variantes) {
+    const et = escapar(String(v.etiqueta).toLowerCase());
+    if (!new RegExp(et, 'i').test(t)) continue;
+
+    // "negro x2" / "negro *2" / "negro (2)" / "2 negro" / "2x negro"
+    const patrones = [
+      new RegExp(`${et}\\s*(?:x|\\*)\\s*(\\d+)`, 'i'),
+      new RegExp(`${et}\\s*\\(\\s*(\\d+)\\s*\\)`, 'i'),
+      new RegExp(`(\\d+)\\s*(?:x\\s*)?${et}`, 'i'),
+    ];
+    let qty = 0;
+    for (const re of patrones) {
+      const m = t.match(re);
+      if (m) {
+        qty = parseInt(m[1], 10);
+        break;
+      }
+    }
+    mencionadas.push({ variante: v, qty });
+  }
+
+  if (!mencionadas.length) return [];
+  // Nadie trajo número → que decida la lógica anterior
+  if (mencionadas.every((m) => !m.qty)) return [];
+  // Alguna sin número → ambiguo, mejor manual
+  if (mencionadas.some((m) => !m.qty || m.qty < 1)) return [];
+
+  return mencionadas.map((m) => ({ ...m.variante, qty: m.qty }));
+}
+
 function matchEnLista(lista, objetivo, pickName) {
   const target = normalizarTexto(objetivo);
   if (!target) return null;
@@ -762,7 +818,26 @@ async function autoCrearOrdenDropi({
 
       const conStock = variantes.filter((v) => v.stock >= cantidadOrden);
 
-      if (pedida) {
+      /* ── Reparto explícito: "Negro x2, Cafe x1" ──
+         Hasta acá la variedad era solo una lista de nombres, así que el sistema
+         podía darle todas las unidades a un color o repartir de a una cuando
+         había tantos colores como unidades. Un pedido de 3 con 2 negros y 1
+         café no tenía forma de expresarse y caía a manual siempre.
+         Si el texto trae cantidades, mandan ellas. Si no las trae, sigue el
+         camino de siempre. */
+      const reparto = leerRepartoExplicito(pedida, variantes);
+      if (reparto.length) {
+        const suma = reparto.reduce((a, r) => a + r.qty, 0);
+        if (suma !== cantidadOrden) {
+          return fail(
+            'producto',
+            `El reparto por variedad (${reparto.map((r) => `${r.etiqueta} x${r.qty}`).join(', ')}) ` +
+              `suma ${suma} y el pedido es de ${cantidadOrden} unidad(es). ` +
+              `Corrige la cantidad o el reparto.`,
+          );
+        }
+        variacionesElegidas = reparto;
+      } else if (pedida) {
         const unica =
           variantes.find((v) => v.etiqueta.toLowerCase() === pedida) ||
           variantes.find((v) => v.etiqueta.toLowerCase().includes(pedida)) ||
@@ -800,7 +875,11 @@ async function autoCrearOrdenDropi({
          CLIENTE. Si alguna no aparece, la orden cae a manual con las opciones
          listadas: mil veces mejor un pedido manual que uno del color
          equivocado. */
-      if (variacionesElegidas.length) {
+      /* El candado NO aplica cuando la variedad la corrigió un humano desde el
+         panel de pedidos sin subir: ahí alguien la eligió mirando el chat, que
+         es exactamente la verificación que este bloque intenta automatizar.
+         Aplicarlo igual dejaba la orden atascada sin salida manual. */
+      if (variacionesElegidas.length && !datosBot?._correccion_manual) {
         const sinAcentos = (s) =>
           String(s || '')
             .toLowerCase()

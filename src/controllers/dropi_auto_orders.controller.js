@@ -68,6 +68,15 @@ exports.probarAutoOrden = async (req, res) => {
         datosBot && typeof datosBot === 'object' ? datosBot : {};
       datosBot = { ...base, ...correcciones };
 
+      /* Marca de que un humano corrigió estos datos desde el panel de pedidos
+         sin subir. El servicio tiene un candado que exige que la variedad
+         aparezca escrita por el cliente —está para atrapar al bot cuando la
+         inventa—, pero aquí el operador la eligió a mano con el chat delante.
+         Sin esta marca, corregir el color en el panel volvía a fallar con
+         "variedad no confirmada por el cliente" y no había forma de rescatar
+         la orden. */
+      if (Object.keys(correcciones).length) datosBot._correccion_manual = true;
+
       id_configuracion = row.id_configuracion;
       id_cliente = row.id_cliente;
       if (!datosBot.telefono && row.telefono) datosBot.telefono = row.telefono;
@@ -280,13 +289,46 @@ exports.listarProductosVinculados = async (req, res) => {
         .json({ ok: false, message: 'id_configuracion requerido' });
     }
     const rows = await db.query(
-      `SELECT id, nombre, precio, external_id, imagen_url
+      `SELECT id, nombre, precio, external_id, imagen_url, es_variable
          FROM productos_chat_center
         WHERE id_configuracion = ? AND eliminado = 0
           AND external_source = 'DROPI' AND external_id IS NOT NULL
         ORDER BY nombre ASC`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
+
+    /* Las variedades viajan con el producto: el panel de "pedidos sin subir"
+       existe justamente para rescatar órdenes que fallaron, y el motivo #1 de
+       fallo es "es variable y falta elegir la variedad". Sin esta lista el
+       formulario dejaba elegir el producto pero no el color, así que no había
+       forma de completar la orden desde ahí. */
+    const variables = rows.filter((r) => Number(r.es_variable) === 1);
+    if (variables.length) {
+      const vars = await db.query(
+        `SELECT id_producto, atributo, valor
+           FROM productos_variaciones
+          WHERE id_producto IN (:ids) AND activo = 1
+          ORDER BY id ASC`,
+        {
+          replacements: { ids: variables.map((v) => v.id) },
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const porProducto = new Map();
+      for (const v of vars) {
+        if (!porProducto.has(v.id_producto)) porProducto.set(v.id_producto, []);
+        porProducto.get(v.id_producto).push({
+          atributo: v.atributo,
+          valor: v.valor,
+        });
+      }
+      for (const r of rows) {
+        r.variaciones = porProducto.get(r.id) || [];
+      }
+    } else {
+      for (const r of rows) r.variaciones = [];
+    }
+
     return res.json({ ok: true, data: rows });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message });
