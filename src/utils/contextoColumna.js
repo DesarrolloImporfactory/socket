@@ -51,6 +51,41 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   const mensajeCliente = String(opts?.mensaje || '');
   let bloque = '';
 
+  /* ── Quién está escribiendo ─────────────────────────────────
+     El teléfono llega en el webhook: es el número desde el que la persona
+     escribe. Pedírselo es absurdo —y peor, el bot terminaba escribiendo
+     "Teléfono: no registra" en el bloque de agendamiento y la cita quedaba sin
+     forma de contactar a nadie. Con el dato a la vista tampoco se traba cuando
+     la clienta responde "a este mismo número". */
+  if (opts?.id_cliente) {
+    try {
+      const [cli] = await db.query(
+        `SELECT nombre_cliente, apellido_cliente, celular_cliente
+           FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+        { replacements: [opts.id_cliente], type: db.QueryTypes.SELECT },
+      );
+
+      if (cli?.celular_cliente) {
+        const nombre = [cli.nombre_cliente, cli.apellido_cliente]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+
+        bloque +=
+          `\n\n[DATOS DE QUIEN TE ESCRIBE — ya los tienes, NO los preguntes]\n` +
+          `Teléfono: ${cli.celular_cliente}\n` +
+          (nombre ? `Nombre en WhatsApp: ${nombre}\n` : '') +
+          `Este es el número desde el que te escribe. Úsalo siempre que necesites ` +
+          `su teléfono (por ejemplo en el bloque de agendamiento) y no le preguntes ` +
+          `cuál es. Si dice "a este mismo número" o "desde donde te escribo", se ` +
+          `refiere a este. El nombre de WhatsApp sí puede no ser el real: para el ` +
+          `bloque usa el que te dé la persona, y solo si no te dio ninguno usa este.`;
+      }
+    } catch (e) {
+      say(`⚠️ contexto datos del cliente: ${e.message}`);
+    }
+  }
+
   // ── Sedes / sucursales ──────────────────────────────────────
   // Deja de ser criterio del modelo saber si alguien está dentro de cobertura:
   // se le entrega la lista real de sedes con su ciudad, dirección y horario.

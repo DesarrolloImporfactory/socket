@@ -1260,7 +1260,7 @@ exports.eliminar_thread = catchAsync(async (req, res, next) => {
     return next(new AppError('Falta el campo id_cliente_chat_center', 400));
   }
 
-  const deleted = await db.query(
+  await db.query(
     `DELETE FROM openai_threads WHERE id_cliente_chat_center = ?`,
     {
       replacements: [id_cliente_chat_center],
@@ -1268,9 +1268,57 @@ exports.eliminar_thread = catchAsync(async (req, res, next) => {
     },
   );
 
+  /* 
+     La etapa de arranque es la columna marcada como principal; si la cuenta no
+     marcó ninguna, se usa contacto_inicial, que es como venía. */
+  const [cliente] = await db.query(
+    `SELECT id_configuracion, estado_contacto FROM clientes_chat_center
+      WHERE id = ? LIMIT 1`,
+    { replacements: [id_cliente_chat_center], type: db.QueryTypes.SELECT },
+  );
+
+  let estadoNuevo = null;
+
+  if (cliente?.id_configuracion) {
+    const [colPrincipal] = await db.query(
+      `SELECT estado_db FROM kanban_columnas
+        WHERE id_configuracion = ? AND es_principal = 1 AND activo = 1
+        LIMIT 1`,
+      {
+        replacements: [cliente.id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    estadoNuevo = colPrincipal?.estado_db || 'contacto_inicial';
+
+    if (estadoNuevo !== cliente.estado_contacto) {
+      await db.query(
+        `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+        {
+          replacements: [estadoNuevo, id_cliente_chat_center],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+    }
+
+    /* Los seguimientos programados eran para la etapa vieja: dejarlos vivos
+       haría que le llegue "¿seguimos con tu cita?" a alguien cuya conversación
+       se acaba de reiniciar. */
+    await db.query(
+      `UPDATE remarketing_pendientes SET cancelado = 1
+        WHERE id_cliente_chat_center = ? AND enviado = 0 AND cancelado = 0`,
+      {
+        replacements: [id_cliente_chat_center],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  }
+
   res.status(200).json({
     status: '200',
     message: `Thread eliminado correctamente para id_cliente_chat_center: ${id_cliente_chat_center}`,
+    estado_contacto: estadoNuevo,
+    estado_anterior: cliente?.estado_contacto || null,
   });
 });
 

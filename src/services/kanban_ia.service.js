@@ -424,8 +424,9 @@ async function procesarMensajeKanban(params) {
     acciones,
     log,
     // El mensaje sirve para elegir qué productos mandar cuando el catálogo es
-    // grande: los que la persona nombró.
-    { mensaje },
+    // grande: los que la persona nombró. El id_cliente, para entregarle el
+    // teléfono desde el que escribe en vez de que se lo pregunte.
+    { mensaje, id_cliente },
   );
 
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
@@ -853,7 +854,27 @@ async function procesarMensajeKanban(params) {
     const cfg = parseConfig(acCita);
     const trigger = cfg.trigger || '[cita_confirmada]: true';
 
-    if (respuestaRaw.toLowerCase().includes(trigger.toLowerCase())) {
+    /* El tag es la señal, pero no se puede depender solo de él: el modelo
+       escribe el bloque completo, le dice al cliente "tu cita quedó agendada" y
+       a veces se olvida de la última línea. Ahí no se creaba nada, la tarjeta se
+       quedaba quieta y nadie se enteraba hasta que la persona llegaba al local.
+       Si el bloque está entero —con fecha de inicio y de fin— se agenda igual:
+       el bloque ES la confirmación. */
+    const escribioBloque =
+      /Fecha y hora de inicio\s*:/i.test(respuestaRaw) &&
+      /Fecha y hora de fin\s*:/i.test(respuestaRaw);
+
+    const tieneTag = respuestaRaw
+      .toLowerCase()
+      .includes(trigger.toLowerCase());
+
+    if (!tieneTag && escribioBloque) {
+      await log(
+        `⚠️ agendar_cita: el bot escribió el bloque de confirmación SIN el tag ${trigger}; se agenda igual`,
+      );
+    }
+
+    if (tieneTag || escribioBloque) {
       const res = await procesarAgendarCita(
         respuestaRaw,
         id_configuracion,
@@ -871,6 +892,28 @@ async function procesarMensajeKanban(params) {
          createAppointment responde 409 y el error se quedaba en un log.
          Va a "asesor" porque el cliente ya recibió un mensaje diciéndole que su
          cita quedó confirmada: eso lo tiene que resolver una persona. */
+      /* Sin tag, `cambiar_estado` (paso 10) tampoco corrió: la cita quedaría
+         creada y la tarjeta parada en la columna anterior. Se mueve acá con el
+         mismo destino que tiene configurada esa acción. */
+      if (res?.ok && !tieneTag) {
+        const destino = getAcciones('cambiar_estado')
+          .map((ac) => parseConfig(ac))
+          .find(
+            (c) =>
+              String(c.trigger || '').toLowerCase() === trigger.toLowerCase(),
+          )?.estado_destino;
+
+        if (destino) {
+          await db.query(
+            `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+            { replacements: [destino, id_cliente], type: db.QueryTypes.UPDATE },
+          );
+          await log(
+            `🔄 Estado cambiado a "${destino}" por el bloque de cita (sin tag)`,
+          );
+        }
+      }
+
       if (res && res.ok === false) {
         const [colAsesor] = await db.query(
           `SELECT id FROM kanban_columnas
@@ -1349,9 +1392,21 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
       ?.trim() || '';
 
   const nombre = campo('Nombre');
-  const telefono = campo('Tel[eé]fono');
   const correo = campo('Correo');
   const servicio = campo('Servicio que desea');
+
+  /* El teléfono NO se lee del bloque: el que vale es el número desde el que la
+     persona escribe, que llega en el webhook. El modelo lo inventaba, lo pedía
+     de nuevo o escribía "no registra", y la cita quedaba sin forma de llamar a
+     nadie. Solo si el contacto no tuviera número se usa lo que haya escrito. */
+  const [contacto] = await db.query(
+    `SELECT celular_cliente FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+    { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+  );
+  const telefonoBloque = campo('Tel[eé]fono');
+  const telefono =
+    contacto?.celular_cliente ||
+    (/no registra/i.test(telefonoBloque) ? '' : telefonoBloque);
   const fechaIni = campo('Fecha y hora de inicio');
   const fechaFin = campo('Fecha y hora de fin');
 
@@ -1369,6 +1424,44 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
 
   const inicio_utc = mIni.utc().format();
   const fin_utc = mFin.utc().format();
+
+  /* Un producto no se agenda, se entrega. El bot igual arma citas de "recogida"
+     cuando la clienta quiere comprar algo, y eso le ocupa un cupo real de la
+     agenda a un tratamiento. Se corta acá y no solo en el prompt: si lo que
+     escribió en "Servicio" es un producto del catálogo, no hay cita y el caso
+     pasa a un asesor, que es quien cierra la venta. */
+  if (servicio) {
+    const catalogo = await db.query(
+      `SELECT nombre, tipo FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    const norm = (s) =>
+      String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{M}/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const pedido = norm(servicio);
+    const esProducto = catalogo.some((p) => {
+      if (String(p.tipo || '').toLowerCase() === 'servicio') return false;
+      const n = norm(p.nombre);
+      return n.length > 3 && (pedido.includes(n) || n.includes(pedido));
+    });
+
+    if (esProducto) {
+      await log(
+        `⛔ agendar_cita: "${servicio}" es un producto del catálogo, no un servicio; la cita NO se creó`,
+      );
+      return {
+        ok: false,
+        motivo: `"${servicio}" es un producto: se vende y se entrega, no se agenda`,
+      };
+    }
+  }
 
   /* Sede elegida por el bot. Si la cuenta tiene varias sucursales, la cita va al
      calendario de ESA sede; si no, al único que exista. Antes siempre se tomaba

@@ -267,6 +267,7 @@ async function listAppointments({
       'status',
       'assigned_user_id',
       'id_profesional',
+      'id_establecimiento',
       'contact_id',
       'start_utc',
       'end_utc',
@@ -291,6 +292,34 @@ async function listAppointments({
       },
     ],
   });
+
+  /* Quién atiende y en qué sede. El id solo no sirve de nada en pantalla: el
+     dueño necesita ver "atiende Karla, sede Norte" para saber a quién le está
+     ocupando la hora, que es distinto del sub-usuario del sistema que quedó
+     asignado a la tarjeta. */
+  const idsProf = [...new Set(rows.map((r) => r.id_profesional).filter(Boolean))];
+  const idsSede = [
+    ...new Set(rows.map((r) => r.id_establecimiento).filter(Boolean)),
+  ];
+
+  const profesionales = idsProf.length
+    ? await db.query(
+        `SELECT id, nombre, id_establecimiento FROM profesionales_chat_center
+          WHERE id IN (:ids)`,
+        { replacements: { ids: idsProf }, type: db.QueryTypes.SELECT },
+      )
+    : [];
+
+  const sedes = idsSede.length
+    ? await db.query(
+        `SELECT id, nombre, ciudad FROM establecimientos_chat_center
+          WHERE id IN (:ids)`,
+        { replacements: { ids: idsSede }, type: db.QueryTypes.SELECT },
+      )
+    : [];
+
+  const profPorId = new Map(profesionales.map((p) => [Number(p.id), p]));
+  const sedePorId = new Map(sedes.map((s) => [Number(s.id), s]));
 
   // ── Formato FullCalendar + props extra ──────────────────────────
   return rows.map((r) => {
@@ -317,6 +346,9 @@ async function listAppointments({
         status: r.status,
         assigned_user_id: r.assigned_user_id,
         id_profesional: r.id_profesional,
+        profesional: profPorId.get(Number(r.id_profesional)) || null,
+        id_establecimiento: r.id_establecimiento,
+        sede: sedePorId.get(Number(r.id_establecimiento)) || null,
         contact_id: r.contact_id,
         contact, // invitado que quedó como contacto principal
         booked_tz: r.booked_tz,
@@ -447,6 +479,10 @@ async function updateAppointment(id, payload, opts = {}) {
     'description',
     'status',
     'assigned_user_id',
+    // Quién atiende: se puede reasignar desde el calendario cuando la agenda
+    // real del local cambia (alguien falta, entra otra esteticista).
+    'id_profesional',
+    'id_establecimiento',
     'contact_id',
     'location_text',
     'meeting_url',
@@ -455,6 +491,12 @@ async function updateAppointment(id, payload, opts = {}) {
   ].forEach((f) => {
     if (payload[f] !== undefined) up[f] = payload[f];
   });
+
+  // Vacío desde un <select> llega como "" y guardarlo rompería el FK.
+  for (const f of ['id_profesional', 'id_establecimiento']) {
+    if (up[f] === '' || up[f] === 0) up[f] = null;
+    else if (up[f] != null) up[f] = Number(up[f]);
+  }
 
   // La columna guarda strings UTC → convertir a Date para poder comparar
   // cuando el update trae solo uno de los dos extremos.
@@ -483,12 +525,18 @@ async function updateAppointment(id, payload, opts = {}) {
       ? up.assigned_user_id
       : appt.assigned_user_id;
 
+  /* Si la cita la atiende alguien de la sede, el choque se mide contra ESA
+     persona: dos esteticistas pueden atender a la misma hora, la misma no. */
+  const nextProfesional =
+    up.id_profesional !== undefined ? up.id_profesional : appt.id_profesional;
+
   await assertNoOverlap({
     calendar_id: appt.calendar_id,
     start_utc: up.start_utc ?? startUtc,
     end_utc: up.end_utc ?? endUtc,
     ignoreId: appt.id,
     assigned_user_id: nextAssigned,
+    id_profesional: nextProfesional,
   });
 
   const updated = await db.transaction(async (t) => {
