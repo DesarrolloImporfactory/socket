@@ -652,12 +652,35 @@ async function autoCrearOrdenDropi({
         Number(c?.id_dropi || c?.external_id) > 0,
     );
 
+    const combosMapeados = (Array.isArray(combos) ? combos : []).filter(
+      (c) => Number(c?.id_dropi || c?.external_id) > 0,
+    );
+
     if (comboUsado) {
       // El combo ES otro producto en Dropi → se despacha 1 unidad de ese ID
       dropiProductId = Number(comboUsado.id_dropi || comboUsado.external_id);
       cantidadOrden = 1;
     } else if (cantidad > 1) {
-      // Sin combo configurado → producto base x N (decisión del cliente)
+      /* Cantidad sin combo mapeado.
+         Si el producto NO tiene combos, el external_id es una unidad suelta y
+         multiplicarlo es correcto: producto base x N.
+
+         Pero si SÍ tiene combos, el external_id ya no significa "una unidad".
+         En la 411 el base de Dr Melaxin es 142847, que en Dropi es el pack de 2:
+         un pedido de 4 saldría como 4 packs = 8 frascos, con el doble de costo
+         de proveedor. Ahí es preferible mandarlo a manual y que alguien mapee el
+         combo que falta. */
+      if (combosMapeados.length) {
+        return fail(
+          'producto',
+          `Pedido de ${cantidad} unidad(es) sin combo configurado para esa cantidad. ` +
+            `Combos mapeados: ${combosMapeados
+              .map((c) => `${c.cantidad}u → #${c.id_dropi || c.external_id}`)
+              .join(', ')}. ` +
+            `No se despacha el producto base x${cantidad} porque con combos ` +
+            `configurados ese ID no equivale a una unidad.`,
+        );
+      }
       cantidadOrden = cantidad;
     }
 
