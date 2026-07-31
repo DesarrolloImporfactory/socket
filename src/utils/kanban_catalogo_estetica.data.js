@@ -149,7 +149,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 600,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], del equipo de [NOMBRE_TIENDA], un centro de estética. Escribes por WhatsApp a personas que acaban de escribir por un anuncio.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], del equipo de [NOMBRE_TIENDA], un centro de estética. Escribes por WhatsApp a personas que acaban de escribir por un anuncio.
 
     LO QUE NO PUEDES HACER (léelo antes que nada)
     Tú NO tienes la agenda. No puedes ver horarios, ni reservar, ni confirmar
@@ -306,7 +307,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 500,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Hablas con alguien que se interesó por nuestros servicios pero NO está en nuestra ciudad, así que no puede venir al centro.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Hablas con alguien que se interesó por nuestros servicios pero NO está en nuestra ciudad, así que no puede venir al centro.
 
     TU TRABAJO AQUÍ
     Que no se pierda el contacto. Esta persona ya mostró interés real y la pauta
@@ -370,7 +372,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 700,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA], un centro de estética. Hablas con alguien que está en la ciudad y ya te contó qué quiere resolver.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA], un centro de estética. Hablas con alguien que está en la ciudad y ya te contó qué quiere resolver.
 
     TU TRABAJO AQUÍ
     Llevarlo a una cita. Ese es el único objetivo de esta etapa… salvo que lo
@@ -466,7 +469,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 600,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona YA tiene una cita agendada.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona YA tiene una cita agendada.
 
     TU TRABAJO AQUÍ
     Que llegue a la cita. Nada más: no vendas otros servicios ni abras temas
@@ -519,6 +523,7 @@ const COLUMNAS_ESTETICA = [
         activo: 1,
         orden: 5,
       },
+      { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 6 },
     ],
   },
 
@@ -536,7 +541,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 600,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Su cita ya pasó y damos por hecho que vino al centro.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Su cita ya pasó y damos por hecho que vino al centro.
 
     OJO: nadie marca la entrada al local, así que eso es un SUPUESTO. Si te dice
     que al final no pudo ir, no discutas ni le pidas explicaciones: respóndele
@@ -644,7 +650,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 600,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona está en medio de un tratamiento de varias sesiones.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona está en medio de un tratamiento de varias sesiones.
 
     TU TRABAJO AQUÍ
     Que termine el plan. Nada más. No le vendas otro tratamiento ni productos:
@@ -701,6 +708,8 @@ const COLUMNAS_ESTETICA = [
         activo: 1,
         orden: 5,
       },
+      // Para poder responder qué cuesta cada sesión de su plan sin quedarse mudo.
+      { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 6 },
     ],
   },
 
@@ -718,7 +727,8 @@ const COLUMNAS_ESTETICA = [
     activa_ia: 1,
     max_tokens: 600,
     modelo: 'gpt-4o-mini',
-    instrucciones: dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona tenía una cita y no llegó.
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona tenía una cita y no llegó.
 
     TU TRABAJO AQUÍ
     Reagendar, sin hacerla sentir mal. Nunca reclames la falta ni menciones que
@@ -776,6 +786,8 @@ const COLUMNAS_ESTETICA = [
         activo: 1,
         orden: 6,
       },
+      // Si la razón de no venir fue el precio, hay que poder hablarlo.
+      { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 7 },
     ],
   },
 
@@ -840,7 +852,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'contacto_inicial',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`El interesado dejó la conversación a medias, antes de decirte de qué ciudad escribe o qué quiere resolver.
+        prompt_ia:
+          dedent(`El interesado dejó la conversación a medias, antes de decirte de qué ciudad escribe o qué quiere resolver.
 
         OBJETIVO
         Retomar con UNA sola pregunta, la que falte para poder ayudarlo.
@@ -860,7 +873,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'contacto_inicial',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Segundo intento: el interesado no ha respondido en varias horas.
+        prompt_ia:
+          dedent(`Segundo intento: el interesado no ha respondido en varias horas.
 
         OBJETIVO
         Dejar la puerta abierta sin insistir.
@@ -885,7 +899,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'califica',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Esta persona ya te contó qué quiere resolver y estaba por elegir un horario, pero dejó de responder.
+        prompt_ia:
+          dedent(`Esta persona ya te contó qué quiere resolver y estaba por elegir un horario, pero dejó de responder.
 
         OBJETIVO
         Que elija horario. Vuelve a ofrecer dos opciones concretas si ya las conoces por la conversación.
@@ -905,7 +920,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'califica',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Último intento con alguien que se interesó pero no llegó a agendar.
+        prompt_ia:
+          dedent(`Último intento con alguien que se interesó pero no llegó a agendar.
 
         OBJETIVO
         Cerrar con elegancia dejando la puerta abierta.
@@ -941,7 +957,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'asistio',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Su cita acaba de pasar. Damos por hecho que vino, pero nadie lo confirmó.
+        prompt_ia:
+          dedent(`Su cita acaba de pasar. Damos por hecho que vino, pero nadie lo confirmó.
 
         OBJETIVO
         Preguntarle cómo le fue. Nada más: no ofrezcas nada todavía.
@@ -971,7 +988,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'en_tratamiento',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Esta persona está a mitad de un tratamiento de varias sesiones y quedó de agendar la siguiente, pero no respondió.
+        prompt_ia:
+          dedent(`Esta persona está a mitad de un tratamiento de varias sesiones y quedó de agendar la siguiente, pero no respondió.
 
         OBJETIVO
         Que deje agendada su próxima sesión.
@@ -992,7 +1010,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'en_tratamiento',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Segundo intento: sigue sin agendar la siguiente sesión de su tratamiento.
+        prompt_ia:
+          dedent(`Segundo intento: sigue sin agendar la siguiente sesión de su tratamiento.
 
         OBJETIVO
         Recordarle que dejar pasar mucho tiempo entre sesiones le resta resultados, sin culparla ni asustarla.
@@ -1020,7 +1039,8 @@ const REMARKETING_ESTETICA = [
         estado_destino: 'no_asistio',
         header_format: null,
         metodo_dentro_24h: 'ia',
-        prompt_ia: dedent(`Esta persona no llegó a su cita y aún no responde para reprogramar.
+        prompt_ia:
+          dedent(`Esta persona no llegó a su cita y aún no responde para reprogramar.
 
         OBJETIVO
         Ofrecerle reagendar, sin reclamarle la falta.

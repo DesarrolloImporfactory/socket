@@ -408,6 +408,9 @@ exports.sendWhatsappMessageTemplate = async ({
     ruta_archivo[index + 1] = param;
   });
 
+  /* Una plantilla sin variables no lleva componente de body: mandarlo vacío
+     hace que Meta rechace el envío entero. Pasa con los recordatorios cortos
+     ("tu cita es hoy, te esperamos"), que no necesitan ningún dato. */
   const data = {
     messaging_product: 'whatsapp',
     to: telefono,
@@ -415,7 +418,9 @@ exports.sendWhatsappMessageTemplate = async ({
     template: {
       name: nombre_template,
       language: { code: LANGUAGE_CODE },
-      components: [{ type: 'body', parameters: components }],
+      ...(components.length
+        ? { components: [{ type: 'body', parameters: components }] }
+        : {}),
     },
   };
 

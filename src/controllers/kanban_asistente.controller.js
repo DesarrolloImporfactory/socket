@@ -685,6 +685,8 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   const bloqueContexto = await construirContextoColumna(
     columna.id_configuracion,
     acciones,
+    null,
+    { mensaje },
   );
 
   const headers = {

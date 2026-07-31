@@ -469,12 +469,13 @@ async function cleanupAllAssistantVectorStores(
 
   if (!existingVsIds.length) {
     await logger(`ℹ️ No hay vector stores viejos que limpiar.`);
-    return;
   }
 
-  await logger(
-    `🧹 Limpiando ${existingVsIds.length} vector store(s) viejo(s): ${existingVsIds.join(', ')}`,
-  );
+  if (existingVsIds.length) {
+    await logger(
+      `🧹 Limpiando ${existingVsIds.length} vector store(s) viejo(s): ${existingVsIds.join(', ')}`,
+    );
+  }
 
   for (const vsId of existingVsIds) {
     try {
@@ -550,7 +551,15 @@ async function cleanupAllAssistantVectorStores(
   /* Dejar en el asistente SOLO los stores que se conservan (el recién
      sincronizado). Antes esto mandaba `vector_store_ids: []` siempre, y  dejaba al asistente sin catálogo: la columna quedaba con
      un vector_store válido en BD y el asistente sin nada que buscar.
-      */
+
+     Corre SIEMPRE, aunque no haya nada viejo que borrar: el paso 9 adjunta el
+     store al asistente pero no es fatal si falla, así que esta es la única
+     reconciliación que queda. Cuando se salía antes por "no hay nada que
+     limpiar", un paso 9 fallido dejaba al asistente sin catálogo de forma
+     permanente y el bot contestaba precios inventados sin que nada avisara
+     (le pasó a la columna Contacto Inicial de la config 818). */
+  if (!assistantId) return;
+
   const conservarIds = [...conservar];
   try {
     const currentRes = await axios.get(

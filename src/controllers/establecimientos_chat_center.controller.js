@@ -45,6 +45,186 @@ const ERROR_MAPS =
   'El enlace de Google Maps no es válido. Abre la sede en Google Maps, ' +
   'usa Compartir → Copiar vínculo y pega ese enlace.';
 
+/* ── Recordatorios de cita ──────────────────────────────────────────────
+   Cuántos avisos se mandan antes de cada cita, con cuánta anticipación y con
+   qué mensaje cada uno. Vive junto a las sedes porque es lo mismo que se está
+   configurando: cómo trabaja la agenda. Las horas se guardan separadas por coma
+   ("24,2"); NULL = uno a la hora, que es como venía funcionando.
+
+   La plantilla va por hora (JSON {"24":"nombre","2":"otro"}) porque el mismo
+   texto a 24 horas y a 1 hora se lee como spam: el de la víspera confirma, el
+   de la hora avisa que salga. `template_notificar_calendario` se mantiene como
+   respaldo para las cuentas que nunca eligieron una por hora. */
+const HORAS_VALIDAS = [48, 24, 12, 4, 2, 1];
+
+const {
+  VARIABLES_RECORDATORIO,
+  normalizarMapeo,
+} = require('../utils/variablesRecordatorio');
+
+/* Cada aviso guarda { plantilla, body, buttons }. `body` es posicional
+   (body[0] → {{1}}) y puede ir vacío: una plantilla sin variables se manda tal
+   cual, que es lo normal en un recordatorio corto.
+
+   Formato viejo: el valor era el nombre de la plantilla a secas. Se sigue
+   leyendo para no dejar sin recordatorios a quien ya lo tenía configurado. */
+const leerPlantillasPorHora = (raw) => {
+  if (!raw) return {};
+  try {
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+
+    const salida = {};
+    for (const [h, valor] of Object.entries(obj)) {
+      const hora = Number(h);
+      if (!Number.isFinite(hora) || hora <= 0) continue;
+
+      const crudo = typeof valor === 'string' ? { plantilla: valor } : valor;
+      const plantilla = String(crudo?.plantilla || '').trim();
+      if (!plantilla) continue;
+
+      salida[hora] = {
+        plantilla,
+        body: normalizarMapeo(crudo?.body),
+        buttons: (Array.isArray(crudo?.buttons) ? crudo.buttons : [])
+          .map((b) => ({
+            index: Number(b?.index) || 0,
+            variable: normalizarMapeo([b?.variable])[0],
+          }))
+          .filter((b) => b.variable),
+      };
+    }
+    return salida;
+  } catch {
+    return {};
+  }
+};
+
+exports.obtenerRecordatorios = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const [cfg] = await db.query(
+    `SELECT recordatorios_cita, recordatorios_cita_plantillas,
+            template_notificar_calendario
+       FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
+
+  const horas = String(cfg.recordatorios_cita || '1')
+    .split(',')
+    .map((h) => Number(String(h).trim()))
+    .filter((h) => Number.isFinite(h) && h > 0);
+
+  const porHora = leerPlantillasPorHora(cfg.recordatorios_cita_plantillas);
+
+  /* Una cuenta que venía con plantilla única la ve repetida en cada aviso: es
+     lo que hoy sale de verdad, así que mostrar otra cosa sería mentir. */
+  const respaldo = cfg.template_notificar_calendario || null;
+  const finales = horas.length ? horas : [1];
+  const plantillas = {};
+  for (const h of finales) {
+    plantillas[h] =
+      porHora[h] ||
+      (respaldo ? { plantilla: respaldo, body: [], buttons: [] } : null);
+  }
+
+  return res.json({
+    status: 'success',
+    data: {
+      horas: finales,
+      opciones: HORAS_VALIDAS,
+      // Sin plantilla el aviso no puede salir: a esa hora la ventana de 24h de
+      // Meta suele estar cerrada y solo una plantilla aprobada la reabre.
+      plantillas,
+      plantilla: respaldo,
+      /* Catálogo de datos que se pueden poner en las variables, con su ejemplo
+         para la vista previa. Sale de acá y no del front para que lo que se ve
+         al configurar y lo que manda el cron no puedan separarse. */
+      variables: VARIABLES_RECORDATORIO,
+      configurado: cfg.recordatorios_cita != null,
+    },
+  });
+});
+
+exports.guardarRecordatorios = catchAsync(async (req, res, next) => {
+  const { id_configuracion, horas, plantilla, plantillas } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  /* Elegir el mensaje va por acá y no por otra pantalla: es la mitad de la
+     misma decisión. Antes el nombre vivía en un campo que el cliente no veía,
+     así que activaba los recordatorios y no salía ninguno. */
+  if (plantillas && typeof plantillas === 'object') {
+    const limpias = leerPlantillasPorHora(plantillas);
+    await db.query(
+      `UPDATE configuraciones
+          SET recordatorios_cita_plantillas = ?,
+              template_notificar_calendario = ?
+        WHERE id = ?`,
+      {
+        replacements: [
+          Object.keys(limpias).length ? JSON.stringify(limpias) : null,
+          // El respaldo apunta al aviso más cercano a la cita, que es el que
+          // nunca falta; así lo que ya lea este campo sigue funcionando.
+          Object.keys(limpias).length
+            ? limpias[Math.min(...Object.keys(limpias).map(Number))].plantilla
+            : null,
+          id_configuracion,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    if (!Array.isArray(horas)) {
+      return res.json({ status: 'success', data: { plantillas: limpias } });
+    }
+  } else if (typeof plantilla !== 'undefined') {
+    const nombre = String(plantilla || '').trim();
+    await db.query(
+      `UPDATE configuraciones SET template_notificar_calendario = ? WHERE id = ?`,
+      {
+        replacements: [nombre || null, id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    if (!Array.isArray(horas)) {
+      return res.json({ status: 'success', data: { plantilla: nombre || null } });
+    }
+  }
+
+  if (!Array.isArray(horas))
+    return next(new AppError('horas debe ser un arreglo', 400));
+
+  const limpias = [
+    ...new Set(
+      horas
+        .map((h) => Number(h))
+        .filter((h) => Number.isFinite(h) && h > 0 && h <= 168),
+    ),
+  ].sort((a, b) => b - a);
+
+  if (!limpias.length) {
+    return next(
+      new AppError(
+        'Deja al menos un recordatorio: sin ninguno, nadie recibe aviso de su cita.',
+        400,
+      ),
+    );
+  }
+
+  await db.query(
+    `UPDATE configuraciones SET recordatorios_cita = ? WHERE id = ?`,
+    {
+      replacements: [limpias.join(','), id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  return res.json({ status: 'success', data: { horas: limpias } });
+});
+
 exports.listar = catchAsync(async (req, res, next) => {
   const { id_configuracion, incluir_inactivos } = req.body;
   if (!id_configuracion)

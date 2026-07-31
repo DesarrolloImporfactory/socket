@@ -821,6 +821,124 @@ exports.crearPlantillasAutomaticas = async (req, res) => {
   }
 };
 
+/* ─────────── PLANTILLAS DE RECORDATORIO DE CITA ─────────── */
+
+/* Las tres que recomendamos para un negocio que agenda citas. Son distintas a
+   propósito: mandar el mismo texto a la víspera y a la hora se lee como spam.
+   Los ejemplos van con el mismo orden de datos que trae preconfigurado el panel
+   de recordatorios (nombre, servicio, fecha/hora, ubicación), pero el cliente
+   puede reasignar cada variable desde ahí. */
+const PLANTILLAS_RECORDATORIO = [
+  {
+    name: 'recordatorio_cita_vispera',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}} 😊\nTe recordamos tu cita de *{{2}}* para {{3}}.\n\n¿Nos confirmas que puedes asistir? Si necesitas moverla, escríbenos y buscamos otro horario.',
+        example: {
+          body_text: [
+            ['María', 'Limpieza facial profunda', 'mañana a las 15:30'],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'recordatorio_cita_hoy',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}} ✨\nHoy es tu cita de *{{2}}* a las {{3}}.\n\nAquí te dejamos cómo llegar:\n{{4}}\n\n¡Te esperamos!',
+        example: {
+          body_text: [
+            [
+              'María',
+              'Limpieza facial profunda',
+              '15:30',
+              'https://maps.app.goo.gl/ejemplo',
+            ],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'recordatorio_cita_ahora',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: '{{1}}, tu cita es a las {{2}} ⏰\nYa te estamos esperando. Si vas con retraso, avísanos por aquí.',
+        example: { body_text: [['María', '15:30']] },
+      },
+    ],
+  },
+];
+
+exports.crearPlantillasRecordatorio = async (req, res) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res.status(400).json({ error: 'Falta id_configuracion.' });
+  }
+
+  try {
+    const wabaConfig = await getConfigFromDB(id_configuracion);
+    if (!wabaConfig) {
+      return res.status(404).json({ error: 'Configuración no encontrada.' });
+    }
+
+    const { WABA_ID, ACCESS_TOKEN } = wabaConfig;
+    const { data } = await axios.get(
+      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?access_token=${ACCESS_TOKEN}&limit=200`,
+    );
+    const existentes = (data?.data || []).map((p) => p.name);
+
+    const resultados = [];
+    for (const plantilla of PLANTILLAS_RECORDATORIO) {
+      // Recrearla daría error de nombre duplicado y gastaría cupo de la WABA.
+      if (existentes.includes(plantilla.name)) {
+        resultados.push({ nombre: plantilla.name, status: 'ya_existe' });
+        continue;
+      }
+      try {
+        await axios.post(
+          `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates`,
+          plantilla,
+          {
+            headers: {
+              Authorization: `Bearer ${ACCESS_TOKEN}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        );
+        resultados.push({ nombre: plantilla.name, status: 'creada' });
+      } catch (err) {
+        resultados.push({
+          nombre: plantilla.name,
+          status: 'error',
+          error:
+            err.response?.data?.error?.error_user_msg ||
+            err.response?.data?.error?.message ||
+            err.message,
+        });
+      }
+    }
+
+    return res.json({ success: true, resultados });
+  } catch (error) {
+    console.error(
+      'Error creando plantillas de recordatorio:',
+      error?.response?.data || error.message,
+    );
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 /* ─────────── PLANTILLAS RÁPIDAS ─────────── */
 
 exports.obtenerRespuestasRapidas = async (req, res) => {

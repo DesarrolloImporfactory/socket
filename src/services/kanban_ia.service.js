@@ -306,6 +306,19 @@ async function procesarMensajeKanban(params) {
   );
   await log(`📝 Instructions len=${assistantInfo.instructions_length}`);
 
+  /* Columna con IA prendida pero SIN prompt: sería un modelo desnudo hablándole
+     al cliente —inventa precios, promete horarios y nunca escribe los tags, así
+     que la ficha además se queda atascada. Solo aplica al camino de Responses,
+     que es el único donde el prompt sale de la BD; por el camino viejo el prompt
+     vive en el assistant de OpenAI y `instrucciones` es apenas una copia local
+     que en varias cuentas antiguas nunca se llenó. */
+  if (USAR_RESPONSES_API && !String(assistantInfo.instructions || '').trim()) {
+    await log(
+      `🚫 Columna "${columna.nombre}" (id=${columna.id}, config=${id_configuracion}) tiene IA activa pero el prompt está VACÍO. No se ejecuta: se deja para atención humana.`,
+    );
+    return { ok: false, motivo: 'sin_instrucciones' };
+  }
+
   // ── 2. Obtener acciones configuradas para esta columna ────
   const acciones = await db.query(
     `SELECT tipo_accion, config, orden
@@ -410,6 +423,9 @@ async function procesarMensajeKanban(params) {
     id_configuracion,
     acciones,
     log,
+    // El mensaje sirve para elegir qué productos mandar cuando el catálogo es
+    // grande: los que la persona nombró.
+    { mensaje },
   );
 
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──

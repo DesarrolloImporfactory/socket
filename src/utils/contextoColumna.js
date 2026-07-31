@@ -14,15 +14,41 @@
 const { db } = require('../database/config');
 const { enlaceUbicacionSede } = require('./ubicacionSede');
 
+/* Palabras que no distinguen un producto de otro. Sin esto, "quiero información
+   del tratamiento facial" traería cualquier cosa que diga "facial". */
+const VACIAS = new Set([
+  'de','del','la','el','los','las','un','una','unos','unas','y','o','para','por',
+  'con','sin','en','al','que','qué','me','mi','tu','su','es','son','the','info',
+  'informacion','información','precio','precios','cuanto','cuánto','cuesta',
+  'vale','quiero','necesito','busco','hola','buenas','tienen','tienes','hay',
+  'sobre','favor','porfa','gracias','sesion','sesión','servicio','producto',
+]);
+
+const normalizar = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const palabrasUtiles = (s) =>
+  normalizar(s)
+    .split(' ')
+    .filter((t) => t.length > 2 && !VACIAS.has(t));
+
 /**
  * @param {number} id_configuracion
  * @param {Array<{tipo_accion:string}>} acciones  acciones activas de la columna
  * @param {(msg:string)=>any} [log]
+ * @param {{mensaje?:string}} [opts]  mensaje del cliente, para catálogos grandes
  * @returns {Promise<string>} bloque de contexto (puede venir vacío)
  */
-async function construirContextoColumna(id_configuracion, acciones, log) {
+async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   const say = typeof log === 'function' ? log : () => {};
   const tiene = (t) => (acciones || []).some((a) => a.tipo_accion === t);
+  const mensajeCliente = String(opts?.mensaje || '');
   let bloque = '';
 
   // ── Sedes / sucursales ──────────────────────────────────────
@@ -118,6 +144,104 @@ async function construirContextoColumna(id_configuracion, acciones, log) {
      Acá va por el canal determinista: la lista completa siempre viaja en el
      mensaje, cueste lo que cueste el retrieval. Es corta (son pocos productos
      variables por cuenta) y evita el modo de fallo más caro del sistema. */
+  /* ── Lista de precios ────────────────────────────────────────
+     Los precios viven en el catálogo que se consulta con file_search, y eso los
+     vuelve una lotería: en la misma conversación el bot cotizó "$150 la
+     espalda" (un servicio que no existe) y minutos después dijo que no tenía
+     información de precios. Inventar un precio es peor que no darlo: el negocio
+     queda obligado a sostenerlo o a desdecirse frente al cliente.
+
+     Con pocos ítems la lista entra entera en el mensaje y deja de depender del
+     retrieval. Con catálogos grandes (dropshipping) no cabe, así que ahí se
+     mantiene file_search como hasta ahora. */
+  if (tiene('contexto_productos')) {
+    try {
+      const items = await db.query(
+        `SELECT nombre, tipo, precio, duracion
+           FROM productos_chat_center
+          WHERE id_configuracion = ? AND eliminado = 0
+          ORDER BY tipo DESC, nombre`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+
+      /* Con catálogo chico va la lista entera. Con uno grande no cabe —200
+         productos son ~3.000 tokens en CADA mensaje— así que se mandan solo los
+         que la persona nombró en su mensaje. Es el mismo principio: que el dato
+         que se necesita ahora llegue seguro, en vez de esperar que el retrieval
+         lo encuentre. Lo que no se nombró sigue estando en file_search. */
+      const TOPE_LISTA_INLINE = 40;
+      const TOPE_COINCIDENCIAS = 6;
+
+      let seleccion = items;
+      let parcial = false;
+
+      if (items.length > TOPE_LISTA_INLINE) {
+        const palabras = palabrasUtiles(mensajeCliente);
+        if (!palabras.length) {
+          seleccion = [];
+        } else {
+          /* Se comparan PALABRAS COMPLETAS, no subcadenas: buscar "set" dentro
+             del nombre hacía coincidir "camiSETa" y "corSET", y el bot recibía
+             precios de ropa cuando le preguntaban por un juego de cuchillos.
+             Se acepta prefijo solo en palabras largas, para que "libro" y
+             "libros" sigan siendo lo mismo. */
+          const casan = (a, b) =>
+            a === b ||
+            (a.length >= 5 && b.length >= 5 &&
+              (a.startsWith(b) || b.startsWith(a)));
+
+          seleccion = items
+            .map((i) => {
+              const tokens = palabrasUtiles(i.nombre);
+              const aciertos = palabras.filter((p) =>
+                tokens.some((t) => casan(t, p)),
+              ).length;
+              return { item: i, aciertos };
+            })
+            .filter((x) => x.aciertos > 0)
+            .sort((a, b) => b.aciertos - a.aciertos)
+            .slice(0, TOPE_COINCIDENCIAS)
+            .map((x) => x.item);
+        }
+        parcial = true;
+      }
+
+      if (seleccion.length) {
+        const linea = (i) => {
+          const precio =
+            Number(i.precio) > 0 ? `$${Number(i.precio).toFixed(2)}` : 'consultar';
+          const dur =
+            String(i.tipo).toLowerCase() === 'servicio' && Number(i.duracion) > 0
+              ? ` · ${i.duracion} min`
+              : '';
+          const que =
+            String(i.tipo).toLowerCase() === 'servicio' ? 'servicio' : 'producto';
+          return `- ${i.nombre} — ${precio}${dur} (${que})`;
+        };
+
+        bloque +=
+          (parcial
+            ? `💲 Precios de lo que mencionó la persona (tomados del catálogo):\n`
+            : `💲 Precios vigentes (esto es lo ÚNICO que puedes cotizar):\n`) +
+          seleccion.map(linea).join('\n') +
+          `\n` +
+          (parcial
+            ? `Estos son los que coinciden con su mensaje; el resto del catálogo ` +
+              `lo tienes disponible para consultar. `
+            : ``) +
+          `Si te preguntan por algo que NO está en esta lista —otra zona, otro ` +
+          `tratamiento, un paquete— NO inventes un precio ni lo estimes: dile ` +
+          `que ese valor se confirma en la valoración o con un asesor. Un precio ` +
+          `inventado obliga al negocio a sostenerlo o a desdecirse.\n\n`;
+        say(
+          `✅ Precios inyectados (${seleccion.length}${parcial ? ` de ${items.length}, por coincidencia` : ''})`,
+        );
+      }
+    } catch (err) {
+      say(`⚠️ Error lista de precios: ${err.message}`);
+    }
+  }
+
   if (tiene('contexto_productos')) {
     try {
       const variables = await db.query(

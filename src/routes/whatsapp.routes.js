@@ -58,6 +58,10 @@ router.post(
   '/crearPlantillasAutomaticas',
   whatsappCtrl.crearPlantillasAutomaticas,
 );
+router.post(
+  '/crearPlantillasRecordatorio',
+  whatsappCtrl.crearPlantillasRecordatorio,
+);
 router.post('/eliminarTemplateMeta', whatsappCtrl.eliminarTemplateMeta);
 
 /* ════════════════════════════════════════════════
