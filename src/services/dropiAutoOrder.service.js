@@ -27,8 +27,10 @@
  *  (ignora COMBO/KIT/números; en empate prefiere fallar a manual).
  *
  * CANTIDADES/COMBOS:
- *  - qty 1 → producto base (external_id), quantity 1
  *  - qty N + combo con id_dropi en combos_producto → producto COMBO, quantity 1
+ *    (vale también para qty 1: hay cuentas cuyo external_id es el 2x y que
+ *     mapean la unidad suelta a otro id de Dropi)
+ *  - qty 1 sin combo → producto base (external_id), quantity 1
  *  - qty N sin combo configurado → producto base, quantity N, unitario = total/N
  *  - Cinturón de margen: si el total del bot < costo proveedor del despacho,
  *    NO se crea la orden (cae a manual).
@@ -576,25 +578,31 @@ async function autoCrearOrdenDropi({
     let cantidadOrden = 1;
     let comboUsado = null;
 
-    if (cantidad > 1) {
-      let combos = [];
-      try {
-        combos = JSON.parse(prodLocal.combos_producto || '[]');
-      } catch (_) {}
-      comboUsado = (Array.isArray(combos) ? combos : []).find(
-        (c) =>
-          Number(c?.cantidad) === cantidad &&
-          Number(c?.id_dropi || c?.external_id) > 0,
-      );
+    /* El combo se busca para CUALQUIER cantidad, incluida 1. Antes esto vivía
+       dentro de un `if (cantidad > 1)`, así que un combo configurado para 1
+       unidad se ignoraba y se despachaba el `external_id` del producto.
 
-      if (comboUsado) {
-        // El combo ES otro producto en Dropi → se despacha 1 unidad de ese ID
-        dropiProductId = Number(comboUsado.id_dropi || comboUsado.external_id);
-        cantidadOrden = 1;
-      } else {
-        // Sin combo configurado → producto base x N (decisión del cliente)
-        cantidadOrden = cantidad;
-      }
+       En la cfg 411 (Dr Melaxin) eso salía caro: el external_id es 142847, que
+       en Dropi ES el 2x. Con los combos 1→144476, 2→142847, 3→159920, las
+       ventas de 2 y 3 salían bien y las de 1 despachaban el 2x cobrando $20.
+       11 de las 21 órdenes revisadas del 29-30/jul iban con dos frascos. */
+    let combos = [];
+    try {
+      combos = JSON.parse(prodLocal.combos_producto || '[]');
+    } catch (_) {}
+    comboUsado = (Array.isArray(combos) ? combos : []).find(
+      (c) =>
+        Number(c?.cantidad) === cantidad &&
+        Number(c?.id_dropi || c?.external_id) > 0,
+    );
+
+    if (comboUsado) {
+      // El combo ES otro producto en Dropi → se despacha 1 unidad de ese ID
+      dropiProductId = Number(comboUsado.id_dropi || comboUsado.external_id);
+      cantidadOrden = 1;
+    } else if (cantidad > 1) {
+      // Sin combo configurado → producto base x N (decisión del cliente)
+      cantidadOrden = cantidad;
     }
 
     // 2. Producto crudo desde POST /products/index — el MISMO endpoint que
@@ -1155,9 +1163,12 @@ async function autoCrearOrdenDropi({
     // Renglones de la orden. Se arman fuera del payload porque también
     // alimentan las variables de la plantilla de seguimiento ({{contenido}}).
     const productosOrden = (() => {
-      const base = comboUsado
-        ? `${prodLocal.nombre} (combo x${cantidad})`
-        : prodLocal.nombre;
+      // "(combo xN)" solo desde 2: con un combo de 1 unidad el rótulo
+      // "combo x1" no le dice nada a quien despacha.
+      const base =
+        comboUsado && cantidad > 1
+          ? `${prodLocal.nombre} (combo x${cantidad})`
+          : prodLocal.nombre;
       if (!variacionesElegidas.length) {
         return [
           {

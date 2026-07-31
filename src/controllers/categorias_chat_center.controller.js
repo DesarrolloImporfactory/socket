@@ -27,7 +27,28 @@ exports.listarCategorias = catchAsync(async (req, res, next) => {
 });
 
 exports.agregarCategoria = catchAsync(async (req, res, next) => {
-  const { id_configuracion, nombre, descripcion } = req.body;
+  const { id_configuracion, descripcion } = req.body;
+  const nombre = String(req.body?.nombre || '').trim();
+
+  // Ahora este endpoint se consume desde dos lados (la vista de Categorías y
+  // el modal de producto), así que valida acá y no en cada formulario.
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+  if (!nombre) return next(new AppError('El nombre es obligatorio', 400));
+
+  /* Duplicados: la categoría alimenta el catálogo del asistente, y dos filas
+     con el mismo nombre lo dejan eligiendo entre categorías idénticas. Si ya
+     existe se devuelve la que hay en vez de crear otra. */
+  const existente = await CategoriasChatCenter.findOne({
+    where: { id_configuracion, nombre },
+  });
+  if (existente) {
+    return res.status(200).json({
+      status: 'success',
+      data: existente,
+      yaExistia: true,
+    });
+  }
 
   const nuevaCategoria = await CategoriasChatCenter.create({
     id_configuracion,

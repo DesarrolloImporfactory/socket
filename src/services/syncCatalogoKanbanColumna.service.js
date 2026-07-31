@@ -545,6 +545,11 @@ async function cleanupAllAssistantVectorStores(
     }
   }
 
+  /* Dejar en el asistente SOLO los stores que se conservan (el recién
+     sincronizado). Antes esto mandaba `vector_store_ids: []` siempre, y  dejaba al asistente sin catálogo: la columna quedaba con
+     un vector_store válido en BD y el asistente sin nada que buscar.
+      */
+  const conservarIds = [...conservar];
   try {
     const currentRes = await axios.get(
       `https://api.openai.com/v1/assistants/${assistantId}`,
@@ -556,11 +561,13 @@ async function cleanupAllAssistantVectorStores(
       `https://api.openai.com/v1/assistants/${assistantId}`,
       {
         tools,
-        tool_resources: { file_search: { vector_store_ids: [] } },
+        tool_resources: { file_search: { vector_store_ids: conservarIds } },
       },
       { headers: headersJson },
     );
-    await logger(`✅ Asistente ${assistantId} limpio — vector_store_ids: []`);
+    await logger(
+      `✅ Asistente ${assistantId} actualizado — vector_store_ids: [${conservarIds.join(', ')}]`,
+    );
   } catch (err) {
     await logger(
       `⚠️ No se pudo limpiar tool_resources del asistente: ${err?.response?.data?.error?.message || err.message}`,
@@ -800,7 +807,10 @@ function formatearCombosParaCatalogo(combosProducto) {
         if (precio !== '') combosTexto += ` | Precio: ${precio}`;
         combosTexto += `\n`;
       });
-    } else if (!Array.isArray(combosNormalizados) && typeof combosNormalizados === 'object') {
+    } else if (
+      !Array.isArray(combosNormalizados) &&
+      typeof combosNormalizados === 'object'
+    ) {
       combosTexto += `Combos disponibles:\n${JSON.stringify(combosNormalizados, null, 2)}`;
     }
   } catch (_) {}
