@@ -184,6 +184,41 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     'sábado',
   ];
 
+  /* ── Días que el local NO abre ───────────────────────────────────
+     El horario de la sede se guarda como texto libre ("Lunes a viernes
+     09:00-19:00 · Sábados 09:00-14:00") y solo llegaba dentro de la ficha de la
+     sede, como un dato más entre la dirección y el teléfono. El modelo lo leía
+     y agendaba domingo igual. Acá se traduce a días concretos y se marca CERRADO
+     en la misma lista de fechas que el bot usa para proponer, que es donde
+     mira.
+
+     La lectura es conservadora: si el texto no se entiende, no se marca nada.
+     Cerrar un día por una mala interpretación es peor que no marcarlo. */
+  const sedes = await db.query(
+    `SELECT nombre, horario, horario_json FROM establecimientos_chat_center
+      WHERE id_configuracion = ? AND activo = 1 AND eliminado = 0
+      ORDER BY orden ASC, id ASC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  const {
+    diasAbiertos,
+    diasAbiertosDesdeTexto,
+    franjasDelDia,
+  } = require('./horarioSede');
+
+  /* Un día está cerrado solo si NINGUNA sede abre: con dos sucursales, que una
+     descanse el lunes no puede bloquear a la otra.
+     Se prefiere el horario estructurado; el texto libre es el respaldo de las
+     sedes que todavía no se editaron desde el panel nuevo. */
+  const horariosLeidos = sedes.map(
+    (s) => diasAbiertos(s.horario_json) || diasAbiertosDesdeTexto(s.horario),
+  );
+  const algunoLegible = horariosLeidos.some(Boolean);
+  const cerrado = (dia) =>
+    algunoLegible &&
+    horariosLeidos.every((set) => (set ? !set.has(dia) : false));
+
   /* Los próximos días, ya resueltos. El modelo calcula fechas fatal: con solo
      "hoy es jueves 30" ofrecía "lunes 2026-08-01" (que es sábado) y armaba
      citas en días que no existen. Dándole la tabla hecha no tiene que sumar. */
@@ -191,7 +226,20 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
   for (let i = 0; i <= 13; i += 1) {
     const d = ahora.clone().add(i, 'day');
     const etiqueta = i === 0 ? ' (hoy)' : i === 1 ? ' (mañana)' : '';
-    proximos.push(`${DIAS[d.day()]} ${d.format('YYYY-MM-DD')}${etiqueta}`);
+    /* Hasta qué hora atienden ESE día, al lado de la fecha. Con solo el rango
+       general el bot ofrecía las 18:00 de un sábado que cierra a las 14:00: el
+       horario estaba escrito, pero en otra parte del mensaje. */
+    const franjas = sedes
+      .map((s) => franjasDelDia(s.horario_json, d.day()))
+      .filter((f) => f && f.length);
+    const horas = franjas.length
+      ? `  (${franjas[0].map((f) => `${f.desde}-${f.hasta}`).join(' y ')})`
+      : '';
+
+    const marca = cerrado(d.day()) ? '  ← CERRADO, no lo ofrezcas' : horas;
+    proximos.push(
+      `${DIAS[d.day()]} ${d.format('YYYY-MM-DD')}${etiqueta}${marca}`,
+    );
   }
 
   let bloque =
@@ -203,6 +251,21 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     `\n\nCualquier fecha relativa que diga el cliente ("mañana", "el martes", ` +
     `"la próxima semana") la resuelves con esa lista, y siempre hacia ` +
     `adelante. Nunca propongas ni agendes una fecha que no esté ahí.\n\n`;
+
+  /* El horario, otra vez y en el sitio donde se decide. Ya viaja en la ficha de
+     la sede, pero ahí queda entre la dirección y el teléfono; acá está pegado a
+     las fechas que el bot va a proponer. */
+  const conHorario = sedes.filter((s) => String(s.horario || '').trim());
+  if (conHorario.length) {
+    bloque +=
+      `⏰ Horario de atención (fuera de esto el local está cerrado):\n` +
+      conHorario.map((s) => `  - ${s.nombre}: ${s.horario}`).join('\n') +
+      `\n\nNunca ofrezcas ni aceptes una hora fuera de ese horario, aunque la ` +
+      `agenda se vea libre: la agenda solo sabe qué citas hay, no cuándo abre el ` +
+      `local. Si la persona pide un día u hora en que está cerrado, dile hasta ` +
+      `qué hora atienden ese día y ofrécele la opción más cercana que sí exista.` +
+      `\n\n`;
+  }
 
   if (!calendario || calendario.length === 0) {
     return {
@@ -236,7 +299,15 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     franjas.get(clave).ocupadas += 1;
   });
 
-  bloque += `Ocupación de la agenda (solo ofrece horarios donde quede cupo):\n`;
+  /* El encabezado importa tanto como la lista: cuando decía "Ocupación de la
+     agenda", el modelo leía las dos filas como "estos son los horarios que
+     tengo" y daba por lleno todo lo demás. Le pedían las 11:00 —libre— y
+     contestaba que no había cupo. Ahora la regla va ANTES de la lista. */
+  bloque +=
+    `🚫 CITAS YA TOMADAS. Esto es lo ÚNICO ocupado: cualquier otra hora dentro ` +
+    `del horario de atención está LIBRE y la puedes agendar. Si te piden una ` +
+    `hora que no aparece en esta lista, está disponible — nunca digas que está ` +
+    `llena.\n`;
 
   for (const f of franjas.values()) {
     const total = capacidad.get(f.sedeId) || 1;
@@ -254,6 +325,85 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     bloque +=
       `\nVarias personas atienden a la vez, así que un horario con citas NO ` +
       `está necesariamente lleno: fíjate en cuántos cupos quedan.\n`;
+  }
+
+  /* Los huecos LIBRES, ya calculados.
+     Decirle "todo lo que no está en la lista de ocupados está libre" no alcanza:
+     el modelo prefiere no arriesgarse y contesta "esa hora ya está llena" para
+     una hora que nadie tomó. Razonar por ausencia no es lo suyo. Acá se le
+     entrega el horario del local menos lo ocupado, resuelto: elige de una lista
+     en vez de deducir. */
+  const aMin = (hhmm) => {
+    const [h, m] = String(hhmm).split(':').map(Number);
+    return h * 60 + m;
+  };
+  const aHHMM = (min) =>
+    `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
+  const ocupadasPorFecha = new Map();
+  for (const f of franjas.values()) {
+    const total = capacidad.get(f.sedeId) || 1;
+    if (total - f.ocupadas > 0) continue; // todavía queda cupo: no bloquea
+    const fecha = f.ini.format('YYYY-MM-DD');
+    if (!ocupadasPorFecha.has(fecha)) ocupadasPorFecha.set(fecha, []);
+    ocupadasPorFecha
+      .get(fecha)
+      .push({ desde: aMin(f.ini.format('HH:mm')), hasta: aMin(f.fin.format('HH:mm')) });
+  }
+
+  const lineasLibres = [];
+  for (let i = 0; i <= 6; i += 1) {
+    const d = ahora.clone().add(i, 'day');
+    const fecha = d.format('YYYY-MM-DD');
+
+    for (const s of sedes) {
+      const franjasDia = franjasDelDia(s.horario_json, d.day());
+      if (!franjasDia || !franjasDia.length) continue;
+
+      /* Hoy ya no se puede ofrecer una hora que pasó: redondeado a la próxima
+         media hora, para no proponer "en 5 minutos". */
+      const pisoHoy =
+        i === 0 ? Math.ceil((aMin(ahora.format('HH:mm')) + 30) / 30) * 30 : 0;
+
+      let libres = franjasDia
+        .map((f) => ({ desde: Math.max(aMin(f.desde), pisoHoy), hasta: aMin(f.hasta) }))
+        .filter((f) => f.hasta - f.desde >= 30);
+
+      for (const oc of ocupadasPorFecha.get(fecha) || []) {
+        const nuevas = [];
+        for (const l of libres) {
+          if (oc.hasta <= l.desde || oc.desde >= l.hasta) {
+            nuevas.push(l);
+            continue;
+          }
+          if (oc.desde - l.desde >= 30)
+            nuevas.push({ desde: l.desde, hasta: oc.desde });
+          if (l.hasta - oc.hasta >= 30)
+            nuevas.push({ desde: oc.hasta, hasta: l.hasta });
+        }
+        libres = nuevas;
+      }
+
+      const texto = libres
+        .map((l) => `${aHHMM(l.desde)}-${aHHMM(l.hasta)}`)
+        .join(', ');
+      const donde = sedes.length > 1 ? ` · ${s.nombre}` : '';
+
+      lineasLibres.push(
+        texto
+          ? `- ${DIAS[d.day()]} ${fecha}${donde}: ${texto}`
+          : `- ${DIAS[d.day()]} ${fecha}${donde}: sin cupo`,
+      );
+    }
+  }
+
+  if (lineasLibres.length) {
+    bloque +=
+      `\n✅ HORAS LIBRES (ya descontadas las citas y el horario del local). ` +
+      `Ofrece SIEMPRE de acá, y si te piden una hora que cae dentro de estos ` +
+      `rangos, acéptala: está disponible.\n` +
+      lineasLibres.join('\n') +
+      `\n`;
   }
 
   return {

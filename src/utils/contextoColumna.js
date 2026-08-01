@@ -79,7 +79,10 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           `su teléfono (por ejemplo en el bloque de agendamiento) y no le preguntes ` +
           `cuál es. Si dice "a este mismo número" o "desde donde te escribo", se ` +
           `refiere a este. El nombre de WhatsApp sí puede no ser el real: para el ` +
-          `bloque usa el que te dé la persona, y solo si no te dio ninguno usa este.`;
+          `bloque usa el que te dé la persona; si no te dio ninguno, usa este y ` +
+          `agenda igual. NO le pidas el nombre solo para completar el bloque: ` +
+          `pedirlo cuando ya lo tienes es la vuelta de más que enfría la cita. ` +
+          `Si después te lo corrige, se ajusta y ya.\n\n`;
       }
     } catch (e) {
       say(`⚠️ contexto datos del cliente: ${e.message}`);
@@ -192,7 +195,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   if (tiene('contexto_productos')) {
     try {
       const items = await db.query(
-        `SELECT nombre, tipo, precio, duracion
+        `SELECT nombre, tipo, precio, duracion, descripcion
            FROM productos_chat_center
           WHERE id_configuracion = ? AND eliminado = 0
           ORDER BY tipo DESC, nombre`,
@@ -209,6 +212,26 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
 
       let seleccion = items;
       let parcial = false;
+
+      /* Lo que la persona nombró en ESTE mensaje. De esos se manda además la
+         descripción completa: beneficios, qué incluye, garantía. Sin esto el bot
+         solo tenía nombre y precio, así que respondía "cuesta $85, ¿la
+         compras?" y quedaba en manos de file_search si mencionaba o no los 6
+         meses de garantía que están escritos en el catálogo. Justo lo que cierra
+         una venta se lo estábamos dejando al azar. */
+      const palabrasMsg = palabrasUtiles(mensajeCliente);
+      const casanPalabras = (a, b) =>
+        a === b ||
+        (a.length >= 5 &&
+          b.length >= 5 &&
+          (a.startsWith(b) || b.startsWith(a)));
+
+      const nombrados = palabrasMsg.length
+        ? items.filter((i) => {
+            const tokens = palabrasUtiles(i.nombre);
+            return palabrasMsg.some((p) => tokens.some((t) => casanPalabras(t, p)));
+          })
+        : [];
 
       if (items.length > TOPE_LISTA_INLINE) {
         const palabras = palabrasUtiles(mensajeCliente);
@@ -264,13 +287,44 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
             ? `Estos son los que coinciden con su mensaje; el resto del catálogo ` +
               `lo tienes disponible para consultar. `
             : ``) +
+          /* Antes esto decía "se confirma en la valoración". El modelo tomaba esa
+             palabra y la pegaba al único ítem del catálogo que se llama parecido
+             —"Valoración facial"— así que a quien preguntaba por depilación de
+             zona grande le ofrecía una valoración FACIAL. Se nombra el camino sin
+             nombrar un servicio. */
           `Si te preguntan por algo que NO está en esta lista —otra zona, otro ` +
-          `tratamiento, un paquete— NO inventes un precio ni lo estimes: dile ` +
-          `que ese valor se confirma en la valoración o con un asesor. Un precio ` +
-          `inventado obliga al negocio a sostenerlo o a desdecirse.\n\n`;
+          `tratamiento, un paquete— NO inventes un precio ni lo estimes, y NO lo ` +
+          `reemplaces por otro servicio parecido del catálogo: dile con ` +
+          `naturalidad que ese valor te lo confirma una compañera y pásalo a un ` +
+          `asesor. Un precio inventado obliga al negocio a sostenerlo o a ` +
+          `desdecirse.\n\n`;
         say(
           `✅ Precios inyectados (${seleccion.length}${parcial ? ` de ${items.length}, por coincidencia` : ''})`,
         );
+      }
+
+      /* Ficha completa de lo que nombró. Va aparte de la lista de precios para
+         que no se mezcle: la lista sirve para no inventar precios, esto sirve
+         para vender. Se corta cada descripción porque alguna cuenta escribe
+         media página y no vale la pena pagarla en cada mensaje. */
+      const TOPE_DESC = 700;
+      const conFicha = nombrados
+        .filter((i) => String(i.descripcion || '').trim())
+        .slice(0, 3);
+
+      if (conFicha.length) {
+        bloque +=
+          `📋 Ficha de lo que la persona nombró — úsala para responderle:\n\n` +
+          conFicha
+            .map((i) => {
+              const desc = String(i.descripcion).trim().slice(0, TOPE_DESC);
+              return `▸ ${i.nombre}\n${desc}`;
+            })
+            .join('\n\n') +
+          `\n\nEsto es lo que sabes del producto: cuéntaselo tú, sin esperar a ` +
+          `que lo pregunte. Lo que no esté acá —garantías distintas, envíos ` +
+          `especiales, descuentos— no te lo inventes.\n\n`;
+        say(`✅ Ficha inyectada de ${conFicha.length} ítem(s) nombrados`);
       }
     } catch (err) {
       say(`⚠️ Error lista de precios: ${err.message}`);

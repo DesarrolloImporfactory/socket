@@ -54,6 +54,13 @@ const EstablecimientosChatCenter = db.define(
       type: DataTypes.STRING(500),
       allowNull: true,
     },
+    /* Horario estructurado. El campo `horario` de arriba es su resumen legible:
+       como texto libre el bot tenía que interpretarlo y ofrecía citas los días
+       que el local está cerrado. */
+    horario_json: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     // calendars.id — la agenda de esta sede. NULL = la cuenta tiene una sola.
     id_calendario: {
       type: DataTypes.BIGINT.UNSIGNED,

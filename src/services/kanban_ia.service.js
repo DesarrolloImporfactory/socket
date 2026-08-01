@@ -9,6 +9,7 @@ const flatted = require('flatted');
 const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { construirContextoColumna } = require('../utils/contextoColumna');
+const { limpiarColetillas } = require('../utils/limpiarColetillas');
 
 const {
   enviarMensajeWhatsapp,
@@ -260,6 +261,28 @@ async function procesarMensajeKanban(params) {
       `🚫 Automatizaciones cortadas para config=${id_configuracion} (${acceso.motivo}). No se ejecuta la IA.`,
     );
     return { ok: false, motivo: `plan_bloqueado:${acceso.motivo}` };
+  }
+
+  /* ── 0.05 Interruptor general del bot ─────────────────────
+     El switch de la pantalla de Asistentes. Existía y no hacía nada para las
+     cuentas con tablero: apagarlo ahí no callaba al bot, había que entrar
+     columna por columna a bajar la IA. Ahora manda sobre todas.
+
+     La ausencia de fila NO apaga nada: hay cuentas con tablero que nunca
+     pasaron por esa pantalla y su bot funciona. Solo apaga un `activo = 0`
+     explícito. */
+  const [interruptor] = await db.query(
+    `SELECT activo FROM openai_assistants
+      WHERE id_configuracion = ? AND tipo = 'ventas' AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (interruptor && Number(interruptor.activo) === 0) {
+    await log(
+      `🔌 Bot apagado desde la pantalla de Asistentes para config=${id_configuracion}. No se ejecuta la IA.`,
+    );
+    return { ok: false, motivo: 'bot_apagado' };
   }
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
@@ -849,6 +872,10 @@ async function procesarMensajeKanban(params) {
   }
 
   // ── 11. ACCIÓN: agendar_cita ──────────────────────────────
+  // Se declara afuera porque el control de "conversación que no avanza" (11.5)
+  // también lo mira: escribir el bloque ES avanzar, aunque falte el tag.
+  let escribioBloqueCita = false;
+
   if (tieneAccion('agendar_cita')) {
     const [acCita] = getAcciones('agendar_cita');
     const cfg = parseConfig(acCita);
@@ -861,8 +888,9 @@ async function procesarMensajeKanban(params) {
        Si el bloque está entero —con fecha de inicio y de fin— se agenda igual:
        el bloque ES la confirmación. */
     const escribioBloque =
-      /Fecha y hora de inicio\s*:/i.test(respuestaRaw) &&
-      /Fecha y hora de fin\s*:/i.test(respuestaRaw);
+      /Fecha y hora(?: de inicio)?\s*:/i.test(respuestaRaw) &&
+      /Servicio que desea\s*:/i.test(respuestaRaw);
+    escribioBloqueCita = escribioBloque;
 
     const tieneTag = respuestaRaw
       .toLowerCase()
@@ -938,6 +966,74 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── 11.5 Conversación que no avanza ──────────────────────
+     Una columna con IA puede dar vueltas para siempre: el bot contesta bien,
+     el cliente contesta bien, y nadie escribe ningún tag. La ficha se queda
+     quieta y nadie se entera hasta que alguien revisa el tablero a mano.
+     Después de N respuestas seguidas sin disparar NINGUNA acción, el caso pasa
+     a un asesor. No es un error del bot: es admitir que esta conversación
+     necesita una persona.
+
+     El contador se reinicia solo cuando algo avanza, así que una charla larga
+     que sí progresa nunca escala. */
+  const LIMITE_TURNOS_SIN_AVANCE = 10;
+
+  const triggersColumna = acciones
+    .map((ac) => parseConfig(ac).trigger)
+    .filter(Boolean);
+
+  const avanzo =
+    triggersColumna.some((t) =>
+      respuestaRaw.toLowerCase().includes(String(t).toLowerCase()),
+    ) || escribioBloqueCita;
+
+  if (avanzo) {
+    await db.query(
+      `UPDATE clientes_chat_center SET turnos_sin_avance = 0 WHERE id = ?`,
+      { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+    );
+  } else if (triggersColumna.length) {
+    const [{ turnos } = { turnos: 0 }] = await db.query(
+      `UPDATE clientes_chat_center SET turnos_sin_avance = turnos_sin_avance + 1
+        WHERE id = ?`,
+      { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+    ).then(() =>
+      db.query(
+        `SELECT turnos_sin_avance AS turnos FROM clientes_chat_center WHERE id = ?`,
+        { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+      ),
+    );
+
+    if (Number(turnos) >= LIMITE_TURNOS_SIN_AVANCE) {
+      const [colAsesor] = await db.query(
+        `SELECT id FROM kanban_columnas
+          WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
+          LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+
+      if (colAsesor) {
+        await db.query(
+          `UPDATE clientes_chat_center
+              SET estado_contacto = 'asesor', turnos_sin_avance = 0
+            WHERE id = ?`,
+          { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+        );
+        await log(
+          `🚨 ${turnos} respuestas en "${columna.nombre}" sin que la conversación avance: cliente ${id_cliente} movido a "asesor"`,
+        );
+      } else {
+        await log(
+          `⚠️ ${turnos} respuestas sin avance en "${columna.nombre}" y la configuración ${id_configuracion} no tiene columna "asesor"`,
+        );
+      }
+    } else if (Number(turnos) >= LIMITE_TURNOS_SIN_AVANCE - 3) {
+      await log(
+        `⏳ ${turnos}/${LIMITE_TURNOS_SIN_AVANCE} respuestas sin avance en "${columna.nombre}" (cliente ${id_cliente})`,
+      );
+    }
+  }
+
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
   const { texto, imagenes, videos } = extraerMedia(respuestaRaw);
@@ -976,6 +1072,15 @@ async function procesarMensajeKanban(params) {
   // ── 13. Enviar texto final ────────────────────────────────
   // Limpiar tags de acciones del texto
   soloTexto = limpiarTagsAcciones(soloTexto).trim();
+
+  /* Y las coletillas de relleno ("no dudes en escribirme", "aquí estoy para
+     ayudarte"). Están prohibidas en el prompt y el modelo las escribe igual;
+     son lo que hace que la conversación se sienta de robot. */
+  const antesColetillas = soloTexto;
+  soloTexto = limpiarColetillas(soloTexto);
+  if (soloTexto !== antesColetillas) {
+    await log(`🧹 Coletilla de relleno eliminada del mensaje`);
+  }
 
   if (soloTexto) {
     // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
@@ -1407,19 +1512,43 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   const telefono =
     contacto?.celular_cliente ||
     (/no registra/i.test(telefonoBloque) ? '' : telefonoBloque);
-  const fechaIni = campo('Fecha y hora de inicio');
+  /* La hora de fin ya no se le pide al modelo: el resumen que ve el cliente era
+     larguísimo y esa línea no le dice nada. Se calcula con la duración que tiene
+     el servicio en el catálogo. Se sigue leyendo si viene, para no romper las
+     cuentas cuyo prompt todavía la incluye. */
+  const fechaIni = campo('Fecha y hora de inicio') || campo('Fecha y hora');
   const fechaFin = campo('Fecha y hora de fin');
 
   const mIni = moment.tz(fechaIni, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
-  const mFin = moment.tz(fechaFin, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
 
-  /* Sin fechas legibles no hay cita. Antes se seguía adelante con "Invalid
-     date" y quedaba una fila basura en la agenda. */
-  if (!mIni.isValid() || !mFin.isValid()) {
+  if (!mIni.isValid()) {
     await log(
-      `❌ agendar_cita: fechas ilegibles en el bloque (inicio="${fechaIni}" fin="${fechaFin}"); la cita NO se creó`,
+      `❌ agendar_cita: fecha ilegible en el bloque (inicio="${fechaIni}"); la cita NO se creó`,
     );
-    return { ok: false, motivo: 'fechas ilegibles en el bloque' };
+    return { ok: false, motivo: 'fecha ilegible en el bloque' };
+  }
+
+  let mFin = fechaFin
+    ? moment.tz(fechaFin, 'YYYY-MM-DD HH:mm', 'America/Guayaquil')
+    : null;
+
+  if (!mFin || !mFin.isValid() || !mFin.isAfter(mIni)) {
+    const [servicioCat] = await db.query(
+      `SELECT duracion FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0 AND duracion > 0
+          AND ? LIKE CONCAT('%', nombre, '%')
+        ORDER BY CHAR_LENGTH(nombre) DESC LIMIT 1`,
+      {
+        replacements: [id_configuracion, servicio || ''],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const minutos = Number(servicioCat?.duracion) > 0 ? Number(servicioCat.duracion) : 60;
+    mFin = mIni.clone().add(minutos, 'minutes');
+    await log(
+      `🕒 agendar_cita: hora de fin calculada (${minutos} min de "${servicio || 'sin servicio'}")`,
+    );
   }
 
   const inicio_utc = mIni.utc().format();

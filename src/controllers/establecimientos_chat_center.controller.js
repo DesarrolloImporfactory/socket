@@ -15,6 +15,7 @@ const CAMPOS_EDITABLES = [
   'google_maps_url',
   'telefono',
   'horario',
+  'horario_json',
   'id_calendario',
   'orden',
   'activo',
@@ -39,6 +40,38 @@ const limpiarUrlMaps = (v) => {
   const url = /^https?:\/\//i.test(s) ? s : `https://${s}`;
   if (!URL_MAPS_OK.test(url)) return { ok: false, valor: null };
   return { ok: true, valor: url.slice(0, 500) };
+};
+
+/* El horario se guarda estructurado y el texto pasa a ser un resumen generado.
+   Como texto libre, el bot tenía que interpretarlo y terminaba ofreciendo citas
+   un domingo en un local que cierra el sábado. */
+const {
+  normalizarHorario,
+  resumenHorario,
+} = require('../utils/horarioSede');
+
+const prepararHorario = (body) => {
+  if (body.horario_json === undefined) return null;
+
+  const limpio = normalizarHorario(body.horario_json);
+  if (limpio) {
+    return { json: JSON.stringify(limpio), texto: resumenHorario(limpio) };
+  }
+
+  /* Sin franjas válidas hay dos casos distintos y no se pueden tratar igual:
+     - el cliente vació el horario a propósito → se borra todo, y el bot pasa a
+       no tener horario (que es honesto: no lo sabe).
+     - llegó algo ilegible por un error → no se toca nada, porque borrar el
+       horario de una sede en producción por un payload roto es peor que
+       ignorarlo. */
+  const vaciadoAdrede =
+    body.horario_json === null ||
+    (typeof body.horario_json === 'object' &&
+      !Array.isArray(body.horario_json) &&
+      !body.horario_json.abierto_24h &&
+      Object.keys(body.horario_json.dias || {}).length === 0);
+
+  return vaciadoAdrede ? { json: null, texto: null } : { ignorar: true };
 };
 
 const ERROR_MAPS =
@@ -265,7 +298,8 @@ exports.crear = catchAsync(async (req, res, next) => {
     referencia: limpiar(req.body.referencia),
     google_maps_url: maps.valor,
     telefono: limpiar(req.body.telefono),
-    horario: limpiar(req.body.horario),
+    horario: prepararHorario(req.body)?.texto ?? limpiar(req.body.horario),
+    horario_json: prepararHorario(req.body)?.json || null,
     id_calendario: req.body.id_calendario || null,
     orden: Number(req.body.orden) || 0,
     activo: Number(req.body.activo) === 0 ? 0 : 1,
@@ -283,12 +317,22 @@ exports.actualizar = catchAsync(async (req, res, next) => {
   });
   if (!est) return next(new AppError('Establecimiento no encontrado', 404));
 
+  /* El horario estructurado manda sobre el texto: el texto es su resumen. */
+  const horario = prepararHorario(req.body);
+
   for (const campo of CAMPOS_EDITABLES) {
     if (req.body[campo] === undefined) continue;
     if (campo === 'google_maps_url') {
       const maps = limpiarUrlMaps(req.body.google_maps_url);
       if (!maps.ok) return next(new AppError(ERROR_MAPS, 400));
       est.google_maps_url = maps.valor;
+    } else if (campo === 'horario_json') {
+      if (horario?.ignorar) continue;
+      est.horario_json = horario?.json ?? null;
+      est.horario = horario?.texto ?? null;
+    } else if (campo === 'horario') {
+      // Si vino el estructurado, el texto sale de ahí y no de lo que manden.
+      if (!horario || horario.ignorar) est.horario = limpiar(req.body.horario);
     } else if (campo === 'id_calendario') {
       est.id_calendario = req.body.id_calendario || null;
     } else if (campo === 'orden') {

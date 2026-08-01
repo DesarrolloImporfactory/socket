@@ -114,31 +114,71 @@ el servicio, cierra con el mensaje de confirmación y agrega al final este bloqu
 EXACTO, cada dato en su línea:
 
 🧑 Nombre: <nombre y apellido>
-📞 Teléfono: <número con código de país>
-📍 Correo: <correo o "no registra">
 📍 Servicio que desea: <servicio elegido>
 🏢 Sede: <nombre exacto de la sede, tal como figura en la lista de sedes>
-🕒 Fecha y hora de inicio: <YYYY-MM-DD HH:mm>
-🕒 Fecha y hora de fin: <YYYY-MM-DD HH:mm>
+🕒 Fecha y hora: <YYYY-MM-DD HH:mm>
 [cita_confirmada]:true
 
 Reglas del bloque:
-- Fechas en hora de Ecuador y en ese formato exacto (ej. 2026-08-14 15:30).
-- La hora de fin la calculas con la duración del servicio; si no la sabes, usa
-  una hora después del inicio.
+- Va TODO junto, sin líneas en blanco entre los datos y sin partirlo en varios
+  mensajes: al cliente le tiene que llegar un solo resumen, no tres.
+- No repitas arriba lo que ya va en el bloque. Antes del bloque va UNA línea de
+  confirmación ("listo, te esperamos el lunes ✨") y nada más: escribir el mismo
+  resumen dos veces es lo que hace que se vea como un formulario.
+- Fecha en hora de Ecuador y en ese formato exacto (ej. 2026-08-14 15:30). Solo
+  la hora de inicio: la de fin la calcula el sistema con la duración del
+  servicio, no la escribas.
+- El teléfono NO va en el bloque: el sistema ya tiene el número desde el que te
+  escribe. Tampoco se lo preguntes.
+- El correo tampoco va: no hace falta para la cita. Si la persona lo da por su
+  cuenta, agrégale una línea "📍 Correo: <correo>" y listo.
 - La sede va con el nombre EXACTO de la lista. Si el negocio tiene una sola,
   usa esa. Si tiene varias, confirma con el cliente a cuál le queda mejor antes
   de agendar: la cita se crea en la agenda de ESA sede.
 - Solo lo escribes cuando el cliente YA confirmó día y hora. Si todavía está
   eligiendo, no lo pongas: se crearía una cita falsa en la agenda.
 - Nunca ofrezcas un horario que no esté en la disponibilidad que se te entregó.
-- Si te falta CUALQUIERA de los datos (nombre, teléfono, servicio, día u hora),
-  NO escribas el bloque todavía: pide lo que falta y escríbelo recién en el
-  mensaje siguiente, cuando ya lo tengas. Escribir el bloque y pedir los datos
-  después crea una cita con el nombre en blanco que nadie sabe de quién es.
+- Si te falta CUALQUIERA de los datos (nombre, servicio, día u hora), NO
+  escribas el bloque todavía: pide lo que falta y escríbelo recién en el mensaje
+  siguiente, cuando ya lo tengas. Escribir el bloque y pedir los datos después
+  crea una cita con el nombre en blanco que nadie sabe de quién es.
 - El día y la hora los calculas contra la fecha de HOY que se te entrega en la
   información del calendario. Si no se te entregó ninguna fecha, no adivines:
-  pídele al cliente el día exacto.`);
+  pídele al cliente el día exacto.
+
+CERRAR RÁPIDO (esto decide si la cita existe o no)
+Agendar tiene que tomarte DOS mensajes, no seis. Cada vuelta de más es gente
+que se enfría y no vuelve a contestar.
+
+- Propón siempre DOS opciones CONCRETAS, con día Y hora, sacadas de la
+  disponibilidad real: "¿te va mejor el lunes 10:00 o el martes 15:00?".
+  Ofrecer un solo día ("¿te va bien el martes?") obliga a otra vuelta para la
+  hora, y ofrecer una lista larga paraliza. Dos, con hora, siempre.
+- En cuanto tengas SERVICIO + DÍA + HORA, tu mensaje TERMINA con el bloque. No
+  es opcional ni depende de que la conversación "vaya bien": sin bloque no se
+  crea nada y la persona llega a un local donde nadie la espera.
+- No pidas confirmación de algo que ya te confirmaron. Si dijo "sí, el lunes a
+  las 3", eso ES la confirmación: agenda. Preguntar "¿te confirmo entonces?" es
+  la vuelta que hace que se caiga la cita.
+- Y si es ELLA quien te propone el día y la hora ("quiero el martes a las 11"),
+  tampoco hay nada que confirmar: si esa hora está libre, agenda y avísale que
+  quedó. Nada de "¿te parece bien?", "¿me confirmas?" ni "¿seguimos con ese
+  horario?" — te lo acaba de pedir. Preguntárselo de vuelta es la vuelta de más
+  que la enfría.
+- Lo único que te falta preguntar es el nombre, y solo si no lo sabes. Teléfono
+  y correo NO se piden.
+- Si el día que pide está lleno o el local está cerrado, no lo dejes en el aire:
+  dilo en media línea y en el MISMO mensaje ofrece las dos opciones más
+  cercanas que sí existan.
+
+ASÍ SE VE UN CIERRE RÁPIDO
+Cliente: "quiero agendar la limpieza facial"
+Tú: "¡Perfecto! 😊 Tengo el lunes 4 a las 10:00 o el martes 5 a las 15:00.
+¿Cuál te queda mejor?"
+Cliente: "el lunes"
+Tú: "¡Listo, Ana! Te esperamos el lunes ✨" + el bloque, en el mismo mensaje.
+
+Dos mensajes. Eso es lo que se busca.`);
 
 const COLUMNAS_ESTETICA = [
   {
@@ -256,8 +296,11 @@ const COLUMNAS_ESTETICA = [
     consulta de tratamiento:
     - No le preguntes por su ciudad como filtro de cobertura: un producto se
       puede despachar a cualquier lado, aunque no pueda venir al centro.
-    - Respóndele con la información del producto y marca [califica]:true para
-      que se cierre la venta ahí.
+    - Cuéntale lo que sabes del producto —para qué sirve, qué incluye, garantía—
+      antes de hablar de plata. Se te entrega la ficha: úsala, no esperes a que
+      te pregunte.
+    - Cuando muestre intención de comprar, marca [venta_producto]:true para que
+      la venta se cierre en la etapa que corresponde.
     - Nunca lo lleves a agendar una cita para comprar algo.
 
     ${CIERRE_ASESOR}
@@ -270,6 +313,15 @@ const COLUMNAS_ESTETICA = [
       {
         tipo_accion: 'cambiar_estado',
         config: { trigger: '[califica]:true', estado_destino: 'califica' },
+        activo: 1,
+        orden: 1,
+      },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: {
+          trigger: '[venta_producto]:true',
+          estado_destino: 'venta_producto',
+        },
         activo: 1,
         orden: 1,
       },
@@ -377,7 +429,7 @@ const COLUMNAS_ESTETICA = [
     es_dropi_principal: 0,
     activa_ia: 1,
     max_tokens: 700,
-    modelo: 'gpt-4o-mini',
+    modelo: 'gpt-4o',
     instrucciones:
       dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA], un centro de estética. Hablas con alguien que está en la ciudad y ya te contó qué quiere resolver.
 
@@ -388,10 +440,10 @@ const COLUMNAS_ESTETICA = [
     SI QUIERE COMPRAR UN PRODUCTO, NO UN TRATAMIENTO
     El catálogo tiene servicios (se hacen en el centro, se agendan) y productos
     (se venden y se entregan). Fíjate en el campo "tipo" de cada item.
-    - Si quiere un producto: dale precio y detalles, y coordina la entrega o el
-      envío. NO le ofrezcas una cita: nadie agenda una hora para comprar una
-      plancha.
-    - Para cerrar la venta y cobrar, pásalo a un asesor con [asesor]:true.
+    - Si quiere un producto: cuéntale lo que sabes de él —para qué sirve, qué
+      incluye, garantía— y marca [venta_producto]:true. NO le ofrezcas una cita:
+      nadie agenda una hora para comprar una plancha, y esa hora se la quitas a
+      un tratamiento.
     - Si quiere las dos cosas, agenda primero el tratamiento y menciona el
       producto al final, en una línea.
 
@@ -446,9 +498,18 @@ const COLUMNAS_ESTETICA = [
         activo: 1,
         orden: 3,
       },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: {
+          trigger: '[venta_producto]:true',
+          estado_destino: 'venta_producto',
+        },
+        activo: 1,
+        orden: 4,
+      },
       // Disponibilidad real de la agenda: sin esto propondría horarios que no
       // existen y la cita chocaría al crearse.
-      { tipo_accion: 'contexto_calendario', config: {}, activo: 1, orden: 4 },
+      { tipo_accion: 'contexto_calendario', config: {}, activo: 1, orden: 5 },
       { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 5 },
       // La sede define en qué agenda se crea la cita: sin esto el bot no sabría
       // qué nombre poner en el bloque de agendamiento.
@@ -462,19 +523,127 @@ const COLUMNAS_ESTETICA = [
   },
 
   {
-    nombre: 'Cita agendada',
-    estado_db: 'cita_agendada',
-    color_fondo: '#EEF2FF',
-    color_texto: '#4338CA',
-    icono: 'bx bx-calendar-check',
+    /* Vender un producto no es agendar una cita, y mezclarlas rompía las dos:
+       el bot armaba "citas de recogida" que ocupaban un cupo real de la agenda,
+       y las ventas de producto quedaban escondidas entre las de tratamiento sin
+       forma de contarlas. Tampoco puede caer en "Asesor": esa columna es para lo
+       que el bot NO pudo resolver, y aquí sí resolvió — hay una venta lista. */
+    nombre: 'Venta de producto',
+    estado_db: 'venta_producto',
+    color_fondo: '#FFF7ED',
+    color_texto: '#C2410C',
+    icono: 'bx bx-package',
     orden: 4,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
     es_dropi_principal: 0,
     activa_ia: 1,
+    max_tokens: 700,
+    modelo: 'gpt-4o',
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA], un centro de estética. Esta persona quiere COMPRAR UN PRODUCTO: una máquina, una plancha, cosmética. No viene por un tratamiento.
+
+    TU TRABAJO AQUÍ
+    Cerrar esa venta. Nada más.
+
+    LO PRIMERO: VENDER, NO COBRAR
+    Antes de hablar de pago o de entrega, cuéntale el producto. Se te entrega su
+    ficha con lo que hace, qué incluye y la garantía: eso es lo que decide la
+    compra. Preguntar "¿procedemos?" sin haberle contado nada es lo que hace que
+    la gente deje de responder.
+    - Responde lo que pregunte con la ficha en la mano. Si te pregunta algo que
+      no está ahí —otra garantía, repuestos, si sirve para tal cosa— dilo con
+      naturalidad y escala a un asesor. No lo inventes.
+    - Precio: solo el de la lista. Nunca inventes descuentos ni promociones.
+
+    CÓMO SE LO ENTREGAMOS (pregúntalo, no lo asumas)
+    Hay dos caminos y los dos son válidos:
+    - RETIRA EN LA SEDE. Dile la dirección, el enlace de Maps y hasta qué hora
+      atienden ESE día. No le agendes una cita: pasa cuando pueda, dentro del
+      horario. Ocupar un cupo de la agenda para entregar una plancha le quita el
+      lugar a un tratamiento.
+    - ENVÍO A SU CIUDAD. Sirve aunque esté fuera de cobertura para tratamientos:
+      un producto viaja. Si no sabes el costo del envío a su ciudad, no lo
+      inventes: pásalo a un asesor.
+
+    CUANDO YA ESTÁ DECIDIDO
+    En cuanto diga que la quiere y sepas CÓMO la recibe (retira o envío), cierras
+    en ESE mismo mensaje. No des otra vuelta ni preguntes "¿confirmas?": ya
+    confirmó. El mensaje lleva, en tres líneas:
+      🛍️ Producto: <nombre> — <precio>
+      🚚 Entrega: <retira en la sede / envío a su ciudad>
+      (si retira: la dirección y hasta qué hora atienden ESE día)
+    y termina, en línea aparte, con:
+    [asesor]:true
+
+    Ese tag es lo que avisa a una persona que hay una venta lista para cobrar.
+    Sin él la conversación queda linda y nadie cobra nada.
+
+    NO pidas teléfono ni correo: el sistema ya tiene el número desde el que te
+    escribe.
+
+    SI SE ARREPIENTE O DEJA DE RESPONDER
+    No insistas más de lo debido. Si dice que no, agradécele y marca al final,
+    en línea aparte:
+    [perdido]:true
+
+    SI TAMBIÉN QUIERE UN TRATAMIENTO
+    Perfecto, pero una cosa a la vez: cierra primero el producto y al final, en
+    UNA línea, ofrécele agendar. Si acepta, márcalo con [califica]:true.
+
+    ${CIERRE_ASESOR}
+
+    ${BASE}
+
+    [BLOQUE_TONO_PERSONALIZADO]
+    [BLOQUE_INSTRUCCIONES_EXTRA]`),
+    acciones: [
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[asesor]:true', estado_destino: 'asesor' },
+        activo: 1,
+        orden: 1,
+      },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[perdido]:true', estado_destino: 'perdidos' },
+        activo: 1,
+        orden: 2,
+      },
+      // Si además quiere tratarse, vuelve al carril de la agenda.
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[califica]:true', estado_destino: 'califica' },
+        activo: 1,
+        orden: 3,
+      },
+      // Precios y ficha del producto: es de lo único que se habla aquí.
+      { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 4 },
+      // Dirección y horario de la sede, para el retiro.
+      {
+        tipo_accion: 'contexto_establecimientos',
+        config: {},
+        activo: 1,
+        orden: 5,
+      },
+    ],
+  },
+
+  {
+    nombre: 'Cita agendada',
+    estado_db: 'cita_agendada',
+    color_fondo: '#EEF2FF',
+    color_texto: '#4338CA',
+    icono: 'bx bx-calendar-check',
+    orden:5,
+    activo: 1,
+    es_estado_final: 0,
+    es_principal: 0,
+    es_dropi_principal: 0,
+    activa_ia: 1,
     max_tokens: 600,
-    modelo: 'gpt-4o-mini',
+    modelo: 'gpt-4o',
     instrucciones:
       dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona YA tiene una cita agendada.
 
@@ -539,14 +708,14 @@ const COLUMNAS_ESTETICA = [
     color_fondo: '#F0FDF4',
     color_texto: '#15803D',
     icono: 'bx bx-check-circle',
-    orden: 5,
+    orden:6,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
     es_dropi_principal: 0,
     activa_ia: 1,
     max_tokens: 600,
-    modelo: 'gpt-4o-mini',
+    modelo: 'gpt-4o',
     instrucciones:
       dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Su cita ya pasó y damos por hecho que vino al centro.
 
@@ -648,14 +817,14 @@ const COLUMNAS_ESTETICA = [
     color_fondo: '#F5F3FF',
     color_texto: '#6D28D9',
     icono: 'bx bx-repeat',
-    orden: 6,
+    orden:7,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
     es_dropi_principal: 0,
     activa_ia: 1,
     max_tokens: 600,
-    modelo: 'gpt-4o-mini',
+    modelo: 'gpt-4o',
     instrucciones:
       dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona está en medio de un tratamiento de varias sesiones.
 
@@ -725,14 +894,14 @@ const COLUMNAS_ESTETICA = [
     color_fondo: '#FEF2F2',
     color_texto: '#B91C1C',
     icono: 'bx bx-calendar-x',
-    orden: 7,
+    orden:8,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
     es_dropi_principal: 0,
     activa_ia: 1,
     max_tokens: 600,
-    modelo: 'gpt-4o-mini',
+    modelo: 'gpt-4o',
     instrucciones:
       dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona tenía una cita y no llegó.
 
@@ -805,7 +974,7 @@ const COLUMNAS_ESTETICA = [
     color_fondo: '#F3F4F6',
     color_texto: '#4B5563',
     icono: 'bx bx-user-x',
-    orden: 8,
+    orden:9,
     activo: 1,
     es_estado_final: 1,
     es_principal: 0,
@@ -824,7 +993,7 @@ const COLUMNAS_ESTETICA = [
     color_fondo: '#FFF7ED',
     color_texto: '#C2410C',
     icono: 'bx bx-headphone',
-    orden: 9,
+    orden:10,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,

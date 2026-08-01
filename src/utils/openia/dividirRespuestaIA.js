@@ -74,6 +74,9 @@ function dividirRespuestaIA(texto, opts = {}) {
   // ── Regla 3: pegar listas a su bloque introductorio ───────
   bloques = pegarListas(bloques);
 
+  // ── Regla 3.1: el resumen de una cita/pedido viaja entero ─
+  bloques = pegarResumen(bloques);
+
   // ── Regla 4: fusionar bloques demasiado cortos ────────────
   bloques = fusionarCortos(bloques, cfg);
 
@@ -114,6 +117,29 @@ function pegarListas(bloques) {
   for (const bloque of bloques) {
     const esContinuacion = RE_ITEM_LISTA.test(bloque.split('\n')[0]);
     if (esContinuacion && out.length) {
+      out[out.length - 1] += `\n${bloque}`;
+    } else {
+      out.push(bloque);
+    }
+  }
+  return out;
+}
+
+/* Etiquetas del bloque de confirmación de cita/pedido. Si el modelo mete una
+   línea en blanco en medio, el resumen se partía en dos o tres mensajes y al
+   cliente le llegaba su cita en pedazos. El bloque es UNA unidad: se vuelve a
+   pegar acá en vez de confiar en que el prompt lo escriba perfecto. */
+const RE_CAMPO_RESUMEN =
+  /^\s*[^\w\s]*\s*(Nombre|Tel[eé]fono|Correo|Servicio que desea|Sede|Fecha y hora(?: de (?:inicio|fin))?|Producto|Precio total|Cantidad|Direcci[oó]n|Ciudad|Provincia)\s*:/im;
+
+function pegarResumen(bloques) {
+  const out = [];
+  for (const bloque of bloques) {
+    const tieneCampo = RE_CAMPO_RESUMEN.test(bloque);
+    const anteriorTieneCampo =
+      out.length && RE_CAMPO_RESUMEN.test(out[out.length - 1]);
+
+    if (tieneCampo && anteriorTieneCampo) {
       out[out.length - 1] += `\n${bloque}`;
     } else {
       out.push(bloque);

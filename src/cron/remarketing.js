@@ -555,15 +555,26 @@ cron.schedule('*/1 * * * *', async () => {
         },
       ); */
 
+      /* El interruptor general de la pantalla de Asistentes también apaga el
+         seguimiento: un bot "apagado" que igual sigue mandando remarketing no
+         está apagado. Solo excluye un `activo = 0` explícito; las cuentas sin
+         fila nunca pasaron por esa pantalla y siguen como estaban. */
       const pendientes = await db.query(
-        `SELECT * FROM remarketing_pendientes
-         WHERE enviado = 0
-           AND cancelado = 0
-           AND (source = 'wa' OR source IS NULL)
-           AND tiempo_disparo <= NOW()
-           AND tiempo_disparo > NOW() - INTERVAL 3 DAY
-           AND intentos < max_intentos
-         ORDER BY tiempo_disparo ASC
+        `SELECT rp.* FROM remarketing_pendientes rp
+         WHERE rp.enviado = 0
+           AND rp.cancelado = 0
+           AND (rp.source = 'wa' OR rp.source IS NULL)
+           AND rp.tiempo_disparo <= NOW()
+           AND rp.tiempo_disparo > NOW() - INTERVAL 3 DAY
+           AND rp.intentos < max_intentos
+           AND NOT EXISTS (
+                 SELECT 1 FROM openai_assistants oa
+                  WHERE oa.id_configuracion = rp.id_configuracion
+                    AND oa.tipo = 'ventas'
+                    AND oa.deleted_at IS NULL
+                    AND oa.activo = 0
+               )
+         ORDER BY rp.tiempo_disparo ASC
          LIMIT 50`,
         { type: db.QueryTypes.SELECT },
       );
