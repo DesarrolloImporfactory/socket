@@ -344,6 +344,38 @@ async function main() {
         }
       }
     }
+
+    /* Mismo freno que kanban_ia.service: si la columna de entrada promete una
+       cita que no puede crear y no marca el tag, la ficha se deriva igual a la
+       etapa que sí agenda. */
+    const accionAgenda = col.acciones
+      .map((ac) =>
+        typeof ac.config === 'string' ? JSON.parse(ac.config || '{}') : ac.config || {},
+      )
+      .find((c) => c.estado_destino === 'califica');
+    const puedeAgendar = col.acciones.some((a) => a.tipo_accion === 'agendar_cita');
+
+    if (accionAgenda && !puedeAgendar && !tags.length) {
+      const finPalabra = '(?![a-záéíóúñ])';
+      const PROMETE_CITA = new RegExp(
+      [
+      '\\b(te|le)\\s+(agendo|agendamos|agendar[eé]|agendaremos|agendar[ií]a',
+      '|reservo|reservamos|reservar[eé]|confirmo|confirmamos|confirmar[eé]',
+      `|separo|separamos|separar[eé])${finPalabra}`,
+      '|\\b(cita|consulta|hora)\\s+(ya\\s+)?(qued[oó]|queda|est[aá])\\s+',
+      `(agendad[ao]|reservad[ao]|confirmad[ao])${finPalabra}`,
+      // Pronombre pegado al verbo: "voy a agendarte", "puedo reservarle".
+      `|\\b(agendar|reservar|confirmar|separar)(te|le|lo|la)${finPalabra}`,
+      ].join(''),
+      'i',
+      );
+      if (PROMETE_CITA.test(cruda)) {
+        estado = accionAgenda.estado_destino;
+        console.log(
+          `   ⚠️  prometió una cita sin poder crearla → derivado por código a "${estado}"`,
+        );
+      }
+    }
     // El tag manda a otra columna
     for (const ac of col.acciones) {
       if (ac.tipo_accion !== 'cambiar_estado') continue;

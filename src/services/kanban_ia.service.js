@@ -730,6 +730,62 @@ async function procesarMensajeKanban(params) {
     `🧪 Acciones cambiar_estado: ${JSON.stringify(getAcciones('cambiar_estado'))}`,
   );
 
+  /* ── 9.8 Prometió una cita sin poder crearla ───────────────
+     La columna de entrada NO tiene la agenda: su prompt le prohíbe confirmar y
+     le pide pasar la ficha a la etapa que sí reserva. Aun así, a veces escribe
+     "te agendo la consulta para el lunes a las 10" y no emite ningún tag: la
+     ficha se queda quieta, la cita no existe y el paciente cree que tiene hora.
+     En un consultorio eso significa alguien presentándose con un problema de
+     salud sin estar en ninguna lista.
+
+     Si el mensaje suena a confirmación y la columna sabe derivar a la etapa que
+     agenda, se deriva igual. No deshace la promesa —eso lo arregla una persona o
+     el siguiente mensaje— pero al menos la conversación queda en manos de quien
+     sí puede reservar. */
+  const accionAgenda = getAcciones('cambiar_estado')
+    .map((ac) => parseConfig(ac))
+    .find((c) => c.estado_destino === 'califica');
+
+  if (
+    accionAgenda &&
+    !tieneAccion('agendar_cita') &&
+    !respuestaRaw.includes(accionAgenda.trigger)
+  ) {
+    /* Formas escritas una por una en vez de prefijo + terminación: con el
+       patrón corto, "te paso con LA AGENDA" —que es el comportamiento correcto—
+       daba positivo. Y hay que cubrir presente y futuro, porque el modelo
+       alterna entre "te agendo" y "te agendaré". */
+    /* El cierre es un lookahead y no `\b`: en JavaScript `\b` se calcula con
+       [A-Za-z0-9_], así que una palabra terminada en acento —"agendaré"— no
+       tiene frontera de palabra al final y el patrón no cerraba nunca. */
+    const finPalabra = '(?![a-záéíóúñ])';
+    const PROMETE_CITA = new RegExp(
+      [
+        '\\b(te|le)\\s+(agendo|agendamos|agendar[eé]|agendaremos|agendar[ií]a',
+        '|reservo|reservamos|reservar[eé]|confirmo|confirmamos|confirmar[eé]',
+        `|separo|separamos|separar[eé])${finPalabra}`,
+        '|\\b(cita|consulta|hora)\\s+(ya\\s+)?(qued[oó]|queda|est[aá])\\s+',
+        `(agendad[ao]|reservad[ao]|confirmad[ao])${finPalabra}`,
+        // Pronombre pegado al verbo: "voy a agendarte", "puedo reservarle".
+        `|\\b(agendar|reservar|confirmar|separar)(te|le|lo|la)${finPalabra}`,
+      ].join(''),
+      'i',
+    );
+
+    if (PROMETE_CITA.test(respuestaRaw)) {
+      await db.query(
+        `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+        {
+          replacements: [accionAgenda.estado_destino, id_cliente],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+      await log(
+        `⚠️ "${columna.nombre}" confirmó una cita que no puede crear y no marcó el tag: cliente ${id_cliente} derivado a "${accionAgenda.estado_destino}"`,
+      );
+    }
+  }
+
   /* ── 9.9 Quien pregunta por un PRODUCTO va a su columna ────
      Enrutar no puede depender de que el modelo se acuerde de escribir un tag.
      Medido en la 818: ante "quiero comprar la máquina cortadora", el asistente
@@ -1145,12 +1201,22 @@ async function procesarMensajeKanban(params) {
       });
 
       if (mencionado) {
+        /* La imagen enviada NO queda en `texto_mensaje` —ahí va vacío— sino en
+           `ruta_archivo`, con tipo_mensaje = 'image'. Buscarla en el campo
+           equivocado hacía que "ya se envió" nunca fuera cierto y la foto se
+           adjuntara en CADA mensaje: clientes con más de 200 fotos del mismo
+           producto en su chat. */
         const [yaEnviada] = await db.query(
           `SELECT id FROM mensajes_clientes
-            WHERE id_cliente = ? AND texto_mensaje LIKE ?
+            WHERE id_cliente = ?
+              AND (ruta_archivo LIKE ? OR texto_mensaje LIKE ?)
             LIMIT 1`,
           {
-            replacements: [id_cliente, `%${mencionado.imagen_url}%`],
+            replacements: [
+              id_cliente,
+              `%${mencionado.imagen_url}%`,
+              `%${mencionado.imagen_url}%`,
+            ],
             type: db.QueryTypes.SELECT,
           },
         );

@@ -374,9 +374,19 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               return `▸ ${i.nombre}\n${desc}${media ? `\n${media}` : ''}`;
             })
             .join('\n\n') +
-          `\n\nEsto es lo que sabes del producto: cuéntaselo tú, sin esperar a ` +
-          `que lo pregunte. Lo que no esté acá —garantías distintas, envíos ` +
-          `especiales, descuentos— no te lo inventes.\n`;
+          /* Esta ficha se inyecta en CADA mensaje mientras la persona siga
+             hablando del mismo ítem. La instrucción decía "cuéntaselo tú, sin
+             esperar a que lo pregunte" y el modelo la obedecía cada turno: le
+             repetía la descripción entera tres y cuatro veces seguidas. Ahora
+             se dice explícitamente que es material de consulta y que solo se
+             presenta completo la primera vez. */
+          `\n\nEsto es material de consulta, NO un texto para pegar. Preséntalo ` +
+          `completo UNA sola vez, la primera vez que le hablas de ese ítem. ` +
+          `Después responde solo lo que te pregunte, con el dato puntual: si ya ` +
+          `le contaste qué incluye, no se lo vuelvas a contar. Repetir la misma ` +
+          `descripción cada mensaje es lo que hace que la gente deje de leer.\n` +
+          `Lo que no esté acá —garantías distintas, envíos especiales, ` +
+          `descuentos— no te lo inventes.\n`;
 
         if (conMedia.length) {
           bloque +=
