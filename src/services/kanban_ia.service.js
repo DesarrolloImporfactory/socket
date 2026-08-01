@@ -268,9 +268,12 @@ async function procesarMensajeKanban(params) {
      cuentas con tablero: apagarlo ahí no callaba al bot, había que entrar
      columna por columna a bajar la IA. Ahora manda sobre todas.
 
-     La ausencia de fila NO apaga nada: hay cuentas con tablero que nunca
-     pasaron por esa pantalla y su bot funciona. Solo apaga un `activo = 0`
-     explícito. */
+     Una cuenta recién creada NO tiene fila, y eso significa apagado: el bot
+     empieza en silencio y habla recién cuando el cliente lo enciende. Nadie
+     quiere que un bot se ponga a contestarle a sus clientes antes de que él
+     revise el prompt. Las cuentas que ya estaban respondiendo cuando esto se
+     implementó recibieron su fila encendida, así que a nadie se le calló el bot
+     de un día para otro. */
   const [interruptor] = await db.query(
     `SELECT activo FROM openai_assistants
       WHERE id_configuracion = ? AND tipo = 'ventas' AND deleted_at IS NULL
@@ -278,9 +281,9 @@ async function procesarMensajeKanban(params) {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
-  if (interruptor && Number(interruptor.activo) === 0) {
+  if (!interruptor || Number(interruptor.activo) === 0) {
     await log(
-      `🔌 Bot apagado desde la pantalla de Asistentes para config=${id_configuracion}. No se ejecuta la IA.`,
+      `🔌 Bot apagado para config=${id_configuracion} (${interruptor ? 'apagado desde Asistentes' : 'nunca se activó'}). No se ejecuta la IA.`,
     );
     return { ok: false, motivo: 'bot_apagado' };
   }
@@ -1596,7 +1599,10 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
      calendario de ESA sede; si no, al único que exista. Antes siempre se tomaba
      el primer calendario de la cuenta (LIMIT 1 sin orden), así que una cuenta
      con dos sedes agendaba todo en la misma agenda. */
-  const sedeNombre = campo('Sede');
+  /* El bloque ahora lleva "Sede La Carolina — Av. Amazonas 123" porque al
+     cliente la dirección le sirve y el nombre solo no. Para buscar la sede se
+     usa lo que va antes del guion. */
+  const sedeNombre = campo('Sede').split(/\s+[—–-]\s+/)[0].trim();
 
   const sedes = await db.query(
     `SELECT id, nombre, ciudad, direccion, id_calendario

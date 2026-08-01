@@ -195,7 +195,8 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   if (tiene('contexto_productos')) {
     try {
       const items = await db.query(
-        `SELECT nombre, tipo, precio, duracion, descripcion
+        `SELECT nombre, tipo, precio, duracion, descripcion,
+                imagen_url, video_url, sesiones_min, sesiones_max
            FROM productos_chat_center
           WHERE id_configuracion = ? AND eliminado = 0
           ORDER BY tipo DESC, nombre`,
@@ -313,18 +314,125 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         .slice(0, 3);
 
       if (conFicha.length) {
+        /* La foto o el video vende más que cualquier párrafo, y ya estaban
+           cargados en el catálogo: lo que faltaba era que el bot los tuviera a
+           la vista. Se mandan con las etiquetas que el motor sabe extraer para
+           convertirlas en archivos de WhatsApp de verdad; si van como texto
+           suelto, al cliente le llega un link pelado. */
+        const conMedia = conFicha.filter((i) => i.imagen_url || i.video_url);
+
         bloque +=
           `📋 Ficha de lo que la persona nombró — úsala para responderle:\n\n` +
           conFicha
             .map((i) => {
               const desc = String(i.descripcion).trim().slice(0, TOPE_DESC);
-              return `▸ ${i.nombre}\n${desc}`;
+              const media = [
+                i.imagen_url ? `  📷 imagen: ${i.imagen_url}` : null,
+                i.video_url ? `  🎥 video: ${i.video_url}` : null,
+              ]
+                .filter(Boolean)
+                .join('\n');
+              return `▸ ${i.nombre}\n${desc}${media ? `\n${media}` : ''}`;
             })
             .join('\n\n') +
           `\n\nEsto es lo que sabes del producto: cuéntaselo tú, sin esperar a ` +
           `que lo pregunte. Lo que no esté acá —garantías distintas, envíos ` +
-          `especiales, descuentos— no te lo inventes.\n\n`;
-        say(`✅ Ficha inyectada de ${conFicha.length} ítem(s) nombrados`);
+          `especiales, descuentos— no te lo inventes.\n`;
+
+        if (conMedia.length) {
+          bloque +=
+            `\nMÁNDALE LA FOTO. Cuando le hables de un producto que tenga ` +
+            `imagen o video, agrégalo al final de tu mensaje en su propia ` +
+            `línea, con este formato EXACTO:\n` +
+            `[producto_imagen_url]: <la url de la imagen>\n` +
+            `[producto_video_url]: <la url del video>\n` +
+            `El sistema lo convierte en la foto o el video de verdad, así que ` +
+            `no escribas la url dentro de una frase ni digas "aquí te dejo el ` +
+            `enlace": el cliente ve el archivo, no el link. Manda la imagen la ` +
+            `PRIMERA vez que le hablas de ese producto; no la repitas en cada ` +
+            `mensaje. Si un producto no tiene, simplemente no pongas la línea.\n`;
+        }
+
+        bloque += `\n`;
+        say(
+          `✅ Ficha inyectada de ${conFicha.length} ítem(s) nombrados` +
+            (conMedia.length ? ` · ${conMedia.length} con media` : ''),
+        );
+      }
+
+      /* ── Plan de sesiones ────────────────────────────────────
+         Un servicio de sesión única y un plan de 8 no se atienden igual, y hasta
+         ahora nada los distinguía: el bot leía "entre 6 y 8 sesiones" de la
+         descripción en prosa y adivinaba. Peor con los planes variables (borrado
+         de tatuajes: puede terminar en 3 o en 8), donde insistir con un número
+         fijo es quedar mal.
+
+         Se le entrega el plan del catálogo Y cuántas sesiones lleva ESTA persona
+         de verdad, contadas de la agenda. Con eso deja de suponer: sabe si
+         empuja la siguiente, si pregunta o si ya terminó. */
+      const conPlan = items.filter((i) => Number(i.sesiones_max) > 1);
+
+      if (conPlan.length && opts?.id_cliente) {
+        const asistidas = await db.query(
+          `SELECT ap.title, COUNT(*) AS n
+             FROM appointments ap
+             JOIN calendars cal ON cal.id = ap.calendar_id
+             JOIN appointment_invitees inv ON inv.appointment_id = ap.id
+             JOIN clientes_chat_center cli
+               ON cli.celular_last9 = RIGHT(REGEXP_REPLACE(inv.phone, '[^0-9]', ''), 9)
+            WHERE cal.account_id = ? AND cli.id = ?
+              AND ap.start_utc < UTC_TIMESTAMP()
+              AND ap.status IN ('Agendado', 'Confirmado', 'Completado')
+            GROUP BY ap.title`,
+          {
+            replacements: [id_configuracion, opts.id_cliente],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        const llevaDe = (nombre) => {
+          const n = normalizar(nombre);
+          return asistidas
+            .filter((a) => normalizar(a.title).includes(n))
+            .reduce((s, a) => s + Number(a.n), 0);
+        };
+
+        const lineas = conPlan.map((i) => {
+          const min = Number(i.sesiones_min) || 1;
+          const max = Number(i.sesiones_max);
+          const lleva = llevaDe(i.nombre);
+          const plan =
+            min === max
+              ? `plan de ${max} sesiones`
+              : `plan de ${min} a ${max} sesiones (varía según el caso)`;
+
+          let estado;
+          if (lleva === 0) {
+            estado = 'todavía no ha venido a ninguna';
+          } else if (lleva < min) {
+            estado = `lleva ${lleva}; aún le faltan para completar el plan`;
+          } else if (lleva < max) {
+            estado =
+              `lleva ${lleva}: ya está en el tramo donde puede terminar o ` +
+              `seguir. NO des por hecho que le faltan más — pregúntale cómo ve ` +
+              `sus resultados y si quiere continuar`;
+          } else {
+            estado =
+              `lleva ${lleva}, que es el máximo del plan. NO le ofrezcas más ` +
+              `sesiones de esto: felicítala por terminar y, si quiere seguir, ` +
+              `que lo defina una especialista`;
+          }
+
+          return `- ${i.nombre}: ${plan}. Esta persona ${estado}.`;
+        });
+
+        bloque +=
+          `🔁 Planes de varias sesiones:\n` +
+          lineas.join('\n') +
+          `\n\nEse conteo sale de las citas a las que de verdad vino, no lo ` +
+          `cambies ni lo estimes. Si un servicio no aparece acá, es de sesión ` +
+          `única: no le hables de "próximas sesiones".\n\n`;
+        say(`✅ Plan de sesiones inyectado (${lineas.length} servicio/s)`);
       }
     } catch (err) {
       say(`⚠️ Error lista de precios: ${err.message}`);

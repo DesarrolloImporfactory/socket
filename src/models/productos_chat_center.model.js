@@ -51,6 +51,19 @@ const ProductosChatCenter = db.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+
+    /* Plan de sesiones de un servicio. Vacío o 1 = sesión única; min < max = el
+       plan varía según el caso (borrado de tatuajes: puede terminar en 3 o en
+       8). El bot lo cruza con las sesiones a las que la persona SÍ vino para
+       saber si empuja la siguiente, si pregunta o si ya terminó. */
+    sesiones_min: {
+      type: DataTypes.SMALLINT,
+      allowNull: true,
+    },
+    sesiones_max: {
+      type: DataTypes.SMALLINT,
+      allowNull: true,
+    },
     nombre_upsell: {
       type: DataTypes.STRING(255),
       allowNull: true,

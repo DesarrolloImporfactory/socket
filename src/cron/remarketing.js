@@ -557,8 +557,11 @@ cron.schedule('*/1 * * * *', async () => {
 
       /* El interruptor general de la pantalla de Asistentes también apaga el
          seguimiento: un bot "apagado" que igual sigue mandando remarketing no
-         está apagado. Solo excluye un `activo = 0` explícito; las cuentas sin
-         fila nunca pasaron por esa pantalla y siguen como estaban. */
+         está apagado. Sin fila = apagado, igual que en la IA.
+
+         Y no se persigue a quien YA tiene una cita futura: recibir "¿te busco
+         un espacio?" media hora después de haber reservado es la clase de
+         mensaje que hace que la gente silencie el número. */
       const pendientes = await db.query(
         `SELECT rp.* FROM remarketing_pendientes rp
          WHERE rp.enviado = 0
@@ -567,12 +570,24 @@ cron.schedule('*/1 * * * *', async () => {
            AND rp.tiempo_disparo <= NOW()
            AND rp.tiempo_disparo > NOW() - INTERVAL 3 DAY
            AND rp.intentos < max_intentos
-           AND NOT EXISTS (
+           AND EXISTS (
                  SELECT 1 FROM openai_assistants oa
                   WHERE oa.id_configuracion = rp.id_configuracion
                     AND oa.tipo = 'ventas'
                     AND oa.deleted_at IS NULL
-                    AND oa.activo = 0
+                    AND oa.activo = 1
+               )
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM clientes_chat_center cli
+                   JOIN appointment_invitees inv
+                     ON cli.celular_last9 = RIGHT(REGEXP_REPLACE(inv.phone, '[^0-9]', ''), 9)
+                   JOIN appointments ap ON ap.id = inv.appointment_id
+                   JOIN calendars cal ON cal.id = ap.calendar_id
+                  WHERE cli.id = rp.id_cliente_chat_center
+                    AND cal.account_id = rp.id_configuracion
+                    AND ap.start_utc > UTC_TIMESTAMP()
+                    AND ap.status IN ('Agendado', 'Confirmado')
                )
          ORDER BY rp.tiempo_disparo ASC
          LIMIT 50`,

@@ -27,6 +27,16 @@ const {
   downloadAndConvertToJpgS3,
 } = require('../utils/imageConverter');
 
+/* "" / undefined → null para campos numéricos.
+   Vivía dentro de `crear`, así que `actualizar` no lo veía: guardar un producto
+   ya existente reventaba con "toNullableNumber is not defined". Va a nivel de
+   módulo para que lo usen los dos. */
+const toNullableNumber = (v) => {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 async function getActiveIntegration(id_configuracion) {
   return DropiIntegrations.findOne({
     where: { id_configuracion, deleted_at: null, is_active: 1 },
@@ -124,6 +134,8 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     tipo,
     precio,
     duracion,
+    sesiones_min,
+    sesiones_max,
     id_categoria,
     nombre_upsell,
     descripcion_upsell,
@@ -144,18 +156,19 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     });
   }
 
-  // ── Helper: "" / undefined → null para campos numéricos ──
-  const toNullableNumber = (v) => {
-    if (v === '' || v == null) return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-
   // Normalización de numéricos
   const precioNum = toNullableNumber(precio);
   const precioUpsellNum = toNullableNumber(precio_upsell);
   const precioProveedorNum = toNullableNumber(precio_proveedor);
   const duracionNum = toNullableNumber(duracion) ?? 0;
+
+  /* Plan de sesiones. Un servicio de sesión única y uno de 8 no se atienden
+     igual, y antes eso solo estaba escrito en prosa dentro de la descripción:
+     el bot tenía que adivinarlo. Vacío = sesión única. */
+  const sesMin = toNullableNumber(sesiones_min);
+  const sesMax = toNullableNumber(sesiones_max);
+  const sesionesMin = sesMin && sesMin > 0 ? sesMin : null;
+  const sesionesMax = sesMax && sesMax > 0 ? Math.max(sesMax, sesionesMin || 1) : null;
   const idCategoriaNum = toNullableNumber(id_categoria);
   // Un servicio no tiene unidades: se presta, no se agota.
   const stockNum =
@@ -230,6 +243,8 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     precio: precioNum,
     precio_proveedor: precioProveedorNum,
     duracion: duracionNum,
+    sesiones_min: sesionesMin,
+    sesiones_max: sesionesMax,
     stock: stockNum,
     id_categoria: idCategoriaNum,
     imagen_url,
@@ -461,6 +476,17 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
+
+  if (typeof req.body.sesiones_min !== 'undefined') {
+    const v = toNullableNumber(req.body.sesiones_min);
+    producto.sesiones_min = v && v > 0 ? v : null;
+  }
+  if (typeof req.body.sesiones_max !== 'undefined') {
+    const v = toNullableNumber(req.body.sesiones_max);
+    // Un máximo por debajo del mínimo dejaría un plan imposible de leer.
+    producto.sesiones_max =
+      v && v > 0 ? Math.max(v, Number(producto.sesiones_min) || 1) : null;
+  }
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
   if (typeof nombre_upsell !== 'undefined')
     producto.nombre_upsell = nombre_upsell || null;
