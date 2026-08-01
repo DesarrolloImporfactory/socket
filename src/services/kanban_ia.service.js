@@ -1201,35 +1201,19 @@ async function procesarMensajeKanban(params) {
       });
 
       if (mencionado) {
-        /* La imagen enviada NO queda en `texto_mensaje` —ahí va vacío— sino en
-           `ruta_archivo`, con tipo_mensaje = 'image'. Buscarla en el campo
-           equivocado hacía que "ya se envió" nunca fuera cierto y la foto se
-           adjuntara en CADA mensaje: clientes con más de 200 fotos del mismo
-           producto en su chat. */
-        const [yaEnviada] = await db.query(
-          `SELECT id FROM mensajes_clientes
-            WHERE id_cliente = ?
-              AND (ruta_archivo LIKE ? OR texto_mensaje LIKE ?)
-            LIMIT 1`,
-          {
-            replacements: [
-              id_cliente,
-              `%${mencionado.imagen_url}%`,
-              `%${mencionado.imagen_url}%`,
-            ],
-            type: db.QueryTypes.SELECT,
-          },
-        );
+        /* No se comprueba acá si ya se envió: de eso se encarga el filtro del
+           paso 12, que es por donde pasan también las etiquetas que escribe el
+           propio prompt. Tener el control en dos lados fue justamente el
+           problema: este lado se cuidaba y el otro mandaba la misma foto en
+           cada mensaje.
 
-        if (!yaEnviada) {
-          /* Va en su propia variable porque `respuestaRaw` es const: al
-             intentar concatenar ahí, el error caía en el catch de abajo y la
-             foto no se enviaba nunca, sin una sola señal de que algo falló. */
-          adjuntoImagen = `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
-          await log(
-            `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
-          );
-        }
+           Va en su propia variable porque `respuestaRaw` es const: al intentar
+           concatenar ahí, el error caía en el catch de abajo y la foto no se
+           enviaba nunca, sin una sola señal de que algo falló. */
+        adjuntoImagen = `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
+        await log(
+          `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
+        );
       }
     } catch (e) {
       await log(`⚠️ No se pudo adjuntar la imagen del producto: ${e.message}`);
@@ -1238,10 +1222,55 @@ async function procesarMensajeKanban(params) {
 
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
-  const { texto, imagenes, videos } = extraerMedia(
-    `${respuestaRaw}${adjuntoImagen}`,
-  );
+  const media = extraerMedia(`${respuestaRaw}${adjuntoImagen}`);
+  const { texto } = media;
   soloTexto = texto;
+
+  /* Una foto por cliente, una sola vez.
+     El filtro tiene que estar ACÁ y no donde se decide adjuntarla: la etiqueta
+     puede venir del prompt (el modelo la repite en cada mensaje, que es lo que
+     hacía llegar la misma imagen dos y tres veces seguidas) o del código. Este
+     es el único punto por el que pasan las dos.
+     Se compara contra `ruta_archivo`, que es donde queda guardada la imagen
+     enviada; `texto_mensaje` va vacío en esos mensajes. */
+  const yaMandadas = new Set();
+  const filtrarNuevas = async (urls, etiqueta) => {
+    const salida = [];
+    for (const url of urls) {
+      if (yaMandadas.has(url)) continue; // repetida dentro del mismo mensaje
+      yaMandadas.add(url);
+
+      /* La marca en memoria va antes de la consulta a la BD porque la fila del
+         envío se guarda recién después de mandarlo: si el cliente escribe dos
+         veces seguidas y las dos respuestas se cruzan, las dos preguntan
+         "¿ya se envió?" antes de que ninguna haya guardado nada, y las dos
+         responden que no. */
+      if (recienEnviado(id_cliente, url)) {
+        await log(`🔁 ${etiqueta} recién enviado, se omite`);
+        continue;
+      }
+
+      try {
+        const [existe] = await db.query(
+          `SELECT id FROM mensajes_clientes
+            WHERE id_cliente = ? AND ruta_archivo LIKE ? LIMIT 1`,
+          { replacements: [id_cliente, `%${url}%`], type: db.QueryTypes.SELECT },
+        );
+        if (existe) {
+          await log(`🔁 ${etiqueta} ya enviado antes a este cliente, se omite`);
+          continue;
+        }
+      } catch (e) {
+        await log(`⚠️ No se pudo verificar ${etiqueta} repetido: ${e.message}`);
+      }
+      marcarEnviado(id_cliente, url);
+      salida.push(url);
+    }
+    return salida;
+  };
+
+  const imagenes = await filtrarNuevas(media.imagenes, 'imagen');
+  const videos = await filtrarNuevas(media.videos, 'video');
 
   for (const url of imagenes) {
     await canal
@@ -1570,6 +1599,30 @@ async function ejecutarConResponsesAPI({
 // ══════════════════════════════════════════════════════════════
 // Helpers de procesamiento de respuesta
 // ══════════════════════════════════════════════════════════════
+
+/* Media recién enviada, para el hueco que deja la consulta a la BD: entre que
+   se decide enviar y que la fila queda guardada pasan un par de segundos, y en
+   ese rato una segunda respuesta puede colarse con la misma foto.
+   Dura poco a propósito: solo tapa la carrera, el "ya se la mandamos alguna
+   vez" sigue saliendo del historial del chat. */
+const MEDIA_RECIENTE = new Map();
+const VENTANA_MEDIA_MS = 2 * 60 * 1000;
+
+function recienEnviado(id_cliente, url) {
+  const cuando = MEDIA_RECIENTE.get(`${id_cliente}|${url}`);
+  return !!cuando && Date.now() - cuando < VENTANA_MEDIA_MS;
+}
+
+function marcarEnviado(id_cliente, url) {
+  const ahora = Date.now();
+  MEDIA_RECIENTE.set(`${id_cliente}|${url}`, ahora);
+  // Sin esto el Map crece para siempre en un proceso que no se reinicia.
+  if (MEDIA_RECIENTE.size > 5000) {
+    for (const [k, t] of MEDIA_RECIENTE) {
+      if (ahora - t >= VENTANA_MEDIA_MS) MEDIA_RECIENTE.delete(k);
+    }
+  }
+}
 
 function extraerMedia(texto) {
   const imagenes = (
