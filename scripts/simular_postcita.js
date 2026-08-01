@@ -212,6 +212,112 @@ async function main() {
             '\n   ',
           ),
       );
+
+      /* Y la conversación sigue: se contesta ese mensaje en el MISMO hilo y con
+         el asistente de la columna a la que acaba de llegar, que es lo que pasa
+         en producción cuando la clienta responde el seguimiento. */
+      const respuestas = process.argv
+        .slice(4)
+        .filter((a) => !a.startsWith('--'));
+
+      if (respuestas.length) {
+        const {
+          construirContextoColumna,
+        } = require('../src/utils/contextoColumna');
+        const {
+          dividirRespuestaIA,
+        } = require('../src/utils/openia/dividirRespuestaIA');
+
+        const acciones = await db.query(
+          `SELECT tipo_accion, config FROM kanban_acciones a
+             JOIN kanban_columnas c ON c.id = a.id_kanban_columna
+            WHERE c.id_configuracion = ? AND c.estado_db = ? AND a.activo = 1`,
+          {
+            replacements: [ID_CONFIG, despues.estado_contacto],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        const TAGS = [
+          '[cita_confirmada]:true',
+          '[en_tratamiento]:true',
+          '[plan_terminado]:true',
+          '[no_asistio]:true',
+          '[perdido]:true',
+          '[asesor]:true',
+          '[califica]:true',
+        ];
+
+        for (const respuesta of respuestas) {
+          console.log(
+            `\n${'─'.repeat(70)}\n🙍 CLIENTE responde: ${respuesta}\n`,
+          );
+
+          const ctx = await construirContextoColumna(ID_CONFIG, acciones, null, {
+            mensaje: respuesta,
+            id_cliente: ID_CLIENTE,
+          });
+
+          if (ctx.trim()) {
+            await axios.post(
+              `https://api.openai.com/v1/threads/${th.id}/messages`,
+              { role: 'user', content: `🧾 Contexto adicional:\n\n${ctx.trim()}` },
+              { headers },
+            );
+          }
+          await axios.post(
+            `https://api.openai.com/v1/threads/${th.id}/messages`,
+            { role: 'user', content: respuesta },
+            { headers },
+          );
+
+          const { data: r2 } = await axios.post(
+            `https://api.openai.com/v1/threads/${th.id}/runs`,
+            { assistant_id: col.assistant_id, max_completion_tokens: 700 },
+            { headers, timeout: 90000 },
+          );
+
+          let e2 = 'queued';
+          let k = 0;
+          while (!['completed', 'failed'].includes(e2) && k < 40) {
+            await new Promise((r) => setTimeout(r, 1200));
+            k += 1;
+            const { data } = await axios.get(
+              `https://api.openai.com/v1/threads/${th.id}/runs/${r2.id}`,
+              { headers },
+            );
+            e2 = data.status;
+          }
+
+          const { data: m2 } = await axios.get(
+            `https://api.openai.com/v1/threads/${th.id}/messages`,
+            { headers },
+          );
+          const cruda =
+            m2.data
+              .reverse()
+              .find((m) => m.role === 'assistant' && m.run_id === r2.id)
+              ?.content?.[0]?.text?.value || '(sin respuesta)';
+
+          const tags = TAGS.filter((t) =>
+            cruda.toLowerCase().includes(t.toLowerCase()),
+          );
+          let limpio = cruda;
+          for (const t of TAGS) limpio = limpio.split(t).join('');
+          limpio = limpiarMarkdown(
+            humanizarFechas(limpiarColetillas(limpio.trim())),
+          );
+
+          const partes = dividirRespuestaIA(limpio);
+          console.log(`🤖 [${col.nombre}] → ${partes.length} mensaje(s)`);
+          partes.forEach((p, i) =>
+            console.log(`   ${i + 1}│ ${p.replace(/\n/g, '\n    │ ')}`),
+          );
+          console.log(
+            `   ▸ tags: ${tags.length ? tags.join(', ') : 'ninguno'}`,
+          );
+        }
+      }
     }
   }
 

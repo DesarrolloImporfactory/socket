@@ -1109,7 +1109,12 @@ async function procesarMensajeKanban(params) {
      contacto todavía no se la mandamos. La marca de "ya se envió" sale del
      historial del chat, así que reiniciar la conversación vuelve a habilitarla:
      si el cliente empieza de cero, la foto es parte de empezar de cero. */
-  if (tieneAccion('contexto_productos') && !/\[producto_imagen_url\]/i.test(respuestaRaw)) {
+  let adjuntoImagen = '';
+
+  if (
+    tieneAccion('contexto_productos') &&
+    !/\[producto_imagen_url\]/i.test(respuestaRaw)
+  ) {
     try {
       const conImagen = await db.query(
         `SELECT nombre, imagen_url FROM productos_chat_center
@@ -1151,7 +1156,10 @@ async function procesarMensajeKanban(params) {
         );
 
         if (!yaEnviada) {
-          respuestaRaw += `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
+          /* Va en su propia variable porque `respuestaRaw` es const: al
+             intentar concatenar ahí, el error caía en el catch de abajo y la
+             foto no se enviaba nunca, sin una sola señal de que algo falló. */
+          adjuntoImagen = `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
           await log(
             `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
           );
@@ -1164,7 +1172,9 @@ async function procesarMensajeKanban(params) {
 
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
-  const { texto, imagenes, videos } = extraerMedia(respuestaRaw);
+  const { texto, imagenes, videos } = extraerMedia(
+    `${respuestaRaw}${adjuntoImagen}`,
+  );
   soloTexto = texto;
 
   for (const url of imagenes) {

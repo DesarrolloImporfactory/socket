@@ -12,8 +12,13 @@
    dentro de una oración con contenido real, se dejan — perder información del
    cliente sería peor que sonar robótico. */
 
+/* EL ORDEN IMPORTA: primero las frases condicionales completas, después los
+   verbos sueltos. Al revés, "no dudes en …" se llevaba la segunda mitad y
+   dejaba colgando el arranque pegado a la frase siguiente:
+   "Si tienes más dudas, Para avanzar, ¿desde qué ciudad nos escribes?". */
 const PATRONES = [
   /si (?:necesitas|necesita|requieres|quieres|deseas|te interesa|gustas)[^.!?\n]{0,60}?(?:informaci[oó]n|ayuda|algo|consulta|duda|detalle|saber m[aá]s)[^.!?\n]*[.!?]?/i,
+  /si (?:tienes|te queda|te surge|surge|hay)[^.!?\n]{0,60}?(?:duda|pregunta|consulta|inquietud)[^.!?\n]*[.!?]?/i,
   /* "no dudes en …" con cualquier verbo: el modelo va rotando el que usa
      ("comentarlo", "avisarme", "hacérmelo saber") y una lista cerrada de verbos
      dejaba pasar la mitad. */
@@ -27,7 +32,6 @@ const PATRONES = [
   /estoy (?:aqu[ií]|ac[aá]) para (?:ayudarte|lo que necesites|servirte)[^.!?\n]*[.!?]?/i,
   /(?:quedo|estar[eé]) (?:atenta|atento|pendiente)[^.!?\n]*[.!?]?/i,
   /(?:si|cuando) (?:alguna vez |algún día )?(?:necesitas|quieres|gustas)[^.!?\n]{0,40}?estar[eé] (?:aqu[ií]|ac[aá]|por (?:aqu[ií]|ac[aá]))[^.!?\n]*[.!?]?/i,
-  /si tienes (?:alguna |cualquier )?(?:otra )?(?:duda|pregunta|consulta)[^.!?\n]*[.!?]?/i,
 ];
 
 /* Emojis y espacios que quedan colgando cuando la frase se va: "¡Nos vemos! 💖

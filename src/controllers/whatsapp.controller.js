@@ -823,6 +823,72 @@ exports.crearPlantillasAutomaticas = async (req, res) => {
 
 /* ─────────── PLANTILLAS DE RECORDATORIO DE CITA ─────────── */
 
+/* Hay dos juegos porque un centro estético y un consultorio médico no le
+   escriben igual a su gente. En el consultorio el mensaje es más sobrio, se
+   habla de "consulta" y no de "sesión", y la víspera incluye lo que en salud
+   hace la diferencia entre que la cita sirva o se pierda: recordar la
+   preparación previa (ayuno, exámenes anteriores, documento).
+
+   Cuál se crea lo decide el tablero de la cuenta, no un parámetro que alguien
+   tenga que acordarse de mandar: si tiene la columna "urgencia", es una
+   clínica. */
+const PLANTILLAS_RECORDATORIO_CLINICA = [
+  {
+    name: 'recordatorio_consulta_vispera',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}}, le recordamos su consulta de *{{2}}* para {{3}}.\n\nSi tiene indicaciones previas (ayuno, exámenes anteriores o documento), recuerde traerlas.\n\n¿Podrá asistir? Si necesita cambiar la fecha, escríbanos y buscamos otro espacio.',
+        example: {
+          body_text: [
+            ['María Pérez', 'Medicina general', 'mañana a las 15:30'],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'recordatorio_consulta_hoy',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        /* Meta rechaza la plantilla si una variable queda al principio o al
+           final del cuerpo, así que después del enlace va siempre una línea de
+           cierre. */
+        text: 'Hola {{1}}, hoy es su consulta de *{{2}}* a las {{3}}.\n\nLe recomendamos llegar 10 minutos antes.\nAquí puede ver cómo llegar:\n{{4}}\n\nLo esperamos.',
+        example: {
+          body_text: [
+            [
+              'María Pérez',
+              'Medicina general',
+              '15:30',
+              'https://maps.app.goo.gl/ejemplo',
+            ],
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: 'recordatorio_consulta_ahora',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        // Empieza con texto, no con la variable: Meta no acepta plantillas que
+        // arranquen con un {{n}}.
+        text: 'Hola {{1}}, su consulta es a las {{2}}. Ya lo estamos esperando.\n\nSi va con retraso o no podrá llegar, avísenos por aquí.',
+        example: { body_text: [['María Pérez', '15:30']] },
+      },
+    ],
+  },
+];
+
 /* Las tres que recomendamos para un negocio que agenda citas. Son distintas a
    propósito: mandar el mismo texto a la víspera y a la hora se lee como spam.
    Los ejemplos van con el mismo orden de datos que trae preconfigurado el panel
@@ -873,7 +939,9 @@ const PLANTILLAS_RECORDATORIO = [
     components: [
       {
         type: 'BODY',
-        text: '{{1}}, tu cita es a las {{2}} ⏰\nYa te estamos esperando. Si vas con retraso, avísanos por aquí.',
+        // Meta rechaza que el cuerpo arranque con una variable, así que va
+        // "Hola" delante.
+        text: 'Hola {{1}}, tu cita es a las {{2}} ⏰\nYa te estamos esperando. Si vas con retraso, avísanos por aquí.',
         example: { body_text: [['María', '15:30']] },
       },
     ],
@@ -898,8 +966,23 @@ exports.crearPlantillasRecordatorio = async (req, res) => {
     );
     const existentes = (data?.data || []).map((p) => p.name);
 
+    /* El juego se elige por el tablero de la cuenta: la columna "urgencia" solo
+       existe en el de clínicas. Así el cliente aprieta un botón y recibe los
+       textos que le corresponden, sin tener que elegir un tipo que no sabe qué
+       significa. */
+    const [esClinica] = await db.query(
+      `SELECT 1 AS x FROM kanban_columnas
+        WHERE id_configuracion = ? AND estado_db = 'urgencia' AND activo = 1
+        LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    const juego = esClinica
+      ? PLANTILLAS_RECORDATORIO_CLINICA
+      : PLANTILLAS_RECORDATORIO;
+
     const resultados = [];
-    for (const plantilla of PLANTILLAS_RECORDATORIO) {
+    for (const plantilla of juego) {
       // Recrearla daría error de nombre duplicado y gastaría cupo de la WABA.
       if (existentes.includes(plantilla.name)) {
         resultados.push({ nombre: plantilla.name, status: 'ya_existe' });
@@ -929,7 +1012,12 @@ exports.crearPlantillasRecordatorio = async (req, res) => {
       }
     }
 
-    return res.json({ success: true, resultados });
+    return res.json({
+      success: true,
+      resultados,
+      // Para que el front pueda decir qué juego se creó sin adivinarlo.
+      tipo: esClinica ? 'clinica' : 'servicios',
+    });
   } catch (error) {
     console.error(
       'Error creando plantillas de recordatorio:',

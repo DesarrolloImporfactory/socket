@@ -37,6 +37,7 @@ const TAGS = [
   '[no_asistio]:true',
   '[perdido]:true',
   '[asesor]:true',
+  '[urgencia]:true',
 ];
 
 const GUIONES = {
