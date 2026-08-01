@@ -562,9 +562,8 @@ cron.schedule('*/1 * * * *', async () => {
          Y no se persigue a quien YA tiene una cita futura: recibir "¿te busco
          un espacio?" media hora después de haber reservado es la clase de
          mensaje que hace que la gente silencie el número. */
-      const pendientes = await db.query(
-        `SELECT rp.* FROM remarketing_pendientes rp
-         WHERE rp.enviado = 0
+      const ELEGIBLE_WHERE = `
+           rp.enviado = 0
            AND rp.cancelado = 0
            AND (rp.source = 'wa' OR rp.source IS NULL)
            AND rp.tiempo_disparo <= NOW()
@@ -576,7 +575,82 @@ cron.schedule('*/1 * * * *', async () => {
                     AND oa.tipo = 'ventas'
                     AND oa.deleted_at IS NULL
                     AND oa.activo = 1
-               )
+               )`;
+
+      // ── Configs bloqueadas se filtran ANTES del LIMIT ──
+      // El LIMIT 50 con ORDER BY tiempo_disparo ASC es una cola global. Los
+      // registros de cuentas sin plan o con el bot apagado se saltan SIN
+      // consumirse (a propósito: se reanudan si la cuenta vuelve), pero eso
+      // significa que siguen siendo los más viejos y vuelven a copar los 50
+      // puestos al minuto siguiente: bastaron 4 cuentas suspendidas para que
+      // ninguna otra config recibiera remarketing. Por eso el chequeo de bot
+      // apagado y de plan se resuelve aquí, POR CONFIG y una vez por ciclo,
+      // y las bloqueadas se excluyen de la selección. Sus pendientes quedan
+      // igual que antes: en espera, dentro de su ventana de 3 días.
+      const cfgRows = await db.query(
+        `SELECT DISTINCT rp.id_configuracion
+           FROM remarketing_pendientes rp
+          WHERE ${ELEGIBLE_WHERE}`,
+        { type: db.QueryTypes.SELECT },
+      );
+      const configIdsPend = cfgRows
+        .map((r) => Number(r.id_configuracion))
+        .filter(Boolean);
+      if (!configIdsPend.length) {
+        console.log(`📋 [remarketing] sin pendientes elegibles`);
+        return;
+      }
+
+      const configsBloqueadas = new Set();
+
+      // Bot apagado en la vista Asistentes (openai_assistants.activo = 0,
+      // tipo 'ventas'): no envía, no cancela, no suma intentos.
+      const rowsApagados = await db.query(
+        `SELECT DISTINCT id_configuracion
+           FROM openai_assistants
+          WHERE id_configuracion IN (:ids)
+            AND tipo = 'ventas'
+            AND activo = 0
+            AND deleted_at IS NULL`,
+        { replacements: { ids: configIdsPend }, type: db.QueryTypes.SELECT },
+      );
+      for (const r of rowsApagados) {
+        configsBloqueadas.add(Number(r.id_configuracion));
+      }
+
+      // Corta-fuegos por plan: sin plan vigente no se envía remarketing. Si
+      // el cliente paga, la secuencia se reanuda sola donde quedó.
+      for (const idCfg of configIdsPend) {
+        if (configsBloqueadas.has(idCfg)) continue;
+        try {
+          const acceso = await verificarAccesoAutomatizaciones(idCfg);
+          if (!acceso.permitido) {
+            configsBloqueadas.add(idCfg);
+            console.log(
+              `🚫 [remarketing] config=${idCfg} bloqueada (${acceso.motivo}) — sus pendientes esperan`,
+            );
+          }
+        } catch (e) {
+          // Ante la duda, esperar un ciclo antes que enviar sin plan.
+          configsBloqueadas.add(idCfg);
+          console.log(
+            `⚠️ [remarketing] no pude verificar plan de config=${idCfg} (${e.message}) — se salta este ciclo`,
+          );
+        }
+      }
+
+      const configsPermitidas = configIdsPend.filter(
+        (id) => !configsBloqueadas.has(id),
+      );
+      console.log(
+        `📋 [remarketing] configs con pendientes: ${configIdsPend.length} · bloqueadas: ${configsBloqueadas.size}`,
+      );
+      if (!configsPermitidas.length) return;
+
+      const pendientes = await db.query(
+        `SELECT rp.* FROM remarketing_pendientes rp
+         WHERE ${ELEGIBLE_WHERE}
+           AND rp.id_configuracion IN (:permitidas)
            AND NOT EXISTS (
                  SELECT 1
                    FROM clientes_chat_center cli
@@ -591,7 +665,10 @@ cron.schedule('*/1 * * * *', async () => {
                )
          ORDER BY rp.tiempo_disparo ASC
          LIMIT 50`,
-        { type: db.QueryTypes.SELECT },
+        {
+          replacements: { permitidas: configsPermitidas },
+          type: db.QueryTypes.SELECT,
+        },
       );
 
       console.log(
@@ -599,35 +676,6 @@ cron.schedule('*/1 * * * *', async () => {
       );
 
       if (!pendientes.length) return;
-
-      console.log(`📋 [remarketing] Pendientes: ${pendientes.length}`);
-
-      // ── Bot apagado → no ejecutar remarketing (saltar y esperar) ──
-      // Si el usuario apagó el bot en la vista Asistentes
-      // (openai_assistants.activo = 0, tipo 'ventas'), se entiende que no
-      // quiere que el asistente actúe en nada, remarketing incluido. Los
-      // pendientes de esas conexiones NO se envían ni se cancelan: quedan
-      // en cola y se reanudan solos cuando el bot se reactive (mientras
-      // sigan dentro de la ventana de 3 días del SELECT de arriba). Se
-      // resuelve en UNA consulta para no pegarle a la BD por cada record.
-      const configIdsPend = [
-        ...new Set(pendientes.map((p) => p.id_configuracion).filter(Boolean)),
-      ];
-      let botsApagados = new Set();
-      if (configIdsPend.length) {
-        const rowsApagados = await db.query(
-          `SELECT DISTINCT id_configuracion
-             FROM openai_assistants
-            WHERE id_configuracion IN (:ids)
-              AND tipo = 'ventas'
-              AND activo = 0
-              AND deleted_at IS NULL`,
-          { replacements: { ids: configIdsPend }, type: db.QueryTypes.SELECT },
-        );
-        botsApagados = new Set(
-          rowsApagados.map((r) => Number(r.id_configuracion)),
-        );
-      }
 
       let rateLimitHitsThisCycle = 0;
       const MAX_RATE_LIMIT_HITS = 5;
@@ -662,29 +710,8 @@ cron.schedule('*/1 * * * *', async () => {
           break;
         }
 
-        // Bot apagado para esta conexión → saltar sin tocar el record
-        // (no enviado, no cancelado, no suma intentos): se reanuda solo
-        // cuando el bot se vuelva a encender.
-        if (botsApagados.has(Number(record.id_configuracion))) {
-          console.log(
-            `🟦 [DEBUG] ⏸ Bot apagado (openai_assistants.activo=0) para config=${record.id_configuracion} — se salta y espera`,
-          );
-          continue;
-        }
-
-        // Corta-fuegos por plan: sin plan vigente no se envía remarketing.
-        // Se salta con la misma semántica que el bot apagado (no enviado, no
-        // cancelado, no suma intentos): si el cliente paga, la secuencia se
-        // reanuda sola donde quedó en vez de haberse quemado.
-        const accesoRmk = await verificarAccesoAutomatizaciones(
-          record.id_configuracion,
-        );
-        if (!accesoRmk.permitido) {
-          console.log(
-            `🟦 [DEBUG] 🚫 Remarketing cortado para config=${record.id_configuracion} (${accesoRmk.motivo}) — se salta y espera`,
-          );
-          continue;
-        }
+        // El bot apagado y el plan vencido ya se filtraron por config antes
+        // del SELECT: aquí solo llegan registros de configs habilitadas.
 
         let wabaIdForLog = null;
         // true en cuanto el mensaje SALE a Meta. Gobierna si, ante un error,
