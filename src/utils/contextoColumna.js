@@ -71,18 +71,21 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           .join(' ')
           .trim();
 
+        /* Estos datos son el RESPALDO, no el atajo. El nombre de WhatsApp puede
+           ser un apodo o el de quien le prestó el teléfono, y el número desde el
+           que escribe no siempre es donde quiere que la llamen. Se preguntan
+           igual; esto solo existe para cuando la persona contesta "a este mismo
+           número" y hay que saber cuál es. */
         bloque +=
-          `\n\n[DATOS DE QUIEN TE ESCRIBE — ya los tienes, NO los preguntes]\n` +
-          `Teléfono: ${cli.celular_cliente}\n` +
-          (nombre ? `Nombre en WhatsApp: ${nombre}\n` : '') +
-          `Este es el número desde el que te escribe. Úsalo siempre que necesites ` +
-          `su teléfono (por ejemplo en el bloque de agendamiento) y no le preguntes ` +
-          `cuál es. Si dice "a este mismo número" o "desde donde te escribo", se ` +
-          `refiere a este. El nombre de WhatsApp sí puede no ser el real: para el ` +
-          `bloque usa el que te dé la persona; si no te dio ninguno, usa este y ` +
-          `agenda igual. NO le pidas el nombre solo para completar el bloque: ` +
-          `pedirlo cuando ya lo tienes es la vuelta de más que enfría la cita. ` +
-          `Si después te lo corrige, se ajusta y ya.\n\n`;
+          `\n\n[DATOS TÉCNICOS DEL CONTACTO — solo de respaldo]\n` +
+          `Número desde el que escribe: ${cli.celular_cliente}\n` +
+          (nombre ? `Nombre de su perfil de WhatsApp: ${nombre}\n` : '') +
+          `PREGÚNTALE SIEMPRE su nombre y su teléfono antes de agendar. No los ` +
+          `des por sabidos: el nombre del perfil puede ser un apodo y el número ` +
+          `puede no ser donde quiere que la contacten.\n` +
+          `Estos datos son SOLO para cuando ella misma te diga "a este mismo ` +
+          `número", "desde donde te escribo" o "el mismo de acá": ahí ya no ` +
+          `vuelves a preguntar, usas el de arriba y sigues.\n\n`;
       }
     } catch (e) {
       say(`⚠️ contexto datos del cliente: ${e.message}`);

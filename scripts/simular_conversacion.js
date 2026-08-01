@@ -255,12 +255,33 @@ async function main() {
       ),
       'quedó una coletilla de relleno',
     );
-    revisar(
-      /no (hay |tengo )?(disponibilidad|cupo)|est[aá] (lleno|ocupado)/i.test(
-        texto,
-      ),
-      'dijo que no hay cupo — verificar contra las horas libres',
-    );
+    /* "está lleno" no es un error por sí solo: a veces es verdad. Se compara
+       contra la agenda real y solo se avisa cuando la hora que rechazó estaba
+       libre, que es la falla que veníamos persiguiendo. */
+    if (/no (hay |tengo )?(disponibilidad|cupo)|est[aá] (lleno|ocupad)|no est[aá] disponible/i.test(texto)) {
+      const horas = [...texto.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)].map(
+        (m) => `${String(m[1]).padStart(2, '0')}:${m[2]}`,
+      );
+
+      const ocupadas = await db.query(
+        `SELECT DATE_FORMAT(CONVERT_TZ(ap.start_utc, '+00:00', '-05:00'), '%H:%i') AS h
+           FROM appointments ap
+           JOIN calendars c ON c.id = ap.calendar_id
+          WHERE c.account_id = ? AND ap.status IN ('Agendado', 'Confirmado')
+            AND ap.start_utc > UTC_TIMESTAMP()`,
+        { replacements: [ID_CONFIG], type: db.QueryTypes.SELECT },
+      );
+      const setOcupadas = new Set(ocupadas.map((o) => o.h));
+
+      // La hora rechazada es la primera que nombra; las siguientes suelen ser
+      // las alternativas que ofrece.
+      const rechazada = horas[0];
+      if (rechazada && !setOcupadas.has(rechazada)) {
+        revisar(true, `dijo que ${rechazada} no está disponible y en la agenda está libre`);
+      } else if (rechazada) {
+        console.log(`   ✔️  dijo que ${rechazada} está ocupada y es cierto`);
+      }
+    }
     revisar(
       /\*\*/.test(texto) || /^#{1,6}\s/m.test(texto),
       'quedó Markdown que WhatsApp no entiende',

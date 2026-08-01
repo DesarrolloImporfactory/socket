@@ -1100,6 +1100,68 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── 11.9 La foto del producto la manda el código ──────────
+     Al modelo se le entrega la imagen y la instrucción de adjuntarla, y aun así
+     depende de que él decida que "es la primera vez". Con la foto cargada en el
+     catálogo, que llegue o no una imagen no puede ser un criterio suyo.
+
+     Se adjunta cuando el bot nombra un producto que tiene imagen y a ese
+     contacto todavía no se la mandamos. La marca de "ya se envió" sale del
+     historial del chat, así que reiniciar la conversación vuelve a habilitarla:
+     si el cliente empieza de cero, la foto es parte de empezar de cero. */
+  if (tieneAccion('contexto_productos') && !/\[producto_imagen_url\]/i.test(respuestaRaw)) {
+    try {
+      const conImagen = await db.query(
+        `SELECT nombre, imagen_url FROM productos_chat_center
+          WHERE id_configuracion = ? AND eliminado = 0
+            AND imagen_url IS NOT NULL AND imagen_url <> ''`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+
+      const norm = (s) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/\p{M}/gu, '')
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      const dicho = norm(respuestaRaw);
+
+      // Dos palabras del nombre, igual que en el enrutado: una sola ("facial",
+      // "profesional") aparece en medio catálogo.
+      const mencionado = conImagen.find((p) => {
+        const tk = norm(p.nombre)
+          .split(' ')
+          .filter((t) => t.length > 3);
+        const aciertos = tk.filter((t) => dicho.includes(t)).length;
+        return aciertos >= Math.min(2, tk.length);
+      });
+
+      if (mencionado) {
+        const [yaEnviada] = await db.query(
+          `SELECT id FROM mensajes_clientes
+            WHERE id_cliente = ? AND texto_mensaje LIKE ?
+            LIMIT 1`,
+          {
+            replacements: [id_cliente, `%${mencionado.imagen_url}%`],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        if (!yaEnviada) {
+          respuestaRaw += `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
+          await log(
+            `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
+          );
+        }
+      }
+    } catch (e) {
+      await log(`⚠️ No se pudo adjuntar la imagen del producto: ${e.message}`);
+    }
+  }
+
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
   const { texto, imagenes, videos } = extraerMedia(respuestaRaw);
@@ -1577,18 +1639,36 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   const correo = campo('Correo');
   const servicio = campo('Servicio que desea');
 
-  /* El teléfono NO se lee del bloque: el que vale es el número desde el que la
-     persona escribe, que llega en el webhook. El modelo lo inventaba, lo pedía
-     de nuevo o escribía "no registra", y la cita quedaba sin forma de llamar a
-     nadie. Solo si el contacto no tuviera número se usa lo que haya escrito. */
+  /* El teléfono que vale es el que la persona DIO: puede querer que la llamen a
+     otro número distinto del que usa para escribir. El del webhook es el
+     respaldo, para cuando contestó "a este mismo" o cuando el modelo no logró
+     que se lo dieran. Antes se forzaba siempre el del webhook y se perdía el
+     número real que la clienta había dejado. */
   const [contacto] = await db.query(
     `SELECT celular_cliente FROM clientes_chat_center WHERE id = ? LIMIT 1`,
     { replacements: [id_cliente], type: db.QueryTypes.SELECT },
   );
+
   const telefonoBloque = campo('Tel[eé]fono');
-  const telefono =
-    contacto?.celular_cliente ||
-    (/no registra/i.test(telefonoBloque) ? '' : telefonoBloque);
+
+  /* "este mismo", "el de siempre", "no registra": no son números. Se toman como
+     que hay que usar el del webhook. */
+  const esReferencia =
+    !telefonoBloque ||
+    /no registra|mismo|este n[uú]mero|desde donde|el de ac[aá]|<|>/i.test(
+      telefonoBloque,
+    ) ||
+    telefonoBloque.replace(/\D/g, '').length < 7;
+
+  const telefono = esReferencia
+    ? contacto?.celular_cliente || ''
+    : telefonoBloque;
+
+  if (esReferencia && telefonoBloque) {
+    await log(
+      `📞 agendar_cita: "${telefonoBloque}" no es un número; se usa el del webhook`,
+    );
+  }
   /* La hora de fin ya no se le pide al modelo: el resumen que ve el cliente era
      larguísimo y esa línea no le dice nada. Se calcula con la duración que tiene
      el servicio en el catálogo. Se sigue leyendo si viene, para no romper las
