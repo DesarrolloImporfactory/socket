@@ -13,12 +13,20 @@
    cliente sería peor que sonar robótico. */
 
 const PATRONES = [
-  /si (?:necesitas|necesita|requieres|quieres) (?:m[aá]s |alguna |cualquier )?(?:informaci[oó]n|ayuda|algo|consulta|duda)[^.!?\n]*[.!?]?/i,
-  /no dudes en (?:escribirme|decirme|dec[ií]rmelo|consultarme|contactarme|preguntar)[^.!?\n]*[.!?]?/i,
+  /si (?:necesitas|necesita|requieres|quieres|deseas|te interesa|gustas)[^.!?\n]{0,60}?(?:informaci[oó]n|ayuda|algo|consulta|duda|detalle|saber m[aá]s)[^.!?\n]*[.!?]?/i,
+  /* "no dudes en …" con cualquier verbo: el modelo va rotando el que usa
+     ("comentarlo", "avisarme", "hacérmelo saber") y una lista cerrada de verbos
+     dejaba pasar la mitad. */
+  /no dudes en [^.!?\n]*[.!?]?/i,
+  /(?:qued[oa]|estoy|estar[eé]) a (?:tu|su) (?:disposici[oó]n|orden)[^.!?\n]*[.!?]?/i,
+  /* Va ANTES del "me avisas…" de abajo: si ese corre primero, se lleva la mitad
+     de la frase y deja colgando un "Cualquier cosa" suelto. */
+  /cualquier (?:cosa|duda|consulta)[^.!?\n]{0,20}?(?:me )?(?:dices|avisas|escribes|comentas|consultas)[^.!?\n]*[.!?]?/i,
+  /me (?:avisas|comentas|dices|cuentas) (?:cualquier cosa|si necesitas|si quieres|nom[aá]s)[^.!?\n]*[.!?]?/i,
   /(?:aqu[ií]|ac[aá]) (?:estoy|estar[eé]) (?:para ayudarte|si necesitas|a la orden)[^.!?\n]*[.!?]?/i,
   /estoy (?:aqu[ií]|ac[aá]) para (?:ayudarte|lo que necesites|servirte)[^.!?\n]*[.!?]?/i,
   /(?:quedo|estar[eé]) (?:atenta|atento|pendiente)[^.!?\n]*[.!?]?/i,
-  /cualquier (?:cosa|duda|consulta)(?: me)? (?:dices|avisas|escribes|comentas)[^.!?\n]*[.!?]?/i,
+  /(?:si|cuando) (?:alguna vez |algún día )?(?:necesitas|quieres|gustas)[^.!?\n]{0,40}?estar[eé] (?:aqu[ií]|ac[aá]|por (?:aqu[ií]|ac[aá]))[^.!?\n]*[.!?]?/i,
   /si tienes (?:alguna |cualquier )?(?:otra )?(?:duda|pregunta|consulta)[^.!?\n]*[.!?]?/i,
 ];
 

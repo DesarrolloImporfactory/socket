@@ -10,6 +10,8 @@ const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
+const { humanizarFechas } = require('../utils/humanizarFechas');
+const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
 
 const {
   enviarMensajeWhatsapp,
@@ -728,6 +730,67 @@ async function procesarMensajeKanban(params) {
     `🧪 Acciones cambiar_estado: ${JSON.stringify(getAcciones('cambiar_estado'))}`,
   );
 
+  /* ── 9.9 Quien pregunta por un PRODUCTO va a su columna ────
+     Enrutar no puede depender de que el modelo se acuerde de escribir un tag.
+     Medido en la 818: ante "quiero comprar la máquina cortadora", el asistente
+     de contacto inicial unas veces no marcaba nada y otras contestaba "te paso
+     con la agenda" —mandándolo a agendar una cita para comprar un aparato—.
+
+     Un producto del catálogo nombrado en el mensaje, con intención de compra,
+     es una señal que el código puede leer solo. La columna destino tiene que
+     existir y estar configurada en el tablero, así que esto no se activa en
+     cuentas que no venden productos. */
+  const accionProducto = getAcciones('cambiar_estado')
+    .map((ac) => parseConfig(ac))
+    .find((c) => c.estado_destino === 'venta_producto');
+
+  if (accionProducto && !respuestaRaw.includes('[venta_producto]:true')) {
+    const RE_COMPRA =
+      /\b(compr|quiero la|quiero el|me la llevo|me lo llevo|cu[aá]nto (cuesta|vale|sale)|precio|venden|tienen|c[oó]mo la consigo)/i;
+
+    if (RE_COMPRA.test(mensaje)) {
+      const productos = await db.query(
+        `SELECT nombre FROM productos_chat_center
+          WHERE id_configuracion = ? AND eliminado = 0
+            AND LOWER(COALESCE(tipo, '')) NOT LIKE 'servicio%'`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+
+      const norm = (s) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/\p{M}/gu, '')
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      const palabras = norm(mensaje).split(' ').filter((p) => p.length > 3);
+
+      /* Se pide que coincidan DOS palabras del nombre, no una: "profesional" o
+         "facial" sueltas aparecen en medio catálogo y mandarían a la columna
+         equivocada a quien pregunta por un tratamiento. */
+      const nombrado = productos.find((p) => {
+        const tokens = norm(p.nombre)
+          .split(' ')
+          .filter((t) => t.length > 3);
+        const aciertos = tokens.filter((t) => palabras.includes(t)).length;
+        return aciertos >= Math.min(2, tokens.length);
+      });
+
+      if (nombrado) {
+        await db.query(
+          `UPDATE clientes_chat_center SET estado_contacto = 'venta_producto'
+            WHERE id = ?`,
+          { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+        );
+        await log(
+          `🛍️ "${nombrado.nombre}" es un producto y el mensaje muestra intención de compra: cliente ${id_cliente} movido a "venta_producto" sin depender del tag`,
+        );
+      }
+    }
+  }
+
   // ── 10. ACCIÓN: cambiar_estado ────────────────────────────
   for (const ac of getAcciones('cambiar_estado')) {
     const cfg = parseConfig(ac);
@@ -1084,6 +1147,17 @@ async function procesarMensajeKanban(params) {
   if (soloTexto !== antesColetillas) {
     await log(`🧹 Coletilla de relleno eliminada del mensaje`);
   }
+
+  /* Y las fechas pasan a lenguaje de persona. El bloque de agendamiento las
+     lleva en formato de sistema porque así las parsea el backend sin
+     ambigüedad, pero ese bloque también le llega al cliente: leer
+     "2026-08-01 10:00" en un WhatsApp delata la máquina. Se traduce acá, ya
+     usadas: "mañana sábado 1 de agosto, 10:00". */
+  soloTexto = humanizarFechas(soloTexto);
+
+  /* Y el Markdown que WhatsApp no entiende: los ** llegan como asteriscos a
+     la vista. Está prohibido en el prompt y el modelo lo escribe igual. */
+  soloTexto = limpiarMarkdown(soloTexto);
 
   if (soloTexto) {
     // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
@@ -1724,6 +1798,39 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   if (idProfesional && idProfesional.error) {
     await log(`❌ agendar_cita: ${idProfesional.error}`);
     return { ok: false, motivo: idProfesional.error };
+  }
+
+  /* Cita repetida. El bot vuelve a escribir el bloque cuando la persona
+     responde "sí" o "perfecto" después de confirmada —pasa sobre todo en la
+     columna "Cita agendada", que también puede agendar para reprogramar— y eso
+     creaba una segunda cita idéntica: dos cupos ocupados y la sede esperando a
+     alguien dos veces. Si ya existe una en ese mismo horario para este contacto,
+     se da por hecha. */
+  const [yaExiste] = await db.query(
+    `SELECT ap.id
+       FROM appointments ap
+       JOIN appointment_invitees inv ON inv.appointment_id = ap.id
+      WHERE ap.calendar_id = ?
+        AND ap.start_utc = ?
+        AND ap.status IN ('Agendado', 'Confirmado')
+        AND RIGHT(REGEXP_REPLACE(inv.phone, '[^0-9]', ''), 9)
+            = RIGHT(REGEXP_REPLACE(?, '[^0-9]', ''), 9)
+      LIMIT 1`,
+    {
+      replacements: [
+        calendarId,
+        moment.utc(inicio_utc).format('YYYY-MM-DD HH:mm:ss'),
+        telefono || '',
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  if (yaExiste) {
+    await log(
+      `♻️ agendar_cita: ${nombre} ya tenía la cita ${yaExiste.id} a esa misma hora; no se duplica`,
+    );
+    return { ok: true, id: yaExiste.id, repetida: true };
   }
 
   const payload = {
