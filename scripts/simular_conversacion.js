@@ -41,6 +41,26 @@ const TAGS = [
 ];
 
 const GUIONES = {
+  /* ── Dropshipping ──────────────────────────────────────────────────
+     El contexto que se inyecta (precios, fichas, media) lo comparten TODOS los
+     tableros, no solo los de servicios. Un cambio pensado para estética ya
+     rompió una vez los combos de dropshipping —el bloque decía "no cotices
+     paquetes" y los bots pasaron a vender unidades sueltas—, así que estos dos
+     guiones existen para correrlos ANTES de subir cualquier cambio a
+     contextoColumna o al pipeline de respuesta. */
+  dropi_combo: [
+    // Nombra el producto: sin eso el bot pregunta cuál y el guion no llega a
+    // los combos, que es lo que se quiere verificar.
+    'hola, cuanto cuesta la rodillera?',
+    'y si llevo 2?',
+    'dale, quiero 2',
+  ],
+  dropi_pedido: [
+    'quiero comprar uno',
+    'Juan Perez, 0987654321, Av. Amazonas y Colon, Quito, Pichincha',
+  ],
+
+  // ── Servicios (estética / clínica) ──────────────────────────────
   laser: [
     'Hola, quiero informacion sobre la depilacion laser',
     'si quiero',

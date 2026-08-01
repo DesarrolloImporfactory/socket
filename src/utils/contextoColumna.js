@@ -199,12 +199,34 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
     try {
       const items = await db.query(
         `SELECT nombre, tipo, precio, duracion, descripcion,
-                imagen_url, video_url, sesiones_min, sesiones_max
+                imagen_url, video_url, sesiones_min, sesiones_max,
+                combos_producto
            FROM productos_chat_center
           WHERE id_configuracion = ? AND eliminado = 0
           ORDER BY tipo DESC, nombre`,
         { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
       );
+
+      /* Precios por cantidad. En dropshipping el combo ES el negocio: se vende
+         "2 x $28.99" y no una unidad suelta. La lista salía solo con el precio
+         unitario y encima decía que era lo ÚNICO cotizable, así que el bot
+         dejaba de ofrecer los combos que el cliente tiene cargados. */
+      const combosDe = (raw) => {
+        if (!raw) return [];
+        try {
+          const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (!Array.isArray(arr)) return [];
+          return arr
+            .map((c) => ({
+              cantidad: Number(c?.cantidad),
+              precio: Number(c?.precio),
+            }))
+            .filter((c) => c.cantidad > 1 && c.precio > 0)
+            .sort((a, b) => a.cantidad - b.cantidad);
+        } catch {
+          return [];
+        }
+      };
 
       /* Con catálogo chico va la lista entera. Con uno grande no cabe —200
          productos son ~3.000 tokens en CADA mensaje— así que se mandan solo los
@@ -278,7 +300,15 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               : '';
           const que =
             String(i.tipo).toLowerCase() === 'servicio' ? 'servicio' : 'producto';
-          return `- ${i.nombre} — ${precio}${dur} (${que})`;
+
+          const combos = combosDe(i.combos_producto);
+          const packs = combos.length
+            ? ` · combos: ${combos
+                .map((c) => `${c.cantidad} x $${c.precio.toFixed(2)}`)
+                .join(', ')}`
+            : '';
+
+          return `- ${i.nombre} — ${precio}${dur} (${que})${packs}`;
         };
 
         bloque +=
@@ -296,12 +326,18 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
              —"Valoración facial"— así que a quien preguntaba por depilación de
              zona grande le ofrecía una valoración FACIAL. Se nombra el camino sin
              nombrar un servicio. */
-          `Si te preguntan por algo que NO está en esta lista —otra zona, otro ` +
-          `tratamiento, un paquete— NO inventes un precio ni lo estimes, y NO lo ` +
-          `reemplaces por otro servicio parecido del catálogo: dile con ` +
-          `naturalidad que ese valor te lo confirma una compañera y pásalo a un ` +
-          `asesor. Un precio inventado obliga al negocio a sostenerlo o a ` +
-          `desdecirse.\n\n`;
+          /* Los combos SÍ se ofrecen: son el precio por llevar más de uno y en
+             dropshipping es de donde sale el margen. Antes esta misma frase los
+             metía en la bolsa de "no cotices paquetes" y el bot terminaba
+             vendiendo unidades sueltas. */
+          `Los combos que ves ahí son precios reales por cantidad: ofrécelos ` +
+          `cuando la persona quiera llevar más de uno, y respétalos tal cual.\n` +
+          `Si te preguntan por algo que NO está en esta lista —otro producto, ` +
+          `otra presentación, una cantidad sin combo cargado— NO inventes un ` +
+          `precio ni lo estimes, y NO lo reemplaces por otro parecido del ` +
+          `catálogo: dile con naturalidad que ese valor te lo confirma una ` +
+          `compañera y pásalo a un asesor. Un precio inventado obliga al negocio ` +
+          `a sostenerlo o a desdecirse.\n\n`;
         say(
           `✅ Precios inyectados (${seleccion.length}${parcial ? ` de ${items.length}, por coincidencia` : ''})`,
         );
