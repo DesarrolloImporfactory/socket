@@ -1075,6 +1075,27 @@ cron.schedule('*/1 * * * *', async () => {
               headerFormatNorm,
             );
 
+            // Los valores del body ({{1}}, {{2}}…) se resuelven UNA vez para
+            // las dos ramas. Antes solo los leía la rama con media y la de
+            // texto plano mandaba [] fijo: toda plantilla de texto con
+            // variables moría en (#132000) "Number of parameters does not
+            // match" — es lo que tenía frenado el aviso de retiro en agencia,
+            // que es texto con 4 variables (nombre, agencia, guía, días).
+            let bodyParamsRecord = [];
+            if (record.template_parameters) {
+              try {
+                const parsed =
+                  typeof record.template_parameters === 'string'
+                    ? JSON.parse(record.template_parameters)
+                    : record.template_parameters;
+                if (Array.isArray(parsed)) {
+                  bodyParamsRecord = parsed.map((p) => String(p ?? ''));
+                }
+              } catch (_) {
+                // JSON corrupto → se envía sin parámetros y Meta dirá si falta
+              }
+            }
+
             if (esMediaHeader) {
               const tplData = await obtenerTextoPlantilla(
                 record.nombre_template,
@@ -1129,9 +1150,7 @@ cron.schedule('*/1 * * * *', async () => {
                 },
               ];
 
-              const bodyParams = record.template_parameters
-                ? JSON.parse(record.template_parameters || '[]')
-                : [];
+              const bodyParams = bodyParamsRecord;
               if (bodyParams.length > 0) {
                 components.push({
                   type: 'body',
@@ -1256,7 +1275,7 @@ cron.schedule('*/1 * * * *', async () => {
                 id_configuracion: record.id_configuracion,
                 nombre_template: record.nombre_template,
                 language_code: record.language_code,
-                template_parameters: [],
+                template_parameters: bodyParamsRecord,
                 responsable: 'cron_remarketing_estado',
                 header_format: null,
                 header_media_url: null,
