@@ -13,6 +13,7 @@ const Errores_chat_meta = require('../models/errores_chat_meta.model');
 const logger = require('../utils/logger');
 const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { reclamarWamid } = require('../utils/dedupeWamid');
+const { extraerUrlsMedia } = require('../utils/urlsMedia');
 const dashboardEmitter = require('./dashboardEmitter');
 
 const servicioAppointments = require('../services/appointments.service');
@@ -1713,32 +1714,15 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 servicioAppointments.createAppointment(payload, id_usuarios);
               }
 
-              // Buscar URLs de imágenes y videos usando regex
-              const urls_imagenes = (
-                mensajeGPT.match(
-                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi,
-                ) || []
-              )
-                .map((s) => {
-                  const m = s.match(
-                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i,
-                  );
-                  return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
-                })
-                .filter(Boolean);
-
-              const urls_videos = (
-                mensajeGPT.match(
-                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi,
-                ) || []
-              )
-                .map((s) => {
-                  const m = s.match(
-                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i,
-                  );
-                  return m ? m[1] || m[2] : null;
-                })
-                .filter(Boolean);
+              /* Las urls salen ya normalizadas: el patrón anterior cortaba en
+                 el primer espacio, y las de Dropi los traen, así que a Meta le
+                 llegaba un link recortado que responde 200 pero no se entrega
+                 nunca. Ver utils/urlsMedia. */
+              const {
+                imagenes: urls_imagenes,
+                videos: urls_videos,
+                texto: texto_sin_media,
+              } = extraerUrlsMedia(mensajeGPT);
 
               /* Se descartan las que ya se le mandaron hace poco. Sin esto, cada
                  vez que el modelo repite la etiqueta en su respuesta —y la
@@ -1795,12 +1779,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               }
 
               // Eliminar las líneas con URLs del mensaje
-              let solo_texto = mensajeGPT
-                .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
-                .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
-                .replace(/\[upsell_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de upsell
-                .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
-                .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
+              /* Parte del texto que `extraerUrlsMedia` ya dejó sin las etiquetas
+                 de media: quitarlas acá con el patrón viejo dejaba colgando la
+                 cola de las urls con espacios ("Image 2026-01-31 at 2.43.49 PM
+                 (1).jpeg") a la vista del cliente. */
+              let solo_texto = texto_sin_media
                 .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
                 .replace(/\[cita_confirmada\]:\s*true/gi, ''); // Eliminar confirmación de cita
 
@@ -2036,32 +2019,15 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 );
               }
 
-              // Buscar URLs de imágenes y videos usando regex
-              const urls_imagenes = (
-                mensajeGPT.match(
-                  /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi,
-                ) || []
-              )
-                .map((s) => {
-                  const m = s.match(
-                    /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/i,
-                  );
-                  return m ? m[2] : null; // <-- el grupo 2 siempre es la URL
-                })
-                .filter(Boolean);
-
-              const urls_videos = (
-                mensajeGPT.match(
-                  /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/gi,
-                ) || []
-              )
-                .map((s) => {
-                  const m = s.match(
-                    /\[producto_video_url\]:\s*(https?:\/\/[^\s]+)|\[servicio_video_url\]:\s*(https?:\/\/[^\s]+)/i,
-                  );
-                  return m ? m[1] || m[2] : null;
-                })
-                .filter(Boolean);
+              /* Las urls salen ya normalizadas: el patrón anterior cortaba en
+                 el primer espacio, y las de Dropi los traen, así que a Meta le
+                 llegaba un link recortado que responde 200 pero no se entrega
+                 nunca. Ver utils/urlsMedia. */
+              const {
+                imagenes: urls_imagenes,
+                videos: urls_videos,
+                texto: texto_sin_media,
+              } = extraerUrlsMedia(mensajeGPT);
 
               /* Se descartan las que ya se le mandaron hace poco. Sin esto, cada
                  vez que el modelo repite la etiqueta en su respuesta —y la
@@ -2118,12 +2084,11 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               }
 
               // Eliminar las líneas con URLs del mensaje
-              let solo_texto = mensajeGPT
-                .replace(/\[producto_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de producto
-                .replace(/\[servicio_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de servicio
-                .replace(/\[upsell_imagen_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar imágenes de upsell
-                .replace(/\[producto_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de producto
-                .replace(/\[servicio_video_url\]:\s*https?:\/\/[^\s]+/gi, '') // Eliminar videos de servicio
+              /* Parte del texto que `extraerUrlsMedia` ya dejó sin las etiquetas
+                 de media: quitarlas acá con el patrón viejo dejaba colgando la
+                 cola de las urls con espacios ("Image 2026-01-31 at 2.43.49 PM
+                 (1).jpeg") a la vista del cliente. */
+              let solo_texto = texto_sin_media
                 .replace(/\[pedido_confirmado\]:\s*true/gi, '') // Eliminar confirmación de pedido
                 .replace(/\[cita_confirmada\]:\s*true/gi, '') // Eliminar confirmación de cita
                 .replace(/\[asesor_confirmado\]:\s*true/gi, '') // Eliminar asesor_confirmado

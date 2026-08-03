@@ -13,6 +13,7 @@
 
 const { db } = require('../database/config');
 const { enlaceUbicacionSede } = require('./ubicacionSede');
+const { normalizarUrlMedia } = require('./urlsMedia');
 
 /* Palabras que no distinguen un producto de otro. Sin esto, "quiero información
    del tratamiento facial" traería cualquier cosa que diga "facial". */
@@ -365,9 +366,17 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           conFicha
             .map((i) => {
               const desc = String(i.descripcion).trim().slice(0, TOPE_DESC);
+              /* Se normalizan antes de dárselas al modelo: él las copia tal
+                 cual en la etiqueta, y si llevan espacios —las de Dropi los
+                 traen— el extractor las corta en el primero y a Meta le llega
+                 un link roto que nunca se entrega. */
               const media = [
-                i.imagen_url ? `  📷 imagen: ${i.imagen_url}` : null,
-                i.video_url ? `  🎥 video: ${i.video_url}` : null,
+                i.imagen_url
+                  ? `  📷 imagen: ${normalizarUrlMedia(i.imagen_url)}`
+                  : null,
+                i.video_url
+                  ? `  🎥 video: ${normalizarUrlMedia(i.video_url)}`
+                  : null,
               ]
                 .filter(Boolean)
                 .join('\n');

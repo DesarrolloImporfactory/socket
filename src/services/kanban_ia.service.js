@@ -11,6 +11,7 @@ const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
 const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
+const { extraerUrlsMedia, normalizarUrlMedia } = require('../utils/urlsMedia');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
 
@@ -1215,7 +1216,9 @@ async function procesarMensajeKanban(params) {
            Va en su propia variable porque `respuestaRaw` es const: al intentar
            concatenar ahí, el error caía en el catch de abajo y la foto no se
            enviaba nunca, sin una sola señal de que algo falló. */
-        adjuntoImagen = `\n[producto_imagen_url]: ${mencionado.imagen_url}`;
+        adjuntoImagen = `\n[producto_imagen_url]: ${normalizarUrlMedia(
+          mencionado.imagen_url,
+        )}`;
         await log(
           `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
         );
@@ -1586,40 +1589,12 @@ async function ejecutarConResponsesAPI({
 // Helpers de procesamiento de respuesta
 // ══════════════════════════════════════════════════════════════
 
+/* Delega en `utils/urlsMedia`: el patrón que estaba acá cortaba la url en el
+   primer espacio, y las urls de Dropi los traen (el nombre del objeto es el
+   archivo que subió el vendedor). Eso mandaba a Meta un link recortado que
+   nunca se entregaba, y de paso rompía el dedupe. */
 function extraerMedia(texto) {
-  const imagenes = (
-    texto.match(
-      /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*(https?:\/\/[^\s]+)/gi,
-    ) || []
-  )
-    .map((s) => {
-      const m = s.match(/\]:\s*(https?:\/\/[^\s]+)/i);
-      return m ? m[1] : null;
-    })
-    .filter(Boolean);
-
-  const videos = (
-    texto.match(
-      /\[(producto_video_url|servicio_video_url)\]:\s*(https?:\/\/[^\s]+)/gi,
-    ) || []
-  )
-    .map((s) => {
-      const m = s.match(/\]:\s*(https?:\/\/[^\s]+)/i);
-      return m ? m[1] : null;
-    })
-    .filter(Boolean);
-
-  let textoLimpio = texto
-    .replace(
-      /\[(producto_imagen_url|servicio_imagen_url|upsell_imagen_url)\]:\s*https?:\/\/[^\s]+/gi,
-      '',
-    )
-    .replace(
-      /\[(producto_video_url|servicio_video_url)\]:\s*https?:\/\/[^\s]+/gi,
-      '',
-    );
-
-  return { texto: textoLimpio, imagenes, videos };
+  return extraerUrlsMedia(texto);
 }
 
 function limpiarTagsAcciones(texto) {
