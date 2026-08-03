@@ -15,6 +15,19 @@ const Planes_chat_center = db.define(
       defaultValue: 1,
       allowNull: true,
     },
+    // NOTA: la tabla también tiene `visible_publico` (ver
+    // planes_visibilidad_migration.sql). NO se declara aquí a propósito: si el
+    // modelo la pidiera y la migración todavía no hubiese corrido, cualquier
+    // findAll rompería /planes en producción. `obtenerPlanes` la lee con un
+    // SELECT * y trata su ausencia como "visible".
+    //
+    // OJO al usarla: no es lo mismo que `activo`.
+    //   activo = 0          → el plan deja de FUNCIONAR (checkPlanActivo
+    //                         responde PLAN_UNAVAILABLE y planAcceso apaga las
+    //                         automatizaciones de quien ya lo tiene).
+    //   visible_publico = 0 → el plan deja de VENDERSE; los que ya lo tienen
+    //                         siguen igual.
+    // Para retirar un plan del catálogo se usa SIEMPRE visible_publico.
     nombre_plan: {
       type: DataTypes.STRING,
       allowNull: false,

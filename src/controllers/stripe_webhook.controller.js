@@ -197,6 +197,138 @@ exports.stripeWebhook = async (req, res) => {
       }
 
       /**
+       * Factura creada (draft) → FINALIZARLA YA.
+       *
+       * POR QUÉ EXISTE ESTE CASE
+       * Stripe crea las facturas de suscripción en `draft` y las finaliza sola
+       * ~1 hora después (esa ventana existe para poder agregar invoice items
+       * antes del cierre). El cobro y el `invoice.payment_succeeded` —que es
+       * donde este webhook activa al usuario— recién ocurren al finalizar.
+       *
+       * Resultado con membresías: al vencer `fecha_renovacion`, checkPlanActivo
+       * marca al cliente 'vencido' y le bloquea el panel hasta una hora, aunque
+       * su tarjeta esté perfecta. Finalizando aquí, el cobro entra en segundos.
+       *
+       * NO se finaliza cuando:
+       *  - La factura no nace de una suscripción (billing_reason ajeno).
+       *  - Ya no está en draft → el webhook se reintentó, o Stripe la finalizó
+       *    primero. Es lo que hace este handler idempotente.
+       *  - auto_advance = false o collection_method = 'send_invoice' → es una
+       *    factura gestionada a mano; no se toca.
+       *  - La suscripción tiene una cancelación programada.
+       *
+       * Si algo falla se registra y se sigue: la factura simplemente se cobrará
+       * por el camino normal de 1h. Este atajo nunca puede tumbar el webhook.
+       */
+      case 'invoice.created': {
+        const invoice = event.data.object;
+
+        // Solo las facturas que hoy nadie cobra a mano.
+        //
+        // `subscription_update` (upgrades y addons) queda FUERA a propósito:
+        // cambiarPlan y comprarAddon ya recuperan la factura y llaman a
+        // invoices.pay(). Si este handler la finalizara primero, ese pay()
+        // podría fallar por "ya pagada" y el controller devolvería
+        // actionRequired:true con el hosted_invoice_url de una factura ya
+        // cobrada — el cliente vería "Complete el pago" sin deber nada.
+        const RAZONES_COBRO_INMEDIATO = new Set([
+          'subscription_cycle', // renovación / fin de trial ← el caso que duele
+          'subscription_create', // primera factura de una sub creada por API
+        ]);
+
+        if (!RAZONES_COBRO_INMEDIATO.has(invoice.billing_reason)) {
+          console.log(
+            '[stripe] invoice.created ignorada (billing_reason):',
+            invoice.billing_reason,
+          );
+          break;
+        }
+
+        if (invoice.status !== 'draft') {
+          console.log(
+            '[stripe] invoice.created ya no es draft, skip:',
+            invoice.id,
+            invoice.status,
+          );
+          break;
+        }
+
+        if (
+          invoice.auto_advance !== true ||
+          invoice.collection_method !== 'charge_automatically'
+        ) {
+          console.log('[stripe] invoice.created manual, skip:', invoice.id);
+          break;
+        }
+
+        const firstLineCreated = invoice.lines?.data?.[0] || null;
+        const subscriptionIdCreated =
+          invoice.subscription ||
+          invoice.parent?.subscription_details?.subscription ||
+          firstLineCreated?.parent?.subscription_item_details?.subscription ||
+          firstLineCreated?.subscription ||
+          null;
+
+        // Cancelación programada → dejar que siga el curso normal de Stripe.
+        if (subscriptionIdCreated) {
+          try {
+            const subCreated = await stripe.subscriptions.retrieve(
+              subscriptionIdCreated,
+            );
+            if (subCreated.cancel_at_period_end) {
+              console.log(
+                '[stripe] invoice.created con cancelación programada, skip:',
+                subscriptionIdCreated,
+              );
+              break;
+            }
+          } catch (e) {
+            // No poder leer la sub no justifica retrasar el cobro una hora.
+            console.log(
+              '[stripe] invoice.created: subscriptions.retrieve falló, se finaliza igual:',
+              e?.message,
+            );
+          }
+        }
+
+        try {
+          const finalizada = await stripe.invoices.finalizeInvoice(invoice.id, {
+            auto_advance: true,
+          });
+          console.log('[stripe] invoice finalizada al instante:', {
+            id: finalizada.id,
+            status: finalizada.status,
+            amount_due: finalizada.amount_due,
+            billing_reason: invoice.billing_reason,
+          });
+
+          await db.query(
+            `INSERT IGNORE INTO transacciones_stripe_chat
+             (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+             VALUES (?, ?, ?, ?, NOW(), ?)`,
+            {
+              replacements: [
+                `finalize_${invoice.id}`,
+                subscriptionIdCreated || null,
+                null,
+                `invoice_finalizada_inmediata:${invoice.billing_reason}`,
+                invoice.customer || null,
+              ],
+            },
+          );
+        } catch (e) {
+          // Carrera entre dos entregas del webhook, o Stripe ya la finalizó.
+          console.log(
+            '[stripe] finalizeInvoice falló (sigue el flujo normal):',
+            invoice.id,
+            e?.message,
+          );
+        }
+
+        break;
+      }
+
+      /**
        *  Pago exitoso (FUENTE DE VERDAD)
        * - Activa usuario
        * - Actualiza plan/fechas

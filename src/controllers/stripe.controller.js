@@ -18,77 +18,29 @@ const envPick = (prodKey, testKey, fallback = '') => {
 
 const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
 
-const COUPON_PLAN_IL = envPick(
-  'STRIPE_COUPON_IL_FIRST_MONTH',
-  'STRIPE_COUPON_IL_FIRST_MONTH_TEST',
-);
-const COUPON_PLAN_IC = envPick(
-  'STRIPE_COUPON_PLAN2_FIRST_MONTH',
-  'STRIPE_COUPON_PLAN2_FIRST_MONTH_TEST',
-);
-const COUPON_PLAN_PRO = envPick(
-  'STRIPE_COUPON_PLAN3_FIRST_MONTH',
-  'STRIPE_COUPON_PLAN3_FIRST_MONTH_TEST',
-);
-const COUPON_PLAN_ADV = envPick(
-  'STRIPE_COUPON_PLAN4_FIRST_MONTH',
-  'STRIPE_COUPON_PLAN4_FIRST_MONTH_TEST',
-);
-
-const COUPON_PLAN_COMUNIDAD = envPick(
-  'STRIPE_COUPON_COMUNIDAD_FIRST_MONTH',
-  'STRIPE_COUPON_COMUNIDAD_FIRST_MONTH_TEST',
-);
-
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
   'FRONT_SUCCESS_URL_TEST',
 );
 const FRONT_CANCEL_URL = envPick('FRONT_CANCEL_URL', 'FRONT_CANCEL_URL_TEST');
 
-const PLAN_IL_ID = Number(
-  envPick('STRIPE_PLAN_IL_ID', 'STRIPE_PLAN_IL_ID_TEST', '6'),
-);
-const PLAN_IC_ID = Number(
-  envPick('STRIPE_PLAN_CONEXION_ID', 'STRIPE_PLAN_CONEXION_ID_TEST', '2'),
-);
-
-// ID del Plan Comunidad por entorno
-const PLAN_COMUNIDAD_ID = Number(
-  envPick('STRIPE_PLAN_COMUNIDAD_ID', 'STRIPE_PLAN_COMUNIDAD_ID_TEST', '22'),
-);
-
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
 // ─────────────────────────────────────────────────────────────
 // Configuración de planes (ecosistema)
+// IDs, trials y cupones viven en config/planes.config.js: el front los consume
+// por HTTP desde ahí, así que no pueden estar duplicados en este archivo.
 // ─────────────────────────────────────────────────────────────
-const TRIAL_DAYS = 7;
-const TRIAL_DAYS_COMUNIDAD = 5;
-const IL_TRIAL_IMAGES = 10;
-const PROMO_FIRST_MONTH_PRICE = 5;
-
-const getCouponByPlan = (idPlan) => {
-  const num = Number(idPlan);
-  const map = {
-    [PLAN_IL_ID]: COUPON_PLAN_IL,
-    [PLAN_IC_ID]: COUPON_PLAN_IC,
-    [PLAN_COMUNIDAD_ID]: COUPON_PLAN_COMUNIDAD,
-  };
-  if (isProd) {
-    map[3] = COUPON_PLAN_PRO;
-    map[4] = COUPON_PLAN_ADV;
-  } else {
-    map[17] = COUPON_PLAN_PRO;
-    map[18] = COUPON_PLAN_ADV;
-  }
-  return map[num] || null;
-};
-
-const getPromoPlans = () => {
-  if (isProd) return new Set([PLAN_IL_ID, PLAN_IC_ID, 3, 4, PLAN_COMUNIDAD_ID]); // ✅ añadido COMUNIDAD
-  return new Set([PLAN_IL_ID, PLAN_IC_ID, 17, 18, PLAN_COMUNIDAD_ID]); // ✅ añadido COMUNIDAD
-};
+const {
+  PLAN_IL_ID,
+  PLAN_IC_ID,
+  PLAN_COMUNIDAD_ID,
+  TRIAL_DAYS,
+  TRIAL_DAYS_COMUNIDAD,
+  IL_TRIAL_IMAGES,
+  getCouponByPlan,
+  getPromoPlans,
+} = require('../config/planes.config');
 
 // Helpers
 

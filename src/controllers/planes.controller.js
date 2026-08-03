@@ -1,5 +1,19 @@
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
+const { db } = require('../database/config');
+const {
+  PLAN_IC_ID,
+  PLAN_IL_ID,
+  PLAN_COMUNIDAD_ID,
+  PLAN_METHOD_ID,
+  TRIAL_DAYS,
+  TRIAL_DAYS_COMUNIDAD,
+  IL_TRIAL_IMAGES,
+  PROMO_FIRST_MONTH_PRICE,
+  getPromoPlans,
+  tipoPlanUI,
+  trialDiasParaPlan,
+} = require('../config/planes.config');
 
 /**
  * ✅ Asigna un plan al usuario sin activarlo
@@ -68,10 +82,115 @@ exports.seleccionarPlan = async (req, res) => {
       .json({ status: 'fail', message: 'Error interno al seleccionar plan' });
   }
 };
+/**
+ * Devuelve el catálogo YA RESUELTO para el usuario que pregunta.
+ *
+ * POR QUÉ DEVUELVE MÁS QUE LA TABLA
+ * El front decidía qué planes mostrar con Sets hardcodeados
+ * (PLANES_VISIBLES / HIDDEN_PLANS / SORT_ORDER en PlanesView.jsx), así que
+ * cambiar el catálogo obligaba a redesplegar el SPA. Peor: la elegibilidad
+ * quedaba del lado del cliente, donde cualquiera puede editarla. Ahora la
+ * visibilidad se calcula aquí y el front solo pinta lo que recibe.
+ *
+ * `data` mantiene exactamente la forma de siempre (array de filas del
+ * catálogo) para no romper a ningún consumidor existente; lo nuevo va como
+ * campos adicionales por plan y en el bloque `config`.
+ *
+ * Un plan se muestra si:
+ *   1. visible_publico = 1 (catálogo público), o
+ *   2. está en unlocked_plans del usuario (lo desbloqueó con código promo), o
+ *   3. es el plan que el usuario tiene hoy (para que se vea a sí mismo aunque
+ *      el plan ya no se venda).
+ */
 exports.obtenerPlanes = async (req, res) => {
   try {
-    const planes = await Planes_chat_center.findAll({ where: { activo: 1 } });
-    return res.status(200).json({ status: 'success', data: planes });
+    const id_usuario = req.sessionUser?.id_usuario || null;
+
+    // SELECT * a propósito: `visible_publico` puede no existir todavía si la
+    // migración no corrió. Con el modelo de Sequelize el findAll reventaría;
+    // así simplemente llega undefined y se asume visible.
+    const [planes] = await db.query(
+      `SELECT * FROM planes_chat_center
+        WHERE activo = 1
+        ORDER BY sort_order ASC, id_plan ASC`,
+    );
+
+    let usuario = null;
+    if (id_usuario) {
+      usuario = await Usuarios_chat_center.findByPk(id_usuario, {
+        attributes: [
+          'id_usuario',
+          'id_plan',
+          'unlocked_plans',
+          'free_trial_used',
+          'promo_plan2_used',
+        ],
+      });
+    }
+
+    // unlocked_plans se guarda como JSON en texto; un valor corrupto no puede
+    // tumbar el catálogo entero.
+    let desbloqueados = [];
+    try {
+      const raw = JSON.parse(usuario?.unlocked_plans || '[]');
+      if (Array.isArray(raw)) desbloqueados = raw.map(Number).filter(Boolean);
+    } catch (e) {
+      console.warn('[planes] unlocked_plans inválido:', e?.message);
+    }
+
+    const planActualId = Number(usuario?.id_plan || 0) || null;
+    const promoPlans = getPromoPlans();
+    const promoDisponible = Number(usuario?.promo_plan2_used || 0) === 0;
+
+    // Si la migración de `visible_publico` todavía no corrió, NO se manda el
+    // campo `visible`: el front detecta su ausencia y decide con su lista de
+    // respaldo. Mandarlo en true para todo mostraría hasta las filas TEST.
+    const hayColumnaVisibilidad =
+      (planes || []).length > 0 && planes[0].visible_publico !== undefined;
+
+    if (!hayColumnaVisibilidad) {
+      console.warn(
+        '[planes] falta la columna visible_publico — aplicar planes_visibilidad_migration.sql',
+      );
+    }
+
+    const data = (planes || []).map((plan) => {
+      const idPlan = Number(plan.id_plan);
+      const esActual = !!planActualId && planActualId === idPlan;
+
+      const visibilidad = hayColumnaVisibilidad
+        ? {
+            visible:
+              Number(plan.visible_publico) === 1 ||
+              desbloqueados.includes(idPlan) ||
+              esActual,
+          }
+        : {};
+
+      return {
+        ...plan,
+        ...visibilidad,
+        es_plan_actual: esActual,
+        tipo_ui: tipoPlanUI(plan),
+        trial_dias: trialDiasParaPlan(idPlan, usuario),
+        promo_aplicable: promoDisponible && promoPlans.has(idPlan),
+      };
+    });
+
+    return res.status(200).json({
+      status: 'success',
+      data,
+      config: {
+        plan_imporchat_id: PLAN_IC_ID,
+        plan_insta_landing_id: PLAN_IL_ID,
+        plan_comunidad_id: PLAN_COMUNIDAD_ID,
+        plan_method_id: PLAN_METHOD_ID,
+        trial_dias: TRIAL_DAYS,
+        trial_dias_comunidad: TRIAL_DAYS_COMUNIDAD,
+        il_trial_imagenes: IL_TRIAL_IMAGES,
+        promo_primer_mes_precio: PROMO_FIRST_MONTH_PRICE,
+      },
+    });
   } catch (error) {
     console.error('Error al obtener planes:', error);
     return res.status(500).json({

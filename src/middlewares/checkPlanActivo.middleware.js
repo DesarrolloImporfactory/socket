@@ -1,6 +1,51 @@
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const { db } = require('../database/config');
+const { DIAS_GRACIA } = require('../utils/planAcceso');
+
+/**
+ * ¿Este usuario merece la ventana de gracia tras vencer fecha_renovacion?
+ *
+ * PROBLEMA QUE RESUELVE
+ * El cobro de Stripe nunca cae exactamente en fecha_renovacion: entre el cierre
+ * del ciclo, la finalización de la factura y los reintentos de tarjeta pasan
+ * minutos u horas. Sin gracia, al cliente que SÍ va a pagar se le bloquea el
+ * panel en ese hueco. `utils/planAcceso` ya protegía así al bot (DIAS_GRACIA);
+ * esto alinea el panel con ese mismo criterio.
+ *
+ * Solo aplica a quien está realmente suscrito y no programó cancelación. El que
+ * no tiene suscripción en Stripe —por ejemplo un Plan Method Ecommerce en sus
+ * meses de cortesía que nunca registró tarjeta— se bloquea como siempre: ahí el
+ * vencimiento es real, no un desfase de cobro.
+ *
+ * Estados de Stripe excluidos por denylist, no allowlist: un status nulo suele
+ * ser un registro viejo al que el webhook todavía no le escribió nada, y
+ * bloquearlo por eso sería el mismo error que estamos corrigiendo.
+ */
+const STRIPE_STATUS_SIN_GRACIA = new Set([
+  'canceled',
+  'incomplete',
+  'incomplete_expired',
+  'unpaid',
+]);
+
+const tieneGraciaDeCobro = (usuario, ahora) => {
+  if (!usuario.stripe_subscription_id) return false;
+  if (Number(usuario.cancel_at_period_end) === 1) return false;
+
+  const status = String(usuario.stripe_subscription_status || '')
+    .toLowerCase()
+    .trim();
+  if (STRIPE_STATUS_SIN_GRACIA.has(status)) return false;
+
+  if (!usuario.fecha_renovacion) return false;
+
+  const limite =
+    new Date(usuario.fecha_renovacion).getTime() +
+    DIAS_GRACIA * 24 * 60 * 60 * 1000;
+
+  return ahora.getTime() <= limite;
+};
 
 const checkPlanActivo = async (req, res, next) => {
   try {
@@ -176,11 +221,14 @@ const checkPlanActivo = async (req, res, next) => {
       });
     }
 
+    const vencido =
+      usuario.fecha_renovacion && ahora > new Date(usuario.fecha_renovacion);
+
+    // Suscrito y dentro del margen de cobro → no es un vencimiento real.
+    const enGracia = vencido && tieneGraciaDeCobro(usuario, ahora);
+
     // Validar fecha de renovación (vencido)
-    if (
-      usuario.fecha_renovacion &&
-      ahora > new Date(usuario.fecha_renovacion)
-    ) {
+    if (vencido && !enGracia) {
       if (usuario.estado !== 'vencido') {
         await usuario.update({ estado: 'vencido' });
       }
@@ -192,8 +240,13 @@ const checkPlanActivo = async (req, res, next) => {
       });
     }
 
-    // Si el estado no es activo, bloquear
-    if (usuario.estado !== 'activo') {
+    // Si el estado no es activo, bloquear.
+    // En gracia se tolera 'vencido': puede venir de un request anterior que sí
+    // lo marcó, y esa marca es pegajosa —solo el webhook de pago la limpia—.
+    if (
+      usuario.estado !== 'activo' &&
+      !(enGracia && usuario.estado === 'vencido')
+    ) {
       return res.status(403).json({
         status: 'fail',
         code: 'PLAN_INACTIVE',
@@ -213,7 +266,7 @@ const checkPlanActivo = async (req, res, next) => {
           redirectTo: '/planes',
         });
       }
-      req.planInfo = { plan };
+      req.planInfo = { plan, ...(enGracia ? { gracia_cobro: true } : {}) };
     }
 
     return next();

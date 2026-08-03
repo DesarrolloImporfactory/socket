@@ -3,9 +3,9 @@
 //
 
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
-
-// Planes que requieren captura de tarjeta antes de usar features core
-const PLANES_REQUIRE_CARD = new Set([21]);
+const {
+  PLANES_REQUIERE_TARJETA: PLANES_REQUIRE_CARD,
+} = require('../config/planes.config');
 
 const requireStripeSubscription = async (req, res, next) => {
   try {
