@@ -5,6 +5,7 @@ const { db, db_2 } = require('../database/config');
 const axios = require('axios');
 const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
+const { olvidarCliente } = require('../utils/dedupeMedia');
 const {
   obtenerDatosClienteParaAssistant,
   informacionProductos,
@@ -1267,6 +1268,28 @@ exports.eliminar_thread = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.DELETE,
     },
   );
+
+  /* Reiniciar deja al bot presentando el producto desde cero, y la foto es
+     parte de esa presentación: sin esta marca el dedupe la seguía viendo como
+     "ya enviada" y el cliente recibía la presentación sin la imagen.
+     Va en su propio try porque la columna se agrega con una migración manual
+     (`reinicio_conversacion_migration.sql`): mientras no esté aplicada, el
+     reinicio funciona igual y la foto se rige solo por la ventana de 48 h. */
+  try {
+    await db.query(
+      `UPDATE clientes_chat_center SET reinicio_conversacion_at = NOW()
+        WHERE id = ?`,
+      {
+        replacements: [id_cliente_chat_center],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    olvidarCliente(id_cliente_chat_center);
+  } catch (e) {
+    console.log(
+      `[eliminar_thread] no se pudo marcar el reinicio (¿falta aplicar reinicio_conversacion_migration.sql?): ${e.message}`,
+    );
+  }
 
   /* 
      La etapa de arranque es la columna marcada como principal; si la cuenta no

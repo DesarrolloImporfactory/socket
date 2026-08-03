@@ -11,6 +11,8 @@ const Templates_chat_center = require('../models/templates_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Errores_chat_meta = require('../models/errores_chat_meta.model');
 const logger = require('../utils/logger');
+const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
+const { reclamarWamid } = require('../utils/dedupeWamid');
 const dashboardEmitter = require('./dashboardEmitter');
 
 const servicioAppointments = require('../services/appointments.service');
@@ -577,6 +579,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const esProduccion = process.env.NODE_ENV === 'production';
       const wamid_entrante = msg0?.id || null;
       if (esProduccion && wamid_entrante && !isSMBEcho) {
+        /* Primero el reclamo en memoria, que es síncrono, y después la consulta.
+           La consulta sola no alcanza: es un SELECT seguido de un INSERT con
+           varios `await` en medio, así que dos entregas simultáneas del mismo
+           wamid —Meta reintenta— pasaban las dos y el mensaje disparaba la IA
+           dos veces (respuesta doble, foto doble). Ver utils/dedupeWamid. */
+        if (!reclamarWamid(`${id_configuracion}|${wamid_entrante}`)) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ♻️ Entrega simultánea descartada (wamid=${wamid_entrante}, otra entrega lo está procesando)\n`,
+          );
+          return;
+        }
+
         const yaProcesado = await MensajeCliente.findOne({
           where: { id_wamid_mensaje: wamid_entrante, id_configuracion },
           attributes: ['id'],
@@ -1725,9 +1740,25 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 })
                 .filter(Boolean);
 
+              /* Se descartan las que ya se le mandaron hace poco. Sin esto, cada
+                 vez que el modelo repite la etiqueta en su respuesta —y la
+                 repite turno a turno— al cliente le llegaba de nuevo la misma
+                 foto. El asistente de kanban ya filtraba; estas ramas no, y por
+                 eso las cuentas que no son kanban seguían viendo el problema. */
+              const imagenes_a_enviar = await filtrarMediaNueva({
+                id_cliente,
+                urls: urls_imagenes,
+                etiqueta: 'imagen',
+              });
+              const videos_a_enviar = await filtrarMediaNueva({
+                id_cliente,
+                urls: urls_videos,
+                etiqueta: 'video',
+              });
+
               // Enviar imágenes
-              for (const url_img of urls_imagenes) {
-                if (url_img) {
+              for (const url_img of imagenes_a_enviar) {
+                try {
                   await enviarMedioWhatsapp({
                     tipo: 'image',
                     url_archivo: url_img,
@@ -1737,12 +1768,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                     id_configuracion,
                     responsable: respuesta_asistente.tipo_asistente,
                   });
+                } catch (e) {
+                  /* Si no salió, no quedó fila en `mensajes_clientes`: se suelta
+                     la marca para que el próximo turno pueda reintentar. */
+                  olvidarEnviado(id_cliente, url_img);
+                  throw e;
                 }
               }
 
               // Enviar videos
-              for (const url_video of urls_videos) {
-                if (url_video) {
+              for (const url_video of videos_a_enviar) {
+                try {
                   await enviarMedioWhatsapp({
                     tipo: 'video',
                     url_archivo: url_video,
@@ -1752,6 +1788,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                     id_configuracion,
                     responsable: respuesta_asistente.tipo_asistente,
                   });
+                } catch (e) {
+                  olvidarEnviado(id_cliente, url_video);
+                  throw e;
                 }
               }
 
@@ -2024,9 +2063,25 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 })
                 .filter(Boolean);
 
+              /* Se descartan las que ya se le mandaron hace poco. Sin esto, cada
+                 vez que el modelo repite la etiqueta en su respuesta —y la
+                 repite turno a turno— al cliente le llegaba de nuevo la misma
+                 foto. El asistente de kanban ya filtraba; estas ramas no, y por
+                 eso las cuentas que no son kanban seguían viendo el problema. */
+              const imagenes_a_enviar = await filtrarMediaNueva({
+                id_cliente,
+                urls: urls_imagenes,
+                etiqueta: 'imagen',
+              });
+              const videos_a_enviar = await filtrarMediaNueva({
+                id_cliente,
+                urls: urls_videos,
+                etiqueta: 'video',
+              });
+
               // Enviar imágenes
-              for (const url_img of urls_imagenes) {
-                if (url_img) {
+              for (const url_img of imagenes_a_enviar) {
+                try {
                   await enviarMedioWhatsapp({
                     tipo: 'image',
                     url_archivo: url_img,
@@ -2036,12 +2091,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                     id_configuracion,
                     responsable: respuesta_asistente.tipo_asistente,
                   });
+                } catch (e) {
+                  /* Si no salió, no quedó fila en `mensajes_clientes`: se suelta
+                     la marca para que el próximo turno pueda reintentar. */
+                  olvidarEnviado(id_cliente, url_img);
+                  throw e;
                 }
               }
 
               // Enviar videos
-              for (const url_video of urls_videos) {
-                if (url_video) {
+              for (const url_video of videos_a_enviar) {
+                try {
                   await enviarMedioWhatsapp({
                     tipo: 'video',
                     url_archivo: url_video,
@@ -2051,6 +2111,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                     id_configuracion,
                     responsable: respuesta_asistente.tipo_asistente,
                   });
+                } catch (e) {
+                  olvidarEnviado(id_cliente, url_video);
+                  throw e;
                 }
               }
 

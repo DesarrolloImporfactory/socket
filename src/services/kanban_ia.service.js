@@ -10,6 +10,7 @@ const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
+const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
 
@@ -1162,14 +1163,18 @@ async function procesarMensajeKanban(params) {
      catálogo, que llegue o no una imagen no puede ser un criterio suyo.
 
      Se adjunta cuando el bot nombra un producto que tiene imagen y a ese
-     contacto todavía no se la mandamos. La marca de "ya se envió" sale del
-     historial del chat, así que reiniciar la conversación vuelve a habilitarla:
-     si el cliente empieza de cero, la foto es parte de empezar de cero. */
+     contacto todavía no se la mandamos hace poco. Quién decide ese "hace poco"
+     es el filtro del paso 12, que mira el historial del chat con una ventana de
+     tiempo: acá solo se propone la foto. */
   let adjuntoImagen = '';
 
+  /* La condición mira las tres etiquetas y no solo la de producto: en la
+     vertical de servicios el modelo escribe `[servicio_imagen_url]`, y con el
+     patrón viejo el código no se daba cuenta de que ya había una imagen en la
+     respuesta, así que adjuntaba otra encima. */
   if (
     tieneAccion('contexto_productos') &&
-    !/\[producto_imagen_url\]/i.test(respuestaRaw)
+    !/\[(producto|servicio|upsell)_imagen_url\]/i.test(respuestaRaw)
   ) {
     try {
       const conImagen = await db.query(
@@ -1226,51 +1231,25 @@ async function procesarMensajeKanban(params) {
   const { texto } = media;
   soloTexto = texto;
 
-  /* Una foto por cliente, una sola vez.
-     El filtro tiene que estar ACÁ y no donde se decide adjuntarla: la etiqueta
+  /* El filtro tiene que estar ACÁ y no donde se decide adjuntarla: la etiqueta
      puede venir del prompt (el modelo la repite en cada mensaje, que es lo que
      hacía llegar la misma imagen dos y tres veces seguidas) o del código. Este
      es el único punto por el que pasan las dos.
-     Se compara contra `ruta_archivo`, que es donde queda guardada la imagen
-     enviada; `texto_mensaje` va vacío en esos mensajes. */
-  const yaMandadas = new Set();
-  const filtrarNuevas = async (urls, etiqueta) => {
-    const salida = [];
-    for (const url of urls) {
-      if (yaMandadas.has(url)) continue; // repetida dentro del mismo mensaje
-      yaMandadas.add(url);
-
-      /* La marca en memoria va antes de la consulta a la BD porque la fila del
-         envío se guarda recién después de mandarlo: si el cliente escribe dos
-         veces seguidas y las dos respuestas se cruzan, las dos preguntan
-         "¿ya se envió?" antes de que ninguna haya guardado nada, y las dos
-         responden que no. */
-      if (recienEnviado(id_cliente, url)) {
-        await log(`🔁 ${etiqueta} recién enviado, se omite`);
-        continue;
-      }
-
-      try {
-        const [existe] = await db.query(
-          `SELECT id FROM mensajes_clientes
-            WHERE id_cliente = ? AND ruta_archivo LIKE ? LIMIT 1`,
-          { replacements: [id_cliente, `%${url}%`], type: db.QueryTypes.SELECT },
-        );
-        if (existe) {
-          await log(`🔁 ${etiqueta} ya enviado antes a este cliente, se omite`);
-          continue;
-        }
-      } catch (e) {
-        await log(`⚠️ No se pudo verificar ${etiqueta} repetido: ${e.message}`);
-      }
-      marcarEnviado(id_cliente, url);
-      salida.push(url);
-    }
-    return salida;
-  };
-
-  const imagenes = await filtrarNuevas(media.imagenes, 'imagen');
-  const videos = await filtrarNuevas(media.videos, 'video');
+     La lógica vive en `utils/dedupeMedia` porque las ramas `ventas` e
+     `imporshop` del webhook mandan fotos por su propio camino y necesitan
+     exactamente el mismo control. */
+  const imagenes = await filtrarMediaNueva({
+    id_cliente,
+    urls: media.imagenes,
+    etiqueta: 'imagen',
+    log,
+  });
+  const videos = await filtrarMediaNueva({
+    id_cliente,
+    urls: media.videos,
+    etiqueta: 'video',
+    log,
+  });
 
   for (const url of imagenes) {
     await canal
@@ -1279,7 +1258,13 @@ async function procesarMensajeKanban(params) {
         url,
         responsable: `IA_${columna.nombre}`,
       })
-      .catch(async (err) => log(`⚠️ Error enviando imagen: ${err.message}`));
+      .catch(async (err) => {
+        /* Si el envío falló no quedó fila en `mensajes_clientes`, así que la
+           marca en memoria estaría bloqueando una foto que el cliente nunca
+           recibió. Se suelta para que el próximo turno pueda reintentar. */
+        olvidarEnviado(id_cliente, url);
+        await log(`⚠️ Error enviando imagen: ${err.message}`);
+      });
   }
   for (const url of videos) {
     await log(`🎥 Intentando enviar video URL: ${url}`);
@@ -1297,9 +1282,10 @@ async function procesarMensajeKanban(params) {
         url,
         responsable: `IA_${columna.nombre}`,
       })
-      .catch(async (err) =>
-        log(`⚠️ Error enviando video URL=${url}: ${err.message}`),
-      );
+      .catch(async (err) => {
+        olvidarEnviado(id_cliente, url);
+        await log(`⚠️ Error enviando video URL=${url}: ${err.message}`);
+      });
   }
 
   // ── 13. Enviar texto final ────────────────────────────────
@@ -1599,30 +1585,6 @@ async function ejecutarConResponsesAPI({
 // ══════════════════════════════════════════════════════════════
 // Helpers de procesamiento de respuesta
 // ══════════════════════════════════════════════════════════════
-
-/* Media recién enviada, para el hueco que deja la consulta a la BD: entre que
-   se decide enviar y que la fila queda guardada pasan un par de segundos, y en
-   ese rato una segunda respuesta puede colarse con la misma foto.
-   Dura poco a propósito: solo tapa la carrera, el "ya se la mandamos alguna
-   vez" sigue saliendo del historial del chat. */
-const MEDIA_RECIENTE = new Map();
-const VENTANA_MEDIA_MS = 2 * 60 * 1000;
-
-function recienEnviado(id_cliente, url) {
-  const cuando = MEDIA_RECIENTE.get(`${id_cliente}|${url}`);
-  return !!cuando && Date.now() - cuando < VENTANA_MEDIA_MS;
-}
-
-function marcarEnviado(id_cliente, url) {
-  const ahora = Date.now();
-  MEDIA_RECIENTE.set(`${id_cliente}|${url}`, ahora);
-  // Sin esto el Map crece para siempre en un proceso que no se reinicia.
-  if (MEDIA_RECIENTE.size > 5000) {
-    for (const [k, t] of MEDIA_RECIENTE) {
-      if (ahora - t >= VENTANA_MEDIA_MS) MEDIA_RECIENTE.delete(k);
-    }
-  }
-}
 
 function extraerMedia(texto) {
   const imagenes = (
