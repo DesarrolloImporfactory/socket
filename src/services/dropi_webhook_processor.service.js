@@ -45,6 +45,41 @@ const {
 const MAX_QUEUE = 5000;
 
 /* ═══════════════════════════════════════════════════════════
+   Debounce de estados volátiles
+
+   Dropi a veces genera una guía y la reemplaza por otra un segundo después.
+   El evento llega igual de rápido que el reemplazo, así que el mensaje salía
+   con un número que dejaba de existir enseguida y en la agencia no lo
+   encontraban (caso real: orden 6315272, guía 188169715 → 188169717 en 1
+   segundo; el cliente mandó a su pareja y volvió con las manos vacías).
+
+   Medido sobre 30 días: 234 órdenes cambiaron de guía y 16 lo hicieron en
+   menos de 10 segundos. Esas 16 las arregla esta espera. Las otras 218 cambian
+   horas o días después y las cubre renotificarSiCambioGuia() en
+   dropi_notifier.service.js — no hay espera que las alcance.
+
+   Por qué esperar aquí y no dejarlo para el cron horario: el cron procesa el
+   estado ACTUAL de la orden. Si para cuando corre la orden ya avanzó a
+   "INGRESANDO DE RECOLECCION" (que no mapea a ninguna plantilla), el aviso de
+   guía no se manda nunca. Con 5 minutos eso no pasa: el primer movimiento real
+   tarda 239 min incluso en el decil más rápido.
+
+   El descarte del evento viejo es la otra mitad del arreglo. Sin él, los dos
+   eventos (715 y 717) cumplirían su espera y mandarían dos mensajes seguidos.
+   Se procesa solo el último evento recibido por orden.
+
+   Si el proceso se reinicia dentro de la ventana el evento se pierde, y ahí sí
+   lo recupera el cron: a los pocos minutos el estado sigue siendo
+   GUIA_GENERADA.
+   ═══════════════════════════════════════════════════════════ */
+const DEBOUNCE_MS = 5 * 60 * 1000;
+const ESTADOS_VOLATILES = new Set(['GUIA GENERADA']);
+
+// dropi_order_id → token del último evento programado
+const pendientesPorOrden = new Map();
+let tokenSeq = 0;
+
+/* ═══════════════════════════════════════════════════════════
    Helpers
    ═══════════════════════════════════════════════════════════ */
 
@@ -381,6 +416,35 @@ function encolarEventoWebhook(payload) {
     );
     return;
   }
+
+  // Estado volátil → se espera por si Dropi lo corrige, y si llega un evento
+  // más nuevo de la misma orden este queda obsoleto.
+  const estado = mapDropiStatusToEstadoConfig(payload?.status);
+  const ordenId = Number(payload?.id);
+  if (ESTADOS_VOLATILES.has(estado) && Number.isFinite(ordenId)) {
+    const token = ++tokenSeq;
+    pendientesPorOrden.set(ordenId, token);
+    setTimeout(() => {
+      if (pendientesPorOrden.get(ordenId) !== token) {
+        // Llegó algo más nuevo para esta orden: ese manda.
+        console.log(
+          `[DropiWebhook RT] orden ${ordenId}: evento "${payload.status}" descartado, hay uno más reciente`,
+        );
+        return;
+      }
+      pendientesPorOrden.delete(ordenId);
+      encolarAhora(payload);
+    }, DEBOUNCE_MS).unref?.();
+    return;
+  }
+
+  // Un estado posterior NO cancela el volátil en espera: aunque el paquete ya
+  // se haya movido, el cliente sigue necesitando su guía y su PDF. Recibirlos
+  // 5 minutos tarde es mejor que no recibirlos.
+  encolarAhora(payload);
+}
+
+function encolarAhora(payload) {
   queue.push(payload);
   if (!draining) {
     drain().catch(() => {

@@ -154,16 +154,37 @@ exports.obtenerPlanes = async (req, res) => {
       );
     }
 
+    // ─── Planes "hermanos": mismo producto de Stripe, distinto precio ───
+    //
+    // Al subir un precio se crea una fila legacy que clona el plan y conserva
+    // el price viejo, para que quien ya paga no cambie de tarifa. Esa fila
+    // comparte `id_product_stripe` con la pública.
+    //
+    // Sin esto, el cliente antiguo veía DOS tarjetas con el mismo nombre — la
+    // suya a $29 y la pública a $39 — y si tocaba la segunda, `cambiarPlan` lo
+    // leía como upgrade y le cobraba prorrateo por el MISMO producto, más caro.
+    // Así que al que ya tiene una variante se le oculta la otra.
+    const planActual = (planes || []).find(
+      (p) => Number(p.id_plan) === planActualId,
+    );
+    const productoActual = planActual?.id_product_stripe || null;
+
     const data = (planes || []).map((plan) => {
       const idPlan = Number(plan.id_plan);
       const esActual = !!planActualId && planActualId === idPlan;
 
+      const esHermanoDelActual =
+        !!productoActual &&
+        !esActual &&
+        plan.id_product_stripe === productoActual;
+
       const visibilidad = hayColumnaVisibilidad
         ? {
             visible:
-              Number(plan.visible_publico) === 1 ||
-              desbloqueados.includes(idPlan) ||
-              esActual,
+              !esHermanoDelActual &&
+              (Number(plan.visible_publico) === 1 ||
+                desbloqueados.includes(idPlan) ||
+                esActual),
           }
         : {};
 

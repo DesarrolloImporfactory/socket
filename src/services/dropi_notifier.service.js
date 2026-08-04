@@ -869,21 +869,38 @@ async function reclamarEnvio({
   phone,
   template_name,
   total = null,
+  // Con qué guía salió el mensaje. Lo usa renotificarSiCambioGuia() para
+  // detectar que Dropi la reemplazó después.
+  shipping_guide = null,
 }) {
+  const conGuia = await tieneColumnaGuia();
+
+  const cols = [
+    'dropi_order_id',
+    'id_configuracion',
+    'estado_dropi',
+    'phone',
+    'template_name',
+    'total_order',
+  ];
+  const vals = [
+    dropi_order_id,
+    id_configuracion,
+    estado_dropi,
+    phone || null,
+    template_name || null,
+    Number(total) || null,
+  ];
+  if (conGuia) {
+    cols.push('shipping_guide');
+    vals.push(String(shipping_guide || '').trim() || null);
+  }
+
   const [res] = await db.query(
     `INSERT IGNORE INTO dropi_plantillas_enviadas
-       (dropi_order_id, id_configuracion, estado_dropi, phone, template_name, total_order)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    {
-      replacements: [
-        dropi_order_id,
-        id_configuracion,
-        estado_dropi,
-        phone || null,
-        template_name || null,
-        Number(total) || null,
-      ],
-    },
+       (${cols.join(', ')})
+     VALUES (${cols.map(() => '?').join(', ')})`,
+    { replacements: vals },
   );
   // mysql2 ResultSetHeader: affectedRows=1 → insertó (reclamó);
   // 0 → ya existía (INSERT IGNORE lo ignoró) → NO reenviar.
@@ -1162,6 +1179,98 @@ async function enviarRespuestaRapida({
    Procesar templates para un lote de órdenes
    ═══════════════════════════════════════════════════════════ */
 
+/**
+ * Estados que se re-notifican si la guía cambió después de haberlos enviado.
+ * El mensaje ya salió con un número que quedó obsoleto: quien vaya a la agencia
+ * con él se topa con que "no existe". Reenviar es preferible a dejarlo mal.
+ *
+ * Solo aplica cuando la fila del reclamo ya tiene guía registrada. Las filas
+ * anteriores a la migración la tienen en NULL: ahí no se sabe con qué número se
+ * envió, y se rellena sin reenviar — si no, al desplegar esto se le reenviaría
+ * la guía a todo el historial de golpe.
+ */
+const ESTADOS_RENOTIFICA_SI_CAMBIA_GUIA = new Set(['GUIA GENERADA']);
+
+/**
+ * ¿Está aplicada la migración que agrega shipping_guide?
+ *
+ * Las migraciones de este repo se corren a mano y el deploy es un push a main:
+ * el código puede llegar a producción antes que el ALTER TABLE. Sin esta
+ * comprobación, ese hueco dejaba el INSERT del reclamo con una columna
+ * inexistente y tumbaba TODAS las notificaciones de Dropi, no solo la parte
+ * nueva. Se resuelve una vez por proceso.
+ */
+let _colGuiaDisponible = null;
+async function tieneColumnaGuia() {
+  if (_colGuiaDisponible !== null) return _colGuiaDisponible;
+  try {
+    await db.query(
+      `SELECT shipping_guide FROM dropi_plantillas_enviadas LIMIT 1`,
+      { type: db.QueryTypes.SELECT },
+    );
+    _colGuiaDisponible = true;
+  } catch (_) {
+    _colGuiaDisponible = false;
+    console.warn(
+      '[dropi-notifier] dropi_plantillas_enviadas.shipping_guide no existe: ' +
+        'falta correr dropi_plantillas_enviadas_guia_migration.sql. Los envíos ' +
+        'siguen saliendo, pero no se detectan cambios de guía.',
+    );
+  }
+  return _colGuiaDisponible;
+}
+
+/**
+ * ¿Ya se envió este estado con OTRA guía? Devuelve true si se liberó el reclamo
+ * para que se vuelva a enviar con la guía nueva.
+ */
+async function renotificarSiCambioGuia({
+  dropi_order_id,
+  id_configuracion,
+  estado_dropi,
+  shipping_guide,
+}) {
+  const guiaActual = String(shipping_guide || '').trim();
+  if (!guiaActual) return false;
+  if (!(await tieneColumnaGuia())) return false;
+
+  const [row] = await db.query(
+    `SELECT id, shipping_guide FROM dropi_plantillas_enviadas
+      WHERE dropi_order_id = ? AND id_configuracion = ? AND estado_dropi = ?
+      LIMIT 1`,
+    {
+      replacements: [dropi_order_id, id_configuracion, estado_dropi],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!row) return false;
+
+  const guiaEnviada = String(row.shipping_guide || '').trim();
+
+  // Fila pre-migración: se completa el dato y NO se reenvía.
+  if (!guiaEnviada) {
+    await db.query(
+      `UPDATE dropi_plantillas_enviadas SET shipping_guide = ? WHERE id = ?`,
+      { replacements: [guiaActual, row.id], type: db.QueryTypes.UPDATE },
+    );
+    return false;
+  }
+
+  if (guiaEnviada === guiaActual) return false;
+
+  // La guía cambió → se borra el reclamo para que el flujo normal vuelva a
+  // reclamar y reenviar. El borrado y el reclamo son atómicos por separado; si
+  // dos corridas coinciden, la segunda pierde el INSERT IGNORE y no duplica.
+  await db.query(`DELETE FROM dropi_plantillas_enviadas WHERE id = ?`, {
+    replacements: [row.id],
+    type: db.QueryTypes.DELETE,
+  });
+  console.log(
+    `[dropi-notifier] orden ${dropi_order_id} (cfg ${id_configuracion}): la guía cambió ${guiaEnviada} → ${guiaActual}, se reenvía "${estado_dropi}"`,
+  );
+  return true;
+}
+
 async function procesarTemplates({
   orders,
   id_configuracion,
@@ -1288,6 +1397,18 @@ async function procesarTemplates({
         continue;
       }
 
+      // ¿Se envió este estado con una guía que Dropi ya reemplazó? Se libera
+      // el reclamo ANTES del skip de abajo para que el flujo normal reenvíe
+      // con el número bueno.
+      if (ESTADOS_RENOTIFICA_SI_CAMBIA_GUIA.has(estadoConfig)) {
+        await renotificarSiCambioGuia({
+          dropi_order_id: order.id,
+          id_configuracion,
+          estado_dropi: estadoConfig,
+          shipping_guide: order.shipping_guide,
+        }).catch(() => false);
+      }
+
       // Skip barato si ya se envió (evita armar payloads). La barrera REAL
       // contra duplicados es el reclamo atómico de más abajo.
       if (await yaFueEnviado(order.id, id_configuracion, estadoConfig)) {
@@ -1345,6 +1466,7 @@ async function procesarTemplates({
         phone: telefonoOrden,
         template_name: config.nombre_template,
         total: order.total_order,
+        shipping_guide: order.shipping_guide,
       });
       if (!reclamado) {
         omitidos++;
@@ -1601,6 +1723,8 @@ module.exports = {
   resolverClientes,
   registrarMensajeEnChat,
   enviarTemplate,
+  // detección de guía reemplazada por Dropi
+  renotificarSiCambioGuia,
   // persistencia / envío
   upsertOrders,
   getPlantillasActivas,

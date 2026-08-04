@@ -236,6 +236,44 @@ async function enviarRespuestaRapidaUniversal({
 }
 
 /* ================================================================
+   resolverPlazoEnPrompt
+
+   Los prompts de la secuencia de retiro en agencia hablan del plazo que tiene
+   el cliente para ir a buscar el paquete. Ese plazo NO es fijo: la agencia
+   guarda 7 días, pero cada tienda decide qué comunica (varias dicen 3 para
+   apurar el retiro) y se configura en configuraciones.dias_retiro_agencia.
+
+   Se resuelve aquí y no al guardar el prompt para que cambiar el número en el
+   panel afecte también a las secuencias YA agendadas: si quedara congelado en
+   el prompt, el k1 saldría con 3 días y el k3 con 7.
+
+   Solo hace la consulta si el prompt trae el placeholder — el resto de las
+   columnas no paga nada por esto.
+   ================================================================ */
+const PLACEHOLDER_PLAZO = '{{PLAZO_RETIRO}}';
+
+async function resolverPlazoEnPrompt(prompt, id_configuracion) {
+  const texto = String(prompt || '');
+  if (!texto.includes(PLACEHOLDER_PLAZO)) return prompt;
+
+  let dias = null;
+  try {
+    const [cfg] = await db.query(
+      `SELECT dias_retiro_agencia FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (cfg?.dias_retiro_agencia) dias = Number(cfg.dias_retiro_agencia);
+  } catch (_) {
+    // columna aún no migrada → cae al texto vago, que es preferible a un
+    // número inventado
+  }
+
+  const valor =
+    dias > 0 ? `${dias} día${dias === 1 ? '' : 's'}` : 'un tiempo limitado';
+  return texto.split(PLACEHOLDER_PLAZO).join(valor);
+}
+
+/* ================================================================
    generarMensajeRemarketingIA
    ================================================================ */
 async function generarMensajeRemarketingIA({
@@ -961,7 +999,10 @@ cron.schedule('*/1 * * * *', async () => {
               const textoIA = await generarMensajeRemarketingIA({
                 id_thread: threadRow.thread_id,
                 assistant_id: colRow.assistant_id,
-                prompt_ia: record.prompt_ia,
+                prompt_ia: await resolverPlazoEnPrompt(
+                  record.prompt_ia,
+                  record.id_configuracion,
+                ),
                 api_key_openai,
                 max_tokens: colRow.max_tokens || 300,
               });

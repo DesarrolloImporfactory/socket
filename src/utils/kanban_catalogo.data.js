@@ -308,6 +308,57 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
+    /* Reemplazo de retiro_agencia_k1. Nombre nuevo y no una edición porque
+       cambia la cantidad de variables del cuerpo (1 → 2) y suma un botón:
+       editar la aprobada obligaría a re-aprobación en las 256 WABAs que ya la
+       tienen. Se ofrece como "mejora disponible" y cada cuenta decide.
+
+       Dos cambios sobre el texto viejo, los dos por el mismo incidente
+       (orden 6315272): el cliente fue a la agencia y el paquete no estaba.
+
+       1. El número de guía. Sin él, el cliente no puede verificar nada y el
+          único que puede rastrear es el vendedor. Y es el momento correcto
+          para darlo: cuando el pedido llega a la agencia la guía ya se asentó,
+          aunque la de guia_generada_k1 haya salido con una que Dropi reemplazó.
+
+       2. "reporta" en vez de afirmarlo. Servientrega marca "PARA RETIRO EN
+          AGENCIA" antes de que el paquete esté físicamente en el mostrador, y
+          nosotros no tenemos forma de saberlo: lo único honesto es atribuirle
+          el dato a quien lo dio y dejar que el cliente confirme antes de
+          moverse.
+
+       "Tu transportadora" y no "Servientrega": el estado también lo disparan
+       ENVÍO LISTO EN OFICINA de otras transportadoras. */
+    name: 'retiro_agencia_guia_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'AVISO IMPORTANTE',
+      },
+      {
+        type: 'BODY',
+        text: 'Estimado cliente:\nTu transportadora reporta que tu pedido ya está disponible para retiro en: {{1}}\nGuía: {{2}}\n\nAntes de acercarte te recomendamos confirmar el estado con el botón de abajo.',
+        example: { body_text: [['Agencia Norte Quito', 'V123456789']] },
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          {
+            type: 'URL',
+            text: 'Rastrear mi envío',
+            url: 'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/{{1}}',
+            example: [
+              'https://chat.imporfactory.app/api/v1/kanban_plantillas/t/LC123456',
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
     name: 'confirmacion_pedido_k1',
     language: 'es',
     category: 'UTILITY',
@@ -564,12 +615,18 @@ const DROPI_CONFIG_POR_DEFECTO = [
   },
   {
     estado_dropi: 'RETIRO EN AGENCIA',
-    nombre_template: 'retiro_agencia_k1',
+    // El botón de rastreo recibe el número de guía, no una URL: el redirect
+    // /kanban_plantillas/t/:guide arma el link de la transportadora que
+    // corresponda (mismo patrón que guia_generada_k1).
+    nombre_template: 'retiro_agencia_guia_k1',
     columna_destino: 'retiro_agencia',
     activo: 1,
     usar_respuesta_rapida: 0,
     mensaje_rapido: null,
-    parametros: { body: ['direccion'], buttons: [] },
+    parametros: {
+      body: ['direccion', 'numero_guia'],
+      buttons: [{ index: 0, variable: 'numero_guia' }],
+    },
   },
   {
     estado_dropi: 'NOVEDAD',
@@ -668,7 +725,7 @@ const REMARKETING_POR_DEFECTO = [
 
         REGLAS
         - Tuteo natural LATAM, tono de servicio
-        - NO inventes el número de días: si no aparece en la conversación, habla de "un tiempo limitado"
+        - El plazo de retiro que comunicamos es: {{PLAZO_RETIRO}}. Usa ESE plazo y ningún otro — el cron lo reemplaza por el que configuró la tienda, que no siempre es el que da la transportadora
         - Pregunta si podrá acercarse a retirarlo
         - NO ofrezcas alternativas (reprogramar, cambiar de dirección, extender el plazo): no existen, el paquete se devuelve
         - Máximo 3 líneas
@@ -691,6 +748,7 @@ const REMARKETING_POR_DEFECTO = [
 
         REGLAS
         - Tuteo natural LATAM, cero presión agresiva
+        - El plazo de retiro que comunicamos es: {{PLAZO_RETIRO}}. Usa ESE plazo y ningún otro
         - NO ofrezcas alternativas de ningún tipo (reprogramar el envío, mandarlo a otra dirección, extender el plazo, que lo retire otra persona): no existen. La agencia no espera más y el paquete regresa al remitente. Prometer una salida que no podemos cumplir es peor que no decir nada.
         - NO inventes políticas de la transportadora
         - Máximo 3 líneas

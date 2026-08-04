@@ -1101,10 +1101,41 @@ exports.sync_templates_from_oia_asistentes = async (req, res) => {
 /* sicronizacion de plantillas */
 
 exports.configurar_remarketing = catchAsync(async (req, res, next) => {
-  const { id_configuracion, estado_contacto, remarketings = [] } = req.body;
+  const {
+    id_configuracion,
+    estado_contacto,
+    remarketings = [],
+    // Plazo que la tienda le comunica al cliente para ir a retirar. Viaja con
+    // la secuencia y no por su propia pantalla porque es parte de lo mismo: es
+    // el {{4}} de las tres plantillas de retiro en agencia y el número que usan
+    // sus prompts. Guardarlo aparte invitaba a que quedaran en desacuerdo.
+    dias_retiro_agencia,
+  } = req.body;
 
   if (!id_configuracion || !estado_contacto) {
     return next(new AppError('Faltan parámetros requeridos', 400));
+  }
+
+  if (dias_retiro_agencia != null && dias_retiro_agencia !== '') {
+    const dias = Number(dias_retiro_agencia);
+    if (!Number.isInteger(dias) || dias < 1 || dias > 30) {
+      return next(
+        new AppError('El plazo de retiro debe ser un número de 1 a 30 días', 400),
+      );
+    }
+    try {
+      await db.query(
+        `UPDATE configuraciones SET dias_retiro_agencia = ? WHERE id = ?`,
+        { replacements: [dias, id_configuracion], type: db.QueryTypes.UPDATE },
+      );
+    } catch (e) {
+      // La columna puede no estar migrada todavía: el resto de la
+      // configuración sí debe guardarse.
+      console.warn(
+        `[configurar_remarketing] no se pudo guardar dias_retiro_agencia cfg=${id_configuracion}:`,
+        e.message,
+      );
+    }
   }
 
   const lista = remarketings.slice(0, 3);
@@ -1206,9 +1237,23 @@ exports.obtener_remarketing = catchAsync(async (req, res, next) => {
     },
   );
 
+  // El plazo se devuelve siempre, haya o no secuencia guardada: el modal lo
+  // muestra desde que se abre, y sin secuencia previa `data` es null.
+  let dias_retiro_agencia = null;
+  try {
+    const [cfg] = await db.query(
+      `SELECT dias_retiro_agencia FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (cfg?.dias_retiro_agencia) dias_retiro_agencia = Number(cfg.dias_retiro_agencia);
+  } catch (_) {
+    // columna aún no migrada → el front cae a su default
+  }
+
   res.status(200).json({
     status: '200',
     data: rows.length ? rows : null,
+    dias_retiro_agencia,
   });
 });
 
