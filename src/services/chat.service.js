@@ -10,6 +10,7 @@ const Historial_encargados = require('../models/historial_encargados.model');
 const Configuraciones = require('../models/configuraciones.model');
 const TemplatesChatCenter = require('../models/templates_chat_center.model');
 const { db, db_2 } = require('../database/config');
+const { marcarClientesImporchat } = require('./leads_imporchat.service');
 const FacturasCot = require('../models/facturas_cot.model');
 const ProvinciaLaar = require('../models/provincia_laar.model');
 const CiudadCotizacion = require('../models/ciudad_cotizacion.model');
@@ -291,6 +292,10 @@ class ChatService {
         replacements,
         type: Sequelize.QueryTypes.SELECT,
       });
+
+      // Solo en la configuración de lanzamientos: marca qué contactos ya son
+      // clientes de ImporChat. Una consulta por página, no por chat.
+      await marcarClientesImporchat(chats, id_configuracion);
 
       return chats;
     } catch (error) {

@@ -13,7 +13,7 @@
  * Reglas de acceso (basadas en tools_access del plan):
  *   - 'imporchat'     → requiere tools_access = 'imporchat' o 'both'
  *   - 'insta_landing'  → requiere tools_access = 'insta_landing' o 'both'
- *   - 'dropiboard'    → requiere tools_access = 'both'
+ *   - 'dropiboard'    → requiere tools_access = 'imporchat' o 'both'
  *
  * Escenarios de req.planInfo que setea checkPlanActivo:
  *   1. { permanente: true }                          → acceso total
@@ -28,7 +28,17 @@ const Planes_chat_center = require('../models/planes_chat_center.model');
 const TOOL_RULES = {
   imporchat: (access) => access === 'imporchat' || access === 'both',
   insta_landing: (access) => access === 'insta_landing' || access === 'both',
-  dropiboard: (access) => access === 'both',
+
+  // El Dropiboard acompaña al chat: quien tiene ImporChat lo tiene.
+  //
+  // Antes exigía 'both', que significaba "las dos herramientas". Al retirarse
+  // Insta Landing ese valor dejó de distinguir nada, y la consecuencia real era
+  // que el plan de entrada ($39) pagaba por un Dropi que el middleware le
+  // negaba, mientras la vista de planes se lo prometía.
+  //
+  // 'insta_landing' sigue fuera a propósito: esos usuarios nunca tuvieron el
+  // chat, y el Dropiboard vive colgado de él.
+  dropiboard: (access) => access === 'imporchat' || access === 'both',
 };
 
 const TOOL_LABELS = {
