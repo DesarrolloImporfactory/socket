@@ -7,18 +7,19 @@ const { db } = require('../database/config');
 const fs = require('fs');
 const path = require('path');
 
-// ⏸️ EN PAUSA (false): generación del catálogo en texto plano para mandarlo
-// dentro de las instrucciones en vez de usar file_search.
+// ✅ ACTIVO: generación del catálogo en texto plano para mandarlo dentro de
+// las instrucciones en vez de usar file_search.
 //
-// Va de la mano con TOPE_CATALOGO_INLINE en kanban_ia.service.js:
-//   - aquí se GENERA y se guarda en kanban_columnas.catalogo_inline
-//   - allá se DECIDE si se usa (tope 0 = nunca, todo por file_search)
+// GENERAR y USAR son dos decisiones distintas, a propósito:
+//   - aquí se GENERA y se guarda en kanban_columnas.catalogo_inline. Es
+//     inofensivo: solo llena una columna, no cambia cómo responde el bot.
+//   - en kanban_ia.service.js se DECIDE si se usa, y ahí manda
+//     CONFIGS_CON_CATALOGO_INLINE, que hoy es solo la 10.
 //
-// Mientras esté en false, la sincronización se comporta exactamente igual que
-// antes: solo vector store + file_search. Para reactivar el inline hay que
-// poner esto en true, subir el tope en kanban_ia.service.js y re-sincronizar
-// los catálogos (si no, las columnas quedan con el texto viejo o vacío).
-const GENERAR_CATALOGO_INLINE = false;
+// Está activo para todos porque el texto tiene que existir ANTES de poder
+// medirlo o activarlo en una cuenta. Si se generara solo para las cuentas de
+// la lista, activar una nueva obligaría a re-sincronizarla a mano primero.
+const GENERAR_CATALOGO_INLINE = true;
 
 async function saveCatalogToDisk(
   catalogPayload,
@@ -55,7 +56,8 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // ── 1. Obtener datos de la columna ────────────────────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.id_configuracion, kc.nombre, kc.estado_db,
-            kc.assistant_id, kc.vector_store_id, kc.catalog_file_id
+            kc.assistant_id, kc.vector_store_id, kc.vector_store_docs_id,
+            kc.catalog_file_id
      FROM   kanban_columnas kc
      WHERE  kc.id = ?`,
     { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
@@ -69,6 +71,13 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // IDs viejos: NO se borran todavía. Solo se limpian al final, cuando el
   // reemplazo ya está creado y guardado en BD (ver paso 11).
   const vsAnterior = columna.vector_store_id || null;
+
+  // Vector store de DOCUMENTOS (archivos que sube el usuario desde el front).
+  // La sincronización no lo crea, no lo llena y no lo borra: solo lo lee para
+  // dos cosas —adjuntarlo al asistente junto al catálogo, y meterlo en la
+  // lista de "no borrar" de la limpieza—. Es NULL en las cuentas que todavía
+  // no lo usan y todo se comporta como siempre.
+  const vsDocs = columna.vector_store_docs_id || null;
 
   // El assistant_id es opcional: las columnas que corren por Responses API no
   // usan asistentes (las instrucciones salen de la BD). Sin él se sincroniza
@@ -283,7 +292,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     try {
       await ensureAssistantHasFileSearch(
         assistant_id,
-        vectorStoreId,
+        [vectorStoreId, vsDocs],
         headersJson,
         logger,
       );
@@ -336,13 +345,22 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // Se le pasa el vector store que tenía la columna en BD para poder borrarlo
   // aunque el asistente ya no exista; si solo se preguntara al asistente, los
   // stores viejos quedarían acumulándose en la cuenta de OpenAI.
+  //
+  // vsDocs va en conservarVsIds y NO es opcional: los candidatos a borrar
+  // salen, entre otras fuentes, de los vector stores adjuntos al asistente, y
+  // el de documentos está adjunto ahí. Sin esta línea la sincronización
+  // borraría los archivos del usuario en la primera corrida.
   try {
     await cleanupAllAssistantVectorStores(
       assistant_id,
       headersJson,
       headersBase,
       logger,
-      { extraVsIds: [vsAnterior], conservarVsIds: [vectorStoreId] },
+      {
+        extraVsIds: [vsAnterior],
+        conservarVsIds: [vectorStoreId, vsDocs],
+        vsDestinoRescate: vectorStoreId,
+      },
     );
   } catch (err) {
     await logger(`⚠️ Limpieza de vector stores viejos falló: ${err.message}`);
@@ -447,6 +465,11 @@ async function cleanupAllAssistantVectorStores(
   const conservar = new Set((opts.conservarVsIds || []).filter(Boolean));
   const candidatos = new Set((opts.extraVsIds || []).filter(Boolean));
 
+  // Vector store al que se mueven los archivos que NO son catálogo antes de
+  // destruir el store viejo. Sin él, la limpieza vuelve al comportamiento de
+  // antes (borrar todo), así que conviene pasarlo siempre.
+  const vsDestinoRescate = opts.vsDestinoRescate || null;
+
   if (assistantId) {
     try {
       const res = await axios.get(
@@ -506,6 +529,58 @@ async function cleanupAllAssistantVectorStores(
 
       for (const vsFile of allVsFiles) {
         const fileId = vsFile.id;
+
+        // ¿Es un catálogo generado por nosotros o un documento del usuario?
+        //
+        // Antes esto no se preguntaba: se borraba todo lo que hubiera en el
+        // vector store viejo. Como hasta ahora los archivos que el usuario
+        // subía desde el front vivían en ESE MISMO store, se los llevaba por
+        // delante en cada sincronización — o sea, en cada vez que alguien
+        // guardaba un producto.
+        //
+        // Los catálogos los sube uploadCatalogFile() con el nombre
+        // `catalogo_<config>_<estado>_<timestamp>.json`. Cualquier otra cosa es
+        // del usuario y se rescata al vector store nuevo en vez de borrarse.
+        //
+        // Ante la duda (no se pudo leer el nombre) se RESCATA, no se borra:
+        // acumular un archivo de más cuesta centavos, perder el manual de un
+        // cliente no se deshace.
+        let nombreArchivo = null;
+        try {
+          const meta = await axios.get(
+            `https://api.openai.com/v1/files/${fileId}`,
+            { headers: headersBase },
+          );
+          nombreArchivo = meta?.data?.filename || null;
+        } catch (_) {
+          /* sin nombre → se trata como documento del usuario */
+        }
+
+        const esCatalogo = (nombreArchivo || '').startsWith('catalogo_');
+
+        if (!esCatalogo && vsDestinoRescate && vsDestinoRescate !== vsId) {
+          try {
+            await axios.post(
+              `https://api.openai.com/v1/vector_stores/${vsDestinoRescate}/files`,
+              { file_id: fileId },
+              { headers: headersJson },
+            );
+            await logger(
+              `    🛟 File ${fileId} (${nombreArchivo || 'sin nombre'}) NO es catálogo: rescatado a VS ${vsDestinoRescate}`,
+            );
+          } catch (err) {
+            await logger(
+              `    ⚠️ No se pudo rescatar ${fileId} a ${vsDestinoRescate}: ${err?.response?.data?.error?.message || err.message}`,
+            );
+          }
+          // No se desvincula del store viejo ni se borra de OpenAI Files.
+          // Borrar un vector store NO borra los archivos que contiene, así que
+          // el DELETE del store que viene más abajo ya deshace el vínculo. Y si
+          // el rescate falló, dejarlo quieto es lo que hay que hacer: el
+          // archivo sigue existiendo en Files y se puede recuperar. La opción
+          // de "desvincular igual" lo dejaría huérfano e invisible.
+          continue;
+        }
 
         try {
           await axios.delete(
@@ -707,12 +782,19 @@ async function waitVectorStoreFileProcessed(
   throw new Error(`Timeout indexando vsFile=${vectorStoreFileId}`);
 }
 
+// Recibe uno o varios vector stores (catálogo + documentos). Acepta también un
+// string suelto por compatibilidad con quien la llamaba de a uno. OpenAI admite
+// como máximo 2 vector stores por asistente, que es justo lo que hay: catálogo
+// y documentos.
 async function ensureAssistantHasFileSearch(
   assistantId,
-  vectorStoreId,
+  vectorStoreIds,
   headersJson,
   logger,
 ) {
+  const stores = (
+    Array.isArray(vectorStoreIds) ? vectorStoreIds : [vectorStoreIds]
+  ).filter(Boolean);
   const getRes = await axios.get(
     `https://api.openai.com/v1/assistants/${assistantId}`,
     { headers: headersJson },
@@ -729,12 +811,12 @@ async function ensureAssistantHasFileSearch(
     `https://api.openai.com/v1/assistants/${assistantId}`,
     {
       tools,
-      tool_resources: { file_search: { vector_store_ids: [vectorStoreId] } },
+      tool_resources: { file_search: { vector_store_ids: stores } },
     },
     { headers: headersJson },
   );
   await logger(
-    `✅ Assistant ${assistantId} actualizado con file_search + vector_store ${vectorStoreId}`,
+    `✅ Assistant ${assistantId} actualizado con file_search + vector_store(s) ${stores.join(', ')}`,
   );
 }
 

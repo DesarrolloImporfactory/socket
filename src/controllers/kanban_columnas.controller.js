@@ -17,7 +17,7 @@ async function getColumnas(id_configuracion) {
     `SELECT id, nombre, estado_db, color_fondo, color_texto, icono, orden,
         activo, es_estado_final, es_principal, es_dropi_principal,
         activa_ia, max_tokens, assistant_id, vector_store_id,
-        catalog_file_id, catalog_synced_at
+        vector_store_docs_id, catalog_file_id, catalog_synced_at
      FROM kanban_columnas
      WHERE id_configuracion = ?
      ORDER BY orden ASC`,

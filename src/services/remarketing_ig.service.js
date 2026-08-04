@@ -168,7 +168,8 @@ async function generarRemarketingIgIA({
   } = require('./kanban_ia.service');
 
   const [col] = await db.query(
-    `SELECT id, assistant_id, instrucciones, modelo, max_tokens, vector_store_id
+    `SELECT id, assistant_id, instrucciones, modelo, max_tokens,
+            vector_store_id, vector_store_docs_id
        FROM kanban_columnas
       WHERE id_configuracion = ?
         AND LOWER(estado_db) = LOWER(?)
@@ -194,7 +195,9 @@ async function generarRemarketingIgIA({
       model: col.modelo || 'gpt-4o-mini',
       max_tokens: col.max_tokens || 300,
       vector_store_id: col.vector_store_id || null,
+      vector_store_docs_id: col.vector_store_docs_id || null,
       api_key_openai,
+      id_configuracion,
     });
     // NO guardamos el response_id del remarketing: evita inflar la cadena de la
     // conversación con los nudges + el mensaje-trigger interno (lo que llevaba a

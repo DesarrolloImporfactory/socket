@@ -14,6 +14,7 @@ const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { extraerUrlsMedia, normalizarUrlMedia } = require('../utils/urlsMedia');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
+const { toolFileSearchResponses } = require('../utils/openia/fileSearch');
 
 const {
   enviarMensajeWhatsapp,
@@ -32,23 +33,43 @@ const {
 // Tope para mandar el catálogo dentro de las instrucciones en vez de usar
 // file_search.
 //
-// ⏸️ EN PAUSA (0 = desactivado): todas las columnas usan file_search, igual
-// que antes.
-//
-// La generación del texto inline también está en pausa, del otro lado:
-// GENERAR_CATALOGO_INLINE en syncCatalogoKanbanColumna.service.js. Para
-// reactivar hacen falta las TRES cosas, en este orden:
-//   1. GENERAR_CATALOGO_INLINE = true en el sync
-//   2. re-sincronizar los catálogos (si no, kanban_columnas.catalogo_inline
-//      está vacío o con texto viejo y esto igual cae a file_search)
-//   3. subir este tope
-//
 // Valores de referencia, medidos sobre los catálogos actuales:
 //   16000 → 233 de 238 conexiones usan inline (punto de equilibrio con
 //           file_search, que inyecta ~16.000 tokens por llamada)
 //   30000 → 237 de 238 (entran cfg 285, 403, 277 y 666)
 //   Infinity → las 238 (cfg 261, con 181 productos, costaría ~3x más)
-const TOPE_CATALOGO_INLINE = 0;
+const TOPE_CATALOGO_INLINE = 16000;
+
+// Configuraciones que YA usan catálogo inline. Mismo criterio que
+// USAR_RESPONSES_API: lista escrita a mano para ver de un vistazo hasta dónde
+// llegó la migración mientras se prueba.
+//
+// Hace falta además del tope porque GENERAR_CATALOGO_INLINE ya está activo:
+// cualquier cuenta que guarde un producto se llena su catalogo_inline, y sin
+// esta lista pasaría a inline sola, sin que nadie lo decidiera. El tope dice
+// "cabe"; esta lista dice "quiero".
+const CONFIGS_CON_CATALOGO_INLINE = [10];
+
+// Puente entre el prompt y el catálogo inline.
+//
+// Los prompts existentes están escritos contra file_search y lo nombran a cada
+// rato ("file_search es tu fuente de verdad", "el nombre EXACTO como aparece en
+// file_search", "si file_search NO devuelve combos..."). Solo en la columna
+// 6554 de la config 10 son 11 menciones.
+//
+// Con inline esa herramienta ya no se manda, así que el prompt apunta a algo
+// que no existe. En vez de reescribir los prompts —que los mantiene otra
+// persona y viven en la DB, no en el repo— se traduce el término aquí. Sale
+// más barato y no rompe a quien siga en file_search: este texto solo se pega
+// cuando usarInline es true.
+const PUENTE_INLINE =
+  'NOTA SOBRE EL CATÁLOGO: no tienes la herramienta file_search en esta ' +
+  'conversación y no la necesitas. Donde estas instrucciones digan ' +
+  '"file_search", se refieren al catálogo que viene a continuación: ya lo ' +
+  'tienes COMPLETO aquí abajo, no hay nada más que buscar. Trátalo con las ' +
+  'mismas reglas: es tu única fuente de verdad para nombres, precios, combos, ' +
+  'variedades y URLs; si un producto no está en él, no existe; nunca inventes ' +
+  'nada que no aparezca escrito ahí.';
 
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
 const {
@@ -302,7 +323,8 @@ async function procesarMensajeKanban(params) {
   // ── 1. Obtener configuración de la columna activa ─────────
   const [columna] = await db.query(
     `SELECT kc.id, kc.nombre, kc.assistant_id, kc.activa_ia,
-            kc.max_tokens, kc.vector_store_id, kc.es_dropi_principal,
+            kc.max_tokens, kc.vector_store_id, kc.vector_store_docs_id,
+            kc.es_dropi_principal,
             kc.catalogo_inline, kc.catalogo_inline_tokens
      FROM   kanban_columnas kc
      WHERE  kc.id_configuracion = ?
@@ -609,11 +631,16 @@ async function procesarMensajeKanban(params) {
       const catalogoInline = (columna.catalogo_inline || '').trim();
       const inlineTokens = Number(columna.catalogo_inline_tokens || 0);
       const usarInline =
-        !!catalogoInline && inlineTokens > 0 && inlineTokens <= TOPE_CATALOGO_INLINE;
+        CONFIGS_CON_CATALOGO_INLINE.includes(Number(id_configuracion)) &&
+        !!catalogoInline &&
+        inlineTokens > 0 &&
+        inlineTokens <= TOPE_CATALOGO_INLINE;
 
       let instruccionesFinales = assistantInfo.instructions;
       if (usarInline) {
-        instruccionesFinales = `${assistantInfo.instructions}\n\n${catalogoInline}`;
+        // El puente va ENTRE el prompt y el catálogo, no al final: así el
+        // modelo lee la aclaración justo antes del bloque al que apunta.
+        instruccionesFinales = `${assistantInfo.instructions}\n\n${PUENTE_INLINE}\n\n${catalogoInline}`;
         await log(
           `📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`,
         );
@@ -630,8 +657,12 @@ async function procesarMensajeKanban(params) {
         input: inputFinal,
         model: assistantInfo.model,
         max_tokens: columna.max_tokens || 500,
+        // El catálogo se apaga cuando va inline; los documentos NO, porque no
+        // tienen otra vía de llegar al modelo.
         vector_store_id: usarInline ? null : columna.vector_store_id || null,
+        vector_store_docs_id: columna.vector_store_docs_id || null,
         api_key_openai,
+        id_configuracion,
       });
     } else {
       await log(`🚨 entro con polling VIEJO SISTEMA`);
@@ -677,7 +708,9 @@ async function procesarMensajeKanban(params) {
           model: assistantInfo.model,
           max_tokens: columna.max_tokens || 500,
           vector_store_id: columna.vector_store_id || null,
+          vector_store_docs_id: columna.vector_store_docs_id || null,
           api_key_openai,
+          id_configuracion,
         });
       } catch (err2) {
         if (esSinSaldo(err2)) {
@@ -1531,6 +1564,15 @@ async function ejecutarConResponsesAPI({
   max_tokens,
   vector_store_id,
   api_key_openai,
+  // Opcional a propósito: quien no lo pase se queda con el comportamiento de
+  // siempre (sin tope de fragmentos). Se agregó así, y no renombrando
+  // vector_store_id, para no romper a remarketing_ig.service.js.
+  id_configuracion,
+  // Vector store de documentos subidos por el usuario. Va aparte del catálogo
+  // porque son cosas distintas: el catálogo puede viajar inline (y entonces
+  // vector_store_id llega en null), pero los documentos solo se pueden
+  // consultar por búsqueda. También opcional por la misma razón.
+  vector_store_docs_id,
 }) {
   const headers = {
     Authorization: `Bearer ${api_key_openai}`,
@@ -1542,9 +1584,17 @@ async function ejecutarConResponsesAPI({
     finalInstructions += '\n\n' + additional_instructions;
   }
 
+  // Como máximo son dos: catálogo y documentos —justo el límite que acepta la
+  // API—. Con el catálogo inline el primero llega en null y queda solo el de
+  // documentos; si no hay ninguno, toolFileSearchResponses devuelve null y no
+  // se manda la herramienta.
   const tools = [];
-  if (vector_store_id) {
-    tools.push({ type: 'file_search', vector_store_ids: [vector_store_id] });
+  const toolBusqueda = toolFileSearchResponses(
+    [vector_store_id, vector_store_docs_id],
+    id_configuracion,
+  );
+  if (toolBusqueda) {
+    tools.push(toolBusqueda);
   }
 
   const body = {

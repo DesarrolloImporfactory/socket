@@ -17,6 +17,18 @@ const {
   sanitizarRespuestaAgente,
 } = require('../utils/openia/sanitizador_agente');
 const { construirContextoColumna } = require('../utils/contextoColumna');
+const { toolFileSearchResponses } = require('../utils/openia/fileSearch');
+
+// Configuraciones donde los documentos que sube el usuario van a un vector
+// store PROPIO (kanban_columnas.vector_store_docs_id) en vez de compartir el
+// del catálogo. Misma convención que USAR_RESPONSES_API y
+// CONFIGS_CON_CATALOGO_INLINE: lista a mano para ver hasta dónde llegó esto.
+//
+// Solo decide DÓNDE se guardan los archivos nuevos. Todo lo demás (listarlos,
+// borrarlos, mandárselos al bot) lee vector_store_docs_id directamente: si
+// está en NULL —que es el caso de las 237 cuentas que no están en esta lista—
+// se comporta exactamente igual que antes.
+const CONFIGS_CON_DOCS_SEPARADOS = [10];
 
 // Tipos de archivo aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
@@ -146,7 +158,7 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
 
   const [col] = await db.query(
     `SELECT id, assistant_id, instrucciones, modelo, nombre,
-            vector_store_id, id_configuracion
+            vector_store_id, vector_store_docs_id, id_configuracion
      FROM kanban_columnas WHERE id = ? LIMIT 1`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
@@ -197,17 +209,23 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
     }
   }
 
-  // Archivos del vector store — común a ambos sistemas
-  let archivos = [];
-  if (col.vector_store_id) {
+  // Archivos de los vector stores — común a ambos sistemas.
+  //
+  // Son DOS stores desde que se separó el catálogo de los documentos: el del
+  // catálogo (lo maneja la sincronización) y el de documentos (lo que sube el
+  // usuario). Se listan los dos y se devuelven juntos para no cambiarle la
+  // forma a la respuesta; cada archivo trae `origen` por si el front quiere
+  // separarlos en la biblioteca más adelante.
+  const listarArchivos = async (vectorStoreId, origen) => {
+    if (!vectorStoreId) return [];
     try {
       const vsFiles = await axios.get(
-        `https://api.openai.com/v1/vector_stores/${col.vector_store_id}/files?limit=20`,
+        `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files?limit=20`,
         { headers: headersJson(apiKey) },
       );
       const files = vsFiles.data?.data || [];
 
-      archivos = await Promise.all(
+      return await Promise.all(
         files.map(async (f) => {
           try {
             const fileRes = await axios.get(
@@ -220,22 +238,37 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
               bytes: fileRes.data?.bytes || 0,
               status: f.status,
               created: f.created_at,
+              origen,
             };
           } catch {
-            return { id: f.id, nombre: f.id, bytes: 0, status: f.status };
+            return {
+              id: f.id,
+              nombre: f.id,
+              bytes: 0,
+              status: f.status,
+              origen,
+            };
           }
         }),
       );
     } catch (_) {
       /* ignorar error de archivos, no romper el flujo */
+      return [];
     }
-  }
+  };
+
+  const [archivosCatalogo, archivosDocs] = await Promise.all([
+    listarArchivos(col.vector_store_id, 'catalogo'),
+    listarArchivos(col.vector_store_docs_id, 'documento'),
+  ]);
+  const archivos = [...archivosDocs, ...archivosCatalogo];
 
   return res.status(200).json({
     success: true,
     data: {
       ...asistenteData,
       vector_store_id: col.vector_store_id,
+      vector_store_docs_id: col.vector_store_docs_id,
       archivos,
     },
   });
@@ -494,7 +527,9 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
   }
 
   const [col] = await db.query(
-    `SELECT id, id_configuracion, assistant_id, vector_store_id FROM kanban_columnas WHERE id = ?`,
+    `SELECT id, id_configuracion, assistant_id, vector_store_id,
+            vector_store_docs_id
+       FROM kanban_columnas WHERE id = ?`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
@@ -526,18 +561,35 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     if (!file_id) throw new Error('OpenAI no devolvió file_id');
 
     // 2. Crear o reutilizar vector store
-    let vectorStoreId = col.vector_store_id;
+    //
+    // Con docs separados el archivo va a vector_store_docs_id, que la
+    // sincronización nunca toca. Antes iba al mismo store del catálogo, y como
+    // el sync lo recrea entero en cada corrida, el archivo del usuario se
+    // borraba en cuanto alguien guardaba un producto.
+    const docsSeparados = CONFIGS_CON_DOCS_SEPARADOS.includes(
+      Number(col.id_configuracion),
+    );
+    const campoVs = docsSeparados ? 'vector_store_docs_id' : 'vector_store_id';
+
+    let vectorStoreId = docsSeparados
+      ? col.vector_store_docs_id
+      : col.vector_store_id;
+
     if (!vectorStoreId) {
       const vsRes = await axios.post(
         'https://api.openai.com/v1/vector_stores',
-        { name: `kanban_${col.id}_${Date.now()}` },
+        {
+          name: docsSeparados
+            ? `kanban_docs_${col.id}_${Date.now()}`
+            : `kanban_${col.id}_${Date.now()}`,
+        },
         { headers: headersJson(apiKey) },
       );
       vectorStoreId = vsRes.data?.id;
       if (!vectorStoreId) throw new Error('No se pudo crear vector store');
 
       await db.query(
-        `UPDATE kanban_columnas SET vector_store_id = ? WHERE id = ?`,
+        `UPDATE kanban_columnas SET ${campoVs} = ? WHERE id = ?`,
         { replacements: [vectorStoreId, id], type: db.QueryTypes.UPDATE },
       );
     }
@@ -582,12 +634,20 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
         : [];
       const tieneFileSearch = tools.some((t) => t?.type === 'file_search');
 
+      // Van los DOS stores, no solo el que acaba de recibir el archivo.
+      // tool_resources se reemplaza entero, así que mandar únicamente el de
+      // documentos le dejaría al asistente sin catálogo (y al revés).
+      const storesAsistente = [
+        docsSeparados ? col.vector_store_id : vectorStoreId,
+        docsSeparados ? vectorStoreId : col.vector_store_docs_id,
+      ].filter(Boolean);
+
       await axios.post(
         `https://api.openai.com/v1/assistants/${col.assistant_id}`,
         {
           tools: tieneFileSearch ? tools : [...tools, { type: 'file_search' }],
           tool_resources: {
-            file_search: { vector_store_ids: [vectorStoreId] },
+            file_search: { vector_store_ids: storesAsistente },
           },
         },
         { headers: headersJson(apiKey) },
@@ -602,7 +662,14 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       nombre: archivo.originalname,
       bytes: archivo.size,
       status: 'completed',
-      vector_store_id: vectorStoreId,
+      origen: docsSeparados ? 'documento' : 'catalogo',
+      // Se devuelven los dos por separado para que el front no tenga que
+      // adivinar cuál cambió. Los que ya usan `vector_store_id` siguen
+      // recibiéndolo con el mismo significado de siempre.
+      vector_store_id: docsSeparados ? col.vector_store_id : vectorStoreId,
+      vector_store_docs_id: docsSeparados
+        ? vectorStoreId
+        : col.vector_store_docs_id,
     });
   } catch (err) {
     const mensaje = parsearErrorOpenAI(err);
@@ -619,7 +686,8 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
   if (!id || !file_id) return next(new AppError('Faltan id o file_id', 400));
 
   const [col] = await db.query(
-    `SELECT id, id_configuracion, vector_store_id FROM kanban_columnas WHERE id = ?`,
+    `SELECT id, id_configuracion, vector_store_id, vector_store_docs_id
+       FROM kanban_columnas WHERE id = ?`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
@@ -627,17 +695,30 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
   const apiKey = await getApiKey(col.id_configuracion);
   const errores = [];
 
-  if (col.vector_store_id) {
+  // El archivo puede estar en cualquiera de los dos stores y el front no manda
+  // en cuál: se intenta en ambos y basta con que uno funcione. Un 404 en el
+  // otro es lo esperado, no un error que valga la pena mostrar.
+  const stores = [col.vector_store_id, col.vector_store_docs_id].filter(
+    Boolean,
+  );
+  let desvinculado = false;
+
+  for (const vsId of stores) {
     try {
       await axios.delete(
-        `https://api.openai.com/v1/vector_stores/${col.vector_store_id}/files/${file_id}`,
+        `https://api.openai.com/v1/vector_stores/${vsId}/files/${file_id}`,
         { headers: headersJson(apiKey) },
       );
-    } catch (err) {
-      errores.push(
-        `No se pudo quitar del vector store: ${parsearErrorOpenAI(err)}`,
-      );
+      desvinculado = true;
+    } catch (_) {
+      /* el archivo no estaba en este store */
     }
+  }
+
+  if (stores.length && !desvinculado) {
+    errores.push(
+      'No se pudo quitar del vector store: el archivo no estaba en ninguno.',
+    );
   }
 
   try {
@@ -662,7 +743,7 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   const [columna] = await db.query(
     `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
-            kc.id_configuracion, c.api_key_openai
+            kc.vector_store_docs_id, kc.id_configuracion, c.api_key_openai
      FROM kanban_columnas kc
      INNER JOIN configuraciones c ON c.id = kc.id_configuracion
      WHERE kc.id = ? AND kc.activo = 1 LIMIT 1`,
@@ -695,11 +776,15 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   };
 
   const tools = [];
-  if (columna.vector_store_id) {
-    tools.push({
-      type: 'file_search',
-      vector_store_ids: [columna.vector_store_id],
-    });
+  // El tope de fragmentos solo se aplica a las configs de CONFIGS_CON_TOPE.
+  // Aquí importa pasar el id: a diferencia del flujo de producción, el chat de
+  // prueba usa la Responses API para CUALQUIER cuenta, no solo las migradas.
+  const toolBusqueda = toolFileSearchResponses(
+    [columna.vector_store_id, columna.vector_store_docs_id],
+    columna.id_configuracion,
+  );
+  if (toolBusqueda) {
+    tools.push(toolBusqueda);
   }
 
   const body = {
