@@ -12,6 +12,7 @@ router.delete('/eliminar/:id', ctrl.eliminar); // soft delete
 
 // Asignación a cliente
 router.post('/asignar', ctrl.asignar); // { id_cliente, tipo, id_etiqueta }
+router.post('/asignar-contacto', ctrl.asignarPorContacto); // { correo, telefono, asesor?, ciclo? }
 router.get('/cliente/:id_cliente', ctrl.obtenerPorCliente); // etiquetas del cliente
 
 module.exports = router;

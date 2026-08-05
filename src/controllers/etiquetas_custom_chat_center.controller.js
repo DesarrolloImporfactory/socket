@@ -200,6 +200,59 @@ exports.asignar = catchAsync(async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────────
+// 4b) Asignar asesor/ciclo por correo o teléfono en las líneas de Imporsuit.
+// La venta llama esto después de que la plantilla y la encuesta crean el chat.
+exports.asignarPorContacto = catchAsync(async (req, res, next) => {
+  const correo = String(req.body?.correo ?? '').trim().toLowerCase();
+  const telefono = String(req.body?.telefono ?? '').replace(/\D/g, '');
+  const asesor = String(req.body?.asesor ?? '').trim().slice(0, 120);
+  const ciclo = String(req.body?.ciclo ?? '').trim().slice(0, 120);
+  const configuraciones = [242, 265];
+
+  if (!correo && !telefono) return next(new AppError('correo o teléfono es obligatorio', 400));
+  if (!asesor && !ciclo) return res.status(200).json({ status: 200, data: { filas: 0 } });
+
+  let filas = 0;
+  for (const idConfiguracion of configuraciones) {
+    const ids = {};
+    for (const [tipo, nombre] of [['asesor', asesor], ['ciclo', ciclo]]) {
+      if (!nombre) continue;
+      const [etiqueta] = await db.query(
+        `SELECT id FROM etiquetas_custom_chat_center
+          WHERE id_configuracion = :idConfiguracion AND tipo = :tipo
+            AND nombre = :nombre AND deleted_at IS NULL LIMIT 1`,
+        { replacements: { idConfiguracion, tipo, nombre }, type: QueryTypes.SELECT },
+      );
+      if (etiqueta) {
+        ids[tipo] = etiqueta.id;
+      } else {
+        const [insertId] = await db.query(
+          `INSERT INTO etiquetas_custom_chat_center (id_configuracion, tipo, nombre)
+           VALUES (:idConfiguracion, :tipo, :nombre)`,
+          { replacements: { idConfiguracion, tipo, nombre }, type: QueryTypes.INSERT },
+        );
+        ids[tipo] = insertId;
+      }
+    }
+
+    const sets = [];
+    const replacements = { idConfiguracion, correo, telefono };
+    if (ids.asesor) { sets.push('id_etiqueta_asesor = :asesor'); replacements.asesor = ids.asesor; }
+    if (ids.ciclo) { sets.push('id_etiqueta_ciclo = :ciclo'); replacements.ciclo = ids.ciclo; }
+
+    const [, metadata] = await db.query(
+      `UPDATE clientes_chat_center SET ${sets.join(', ')}, updated_at = NOW()
+        WHERE id_configuracion = :idConfiguracion
+          AND (LOWER(TRIM(email_cliente)) = NULLIF(:correo, '')
+               OR celular_cliente = NULLIF(:telefono, ''))`,
+      { replacements, type: QueryTypes.UPDATE },
+    );
+    filas += Number(metadata?.affectedRows ?? metadata ?? 0);
+  }
+
+  res.status(200).json({ status: 200, data: { filas } });
+});
+
 // 5) Obtener etiquetas asignadas a un cliente
 // GET /etiquetas-custom/cliente/:id_cliente
 // ─────────────────────────────────────────────
