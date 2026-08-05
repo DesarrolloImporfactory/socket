@@ -7,6 +7,8 @@ const { db } = require('../database/config');
 const fs = require('fs');
 const path = require('path');
 
+const { usaCatalogoInline } = require('../utils/openia/fileSearch');
+
 // ✅ ACTIVO: generación del catálogo en texto plano para mandarlo dentro de
 // las instrucciones en vez de usar file_search.
 //
@@ -276,19 +278,88 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   );
 
   // ── 8. Esperar indexación ─────────────────────────────────
-  await waitVectorStoreFileProcessed(
-    vectorStoreId,
-    vectorStoreFileId,
-    headersJson,
-    logger,
-    sleep,
-  );
+  // OpenAI falla indexando cada tanto con {"code":"server_error","message":"An
+  // internal error occurred."} sobre archivos perfectamente válidos: el
+  // 2026-08-05 falló en 2 de las 3 columnas de la config 10 con exactamente el
+  // mismo catálogo que en la tercera indexó sin problema (0 fallos en los 4
+  // meses anteriores, así que es rachas, no una condición estable).
+  //
+  // Encima tarda en marcar el archivo como `failed`: waitVectorStoreFileProcessed
+  // lo ve `in_progress` durante los 60 intentos y sale por timeout, y recién
+  // después OpenAI lo pasa a `failed`. Por eso el log dice "Timeout" y no
+  // "Falló".
+  //
+  // Se reintenta una vez SUBIENDO UN ARCHIVO NUEVO, no readjuntando el mismo:
+  // cuando un file falla la indexación queda inservible (usage_bytes = 0) y
+  // volver a colgarlo del store repite el error.
+  const vaInline = usaCatalogoInline(id_configuracion);
+  let indexado = false;
+  let fileIdFinal = newFileId;
+  let vsFileIdFinal = vectorStoreFileId;
+
+  for (let intento = 1; intento <= 2 && !indexado; intento++) {
+    if (intento > 1) {
+      await logger('🔁 Reintentando indexación con una subida nueva del catálogo');
+      fileIdFinal = await uploadCatalogFile(
+        catalogPayload,
+        id_configuracion,
+        columna.estado_db,
+        headersBase,
+        logger,
+      );
+      const reattach = await attachFileToVectorStore(
+        vectorStoreId,
+        fileIdFinal,
+        headersJson,
+        logger,
+      );
+      vsFileIdFinal = reattach.vectorStoreFileId;
+    }
+
+    try {
+      await waitVectorStoreFileProcessed(
+        vectorStoreId,
+        vsFileIdFinal,
+        headersJson,
+        logger,
+        sleep,
+      );
+      indexado = true;
+    } catch (err) {
+      await logger(`⚠️ Indexación fallida (intento ${intento}/2): ${err.message}`);
+
+      // Para las cuentas que siguen leyendo el vector store, un catálogo sin
+      // indexar no sirve de nada: se corta acá, igual que siempre, y la columna
+      // conserva en BD el store anterior (que sí está indexado). Pero el store
+      // nuevo se descarta ANTES de cortar: el throw se lleva por delante la
+      // limpieza del paso 11, y así es como se acumularon los huérfanos.
+      if (intento === 2 && !vaInline) {
+        await descartarVectorStore(vectorStoreId, headersJson, logger);
+        throw err;
+      }
+    }
+  }
+
+  if (!indexado) {
+    // Solo llega acá una cuenta con catálogo inline. Para ella el vector store
+    // NO está en el camino de lectura del bot —lee kanban_columnas.catalogo_inline—
+    // así que dejar que un error de OpenAI en un paso que no usa le bloquee la
+    // actualización del catálogo era el peor de los dos mundos: el bot seguía
+    // citando productos viejos y en el log solo aparecía un "Timeout indexando".
+    await logger(
+      `📄 La config ${id_configuracion} va por catálogo inline: se guarda el ` +
+        'catálogo nuevo igual y se conserva el vector store anterior',
+    );
+  }
 
   // ── 9. Actualizar asistente con el nuevo VS (NO fatal) ────
   // Las columnas por Responses API no usan asistente, y un asistente borrado
   // en OpenAI no debe tumbar un catálogo que ya está creado e indexado.
+  //
+  // Si la indexación falló no se toca el asistente: apuntarlo a un store con un
+  // archivo roto es peor que dejarlo en el anterior, que sí funciona.
   let assistantActualizado = false;
-  if (assistant_id) {
+  if (assistant_id && indexado) {
     try {
       await ensureAssistantHasFileSearch(
         assistant_id,
@@ -316,24 +387,43 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     ? construirCatalogoInline(catalogPayload)
     : null;
 
-  await db.query(
-    `UPDATE kanban_columnas
-     SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
-         ${inline ? ', catalogo_inline = ?, catalogo_inline_tokens = ?' : ''}
-     WHERE id = ?`,
-    {
-      replacements: inline
-        ? [
-            vectorStoreId,
-            newFileId,
-            inline.texto,
-            inline.tokens,
-            id_kanban_columna,
-          ]
-        : [vectorStoreId, newFileId, id_kanban_columna],
-      type: db.QueryTypes.UPDATE,
-    },
-  );
+  if (indexado) {
+    await db.query(
+      `UPDATE kanban_columnas
+       SET vector_store_id = ?, catalog_file_id = ?, catalog_synced_at = NOW()
+           ${inline ? ', catalogo_inline = ?, catalogo_inline_tokens = ?' : ''}
+       WHERE id = ?`,
+      {
+        replacements: inline
+          ? [
+              vectorStoreId,
+              fileIdFinal,
+              inline.texto,
+              inline.tokens,
+              id_kanban_columna,
+            ]
+          : [vectorStoreId, fileIdFinal, id_kanban_columna],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  } else if (inline) {
+    // Indexación fallida en una cuenta inline: se guarda SOLO el texto.
+    // vector_store_id y catalog_file_id se dejan como estaban a propósito —el
+    // store viejo sigue vivo e indexado, el nuevo tiene un archivo roto— y así
+    // la columna nunca queda apuntando a algo que no responde.
+    //
+    // catalog_synced_at sí se actualiza: para esta cuenta el catálogo que lee
+    // el bot ES el inline, y ese quedó al día.
+    await db.query(
+      `UPDATE kanban_columnas
+       SET catalogo_inline = ?, catalogo_inline_tokens = ?, catalog_synced_at = NOW()
+       WHERE id = ?`,
+      {
+        replacements: [inline.texto, inline.tokens, id_kanban_columna],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  }
 
   if (inline) {
     await logger(
@@ -350,33 +440,46 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // salen, entre otras fuentes, de los vector stores adjuntos al asistente, y
   // el de documentos está adjunto ahí. Sin esta línea la sincronización
   // borraría los archivos del usuario en la primera corrida.
-  try {
-    await cleanupAllAssistantVectorStores(
-      assistant_id,
-      headersJson,
-      headersBase,
-      logger,
-      {
-        extraVsIds: [vsAnterior],
-        conservarVsIds: [vectorStoreId, vsDocs],
-        vsDestinoRescate: vectorStoreId,
-      },
-    );
-  } catch (err) {
-    await logger(`⚠️ Limpieza de vector stores viejos falló: ${err.message}`);
+  if (indexado) {
+    try {
+      await cleanupAllAssistantVectorStores(
+        assistant_id,
+        headersJson,
+        headersBase,
+        logger,
+        {
+          extraVsIds: [vsAnterior],
+          conservarVsIds: [vectorStoreId, vsDocs],
+          vsDestinoRescate: vectorStoreId,
+        },
+      );
+    } catch (err) {
+      await logger(`⚠️ Limpieza de vector stores viejos falló: ${err.message}`);
+    }
+  } else {
+    // La limpieza normal borraría el store ANTERIOR, que es justamente el que la
+    // columna sigue usando. Al revés: el que sobra es el que se acaba de crear.
+    //
+    // Sin esto cada indexación fallida deja un vector store huérfano para
+    // siempre (había 3 del 2026-08-05 y 5 del 2026-04-15 en la cuenta).
+    await descartarVectorStore(vectorStoreId, headersJson, logger);
   }
 
   await logger(
-    `✅ Sync completo: columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
+    `${indexado ? '✅ Sync completo' : '⚠️ Sync parcial (solo catálogo inline)'}: ` +
+      `columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
   );
 
   return {
     ok: true,
+    // Sin indexación no hay vector store nuevo: la columna quedó con el de
+    // antes, y esto tiene que decir lo que hay en BD, no lo que se intentó.
+    indexado,
     id_kanban_columna,
     id_configuracion,
     assistant_id,
-    vector_store_id: vectorStoreId,
-    catalog_file_id: newFileId,
+    vector_store_id: indexado ? vectorStoreId : vsAnterior || null,
+    catalog_file_id: indexado ? fileIdFinal : columna.catalog_file_id || null,
     total_items: catalogoNormalizado.length,
     local_file_path: localFilePath, // ← NUEVO
   };
@@ -780,6 +883,27 @@ async function waitVectorStoreFileProcessed(
     await sleep(2000);
   }
   throw new Error(`Timeout indexando vsFile=${vectorStoreFileId}`);
+}
+
+// Borra un vector store que se creó pero no llegó a servir. Nunca lanza: es
+// higiene de la cuenta de OpenAI, no puede tumbar un sync ni tapar el error
+// original que llevó hasta acá.
+async function descartarVectorStore(vectorStoreId, headersJson, logger) {
+  if (!vectorStoreId) return;
+  try {
+    await axios.delete(
+      `https://api.openai.com/v1/vector_stores/${vectorStoreId}`,
+      { headers: headersJson },
+    );
+    await logger(
+      `🗑️ Vector store ${vectorStoreId} descartado (no llegó a indexar)`,
+    );
+  } catch (err) {
+    await logger(
+      `⚠️ No se pudo descartar el vector store ${vectorStoreId}: ` +
+        `${err?.response?.data?.error?.message || err.message}`,
+    );
+  }
 }
 
 // Recibe uno o varios vector stores (catálogo + documentos). Acepta también un

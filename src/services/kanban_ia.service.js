@@ -14,7 +14,10 @@ const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { extraerUrlsMedia, normalizarUrlMedia } = require('../utils/urlsMedia');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
-const { toolFileSearchResponses } = require('../utils/openia/fileSearch');
+const {
+  toolFileSearchResponses,
+  CONFIGS_CON_CATALOGO_INLINE,
+} = require('../utils/openia/fileSearch');
 
 const {
   enviarMensajeWhatsapp,
@@ -40,15 +43,10 @@ const {
 //   Infinity → las 238 (cfg 261, con 181 productos, costaría ~3x más)
 const TOPE_CATALOGO_INLINE = 16000;
 
-// Configuraciones que YA usan catálogo inline. Mismo criterio que
-// USAR_RESPONSES_API: lista escrita a mano para ver de un vistazo hasta dónde
-// llegó la migración mientras se prueba.
-//
-// Hace falta además del tope porque GENERAR_CATALOGO_INLINE ya está activo:
-// cualquier cuenta que guarde un producto se llena su catalogo_inline, y sin
-// esta lista pasaría a inline sola, sin que nadie lo decidiera. El tope dice
-// "cabe"; esta lista dice "quiero".
-const CONFIGS_CON_CATALOGO_INLINE = [10];
+// Configuraciones que YA usan catálogo inline: la lista vive en
+// utils/openia/fileSearch.js porque el servicio de sincronización también la
+// necesita (ver el comentario ahí). Se importa arriba junto con
+// toolFileSearchResponses.
 
 // Puente entre el prompt y el catálogo inline.
 //

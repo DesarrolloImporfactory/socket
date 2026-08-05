@@ -73,6 +73,34 @@ const MAX_RESULTADOS = 5;
 const CONFIGS_CON_TOPE = [10];
 
 // ─────────────────────────────────────────────────────────────
+// CONFIGS_CON_CATALOGO_INLINE
+//
+// Cuentas que ya NO usan file_search para el catálogo: reciben el catálogo
+// completo en texto dentro de las instrucciones (kanban_columnas.catalogo_inline).
+// Misma convención que las listas de arriba: escrita a mano para ver de un
+// vistazo hasta dónde llegó la migración.
+//
+// Vive acá y no en kanban_ia.service.js porque hay dos lugares que necesitan
+// saberlo y tienen que coincidir:
+//   - kanban_ia.service.js            → decide si manda el catálogo inline
+//   - syncCatalogoKanbanColumna.js    → decide si un fallo indexando el vector
+//                                       store puede tumbar el sync (para estas
+//                                       cuentas no, el store no se lee)
+// Duplicar la lista significaba que activar una cuenta en un archivo y olvidarla
+// en el otro dejaba el sistema en un estado incoherente y silencioso.
+//
+// Hace falta además del tope de tokens porque GENERAR_CATALOGO_INLINE está
+// activo para todos: cualquier cuenta que guarde un producto se llena su
+// catalogo_inline, y sin esta lista pasaría a inline sola, sin que nadie lo
+// decidiera. El tope dice "cabe"; esta lista dice "quiero".
+// ─────────────────────────────────────────────────────────────
+const CONFIGS_CON_CATALOGO_INLINE = [10];
+
+function usaCatalogoInline(id_configuracion) {
+  return CONFIGS_CON_CATALOGO_INLINE.includes(Number(id_configuracion));
+}
+
+// ─────────────────────────────────────────────────────────────
 // Responses API
 //
 // Sin id_configuracion (o con una que no esté en la lista) devuelve la tool
@@ -146,6 +174,8 @@ function normalizarToolsAssistants(tools) {
 
 module.exports = {
   MAX_RESULTADOS,
+  CONFIGS_CON_CATALOGO_INLINE,
+  usaCatalogoInline,
   toolFileSearchResponses,
   toolFileSearchAssistants,
   normalizarToolsAssistants,
