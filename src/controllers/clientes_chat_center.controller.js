@@ -2851,6 +2851,22 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
     params.push(...productosAd);
   }
 
+  // ── Multi-select: PROGRAMA de Imporsuit (Club, Ecommerce Method…) ──
+  // `productos_imporsuit` guarda los ids separados por coma ("1,2,7"), así que
+  // el match va con FIND_IN_SET y no con IN. Varios seleccionados = OR: el
+  // contacto aparece si tiene CUALQUIERA de esos programas.
+  //
+  // OJO: es distinto de `ultimo_producto_ad`, que es el producto del anuncio.
+  const programasImp = parseCSV(req.body.productos_imporsuit).filter((v) =>
+    /^\d+$/.test(String(v).trim()),
+  );
+  if (programasImp.length) {
+    whereParts.push(
+      `(${programasImp.map(() => 'FIND_IN_SET(?, c.productos_imporsuit)').join(' OR ')})`,
+    );
+    params.push(...programasImp.map((v) => String(v).trim()));
+  }
+
   const fechaTipo = String(req.body.fecha_tipo ?? '').trim();
   const fechaDesde = String(req.body.fecha_desde ?? '').trim();
   const fechaHasta = String(req.body.fecha_hasta ?? '').trim();
