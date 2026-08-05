@@ -31,6 +31,19 @@ function limpiarTelefono(raw) {
   return String(raw || '').replace(/\D/g, '');
 }
 
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || 'https://chatcenter.imporfactory.app';
+
+/**
+ * Link público y único de la encuesta para un cliente concreto.
+ * Mismo formato que usa la encuesta de satisfacción (utils/encuestaSatisfaccion.js),
+ * para que encuestas_publico resuelva al cliente por el ?cid=.
+ */
+function construirLinkEncuesta(idEncuesta, idCliente) {
+  if (!idEncuesta || !idCliente) return '';
+  return `${FRONTEND_URL}/encuesta-publica/${idEncuesta}?cid=${idCliente}`;
+}
+
 const CAMPOS_CONTACTO = new Set([
   'nombre',
   'name',
@@ -101,7 +114,8 @@ async function estaDentroVentana24h({ idCliente, idConfiguracion }) {
 }
 
 /**
- * Reemplaza placeholders {nombre}, {apellido}, {email}, {telefono}.
+ * Reemplaza placeholders {nombre}, {apellido}, {email}, {telefono}
+ * y {link_encuesta} (alias {link}) con el link único del cliente.
  * Limpia espacios sobrantes cuando el placeholder queda vacío.
  */
 function resolverPlaceholders(str, contacto, opts = {}) {
@@ -115,9 +129,14 @@ function resolverPlaceholders(str, contacto, opts = {}) {
   const apellido = (contacto.apellido || '').trim();
   const email = (contacto.email || '').trim();
   const telefono = (contacto.telefono || '').trim();
+  const linkEncuesta = (contacto.link_encuesta || '').trim();
 
   return (
     str
+      // {link_encuesta} va primero: {link} no lo puede capturar porque exige
+      // la llave de cierre justo después, pero dejamos el orden explícito.
+      .replace(/\{link_encuesta\}/gi, linkEncuesta)
+      .replace(/\{link\}/gi, linkEncuesta)
       .replace(/\{nombre\}/gi, nombre)
       .replace(/\{apellido\}/gi, apellido)
       .replace(/\{email\}/gi, email)
@@ -151,11 +170,20 @@ function parseTemplateParams(raw) {
 async function enviarMensajeBienvenida({
   idCliente,
   idConfiguracion,
+  idEncuesta,
   telefono,
   encuestaCfg,
-  contacto,
+  contacto: contactoBase,
 }) {
   try {
+    // El link de la encuesta es único por cliente: se resuelve en cada envío
+    // y queda disponible como {link_encuesta} tanto en el texto como en los
+    // parámetros del template.
+    const contacto = {
+      ...contactoBase,
+      link_encuesta: construirLinkEncuesta(idEncuesta, idCliente),
+    };
+
     const hayTexto = !!(encuestaCfg.mensaje_dentro_24h || '').trim();
     const hayTemplate = !!(encuestaCfg.template_fuera_24h || '').trim();
 
@@ -224,8 +252,11 @@ async function enviarMensajeBienvenida({
       const resuelto = resolverPlaceholders(String(p ?? ''), contacto);
 
       if (!resuelto || !resuelto.trim()) {
+        const esLink = /\{link(_encuesta)?\}/i.test(String(p ?? ''));
         console.warn(
-          `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} quedó vacío — placeholder original: "${p}". Se reemplaza por "-"`,
+          esLink
+            ? `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} es el link de la encuesta pero quedó vacío (idEncuesta=${idEncuesta} idCliente=${idCliente}). Se reemplaza por "-"`
+            : `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} quedó vacío — placeholder original: "${p}". Se reemplaza por "-"`,
         );
         return '-';
       }
@@ -589,6 +620,7 @@ exports.inbound = async (req, res) => {
       enviarMensajeBienvenida({
         idCliente,
         idConfiguracion,
+        idEncuesta,
         telefono: telLimpio,
         encuestaCfg,
         contacto: {

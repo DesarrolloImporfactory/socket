@@ -8,6 +8,22 @@
 
 const { db } = require('../database/config');
 const { QueryTypes } = require('sequelize');
+const {
+  normalizarPreguntas,
+  validarRespuestasRequeridas,
+} = require('../utils/encuestaPreguntas');
+
+/** Parse tolerante de las columnas JSON (pueden venir string u objeto). */
+function parseJsonSeguro(valor) {
+  if (!valor) return {};
+  if (typeof valor === 'object') return valor;
+  try {
+    const parsed = JSON.parse(valor);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * GET /api/v1/encuestas_publico/publica/:idEncuesta?cid=123
@@ -41,14 +57,8 @@ exports.obtenerEncuestaPublica = async (req, res) => {
         .json({ ok: false, error: 'Encuesta no encontrada o inactiva' });
     }
 
-    // Parsear preguntas
-    let preguntas = [];
-    try {
-      preguntas =
-        typeof encuesta.preguntas === 'string'
-          ? JSON.parse(encuesta.preguntas)
-          : encuesta.preguntas;
-    } catch (_) {}
+    // Parsear + normalizar preguntas (garantiza el shape que espera el front)
+    const preguntas = normalizarPreguntas(encuesta.preguntas);
 
     // ── Preview mode ──
     if (cid === 'preview') {
@@ -193,7 +203,7 @@ exports.responderEncuestaPublica = async (req, res) => {
 
     const [encuesta] = await db.query(
       `
-      SELECT id, tipo, umbral_escalacion
+      SELECT id, tipo, umbral_escalacion, preguntas
       FROM encuestas
       WHERE id = :id AND activa = 1 AND deleted_at IS NULL
       LIMIT 1
@@ -208,6 +218,17 @@ exports.responderEncuestaPublica = async (req, res) => {
       return res
         .status(404)
         .json({ ok: false, error: 'Encuesta no encontrada' });
+    }
+
+    // Validar preguntas obligatorias del lado servidor (el front ya valida,
+    // pero el endpoint es público y hay que blindarlo)
+    const faltantes = validarRespuestasRequeridas(encuesta.preguntas, respuestas);
+    if (faltantes.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Faltan respuestas obligatorias',
+        faltantes,
+      });
     }
 
     let idConfiguracion = null;
@@ -254,16 +275,22 @@ exports.responderEncuestaPublica = async (req, res) => {
     const scoreNum = score ? Number(score) : null;
     const escalado =
       scoreNum && scoreNum <= (encuesta.umbral_escalacion || 2) ? 1 : 0;
-    const respuestasJson = JSON.stringify(respuestas || {});
+    const respuestasNuevas =
+      respuestas && typeof respuestas === 'object' ? respuestas : {};
 
     let idRespuesta = null;
 
-    // Buscar la respuesta pendiente MÁS RECIENTE (estado = 'enviada')
+    // Buscar la fila abierta MÁS RECIENTE de este cliente:
+    //  - 'enviada'  → satisfacción: se mandó el link al cerrar el chat
+    //  - 'recibida' → webhook_lead: el lead entró por el webhook y ahora
+    //                 llena el formulario. Se fusiona en la MISMA fila para
+    //                 no partir en dos el registro del mismo contacto.
     if (cid) {
       const [pendiente] = await db.query(
         `
-        SELECT id, id_encargado FROM encuestas_respuestas
-        WHERE id_encuesta = :enc AND id_cliente_chat_center = :cid AND estado = 'enviada'
+        SELECT id, id_encargado, respuestas FROM encuestas_respuestas
+        WHERE id_encuesta = :enc AND id_cliente_chat_center = :cid
+          AND estado IN ('enviada', 'recibida')
         ORDER BY created_at DESC LIMIT 1
       `,
         {
@@ -273,6 +300,13 @@ exports.responderEncuestaPublica = async (req, res) => {
       );
 
       if (pendiente) {
+        // Conservar lo que ya trajo el webhook y superponer lo del formulario
+        const respuestasPrevias = parseJsonSeguro(pendiente.respuestas);
+        const respuestasFusionadas = {
+          ...respuestasPrevias,
+          ...respuestasNuevas,
+        };
+
         // Usar el encargado que cerró ese chat específico (no el actual)
         await db.query(
           `
@@ -284,7 +318,7 @@ exports.responderEncuestaPublica = async (req, res) => {
           {
             replacements: {
               score: scoreNum,
-              resp: respuestasJson,
+              resp: JSON.stringify(respuestasFusionadas),
               escalado,
               id: pendiente.id,
             },
@@ -311,7 +345,7 @@ exports.responderEncuestaPublica = async (req, res) => {
             cid: cid || null,
             encargado: idEncargado,
             score: scoreNum,
-            resp: respuestasJson,
+            resp: JSON.stringify(respuestasNuevas),
             escalado,
           },
           type: QueryTypes.INSERT,

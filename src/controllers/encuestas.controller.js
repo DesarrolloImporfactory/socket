@@ -10,6 +10,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const crypto = require('crypto');
 const ExcelJS = require('exceljs');
+const { normalizarPreguntas } = require('../utils/encuestaPreguntas');
 
 const DEFAULT_MENSAJE_SATISFACCION =
   '¡Hola {nombre}! 🙏\n\nGracias por comunicarte con nosotros. Nos encantaría saber cómo fue tu experiencia:\n\n👉 {link}\n\n¡Solo toma 10 segundos!';
@@ -22,7 +23,7 @@ exports.listarPorConexion = catchAsync(async (req, res, next) => {
 
   const encuestas = await db.query(
     `
-  SELECT e.id, e.tipo, e.nombre, e.descripcion, e.activa,
+  SELECT e.id, e.tipo, e.nombre, e.descripcion, e.activa, e.preguntas,
            e.cooldown_horas, e.delay_envio_minutos, e.mensaje_envio,
            e.url_encuesta_publica, e.umbral_escalacion,
            e.mensaje_dentro_24h, e.template_fuera_24h, e.template_parameters,
@@ -65,6 +66,8 @@ exports.stats = catchAsync(async (req, res, next) => {
       COUNT(*) AS total,
       SUM(CASE WHEN estado = 'respondida' THEN 1 ELSE 0 END) AS respondidas,
       SUM(CASE WHEN estado = 'enviada' THEN 1 ELSE 0 END) AS pendientes,
+      -- 'recibida' = lead que entró por webhook pero aún no llenó el formulario
+      SUM(CASE WHEN estado = 'recibida' THEN 1 ELSE 0 END) AS recibidas,
       SUM(CASE WHEN source = 'webhook' THEN 1 ELSE 0 END) AS por_webhook,
       SUM(CASE WHEN source = 'link' THEN 1 ELSE 0 END) AS por_link,
       ROUND(AVG(score), 1) AS promedio_score,
@@ -268,8 +271,7 @@ exports.crear = catchAsync(async (req, res, next) => {
     }
   }
 
-  const preguntasJson =
-    typeof preguntas === 'string' ? preguntas : JSON.stringify(preguntas || []);
+  const preguntasJson = JSON.stringify(normalizarPreguntas(preguntas));
   const webhookSecret =
     tipo === 'webhook_lead' ? crypto.randomBytes(16).toString('hex') : null;
 
@@ -341,6 +343,7 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     mensaje_dentro_24h,
     template_fuera_24h,
     template_parameters,
+    preguntas,
   } = req.body;
 
   if (delay_envio_minutos !== undefined && delay_envio_minutos > 1380) {
@@ -365,6 +368,12 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     templateParamsNormalized = String(template_parameters); // ya es JSON string
   }
 
+  // Preguntas: solo se tocan si vienen en el body (undefined = no modificar)
+  const preguntasJson =
+    preguntas === undefined
+      ? undefined
+      : JSON.stringify(normalizarPreguntas(preguntas));
+
   await db.query(
     `
     UPDATE encuestas SET
@@ -378,6 +387,7 @@ exports.actualizar = catchAsync(async (req, res, next) => {
       mensaje_dentro_24h = CASE WHEN :mensaje24_provided = 1 THEN :mensaje24 ELSE mensaje_dentro_24h END,
       template_fuera_24h = CASE WHEN :tpl_provided = 1 THEN :tpl ELSE template_fuera_24h END,
       template_parameters = CASE WHEN :tplparams_provided = 1 THEN :tplparams ELSE template_parameters END,
+      preguntas = CASE WHEN :preguntas_provided = 1 THEN :preguntas ELSE preguntas END,
       updated_at = NOW()
     WHERE id = :id
   `,
@@ -398,6 +408,8 @@ exports.actualizar = catchAsync(async (req, res, next) => {
         tpl: template_fuera_24h || null,
         tplparams_provided: templateParamsNormalized !== undefined ? 1 : 0,
         tplparams: templateParamsNormalized ?? null,
+        preguntas_provided: preguntasJson !== undefined ? 1 : 0,
+        preguntas: preguntasJson ?? null,
       },
       type: QueryTypes.UPDATE,
     },
@@ -699,9 +711,11 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
         row[`dyn_${k}`] =
           val == null
             ? ''
-            : typeof val === 'object'
-              ? JSON.stringify(val)
-              : String(val);
+            : Array.isArray(val)
+              ? val.join(', ') // preguntas de opción múltiple
+              : typeof val === 'object'
+                ? JSON.stringify(val)
+                : String(val);
       });
       ws.addRow(row);
     });
