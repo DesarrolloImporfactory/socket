@@ -104,6 +104,11 @@ const ClientesChatCenter = db.define(
     propietario: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     direccion: { type: DataTypes.STRING(255), allowNull: true },
     productos: { type: DataTypes.STRING(255), allowNull: true },
+    // Programas de Imporsuit del cliente: ids de `productos_venta`
+    // separados por coma ("1,2,7"). Copia denormalizada que escribe el PHP
+    // al registrar una venta, para filtrar la lista sin cruzar bases.
+    // OJO: es distinto de `productos`, que es el producto del anuncio.
+    productos_imporsuit: { type: DataTypes.STRING(255), allowNull: true },
   },
   {
     tableName: 'clientes_chat_center',

@@ -1912,6 +1912,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.created_at, c.updated_at, c.deleted_at,
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
       c.pedido_confirmado, c.direccion, c.productos,
+      c.productos_imporsuit,
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
