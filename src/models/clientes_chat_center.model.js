@@ -104,14 +104,17 @@ const ClientesChatCenter = db.define(
     propietario: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     direccion: { type: DataTypes.STRING(255), allowNull: true },
     productos: { type: DataTypes.STRING(255), allowNull: true },
-    // Programas de Imporsuit del cliente: ids de `productos_venta`
-    // separados por coma ("1,2,7"). Copia denormalizada que escribe el PHP
-    // al registrar una venta, para filtrar la lista sin cruzar bases.
-    // OJO: es distinto de `productos`, que es el producto del anuncio.
-    productos_imporsuit: { type: DataTypes.STRING(255), allowNull: true },
-    // Los mismos programas en texto legible, para mostrar y exportar sin
-    // depender del catálogo (que vive en la base de Imporsuit).
-    productos_imporsuit_txt: { type: DataTypes.STRING(500), allowNull: true },
+    // ⚠ `productos_imporsuit` y `productos_imporsuit_txt` (programas de
+    // Imporsuit del cliente) NO se declaran acá A PROPÓSITO.
+    //
+    // Sequelize arma un SELECT explícito con TODOS los atributos declarados,
+    // así que declararlas antes de aplicar las migraciones 1200/1300 en
+    // `chat_center` tumba cualquier findOne/findAll con "Unknown column".
+    // Las consultas que sí las usan (listado, filtros y export) van en SQL
+    // crudo y comprueban antes si existen.
+    //
+    // Cuando las migraciones estén aplicadas en TODOS los entornos, se pueden
+    // sumar acá sin más.
   },
   {
     tableName: 'clientes_chat_center',

@@ -11,6 +11,43 @@ const Planes_chat_centerModel = require('../models/planes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
 const { QueryTypes } = require('sequelize');
+
+/**
+ * ¿`clientes_chat_center` ya tiene las columnas de programas de Imporsuit?
+ *
+ * El código puede desplegarse antes que la migración
+ * (`2026-08-05_1200_chatcenter_productos_imporsuit.sql` y la _1300), y un
+ * SELECT con una columna inexistente tumba TODO el listado de contactos con
+ * "Unknown column". Se comprueba una sola vez por proceso y, si no están, el
+ * listado sigue funcionando sin la columna Programa.
+ */
+let _colsProgramas = null;
+async function colsProgramas() {
+  if (_colsProgramas !== null) return _colsProgramas;
+  try {
+    const rows = await db.query(
+      "SHOW COLUMNS FROM clientes_chat_center LIKE 'productos_imporsuit%'",
+      { type: QueryTypes.SELECT },
+    );
+    const nombres = (rows || []).map((r) => r.Field || r.field);
+    _colsProgramas = {
+      ids: nombres.includes('productos_imporsuit'),
+      txt: nombres.includes('productos_imporsuit_txt'),
+    };
+  } catch {
+    _colsProgramas = { ids: false, txt: false };
+  }
+  return _colsProgramas;
+}
+
+/** Fragmento de SELECT con las columnas que existan (o cadena vacía). */
+async function selectProgramas(alias = 'c.') {
+  const c = await colsProgramas();
+  const out = [];
+  if (c.ids) out.push(alias + 'productos_imporsuit');
+  if (c.txt) out.push(alias + 'productos_imporsuit_txt');
+  return out.length ? ', ' + out.join(', ') : '';
+}
 const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
@@ -1413,7 +1450,9 @@ exports.listarClientes = catchAsync(async (req, res) => {
   const programasImpGet = parseCSV(req.query.productos_imporsuit).filter((v) =>
     /^\d+$/.test(String(v).trim()),
   );
-  if (programasImpGet.length) {
+  // Sin la columna (migración sin aplicar) el filtro se ignora: mejor devolver
+  // todo que tumbar el listado con "Unknown column".
+  if (programasImpGet.length && (await colsProgramas()).ids) {
     whereParts.push(
       `(${programasImpGet.map(() => 'FIND_IN_SET(?, c.productos_imporsuit)').join(' OR ')})`,
     );
@@ -1463,6 +1502,8 @@ exports.listarClientes = catchAsync(async (req, res) => {
     return r;
   };
 
+  const colsProg = await selectProgramas('c.');
+
   const buildDataSql = (whereSql, orderPrefix = '') => `
     SELECT
       c.id, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
@@ -1480,9 +1521,7 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.ultimo_rol_mensaje,
       c.ultimo_msg_id,
       c.ultimo_producto_ad,
-      c.ultimo_producto_ad_at,
-      c.productos_imporsuit,
-      c.productos_imporsuit_txt
+      c.ultimo_producto_ad_at${colsProg}
     FROM clientes_chat_center c
     LEFT JOIN etiquetas_custom_chat_center eca
       ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
@@ -1918,6 +1957,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
   `;
 
   // ★ CAMBIO: columnas asesor/ciclo en SELECT
+  const colsProgPost = await selectProgramas('c.');
   const dataSql = `
     SELECT
       c.id, c.id_plataforma, c.id_configuracion, c.id_etiqueta, c.uid_cliente,
@@ -1925,9 +1965,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.imagePath, c.mensajes_por_dia_cliente, c.estado_cliente,
       c.created_at, c.updated_at, c.deleted_at,
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
-      c.pedido_confirmado, c.direccion, c.productos,
-      c.productos_imporsuit,
-      c.productos_imporsuit_txt,
+      c.pedido_confirmado, c.direccion, c.productos${colsProgPost},
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
@@ -2875,7 +2913,8 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
   const programasImp = parseCSV(req.body.productos_imporsuit).filter((v) =>
     /^\d+$/.test(String(v).trim()),
   );
-  if (programasImp.length) {
+  // Sin la columna (migración sin aplicar) el filtro se ignora.
+  if (programasImp.length && (await colsProgramas()).ids) {
     whereParts.push(
       `(${programasImp.map(() => 'FIND_IN_SET(?, c.productos_imporsuit)').join(' OR ')})`,
     );
@@ -2909,6 +2948,15 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
 
   const whereClause = `WHERE ${whereParts.join(' AND ')}`;
 
+  // Nombres y no ids: el Excel se arma acá y la tabla de productos vive en la
+  // base de Imporsuit, en otro servidor — no hay JOIN posible. Si la columna
+  // todavía no existe (migración sin aplicar), la hoja sale sin Programa en
+  // vez de fallar entera.
+  const cols = await colsProgramas();
+  const colProgramaExport = cols.txt
+    ? 'c.productos_imporsuit_txt AS programa,'
+    : "'' AS programa,";
+
   const sql = `
     SELECT
       c.id,
@@ -2923,9 +2971,7 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
       c.ultimo_texto,
       c.chat_cerrado,
       c.direccion,
-      -- Nombres y no ids: el Excel se arma acá y la tabla de productos vive
-      -- en la base de Imporsuit, en otro servidor. No hay JOIN posible.
-      c.productos_imporsuit_txt AS programa,
+      ${colProgramaExport}
       eca.nombre  AS asesor_nombre,
       ecc.nombre  AS ciclo_nombre,
       IFNULL(etq.etiquetas, '') AS etiquetas
