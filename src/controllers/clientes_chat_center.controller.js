@@ -1408,6 +1408,18 @@ exports.listarClientes = catchAsync(async (req, res) => {
     params.push(...productosAd);
   }
 
+  // PROGRAMA de Imporsuit: `productos_imporsuit` guarda ids separados por coma,
+  // así que el match va con FIND_IN_SET. Varios = OR (tiene cualquiera).
+  const programasImpGet = parseCSV(req.query.productos_imporsuit).filter((v) =>
+    /^\d+$/.test(String(v).trim()),
+  );
+  if (programasImpGet.length) {
+    whereParts.push(
+      `(${programasImpGet.map(() => 'FIND_IN_SET(?, c.productos_imporsuit)').join(' OR ')})`,
+    );
+    params.push(...programasImpGet.map((v) => String(v).trim()));
+  }
+
   // ── Filtro por fecha ──
   const fechaTipo = String(req.query.fecha_tipo ?? '').trim(); // 'created' | 'actividad'
   const fechaDesde = String(req.query.fecha_desde ?? '').trim(); // 'YYYY-MM-DD'
@@ -1468,7 +1480,9 @@ exports.listarClientes = catchAsync(async (req, res) => {
       c.ultimo_rol_mensaje,
       c.ultimo_msg_id,
       c.ultimo_producto_ad,
-      c.ultimo_producto_ad_at
+      c.ultimo_producto_ad_at,
+      c.productos_imporsuit,
+      c.productos_imporsuit_txt
     FROM clientes_chat_center c
     LEFT JOIN etiquetas_custom_chat_center eca
       ON eca.id = c.id_etiqueta_asesor AND eca.deleted_at IS NULL
@@ -1913,6 +1927,7 @@ exports.listarClientesPorEtiqueta = catchAsync(async (req, res, next) => {
       c.chat_cerrado, c.bot_openia, c.id_departamento, c.id_encargado,
       c.pedido_confirmado, c.direccion, c.productos,
       c.productos_imporsuit,
+      c.productos_imporsuit_txt,
       c.id_etiqueta_asesor,
       c.id_etiqueta_ciclo,
       eca.nombre AS asesor_nombre,
@@ -2908,6 +2923,9 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
       c.ultimo_texto,
       c.chat_cerrado,
       c.direccion,
+      -- Nombres y no ids: el Excel se arma acá y la tabla de productos vive
+      -- en la base de Imporsuit, en otro servidor. No hay JOIN posible.
+      c.productos_imporsuit_txt AS programa,
       eca.nombre  AS asesor_nombre,
       ecc.nombre  AS ciclo_nombre,
       IFNULL(etq.etiquetas, '') AS etiquetas
@@ -2960,6 +2978,7 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
     { header: 'Etiquetas', key: 'etiquetas', width: 40 },
     { header: 'Asesor', key: 'asesor', width: 20 },
     { header: 'Ciclo', key: 'ciclo', width: 20 },
+    { header: 'Programa', key: 'programa', width: 34 },
     { header: 'Dirección', key: 'direccion', width: 30 },
     { header: 'Creado', key: 'created_at', width: 20 },
     { header: 'Última Actividad', key: 'ultimo_mensaje_at', width: 20 },
@@ -3007,6 +3026,7 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
         etiquetas: row.etiquetas || '',
         asesor: row.asesor_nombre || '',
         ciclo: row.ciclo_nombre || '',
+        programa: row.programa || '',
         direccion: row.direccion || '',
         created_at: row.created_at,
         ultimo_mensaje_at: row.ultimo_mensaje_at,

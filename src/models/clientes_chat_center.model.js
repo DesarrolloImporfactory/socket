@@ -109,6 +109,9 @@ const ClientesChatCenter = db.define(
     // al registrar una venta, para filtrar la lista sin cruzar bases.
     // OJO: es distinto de `productos`, que es el producto del anuncio.
     productos_imporsuit: { type: DataTypes.STRING(255), allowNull: true },
+    // Los mismos programas en texto legible, para mostrar y exportar sin
+    // depender del catálogo (que vive en la base de Imporsuit).
+    productos_imporsuit_txt: { type: DataTypes.STRING(500), allowNull: true },
   },
   {
     tableName: 'clientes_chat_center',
