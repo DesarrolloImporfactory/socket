@@ -347,338 +347,89 @@ exports.eliminarDepartamento = catchAsync(async (req, res, next) => {
 });
 
 exports.transferirChat = catchAsync(async (req, res, next) => {
-  const {
-    source, // 'ms' | 'ig' | 'wa' (o undefined => WhatsApp)
-    id_encargado,
-    id_departamento,
-    id_cliente_chat_center, // para WhatsApp
-    motivo,
-    id_configuracion,
-    emisor,
-  } = req.body;
+  try {
+    const {
+      source, // 'ms' | 'ig' | 'wa' (o undefined => WhatsApp)
+      id_encargado,
+      id_departamento,
+      id_cliente_chat_center, // para WhatsApp
+      motivo,
+      id_configuracion,
+      emisor,
+    } = req.body;
 
-  if (id_encargado == null && id_departamento == null) {
-    return res.status(400).json({
-      status: 'fail',
-      message: 'Debe enviar al menos id_encargado o id_departamento',
+    if (id_encargado == null && id_departamento == null) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Debe enviar al menos id_encargado o id_departamento',
+      });
+    }
+
+    // ✅ buscar nombre encargado y propietario origen UNA SOLA VEZ
+    const subUsuario = id_encargado
+      ? await Sub_usuarios_chat_center.findByPk(id_encargado, {
+          attributes: ['nombre_encargado'],
+        })
+      : null;
+    const nombreEncargado =
+      subUsuario?.nombre_encargado ?? `ID ${id_encargado}`;
+
+    const propietarioOrigen = await Clientes_chat_center.findOne({
+      where: { id_configuracion, propietario: 1 },
     });
-  }
 
-  // ✅ buscar nombre encargado y propietario origen UNA SOLA VEZ
-  const subUsuario = id_encargado
-    ? await Sub_usuarios_chat_center.findByPk(id_encargado, {
-        attributes: ['nombre_encargado'],
-      })
-    : null;
-  const nombreEncargado = subUsuario?.nombre_encargado ?? `ID ${id_encargado}`;
-
-  const propietarioOrigen = await Clientes_chat_center.findOne({
-    where: { id_configuracion, propietario: 1 },
-  });
-
-  switch (source) {
-    case 'ms': {
-      if (!id_cliente_chat_center) {
-        return res.status(400).json({
-          status: 'fail',
-          message: 'Falta id_cliente_chat_center para WhatsApp',
-        });
-      }
-
-      // 1. Obtener el registro actual
-      const clienteActual = await Clientes_chat_center.findOne({
-        where: { id: id_cliente_chat_center },
-      });
-
-      if (!clienteActual) {
-        return res.status(404).json({
-          status: 'fail',
-          message: 'Cliente no encontrado',
-        });
-      }
-
-      // 2. Guardar el id_encargado actual en variable
-      const id_encargado_anterior = clienteActual.id_encargado;
-
-      await Historial_encargados.create({
-        id_cliente_chat_center,
-        id_departamento_asginado: id_departamento,
-        id_encargado_anterior,
-        id_encargado_nuevo: id_encargado,
-        motivo,
-      });
-
-      const configuracion_transferida = await DepartamentosChatCenter.findOne({
-        where: { id_departamento },
-        include: [
-          {
-            model: Configuraciones,
-            as: 'configuracion',
-            required: true, // required:true => INNER JOIN
-            attributes: ['id_telefono'], // trae solo lo que necesitas
-          },
-        ],
-      });
-
-      await Clientes_chat_center.update(
-        { id_encargado: id_encargado, chat_cerrado: 0 },
-        {
-          where: { id: clienteActual.id },
-        },
-      );
-
-      // Buscar el cliente propietario de esa configuración (igual que arriba)
-      const cliente_configuracion = await Clientes_chat_center.findOne({
-        where: {
-          id_configuracion: configuracion_transferida.id_configuracion,
-          propietario: 1,
-        },
-      });
-
-      // (opcional pero recomendado) si no existe propietario, evita crashear:
-      if (!cliente_configuracion) {
-        throw new Error(
-          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
-        );
-      }
-
-      // ✅ mensaje en el chat destino
-      await MensajesClientes.create({
-        id_configuracion: configuracion_transferida.id_configuracion,
-        id_cliente: cliente_configuracion.id,
-        mid_mensaje: configuracion_transferida.configuracion.id_telefono,
-        tipo_mensaje: 'notificacion',
-        visto: 0,
-        texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
-        rol_mensaje: 3,
-        celular_recibe: clienteActual.id,
-        uid_whatsapp: clienteActual.celular_cliente,
-      });
-
-      // ✅ mensaje en el chat origen
-      if (propietarioOrigen) {
-        await MensajesClientes.create({
-          id_configuracion,
-          id_cliente: propietarioOrigen.id,
-          mid_mensaje: propietarioOrigen.id_telefono,
-          tipo_mensaje: 'notificacion',
-          visto: 0,
-          texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
-          rol_mensaje: 3,
-          celular_recibe: clienteActual.id,
-          uid_whatsapp: clienteActual.celular_cliente,
-        });
-      }
-
-      enviarConsultaAPI(
-        configuracion_transferida.id_configuracion,
-        clienteActual.id,
-      );
-
-      break;
-    }
-    case 'ig': {
-      if (!id_cliente_chat_center) {
-        return res.status(400).json({
-          status: 'fail',
-          message: 'Falta id_cliente_chat_center para WhatsApp',
-        });
-      }
-
-      // 1. Obtener el registro actual
-      const clienteActual = await Clientes_chat_center.findOne({
-        where: { id: id_cliente_chat_center },
-      });
-
-      if (!clienteActual) {
-        return res.status(404).json({
-          status: 'fail',
-          message: 'Cliente no encontrado',
-        });
-      }
-
-      // 2. Guardar el id_encargado actual en variable
-      const id_encargado_anterior = clienteActual.id_encargado;
-
-      await Historial_encargados.create({
-        id_cliente_chat_center,
-        id_departamento_asginado: id_departamento,
-        id_encargado_anterior,
-        id_encargado_nuevo: id_encargado,
-        motivo,
-      });
-
-      const configuracion_transferida = await DepartamentosChatCenter.findOne({
-        where: { id_departamento },
-        include: [
-          {
-            model: Configuraciones,
-            as: 'configuracion',
-            required: true, // required:true => INNER JOIN
-            attributes: ['id_telefono'], // trae solo lo que necesitas
-          },
-        ],
-      });
-
-      await Clientes_chat_center.update(
-        { id_encargado: id_encargado, chat_cerrado: 0 },
-        {
-          where: { id: clienteActual.id },
-        },
-      );
-
-      // Buscar el cliente propietario de esa configuración (igual que arriba)
-      const cliente_configuracion = await Clientes_chat_center.findOne({
-        where: {
-          id_configuracion: configuracion_transferida.id_configuracion,
-          propietario: 1,
-        },
-      });
-
-      // (opcional pero recomendado) si no existe propietario, evita crashear:
-      if (!cliente_configuracion) {
-        throw new Error(
-          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
-        );
-      }
-
-      // ✅ mensaje en el chat destino
-      await MensajesClientes.create({
-        id_configuracion: configuracion_transferida.id_configuracion,
-        id_cliente: cliente_configuracion.id,
-        mid_mensaje: configuracion_transferida.configuracion.id_telefono,
-        tipo_mensaje: 'notificacion',
-        visto: 0,
-        texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
-        rol_mensaje: 3,
-        celular_recibe: clienteActual.id,
-        uid_whatsapp: clienteActual.celular_cliente,
-      });
-
-      // ✅ mensaje en el chat origen
-      if (propietarioOrigen) {
-        await MensajesClientes.create({
-          id_configuracion,
-          id_cliente: propietarioOrigen.id,
-          mid_mensaje: propietarioOrigen.id_telefono,
-          tipo_mensaje: 'notificacion',
-          visto: 0,
-          texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
-          rol_mensaje: 3,
-          celular_recibe: clienteActual.id,
-          uid_whatsapp: clienteActual.celular_cliente,
-        });
-      }
-
-      enviarConsultaAPI(
-        configuracion_transferida.id_configuracion,
-        clienteActual.id,
-      );
-
-      break;
-    }
-    // WhatsApp por defecto (o 'wa')
-    default: {
-      if (!id_cliente_chat_center) {
-        return res.status(400).json({
-          status: 'fail',
-          message: 'Falta id_cliente_chat_center para WhatsApp',
-        });
-      }
-
-      // 1. Obtener el registro actual
-      const clienteActual = await Clientes_chat_center.findOne({
-        where: { id: id_cliente_chat_center },
-      });
-
-      if (!clienteActual) {
-        return res.status(404).json({
-          status: 'fail',
-          message: 'Cliente no encontrado',
-        });
-      }
-
-      // 2. Guardar el id_encargado actual en variable
-      const id_encargado_anterior = clienteActual.id_encargado;
-
-      await Historial_encargados.create({
-        id_cliente_chat_center,
-        id_departamento_asginado: id_departamento,
-        id_encargado_anterior,
-        id_encargado_nuevo: id_encargado,
-        motivo,
-      });
-
-      const configuracion_transferida = await DepartamentosChatCenter.findOne({
-        where: { id_departamento },
-        include: [
-          {
-            model: Configuraciones,
-            as: 'configuracion',
-            required: true, // required:true => INNER JOIN
-            attributes: ['id_telefono'], // trae solo lo que necesitas
-          },
-        ],
-      });
-
-      if (configuracion_transferida.id_configuracion == id_configuracion) {
-        /* validar si existe un cliente ya en esa otra configuracion */
-        const validar_cliente_new_conf = await Clientes_chat_center.findOne({
-          where: {
-            id_configuracion: configuracion_transferida.id_configuracion,
-            celular_cliente: clienteActual.celular_cliente,
-          },
-        });
-
-        if (validar_cliente_new_conf) {
-          await Clientes_chat_center.update(
-            { id_encargado: id_encargado, chat_cerrado: 0 },
-            {
-              where: { id: id_cliente_chat_center },
-            },
-          );
-
-          // Buscar el cliente propietario de esa configuración (igual que arriba)
-          const cliente_configuracion = await Clientes_chat_center.findOne({
-            where: {
-              id_configuracion: configuracion_transferida.id_configuracion,
-              propietario: 1,
-            },
+    switch (source) {
+      case 'ms': {
+        if (!id_cliente_chat_center) {
+          return res.status(400).json({
+            status: 'fail',
+            message: 'Falta id_cliente_chat_center para WhatsApp',
           });
-
-          // (opcional pero recomendado) si no existe propietario, evita crashear:
-          if (!cliente_configuracion) {
-            throw new Error(
-              `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
-            );
-          }
-
-          await MensajesClientes.create({
-            id_configuracion: configuracion_transferida.id_configuracion,
-            id_cliente: cliente_configuracion.id,
-            mid_mensaje: configuracion_transferida.configuracion.id_telefono,
-            tipo_mensaje: 'notificacion',
-            visto: 0,
-            texto_mensaje:
-              emisor + ' te transfirió este chat. Motivo: ' + motivo,
-            rol_mensaje: 3,
-            celular_recibe: validar_cliente_new_conf.id,
-            uid_whatsapp: validar_cliente_new_conf.celular_cliente,
-          });
-
-          enviarConsultaAPI(
-            configuracion_transferida.id_configuracion,
-            validar_cliente_new_conf.id,
-          );
         }
-      } else {
-        /* validar si existe un cliente ya en esa otra configuracion */
-        const validar_cliente_new_conf = await Clientes_chat_center.findOne({
-          where: {
-            id_configuracion: configuracion_transferida.id_configuracion,
-            celular_cliente: clienteActual.celular_cliente,
-          },
+
+        // 1. Obtener el registro actual
+        const clienteActual = await Clientes_chat_center.findOne({
+          where: { id: id_cliente_chat_center },
         });
+
+        if (!clienteActual) {
+          return res.status(404).json({
+            status: 'fail',
+            message: 'Cliente no encontrado',
+          });
+        }
+
+        // 2. Guardar el id_encargado actual en variable
+        const id_encargado_anterior = clienteActual.id_encargado;
+
+        await Historial_encargados.create({
+          id_cliente_chat_center,
+          id_departamento_asginado: id_departamento,
+          id_encargado_anterior,
+          id_encargado_nuevo: id_encargado,
+          motivo,
+        });
+
+        const configuracion_transferida = await DepartamentosChatCenter.findOne(
+          {
+            where: { id_departamento },
+            include: [
+              {
+                model: Configuraciones,
+                as: 'configuracion',
+                required: true, // required:true => INNER JOIN
+                attributes: ['id_telefono'], // trae solo lo que necesitas
+              },
+            ],
+          },
+        );
+
+        await Clientes_chat_center.update(
+          { id_encargado: id_encargado, chat_cerrado: 0 },
+          {
+            where: { id: clienteActual.id },
+          },
+        );
 
         // Buscar el cliente propietario de esa configuración (igual que arriba)
         const cliente_configuracion = await Clientes_chat_center.findOne({
@@ -695,109 +446,345 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
           );
         }
 
-        if (validar_cliente_new_conf) {
-          await Clientes_chat_center.update(
-            { id_encargado: id_encargado, chat_cerrado: 0 },
-            {
-              where: { id: validar_cliente_new_conf.id },
-            },
-          );
+        // ✅ mensaje en el chat destino
+        await MensajesClientes.create({
+          id_configuracion: configuracion_transferida.id_configuracion,
+          id_cliente: cliente_configuracion.id,
+          mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+          tipo_mensaje: 'notificacion',
+          visto: 0,
+          texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
+          rol_mensaje: 3,
+          celular_recibe: clienteActual.id,
+          uid_whatsapp: clienteActual.celular_cliente,
+        });
 
-          // ✅ mensaje en el chat destino
+        // ✅ mensaje en el chat origen
+        if (propietarioOrigen) {
           await MensajesClientes.create({
-            id_configuracion: configuracion_transferida.id_configuracion,
-            id_cliente: cliente_configuracion.id,
-            mid_mensaje: configuracion_transferida.id_telefono,
+            id_configuracion,
+            id_cliente: propietarioOrigen.id,
+            mid_mensaje: propietarioOrigen.id_telefono,
             tipo_mensaje: 'notificacion',
             visto: 0,
-            texto_mensaje:
-              emisor + ' te transfirió este chat. Motivo: ' + motivo,
+            texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
             rol_mensaje: 3,
-            celular_recibe: validar_cliente_new_conf.id,
-            uid_whatsapp: validar_cliente_new_conf.celular_cliente,
+            celular_recibe: clienteActual.id,
+            uid_whatsapp: clienteActual.celular_cliente,
           });
+        }
 
-          // ✅ mensaje en el chat origen
-          if (propietarioOrigen) {
-            await MensajesClientes.create({
-              id_configuracion,
-              id_cliente: propietarioOrigen.id,
-              mid_mensaje: propietarioOrigen.id_telefono,
-              tipo_mensaje: 'notificacion',
-              visto: 0,
-              texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
-              rol_mensaje: 3,
-              celular_recibe: clienteActual.id,
-              uid_whatsapp: clienteActual.celular_cliente,
-            });
-          }
+        enviarConsultaAPI(
+          configuracion_transferida.id_configuracion,
+          clienteActual.id,
+        );
 
-          enviarConsultaAPI(
-            configuracion_transferida.id_configuracion,
-            validar_cliente_new_conf.id,
-          );
-        } else {
-          // 1) Crear el cliente porque no existe en la nueva configuración
-          const nuevo_cliente = await Clientes_chat_center.create({
+        break;
+      }
+      case 'ig': {
+        if (!id_cliente_chat_center) {
+          return res.status(400).json({
+            status: 'fail',
+            message: 'Falta id_cliente_chat_center para WhatsApp',
+          });
+        }
+
+        // 1. Obtener el registro actual
+        const clienteActual = await Clientes_chat_center.findOne({
+          where: { id: id_cliente_chat_center },
+        });
+
+        if (!clienteActual) {
+          return res.status(404).json({
+            status: 'fail',
+            message: 'Cliente no encontrado',
+          });
+        }
+
+        // 2. Guardar el id_encargado actual en variable
+        const id_encargado_anterior = clienteActual.id_encargado;
+
+        await Historial_encargados.create({
+          id_cliente_chat_center,
+          id_departamento_asginado: id_departamento,
+          id_encargado_anterior,
+          id_encargado_nuevo: id_encargado,
+          motivo,
+        });
+
+        const configuracion_transferida = await DepartamentosChatCenter.findOne(
+          {
+            where: { id_departamento },
+            include: [
+              {
+                model: Configuraciones,
+                as: 'configuracion',
+                required: true, // required:true => INNER JOIN
+                attributes: ['id_telefono'], // trae solo lo que necesitas
+              },
+            ],
+          },
+        );
+
+        await Clientes_chat_center.update(
+          { id_encargado: id_encargado, chat_cerrado: 0 },
+          {
+            where: { id: clienteActual.id },
+          },
+        );
+
+        // Buscar el cliente propietario de esa configuración (igual que arriba)
+        const cliente_configuracion = await Clientes_chat_center.findOne({
+          where: {
             id_configuracion: configuracion_transferida.id_configuracion,
-            nombre_cliente: clienteActual.nombre_cliente,
-            apellido_cliente: clienteActual.apellido_cliente,
-            celular_cliente: clienteActual.celular_cliente,
-            id_encargado: id_encargado,
-            propietario: 0,
-            uid_cliente: cliente_configuracion.uid_cliente,
-          });
+            propietario: 1,
+          },
+        });
 
-          // ✅ mensaje en el chat destino
-          // 2) Crear el mensaje usando el nuevo cliente
-          await MensajesClientes.create({
-            id_configuracion: configuracion_transferida.id_configuracion,
-            id_cliente: cliente_configuracion.id,
-            mid_mensaje: cliente_configuracion.uid_cliente,
-            tipo_mensaje: 'notificacion',
-            visto: 0,
-            texto_mensaje:
-              emisor + ' te transfirió este chat. Motivo: ' + motivo,
-            rol_mensaje: 3,
-            celular_recibe: nuevo_cliente.id, // igual que tu patrón (usas el id)
-            uid_whatsapp: nuevo_cliente.celular_cliente, // el celular del nuevo cliente
-          });
-
-          // ✅ mensaje en el chat origen
-          if (propietarioOrigen) {
-            await MensajesClientes.create({
-              id_configuracion,
-              id_cliente: propietarioOrigen.id,
-              mid_mensaje: propietarioOrigen.id_telefono,
-              tipo_mensaje: 'notificacion',
-              visto: 0,
-              texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
-              rol_mensaje: 3,
-              celular_recibe: clienteActual.id,
-              uid_whatsapp: clienteActual.celular_cliente,
-            });
-          }
-
-          enviarConsultaAPI(
-            configuracion_transferida.id_configuracion,
-            nuevo_cliente.id,
+        // (opcional pero recomendado) si no existe propietario, evita crashear:
+        if (!cliente_configuracion) {
+          throw new Error(
+            `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
           );
         }
-      }
 
-      // Emitir al dashboard - cubre origen y destino
-      const configDestino = configuracion_transferida?.id_configuracion;
-      dashboardEmitter.emitByConfig(id_configuracion, 'chat_transferred');
-      if (configDestino && configDestino !== id_configuracion) {
-        dashboardEmitter.emitByConfig(configDestino, 'chat_transferred');
+        // ✅ mensaje en el chat destino
+        await MensajesClientes.create({
+          id_configuracion: configuracion_transferida.id_configuracion,
+          id_cliente: cliente_configuracion.id,
+          mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+          tipo_mensaje: 'notificacion',
+          visto: 0,
+          texto_mensaje: emisor + ' te transfirió este chat. Motivo: ' + motivo,
+          rol_mensaje: 3,
+          celular_recibe: clienteActual.id,
+          uid_whatsapp: clienteActual.celular_cliente,
+        });
+
+        // ✅ mensaje en el chat origen
+        if (propietarioOrigen) {
+          await MensajesClientes.create({
+            id_configuracion,
+            id_cliente: propietarioOrigen.id,
+            mid_mensaje: propietarioOrigen.id_telefono,
+            tipo_mensaje: 'notificacion',
+            visto: 0,
+            texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+            rol_mensaje: 3,
+            celular_recibe: clienteActual.id,
+            uid_whatsapp: clienteActual.celular_cliente,
+          });
+        }
+
+        enviarConsultaAPI(
+          configuracion_transferida.id_configuracion,
+          clienteActual.id,
+        );
+
+        break;
       }
-      break;
+      // WhatsApp por defecto (o 'wa')
+      default: {
+        if (!id_cliente_chat_center) {
+          return res.status(400).json({
+            status: 'fail',
+            message: 'Falta id_cliente_chat_center para WhatsApp',
+          });
+        }
+
+        // 1. Obtener el registro actual
+        const clienteActual = await Clientes_chat_center.findOne({
+          where: { id: id_cliente_chat_center },
+        });
+
+        if (!clienteActual) {
+          return res.status(404).json({
+            status: 'fail',
+            message: 'Cliente no encontrado',
+          });
+        }
+
+        // 2. Guardar el id_encargado actual en variable
+        const id_encargado_anterior = clienteActual.id_encargado;
+
+        await Historial_encargados.create({
+          id_cliente_chat_center,
+          id_departamento_asginado: id_departamento,
+          id_encargado_anterior,
+          id_encargado_nuevo: id_encargado,
+          motivo,
+        });
+
+        const configuracion_transferida = await DepartamentosChatCenter.findOne(
+          {
+            where: { id_departamento },
+            include: [
+              {
+                model: Configuraciones,
+                as: 'configuracion',
+                required: true, // required:true => INNER JOIN
+                attributes: ['id_telefono'], // trae solo lo que necesitas
+              },
+            ],
+          },
+        );
+
+        if (configuracion_transferida.id_configuracion == id_configuracion) {
+          /* validar si existe un cliente ya en esa otra configuracion */
+          const validar_cliente_new_conf = await Clientes_chat_center.findOne({
+            where: {
+              id_configuracion: configuracion_transferida.id_configuracion,
+              celular_cliente: clienteActual.celular_cliente,
+            },
+          });
+
+          if (validar_cliente_new_conf) {
+            await Clientes_chat_center.update(
+              { id_encargado: id_encargado, chat_cerrado: 0 },
+              {
+                where: { id: id_cliente_chat_center },
+              },
+            );
+
+            // Buscar el cliente propietario de esa configuración (igual que arriba)
+            const cliente_configuracion = await Clientes_chat_center.findOne({
+              where: {
+                id_configuracion: configuracion_transferida.id_configuracion,
+                propietario: 1,
+              },
+            });
+
+            // (opcional pero recomendado) si no existe propietario, evita crashear:
+            if (!cliente_configuracion) {
+              throw new Error(
+                `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+              );
+            }
+
+            await MensajesClientes.create({
+              id_configuracion: configuracion_transferida.id_configuracion,
+              id_cliente: cliente_configuracion.id,
+              mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+              tipo_mensaje: 'notificacion',
+              visto: 0,
+              texto_mensaje:
+                emisor + ' te transfirió este chat. Motivo: ' + motivo,
+              rol_mensaje: 3,
+              celular_recibe: validar_cliente_new_conf.id,
+              uid_whatsapp: validar_cliente_new_conf.celular_cliente,
+            });
+
+            enviarConsultaAPI(
+              configuracion_transferida.id_configuracion,
+              validar_cliente_new_conf.id,
+            );
+          }
+        } else {
+          // Buscar el cliente propietario de esa configuración (igual que arriba)
+          const cliente_configuracion = await Clientes_chat_center.findOne({
+            where: {
+              id_configuracion: configuracion_transferida.id_configuracion,
+              propietario: 1,
+            },
+          });
+
+          if (!cliente_configuracion) {
+            throw new Error(
+              `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+            );
+          }
+
+          /* ✅ findOrCreate: busca y crea de forma atómica usando EXACTAMENTE
+     las columnas del índice único uq_ccc_dedupe, evitando el 500 */
+          // Replica la lógica de celular_last9: últimos 9 dígitos numéricos
+          const last9 = clienteActual.celular_cliente
+            .replace(/\D/g, '')
+            .slice(-9);
+
+          const [cliente_destino, creado] =
+            await Clientes_chat_center.findOrCreate({
+              where: {
+                id_configuracion: configuracion_transferida.id_configuracion,
+                source: clienteActual.source ?? 'wa',
+                celular_last9: last9, // ✅ esta es la columna que realmente compone dedupe_key
+              },
+              defaults: {
+                nombre_cliente: clienteActual.nombre_cliente,
+                apellido_cliente: clienteActual.apellido_cliente,
+                celular_cliente: clienteActual.celular_cliente,
+                id_encargado: id_encargado,
+                propietario: 0,
+                uid_cliente: cliente_configuracion.uid_cliente,
+                source: clienteActual.source ?? 'wa',
+              },
+            });
+
+          if (!creado) {
+            // ya existía → actualízalo (mismo comportamiento que tu rama "validar_cliente_new_conf")
+            await cliente_destino.update({ id_encargado, chat_cerrado: 0 });
+          }
+
+          // ✅ mensaje en el chat destino (usa cliente_destino en vez de nuevo_cliente/validar_cliente_new_conf)
+          await MensajesClientes.create({
+            id_configuracion: configuracion_transferida.id_configuracion,
+            id_cliente: cliente_configuracion.id,
+            mid_mensaje: configuracion_transferida.configuracion.id_telefono,
+            tipo_mensaje: 'notificacion',
+            visto: 0,
+            texto_mensaje:
+              emisor + ' te transfirió este chat. Motivo: ' + motivo,
+            rol_mensaje: 3,
+            celular_recibe: cliente_destino.id,
+            uid_whatsapp: cliente_destino.celular_cliente,
+          });
+
+          // ✅ mensaje en el chat origen
+          if (propietarioOrigen) {
+            await MensajesClientes.create({
+              id_configuracion,
+              id_cliente: propietarioOrigen.id,
+              mid_mensaje: propietarioOrigen.id_telefono,
+              tipo_mensaje: 'notificacion',
+              visto: 0,
+              texto_mensaje: `Transferiste este chat a ${nombreEncargado}. Motivo: ${motivo}`,
+              rol_mensaje: 3,
+              celular_recibe: clienteActual.id,
+              uid_whatsapp: clienteActual.celular_cliente,
+            });
+          }
+
+          enviarConsultaAPI(
+            configuracion_transferida.id_configuracion,
+            cliente_destino.id,
+          );
+        }
+
+        // Emitir al dashboard - cubre origen y destino
+        const configDestino = configuracion_transferida?.id_configuracion;
+        dashboardEmitter.emitByConfig(id_configuracion, 'chat_transferred');
+        if (configDestino && configDestino !== id_configuracion) {
+          dashboardEmitter.emitByConfig(configDestino, 'chat_transferred');
+        }
+        break;
+      }
     }
-  }
 
-  return res
-    .status(200)
-    .json({ status: 'success', message: 'Chat transferido correctamente' });
+    return res
+      .status(200)
+      .json({ status: 'success', message: 'Chat transferido correctamente' });
+  } catch (err) {
+    console.error('🔥 Error en transferirChat:', err.name);
+    console.error('Mensaje:', err.message);
+    if (err.errors) {
+      // Esto es lo que realmente te interesa
+      err.errors.forEach((e) =>
+        console.error(
+          `Campo: ${e.path} | Valor: ${e.value} | Motivo: ${e.message}`,
+        ),
+      );
+    }
+    throw err; // lo re-lanzas para que catchAsync/globalErrorHandler lo maneje igual
+  }
 });
 
 exports.asignar_encargado = catchAsync(async (req, res, next) => {
