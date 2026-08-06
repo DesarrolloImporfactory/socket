@@ -105,12 +105,29 @@ const obtenerOCrearCodigo = async (id_usuario) => {
 };
 
 /**
+ * Corta el autoreferido obvio: la misma persona abriendo una segunda cuenta
+ * para cobrarse a sí misma. No pretende ser antifraude completo —la
+ * coincidencia de tarjeta se revisa después, ya con el pago hecho—, solo cerrar
+ * el caso evidente.
+ */
+const esAutoreferido = (ref, datosNuevo = {}) => {
+  const emailNuevo = String(datosNuevo.email || '')
+    .toLowerCase()
+    .trim();
+  const emailRef = String(ref?.email_propietario || '')
+    .toLowerCase()
+    .trim();
+  if (emailNuevo && emailNuevo === emailRef) return true;
+
+  const waNuevo = String(datosNuevo.whatsapp || '').replace(/\D/g, '');
+  const waRef = String(ref?.whatsapp_lead || '').replace(/\D/g, '');
+  if (waNuevo && waRef && waNuevo.slice(-9) === waRef.slice(-9)) return true;
+
+  return false;
+};
+
+/**
  * Traduce un código de la URL al usuario que lo repartió.
- *
- * `datosNuevo` trae el email y el WhatsApp de quien se está registrando para
- * cortar el autoreferido obvio —la misma persona abriendo una segunda cuenta
- * con su propio enlace para cobrarse a sí misma—. No pretende ser antifraude
- * completo: la coincidencia de tarjeta se revisa después, ya con el pago hecho.
  *
  * Ante cualquier duda devuelve null. Un código inválido nunca puede tumbar un
  * registro: perder una atribución cuesta mucho menos que perder un cliente.
@@ -130,18 +147,40 @@ const resolverReferidor = async (codigo, datosNuevo = {}) => {
     { replacements: [limpio], ...SELECT },
   );
   if (!ref) return null;
+  if (esAutoreferido(ref, datosNuevo)) return null;
 
-  const emailNuevo = String(datosNuevo.email || '')
-    .toLowerCase()
-    .trim();
-  const emailRef = String(ref.email_propietario || '')
-    .toLowerCase()
-    .trim();
-  if (emailNuevo && emailNuevo === emailRef) return null;
+  return ref.id_usuario;
+};
 
-  const waNuevo = String(datosNuevo.whatsapp || '').replace(/\D/g, '');
-  const waRef = String(ref.whatsapp_lead || '').replace(/\D/g, '');
-  if (waNuevo && waRef && waNuevo.slice(-9) === waRef.slice(-9)) return null;
+/**
+ * Atribución por comunidad: el dueño de la comunidad que el registrante eligió
+ * en el formulario.
+ *
+ * POR QUÉ EXISTE
+ * Antes del programa de referidos, las comunidades repartían el acceso a mano y
+ * el registrante elegía la suya en un combobox. Ese trato sigue vivo, pero solo
+ * lo honraba un UPDATE manual que se corre de vez en cuando: quien se registrara
+ * después de la última pasada quedaba sin atribuir, y nadie se enteraba porque
+ * no falla nada — esa persona simplemente nunca aparece en la lista del dueño.
+ *
+ * Es más débil que el enlace y conviene tenerlo presente: la comunidad es
+ * AUTODECLARADA, cualquiera puede elegir cualquiera y no queda rastro de por
+ * dónde entró. Por eso el enlace manda cuando llegan los dos.
+ */
+const resolverReferidorPorComunidad = async (id_comunidad, datosNuevo = {}) => {
+  const id = Number(id_comunidad) || 0;
+  if (!id) return null;
+
+  const [ref] = await db.query(
+    `SELECT u.id_usuario, u.email_propietario, u.whatsapp_lead
+       FROM comunidades_chat_center c
+       JOIN usuarios_chat_center u ON u.id_usuario = c.id_usuario_propietario
+      WHERE c.id_comunidad = ?
+      LIMIT 1`,
+    { replacements: [id], ...SELECT },
+  );
+  if (!ref) return null; // Comunidad sin dueño: no hay a quién atribuir.
+  if (esAutoreferido(ref, datosNuevo)) return null;
 
   return ref.id_usuario;
 };
@@ -1139,6 +1178,7 @@ const resolverSolicitud = async ({
 module.exports = {
   obtenerOCrearCodigo,
   resolverReferidor,
+  resolverReferidorPorComunidad,
   infoPublicaPorCodigo,
   devengarPorFactura,
   revertirPorFactura,

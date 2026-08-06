@@ -89,14 +89,32 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
      inválido NO puede tumbar el registro: perder una atribución cuesta mucho
      menos que perder un cliente. */
   let referidoPor = null;
+  let referidoOrigen = null;
   if (codigo_referido) {
     try {
       referidoPor = await referidosService.resolverReferidor(codigo_referido, {
         email,
         whatsapp: waClean,
       });
+      if (referidoPor) referidoOrigen = 'link';
     } catch (e) {
       console.log('[referidos] no se pudo resolver el código:', e?.message);
+    }
+  }
+
+  /* Sin enlace, la comunidad elegida hace de atribución si tiene dueño: es el
+     trato que ya existía con las comunidades antes del programa. El enlace
+     manda cuando llegan los dos, por eso esto va después y solo si no hubo
+     código válido. */
+  if (!referidoPor && comunidadValida) {
+    try {
+      referidoPor = await referidosService.resolverReferidorPorComunidad(
+        comunidadValida,
+        { email, whatsapp: waClean },
+      );
+      if (referidoPor) referidoOrigen = 'comunidad';
+    } catch (e) {
+      console.log('[referidos] no se pudo resolver la comunidad:', e?.message);
     }
   }
 
@@ -127,12 +145,20 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
            no guarde la atribución. */
         if (referidoPor) {
           try {
+            /* `referido_ciclos_previos` se queda en 0 aunque venga por
+               comunidad: el 2 fue exclusivo de la migración, para no pagarle
+               retroactivo al dueño por meses ya cerrados. Quien se registra hoy
+               hace sus tres ciclos completos como cualquiera. */
             await sequelize.query(
               `UPDATE usuarios_chat_center
-                  SET referido_por = ?, referido_en = NOW(), referido_origen = 'link'
+                  SET referido_por = ?, referido_en = NOW(), referido_origen = ?
                 WHERE id_usuario = ?`,
               {
-                replacements: [referidoPor, nuevoUsuarioInst.id_usuario],
+                replacements: [
+                  referidoPor,
+                  referidoOrigen,
+                  nuevoUsuarioInst.id_usuario,
+                ],
                 transaction: t,
               },
             );
