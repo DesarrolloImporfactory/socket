@@ -1,5 +1,6 @@
 const Stripe = require('stripe');
 const { db } = require('../database/config');
+const referidosService = require('../services/referidos.service');
 
 /* =========================
    Selección automática de variables por entorno (production vs test)
@@ -777,6 +778,40 @@ exports.stripeWebhook = async (req, res) => {
           console.log('[stripe] transacciones update failed:', e?.message);
         }
 
+        // =========
+        // 5) Programa de referidos: contar el ciclo y devengar comisión
+        //
+        // Va al final y con su propio try/catch porque NADA de referidos puede
+        // impedir que el pago del cliente se procese. El servicio ya es
+        // idempotente (UNIQUE sobre invoice_id) y decide solo si este ciclo
+        // comisiona o no: aquí no se replica ninguna regla del programa.
+        //
+        // NO usa `hasRealCharge`: esa bandera exige cobro en tarjeta, y una
+        // factura saldada con el saldo a favor del cliente llega con
+        // amount_paid = 0. Con ese criterio, el mes que un referido paga con su
+        // propio crédito de referidos no contaría ciclo ni pagaría comisión a
+        // quien lo trajo, que no ve ni controla esa decisión.
+        //
+        // La base es `invoice.total`: lo facturado tras cupones y descuentos,
+        // antes de aplicar el saldo. Un cupón sigue bajando la comisión —la
+        // regla prometida se mantiene—; lo único que deja de restar es el
+        // crédito, que es dinero que la empresa ya le debía al cliente.
+        // =========
+        const facturaLiquidada = invoiceTotal > 0 && invoice.paid === true;
+        if (id_usuario && facturaLiquidada) {
+          try {
+            await referidosService.devengarPorFactura({
+              id_usuario_referido: id_usuario,
+              invoiceId: invoice.id,
+              subscriptionId,
+              montoFacturadoCent: invoiceTotal,
+              moneda: invoice.currency || 'usd',
+            });
+          } catch (e) {
+            console.log('[stripe] devengo de referido falló:', e?.message);
+          }
+        }
+
         break;
       }
 
@@ -1372,6 +1407,53 @@ exports.stripeWebhook = async (req, res) => {
           },
         );
 
+        break;
+      }
+
+      /**
+       * 💸 Reembolso — revierte la comisión de referido de esa factura
+       *
+       * Sin esto se paga comisión sobre dinero que después se devuelve, y
+       * recuperarla de un referidor ya liquidado no ocurre nunca. El servicio
+       * decide qué hacer según el estado: si aún no se pagó la marca revertida,
+       * y si ya se pagó crea un ajuste negativo que se descuenta de lo que ese
+       * referidor gane más adelante.
+       *
+       * Solo se revierte en el reembolso TOTAL. En uno parcial el referido sí
+       * se quedó con servicio y el referidor con su parte; recalcular
+       * proporcionalmente cuesta más de lo que corrige.
+       */
+      case 'charge.refunded': {
+        const charge = event.data.object;
+        const invoiceId = charge.invoice || null;
+        const totalReembolsado = Number(charge.amount_refunded || 0);
+        const totalCobrado = Number(charge.amount || 0);
+
+        if (invoiceId && totalReembolsado >= totalCobrado && totalCobrado > 0) {
+          await referidosService.revertirPorFactura(invoiceId, 'reembolso');
+        }
+        break;
+      }
+
+      /**
+       * ⚠️ Contracargo — misma lógica que el reembolso.
+       * Se revierte al ABRIRSE la disputa, no al perderla: el dinero ya salió
+       * de la cuenta en ese momento.
+       */
+      case 'charge.dispute.created': {
+        const dispute = event.data.object;
+        let invoiceId = null;
+        try {
+          if (dispute.charge) {
+            const charge = await stripe.charges.retrieve(dispute.charge);
+            invoiceId = charge?.invoice || null;
+          }
+        } catch (e) {
+          console.log('[stripe] no se pudo resolver el charge de la disputa:', e?.message);
+        }
+        if (invoiceId) {
+          await referidosService.revertirPorFactura(invoiceId, 'contracargo');
+        }
         break;
       }
 

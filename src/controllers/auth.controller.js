@@ -9,6 +9,7 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 const Openai_assistants = require('../models/openai_assistants.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Comunidad = require('../models/comunidad_chat_center.model');
+const referidosService = require('../services/referidos.service');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
@@ -22,6 +23,7 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
     whatsapp_lead,
     whatsapp_lead_pais,
     id_comunidad,
+    codigo_referido,
   } = req.body;
 
   // --- Campos obligatorios ahora son 4 (WhatsApp incluido) ---
@@ -76,6 +78,28 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
     if (found) comunidadValida = found.id_comunidad;
   }
 
+  /* --- 🎁 Referido: se sella AQUÍ y no se vuelve a tocar nunca ---
+     Es la única oportunidad de fijar la atribución. Después de este punto
+     `referido_por` es la base de un pago real de dinero, así que no existe
+     ningún endpoint que la modifique: hacerla editable sería el primer sitio
+     por donde entraría el fraude.
+
+     `resolverReferidor` corta el autoreferido evidente (mismo email o mismo
+     WhatsApp que el referidor) y devuelve null ante cualquier duda. Un código
+     inválido NO puede tumbar el registro: perder una atribución cuesta mucho
+     menos que perder un cliente. */
+  let referidoPor = null;
+  if (codigo_referido) {
+    try {
+      referidoPor = await referidosService.resolverReferidor(codigo_referido, {
+        email,
+        whatsapp: waClean,
+      });
+    } catch (e) {
+      console.log('[referidos] no se pudo resolver el código:', e?.message);
+    }
+  }
+
   const sequelize = Usuarios_chat_center.sequelize;
 
   try {
@@ -92,6 +116,30 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           },
           { transaction: t },
         );
+
+        /* El vínculo de referido se escribe con SQL crudo y NO como atributo
+           del modelo a propósito. `usuarios_chat_center.model.js` no declara
+           las columnas de referidos porque un push a main despliega al
+           instante mientras que `referidos_migration.sql` se aplica a mano: si
+           el modelo pidiera columnas que todavía no existen, CUALQUIER consulta
+           sobre usuarios reventaría —login incluido— hasta correr la migración.
+           Así, lo peor que pasa si la migración va atrasada es que el registro
+           no guarde la atribución. */
+        if (referidoPor) {
+          try {
+            await sequelize.query(
+              `UPDATE usuarios_chat_center
+                  SET referido_por = ?, referido_en = NOW(), referido_origen = 'link'
+                WHERE id_usuario = ?`,
+              {
+                replacements: [referidoPor, nuevoUsuarioInst.id_usuario],
+                transaction: t,
+              },
+            );
+          } catch (e) {
+            console.log('[referidos] no se pudo sellar la atribución:', e?.message);
+          }
+        }
 
         // 2) Stripe customer
         const resultado = await crearStripeCustomer({

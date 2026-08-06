@@ -131,6 +131,8 @@ const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.ro
 
 const comunidadesRouter = require('./routes/comunidad.routes');
 
+const referidosRouter = require('./routes/referidos.routes');
+
 const webhookTriveRouter = require('./routes/webhook_trive.routes');
 
 const adminDashboardRouter = require('./routes/admin_dashboard.routes');
@@ -377,6 +379,7 @@ app.use('/api/v1/meta_ads', metaAdsRouter);
 app.use('/api/v1/marketing-control', marketingControlRouter);
 app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
+app.use('/api/v1/referidos', referidosRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
 app.use('/api/v1/admin_dashboard', adminDashboardRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
