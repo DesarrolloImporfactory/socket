@@ -27,6 +27,9 @@ const {
   dividirRespuestaIA,
 } = require('../src/utils/openia/dividirRespuestaIA');
 
+/* Base histórica. La lista real se completa en main() con los triggers de las
+   acciones de la cuenta: cada tablero tiene los suyos y un tag que no esté acá
+   no se limpia, así que se le vería al cliente en el texto. */
 const TAGS = [
   '[califica]:true',
   '[fuera_zona]:true',
@@ -188,6 +191,16 @@ async function main() {
     );
   }
 
+  /* Los tags que de verdad usa este tablero, sacados de las acciones. */
+  const tagsCuenta = new Set(TAGS);
+  for (const col of columnas) {
+    for (const ac of col.acciones) {
+      const c = typeof ac.config === 'string' ? JSON.parse(ac.config || '{}') : ac.config || {};
+      if (c.trigger) tagsCuenta.add(c.trigger);
+    }
+  }
+  const TAGS_CUENTA = [...tagsCuenta];
+
   const [contacto] = await db.query(
     `SELECT estado_contacto FROM clientes_chat_center WHERE id = ? LIMIT 1`,
     { replacements: [ID_CLIENTE], type: db.QueryTypes.SELECT },
@@ -234,12 +247,12 @@ async function main() {
 
     const cruda = await correr(thread.id, col.assistant_id, col.max_tokens);
 
-    const tags = TAGS.filter((t) =>
+    const tags = TAGS_CUENTA.filter((t) =>
       cruda.toLowerCase().includes(t.toLowerCase()),
     );
 
     let texto = cruda;
-    for (const t of TAGS) texto = texto.split(t).join('');
+    for (const t of TAGS_CUENTA) texto = texto.split(t).join('');
     const antesFiltro = texto.trim();
     texto = limpiarMarkdown(humanizarFechas(limpiarColetillas(antesFiltro)));
     const partes = dividirRespuestaIA(texto);

@@ -10,7 +10,7 @@
  * del catálogo, referenciadas desde `setup.remarketing_items`.
  *
  * Uso:
- *   node scripts/publicar_plantilla_global.js <id_plantilla> <clinica|estetica> "Nombre visible"
+ *   node scripts/publicar_plantilla_global.js <id_plantilla> <clinica|estetica|inmobiliaria> "Nombre visible"
  */
 
 require('dotenv').config();
@@ -41,6 +41,19 @@ const CATALOGOS = {
         'vende productos del catálogo y acompaña los tratamientos de varias sesiones.',
     };
   },
+  inmobiliaria: () => {
+    const m = require('../src/utils/kanban_catalogo_inmobiliaria.data');
+    return {
+      columnas: m.COLUMNAS_INMOBILIARIA,
+      remarketing: m.REMARKETING_INMOBILIARIA,
+      icono: 'bx bx-buildings',
+      color: '#7c3aed',
+      descripcion:
+        'Asistente con IA para inmobiliarias y corredores: califica al interesado por forma de pago, plazo y ' +
+        'presupuesto para priorizar a quien sí puede comprar, agenda visitas con el corredor, atiende arriendos ' +
+        'y capta propietarios que quieren vender.',
+    };
+  },
 };
 
 const ID_PLANTILLA = Number(process.argv[2]);
@@ -49,7 +62,7 @@ const NOMBRE = process.argv[4];
 
 if (!ID_PLANTILLA || !CATALOGOS[CATALOGO] || !NOMBRE) {
   console.error(
-    'Uso: node scripts/publicar_plantilla_global.js <id_plantilla> <clinica|estetica> "Nombre visible"',
+    'Uso: node scripts/publicar_plantilla_global.js <id_plantilla> <clinica|estetica|inmobiliaria> "Nombre visible"',
   );
   process.exit(1);
 }

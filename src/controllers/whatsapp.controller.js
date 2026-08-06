@@ -29,6 +29,12 @@ const {
   upsertOwnerByConfig,
 } = require('../utils/whatsappTemplate.helpers');
 
+const {
+  resolverParametrosEncuestaTemplate,
+  forzarLinkEnComponents,
+  registrarEnvioEncuestaManual,
+} = require('../utils/encuestaTemplateLink');
+
 exports.obtener_numeros = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
   if (!id_configuracion) {
@@ -3524,6 +3530,37 @@ exports.enviarTemplateMasivo = async (req, res) => {
       }
     }
 
+    // ===== 2.9) Si la plantilla es de una encuesta, blindar el link =====
+    // El asesor puede escribir cualquier cosa en el campo del link; el ?cid=
+    // tiene que ser el del destinatario o la respuesta se asocia mal.
+    let encuestaTpl = null;
+
+    try {
+      encuestaTpl = await resolverParametrosEncuestaTemplate({
+        idConfiguracion: id_configuracion,
+        nombreTemplate: template_name,
+        telefono: toClean,
+        idClienteChatCenter: req.body?.id_cliente_chat_center,
+      });
+
+      if (encuestaTpl) {
+        const { components: compsFix, corregidos } = forzarLinkEnComponents(
+          payload.template.components,
+          encuestaTpl.parametros,
+        );
+        payload.template.components = compsFix;
+
+        console.log(
+          `[SEND_TEMPLATE] Encuesta ${encuestaTpl.id_encuesta} detectada en "${template_name}" → cliente=${encuestaTpl.cliente.id} links_corregidos=${corregidos}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        '[SEND_TEMPLATE] Error resolviendo encuesta del template:',
+        err.message,
+      );
+    }
+
     // ===== 3) Enviar template a Meta =====
     console.log(
       '[SEND_TEMPLATE] Enviando a:',
@@ -3566,9 +3603,31 @@ exports.enviarTemplateMasivo = async (req, res) => {
     const wamid = resp.data?.messages?.[0]?.id || null;
     console.log('[SEND_TEMPLATE] Enviado exitosamente. WAMID:', wamid);
 
+    // Deja la encuesta esperando respuesta para este cliente (no duplica si
+    // el webhook ya había creado la fila). Fire-and-forget: no bloquea la
+    // respuesta del envío.
+    if (encuestaTpl) {
+      registrarEnvioEncuestaManual({
+        idEncuesta: encuestaTpl.id_encuesta,
+        idConfiguracion: Number(id_configuracion),
+        cliente: encuestaTpl.cliente,
+        origen: 'chat_manual',
+      }).then((r) =>
+        console.log('[SEND_TEMPLATE] Registro encuesta:', JSON.stringify(r)),
+      );
+    }
+
     return res.json({
       success: true,
       wamid,
+      encuesta: encuestaTpl
+        ? {
+            id_encuesta: encuestaTpl.id_encuesta,
+            nombre: encuestaTpl.nombre_encuesta,
+            id_cliente_chat_center: encuestaTpl.cliente.id,
+            link: encuestaTpl.link,
+          }
+        : null,
       data: resp.data,
       fileUrl,
       meta_media_id,

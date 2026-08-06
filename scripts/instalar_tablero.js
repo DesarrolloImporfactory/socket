@@ -9,7 +9,7 @@
  * Uso:
  *   node scripts/instalar_tablero.js <id_configuracion> <catalogo> ["Nombre asistente"] ["Nombre negocio"]
  *
- *   catalogo: clinica | estetica
+ *   catalogo: clinica | estetica | inmobiliaria
  *
  * Es idempotente: si la columna ya existe, no la duplica ni le pisa el prompt
  * (los clientes editan sus prompts a mano y perder eso sería peor que no
@@ -29,6 +29,13 @@ const CATALOGOS = {
     const m = require('../src/utils/kanban_catalogo_estetica.data');
     return { columnas: m.COLUMNAS_ESTETICA, remarketing: m.REMARKETING_ESTETICA };
   },
+  inmobiliaria: () => {
+    const m = require('../src/utils/kanban_catalogo_inmobiliaria.data');
+    return {
+      columnas: m.COLUMNAS_INMOBILIARIA,
+      remarketing: m.REMARKETING_INMOBILIARIA,
+    };
+  },
 };
 
 const ID_CONFIG = Number(process.argv[2]);
@@ -39,7 +46,7 @@ const FORZAR_PROMPT = process.argv.includes('--forzar-prompt');
 
 if (!ID_CONFIG || !CATALOGOS[CATALOGO]) {
   console.error(
-    'Uso: node scripts/instalar_tablero.js <id_configuracion> <clinica|estetica> ["Asistente"] ["Negocio"]',
+    'Uso: node scripts/instalar_tablero.js <id_configuracion> <clinica|estetica|inmobiliaria> ["Asistente"] ["Negocio"]',
   );
   process.exit(1);
 }

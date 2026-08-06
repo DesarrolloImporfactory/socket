@@ -11,9 +11,45 @@ const AppError = require('../utils/appError');
 const crypto = require('crypto');
 const ExcelJS = require('exceljs');
 const { normalizarPreguntas } = require('../utils/encuestaPreguntas');
+const {
+  resolverParametrosEncuestaTemplate,
+} = require('../utils/encuestaTemplateLink');
 
 const DEFAULT_MENSAJE_SATISFACCION =
   '¡Hola {nombre}! 🙏\n\nGracias por comunicarte con nosotros. Nos encantaría saber cómo fue tu experiencia:\n\n👉 {link}\n\n¡Solo toma 10 segundos!';
+
+/**
+ * ── Parámetros de encuesta para una plantilla concreta ──
+ * GET /api/v1/encuestas/template_params
+ *   ?id_configuracion=265&nombre_template=clubdeimportadores1
+ *   &telefono=5939...&id_cliente_chat_center=123
+ *
+ * Lo usa el modal de plantillas del chat: si la plantilla pertenece a una
+ * encuesta, devuelve los valores ya resueltos para cada {{n}} — incluido el
+ * link con el ?cid= del destinatario — para prellenarlos.
+ * Si la plantilla no es de una encuesta responde { data: null } sin error.
+ */
+exports.paramsTemplate = catchAsync(async (req, res, next) => {
+  const {
+    id_configuracion,
+    nombre_template,
+    telefono,
+    id_cliente_chat_center,
+  } = req.query;
+
+  if (!id_configuracion || !nombre_template) {
+    return next(new AppError('Falta id_configuracion o nombre_template', 400));
+  }
+
+  const data = await resolverParametrosEncuestaTemplate({
+    idConfiguracion: id_configuracion,
+    nombreTemplate: nombre_template,
+    telefono,
+    idClienteChatCenter: id_cliente_chat_center,
+  });
+
+  return res.json({ success: true, data });
+});
 
 // ── Listar encuestas de una conexión ──
 exports.listarPorConexion = catchAsync(async (req, res, next) => {

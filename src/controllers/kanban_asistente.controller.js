@@ -17,6 +17,8 @@ const {
   sanitizarRespuestaAgente,
 } = require('../utils/openia/sanitizador_agente');
 const { construirContextoColumna } = require('../utils/contextoColumna');
+const { humanizarFechas } = require('../utils/humanizarFechas');
+const { limpiarColetillas } = require('../utils/limpiarColetillas');
 const { toolFileSearchResponses } = require('../utils/openia/fileSearch');
 
 // Configuraciones donde los documentos que sube el usuario van a un vector
@@ -835,7 +837,14 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
       ?.join('') ||
     '';
 
-  const respuestaLimpia = sanitizarRespuestaAgente(outputText);
+  /* Mismo post-proceso que producción. El chat de prueba mostraba el texto
+     crudo, así que la fecha del bloque de agendamiento se veía "2026-08-06
+     16:00" y parecía un error del prompt — cuando en WhatsApp al cliente ya le
+     llega "jueves 6 de agosto, 16:00". Probar contra algo distinto de lo que
+     recibe el cliente hace perder tiempo persiguiendo fallas que no existen. */
+  const respuestaLimpia = humanizarFechas(
+    limpiarColetillas(sanitizarRespuestaAgente(outputText)),
+  );
 
   /* Qué habría hecho el tablero con esta respuesta.
      Probar el bot sin ver esto es probar a medias: la conversación puede sonar

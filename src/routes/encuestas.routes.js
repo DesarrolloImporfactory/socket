@@ -8,6 +8,9 @@ router.use(protect);
 // Listar encuestas de una conexión
 router.get('/listar', ctrl.listarPorConexion);
 
+// Parámetros resueltos (incluye el link con ?cid=) para una plantilla de Meta
+router.get('/template_params', ctrl.paramsTemplate);
+
 // Stats de una encuesta
 router.get('/:id/stats', ctrl.stats);
 

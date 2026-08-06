@@ -31,18 +31,13 @@ function limpiarTelefono(raw) {
   return String(raw || '').replace(/\D/g, '');
 }
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || 'https://chatcenter.imporfactory.app';
-
-/**
- * Link público y único de la encuesta para un cliente concreto.
- * Mismo formato que usa la encuesta de satisfacción (utils/encuestaSatisfaccion.js),
- * para que encuestas_publico resuelva al cliente por el ?cid=.
- */
-function construirLinkEncuesta(idEncuesta, idCliente) {
-  if (!idEncuesta || !idCliente) return '';
-  return `${FRONTEND_URL}/encuesta-publica/${idEncuesta}?cid=${idCliente}`;
-}
+// Link, placeholders y parseo viven en el util para que el envío manual
+// desde el chat resuelva exactamente igual que este webhook.
+const {
+  construirLinkEncuesta,
+  parseTemplateParams,
+  resolverPlaceholders,
+} = require('../utils/encuestaTemplateLink');
 
 const CAMPOS_CONTACTO = new Set([
   'nombre',
@@ -110,56 +105,6 @@ async function estaDentroVentana24h({ idCliente, idConfiguracion }) {
       err.message,
     );
     return false; // ante duda → fuera de ventana → template (más seguro)
-  }
-}
-
-/**
- * Reemplaza placeholders {nombre}, {apellido}, {email}, {telefono}
- * y {link_encuesta} (alias {link}) con el link único del cliente.
- * Limpia espacios sobrantes cuando el placeholder queda vacío.
- */
-function resolverPlaceholders(str, contacto, opts = {}) {
-  if (typeof str !== 'string') return String(str ?? '');
-
-  // Compatibilidad legacy: si pasan defaultValue, solo aplica a {nombre}
-  // (no a apellido/email/telefono que pueden estar legítimamente vacíos)
-  const fallbackNombre = opts.defaultValue || '';
-
-  const nombre = (contacto.nombre || '').trim() || fallbackNombre;
-  const apellido = (contacto.apellido || '').trim();
-  const email = (contacto.email || '').trim();
-  const telefono = (contacto.telefono || '').trim();
-  const linkEncuesta = (contacto.link_encuesta || '').trim();
-
-  return (
-    str
-      // {link_encuesta} va primero: {link} no lo puede capturar porque exige
-      // la llave de cierre justo después, pero dejamos el orden explícito.
-      .replace(/\{link_encuesta\}/gi, linkEncuesta)
-      .replace(/\{link\}/gi, linkEncuesta)
-      .replace(/\{nombre\}/gi, nombre)
-      .replace(/\{apellido\}/gi, apellido)
-      .replace(/\{email\}/gi, email)
-      .replace(/\{telefono\}/gi, telefono)
-      // limpieza estética: "Hola !" → "Hola!"
-      .replace(/\s+([!,.?])/g, '$1')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-  );
-}
-
-/**
- * Parse seguro de template_parameters (puede venir como JSON string,
- * array ya parseado, null o vacío).
- */
-function parseTemplateParams(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
   }
 }
 
