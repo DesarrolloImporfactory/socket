@@ -35,6 +35,8 @@ const {
   registrarEnvioEncuestaManual,
 } = require('../utils/encuestaTemplateLink');
 
+const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
+
 exports.obtener_numeros = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
   if (!id_configuracion) {
@@ -516,24 +518,61 @@ exports.obtenerTemplatesWhatsapp = async (req, res) => {
     }
 
     const { WABA_ID, ACCESS_TOKEN } = rows[0];
-    const { after, before, limit: limitRaw } = req.body || {};
+    const { after, before, limit: limitRaw, q: qRaw } = req.body || {};
     const limit = Math.min(Math.max(parseInt(limitRaw || 50, 10), 1), 100);
 
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (after) params.set('after', after);
-    if (before) params.set('before', before);
+    /* Búsqueda: se delega a Meta con `name_or_content` en vez de filtrar la
+       página ya traída. Filtrar en el front solo miraba las 25 plantillas
+       visibles, así que una plantilla que existía pero caía en la página 2
+       aparecía como "no encontrada" y el usuario la daba por inexistente. */
+    const q = String(qRaw ?? '').trim();
 
-    const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?${params.toString()}`;
+    const construirUrl = (conBusqueda) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (after) params.set('after', after);
+      if (before) params.set('before', before);
+      if (conBusqueda && q) params.set('name_or_content', q);
 
-    const { data } = await axios.get(url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-      timeout: 15000,
-    });
+      return `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${WABA_ID}/message_templates?${params.toString()}`;
+    };
+
+    const pedir = (conBusqueda) =>
+      axios.get(construirUrl(conBusqueda), {
+        headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+        timeout: 15000,
+      });
+
+    let data;
+    let busquedaEnServidor = Boolean(q);
+
+    try {
+      ({ data } = await pedir(true));
+    } catch (err) {
+      // Si Meta rechaza el filtro (parámetro no soportado en esta versión de
+      // Graph), se reintenta sin él: la búsqueda queda degradada a la página
+      // actual, pero el listado no se rompe.
+      const esErrorDeParametro =
+        q && [100, 400].includes(err?.response?.data?.error?.code);
+
+      if (!esErrorDeParametro) throw err;
+
+      console.warn(
+        '⚠️ obtenerTemplatesWhatsapp: Meta rechazó name_or_content, se reintenta sin búsqueda.',
+      );
+      busquedaEnServidor = false;
+      ({ data } = await pedir(false));
+    }
 
     return res.json({
       success: true,
       ...data,
-      meta: { state: 'OK', page_limit: limit },
+      meta: {
+        state: 'OK',
+        page_limit: limit,
+        q: q || null,
+        // El front lo usa para saber si ya no debe filtrar por su cuenta.
+        busqueda_en_servidor: busquedaEnServidor,
+      },
     });
   } catch (error) {
     const metaError = error?.response?.data?.error;
@@ -4061,9 +4100,7 @@ exports.programarTemplateMasivo = async (req, res) => {
         const nowIso = new Date().toISOString();
 
         for (const r of rows) {
-          const room = `chat_programados:${Number(r.id_configuracion)}:${Number(r.id_cliente_chat_center)}`;
-
-          io.to(room).emit('PROGRAMADO_ESTADO', {
+          emitirProgramadoEstado({
             id: null,
             ui_key: `${r.uuid_lote}:${r.id_cliente_chat_center}:${r.telefono}:${r.fecha_programada}`,
             uuid_lote: r.uuid_lote,
@@ -4167,6 +4204,17 @@ exports.programarTemplateMasivo = async (req, res) => {
   }
 };
 
+/* Estados que significan "esto todavía le va a llegar al cliente".
+   'procesando' entra porque el cron ya lo tomó: avisar igual evita que el
+   asesor mande la misma plantilla en el minuto que sale la programada. */
+const ESTADOS_PROGRAMADO_VIGENTE = ['pendiente', 'procesando'];
+
+/* Un registro "pendiente" con intentos >= max_intentos ya no lo toma el cron:
+   está quemado y no va a salir nunca (lo mismo un 'procesando' quemado, que el
+   auto-recovery tampoco reencola). Avisar por esos sería una falsa alarma —
+   en producción son la mayoría de los pendientes viejos. */
+const SQL_PROGRAMADO_VIVO = 'intentos < max_intentos';
+
 exports.listarProgramadosPorChat = async (req, res) => {
   try {
     const id_configuracion = Number(req.query?.id_configuracion || 0) || null;
@@ -4175,12 +4223,28 @@ exports.listarProgramadosPorChat = async (req, res) => {
 
     const limit = Math.min(Number(req.query?.limit || 50) || 50, 200);
 
+    // El chat center pide solo lo vigente (?vigentes=1) para el aviso de
+    // "ya hay una plantilla programada". Sin el flag se mantiene el
+    // comportamiento anterior: historial completo, más reciente primero.
+    const soloVigentes =
+      String(req.query?.vigentes ?? '') === '1' ||
+      String(req.query?.vigentes ?? '').toLowerCase() === 'true';
+
     if (!id_configuracion || !id_cliente_chat_center) {
       return res.status(400).json({
         ok: false,
         msg: 'Faltan parámetros: id_configuracion, id_cliente_chat_center',
       });
     }
+
+    const filtroEstado = soloVigentes
+      ? `AND estado IN (${ESTADOS_PROGRAMADO_VIGENTE.map(() => '?').join(',')})
+         AND ${SQL_PROGRAMADO_VIVO}`
+      : '';
+
+    const orden = soloVigentes
+      ? 'ORDER BY fecha_programada_utc ASC, id ASC'
+      : 'ORDER BY creado_en DESC';
 
     const rows = await db.query(
       `
@@ -4216,11 +4280,17 @@ exports.listarProgramadosPorChat = async (req, res) => {
       FROM template_envios_programados
       WHERE id_configuracion = ?
         AND id_cliente_chat_center = ?
-      ORDER BY creado_en DESC
+        ${filtroEstado}
+      ${orden}
       LIMIT ?
       `,
       {
-        replacements: [id_configuracion, id_cliente_chat_center, limit],
+        replacements: [
+          id_configuracion,
+          id_cliente_chat_center,
+          ...(soloVigentes ? ESTADOS_PROGRAMADO_VIGENTE : []),
+          limit,
+        ],
         type: db.QueryTypes.SELECT,
       },
     );
@@ -4234,7 +4304,9 @@ exports.listarProgramadosPorChat = async (req, res) => {
 
     return res.json({
       ok: true,
-      data: data.reverse(), // opcional: dejar ascendente para render timeline
+      // En modo vigentes ya viene ascendente por fecha programada (el próximo
+      // primero); en el modo histórico se invierte como siempre.
+      data: soloVigentes ? data : data.reverse(),
     });
   } catch (error) {
     console.error('❌ listarProgramadosPorChat:', error);
@@ -4245,6 +4317,96 @@ exports.listarProgramadosPorChat = async (req, res) => {
     });
   }
 };
+
+/* ────────────────────────────────────────────────
+   Resumen de programados vigentes para VARIOS chats.
+
+   Es lo que consume el listado del chat center: una sola consulta agrupada
+   por la página de chats que el asesor tiene a la vista, en vez de una
+   consulta por chat (o peor, traer todos los programados de la cuenta, que
+   con lotes masivos son decenas de miles de filas).
+
+   Devuelve solo el conteo y el próximo envío por cliente — lo mínimo para
+   pintar el badge del reloj. El detalle se pide con /programados_por_chat
+   cuando el asesor abre ese chat.
+   ──────────────────────────────────────────────── */
+
+const MAX_IDS_RESUMEN_PROGRAMADOS = 200;
+
+exports.programadosResumenChats = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query?.id_configuracion || 0);
+
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'id_configuracion es requerido' });
+  }
+
+  // Acepta ?ids=1,2,3 o ?ids[]=1&ids[]=2
+  const crudo = req.query?.ids;
+  const listaCruda = Array.isArray(crudo)
+    ? crudo
+    : String(crudo || '').split(',');
+
+  const ids = [
+    ...new Set(
+      listaCruda.map((v) => Number(String(v).trim())).filter((n) => n > 0),
+    ),
+  ].slice(0, MAX_IDS_RESUMEN_PROGRAMADOS);
+
+  if (!ids.length) {
+    return res.status(200).json({ ok: true, data: {} });
+  }
+
+  /* Un solo GROUP BY. El "próximo" (fecha, plantilla, lote) sale con
+     GROUP_CONCAT ordenado + SUBSTRING_INDEX para no tener que hacer una
+     segunda consulta ni un self-join por cada cliente. */
+  const rows = await db.query(
+    `
+    SELECT
+      id_cliente_chat_center                                   AS id_cliente_chat_center,
+      COUNT(*)                                                 AS pendientes,
+      MIN(fecha_programada_utc)                                AS proxima_fecha_utc,
+      SUBSTRING_INDEX(
+        GROUP_CONCAT(fecha_programada ORDER BY fecha_programada_utc ASC, id ASC SEPARATOR '||'),
+        '||', 1
+      )                                                        AS proxima_fecha,
+      SUBSTRING_INDEX(
+        GROUP_CONCAT(COALESCE(nombre_template, '') ORDER BY fecha_programada_utc ASC, id ASC SEPARATOR '||'),
+        '||', 1
+      )                                                        AS proximo_template,
+      SUBSTRING_INDEX(
+        GROUP_CONCAT(uuid_lote ORDER BY fecha_programada_utc ASC, id ASC SEPARATOR '||'),
+        '||', 1
+      )                                                        AS proximo_uuid_lote,
+      SUM(estado = 'procesando')                               AS procesando
+    FROM template_envios_programados
+    WHERE id_configuracion = ?
+      AND id_cliente_chat_center IN (${ids.map(() => '?').join(',')})
+      AND estado IN (${ESTADOS_PROGRAMADO_VIGENTE.map(() => '?').join(',')})
+      AND ${SQL_PROGRAMADO_VIVO}
+    GROUP BY id_cliente_chat_center
+    `,
+    {
+      replacements: [id_configuracion, ...ids, ...ESTADOS_PROGRAMADO_VIGENTE],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const data = {};
+  for (const r of rows) {
+    data[String(r.id_cliente_chat_center)] = {
+      pendientes: Number(r.pendientes) || 0,
+      procesando: Number(r.procesando) || 0,
+      proxima_fecha: r.proxima_fecha || null,
+      proxima_fecha_utc: r.proxima_fecha_utc || null,
+      proximo_template: r.proximo_template || null,
+      proximo_uuid_lote: r.proximo_uuid_lote || null,
+    };
+  }
+
+  return res.status(200).json({ ok: true, data, consultados: ids.length });
+});
 
 /* ────────────────────────────────────────────────
    1) Listar programados agrupados por lote (SSR)
@@ -4624,6 +4786,22 @@ exports.editarFechaLote = catchAsync(async (req, res) => {
   const fechaLocalSql = dtLocal.toFormat('yyyy-LL-dd HH:mm:ss');
   const fechaUtcSql = dtLocal.toUTC().toFormat('yyyy-LL-dd HH:mm:ss');
 
+  /* Qué chats toca el lote: se lee ANTES del UPDATE para poder avisarle al
+     chat center la nueva fecha. Son los ids del lote, no de la cuenta. */
+  const afectadosPrev = await db.query(
+    `
+    SELECT id, id_cliente_chat_center, nombre_template
+      FROM template_envios_programados
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+       AND estado = 'pendiente'
+    `,
+    {
+      replacements: [uuid_lote, Number(id_configuracion)],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
   // Solo reprogramamos los pendientes del lote
   const [result] = await db.query(
     `
@@ -4653,6 +4831,21 @@ exports.editarFechaLote = catchAsync(async (req, res) => {
     return res.status(200).json({
       ok: false,
       msg: 'No hay mensajes pendientes que reprogramar en este lote (pueden estar enviados, en proceso o cancelados).',
+    });
+  }
+
+  for (const r of afectadosPrev) {
+    emitirProgramadoEstado({
+      id: r.id,
+      uuid_lote,
+      id_configuracion: Number(id_configuracion),
+      id_cliente_chat_center: r.id_cliente_chat_center,
+      nombre_template: r.nombre_template,
+      estado: 'pendiente',
+      fecha_programada: fechaLocalSql,
+      fecha_programada_utc: fechaUtcSql,
+      timezone: tz,
+      source: 'lote_reprogramado',
     });
   }
 
@@ -4735,6 +4928,21 @@ exports.cancelarLote = catchAsync(async (req, res) => {
     });
   }
 
+  // Chats a los que hay que avisarles la cancelación (se lee antes del UPDATE)
+  const aCancelar = await db.query(
+    `
+    SELECT id, id_cliente_chat_center, nombre_template, fecha_programada
+      FROM template_envios_programados
+     WHERE uuid_lote = ?
+       AND id_configuracion = ?
+       AND estado = 'pendiente'
+    `,
+    {
+      replacements: [uuid_lote, Number(id_configuracion)],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
   // 3) Cancelar solo los pendientes
   const [result] = await db.query(
     `
@@ -4751,6 +4959,19 @@ exports.cancelarLote = catchAsync(async (req, res) => {
   );
 
   const cancelados = result?.affectedRows ?? result ?? 0;
+
+  for (const r of aCancelar) {
+    emitirProgramadoEstado({
+      id: r.id,
+      uuid_lote,
+      id_configuracion: Number(id_configuracion),
+      id_cliente_chat_center: r.id_cliente_chat_center,
+      nombre_template: r.nombre_template,
+      fecha_programada: r.fecha_programada,
+      estado: 'cancelado',
+      source: 'lote_cancelado',
+    });
+  }
 
   // 4) Mensaje adaptado al contexto
   let msg = `Lote cancelado. Se cancelaron ${cancelados} mensaje(s) pendiente(s).`;

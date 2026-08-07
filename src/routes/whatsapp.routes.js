@@ -140,6 +140,8 @@ router.post(
 );
 
 router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
+// Resumen batch para el listado de chats (1 consulta por página visible)
+router.get('/programados_resumen_chats', whatsappCtrl.programadosResumenChats);
 router.get('/programados_por_config', whatsappCtrl.programados_por_config);
 router.get('/templates_programados', whatsappCtrl.templates_programados);
 

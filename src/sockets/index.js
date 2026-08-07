@@ -13,6 +13,10 @@ const dropiService = require('../services/dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { decryptToken } = require('../utils/cryptoToken');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
+const {
+  roomProgramados,
+  emitirProgramadoEstado,
+} = require('../utils/programadosRealtime');
 
 const onlineUsers = [];
 
@@ -76,27 +80,14 @@ class Sockets {
     }
   }
 
+  // El nombre del room y la emisión viven en utils/programadosRealtime para
+  // que cron, controlador y socket usen exactamente la misma clave.
   getProgramadosRoom(id_configuracion, id_cliente_chat_center) {
-    const idCfg = Number(id_configuracion);
-    const idCli = Number(id_cliente_chat_center);
-
-    if (!idCfg || !idCli) return null;
-    return `chat_programados:${idCfg}:${idCli}`;
+    return roomProgramados(id_configuracion, id_cliente_chat_center);
   }
 
   emitProgramadoEstadoToRoom(payload = {}) {
-    try {
-      const room = this.getProgramadosRoom(
-        payload.id_configuracion,
-        payload.id_cliente_chat_center,
-      );
-
-      if (!room) return;
-
-      this.io.to(room).emit('PROGRAMADO_ESTADO', payload);
-    } catch (e) {
-      console.warn('emitProgramadoEstadoToRoom error:', e.message);
-    }
+    emitirProgramadoEstado(payload, this.io);
   }
 
   socketEvents() {

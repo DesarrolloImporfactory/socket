@@ -6,6 +6,7 @@ const {
   prefetchTemplates,
   pruneTemplateCache,
 } = require('../services/whatsapp.service');
+const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
 
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
@@ -309,6 +310,20 @@ cron.schedule('* * * * *', async () => {
               },
             );
 
+            // Avisar al chat abierto que este programado ya salió, para que
+            // el aviso de "tiene una plantilla programada" desaparezca solo.
+            emitirProgramadoEstado({
+              id: item.id,
+              uuid_lote: item.uuid_lote,
+              id_configuracion: item.id_configuracion,
+              id_cliente_chat_center: item.id_cliente_chat_center,
+              nombre_template: item.nombre_template,
+              fecha_programada: item.fecha_programada,
+              estado: 'enviado',
+              id_wamid_mensaje: wamid,
+              source: 'cron_enviado',
+            });
+
             console.log(
               `✅ [CRON templateProgramadoMasivo] Enviado id=${item.id} tel=${item.telefono} wamid=${wamid || 'N/A'} ms=${Date.now() - itemStart}`,
             );
@@ -392,6 +407,23 @@ cron.schedule('* * * * *', async () => {
                 `❌ [CRON templateProgramadoMasivo] Error actualizando catch id=${item.id}:`,
                 updateErr.message,
               );
+            }
+
+            // Solo se avisa cuando el registro queda en 'error' definitivo:
+            // si vuelve a 'pendiente' sigue vigente y el chat debe seguir
+            // mostrando el aviso.
+            if (nuevoEstado === 'error') {
+              emitirProgramadoEstado({
+                id: item.id,
+                uuid_lote: item.uuid_lote,
+                id_configuracion: item.id_configuracion,
+                id_cliente_chat_center: item.id_cliente_chat_center,
+                nombre_template: item.nombre_template,
+                fecha_programada: item.fecha_programada,
+                estado: 'error',
+                error_message: errorPayload.message,
+                source: 'cron_error',
+              });
             }
 
             console.error(
