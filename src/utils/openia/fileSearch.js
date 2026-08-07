@@ -94,10 +94,70 @@ const CONFIGS_CON_TOPE = [10];
 // catalogo_inline, y sin esta lista pasaría a inline sola, sin que nadie lo
 // decidiera. El tope dice "cabe"; esta lista dice "quiero".
 // ─────────────────────────────────────────────────────────────
-const CONFIGS_CON_CATALOGO_INLINE = [10];
+//
+// Sacar una cuenta de acá la devuelve a file_search en el mensaje siguiente,
+// sin migrar nada: es el rollback más rápido que hay.
+//
+// ── Tanda 1 (2026-08-05) ──────────────────────────────────────
+//   610 "Global Outlet ec Pruebas" → 19 productos, 5.599 tokens, 4.087 msgs/30d
+//        Cabe holgado: PASA a inline. Es la primera cuenta fuera de la 10, y la
+//        primera en estrenar el inline por la rama de Assistants
+//        (additional_instructions). 3 de sus 4 columnas ya tienen el texto
+//        guardado, así que entra sin esperar a que sincronice.
+//
+//   666 "VitalLust" → 90 productos, 31.094 tokens, 27.226 msgs/30d
+//        NO cabe: se queda en file_search, y está acá A PROPÓSITO. Es la
+//        prueba de que el tope hace su trabajo — que una cuenta habilitada
+//        cuyo catálogo no entra siga funcionando por el camino viejo, sola,
+//        sin que nadie la saque a mano. Es el mecanismo que va a proteger a
+//        las 256 cuando esto se abra, y conviene verlo funcionando ahora y no
+//        el día del rollout. En el log tiene que decir:
+//          🔎 Catálogo por file_search (NO CABE: 31094 tokens > tope 16000)
+//        Para que la 666 pasara a inline habría que subir el tope a ~32.000,
+//        que es una decisión de costo aparte: son ~900 mensajes por día.
+const CONFIGS_CON_CATALOGO_INLINE = [10, 610, 666];
 
+// ⚠️ "QUIERE inline" ≠ "USA inline". Son dos preguntas distintas y confundirlas
+// hace daño.
+//
+// usaCatalogoInline() responde solo por la lista: la cuenta está habilitada.
+// Pero además el catálogo tiene que CABER, y eso no se sabe desde el
+// id_configuracion: los tokens viven por columna en la BD. Una cuenta puede
+// estar en la lista y seguir en file_search porque su catálogo se pasa del
+// tope — que es justamente el comportamiento que se quiere (el sistema elige
+// solo), pero significa que quien pregunte "¿va por inline?" tiene que pasar
+// los tokens.
+//
+// Para eso está catalogoInlineActivo(). Usar usaCatalogoInline() donde hacía
+// falta la segunda hacía, por ejemplo, que el sync se tragara en silencio un
+// fallo de indexación en una cuenta que SÍ lee su vector store.
 function usaCatalogoInline(id_configuracion) {
   return CONFIGS_CON_CATALOGO_INLINE.includes(Number(id_configuracion));
+}
+
+// Tope para mandar el catálogo dentro de las instrucciones en vez de usar
+// file_search. Vive acá, junto a la lista, porque el runtime y el servicio de
+// sincronización tienen que decidir con el mismo número.
+//
+// Valores de referencia, medidos sobre los catálogos actuales (256 cuentas con
+// asistente activo):
+//   16000 → 247 de 256 (punto de equilibrio con file_search, que inyecta
+//           ~16.000 tokens por llamada)
+//   30000 → 251 de 256 (entran cfg 782, 485, 739 y 285)
+//   Infinity → las 256 (cfg 261, con 182 productos, ~51.000 tokens)
+//
+// Ojo al comparar: el inline es PLANO —se reenvía igual cada turno y no queda
+// guardado— mientras que los fragmentos de file_search se acumulan en la
+// conversación y se re-cobran. 16.000 de file_search son 32.000 en el turno 2.
+// O sea que el punto de equilibrio real está bastante más arriba de 16.000;
+// falta medirlo con costo real por conversación antes de subirlo.
+const TOPE_CATALOGO_INLINE = 16000;
+
+// La pregunta de verdad: ¿esta columna va por inline en esta llamada?
+// Necesita los tokens del catálogo de la columna, no solo la cuenta.
+function catalogoInlineActivo(id_configuracion, tokens) {
+  const n = Number(tokens || 0);
+  return usaCatalogoInline(id_configuracion) && n > 0 && n <= TOPE_CATALOGO_INLINE;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -175,7 +235,9 @@ function normalizarToolsAssistants(tools) {
 module.exports = {
   MAX_RESULTADOS,
   CONFIGS_CON_CATALOGO_INLINE,
+  TOPE_CATALOGO_INLINE,
   usaCatalogoInline,
+  catalogoInlineActivo,
   toolFileSearchResponses,
   toolFileSearchAssistants,
   normalizarToolsAssistants,

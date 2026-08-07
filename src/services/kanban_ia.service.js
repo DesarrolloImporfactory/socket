@@ -16,7 +16,9 @@ const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
 const {
   toolFileSearchResponses,
-  CONFIGS_CON_CATALOGO_INLINE,
+  usaCatalogoInline,
+  catalogoInlineActivo,
+  TOPE_CATALOGO_INLINE,
 } = require('../utils/openia/fileSearch');
 
 const {
@@ -33,20 +35,9 @@ const {
   nuevoTurno,
 } = require('../utils/openia/envioEnBloques');
 
-// Tope para mandar el catálogo dentro de las instrucciones en vez de usar
-// file_search.
-//
-// Valores de referencia, medidos sobre los catálogos actuales:
-//   16000 → 233 de 238 conexiones usan inline (punto de equilibrio con
-//           file_search, que inyecta ~16.000 tokens por llamada)
-//   30000 → 237 de 238 (entran cfg 285, 403, 277 y 666)
-//   Infinity → las 238 (cfg 261, con 181 productos, costaría ~3x más)
-const TOPE_CATALOGO_INLINE = 16000;
-
-// Configuraciones que YA usan catálogo inline: la lista vive en
-// utils/openia/fileSearch.js porque el servicio de sincronización también la
-// necesita (ver el comentario ahí). Se importa arriba junto con
-// toolFileSearchResponses.
+// La lista de configs con inline y el tope de tokens viven en
+// utils/openia/fileSearch.js, porque el servicio de sincronización decide con
+// los mismos números. Se importan arriba junto con toolFileSearchResponses.
 
 // Puente entre el prompt y el catálogo inline.
 //
@@ -55,19 +46,29 @@ const TOPE_CATALOGO_INLINE = 16000;
 // file_search", "si file_search NO devuelve combos..."). Solo en la columna
 // 6554 de la config 10 son 11 menciones.
 //
-// Con inline esa herramienta ya no se manda, así que el prompt apunta a algo
-// que no existe. En vez de reescribir los prompts —que los mantiene otra
-// persona y viven en la DB, no en el repo— se traduce el término aquí. Sale
-// más barato y no rompe a quien siga en file_search: este texto solo se pega
-// cuando usarInline es true.
+// Con inline el catálogo ya no viaja por esa herramienta, así que el prompt
+// apunta a algo que no está. En vez de reescribir los prompts —que los mantiene
+// otra persona y viven en la DB, no en el repo— se traduce el término aquí.
+// Sale más barato y no rompe a quien siga en file_search: este texto solo se
+// pega cuando usarInline es true.
+//
+// ⚠️ NO puede decir "no tienes la herramienta file_search". Eso era cierto
+// mientras el inline existía solo en la rama de la Responses API, donde las
+// tools se arman por llamada. En la rama de Assistants las tools viven en el
+// asistente, y las cuentas con documentos propios conservan file_search para
+// su vector store de documentos: decirle al modelo que no la tiene lo llevaría
+// a no buscar nunca en esos archivos. Por eso el texto habla de DÓNDE está el
+// catálogo, no de qué herramientas existen.
 const PUENTE_INLINE =
-  'NOTA SOBRE EL CATÁLOGO: no tienes la herramienta file_search en esta ' +
-  'conversación y no la necesitas. Donde estas instrucciones digan ' +
-  '"file_search", se refieren al catálogo que viene a continuación: ya lo ' +
-  'tienes COMPLETO aquí abajo, no hay nada más que buscar. Trátalo con las ' +
-  'mismas reglas: es tu única fuente de verdad para nombres, precios, combos, ' +
-  'variedades y URLs; si un producto no está en él, no existe; nunca inventes ' +
-  'nada que no aparezca escrito ahí.';
+  'NOTA SOBRE EL CATÁLOGO: el catálogo NO está en file_search. Donde estas ' +
+  'instrucciones digan "file_search" refiriéndose a productos, precios, ' +
+  'combos, variedades o URLs, se refieren al catálogo que viene a ' +
+  'continuación: ya lo tienes COMPLETO aquí abajo, no hay nada que buscar. ' +
+  'Trátalo con las mismas reglas: es tu única fuente de verdad sobre el ' +
+  'catálogo; si un producto no está en él, no existe; nunca inventes nada que ' +
+  'no aparezca escrito ahí. Si además tienes la herramienta file_search ' +
+  'disponible, contiene únicamente documentos de apoyo (guías, agencias, ' +
+  'políticas), NO el catálogo: úsala solo para eso.';
 
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
 const {
@@ -608,45 +609,67 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  // ── 8.5 Catálogo: inline vs file_search ───────────────────
+  // file_search trocea el catálogo en fragmentos de 800 tokens con 400 de
+  // solapamiento y por defecto devuelve hasta 20, así que termina inyectando el
+  // catálogo entero DUPLICADO. Medido en config 10: 16.230 tokens por llamada,
+  // contra 2.221 del mismo catálogo en texto plano.
+  //
+  // Por eso, si el catálogo en texto cabe holgadamente se manda inline: sale
+  // más barato Y el modelo ve el catálogo COMPLETO, sin depender de que la
+  // búsqueda semántica acierte —que es de donde salen las confusiones de
+  // precios entre productos, porque los cortes de 800 tokens caen en medio de
+  // los items y un fragmento puede traer la cola de uno y la cabeza del otro.
+  //
+  // Esta decisión vive FUERA del if de la API a propósito. Estuvo adentro de la
+  // rama de Responses mientras el inline era solo de la config 10, y eso hacía
+  // que "activar el inline" para el resto no hiciera nada: las otras cuentas
+  // pasan por ejecutarAsistente y nunca veían este bloque.
+  const catalogoInline = (columna.catalogo_inline || '').trim();
+  const inlineTokens = Number(columna.catalogo_inline_tokens || 0);
+  const usarInline =
+    !!catalogoInline && catalogoInlineActivo(id_configuracion, inlineTokens);
+
+  if (usarInline) {
+    await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
+  } else if (columna.vector_store_id) {
+    // Se distingue POR QUÉ no fue inline. Sin esto, una cuenta habilitada que
+    // se pasa del tope y una que nunca se habilitó dan el mismo log, y no hay
+    // manera de comprobar desde afuera que el tope está haciendo su trabajo.
+    const motivo = !usaCatalogoInline(id_configuracion)
+      ? 'cuenta no habilitada'
+      : !catalogoInline
+        ? 'sin catálogo inline guardado todavía'
+        : `NO CABE: ${inlineTokens} tokens > tope ${TOPE_CATALOGO_INLINE}`;
+    await log(`🔎 Catálogo por file_search (${motivo})`);
+  }
+
+  // El mismo texto sirve para las dos APIs; cambia solo por dónde entra:
+  //   Responses  → `instructions`
+  //   Assistants → `additional_instructions` del run
+  // Las dos se reenvían enteras en cada llamada y ninguna queda guardada en la
+  // conversación, así que el costo es PLANO. Es justo lo contrario de
+  // file_search, cuyos fragmentos sí quedan pegados —en el thread o en la
+  // cadena de previous_response_id— y se re-cobran en todos los turnos
+  // siguientes: 16.000 tokens en el turno 1, 32.000 en el 2, 48.000 en el 3.
+  // Por eso el inline gana desde el segundo turno aunque de entrada parezca
+  // más caro.
+  //
+  // El puente va ANTES del catálogo, no al final: así el modelo lee la
+  // aclaración justo antes del bloque al que apunta.
+  const bloqueCatalogo = usarInline
+    ? `${PUENTE_INLINE}\n\n${catalogoInline}`
+    : null;
+
   // ── 9. Ejecutar ───────────────────────────────────────────
   let resultado;
   try {
     if (USAR_RESPONSES_API) {
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
 
-      // ── Catálogo: inline vs file_search ────────────────────
-      // file_search trocea el catálogo en fragmentos de 800 tokens con 400 de
-      // solapamiento y por defecto devuelve hasta 20, así que termina
-      // inyectando el catálogo entero DUPLICADO. Medido en config 10: 16.230
-      // tokens por llamada, contra 2.221 del mismo catálogo en texto plano.
-      //
-      // Por eso, si el catálogo en texto cabe holgadamente se manda inline:
-      // sale más barato Y el modelo ve el catálogo COMPLETO, sin depender de
-      // que la búsqueda semántica acierte. Solo los catálogos que superan el
-      // punto de equilibrio siguen con file_search, donde sí conviene.
-      //
-      // Subir TOPE_CATALOGO_INLINE a Infinity fuerza inline para todos.
-      const catalogoInline = (columna.catalogo_inline || '').trim();
-      const inlineTokens = Number(columna.catalogo_inline_tokens || 0);
-      const usarInline =
-        CONFIGS_CON_CATALOGO_INLINE.includes(Number(id_configuracion)) &&
-        !!catalogoInline &&
-        inlineTokens > 0 &&
-        inlineTokens <= TOPE_CATALOGO_INLINE;
-
-      let instruccionesFinales = assistantInfo.instructions;
-      if (usarInline) {
-        // El puente va ENTRE el prompt y el catálogo, no al final: así el
-        // modelo lee la aclaración justo antes del bloque al que apunta.
-        instruccionesFinales = `${assistantInfo.instructions}\n\n${PUENTE_INLINE}\n\n${catalogoInline}`;
-        await log(
-          `📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`,
-        );
-      } else if (columna.vector_store_id) {
-        await log(
-          `🔎 Catálogo por file_search (inline=${inlineTokens || 'n/d'} tokens, tope=${TOPE_CATALOGO_INLINE})`,
-        );
-      }
+      const instruccionesFinales = bloqueCatalogo
+        ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
+        : assistantInfo.instructions;
 
       resultado = await ejecutarConResponsesAPI({
         previous_response_id,
@@ -664,6 +687,18 @@ async function procesarMensajeKanban(params) {
       });
     } else {
       await log(`🚨 entro con polling VIEJO SISTEMA`);
+
+      // Acá el prompt vive en el assistant de OpenAI, no en la BD, así que el
+      // catálogo no se puede concatenar a `instructions`: entra por
+      // `additional_instructions`, que la API aplica SOLO a este run y no
+      // guarda en el thread. Mismo costo plano que el inline por Responses.
+      //
+      // El bloque del producto del anuncio va DESPUÉS del catálogo a propósito:
+      // si se contradicen, lo específico tiene que ganarle a lo general.
+      const additional =
+        [bloqueCatalogo, instruccionesProducto].filter(Boolean).join('\n\n') ||
+        null;
+
       resultado = await ejecutarAsistente({
         id_thread,
         assistant_id: columna.assistant_id,
@@ -671,7 +706,7 @@ async function procesarMensajeKanban(params) {
         max_tokens: columna.max_tokens || 500,
         headers: headers_assistants,
         skip_send_message: true,
-        additional_instructions: instruccionesProducto || null,
+        additional_instructions: additional,
       });
     }
   } catch (err) {
@@ -700,12 +735,18 @@ async function procesarMensajeKanban(params) {
       try {
         resultado = await ejecutarConResponsesAPI({
           previous_response_id: null,
-          instructions: assistantInfo.instructions,
+          // Mismo criterio que el intento original. Antes esta rama mandaba las
+          // instrucciones peladas y volvía a prender file_search, o sea que el
+          // reintento de un desborde de contexto reinyectaba los ~16.000 tokens
+          // de fragmentos que lo habían provocado.
+          instructions: bloqueCatalogo
+            ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
+            : assistantInfo.instructions,
           additional_instructions: instruccionesProducto || null,
           input: inputConRecap,
           model: assistantInfo.model,
           max_tokens: columna.max_tokens || 500,
-          vector_store_id: columna.vector_store_id || null,
+          vector_store_id: usarInline ? null : columna.vector_store_id || null,
           vector_store_docs_id: columna.vector_store_docs_id || null,
           api_key_openai,
           id_configuracion,
@@ -1484,11 +1525,11 @@ async function ejecutarAsistente({
     const runBody = { assistant_id, max_completion_tokens: max_tokens };
     if (additional_instructions) {
       runBody.additional_instructions = additional_instructions;
+      // Solo el principio: desde que el catálogo inline entra por acá, volcarlo
+      // entero mete hasta ~64.000 caracteres por mensaje en debug_log.txt.
       await log(
-        `📎 additional_instructions inyectado (${additional_instructions.length} chars)`,
-      );
-      await log(
-        `📎 additional_instructions inyectado 2: (${additional_instructions})`,
+        `📎 additional_instructions inyectado (${additional_instructions.length} chars): ` +
+          `${additional_instructions.slice(0, 300)}${additional_instructions.length > 300 ? '…' : ''}`,
       );
     }
 

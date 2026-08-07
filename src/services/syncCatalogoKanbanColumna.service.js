@@ -7,7 +7,7 @@ const { db } = require('../database/config');
 const fs = require('fs');
 const path = require('path');
 
-const { usaCatalogoInline } = require('../utils/openia/fileSearch');
+const { catalogoInlineActivo } = require('../utils/openia/fileSearch');
 
 // ✅ ACTIVO: generación del catálogo en texto plano para mandarlo dentro de
 // las instrucciones en vez de usar file_search.
@@ -235,6 +235,14 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     instrucciones_uso_ia,
   };
 
+  // El texto plano se arma acá, antes de tocar OpenAI, porque de sus tokens
+  // depende una decisión que se toma más abajo: si un fallo indexando puede
+  // perdonarse o no. Es una función pura sobre catalogPayload, no cuesta nada
+  // adelantarla.
+  const inline = GENERAR_CATALOGO_INLINE
+    ? construirCatalogoInline(catalogPayload)
+    : null;
+
   // ── 4.5 Guardar JSON localmente (opcional, por defecto activo) ──
   /* const saveToDisk = opts.saveToDisk !== false; */ // true por defecto
   const saveToDisk = false;
@@ -292,7 +300,11 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // Se reintenta una vez SUBIENDO UN ARCHIVO NUEVO, no readjuntando el mismo:
   // cuando un file falla la indexación queda inservible (usage_bytes = 0) y
   // volver a colgarlo del store repite el error.
-  const vaInline = usaCatalogoInline(id_configuracion);
+  // ⚠️ No alcanza con "está en la lista": tiene que CABER. Una cuenta
+  // habilitada cuyo catálogo se pasa del tope sigue leyendo su vector store, y
+  // para ella un fallo de indexación NO se puede perdonar — se quedaría con el
+  // catálogo viejo en silencio. Por eso se pregunta con los tokens en la mano.
+  const vaInline = catalogoInlineActivo(id_configuracion, inline?.tokens);
   let indexado = false;
   let fileIdFinal = newFileId;
   let vsFileIdFinal = vectorStoreFileId;
@@ -361,9 +373,12 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   let assistantActualizado = false;
   if (assistant_id && indexado) {
     try {
+      // El asistente tiene UN solo cupo (ver ensureAssistantHasFileSearch).
+      // Si la cuenta va inline, el catálogo viaja en las instrucciones y el
+      // cupo se le da a los documentos; si no, al catálogo.
       await ensureAssistantHasFileSearch(
         assistant_id,
-        [vectorStoreId, vsDocs],
+        vaInline && vsDocs ? [vsDocs] : [vectorStoreId],
         headersJson,
         logger,
       );
@@ -383,9 +398,8 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   //
   // El catálogo inline (si está activo) se guarda en el mismo UPDATE para que
   // el texto y el vector store queden siempre de la misma sincronización.
-  const inline = GENERAR_CATALOGO_INLINE
-    ? construirCatalogoInline(catalogPayload)
-    : null;
+  // `inline` ya viene armado desde el paso 4.5, donde hizo falta para decidir
+  // si un fallo de indexación era perdonable.
 
   if (indexado) {
     await db.query(
@@ -906,10 +920,23 @@ async function descartarVectorStore(vectorStoreId, headersJson, logger) {
   }
 }
 
-// Recibe uno o varios vector stores (catálogo + documentos). Acepta también un
-// string suelto por compatibilidad con quien la llamaba de a uno. OpenAI admite
-// como máximo 2 vector stores por asistente, que es justo lo que hay: catálogo
-// y documentos.
+// ⚠️ UN SOLO vector store por asistente.
+//
+// tool_resources.file_search.vector_store_ids admite MÁXIMO 1 elemento en la
+// Assistants API; mandarle 2 devuelve 400 "array too long. Expected an array
+// with maximum length 1". El límite de 2 que sí existe es de la Responses API,
+// por llamada, y no aplica acá — eran dos límites distintos que estábamos
+// confundiendo.
+//
+// Con un solo cupo hay que elegir, y quien elige es el llamador:
+//   - cuenta con catálogo inline → conviene el store de DOCUMENTOS, porque el
+//     catálogo ya viaja dentro de las instrucciones y no necesita búsqueda.
+//   - cuenta sin inline → el store del CATÁLOGO, que es lo único que el modelo
+//     no puede saber de memoria. Sus documentos siguen conviviendo dentro de
+//     ese mismo store, como siempre.
+//
+// Se sigue aceptando un array por compatibilidad con los llamadores, pero se
+// queda con el primero que no sea nulo.
 async function ensureAssistantHasFileSearch(
   assistantId,
   vectorStoreIds,
@@ -918,7 +945,9 @@ async function ensureAssistantHasFileSearch(
 ) {
   const stores = (
     Array.isArray(vectorStoreIds) ? vectorStoreIds : [vectorStoreIds]
-  ).filter(Boolean);
+  )
+    .filter(Boolean)
+    .slice(0, 1);
   const getRes = await axios.get(
     `https://api.openai.com/v1/assistants/${assistantId}`,
     { headers: headersJson },

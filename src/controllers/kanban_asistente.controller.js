@@ -19,7 +19,10 @@ const {
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
-const { toolFileSearchResponses } = require('../utils/openia/fileSearch');
+const {
+  toolFileSearchResponses,
+  usaCatalogoInline,
+} = require('../utils/openia/fileSearch');
 
 // Configuraciones donde los documentos que sube el usuario van a un vector
 // store PROPIO (kanban_columnas.vector_store_docs_id) en vez de compartir el
@@ -636,20 +639,29 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
         : [];
       const tieneFileSearch = tools.some((t) => t?.type === 'file_search');
 
-      // Van los DOS stores, no solo el que acaba de recibir el archivo.
-      // tool_resources se reemplaza entero, así que mandar únicamente el de
-      // documentos le dejaría al asistente sin catálogo (y al revés).
-      const storesAsistente = [
-        docsSeparados ? col.vector_store_id : vectorStoreId,
-        docsSeparados ? vectorStoreId : col.vector_store_docs_id,
-      ].filter(Boolean);
+      // ⚠️ UN SOLO store. tool_resources.file_search.vector_store_ids admite
+      // máximo 1 en la Assistants API: con 2 devuelve 400 "array too long.
+      // Expected an array with maximum length 1". El máximo de 2 es de la
+      // Responses API, por llamada — son dos límites distintos. Y se reemplaza
+      // entero, no se fusiona, así que el que se mande es el único que queda.
+      //
+      // Con un solo cupo:
+      //   - cuenta con catálogo inline → los DOCUMENTOS, porque el catálogo ya
+      //     viaja dentro de las instrucciones y no necesita búsqueda.
+      //   - cuenta sin inline → el CATÁLOGO, que es lo único que el modelo no
+      //     puede saber de memoria. Ahí los documentos conviven en ese mismo
+      //     store, que es como funcionó siempre.
+      const storeAsistente =
+        usaCatalogoInline(col.id_configuracion) && docsSeparados
+          ? vectorStoreId
+          : col.vector_store_id || vectorStoreId;
 
       await axios.post(
         `https://api.openai.com/v1/assistants/${col.assistant_id}`,
         {
           tools: tieneFileSearch ? tools : [...tools, { type: 'file_search' }],
           tool_resources: {
-            file_search: { vector_store_ids: storesAsistente },
+            file_search: { vector_store_ids: [storeAsistente] },
           },
         },
         { headers: headersJson(apiKey) },
