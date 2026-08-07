@@ -854,7 +854,9 @@ async function procesarMensajeKanban(params) {
           .replace(/\s+/g, ' ')
           .trim();
 
-      const palabras = norm(mensaje).split(' ').filter((p) => p.length > 3);
+      const palabras = norm(mensaje)
+        .split(' ')
+        .filter((p) => p.length > 3);
 
       /* Se pide que coincidan DOS palabras del nombre, no una: "profesional" o
          "facial" sueltas aparecen en medio catálogo y mandarían a la columna
@@ -1047,9 +1049,7 @@ async function procesarMensajeKanban(params) {
       /Servicio que desea\s*:/i.test(respuestaRaw);
     escribioBloqueCita = escribioBloque;
 
-    const tieneTag = respuestaRaw
-      .toLowerCase()
-      .includes(trigger.toLowerCase());
+    const tieneTag = respuestaRaw.toLowerCase().includes(trigger.toLowerCase());
 
     if (!tieneTag && escribioBloque) {
       await log(
@@ -1148,16 +1148,18 @@ async function procesarMensajeKanban(params) {
       { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
     );
   } else if (triggersColumna.length) {
-    const [{ turnos } = { turnos: 0 }] = await db.query(
-      `UPDATE clientes_chat_center SET turnos_sin_avance = turnos_sin_avance + 1
+    const [{ turnos } = { turnos: 0 }] = await db
+      .query(
+        `UPDATE clientes_chat_center SET turnos_sin_avance = turnos_sin_avance + 1
         WHERE id = ?`,
-      { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
-    ).then(() =>
-      db.query(
-        `SELECT turnos_sin_avance AS turnos FROM clientes_chat_center WHERE id = ?`,
-        { replacements: [id_cliente], type: db.QueryTypes.SELECT },
-      ),
-    );
+        { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+      )
+      .then(() =>
+        db.query(
+          `SELECT turnos_sin_avance AS turnos FROM clientes_chat_center WHERE id = ?`,
+          { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+        ),
+      );
 
     if (Number(turnos) >= LIMITE_TURNOS_SIN_AVANCE) {
       const [colAsesor] = await db.query(
@@ -1718,7 +1720,9 @@ async function elegirProfesionalLibre({
           norm(p.nombre).includes(buscado) || buscado.includes(norm(p.nombre)),
       );
     if (!elegido) {
-      return { error: `no existe "${pedido}" entre quienes atienden en la sede` };
+      return {
+        error: `no existe "${pedido}" entre quienes atienden en la sede`,
+      };
     }
     if (ocupadosSet.has(Number(elegido.id))) {
       return { error: `${elegido.nombre} ya tiene una cita a esa hora` };
@@ -1745,9 +1749,8 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
      Se quita el énfasis antes de leer y el emoji queda opcional. */
   const limpio = String(mensajeGPT || '').replace(/[*_]{1,2}/g, '');
   const campo = (etiqueta) =>
-    limpio
-      .match(new RegExp(`${etiqueta}\\s*:\\s*(.+)`, 'i'))?.[1]
-      ?.trim() || '';
+    limpio.match(new RegExp(`${etiqueta}\\s*:\\s*(.+)`, 'i'))?.[1]?.trim() ||
+    '';
 
   const nombre = campo('Nombre');
   const correo = campo('Correo');
@@ -1815,7 +1818,8 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
       },
     );
 
-    const minutos = Number(servicioCat?.duracion) > 0 ? Number(servicioCat.duracion) : 60;
+    const minutos =
+      Number(servicioCat?.duracion) > 0 ? Number(servicioCat.duracion) : 60;
     mFin = mIni.clone().add(minutos, 'minutes');
     await log(
       `🕒 agendar_cita: hora de fin calculada (${minutos} min de "${servicio || 'sin servicio'}")`,
@@ -1870,7 +1874,9 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   /* El bloque ahora lleva "Sede La Carolina — Av. Amazonas 123" porque al
      cliente la dirección le sirve y el nombre solo no. Para buscar la sede se
      usa lo que va antes del guion. */
-  const sedeNombre = campo('Sede').split(/\s+[—–-]\s+/)[0].trim();
+  const sedeNombre = campo('Sede')
+    .split(/\s+[—–-]\s+/)[0]
+    .trim();
 
   const sedes = await db.query(
     `SELECT id, nombre, ciudad, direccion, id_calendario
@@ -1940,10 +1946,13 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   let calendarId = null;
 
   if (establecimiento?.id_calendario) {
-    const [c] = await db.query(`SELECT id FROM calendars WHERE id = ? LIMIT 1`, {
-      replacements: [establecimiento.id_calendario],
-      type: db.QueryTypes.SELECT,
-    });
+    const [c] = await db.query(
+      `SELECT id FROM calendars WHERE id = ? LIMIT 1`,
+      {
+        replacements: [establecimiento.id_calendario],
+        type: db.QueryTypes.SELECT,
+      },
+    );
     calendarId = c?.id || null;
   }
 

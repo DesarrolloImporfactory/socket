@@ -25,7 +25,7 @@ const num = (envKey, fallback) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// Escalera de comisiones
+// Comisión
 // ─────────────────────────────────────────────────────────────
 /**
  * Primer ciclo de facturación que genera comisión.
@@ -37,14 +37,16 @@ const num = (envKey, fallback) => {
  */
 const CICLO_INICIO = num('REFERIDOS_CICLO_INICIO', 3);
 
-/** Ciclos 3 → 12. */
-const PORCENTAJE_INICIAL = num('REFERIDOS_PORCENTAJE_INICIAL', 25);
-
-/** Último ciclo que cobra PORCENTAJE_INICIAL. */
-const CICLO_FIN_TRAMO_ALTO = num('REFERIDOS_CICLO_FIN_TRAMO_ALTO', 12);
-
-/** Ciclo 13 en adelante: residual vitalicio mientras el referido siga pagando. */
-const PORCENTAJE_RESIDUAL = num('REFERIDOS_PORCENTAJE_RESIDUAL', 10);
+/**
+ * Porcentaje único, del ciclo 3 en adelante y sin tope de tiempo.
+ *
+ * Antes había una escalera —25% hasta el ciclo 12 y 10% residual del 13 en
+ * adelante—. Se eliminó: el 25% es vitalicio mientras el referido siga pagando.
+ * La bajada al 10% no se llegó a devengar nunca (ninguna comisión pasó del
+ * ciclo 4), así que no hay histórico que respetar; y aunque lo hubiera, cada
+ * comisión guarda SU porcentaje en la fila y este cambio no reescribe el pasado.
+ */
+const PORCENTAJE = num('REFERIDOS_PORCENTAJE', 25);
 
 /**
  * Porcentaje que le toca a un ciclo. Devuelve 0 cuando el ciclo todavía no
@@ -52,9 +54,7 @@ const PORCENTAJE_RESIDUAL = num('REFERIDOS_PORCENTAJE_RESIDUAL', 10);
  */
 const porcentajeParaCiclo = (ciclo) => {
   const n = Number(ciclo) || 0;
-  if (n < CICLO_INICIO) return 0;
-  if (n <= CICLO_FIN_TRAMO_ALTO) return PORCENTAJE_INICIAL;
-  return PORCENTAJE_RESIDUAL;
+  return n < CICLO_INICIO ? 0 : PORCENTAJE;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -112,9 +112,7 @@ const construirEnlace = (codigo) => {
 
 module.exports = {
   CICLO_INICIO,
-  PORCENTAJE_INICIAL,
-  CICLO_FIN_TRAMO_ALTO,
-  PORCENTAJE_RESIDUAL,
+  PORCENTAJE,
   porcentajeParaCiclo,
 
   DIAS_RETENCION,

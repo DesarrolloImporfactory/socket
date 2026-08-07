@@ -17,7 +17,7 @@
  *    los webhooks —es su comportamiento normal, no un fallo— y sin ese UNIQUE
  *    cada reintento pagaría la comisión otra vez.
  *
- * 3. El porcentaje se guarda EN CADA FILA. Cambiar la escalera en
+ * 3. El porcentaje se guarda EN CADA FILA. Cambiar el porcentaje en
  *    `referidos.config.js` afecta a lo que se devengue de ahí en adelante y
  *    jamás reescribe lo ya devengado.
  *
