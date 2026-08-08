@@ -46,6 +46,28 @@ function setCachedTemplate(waba_id, nombre_template, data) {
 }
 
 /**
+ * Borra TODAS las plantillas cacheadas de un WABA.
+ *
+ * Se llama cuando el cliente acaba de crear o eliminar una plantilla desde el
+ * administrador: sin esto, el chat y el cron seguirían viendo la lista vieja
+ * hasta que venza el TTL de 30 min, y una plantilla recién borrada seguiría
+ * apareciendo como enviable.
+ */
+function invalidarTemplatesDeWaba(waba_id) {
+  const prefijo = `${waba_id}::`;
+  let borradas = 0;
+
+  for (const key of templateCache.keys()) {
+    if (key.startsWith(prefijo)) {
+      templateCache.delete(key);
+      borradas++;
+    }
+  }
+
+  return borradas;
+}
+
+/**
  * Limpia entradas expiradas del cache (llamar periódicamente si se desea)
  */
 function pruneTemplateCache() {
@@ -58,6 +80,60 @@ function pruneTemplateCache() {
 }
 
 /* ================================================================
+   definicionDesdeComponents — components de una plantilla → la forma
+   que consume el resto del sistema.
+
+   Una sola fuente a propósito: los components vienen igual de Meta y del
+   catálogo local (kanban_catalogo), y si cada camino los interpretara por
+   su cuenta el chat pintaría una cosa distinta según de dónde salió la
+   definición.
+   ================================================================ */
+
+function definicionDesdeComponents(components, extra = {}) {
+  const comps = Array.isArray(components) ? components : [];
+
+  const body = comps.find((c) => c.type === 'BODY');
+  if (!body?.text) return null;
+
+  const headerComp = comps.find((c) => c.type === 'HEADER');
+  const footerComp = comps.find((c) => c.type === 'FOOTER');
+  const buttonsComp = comps.find((c) => c.type === 'BUTTONS');
+
+  let header = null;
+  if (headerComp) {
+    header = {
+      format: headerComp.format || null,
+      media_url: headerComp.example?.header_handle?.[0] || null,
+      // El header TEXT también puede traer {{1}}: sin el texto, el chat no
+      // podía pintarlo y se perdía la primera línea de la plantilla.
+      text: headerComp.text || null,
+    };
+  }
+
+  /* Footer y botones: sin ellos el chat no puede renderizar la plantilla
+     como la ve el cliente. No se guardan con el mensaje enviado — solo
+     viajan los VALORES de los parámetros, no las etiquetas ni las URLs. */
+  const buttons = Array.isArray(buttonsComp?.buttons)
+    ? buttonsComp.buttons.map((b) => ({
+        type: b.type || null,
+        text: b.text || '',
+        url: b.url || null,
+        phone_number: b.phone_number || null,
+      }))
+    : [];
+
+  return {
+    text: body.text,
+    language: extra.language || 'es',
+    header,
+    footer: footerComp?.text || null,
+    buttons,
+    category: extra.category || null,
+    status: extra.status || null,
+  };
+}
+
+/* ================================================================
    cacheTemplatesFromResponse — Extrae y cachea plantillas de una
    respuesta de Meta (una página)
    ================================================================ */
@@ -65,23 +141,13 @@ function pruneTemplateCache() {
 function cacheTemplatesFromResponse(templates, waba_id) {
   let cached = 0;
   for (const tpl of templates) {
-    const body = tpl.components?.find((comp) => comp.type === 'BODY');
-    if (!body?.text) continue;
+    const tplData = definicionDesdeComponents(tpl.components, {
+      language: tpl.language,
+      category: tpl.category,
+      status: tpl.status,
+    });
 
-    const headerComp = tpl.components?.find((comp) => comp.type === 'HEADER');
-    let header = null;
-    if (headerComp) {
-      header = {
-        format: headerComp.format || null,
-        media_url: headerComp.example?.header_handle?.[0] || null,
-      };
-    }
-
-    const tplData = {
-      text: body.text,
-      language: tpl.language || 'es',
-      header,
-    };
+    if (!tplData) continue;
 
     setCachedTemplate(waba_id, tpl.name, tplData);
     cached++;
@@ -786,6 +852,92 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   };
 };
 
+/* ================================================================
+   obtenerDefinicionPorNombre — una sola petición, sin paginar.
+
+   Para LECTURA (pintar el historial del chat), no para enviar. Usa el filtro
+   `name_or_content` de Meta en vez de recorrer las páginas del WABA: una
+   plantilla que cae en la página 3 costaba 3 llamadas y ahora cuesta 1.
+
+   No reemplaza a obtenerTextoPlantilla: esa camina todas las páginas y de
+   paso calienta la caché entera, que es lo que le conviene al cron cuando
+   resuelve muchas plantillas de golpe. Aquí se busca lo contrario — el costo
+   mínimo por nombre suelto.
+
+   Escribe en la MISMA caché, así que lo que resuelva el chat también le sirve
+   al cron y viceversa.
+   ================================================================ */
+
+/* ================================================================
+   precargarTemplatesDelWaba — una pasada, cachea todo lo que venga.
+
+   Para resolver VARIOS nombres de golpe. Pedirlos uno por uno con filtro
+   cuesta una llamada por nombre; una sola página de 200 normalmente trae el
+   WABA entero y los deja todos resueltos. Medido con 8 nombres reales de una
+   cuenta: 8 llamadas filtrando vs 1 así.
+   ================================================================ */
+
+async function precargarTemplatesDelWaba(
+  waba_id,
+  accessToken,
+  { maxPages = 2, limit = 200 } = {},
+) {
+  let url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${waba_id}/message_templates`;
+  let params = { limit };
+  let total = 0;
+
+  for (let page = 0; page < maxPages && url; page++) {
+    const { data } = await axios.get(url, {
+      params,
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 20000,
+    });
+
+    total += cacheTemplatesFromResponse(data?.data || [], waba_id);
+
+    // El `next` de Meta ya trae sus propios query params.
+    url = data?.paging?.next || null;
+    params = undefined;
+  }
+
+  return total;
+}
+
+async function obtenerDefinicionPorNombre(
+  nombre_template,
+  accessToken,
+  waba_id,
+) {
+  const cached = getCachedTemplate(waba_id, nombre_template);
+  if (cached) return cached;
+
+  const { data } = await axios.get(
+    `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${waba_id}/message_templates`,
+    {
+      params: { name_or_content: nombre_template, limit: 25 },
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 20000,
+    },
+  );
+
+  // El filtro de Meta es por coincidencia parcial: hay que quedarse con el
+  // nombre exacto o se pintaría la plantilla equivocada.
+  const encontrada = (data?.data || []).find((t) => t.name === nombre_template);
+  if (!encontrada) return null;
+
+  // Se cachean todas las que vinieron: son variantes del mismo nombre y es
+  // probable que el chat las pida enseguida.
+  cacheTemplatesFromResponse(data.data, waba_id);
+
+  return getCachedTemplate(waba_id, nombre_template);
+}
+
 exports.prefetchTemplates = prefetchTemplates;
 exports.pruneTemplateCache = pruneTemplateCache;
 exports.obtenerTextoPlantilla = obtenerTextoPlantilla;
+exports.obtenerDefinicionPorNombre = obtenerDefinicionPorNombre;
+exports.precargarTemplatesDelWaba = precargarTemplatesDelWaba;
+exports.cachearTemplatesDeRespuesta = cacheTemplatesFromResponse;
+exports.invalidarTemplatesDeWaba = invalidarTemplatesDeWaba;
+exports.definicionDesdeComponents = definicionDesdeComponents;
+exports.getDefinicionCacheada = getCachedTemplate;

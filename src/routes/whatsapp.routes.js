@@ -139,6 +139,9 @@ router.post(
   whatsappCtrl.enviarVideoWhatsappFile,
 );
 
+// Definición completa (header/body/footer/botones) para renderizar el chat
+router.post('/definiciones_templates', whatsappCtrl.definicionesTemplates);
+
 router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 // Resumen batch para el listado de chats (1 consulta por página visible)
 router.get('/programados_resumen_chats', whatsappCtrl.programadosResumenChats);

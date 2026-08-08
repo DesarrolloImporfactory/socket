@@ -602,8 +602,14 @@ function buildTemplateComponents(parametrosJson, order) {
   if (Array.isArray(config.buttons) && config.buttons.length > 0) {
     for (const btn of config.buttons) {
       const idx = btn.index != null ? btn.index : 0;
+      /* Mismo '-' que el body: Meta rechaza el parámetro vacío con 132000 y
+         tumba el envío entero. Un botón que lleva a un link muerto es peor
+         que nada, pero mucho menos malo que no avisarle al cliente que su
+         pedido llegó — y además, sin envío el notifier tampoco lo mueve de
+         columna. Hoy no ocurre (0 de 8.614 órdenes en agencia sin guía),
+         queda como red de seguridad para otras plantillas con botón. */
       const value =
-        sanitizeParamText(resolveVariable(btn.variable || '', order)) || '';
+        sanitizeParamText(resolveVariable(btn.variable || '', order)) || '-';
       components.push({
         type: 'button',
         sub_type: 'url',

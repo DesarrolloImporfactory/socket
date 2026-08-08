@@ -36,6 +36,15 @@ const {
 } = require('../utils/encuestaTemplateLink');
 
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
+const {
+  obtenerDefinicionPorNombre,
+  precargarTemplatesDelWaba,
+  definicionDesdeComponents,
+  getDefinicionCacheada,
+  cachearTemplatesDeRespuesta,
+  invalidarTemplatesDeWaba,
+} = require('../services/whatsapp.service');
+const { getTemplatesMetaMerged } = require('../utils/kanban_catalogo.provider');
 
 exports.obtener_numeros = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
@@ -517,9 +526,29 @@ exports.obtenerTemplatesWhatsapp = async (req, res) => {
       });
     }
 
-    const { WABA_ID, ACCESS_TOKEN } = rows[0];
-    const { after, before, limit: limitRaw, q: qRaw } = req.body || {};
+    const {
+      after,
+      before,
+      limit: limitRaw,
+      q: qRaw,
+      refrescar,
+    } = req.body || {};
     const limit = Math.min(Math.max(parseInt(limitRaw || 50, 10), 1), 100);
+
+    const { WABA_ID, ACCESS_TOKEN } = rows[0];
+
+    /* El cliente acaba de crear o eliminar una plantilla: se tira la caché
+       compartida de ese WABA para que el chat y el cron dejen de ver la lista
+       vieja. Sin esto había que esperar los 30 min del TTL, y una plantilla
+       recién borrada seguía apareciendo como enviable. */
+    if (refrescar) {
+      const borradas = invalidarTemplatesDeWaba(WABA_ID);
+      if (borradas) {
+        console.log(
+          `♻️ [obtenerTemplatesWhatsapp] caché invalidada: ${borradas} plantilla(s) del WABA ${WABA_ID}`,
+        );
+      }
+    }
 
     /* Búsqueda: se delega a Meta con `name_or_content` en vez de filtrar la
        página ya traída. Filtrar en el front solo miraba las 25 plantillas
@@ -561,6 +590,19 @@ exports.obtenerTemplatesWhatsapp = async (req, res) => {
       );
       busquedaEnServidor = false;
       ({ data } = await pedir(false));
+    }
+
+    /* Meta ya devolvió los components completos en esta misma respuesta, así
+       que se aprovecha para calentar la caché compartida sin gastar una
+       llamada extra: cada vez que el cliente abre su administrador de
+       plantillas, el chat y el cron quedan al día gratis. */
+    try {
+      cachearTemplatesDeRespuesta(data?.data || [], WABA_ID);
+    } catch (e) {
+      console.warn(
+        '⚠️ obtenerTemplatesWhatsapp: no se pudo cachear:',
+        e.message,
+      );
     }
 
     return res.json({
@@ -4317,6 +4359,197 @@ exports.listarProgramadosPorChat = async (req, res) => {
     });
   }
 };
+
+/* ────────────────────────────────────────────────
+   Definición completa de plantillas (body + header + footer + botones).
+
+   Del envío solo se guarda el body ya interpolado y los VALORES de los
+   parámetros; la etiqueta del botón, su URL y el footer nunca se guardaron,
+   así que hay que resolverlos contra la definición de la plantilla.
+
+   Se resuelve en tres escalones, del más barato al más caro:
+
+     1. Caché en memoria del WABA (la que llena el cron). Gratis y es el dato
+        real de Meta.
+     2. Catálogo local (kanban_catalogo). Gratis, sin red, sobrevive al
+        deploy. Cubre el 75% de los mensajes de plantilla del sistema, porque
+        casi todo lo que envía el notifier son plantillas que instalamos
+        nosotros. Es fiable porque la política del catálogo es no editar una
+        plantilla aprobada nunca: si cambian las variables se crea un nombre
+        nuevo (por eso existe retiro_agencia_guia_k1 y no una edición de
+        retiro_agencia_k1), así que nombre → definición no se mueve.
+     3. Meta, con filtro por nombre y una sola petición. Solo para las
+        plantillas propias del cliente, que son el 25% restante.
+
+   Se piden por lote: un chat repite 2 o 3 nombres y no tiene sentido una
+   llamada por mensaje.
+   ──────────────────────────────────────────────── */
+
+const MAX_TEMPLATES_DEFINICION = 25;
+
+/* Caché negativa: nombres que no están ni en el catálogo ni en el WABA
+   (plantilla borrada del BM que sigue apareciendo en el historial). Sin
+   esto, cada apertura de ese chat vuelve a preguntarle a Meta. */
+const definicionesNoEncontradas = new Map(); // `${waba}::${nombre}` -> ts
+const TTL_NO_ENCONTRADA_MS = 10 * 60 * 1000;
+
+/* Catálogo local indexado por nombre. Se arma una vez por proceso: son ~20
+   plantillas de fábrica más las custom del tablero. */
+let catalogoPorNombre = null;
+let catalogoTs = 0;
+const TTL_CATALOGO_MS = 10 * 60 * 1000;
+
+async function getCatalogoPorNombre() {
+  const ahora = Date.now();
+  if (catalogoPorNombre && ahora - catalogoTs < TTL_CATALOGO_MS) {
+    return catalogoPorNombre;
+  }
+
+  const items = await getTemplatesMetaMerged();
+  const mapa = new Map();
+
+  for (const tpl of items) {
+    const def = definicionDesdeComponents(tpl.components, {
+      language: tpl.language,
+      category: tpl.category,
+      // El catálogo no sabe el estado real en el WABA del cliente; se deja
+      // nulo para no afirmar algo que no nos consta.
+      status: null,
+    });
+    if (def) mapa.set(tpl.name, def);
+  }
+
+  catalogoPorNombre = mapa;
+  catalogoTs = ahora;
+  return mapa;
+}
+
+exports.definicionesTemplates = catchAsync(async (req, res) => {
+  const id_configuracion = Number(
+    req.body?.id_configuracion ?? req.query?.id_configuracion ?? 0,
+  );
+
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'id_configuracion es requerido' });
+  }
+
+  const crudo = req.body?.nombres ?? req.query?.nombres;
+  const lista = Array.isArray(crudo) ? crudo : String(crudo || '').split(',');
+
+  const nombres = [
+    ...new Set(lista.map((n) => String(n || '').trim()).filter(Boolean)),
+  ].slice(0, MAX_TEMPLATES_DEFINICION);
+
+  if (!nombres.length) {
+    return res.status(200).json({ ok: true, data: {} });
+  }
+
+  const cfg = await getConfigFromDB(id_configuracion);
+
+  if (!cfg?.ACCESS_TOKEN || !cfg?.WABA_ID) {
+    // Sin credenciales no es un error: el chat simplemente no pinta botones.
+    return res
+      .status(200)
+      .json({ ok: true, data: {}, meta: { state: 'NO_CREDENTIALS' } });
+  }
+
+  const catalogo = await getCatalogoPorNombre();
+
+  const data = {};
+  const ahora = Date.now();
+  const origen = {
+    cache: 0,
+    catalogo: 0,
+    precarga: 0,
+    meta: 0,
+    sin_resolver: 0,
+  };
+
+  // ── 1 y 2) Lo que se resuelve sin tocar la red ──
+  const pendientes = [];
+
+  for (const nombre of nombres) {
+    const enCache = getDefinicionCacheada(cfg.WABA_ID, nombre);
+    if (enCache?.text) {
+      data[nombre] = enCache;
+      origen.cache++;
+      continue;
+    }
+
+    const enCatalogo = catalogo.get(nombre);
+    if (enCatalogo?.text) {
+      data[nombre] = enCatalogo;
+      origen.catalogo++;
+      continue;
+    }
+
+    // Nombre que ya se buscó y no existe: no se vuelve a preguntar.
+    const fallo = definicionesNoEncontradas.get(`${cfg.WABA_ID}::${nombre}`);
+    if (fallo && ahora - fallo < TTL_NO_ENCONTRADA_MS) {
+      origen.sin_resolver++;
+      continue;
+    }
+
+    pendientes.push(nombre);
+  }
+
+  /* ── 3) Una sola precarga para TODO lo que quedó ──
+     Son las plantillas propias del cliente. Pedirlas de a una con filtro
+     costaba una llamada por nombre (medido: 8 nombres = 8 llamadas); una
+     página de 200 normalmente trae el WABA completo y las resuelve todas
+     de una. */
+  if (pendientes.length) {
+    try {
+      await precargarTemplatesDelWaba(cfg.WABA_ID, cfg.ACCESS_TOKEN);
+    } catch (err) {
+      console.warn(
+        '⚠️ definicionesTemplates: falló la precarga del WABA:',
+        err.message,
+      );
+    }
+  }
+
+  // ── 4) Rezagados: lo que ni así apareció (WABA enorme o plantilla borrada) ──
+  for (const nombre of pendientes) {
+    const trasPrecarga = getDefinicionCacheada(cfg.WABA_ID, nombre);
+    if (trasPrecarga?.text) {
+      data[nombre] = trasPrecarga;
+      origen.precarga++;
+      continue;
+    }
+
+    const claveNeg = `${cfg.WABA_ID}::${nombre}`;
+
+    try {
+      const tpl = await obtenerDefinicionPorNombre(
+        nombre,
+        cfg.ACCESS_TOKEN,
+        cfg.WABA_ID,
+      );
+
+      if (!tpl?.text) {
+        definicionesNoEncontradas.set(claveNeg, ahora);
+        origen.sin_resolver++;
+        continue;
+      }
+
+      data[nombre] = tpl;
+      origen.meta++;
+    } catch (err) {
+      // Rate limit u otro fallo de Meta: se devuelve lo que sí se resolvió.
+      // El chat degrada a texto plano, que es lo que hacía siempre.
+      origen.sin_resolver++;
+      console.warn(
+        `⚠️ definicionesTemplates: no se pudo resolver "${nombre}":`,
+        err.message,
+      );
+    }
+  }
+
+  return res.status(200).json({ ok: true, data, meta: { origen } });
+});
 
 /* ────────────────────────────────────────────────
    Resumen de programados vigentes para VARIOS chats.

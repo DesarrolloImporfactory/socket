@@ -1566,6 +1566,40 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       )
     : { skipped: true };
 
+  /* ── Plantillas Meta que hay que crear sí o sí ────────────────────────
+     `templates_meta_items` (lista escrita a mano en la plantilla global) y
+     la config de Dropi/remarketing (que sale del catálogo) son dos fuentes
+     distintas que deben coincidir, y se desincronizaron: el catálogo pasó a
+     apuntar RETIRO EN AGENCIA a `retiro_agencia_guia_k1` pero la lista siguió
+     con la vieja, así que el tablero quedaba configurado contra una plantilla
+     que no existía en el WABA del cliente.
+
+     El costo de eso no es solo que no llegue el mensaje: en el notifier el
+     movimiento de columna va DESPUÉS del envío, así que si el envío falla el
+     contacto tampoco se mueve.
+
+     En vez de pedir que alguien mantenga las dos listas iguales, se le suman
+     a la lista las plantillas que la configuración recién aplicada realmente
+     necesita. Se usan los resultados reales, no una segunda copia de la
+     lógica de filtrado. */
+  const itemsTemplatesMeta = setup.templates_meta_items
+    ? new Set(setup.templates_meta_items)
+    : null; // null = crear todas las de fábrica, no hace falta completar nada
+
+  if (itemsTemplatesMeta) {
+    const aplicados = [].concat(
+      Array.isArray(resultadoDropiConfig) ? resultadoDropiConfig : [],
+      Array.isArray(resultadoRemarketing) ? resultadoRemarketing : [],
+    );
+
+    for (const r of aplicados) {
+      // remarketing usa un texto de relleno cuando la secuencia va por IA
+      if (r?.template && !r.template.startsWith('(')) {
+        itemsTemplatesMeta.add(r.template);
+      }
+    }
+  }
+
   await db.query(
     `UPDATE configuraciones
        SET kanban_global_activo = 1, kanban_global_id = ?
@@ -1612,15 +1646,28 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
 
   // ═══ SEGUNDO PLANO: templates Meta + sync catálogo ═══
   setImmediate(async () => {
+    let resultadoTemplates;
+
     try {
-      const resultadoTemplates = setup.templates_meta
-        ? await _crearTemplatesMeta(
-            id_configuracion,
-            setup.templates_meta_items
-              ? new Set(setup.templates_meta_items)
-              : null,
-          )
+      resultadoTemplates = setup.templates_meta
+        ? await _crearTemplatesMeta(id_configuracion, itemsTemplatesMeta)
         : [{ status: 'skipped', mensaje: 'Desactivado en setup de plantilla' }];
+
+      console.log(`[aplicarGlobal][cfg=${id_configuracion}] templates Meta OK`);
+    } catch (err) {
+      resultadoTemplates = [{ status: 'error', error: err.message }];
+      console.error(
+        `[aplicarGlobal][cfg=${id_configuracion}] error templates Meta async:`,
+        err.message,
+      );
+    }
+
+    /* El registro va en su propio try: antes compartía el catch con la
+       creación, y como la columna `accion` era un enum sin 'templates_meta'
+       el INSERT fallaba SIEMPRE — se perdía el resultado de todas las
+       creaciones y encima quedaba logueado como si hubiera fallado la
+       creación misma. Requiere kanban_global_log_accion_migration.sql. */
+    try {
       await db.query(
         `INSERT INTO configuraciones_kanban_global_log
            (id_configuracion, id_plantilla, accion, detalle)
@@ -1633,11 +1680,11 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
           ],
         },
       );
-      console.log(`[aplicarGlobal][cfg=${id_configuracion}] templates Meta OK`);
     } catch (err) {
       console.error(
-        `[aplicarGlobal][cfg=${id_configuracion}] error templates Meta async:`,
+        `[aplicarGlobal][cfg=${id_configuracion}] no se pudo registrar templates_meta:`,
         err.message,
+        JSON.stringify(resultadoTemplates).slice(0, 800),
       );
     }
 
