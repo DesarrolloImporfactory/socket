@@ -150,6 +150,8 @@ router.get('/templates_programados', whatsappCtrl.templates_programados);
 
 router.put('/programados_editar_fecha', whatsappCtrl.editarFechaLote);
 router.delete('/programados_cancelar_lote', whatsappCtrl.cancelarLote);
+// Cancela un solo envío del lote (lo usa el chat sobre el contacto abierto)
+router.post('/programados_cancelar_item', whatsappCtrl.cancelarProgramadoItem);
 router.post('/programados_reintentar_lote', whatsappCtrl.reintentarLote);
 
 module.exports = router;

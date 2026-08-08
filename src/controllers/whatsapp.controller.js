@@ -5096,6 +5096,103 @@ exports.editarFechaLote = catchAsync(async (req, res) => {
 });
 
 /* ────────────────────────────────────────────────
+   Cancelar UN envío programado (no el lote).
+
+   El asesor lo hace desde el chat, sobre el contacto que tiene abierto:
+   cancelar el lote entero para sacar a un solo cliente no es una opción
+   cuando el lote tiene cientos de destinatarios.
+
+   Queda registrado en meta_json.cancelado (origen, quién, cuándo) para que en
+   la vista de Programados se distinga de una cancelación de lote.
+   ──────────────────────────────────────────────── */
+exports.cancelarProgramadoItem = catchAsync(async (req, res) => {
+  const id = Number(req.body?.id ?? req.query?.id ?? 0);
+  const id_configuracion = Number(req.body?.id_configuracion ?? 0);
+  const origen = String(req.body?.origen || 'chat').slice(0, 40);
+  const id_sub_usuario = req.body?.id_sub_usuario ?? null;
+
+  if (!id || !id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'Faltan campos: id, id_configuracion' });
+  }
+
+  // Se lee primero para saber si todavía es cancelable y a quién avisarle.
+  const [fila] = await db.query(
+    `SELECT id, uuid_lote, id_configuracion, id_cliente_chat_center, telefono,
+            nombre_template, fecha_programada, estado, meta_json
+       FROM template_envios_programados
+      WHERE id = ? AND id_configuracion = ?
+      LIMIT 1`,
+    { replacements: [id, id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!fila) {
+    return res.status(404).json({ ok: false, msg: 'El envío no existe.' });
+  }
+
+  if (fila.estado !== 'pendiente') {
+    // 'procesando' ya está en manos del cron; 'enviado' no se deshace.
+    return res.status(200).json({
+      ok: false,
+      estado: fila.estado,
+      msg:
+        fila.estado === 'procesando'
+          ? 'Este mensaje ya se está enviando, no se puede cancelar.'
+          : `Este mensaje ya está en estado "${fila.estado}".`,
+    });
+  }
+
+  const metaPrevio = parseMaybeJSON(fila.meta_json, null) || {};
+  const metaNuevo = {
+    ...metaPrevio,
+    cancelado: {
+      origen,
+      id_sub_usuario: id_sub_usuario != null ? Number(id_sub_usuario) : null,
+      at: new Date().toISOString(),
+    },
+  };
+
+  /* Sin `type: UPDATE` a propósito: con ese tipo Sequelize devuelve
+     [results, affectedRows] y el destructuring deja `affectedRows` fuera, así
+     que el conteo salía siempre 0 y la respuesta decía que no se canceló
+     aunque sí se hubiera cancelado. Es la misma forma que usa cancelarLote. */
+  const [result] = await db.query(
+    `UPDATE template_envios_programados
+        SET estado = 'cancelado', meta_json = ?, actualizado_en = NOW()
+      WHERE id = ? AND id_configuracion = ? AND estado = 'pendiente'`,
+    { replacements: [JSON.stringify(metaNuevo), id, id_configuracion] },
+  );
+
+  const afectados = result?.affectedRows ?? result ?? 0;
+
+  if (!afectados) {
+    // Carrera: el cron lo tomó entre el SELECT y el UPDATE.
+    return res.status(200).json({
+      ok: false,
+      msg: 'El mensaje cambió de estado mientras se cancelaba. Recarga.',
+    });
+  }
+
+  emitirProgramadoEstado({
+    id: fila.id,
+    uuid_lote: fila.uuid_lote,
+    id_configuracion,
+    id_cliente_chat_center: fila.id_cliente_chat_center,
+    nombre_template: fila.nombre_template,
+    fecha_programada: fila.fecha_programada,
+    estado: 'cancelado',
+    source: 'item_cancelado',
+  });
+
+  return res.json({
+    ok: true,
+    msg: 'Envío cancelado.',
+    data: { id: fila.id, uuid_lote: fila.uuid_lote, estado: 'cancelado' },
+  });
+});
+
+/* ────────────────────────────────────────────────
    4) Cancelar lote
       - Solo marca como 'cancelado' los pendientes
       - Devuelve cuántos se cancelaron, cuántos ya se enviaron, cuántos fallaron

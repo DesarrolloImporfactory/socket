@@ -119,9 +119,17 @@ cron.schedule('* * * * *', async () => {
             AND NOT EXISTS (
               SELECT 1
               FROM (
-                SELECT DISTINCT uuid_lote
+                /* Lote cancelado ENTERO. Antes bastaba con que una fila
+                   estuviera cancelada, pero desde que se puede cancelar un
+                   envío suelto desde el chat eso dejaría sin reencolar a los
+                   demás destinatarios del mismo lote, que siguen vigentes.
+                   Un lote está cancelado del todo cuando tiene cancelados y
+                   ya no le queda ningún pendiente. */
+                SELECT uuid_lote
                 FROM template_envios_programados
-                WHERE estado = 'cancelado'
+                GROUP BY uuid_lote
+                HAVING SUM(estado = 'cancelado') > 0
+                   AND SUM(estado = 'pendiente') = 0
               ) AS c
               WHERE c.uuid_lote = t.uuid_lote
             )
@@ -149,9 +157,12 @@ cron.schedule('* * * * *', async () => {
               AND EXISTS (
                 SELECT 1
                 FROM (
-                  SELECT DISTINCT uuid_lote
+                  -- Mismo criterio que el reencolado: lote cancelado ENTERO.
+                  SELECT uuid_lote
                   FROM template_envios_programados
-                  WHERE estado = 'cancelado'
+                  GROUP BY uuid_lote
+                  HAVING SUM(estado = 'cancelado') > 0
+                     AND SUM(estado = 'pendiente') = 0
                 ) AS c
                 WHERE c.uuid_lote = t.uuid_lote
               )
