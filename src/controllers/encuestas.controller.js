@@ -196,7 +196,7 @@ exports.listarRespuestas = catchAsync(async (req, res, next) => {
     SELECT
       er.id, er.id_cliente_chat_center, er.source, er.score,
       er.estado, er.escalado, er.respuestas, er.datos_contacto,
-      er.id_configuracion, er.created_at,
+      er.id_configuracion, er.created_at, er.updated_at,
       er.resolucion_comentario, er.resolucion_por, er.resolucion_fecha, er.escalado_resuelto,
       c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
       COALESCE(s.nombre_encargado, 'Sin asignar') AS nombre_encargado
@@ -205,7 +205,11 @@ exports.listarRespuestas = catchAsync(async (req, res, next) => {
     LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = er.id_encargado
     WHERE er.id_encuesta = :id AND er.id_configuracion = :cfg
       ${extraWhere}
-    ORDER BY er.created_at DESC
+    -- Última actividad, NO fecha de creación: cuando un lead que entró por el
+    -- webhook llena después el formulario, la respuesta se fusiona en su fila
+    -- original y conserva su created_at. Ordenando por creación, una respuesta
+    -- recién recibida quedaba enterrada páginas atrás y parecía perdida.
+    ORDER BY COALESCE(er.updated_at, er.created_at) DESC
     LIMIT :limit OFFSET :offset
   `,
     {
@@ -635,7 +639,7 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
   const respuestas = await db.query(
     `SELECT
         er.id, er.source, er.score, er.estado, er.escalado,
-        er.respuestas, er.datos_contacto, er.created_at,
+        er.respuestas, er.datos_contacto, er.created_at, er.updated_at,
         er.resolucion_comentario, er.resolucion_fecha, er.escalado_resuelto,
         c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
         COALESCE(s.nombre_encargado, 'Sin asignar') AS nombre_encargado,
@@ -645,7 +649,7 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
      LEFT JOIN sub_usuarios_chat_center s  ON s.id_sub_usuario  = er.id_encargado
      LEFT JOIN sub_usuarios_chat_center sr ON sr.id_sub_usuario = er.resolucion_por
      WHERE er.id_encuesta = :id AND er.id_configuracion = :cfg
-     ORDER BY er.created_at DESC`,
+     ORDER BY COALESCE(er.updated_at, er.created_at) DESC`,
     { replacements: { id, cfg: id_configuracion }, type: QueryTypes.SELECT },
   );
 
@@ -666,12 +670,19 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
   const nombreCompleto = (r) =>
     `${r.nombre_cliente || ''} ${r.apellido_cliente || ''}`.trim() || '—';
 
+  // `created_at` es cuándo se abrió el registro (el lead entró por el webhook,
+  // o se le mandó el link). La respuesta puede llegar días después y se fusiona
+  // en esa misma fila, así que la fecha real de respuesta es `updated_at`.
+  const fechaRespuesta = (r) =>
+    r.estado === 'respondida' ? fmtFecha(r.updated_at || r.created_at) : '';
+
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Respuestas');
 
   if (enc.tipo === 'satisfaccion') {
     ws.columns = [
       { header: 'Fecha', key: 'fecha', width: 20 },
+      { header: 'Fecha de respuesta', key: 'fecha_respuesta', width: 20 },
       { header: 'Cliente', key: 'cliente', width: 28 },
       { header: 'Teléfono', key: 'telefono', width: 16 },
       { header: 'Encargado', key: 'encargado', width: 22 },
@@ -696,6 +707,7 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
         '';
       ws.addRow({
         fecha: fmtFecha(r.created_at),
+        fecha_respuesta: fechaRespuesta(r),
         cliente: nombreCompleto(r),
         telefono: r.celular_cliente || '',
         encargado: r.nombre_encargado,
@@ -724,6 +736,7 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
 
     const baseCols = [
       { header: 'Fecha', key: 'fecha', width: 20 },
+      { header: 'Fecha de respuesta', key: 'fecha_respuesta', width: 20 },
       { header: 'Cliente', key: 'cliente', width: 28 },
       { header: 'Teléfono', key: 'telefono', width: 16 },
       { header: 'Origen', key: 'source', width: 10 },
@@ -738,6 +751,7 @@ exports.exportarExcel = catchAsync(async (req, res, next) => {
     parsed.forEach(({ r, merged }) => {
       const row = {
         fecha: fmtFecha(r.created_at),
+        fecha_respuesta: fechaRespuesta(r),
         cliente: nombreCompleto(r),
         telefono: r.celular_cliente || '',
         source: r.source === 'webhook' ? 'Webhook' : 'Link',

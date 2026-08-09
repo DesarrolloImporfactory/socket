@@ -369,7 +369,8 @@ exports.responderEncuestaPublica = async (req, res) => {
 
     const [encuesta] = await db.query(
       `
-      SELECT id, tipo, umbral_escalacion, preguntas, cooldown_horas
+      SELECT id, tipo, umbral_escalacion, preguntas, cooldown_horas,
+             mensaje_dentro_24h, template_fuera_24h, template_parameters
       FROM encuestas
       WHERE id = :id AND activa = 1 AND deleted_at IS NULL
       LIMIT 1
@@ -605,6 +606,37 @@ exports.responderEncuestaPublica = async (req, res) => {
     console.log(
       `[encuestas_publico] ✅ Respuesta guardada: id=${idRespuesta} encuesta=${idEncuesta} cliente=${cid || 'sin_cid'} score=${scoreNum} escalado=${escalado}`,
     );
+
+    // ── Mensaje de bienvenida, SOLO para el link público ──
+    // Con ?cid= el cliente ya venía de una conversación (o de la plantilla que
+    // le mandó el asesor): ahí no se manda nada, igual que antes.
+    // Fire-and-forget después de responder: el cliente no tiene por qué
+    // esperar a que Meta conteste.
+    if (telefonoPublico) {
+      enviarMensajeBienvenida({
+        idCliente: cid,
+        idConfiguracion,
+        idEncuesta,
+        telefono: telefonoPublico,
+        encuestaCfg: {
+          mensaje_dentro_24h: encuesta.mensaje_dentro_24h,
+          template_fuera_24h: encuesta.template_fuera_24h,
+          template_parameters: encuesta.template_parameters,
+        },
+        contacto: {
+          nombre: nombre || null,
+          apellido: apellido || null,
+          telefono: telefonoPublico,
+        },
+        responsable: 'Encuesta Link Público',
+        logPrefix: '[encuestas_publico]',
+        // Acaba de llenar la encuesta: si el mensaje configurado es el que
+        // manda el link para llenarla, no se envía.
+        omitirSiPideEncuesta: true,
+      }).then((result) => {
+        console.log('[encuestas_publico] Resultado envío bienvenida:', result);
+      });
+    }
 
     return res.json({
       ok: true,

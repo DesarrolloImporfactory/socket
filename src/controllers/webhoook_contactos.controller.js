@@ -16,8 +16,6 @@
 
 const { db } = require('../database/config');
 const { QueryTypes } = require('sequelize');
-const ChatService = require('../services/chat.service');
-const whatsappService = require('../services/whatsapp.service');
 
 // ⚠️ Ajusta estas rutas si tu estructura de carpetas es distinta
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
@@ -25,19 +23,16 @@ const {
   asignarRoundRobinClienteExistente,
 } = require('../utils/webhook_whatsapp/round_robin');
 
+// El envío del mensaje de bienvenida (texto dentro de 24h / template fuera)
+// vive en el util para que el link público de la encuesta mande exactamente
+// lo mismo que este webhook.
+const { enviarMensajeBienvenida } = require('../utils/encuestaBienvenida');
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function limpiarTelefono(raw) {
   return String(raw || '').replace(/\D/g, '');
 }
-
-// Link, placeholders y parseo viven en el util para que el envío manual
-// desde el chat resuelva exactamente igual que este webhook.
-const {
-  construirLinkEncuesta,
-  parseTemplateParams,
-  resolverPlaceholders,
-} = require('../utils/encuestaTemplateLink');
 
 const CAMPOS_CONTACTO = new Set([
   'nombre',
@@ -75,158 +70,6 @@ function extraerContacto(body) {
     body.telefono || body.phone || body.celular || body.whatsapp || '';
   const telLimpio = limpiarTelefono(telRaw);
   return { nombre, apellido, email, telRaw, telLimpio };
-}
-
-/**
- * Detecta si el cliente está dentro de la ventana de 24h de Meta.
- * Aislado por id_configuracion (multi-tenant seguro).
- */
-async function estaDentroVentana24h({ idCliente, idConfiguracion }) {
-  try {
-    const [row] = await db.query(
-      `SELECT MAX(created_at) AS last_in
-         FROM mensajes_clientes
-        WHERE celular_recibe = :idCliente
-          AND id_configuracion = :idConfiguracion
-          AND (direction = 'in' OR rol_mensaje = 0)
-          AND deleted_at IS NULL`,
-      {
-        replacements: { idCliente: String(idCliente), idConfiguracion },
-        type: QueryTypes.SELECT,
-      },
-    );
-
-    if (!row?.last_in) return false;
-    const diffMs = Date.now() - new Date(row.last_in).getTime();
-    return diffMs < 24 * 60 * 60 * 1000;
-  } catch (err) {
-    console.error(
-      '[webhook_contactos] Error detectando ventana 24h:',
-      err.message,
-    );
-    return false; // ante duda → fuera de ventana → template (más seguro)
-  }
-}
-
-/**
- * Envía el mensaje de bienvenida según ventana 24h.
- * Fire-and-forget: nunca hace throw, solo loguea.
- */
-async function enviarMensajeBienvenida({
-  idCliente,
-  idConfiguracion,
-  idEncuesta,
-  telefono,
-  encuestaCfg,
-  contacto: contactoBase,
-}) {
-  try {
-    // El link de la encuesta es único por cliente: se resuelve en cada envío
-    // y queda disponible como {link_encuesta} tanto en el texto como en los
-    // parámetros del template.
-    const contacto = {
-      ...contactoBase,
-      link_encuesta: construirLinkEncuesta(idEncuesta, idCliente),
-    };
-
-    const hayTexto = !!(encuestaCfg.mensaje_dentro_24h || '').trim();
-    const hayTemplate = !!(encuestaCfg.template_fuera_24h || '').trim();
-
-    if (!hayTexto && !hayTemplate) {
-      console.log(
-        '[webhook_contactos] Encuesta sin mensaje configurado — no se envía nada',
-      );
-      return { enviado: false, motivo: 'sin_configuracion' };
-    }
-
-    const dentroVentana = await estaDentroVentana24h({
-      idCliente,
-      idConfiguracion,
-    });
-    console.log(
-      `[webhook_contactos] Ventana 24h: ${dentroVentana ? 'DENTRO' : 'FUERA'} → cliente=${idCliente} config=${idConfiguracion}`,
-    );
-
-    // ── DENTRO 24h → texto libre ──
-    if (dentroVentana && hayTexto) {
-      const chatService = new ChatService();
-      const dataAdmin = await chatService.getDataAdmin(idConfiguracion);
-
-      if (!dataAdmin) {
-        console.error(
-          '[webhook_contactos] No se pudo obtener dataAdmin para config',
-          idConfiguracion,
-        );
-        return { enviado: false, motivo: 'sin_data_admin' };
-      }
-
-      const textoFinal = resolverPlaceholders(
-        encuestaCfg.mensaje_dentro_24h,
-        contacto,
-      );
-
-      await chatService.sendMessage({
-        mensaje: textoFinal,
-        to: telefono,
-        dataAdmin,
-        tipo_mensaje: 'text',
-        id_configuracion: idConfiguracion,
-        nombre_encargado: 'Encuesta Webhook',
-      });
-
-      console.log(
-        `[webhook_contactos] ✅ Texto enviado (dentro 24h) → ${telefono}`,
-      );
-      return { enviado: true, tipo: 'texto' };
-    }
-
-    // ── FUERA 24h (o sin texto configurado) → template ──
-    if (!hayTemplate) {
-      console.log(
-        '[webhook_contactos] Fuera de 24h y sin template configurado — no se envía',
-      );
-      return { enviado: false, motivo: 'fuera_24h_sin_template' };
-    }
-
-    // Template puede no tener variables → paramsRaw = []
-    const paramsRaw = parseTemplateParams(encuestaCfg.template_parameters);
-
-    // Si tiene variables, resolver placeholders con default amigable
-    // (Meta rechaza parámetros vacíos con error 132000)
-    const paramsResueltos = paramsRaw.map((p, idx) => {
-      const resuelto = resolverPlaceholders(String(p ?? ''), contacto);
-
-      if (!resuelto || !resuelto.trim()) {
-        const esLink = /\{link(_encuesta)?\}/i.test(String(p ?? ''));
-        console.warn(
-          esLink
-            ? `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} es el link de la encuesta pero quedó vacío (idEncuesta=${idEncuesta} idCliente=${idCliente}). Se reemplaza por "-"`
-            : `[webhook_contactos] ⚠️ Parámetro {{${idx + 1}}} quedó vacío — placeholder original: "${p}". Se reemplaza por "-"`,
-        );
-        return '-';
-      }
-      return resuelto;
-    });
-
-    const result = await whatsappService.sendWhatsappMessageTemplateScheduled({
-      telefono,
-      id_configuracion: idConfiguracion,
-      responsable: 'Encuesta Webhook',
-      nombre_template: encuestaCfg.template_fuera_24h,
-      template_parameters: paramsResueltos, // [] si el template no tiene variables
-    });
-
-    console.log(
-      `[webhook_contactos] ✅ Template "${encuestaCfg.template_fuera_24h}" enviado (fuera 24h) → ${telefono} wamid=${result?.wamid} params=${paramsResueltos.length}`,
-    );
-    return { enviado: true, tipo: 'template', wamid: result?.wamid };
-  } catch (err) {
-    console.error('[webhook_contactos] ❌ Error enviando mensaje bienvenida:', {
-      message: err.message,
-      meta_error: err.meta_error || null,
-    });
-    return { enviado: false, motivo: 'error', error: err.message };
-  }
 }
 
 // ── Controller principal ─────────────────────────────────────
