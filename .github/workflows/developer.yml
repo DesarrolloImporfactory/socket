@@ -1,21 +1,96 @@
-name: Deploy vía FTP s
+name: Deploy development socket
 
 on:
   push:
-    branches:
-      - main
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-development-socket
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    name: Validate and deploy development socket
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: development
 
     steps:
-      - name: Checkout repositorio
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Deploy vía FTP
-        uses: SamKirkland/FTP-Deploy-Action@4.3.3
+      - name: Detect development command
+        id: development-command
+        shell: bash
+        run: |
+          message="$(git log -1 --pretty=%B)"
+          mode=deploy
+
+          if grep --quiet --ignore-case '\[dev:off\]' <<< "$message"; then
+            mode=off
+          elif grep --quiet --ignore-case '\[dev:skip\]' <<< "$message"; then
+            mode=skip
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Development command: $mode"
+
+      - name: Set up Node.js
+        if: steps.development-command.outputs.mode == 'deploy'
+        uses: actions/setup-node@v4
         with:
-          server: ${{ secrets.FTP_HOST }}
-          username: ${{ secrets.FTP_USER }}
-          password: ${{ secrets.FTP_PASS }}
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate server entrypoint
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: node --check src/server.js
+
+      - name: Configure development SSH key
+        if: steps.development-command.outputs.mode != 'skip'
+        env:
+          DEV_SSH_PRIVATE_KEY: ${{ secrets.DEV_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEV_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' '98.91.50.83 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqqEOVvNtSMXGB74E/IAHp50rZSfIaZ9DEBvP7TPfnv' > ~/.ssh/known_hosts
+
+      - name: Synchronize development source
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: |
+          rsync --archive --compress \
+            --exclude='.git/' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.ssh/' \
+            --exclude='node_modules/' \
+            --exclude='uploads/' \
+            --exclude='logs/' \
+            --exclude='src/uploads/' \
+            --exclude='src/logs/' \
+            --exclude='pm2.config.js' \
+            ./ deploysocket@98.91.50.83:/var/www/devsocket/
+
+      - name: Install and reload development socket
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: ssh deploysocket@98.91.50.83 sudo /usr/local/sbin/reload-devsocket
+
+      - name: Stop development socket
+        if: steps.development-command.outputs.mode == 'off'
+        run: ssh deploysocket@98.91.50.83 sudo /usr/local/sbin/stop-devsocket
+
+      - name: Verify public Socket.IO handshake
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            'https://developer.imporfactory.app/socket.io/?EIO=4&transport=polling' \
+            | grep -q '"sid"'
