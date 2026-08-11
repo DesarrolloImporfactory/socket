@@ -1731,50 +1731,64 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                  eso las cuentas que no son kanban seguían viendo el problema. */
               const imagenes_a_enviar = await filtrarMediaNueva({
                 id_cliente,
+                id_configuracion,
                 urls: urls_imagenes,
                 etiqueta: 'imagen',
               });
               const videos_a_enviar = await filtrarMediaNueva({
                 id_cliente,
+                id_configuracion,
                 urls: urls_videos,
                 etiqueta: 'video',
               });
 
+              /* Si el envío no salió, no queda fila en `mensajes_clientes`, así
+                 que la marca en memoria estaría bloqueando una foto que el
+                 cliente nunca recibió: se suelta para poder reintentar en el
+                 próximo turno.
+
+                 `enviarMedioWhatsapp` devuelve `{ ok, error }` en vez de lanzar
+                 —antes se tragaba el fallo y este bloque no se ejecutaba jamás—.
+                 Se comprueba el resultado y NO se corta: la respuesta de texto
+                 va después, y una imagen que Meta rechaza no puede dejar al
+                 cliente sin contestación. */
               // Enviar imágenes
               for (const url_img of imagenes_a_enviar) {
-                try {
-                  await enviarMedioWhatsapp({
-                    tipo: 'image',
-                    url_archivo: url_img,
-                    phone_whatsapp_to: phone_whatsapp_from,
-                    business_phone_id,
-                    accessToken,
-                    id_configuracion,
-                    responsable: respuesta_asistente.tipo_asistente,
-                  });
-                } catch (e) {
-                  /* Si no salió, no quedó fila en `mensajes_clientes`: se suelta
-                     la marca para que el próximo turno pueda reintentar. */
+                const r = await enviarMedioWhatsapp({
+                  tipo: 'image',
+                  url_archivo: url_img,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                }).catch((e) => ({ ok: false, error: e.message }));
+
+                if (r && r.ok === false) {
                   olvidarEnviado(id_cliente, url_img);
-                  throw e;
+                  console.log(
+                    `⚠️ No se pudo enviar la imagen ${url_img}: ${r.error}`,
+                  );
                 }
               }
 
               // Enviar videos
               for (const url_video of videos_a_enviar) {
-                try {
-                  await enviarMedioWhatsapp({
-                    tipo: 'video',
-                    url_archivo: url_video,
-                    phone_whatsapp_to: phone_whatsapp_from,
-                    business_phone_id,
-                    accessToken,
-                    id_configuracion,
-                    responsable: respuesta_asistente.tipo_asistente,
-                  });
-                } catch (e) {
+                const r = await enviarMedioWhatsapp({
+                  tipo: 'video',
+                  url_archivo: url_video,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                }).catch((e) => ({ ok: false, error: e.message }));
+
+                if (r && r.ok === false) {
                   olvidarEnviado(id_cliente, url_video);
-                  throw e;
+                  console.log(
+                    `⚠️ No se pudo enviar el video ${url_video}: ${r.error}`,
+                  );
                 }
               }
 
@@ -2036,50 +2050,64 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                  eso las cuentas que no son kanban seguían viendo el problema. */
               const imagenes_a_enviar = await filtrarMediaNueva({
                 id_cliente,
+                id_configuracion,
                 urls: urls_imagenes,
                 etiqueta: 'imagen',
               });
               const videos_a_enviar = await filtrarMediaNueva({
                 id_cliente,
+                id_configuracion,
                 urls: urls_videos,
                 etiqueta: 'video',
               });
 
+              /* Si el envío no salió, no queda fila en `mensajes_clientes`, así
+                 que la marca en memoria estaría bloqueando una foto que el
+                 cliente nunca recibió: se suelta para poder reintentar en el
+                 próximo turno.
+
+                 `enviarMedioWhatsapp` devuelve `{ ok, error }` en vez de lanzar
+                 —antes se tragaba el fallo y este bloque no se ejecutaba jamás—.
+                 Se comprueba el resultado y NO se corta: la respuesta de texto
+                 va después, y una imagen que Meta rechaza no puede dejar al
+                 cliente sin contestación. */
               // Enviar imágenes
               for (const url_img of imagenes_a_enviar) {
-                try {
-                  await enviarMedioWhatsapp({
-                    tipo: 'image',
-                    url_archivo: url_img,
-                    phone_whatsapp_to: phone_whatsapp_from,
-                    business_phone_id,
-                    accessToken,
-                    id_configuracion,
-                    responsable: respuesta_asistente.tipo_asistente,
-                  });
-                } catch (e) {
-                  /* Si no salió, no quedó fila en `mensajes_clientes`: se suelta
-                     la marca para que el próximo turno pueda reintentar. */
+                const r = await enviarMedioWhatsapp({
+                  tipo: 'image',
+                  url_archivo: url_img,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                }).catch((e) => ({ ok: false, error: e.message }));
+
+                if (r && r.ok === false) {
                   olvidarEnviado(id_cliente, url_img);
-                  throw e;
+                  console.log(
+                    `⚠️ No se pudo enviar la imagen ${url_img}: ${r.error}`,
+                  );
                 }
               }
 
               // Enviar videos
               for (const url_video of videos_a_enviar) {
-                try {
-                  await enviarMedioWhatsapp({
-                    tipo: 'video',
-                    url_archivo: url_video,
-                    phone_whatsapp_to: phone_whatsapp_from,
-                    business_phone_id,
-                    accessToken,
-                    id_configuracion,
-                    responsable: respuesta_asistente.tipo_asistente,
-                  });
-                } catch (e) {
+                const r = await enviarMedioWhatsapp({
+                  tipo: 'video',
+                  url_archivo: url_video,
+                  phone_whatsapp_to: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  id_configuracion,
+                  responsable: respuesta_asistente.tipo_asistente,
+                }).catch((e) => ({ ok: false, error: e.message }));
+
+                if (r && r.ok === false) {
                   olvidarEnviado(id_cliente, url_video);
-                  throw e;
+                  console.log(
+                    `⚠️ No se pudo enviar el video ${url_video}: ${r.error}`,
+                  );
                 }
               }
 

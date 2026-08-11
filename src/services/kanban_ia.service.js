@@ -259,8 +259,14 @@ async function procesarMensajeKanban(params) {
         responsable,
         total_tokens,
       }),
-    enviarMedia: async ({ tipo, url, responsable }) =>
-      enviarMedioWhatsapp({
+    enviarMedia: async ({ tipo, url, responsable }) => {
+      /* `enviarMedioWhatsapp` no lanza: devuelve `{ ok, error }`. Acá sí se
+         convierte en excepción porque los adaptadores de MS e IG fallan
+         lanzando, y el `.catch` del paso 12 —el que suelta la marca del
+         dedupe— es común a los tres. Sin esto, para WhatsApp ese catch no se
+         ejecutaba nunca y una foto rechazada por Meta quedaba marcada como
+         enviada. */
+      const r = await enviarMedioWhatsapp({
         tipo,
         url_archivo: url,
         phone_whatsapp_to: telefono,
@@ -268,7 +274,12 @@ async function procesarMensajeKanban(params) {
         accessToken,
         id_configuracion,
         responsable,
-      }),
+      });
+      if (r && r.ok === false) {
+        throw new Error(r.error || 'Meta rechazó el envío');
+      }
+      return r;
+    },
   };
 
   // ── 0. Corta-fuegos por plan ──────────────────────────────
@@ -1317,12 +1328,14 @@ async function procesarMensajeKanban(params) {
      exactamente el mismo control. */
   const imagenes = await filtrarMediaNueva({
     id_cliente,
+    id_configuracion,
     urls: media.imagenes,
     etiqueta: 'imagen',
     log,
   });
   const videos = await filtrarMediaNueva({
     id_cliente,
+    id_configuracion,
     urls: media.videos,
     etiqueta: 'video',
     log,

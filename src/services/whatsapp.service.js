@@ -9,6 +9,7 @@ const {
 const {
   getConfigFromDB,
   onlyDigits,
+  uploadMediaToMeta,
 } = require('../utils/whatsappTemplate.helpers');
 
 /* ================================================================
@@ -76,6 +77,162 @@ function pruneTemplateCache() {
     if (now - entry.cachedAt > TEMPLATE_CACHE_TTL_MS) {
       templateCache.delete(key);
     }
+  }
+}
+
+/* ================================================================
+   HEADER MULTIMEDIA — del handle de ejemplo al media_id
+
+   Meta entrega el archivo del header en `example.header_handle[0]`, y eso
+   NO es una URL pública: es una firmada de scontent.whatsapp.net, atada a
+   la consulta que la pidió y con caducidad propia (los parámetros de firma
+   cambian en cada lectura de la plantilla).
+
+   Mandarla como `{ link }` es justo lo que rompía los envíos: Meta acepta
+   el mensaje y devuelve wamid, después no logra descargar el archivo y
+   falla en asíncrono con 131053 "Media upload error". El mensaje queda
+   guardado como "enviado", nadie se entera y el cliente nunca recibe nada.
+
+   La salida es descargar el handle una vez y resubirlo a /media: ese
+   media_id sí es estable (Meta lo mantiene 30 días) y se puede reusar en
+   todos los envíos de la misma plantilla.
+   ================================================================ */
+
+const MEDIA_ID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h (el id vive 30 días)
+const mediaIdCache = new Map(); // `${phone_number_id}::${path}` → { media, cachedAt }
+
+/**
+ * ¿La URL es un handle efímero de Meta y no un link propio?
+ * Solo esas hay que resubir: si el llamador pasó una URL pública suya
+ * (header_media_url), Meta la descarga sin problema y se respeta tal cual.
+ */
+function esHandleEfimeroDeMeta(url) {
+  try {
+    const host = new URL(String(url)).hostname.toLowerCase();
+    return (
+      host.endsWith('.whatsapp.net') ||
+      host === 'whatsapp.net' ||
+      host.endsWith('.fbsbx.com') ||
+      host.endsWith('.fbcdn.net')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Clave de cache sin querystring: la firma cambia, el archivo no. */
+function mediaCacheKey(business_phone_id, url) {
+  try {
+    const u = new URL(String(url));
+    return `${business_phone_id}::${u.hostname}${u.pathname}`;
+  } catch {
+    return `${business_phone_id}::${url}`;
+  }
+}
+
+const EXT_POR_MIME = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+};
+
+/**
+ * Descarga el handle del header y lo resube a /media.
+ *
+ * Nunca lanza: si algo falla devuelve null y el llamador se queda con el
+ * comportamiento anterior ({ link }). Es preferible reintentar el camino
+ * viejo —que a veces funciona— a tumbar el envío entero.
+ *
+ * @returns {{ mediaId: string, filename: string }|null}
+ */
+async function resolverMediaIdDeHeader({
+  url,
+  business_phone_id,
+  accessToken,
+  nombre_template,
+  header_media_name,
+}) {
+  const cacheKey = mediaCacheKey(business_phone_id, url);
+  const cached = mediaIdCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.cachedAt < MEDIA_ID_CACHE_TTL_MS) {
+    console.log('💾 [headerMedia] CACHE HIT', {
+      nombre_template,
+      mediaId: cached.media.mediaId,
+    });
+    return cached.media;
+  }
+
+  try {
+    const descarga = await axios.get(String(url), {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      maxContentLength: 100 * 1024 * 1024,
+      validateStatus: () => true,
+    });
+
+    if (descarga.status < 200 || descarga.status >= 300) {
+      console.error('❌ [headerMedia] No se pudo descargar el handle', {
+        nombre_template,
+        status: descarga.status,
+      });
+      return null;
+    }
+
+    const buffer = Buffer.from(descarga.data);
+    const mimetype = String(descarga.headers['content-type'] || '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
+
+    if (!buffer.length || !mimetype) {
+      console.error('❌ [headerMedia] Descarga vacía o sin content-type', {
+        nombre_template,
+        bytes: buffer.length,
+        mimetype,
+      });
+      return null;
+    }
+
+    /* El nombre importa: en los documentos es lo que ve el cliente en el
+       chat. Sin esto WhatsApp muestra el hash del CDN de Meta. */
+    const ext = EXT_POR_MIME[mimetype] || mimetype.split('/')[1] || 'bin';
+    const originalname = header_media_name || `${nombre_template}.${ext}`;
+
+    const subida = await uploadMediaToMeta(
+      { ACCESS_TOKEN: accessToken, PHONE_NUMBER_ID: business_phone_id },
+      { buffer, mimetype, originalname },
+    );
+
+    if (!subida.ok) {
+      console.error('❌ [headerMedia] Meta rechazó la resubida', {
+        nombre_template,
+        meta_status: subida.meta_status,
+        error: subida.error,
+      });
+      return null;
+    }
+
+    const media = { mediaId: subida.mediaId, filename: originalname };
+    mediaIdCache.set(cacheKey, { media, cachedAt: Date.now() });
+
+    console.log('✅ [headerMedia] Handle resubido a /media', {
+      nombre_template,
+      mediaId: subida.mediaId,
+      mimetype,
+      kb: Math.round(buffer.length / 1024),
+    });
+
+    return media;
+  } catch (err) {
+    console.error('❌ [headerMedia] Error resolviendo el media del header', {
+      nombre_template,
+      message: err.message,
+    });
+    return null;
   }
 }
 
@@ -701,6 +858,8 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     }
   }
 
+  let headerMedia = null; // { mediaId, filename } si se resubió a /media
+
   if (
     ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormatNorm) &&
     resolvedMediaUrl
@@ -712,10 +871,28 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
           ? 'video'
           : 'document';
 
-    const mediaObj = { link: String(resolvedMediaUrl).trim() };
+    /* El handle que viene en la plantilla no se puede mandar como link:
+       Meta no logra descargarlo y el envío muere con 131053. Se resube y
+       se manda por media_id. Una URL propia sí se respeta tal cual. */
+    if (esHandleEfimeroDeMeta(resolvedMediaUrl)) {
+      headerMedia = await resolverMediaIdDeHeader({
+        url: resolvedMediaUrl,
+        business_phone_id,
+        accessToken,
+        nombre_template,
+        header_media_name,
+      });
+    }
 
-    if (mediaType === 'document' && header_media_name) {
-      mediaObj.filename = String(header_media_name);
+    const mediaObj = headerMedia
+      ? { id: String(headerMedia.mediaId) }
+      : { link: String(resolvedMediaUrl).trim() };
+
+    /* En documentos el filename es lo que ve el cliente en el chat, vaya
+       por id o por link. */
+    if (mediaType === 'document') {
+      const filename = header_media_name || headerMedia?.filename || null;
+      if (filename) mediaObj.filename = String(filename);
     }
 
     componentsPayload.push({
@@ -815,7 +992,11 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
       format: headerFormatNorm || null,
       parameters: Array.isArray(header_parameters) ? header_parameters : null,
       media_url: resolvedMediaUrl || null,
-      media_name: header_media_name || null,
+      // Qué se mandó de verdad: con media_id el envío no depende de que Meta
+      // pueda descargar la URL, y saberlo es lo que permite distinguir un
+      // 131053 viejo de uno nuevo al revisar un envío fallido.
+      media_id: headerMedia?.mediaId || null,
+      media_name: header_media_name || headerMedia?.filename || null,
     },
     source: 'cron_programado',
   };

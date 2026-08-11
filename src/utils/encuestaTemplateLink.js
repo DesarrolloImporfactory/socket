@@ -46,6 +46,39 @@ function esPlaceholderLink(placeholder) {
 }
 
 /**
+ * Plantillas ADICIONALES que también llevan el link de la encuesta
+ * (`encuestas.plantillas_link`), cada una con su propio mapeo:
+ *
+ *   [{ nombre_template: 'bienvenida_angel',
+ *      template_parameters: ['{link_encuesta}'] }]
+ *
+ * Existen porque una encuesta suele tener más de una plantilla que la
+ * reparte —una bienvenida por asesor, por ejemplo— y `template_fuera_24h`
+ * es una sola: la del envío automático del webhook. Estas son solo para el
+ * envío manual desde el chat.
+ */
+function parsePlantillasLink(raw) {
+  let arr = raw;
+
+  if (typeof raw === 'string') {
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  if (!Array.isArray(arr)) return [];
+
+  return arr
+    .map((p) => ({
+      nombre_template: String(p?.nombre_template ?? '').trim(),
+      template_parameters: parseTemplateParams(p?.template_parameters),
+    }))
+    .filter((p) => p.nombre_template);
+}
+
+/**
  * Reemplaza {nombre}, {apellido}, {email}, {telefono} y {link_encuesta}
  * (alias {link}). Limpia espacios sobrantes cuando el placeholder queda vacío.
  */
@@ -78,30 +111,118 @@ function resolverPlaceholders(str, contacto = {}, opts = {}) {
 }
 
 /**
- * Encuesta activa de esa conexión que usa esta plantilla de Meta.
- * Devuelve null si la plantilla no pertenece a ninguna encuesta.
+ * Encuestas activas de una conexión, con lo necesario para resolver una
+ * plantilla.
+ *
+ * `plantillas_link` es una columna nueva y aquí un push a main despliega el
+ * código tal cual, sin esperar a que se corra la migración: si se consultara
+ * a secas, entre el deploy y el ALTER el auto-relleno se caería para TODAS
+ * las encuestas, incluidas las que hoy funcionan. Por eso, si la columna
+ * todavía no existe, se reintenta sin ella y se avisa por log.
  */
-async function buscarEncuestaPorTemplate({ idConfiguracion, nombreTemplate }) {
-  const cfg = Number(idConfiguracion) || 0;
-  const tpl = String(nombreTemplate || '').trim();
-  if (!cfg || !tpl) return null;
+let plantillasLinkDisponible = null; // null = todavía sin comprobar
 
-  const [row] = await db.query(
+async function existeColumnaPlantillasLink() {
+  if (plantillasLinkDisponible !== null) return plantillasLinkDisponible;
+
+  try {
+    const [row] = await db.query(
+      `SELECT COUNT(*) AS n
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'encuestas'
+          AND COLUMN_NAME = 'plantillas_link'`,
+      { type: QueryTypes.SELECT },
+    );
+
+    plantillasLinkDisponible = Number(row?.n || 0) > 0;
+  } catch {
+    plantillasLinkDisponible = false;
+  }
+
+  if (!plantillasLinkDisponible) {
+    console.warn(
+      '[encuestaTemplateLink] Falta la columna encuestas.plantillas_link — ' +
+        'corre encuestas_plantillas_link_migration.sql. Mientras tanto solo ' +
+        'se resuelve la plantilla del envío automático.',
+    );
+  }
+
+  return plantillasLinkDisponible;
+}
+
+async function consultarEncuestasDeConexion(cfg) {
+  const conColumna = await existeColumnaPlantillasLink();
+
+  return db.query(
     `SELECT e.id AS id_encuesta, e.nombre AS nombre_encuesta, e.tipo,
             e.template_fuera_24h, e.template_parameters
+            ${conColumna ? ', e.plantillas_link' : ''}
        FROM encuestas_conexiones ec
        JOIN encuestas e ON e.id = ec.id_encuesta
       WHERE ec.id_configuracion = :cfg
         AND ec.activa = 1
         AND e.activa = 1
         AND e.deleted_at IS NULL
-        AND e.template_fuera_24h = :tpl
-      ORDER BY e.id DESC
-      LIMIT 1`,
-    { replacements: { cfg, tpl }, type: QueryTypes.SELECT },
+      ORDER BY e.id DESC`,
+    { replacements: { cfg }, type: QueryTypes.SELECT },
+  );
+}
+
+/**
+ * Encuesta activa de esa conexión que usa esta plantilla de Meta.
+ * Devuelve null si la plantilla no pertenece a ninguna encuesta.
+ *
+ * La plantilla puede ser la del envío automático (`template_fuera_24h`) o
+ * una de las adicionales de `plantillas_link`. En ambos casos se devuelve
+ * el `template_parameters` que corresponde A ESA plantilla, porque cada una
+ * tiene sus propias variables: la del webhook puede ser
+ * ["{nombre}","{link_encuesta}"] y una bienvenida solo ["{link_encuesta}"].
+ *
+ * El match se hace en JS y no en SQL porque `plantillas_link` es JSON y una
+ * conexión tiene un puñado de encuestas: filtrarlo en la query obligaría a
+ * funciones JSON de MariaDB para no ganar nada.
+ */
+async function buscarEncuestaPorTemplate({ idConfiguracion, nombreTemplate }) {
+  const cfg = Number(idConfiguracion) || 0;
+  const tpl = String(nombreTemplate || '').trim();
+  if (!cfg || !tpl) return null;
+
+  const encuestas = await consultarEncuestasDeConexion(cfg);
+
+  // La plantilla del envío automático manda: es la que ya estaba configurada
+  // y la que se usa fuera de 24h.
+  const principal = encuestas.find(
+    (e) => String(e.template_fuera_24h || '').trim() === tpl,
   );
 
-  return row || null;
+  if (principal) {
+    return {
+      id_encuesta: principal.id_encuesta,
+      nombre_encuesta: principal.nombre_encuesta,
+      tipo: principal.tipo,
+      template_fuera_24h: principal.template_fuera_24h,
+      template_parameters: principal.template_parameters,
+    };
+  }
+
+  for (const enc of encuestas) {
+    const extra = parsePlantillasLink(enc.plantillas_link).find(
+      (p) => p.nombre_template === tpl,
+    );
+
+    if (extra) {
+      return {
+        id_encuesta: enc.id_encuesta,
+        nombre_encuesta: enc.nombre_encuesta,
+        tipo: enc.tipo,
+        template_fuera_24h: extra.nombre_template,
+        template_parameters: extra.template_parameters,
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -326,6 +447,8 @@ module.exports = {
   FRONTEND_URL,
   construirLinkEncuesta,
   parseTemplateParams,
+  parsePlantillasLink,
+  existeColumnaPlantillasLink,
   esPlaceholderLink,
   resolverPlaceholders,
   buscarEncuestaPorTemplate,

@@ -6,7 +6,17 @@ const { procesarMensajeTexto } = require('./procesarMensajeTexto');
 
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 
-// Función genérica para enviar medios (imagen/video)
+/* Función genérica para enviar medios (imagen/video).
+ *
+ * Devuelve `{ ok, wamid, error }` en vez de lanzar. Antes se tragaba los fallos
+ * enteros —los escribía en el log de archivo y volvía como si nada—, así que
+ * quien llamaba no tenía forma de enterarse: los `catch` que sueltan la marca
+ * del dedupe (`olvidarEnviado`) no se ejecutaban nunca, y una foto que Meta
+ * rechazaba quedaba marcada como enviada sin que el cliente la recibiera.
+ *
+ * Se devuelve el resultado y no se lanza a propósito: hay cinco puntos de
+ * llamada y en varios el envío de la imagen va antes del texto de la respuesta.
+ * Si esto lanzara, una foto rota se llevaría por delante el mensaje completo. */
 async function enviarMedioWhatsapp({
   tipo, // "image" o "video"
   url_archivo,
@@ -77,6 +87,8 @@ async function enviarMedioWhatsapp({
           });
         }
       }
+
+      return { ok: true, wamid: mensajeId };
     } else {
       const errorMsg = respData?.error
         ? JSON.stringify(respData.error)
@@ -84,6 +96,7 @@ async function enviarMedioWhatsapp({
       await logToFile(
         `[${new Date().toISOString()}] ❌ Error al enviar ${tipo}: ${errorMsg}\n`
       );
+      return { ok: false, error: errorMsg };
     }
   } catch (err) {
     await logToFile(
@@ -91,6 +104,12 @@ async function enviarMedioWhatsapp({
         err.message
       }\n`
     );
+    /* Meta devuelve el detalle en el body, no en el mensaje del axios: sin esto
+       el log dice solo "Request failed with status code 400". */
+    const detalle = err.response?.data?.error
+      ? JSON.stringify(err.response.data.error)
+      : err.message;
+    return { ok: false, error: detalle };
   }
 }
 

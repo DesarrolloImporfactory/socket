@@ -101,11 +101,34 @@ async function hayColumnaReinicio() {
    otro y quedar bloqueada la que sí tocaba enviar. */
 const escaparLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
 
+/* La conversación se busca por `celular_recibe`, NO por `id_cliente`.
+   En `mensajes_clientes` las dos columnas guardan un id de
+   `clientes_chat_center`, pero no el mismo: `id_cliente` es SIEMPRE el dueño
+   (la fila `propietario = 1` de la cuenta, la misma para todos sus contactos) y
+   `celular_recibe` —el nombre engaña, no es un teléfono— es el contacto. Vale
+   para los dos sentidos y para los tres canales; ver
+   `procesarMensajeTexto` (WhatsApp) y `saveOutgoingMessageUnified` (MS/IG),
+   que lo dejan escrito: "id_cliente = dueño, celular_recibe = contacto".
+
+   Preguntando por `id_cliente = <contacto>` la consulta no devolvía NUNCA una
+   fila, así que el dedupe contra el historial era letra muerta: lo único que
+   frenaba la foto repetida era el Map de 2 minutos de acá arriba. Por eso la
+   imagen volvía "en cada mensaje o cada dos", según lo que tardara la persona
+   en contestar, y por eso parecía arreglado al probarlo a mensaje seguido.
+
+   La url puede estar en dos sitios según el canal: WhatsApp la guarda en
+   `ruta_archivo` y Messenger/Instagram la dejan dentro del JSON de
+   `attachments_unificado`. Se miran los dos o el dedupe seguiría sin existir
+   para esos dos canales. */
+const COLUMNA_CONTACTO = 'celular_recibe';
+
 /**
  * Filtra las urls que ya se le enviaron a este cliente hace poco.
  *
  * @param {object}   p
- * @param {number}   p.id_cliente
+ * @param {number}   p.id_cliente        id del CONTACTO en clientes_chat_center
+ * @param {number}   [p.id_configuracion] la cuenta; sin él la consulta no puede
+ *                                        usar el índice y barre la tabla
  * @param {string[]} p.urls       urls candidatas, en orden
  * @param {string}   p.etiqueta   'imagen' | 'video', solo para el log
  * @param {Function} [p.log]      async (msg) => void
@@ -113,6 +136,7 @@ const escaparLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
  */
 async function filtrarMediaNueva({
   id_cliente,
+  id_configuracion = null,
   urls,
   etiqueta = 'media',
   log,
@@ -156,18 +180,35 @@ async function filtrarMediaNueva({
     marcarEnviado(id_cliente, url);
 
     try {
+      const patron = `%${escaparLike(url)}%`;
+      /* `mensajes_clientes` es de las tablas grandes del sistema y esto corre en
+         cada turno del bot. El índice que ya existe
+         (`idx_mc_conf_cel_rol_del_at`, ver dashboard_indexes_migration.sql)
+         arranca por `id_configuracion`, así que sin esa condición la consulta
+         no lo alcanza y termina en escaneo completo. */
+      const filtroCuenta = id_configuracion ? `id_configuracion = ? AND` : '';
       const [existe] = await db.query(
         `SELECT id FROM mensajes_clientes
-          WHERE id_cliente = ?
+          WHERE ${filtroCuenta} ${COLUMNA_CONTACTO} = ?
+            AND rol_mensaje = 1
+            AND deleted_at IS NULL
             AND created_at >= ${corteVentana}
-            AND ruta_archivo LIKE ? ESCAPE '\\\\'
+            AND (
+              ruta_archivo LIKE ? ESCAPE '\\\\'
+              OR attachments_unificado LIKE ? ESCAPE '\\\\'
+            )
           LIMIT 1`,
         {
           replacements: [
-            id_cliente,
+            ...(id_configuracion ? [id_configuracion] : []),
+            /* `celular_recibe` es VARCHAR aunque lleve un id: si se le pasa un
+               número, MySQL convierte la columna entera para comparar y se
+               queda sin índice. */
+            String(id_cliente),
             VENTANA_REENVIO_HORAS,
             ...(conReinicio ? [id_cliente] : []),
-            `%${escaparLike(url)}%`,
+            patron,
+            patron,
           ],
           type: db.QueryTypes.SELECT,
         },
