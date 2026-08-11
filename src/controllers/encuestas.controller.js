@@ -13,6 +13,8 @@ const ExcelJS = require('exceljs');
 const { normalizarPreguntas } = require('../utils/encuestaPreguntas');
 const {
   resolverParametrosEncuestaTemplate,
+  parsePlantillasLink,
+  existeColumnaPlantillasLink,
 } = require('../utils/encuestaTemplateLink');
 
 const DEFAULT_MENSAJE_SATISFACCION =
@@ -57,12 +59,17 @@ exports.listarPorConexion = catchAsync(async (req, res, next) => {
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
 
+  // La columna es nueva y el deploy no espera a la migración: hasta que se
+  // corra el ALTER, el listado sigue funcionando sin ella.
+  const conPlantillasLink = await existeColumnaPlantillasLink();
+
   const encuestas = await db.query(
     `
   SELECT e.id, e.tipo, e.nombre, e.descripcion, e.activa, e.preguntas,
            e.cooldown_horas, e.delay_envio_minutos, e.mensaje_envio,
            e.url_encuesta_publica, e.umbral_escalacion,
            e.mensaje_dentro_24h, e.template_fuera_24h, e.template_parameters,
+           ${conPlantillasLink ? 'e.plantillas_link,' : ''}
            e.created_at,
            ec.id AS id_conexion, ec.activa AS conexion_activa,
            ec.auto_enviar_al_cerrar, ec.webhook_secret,
@@ -383,6 +390,7 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     mensaje_dentro_24h,
     template_fuera_24h,
     template_parameters,
+    plantillas_link,
     preguntas,
   } = req.body;
 
@@ -408,6 +416,22 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     templateParamsNormalized = String(template_parameters); // ya es JSON string
   }
 
+  /* Plantillas adicionales que llevan el link (solo envío manual desde el
+     chat; el automático sigue con template_fuera_24h). Se descartan las
+     entradas sin nombre de plantilla: una fila a medio llenar en el panel
+     no debe llegar a la BD. */
+  let plantillasLinkNormalized;
+  if (!(await existeColumnaPlantillasLink())) {
+    plantillasLinkNormalized = undefined; // sin migración no hay dónde guardar
+  } else if (plantillas_link === undefined) {
+    plantillasLinkNormalized = undefined; // no tocar el campo
+  } else if (plantillas_link === null || plantillas_link === '') {
+    plantillasLinkNormalized = null; // limpiar explícitamente
+  } else {
+    const limpias = parsePlantillasLink(plantillas_link);
+    plantillasLinkNormalized = limpias.length ? JSON.stringify(limpias) : null;
+  }
+
   // Preguntas: solo se tocan si vienen en el body (undefined = no modificar)
   const preguntasJson =
     preguntas === undefined
@@ -427,6 +451,7 @@ exports.actualizar = catchAsync(async (req, res, next) => {
       mensaje_dentro_24h = CASE WHEN :mensaje24_provided = 1 THEN :mensaje24 ELSE mensaje_dentro_24h END,
       template_fuera_24h = CASE WHEN :tpl_provided = 1 THEN :tpl ELSE template_fuera_24h END,
       template_parameters = CASE WHEN :tplparams_provided = 1 THEN :tplparams ELSE template_parameters END,
+      plantillas_link = CASE WHEN :plink_provided = 1 THEN :plink ELSE plantillas_link END,
       preguntas = CASE WHEN :preguntas_provided = 1 THEN :preguntas ELSE preguntas END,
       updated_at = NOW()
     WHERE id = :id
@@ -448,6 +473,8 @@ exports.actualizar = catchAsync(async (req, res, next) => {
         tpl: template_fuera_24h || null,
         tplparams_provided: templateParamsNormalized !== undefined ? 1 : 0,
         tplparams: templateParamsNormalized ?? null,
+        plink_provided: plantillasLinkNormalized !== undefined ? 1 : 0,
+        plink: plantillasLinkNormalized ?? null,
         preguntas_provided: preguntasJson !== undefined ? 1 : 0,
         preguntas: preguntasJson ?? null,
       },
