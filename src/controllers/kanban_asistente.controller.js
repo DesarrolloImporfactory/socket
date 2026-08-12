@@ -174,7 +174,7 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
   }
 
   const apiKey = await getApiKey(col.id_configuracion);
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   let asistenteData;
 
@@ -314,7 +314,7 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
       ),
     );
 
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   if (USAR_RESPONSES_API) {
     console.log('SISTEMA NUEVO SIN ASSISTANTS');
@@ -449,7 +449,7 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
     },
   );
 
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   // OpenAI: solo sistema viejo (hay Assistant real que sincronizar)
   if (
@@ -544,7 +544,7 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     );
 
   const apiKey = await getApiKey(col.id_configuracion);
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   try {
