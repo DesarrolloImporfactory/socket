@@ -16,6 +16,8 @@ const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const { obtenerOCrearContactoWa } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+// Mismo interruptor que kanban y que el remarketing de IG: acá NO se decide nada.
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 const {
   isWabaThrottled,
   markWabaThrottled,
@@ -956,7 +958,9 @@ cron.schedule('*/1 * * * *', async () => {
               const api_key_openai = cfgRow.api_key_openai;
 
               const [colRow] = await db.query(
-                `SELECT assistant_id, max_tokens FROM kanban_columnas
+                `SELECT assistant_id, max_tokens, instrucciones, modelo,
+                        vector_store_id, vector_store_docs_id
+                 FROM kanban_columnas
                  WHERE id_configuracion = ?
                    AND LOWER(estado_db) = LOWER(?)
                    AND activo = 1
@@ -973,39 +977,96 @@ cron.schedule('*/1 * * * *', async () => {
                 `🟦 [DEBUG IA] colRow: assistant_id=${colRow?.assistant_id || 'NO'} max_tokens=${colRow?.max_tokens}`,
               );
 
-              if (!colRow?.assistant_id) {
-                throw new Error(
-                  `Columna kanban "${record.estado_contacto_origen}" sin assistant_id`,
+              const prompt_ia_resuelto = await resolverPlazoEnPrompt(
+                record.prompt_ia,
+                record.id_configuracion,
+              );
+
+              let textoIA;
+
+              if (usaResponsesApi(record.id_configuracion)) {
+                // Responses API: el prompt sale de kanban_columnas y el contexto
+                // de previous_response_id. No hace falta assistant_id ni thread.
+                //
+                // Igual que en remarketing_ig.service, el response_id que salga
+                // de aquí NO se guarda: encadenar los remarketings infla la
+                // cadena con mensajes-trigger internos hasta reventar por
+                // context_length_exceeded. Se lee el contexto, no se escribe.
+                //
+                // Require perezoso por lo mismo que limpiarTagsAcciones más
+                // abajo: no arrastrar el árbol de kanban_ia al arrancar el server.
+                const {
+                  ejecutarConResponsesAPI,
+                  limpiarTagsAcciones,
+                } = require('../services/kanban_ia.service');
+                const {
+                  obtenerUltimoResponseId,
+                } = require('../services/obtener_response.service');
+
+                if (!colRow?.instrucciones) {
+                  throw new Error(
+                    `Columna kanban "${record.estado_contacto_origen}" sin instrucciones`,
+                  );
+                }
+
+                const previous_response_id = await obtenerUltimoResponseId(
+                  record.id_cliente_chat_center,
                 );
+                console.log(
+                  `🟦 [DEBUG IA] responses: previous_response_id=${previous_response_id || 'NO'}`,
+                );
+
+                const r = await ejecutarConResponsesAPI({
+                  previous_response_id,
+                  instructions: colRow.instrucciones,
+                  additional_instructions: prompt_ia_resuelto,
+                  input: '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados.',
+                  model: colRow.modelo || 'gpt-4o-mini',
+                  max_tokens: colRow.max_tokens || 300,
+                  vector_store_id: colRow.vector_store_id || null,
+                  vector_store_docs_id: colRow.vector_store_docs_id || null,
+                  api_key_openai,
+                  id_configuracion: record.id_configuracion,
+                });
+
+                // ejecutarConResponsesAPI ya limpia las citas, pero NO los tags
+                // de acción ([asesor]:true…). Acá nadie los evalúa: si se cuela
+                // uno, viaja tal cual al cliente.
+                textoIA = limpiarTagsAcciones(
+                  (r?.respuesta || '').trim(),
+                ).trim();
+              } else {
+                if (!colRow?.assistant_id) {
+                  throw new Error(
+                    `Columna kanban "${record.estado_contacto_origen}" sin assistant_id`,
+                  );
+                }
+
+                const [threadRow] = await db.query(
+                  `SELECT thread_id FROM openai_threads
+                   WHERE id_cliente_chat_center = ?
+                   LIMIT 1`,
+                  {
+                    replacements: [record.id_cliente_chat_center],
+                    type: db.QueryTypes.SELECT,
+                  },
+                );
+                console.log(
+                  `🟦 [DEBUG IA] threadRow: thread_id=${threadRow?.thread_id || 'NO'}`,
+                );
+
+                if (!threadRow?.thread_id) {
+                  throw new Error('Cliente sin thread de OpenAI');
+                }
+
+                textoIA = await generarMensajeRemarketingIA({
+                  id_thread: threadRow.thread_id,
+                  assistant_id: colRow.assistant_id,
+                  prompt_ia: prompt_ia_resuelto,
+                  api_key_openai,
+                  max_tokens: colRow.max_tokens || 300,
+                });
               }
-
-              const [threadRow] = await db.query(
-                `SELECT thread_id FROM openai_threads
-                 WHERE id_cliente_chat_center = ?
-                 LIMIT 1`,
-                {
-                  replacements: [record.id_cliente_chat_center],
-                  type: db.QueryTypes.SELECT,
-                },
-              );
-              console.log(
-                `🟦 [DEBUG IA] threadRow: thread_id=${threadRow?.thread_id || 'NO'}`,
-              );
-
-              if (!threadRow?.thread_id) {
-                throw new Error('Cliente sin thread de OpenAI');
-              }
-
-              const textoIA = await generarMensajeRemarketingIA({
-                id_thread: threadRow.thread_id,
-                assistant_id: colRow.assistant_id,
-                prompt_ia: await resolverPlazoEnPrompt(
-                  record.prompt_ia,
-                  record.id_configuracion,
-                ),
-                api_key_openai,
-                max_tokens: colRow.max_tokens || 300,
-              });
 
               if (!textoIA || textoIA.trim().length < 5) {
                 throw new Error('IA devolvió texto vacío o muy corto');

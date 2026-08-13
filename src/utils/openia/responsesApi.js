@@ -39,6 +39,10 @@
 //
 // Mientras esté en false solo migran las configs de la lista. En true, TODAS,
 // y la lista pasa a ser historia de por dónde empezó.
+//
+// Pendiente de voltear antes del 2026-08-26, que es cuando OpenAI apaga la
+// Assistants API. Para volver atrás después de voltearlo: false otra vez — el
+// camino viejo sigue completo hasta esa fecha, y a partir de ahí ya no sirve.
 const TODAS = false;
 
 // Configuraciones migradas a mano, en orden de llegada. Misma convención que
