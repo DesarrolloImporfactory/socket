@@ -51,17 +51,13 @@ function isTemplateNotFoundError(err) {
   );
 }
 
-function isOpenAISinSaldo(err) {
-  const status = err?.response?.status;
-  const code = err?.response?.data?.error?.code;
-  const msg = err?.response?.data?.error?.message || err?.message || '';
-  return (
-    (status === 429 && code === 'insufficient_quota') ||
-    status === 402 ||
-    msg.toLowerCase().includes('exceeded your current quota') ||
-    msg.toLowerCase().includes('insufficient_quota')
-  );
-}
+// Detector compartido con el chat. Ver utils/openia/sinSaldo.js: esta copia era
+// la única que sí miraba err.message, y aun así dejó de detectar cuando OpenAI
+// cambió el texto al saldo prepago ("You have no credits remaining").
+const {
+  esSinSaldoOpenAI: isOpenAISinSaldo,
+  mensajeErrorOpenAI,
+} = require('../utils/openia/sinSaldo');
 
 /* ================================================================
    uploadMediaToMeta
@@ -1108,7 +1104,9 @@ cron.schedule('*/1 * * * *', async () => {
                    WHERE id = ?`,
                   {
                     replacements: [
-                      'Sin saldo OpenAI (detectado en cron remarketing)',
+                      `Sin saldo OpenAI (cron remarketing): ${
+                        mensajeErrorOpenAI(iaErr) || 'sin detalle'
+                      }`.slice(0, 500),
                       record.id_configuracion,
                     ],
                     type: db.QueryTypes.UPDATE,

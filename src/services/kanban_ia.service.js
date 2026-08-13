@@ -125,17 +125,13 @@ const servicioAppointments = require('../services/appointments.service');
 const logsDir = require('path').join(process.cwd(), './src/logs/logs_meta');
 const fs = require('fs').promises;
 
-function esSinSaldo(err) {
-  const status = err?.response?.status;
-  const code = err?.response?.data?.error?.code;
-  const msg = err?.response?.data?.error?.message || '';
-  return (
-    (status === 429 && code === 'insufficient_quota') ||
-    status === 402 ||
-    msg.toLowerCase().includes('exceeded your current quota') ||
-    msg.toLowerCase().includes('insufficient_quota')
-  );
-}
+// Detector compartido: antes había una copia acá y otra en el cron, y se
+// separaron por una sola línea (la de acá no miraba err.message). Ver el
+// encabezado de utils/openia/sinSaldo.js.
+const {
+  esSinSaldoOpenAI: esSinSaldo,
+  mensajeErrorOpenAI,
+} = require('../utils/openia/sinSaldo');
 
 // La Responses API acumula historial vía previous_response_id; con muchos
 // turnos + file_search el contexto puede superar la ventana del modelo.
@@ -789,7 +785,7 @@ async function procesarMensajeKanban(params) {
       await log(`🚨 SIN SALDO OPENAI para config=${id_configuracion}`);
       await marcarOpenAIInactivo(
         id_configuracion,
-        err?.response?.data?.error?.message || 'Sin saldo OpenAI',
+        err.motivoOpenAI || mensajeErrorOpenAI(err) || 'Sin saldo OpenAI',
       );
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
@@ -830,7 +826,7 @@ async function procesarMensajeKanban(params) {
         if (esSinSaldo(err2)) {
           await marcarOpenAIInactivo(
             id_configuracion,
-            err2?.response?.data?.error?.message || 'Sin saldo OpenAI',
+            mensajeErrorOpenAI(err2) || 'Sin saldo OpenAI',
           );
           return { ok: false, motivo: 'sin_saldo_openai' };
         }
@@ -1663,10 +1659,13 @@ async function ejecutarAsistente({
   } catch (err) {
     if (esSinSaldo(err)) {
       await log(
-        `🚨 SIN SALDO OPENAI: ${err?.response?.data?.error?.message || err.message}`,
+        `🚨 SIN SALDO OPENAI: ${mensajeErrorOpenAI(err)}`,
       );
+      // Se pierde el error original al relanzar, así que el motivo viaja en la
+      // propiedad para que quien lo capture arriba pueda guardarlo tal cual.
       const e = new Error('sin_saldo_openai');
       e.code = 'sin_saldo_openai';
+      e.motivoOpenAI = mensajeErrorOpenAI(err);
       throw e;
     }
     throw err;
