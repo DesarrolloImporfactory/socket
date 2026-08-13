@@ -5878,6 +5878,12 @@ exports.getConnectionSummary = catchAsync(async (req, res) => {
 });
 
 // ── Helpers exportados para uso interno (marketing_control) ──
+/* Reutilizado por aliclik_orders.controller: cruza las órdenes contra los
+   contactos del chat center por teléfono y les pega la conversación y el
+   agente asignado. Es agnóstico al proveedor (solo usa `phone` e `id`), así
+   que se exporta en vez de duplicarlo para Aliclik. */
+exports.enrichOrdersWithChatAndAgent = enrichOrdersWithChatAndAgent;
+
 exports._internal = {
   syncFromDropi,
   getActiveIntegration,

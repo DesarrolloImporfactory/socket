@@ -218,6 +218,11 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
   );
 
+  /* Sin filtro de `proveedor` a propósito: acá se borran TODAS las columnas
+     del tablero (arriba), así que los `columna_destino` de cualquier proveedor
+     —Dropi o Aliclik— quedarían apuntando a columnas que ya no existen.
+     Borrar solo las de Dropi dejaría configuración huérfana y silenciosamente
+     rota. */
   await db.query(
     `DELETE FROM dropi_plantillas_config WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
@@ -956,7 +961,8 @@ async function _aplicarConfigDropiPorDefecto(
 
       const [existe] = await db.query(
         `SELECT id FROM dropi_plantillas_config
-         WHERE id_configuracion = ? AND estado_dropi = ? LIMIT 1`,
+         WHERE id_configuracion = ? AND proveedor = 'dropi'
+           AND estado_dropi = ? LIMIT 1`,
         {
           replacements: [id_configuracion, cfg.estado_dropi],
           type: db.QueryTypes.SELECT,
@@ -2907,7 +2913,8 @@ async function _instalarFaltantes(id_configuracion) {
   // disponible" para que el cliente decida, no se le impone.
   try {
     const existentes = await db.query(
-      `SELECT estado_dropi FROM dropi_plantillas_config WHERE id_configuracion = ?`,
+      `SELECT estado_dropi FROM dropi_plantillas_config
+        WHERE id_configuracion = ? AND proveedor = 'dropi'`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
     const yaTiene = new Set(existentes.map((r) => r.estado_dropi));
@@ -3023,7 +3030,7 @@ exports.mejorasDisponibles = catchAsync(async (req, res, next) => {
     `SELECT estado_dropi, nombre_template, columna_destino, activo,
             usar_respuesta_rapida, mensaje_rapido
        FROM dropi_plantillas_config
-      WHERE id_configuracion = ?`,
+      WHERE id_configuracion = ? AND proveedor = 'dropi'`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const porEstado = new Map(actuales.map((r) => [r.estado_dropi, r]));
@@ -3099,7 +3106,8 @@ exports.aplicarMejoras = catchAsync(async (req, res, next) => {
           SET nombre_template = ?, columna_destino = ?,
               usar_respuesta_rapida = ?, mensaje_rapido = ?,
               parametros_json = ?, updated_at = NOW()
-        WHERE id_configuracion = ? AND estado_dropi = ?`,
+        WHERE id_configuracion = ? AND proveedor = 'dropi'
+          AND estado_dropi = ?`,
       {
         replacements: [
           cat.nombre_template || null,

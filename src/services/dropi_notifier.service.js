@@ -509,6 +509,11 @@ function resolveVariable(varName, order) {
     case 'nombre':
       return `${order.name || ''} ${order.surname || ''}`.trim() || 'Cliente';
     case 'contenido':
+      // Resumen ya armado por el origen. Lo usa Aliclik, cuyo listado no
+      // devuelve el nombre por item (solo skuId) sino un `productDetail`
+      // textual. Las órdenes de Dropi nunca traen este campo, así que para
+      // ellas el comportamiento es idéntico al de siempre.
+      if (order.contenido_texto) return String(order.contenido_texto);
       if (!details.length) return 'Tu pedido';
       return details
         .map((d) => `${d?.quantity || 1} x ${d?.product?.name || 'Producto'}`)
@@ -558,9 +563,11 @@ function buildRutaArchivo(order, estadoConfig) {
     email: '',
     celular: order.phone || '',
     order_id: String(order.id || ''),
-    contenido: details
-      .map((d) => ` ${d?.quantity || 1} x ${d?.product?.name || 'Producto'} `)
-      .join(','),
+    contenido:
+      order.contenido_texto ||
+      details
+        .map((d) => ` ${d?.quantity || 1} x ${d?.product?.name || 'Producto'} `)
+        .join(','),
     costo: String(order.total_order || '0'),
     ciudad: order.city || '',
     tracking: getTrackingUrl(order.shipping_company, order.shipping_guide),
@@ -724,18 +731,30 @@ async function getTemplatesAprobadas(waba_id, token) {
   }
 }
 
-async function getPlantillasActivas(id_configuracion) {
+/**
+ * Plantillas activas de una configuración para un proveedor de fulfillment.
+ *
+ * `dropi_plantillas_config` es en la práctica una tabla genérica ("estado
+ * canónico → plantilla + columna destino"); la columna `proveedor` es lo que
+ * permite que Aliclik use la misma tabla y la misma pantalla sin pisar la
+ * configuración de Dropi. El default 'dropi' deja intactos a los llamadores
+ * existentes.
+ */
+async function getPlantillasActivas(id_configuracion, proveedor = 'dropi') {
   const rows = await db.query(
     `SELECT estado_dropi, nombre_template, language_code,
             mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
             columna_destino
      FROM dropi_plantillas_config
-     WHERE id_configuracion = ? AND activo = 1
+     WHERE id_configuracion = ? AND proveedor = ? AND activo = 1
        AND (
          (nombre_template IS NOT NULL AND nombre_template != '')
          OR (columna_destino IS NOT NULL AND columna_destino != '')
        )`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    {
+      replacements: [id_configuracion, proveedor],
+      type: db.QueryTypes.SELECT,
+    },
   );
   const map = {};
   for (const r of rows) {
@@ -1729,6 +1748,19 @@ module.exports = {
   resolverClientes,
   registrarMensajeEnChat,
   enviarTemplate,
+  // Piezas que consume services/aliclik_notifier.service.js. Aliclik identifica
+  // sus pedidos con un string (orderNumber), no con un id numérico, así que no
+  // puede reusar procesarTemplates() —que está atada a dropi_order_id BIGINT—
+  // y arma su propio bucle con estas mismas hojas. Se exportan en vez de
+  // duplicarlas: la lógica de ventana de 24h, plantillas aprobadas y kanban
+  // debe vivir en un solo lugar.
+  getTemplatesAprobadas,
+  verificarVentana24h,
+  enviarRespuestaRapida,
+  getColumnaPrincipalDropi,
+  actualizarEstadoContactoEntregado,
+  isWindowClosedError,
+  isMetaRateLimit,
   // detección de guía reemplazada por Dropi
   renotificarSiCambioGuia,
   // persistencia / envío

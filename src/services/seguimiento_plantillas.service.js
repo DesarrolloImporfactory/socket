@@ -56,7 +56,7 @@ async function getConfigPendienteConfirmacion(id_configuracion) {
     `SELECT nombre_template, language_code, parametros_json, body_text,
             activo, enviar_en_orden_bot
      FROM dropi_plantillas_config
-     WHERE id_configuracion = ? AND estado_dropi = ?
+     WHERE id_configuracion = ? AND proveedor = 'dropi' AND estado_dropi = ?
      LIMIT 1`,
     {
       replacements: [id_configuracion, ESTADO],

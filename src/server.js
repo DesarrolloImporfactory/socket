@@ -66,6 +66,7 @@ async function startServer() {
     require('./cron/templateProgramadoMasivo.js');
     require('./cron/syncDropiStock.js');
     require('./cron/syncDropiOrdersHourly.js');
+    require('./cron/syncAliclikOrders.js');
     require('./cron/cronEncuestasEnvio.js');
     require('./cron/metricasSnapshot.js');
     require('./cron/imporsuitEmailSync.js');
