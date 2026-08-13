@@ -23,6 +23,7 @@ const {
   toolFileSearchResponses,
   usaCatalogoInline,
 } = require('../utils/openia/fileSearch');
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 // Configuraciones donde los documentos que sube el usuario van a un vector
 // store PROPIO (kanban_columnas.vector_store_docs_id) en vez de compartir el
