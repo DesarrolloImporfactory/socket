@@ -23,6 +23,10 @@ const dropiService = require('../services/dropi.service');
 const { getProductosConCache } = require('../utils/dropiProductsCache');
 
 const {
+  generarDescripcion: generarDescripcionProductoIA,
+} = require('../services/producto_descripcion_ia.service');
+
+const {
   convertLocalFileToJpg,
   downloadAndConvertToJpgS3,
 } = require('../utils/imageConverter');
@@ -168,13 +172,13 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const sesMin = toNullableNumber(sesiones_min);
   const sesMax = toNullableNumber(sesiones_max);
   const sesionesMin = sesMin && sesMin > 0 ? sesMin : null;
-  const sesionesMax = sesMax && sesMax > 0 ? Math.max(sesMax, sesionesMin || 1) : null;
+  const sesionesMax =
+    sesMax && sesMax > 0 ? Math.max(sesMax, sesionesMin || 1) : null;
   const idCategoriaNum = toNullableNumber(id_categoria);
   // Un servicio no tiene unidades: se presta, no se agota.
-  const stockNum =
-    String(tipo).toLowerCase().startsWith('ser')
-      ? 0
-      : Math.max(0, Math.round(toNullableNumber(stock) ?? 0));
+  const stockNum = String(tipo).toLowerCase().startsWith('ser')
+    ? 0
+    : Math.max(0, Math.round(toNullableNumber(stock) ?? 0));
 
   const idDropiParsed =
     id_dropi != null && id_dropi !== '' ? Number(id_dropi) : null;
@@ -472,7 +476,11 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
 
   // ── Campos básicos ──
   if (typeof nombre !== 'undefined') producto.nombre = nombre;
-  if (typeof descripcion !== 'undefined') producto.descripcion = descripcion;
+  // Vaciada a propósito → NULL, no cadena vacía: los consumidores del catálogo
+  // (prompt del asistente, sync del kanban) preguntan por ausencia de dato, y
+  // un '' es un dato presente que termina pintando "Descripción:" en blanco.
+  if (typeof descripcion !== 'undefined')
+    producto.descripcion = descripcion || null;
   if (typeof tipo !== 'undefined') producto.tipo = tipo;
   if (typeof precio !== 'undefined') producto.precio = precio;
   if (typeof duracion !== 'undefined') producto.duracion = duracion;
@@ -513,7 +521,11 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     String(producto.external_source || '').toLowerCase() === 'dropi' &&
     producto.external_id != null;
 
-  if (String(producto.tipo || '').toLowerCase().startsWith('ser')) {
+  if (
+    String(producto.tipo || '')
+      .toLowerCase()
+      .startsWith('ser')
+  ) {
     producto.stock = 0;
   } else if (!esProductoDropi && typeof req.body.stock !== 'undefined') {
     const n = Number(req.body.stock);
@@ -559,8 +571,12 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
             dropi_variation_id: v.dropi_variation_id
               ? String(v.dropi_variation_id).trim()
               : null,
-            atributo: String(v.atributo || 'Variante').trim().slice(0, 60),
-            valor: String(v.valor || '').trim().slice(0, 120),
+            atributo: String(v.atributo || 'Variante')
+              .trim()
+              .slice(0, 60),
+            valor: String(v.valor || '')
+              .trim()
+              .slice(0, 120),
             stock: Number(v.stock) || 0,
             precio_proveedor:
               v.precio_proveedor === '' || v.precio_proveedor == null
@@ -1001,7 +1017,11 @@ function normalizarVariacionesDropi(prod) {
 }
 
 /* Reemplaza las variantes de un producto (import y re-sync son idempotentes). */
-async function guardarVariaciones({ id_producto, id_configuracion, variaciones }) {
+async function guardarVariaciones({
+  id_producto,
+  id_configuracion,
+  variaciones,
+}) {
   await db.query(`DELETE FROM productos_variaciones WHERE id_producto = ?`, {
     replacements: [id_producto],
     type: db.QueryTypes.DELETE,
@@ -1273,4 +1293,62 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
       ? `Producto importado desde Dropi con ${variaciones.length} variante(s).`
       : 'Producto importado desde Dropi correctamente (detalle + categorías sincronizadas).',
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERAR DESCRIPCIÓN CON IA
+// La descripción es el campo que más se deja vacío del modal —y el que más
+// necesita el asistente para vender: sin ella el bot solo sabe el nombre y el
+// precio, y ante cualquier pregunta del cliente contesta que no tiene el dato.
+// Acá se redacta a partir del nombre, la categoría y la foto, usando la API key
+// de OpenAI que el propio negocio ya tiene conectada en Asistentes.
+// ═══════════════════════════════════════════════════════════════════════════
+exports.generarDescripcionIA = catchAsync(async (req, res, next) => {
+  const { id_configuracion, nombre, tipo, categoria, material, borrador } =
+    req.body;
+
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_configuracion es obligatorio.' });
+  }
+  if (!nombre || !String(nombre).trim()) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Escribe primero el nombre del producto.',
+    });
+  }
+
+  try {
+    const { descripcion, uso_imagen } = await generarDescripcionProductoIA({
+      id_configuracion: Number(id_configuracion),
+      nombre: String(nombre).trim().slice(0, 300),
+      tipo,
+      categoria: String(categoria || '')
+        .trim()
+        .slice(0, 120),
+      material: String(material || '')
+        .trim()
+        .slice(0, 300),
+      // Lo ya escrito manda sobre lo que invente el modelo, pero se acota:
+      // el campo admite 600 palabras y mandarlas enteras encarece la llamada.
+      borrador: String(borrador || '')
+        .trim()
+        .slice(0, 3000),
+      imagen_url: req.body.imagen_url || null,
+      archivo: req.file || null,
+    });
+
+    return res.status(200).json({
+      status: 'success',
+      data: { descripcion, uso_imagen },
+    });
+  } catch (err) {
+    if (err.codigo) {
+      return res
+        .status(400)
+        .json({ status: 'fail', code: err.codigo, message: err.message });
+    }
+    return next(err);
+  }
 });

@@ -21,6 +21,8 @@ const path = require('path');
 const fs = require('fs').promises;
 
 const { obtenerUltimoResponseId } = require('./obtener_response.service');
+// Mismo interruptor que el flujo de kanban: acá NO se decide nada.
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 async function log(msg) {
@@ -33,10 +35,6 @@ async function log(msg) {
   } catch (_) {}
 }
 
-// Mismas configs que usan la Responses API en el flujo de kanban.
-function usaResponsesApi(id_configuracion) {
-  return [10].includes(Number(id_configuracion));
-}
 
 // ─────────────────────────────────────────────────────────────
 // programarRemarketingIG

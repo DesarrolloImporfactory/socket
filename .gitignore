@@ -5,3 +5,4 @@ logs/*
 src/logs/
 src/uploads/*
 *.logs
+backups_prompts/

@@ -115,7 +115,7 @@ const CONFIGS_CON_TOPE = [10];
 //          🔎 Catálogo por file_search (NO CABE: 31094 tokens > tope 16000)
 //        Para que la 666 pasara a inline habría que subir el tope a ~32.000,
 //        que es una decisión de costo aparte: son ~900 mensajes por día.
-const CONFIGS_CON_CATALOGO_INLINE = [10, 610, 666];
+const CONFIGS_CON_CATALOGO_INLINE = [10, 610, 666, 857, 411];
 
 // ⚠️ "QUIERE inline" ≠ "USA inline". Son dos preguntas distintas y confundirlas
 // hace daño.

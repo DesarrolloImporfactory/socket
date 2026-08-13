@@ -20,6 +20,7 @@ const {
   catalogoInlineActivo,
   TOPE_CATALOGO_INLINE,
 } = require('../utils/openia/fileSearch');
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 const {
   enviarMensajeWhatsapp,
@@ -77,9 +78,23 @@ const {
 } = require('./dropiAutoOrder.service');
 
 // ══════════════════════════════════════════════════════════════
-// fetchAssistantInfo — Trae el prompt REAL cargado en OpenAI
-// Solo para debugging. Permite confirmar si Platform tiene
-// el prompt que crees que tiene.
+// fetchAssistantInfo — devuelve el prompt de la BD (kanban_columnas)
+//
+// ⚠️ El nombre y el comentario viejo decían "trae el prompt REAL cargado en
+// OpenAI". Es falso y confunde justo donde más caro sale: NO llama a OpenAI,
+// lee kanban_columnas.instrucciones. Tampoco es solo para debugging — lo que
+// devuelve es lo que se manda como `instructions` en la Responses API.
+//
+// Ahí está la asimetría que hay que tener presente al migrar:
+//   Assistants API → el prompt vive DENTRO del assistant, en OpenAI.
+//                    kanban_columnas.instrucciones no lo lee nadie.
+//   Responses API  → el prompt sale de la BD. El de OpenAI se ignora.
+//
+// O sea que pasar una cuenta de una API a la otra CAMBIA cuál de las dos
+// copias manda. Si divergieron mientras nadie miraba la de la BD, el bot
+// cambia de comportamiento al migrar, sin ningún error.
+// (Auditado el 2026-08-11: 22 de 769 columnas habían divergido; ver
+// scripts/auditarMigracionResponsesApi.js.)
 // ══════════════════════════════════════════════════════════════
 async function fetchAssistantInfo(id_columna) {
   const [col] = await db.query(
@@ -324,7 +339,7 @@ async function procesarMensajeKanban(params) {
   }
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
-  const USAR_RESPONSES_API = [10].includes(Number(id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(id_configuracion);
 
   // Llegó un mensaje nuevo de este cliente: invalida cualquier ráfaga que
   // haya quedado pendiente de la respuesta anterior.
@@ -552,6 +567,55 @@ async function procesarMensajeKanban(params) {
   if (USAR_RESPONSES_API) {
     if (bloqueContexto.trim()) {
       inputFinal = `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n${mensajeFinal}`;
+    }
+
+    // ── Siembra del contexto cuando no hay cadena ─────────────
+    //
+    // Sin previous_response_id el modelo arranca en blanco: no sabe que ya
+    // habló con esta persona, la saluda de nuevo y le vuelve a pedir datos que
+    // ya dio. Eso pasa en dos situaciones, y las dos importan:
+    //
+    //   1. La cuenta acaba de pasar de la Assistants API a Responses. Todo su
+    //      historial estaba en threads de OpenAI y la cadena nueva empieza
+    //      vacía. Con la migración de las 273 configuraciones antes del
+    //      2026-08-26 (OpenAI apaga Assistants), son ~76.000 clientes a mitad
+    //      de conversación.
+    //   2. obtenerUltimoResponseId() borra la cadena tras 14 días de silencio.
+    //      Ese caso YA existía y nadie lo estaba tapando: el cliente vuelve y
+    //      el bot no lo conoce.
+    //
+    // La cura es la misma para las dos: rearmar la conversación desde
+    // mensajes_clientes, que es donde de verdad vive el historial —los threads
+    // de OpenAI eran una copia. Es exactamente lo que ya se hace al reventar el
+    // contexto, un turno antes.
+    //
+    // Se paga UNA vez: OpenAI guarda esta respuesta (store: true) y a partir
+    // del mensaje siguiente la cadena viaja por previous_response_id. Medido:
+    // ~456 tokens por conversación.
+    if (!previous_response_id) {
+      const recap = await construirRecapConversacion(id_cliente);
+
+      // Con un solo mensaje no hay nada que retomar: es el que acaba de llegar,
+      // que el webhook ya guardó antes de llamarnos, así que sembrar sería
+      // repetirle al modelo lo que ya tiene en el input.
+      //
+      // Se cuentan MENSAJES, no líneas: el recap une los textos con \n y un
+      // cliente nuevo que escriba un mensaje de varias líneas daría más de una
+      // sin tener historial. Cada mensaje empieza con "Cliente: " o
+      // "Asistente: " a principio de línea.
+      const nMensajes = (recap.match(/^(Cliente|Asistente): /gm) || []).length;
+
+      if (nMensajes >= 2) {
+        inputFinal = `[CONTEXTO DE LA CONVERSACIÓN PREVIA — retómala, NO saludes de nuevo ni pidas datos ya dados]\n${recap}\n\n[MENSAJE ACTUAL DEL CLIENTE]\n${inputFinal}`;
+        await log(
+          `🌱 Sin cadena previa: sembrado con recap (${nMensajes} mensajes, ` +
+            `${recap.length} chars) cliente=${id_cliente}`,
+        );
+      } else {
+        await log(
+          `🆕 Sin cadena previa y sin historial (${nMensajes} mensajes): arranca limpio cliente=${id_cliente}`,
+        );
+      }
     }
   } else {
     if (bloqueContexto.trim()) {

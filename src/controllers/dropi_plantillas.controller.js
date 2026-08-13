@@ -1,5 +1,8 @@
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
+const {
+  ESTADOS_ALICLIK,
+} = require('../services/aliclik_notifier.service');
 
 const ESTADOS_DROPI = [
   'PENDIENTE CONFIRMACION',
@@ -14,21 +17,43 @@ const ESTADOS_DROPI = [
   'DEVOLUCION',
 ];
 
+/**
+ * Esta pantalla configura "estado del pedido → plantilla de WhatsApp", y eso
+ * es común a cualquier proveedor de fulfillment. Lo único que cambia por
+ * proveedor es qué estados existen: Aliclik no tiene guías (no expone el
+ * número en ninguna parte de su API) ni carritos abandonados.
+ */
+const ESTADOS_POR_PROVEEDOR = {
+  dropi: ESTADOS_DROPI,
+  aliclik: ESTADOS_ALICLIK,
+};
+
+function resolverProveedor(valor) {
+  const p = String(valor || 'dropi')
+    .trim()
+    .toLowerCase();
+  return ESTADOS_POR_PROVEEDOR[p] ? p : 'dropi';
+}
+
 // ── Obtener config de todos los estados ──────────────────────
 exports.obtener = catchAsync(async (req, res) => {
   const { id_configuracion } = req.body;
+  const proveedor = resolverProveedor(req.body.proveedor);
 
   const registros = await db.query(
     `SELECT estado_dropi, nombre_template, language_code, activo,
             mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
             columna_destino, enviar_en_orden_bot
      FROM dropi_plantillas_config
-     WHERE id_configuracion = ?`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+     WHERE id_configuracion = ? AND proveedor = ?`,
+    {
+      replacements: [id_configuracion, proveedor],
+      type: db.QueryTypes.SELECT,
+    },
   );
 
   const resultado = {};
-  for (const estado of ESTADOS_DROPI) {
+  for (const estado of ESTADOS_POR_PROVEEDOR[proveedor]) {
     const encontrado = registros.find((r) => r.estado_dropi === estado);
     resultado[estado] = {
       nombre_template: encontrado?.nombre_template || '',
@@ -46,7 +71,7 @@ exports.obtener = catchAsync(async (req, res) => {
     };
   }
 
-  return res.json({ success: true, data: resultado });
+  return res.json({ success: true, data: resultado, proveedor });
 });
 
 // ── Guardar config de un estado ──────────────────────────────
@@ -69,6 +94,18 @@ exports.guardar = catchAsync(async (req, res) => {
     return res
       .status(400)
       .json({ success: false, message: 'Faltan campos obligatorios' });
+  }
+
+  const proveedor = resolverProveedor(req.body.proveedor);
+
+  // Evita guardar un estado que no existe para ese proveedor (ej. una
+  // "GUIA GENERADA" de Aliclik, que nunca se dispararía porque su API no
+  // expone guías).
+  if (!ESTADOS_POR_PROVEEDOR[proveedor].includes(estado_dropi)) {
+    return res.status(400).json({
+      success: false,
+      message: `El estado "${estado_dropi}" no aplica para ${proveedor}`,
+    });
   }
 
   // Normalizar columna_destino: string vacío → null
@@ -100,9 +137,9 @@ exports.guardar = catchAsync(async (req, res) => {
 
   const [existe] = await db.query(
     `SELECT id FROM dropi_plantillas_config
-     WHERE id_configuracion = ? AND estado_dropi = ? LIMIT 1`,
+     WHERE id_configuracion = ? AND proveedor = ? AND estado_dropi = ? LIMIT 1`,
     {
-      replacements: [id_configuracion, estado_dropi],
+      replacements: [id_configuracion, proveedor, estado_dropi],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -119,7 +156,7 @@ exports.guardar = catchAsync(async (req, res) => {
            body_text = ?,
            columna_destino = ?,
            enviar_en_orden_bot = COALESCE(?, enviar_en_orden_bot)
-       WHERE id_configuracion = ? AND estado_dropi = ?`,
+       WHERE id_configuracion = ? AND proveedor = ? AND estado_dropi = ?`,
       {
         replacements: [
           nombre_template || null,
@@ -136,6 +173,7 @@ exports.guardar = catchAsync(async (req, res) => {
           columnaDestinoClean,
           envioBotClean,
           id_configuracion,
+          proveedor,
           estado_dropi,
         ],
         type: db.QueryTypes.UPDATE,
@@ -144,13 +182,14 @@ exports.guardar = catchAsync(async (req, res) => {
   } else {
     await db.query(
       `INSERT INTO dropi_plantillas_config
-         (id_configuracion, estado_dropi, nombre_template, language_code,
+         (id_configuracion, proveedor, estado_dropi, nombre_template, language_code,
           activo, mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
           columna_destino, enviar_en_orden_bot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
+          proveedor,
           estado_dropi,
           nombre_template || null,
           language_code || 'es',

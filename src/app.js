@@ -47,6 +47,9 @@ const webhookRouter = require('./routes/webhook.routes');
 
 const dropiWebhookRouter = require('./routes/dropi_webhook.routes');
 
+const aliclikIntegrationsRouter = require('./routes/aliclik_integrations.routes');
+const aliclikWebhookRouter = require('./routes/aliclik_webhook.routes');
+
 const chat_serviceRouter = require('./routes/chat_service.routes');
 
 const planesRouter = require('./routes/planes.routes');
@@ -297,6 +300,13 @@ app.use((req, res, next) => {
     '/api/v1/kanban_plantillas_admin',
     '/api/v1/kanban_plantillas',
     '/api/v1/openai_assistants',
+    // Webhook de Aliclik: va por prefijo y no en skipExact porque la URL
+    // lleva el secreto como último segmento del path
+    // (/api/v1/aliclik_webhook/orders/<secret>) y no hay una ruta fija que
+    // comparar. NO se le captura rawBody: Aliclik no firma sus eventos, así
+    // que no hay nada que verificar contra el cuerpo crudo — la autenticación
+    // es el secreto de la URL (ver aliclik_webhook.controller.js).
+    '/api/v1/aliclik_webhook',
   ];
 
   if (skipExact.includes(req.path)) return next();
@@ -364,6 +374,8 @@ app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/dropi_stats', require('./routes/dropi_stats.routes'));
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
+app.use('/api/v1/aliclik_integrations', aliclikIntegrationsRouter);
+app.use('/api/v1/aliclik_webhook', aliclikWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/gemini', geminiRouter);

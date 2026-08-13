@@ -274,4 +274,5 @@ module.exports = {
   validarPersonalizacion,
   detectarTipoPrompt,
   quitarBloqueInstruccionesExtra,
+  NOMBRES_TIENDA_LEGACY,
 };

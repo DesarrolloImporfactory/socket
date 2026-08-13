@@ -280,6 +280,7 @@ async function getPlantillaPendienteConfirmacion(id_configuracion) {
     `SELECT nombre_template, language_code, parametros_json, body_text, columna_destino
      FROM dropi_plantillas_config
      WHERE id_configuracion = ?
+       AND proveedor = 'dropi'
        AND estado_dropi = 'PENDIENTE CONFIRMACION'
        AND activo = 1
        AND nombre_template IS NOT NULL

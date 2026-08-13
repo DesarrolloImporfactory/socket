@@ -78,4 +78,38 @@ const uploadProductoMediaHandler = (req, res, next) => {
   });
 };
 
-module.exports = { uploadProductoMedia: uploadProductoMediaHandler };
+/* Imagen para generar la descripción con IA.
+   Va a memoria y no a disco a propósito: la foto solo se usa para armar el
+   data URL que se le manda a OpenAI y se descarta. Guardarla dejaría basura en
+   uploads/ cada vez que alguien pulsa "generar" mientras todavía está armando
+   el producto (que puede no llegar a guardarse nunca).
+   El tope es 5 MB —no 16— porque base64 infla ~33% y el modelo tampoco necesita
+   más resolución para describir un producto. */
+const uploadImagenIA = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    if (allowed.imagen.includes(file.mimetype)) return cb(null, true);
+    cb(new Error('La imagen debe ser JPG, PNG, WEBP o GIF.'));
+  },
+  limits: { fileSize: 5 * 1024 * 1024 },
+}).single('imagen');
+
+const uploadImagenIAHandler = (req, res, next) => {
+  uploadImagenIA(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'La imagen supera los 5 MB.',
+        });
+      }
+      return res.status(400).json({ status: 'fail', message: err.message });
+    }
+    next();
+  });
+};
+
+module.exports = {
+  uploadProductoMedia: uploadProductoMediaHandler,
+  uploadImagenIA: uploadImagenIAHandler,
+};

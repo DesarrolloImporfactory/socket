@@ -6,7 +6,10 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
-const { uploadProductoMedia } = require('../middlewares/uploadProductos');
+const {
+  uploadProductoMedia,
+  uploadImagenIA,
+} = require('../middlewares/uploadProductos');
 
 const { uploadExcel } = require('../middlewares/uploadExcel');
 
@@ -38,6 +41,17 @@ router.post(
 router.delete(
   '/eliminarProducto',
   productos_chat_centerController.eliminarProducto,
+);
+
+/* Redacta la descripción con la API key de OpenAI del propio negocio.
+   Va con multer aunque no guarde nada: la foto llega dentro de un multipart
+   (todavía no está subida cuando el producto se está creando) y sin multer
+   req.body llegaría vacío. */
+router.post(
+  '/generarDescripcionIA',
+  checkPlanActivo,
+  uploadImagenIA,
+  productos_chat_centerController.generarDescripcionIA,
 );
 
 // Ruta nueva para carga masiva

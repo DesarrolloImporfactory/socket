@@ -26,6 +26,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../database/config');
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 // Tipos aceptados por OpenAI para file_search
 // https://platform.openai.com/docs/assistants/tools/file-search/supported-files
@@ -270,7 +271,7 @@ async function subirArchivo({ id_kanban_columna, archivo, id_sub_usuario = null 
   }
 
   const apiKey = await getApiKey(col.id_configuracion);
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   // 1. Subir los bytes a OpenAI Files
   const form = new FormData();
@@ -403,7 +404,7 @@ async function vincularArchivo({ id_kanban_columna, id_archivo }) {
   }
 
   const apiKey = await getApiKey(col.id_configuracion);
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   const vsDocs = await asegurarVectorStoreDocs(col, apiKey);
   const { vectorStoreFileId, status } = await adjuntarAVectorStore(
@@ -463,7 +464,7 @@ async function desvincularArchivo({ id_kanban_columna, id_archivo }) {
   );
 
   // Sistema viejo: también estaba en el store del catálogo.
-  const USAR_RESPONSES_API = [10].includes(Number(col.id_configuracion));
+  const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
   if (!USAR_RESPONSES_API && col.vector_store_id) {
     await desadjuntarDeVectorStore(
       col.vector_store_id,
