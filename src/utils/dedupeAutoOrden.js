@@ -1,4 +1,6 @@
-/* Candado anti-duplicado para la creación automática de órdenes Dropi.
+/* Candados anti-duplicado del CIERRE de la venta: la orden en Dropi y el
+ * resumen que el bot le manda al cliente. Son dos síntomas del mismo problema,
+ * por eso viven juntos.
  *
  * EL PROBLEMA
  * El cliente manda dos mensajes seguidos ("En la entrada de ocho" / "Hay un
@@ -95,8 +97,59 @@ function liberarAutoOrden(clave) {
   ESTADO.delete(clave);
 }
 
+/* ──────────────── resumen de cierre ────────────────
+ *
+ * El candado de arriba evita la orden duplicada, pero el cliente igual veía el
+ * resumen dos veces —dos "tu pedido queda así" con segundos de diferencia—, que
+ * es lo que hizo pensar al dueño de la cuenta que se le duplicaban los pedidos
+ * incluso cuando la orden salía bien.
+ *
+ * Esto tapa SOLO ese mensaje. No se toca el resto de la conversación a
+ * propósito: el 28% de los mensajes que manda un cliente llegan a menos de 20
+ * segundos del anterior (626 casos en 7 días en la cfg 411), así que descartar
+ * toda respuesta que quedó vieja cambiaría el comportamiento del bot en uno de
+ * cada cuatro mensajes. Acá se bloquea el resumen repetido y nada más.
+ *
+ * Ventana más corta que la de la orden (5 min contra 30) a propósito: si el
+ * cliente pregunta "¿me repites mi pedido?" un rato después, el resumen tiene
+ * que poder salir. Lo que no puede es salir dos veces seguidas por una ráfaga.
+ * El duplicado real más separado que se registró fueron 193 segundos, así que
+ * 5 minutos lo cubre con margen.
+ */
+
+const RESUMEN = new Map(); // clave → ts del último resumen enviado
+const VIGENCIA_RESUMEN_MS = 5 * 60 * 1000;
+
+/**
+ * ¿Toca mandar el resumen de cierre a este cliente?
+ *
+ * @param {string} clave `${id_configuracion}|${id_cliente}`
+ * @returns {boolean} true si se puede mandar (y queda marcado), false si ya se
+ *   mandó uno hace menos de la ventana.
+ */
+function reclamarResumenCierre(clave) {
+  const ahora = Date.now();
+  const previo = RESUMEN.get(clave);
+
+  // No se refresca la marca al rechazar: la ventana corre desde el resumen que
+  // SÍ se envió, no desde el último intento. Si no, una ráfaga larga la iría
+  // estirando y el resumen quedaría bloqueado mucho más de lo previsto.
+  if (previo && ahora - previo < VIGENCIA_RESUMEN_MS) return false;
+
+  RESUMEN.set(clave, ahora);
+
+  if (RESUMEN.size > MAX_ENTRADAS) {
+    for (const [k, t] of RESUMEN) {
+      if (ahora - t >= VIGENCIA_RESUMEN_MS) RESUMEN.delete(k);
+    }
+  }
+
+  return true;
+}
+
 module.exports = {
   reclamarAutoOrden,
   confirmarAutoOrden,
   liberarAutoOrden,
+  reclamarResumenCierre,
 };

@@ -80,11 +80,16 @@ const {
   autoActualizarOrdenDropi,
 } = require('./dropiAutoOrder.service');
 
-// Candado para que dos resúmenes de cierre seguidos no creen dos órdenes
+// Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
+const { esperarRafaga } = require('../utils/agruparRafaga');
+
+// Candados para que dos cierres seguidos no creen dos órdenes ni manden el
+// resumen del pedido dos veces
 const {
   reclamarAutoOrden,
   confirmarAutoOrden,
   liberarAutoOrden,
+  reclamarResumenCierre,
 } = require('../utils/dedupeAutoOrden');
 
 // ══════════════════════════════════════════════════════════════
@@ -256,13 +261,16 @@ async function procesarMensajeKanban(params) {
     id_configuracion,
     id_cliente,
     telefono,
-    mensaje,
     estado_contacto,
     api_key_openai,
     business_phone_id,
     accessToken,
     bloque_producto_referral,
   } = params;
+
+  // `let` porque la agrupación de ráfaga (más abajo) lo reemplaza por el texto
+  // completo del cliente cuando escribió en varios mensajes seguidos.
+  let { mensaje } = params;
 
   // ── Canal de salida ───────────────────────────────────────
   // Por defecto = WhatsApp (mismo comportamiento estable de siempre).
@@ -348,6 +356,32 @@ async function procesarMensajeKanban(params) {
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
   const USAR_RESPONSES_API = usaResponsesApi(id_configuracion);
+
+  /* ── Agrupar la ráfaga ────────────────────────────────────
+     Si el cliente escribe en pedazos, cada mensaje llega acá por separado y
+     antes corrían dos turnos en paralelo: dos llamadas a OpenAI y el bot
+     contestando dos veces. Ahora se espera una ventana corta; si llega otro
+     mensaje, esta corrida se retira y la nueva contesta con TODO el texto.
+
+     Va después de los gates de plan e interruptor —que son baratos y cortan
+     antes de gastar la espera— y antes de todo el trabajo real.
+
+     Ver el costo en latencia y la medición que fijó la ventana en
+     utils/agruparRafaga.js. */
+  const mensajeAgrupado = await esperarRafaga(id_cliente, mensaje);
+  if (mensajeAgrupado === null) {
+    await log(
+      `⏸️ Ráfaga: el cliente ${id_cliente} siguió escribiendo; este turno se ` +
+        `retira y contesta el último con todo el texto junto`,
+    );
+    return { ok: true, motivo: 'absorbido_en_rafaga' };
+  }
+  if (mensajeAgrupado !== mensaje) {
+    await log(
+      `🧩 Ráfaga agrupada para cliente=${id_cliente}: "${String(mensajeAgrupado).slice(0, 160)}"`,
+    );
+    mensaje = mensajeAgrupado;
+  }
 
   // Llegó un mensaje nuevo de este cliente: invalida cualquier ráfaga que
   // haya quedado pendiente de la respuesta anterior.
@@ -1022,6 +1056,10 @@ async function procesarMensajeKanban(params) {
   }
 
   // ── 10. ACCIÓN: cambiar_estado ────────────────────────────
+  // ¿Esta respuesta cierra la venta (resumen del pedido)? Lo decide el paso 10
+  // y lo usa el 13 para no repetir el resumen. Se declara afuera del bucle.
+  let cerroLaVenta = false;
+  const claveResumen = `${id_configuracion}|${id_cliente}`;
   for (const ac of getAcciones('cambiar_estado')) {
     const cfg = parseConfig(ac);
     const trigger = cfg.trigger || '';
@@ -1030,6 +1068,9 @@ async function procesarMensajeKanban(params) {
 
     const coincide = respuestaRaw.toLowerCase().includes(trigger.toLowerCase());
     if (coincide) {
+      // Esta respuesta ES un cierre de venta. Se marca para que el paso 13 no
+      // mande el mismo resumen dos veces cuando el cliente escribió en ráfaga.
+      if (estadoDestino === 'generar_guia') cerroLaVenta = true;
       await db.query(
         `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
         {
@@ -1558,6 +1599,25 @@ async function procesarMensajeKanban(params) {
   /* Y el Markdown que WhatsApp no entiende: los ** llegan como asteriscos a
      la vista. Está prohibido en el prompt y el modelo lo escribe igual. */
   soloTexto = limpiarMarkdown(soloTexto);
+
+  /* Resumen de cierre repetido: no se manda.
+
+     Cuando el cliente escribe dos veces seguidas ("En la entrada de ocho" /
+     "Hay un Servientrega"), cada mensaje corre su propio turno y el asistente
+     cierra la venta en las DOS respuestas. La orden ya la ataja el candado del
+     paso 10, pero el cliente igual veía dos "tu pedido queda así" seguidos, que
+     es exactamente lo que hizo pensar que se le duplicaban los pedidos.
+
+     Solo se descarta el resumen repetido. El resto de la conversación sale como
+     siempre: descartar toda respuesta que quedó vieja tocaría el 28% de los
+     mensajes (ver utils/dedupeAutoOrden.js) y eso es otro problema. */
+  if (soloTexto && cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
+    await log(
+      `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
+        `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
+    );
+    soloTexto = '';
+  }
 
   if (soloTexto) {
     // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
