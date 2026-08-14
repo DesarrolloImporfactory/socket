@@ -37,17 +37,9 @@ async function log(msg) {
   );
 }
 
-function esSinSaldo(err) {
-  const status = err?.response?.status;
-  const code = err?.response?.data?.error?.code;
-  const msg = err?.response?.data?.error?.message || '';
-  return (
-    (status === 429 && code === 'insufficient_quota') ||
-    status === 402 ||
-    msg.toLowerCase().includes('exceeded your current quota') ||
-    msg.toLowerCase().includes('insufficient_quota')
-  );
-}
+// Detector compartido. Ver utils/openia/sinSaldo.js. (Este archivo hoy no lo
+// requiere nadie, pero se deja alineado para que no reviva con la copia rota.)
+const { esSinSaldoOpenAI: esSinSaldo } = require('../utils/openia/sinSaldo');
 
 async function marcarOpenAIInactivo(id_configuracion, motivo) {
   try {

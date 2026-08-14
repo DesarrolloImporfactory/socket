@@ -13,6 +13,7 @@ const {
 } = require('../utils/promptCompiler');
 
 const axios = require('axios');
+const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 // Catálogo Kanban (fuente única de verdad, compartida con el admin controller)
 const {
@@ -2190,12 +2191,11 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
             persoActual || {},
           );
 
-          await axios.post(
-            `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-            { instructions: promptCompilado },
-            { headers, timeout: 15000 },
-          );
-
+          // La BD va PRIMERO. Mismo motivo que en personalizacionActualizar:
+          // con el orden viejo, un fallo de OpenAI se llevaba por delante los
+          // dos UPDATE de abajo y el resync no dejaba rastro —y por Responses
+          // el prompt que manda es el de acá—. Desde el 2026-08-26 esa llamada
+          // falla siempre, así que el resync entero se volvía inútil.
           await db.query(
             `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
             {
@@ -2204,8 +2204,31 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
             },
           );
 
+          // Solo para cuentas que sigan por Assistants: mantiene el rollback
+          // usable. Ver la nota larga en personalizacionActualizar. Se borra
+          // después del 2026-08-26.
+          if (usaResponsesApi(id_configuracion)) {
+            console.log(
+              `[resincronizar] col=${col.id} por Responses API: se omite la actualización del assistant`,
+            );
+          } else if (col.assistant_id) {
+            try {
+              await axios.post(
+                `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+                { instructions: promptCompilado },
+                { headers, timeout: 15000 },
+              );
+            } catch (errAsst) {
+              console.error(
+                `[resincronizar] col=${col.id}: no se pudo actualizar el assistant ` +
+                  `${col.assistant_id} (el prompt YA se guardó en BD): ` +
+                  `${errAsst?.response?.data?.error?.message || errAsst.message}`,
+              );
+            }
+          }
+
           await db.query(
-            `UPDATE kanban_columnas_personalizaciones 
+            `UPDATE kanban_columnas_personalizaciones
              SET prompt_base_snapshot = ?
              WHERE id_kanban_columna = ?`,
             {
@@ -2535,14 +2558,17 @@ exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
           instrucciones_extra: instruccionesExtraDeEstaColumna,
         });
 
-        // 6.4) Actualizar assistant en OpenAI (de ESTE cliente solamente)
-        await axios.post(
-          `https://api.openai.com/v1/assistants/${col.assistant_id}`,
-          { instructions: promptCompilado },
-          { headers, timeout: 15000 },
-        );
-
-        // 6.5) Actualizar kanban_columnas.instrucciones del cliente
+        // 6.4) Guardar el prompt en NUESTRA BD. Va primero, y no es negociable.
+        //
+        // Antes esto iba después de actualizar el assistant en OpenAI, y ese
+        // orden pierde datos: si OpenAI falla, el catch de abajo devuelve
+        // status:'error' y este UPDATE nunca corre. El cliente ve un error, la
+        // personalización se descarta... y por Responses el bot lee justo de
+        // acá, así que se queda con el prompt viejo para siempre.
+        //
+        // A partir del 2026-08-26 la llamada a /v1/assistants falla SIEMPRE
+        // (OpenAI apaga la API), o sea que con el orden viejo esta pantalla
+        // dejaba de guardar por completo.
         await db.query(
           `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
           {
@@ -2550,6 +2576,37 @@ exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
             type: db.QueryTypes.UPDATE,
           },
         );
+
+        // 6.5) Reflejarlo en el assistant de OpenAI — SOLO si la cuenta sigue
+        // por la Assistants API.
+        //
+        // No se borra la llamada aunque hoy no corra para nadie: es lo que
+        // mantiene el rollback vivo. Si hubiera que volver a TODAS = false, el
+        // bot leería el prompt desde el assistant, y sin esto ese assistant
+        // estaría desactualizado desde la última vez que alguien tocó su
+        // personalización. Después del 2026-08-26 este bloque se borra entero.
+        //
+        // El try propio es a propósito: un fallo acá NO debe tumbar la
+        // personalización, que ya quedó guardada arriba.
+        if (usaResponsesApi(id_configuracion)) {
+          console.log(
+            `[personalizacion] col=${col.id} por Responses API: se omite la actualización del assistant`,
+          );
+        } else if (col.assistant_id) {
+          try {
+            await axios.post(
+              `https://api.openai.com/v1/assistants/${col.assistant_id}`,
+              { instructions: promptCompilado },
+              { headers, timeout: 15000 },
+            );
+          } catch (errAsst) {
+            console.error(
+              `[personalizacion] col=${col.id}: no se pudo actualizar el assistant ` +
+                `${col.assistant_id} (el prompt YA se guardó en BD): ` +
+                `${errAsst?.response?.data?.error?.message || errAsst.message}`,
+            );
+          }
+        }
 
         // 6.6) Upsert en kanban_columnas_personalizaciones
         // IMPORTANTE: NO sobrescribimos prompt_base_snapshot.

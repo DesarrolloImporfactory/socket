@@ -59,6 +59,7 @@ const MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 // techo, una cuenta sube 40 PDFs e infla la factura de todas sus conversaciones.
 const MAX_ARCHIVOS_POR_CONFIGURACION = 25;
 
+
 const DIR_UPLOADS = path.join(__dirname, '..', 'uploads', 'kanban_docs');
 
 // ─────────────────────────────────────────────────────────────

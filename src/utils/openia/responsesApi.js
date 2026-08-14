@@ -39,7 +39,11 @@
 //
 // Mientras esté en false solo migran las configs de la lista. En true, TODAS,
 // y la lista pasa a ser historia de por dónde empezó.
-const TODAS = false;
+//
+// Pendiente de voltear antes del 2026-08-26, que es cuando OpenAI apaga la
+// Assistants API. Para volver atrás después de voltearlo: false otra vez — el
+// camino viejo sigue completo hasta esa fecha, y a partir de ahí ya no sirve.
+const TODAS = true;
 
 // Configuraciones migradas a mano, en orden de llegada. Misma convención que
 // CONFIGS_CON_CATALOGO_INLINE y CONFIGS_CON_TOPE en fileSearch.js: lista
@@ -53,8 +57,43 @@ function usaResponsesApi(id_configuracion) {
   return CONFIGS_CON_RESPONSES_API.includes(Number(id_configuracion));
 }
 
+// ─────────────────────────────────────────────────────────────
+// CONFIGS_SIN_RECAP
+//
+// Cuentas que NO reciben la siembra de contexto: arrancan en blanco aunque el
+// cliente tenga historial en mensajes_clientes.
+//
+// Normalmente la siembra es lo que se quiere —es el puente que evita que el bot
+// salude de nuevo y vuelva a pedir datos ya dados al migrar de Assistants a
+// Responses—, pero hay cuentas donde ese historial es ruido y meterlo empeora
+// la respuesta:
+//
+//   818 "Imporfactory Grupos - API" — cuenta demo (5 clientes, 343 mensajes,
+//        creada el 2026-07-20). Su historial es de pruebas con prompts que ya
+//        no existen; sembrarlo le enseña al bot conversaciones que no
+//        representan cómo debe atender hoy.
+//
+// Para agregar otra: el número acá y listo. Para revertir: sacarlo, y la
+// siembra vuelve en el mensaje siguiente.
+//
+// ⚠️ ALCANCE: esto apaga SOLO la siembra de arranque (cuando no hay cadena
+// previa). NO apaga el recap del reintento por context_length_exceeded en
+// kanban_ia.service.js, y es a propósito: ahí la alternativa no es "arrancar
+// limpio" sino que el bot se quede sin nada A MITAD de una conversación viva
+// —pierde el producto, el nombre y la dirección— justo cuando el cliente lleva
+// diez turnos hablando. Son dos problemas distintos aunque usen la misma
+// función. Si alguna vez hace falta apagar también ese, es otra lista.
+// ─────────────────────────────────────────────────────────────
+const CONFIGS_SIN_RECAP = [818,10];
+
+function usaRecapConversacion(id_configuracion) {
+  return !CONFIGS_SIN_RECAP.includes(Number(id_configuracion));
+}
+
 module.exports = {
   TODAS,
   CONFIGS_CON_RESPONSES_API,
   usaResponsesApi,
+  CONFIGS_SIN_RECAP,
+  usaRecapConversacion,
 };

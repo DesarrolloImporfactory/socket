@@ -24,6 +24,7 @@ const {
   usaCatalogoInline,
 } = require('../utils/openia/fileSearch');
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
+const { esSinSaldoOpenAI } = require('../utils/openia/sinSaldo');
 
 // Configuraciones donde los documentos que sube el usuario van a un vector
 // store PROPIO (kanban_columnas.vector_store_docs_id) en vez de compartir el
@@ -111,6 +112,12 @@ function parsearErrorOpenAI(err) {
       return `Tipo de archivo no soportado por OpenAI. Usa PDF, DOCX, TXT, CSV, JSON, MD, XLSX o PPTX.`;
     if (msg.includes('too large') || msg.includes('size'))
       return `El archivo supera el tamaño máximo permitido (512 MB por archivo, 100 MB para sin parsear).`;
+    // Antes esto solo miraba 'quota', así que el saldo agotado del modelo
+    // prepago ("You have no credits remaining", code rate_limit_exceeded) caía
+    // más abajo en el rate_limit y el cliente leía "intenta en unos segundos"
+    // para siempre. Va antes que el rate_limit a propósito.
+    if (esSinSaldoOpenAI({ response: { status, data } }))
+      return `Tu cuenta de OpenAI se quedó sin saldo. Recarga créditos en platform.openai.com para que el asistente vuelva a responder.`;
     if (msg.includes('quota') || code === 'insufficient_quota')
       return `Tu API key no tiene saldo suficiente en OpenAI.`;
     if (msg.includes('invalid_api_key'))
