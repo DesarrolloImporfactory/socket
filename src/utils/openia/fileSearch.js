@@ -98,6 +98,28 @@ const CONFIGS_CON_TOPE = [10];
 // Sacar una cuenta de acá la devuelve a file_search en el mensaje siguiente,
 // sin migrar nada: es el rollback más rápido que hay.
 //
+// ── Interruptor general ───────────────────────────────────────
+//
+// Mismo patrón que TODAS en responsesApi.js: en true manda a TODAS las cuentas
+// por inline y la lista de abajo pasa a ser historia de por dónde empezó.
+//
+// Voltearlo NO mete a nadie a la fuerza. Sigue mandando catalogoInlineActivo(),
+// que exige que la columna tenga catálogo inline guardado y que quepa en
+// TOPE_CATALOGO_INLINE. Medido sobre las 846 columnas con IA activa el
+// 2026-08-14:
+//
+//   219  pasan a inline ya            (tienen texto y caben)
+//    26  siguen en file_search        (se pasan del tope; el sistema las deja
+//                                      solas, que es justo lo que se probó con
+//                                      la 666)
+//   601  siguen en file_search        (nunca sincronizaron desde que
+//                                      GENERAR_CATALOGO_INLINE está en true;
+//                                      se llenan solas al guardar un producto)
+//
+// Para volver atrás: false otra vez. Vuelve a mandar la lista y las cuentas
+// regresan a file_search en el mensaje siguiente, sin migrar nada.
+const TODAS_INLINE = false;
+//
 // ── Tanda 1 (2026-08-05) ──────────────────────────────────────
 //   610 "Global Outlet ec Pruebas" → 19 productos, 5.599 tokens, 4.087 msgs/30d
 //        Cabe holgado: PASA a inline. Es la primera cuenta fuera de la 10, y la
@@ -132,6 +154,7 @@ const CONFIGS_CON_CATALOGO_INLINE = [10, 610, 666, 857, 411];
 // falta la segunda hacía, por ejemplo, que el sync se tragara en silencio un
 // fallo de indexación en una cuenta que SÍ lee su vector store.
 function usaCatalogoInline(id_configuracion) {
+  if (TODAS_INLINE) return true;
   return CONFIGS_CON_CATALOGO_INLINE.includes(Number(id_configuracion));
 }
 
@@ -234,6 +257,7 @@ function normalizarToolsAssistants(tools) {
 
 module.exports = {
   MAX_RESULTADOS,
+  TODAS_INLINE,
   CONFIGS_CON_CATALOGO_INLINE,
   TOPE_CATALOGO_INLINE,
   usaCatalogoInline,
