@@ -478,12 +478,23 @@ async function completarDatosConIA({
 
 /* ────────────────────── flujo principal ────────────────────── */
 
+/* Ventana de la verificación anti-duplicado contra el log. Ver el comentario
+   largo en utils/dedupeAutoOrden.js: esta es la red de abajo (cubre reinicios
+   del proceso y órdenes creadas desde el panel), el candado en memoria es el
+   que ataja la carrera. */
+const VENTANA_DUPLICADO_MIN = 30;
+
 async function autoCrearOrdenDropi({
   id_configuracion,
   id_cliente,
   datosBot,
   api_key_openai = null,
   force = false,
+  // Solo el camino del bot lo prende. El panel de "pedidos sin subir" llama sin
+  // esta bandera a propósito: ahí un humano está creando la orden a mano —para
+  // rescatar una que falló, o porque el cliente pidió una segunda— y bloquearlo
+  // le quitaría la única salida manual que tiene.
+  dedupe = false,
 }) {
   // datosBot: { nombre, telefono, provincia, ciudad, direccion, producto, precio, cantidad }
   const ctx = {
@@ -503,6 +514,42 @@ async function autoCrearOrdenDropi({
         { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
       );
       if (!cfg || Number(cfg.auto_crear_orden_dropi) !== 1) return null;
+    }
+
+    /* 0.2 Anti-duplicado (solo camino del bot).
+       El candado en memoria ya atajó la carrera; esto cubre lo que él no puede:
+       el proceso se reinició entre las dos corridas, o la orden la creó el panel
+       y después llegó otro mensaje que volvió a disparar el cierre. Se apoya en
+       el propio log, que es lo único que se escribe siempre. */
+    if (dedupe && id_cliente) {
+      const [ya] = await db.query(
+        `SELECT id, dropi_order_id
+           FROM dropi_auto_ordenes_log
+          WHERE id_configuracion = ? AND id_cliente = ?
+            AND resultado = 'creada'
+            AND created_at >= NOW() - INTERVAL ? MINUTE
+          ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [id_configuracion, id_cliente, VENTANA_DUPLICADO_MIN],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      if (ya) {
+        console.log(
+          `[AutoOrden] duplicado evitado: el cliente ${id_cliente} ya tiene la orden ${ya.dropi_order_id} creada hace menos de ${VENTANA_DUPLICADO_MIN} min (log #${ya.id})`,
+        );
+        await logAuto({
+          ...ctx,
+          resultado: 'omitida',
+          paso_fallo: 'duplicada',
+          dropi_order_id: ya.dropi_order_id,
+          detalle:
+            `Ya existe la orden ${ya.dropi_order_id} para este cliente ` +
+            `(log #${ya.id}, dentro de los ${VENTANA_DUPLICADO_MIN} min). ` +
+            `No se crea otra: el bot volvió a escribir el resumen de cierre.`,
+        });
+        return null;
+      }
     }
 
     const integration = await DropiIntegrations.findOne({

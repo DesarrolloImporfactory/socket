@@ -80,6 +80,13 @@ const {
   autoActualizarOrdenDropi,
 } = require('./dropiAutoOrder.service');
 
+// Candado para que dos resúmenes de cierre seguidos no creen dos órdenes
+const {
+  reclamarAutoOrden,
+  confirmarAutoOrden,
+  liberarAutoOrden,
+} = require('../utils/dedupeAutoOrden');
+
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — devuelve el prompt de la BD (kanban_columnas)
 //
@@ -1085,6 +1092,36 @@ async function procesarMensajeKanban(params) {
             direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
           };
 
+          /* ── Candado anti-duplicado ──
+             Cuando el cliente manda dos mensajes seguidos, cada uno corre su
+             propio turno de IA (no hay agrupación de ráfagas) y el asistente
+             cierra la venta en las DOS respuestas: dos resúmenes, dos tags, dos
+             órdenes en Dropi con segundos de diferencia. Le pasó 6 veces a la
+             cfg 411 —separaciones de 2 a 193 segundos— y el cliente lo vio como
+             pedidos duplicados en /pedidos.
+
+             El reclamo es síncrono (utils/dedupeAutoOrden.js), así que de dos
+             corridas simultáneas solo una entra. Si la que entró NO termina
+             creando —producto sin match, ciudad sin cod_dane, gate apagado—, se
+             suelta enseguida para que el próximo mensaje pueda reintentar; el
+             comportamiento de los pedidos que hoy caen a manual no cambia. */
+          const claveAutoOrden = `${id_configuracion}|${id_cliente}`;
+          const dispararAutoOrden = ({ force }) => {
+            autoCrearOrdenDropi({
+              id_configuracion,
+              id_cliente,
+              api_key_openai,
+              datosBot,
+              force,
+              dedupe: true,
+            })
+              .then((r) => {
+                if (r?.orderId) confirmarAutoOrden(claveAutoOrden);
+                else liberarAutoOrden(claveAutoOrden);
+              })
+              .catch(() => liberarAutoOrden(claveAutoOrden));
+          };
+
           // MODELO PER-COLUMNA (full pro): la acción Dropi de la columna decide
           // qué hacer y su `activo` es el gate. Si la columna no tiene ninguna
           // acción Dropi → FALLBACK al modelo viejo (flag config + es_dropi_principal),
@@ -1112,16 +1149,14 @@ async function procesarMensajeKanban(params) {
                 await log(
                   `🔁 Actualizar orden Dropi (acción columna) cliente=${id_cliente}`,
                 );
-              } else {
-                autoCrearOrdenDropi({
-                  id_configuracion,
-                  id_cliente,
-                  api_key_openai,
-                  datosBot,
-                  force: true,
-                }).catch(() => {});
+              } else if (reclamarAutoOrden(claveAutoOrden)) {
+                dispararAutoOrden({ force: true });
                 await log(
                   `🛒 Crear orden Dropi (acción columna) cliente=${id_cliente}`,
+                );
+              } else {
+                await log(
+                  `🚫 Auto-orden Dropi OMITIDA (acción columna) cliente=${id_cliente}: ya hay una creación en curso o recién hecha para este cliente`,
                 );
               }
             } else {
@@ -1140,16 +1175,15 @@ async function procesarMensajeKanban(params) {
             await log(
               `🔁 Actualización orden Dropi (fallback flag) cliente=${id_cliente}`,
             );
-          } else {
+          } else if (reclamarAutoOrden(claveAutoOrden)) {
             // Fallback viejo: cualquier otra columna → crear (gate: flag).
-            autoCrearOrdenDropi({
-              id_configuracion,
-              id_cliente,
-              api_key_openai,
-              datosBot,
-            }).catch(() => {});
+            dispararAutoOrden({ force: false });
             await log(
               `🛒 Auto-orden Dropi (fallback flag) cliente=${id_cliente}`,
+            );
+          } else {
+            await log(
+              `🚫 Auto-orden Dropi OMITIDA (fallback flag) cliente=${id_cliente}: ya hay una creación en curso o recién hecha para este cliente`,
             );
           }
         } catch (e) {
