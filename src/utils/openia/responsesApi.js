@@ -84,7 +84,7 @@ function usaResponsesApi(id_configuracion) {
 // diez turnos hablando. Son dos problemas distintos aunque usen la misma
 // función. Si alguna vez hace falta apagar también ese, es otra lista.
 // ─────────────────────────────────────────────────────────────
-const CONFIGS_SIN_RECAP = [818];
+const CONFIGS_SIN_RECAP = [818,10];
 
 function usaRecapConversacion(id_configuracion) {
   return !CONFIGS_SIN_RECAP.includes(Number(id_configuracion));
