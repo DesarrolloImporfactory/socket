@@ -41,6 +41,96 @@ const toNullableNumber = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
+/* ── Ubicación propia del ítem ────────────────────────────────────────────
+   Solo la usan los negocios donde la cita NO se hace en el local: en
+   inmobiliaria la visita es en la casa, y la agenda sigue siendo la de la
+   oficina. Todo es opcional; sin nada de esto el ítem se comporta igual que
+   siempre y la cita se agenda en la sede.
+
+   Las coordenadas se aceptan pegadas tal como las copia Google Maps
+   ("-0.1806534, -78.4678382") y, si no vienen, se intentan sacar del enlace:
+   nadie va a buscar la latitud a mano, y sin ellas no se puede mandar el pin
+   real de WhatsApp — solo el enlace, que en el celular es bastante peor. */
+const COORDS = /(-?\d{1,3}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/;
+
+const leerCoordenadas = (texto) => {
+  const m = COORDS.exec(String(texto || ''));
+  if (!m) return null;
+  const lat = Number(m[1]);
+  const lng = Number(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+};
+
+const textoONull = (v) => {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+};
+
+/* Devuelve solo las claves que vinieron en el body: así `actualizar` distingue
+   "lo vació a propósito" (null) de "ni lo tocó" (undefined). */
+function camposUbicacionItem(body) {
+  const salida = {};
+
+  if (body.id_establecimiento !== undefined) {
+    const n = toNullableNumber(body.id_establecimiento);
+    salida.id_establecimiento = n && n > 0 ? n : null;
+  }
+  // Los topes son los de la columna: pasarse trunca en silencio y una dirección
+  // cortada a la mitad manda a la persona a media cuadra de donde tiene que ir.
+  for (const [campo, tope] of [
+    ['direccion', 255],
+    ['sector', 120],
+    ['ciudad', 120],
+  ]) {
+    const v = textoONull(body[campo]);
+    if (v !== undefined) salida[campo] = v ? v.slice(0, tope) : null;
+  }
+
+  const maps = textoONull(body.google_maps_url);
+  if (maps !== undefined) salida.google_maps_url = maps ? maps.slice(0, 500) : null;
+
+  /* Álbum de fotos. WhatsApp recibe una imagen por mensaje: el sistema manda
+     una y, cuando piden más, el bot pasa este enlace. */
+  const galeria = textoONull(body.galeria_url);
+  if (galeria !== undefined) salida.galeria_url = galeria ? galeria.slice(0, 512) : null;
+
+  /* Coordenadas: campo propio, o lo que se pueda leer del enlace pegado. Si el
+     usuario borró el enlace y no mandó coordenadas, se borran también: dejar un
+     pin apuntando a una ubicación que ya no está cargada manda a la persona a
+     una dirección equivocada. */
+  if (body.coordenadas !== undefined || maps !== undefined) {
+    const punto =
+      leerCoordenadas(body.coordenadas) ||
+      leerCoordenadas(maps) ||
+      leerCoordenadas(body.latitud ? `${body.latitud}, ${body.longitud}` : '');
+    salida.latitud = punto ? punto.lat : null;
+    salida.longitud = punto ? punto.lng : null;
+  }
+
+  return salida;
+}
+
+/* Ficha del nicho (dormitorios, m², año del auto…). Qué claves son válidas lo
+   decide el preset que eligió la cuenta, así que hay que preguntarlo: guardar
+   lo que venga dejaría el prompt lleno de claves que nadie sabe qué son.
+   Sin preset, el campo no se toca — no existe para esa cuenta. */
+async function prepararAtributos(id_configuracion, body) {
+  if (body.atributos === undefined && body.atributos_json === undefined) {
+    return undefined;
+  }
+
+  const { normalizarAtributos, resolverPreset } = require('../utils/fichaPresets');
+
+  const preset = await resolverPreset(db, id_configuracion);
+  if (!preset) return undefined;
+
+  return normalizarAtributos(preset, body.atributos ?? body.atributos_json);
+}
+
 async function getActiveIntegration(id_configuracion) {
   return DropiIntegrations.findOne({
     where: { id_configuracion, deleted_at: null, is_active: 1 },
@@ -226,9 +316,18 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     }
   }
 
+  /* Sin archivo se acepta una URL en el body, que es como llega la foto de un
+     anuncio importado: el importador ya la descargó, la convirtió a JPG y la
+     subió a nuestro storage, así que volver a pedirle al usuario que la suba
+     sería hacerle repetir un trabajo ya hecho. Solo http(s) — cualquier otra
+     cosa se ignora en vez de guardarse y descubrirse cuando el bot la mande. */
+  const imagenExterna = /^https?:\/\//i.test(String(req.body.imagen_url || ''))
+    ? String(req.body.imagen_url).trim().slice(0, 512)
+    : null;
+
   const imagen_url = imagenFile
     ? `${dominio}/uploads/productos/imagen/${imagenFile.filename}`
-    : null;
+    : imagenExterna;
   const imagen_upsell_url = imagen_upsellFile
     ? `${dominio}/uploads/productos/imagen_upsell/${imagen_upsellFile.filename}`
     : null;
@@ -261,6 +360,8 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     precio_upsell: precioUpsellNum,
     imagen_upsell_url,
     combos_producto,
+    ...camposUbicacionItem(req.body),
+    atributos_json: (await prepararAtributos(id_configuracion, req.body)) ?? null,
   });
 
   // ← Responder ANTES de convertir
@@ -507,6 +608,14 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   if (typeof material !== 'undefined') producto.material = material || null;
   if (typeof landing_url !== 'undefined')
     producto.landing_url = landing_url || null;
+
+  // Dónde queda el ítem. Solo se tocan las claves que vinieron en el body.
+  for (const [campo, valor] of Object.entries(camposUbicacionItem(req.body))) {
+    producto[campo] = valor;
+  }
+
+  const atributos = await prepararAtributos(producto.id_configuracion, req.body);
+  if (atributos !== undefined) producto.atributos_json = atributos;
   if (typeof precio_proveedor !== 'undefined')
     producto.precio_proveedor = precio_proveedor || null;
 
@@ -1351,4 +1460,90 @@ exports.generarDescripcionIA = catchAsync(async (req, res, next) => {
     }
     return next(err);
   }
+});
+
+/* ── Importar un inmueble desde el anuncio que ya está publicado ──────────
+   Devuelve un BORRADOR para revisar; el alta sigue pasando por el formulario
+   de siempre. El detalle de por qué está en importadorCatalogo.service.js. */
+exports.importarDesdeUrl = catchAsync(async (req, res, next) => {
+  const { id_configuracion, url, texto, descargar_imagenes } = req.body;
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta id_configuracion', 400));
+  }
+
+  const { importarDesdeUrl } = require('../services/importadorCatalogo.service');
+
+  const r = await importarDesdeUrl({
+    id_configuracion,
+    url: String(url || '').trim(),
+    texto: String(texto || '').trim(),
+    descargar_imagenes: descargar_imagenes !== false,
+  });
+
+  /* Un anuncio ilegible no es un error del servidor: es un caso normal —el
+     portal cambió, bloqueó la lectura, el enlace no era de un anuncio— y quien
+     lo pegó necesita leer qué hacer, no un 500. */
+  if (!r.ok) {
+    /* `requiere_texto` es lo que hace que la pantalla cambie a la guía de
+       copiar y pegar en vez de mostrar un error sin salida. */
+    return res.status(422).json({
+      status: 'fail',
+      message: r.motivo,
+      requiere_texto: !!r.requiere_texto,
+      enlace: r.enlace || null,
+    });
+  }
+
+  return res.status(200).json({ status: 'success', data: r });
+});
+
+/* ── Ficha por nicho ─────────────────────────────────────────────────────
+   Qué campos extra tienen los ítems de esta cuenta. Sin preset elegido el
+   formulario no dibuja nada: un catálogo de dropshipping no tiene por qué ver
+   "dormitorios". */
+exports.fichaPreset = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) return next(new AppError('Falta id_configuracion', 400));
+
+  const { PRESETS, obtenerPreset, resolverPreset } = require('../utils/fichaPresets');
+
+  // Se deduce del tablero de la cuenta. Nadie tiene que elegir su rubro.
+  const clave = await resolverPreset(db, id_configuracion);
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      preset: clave,
+      campos: obtenerPreset(clave)?.campos || [],
+      // El catálogo completo, para el selector.
+      disponibles: Object.entries(PRESETS).map(([k, v]) => ({
+        clave: k,
+        nombre: v.nombre,
+        descripcion: v.descripcion,
+      })),
+    },
+  });
+});
+
+exports.guardarFichaPreset = catchAsync(async (req, res, next) => {
+  const { id_configuracion, preset } = req.body;
+  if (!id_configuracion) return next(new AppError('Falta id_configuracion', 400));
+
+  const { obtenerPreset } = require('../utils/fichaPresets');
+
+  const limpio = String(preset || '').trim() || null;
+  if (limpio && !obtenerPreset(limpio)) {
+    return next(new AppError(`No existe la ficha "${limpio}"`, 400));
+  }
+
+  await db.query(`UPDATE configuraciones SET ficha_preset = ? WHERE id = ?`, {
+    replacements: [limpio, id_configuracion],
+    type: db.QueryTypes.UPDATE,
+  });
+
+  /* Quitar el preset NO borra lo que ya estaba guardado en los ítems: si se
+     vuelve a activar, la ficha reaparece completa. Mientras esté sin preset,
+     `atributos_json` simplemente no se lee ni se muestra. */
+  return res.status(200).json({ status: 'success', data: { preset: limpio } });
 });

@@ -52,6 +52,50 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   const mensajeCliente = String(opts?.mensaje || '');
   let bloque = '';
 
+  /* Dónde se hace la cita de esta columna. Es la misma llave que lee
+     procesarAgendarCita, y se lee acá porque cambia lo que hay que contarle al
+     modelo: con la cita en el local, la sede es el lugar; con la cita en el
+     ítem —una visita a un inmueble— la sede es solo la oficina que coordina, y
+     decirle que cite "en la sede" lo lleva a citar en la oficina a alguien que
+     quiere ver una casa. */
+  const configDe = (tipo) => {
+    const accion = (acciones || []).find((a) => a.tipo_accion === tipo);
+    try {
+      let cfg = accion?.config;
+      if (!cfg) return {};
+      while (typeof cfg === 'string') cfg = JSON.parse(cfg);
+      return cfg && typeof cfg === 'object' ? cfg : {};
+    } catch {
+      return {};
+    }
+  };
+  const cfgCita = configDe('agendar_cita');
+  const citaEnElItem = cfgCita.lugar_cita === 'item';
+  const citaEsSolicitud = cfgCita.modo === 'solicitud';
+
+  /* Con la cita en modo solicitud, lo que el bot NO puede hacer es darla por
+     hecha. Escribe el mismo bloque de siempre —es lo que registra el pedido—
+     pero su línea de cierre cambia por completo: prometer "nos vemos el
+     jueves" y que después el horario no dé es plantar a alguien en una puerta.
+
+     Va acá y no en el prompt porque el modo se cambia desde el editor de la
+     acción con un selector. Si el texto viviera en las instrucciones, cambiar
+     el selector dejaría al bot confirmando citas que ya nadie está creando. */
+  if (citaEsSolicitud && tiene('agendar_cita')) {
+    bloque +=
+      `⏳ LAS CITAS DE ESTA ETAPA NO QUEDAN CONFIRMADAS EN EL ACTO.\n` +
+      `Un asesor revisa el horario y lo confirma después. Tú levantas el pedido ` +
+      `igual —mismo bloque, mismos datos, día y hora incluidos— pero tu línea de ` +
+      `cierre NO puede dar la cita por hecha.\n` +
+      `PROHIBIDO: "listo, nos vemos el jueves", "quedó agendada", "te espero a ` +
+      `las 3", "confirmada".\n` +
+      `ASÍ SÍ: "listo, ya quedó registrada tu solicitud para el jueves a las ` +
+      `15:00; un asesor te confirma el horario en un rato".\n` +
+      `Si te pregunta si ya está confirmada, dile la verdad: está en revisión y ` +
+      `le confirman hoy. No inventes un plazo exacto que no controlas.\n\n`;
+    say(`✅ Modo solicitud: instrucción de no confirmar inyectada`);
+  }
+
   /* ── Quién está escribiendo ─────────────────────────────────
      El teléfono llega en el webhook: es el número desde el que la persona
      escribe. Pedírselo es absurdo —y peor, el bot terminaba escribiendo
@@ -145,12 +189,27 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         });
 
         bloque +=
-          `🏢 Sedes donde atendemos (ÚNICAS ciudades con cobertura):\n${lineas.join('\n')}\n\n` +
+          `🏢 ${citaEnElItem ? 'Nuestras oficinas' : 'Sedes donde atendemos'} ` +
+          `(ÚNICAS ciudades con cobertura):\n${lineas.join('\n')}\n\n` +
           `Si la persona escribe desde una ciudad que NO está en esta lista, está fuera de cobertura.\n` +
-          `Al agendar, usa el nombre EXACTO de la sede tal como aparece aquí.\n` +
-          `Cuando pregunten cómo llegar, o al confirmar una cita, pega el enlace de ` +
-          `Google Maps de esa sede tal cual, en su propia línea y sin acortarlo ni ` +
-          `cambiarlo. Si una sede no tiene enlace, da la dirección y la referencia.\n` +
+          (citaEnElItem
+            ? /* La oficina coordina; el lugar de la cita es el inmueble. Sin
+                 decirlo así, el modelo cita en la oficina a quien quiere ver una
+                 casa: es lo que dice la lista que tiene delante. */
+              `OJO CON EL LUGAR: la cita NO se hace en la oficina. Se hace EN el ` +
+              `inmueble que la persona va a ver, y el sistema le pone la ` +
+              `dirección de ese inmueble a la cita. La oficina es solo la ` +
+              `agenda de quien lo va a mostrar.\n` +
+              `Por eso, al agendar, lo que importa es el nombre EXACTO del ` +
+              `inmueble en "Servicio que desea": de ahí sale a dónde va a llegar ` +
+              `la persona. La línea de la oficina puedes omitirla; si la pones, ` +
+              `usa el nombre exacto de la lista.\n` +
+              `Nunca escribas tú una dirección: la pone el sistema desde la ficha ` +
+              `del inmueble. Una dirección inventada manda a alguien a otro barrio.\n`
+            : `Al agendar, usa el nombre EXACTO de la sede tal como aparece aquí.\n` +
+              `Cuando pregunten cómo llegar, o al confirmar una cita, pega el enlace de ` +
+              `Google Maps de esa sede tal cual, en su propia línea y sin acortarlo ni ` +
+              `cambiarlo. Si una sede no tiene enlace, da la dirección y la referencia.\n`) +
           (profesionales.length
             ? `Si la persona pide atenderse con alguien en particular, agrega al bloque ` +
               `de agendamiento una línea "👩 Atiende: <nombre exacto>". Si no pide a ` +
@@ -201,12 +260,21 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       const items = await db.query(
         `SELECT nombre, tipo, precio, duracion, descripcion,
                 imagen_url, video_url, sesiones_min, sesiones_max,
-                combos_producto
+                combos_producto, direccion, sector, ciudad, google_maps_url,
+                galeria_url, atributos_json
            FROM productos_chat_center
           WHERE id_configuracion = ? AND eliminado = 0
           ORDER BY tipo DESC, nombre`,
         { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
       );
+
+      /* Qué ficha usa esta cuenta. Sin preset configurado devuelve vacío y
+         `atributos_json` no se mira siquiera: un catálogo de dropshipping no
+         tiene por qué recibir "Dormitorios" en el prompt. */
+      const { fichaLegible, resolverPreset } = require('./fichaPresets');
+      const presetFicha = await resolverPreset(db, id_configuracion);
+      const fichaDelItem = (raw) =>
+        presetFicha ? fichaLegible(presetFicha, raw) : '';
 
       /* Precios por cantidad. En dropshipping el combo ES el negocio: se vende
          "2 x $28.99" y no una unidad suelta. La lista salía solo con el precio
@@ -349,8 +417,20 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          para vender. Se corta cada descripción porque alguna cuenta escribe
          media página y no vale la pena pagarla en cada mensaje. */
       const TOPE_DESC = 700;
+      /* Entra el ítem que tenga ALGO que contar: descripción, ficha del nicho,
+         ubicación o álbum. Antes se pedía descripción sí o sí, y un inmueble
+         importado sin texto —o cargado a las apuradas con solo los datos duros—
+         se quedaba sin bloque: el bot tenía su dirección y sus metros en la BD y
+         respondía "déjame confirmarlo con un asesor". */
       const conFicha = nombrados
-        .filter((i) => String(i.descripcion || '').trim())
+        .filter((i) =>
+          [
+            String(i.descripcion || '').trim(),
+            fichaDelItem(i.atributos_json),
+            String(i.direccion || i.sector || i.ciudad || '').trim(),
+            String(i.galeria_url || '').trim(),
+          ].some(Boolean),
+        )
         .slice(0, 3);
 
       if (conFicha.length) {
@@ -365,7 +445,11 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           `📋 Ficha de lo que la persona nombró — úsala para responderle:\n\n` +
           conFicha
             .map((i) => {
-              const desc = String(i.descripcion).trim().slice(0, TOPE_DESC);
+              // Puede venir vacía: ahora entran ítems que solo tienen ficha o
+              // ubicación. `String(null)` daría el texto "null" al modelo.
+              const desc = String(i.descripcion || '')
+                .trim()
+                .slice(0, TOPE_DESC);
               /* Se normalizan antes de dárselas al modelo: él las copia tal
                  cual en la etiqueta, y si llevan espacios —las de Dropi los
                  traen— el extractor las corta en el primero y a Meta le llega
@@ -380,7 +464,39 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               ]
                 .filter(Boolean)
                 .join('\n');
-              return `▸ ${i.nombre}\n${desc}${media ? `\n${media}` : ''}`;
+
+              /* Dónde queda. Solo aparece en los ítems que tienen ubicación
+                 propia —un inmueble, un local—, así que un catálogo de
+                 dropshipping no ve ni una línea de esto.
+                 El sector va siempre: es lo primero que preguntan y responderlo
+                 con "consúltalo con el asesor" pierde la conversación. La
+                 dirección exacta va aparte porque no se regala por WhatsApp: se
+                 da cuando la visita ya está en pie. */
+              const zona = [i.sector, i.ciudad].filter(Boolean).join(', ');
+              const ubic = [
+                zona ? `  📍 zona: ${zona}` : null,
+                i.direccion ? `  🏠 dirección exacta: ${i.direccion}` : null,
+                i.google_maps_url
+                  ? `  🗺️ ubicación: ${i.google_maps_url}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join('\n');
+
+              /* Ficha del nicho. Sale de los campos que la cuenta configuró en
+                 su preset, así que un catálogo sin preset no ve ni una línea.
+                 Es la diferencia entre responder "tiene 3 dormitorios y 2
+                 baños" con el dato del catálogo y que el modelo lo deduzca de
+                 la descripción —que es como terminó inventando metrajes. */
+              const ficha = fichaDelItem(i.atributos_json);
+
+              return (
+                `▸ ${i.nombre}${desc ? `\n${desc}` : ''}` +
+                `${ficha ? `\n  📐 ${ficha}` : ''}` +
+                `${ubic ? `\n${ubic}` : ''}` +
+                `${media ? `\n${media}` : ''}` +
+                `${i.galeria_url ? `\n  🖼️ álbum con más fotos: ${i.galeria_url}` : ''}`
+              );
             })
             .join('\n\n') +
           /* Esta ficha se inyecta en CADA mensaje mientras la persona siga
@@ -396,6 +512,43 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           `descripción cada mensaje es lo que hace que la gente deje de leer.\n` +
           `Lo que no esté acá —garantías distintas, envíos especiales, ` +
           `descuentos— no te lo inventes.\n`;
+
+        /* Reglas de la ubicación. Van solo si algún ítem nombrado la tiene
+           cargada: en un catálogo sin ubicaciones esto sería ruido puro. */
+        const conUbicacion = conFicha.filter(
+          (i) => i.direccion || i.sector || i.ciudad,
+        );
+
+        if (conUbicacion.length) {
+          bloque +=
+            `\nSOBRE DÓNDE QUEDA. La zona la puedes decir siempre, apenas ` +
+            `pregunten: es lo primero que quieren saber y responder "eso te lo ` +
+            `confirma un asesor" pierde la conversación.\n` +
+            `La dirección exacta y el enlace de ubicación NO. Esos se dan cuando ` +
+            `la visita ya está acordada, o cuando la persona va en camino. ` +
+            `Antes de eso, con la zona alcanza.\n` +
+            `Y solo puedes usar las direcciones que ves acá arriba: si un ítem no ` +
+            `tiene, dilo y ofrécete a confirmarlo — jamás la deduzcas de la zona ` +
+            `ni la completes con lo que te parece.\n`;
+        }
+
+        /* El álbum. El sistema manda UNA foto por ítem —quince mensajes con
+           imágenes es spam y WhatsApp no manda álbumes— así que "¿tienes más
+           fotos?" se respondía con "te las envía un asesor", que en algo que se
+           compra por los ojos es perder la conversación. */
+        const conAlbum = conFicha.filter((i) => String(i.galeria_url || '').trim());
+
+        if (conAlbum.length) {
+          bloque +=
+            `\nSI PIDEN MÁS FOTOS: manda el enlace del álbum que ves arriba, ` +
+            `solo y en su propia línea, sin acortarlo ni cambiarlo. Ese enlace ` +
+            `NO lleva las etiquetas de imagen: es un link para abrir, no un ` +
+            `archivo para enviar.\n` +
+            `Mándalo cuando lo pidan, no de entrada: primero la foto principal, ` +
+            `que es la que engancha. Si un ítem no tiene álbum, no lo inventes ` +
+            `ni mandes el de otro — dile que le pasas más material enseguida y ` +
+            `pásalo a un asesor.\n`;
+        }
 
         if (conMedia.length) {
           bloque +=

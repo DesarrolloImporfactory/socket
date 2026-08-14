@@ -71,4 +71,20 @@ router.post(
   productos_chat_centerController.importarProductoDropi,
 );
 
+/* Lee un anuncio publicado (o su texto pegado) y devuelve un borrador para
+   revisar. No guarda nada: el alta sigue pasando por /agregarProducto. */
+router.post(
+  '/importarDesdeUrl',
+  checkPlanActivo,
+  productos_chat_centerController.importarDesdeUrl,
+);
+
+/* Qué ficha extra usa la cuenta y con qué campos. El formulario la pide para
+   saber si dibuja esa sección o no. */
+router.post('/fichaPreset', productos_chat_centerController.fichaPreset);
+router.post(
+  '/guardarFichaPreset',
+  productos_chat_centerController.guardarFichaPreset,
+);
+
 module.exports = router;

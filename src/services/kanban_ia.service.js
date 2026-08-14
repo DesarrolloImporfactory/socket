@@ -120,7 +120,9 @@ const {
   guardarResponseId,
 } = require('../services/obtener_response.service');
 
-const servicioAppointments = require('../services/appointments.service');
+/* El alta de la cita es compartida con la confirmación manual de solicitudes:
+   acá solo se lee el bloque que escribió el modelo y se le pasan los datos. */
+const { crearCitaAgendada } = require('./citas_agenda.service');
 
 const logsDir = require('path').join(process.cwd(), './src/logs/logs_meta');
 const fs = require('fs').promises;
@@ -455,7 +457,14 @@ async function procesarMensajeKanban(params) {
 
   let bloqueContexto = '';
   let total_tokens = 0;
-  let mensajeFinal = mensaje;
+  /* Una ubicación compartida por WhatsApp se guarda como el JSON crudo que
+     manda Meta (`{"latitude":-0.3,"longitude":-78.4}`) porque así lo pinta el
+     chat. Al asistente le llegaba eso literal y contestaba lo que se puede
+     esperar de alguien que recibe un JSON: pedía la dirección "en palabras".
+     Y en captación —donde al propietario se le PIDE que mande la ubicación—
+     eso es quedarse sin el dato justo después de conseguirlo.
+     Se traduce solo para el modelo; lo guardado no se toca. */
+  let mensajeFinal = textoDeUbicacion(mensaje) || mensaje;
 
   // ── 4. ACCIÓN: separador_productos (pre-procesamiento) ────
   /* if (tieneAccion('separador_productos')) {
@@ -1174,14 +1183,56 @@ async function procesarMensajeKanban(params) {
     }
 
     if (tieneTag || escribioBloque) {
+      /* Dónde se hace la cita lo decide la columna, no el código: la misma
+         plantilla sirve a una clínica (se atiende en el local) y a una
+         inmobiliaria (se visita el inmueble). Sin la llave configurada vale
+         'sede', que es como venía funcionando. */
       const res = await procesarAgendarCita(
         respuestaRaw,
         id_configuracion,
         id_cliente,
+        { lugar_cita: cfg.lugar_cita, modo: cfg.modo },
       ).catch(async (err) => {
         await log(`⚠️ Error agendar_cita: ${err.message}`);
         return { ok: false, motivo: err.message };
       });
+
+      /* En modo solicitud la tarjeta NO puede quedarse en "cita agendada": no
+         hay ninguna cita. Va a la columna de revisión, que es el único aviso
+         que va a tener quien atiende de que hay alguien esperando confirmación.
+         Corre después de `cambiar_estado` (paso 10) a propósito: lo que esa
+         acción haya hecho se pisa acá, que es la decisión correcta. */
+      if (res?.ok && res.modo === 'solicitud') {
+        const destino = String(cfg.estado_solicitud || 'por_agendar').trim();
+        const [colDestino] = await db.query(
+          `SELECT id FROM kanban_columnas
+            WHERE id_configuracion = ? AND LOWER(estado_db) = LOWER(?) AND activo = 1
+            LIMIT 1`,
+          {
+            replacements: [id_configuracion, destino],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        if (colDestino) {
+          await db.query(
+            `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+            { replacements: [destino, id_cliente], type: db.QueryTypes.UPDATE },
+          );
+          await log(
+            `🔄 Solicitud #${res.id_solicitud}: contacto ${id_cliente} movido a "${destino}"`,
+          );
+        } else {
+          /* Sin la columna, la solicitud existe pero nadie la ve en el tablero.
+             Se avisa fuerte porque el síntoma es el peor de todos: el bot le
+             dijo a la persona que le confirman el horario y no hay nada que se
+             lo recuerde a nadie. */
+          await log(
+            `🚨 Solicitud #${res.id_solicitud} guardada pero la configuración ${id_configuracion} ` +
+              `no tiene columna "${destino}": revísala en el panel de solicitudes o créala`,
+          );
+        }
+      }
 
       /* Si la cita no se creó, la tarjeta NO se puede quedar en "Cita
          agendada": cambiar_estado ya corrió (paso 10) y la movió igual, así que
@@ -1194,7 +1245,8 @@ async function procesarMensajeKanban(params) {
       /* Sin tag, `cambiar_estado` (paso 10) tampoco corrió: la cita quedaría
          creada y la tarjeta parada en la columna anterior. Se mueve acá con el
          mismo destino que tiene configurada esa acción. */
-      if (res?.ok && !tieneTag) {
+      // En modo solicitud el destino ya se decidió arriba: no se pisa.
+      if (res?.ok && !tieneTag && res.modo !== 'solicitud') {
         const destino = getAcciones('cambiar_estado')
           .map((ac) => parseConfig(ac))
           .find(
@@ -1765,6 +1817,40 @@ function extraerMedia(texto) {
   return extraerUrlsMedia(texto);
 }
 
+/**
+ * Traduce la ubicación que llega por WhatsApp a algo que un modelo pueda leer.
+ *
+ * El webhook guarda el JSON crudo de Meta porque el chat lo usa para pintar el
+ * mapita. Para el asistente eso no es un mensaje: es ruido, y responde pidiendo
+ * "la dirección en palabras" a alguien que le acaba de mandar exactamente eso.
+ *
+ * Devuelve `null` si el texto no es una ubicación, para que el mensaje siga su
+ * camino sin tocarse.
+ */
+function textoDeUbicacion(texto) {
+  const s = String(texto || '').trim();
+  if (!s.startsWith('{') || !s.includes('latitude')) return null;
+
+  try {
+    const o = JSON.parse(s);
+    const lat = Number(o?.latitude);
+    const lng = Number(o?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return (
+      `[El cliente compartió su ubicación por WhatsApp]\n` +
+      `Coordenadas: ${lat}, ${lng}\n` +
+      `Mapa: https://www.google.com/maps?q=${lat},${lng}\n` +
+      `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
+      `dirección "en palabras". Si necesitas el nombre del sector o una ` +
+      `referencia para llegar, pídele eso puntual. Cuando tengas que dejar la ` +
+      `ubicación registrada en una ficha, escribe el enlace del mapa tal cual.`
+    );
+  } catch {
+    return null;
+  }
+}
+
 function limpiarTagsAcciones(texto) {
   return texto
     .replace(/\[pedido_confirmado\]:\s*(true|false)/gi, '')
@@ -1776,89 +1862,34 @@ function limpiarTagsAcciones(texto) {
 }
 
 /**
- * Elige a quién le toca la cita entre los profesionales de la sede.
+ * @param {string} mensajeGPT   respuesta cruda del modelo, con el bloque de cita
+ * @param {number} id_configuracion
+ * @param {number} id_cliente
+ * @param {{lugar_cita?: 'sede'|'item', modo?: 'auto'|'solicitud'}} [opciones]
+ *   Las dos salen de la config de la acción `agendar_cita` de la columna.
  *
- * Devuelve el id, `null` si la sede no tiene profesionales cargados (y entonces
- * todo funciona como antes), o `{ error }` si no queda nadie libre.
+ *   `lugar_cita`:
+ *     - 'sede' (default): la cita se hace en el local, como siempre.
+ *     - 'item': se hace donde queda el ítem del catálogo. Es el caso de
+ *       inmobiliaria — la visita es en la casa, no en la oficina—, y por eso el
+ *       lugar sale de la dirección cargada en el ítem y no de la sede.
  *
- * Si el bot escribió una línea "Atiende: <nombre>" —porque la clienta la pidió—
- * se respeta o se falla: cambiarla en silencio por otra persona es peor que no
- * agendar, la clienta llegaría esperando a alguien que no la va a atender.
+ *   `modo`:
+ *     - 'auto' (default): se crea la cita en el calendario.
+ *     - 'solicitud': NO se toca el calendario. Se guarda el pedido en
+ *       `citas_solicitudes` para que una persona lo confirme. Es para las
+ *       agendas donde enterarse de una visita 20 minutos antes no es una
+ *       opción: quien atiende puede estar durmiendo o manejando.
  */
-async function elegirProfesionalLibre({
+async function procesarAgendarCita(
+  mensajeGPT,
   id_configuracion,
-  establecimiento,
-  calendarId,
-  inicio_utc,
-  fin_utc,
-  pedido,
-}) {
-  if (!establecimiento?.id) return null;
-
-  const profesionales = await db.query(
-    `SELECT id, nombre FROM profesionales_chat_center
-      WHERE id_configuracion = ? AND id_establecimiento = ?
-        AND activo = 1 AND eliminado = 0
-      ORDER BY orden ASC, id ASC`,
-    {
-      replacements: [id_configuracion, establecimiento.id],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-  if (!profesionales.length) return null;
-
-  // Ocupados en ese rango. 'Bloqueado' sin profesional cierra el local entero.
-  const ocupados = await db.query(
-    `SELECT DISTINCT id_profesional FROM appointments
-      WHERE calendar_id = ?
-        AND status IN ('Agendado', 'Confirmado', 'Bloqueado')
-        AND start_utc < ? AND end_utc > ?
-        AND id_profesional IS NOT NULL`,
-    {
-      replacements: [calendarId, fin_utc, inicio_utc],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-  const ocupadosSet = new Set(ocupados.map((o) => Number(o.id_profesional)));
-
-  const norm = (s) =>
-    String(s || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/\p{M}/gu, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  if (pedido) {
-    const buscado = norm(pedido);
-    const elegido =
-      profesionales.find((p) => norm(p.nombre) === buscado) ||
-      profesionales.find(
-        (p) =>
-          norm(p.nombre).includes(buscado) || buscado.includes(norm(p.nombre)),
-      );
-    if (!elegido) {
-      return {
-        error: `no existe "${pedido}" entre quienes atienden en la sede`,
-      };
-    }
-    if (ocupadosSet.has(Number(elegido.id))) {
-      return { error: `${elegido.nombre} ya tiene una cita a esa hora` };
-    }
-    return elegido.id;
-  }
-
-  const libre = profesionales.find((p) => !ocupadosSet.has(Number(p.id)));
-  if (!libre) {
-    return {
-      error: `no queda nadie libre en "${establecimiento.nombre}" a esa hora (${profesionales.length} atienden)`,
-    };
-  }
-  return libre.id;
-}
-
-async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
+  id_cliente,
+  opciones = {},
+) {
   const moment = require('moment-timezone');
+  const lugarCita = opciones?.lugar_cita === 'item' ? 'item' : 'sede';
+  const modo = opciones?.modo === 'solicitud' ? 'solicitud' : 'auto';
 
   /* El bloque llega tal como lo escribió el modelo, y el modelo pone negritas
      cuando le parece: "🧑 **Nombre:** Ana". Con el emoji y los asteriscos
@@ -1914,17 +1945,27 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   const mIni = moment.tz(fechaIni, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
 
   if (!mIni.isValid()) {
-    await log(
-      `❌ agendar_cita: fecha ilegible en el bloque (inicio="${fechaIni}"); la cita NO se creó`,
-    );
-    return { ok: false, motivo: 'fecha ilegible en el bloque' };
+    /* Sin fecha legible no hay cita posible. Pero sí hay solicitud: alguien que
+       quiere ver algo y dijo "el sábado en la mañana" es exactamente el lead
+       que no se puede perder, y quien confirma va a leer esa frase igual. Se
+       guarda con la fecha vacía y el texto tal cual. */
+    if (modo === 'solicitud') {
+      await log(
+        `📝 agendar_cita (solicitud): fecha no interpretable ("${fechaIni}"); se guarda la preferencia como texto`,
+      );
+    } else {
+      await log(
+        `❌ agendar_cita: fecha ilegible en el bloque (inicio="${fechaIni}"); la cita NO se creó`,
+      );
+      return { ok: false, motivo: 'fecha ilegible en el bloque' };
+    }
   }
 
   let mFin = fechaFin
     ? moment.tz(fechaFin, 'YYYY-MM-DD HH:mm', 'America/Guayaquil')
     : null;
 
-  if (!mFin || !mFin.isValid() || !mFin.isAfter(mIni)) {
+  if (mIni.isValid() && (!mFin || !mFin.isValid() || !mFin.isAfter(mIni))) {
     const [servicioCat] = await db.query(
       `SELECT duracion FROM productos_chat_center
         WHERE id_configuracion = ? AND eliminado = 0 AND duracion > 0
@@ -1944,17 +1985,21 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     );
   }
 
-  const inicio_utc = mIni.utc().format();
-  const fin_utc = mFin.utc().format();
+  const inicio_utc = mIni.isValid() ? mIni.utc().format() : null;
+  const fin_utc = mFin && mFin.isValid() ? mFin.utc().format() : null;
 
-  /* Un producto no se agenda, se entrega. El bot igual arma citas de "recogida"
-     cuando la clienta quiere comprar algo, y eso le ocupa un cupo real de la
-     agenda a un tratamiento. Se corta acá y no solo en el prompt: si lo que
-     escribió en "Servicio" es un producto del catálogo, no hay cita y el caso
-     pasa a un asesor, que es quien cierra la venta. */
+  /* ── Qué ítem del catálogo se va a ver ──────────────────────────
+     Sale de "Servicio que desea", que es donde el bot escribe el nombre exacto.
+     Sirve para dos cosas distintas: el guard de acá abajo, y —cuando la cita se
+     hace en el ítem— saber a qué dirección va la persona y qué oficina lo
+     gestiona. */
+  let itemAgendado = null;
+
   if (servicio) {
     const catalogo = await db.query(
-      `SELECT nombre, tipo FROM productos_chat_center
+      `SELECT id, nombre, tipo, id_establecimiento, direccion, sector, ciudad,
+              latitud, longitud, google_maps_url
+         FROM productos_chat_center
         WHERE id_configuracion = ? AND eliminado = 0`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
@@ -1968,13 +2013,40 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
         .trim();
 
     const pedido = norm(servicio);
-    const esProducto = catalogo.some((p) => {
-      if (String(p.tipo || '').toLowerCase() === 'servicio') return false;
+
+    /* El bot escribe "Visita — Casa Cumbayá", así que la coincidencia es por
+       nombre contenido. Se prefiere el exacto y, si no hay, el nombre MÁS
+       LARGO: con "Casa Cumbayá" y "Casa Cumbayá 2" en la cartera, el corto
+       coincide con los dos y la visita se iría a la dirección equivocada. */
+    const candidatos = catalogo.filter((p) => {
       const n = norm(p.nombre);
       return n.length > 3 && (pedido.includes(n) || n.includes(pedido));
     });
 
-    if (esProducto) {
+    itemAgendado =
+      candidatos.find((p) => norm(p.nombre) === pedido) ||
+      candidatos.sort(
+        (a, b) => norm(b.nombre).length - norm(a.nombre).length,
+      )[0] ||
+      null;
+
+    /* Un producto no se agenda, se entrega. El bot igual arma citas de
+       "recogida" cuando la clienta quiere comprar algo, y eso le ocupa un cupo
+       real de la agenda a un tratamiento. Se corta acá y no solo en el prompt:
+       si lo que escribió en "Servicio" es un producto del catálogo, no hay cita
+       y el caso pasa a un asesor, que es quien cierra la venta.
+
+       La excepción es la cita EN el ítem. Ahí lo que se agenda es ir a verlo, y
+       un inmueble cargado como producto es perfectamente legítimo: el guard lo
+       reconoce por su ubicación propia, que es justo lo que un producto de
+       dropshipping nunca va a tener. */
+    const esProducto =
+      itemAgendado &&
+      String(itemAgendado.tipo || '').toLowerCase() !== 'servicio';
+    const seVisitaEnSitio =
+      lugarCita === 'item' && String(itemAgendado?.direccion || '').trim();
+
+    if (esProducto && !seVisitaEnSitio) {
       await log(
         `⛔ agendar_cita: "${servicio}" es un producto del catálogo, no un servicio; la cita NO se creó`,
       );
@@ -1997,7 +2069,7 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     .trim();
 
   const sedes = await db.query(
-    `SELECT id, nombre, ciudad, direccion, id_calendario
+    `SELECT id, nombre, ciudad, direccion, id_calendario, buffer_minutos
        FROM establecimientos_chat_center
       WHERE id_configuracion = ? AND eliminado = 0 AND activo = 1
       ORDER BY orden ASC, id ASC`,
@@ -2006,7 +2078,21 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
 
   let establecimiento = null;
 
-  if (sedes.length === 1) {
+  /* Cuando la visita es en el ítem, la oficina la decide el ítem y no el bot:
+     cada inmueble está a cargo de una sucursal, y esa es la agenda donde tiene
+     que caer la visita y de donde sale el corredor. Lo que el modelo haya
+     escrito en "Sede" acá no manda — cambiar de oficina por una palabra mal
+     copiada deja al corredor equivocado esperando. */
+  const sedeDelItem =
+    lugarCita === 'item' && itemAgendado?.id_establecimiento
+      ? sedes.find(
+          (s) => Number(s.id) === Number(itemAgendado.id_establecimiento),
+        ) || null
+      : null;
+
+  if (sedeDelItem) {
+    establecimiento = sedeDelItem;
+  } else if (sedes.length === 1) {
     // Con una sola sede no hay nada que elegir, escriba lo que escriba el bot.
     establecimiento = sedes[0];
   } else if (sedeNombre && sedes.length) {
@@ -2039,170 +2125,125 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     }
   }
 
-  const [usuario] = await db.query(
-    `SELECT sb.id_sub_usuario, sb.id_usuario
-     FROM configuraciones c
-     INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
-     WHERE c.id = ? AND sb.rol = 'administrador' LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
+  /* ── Modo solicitud: hasta acá y no más ─────────────────────────
+     Todo lo de arriba —quién es, qué quiere ver, cuándo, en qué oficina— es el
+     trabajo que el bot hace bien y que no hay razón para repetir a mano. Lo que
+     no hace es tocar el calendario: eso lo decide una persona.
 
-  if (!usuario) {
-    await log(
-      `❌ agendar_cita: la configuración ${id_configuracion} no tiene sub-usuario administrador; la cita NO se creó`,
-    );
-    return { ok: false, motivo: 'sin sub-usuario administrador' };
-  }
-
-  /* La agenda se crea al vuelo si no existe.
-     Antes esto se abandonaba con un log y la cita no se creaba nunca. Y como la
-     acción `cambiar_estado` corre por separado, la tarjeta igual se movía a
-     "Cita agendada": quedaba una cita fantasma, visible en el tablero e
-     inexistente en el calendario, sin ningún error a la vista.
-     Pasaba siempre en cuentas recién montadas, porque la fila de `calendars`
-     solo nacía cuando alguien abría la pantalla de Calendario (/calendars/ensure). */
-  let calendarId = null;
-
-  if (establecimiento?.id_calendario) {
-    const [c] = await db.query(
-      `SELECT id FROM calendars WHERE id = ? LIMIT 1`,
+     Se corta antes de buscar el sub-usuario y de crear la agenda porque nada de
+     eso hace falta todavía; se resuelve al confirmar, con quien confirma. */
+  if (modo === 'solicitud') {
+    const [yaPendiente] = await db.query(
+      `SELECT id FROM citas_solicitudes
+        WHERE id_configuracion = ? AND id_cliente = ? AND estado = 'pendiente'
+        ORDER BY id DESC LIMIT 1`,
       {
-        replacements: [establecimiento.id_calendario],
+        replacements: [id_configuracion, id_cliente],
         type: db.QueryTypes.SELECT,
       },
     );
-    calendarId = c?.id || null;
-  }
 
-  if (!calendarId) {
-    const [c] = await db.query(
-      `SELECT id FROM calendars WHERE account_id = ? AND is_active = 1
-        ORDER BY id ASC LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
-    calendarId = c?.id || null;
-  }
+    /* El bot reescribe el bloque cuando la persona responde "perfecto" o
+       cambia de idea sobre el horario. Sin esto, cada mensaje deja otra
+       solicitud y quien confirma ve la misma persona cuatro veces. Se
+       actualiza la que ya estaba: lo último que dijo es lo que vale. */
+    const datos = {
+      id_producto: itemAgendado?.id || null,
+      id_establecimiento: establecimiento?.id || null,
+      nombre: (nombre || '').slice(0, 150) || null,
+      telefono: (telefono || '').slice(0, 30) || null,
+      correo: (correo || '').slice(0, 150) || null,
+      servicio: (servicio || '').slice(0, 255) || null,
+      preferencia_texto: (fechaIni || '').slice(0, 255) || null,
+      inicio_sugerido: inicio_utc
+        ? moment.utc(inicio_utc).format('YYYY-MM-DD HH:mm:ss')
+        : null,
+      duracion_minutos:
+        inicio_utc && fin_utc
+          ? Math.max(15, moment.utc(fin_utc).diff(moment.utc(inicio_utc), 'minutes'))
+          : null,
+    };
 
-  if (!calendarId) {
-    try {
-      const { ensureDefaultCalendar } = require('./calendars.service');
-      const creado = await ensureDefaultCalendar({
-        account_id: Number(id_configuracion),
-        name: 'Agenda principal',
-        created_by: usuario.id_usuario,
-      });
-      calendarId = creado?.id || null;
-      await log(
-        `📅 agendar_cita: la configuración ${id_configuracion} no tenía agenda; se creó la ${calendarId}`,
+    if (yaPendiente) {
+      await db.query(
+        `UPDATE citas_solicitudes
+            SET id_producto = ?, id_establecimiento = ?, nombre = ?, telefono = ?,
+                correo = ?, servicio = ?, preferencia_texto = ?, inicio_sugerido = ?,
+                duracion_minutos = ?, updated_at = NOW()
+          WHERE id = ?`,
+        {
+          replacements: [
+            datos.id_producto,
+            datos.id_establecimiento,
+            datos.nombre,
+            datos.telefono,
+            datos.correo,
+            datos.servicio,
+            datos.preferencia_texto,
+            datos.inicio_sugerido,
+            datos.duracion_minutos,
+            yaPendiente.id,
+          ],
+          type: db.QueryTypes.UPDATE,
+        },
       );
-    } catch (e) {
-      await log(`❌ agendar_cita: no se pudo crear la agenda: ${e.message}`);
-      return { ok: false, motivo: `no se pudo crear la agenda: ${e.message}` };
+      await log(
+        `📝 Solicitud de cita ${yaPendiente.id} actualizada: ${nombre} · ${servicio || 'sin ítem'} · ${fechaIni || 'sin fecha'}`,
+      );
+      return { ok: true, modo: 'solicitud', id_solicitud: yaPendiente.id };
     }
-  }
 
-  /* ── Quién atiende ────────────────────────────────────────────────
-     Sin esto el bot mandaba todas las citas al mismo sub-usuario administrador,
-     así que un centro con tres esteticistas solo podía recibir UNA cita por
-     hora: la segunda moría con "el encargado ya tiene una cita".
-     Con profesionales cargados, la capacidad la da cuánta gente atiende. Si la
-     sede no tiene ninguno, todo sigue como antes. */
-  const idProfesional = await elegirProfesionalLibre({
-    id_configuracion,
-    establecimiento,
-    calendarId,
-    inicio_utc,
-    fin_utc,
-    pedido: campo('Atiende'),
-  });
-
-  if (idProfesional && idProfesional.error) {
-    await log(`❌ agendar_cita: ${idProfesional.error}`);
-    return { ok: false, motivo: idProfesional.error };
-  }
-
-  /* Cita repetida. El bot vuelve a escribir el bloque cuando la persona
-     responde "sí" o "perfecto" después de confirmada —pasa sobre todo en la
-     columna "Cita agendada", que también puede agendar para reprogramar— y eso
-     creaba una segunda cita idéntica: dos cupos ocupados y la sede esperando a
-     alguien dos veces. Si ya existe una en ese mismo horario para este contacto,
-     se da por hecha. */
-  const [yaExiste] = await db.query(
-    `SELECT ap.id
-       FROM appointments ap
-       JOIN appointment_invitees inv ON inv.appointment_id = ap.id
-      WHERE ap.calendar_id = ?
-        AND ap.start_utc = ?
-        AND ap.status IN ('Agendado', 'Confirmado')
-        AND RIGHT(REGEXP_REPLACE(inv.phone, '[^0-9]', ''), 9)
-            = RIGHT(REGEXP_REPLACE(?, '[^0-9]', ''), 9)
-      LIMIT 1`,
-    {
-      replacements: [
-        calendarId,
-        moment.utc(inicio_utc).format('YYYY-MM-DD HH:mm:ss'),
-        telefono || '',
-      ],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-
-  if (yaExiste) {
-    await log(
-      `♻️ agendar_cita: ${nombre} ya tenía la cita ${yaExiste.id} a esa misma hora; no se duplica`,
-    );
-    return { ok: true, id: yaExiste.id, repetida: true };
-  }
-
-  const payload = {
-    assigned_user_id: usuario.id_sub_usuario,
-    id_profesional: idProfesional || null,
-    booked_tz: 'America/Guayaquil',
-    calendar_id: calendarId,
-    create_meet: true,
-    created_by_user_id: usuario.id_usuario,
-    description: '',
-    end: fin_utc,
-    invitees: [{ name: nombre, email: correo, phone: telefono }],
-    // Para un servicio presencial la ubicación es la sede, no "online".
-    location_text: establecimiento
-      ? [
-          establecimiento.nombre,
-          establecimiento.direccion,
-          establecimiento.ciudad,
-        ]
-          .filter(Boolean)
-          .join(' — ')
-          .slice(0, 255)
-      : 'online',
-    meeting_url: null,
-    start: inicio_utc,
-    status: 'Agendado',
-    title: `${nombre} - ${servicio}`,
-  };
-
-  const cita = await servicioAppointments.createAppointment(
-    payload,
-    usuario.id_usuario,
-  );
-
-  // La sede se guarda aparte: createAppointment no la conoce y no vale la pena
-  // meterle un campo que solo usa este flujo.
-  if (establecimiento?.id && cita?.id) {
-    await db.query(
-      `UPDATE appointments SET id_establecimiento = ? WHERE id = ?`,
+    const [idNuevo] = await db.query(
+      `INSERT INTO citas_solicitudes
+         (id_configuracion, id_cliente, id_producto, id_establecimiento, nombre,
+          telefono, correo, servicio, preferencia_texto, inicio_sugerido,
+          duracion_minutos, estado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')`,
       {
-        replacements: [establecimiento.id, cita.id],
-        type: db.QueryTypes.UPDATE,
+        replacements: [
+          id_configuracion,
+          id_cliente,
+          datos.id_producto,
+          datos.id_establecimiento,
+          datos.nombre,
+          datos.telefono,
+          datos.correo,
+          datos.servicio,
+          datos.preferencia_texto,
+          datos.inicio_sugerido,
+          datos.duracion_minutos,
+        ],
+        type: db.QueryTypes.INSERT,
       },
     );
+
+    await log(
+      `📝 Solicitud de cita registrada (#${idNuevo}): ${nombre} · ${servicio || 'sin ítem'} · ${fechaIni || 'sin fecha'}`,
+    );
+
+    return { ok: true, modo: 'solicitud', id_solicitud: idNuevo };
   }
 
-  await log(
-    `✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}${establecimiento ? ` · sede "${establecimiento.nombre}"` : ''}`,
-  );
+  /* El alta de la cita vive en citas_agenda.service: elegir la agenda, repartir
+     a quien atiende, respetar el traslado y decidir la dirección son las mismas
+     decisiones cuando confirma una persona desde el panel de solicitudes. Dos
+     copias de eso se separan a la primera corrección y nadie se entera hasta
+     que una visita cae en la sucursal equivocada. */
+  const resultado = await crearCitaAgendada({
+    id_configuracion,
+    establecimiento,
+    item: itemAgendado,
+    lugar_cita: lugarCita,
+    nombre,
+    telefono,
+    correo,
+    servicio,
+    inicio_utc,
+    fin_utc,
+    profesional_pedido: campo('Atiende'),
+  });
 
-  return { ok: true, id: cita?.id || null };
+  return resultado;
 }
 
 /**

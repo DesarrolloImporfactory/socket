@@ -89,6 +89,15 @@ const ProductosChatCenter = db.define(
       allowNull: true,
     },
 
+    /* Álbum con el resto de las fotos. WhatsApp recibe una imagen por mensaje y
+       mandar quince es spam, así que el sistema manda una y, cuando piden más,
+       el bot pasa este enlace. Sin él la respuesta era "te las envía un asesor",
+       que en un inmueble es perder la conversación. */
+    galeria_url: {
+      type: DataTypes.STRING(512),
+      allowNull: true,
+    },
+
     // ===== nuevos =====
     landing_url: {
       type: DataTypes.STRING(512),
@@ -139,6 +148,51 @@ const ProductosChatCenter = db.define(
       },
       onUpdate: 'CASCADE',
       onDelete: 'SET NULL',
+    },
+
+    /* ── Dónde queda este ítem ────────────────────────────────────
+       Existe porque hay negocios donde la cita NO se hace en el local: en
+       inmobiliaria la visita es en la casa. La agenda sigue siendo la de la
+       oficina (`id_establecimiento`), pero el lugar al que llega la persona es
+       la dirección de acá. Vacío = el ítem no tiene ubicación propia y la cita
+       se hace en la sede, como siempre. */
+    id_establecimiento: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    direccion: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    sector: {
+      type: DataTypes.STRING(120),
+      allowNull: true,
+    },
+    ciudad: {
+      type: DataTypes.STRING(120),
+      allowNull: true,
+    },
+    // Para mandar el pin real de WhatsApp, no solo el enlace de Maps.
+    latitud: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+    longitud: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+    google_maps_url: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+    },
+
+    /* Ficha del nicho: {"dormitorios":"3","banos":"2"}. Qué claves son válidas
+       lo define el preset de la cuenta (utils/fichaPresets.js). Va como JSON y
+       no como columnas para que un catálogo de dropshipping no tenga que
+       convivir con campos de inmuebles vacíos para siempre. */
+    atributos_json: {
+      type: DataTypes.JSON,
+      allowNull: true,
     },
     fecha_creacion: {
       type: DataTypes.DATE,

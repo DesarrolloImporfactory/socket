@@ -61,6 +61,29 @@ const EstablecimientosChatCenter = db.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    /* Traslado entre citas. Cuando se atiende EN el local, una cita termina a
+       las 15:00 y la siguiente empieza a las 15:00: la persona ya está ahí. Pero
+       cuando el que se mueve es quien atiende —un corredor que va de un inmueble
+       a otro— agendar 15:00 y 15:30 es agendar algo a lo que no va a llegar.
+       Son minutos que se reservan ANTES y DESPUÉS de cada cita.
+       0 = citas pegadas, que es como venía funcionando. */
+    buffer_minutos: {
+      type: DataTypes.SMALLINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    /* Cuánto se necesita de aviso. Sin esto el bot ofrece las 16:00 cuando son
+       las 15:40, y ni el cliente ni quien atiende llegan. */
+    anticipacion_minima_horas: {
+      type: DataTypes.SMALLINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    // Tope de citas por día. NULL = sin tope.
+    max_citas_dia: {
+      type: DataTypes.SMALLINT,
+      allowNull: true,
+    },
     // calendars.id — la agenda de esta sede. NULL = la cuenta tiene una sola.
     id_calendario: {
       type: DataTypes.BIGINT.UNSIGNED,

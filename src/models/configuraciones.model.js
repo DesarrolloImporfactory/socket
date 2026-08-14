@@ -96,6 +96,13 @@ const Configuraciones = db.define(
       allowNull: false,
       defaultValue: 0,
     },
+    /* Qué ficha extra usan los ítems de esta cuenta (utils/fichaPresets.js).
+       NULL = ninguna, y entonces esos campos ni aparecen en el formulario: un
+       catálogo de dropshipping no tiene por qué ver "dormitorios". */
+    ficha_preset: {
+      type: DataTypes.STRING(40),
+      allowNull: true,
+    },
     api_key_gemini: {
       type: DataTypes.STRING(1000),
       allowNull: true,
