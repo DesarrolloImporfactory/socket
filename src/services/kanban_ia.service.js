@@ -20,7 +20,10 @@ const {
   catalogoInlineActivo,
   TOPE_CATALOGO_INLINE,
 } = require('../utils/openia/fileSearch');
-const { usaResponsesApi } = require('../utils/openia/responsesApi');
+const {
+  usaResponsesApi,
+  usaRecapConversacion,
+} = require('../utils/openia/responsesApi');
 
 const {
   enviarMensajeWhatsapp,
@@ -588,7 +591,15 @@ async function procesarMensajeKanban(params) {
     // Se paga UNA vez: OpenAI guarda esta respuesta (store: true) y a partir
     // del mensaje siguiente la cadena viaja por previous_response_id. Medido:
     // ~456 tokens por conversación.
-    if (!previous_response_id) {
+    if (!previous_response_id && !usaRecapConversacion(id_configuracion)) {
+      // Cuenta en CONFIGS_SIN_RECAP: arranca en blanco a propósito. Ni siquiera
+      // se consulta la BD —no tiene sentido armar un recap para descartarlo—.
+      // Ver el porqué de cada cuenta en utils/openia/responsesApi.js.
+      await log(
+        `🚫 Siembra desactivada para config=${id_configuracion} ` +
+          `(CONFIGS_SIN_RECAP): arranca en blanco cliente=${id_cliente}`,
+      );
+    } else if (!previous_response_id) {
       const recap = await construirRecapConversacion(id_cliente);
 
       // Con un solo mensaje no hay nada que retomar: es el que acaba de llegar,
