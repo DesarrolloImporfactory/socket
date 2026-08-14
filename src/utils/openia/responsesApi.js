@@ -43,7 +43,7 @@
 // Pendiente de voltear antes del 2026-08-26, que es cuando OpenAI apaga la
 // Assistants API. Para volver atrás después de voltearlo: false otra vez — el
 // camino viejo sigue completo hasta esa fecha, y a partir de ahí ya no sirve.
-const TODAS = false;
+const TODAS = true;
 
 // Configuraciones migradas a mano, en orden de llegada. Misma convención que
 // CONFIGS_CON_CATALOGO_INLINE y CONFIGS_CON_TOPE en fileSearch.js: lista
