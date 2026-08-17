@@ -15,6 +15,24 @@ const {
 const axios = require('axios');
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
+/* Identificador de asistente para las cuentas por Responses API.
+   ─────────────────────────────────────────────────────────────
+   Por Responses no existe un objeto en OpenAI: el prompt se lee de
+   `kanban_columnas.instrucciones` y el `assistant_id` es apenas una marca
+   local. Misma convención que kanban_asistente.controller al crear una columna
+   a mano (`local_...`).
+
+   Lo que NO puede pasar es que quede en NULL: `procesarMensajeKanban` corta con
+   `ia_inactiva` cuando la columna no tiene assistant_id, así que una columna
+   creada sin él nace con el bot mudo.
+
+   Ese era el destino de TODO tablero instalado a partir del 2026-08-26: al
+   apagarse la Assistants API, el `POST /v1/assistants` de acá abajo iba a
+   fallar siempre, el catch devolvía null con un console.error, y el cliente
+   nuevo estrenaba su tablero sin que el bot contestara nada. */
+const assistantIdLocal = (id_configuracion) =>
+  `local_tpl_${id_configuracion}_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
 // Catálogo Kanban (fuente única de verdad, compartida con el admin controller)
 const {
   KANBAN_TEMPLATES_META,
@@ -96,14 +114,28 @@ exports.aplicar = catchAsync(async (req, res, next) => {
   const resultado = [];
 
   for (const col of plantilla.columnas) {
+    /* El prompt de la columna. Con Responses tiene que quedar en la BD sí o
+       sí: es de donde lo lee el motor. Este INSERT no guardaba `instrucciones`
+       —con Assistants daba igual, el prompt vivía en OpenAI— así que un
+       tablero instalado por acá después del 2026-08-26 nacía con assistant_id
+       pero prompt vacío, y el paso 1.5 lo cortaba con `sin_instrucciones`:
+       bot mudo con otro nombre. */
+    const promptColumna =
+      (col.prompt_key && prompts[col.prompt_key]) || null;
+
     let assistant_id = null;
-    if (col.prompt_key && prompts[col.prompt_key] && api_key_openai) {
+    if (promptColumna && usaResponsesApi(id_configuracion)) {
+      /* Solo si HAY prompt. Una columna sin prompt es una columna de atención
+         humana: debe quedar sin assistant_id (ia_inactiva), que es su estado
+         normal — no con un id local apuntando a instrucciones vacías. */
+      assistant_id = assistantIdLocal(id_configuracion);
+    } else if (promptColumna && api_key_openai) {
       try {
         const aRes = await axios.post(
           'https://api.openai.com/v1/assistants',
           {
             name: `${col.nombre} - ${empresa}`,
-            instructions: prompts[col.prompt_key],
+            instructions: promptColumna,
             model: col.modelo || 'gpt-4o-mini',
             tools: [{ type: 'file_search' }],
           },
@@ -122,8 +154,8 @@ exports.aplicar = catchAsync(async (req, res, next) => {
       `INSERT INTO kanban_columnas
        (id_configuracion, nombre, estado_db, color_fondo, color_texto,
         icono, orden, activo, es_estado_final, activa_ia, max_tokens,
-        assistant_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assistant_id, instrucciones, modelo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion,
@@ -138,6 +170,8 @@ exports.aplicar = catchAsync(async (req, res, next) => {
           col.activa_ia,
           col.max_tokens,
           assistant_id,
+          promptColumna,
+          col.modelo || 'gpt-4o-mini',
         ],
         type: db.QueryTypes.INSERT,
       },
@@ -423,7 +457,11 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
     }
 
     let assistant_id = null;
-    if (col.instrucciones && headers) {
+    // Solo si hay prompt: sin él, la columna es de atención humana y debe
+    // quedar ia_inactiva, no con un id local apuntando a instrucciones vacías.
+    if (col.instrucciones && usaResponsesApi(id_configuracion)) {
+      assistant_id = assistantIdLocal(id_configuracion);
+    } else if (col.instrucciones && headers) {
       try {
         const aRes = await axios.post(
           'https://api.openai.com/v1/assistants',
@@ -1425,7 +1463,9 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
       ? compilarPromptFinal(col.instrucciones, personalizacionInicial)
       : null;
 
-    if (promptCompilado && headers) {
+    if (promptCompilado && usaResponsesApi(id_configuracion)) {
+      assistant_id = assistantIdLocal(id_configuracion);
+    } else if (promptCompilado && headers) {
       try {
         const aRes = await axios.post(
           'https://api.openai.com/v1/assistants',
@@ -1882,7 +1922,15 @@ async function _sincronizarEstructuraColumnas(
     : null;
 
   const crearAsistente = async (col, prompt) => {
-    if (!prompt || !headers) return null;
+    if (!prompt) return null;
+
+    // Ver el comentario de assistantIdLocal: por Responses no hay objeto en
+    // OpenAI, y dejarlo en null dejaría la columna con el bot mudo.
+    if (usaResponsesApi(id_configuracion)) {
+      return assistantIdLocal(id_configuracion);
+    }
+
+    if (!headers) return null;
     try {
       const r = await axios.post(
         'https://api.openai.com/v1/assistants',

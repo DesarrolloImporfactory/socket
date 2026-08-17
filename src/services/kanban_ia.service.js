@@ -80,6 +80,18 @@ const {
   autoActualizarOrdenDropi,
 } = require('./dropiAutoOrder.service');
 
+// Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
+const { esperarRafaga } = require('../utils/agruparRafaga');
+
+// Candados para que dos cierres seguidos no creen dos órdenes ni manden el
+// resumen del pedido dos veces
+const {
+  reclamarAutoOrden,
+  confirmarAutoOrden,
+  liberarAutoOrden,
+  reclamarResumenCierre,
+} = require('../utils/dedupeAutoOrden');
+
 // ══════════════════════════════════════════════════════════════
 // fetchAssistantInfo — devuelve el prompt de la BD (kanban_columnas)
 //
@@ -123,7 +135,9 @@ const {
   guardarResponseId,
 } = require('../services/obtener_response.service');
 
-const servicioAppointments = require('../services/appointments.service');
+/* El alta de la cita es compartida con la confirmación manual de solicitudes:
+   acá solo se lee el bloque que escribió el modelo y se le pasan los datos. */
+const { crearCitaAgendada } = require('./citas_agenda.service');
 
 const logsDir = require('path').join(process.cwd(), './src/logs/logs_meta');
 const fs = require('fs').promises;
@@ -247,13 +261,16 @@ async function procesarMensajeKanban(params) {
     id_configuracion,
     id_cliente,
     telefono,
-    mensaje,
     estado_contacto,
     api_key_openai,
     business_phone_id,
     accessToken,
     bloque_producto_referral,
   } = params;
+
+  // `let` porque la agrupación de ráfaga (más abajo) lo reemplaza por el texto
+  // completo del cliente cuando escribió en varios mensajes seguidos.
+  let { mensaje } = params;
 
   // ── Canal de salida ───────────────────────────────────────
   // Por defecto = WhatsApp (mismo comportamiento estable de siempre).
@@ -339,6 +356,32 @@ async function procesarMensajeKanban(params) {
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
   const USAR_RESPONSES_API = usaResponsesApi(id_configuracion);
+
+  /* ── Agrupar la ráfaga ────────────────────────────────────
+     Si el cliente escribe en pedazos, cada mensaje llega acá por separado y
+     antes corrían dos turnos en paralelo: dos llamadas a OpenAI y el bot
+     contestando dos veces. Ahora se espera una ventana corta; si llega otro
+     mensaje, esta corrida se retira y la nueva contesta con TODO el texto.
+
+     Va después de los gates de plan e interruptor —que son baratos y cortan
+     antes de gastar la espera— y antes de todo el trabajo real.
+
+     Ver el costo en latencia y la medición que fijó la ventana en
+     utils/agruparRafaga.js. */
+  const mensajeAgrupado = await esperarRafaga(id_cliente, mensaje);
+  if (mensajeAgrupado === null) {
+    await log(
+      `⏸️ Ráfaga: el cliente ${id_cliente} siguió escribiendo; este turno se ` +
+        `retira y contesta el último con todo el texto junto`,
+    );
+    return { ok: true, motivo: 'absorbido_en_rafaga' };
+  }
+  if (mensajeAgrupado !== mensaje) {
+    await log(
+      `🧩 Ráfaga agrupada para cliente=${id_cliente}: "${String(mensajeAgrupado).slice(0, 160)}"`,
+    );
+    mensaje = mensajeAgrupado;
+  }
 
   // Llegó un mensaje nuevo de este cliente: invalida cualquier ráfaga que
   // haya quedado pendiente de la respuesta anterior.
@@ -454,7 +497,25 @@ async function procesarMensajeKanban(params) {
 
   let bloqueContexto = '';
   let total_tokens = 0;
-  let mensajeFinal = mensaje;
+  /* Una ubicación compartida por WhatsApp se guarda como el JSON crudo que
+     manda Meta (`{"latitude":-0.3,"longitude":-78.4}`) porque así lo pinta el
+     chat. Al asistente le llegaba eso literal y contestaba lo que se puede
+     esperar de alguien que recibe un JSON: pedía la dirección "en palabras".
+     Y en captación —donde al propietario se le PIDE que mande la ubicación—
+     eso es quedarse sin el dato justo después de conseguirlo.
+     Se traduce solo para el modelo; lo guardado no se toca. */
+  const textoDelSistema =
+    textoDeUbicacion(mensaje) || textoDeMensajeIlegible(mensaje);
+
+  let mensajeFinal = textoDelSistema || mensaje;
+
+  /* Para elegir qué productos se le inyectan solo cuentan las palabras del
+     CLIENTE. Cuando el texto lo escribió el sistema —el relleno de un mensaje
+     ilegible, o la traducción de una ubicación— no se nombró ningún producto, y
+     buscar sobre ese texto ata cosas al azar: primero fue "tipo" contra "Cable
+     Tipo C", y después mi propia instrucción, que también habla de productos.
+     Va vacío: la lista de precios se sigue entregando, la ficha no. */
+  const mensajeParaBuscar = textoDelSistema ? '' : mensaje;
 
   // ── 4. ACCIÓN: separador_productos (pre-procesamiento) ────
   /* if (tieneAccion('separador_productos')) {
@@ -499,10 +560,17 @@ async function procesarMensajeKanban(params) {
     id_configuracion,
     acciones,
     log,
-    // El mensaje sirve para elegir qué productos mandar cuando el catálogo es
-    // grande: los que la persona nombró. El id_cliente, para entregarle el
-    // teléfono desde el que escribe en vez de que se lo pregunte.
-    { mensaje, id_cliente },
+    /* Va `mensajeFinal` y NO el crudo, a propósito. El contexto tiene que
+       armarse con el MISMO texto que va a leer el modelo: acá se decide qué
+       productos se le inyectan, y con el texto crudo se decidía sobre relleno
+       del sistema. Un "Tipo de mensaje no reconocido." hacía coincidir la
+       palabra "tipo" con "Cable Tipo C 240W" y el bot recibía la ficha de ese
+       producto bajo el título "lo que la persona nombró". Después ofrecía el
+       cable a alguien que solo había mandado un sticker.
+
+       El id_cliente es para entregarle el teléfono desde el que escribe en vez
+       de que se lo pregunte. */
+    { mensaje: mensajeParaBuscar, id_cliente },
   );
 
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
@@ -845,7 +913,20 @@ async function procesarMensajeKanban(params) {
         throw err2;
       }
     } else {
-      await log(`❌ Error ejecutando asistente: ${err.message}`);
+      /* El detalle que manda OpenAI, no solo el código.
+         "Request failed with status code 429" no se puede diagnosticar: puede
+         ser el límite por minuto del modelo o la cuenta sin saldo, y son cosas
+         distintas con arreglos distintos. El body lo dice —incluye el límite y
+         cuánto falta para que se libere— y estaba en el error, sin registrarse:
+         para saberlo había que reproducirlo a mano contra la API. */
+      const detalle = err.response?.data?.error;
+      await log(
+        `❌ Error ejecutando asistente: ${err.message}` +
+          (detalle
+            ? ` · OpenAI: ${detalle.message}` +
+              (detalle.code ? ` [${detalle.code}]` : '')
+            : ''),
+      );
       throw err;
     }
   }
@@ -1006,6 +1087,10 @@ async function procesarMensajeKanban(params) {
   }
 
   // ── 10. ACCIÓN: cambiar_estado ────────────────────────────
+  // ¿Esta respuesta cierra la venta (resumen del pedido)? Lo decide el paso 10
+  // y lo usa el 13 para no repetir el resumen. Se declara afuera del bucle.
+  let cerroLaVenta = false;
+  const claveResumen = `${id_configuracion}|${id_cliente}`;
   for (const ac of getAcciones('cambiar_estado')) {
     const cfg = parseConfig(ac);
     const trigger = cfg.trigger || '';
@@ -1014,6 +1099,9 @@ async function procesarMensajeKanban(params) {
 
     const coincide = respuestaRaw.toLowerCase().includes(trigger.toLowerCase());
     if (coincide) {
+      // Esta respuesta ES un cierre de venta. Se marca para que el paso 13 no
+      // mande el mismo resumen dos veces cuando el cliente escribió en ráfaga.
+      if (estadoDestino === 'generar_guia') cerroLaVenta = true;
       await db.query(
         `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
         {
@@ -1076,6 +1164,36 @@ async function procesarMensajeKanban(params) {
             direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
           };
 
+          /* ── Candado anti-duplicado ──
+             Cuando el cliente manda dos mensajes seguidos, cada uno corre su
+             propio turno de IA (no hay agrupación de ráfagas) y el asistente
+             cierra la venta en las DOS respuestas: dos resúmenes, dos tags, dos
+             órdenes en Dropi con segundos de diferencia. Le pasó 6 veces a la
+             cfg 411 —separaciones de 2 a 193 segundos— y el cliente lo vio como
+             pedidos duplicados en /pedidos.
+
+             El reclamo es síncrono (utils/dedupeAutoOrden.js), así que de dos
+             corridas simultáneas solo una entra. Si la que entró NO termina
+             creando —producto sin match, ciudad sin cod_dane, gate apagado—, se
+             suelta enseguida para que el próximo mensaje pueda reintentar; el
+             comportamiento de los pedidos que hoy caen a manual no cambia. */
+          const claveAutoOrden = `${id_configuracion}|${id_cliente}`;
+          const dispararAutoOrden = ({ force }) => {
+            autoCrearOrdenDropi({
+              id_configuracion,
+              id_cliente,
+              api_key_openai,
+              datosBot,
+              force,
+              dedupe: true,
+            })
+              .then((r) => {
+                if (r?.orderId) confirmarAutoOrden(claveAutoOrden);
+                else liberarAutoOrden(claveAutoOrden);
+              })
+              .catch(() => liberarAutoOrden(claveAutoOrden));
+          };
+
           // MODELO PER-COLUMNA (full pro): la acción Dropi de la columna decide
           // qué hacer y su `activo` es el gate. Si la columna no tiene ninguna
           // acción Dropi → FALLBACK al modelo viejo (flag config + es_dropi_principal),
@@ -1103,16 +1221,14 @@ async function procesarMensajeKanban(params) {
                 await log(
                   `🔁 Actualizar orden Dropi (acción columna) cliente=${id_cliente}`,
                 );
-              } else {
-                autoCrearOrdenDropi({
-                  id_configuracion,
-                  id_cliente,
-                  api_key_openai,
-                  datosBot,
-                  force: true,
-                }).catch(() => {});
+              } else if (reclamarAutoOrden(claveAutoOrden)) {
+                dispararAutoOrden({ force: true });
                 await log(
                   `🛒 Crear orden Dropi (acción columna) cliente=${id_cliente}`,
+                );
+              } else {
+                await log(
+                  `🚫 Auto-orden Dropi OMITIDA (acción columna) cliente=${id_cliente}: ya hay una creación en curso o recién hecha para este cliente`,
                 );
               }
             } else {
@@ -1131,16 +1247,15 @@ async function procesarMensajeKanban(params) {
             await log(
               `🔁 Actualización orden Dropi (fallback flag) cliente=${id_cliente}`,
             );
-          } else {
+          } else if (reclamarAutoOrden(claveAutoOrden)) {
             // Fallback viejo: cualquier otra columna → crear (gate: flag).
-            autoCrearOrdenDropi({
-              id_configuracion,
-              id_cliente,
-              api_key_openai,
-              datosBot,
-            }).catch(() => {});
+            dispararAutoOrden({ force: false });
             await log(
               `🛒 Auto-orden Dropi (fallback flag) cliente=${id_cliente}`,
+            );
+          } else {
+            await log(
+              `🚫 Auto-orden Dropi OMITIDA (fallback flag) cliente=${id_cliente}: ya hay una creación en curso o recién hecha para este cliente`,
             );
           }
         } catch (e) {
@@ -1181,14 +1296,56 @@ async function procesarMensajeKanban(params) {
     }
 
     if (tieneTag || escribioBloque) {
+      /* Dónde se hace la cita lo decide la columna, no el código: la misma
+         plantilla sirve a una clínica (se atiende en el local) y a una
+         inmobiliaria (se visita el inmueble). Sin la llave configurada vale
+         'sede', que es como venía funcionando. */
       const res = await procesarAgendarCita(
         respuestaRaw,
         id_configuracion,
         id_cliente,
+        { lugar_cita: cfg.lugar_cita, modo: cfg.modo },
       ).catch(async (err) => {
         await log(`⚠️ Error agendar_cita: ${err.message}`);
         return { ok: false, motivo: err.message };
       });
+
+      /* En modo solicitud la tarjeta NO puede quedarse en "cita agendada": no
+         hay ninguna cita. Va a la columna de revisión, que es el único aviso
+         que va a tener quien atiende de que hay alguien esperando confirmación.
+         Corre después de `cambiar_estado` (paso 10) a propósito: lo que esa
+         acción haya hecho se pisa acá, que es la decisión correcta. */
+      if (res?.ok && res.modo === 'solicitud') {
+        const destino = String(cfg.estado_solicitud || 'por_agendar').trim();
+        const [colDestino] = await db.query(
+          `SELECT id FROM kanban_columnas
+            WHERE id_configuracion = ? AND LOWER(estado_db) = LOWER(?) AND activo = 1
+            LIMIT 1`,
+          {
+            replacements: [id_configuracion, destino],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+
+        if (colDestino) {
+          await db.query(
+            `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+            { replacements: [destino, id_cliente], type: db.QueryTypes.UPDATE },
+          );
+          await log(
+            `🔄 Solicitud #${res.id_solicitud}: contacto ${id_cliente} movido a "${destino}"`,
+          );
+        } else {
+          /* Sin la columna, la solicitud existe pero nadie la ve en el tablero.
+             Se avisa fuerte porque el síntoma es el peor de todos: el bot le
+             dijo a la persona que le confirman el horario y no hay nada que se
+             lo recuerde a nadie. */
+          await log(
+            `🚨 Solicitud #${res.id_solicitud} guardada pero la configuración ${id_configuracion} ` +
+              `no tiene columna "${destino}": revísala en el panel de solicitudes o créala`,
+          );
+        }
+      }
 
       /* Si la cita no se creó, la tarjeta NO se puede quedar en "Cita
          agendada": cambiar_estado ya corrió (paso 10) y la movió igual, así que
@@ -1201,7 +1358,8 @@ async function procesarMensajeKanban(params) {
       /* Sin tag, `cambiar_estado` (paso 10) tampoco corrió: la cita quedaría
          creada y la tarjeta parada en la columna anterior. Se mueve acá con el
          mismo destino que tiene configurada esa acción. */
-      if (res?.ok && !tieneTag) {
+      // En modo solicitud el destino ya se decidió arriba: no se pisa.
+      if (res?.ok && !tieneTag && res.modo !== 'solicitud') {
         const destino = getAcciones('cambiar_estado')
           .map((ac) => parseConfig(ac))
           .find(
@@ -1472,6 +1630,25 @@ async function procesarMensajeKanban(params) {
   /* Y el Markdown que WhatsApp no entiende: los ** llegan como asteriscos a
      la vista. Está prohibido en el prompt y el modelo lo escribe igual. */
   soloTexto = limpiarMarkdown(soloTexto);
+
+  /* Resumen de cierre repetido: no se manda.
+
+     Cuando el cliente escribe dos veces seguidas ("En la entrada de ocho" /
+     "Hay un Servientrega"), cada mensaje corre su propio turno y el asistente
+     cierra la venta en las DOS respuestas. La orden ya la ataja el candado del
+     paso 10, pero el cliente igual veía dos "tu pedido queda así" seguidos, que
+     es exactamente lo que hizo pensar que se le duplicaban los pedidos.
+
+     Solo se descarta el resumen repetido. El resto de la conversación sale como
+     siempre: descartar toda respuesta que quedó vieja tocaría el 28% de los
+     mensajes (ver utils/dedupeAutoOrden.js) y eso es otro problema. */
+  if (soloTexto && cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
+    await log(
+      `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
+        `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
+    );
+    soloTexto = '';
+  }
 
   if (soloTexto) {
     // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
@@ -1775,6 +1952,229 @@ function extraerMedia(texto) {
   return extraerUrlsMedia(texto);
 }
 
+/**
+ * Traduce la ubicación que llega por WhatsApp a algo que un modelo pueda leer.
+ *
+ * El webhook guarda el JSON crudo de Meta porque el chat lo usa para pintar el
+ * mapita. Para el asistente eso no es un mensaje: es ruido, y responde pidiendo
+ * "la dirección en palabras" a alguien que le acaba de mandar exactamente eso.
+ *
+ * Devuelve `null` si el texto no es una ubicación, para que el mensaje siga su
+ * camino sin tocarse.
+ */
+function textoDeUbicacion(texto) {
+  const s = String(texto || '').trim();
+  if (!s.startsWith('{') || !s.includes('latitude')) return null;
+
+  try {
+    const o = JSON.parse(s);
+    const lat = Number(o?.latitude);
+    const lng = Number(o?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return (
+      `[El cliente compartió su ubicación por WhatsApp]\n` +
+      `Coordenadas: ${lat}, ${lng}\n` +
+      `Mapa: https://www.google.com/maps?q=${lat},${lng}\n` +
+      `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
+      `dirección "en palabras". Si necesitas el nombre del sector o una ` +
+      `referencia para llegar, pídele eso puntual. Cuando tengas que dejar la ` +
+      `ubicación registrada en una ficha, escribe el enlace del mapa tal cual.`
+    );
+  } catch {
+    return null;
+  }
+}
+
+/* ── Qué ítem del catálogo nombró el bot ────────────────────────
+   El prompt le pide el nombre EXACTO y el modelo lo parafrasea igual: para
+   "Arriendo casa Cumbayá" escribió "Visita — Casa Cumbayá". Con coincidencia
+   por subcadena eso no calza en ninguna dirección —ni el pedido contiene al
+   nombre ni al revés— así que la visita se creaba sin el inmueble atado, y por
+   lo tanto sin su dirección: terminaba citando en la oficina, que es justo lo
+   que se vino a arreglar. Y sin un solo error a la vista.
+
+   Se compara por PALABRAS compartidas. Las genéricas no cuentan: si contaran,
+   "Visita — Casa Cumbayá" empataría con cualquier otra casa del catálogo por
+   la palabra "casa". */
+const GENERICAS_ITEM = new Set([
+  'visita', 'visitar', 'ver', 'cita', 'para', 'del', 'de', 'la', 'el', 'los',
+  'las', 'en', 'con', 'por', 'un', 'una', 'al', 'y', 'o',
+  'arriendo', 'arrendar', 'alquiler', 'venta', 'vender', 'compra', 'comprar',
+  'inmueble', 'propiedad', 'servicio',
+]);
+
+/* El TIPO de inmueble tampoco identifica cuál es. "Visita — Casa en
+   Samborondón" comparte la palabra "casa" con "Arriendo casa Cumbayá" y con
+   otras diez: si eso alcanzara para atar el ítem, se agendaría una visita a la
+   casa equivocada, con la dirección equivocada. Lo que identifica es el nombre
+   propio —el sector, el barrio, el edificio— así que se exige compartir al
+   menos uno de esos. */
+const TIPOS_ITEM = new Set([
+  'casa', 'casas', 'departamento', 'departamentos', 'depto', 'suite', 'suites',
+  'terreno', 'terrenos', 'lote', 'local', 'locales', 'oficina', 'oficinas',
+  'bodega', 'bodegas', 'galpon', 'galpones', 'penthouse', 'loft', 'villa',
+  'quinta', 'chalet', 'edificio', 'consultorio',
+]);
+
+const normalizarItem = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const tokensItem = (s) =>
+  normalizarItem(s)
+    .split(' ')
+    .filter((t) => t.length > 2);
+
+const distintivos = (toks) => toks.filter((t) => !GENERICAS_ITEM.has(t));
+
+/**
+ * Elige del catálogo el ítem que el bot quiso nombrar.
+ *
+ * @param {string} pedido    lo que escribió en "Servicio que desea"
+ * @param {Array<{nombre:string}>} catalogo
+ * @returns el ítem, o null si nada se parece lo suficiente
+ */
+function elegirItemDelCatalogo(pedido, catalogo) {
+  const pedidoNorm = normalizarItem(pedido);
+  if (!pedidoNorm) return null;
+
+  const pedidoToks = new Set(tokensItem(pedido));
+
+  /* Se puntúa por cuántas palabras IDENTIFICATORIAS comparten —el sector, el
+     barrio, el edificio— y no por qué proporción del nombre coincide. Los
+     nombres reales del catálogo son verbosos ("Suite Moderna Amoblada Sector El
+     Bosque") y el modelo los acorta ("Suite El Bosque"): exigir la mitad de las
+     palabras dejaba fuera justo los casos normales. */
+  const candidatos = [];
+
+  for (const item of catalogo || []) {
+    const nombreNorm = normalizarItem(item.nombre);
+    if (!nombreNorm) continue;
+
+    // El nombre exacto, o contenido de un lado o del otro: no hay nada que dudar.
+    if (
+      nombreNorm === pedidoNorm ||
+      (nombreNorm.length > 3 &&
+        (pedidoNorm.includes(nombreNorm) || nombreNorm.includes(pedidoNorm)))
+    ) {
+      return item;
+    }
+
+    const propios = distintivos(tokensItem(item.nombre));
+    if (!propios.length) continue;
+
+    const compartidos = propios.filter((t) => pedidoToks.has(t));
+    if (!compartidos.length) continue;
+
+    /* Tiene que coincidir en algo que IDENTIFIQUE al inmueble, no solo en su
+       tipo. Si el ítem no tiene ninguna palabra identificatoria —alguien lo
+       llamó "Casa" y nada más— se acepta el tipo, que es todo lo que hay. */
+    const identificadores = propios.filter((t) => !TIPOS_ITEM.has(t));
+    const idsCompartidos = identificadores.filter((t) => pedidoToks.has(t));
+
+    if (identificadores.length && !idsCompartidos.length) continue;
+    if (!identificadores.length && compartidos.length / propios.length < 0.5) {
+      continue;
+    }
+
+    candidatos.push({
+      item,
+      ids: idsCompartidos.length,
+      ratio: compartidos.length / propios.length,
+    });
+  }
+
+  if (!candidatos.length) return null;
+
+  candidatos.sort((a, b) => b.ids - a.ids || b.ratio - a.ratio);
+
+  /* Empate real: dos inmuebles del catálogo coinciden igual de bien. Pasa con
+     dos unidades en el mismo edificio. Devolver cualquiera sería mandar a
+     alguien a la puerta equivocada, y eso es peor que no resolver el ítem —el
+     caller lo registra y la cita cae en la sede, donde al menos hay alguien. */
+  const [primero, segundo] = candidatos;
+  if (segundo && segundo.ids === primero.ids && segundo.ratio === primero.ratio) {
+    return null;
+  }
+
+  return primero.item;
+}
+
+/**
+ * Traduce los textos que escribe el SISTEMA, no el cliente.
+ *
+ * Cuando llega un tipo de mensaje que no se puede leer —un sticker, una
+ * encuesta, un mensaje eliminado— el webhook guarda un texto de relleno
+ * ("Tipo de mensaje no reconocido.") para que el chat muestre algo. Ese texto
+ * viajaba al asistente COMO SI LO HUBIERA ESCRITO LA PERSONA, y ahí pasaban dos
+ * cosas, las dos malas:
+ *
+ *   1. El bot tenía que adivinar qué quiere alguien que dijo "Tipo de mensaje
+ *      no reconocido", y adivinaba.
+ *   2. Peor: el selector de productos de contextoColumna busca coincidencias por
+ *      palabra, y "tipo" está en un montón de nombres de catálogo ("Cable Tipo
+ *      C 240W"). Con eso, al bot se le inyectaba la ficha completa de ese
+ *      producto bajo el título "Ficha de lo que la persona nombró" y la orden
+ *      de mandarle la foto. No inventaba nada: hacía lo que le decíamos.
+ *
+ * Devuelve `null` si el texto es del cliente y no hay nada que traducir.
+ */
+/* Los textos que escribe el webhook cuando el mensaje no viene como texto. Cada
+   uno sale de un `case` de webhook_meta_whatsapp.controller.js, y hay que
+   mirarlos todos: el sticker —el caso más común de "no me llegó bien"— quedaba
+   fuera y el bot tenía que contestarle a "Sticker recibido y guardado con ID:
+   4471…" como si eso lo hubiera escrito una persona. */
+const RELLENOS_SISTEMA = [
+  /^tipo de mensaje no reconocido\.?$/i, // case default
+  /^🚫?\s*mensaje eliminado por el usuario\.?$/i, // case revoke
+  /^sticker recibido y guardado con id/i, // case sticker
+  /^error al descargar/i,
+  /* case document sin caption: se guarda el nombre del archivo. Un mensaje que
+     es exactamente un nombre de archivo no es una pregunta de nadie. */
+  /^[\w\-. ()]{1,80}\.(pdf|docx?|xlsx?|pptx?|txt|csv|zip|rar|jpe?g|png|webp|mp4)$/i,
+];
+
+/* Una reacción es otra cosa: el cliente no mandó un mensaje nuevo, le puso un
+   emoji al anterior. Decirle al bot "no sabes qué quiere, preguntale qué
+   producto" ahí sería absurdo — sí sabe de qué venían hablando. */
+const soloEmojis = (s) =>
+  s.length <= 8 && /^[\p{Emoji}️‍\s]+$/u.test(s) && /\p{Emoji}/u.test(s);
+
+function textoDeMensajeIlegible(texto) {
+  const s = String(texto || '').trim();
+  if (!s) return null;
+
+  if (soloEmojis(s)) {
+    return (
+      `[El cliente reaccionó con ${s} a tu mensaje anterior. No escribió nada más.]\n` +
+      `No es una consulta nueva y NO nombró ningún producto: no le ofrezcas uno ` +
+      `ni le mandes fotos por esto.\n` +
+      `Si venían en medio de algo, continúa con eso. Si la conversación ya estaba ` +
+      `cerrada, responde en UNA línea corta y no preguntes nada.`
+    );
+  }
+
+  if (!RELLENOS_SISTEMA.some((re) => re.test(s))) return null;
+
+  return (
+    `[El cliente envió algo que no se puede leer: un sticker, una encuesta, un ` +
+    `archivo, un mensaje eliminado o un formato que WhatsApp no entrega como ` +
+    `texto.]\n` +
+    `NO sabes qué dice. Está PROHIBIDO suponerlo, y sobre todo está prohibido ` +
+    `ofrecerle un producto del catálogo: nadie lo mencionó.\n` +
+    `Si ya venían hablando de algo concreto, retoma ESO y pregúntale qué quiso ` +
+    `decir. Si no sabes de qué venía la conversación, dile en UNA línea que no te ` +
+    `llegó bien y pregúntale qué producto le interesa. Nada más: ni foto, ni ` +
+    `precio, ni ciudad.`
+  );
+}
+
 function limpiarTagsAcciones(texto) {
   return texto
     .replace(/\[pedido_confirmado\]:\s*(true|false)/gi, '')
@@ -1786,89 +2186,34 @@ function limpiarTagsAcciones(texto) {
 }
 
 /**
- * Elige a quién le toca la cita entre los profesionales de la sede.
+ * @param {string} mensajeGPT   respuesta cruda del modelo, con el bloque de cita
+ * @param {number} id_configuracion
+ * @param {number} id_cliente
+ * @param {{lugar_cita?: 'sede'|'item', modo?: 'auto'|'solicitud'}} [opciones]
+ *   Las dos salen de la config de la acción `agendar_cita` de la columna.
  *
- * Devuelve el id, `null` si la sede no tiene profesionales cargados (y entonces
- * todo funciona como antes), o `{ error }` si no queda nadie libre.
+ *   `lugar_cita`:
+ *     - 'sede' (default): la cita se hace en el local, como siempre.
+ *     - 'item': se hace donde queda el ítem del catálogo. Es el caso de
+ *       inmobiliaria — la visita es en la casa, no en la oficina—, y por eso el
+ *       lugar sale de la dirección cargada en el ítem y no de la sede.
  *
- * Si el bot escribió una línea "Atiende: <nombre>" —porque la clienta la pidió—
- * se respeta o se falla: cambiarla en silencio por otra persona es peor que no
- * agendar, la clienta llegaría esperando a alguien que no la va a atender.
+ *   `modo`:
+ *     - 'auto' (default): se crea la cita en el calendario.
+ *     - 'solicitud': NO se toca el calendario. Se guarda el pedido en
+ *       `citas_solicitudes` para que una persona lo confirme. Es para las
+ *       agendas donde enterarse de una visita 20 minutos antes no es una
+ *       opción: quien atiende puede estar durmiendo o manejando.
  */
-async function elegirProfesionalLibre({
+async function procesarAgendarCita(
+  mensajeGPT,
   id_configuracion,
-  establecimiento,
-  calendarId,
-  inicio_utc,
-  fin_utc,
-  pedido,
-}) {
-  if (!establecimiento?.id) return null;
-
-  const profesionales = await db.query(
-    `SELECT id, nombre FROM profesionales_chat_center
-      WHERE id_configuracion = ? AND id_establecimiento = ?
-        AND activo = 1 AND eliminado = 0
-      ORDER BY orden ASC, id ASC`,
-    {
-      replacements: [id_configuracion, establecimiento.id],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-  if (!profesionales.length) return null;
-
-  // Ocupados en ese rango. 'Bloqueado' sin profesional cierra el local entero.
-  const ocupados = await db.query(
-    `SELECT DISTINCT id_profesional FROM appointments
-      WHERE calendar_id = ?
-        AND status IN ('Agendado', 'Confirmado', 'Bloqueado')
-        AND start_utc < ? AND end_utc > ?
-        AND id_profesional IS NOT NULL`,
-    {
-      replacements: [calendarId, fin_utc, inicio_utc],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-  const ocupadosSet = new Set(ocupados.map((o) => Number(o.id_profesional)));
-
-  const norm = (s) =>
-    String(s || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/\p{M}/gu, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  if (pedido) {
-    const buscado = norm(pedido);
-    const elegido =
-      profesionales.find((p) => norm(p.nombre) === buscado) ||
-      profesionales.find(
-        (p) =>
-          norm(p.nombre).includes(buscado) || buscado.includes(norm(p.nombre)),
-      );
-    if (!elegido) {
-      return {
-        error: `no existe "${pedido}" entre quienes atienden en la sede`,
-      };
-    }
-    if (ocupadosSet.has(Number(elegido.id))) {
-      return { error: `${elegido.nombre} ya tiene una cita a esa hora` };
-    }
-    return elegido.id;
-  }
-
-  const libre = profesionales.find((p) => !ocupadosSet.has(Number(p.id)));
-  if (!libre) {
-    return {
-      error: `no queda nadie libre en "${establecimiento.nombre}" a esa hora (${profesionales.length} atienden)`,
-    };
-  }
-  return libre.id;
-}
-
-async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
+  id_cliente,
+  opciones = {},
+) {
   const moment = require('moment-timezone');
+  const lugarCita = opciones?.lugar_cita === 'item' ? 'item' : 'sede';
+  const modo = opciones?.modo === 'solicitud' ? 'solicitud' : 'auto';
 
   /* El bloque llega tal como lo escribió el modelo, y el modelo pone negritas
      cuando le parece: "🧑 **Nombre:** Ana". Con el emoji y los asteriscos
@@ -1921,70 +2266,89 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
   const fechaIni = campo('Fecha y hora de inicio') || campo('Fecha y hora');
   const fechaFin = campo('Fecha y hora de fin');
 
+  /* ── Qué ítem del catálogo se va a ver ──────────────────────────
+     Sale de "Servicio que desea". Se resuelve ANTES de las fechas porque su
+     `duracion` es la que decide la hora de fin: antes eso se buscaba con un
+     LIKE aparte que fallaba con los mismos nombres parafraseados, y la visita
+     quedaba de 60 minutos aunque el inmueble dijera 45. */
+  let itemAgendado = null;
+
+  if (servicio) {
+    const catalogo = await db.query(
+      `SELECT id, nombre, tipo, duracion, id_establecimiento, direccion,
+              sector, ciudad, latitud, longitud, google_maps_url
+         FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    itemAgendado = elegirItemDelCatalogo(servicio, catalogo);
+
+    if (!itemAgendado) {
+      /* Se avisa porque es silencioso y caro: sin ítem atado, la visita se crea
+         con la dirección de la sede y quien atiende sale para la oficina. */
+      await log(
+        `⚠️ agendar_cita: "${servicio}" no coincide con ningún ítem del catálogo ` +
+          `de la configuración ${id_configuracion}`,
+      );
+    }
+  }
+
   const mIni = moment.tz(fechaIni, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
 
   if (!mIni.isValid()) {
-    await log(
-      `❌ agendar_cita: fecha ilegible en el bloque (inicio="${fechaIni}"); la cita NO se creó`,
-    );
-    return { ok: false, motivo: 'fecha ilegible en el bloque' };
+    /* Sin fecha legible no hay cita posible. Pero sí hay solicitud: alguien que
+       quiere ver algo y dijo "el sábado en la mañana" es exactamente el lead
+       que no se puede perder, y quien confirma va a leer esa frase igual. Se
+       guarda con la fecha vacía y el texto tal cual. */
+    if (modo === 'solicitud') {
+      await log(
+        `📝 agendar_cita (solicitud): fecha no interpretable ("${fechaIni}"); se guarda la preferencia como texto`,
+      );
+    } else {
+      await log(
+        `❌ agendar_cita: fecha ilegible en el bloque (inicio="${fechaIni}"); la cita NO se creó`,
+      );
+      return { ok: false, motivo: 'fecha ilegible en el bloque' };
+    }
   }
 
   let mFin = fechaFin
     ? moment.tz(fechaFin, 'YYYY-MM-DD HH:mm', 'America/Guayaquil')
     : null;
 
-  if (!mFin || !mFin.isValid() || !mFin.isAfter(mIni)) {
-    const [servicioCat] = await db.query(
-      `SELECT duracion FROM productos_chat_center
-        WHERE id_configuracion = ? AND eliminado = 0 AND duracion > 0
-          AND ? LIKE CONCAT('%', nombre, '%')
-        ORDER BY CHAR_LENGTH(nombre) DESC LIMIT 1`,
-      {
-        replacements: [id_configuracion, servicio || ''],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-
+  if (mIni.isValid() && (!mFin || !mFin.isValid() || !mFin.isAfter(mIni))) {
+    // La duración del ítem que se resolvió arriba. 60 es el último recurso.
     const minutos =
-      Number(servicioCat?.duracion) > 0 ? Number(servicioCat.duracion) : 60;
+      Number(itemAgendado?.duracion) > 0 ? Number(itemAgendado.duracion) : 60;
     mFin = mIni.clone().add(minutos, 'minutes');
     await log(
-      `🕒 agendar_cita: hora de fin calculada (${minutos} min de "${servicio || 'sin servicio'}")`,
+      `🕒 agendar_cita: hora de fin calculada (${minutos} min de ` +
+        `"${itemAgendado?.nombre || servicio || 'sin servicio'}")`,
     );
   }
 
-  const inicio_utc = mIni.utc().format();
-  const fin_utc = mFin.utc().format();
+  const inicio_utc = mIni.isValid() ? mIni.utc().format() : null;
+  const fin_utc = mFin && mFin.isValid() ? mFin.utc().format() : null;
 
-  /* Un producto no se agenda, se entrega. El bot igual arma citas de "recogida"
-     cuando la clienta quiere comprar algo, y eso le ocupa un cupo real de la
-     agenda a un tratamiento. Se corta acá y no solo en el prompt: si lo que
-     escribió en "Servicio" es un producto del catálogo, no hay cita y el caso
-     pasa a un asesor, que es quien cierra la venta. */
   if (servicio) {
-    const catalogo = await db.query(
-      `SELECT nombre, tipo FROM productos_chat_center
-        WHERE id_configuracion = ? AND eliminado = 0`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
+    /* Un producto no se agenda, se entrega. El bot igual arma citas de
+       "recogida" cuando la clienta quiere comprar algo, y eso le ocupa un cupo
+       real de la agenda a un tratamiento. Se corta acá y no solo en el prompt:
+       si lo que escribió en "Servicio" es un producto del catálogo, no hay cita
+       y el caso pasa a un asesor, que es quien cierra la venta.
 
-    const norm = (s) =>
-      String(s || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/\p{M}/gu, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+       La excepción es la cita EN el ítem. Ahí lo que se agenda es ir a verlo, y
+       un inmueble cargado como producto es perfectamente legítimo: el guard lo
+       reconoce por su ubicación propia, que es justo lo que un producto de
+       dropshipping nunca va a tener. */
+    const esProducto =
+      itemAgendado &&
+      String(itemAgendado.tipo || '').toLowerCase() !== 'servicio';
+    const seVisitaEnSitio =
+      lugarCita === 'item' && String(itemAgendado?.direccion || '').trim();
 
-    const pedido = norm(servicio);
-    const esProducto = catalogo.some((p) => {
-      if (String(p.tipo || '').toLowerCase() === 'servicio') return false;
-      const n = norm(p.nombre);
-      return n.length > 3 && (pedido.includes(n) || n.includes(pedido));
-    });
-
-    if (esProducto) {
+    if (esProducto && !seVisitaEnSitio) {
       await log(
         `⛔ agendar_cita: "${servicio}" es un producto del catálogo, no un servicio; la cita NO se creó`,
       );
@@ -2007,7 +2371,7 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     .trim();
 
   const sedes = await db.query(
-    `SELECT id, nombre, ciudad, direccion, id_calendario
+    `SELECT id, nombre, ciudad, direccion, id_calendario, buffer_minutos
        FROM establecimientos_chat_center
       WHERE id_configuracion = ? AND eliminado = 0 AND activo = 1
       ORDER BY orden ASC, id ASC`,
@@ -2016,7 +2380,21 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
 
   let establecimiento = null;
 
-  if (sedes.length === 1) {
+  /* Cuando la visita es en el ítem, la oficina la decide el ítem y no el bot:
+     cada inmueble está a cargo de una sucursal, y esa es la agenda donde tiene
+     que caer la visita y de donde sale el corredor. Lo que el modelo haya
+     escrito en "Sede" acá no manda — cambiar de oficina por una palabra mal
+     copiada deja al corredor equivocado esperando. */
+  const sedeDelItem =
+    lugarCita === 'item' && itemAgendado?.id_establecimiento
+      ? sedes.find(
+          (s) => Number(s.id) === Number(itemAgendado.id_establecimiento),
+        ) || null
+      : null;
+
+  if (sedeDelItem) {
+    establecimiento = sedeDelItem;
+  } else if (sedes.length === 1) {
     // Con una sola sede no hay nada que elegir, escriba lo que escriba el bot.
     establecimiento = sedes[0];
   } else if (sedeNombre && sedes.length) {
@@ -2049,170 +2427,125 @@ async function procesarAgendarCita(mensajeGPT, id_configuracion, id_cliente) {
     }
   }
 
-  const [usuario] = await db.query(
-    `SELECT sb.id_sub_usuario, sb.id_usuario
-     FROM configuraciones c
-     INNER JOIN sub_usuarios_chat_center sb ON sb.id_usuario = c.id_usuario
-     WHERE c.id = ? AND sb.rol = 'administrador' LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
+  /* ── Modo solicitud: hasta acá y no más ─────────────────────────
+     Todo lo de arriba —quién es, qué quiere ver, cuándo, en qué oficina— es el
+     trabajo que el bot hace bien y que no hay razón para repetir a mano. Lo que
+     no hace es tocar el calendario: eso lo decide una persona.
 
-  if (!usuario) {
-    await log(
-      `❌ agendar_cita: la configuración ${id_configuracion} no tiene sub-usuario administrador; la cita NO se creó`,
-    );
-    return { ok: false, motivo: 'sin sub-usuario administrador' };
-  }
-
-  /* La agenda se crea al vuelo si no existe.
-     Antes esto se abandonaba con un log y la cita no se creaba nunca. Y como la
-     acción `cambiar_estado` corre por separado, la tarjeta igual se movía a
-     "Cita agendada": quedaba una cita fantasma, visible en el tablero e
-     inexistente en el calendario, sin ningún error a la vista.
-     Pasaba siempre en cuentas recién montadas, porque la fila de `calendars`
-     solo nacía cuando alguien abría la pantalla de Calendario (/calendars/ensure). */
-  let calendarId = null;
-
-  if (establecimiento?.id_calendario) {
-    const [c] = await db.query(
-      `SELECT id FROM calendars WHERE id = ? LIMIT 1`,
+     Se corta antes de buscar el sub-usuario y de crear la agenda porque nada de
+     eso hace falta todavía; se resuelve al confirmar, con quien confirma. */
+  if (modo === 'solicitud') {
+    const [yaPendiente] = await db.query(
+      `SELECT id FROM citas_solicitudes
+        WHERE id_configuracion = ? AND id_cliente = ? AND estado = 'pendiente'
+        ORDER BY id DESC LIMIT 1`,
       {
-        replacements: [establecimiento.id_calendario],
+        replacements: [id_configuracion, id_cliente],
         type: db.QueryTypes.SELECT,
       },
     );
-    calendarId = c?.id || null;
-  }
 
-  if (!calendarId) {
-    const [c] = await db.query(
-      `SELECT id FROM calendars WHERE account_id = ? AND is_active = 1
-        ORDER BY id ASC LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
-    calendarId = c?.id || null;
-  }
+    /* El bot reescribe el bloque cuando la persona responde "perfecto" o
+       cambia de idea sobre el horario. Sin esto, cada mensaje deja otra
+       solicitud y quien confirma ve la misma persona cuatro veces. Se
+       actualiza la que ya estaba: lo último que dijo es lo que vale. */
+    const datos = {
+      id_producto: itemAgendado?.id || null,
+      id_establecimiento: establecimiento?.id || null,
+      nombre: (nombre || '').slice(0, 150) || null,
+      telefono: (telefono || '').slice(0, 30) || null,
+      correo: (correo || '').slice(0, 150) || null,
+      servicio: (servicio || '').slice(0, 255) || null,
+      preferencia_texto: (fechaIni || '').slice(0, 255) || null,
+      inicio_sugerido: inicio_utc
+        ? moment.utc(inicio_utc).format('YYYY-MM-DD HH:mm:ss')
+        : null,
+      duracion_minutos:
+        inicio_utc && fin_utc
+          ? Math.max(15, moment.utc(fin_utc).diff(moment.utc(inicio_utc), 'minutes'))
+          : null,
+    };
 
-  if (!calendarId) {
-    try {
-      const { ensureDefaultCalendar } = require('./calendars.service');
-      const creado = await ensureDefaultCalendar({
-        account_id: Number(id_configuracion),
-        name: 'Agenda principal',
-        created_by: usuario.id_usuario,
-      });
-      calendarId = creado?.id || null;
-      await log(
-        `📅 agendar_cita: la configuración ${id_configuracion} no tenía agenda; se creó la ${calendarId}`,
+    if (yaPendiente) {
+      await db.query(
+        `UPDATE citas_solicitudes
+            SET id_producto = ?, id_establecimiento = ?, nombre = ?, telefono = ?,
+                correo = ?, servicio = ?, preferencia_texto = ?, inicio_sugerido = ?,
+                duracion_minutos = ?, updated_at = NOW()
+          WHERE id = ?`,
+        {
+          replacements: [
+            datos.id_producto,
+            datos.id_establecimiento,
+            datos.nombre,
+            datos.telefono,
+            datos.correo,
+            datos.servicio,
+            datos.preferencia_texto,
+            datos.inicio_sugerido,
+            datos.duracion_minutos,
+            yaPendiente.id,
+          ],
+          type: db.QueryTypes.UPDATE,
+        },
       );
-    } catch (e) {
-      await log(`❌ agendar_cita: no se pudo crear la agenda: ${e.message}`);
-      return { ok: false, motivo: `no se pudo crear la agenda: ${e.message}` };
+      await log(
+        `📝 Solicitud de cita ${yaPendiente.id} actualizada: ${nombre} · ${servicio || 'sin ítem'} · ${fechaIni || 'sin fecha'}`,
+      );
+      return { ok: true, modo: 'solicitud', id_solicitud: yaPendiente.id };
     }
-  }
 
-  /* ── Quién atiende ────────────────────────────────────────────────
-     Sin esto el bot mandaba todas las citas al mismo sub-usuario administrador,
-     así que un centro con tres esteticistas solo podía recibir UNA cita por
-     hora: la segunda moría con "el encargado ya tiene una cita".
-     Con profesionales cargados, la capacidad la da cuánta gente atiende. Si la
-     sede no tiene ninguno, todo sigue como antes. */
-  const idProfesional = await elegirProfesionalLibre({
-    id_configuracion,
-    establecimiento,
-    calendarId,
-    inicio_utc,
-    fin_utc,
-    pedido: campo('Atiende'),
-  });
-
-  if (idProfesional && idProfesional.error) {
-    await log(`❌ agendar_cita: ${idProfesional.error}`);
-    return { ok: false, motivo: idProfesional.error };
-  }
-
-  /* Cita repetida. El bot vuelve a escribir el bloque cuando la persona
-     responde "sí" o "perfecto" después de confirmada —pasa sobre todo en la
-     columna "Cita agendada", que también puede agendar para reprogramar— y eso
-     creaba una segunda cita idéntica: dos cupos ocupados y la sede esperando a
-     alguien dos veces. Si ya existe una en ese mismo horario para este contacto,
-     se da por hecha. */
-  const [yaExiste] = await db.query(
-    `SELECT ap.id
-       FROM appointments ap
-       JOIN appointment_invitees inv ON inv.appointment_id = ap.id
-      WHERE ap.calendar_id = ?
-        AND ap.start_utc = ?
-        AND ap.status IN ('Agendado', 'Confirmado')
-        AND RIGHT(REGEXP_REPLACE(inv.phone, '[^0-9]', ''), 9)
-            = RIGHT(REGEXP_REPLACE(?, '[^0-9]', ''), 9)
-      LIMIT 1`,
-    {
-      replacements: [
-        calendarId,
-        moment.utc(inicio_utc).format('YYYY-MM-DD HH:mm:ss'),
-        telefono || '',
-      ],
-      type: db.QueryTypes.SELECT,
-    },
-  );
-
-  if (yaExiste) {
-    await log(
-      `♻️ agendar_cita: ${nombre} ya tenía la cita ${yaExiste.id} a esa misma hora; no se duplica`,
-    );
-    return { ok: true, id: yaExiste.id, repetida: true };
-  }
-
-  const payload = {
-    assigned_user_id: usuario.id_sub_usuario,
-    id_profesional: idProfesional || null,
-    booked_tz: 'America/Guayaquil',
-    calendar_id: calendarId,
-    create_meet: true,
-    created_by_user_id: usuario.id_usuario,
-    description: '',
-    end: fin_utc,
-    invitees: [{ name: nombre, email: correo, phone: telefono }],
-    // Para un servicio presencial la ubicación es la sede, no "online".
-    location_text: establecimiento
-      ? [
-          establecimiento.nombre,
-          establecimiento.direccion,
-          establecimiento.ciudad,
-        ]
-          .filter(Boolean)
-          .join(' — ')
-          .slice(0, 255)
-      : 'online',
-    meeting_url: null,
-    start: inicio_utc,
-    status: 'Agendado',
-    title: `${nombre} - ${servicio}`,
-  };
-
-  const cita = await servicioAppointments.createAppointment(
-    payload,
-    usuario.id_usuario,
-  );
-
-  // La sede se guarda aparte: createAppointment no la conoce y no vale la pena
-  // meterle un campo que solo usa este flujo.
-  if (establecimiento?.id && cita?.id) {
-    await db.query(
-      `UPDATE appointments SET id_establecimiento = ? WHERE id = ?`,
+    const [idNuevo] = await db.query(
+      `INSERT INTO citas_solicitudes
+         (id_configuracion, id_cliente, id_producto, id_establecimiento, nombre,
+          telefono, correo, servicio, preferencia_texto, inicio_sugerido,
+          duracion_minutos, estado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')`,
       {
-        replacements: [establecimiento.id, cita.id],
-        type: db.QueryTypes.UPDATE,
+        replacements: [
+          id_configuracion,
+          id_cliente,
+          datos.id_producto,
+          datos.id_establecimiento,
+          datos.nombre,
+          datos.telefono,
+          datos.correo,
+          datos.servicio,
+          datos.preferencia_texto,
+          datos.inicio_sugerido,
+          datos.duracion_minutos,
+        ],
+        type: db.QueryTypes.INSERT,
       },
     );
+
+    await log(
+      `📝 Solicitud de cita registrada (#${idNuevo}): ${nombre} · ${servicio || 'sin ítem'} · ${fechaIni || 'sin fecha'}`,
+    );
+
+    return { ok: true, modo: 'solicitud', id_solicitud: idNuevo };
   }
 
-  await log(
-    `✅ Cita agendada: ${nombre} - ${servicio} - ${inicio_utc}${establecimiento ? ` · sede "${establecimiento.nombre}"` : ''}`,
-  );
+  /* El alta de la cita vive en citas_agenda.service: elegir la agenda, repartir
+     a quien atiende, respetar el traslado y decidir la dirección son las mismas
+     decisiones cuando confirma una persona desde el panel de solicitudes. Dos
+     copias de eso se separan a la primera corrección y nadie se entera hasta
+     que una visita cae en la sucursal equivocada. */
+  const resultado = await crearCitaAgendada({
+    id_configuracion,
+    establecimiento,
+    item: itemAgendado,
+    lugar_cita: lugarCita,
+    nombre,
+    telefono,
+    correo,
+    servicio,
+    inicio_utc,
+    fin_utc,
+    profesional_pedido: campo('Atiende'),
+  });
 
-  return { ok: true, id: cita?.id || null };
+  return resultado;
 }
 
 /**

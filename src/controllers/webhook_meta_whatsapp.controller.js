@@ -1130,8 +1130,30 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         if (bot_openia === 1) {
           let total_tokens = 0;
 
-          // Obtener thread
-          const id_thread = await obtenerThreadId(id_cliente, api_key_openai);
+          /* ── El thread SOLO lo necesitan las ramas viejas ──────────────
+             `enviarAsistenteKanban` no recibe `id_thread` y no lo usa: por la
+             Responses API la memoria es `openai_threads.response_id`, no el
+             thread. Las únicas que lo consumen son las ramas por
+             `tipo_configuracion` distintas de 'kanban', y hoy no hay ninguna
+             cuenta de esos tipos.
+
+             Pedirlo igual no era solo desperdicio (una llamada a OpenAI por
+             cada uno de los ~16.500 mensajes diarios). Es una bomba de tiempo:
+             `obtenerOCrearThreadId` valida el thread contra OpenAI y, si la
+             validación falla, hace DELETE de la fila de `openai_threads` — la
+             MISMA fila donde vive el `response_id`.
+
+             Cuando OpenAI apague la Assistants API el 2026-08-26, esa
+             validación va a fallar SIEMPRE: cada mensaje entrante borraría la
+             memoria del cliente justo antes de que el motor la lea, y todos los
+             bots empezarían a saludar de nuevo en cada turno sin un solo error
+             a la vista.
+
+             Con `null` para kanban, la rama viva deja de tocar esa fila. */
+          const id_thread =
+            tipo_configuracion === 'kanban'
+              ? null
+              : await obtenerThreadId(id_cliente, api_key_openai);
 
           // Si es audio y tienes ruta de archivo, intentar transcribir
           if (tipo_mensaje === 'audio' && ruta_archivo) {

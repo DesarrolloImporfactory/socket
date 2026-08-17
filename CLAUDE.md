@@ -31,7 +31,15 @@ Both repos use pnpm workspaces (`pnpm-workspace.yaml`) but `package-lock.json` i
 
 ## Deployment
 
-Push to `main` on either repo triggers **FTP deploy** via GitHub Actions (`.github/workflows/developer.yml`, `SamKirkland/FTP-Deploy-Action`). There is no build/test gate — pushing to `main` deploys the raw source. Be deliberate about what lands on `main`.
+**`develop` → development server, automatically.** Pushing to `develop` runs `.github/workflows/developer.yml` ("Deploy development socket"): it rsyncs the source over SSH to `deploysocket@98.91.50.83:/var/www/devsocket/` and reloads the service, which serves `developer.imporfactory.app`. Unlike the old pipeline it *does* gate: `node --check src/server.js` must pass, and after reloading it verifies the public Socket.IO handshake responds with a `sid`. `.env`, `node_modules`, `uploads/` and `logs/` are excluded from the sync.
+
+Two kill switches, read from the commit message of the pushed HEAD:
+- `[dev:skip]` — deploy nothing (use when a push shouldn't touch the dev box).
+- `[dev:off]` — stop the development socket entirely. It stays down until a later push without the tag brings it back, so a normal push **revives a stopped dev environment** as a side effect.
+
+**`main` → no automatic deploy.** Until 2026-08-08 `developer.yml` was an FTP deploy triggered by `main` (`SamKirkland/FTP-Deploy-Action`); it was replaced by the SSH pipeline above, and nothing took over that trigger. Pushing to `main` today publishes nothing. Production is released with **Impormerge**, the internal deploy tool, once the work is consolidated on `main` — so landing code on `main` is a prerequisite for release, not the release itself.
+
+In practice not everything reaches `main` through a PR from `develop`: commits also get pushed straight to `main`. Before starting work, check whether `main` is ahead (`git log origin/develop..origin/main`) and merge it into `develop` first — otherwise a later `develop` → `main` merge silently reverts whatever was pushed directly.
 
 ## Backend architecture
 

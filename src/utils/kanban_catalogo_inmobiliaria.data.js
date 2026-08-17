@@ -256,7 +256,13 @@ atascado acá y nadie lo vuelve a atender. Y no partas el cierre en dos mensajes
 /* Bloque que procesarAgendarCita() sabe leer. Las etiquetas y el formato de
    fecha son literales: cualquier cambio y la visita deja de crearse en silencio.
    "Servicio que desea" es el nombre que el parser espera; ahí va el inmueble
-   porque de ahí sale el título que el corredor ve en su agenda. */
+   porque de ahí sale el título que el corredor ve en su agenda —y, con
+   `lugar_cita: 'item'`, también la dirección a la que va a llegar la persona.
+   Por eso el nombre EXACTO importa tanto: es lo que ata la visita al inmueble.
+
+   La línea de la oficina ya no va. Cuando estaba, el modelo la llenaba con la
+   dirección de la oficina y esa dirección terminaba siendo el lugar de la
+   visita: la persona esperando en la casa y el corredor en el local. */
 const BLOQUE_VISITA = dedent(`CÓMO AGENDAR LA VISITA (formato obligatorio)
 Cuando la persona acepte un día y hora CONCRETOS y ya tengas su nombre, teléfono
 y qué inmueble va a ver, cierra con una línea de confirmación y agrega al final
@@ -265,14 +271,15 @@ este bloque EXACTO, cada dato en su línea:
 🧑 Nombre: <nombre y apellido que te dio>
 📞 Teléfono: <el teléfono que te dio>
 📍 Servicio que desea: Visita — <nombre EXACTO del inmueble, como aparece en la cartera>
-🏢 Sede: <nombre exacto de la oficina> — <dirección de esa oficina>
 🕒 Fecha y hora: <YYYY-MM-DD HH:mm>
 [cita_confirmada]:true
 
 Reglas del bloque:
 - Va TODO junto, sin líneas en blanco, en un solo mensaje.
-- Antes del bloque va UNA línea de confirmación ("listo, nos vemos el jueves")
-  y nada más.
+- Antes del bloque va UNA línea de cierre y nada más. Qué dice esa línea
+  —si le confirmas la visita o si le dices que un asesor le confirma el
+  horario— te lo indica la información que se te entrega. Cuando no se te diga
+  nada, confirma normal.
 - Fecha en hora de Ecuador y en ese formato exacto (ej. 2026-08-14 15:30). Solo
   la hora de inicio: la de fin la calcula el sistema con la duración de la
   visita.
@@ -282,13 +289,14 @@ Reglas del bloque:
   "¿me confirmas tu nombre completo y un número de contacto?".
   ÚNICA excepción: si responde "a este mismo número" o parecido, usa el número
   que se te entrega en los datos técnicos del contacto y no vuelvas a preguntar.
-- El inmueble va con el nombre EXACTO de la cartera: es lo que el corredor lee
-  en su agenda para saber a dónde tiene que ir.
-- La oficina va con el nombre EXACTO de la lista. Si hay una sola, usa esa sin
-  preguntar. Si hay VARIAS, no elijas al azar: la visita se crea en la agenda de
-  ESA oficina y el corredor equivocado queda esperando. Usa la que atienda la
-  zona del inmueble, y si no lo tienes claro, pregúntale a la persona cuál le
-  queda mejor antes de escribir el bloque.
+- El inmueble va con el nombre EXACTO de la cartera. Es el dato del que cuelga
+  todo: de ahí salen la dirección a la que va a llegar la persona y el corredor
+  que la muestra. Escrito a medias o con otro nombre, la visita se crea en el
+  lugar equivocado. Si no estás seguro de cuál de dos inmuebles parecidos es,
+  pregúntaselo antes de escribir el bloque.
+- LA VISITA ES EN EL INMUEBLE, no en la oficina. No escribas ninguna dirección
+  en el bloque: la pone el sistema desde la ficha del inmueble. Tampoco cites a
+  nadie en la oficina "para ir juntos" salvo que la persona lo pida.
 - Solo escribes el bloque cuando la persona YA confirmó día y hora. Si todavía
   está eligiendo, no lo pongas: se crearía una visita falsa en la agenda.
 - Nunca ofrezcas un horario que no esté en la disponibilidad que se te entregó.
@@ -651,7 +659,22 @@ const COLUMNAS_INMOBILIARIA = [
       // que exista la cita.
       {
         tipo_accion: 'agendar_cita',
-        config: { trigger: '[cita_confirmada]:true' },
+        /* `lugar_cita: 'item'` es lo que hace que la visita se cree con la
+           dirección del inmueble y no con la de la oficina. Es la diferencia
+           entre este tablero y el de una clínica: acá el cliente no viene, se
+           va a ver la casa. La oficina sigue siendo la agenda —de ahí sale el
+           corredor que la muestra—, y si el inmueble no tiene dirección
+           cargada, la cita cae en la sede como antes. */
+        /* `modo: 'solicitud'`: el bot levanta el pedido y lo deja en "Por
+           agendar visita" para que un asesor confirme el horario. Quien quiera
+           que el bot agende solo cambia esta llave a 'auto' desde el editor de
+           la acción y borra esa columna: el resto del tablero no se entera. */
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
         activo: 1,
         orden: 1,
       },
@@ -694,6 +717,116 @@ const COLUMNAS_INMOBILIARIA = [
     ],
   },
 
+  /* ── 3.5 Por agendar visita ──────────────────────────────────
+     La columna que existe porque el bot NO agenda solo.
+
+     Con `modo: 'solicitud'` en la acción `agendar_cita`, el bot levanta todo
+     —quién es, qué quiere ver, cuándo le viene bien— y deja la tarjeta acá en
+     vez de tocar el calendario. Quien atiende confirma desde el panel de
+     solicitudes cuando puede.
+
+     No es desconfianza del bot: es que la agenda de un corredor es su día
+     entero. Enterarse a las 14:40 de que tiene una visita a las 15:00 —porque
+     estaba manejando, en una reunión o durmiendo— es peor que responder media
+     hora más tarde.
+
+     Quien SÍ quiera agendamiento automático cambia el modo en la acción y
+     borra esta columna: todo lo demás del tablero funciona igual. */
+  {
+    nombre: 'Por agendar visita',
+    estado_db: 'por_agendar',
+    color_fondo: '#FFF7ED',
+    color_texto: '#C2410C',
+    icono: 'bx bx-time-five',
+    orden: 4,
+    activo: 1,
+    es_estado_final: 0,
+    es_principal: 0,
+    es_dropi_principal: 0,
+    activa_ia: 1,
+    max_tokens: 700,
+    modelo: 'gpt-4o-mini',
+    instrucciones:
+      dedent(`Eres [NOMBRE_ASISTENTE], de [NOMBRE_TIENDA]. Esta persona ya dijo que quiere ver un inmueble y dejó su preferencia de día y hora. Falta que un asesor le confirme el horario.
+
+    LO QUE NO PUEDES HACER ACÁ
+    NO le confirmes la visita. No está confirmada: está en revisión. Frases
+    como "listo, nos vemos el jueves", "quedó agendada" o "te espero a las 3"
+    están PROHIBIDAS en esta columna. Si se lo dices y después el horario no
+    daba, la persona se planta en una puerta y no hay cómo arreglarlo.
+    Lo que sí dices: "ya quedó registrada tu solicitud, un asesor te confirma
+    el horario en un rato".
+
+    SI PREGUNTA POR LA CONFIRMACIÓN
+    Dile con naturalidad que está en revisión y que le confirman hoy mismo. No
+    inventes una hora ni prometas un plazo exacto que no controlas.
+
+    SI CAMBIA EL DÍA O LA HORA QUE PREFIERE
+    Perfecto, tómalo: escribe el bloque completo otra vez con la nueva
+    preferencia. Se actualiza la solicitud que ya existe, no se duplica.
+
+    SI PREGUNTA POR EL INMUEBLE
+    Respóndele normal, con lo que tengas de la ficha. Sigue siendo un lead
+    caliente y esta espera es el peor momento para dejarlo sin respuesta.
+
+    SI DICE QUE YA NO PUEDE O YA NO LE INTERESA
+    [perdidos]:true. Y si lo que quiere es otro inmueble, [califica]:true.
+
+    SI SE IMPACIENTA O INSISTE
+    Un lead que empuja para que le confirmen es exactamente el que no se puede
+    perder: [asesor]:true y que lo tomen ya.
+
+    ${BLOQUE_MEDIA}
+
+    ${BLOQUE_VISITA}
+
+    ${CIERRE_ASESOR}
+
+    ${BASE}
+
+    [BLOQUE_TONO_PERSONALIZADO]
+    [BLOQUE_INSTRUCCIONES_EXTRA]`),
+    acciones: [
+      {
+        tipo_accion: 'agendar_cita',
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
+        activo: 1,
+        orden: 1,
+      },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[califica]:true', estado_destino: 'califica' },
+        activo: 1,
+        orden: 2,
+      },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[perdidos]:true', estado_destino: 'perdidos' },
+        activo: 1,
+        orden: 3,
+      },
+      {
+        tipo_accion: 'cambiar_estado',
+        config: { trigger: '[asesor]:true', estado_destino: 'asesor' },
+        activo: 1,
+        orden: 4,
+      },
+      { tipo_accion: 'contexto_calendario', config: {}, activo: 1, orden: 5 },
+      { tipo_accion: 'contexto_productos', config: {}, activo: 1, orden: 5 },
+      {
+        tipo_accion: 'contexto_establecimientos',
+        config: {},
+        activo: 1,
+        orden: 6,
+      },
+    ],
+  },
+
   // ── 4. Visita agendada (estado_db fijo: lo lee el cron) ─────
   {
     nombre: 'Visita agendada',
@@ -701,7 +834,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#ECFDF5',
     color_texto: '#047857',
     icono: 'bx bx-calendar-check',
-    orden: 4,
+    orden: 5,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -745,7 +878,22 @@ const COLUMNAS_INMOBILIARIA = [
     acciones: [
       {
         tipo_accion: 'agendar_cita',
-        config: { trigger: '[cita_confirmada]:true' },
+        /* `lugar_cita: 'item'` es lo que hace que la visita se cree con la
+           dirección del inmueble y no con la de la oficina. Es la diferencia
+           entre este tablero y el de una clínica: acá el cliente no viene, se
+           va a ver la casa. La oficina sigue siendo la agenda —de ahí sale el
+           corredor que la muestra—, y si el inmueble no tiene dirección
+           cargada, la cita cae en la sede como antes. */
+        /* `modo: 'solicitud'`: el bot levanta el pedido y lo deja en "Por
+           agendar visita" para que un asesor confirme el horario. Quien quiera
+           que el bot agende solo cambia esta llave a 'auto' desde el editor de
+           la acción y borra esa columna: el resto del tablero no se entera. */
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
         activo: 1,
         orden: 1,
       },
@@ -785,7 +933,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#F0FDF4',
     color_texto: '#15803D',
     icono: 'bx bx-home-heart',
-    orden: 5,
+    orden: 6,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -855,7 +1003,22 @@ const COLUMNAS_INMOBILIARIA = [
     acciones: [
       {
         tipo_accion: 'agendar_cita',
-        config: { trigger: '[cita_confirmada]:true' },
+        /* `lugar_cita: 'item'` es lo que hace que la visita se cree con la
+           dirección del inmueble y no con la de la oficina. Es la diferencia
+           entre este tablero y el de una clínica: acá el cliente no viene, se
+           va a ver la casa. La oficina sigue siendo la agenda —de ahí sale el
+           corredor que la muestra—, y si el inmueble no tiene dirección
+           cargada, la cita cae en la sede como antes. */
+        /* `modo: 'solicitud'`: el bot levanta el pedido y lo deja en "Por
+           agendar visita" para que un asesor confirme el horario. Quien quiera
+           que el bot agende solo cambia esta llave a 'auto' desde el editor de
+           la acción y borra esa columna: el resto del tablero no se entera. */
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
         activo: 1,
         orden: 1,
       },
@@ -916,7 +1079,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#FFF7ED',
     color_texto: '#C2410C',
     icono: 'bx bx-calendar-x',
-    orden: 6,
+    orden: 7,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -955,7 +1118,22 @@ const COLUMNAS_INMOBILIARIA = [
     acciones: [
       {
         tipo_accion: 'agendar_cita',
-        config: { trigger: '[cita_confirmada]:true' },
+        /* `lugar_cita: 'item'` es lo que hace que la visita se cree con la
+           dirección del inmueble y no con la de la oficina. Es la diferencia
+           entre este tablero y el de una clínica: acá el cliente no viene, se
+           va a ver la casa. La oficina sigue siendo la agenda —de ahí sale el
+           corredor que la muestra—, y si el inmueble no tiene dirección
+           cargada, la cita cae en la sede como antes. */
+        /* `modo: 'solicitud'`: el bot levanta el pedido y lo deja en "Por
+           agendar visita" para que un asesor confirme el horario. Quien quiera
+           que el bot agende solo cambia esta llave a 'auto' desde el editor de
+           la acción y borra esa columna: el resto del tablero no se entera. */
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
         activo: 1,
         orden: 1,
       },
@@ -1004,7 +1182,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#FEFCE8',
     color_texto: '#A16207',
     icono: 'bx bx-file',
-    orden: 7,
+    orden: 8,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -1089,7 +1267,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#F0FDFA',
     color_texto: '#0F766E',
     icono: 'bx bx-key',
-    orden: 8,
+    orden: 9,
     activo: 1,
     es_estado_final: 1,
     es_principal: 0,
@@ -1108,7 +1286,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#F8FAFC',
     color_texto: '#475569',
     icono: 'bx bx-time-five',
-    orden: 9,
+    orden: 10,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -1206,7 +1384,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#EFF6FF',
     color_texto: '#1E40AF',
     icono: 'bx bx-building-house',
-    orden: 10,
+    orden: 11,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -1269,7 +1447,22 @@ const COLUMNAS_INMOBILIARIA = [
     acciones: [
       {
         tipo_accion: 'agendar_cita',
-        config: { trigger: '[cita_confirmada]:true' },
+        /* `lugar_cita: 'item'` es lo que hace que la visita se cree con la
+           dirección del inmueble y no con la de la oficina. Es la diferencia
+           entre este tablero y el de una clínica: acá el cliente no viene, se
+           va a ver la casa. La oficina sigue siendo la agenda —de ahí sale el
+           corredor que la muestra—, y si el inmueble no tiene dirección
+           cargada, la cita cae en la sede como antes. */
+        /* `modo: 'solicitud'`: el bot levanta el pedido y lo deja en "Por
+           agendar visita" para que un asesor confirme el horario. Quien quiera
+           que el bot agende solo cambia esta llave a 'auto' desde el editor de
+           la acción y borra esa columna: el resto del tablero no se entera. */
+        config: {
+          trigger: '[cita_confirmada]:true',
+          lugar_cita: 'item',
+          modo: 'solicitud',
+          estado_solicitud: 'por_agendar',
+        },
         activo: 1,
         orden: 1,
       },
@@ -1330,7 +1523,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#FDF4FF',
     color_texto: '#A21CAF',
     icono: 'bx bx-home-alt',
-    orden: 11,
+    orden: 12,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -1353,13 +1546,25 @@ const COLUMNAS_INMOBILIARIA = [
 
     LO QUE TIENES QUE AVERIGUAR (uno por mensaje, hilado con lo que te cuente)
     1) Qué es: casa, departamento, terreno, local, oficina, bodega.
-    2) Dónde queda: sector o barrio. La dirección exacta no se pide por WhatsApp,
-       eso lo ve el corredor.
+    2) Dónde queda: sector o barrio. La dirección escrita no hace falta —pídele
+       la UBICACIÓN de WhatsApp, que es más exacta y le toma dos segundos:
+       "¿me mandas la ubicación? Con el clip 📎 → Ubicación. Así el corredor
+       llega directo sin darte vueltas". Si no puede o no quiere, con el sector
+       alcanza y sigues; no insistas más de una vez.
+       Cuando la mande, ya la tienes: no vuelvas a preguntarle la dirección.
     3) Cuántos dormitorios y baños, y cuántos metros. Si no lo sabe de memoria,
        que te dé lo que recuerde.
     4) En cuánto lo quiere vender o arrendar.
     5) Si es para venta o para arriendo.
     6) Si está habitado, arrendado o vacío. Cambia por completo cómo se muestra.
+    7) El número de predio (la clave catastral, la que sale en el impuesto
+       predial). Pídelo así, con el motivo a la vista: "para levantar la ficha
+       del inmueble necesito el número de predio, el que aparece en el impuesto
+       predial. Si no lo tienes a mano me lo pasas después, no hay apuro".
+       Es lo que permite verificar el inmueble antes de invertir en publicarlo,
+       y pedirlo así —una vez, sin condicionar nada— no incomoda. Si dice que no
+       lo tiene, sigues igual: "no lo sabe" es un dato válido y el corredor lo
+       resuelve. NO lo conviertas en un requisito ni frenes la captación por él.
 
     LO QUE NO PREGUNTAS Y NO PROMETES
     - NO le digas cuánto vale su inmueble ni si el precio que pide está bien.
@@ -1379,6 +1584,8 @@ const COLUMNAS_INMOBILIARIA = [
 
     🏠 Inmueble: <tipo>
     📍 Sector: <sector o barrio>
+    🗺️ Ubicación: <el enlace del mapa que se te entregó cuando compartió la ubicación, o "no la mandó">
+    🧾 Predio: <número de predio o clave catastral, o "no lo sabe">
     📐 Detalle: <dormitorios, baños y metros, con lo que te haya dado>
     💵 Lo pide en: <valor que dijo>
     🏷️ Operación: <venta | arriendo>
@@ -1457,7 +1664,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#FEF3C7',
     color_texto: '#B45309',
     icono: 'bx bx-map-pin',
-    orden: 12,
+    orden: 13,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,
@@ -1528,7 +1735,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#F1F5F9',
     color_texto: '#64748B',
     icono: 'bx bx-user-x',
-    orden: 13,
+    orden: 14,
     activo: 1,
     es_estado_final: 1,
     es_principal: 0,
@@ -1548,7 +1755,7 @@ const COLUMNAS_INMOBILIARIA = [
     color_fondo: '#FEE2E2',
     color_texto: '#991B1B',
     icono: 'bx bx-user-voice',
-    orden: 14,
+    orden: 15,
     activo: 1,
     es_estado_final: 0,
     es_principal: 0,

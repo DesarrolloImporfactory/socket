@@ -195,7 +195,9 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
      La lectura es conservadora: si el texto no se entiende, no se marca nada.
      Cerrar un día por una mala interpretación es peor que no marcarlo. */
   const sedes = await db.query(
-    `SELECT nombre, horario, horario_json FROM establecimientos_chat_center
+    `SELECT nombre, horario, horario_json,
+            buffer_minutos, anticipacion_minima_horas, max_citas_dia
+       FROM establecimientos_chat_center
       WHERE id_configuracion = ? AND activo = 1 AND eliminado = 0
       ORDER BY orden ASC, id ASC`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -341,14 +343,51 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
     `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
   const ocupadasPorFecha = new Map();
+  const citasPorFecha = new Map();
   for (const f of franjas.values()) {
+    const fecha = f.ini.format('YYYY-MM-DD');
+    // Para el tope diario cuentan TODAS las citas, llenen o no la franja.
+    citasPorFecha.set(fecha, (citasPorFecha.get(fecha) || 0) + f.ocupadas);
+
     const total = capacidad.get(f.sedeId) || 1;
     if (total - f.ocupadas > 0) continue; // todavía queda cupo: no bloquea
-    const fecha = f.ini.format('YYYY-MM-DD');
     if (!ocupadasPorFecha.has(fecha)) ocupadasPorFecha.set(fecha, []);
     ocupadasPorFecha
       .get(fecha)
       .push({ desde: aMin(f.ini.format('HH:mm')), hasta: aMin(f.fin.format('HH:mm')) });
+  }
+
+  /* Las citas de hoy que ya pasaron. La consulta de arriba solo trae las
+     futuras —para saber qué está ocupado, mirar hacia atrás no sirve—, pero
+     para el tope del día sí cuentan: si el tope son 4 y ya atendió 3 esta
+     mañana, queda 1, no 4. Solo se pregunta si alguna sede tiene tope puesto. */
+  if (sedes.some((s) => Number(s.max_citas_dia) > 0)) {
+    try {
+      const [hoy] = await db.query(
+        `SELECT COUNT(*) AS n
+           FROM appointments ap
+           JOIN calendars ca ON ca.id = ap.calendar_id
+          WHERE ca.account_id = ?
+            AND ap.start_utc <= UTC_TIMESTAMP()
+            AND DATE(CONVERT_TZ(ap.start_utc, '+00:00', ?)) = ?
+            AND ap.status NOT IN ('Cancelado', 'Bloqueado')`,
+        {
+          replacements: [
+            id_configuracion,
+            ahora.format('Z'),
+            ahora.format('YYYY-MM-DD'),
+          ],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const fechaHoy = ahora.format('YYYY-MM-DD');
+      citasPorFecha.set(
+        fechaHoy,
+        (citasPorFecha.get(fechaHoy) || 0) + Number(hoy?.n || 0),
+      );
+    } catch (_) {
+      /* Sin este conteo el tope del día es optimista, no roto: se sigue. */
+    }
   }
 
   const lineasLibres = [];
@@ -360,26 +399,59 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
       const franjasDia = franjasDelDia(s.horario_json, d.day());
       if (!franjasDia || !franjasDia.length) continue;
 
-      /* Hoy ya no se puede ofrecer una hora que pasó: redondeado a la próxima
-         media hora, para no proponer "en 5 minutos". */
-      const pisoHoy =
-        i === 0 ? Math.ceil((aMin(ahora.format('HH:mm')) + 30) / 30) * 30 : 0;
+      const colchon = Math.max(0, Number(s.buffer_minutos) || 0);
+      const donde = sedes.length > 1 ? ` · ${s.nombre}` : '';
+
+      /* Tope de citas del día. Sirve para el que no quiere una agenda llena de
+         punta a punta aunque técnicamente le quepan: con visitas a domicilio,
+         seis en un día es un día imposible por más que los huecos existan. */
+      const tope = Number(s.max_citas_dia) || 0;
+      if (tope && (citasPorFecha.get(fecha) || 0) >= tope) {
+        lineasLibres.push(
+          `- ${DIAS[d.day()]} ${fecha}${donde}: sin cupo (ya tiene ${tope} citas, que es el tope del día)`,
+        );
+        continue;
+      }
+
+      /* Desde cuándo se puede ofrecer. Antes solo se cuidaba el día de hoy y
+         por media hora: bastaba con que la persona pidiera "mañana a las 8" para
+         que el bot lo aceptara a las 11 de la noche. Con anticipación mínima
+         configurada, el corte se arrastra a los días siguientes — que es de lo
+         que se trata: quien se mueve por la ciudad necesita saberlo con horas de
+         anticipación, no con minutos. */
+      const minAviso = Math.max(
+        30,
+        Math.max(0, Number(s.anticipacion_minima_horas) || 0) * 60,
+      );
+      const desdeCuando = ahora.clone().add(minAviso, 'minutes');
+
+      if (d.isBefore(desdeCuando, 'day')) continue;
+
+      const piso = d.isSame(desdeCuando, 'day')
+        ? Math.ceil(aMin(desdeCuando.format('HH:mm')) / 30) * 30
+        : 0;
 
       let libres = franjasDia
-        .map((f) => ({ desde: Math.max(aMin(f.desde), pisoHoy), hasta: aMin(f.hasta) }))
+        .map((f) => ({ desde: Math.max(aMin(f.desde), piso), hasta: aMin(f.hasta) }))
         .filter((f) => f.hasta - f.desde >= 30);
 
       for (const oc of ocupadasPorFecha.get(fecha) || []) {
+        /* El traslado se descuenta a los dos lados de cada cita ya tomada: si
+           hay una a las 15:00 y hacen falta 45 minutos para cruzar la ciudad,
+           las 15:45 no son un hueco aunque la agenda las muestre vacías. */
+        const ocDesde = oc.desde - colchon;
+        const ocHasta = oc.hasta + colchon;
+
         const nuevas = [];
         for (const l of libres) {
-          if (oc.hasta <= l.desde || oc.desde >= l.hasta) {
+          if (ocHasta <= l.desde || ocDesde >= l.hasta) {
             nuevas.push(l);
             continue;
           }
-          if (oc.desde - l.desde >= 30)
-            nuevas.push({ desde: l.desde, hasta: oc.desde });
-          if (l.hasta - oc.hasta >= 30)
-            nuevas.push({ desde: oc.hasta, hasta: l.hasta });
+          if (ocDesde - l.desde >= 30)
+            nuevas.push({ desde: l.desde, hasta: ocDesde });
+          if (l.hasta - ocHasta >= 30)
+            nuevas.push({ desde: ocHasta, hasta: l.hasta });
         }
         libres = nuevas;
       }
@@ -387,7 +459,6 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
       const texto = libres
         .map((l) => `${aHHMM(l.desde)}-${aHHMM(l.hasta)}`)
         .join(', ');
-      const donde = sedes.length > 1 ? ` · ${s.nombre}` : '';
 
       lineasLibres.push(
         texto
@@ -398,12 +469,39 @@ const obtenerDatosCalendarioParaAssistant = async (id_configuracion) => {
   }
 
   if (lineasLibres.length) {
+    const conTraslado = sedes.filter((s) => Number(s.buffer_minutos) > 0);
+    const conAviso = sedes.filter((s) => Number(s.anticipacion_minima_horas) > 0);
+
     bloque +=
       `\n✅ HORAS LIBRES (ya descontadas las citas y el horario del local). ` +
       `Ofrece SIEMPRE de acá, y si te piden una hora que cae dentro de estos ` +
       `rangos, acéptala: está disponible.\n` +
       lineasLibres.join('\n') +
       `\n`;
+
+    /* Por qué estos rangos son más chicos de lo que la agenda sugiere. Sin
+       explicarlo, el modelo "corrige" el hueco que ve raro y ofrece la hora que
+       acabamos de descartar: le parece que hay espacio de sobra. */
+    if (conTraslado.length) {
+      const min = Math.max(...conTraslado.map((s) => Number(s.buffer_minutos)));
+      bloque +=
+        `\nEstos rangos YA tienen descontado el tiempo de traslado (${min} min ` +
+        `entre una cita y la siguiente): quien atiende se mueve de un lugar a ` +
+        `otro y necesita ese margen para llegar. NO ofrezcas una hora pegada a ` +
+        `una cita existente aunque te parezca que cabe, y si la persona la pide, ` +
+        `explícale que necesitas dejar ese espacio y ofrécele la más cercana de ` +
+        `la lista.\n`;
+    }
+
+    if (conAviso.length) {
+      const horas = Math.max(
+        ...conAviso.map((s) => Number(s.anticipacion_minima_horas)),
+      );
+      bloque +=
+        `\nNo se agenda nada dentro de las próximas ${horas} horas: hace falta ` +
+        `ese aviso para organizar el día. Si piden algo antes, ofréceles lo ` +
+        `primero que sí aparezca en la lista.\n`;
+    }
   }
 
   return {

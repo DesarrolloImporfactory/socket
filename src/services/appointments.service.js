@@ -54,17 +54,35 @@ async function assertNoOverlap({
   ignoreId = null, // ← al actualizar excluimos la propia cita
   assigned_user_id = null, // ← encargado de la cita que se está guardando
   id_profesional = null, // ← quién la atiende, si la sede tiene profesionales
+  buffer_minutos = 0, // ← traslado entre citas (sedes que se mueven)
 }) {
   // Comparar SIEMPRE con strings UTC, igual que como se escribe la columna.
   const startStr = toUtcMysqlParam(start_utc);
   const endStr = toUtcMysqlParam(end_utc);
   if (!startStr || !endStr) throw new AppError('Rango de fechas inválido.', 400);
 
+  /* Traslado. Cuando quien atiende se mueve de un lugar a otro —un corredor que
+     va de un inmueble a otro— dos citas pegadas son dos citas a las que no va a
+     llegar. El rango que se compara se agranda a cada lado, así que una cita a
+     las 15:00 con 45 minutos de traslado bloquea hasta las 16:30.
+     Con 0 (el default y lo que usa la agenda manual) esto no cambia nada. */
+  const colchon = Math.max(0, Number(buffer_minutos) || 0);
+  const conColchon = (str, signo) => {
+    if (!colchon) return str;
+    const d = new Date(`${String(str).replace(' ', 'T')}Z`);
+    if (Number.isNaN(d.getTime())) return str;
+    d.setUTCMinutes(d.getUTCMinutes() + signo * colchon);
+    return toUtcMysql(d);
+  };
+
+  const startConBuffer = conColchon(startStr, -1);
+  const endConBuffer = conColchon(endStr, +1);
+
   const where = {
     calendar_id,
     status: { [Op.in]: ['Agendado', 'Confirmado', 'Bloqueado'] },
-    start_utc: { [Op.lt]: endStr }, // empieza antes de que termine la nueva
-    end_utc: { [Op.gt]: startStr }, // termina después de que empieza la nueva
+    start_utc: { [Op.lt]: endConBuffer }, // empieza antes de que termine la nueva
+    end_utc: { [Op.gt]: startConBuffer }, // termina después de que empieza la nueva
   };
   if (ignoreId) where.id = { [Op.ne]: ignoreId };
 
@@ -82,7 +100,8 @@ async function assertNoOverlap({
     const conflictoProf = await Appointment.findOne({ where });
     if (conflictoProf) {
       throw new AppError(
-        'Conflicto de horario: quien atiende ya tiene una cita en ese rango.',
+        'Conflicto de horario: quien atiende ya tiene una cita en ese rango' +
+          (colchon ? ` (se reservan ${colchon} min de traslado).` : '.'),
         409,
       );
     }
@@ -111,10 +130,11 @@ async function assertNoOverlap({
 
   const conflict = await Appointment.findOne({ where });
   if (conflict) {
+    const traslado = colchon ? ` (se reservan ${colchon} min de traslado)` : '';
     throw new AppError(
       asesor === null
-        ? 'Conflicto de horario: ya existe una cita sin encargado en ese rango.'
-        : 'Conflicto de horario: el encargado ya tiene una cita en ese rango.',
+        ? `Conflicto de horario: ya existe una cita sin encargado en ese rango${traslado}.`
+        : `Conflicto de horario: el encargado ya tiene una cita en ese rango${traslado}.`,
       409,
     );
   }
@@ -388,6 +408,10 @@ async function createAppointment(payload, currentUserId, opts = {}) {
     end_utc: endUtc,
     assigned_user_id: assigned,
     id_profesional: payload.id_profesional ?? null,
+    /* Solo lo manda quien sabe que la sede se mueve (hoy, el agendamiento del
+       bot). La agenda manual sigue en 0: si una persona decide poner dos citas
+       pegadas a propósito, sabe lo que hace. */
+    buffer_minutos: payload.buffer_minutos ?? 0,
   });
 
   const appt = await db.transaction(async (t) => {

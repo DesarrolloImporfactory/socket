@@ -16,10 +16,25 @@ const CAMPOS_EDITABLES = [
   'telefono',
   'horario',
   'horario_json',
+  'buffer_minutos',
+  'anticipacion_minima_horas',
+  'max_citas_dia',
   'id_calendario',
   'orden',
   'activo',
 ];
+
+/* Cuánto tiempo de traslado se reserva entre citas y cuánta anticipación se
+   exige. El tope es alto a propósito (4 horas de traslado, 7 días de aviso):
+   son negocios distintos, no hay un valor "razonable" universal. Lo que sí se
+   corta es el número imposible, para que un dedo de más no deje la agenda
+   inservible sin que nadie entienda por qué. */
+const enteroEnRango = (v, { min, max, porDefecto = null }) => {
+  if (v === '' || v === null || v === undefined) return porDefecto;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return porDefecto;
+  return Math.min(max, Math.max(min, Math.round(n)));
+};
 
 const limpiar = (v) => {
   if (v === undefined || v === null) return null;
@@ -300,6 +315,20 @@ exports.crear = catchAsync(async (req, res, next) => {
     telefono: limpiar(req.body.telefono),
     horario: prepararHorario(req.body)?.texto ?? limpiar(req.body.horario),
     horario_json: prepararHorario(req.body)?.json || null,
+    buffer_minutos: enteroEnRango(req.body.buffer_minutos, {
+      min: 0,
+      max: 240,
+      porDefecto: 0,
+    }),
+    anticipacion_minima_horas: enteroEnRango(
+      req.body.anticipacion_minima_horas,
+      { min: 0, max: 168, porDefecto: 0 },
+    ),
+    max_citas_dia: enteroEnRango(req.body.max_citas_dia, {
+      min: 1,
+      max: 100,
+      porDefecto: null,
+    }),
     id_calendario: req.body.id_calendario || null,
     orden: Number(req.body.orden) || 0,
     activo: Number(req.body.activo) === 0 ? 0 : 1,
@@ -333,6 +362,23 @@ exports.actualizar = catchAsync(async (req, res, next) => {
     } else if (campo === 'horario') {
       // Si vino el estructurado, el texto sale de ahí y no de lo que manden.
       if (!horario || horario.ignorar) est.horario = limpiar(req.body.horario);
+    } else if (campo === 'buffer_minutos') {
+      est.buffer_minutos = enteroEnRango(req.body.buffer_minutos, {
+        min: 0,
+        max: 240,
+        porDefecto: 0,
+      });
+    } else if (campo === 'anticipacion_minima_horas') {
+      est.anticipacion_minima_horas = enteroEnRango(
+        req.body.anticipacion_minima_horas,
+        { min: 0, max: 168, porDefecto: 0 },
+      );
+    } else if (campo === 'max_citas_dia') {
+      est.max_citas_dia = enteroEnRango(req.body.max_citas_dia, {
+        min: 1,
+        max: 100,
+        porDefecto: null,
+      });
     } else if (campo === 'id_calendario') {
       est.id_calendario = req.body.id_calendario || null;
     } else if (campo === 'orden') {
