@@ -504,7 +504,18 @@ async function procesarMensajeKanban(params) {
      Y en captación —donde al propietario se le PIDE que mande la ubicación—
      eso es quedarse sin el dato justo después de conseguirlo.
      Se traduce solo para el modelo; lo guardado no se toca. */
-  let mensajeFinal = textoDeUbicacion(mensaje) || mensaje;
+  const textoDelSistema =
+    textoDeUbicacion(mensaje) || textoDeMensajeIlegible(mensaje);
+
+  let mensajeFinal = textoDelSistema || mensaje;
+
+  /* Para elegir qué productos se le inyectan solo cuentan las palabras del
+     CLIENTE. Cuando el texto lo escribió el sistema —el relleno de un mensaje
+     ilegible, o la traducción de una ubicación— no se nombró ningún producto, y
+     buscar sobre ese texto ata cosas al azar: primero fue "tipo" contra "Cable
+     Tipo C", y después mi propia instrucción, que también habla de productos.
+     Va vacío: la lista de precios se sigue entregando, la ficha no. */
+  const mensajeParaBuscar = textoDelSistema ? '' : mensaje;
 
   // ── 4. ACCIÓN: separador_productos (pre-procesamiento) ────
   /* if (tieneAccion('separador_productos')) {
@@ -549,10 +560,17 @@ async function procesarMensajeKanban(params) {
     id_configuracion,
     acciones,
     log,
-    // El mensaje sirve para elegir qué productos mandar cuando el catálogo es
-    // grande: los que la persona nombró. El id_cliente, para entregarle el
-    // teléfono desde el que escribe en vez de que se lo pregunte.
-    { mensaje, id_cliente },
+    /* Va `mensajeFinal` y NO el crudo, a propósito. El contexto tiene que
+       armarse con el MISMO texto que va a leer el modelo: acá se decide qué
+       productos se le inyectan, y con el texto crudo se decidía sobre relleno
+       del sistema. Un "Tipo de mensaje no reconocido." hacía coincidir la
+       palabra "tipo" con "Cable Tipo C 240W" y el bot recibía la ficha de ese
+       producto bajo el título "lo que la persona nombró". Después ofrecía el
+       cable a alguien que solo había mandado un sticker.
+
+       El id_cliente es para entregarle el teléfono desde el que escribe en vez
+       de que se lo pregunte. */
+    { mensaje: mensajeParaBuscar, id_cliente },
   );
 
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
@@ -2086,6 +2104,75 @@ function elegirItemDelCatalogo(pedido, catalogo) {
   }
 
   return primero.item;
+}
+
+/**
+ * Traduce los textos que escribe el SISTEMA, no el cliente.
+ *
+ * Cuando llega un tipo de mensaje que no se puede leer —un sticker, una
+ * encuesta, un mensaje eliminado— el webhook guarda un texto de relleno
+ * ("Tipo de mensaje no reconocido.") para que el chat muestre algo. Ese texto
+ * viajaba al asistente COMO SI LO HUBIERA ESCRITO LA PERSONA, y ahí pasaban dos
+ * cosas, las dos malas:
+ *
+ *   1. El bot tenía que adivinar qué quiere alguien que dijo "Tipo de mensaje
+ *      no reconocido", y adivinaba.
+ *   2. Peor: el selector de productos de contextoColumna busca coincidencias por
+ *      palabra, y "tipo" está en un montón de nombres de catálogo ("Cable Tipo
+ *      C 240W"). Con eso, al bot se le inyectaba la ficha completa de ese
+ *      producto bajo el título "Ficha de lo que la persona nombró" y la orden
+ *      de mandarle la foto. No inventaba nada: hacía lo que le decíamos.
+ *
+ * Devuelve `null` si el texto es del cliente y no hay nada que traducir.
+ */
+/* Los textos que escribe el webhook cuando el mensaje no viene como texto. Cada
+   uno sale de un `case` de webhook_meta_whatsapp.controller.js, y hay que
+   mirarlos todos: el sticker —el caso más común de "no me llegó bien"— quedaba
+   fuera y el bot tenía que contestarle a "Sticker recibido y guardado con ID:
+   4471…" como si eso lo hubiera escrito una persona. */
+const RELLENOS_SISTEMA = [
+  /^tipo de mensaje no reconocido\.?$/i, // case default
+  /^🚫?\s*mensaje eliminado por el usuario\.?$/i, // case revoke
+  /^sticker recibido y guardado con id/i, // case sticker
+  /^error al descargar/i,
+  /* case document sin caption: se guarda el nombre del archivo. Un mensaje que
+     es exactamente un nombre de archivo no es una pregunta de nadie. */
+  /^[\w\-. ()]{1,80}\.(pdf|docx?|xlsx?|pptx?|txt|csv|zip|rar|jpe?g|png|webp|mp4)$/i,
+];
+
+/* Una reacción es otra cosa: el cliente no mandó un mensaje nuevo, le puso un
+   emoji al anterior. Decirle al bot "no sabes qué quiere, preguntale qué
+   producto" ahí sería absurdo — sí sabe de qué venían hablando. */
+const soloEmojis = (s) =>
+  s.length <= 8 && /^[\p{Emoji}️‍\s]+$/u.test(s) && /\p{Emoji}/u.test(s);
+
+function textoDeMensajeIlegible(texto) {
+  const s = String(texto || '').trim();
+  if (!s) return null;
+
+  if (soloEmojis(s)) {
+    return (
+      `[El cliente reaccionó con ${s} a tu mensaje anterior. No escribió nada más.]\n` +
+      `No es una consulta nueva y NO nombró ningún producto: no le ofrezcas uno ` +
+      `ni le mandes fotos por esto.\n` +
+      `Si venían en medio de algo, continúa con eso. Si la conversación ya estaba ` +
+      `cerrada, responde en UNA línea corta y no preguntes nada.`
+    );
+  }
+
+  if (!RELLENOS_SISTEMA.some((re) => re.test(s))) return null;
+
+  return (
+    `[El cliente envió algo que no se puede leer: un sticker, una encuesta, un ` +
+    `archivo, un mensaje eliminado o un formato que WhatsApp no entrega como ` +
+    `texto.]\n` +
+    `NO sabes qué dice. Está PROHIBIDO suponerlo, y sobre todo está prohibido ` +
+    `ofrecerle un producto del catálogo: nadie lo mencionó.\n` +
+    `Si ya venían hablando de algo concreto, retoma ESO y pregúntale qué quiso ` +
+    `decir. Si no sabes de qué venía la conversación, dile en UNA línea que no te ` +
+    `llegó bien y pregúntale qué producto le interesa. Nada más: ni foto, ni ` +
+    `precio, ni ciudad.`
+  );
 }
 
 function limpiarTagsAcciones(texto) {

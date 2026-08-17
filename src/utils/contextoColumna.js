@@ -23,6 +23,12 @@ const VACIAS = new Set([
   'informacion','información','precio','precios','cuanto','cuánto','cuesta',
   'vale','quiero','necesito','busco','hola','buenas','tienen','tienes','hay',
   'sobre','favor','porfa','gracias','sesion','sesión','servicio','producto',
+  /* "tipo" está en un montón de nombres de catálogo ("Cable Tipo C 240W") y no
+     distingue nada por sí sola: como palabra de búsqueda ataba productos al
+     azar. Las otras son relleno que escribe el sistema cuando llega un mensaje
+     que no se puede leer, y con eso alcanzaba para inyectarle al bot la ficha
+     de un producto que nadie mencionó. */
+  'tipo','mensaje','mensajes','reconocido','eliminado','usuario',
 ]);
 
 const normalizar = (s) =>
