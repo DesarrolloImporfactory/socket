@@ -405,6 +405,17 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
              dropshipping es de donde sale el margen. Antes esta misma frase los
              metía en la bolsa de "no cotices paquetes" y el bot terminaba
              vendiendo unidades sueltas. */
+          /* Para qué sirve la lista y para qué NO. Sin decirlo, un cliente que
+             contesta con un número hace que el modelo lo busque acá y cambie de
+             producto: pasó con "solo la de $25", que encontró otro artículo de
+             $25.00 exacto mientras el suyo costaba $24.99. La lista responde
+             "cuánto vale ESTO", no "qué es lo que vale tanto". */
+          `Esta lista sirve para decir cuánto cuesta algo que YA está ` +
+          `identificado por su nombre. NUNCA para adivinar de qué producto habla ` +
+          `alguien a partir de un número: si te dice "la de $25" y el producto ` +
+          `del que venían hablando cuesta $24.99, está redondeando ESE — no es ` +
+          `otro que cueste $25 exactos. Ante la duda, pregunta cuál antes de ` +
+          `cotizar.\n` +
           `Los combos que ves ahí son precios reales por cantidad: ofrécelos ` +
           `cuando la persona quiera llevar más de uno, y respétalos tal cual.\n` +
           `Si te preguntan por algo que NO está en esta lista —otro producto, ` +
@@ -416,6 +427,113 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         say(
           `✅ Precios inyectados (${seleccion.length}${parcial ? ` de ${items.length}, por coincidencia` : ''})`,
         );
+      }
+
+      /* ── De qué producto vienen hablando ─────────────────────
+         La lista de precios completa viaja en cada mensaje, y eso tiene un
+         efecto que no se ve venir: cuando el cliente contesta con un NÚMERO, el
+         modelo lo busca en la lista en vez de mirar la conversación.
+
+         Caso real (config 548): el cliente entró por un anuncio de la pistola
+         rociadora de $24.99, el bot la cotizó bien, y cuando dijo "solo la de
+         $25" —redondeando— encontró "Cooler para Laptop — $25.00", que calzaba
+         exacto, y le cotizó el cooler. Venta perdida. En ese catálogo hay DIEZ
+         productos a $24.99: sin saber de cuál venían hablando, un precio no
+         alcanza para identificar nada.
+
+         Se resuelve con el dato que sí tenemos: qué producto ya se nombró en
+         esta conversación. Va SIEMPRE que se conozca, incluso cuando el mensaje
+         de ahora parece nombrar otro: el selector de la ficha empareja por
+         palabras sueltas, así que un "necesito soporte" hace saltar el "Cooler
+         SOPORTE Laptop" sin que nadie haya cambiado de producto. Teniendo los
+         dos datos y la regla, el modelo decide bien; con uno solo, adivina. */
+      if (opts?.id_cliente && items.length) {
+        try {
+          const previos = await db.query(
+            `SELECT rol_mensaje, texto_mensaje FROM mensajes_clientes
+              WHERE id_configuracion = ? AND celular_recibe = ?
+                AND texto_mensaje IS NOT NULL AND texto_mensaje <> ''
+              /* Ventana amplia a propósito: el producto suele nombrarse en el
+                 PRIMER mensaje —el del anuncio— y después la conversación se
+                 llena de precios, ciudad y forma de pago. Con una ventana corta
+                 ese primer mensaje se cae y solo quedan los del bot, que es
+                 justo lo que no queremos usar como fuente. */
+              ORDER BY id DESC
+              LIMIT 40`,
+            {
+              replacements: [id_configuracion, String(opts.id_cliente)],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+
+          /* Se busca por nombre completo contenido en el texto: es como lo
+             escribe el bot al cotizar y como llega el anuncio en el mensaje de
+             entrada. Se piden más de 8 caracteres para que un nombre corto y
+             genérico no matchee media conversación. */
+          const buscarEn = (mensajes) => {
+            for (const m of mensajes) {
+              const texto = normalizar(m.texto_mensaje);
+              const hallado = items.find((i) => {
+                const n = normalizar(i.nombre);
+                return n.length > 8 && texto.includes(n);
+              });
+              if (hallado) return hallado;
+            }
+            return null;
+          };
+
+          /* Primero lo que nombró el CLIENTE, y solo si nunca nombró nada, lo
+             que dijo el bot. No es un detalle: si el bot ya se equivocó una vez
+             —cotizó otro producto porque un precio calzó— sus propios mensajes
+             lo dicen, y tomarlos como fuente dejaría el error clavado para el
+             resto de la conversación. Lo que el cliente pidió es lo que vale. */
+          const delCliente = previos.filter((m) => Number(m.rol_mensaje) === 0);
+          const delBot = previos.filter((m) => Number(m.rol_mensaje) === 1);
+
+          const enJuego = buscarEn(delCliente) || buscarEn(delBot);
+
+          /* Si lo que se encontró en el historial es lo mismo que la persona
+             acaba de nombrar, el bloque no aporta nada: la ficha ya lo dice. */
+          const yaEsElDeAhora =
+            enJuego &&
+            nombrados.length === 1 &&
+            normalizar(nombrados[0].nombre) === normalizar(enJuego.nombre);
+
+          if (enJuego && !yaEsElDeAhora) {
+            const precio =
+              Number(enJuego.precio) > 0
+                ? `$${Number(enJuego.precio).toFixed(2)}`
+                : 'sin precio cargado';
+
+            bloque +=
+              `🎯 EL PRODUCTO DE ESTA CONVERSACIÓN: ${enJuego.nombre} (${precio}).\n` +
+              `Es de lo que vienen hablando y sigue siéndolo mientras la persona ` +
+              `no pida OTRO con sus palabras.\n` +
+              `Un precio, una cantidad o un "sí, quiero" NO cambian de producto. ` +
+              `Si dice "la de $25" y este cuesta $24.99, se refiere a ESTE ` +
+              `redondeado — no busques en la lista cuál cuesta exactamente $25. ` +
+              `Cambiar de producto porque un número calzó mejor es la forma más ` +
+              `rápida de perder la venta.\n`;
+
+            if (nombrados.length) {
+              /* La ficha de abajo la eligió un emparejamiento por palabras, no
+                 una decisión del cliente. Se lo decimos en vez de dejar que lo
+                 resuelva por su cuenta. */
+              bloque +=
+                `OJO: abajo vas a ver la ficha de ` +
+                `"${nombrados.map((n) => n.nombre).join('", "')}" porque alguna ` +
+                `palabra de su mensaje coincidió con ese nombre. Eso NO es que lo ` +
+                `haya pedido. Si de verdad quiere cambiar de producto lo va a ` +
+                `decir claro ("mejor quiero el X"); si no, sigue con ` +
+                `${enJuego.nombre} y usa esa ficha solo si te pregunta por ella.\n`;
+            }
+
+            bloque += `\n`;
+            say(`✅ Producto de la conversación: ${enJuego.nombre}`);
+          }
+        } catch (err) {
+          say(`⚠️ Error buscando el producto de la conversación: ${err.message}`);
+        }
       }
 
       /* Ficha completa de lo que nombró. Va aparte de la lista de precios para
