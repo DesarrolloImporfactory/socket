@@ -895,7 +895,20 @@ async function procesarMensajeKanban(params) {
         throw err2;
       }
     } else {
-      await log(`❌ Error ejecutando asistente: ${err.message}`);
+      /* El detalle que manda OpenAI, no solo el código.
+         "Request failed with status code 429" no se puede diagnosticar: puede
+         ser el límite por minuto del modelo o la cuenta sin saldo, y son cosas
+         distintas con arreglos distintos. El body lo dice —incluye el límite y
+         cuánto falta para que se libere— y estaba en el error, sin registrarse:
+         para saberlo había que reproducirlo a mano contra la API. */
+      const detalle = err.response?.data?.error;
+      await log(
+        `❌ Error ejecutando asistente: ${err.message}` +
+          (detalle
+            ? ` · OpenAI: ${detalle.message}` +
+              (detalle.code ? ` [${detalle.code}]` : '')
+            : ''),
+      );
       throw err;
     }
   }
@@ -1955,6 +1968,126 @@ function textoDeUbicacion(texto) {
   }
 }
 
+/* ── Qué ítem del catálogo nombró el bot ────────────────────────
+   El prompt le pide el nombre EXACTO y el modelo lo parafrasea igual: para
+   "Arriendo casa Cumbayá" escribió "Visita — Casa Cumbayá". Con coincidencia
+   por subcadena eso no calza en ninguna dirección —ni el pedido contiene al
+   nombre ni al revés— así que la visita se creaba sin el inmueble atado, y por
+   lo tanto sin su dirección: terminaba citando en la oficina, que es justo lo
+   que se vino a arreglar. Y sin un solo error a la vista.
+
+   Se compara por PALABRAS compartidas. Las genéricas no cuentan: si contaran,
+   "Visita — Casa Cumbayá" empataría con cualquier otra casa del catálogo por
+   la palabra "casa". */
+const GENERICAS_ITEM = new Set([
+  'visita', 'visitar', 'ver', 'cita', 'para', 'del', 'de', 'la', 'el', 'los',
+  'las', 'en', 'con', 'por', 'un', 'una', 'al', 'y', 'o',
+  'arriendo', 'arrendar', 'alquiler', 'venta', 'vender', 'compra', 'comprar',
+  'inmueble', 'propiedad', 'servicio',
+]);
+
+/* El TIPO de inmueble tampoco identifica cuál es. "Visita — Casa en
+   Samborondón" comparte la palabra "casa" con "Arriendo casa Cumbayá" y con
+   otras diez: si eso alcanzara para atar el ítem, se agendaría una visita a la
+   casa equivocada, con la dirección equivocada. Lo que identifica es el nombre
+   propio —el sector, el barrio, el edificio— así que se exige compartir al
+   menos uno de esos. */
+const TIPOS_ITEM = new Set([
+  'casa', 'casas', 'departamento', 'departamentos', 'depto', 'suite', 'suites',
+  'terreno', 'terrenos', 'lote', 'local', 'locales', 'oficina', 'oficinas',
+  'bodega', 'bodegas', 'galpon', 'galpones', 'penthouse', 'loft', 'villa',
+  'quinta', 'chalet', 'edificio', 'consultorio',
+]);
+
+const normalizarItem = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const tokensItem = (s) =>
+  normalizarItem(s)
+    .split(' ')
+    .filter((t) => t.length > 2);
+
+const distintivos = (toks) => toks.filter((t) => !GENERICAS_ITEM.has(t));
+
+/**
+ * Elige del catálogo el ítem que el bot quiso nombrar.
+ *
+ * @param {string} pedido    lo que escribió en "Servicio que desea"
+ * @param {Array<{nombre:string}>} catalogo
+ * @returns el ítem, o null si nada se parece lo suficiente
+ */
+function elegirItemDelCatalogo(pedido, catalogo) {
+  const pedidoNorm = normalizarItem(pedido);
+  if (!pedidoNorm) return null;
+
+  const pedidoToks = new Set(tokensItem(pedido));
+
+  /* Se puntúa por cuántas palabras IDENTIFICATORIAS comparten —el sector, el
+     barrio, el edificio— y no por qué proporción del nombre coincide. Los
+     nombres reales del catálogo son verbosos ("Suite Moderna Amoblada Sector El
+     Bosque") y el modelo los acorta ("Suite El Bosque"): exigir la mitad de las
+     palabras dejaba fuera justo los casos normales. */
+  const candidatos = [];
+
+  for (const item of catalogo || []) {
+    const nombreNorm = normalizarItem(item.nombre);
+    if (!nombreNorm) continue;
+
+    // El nombre exacto, o contenido de un lado o del otro: no hay nada que dudar.
+    if (
+      nombreNorm === pedidoNorm ||
+      (nombreNorm.length > 3 &&
+        (pedidoNorm.includes(nombreNorm) || nombreNorm.includes(pedidoNorm)))
+    ) {
+      return item;
+    }
+
+    const propios = distintivos(tokensItem(item.nombre));
+    if (!propios.length) continue;
+
+    const compartidos = propios.filter((t) => pedidoToks.has(t));
+    if (!compartidos.length) continue;
+
+    /* Tiene que coincidir en algo que IDENTIFIQUE al inmueble, no solo en su
+       tipo. Si el ítem no tiene ninguna palabra identificatoria —alguien lo
+       llamó "Casa" y nada más— se acepta el tipo, que es todo lo que hay. */
+    const identificadores = propios.filter((t) => !TIPOS_ITEM.has(t));
+    const idsCompartidos = identificadores.filter((t) => pedidoToks.has(t));
+
+    if (identificadores.length && !idsCompartidos.length) continue;
+    if (!identificadores.length && compartidos.length / propios.length < 0.5) {
+      continue;
+    }
+
+    candidatos.push({
+      item,
+      ids: idsCompartidos.length,
+      ratio: compartidos.length / propios.length,
+    });
+  }
+
+  if (!candidatos.length) return null;
+
+  candidatos.sort((a, b) => b.ids - a.ids || b.ratio - a.ratio);
+
+  /* Empate real: dos inmuebles del catálogo coinciden igual de bien. Pasa con
+     dos unidades en el mismo edificio. Devolver cualquiera sería mandar a
+     alguien a la puerta equivocada, y eso es peor que no resolver el ítem —el
+     caller lo registra y la cita cae en la sede, donde al menos hay alguien. */
+  const [primero, segundo] = candidatos;
+  if (segundo && segundo.ids === primero.ids && segundo.ratio === primero.ratio) {
+    return null;
+  }
+
+  return primero.item;
+}
+
 function limpiarTagsAcciones(texto) {
   return texto
     .replace(/\[pedido_confirmado\]:\s*(true|false)/gi, '')
@@ -2046,6 +2179,34 @@ async function procesarAgendarCita(
   const fechaIni = campo('Fecha y hora de inicio') || campo('Fecha y hora');
   const fechaFin = campo('Fecha y hora de fin');
 
+  /* ── Qué ítem del catálogo se va a ver ──────────────────────────
+     Sale de "Servicio que desea". Se resuelve ANTES de las fechas porque su
+     `duracion` es la que decide la hora de fin: antes eso se buscaba con un
+     LIKE aparte que fallaba con los mismos nombres parafraseados, y la visita
+     quedaba de 60 minutos aunque el inmueble dijera 45. */
+  let itemAgendado = null;
+
+  if (servicio) {
+    const catalogo = await db.query(
+      `SELECT id, nombre, tipo, duracion, id_establecimiento, direccion,
+              sector, ciudad, latitud, longitud, google_maps_url
+         FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    itemAgendado = elegirItemDelCatalogo(servicio, catalogo);
+
+    if (!itemAgendado) {
+      /* Se avisa porque es silencioso y caro: sin ítem atado, la visita se crea
+         con la dirección de la sede y quien atiende sale para la oficina. */
+      await log(
+        `⚠️ agendar_cita: "${servicio}" no coincide con ningún ítem del catálogo ` +
+          `de la configuración ${id_configuracion}`,
+      );
+    }
+  }
+
   const mIni = moment.tz(fechaIni, 'YYYY-MM-DD HH:mm', 'America/Guayaquil');
 
   if (!mIni.isValid()) {
@@ -2070,70 +2231,20 @@ async function procesarAgendarCita(
     : null;
 
   if (mIni.isValid() && (!mFin || !mFin.isValid() || !mFin.isAfter(mIni))) {
-    const [servicioCat] = await db.query(
-      `SELECT duracion FROM productos_chat_center
-        WHERE id_configuracion = ? AND eliminado = 0 AND duracion > 0
-          AND ? LIKE CONCAT('%', nombre, '%')
-        ORDER BY CHAR_LENGTH(nombre) DESC LIMIT 1`,
-      {
-        replacements: [id_configuracion, servicio || ''],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-
+    // La duración del ítem que se resolvió arriba. 60 es el último recurso.
     const minutos =
-      Number(servicioCat?.duracion) > 0 ? Number(servicioCat.duracion) : 60;
+      Number(itemAgendado?.duracion) > 0 ? Number(itemAgendado.duracion) : 60;
     mFin = mIni.clone().add(minutos, 'minutes');
     await log(
-      `🕒 agendar_cita: hora de fin calculada (${minutos} min de "${servicio || 'sin servicio'}")`,
+      `🕒 agendar_cita: hora de fin calculada (${minutos} min de ` +
+        `"${itemAgendado?.nombre || servicio || 'sin servicio'}")`,
     );
   }
 
   const inicio_utc = mIni.isValid() ? mIni.utc().format() : null;
   const fin_utc = mFin && mFin.isValid() ? mFin.utc().format() : null;
 
-  /* ── Qué ítem del catálogo se va a ver ──────────────────────────
-     Sale de "Servicio que desea", que es donde el bot escribe el nombre exacto.
-     Sirve para dos cosas distintas: el guard de acá abajo, y —cuando la cita se
-     hace en el ítem— saber a qué dirección va la persona y qué oficina lo
-     gestiona. */
-  let itemAgendado = null;
-
   if (servicio) {
-    const catalogo = await db.query(
-      `SELECT id, nombre, tipo, id_establecimiento, direccion, sector, ciudad,
-              latitud, longitud, google_maps_url
-         FROM productos_chat_center
-        WHERE id_configuracion = ? AND eliminado = 0`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-    );
-
-    const norm = (s) =>
-      String(s || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/\p{M}/gu, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    const pedido = norm(servicio);
-
-    /* El bot escribe "Visita — Casa Cumbayá", así que la coincidencia es por
-       nombre contenido. Se prefiere el exacto y, si no hay, el nombre MÁS
-       LARGO: con "Casa Cumbayá" y "Casa Cumbayá 2" en la cartera, el corto
-       coincide con los dos y la visita se iría a la dirección equivocada. */
-    const candidatos = catalogo.filter((p) => {
-      const n = norm(p.nombre);
-      return n.length > 3 && (pedido.includes(n) || n.includes(pedido));
-    });
-
-    itemAgendado =
-      candidatos.find((p) => norm(p.nombre) === pedido) ||
-      candidatos.sort(
-        (a, b) => norm(b.nombre).length - norm(a.nombre).length,
-      )[0] ||
-      null;
-
     /* Un producto no se agenda, se entrega. El bot igual arma citas de
        "recogida" cuando la clienta quiere comprar algo, y eso le ocupa un cupo
        real de la agenda a un tratamiento. Se corta acá y no solo en el prompt:

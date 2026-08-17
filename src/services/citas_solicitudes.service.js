@@ -218,6 +218,13 @@ async function confirmarSolicitud({
     (idSede && sedes.find((s) => Number(s.id) === Number(idSede))) ||
     (sedes.length === 1 ? sedes[0] : null);
 
+  /* La hora local, guardada ANTES de convertir.
+     `moment.utc()` no devuelve una copia: muta el objeto. Como el `inicio_utc`
+     de abajo la llama sobre `mIni`, todo lo que use `mIni` después queda en UTC
+     — y el mensaje que le llega al cliente se armaba con esa hora. La cita
+     quedaba bien a las 15:00 y a la persona le decíamos "a las 20:00". */
+  const mLocal = mIni.clone();
+
   const resultado = await crearCitaAgendada({
     id_configuracion,
     establecimiento,
@@ -263,7 +270,7 @@ async function confirmarSolicitud({
     telefono: telefonoFinal,
     texto:
       `¡Listo! Confirmada tu ${queVe ? `visita a ${queVe}` : 'cita'} para el ` +
-      `${DIAS[mIni.day()]} ${mIni.date()} de ${MESES[mIni.month()]} a las ${mIni.format('HH:mm')}.` +
+      `${DIAS[mLocal.day()]} ${mLocal.date()} de ${MESES[mLocal.month()]} a las ${mLocal.format('HH:mm')}.` +
       (resultado.ubicacion && resultado.ubicacion !== 'online'
         ? `\n\n📍 ${resultado.ubicacion}`
         : ''),
@@ -274,7 +281,7 @@ async function confirmarSolicitud({
     id_cita: resultado.id,
     ubicacion: resultado.ubicacion,
     repetida: Boolean(resultado.repetida),
-    inicio_local: mIni.format('YYYY-MM-DD HH:mm'),
+    inicio_local: mLocal.format('YYYY-MM-DD HH:mm'),
     telefono: telefonoFinal,
     nombre: (nombre ?? sol.nombre) || '',
     // Que quien confirma sepa si al cliente le llegó o le toca escribirle.

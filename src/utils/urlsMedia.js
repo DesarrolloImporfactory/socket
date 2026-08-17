@@ -79,7 +79,33 @@ function extraerUrlsMedia(texto) {
   const imagenes = sacar(reImagen());
   const videos = sacar(reVideo());
 
-  const textoLimpio = original.replace(reImagen(), '').replace(reVideo(), '');
+  let textoLimpio = original.replace(reImagen(), '').replace(reVideo(), '');
+
+  /* La frase que anunciaba la foto.
+     El prompt prohíbe escribir "aquí te dejo la imagen" antes de la etiqueta,
+     pero el modelo lo hace igual cada tanto. Al quitar la etiqueta quedaba una
+     línea colgada —"Aquí puedes ver la imagen de la casa:"— seguida de nada, y
+     al cliente le llegaba la foto por un lado y esa frase suelta por el otro.
+     Se ve peor que si no hubiéramos limpiado nada.
+
+     Solo se borra la línea si de verdad estaba anunciando el archivo (menciona
+     foto/imagen/video y termina en dos puntos o nada) y si se sacó algún
+     archivo. Una línea que hable de la foto en medio de una explicación no
+     termina en ":" y no se toca. */
+  if (imagenes.length || videos.length) {
+    textoLimpio = textoLimpio.replace(
+      /* Ojo con `\b` acá: en JS no considera a "í" ni a "á" caracteres de
+         palabra, así que un `\b` después de "aquí" o "acá" nunca coincide y la
+         frase se quedaba sin borrar justo en el caso más común. Se pide un
+         espacio, que es lo que de verdad separa las palabras. */
+      /* La cola después de "imagen" es más larga de lo que parece: el modelo
+         escribe "Aquí tienes la imagen de la casa que vas a visitar:" — 29
+         caracteres después de la palabra. Con un tope de 25 esa frase se
+         quedaba sin borrar, que es exactamente la que salió en las pruebas. */
+      /^[ \t]*(?:aqu[íi]|ac[áa]|te\s+(?:dejo|comparto|env[íi]o|mando|muestro)|mira|adjunto)\s[^\n]{0,70}?(?:fotos?|im[áa]gen(?:es)?|videos?|v[íi]deos?)[^\n]{0,60}:[ \t]*$/gim,
+      '',
+    );
+  }
 
   return { texto: textoLimpio, imagenes, videos };
 }
