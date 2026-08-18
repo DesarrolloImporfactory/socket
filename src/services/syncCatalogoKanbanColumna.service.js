@@ -830,6 +830,40 @@ async function createFreshVectorStore(
   }
 }
 
+/* El documento de file_search viaja TROCEADO: un fragmento puede traer la
+   imagen de un producto pegada al texto de otro. Caso real (285, 2026-08-17):
+   el cliente preguntó "¿protege la cabeza?", el retrieval trajo por semántica
+   el fragmento del "Intercomunicador Bluetooth para CASCO", y el bot —hablando
+   correctamente de la máscara— mandó la foto del intercomunicador, que venía
+   dentro del fragmento.
+
+   Por eso las URLs de imagen/video NO viajan en el documento del vector
+   store: la foto llega solo por el canal determinista (bloque del referral y
+   ficha de contextoColumna), que nunca cruza productos. El catálogo INLINE sí
+   las conserva: ahí el modelo ve el documento entero y exacto, sin troceo.
+   Solo toca la copia que se sube: catalogPayload (del que sale el inline) no
+   se modifica. */
+function sinMediaParaFileSearch(payload) {
+  const items = (payload.items || []).map((item) => {
+    const { producto_imagen_url, producto_video_url, ...resto } = item;
+    return {
+      ...resto,
+      bloque_prompt: String(resto.bloque_prompt || '')
+        .split('\n')
+        .filter((l) => !/^\[producto_(imagen|video)_url\]:/.test(l.trim()))
+        .join('\n'),
+    };
+  });
+
+  const instrucciones_uso_ia = (payload.instrucciones_uso_ia || []).map((t) =>
+    t.includes('[producto_imagen_url]')
+      ? 'Las fotos y videos de los productos los adjunta el sistema por su propio canal: NO escriba URLs de imagen o video, ni las etiquetas [producto_imagen_url]/[producto_video_url], a partir de este catálogo.'
+      : t,
+  );
+
+  return { ...payload, items, instrucciones_uso_ia };
+}
+
 async function uploadCatalogFile(
   catalogPayload,
   id_configuracion,
@@ -838,7 +872,10 @@ async function uploadCatalogFile(
   logger,
 ) {
   const filename = `catalogo_${id_configuracion}_${estado_db}_${Date.now()}.json`;
-  const buffer = Buffer.from(JSON.stringify(catalogPayload, null, 2), 'utf8');
+  const buffer = Buffer.from(
+    JSON.stringify(sinMediaParaFileSearch(catalogPayload), null, 2),
+    'utf8',
+  );
 
   const form = new FormData();
   form.append('purpose', 'assistants');
@@ -1183,4 +1220,10 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
   });
 }
 
-module.exports = { syncCatalogoKanbanColumna, syncCatalogoTodasColumnasConfig };
+module.exports = {
+  syncCatalogoKanbanColumna,
+  syncCatalogoTodasColumnasConfig,
+  // Exportada para la batería de regresión: que el doc de file_search salga
+  // sin URLs de media es una garantía que no puede perderse en silencio.
+  sinMediaParaFileSearch,
+};

@@ -150,6 +150,74 @@ async function suiteA() {
       `via=${r?.via} producto=${r?.producto?.nombre}`,
     );
   }
+
+  // 8. Caso "foto del casco" (285, 2026-08-17): el cliente preguntó
+  //    "¿protege la cabeza?" y file_search le pasó al modelo el fragmento del
+  //    "Intercomunicador Bluetooth para CASCO" con su URL de imagen adentro —
+  //    mandó esa foto hablando de la máscara. Dos garantías lo matan:
+  {
+    const { db } = require('../src/database/config');
+    const {
+      catalogoInlineActivo,
+      TOPE_CATALOGO_INLINE,
+    } = require('../src/utils/openia/fileSearch');
+
+    // a) La 285 tiene que caber en inline (ahí el doc no se trocea).
+    const [col] = await db.query(
+      `SELECT catalogo_inline_tokens AS t FROM kanban_columnas
+        WHERE id_configuracion = ? AND activo = 1 AND activa_ia = 1
+          AND catalogo_inline_tokens IS NOT NULL LIMIT 1`,
+      { replacements: [CFG_DROPI], type: db.QueryTypes.SELECT },
+    );
+    caso(
+      `la ${CFG_DROPI} entra al catálogo inline (tokens ≤ ${TOPE_CATALOGO_INLINE})`,
+      !!col && catalogoInlineActivo(CFG_DROPI, col.t),
+      `tokens=${col?.t}`,
+    );
+
+    // b) El doc de file_search sale SIN URLs de media, para las que no caben.
+    const {
+      sinMediaParaFileSearch,
+    } = require('../src/services/syncCatalogoKanbanColumna.service');
+    const doc = sinMediaParaFileSearch({
+      items: [
+        {
+          nombre: 'Intercomunicador',
+          producto_imagen_url: 'https://x/foto.png',
+          producto_video_url: 'https://x/video.mp4',
+          bloque_prompt:
+            '🛒 Producto: Intercomunicador\n[producto_imagen_url]: https://x/foto.png\n[producto_video_url]: https://x/video.mp4\nPrecio: 29.99',
+        },
+      ],
+      instrucciones_uso_ia: ['Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.'],
+    });
+    const texto = JSON.stringify(doc);
+    caso(
+      'el doc de file_search sale sin URLs de imagen/video',
+      !texto.includes('foto.png') && !texto.includes('video.mp4') &&
+        /NO escriba URLs/.test(texto),
+    );
+
+    // c) Y la raíz: aunque una URL ajena llegue al modelo por donde sea, el
+    //    candado de propiedad (dedupeMedia) no la deja salir al cliente.
+    const { esMediaPermitida } = require('../src/utils/dedupeMedia');
+    const CASCO =
+      'https://chat.imporfactory.app/uploads/productos/imagen/1dd4a79b-83dc-4923-9746-d0ac289075f6.png';
+    const MASCARA =
+      'https://chat.imporfactory.app/uploads/productos/imagen/43197ba2-8462-449d-a748-b5c91e646895.jpg';
+    caso(
+      'la foto de un producto ajeno a la conversación se bloquea al enviar',
+      (await esMediaPermitida({ id_configuracion: CFG_DROPI, id_cliente: CLIENTE_DROPI, url: CASCO })) === false,
+    );
+    caso(
+      'la foto del producto de la conversación sí sale',
+      (await esMediaPermitida({ id_configuracion: CFG_DROPI, id_cliente: CLIENTE_DROPI, url: MASCARA })) === true,
+    );
+    caso(
+      'media que no es de catálogo no se toca',
+      (await esMediaPermitida({ id_configuracion: CFG_DROPI, id_cliente: CLIENTE_DROPI, url: 'https://chat.imporfactory.app/uploads/documentos/manual.pdf' })) === true,
+    );
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.

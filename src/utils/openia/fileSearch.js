@@ -156,8 +156,7 @@ const TODAS_INLINE = true;
 // 🔎 (file_search) a 📄 (catálogo INLINE). Rollback: sacarlas de la lista —
 // vuelven a file_search en el mensaje siguiente, sin migrar nada.
 const CONFIGS_CON_CATALOGO_INLINE = [
-  10, 610, 666, 857, 411,
-  322, 364, 819, 366, 548,
+  10, 610, 666, 857, 411, 322, 364, 819, 366, 548,
 ];
 
 // ⚠️ "QUIERE inline" ≠ "USA inline". Son dos preguntas distintas y confundirlas
@@ -193,15 +192,28 @@ function usaCatalogoInline(id_configuracion) {
 // Ojo al comparar: el inline es PLANO —se reenvía igual cada turno y no queda
 // guardado— mientras que los fragmentos de file_search se acumulan en la
 // conversación y se re-cobran. 16.000 de file_search son 32.000 en el turno 2.
-// O sea que el punto de equilibrio real está bastante más arriba de 16.000;
-// falta medirlo con costo real por conversación antes de subirlo.
-const TOPE_CATALOGO_INLINE = 16000;
+// O sea que el punto de equilibrio real está bastante más arriba de 16.000.
+//
+// ── 2026-08-17: sube a 30.000 ─────────────────────────────────
+// Lo que decidió subirlo no fue el costo sino un error en vivo: en la 285
+// (27.698 tokens, fuera del tope de 16k) el cliente preguntó "¿protege la
+// cabeza?" y file_search recuperó el fragmento del "Intercomunicador
+// Bluetooth para CASCO" — el bot respondió bien sobre la máscara pero mandó
+// LA FOTO del intercomunicador, que venía dentro del fragmento. Ese cruce no
+// existe en inline: el modelo ve el catálogo entero y exacto.
+// En costo, 30k planos por turno son más baratos que file_search desde el
+// turno 2 (16k+16k acumulados) en cualquier conversación de más de un turno.
+// La 666 (31.094) queda fuera por poco: subirla es otro escalón de costo
+// (~900 msgs/día) que se decide aparte.
+const TOPE_CATALOGO_INLINE = 30000;
 
 // La pregunta de verdad: ¿esta columna va por inline en esta llamada?
 // Necesita los tokens del catálogo de la columna, no solo la cuenta.
 function catalogoInlineActivo(id_configuracion, tokens) {
   const n = Number(tokens || 0);
-  return usaCatalogoInline(id_configuracion) && n > 0 && n <= TOPE_CATALOGO_INLINE;
+  return (
+    usaCatalogoInline(id_configuracion) && n > 0 && n <= TOPE_CATALOGO_INLINE
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

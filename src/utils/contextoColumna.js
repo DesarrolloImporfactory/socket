@@ -14,6 +14,7 @@
 const { db } = require('../database/config');
 const { enlaceUbicacionSede } = require('./ubicacionSede');
 const { normalizarUrlMedia } = require('./urlsMedia');
+const { ofrecerMedia } = require('./dedupeMedia');
 
 /* Palabras que no distinguen un producto de otro. Sin esto, "quiero información
    del tratamiento facial" traería cualquier cosa que diga "facial". */
@@ -705,6 +706,20 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         seleccion = [enJuego, ...seleccion];
       }
       emitirListaPrecios();
+
+      /* Se registran como OFRECIDAS las medias del producto en juego y de lo
+         nombrado en este mensaje: son las únicas urls de catálogo que el
+         candado de dedupeMedia deja salir hacia el cliente. Cualquier otra
+         —copiada de un fragmento de file_search, de la memoria del hilo o
+         inventada— se bloquea en el envío. */
+      if (opts?.id_cliente) {
+        const ofrecidas = [];
+        for (const p of [enJuego, ...nombrados].filter(Boolean)) {
+          if (p.imagen_url) ofrecidas.push(normalizarUrlMedia(p.imagen_url));
+          if (p.video_url) ofrecidas.push(normalizarUrlMedia(p.video_url));
+        }
+        if (ofrecidas.length) ofrecerMedia(opts.id_cliente, ofrecidas);
+      }
 
       /* Ficha completa de lo que nombró. Va aparte de la lista de precios para
          que no se mezcle: la lista sirve para no inventar precios, esto sirve

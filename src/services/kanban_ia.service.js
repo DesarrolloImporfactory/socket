@@ -10,7 +10,11 @@ const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
-const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
+const {
+  filtrarMediaNueva,
+  olvidarEnviado,
+  ofrecerMedia,
+} = require('../utils/dedupeMedia');
 const { extraerUrlsMedia, normalizarUrlMedia } = require('../utils/urlsMedia');
 const { humanizarFechas } = require('../utils/humanizarFechas');
 const { limpiarMarkdown } = require('../utils/formatoWhatsapp');
@@ -1533,6 +1537,9 @@ async function procesarMensajeKanban(params) {
         adjuntoImagen = `\n[producto_imagen_url]: ${normalizarUrlMedia(
           mencionado.imagen_url,
         )}`;
+        /* La propone el código: se registra como ofrecida o el candado de
+           propiedad del paso 12 la bloquearía como si fuera del modelo. */
+        ofrecerMedia(id_cliente, [normalizarUrlMedia(mencionado.imagen_url)]);
         await log(
           `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
         );
