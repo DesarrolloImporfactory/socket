@@ -228,14 +228,29 @@ function catalogoInlineActivo(id_configuracion, tokens) {
 // ─────────────────────────────────────────────────────────────
 // Responses API
 //
-// Sin id_configuracion (o con una que no esté en la lista) devuelve la tool
-// sin tope, o sea el comportamiento de siempre: hasta 20 fragmentos.
+// El tope de 5 fragmentos aplica en dos casos:
+//
+//   1. La config está en CONFIGS_CON_TOPE (lista a mano, como siempre).
+//   2. La llamada NO lleva el store del catálogo — o sea, file_search sirve
+//      SOLO documentos de apoyo (agencias, políticas, guías). Esta es la
+//      regla automática que evita ir agregando cuentas a la lista una por
+//      una: el único caso medido donde 5 fragmentos se quedaban cortos era
+//      el listado general de un catálogo grande ("¿qué productos tienes?"),
+//      y ese caso no existe cuando el catálogo va inline. Para preguntas
+//      sobre documentos, 5 fragmentos alcanzan y los 20 por defecto solo
+//      pegan ~16.000 tokens de ruido a la cadena EN CADA turno (caso 569
+//      del 2026-08-18: el contexto pasaba de 36k a 126k en 7 turnos y el
+//      modelo se saltaba las reglas del prompt).
+//
+// Con catálogo por file_search y config fuera de la lista: sin tope, hasta
+// 20 fragmentos, el comportamiento de siempre.
 // ─────────────────────────────────────────────────────────────
 function toolFileSearchResponses(vectorStoreIds, id_configuracion) {
-  // Se recibe la lista con huecos a propósito —normalmente
-  // [catálogo, documentos], y el catálogo llega en null cuando va inline— así
-  // que quien llama no tiene que filtrar. El slice(0, 2) es el tope duro de la
-  // API: más de 2 vector stores en una llamada es error 400.
+  // Se recibe la lista con huecos a propósito —por convención de los
+  // llamadores es [catálogo, documentos], y el catálogo llega en null cuando
+  // va inline— así que quien llama no tiene que filtrar. El slice(0, 2) es el
+  // tope duro de la API: más de 2 vector stores en una llamada es error 400.
+  const soloDocumentos = !(vectorStoreIds || [])[0];
   const stores = [...new Set((vectorStoreIds || []).filter(Boolean))].slice(
     0,
     2,
@@ -247,7 +262,7 @@ function toolFileSearchResponses(vectorStoreIds, id_configuracion) {
     vector_store_ids: stores,
   };
 
-  if (CONFIGS_CON_TOPE.includes(Number(id_configuracion))) {
+  if (soloDocumentos || CONFIGS_CON_TOPE.includes(Number(id_configuracion))) {
     tool.max_num_results = MAX_RESULTADOS;
   }
 

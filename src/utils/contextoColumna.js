@@ -106,6 +106,34 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   const mensajeCliente = String(opts?.mensaje || '');
   let bloque = '';
 
+  /* ── Regla de avance ────────────────────────────────────────
+     El tic más reportado de los bots (todas las verticales, ~0.3% de los
+     mensajes IA medido el 2026-08-18): re-confirmar lo ya aceptado — el
+     cliente dice "sí" y el bot contesta "¿estás de acuerdo?", "¿procedo?",
+     "¿me confirmas?", y la venta se queda dando vueltas hasta que el contador
+     de turnos_sin_avance la escala a asesor. Los prompts ya lo prohíben y el
+     modelo igual recae, así que la regla viaja acá: este bloque entra al
+     INICIO del input de CADA turno, donde la atención del modelo es más
+     fuerte que en un prompt de miles de tokens.
+
+     La redacción es neutral de vertical a propósito ("el paso siguiente de tu
+     flujo"): en ventas el paso final es el resumen de cierre con su tag, en
+     citas es el bloque de agendamiento — cada prompt define el suyo. Cambiarla
+     obliga a probar en las DOS verticales (dropshipping y servicios), como
+     todo lo de este archivo. */
+  bloque +=
+    `[REGLA DE AVANCE — vale toda la conversación]\n` +
+    `Cada mensaje tuyo AVANZA al paso siguiente de tu flujo. Cuando el ` +
+    `cliente responde "sí", "ok", "dale", "esa" o similar a tu última ` +
+    `pregunta, ese punto queda resuelto de forma DEFINITIVA: ejecuta el paso ` +
+    `siguiente, sin repetir la información aceptada y sin volver a ` +
+    `preguntarla con otras palabras ("¿estás de acuerdo?", "¿procedo?", ` +
+    `"¿te parece bien?", "¿me confirmas?" después de un sí son errores). ` +
+    `Cada dato o elección se pregunta y se acepta UNA sola vez. Si con esa ` +
+    `respuesta ya no falta ningún dato, tu mensaje ES el paso final que ` +
+    `dicta tu flujo (el resumen de cierre con su etiqueta, el bloque de ` +
+    `agendamiento, o el que corresponda) — nunca una confirmación más.\n\n`;
+
   /* Dónde se hace la cita de esta columna. Es la misma llave que lee
      procesarAgendarCita, y se lee acá porque cambia lo que hay que contarle al
      modelo: con la cita en el local, la sede es el lugar; con la cita en el
@@ -174,17 +202,32 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
            ser un apodo o el de quien le prestó el teléfono, y el número desde el
            que escribe no siempre es donde quiere que la llamen. Se preguntan
            igual; esto solo existe para cuando la persona contesta "a este mismo
-           número" y hay que saber cuál es. */
+           número" y hay que saber cuál es.
+
+           ⚠️ CUIDADO CON LA REDACCIÓN de este texto: se re-inyecta EN CADA
+           turno, al inicio del input, en TODAS las verticales. La versión
+           anterior decía "PREGÚNTALE SIEMPRE su nombre y su teléfono antes de
+           agendar. No los des por sabidos" y ese imperativo, releído turno a
+           turno, hacía que el bot volviera a pedir y a confirmar datos que el
+           cliente ya había dado — chocaba con la regla "cada dato se pide una
+           sola vez" de los prompts, y de "agendar" salían frases de citas en
+           flujos de venta ("voy a proceder a agendar tu pedido"). Medido: el
+           tic de re-confirmación subió de ~0.21% a ~0.33% de los mensajes IA
+           tras entrar esa línea el 2026-07-31, en todas las cuentas. Acá se
+           describe QUÉ SON los datos, nunca se le ordena al bot preguntar. */
         bloque +=
           `\n\n[DATOS TÉCNICOS DEL CONTACTO — solo de respaldo]\n` +
           `Número desde el que escribe: ${cli.celular_cliente}\n` +
           (nombre ? `Nombre de su perfil de WhatsApp: ${nombre}\n` : '') +
-          `PREGÚNTALE SIEMPRE su nombre y su teléfono antes de agendar. No los ` +
-          `des por sabidos: el nombre del perfil puede ser un apodo y el número ` +
-          `puede no ser donde quiere que la contacten.\n` +
-          `Estos datos son SOLO para cuando ella misma te diga "a este mismo ` +
-          `número", "desde donde te escribo" o "el mismo de acá": ahí ya no ` +
-          `vuelves a preguntar, usas el de arriba y sigues.\n\n`;
+          `Son datos del canal, NO confirmados por el cliente: el nombre del ` +
+          `perfil puede ser un apodo y el número puede no ser donde quiere que ` +
+          `la contacten, así que no los uses como si el cliente te los hubiera ` +
+          `dicho. Su nombre y su teléfono se piden UNA sola vez, en el paso del ` +
+          `flujo que corresponda — y si ya los dio en esta conversación, NO se ` +
+          `los vuelvas a pedir ni a confirmar.\n` +
+          `Estos datos de respaldo solo se usan cuando la persona misma diga ` +
+          `"a este mismo número", "desde donde te escribo" o "el mismo de acá": ` +
+          `ahí no preguntas de nuevo, usas el de arriba y sigues.\n\n`;
       }
     } catch (e) {
       say(`⚠️ contexto datos del cliente: ${e.message}`);
