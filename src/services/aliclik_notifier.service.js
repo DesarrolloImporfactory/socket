@@ -24,13 +24,16 @@
  *  · El estado no es un campo sino tres (callStatus / status / dispatchStatus).
  *  · No existe número de guía ni PDF en ningún endpoint de Aliclik, así que no
  *    hay estado "GUIA GENERADA" ni variables de tracking.
- *  · Perú siempre: country_code fijo en 'PE'.
+ *  · La entrega es siempre en Perú, pero el TELÉFONO puede ser de cualquier
+ *    país: lo que define el destino son las coordenadas del pedido, no el
+ *    número. COUNTRY_CODE = 'PE' es solo la región por defecto para
+ *    interpretar números escritos en formato nacional.
  */
 
 const { db } = require('../database/config');
 const AliclikOrdersCache = require('../models/aliclik_orders_cache.model');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
-const { isValidPhone } = require('../utils/phoneFactor');
+const { toE164Multipais } = require('../utils/phoneFactor');
 
 const {
   normalizePhone,
@@ -423,10 +426,14 @@ async function procesarTemplates({ ordenes, id_configuracion }) {
       // ("51918993266"), así que no hace falta la recuperación de números
       // mochos que sí necesita Dropi. Igual se valida: un número incompleto
       // matchearía por sufijo al contacto de otra persona.
-      const telefonoOrden =
-        order.phone && isValidPhone(order.phone, COUNTRY_CODE)
-          ? order.phone
-          : null;
+      //
+      // Se acepta cualquier país soportado, no solo Perú: Aliclik permite
+      // pedidos con teléfono extranjero (lo que define la entrega son las
+      // coordenadas) y ese cliente tiene que recibir su seguimiento igual.
+      // Exigir región PE lo dejaría sin ninguna notificación, en silencio.
+      const telefonoOrden = order.phone
+        ? toE164Multipais(order.phone, COUNTRY_CODE)
+        : null;
       if (order.phone && !telefonoOrden) {
         console.log(
           `[aliclik-notifier] tel inválido → skip orden ${order.order_number} (cfg ${id_configuracion}, tel "${order.phone}")`,
@@ -478,6 +485,8 @@ async function procesarTemplates({ ordenes, id_configuracion }) {
       }
 
       const config = plantillas[estadoConfig];
+      // telefonoOrden ya viene en E.164 desde toE164Multipais; normalizePhone
+      // queda como red de seguridad y para no divergir del camino de Dropi.
       const phoneNorm = normalizePhone(telefonoOrden, COUNTRY_CODE);
       if (!phoneNorm) {
         omitidos++;

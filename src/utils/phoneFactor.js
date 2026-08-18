@@ -128,9 +128,44 @@ function isValidPhone(raw, countryCode = 'EC') {
   return parseAny(raw, countryCode) !== null;
 }
 
+/**
+ * Normaliza a E.164 sin "+" ACEPTANDO números de cualquiera de los países
+ * soportados, no solo el de la región por defecto.
+ *
+ * Para qué: Aliclik (Perú) acepta pedidos con teléfono de cualquier país — la
+ * entrega la determinan las coordenadas, no el teléfono — y el cliente puede
+ * estar haciendo el seguimiento desde un número extranjero. Exigir región
+ * única, como hace isValidPhone, dejaría fuera esos casos legítimos.
+ *
+ * Lo que SÍ se conserva es el candado anti-mocho:
+ *   1. primero se intenta como nacional de `regionPorDefecto` (cubre
+ *      "987654321" y "+51987654321");
+ *   2. si no, como internacional — pero solo si el código de país resultante
+ *      es uno de los de CALLING_TO_ISO. Sin ese filtro, un nacional EC
+ *      truncado que empiece con "98" ("98115472") se interpreta como Irán
+ *      (+98), pasa por válido y se cuela un teléfono incompleto.
+ *
+ * Devuelve los dígitos E.164 ("51987654321", "593980709288") o null.
+ */
+function toE164Multipais(raw, regionPorDefecto = 'PE') {
+  const nacional = parseAny(raw, regionPorDefecto);
+  if (nacional) return nacional.number.replace('+', '');
+
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return null;
+
+  const p = parsePhoneNumberFromString('+' + digits);
+  if (p && p.isValid() && CALLING_TO_ISO[String(p.countryCallingCode)]) {
+    return p.number.replace('+', '');
+  }
+
+  return null;
+}
+
 module.exports = {
   resolveRegion,
   toDropiLocal,
   toWhatsapp,
   isValidPhone,
+  toE164Multipais,
 };

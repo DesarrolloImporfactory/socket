@@ -63,6 +63,14 @@ router.get(
   clientes_chat_centerController.enlaceOrdenContacto,
 );
 
+// Última ubicación compartida por el cliente en el chat. La usa el panel de
+// pedidos de Aliclik, que cotiza y entrega por lat/lng (no tiene catálogo de
+// ciudades como Dropi).
+router.get(
+  '/ultima_ubicacion',
+  clientes_chat_centerController.ultimaUbicacion,
+);
+
 router.post(
   '/listar_contactos_estado',
   clientes_chat_centerController.listarContactosEstado,
