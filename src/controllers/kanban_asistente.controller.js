@@ -32,9 +32,17 @@ const { esSinSaldoOpenAI } = require('../utils/openia/sinSaldo');
 // CONFIGS_CON_CATALOGO_INLINE: lista a mano para ver hasta dónde llegó esto.
 //
 // Solo decide DÓNDE se guardan los archivos nuevos. Todo lo demás (listarlos,
-// borrarlos, mandárselos al bot) lee vector_store_docs_id directamente: si
-// está en NULL —que es el caso de las 237 cuentas que no están en esta lista—
-// se comporta exactamente igual que antes.
+// borrarlos, mandárselos al bot) lee vector_store_docs_id directamente.
+//
+// ⚠️ En la Responses API los docs separados NO son opcionales: con el catálogo
+// inline la llamada ya no manda vector_store_id, así que un archivo adjuntado
+// al store del catálogo es invisible para el bot — y encima el sync del
+// catálogo recrea ese store y lo borra. Caso 569 del 2026-08-18: el PDF de
+// agencias subido desde KanbanConfig cayó al store del catálogo y el bot
+// inventaba direcciones. Por eso subirArchivo trata TODA cuenta migrada a
+// Responses como docs separados; esta lista queda solo para el camino viejo
+// de Assistants, donde el asistente admite un único store y el catálogo lo
+// ocupa.
 const CONFIGS_CON_DOCS_SEPARADOS = [10];
 
 // Tipos de archivo aceptados por OpenAI para file_search
@@ -579,9 +587,9 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
     // sincronización nunca toca. Antes iba al mismo store del catálogo, y como
     // el sync lo recrea entero en cada corrida, el archivo del usuario se
     // borraba en cuanto alguien guardaba un producto.
-    const docsSeparados = CONFIGS_CON_DOCS_SEPARADOS.includes(
-      Number(col.id_configuracion),
-    );
+    const docsSeparados =
+      USAR_RESPONSES_API ||
+      CONFIGS_CON_DOCS_SEPARADOS.includes(Number(col.id_configuracion));
     const campoVs = docsSeparados ? 'vector_store_docs_id' : 'vector_store_id';
 
     let vectorStoreId = docsSeparados

@@ -173,6 +173,27 @@ function esContextoExcedido(err) {
 async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
   try {
     const limite = Number(maxMsgs) || 30;
+
+    /* Un reinicio manual (eliminar_thread desde el chat) significa "arranca de
+       cero": el recap no puede volver a mostrarle al modelo la conversación
+       que se acaba de descartar. Sin este corte, el reinicio borraba la cadena
+       en OpenAI pero la siembra la reconstruía enterita desde
+       mensajes_clientes — con los vicios del prompt anterior incluidos (caso
+       569 del 2026-08-18: el prompt nuevo prohibía los resúmenes parciales y
+       el bot los seguía escribiendo porque imitaba su propio historial
+       re-sembrado). La columna viene de una migración manual
+       (reinicio_conversacion_migration.sql): si no está aplicada, se sigue
+       sin corte, como siempre. */
+    let desdeReinicio = null;
+    try {
+      const [cli] = await db.query(
+        `SELECT reinicio_conversacion_at FROM clientes_chat_center
+          WHERE id = ? LIMIT 1`,
+        { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+      );
+      desdeReinicio = cli?.reinicio_conversacion_at || null;
+    } catch (_) {}
+
     const rows = await db.query(
       `SELECT rol_mensaje, texto_mensaje
          FROM mensajes_clientes
@@ -180,9 +201,15 @@ async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
           AND texto_mensaje IS NOT NULL
           AND texto_mensaje <> ''
           AND deleted_at IS NULL
+          ${desdeReinicio ? 'AND created_at > ?' : ''}
         ORDER BY id DESC
         LIMIT ${limite}`,
-      { replacements: [String(id_cliente)], type: db.QueryTypes.SELECT },
+      {
+        replacements: desdeReinicio
+          ? [String(id_cliente), desdeReinicio]
+          : [String(id_cliente)],
+        type: db.QueryTypes.SELECT,
+      },
     );
     if (!rows.length) return '';
     return rows
