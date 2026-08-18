@@ -45,6 +45,28 @@ const palabrasUtiles = (s) =>
     .split(' ')
     .filter((t) => t.length > 2 && !VACIAS.has(t));
 
+/* ¿Son la misma palabra, contando el plural?
+   ─────────────────────────────────────────────────────────────
+   Antes esto era "una empieza con la otra" (con mínimo de 5 letras), pensado
+   para que "libro" y "libros" fueran lo mismo. Pero un prefijo NO es un
+   plural: "cabeza" empieza a "cabezal", y con eso una clienta que preguntó si
+   había protección "para la cabeza" (del bebé de la mochila antigolpes)
+   recibió la ficha, la foto y los combos del "Cabezal de ducha masajeadora".
+   Caso real de la config 285, con intervención humana para recuperar la venta.
+
+   Ahora solo se aceptan iguales o formas de plural en s/es. Se compara
+   quitando esa terminación de los DOS lados, así "mochilas" casa con
+   "mochila" y "relojes" con "reloj", pero "cabeza" ya no casa con "cabezal":
+   la 'l' final no es un plural. */
+const raizSingular = (t) => {
+  if (t.length >= 6 && t.endsWith('es')) return t.slice(0, -2);
+  if (t.length >= 5 && t.endsWith('s')) return t.slice(0, -1);
+  return t;
+};
+
+const mismaPalabra = (a, b) =>
+  a === b || (a.length >= 4 && b.length >= 4 && raizSingular(a) === raizSingular(b));
+
 /**
  * @param {number} id_configuracion
  * @param {Array<{tipo_accion:string}>} acciones  acciones activas de la columna
@@ -264,7 +286,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   if (tiene('contexto_productos')) {
     try {
       const items = await db.query(
-        `SELECT nombre, tipo, precio, duracion, descripcion,
+        `SELECT id, nombre, tipo, precio, duracion, descripcion,
                 imagen_url, video_url, sesiones_min, sesiones_max,
                 combos_producto, direccion, sector, ciudad, google_maps_url,
                 galeria_url, atributos_json
@@ -321,16 +343,11 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          meses de garantía que están escritos en el catálogo. Justo lo que cierra
          una venta se lo estábamos dejando al azar. */
       const palabrasMsg = palabrasUtiles(mensajeCliente);
-      const casanPalabras = (a, b) =>
-        a === b ||
-        (a.length >= 5 &&
-          b.length >= 5 &&
-          (a.startsWith(b) || b.startsWith(a)));
 
       const nombrados = palabrasMsg.length
         ? items.filter((i) => {
             const tokens = palabrasUtiles(i.nombre);
-            return palabrasMsg.some((p) => tokens.some((t) => casanPalabras(t, p)));
+            return palabrasMsg.some((p) => tokens.some((t) => mismaPalabra(t, p)));
           })
         : [];
 
@@ -342,18 +359,13 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           /* Se comparan PALABRAS COMPLETAS, no subcadenas: buscar "set" dentro
              del nombre hacía coincidir "camiSETa" y "corSET", y el bot recibía
              precios de ropa cuando le preguntaban por un juego de cuchillos.
-             Se acepta prefijo solo en palabras largas, para que "libro" y
-             "libros" sigan siendo lo mismo. */
-          const casan = (a, b) =>
-            a === b ||
-            (a.length >= 5 && b.length >= 5 &&
-              (a.startsWith(b) || b.startsWith(a)));
-
+             El plural también cuenta (mismaPalabra): "libro" y "libros" son lo
+             mismo, pero "cabeza" y "cabezal" ya no. */
           seleccion = items
             .map((i) => {
               const tokens = palabrasUtiles(i.nombre);
               const aciertos = palabras.filter((p) =>
-                tokens.some((t) => casan(t, p)),
+                tokens.some((t) => mismaPalabra(t, p)),
               ).length;
               return { item: i, aciertos };
             })
@@ -473,24 +485,88 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           const buscarEn = (mensajes) => {
             for (const m of mensajes) {
               const texto = normalizar(m.texto_mensaje);
-              const hallado = items.find((i) => {
+              const candidatos = items.filter((i) => {
                 const n = normalizar(i.nombre);
                 return n.length > 8 && texto.includes(n);
               });
-              if (hallado) return hallado;
+              if (candidatos.length) {
+                /* El nombre MÁS LARGO gana: hay catálogos con "Corrector de
+                   Postura" y "Corrector de Postura Pro" a la vez, y el anuncio
+                   del Pro contiene los dos nombres. Quedarse con el primero
+                   que aparezca ataba la versión equivocada. Mismo criterio que
+                   elegirItemDelCatalogo en el agendamiento. */
+                return candidatos.sort(
+                  (a, b) =>
+                    normalizar(b.nombre).length - normalizar(a.nombre).length,
+                )[0];
+              }
             }
             return null;
           };
 
-          /* Primero lo que nombró el CLIENTE, y solo si nunca nombró nada, lo
-             que dijo el bot. No es un detalle: si el bot ya se equivocó una vez
-             —cotizó otro producto porque un precio calzó— sus propios mensajes
-             lo dicen, y tomarlos como fuente dejaría el error clavado para el
-             resto de la conversación. Lo que el cliente pidió es lo que vale. */
+          /* El orden de las fuentes importa, de la más confiable a la menos:
+
+             1. ultimo_producto_ad — el anuncio por el que ENTRÓ. Es la señal
+                más fuerte y no depende de que nadie escriba el nombre bien.
+             2. Lo que nombró el CLIENTE en sus mensajes.
+             3. Lo que dijo el bot — último recurso, y peligroso: si el bot ya
+                se equivocó de producto, sus mensajes lo repiten. Caso real
+                (config 285): la clienta entró por la mochila antigolpes pero
+                escribió "Mochilas Protectoras", nunca el nombre exacto; el bot
+                después nombró el "Cabezal de ducha" por error, y con el bot
+                como fuente este bloque habría clavado el cabezal — reforzando
+                el error que venía a corregir. El anuncio decía la verdad. */
           const delCliente = previos.filter((m) => Number(m.rol_mensaje) === 0);
           const delBot = previos.filter((m) => Number(m.rol_mensaje) === 1);
 
-          const enJuego = buscarEn(delCliente) || buscarEn(delBot);
+          /* El anuncio se resuelve con el MISMO resolver que usa el webhook
+             (mapa por source_id → texto). Antes acá se buscaba por contención
+             del título, y los dos caminos podían no coincidir: el webhook le
+             inyectaba un producto y este bloque anclaba otro. Una sola verdad. */
+          let desdeAnuncio = null;
+          try {
+            const [ultimoAd] = await db.query(
+              `SELECT headline, source_id FROM cliente_productos_ad
+                WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
+              { replacements: [opts.id_cliente], type: db.QueryTypes.SELECT },
+            );
+
+            if (ultimoAd) {
+              const {
+                resolverProductoAnuncio,
+              } = require('./webhook_whatsapp/buscar_producto_referral');
+              const r = await resolverProductoAnuncio(
+                id_configuracion,
+                ultimoAd.headline,
+                ultimoAd.source_id,
+              );
+              if (r?.producto?.id) {
+                desdeAnuncio =
+                  items.find((i) => Number(i.id) === Number(r.producto.id)) ||
+                  null;
+              }
+            }
+
+            /* Respaldo para clientes viejos sin fila en cliente_productos_ad:
+               el título guardado en el propio cliente, por contención. */
+            if (!desdeAnuncio) {
+              const [cliRow] = await db.query(
+                `SELECT ultimo_producto_ad FROM clientes_chat_center
+                  WHERE id = ? LIMIT 1`,
+                { replacements: [opts.id_cliente], type: db.QueryTypes.SELECT },
+              );
+              if (cliRow?.ultimo_producto_ad) {
+                desdeAnuncio = buscarEn([
+                  { texto_mensaje: cliRow.ultimo_producto_ad },
+                ]);
+              }
+            }
+          } catch (e) {
+            say(`⚠️ resolviendo anuncio del cliente: ${e.message}`);
+          }
+
+          const enJuego =
+            desdeAnuncio || buscarEn(delCliente) || buscarEn(delBot);
 
           /* Si lo que se encontró en el historial es lo mismo que la persona
              acaba de nombrar, el bloque no aporta nada: la ficha ya lo dice. */
