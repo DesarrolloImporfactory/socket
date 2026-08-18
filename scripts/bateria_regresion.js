@@ -89,7 +89,9 @@ async function suiteA() {
     );
     caso(
       `"${msg}" no repite las líneas de media (📷/🎥)`,
-      !b.includes('📷') && !b.includes('MÁNDALE'),
+      // Etiquetas con url, no el aviso "su foto YA se le envió" (que también
+      // usa el emoji): lo peligroso es la url suelta en un turno sin producto.
+      !b.includes('📷 imagen:') && !b.includes('🎥 video:') && !b.includes('MÁNDALE'),
       'media en turno sin producto nombrado → el modelo lo lee como adjuntos',
     );
   }
@@ -99,7 +101,7 @@ async function suiteA() {
     const b = await ctx('quiero la licuadora', HISTORIAL_MASCARA('quiero la licuadora'));
     caso(
       'mención legítima trae ficha + media del nombrado',
-      /Licuadora/i.test(b) && b.includes('📷'),
+      /Licuadora/i.test(b) && b.includes('📷 imagen:'),
     );
     caso('y el ancla de la conversación sigue presente', /Mascara Tactica/i.test(b));
   }
@@ -216,6 +218,34 @@ async function suiteA() {
     caso(
       'media que no es de catálogo no se toca',
       (await esMediaPermitida({ id_configuracion: CFG_DROPI, id_cliente: CLIENTE_DROPI, url: 'https://chat.imporfactory.app/uploads/documentos/manual.pdf' })) === true,
+    );
+  }
+
+  // 9. Caso Vinicio (285, 2026-08-17): "Si el combo de tres" sin dar ni un
+  //    dato → el modelo copió la plantilla del prompt ("Nombre: *[nombre
+  //    completo real]*"), cerró la venta y movió el contacto a generar_guia.
+  //    Un cierre con placeholders NO puede contar como venta.
+  {
+    const { motivoCierreInvalido } = require('../src/services/kanban_ia.service');
+    const basura =
+      'Listo! Aquí tienes el resumen:\n' +
+      '🧑 Nombre: *[nombre completo real]*\n📞 Telefono: *[teléfono real y completo]*\n' +
+      '📍 Provincia: *[provincia de la ciudad]*\n📦 Producto: *Evil Goods*\n' +
+      '🔢 Cantidad: *3*\n[generar_guia]:true';
+    const valido =
+      'Tu pedido queda así:\n🧑 Nombre: Marcos Vinicio Torres\n📞 Telefono: 0979462998\n' +
+      '📍 Provincia: Manabí\n📍 Ciudad: Calceta\n🏡 Dirección: Bolívar y El Limón, junto a la ESPAM\n' +
+      '📦 Producto: Evil Goods\n🔢 Cantidad: 3\n💰 Precio total: $45.00\n' +
+      '[producto_imagen_url]: https://x/foto.jpg\n[generar_guia]:true';
+    caso(
+      'cierre con placeholders se bloquea (caso Vinicio)',
+      motivoCierreInvalido(basura) !== null,
+      `motivo=${motivoCierreInvalido(basura)}`,
+    );
+    caso(
+      'cierre con datos reales pasa (tags y media no confunden)',
+      motivoCierreInvalido(valido) === null,
+      `motivo=${motivoCierreInvalido(valido)}`,
     );
   }
 }

@@ -201,6 +201,42 @@ async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
   }
 }
 
+/* ¿El cierre de venta trae datos de verdad, o el modelo copió la plantilla?
+   Solo se pregunta cuando la respuesta trae el trigger de generar_guia: cerrar
+   una venta mueve columna y dispara el auto-orden de Dropi, así que un resumen
+   con placeholders no puede contar como cierre.
+
+   Se revisan las señales de plantilla copiada, no la completitud campo por
+   campo (el auto-orden ya completa faltantes con su extractor): corchetes
+   tipo "[nombre completo real]" —quitando antes los tags del sistema y de
+   media, que también usan corchetes— y las frases de relleno que el arnés de
+   prompts ya cazaba en las pruebas. Devuelve el motivo, o null si el cierre
+   es válido. */
+const RE_TAGS_SISTEMA = /\[[a-z_]+\]\s*:\s*(?:true|false)/gi;
+const RE_TAGS_MEDIA = /\[(?:producto|servicio|upsell)_(?:imagen|video)_url\]\s*:[^\n]*/gi;
+
+function motivoCierreInvalido(respuesta) {
+  const texto = String(respuesta || '')
+    .replace(RE_TAGS_SISTEMA, '')
+    .replace(RE_TAGS_MEDIA, '');
+
+  if (/\[[^\[\]\n]{3,60}\]/.test(texto)) {
+    return 'placeholders del prompt en el resumen';
+  }
+  if (
+    /\(pendiente\)|\(falta\)|no proporcionad|por favor proporciona|seg[uú]n tu elecci[oó]n/i.test(
+      texto,
+    )
+  ) {
+    return 'texto de relleno en el resumen';
+  }
+  const nombre = texto.match(/🧑?\s*Nombre:\s*([^\n]+)/i)?.[1];
+  if (nombre !== undefined && nombre.replace(/[*_\s]/g, '') === '') {
+    return 'línea de nombre vacía';
+  }
+  return null;
+}
+
 async function marcarOpenAIInactivo(id_configuracion, motivo) {
   try {
     await db.query(
@@ -1094,6 +1130,9 @@ async function procesarMensajeKanban(params) {
   // ¿Esta respuesta cierra la venta (resumen del pedido)? Lo decide el paso 10
   // y lo usa el 13 para no repetir el resumen. Se declara afuera del bucle.
   let cerroLaVenta = false;
+  /* Cierre con resumen basura: se bloquea y el paso 12 reemplaza la respuesta
+     por la petición de datos. Ver motivoCierreInvalido. */
+  let cierreBloqueado = null;
   const claveResumen = `${id_configuracion}|${id_cliente}`;
   for (const ac of getAcciones('cambiar_estado')) {
     const cfg = parseConfig(ac);
@@ -1103,6 +1142,29 @@ async function procesarMensajeKanban(params) {
 
     const coincide = respuestaRaw.toLowerCase().includes(trigger.toLowerCase());
     if (coincide) {
+      /* ── Validación del cierre de venta ──
+         Caso real (285, 2026-08-17, cliente Vinicio): el cliente dijo "Si el
+         combo de tres" sin haber dado ni un dato, y el modelo —con el hilo
+         perdido— copió la PLANTILLA del prompt tal cual: "🧑 Nombre: *[nombre
+         completo real]* 📞 Telefono: *[teléfono real y completo]*…", cerró con
+         "Gracias por tu compra" y el trigger movió el contacto a generar_guia.
+         Un asesor tuvo que entrar a pedir los datos a mano.
+
+         El arnés de prompts ya cazaba esto EN LAS PRUEBAS ("usó placeholders
+         en un resumen"), pero en runtime nadie miraba: el trigger movía la
+         columna con lo que fuera. Cerrar una venta es un acto con consecuencias
+         (columna + auto-orden en Dropi): solo vale con datos de verdad. */
+      if (estadoDestino === 'generar_guia') {
+        const motivo = motivoCierreInvalido(respuestaRaw);
+        if (motivo) {
+          cierreBloqueado = motivo;
+          await log(
+            `🚫 Cierre de venta BLOQUEADO (${motivo}): ni cambio de columna ni ` +
+              `auto-orden. Se le piden los datos al cliente.`,
+          );
+          continue;
+        }
+      }
       // Esta respuesta ES un cierre de venta. Se marca para que el paso 13 no
       // mande el mismo resumen dos veces cuando el cliente escribió en ráfaga.
       if (estadoDestino === 'generar_guia') cerroLaVenta = true;
@@ -1554,6 +1616,22 @@ async function procesarMensajeKanban(params) {
   const media = extraerMedia(`${respuestaRaw}${adjuntoImagen}`);
   const { texto } = media;
   soloTexto = texto;
+
+  /* Cierre bloqueado (paso 10): el resumen era la plantilla del prompt, no un
+     pedido. Mandárselo al cliente ("Nombre: [nombre completo real]") delata a
+     la máquina y da la venta por hecha sin datos, así que la respuesta entera
+     se reemplaza por lo único correcto en ese momento: pedir los datos. */
+  if (cierreBloqueado) {
+    soloTexto =
+      'Para confirmar tu pedido, ayúdame con estos datos 😊:\n' +
+      '- Nombre completo\n' +
+      '- Teléfono\n' +
+      '- Ciudad y provincia\n' +
+      '- Dirección exacta (dos calles y una referencia), o la agencia ' +
+      'Servientrega si prefieres retirarlo';
+    media.imagenes = [];
+    media.videos = [];
+  }
 
   /* El filtro tiene que estar ACÁ y no donde se decide adjuntarla: la etiqueta
      puede venir del prompt (el modelo la repite en cada mensaje, que es lo que
@@ -2817,4 +2895,7 @@ module.exports = {
   // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
   // igual aunque la cita no se cree).
   procesarAgendarCita,
+  // Expuesta para la batería de regresión: que un cierre con placeholders no
+  // cuente como venta es una garantía que no puede perderse en silencio.
+  motivoCierreInvalido,
 };

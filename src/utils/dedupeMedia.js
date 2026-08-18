@@ -287,21 +287,13 @@ const COLUMNA_CONTACTO = 'celular_recibe';
  * @param {Function} [p.log]      async (msg) => void
  * @returns {Promise<string[]>}   las que sí hay que enviar
  */
-async function filtrarMediaNueva({
-  id_cliente,
-  id_configuracion = null,
-  urls,
-  etiqueta = 'media',
-  log,
-}) {
-  const decir = typeof log === 'function' ? log : async () => {};
-  const vistas = new Set();
-  const salida = [];
-
-  /* El corte es el más reciente entre "hace 48 h" y "cuando se reinició la
-     conversación": reiniciar deja al bot presentando el producto desde cero, y
-     la foto es parte de esa presentación. Se resuelve en SQL y no comparando
-     fechas en JS para no mezclar el reloj del proceso con el de la BD. */
+/* ¿Esta media ya se le envió a este contacto dentro de la ventana?
+   Es LA consulta del dedupe, extraída para que contextoColumna pueda avisarle
+   al modelo "la foto ya se envió, no la anuncies" con exactamente el mismo
+   criterio con el que después se filtra el envío. Dos criterios distintos era
+   el bug: el modelo anunciaba "aquí tienes la foto" y el filtro la callaba.
+   Lanza en error de BD: cada caller decide qué hacer con eso. */
+async function mediaYaEnviada({ id_cliente, id_configuracion = null, url }) {
   const conReinicio = await hayColumnaReinicio();
   const corteVentana = conReinicio
     ? `GREATEST(
@@ -313,6 +305,53 @@ async function filtrarMediaNueva({
            )
          )`
     : `DATE_SUB(NOW(), INTERVAL ? HOUR)`;
+
+  const patron = `%${escaparLike(url)}%`;
+  /* `mensajes_clientes` es de las tablas grandes del sistema y esto corre en
+     cada turno del bot. El índice que ya existe
+     (`idx_mc_conf_cel_rol_del_at`, ver dashboard_indexes_migration.sql)
+     arranca por `id_configuracion`, así que sin esa condición la consulta
+     no lo alcanza y termina en escaneo completo. */
+  const filtroCuenta = id_configuracion ? `id_configuracion = ? AND` : '';
+  const [existe] = await db.query(
+    `SELECT id FROM mensajes_clientes
+      WHERE ${filtroCuenta} ${COLUMNA_CONTACTO} = ?
+        AND rol_mensaje = 1
+        AND deleted_at IS NULL
+        AND created_at >= ${corteVentana}
+        AND (
+          ruta_archivo LIKE ? ESCAPE '\\\\'
+          OR attachments_unificado LIKE ? ESCAPE '\\\\'
+        )
+      LIMIT 1`,
+    {
+      replacements: [
+        ...(id_configuracion ? [id_configuracion] : []),
+        /* `celular_recibe` es VARCHAR aunque lleve un id: si se le pasa un
+           número, MySQL convierte la columna entera para comparar y se
+           queda sin índice. */
+        String(id_cliente),
+        VENTANA_REENVIO_HORAS,
+        ...(conReinicio ? [id_cliente] : []),
+        patron,
+        patron,
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  return !!existe;
+}
+
+async function filtrarMediaNueva({
+  id_cliente,
+  id_configuracion = null,
+  urls,
+  etiqueta = 'media',
+  log,
+}) {
+  const decir = typeof log === 'function' ? log : async () => {};
+  const vistas = new Set();
+  const salida = [];
 
   for (const url of urls || []) {
     if (!url) continue;
@@ -341,40 +380,7 @@ async function filtrarMediaNueva({
     marcarEnviado(id_cliente, url);
 
     try {
-      const patron = `%${escaparLike(url)}%`;
-      /* `mensajes_clientes` es de las tablas grandes del sistema y esto corre en
-         cada turno del bot. El índice que ya existe
-         (`idx_mc_conf_cel_rol_del_at`, ver dashboard_indexes_migration.sql)
-         arranca por `id_configuracion`, así que sin esa condición la consulta
-         no lo alcanza y termina en escaneo completo. */
-      const filtroCuenta = id_configuracion ? `id_configuracion = ? AND` : '';
-      const [existe] = await db.query(
-        `SELECT id FROM mensajes_clientes
-          WHERE ${filtroCuenta} ${COLUMNA_CONTACTO} = ?
-            AND rol_mensaje = 1
-            AND deleted_at IS NULL
-            AND created_at >= ${corteVentana}
-            AND (
-              ruta_archivo LIKE ? ESCAPE '\\\\'
-              OR attachments_unificado LIKE ? ESCAPE '\\\\'
-            )
-          LIMIT 1`,
-        {
-          replacements: [
-            ...(id_configuracion ? [id_configuracion] : []),
-            /* `celular_recibe` es VARCHAR aunque lleve un id: si se le pasa un
-               número, MySQL convierte la columna entera para comparar y se
-               queda sin índice. */
-            String(id_cliente),
-            VENTANA_REENVIO_HORAS,
-            ...(conReinicio ? [id_cliente] : []),
-            patron,
-            patron,
-          ],
-          type: db.QueryTypes.SELECT,
-        },
-      );
-      if (existe) {
+      if (await mediaYaEnviada({ id_cliente, id_configuracion, url })) {
         await decir(
           `🔁 ${etiqueta} ya enviado en las últimas ${VENTANA_REENVIO_HORAS} h, se omite`,
         );
@@ -394,6 +400,7 @@ async function filtrarMediaNueva({
 
 module.exports = {
   filtrarMediaNueva,
+  mediaYaEnviada,
   olvidarEnviado,
   olvidarCliente,
   ofrecerMedia,

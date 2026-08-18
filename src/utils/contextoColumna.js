@@ -14,7 +14,7 @@
 const { db } = require('../database/config');
 const { enlaceUbicacionSede } = require('./ubicacionSede');
 const { normalizarUrlMedia } = require('./urlsMedia');
-const { ofrecerMedia } = require('./dedupeMedia');
+const { ofrecerMedia, mediaYaEnviada } = require('./dedupeMedia');
 
 /* Palabras que no distinguen un producto de otro. Sin esto, "quiero información
    del tratamiento facial" traería cualquier cosa que diga "facial". */
@@ -768,8 +768,36 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
            archivos" — leyó las urls como adjuntos del cliente. */
         const nombradoAhora = (i) =>
           nombrados.some((n) => normalizar(n.nombre) === normalizar(i.nombre));
+
+        /* ¿La foto de este ítem ya salió hacia este chat? Se pregunta con EL
+           MISMO criterio del filtro de envío (mediaYaEnviada, en dedupeMedia):
+           tener dos criterios era el bug — el modelo anunciaba "aquí tienes la
+           foto", el filtro la callaba por repetida, y al cliente le llegaba la
+           promesa sin la foto. Sabiéndolo, el modelo no la anuncia. */
+        const yaEnviada = new Map();
+        if (opts?.id_cliente) {
+          for (const i of conFicha) {
+            const urlRef = i.imagen_url || i.video_url;
+            if (!urlRef) continue;
+            try {
+              yaEnviada.set(
+                normalizar(i.nombre),
+                await mediaYaEnviada({
+                  id_cliente: opts.id_cliente,
+                  id_configuracion,
+                  url: normalizarUrlMedia(urlRef),
+                }),
+              );
+            } catch {
+              /* sin el dato se comporta como siempre: propone la foto y el
+                 filtro de envío decide */
+            }
+          }
+        }
+        const fotoYaSalio = (i) => yaEnviada.get(normalizar(i.nombre)) === true;
+
         const conMedia = conFicha.filter(
-          (i) => (i.imagen_url || i.video_url) && nombradoAhora(i),
+          (i) => (i.imagen_url || i.video_url) && nombradoAhora(i) && !fotoYaSalio(i),
         );
 
         bloque +=
@@ -785,18 +813,30 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                  cual en la etiqueta, y si llevan espacios —las de Dropi los
                  traen— el extractor las corta en el primero y a Meta le llega
                  un link roto que nunca se entrega. */
-              const media = nombradoAhora(i)
-                ? [
-                    i.imagen_url
-                      ? `  📷 imagen: ${normalizarUrlMedia(i.imagen_url)}`
-                      : null,
-                    i.video_url
-                      ? `  🎥 video: ${normalizarUrlMedia(i.video_url)}`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join('\n')
-                : '';
+              let media = '';
+              if (fotoYaSalio(i) && (i.imagen_url || i.video_url)) {
+                /* El dato que solo el sistema sabe: la foto ya está en el
+                   chat. Sin esto el modelo la anunciaba y el filtro la
+                   callaba — "aquí tienes la foto" sin foto. La instrucción es
+                   NO hablar de la foto en absoluto: decir "está más arriba"
+                   puede sonar cortante. */
+                media =
+                  `  📷 Su foto ya se le envió en esta conversación: NO la ` +
+                  `menciones — no la anuncies, no digas que ya la mandaste y ` +
+                  `no escribas la etiqueta de nuevo. Responde lo que te ` +
+                  `pregunte con normalidad, sin hablar de la foto.`;
+              } else if (nombradoAhora(i)) {
+                media = [
+                  i.imagen_url
+                    ? `  📷 imagen: ${normalizarUrlMedia(i.imagen_url)}`
+                    : null,
+                  i.video_url
+                    ? `  🎥 video: ${normalizarUrlMedia(i.video_url)}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join('\n');
+              }
 
               /* Dónde queda. Solo aparece en los ítems que tienen ubicación
                  propia —un inmueble, un local—, así que un catálogo de
