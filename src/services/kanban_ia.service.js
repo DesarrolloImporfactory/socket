@@ -259,8 +259,28 @@ function motivoCierreInvalido(respuesta) {
     return 'texto de relleno en el resumen';
   }
   const nombre = texto.match(/🧑?\s*Nombre:\s*([^\n]+)/i)?.[1];
-  if (nombre !== undefined && nombre.replace(/[*_\s]/g, '') === '') {
-    return 'línea de nombre vacía';
+  if (nombre !== undefined) {
+    const limpio = nombre.replace(/[*_]/g, '').trim();
+    if (limpio === '') return 'línea de nombre vacía';
+    /* Un nombre de UNA palabra no genera guía (falta el apellido) y todos
+       los prompts lo exigen en dos. Si el modelo cerró así, se saltó el
+       candado: mejor pedirlo que crear una orden coja. */
+    if (!/\s/.test(limpio)) return 'nombre de una sola palabra en el resumen';
+  }
+
+  /* Teléfono enmascarado o de relleno. Caso real (569, 2026-08-18): el
+     modelo nunca pidió el celular y cerró con "📞 Teléfono: 09XXXXXXXX (a
+     confirmar)" — ninguna señal de plantilla de las de arriba, pero un
+     número que no existe. La validación es POR LÍNEA a propósito: "por
+     confirmar" en 🏡 Direccion es legítimo (agencia por confirmar del flujo
+     7.4) y no puede bloquear el cierre. */
+  const telefono = texto.match(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i)?.[1];
+  if (telefono !== undefined) {
+    const t = telefono.replace(/[*_]/g, '').trim();
+    const digitos = (t.match(/\d/g) || []).length;
+    if (/x{2,}/i.test(t) || /confirmar|pendiente|falta/i.test(t) || digitos < 9) {
+      return 'teléfono enmascarado o de relleno en el resumen';
+    }
   }
   return null;
 }
@@ -1658,13 +1678,52 @@ async function procesarMensajeKanban(params) {
      la máquina y da la venta por hecha sin datos, así que la respuesta entera
      se reemplaza por lo único correcto en ese momento: pedir los datos. */
   if (cierreBloqueado) {
+    /* Se pide SOLO lo que de verdad falta o vino de relleno. Pedir los
+       cuatro grupos cuando el cliente ya dio tres suena a bot perdido y
+       repregunta datos ya dados — la misma enfermedad que se curó en
+       contextoColumna. Un campo es válido si existe, no trae corchetes de
+       plantilla y no es texto de relleno; el teléfono además necesita
+       dígitos reales sin máscaras. */
+    const campo = (re) =>
+      respuestaRaw
+        .match(re)?.[1]
+        ?.replace(/[*_]/g, '')
+        .trim() || '';
+    const deRelleno = (v) =>
+      !v || v.includes('[') || /confirmar|pendiente|falta|proporcionad/i.test(v);
+
+    const nombre = campo(/🧑?\s*Nombre:\s*([^\n]+)/i);
+    const telefono = campo(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i);
+    const ciudad = campo(/📍?\s*Ciudad:\s*([^\n]+)/i);
+    const direccion = campo(/🏡?\s*Direcci[oó]n:\s*([^\n]+)/i);
+
+    const faltan = [];
+    if (deRelleno(nombre) || !/\s/.test(nombre)) faltan.push('- Nombre completo');
+    if (
+      deRelleno(telefono) ||
+      /x{2,}/i.test(telefono) ||
+      (telefono.match(/\d/g) || []).length < 9
+    ) {
+      faltan.push('- Teléfono');
+    }
+    if (deRelleno(ciudad)) faltan.push('- Ciudad y provincia');
+    /* En Direccion, "por confirmar" es legítimo (agencia por confirmar). */
+    if (!direccion || direccion.includes('[')) {
+      faltan.push(
+        '- Dirección exacta (dos calles y una referencia), o la agencia ' +
+          'Servientrega si prefieres retirarlo',
+      );
+    }
+
     soloTexto =
-      'Para confirmar tu pedido, ayúdame con estos datos 😊:\n' +
-      '- Nombre completo\n' +
-      '- Teléfono\n' +
-      '- Ciudad y provincia\n' +
-      '- Dirección exacta (dos calles y una referencia), o la agencia ' +
-      'Servientrega si prefieres retirarlo';
+      faltan.length === 1
+        ? `Para confirmar tu pedido, ayúdame con este dato 😊:\n${faltan[0]}`
+        : `Para confirmar tu pedido, ayúdame con estos datos 😊:\n` +
+          (faltan.length
+            ? faltan.join('\n')
+            : '- Nombre completo\n- Teléfono\n- Ciudad y provincia\n' +
+              '- Dirección exacta (dos calles y una referencia), o la ' +
+              'agencia Servientrega si prefieres retirarlo');
     media.imagenes = [];
     media.videos = [];
   }

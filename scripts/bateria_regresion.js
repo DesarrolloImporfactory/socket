@@ -247,6 +247,37 @@ async function suiteA() {
       motivoCierreInvalido(valido) === null,
       `motivo=${motivoCierreInvalido(valido)}`,
     );
+
+    // Caso 569 del 2026-08-18: el modelo nunca pidió el celular y cerró con
+    // "📞 Teléfono: 09XXXXXXXX (a confirmar)" — sin corchetes ni "(pendiente)",
+    // así que el candado de arriba no lo veía y el pedido entraba sin teléfono.
+    const telEnmascarado =
+      'Aquí está el resumen:\n🧑 Nombre: Michael Orodnez\n' +
+      '📞 Teléfono: 09XXXXXXXX (a confirmar)\n📍 Provincia: Azuay\n' +
+      '📍 Ciudad: Cuenca\n🏡 Dirección: Alfredo Borja y Rumipamba, frente a un Tuti\n' +
+      '📦 Producto: Shampoo Cubre Canas IVSI 400gr\n🔢 Cantidad: 1\n' +
+      '💰 Precio total: $22.99\n🚚 Envío: domicilio\n[generar_guia]:true';
+    caso(
+      'cierre con teléfono enmascarado se bloquea (caso 569)',
+      motivoCierreInvalido(telEnmascarado) !== null,
+      `motivo=${motivoCierreInvalido(telEnmascarado)}`,
+    );
+    caso(
+      'cierre con nombre de una sola palabra se bloquea',
+      motivoCierreInvalido(valido.replace('Marcos Vinicio Torres', 'Marcos')) !== null,
+    );
+    // La agencia "por confirmar" del flujo 7.4 vive en 🏡 Direccion y es
+    // legítima: la validación del teléfono es por línea justo para no
+    // confundirla con relleno.
+    const agenciaPorConfirmar = valido.replace(
+      'Bolívar y El Limón, junto a la ESPAM',
+      'Agencia Servientrega por confirmar — Calceta, sector el parque central',
+    );
+    caso(
+      'cierre con agencia "por confirmar" en la dirección sigue pasando',
+      motivoCierreInvalido(agenciaPorConfirmar) === null,
+      `motivo=${motivoCierreInvalido(agenciaPorConfirmar)}`,
+    );
   }
 }
 

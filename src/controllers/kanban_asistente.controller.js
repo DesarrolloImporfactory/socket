@@ -25,6 +25,7 @@ const {
 } = require('../utils/openia/fileSearch');
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 const { esSinSaldoOpenAI } = require('../utils/openia/sinSaldo');
+const { mejorarIndexadoPdf } = require('../utils/openia/normalizarDocumento');
 
 // Configuraciones donde los documentos que sube el usuario van a un vector
 // store PROPIO (kanban_columnas.vector_store_docs_id) en vez de compartir el
@@ -684,6 +685,33 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       );
     } else {
       console.log('SISTEMA NUEVO SIN ASSISTANTS');
+    }
+
+    /* ── Mejora de indexado para PDFs (asíncrona) ─────────────
+       Los PDFs tabulares (agencias, listas de precios) se trocean mal en
+       file_search y el bot recibe parejas nombre-dato corridas (caso 569 del
+       2026-08-18). Después de responder, un proceso en segundo plano
+       convierte el PDF a texto una-línea-por-registro VERIFICADO y lo
+       reemplaza dentro del vector store; el PDF queda en Files de respaldo.
+       Si cualquier paso falla, el PDF sigue adjuntado como siempre.
+       Solo en el camino de docs separados (Responses): en el camino viejo el
+       archivo vive en el store del catálogo, que el sync recrea, y el TXT
+       generado se perdería en el siguiente guardado de producto. */
+    if (docsSeparados && archivo.mimetype === 'application/pdf') {
+      setImmediate(() => {
+        mejorarIndexadoPdf({
+          vectorStoreId,
+          file_id,
+          filename: archivo.originalname,
+          apiKey,
+        }).then((r) => {
+          if (!r.ok) {
+            console.log(
+              `[subirArchivo] "${archivo.originalname}" queda con el PDF original: ${r.motivo}`,
+            );
+          }
+        });
+      });
     }
 
     return res.status(200).json({
