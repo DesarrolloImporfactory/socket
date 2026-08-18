@@ -60,51 +60,99 @@ function armarBloqueProducto(p) {
   return b.trim();
 }
 
+const CAMPOS_PRODUCTO = `id, nombre, descripcion, precio, imagen_url, video_url,
+              combos_producto, stock, nombre_upsell, descripcion_upsell,
+              precio_upsell, imagen_upsell_url`;
+
 /**
- * Busca el producto del referral en la BD y devuelve un bloque
- * de texto con los datos EXACTOS para inyectar a la IA.
+ * Resuelve QUÉ producto publicita un anuncio. Es la única fuente de esa
+ * verdad: la usan el webhook (para armar el bloque del referral) y
+ * contextoColumna (para anclar el producto de la conversación). Antes cada uno
+ * resolvía por su cuenta y podían no coincidir.
  *
- * @returns {Promise<string>} bloque listo o '' si no encuentra
+ * El orden va de lo determinista a lo difuso:
+ *
+ *   0. El MAPA (anuncios_producto, por source_id). Un anuncio publicita
+ *      siempre el mismo producto, así que la adivinanza de texto se hace UNA
+ *      vez en la vida del anuncio; después es una búsqueda exacta. Es lo único
+ *      que resuelve los títulos de puro marketing ("Luce 2 tallas menos"), que
+ *      son ~1 de cada 4 anuncios y no contienen ningún nombre de producto.
+ *   1. Nombre exacto.
+ *   2. Contenido (el título contiene el nombre o al revés). Gana el nombre MÁS
+ *      LARGO: con "Corrector de Postura" y "Corrector de Postura Pro" en el
+ *      mismo catálogo, el corto calza en los dos anuncios y el orden ASC que
+ *      había antes elegía siempre la versión equivocada.
+ *   3. Palabras sueltas (la que más coincida). Es el nivel difuso: sirve para
+ *      responder, pero NO se graba en el mapa — grabar una adivinanza como
+ *      verdad es como nació el problema que esto arregla.
+ *
+ * Aprende solo: si resolvió por 1 o 2 y hay source_id, guarda el vínculo.
+ *
+ * @returns {Promise<{producto: object, via: string}|null>}
  */
-async function buscarProductoPorReferral(id_configuracion, headline) {
+async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
   const nombre = String(headline || '').trim();
-  if (!nombre) return '';
+  const ad = String(source_id || '').trim();
 
   try {
+    // ── Nivel 0: el mapa ─────────────────────────────────────
+    if (ad) {
+      const [map] = await db.query(
+        `SELECT ap.id_producto FROM anuncios_producto ap
+          WHERE ap.id_configuracion = ? AND ap.source_id = ?
+          LIMIT 1`,
+        { replacements: [id_configuracion, ad], type: db.QueryTypes.SELECT },
+      );
+      if (map) {
+        const [p] = await db.query(
+          `SELECT ${CAMPOS_PRODUCTO} FROM productos_chat_center
+            WHERE id = ? AND eliminado = 0 LIMIT 1`,
+          { replacements: [map.id_producto], type: db.QueryTypes.SELECT },
+        );
+        if (p) {
+          db.query(
+            `UPDATE anuncios_producto SET veces = veces + 1
+              WHERE id_configuracion = ? AND source_id = ?`,
+            { replacements: [id_configuracion, ad], type: db.QueryTypes.UPDATE },
+          ).catch(() => {});
+          return { producto: p, via: 'mapa' };
+        }
+        // El producto del mapa fue eliminado: se cae a los niveles de texto.
+      }
+    }
+
+    if (!nombre) return null;
+
     // ── Nivel 1: match exacto ────────────────────────────────
     let productos = await db.query(
-      `SELECT nombre, descripcion, precio, imagen_url, video_url,
-              combos_producto, stock, nombre_upsell, descripcion_upsell,
-              precio_upsell, imagen_upsell_url
-       FROM   productos_chat_center
-       WHERE  id_configuracion = ? AND nombre = ?
-       LIMIT 2`,
+      `SELECT ${CAMPOS_PRODUCTO} FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0 AND nombre = ?
+        LIMIT 2`,
       { replacements: [id_configuracion, nombre], type: db.QueryTypes.SELECT },
     );
+    let via = 'exacto';
 
-    // ── Nivel 2: LIKE (el nombre contiene el headline o viceversa) ──
+    // ── Nivel 2: contenido, el nombre más largo primero ──────
     if (!productos.length) {
       productos = await db.query(
-        `SELECT nombre, descripcion, precio, imagen_url, video_url,
-                combos_producto, stock, nombre_upsell, descripcion_upsell,
-                precio_upsell, imagen_upsell_url
-         FROM   productos_chat_center
-         WHERE  id_configuracion = ?
-           AND  (nombre LIKE ? OR ? LIKE CONCAT('%', nombre, '%'))
-         ORDER  BY CHAR_LENGTH(nombre) ASC
-         LIMIT 2`,
+        `SELECT ${CAMPOS_PRODUCTO} FROM productos_chat_center
+          WHERE id_configuracion = ? AND eliminado = 0
+            AND (nombre LIKE ? OR ? LIKE CONCAT('%', nombre, '%'))
+          ORDER BY CHAR_LENGTH(nombre) DESC
+          LIMIT 2`,
         {
           replacements: [id_configuracion, `%${nombre}%`, nombre],
           type: db.QueryTypes.SELECT,
         },
       );
+      via = 'contenido';
     }
 
-    // ── Nivel 3: por palabras clave (la que más coincida) ─────
+    // ── Nivel 3: por palabras clave (no se aprende) ──────────
     if (!productos.length) {
       const palabras = nombre
         .split(/\s+/)
-        .filter((w) => w.length >= 4) // ignora "de", "el", "las"...
+        .filter((w) => w.length >= 4)
         .slice(0, 5);
 
       if (palabras.length) {
@@ -114,33 +162,64 @@ async function buscarProductoPorReferral(id_configuracion, headline) {
           .join(' + ');
 
         productos = await db.query(
-          `SELECT nombre, descripcion, precio, imagen_url, video_url,
-                  combos_producto, stock, nombre_upsell, descripcion_upsell,
-                  precio_upsell, imagen_upsell_url,
-                  (${scoring}) AS score
-           FROM   productos_chat_center
-           WHERE  id_configuracion = ? AND (${condiciones})
-           ORDER  BY score DESC, CHAR_LENGTH(nombre) ASC
-           LIMIT 1`,
+          `SELECT ${CAMPOS_PRODUCTO}, (${scoring}) AS score
+             FROM productos_chat_center
+            WHERE id_configuracion = ? AND eliminado = 0 AND (${condiciones})
+            ORDER BY score DESC, CHAR_LENGTH(nombre) ASC
+            LIMIT 1`,
           {
             replacements: [
-              ...palabras.map((w) => `%${w}%`), // para el scoring
+              ...palabras.map((w) => `%${w}%`),
               id_configuracion,
-              ...palabras.map((w) => `%${w}%`), // para el WHERE
+              ...palabras.map((w) => `%${w}%`),
             ],
             type: db.QueryTypes.SELECT,
           },
         );
       }
+      via = 'palabras';
     }
 
-    if (!productos.length) return '';
+    if (!productos.length) return null;
+    const producto = productos[0];
 
-    // Devuelve SOLO los datos del producto. La instrucción la arma el webhook.
-    return productos.map(armarBloqueProducto).join('\n\n');
+    // ── Aprender, solo de los niveles confiables ─────────────
+    if (ad && (via === 'exacto' || via === 'contenido')) {
+      db.query(
+        `INSERT INTO anuncios_producto
+           (id_configuracion, source_id, id_producto, headline, via)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE veces = veces + 1`,
+        {
+          replacements: [
+            id_configuracion,
+            ad,
+            producto.id,
+            nombre.slice(0, 500),
+            via,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      ).catch(() => {});
+    }
+
+    return { producto, via };
   } catch (err) {
-    return '';
+    return null;
   }
 }
 
-module.exports = { buscarProductoPorReferral };
+/**
+ * Busca el producto del referral en la BD y devuelve un bloque
+ * de texto con los datos EXACTOS para inyectar a la IA.
+ *
+ * @returns {Promise<string>} bloque listo o '' si no encuentra
+ */
+async function buscarProductoPorReferral(id_configuracion, headline, source_id) {
+  const r = await resolverProductoAnuncio(id_configuracion, headline, source_id);
+  if (!r) return '';
+  // Devuelve SOLO los datos del producto. La instrucción la arma el webhook.
+  return armarBloqueProducto(r.producto);
+}
+
+module.exports = { buscarProductoPorReferral, resolverProductoAnuncio };

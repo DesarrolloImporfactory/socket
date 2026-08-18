@@ -802,9 +802,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_configuracion == 476
         ) { */
           // Buscar el producto exacto en la BD
+          /* El source_id habilita el nivel 0 del resolver (el mapa
+             anuncio→producto): es lo único que resuelve los títulos de puro
+             marketing, que no contienen ningún nombre de producto. */
           const bloqueProducto = await buscarProductoPorReferral(
             id_configuracion,
             headline,
+            referral.source_id || null,
           );
 
           if (bloqueProducto) {

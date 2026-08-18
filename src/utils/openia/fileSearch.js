@@ -137,7 +137,19 @@ const TODAS_INLINE = false;
 //          🔎 Catálogo por file_search (NO CABE: 31094 tokens > tope 16000)
 //        Para que la 666 pasara a inline habría que subir el tope a ~32.000,
 //        que es una decisión de costo aparte: son ~900 mensajes por día.
-const CONFIGS_CON_CATALOGO_INLINE = [10, 610, 666, 857, 411];
+//
+// ── Tanda 2 (2026-08-18) ──────────────────────────────────────
+// Las 5 de mayor tráfico cuyo catálogo cabe (elegidas por mensajes/7d):
+//   322 → 5.915 tokens, 16.253 msgs/7d
+//   364 → 12.108, 15.103        819 → 3.793, 13.865
+//   366 → 4.103, 13.141         548 → 6.353, 7.271 (la del caso pistola/$25)
+// Qué mirar tras el deploy: en el log, esas cuentas tienen que pasar de
+// 🔎 (file_search) a 📄 (catálogo INLINE). Rollback: sacarlas de la lista —
+// vuelven a file_search en el mensaje siguiente, sin migrar nada.
+const CONFIGS_CON_CATALOGO_INLINE = [
+  10, 610, 666, 857, 411,
+  322, 364, 819, 366, 548,
+];
 
 // ⚠️ "QUIERE inline" ≠ "USA inline". Son dos preguntas distintas y confundirlas
 // hace daño.
