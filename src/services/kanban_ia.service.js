@@ -213,7 +213,8 @@ async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
    prompts ya cazaba en las pruebas. Devuelve el motivo, o null si el cierre
    es válido. */
 const RE_TAGS_SISTEMA = /\[[a-z_]+\]\s*:\s*(?:true|false)/gi;
-const RE_TAGS_MEDIA = /\[(?:producto|servicio|upsell)_(?:imagen|video)_url\]\s*:[^\n]*/gi;
+const RE_TAGS_MEDIA =
+  /\[(?:producto|servicio|upsell)_(?:imagen|video)_url\]\s*:[^\n]*/gi;
 
 function motivoCierreInvalido(respuesta) {
   const texto = String(respuesta || '')
@@ -1931,9 +1932,7 @@ async function ejecutarAsistente({
     return { respuesta, total_tokens };
   } catch (err) {
     if (esSinSaldo(err)) {
-      await log(
-        `🚨 SIN SALDO OPENAI: ${mensajeErrorOpenAI(err)}`,
-      );
+      await log(`🚨 SIN SALDO OPENAI: ${mensajeErrorOpenAI(err)}`);
       // Se pierde el error original al relanzar, así que el motivo viaja en la
       // propiedad para que quien lo capture arriba pueda guardarlo tal cual.
       const e = new Error('sin_saldo_openai');
@@ -2083,10 +2082,35 @@ function textoDeUbicacion(texto) {
    "Visita — Casa Cumbayá" empataría con cualquier otra casa del catálogo por
    la palabra "casa". */
 const GENERICAS_ITEM = new Set([
-  'visita', 'visitar', 'ver', 'cita', 'para', 'del', 'de', 'la', 'el', 'los',
-  'las', 'en', 'con', 'por', 'un', 'una', 'al', 'y', 'o',
-  'arriendo', 'arrendar', 'alquiler', 'venta', 'vender', 'compra', 'comprar',
-  'inmueble', 'propiedad', 'servicio',
+  'visita',
+  'visitar',
+  'ver',
+  'cita',
+  'para',
+  'del',
+  'de',
+  'la',
+  'el',
+  'los',
+  'las',
+  'en',
+  'con',
+  'por',
+  'un',
+  'una',
+  'al',
+  'y',
+  'o',
+  'arriendo',
+  'arrendar',
+  'alquiler',
+  'venta',
+  'vender',
+  'compra',
+  'comprar',
+  'inmueble',
+  'propiedad',
+  'servicio',
 ]);
 
 /* El TIPO de inmueble tampoco identifica cuál es. "Visita — Casa en
@@ -2096,10 +2120,31 @@ const GENERICAS_ITEM = new Set([
    propio —el sector, el barrio, el edificio— así que se exige compartir al
    menos uno de esos. */
 const TIPOS_ITEM = new Set([
-  'casa', 'casas', 'departamento', 'departamentos', 'depto', 'suite', 'suites',
-  'terreno', 'terrenos', 'lote', 'local', 'locales', 'oficina', 'oficinas',
-  'bodega', 'bodegas', 'galpon', 'galpones', 'penthouse', 'loft', 'villa',
-  'quinta', 'chalet', 'edificio', 'consultorio',
+  'casa',
+  'casas',
+  'departamento',
+  'departamentos',
+  'depto',
+  'suite',
+  'suites',
+  'terreno',
+  'terrenos',
+  'lote',
+  'local',
+  'locales',
+  'oficina',
+  'oficinas',
+  'bodega',
+  'bodegas',
+  'galpon',
+  'galpones',
+  'penthouse',
+  'loft',
+  'villa',
+  'quinta',
+  'chalet',
+  'edificio',
+  'consultorio',
 ]);
 
 const normalizarItem = (s) =>
@@ -2184,7 +2229,11 @@ function elegirItemDelCatalogo(pedido, catalogo) {
      alguien a la puerta equivocada, y eso es peor que no resolver el ítem —el
      caller lo registra y la cita cae en la sede, donde al menos hay alguien. */
   const [primero, segundo] = candidatos;
-  if (segundo && segundo.ids === primero.ids && segundo.ratio === primero.ratio) {
+  if (
+    segundo &&
+    segundo.ids === primero.ids &&
+    segundo.ratio === primero.ratio
+  ) {
     return null;
   }
 
@@ -2547,7 +2596,10 @@ async function procesarAgendarCita(
         : null,
       duracion_minutos:
         inicio_utc && fin_utc
-          ? Math.max(15, moment.utc(fin_utc).diff(moment.utc(inicio_utc), 'minutes'))
+          ? Math.max(
+              15,
+              moment.utc(fin_utc).diff(moment.utc(inicio_utc), 'minutes'),
+            )
           : null,
     };
 
