@@ -70,7 +70,16 @@ const MAX_RESULTADOS = 5;
 // USAR_RESPONSES_API, así que esta lista sobra ahí. Hace falta por
 // chat_prueba, que sí llama a la Responses API para CUALQUIER cuenta y sin
 // esto le bajaría el tope al chat de prueba de las 238.
-const CONFIGS_CON_TOPE = [10];
+//
+//   569 — 2026-08-18. Su catálogo va inline, así que file_search sirve SOLO
+//         para el archivo de agencias Servientrega (592 líneas, una por
+//         agencia, agrupadas por ciudad): 5 fragmentos cubren cualquier
+//         ciudad de sobra. Sin el tope, los 20 fragmentos por defecto le
+//         metían ~16.000 tokens de agencias ajenas a la cadena EN CADA
+//         turno (medido: el contexto pasaba de 36k a 126k en 7 turnos) y
+//         con ese ruido gpt-4o-mini se saltaba las reglas del prompt: el
+//         cierre salía sin [generar_guia]:true y la venta no avanzaba.
+const CONFIGS_CON_TOPE = [10, 569];
 
 // ─────────────────────────────────────────────────────────────
 // CONFIGS_CON_CATALOGO_INLINE
