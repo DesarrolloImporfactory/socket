@@ -29,7 +29,32 @@ const VACIAS = new Set([
      que no se puede leer, y con eso alcanzaba para inyectarle al bot la ficha
      de un producto que nadie mencionó. */
   'tipo','mensaje','mensajes','reconocido','eliminado','usuario',
+  /* Demostrativos y muletillas de aceptación. Caso real (config 285): el
+     cliente entró por la Máscara Táctica, aceptó el combo con un "Está bien" y
+     el bot le cambió al "Deja de Roncar Desde ESTA Noche": la palabra "esta"
+     coincidió con el nombre y se le inyectó la ficha completa —foto, video y
+     precios— del producto equivocado justo al cierre. "Estas" repitió el match
+     por el plural. Decir que sí a una compra no puede nombrar un producto. */
+  'esta','este','esto','estas','estos','esa','ese','eso','esas','esos',
+  'aquel','aquella','bien','bueno','buena','buenos','listo','lista','dale',
+  'claro','mismo','misma','ahora','ahi','aqui','alli','asi','tambien',
+  'entonces','quisiera','dame','deme',
 ]);
+
+/* La lista de arriba es la base curada (cada palabra tiene su incidente). Esta
+   otra es MEDIDA: scripts/generarPalabrasFrecuentes.js recorre los mensajes de
+   clientes de todas las cuentas y trae las palabras que son frecuentes en la
+   mayoría de ellas — gramática, cortesía, y las ciudades/couriers ("quito",
+   "servientrega") que un cliente escribe como respuesta suelta. Una palabra
+   frecuente en TODAS las verticales no distingue productos en ninguna; una que
+   solo es frecuente donde se vende ese producto ("licuadora", "casa") no entra
+   y sigue matcheando. Así la lista deja de curarse a mano: se regenera con el
+   script cuando haga falta. Sin el JSON, el sistema funciona con la base. */
+try {
+  for (const p of require('./palabrasFrecuentesChat.json')) VACIAS.add(p);
+} catch {
+  /* sin lista generada: la base alcanza */
+}
 
 const normalizar = (s) =>
   String(s || '')
@@ -344,12 +369,25 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          una venta se lo estábamos dejando al azar. */
       const palabrasMsg = palabrasUtiles(mensajeCliente);
 
-      const nombrados = palabrasMsg.length
-        ? items.filter((i) => {
-            const tokens = palabrasUtiles(i.nombre);
-            return palabrasMsg.some((p) => tokens.some((t) => mismaPalabra(t, p)));
-          })
-        : [];
+      /* Dedupe por nombre: hay catálogos con el mismo producto cargado dos
+         veces (la 285 tiene el antironquidos duplicado) y sin esto la ficha y
+         la advertencia del 🎯 lo repetían al modelo como si fueran dos. */
+      const vistosNombre = new Set();
+      const nombrados = (
+        palabrasMsg.length
+          ? items.filter((i) => {
+              const tokens = palabrasUtiles(i.nombre);
+              return palabrasMsg.some((p) =>
+                tokens.some((t) => mismaPalabra(t, p)),
+              );
+            })
+          : []
+      ).filter((i) => {
+        const n = normalizar(i.nombre);
+        if (vistosNombre.has(n)) return false;
+        vistosNombre.add(n);
+        return true;
+      });
 
       if (items.length > TOPE_LISTA_INLINE) {
         const palabras = palabrasUtiles(mensajeCliente);
@@ -377,7 +415,10 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         parcial = true;
       }
 
-      if (seleccion.length) {
+      /* La lista se EMITE más abajo, después de resolver el producto en juego:
+         su fila va siempre, aunque el mensaje de ahora no lo nombre. */
+      const emitirListaPrecios = () => {
+        if (!seleccion.length) return;
         const linea = (i) => {
           const precio =
             Number(i.precio) > 0 ? `$${Number(i.precio).toFixed(2)}` : 'consultar';
@@ -400,13 +441,13 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
 
         bloque +=
           (parcial
-            ? `💲 Precios de lo que mencionó la persona (tomados del catálogo):\n`
+            ? `💲 Precios de los productos de esta conversación (tomados del catálogo):\n`
             : `💲 Precios vigentes (esto es lo ÚNICO que puedes cotizar):\n`) +
           seleccion.map(linea).join('\n') +
           `\n` +
           (parcial
-            ? `Estos son los que coinciden con su mensaje; el resto del catálogo ` +
-              `lo tienes disponible para consultar. `
+            ? `Son el producto del que vienen hablando y lo que coincide con su ` +
+              `mensaje; el resto del catálogo lo tienes disponible para consultar. `
             : ``) +
           /* Antes esto decía "se confirma en la valoración". El modelo tomaba esa
              palabra y la pegaba al único ítem del catálogo que se llama parecido
@@ -439,7 +480,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         say(
           `✅ Precios inyectados (${seleccion.length}${parcial ? ` de ${items.length}, por coincidencia` : ''})`,
         );
-      }
+      };
 
       /* ── De qué producto vienen hablando ─────────────────────
          La lista de precios completa viaja en cada mensaje, y eso tiene un
@@ -458,10 +499,23 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          de ahora parece nombrar otro: el selector de la ficha empareja por
          palabras sueltas, así que un "necesito soporte" hace saltar el "Cooler
          SOPORTE Laptop" sin que nadie haya cambiado de producto. Teniendo los
-         dos datos y la regla, el modelo decide bien; con uno solo, adivina. */
+         dos datos y la regla, el modelo decide bien; con uno solo, adivina.
+
+         Se declara fuera del bloque porque la lista de precios y la ficha (más
+         abajo) lo necesitan: el producto en juego siempre lleva su fila y su
+         ficha, aunque el mensaje de ahora no lo nombre. */
+      let enJuego = null;
       if (opts?.id_cliente && items.length) {
         try {
-          const previos = await db.query(
+          /* opts.historial existe por el simulador (simular_conversacion.js):
+             sus turnos no se guardan en mensajes_clientes, así que sin esto el
+             ancla no puede seguir la conversación simulada y la prueba deja de
+             parecerse a producción. Mismo formato y mismo orden que la
+             consulta: {rol_mensaje, texto_mensaje}, del más nuevo al más
+             viejo. En producción no llega y se lee la BD. */
+          const previos = Array.isArray(opts?.historial)
+            ? opts.historial
+            : await db.query(
             `SELECT rol_mensaje, texto_mensaje FROM mensajes_clientes
               WHERE id_configuracion = ? AND celular_recibe = ?
                 AND texto_mensaje IS NOT NULL AND texto_mensaje <> ''
@@ -503,21 +557,6 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
             }
             return null;
           };
-
-          /* El orden de las fuentes importa, de la más confiable a la menos:
-
-             1. ultimo_producto_ad — el anuncio por el que ENTRÓ. Es la señal
-                más fuerte y no depende de que nadie escriba el nombre bien.
-             2. Lo que nombró el CLIENTE en sus mensajes.
-             3. Lo que dijo el bot — último recurso, y peligroso: si el bot ya
-                se equivocó de producto, sus mensajes lo repiten. Caso real
-                (config 285): la clienta entró por la mochila antigolpes pero
-                escribió "Mochilas Protectoras", nunca el nombre exacto; el bot
-                después nombró el "Cabezal de ducha" por error, y con el bot
-                como fuente este bloque habría clavado el cabezal — reforzando
-                el error que venía a corregir. El anuncio decía la verdad. */
-          const delCliente = previos.filter((m) => Number(m.rol_mensaje) === 0);
-          const delBot = previos.filter((m) => Number(m.rol_mensaje) === 1);
 
           /* El anuncio se resuelve con el MISMO resolver que usa el webhook
              (mapa por source_id → texto). Antes acá se buscaba por contención
@@ -565,8 +604,50 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
             say(`⚠️ resolviendo anuncio del cliente: ${e.message}`);
           }
 
-          const enJuego =
-            desdeAnuncio || buscarEn(delCliente) || buscarEn(delBot);
+          /* El producto en juego es la señal fuerte MÁS RECIENTE, no una
+             jerarquía fija de fuentes. Con el anuncio ganando siempre, el
+             ancla se quedaba vieja: el cliente preguntaba por la rodillera,
+             el bot la cotizaba, y al turno siguiente el sistema volvía a
+             servirle el producto del anuncio — arrastrando al modelo de
+             vuelta a un producto que ya nadie quería.
+
+             Recorriendo del mensaje más nuevo al más viejo:
+             - Lo que el CLIENTE escribió con el nombre completo vale siempre.
+             - Lo que nombró el BOT vale solo si el cliente se lo había pedido
+               justo antes (alguna palabra de sus 2 mensajes anteriores calza
+               con ese nombre). Sin esa validación, un error del bot se ancla
+               solo: en la 285 el bot nombró el "Cabezal de ducha" por error y
+               una fuente-bot libre lo habría clavado — reforzando el error
+               que esto corrige. Y en el caso "Está bien" (el bot saltó al
+               antironquidos sin que nadie lo pidiera), la validación falla,
+               el ancla se queda con el anuncio y el sistema se corrige solo
+               al turno siguiente.
+             - Si la conversación no estableció nada, manda el anuncio por el
+               que entró: la única señal que no depende de que alguien escriba
+               el nombre bien. */
+          let porConversacion = null;
+          for (let k = 0; k < previos.length && !porConversacion; k++) {
+            const m = previos[k];
+            const item = buscarEn([m]);
+            if (!item) continue;
+            if (Number(m.rol_mensaje) === 0) {
+              porConversacion = item;
+            } else {
+              const clientesAntes = previos
+                .slice(k + 1)
+                .filter((x) => Number(x.rol_mensaje) === 0)
+                .slice(0, 2);
+              const tokens = palabrasUtiles(item.nombre);
+              const pedido = clientesAntes.some((x) =>
+                palabrasUtiles(x.texto_mensaje).some((p) =>
+                  tokens.some((t) => mismaPalabra(t, p)),
+                ),
+              );
+              if (pedido) porConversacion = item;
+            }
+          }
+
+          enJuego = porConversacion || desdeAnuncio;
 
           /* Si lo que se encontró en el historial es lo mismo que la persona
              acaba de nombrar, el bloque no aporta nada: la ficha ya lo dice. */
@@ -612,6 +693,19 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         }
       }
 
+      /* El producto en juego SIEMPRE lleva su fila en la lista, aunque el
+         mensaje de ahora no lo nombre. En el incidente del "Está bien" (285)
+         el producto equivocado llegó con precio, combos y ficha, y el correcto
+         solo con la línea del 🎯: al modelo se le pedía decidir bien con el
+         material desparejo. Los dos platos llegan servidos. */
+      if (
+        enJuego &&
+        !seleccion.some((i) => normalizar(i.nombre) === normalizar(enJuego.nombre))
+      ) {
+        seleccion = [enJuego, ...seleccion];
+      }
+      emitirListaPrecios();
+
       /* Ficha completa de lo que nombró. Va aparte de la lista de precios para
          que no se mezcle: la lista sirve para no inventar precios, esto sirve
          para vender. Se corta cada descripción porque alguna cuenta escribe
@@ -622,7 +716,18 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          importado sin texto —o cargado a las apuradas con solo los datos duros—
          se quedaba sin bloque: el bot tenía su dirección y sus metros en la BD y
          respondía "déjame confirmarlo con un asesor". */
-      const conFicha = nombrados
+      /* El producto en juego encabeza la ficha aunque el mensaje de ahora no
+         lo nombre: es el que se está vendiendo, y su material tiene que llegar
+         tan servido como el de cualquier coincidencia de palabras. */
+      const fuentesFicha = enJuego
+        ? [
+            enJuego,
+            ...nombrados.filter(
+              (i) => normalizar(i.nombre) !== normalizar(enJuego.nombre),
+            ),
+          ]
+        : nombrados;
+      const conFicha = fuentesFicha
         .filter((i) =>
           [
             String(i.descripcion || '').trim(),
@@ -638,11 +743,22 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
            cargados en el catálogo: lo que faltaba era que el bot los tuviera a
            la vista. Se mandan con las etiquetas que el motor sabe extraer para
            convertirlas en archivos de WhatsApp de verdad; si van como texto
-           suelto, al cliente le llega un link pelado. */
-        const conMedia = conFicha.filter((i) => i.imagen_url || i.video_url);
+           suelto, al cliente le llega un link pelado.
+
+           SOLO para lo nombrado EN ESTE mensaje. La ficha del producto en
+           juego viaja todos los turnos, pero sus líneas de media no: la foto
+           ya salió cuando se habló de él por primera vez (por el referral o al
+           nombrarlo), y repetir "📷 imagen: <url>" en un turno sin contenido
+           ("Está bien") hizo que el modelo respondiera "parece que has subido
+           archivos" — leyó las urls como adjuntos del cliente. */
+        const nombradoAhora = (i) =>
+          nombrados.some((n) => normalizar(n.nombre) === normalizar(i.nombre));
+        const conMedia = conFicha.filter(
+          (i) => (i.imagen_url || i.video_url) && nombradoAhora(i),
+        );
 
         bloque +=
-          `📋 Ficha de lo que la persona nombró — úsala para responderle:\n\n` +
+          `📋 Ficha de los productos de esta conversación — úsala para responderle:\n\n` +
           conFicha
             .map((i) => {
               // Puede venir vacía: ahora entran ítems que solo tienen ficha o
@@ -654,16 +770,18 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                  cual en la etiqueta, y si llevan espacios —las de Dropi los
                  traen— el extractor las corta en el primero y a Meta le llega
                  un link roto que nunca se entrega. */
-              const media = [
-                i.imagen_url
-                  ? `  📷 imagen: ${normalizarUrlMedia(i.imagen_url)}`
-                  : null,
-                i.video_url
-                  ? `  🎥 video: ${normalizarUrlMedia(i.video_url)}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join('\n');
+              const media = nombradoAhora(i)
+                ? [
+                    i.imagen_url
+                      ? `  📷 imagen: ${normalizarUrlMedia(i.imagen_url)}`
+                      : null,
+                    i.video_url
+                      ? `  🎥 video: ${normalizarUrlMedia(i.video_url)}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join('\n')
+                : '';
 
               /* Dónde queda. Solo aparece en los ítems que tienen ubicación
                  propia —un inmueble, un local—, así que un catálogo de

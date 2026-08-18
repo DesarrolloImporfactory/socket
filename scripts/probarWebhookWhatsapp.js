@@ -58,6 +58,15 @@ const textoLibre = () =>
     .trim();
 
 const ID_CLIENTE = Number(opcion('cliente', 566217));
+
+/* --referral <source_id>: el PRIMER mensaje de la corrida llega "desde un
+   anuncio", con el objeto referral que manda Meta cuando alguien toca un
+   anuncio de clic-a-WhatsApp. Es la entrada del ~100% de los clientes de
+   dropshipping, así que probar sin esto es probar otro embudo. El headline se
+   lee de anuncios_producto (o se pasa con --headline si el anuncio no está
+   mapeado). */
+const REFERRAL_SOURCE = opcion('referral');
+const REFERRAL_HEADLINE = opcion('headline');
 const BASE = opcion(
   'url',
   `http://localhost:${process.env.PORT || 3000}`,
@@ -77,6 +86,24 @@ const PAUSA_MS = Number(opcion('pausa', 20)) * 1000;
    persona. Lo que se está probando va en `busca`: no es una aserción automática
    —el bot redacta distinto cada vez— es lo que hay que mirar en la respuesta. */
 const ESCENARIOS = {
+  /* Dropshipping (correr con --cliente <id> --referral <source_id>).
+     El primer mensaje NO nombra el producto a propósito: obliga a que el ancla
+     salga del mapa del anuncio (anuncios_producto), que es el caso real. */
+  dropi_anuncio: {
+    titulo: 'Entrada por anuncio + cierre (no debe cambiar de producto jamás)',
+    mensajes: [
+      'Hola, quiero más información',
+      'Precio',
+      'Combo 1',
+      'Está bien',
+      'Quito',
+    ],
+    busca:
+      'TODAS las respuestas deben ser del producto del anuncio (--referral): ' +
+      'ni una foto, video o precio de OTRO producto. "Está bien" y "Quito" son ' +
+      'los mensajes que antes lo hacían saltar de producto (caso 285).',
+  },
+
   zona: {
     titulo: 'Pregunta por la zona (NO debe dar la dirección exacta)',
     mensajes: [
@@ -248,7 +275,7 @@ async function contexto() {
 /* El payload de Meta. El `phone_number_id` es lo único que el webhook usa para
    saber de qué cuenta es el mensaje (busca configuraciones.id_telefono), y el
    `from` es lo que ata el mensaje al contacto. */
-function armarPayload({ cli, cfg, mensaje, i }) {
+function armarPayload({ cli, cfg, mensaje, i, referral }) {
   const wamid = `wamid.PRUEBA${Date.now()}${i}`;
   const nombre = [cli.nombre_cliente, cli.apellido_cliente]
     .filter(Boolean)
@@ -268,6 +295,9 @@ function armarPayload({ cli, cfg, mensaje, i }) {
           type: 'location',
           location: { latitude: mensaje.latitud, longitude: mensaje.longitud },
         };
+
+  // Mismo formato que manda Meta en un clic-a-WhatsApp real.
+  if (referral) msg.referral = referral;
 
   return {
     payload: {
@@ -451,6 +481,36 @@ async function enviar(mensajes) {
   await mostrarEstado('    ');
   console.log('');
 
+  /* El referral se arma una vez y va SOLO en el primer mensaje de la corrida,
+     igual que en la vida real: el clic al anuncio es la entrada. */
+  let referral = null;
+  if (REFERRAL_SOURCE) {
+    let headline = REFERRAL_HEADLINE || '';
+    if (!headline) {
+      const [ad] = await db.query(
+        `SELECT headline FROM anuncios_producto
+          WHERE id_configuracion = ? AND source_id = ? LIMIT 1`,
+        {
+          replacements: [cli.id_configuracion, String(REFERRAL_SOURCE)],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      headline = ad?.headline || '';
+    }
+    referral = {
+      source_url: `https://fb.me/prueba${REFERRAL_SOURCE}`,
+      source_id: String(REFERRAL_SOURCE),
+      source_type: 'ad',
+      headline,
+      body: 'Anuncio de prueba (webhook local)',
+      media_type: 'image',
+      ctwa_clid: `PRUEBA_${Date.now()}`,
+    };
+    console.log(
+      `📣 Entrada por anuncio: source_id=${referral.source_id} · headline="${headline || '(sin headline)'}"\n`,
+    );
+  }
+
   for (let i = 0; i < mensajes.length; i += 1) {
     if (i > 0 && PAUSA_MS > 0) {
       console.log(`   ⏳ ${PAUSA_MS / 1000}s para no topar el límite de OpenAI…\n`);
@@ -459,7 +519,13 @@ async function enviar(mensajes) {
 
     const mensaje = mensajes[i];
     const desdeId = await ultimoId(cfg.id);
-    const { payload } = armarPayload({ cli, cfg, mensaje, i });
+    const { payload } = armarPayload({
+      cli,
+      cfg,
+      mensaje,
+      i,
+      referral: i === 0 ? referral : null,
+    });
 
     const texto =
       typeof mensaje === 'string'

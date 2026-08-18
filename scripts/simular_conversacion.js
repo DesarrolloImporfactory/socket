@@ -218,6 +218,13 @@ async function main() {
 
   const alertas = [];
 
+  /* Los turnos de la simulación no se guardan en mensajes_clientes, pero el
+     ancla del producto (contextoColumna) se arma leyendo la conversación. Sin
+     pasarle este historial, el ancla solo vería la conversación REAL del
+     contacto y la prueba no se parecería a producción. Más nuevo primero,
+     mismo formato que la consulta de la BD. */
+  const historial = [];
+
   for (const mensaje of MENSAJES) {
     const col = porEstado.get(estado);
     if (!col) {
@@ -231,7 +238,13 @@ async function main() {
       ID_CONFIG,
       col.acciones,
       null,
-      { mensaje, id_cliente: ID_CLIENTE },
+      {
+        mensaje,
+        id_cliente: ID_CLIENTE,
+        // El mensaje actual va primero: en producción el webhook ya lo guardó
+        // cuando kanban_ia arma el contexto.
+        historial: [{ rol_mensaje: 0, texto_mensaje: mensaje }, ...historial],
+      },
     );
 
     if (contexto.trim()) {
@@ -256,6 +269,10 @@ async function main() {
     const antesFiltro = texto.trim();
     texto = limpiarMarkdown(humanizarFechas(limpiarColetillas(antesFiltro)));
     const partes = dividirRespuestaIA(texto);
+
+    // Al historial en el mismo orden que quedarían en la BD (más nuevo primero).
+    historial.unshift({ rol_mensaje: 0, texto_mensaje: mensaje });
+    historial.unshift({ rol_mensaje: 1, texto_mensaje: texto });
 
     console.log(
       `🤖 [${col.nombre} · ${col.modelo}] → ${partes.length} mensaje(s)`,

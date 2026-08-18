@@ -118,7 +118,16 @@ const CONFIGS_CON_TOPE = [10];
 //
 // Para volver atrás: false otra vez. Vuelve a mandar la lista y las cuentas
 // regresan a file_search en el mensaje siguiente, sin migrar nada.
-const TODAS_INLINE = false;
+//
+// ── 2026-08-17: SE VOLTEA ──────────────────────────────────────
+// Las tandas 1 y 2 cubrieron las 10 cuentas de mayor tráfico sin incidentes de
+// mecanismo, y el tope quedó probado en vivo con la 666 (no cabe → sigue en
+// file_search sola). Lo que queda fuera de las tandas es MÁS chico que lo ya
+// probado, así que seguir por tandas solo alargaba la exposición al bug que se
+// quiere matar (fragmentos que cortan productos por la mitad).
+// Qué mirar tras el deploy: en el log, cuentas pasando de 🔎 a 📄; las que no
+// caben siguen diciendo "NO CABE" y es correcto. Rollback: false otra vez.
+const TODAS_INLINE = true;
 //
 // ── Tanda 1 (2026-08-05) ──────────────────────────────────────
 //   610 "Global Outlet ec Pruebas" → 19 productos, 5.599 tokens, 4.087 msgs/30d
