@@ -101,6 +101,159 @@ async function hayColumnaReinicio() {
    otro y quedar bloqueada la que sí tocaba enviar. */
 const escaparLike = (s) => String(s).replace(/[\\%_]/g, '\\$&');
 
+/* ══ Candado de propiedad: la foto tiene que ser DEL producto en juego ══
+
+   Caso real (285, 2026-08-17): el cliente preguntó "¿protege la cabeza?"
+   hablando de la máscara táctica, file_search recuperó por semántica el
+   fragmento del "Intercomunicador Bluetooth para CASCO" —con su URL de imagen
+   adentro— y el bot mandó ESA foto. El texto nunca se equivocó; la URL sí.
+
+   La regla, aplicada acá porque este es el único punto por el que sale toda
+   la media: si una URL pertenece a un producto del catálogo, solo se envía
+   cuando ese producto está de verdad en esta conversación —el sistema se lo
+   ofreció al modelo (ficha/ancla/adjunto), es el producto del anuncio por el
+   que entró el cliente, o su nombre completo aparece en los mensajes
+   recientes—. Una URL que el modelo sacó de un fragmento, de la memoria del
+   hilo o de su imaginación no cumple ninguna de las tres y muere acá,
+   venga del prompt o del código.
+
+   Las URLs que NO son de catálogo (documentos, plantillas, calendario…)
+   pasan sin mirar: este candado solo juzga lo que puede identificar. */
+
+const VENTANA_OFERTA_MS = 72 * 60 * 60 * 1000;
+const MEDIA_OFRECIDA = new Map(); // `${id_cliente}|${filename}` → timestamp
+
+/* La llave es el NOMBRE DE ARCHIVO (último segmento, decodificado): la misma
+   url viaja a veces cruda y a veces con el filename percent-encoded
+   (normalizarUrlMedia), y comparar la cadena completa dejaría pasar o
+   bloquearía según cuál forma tocó. Los nombres son UUIDs: identifican solos. */
+const filenameDe = (url) => {
+  const raw = String(url || '').split('?')[0].split('/').pop() || '';
+  try {
+    return decodeURIComponent(raw).trim().toLowerCase();
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+};
+
+/** El sistema le puso esta media delante al modelo: queda autorizada a salir. */
+function ofrecerMedia(id_cliente, urls) {
+  const ahora = Date.now();
+  for (const u of [].concat(urls || [])) {
+    const f = filenameDe(u);
+    if (f) MEDIA_OFRECIDA.set(`${id_cliente}|${f}`, ahora);
+  }
+  if (MEDIA_OFRECIDA.size > 20000) {
+    for (const [k, t] of MEDIA_OFRECIDA) {
+      if (ahora - t >= VENTANA_OFERTA_MS) MEDIA_OFRECIDA.delete(k);
+    }
+  }
+}
+
+const fueOfrecida = (id_cliente, filename) => {
+  const t = MEDIA_OFRECIDA.get(`${id_cliente}|${filename}`);
+  return !!t && Date.now() - t < VENTANA_OFERTA_MS;
+};
+
+/* Copia mínima del normalizar de contextoColumna. No se importa de ahí porque
+   contextoColumna requiere este módulo (para ofrecerMedia) y sería un ciclo. */
+const normalizarTexto = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/**
+ * ¿Esta URL puede salir hacia este cliente?
+ * Exportada aparte para poder probarla directo en la batería de regresión.
+ */
+async function esMediaPermitida({ id_configuracion, id_cliente, url, log }) {
+  const decir = typeof log === 'function' ? log : async () => {};
+  const f = filenameDe(url);
+
+  // Sin cuenta o sin un filename identificable no hay a quién atribuirla.
+  if (!id_configuracion || !f || f.length < 10) return true;
+
+  // (a) El sistema se la ofreció al modelo en esta conversación.
+  if (fueOfrecida(id_cliente, f)) return true;
+
+  // ¿De qué producto es? Si no es de ningún producto, no es jurisdicción de
+  // este candado (documentos, plantillas, media manual…).
+  let dueno = null;
+  try {
+    const patron = `%${escaparLike(f)}%`;
+    [dueno] = await db.query(
+      `SELECT id, nombre FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0
+          AND (imagen_url LIKE ? ESCAPE '\\\\'
+            OR video_url LIKE ? ESCAPE '\\\\'
+            OR imagen_upsell_url LIKE ? ESCAPE '\\\\')
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, patron, patron, patron],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+  } catch (e) {
+    // Ante un error de BD se deja pasar, igual que el dedupe: bloquear una
+    // foto legítima por un timeout sería castigar al cliente por nuestra falla.
+    return true;
+  }
+  if (!dueno) return true;
+
+  // (b) Es el producto del anuncio por el que entró este cliente.
+  try {
+    const [ad] = await db.query(
+      `SELECT headline, source_id FROM cliente_productos_ad
+        WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    );
+    if (ad) {
+      const {
+        resolverProductoAnuncio,
+      } = require('./webhook_whatsapp/buscar_producto_referral');
+      const r = await resolverProductoAnuncio(
+        id_configuracion,
+        ad.headline,
+        ad.source_id,
+      );
+      if (r?.producto?.id && Number(r.producto.id) === Number(dueno.id)) {
+        return true;
+      }
+    }
+  } catch (_) {}
+
+  // (c) Su nombre completo aparece en la conversación reciente. Un nombre muy
+  // corto no alcanza para contención confiable: en ese caso no se bloquea.
+  try {
+    const nombre = normalizarTexto(dueno.nombre);
+    if (nombre.length <= 8) return true;
+    const msgs = await db.query(
+      `SELECT texto_mensaje FROM mensajes_clientes
+        WHERE id_configuracion = ? AND ${COLUMNA_CONTACTO} = ?
+          AND texto_mensaje IS NOT NULL AND texto_mensaje <> ''
+        ORDER BY id DESC LIMIT 30`,
+      {
+        replacements: [id_configuracion, String(id_cliente)],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    for (const m of msgs) {
+      if (normalizarTexto(m.texto_mensaje).includes(nombre)) return true;
+    }
+  } catch (e) {
+    return true;
+  }
+
+  await decir(
+    `🚫 La media pertenece a "${dueno.nombre}", que no está en esta conversación: no se envía`,
+  );
+  return false;
+}
+
 /* La conversación se busca por `celular_recibe`, NO por `id_cliente`.
    En `mensajes_clientes` las dos columnas guardan un id de
    `clientes_chat_center`, pero no el mismo: `id_cliente` es SIEMPRE el dueño
@@ -171,6 +324,14 @@ async function filtrarMediaNueva({
       continue;
     }
 
+    /* Candado de propiedad (ver arriba): media de un producto que no está en
+       esta conversación no sale, venga de donde venga la etiqueta. Va ANTES
+       de marcarEnviado: una url bloqueada no debe quedar marcada como
+       enviada. */
+    if (!(await esMediaPermitida({ id_configuracion, id_cliente, url, log: decir }))) {
+      continue;
+    }
+
     /* La marca va ANTES de la consulta, no después. La fila del envío se guarda
        recién cuando el mensaje ya salió, así que si el cliente escribe dos veces
        seguidas y las dos respuestas se cruzan, las dos llegan a preguntarle a la
@@ -235,5 +396,7 @@ module.exports = {
   filtrarMediaNueva,
   olvidarEnviado,
   olvidarCliente,
+  ofrecerMedia,
+  esMediaPermitida,
   VENTANA_REENVIO_HORAS,
 };
