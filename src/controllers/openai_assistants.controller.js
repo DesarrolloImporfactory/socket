@@ -1321,8 +1321,13 @@ exports.eliminar_thread = catchAsync(async (req, res, next) => {
      (`reinicio_conversacion_migration.sql`): mientras no esté aplicada, el
      reinicio funciona igual y la foto se rige solo por la ventana de 48 h. */
   try {
+    /* turnos_sin_avance también arranca de cero: una conversación reiniciada
+       es una conversación nueva. Sin esto, el contador anti-chat-infinito
+       heredaba las vueltas de la conversación descartada y escalaba a asesor
+       a mitad del flujo nuevo. */
     await db.query(
-      `UPDATE clientes_chat_center SET reinicio_conversacion_at = NOW()
+      `UPDATE clientes_chat_center
+          SET reinicio_conversacion_at = NOW(), turnos_sin_avance = 0
         WHERE id = ?`,
       {
         replacements: [id_cliente_chat_center],

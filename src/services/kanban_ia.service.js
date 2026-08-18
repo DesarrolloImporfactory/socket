@@ -1505,8 +1505,16 @@ async function procesarMensajeKanban(params) {
      necesita una persona.
 
      El contador se reinicia solo cuando algo avanza, así que una charla larga
-     que sí progresa nunca escala. */
-  const LIMITE_TURNOS_SIN_AVANCE = 10;
+     que sí progresa nunca escala.
+
+     El límite era 10 y quedaba justo: una venta COD completa sin ningún tag
+     intermedio ya consume ~9 respuestas (presentación, variedad, upsell,
+     nombre, teléfono, ciudad, tipo de entrega, agencia, cierre), así que una
+     sola pregunta extra del cliente escalaba a asesor ventas que iban bien
+     (caso 569 del 2026-08-18: escaló en plena elección de agencia). Con 15
+     sigue cortando los chats infinitos —que es su trabajo— sin comerse el
+     margen normal de una venta con dudas. */
+  const LIMITE_TURNOS_SIN_AVANCE = 15;
 
   const triggersColumna = acciones
     .map((ac) => parseConfig(ac).trigger)
