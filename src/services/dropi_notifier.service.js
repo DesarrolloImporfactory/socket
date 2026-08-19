@@ -673,6 +673,11 @@ async function upsertOrders(cacheInsertFields, orders) {
         'shipping_company',
         'shipping_guide',
         'product_names',
+        // Mantiene la fecha alineada con la fuente más fresca (el webhook ya
+        // convierte UTC→local con dropiDateToLocal); además repara filas
+        // viejas corridas +5h. Clave para la gemela REEMPLAZADA, que se
+        // busca por order_created_at exacto.
+        'order_created_at',
         'order_data',
         'synced_at',
         'shop_id',

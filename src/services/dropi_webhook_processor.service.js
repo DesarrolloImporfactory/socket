@@ -89,6 +89,32 @@ function normalizeDropiDate(value) {
   return value.replace('T', ' ').replace(/(\.\d+)?Z?$/, '');
 }
 
+// Offset fijo por país Dropi (ninguno de los cuatro usa horario de verano).
+const OFFSET_PAIS_HORAS = { EC: -5, CO: -5, GT: -6, MX: -6 };
+
+/**
+ * Fecha del webhook → hora local del país de la tienda.
+ *
+ * El webhook manda el created_at de la orden en UTC (sufijo Z), pero la API
+ * REST del sync la manda ya en hora local y sin zona. Quitar la Z sin restar
+ * el offset corría las órdenes +5h: toda venta posterior a las ~19:00 caía
+ * al día siguiente en dashboards y atribución de ads (caso orden 6598607).
+ * Convierte SOLO si viene el marcador UTC — algunos eventos llegan ya en
+ * hora local sin zona y esos deben pasar intactos.
+ */
+function dropiDateToLocal(value, country_code) {
+  if (!value || typeof value !== 'string') return value || null;
+  const m = value.match(
+    /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|\+00:00)$/,
+  );
+  if (!m) return normalizeDropiDate(value);
+  const offset =
+    OFFSET_PAIS_HORAS[String(country_code || 'EC').toUpperCase()] ?? -5;
+  const d = new Date(`${m[1]}T${m[2]}Z`);
+  d.setUTCHours(d.getUTCHours() + offset);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 /** ¿La plantilla activa de este estado usa la variable indicada? */
 function plantillaUsaVariable(plantilla, varName) {
   const config = safeJsonParse(plantilla?.parametros_json, null);
@@ -210,7 +236,7 @@ const OVERLAY_FIELDS = [
   'notes',
 ];
 
-function buildOrderFromWebhook(payload, baseOrderData) {
+function buildOrderFromWebhook(payload, baseOrderData, country_code) {
   const order = baseOrderData ? { ...baseOrderData } : {};
 
   order.id = Number(payload.id);
@@ -233,10 +259,14 @@ function buildOrderFromWebhook(payload, baseOrderData) {
     order.orderdetails = [];
   }
 
-  // Fecha de creación original de la orden (no del evento)
-  const createdAt =
-    order.created_at || normalizeDropiDate(payload.created_at) || null;
-  order.created_at = normalizeDropiDate(createdAt);
+  // Fecha de creación original de la orden (no del evento: es constante en
+  // todos los eventos de una misma orden). El payload manda sobre el
+  // order_data del cache — las filas nacidas de webhooks previos al fix de
+  // zona horaria arrastran la hora UTC en su JSON y no deben perpetuarla.
+  order.created_at =
+    dropiDateToLocal(payload.created_at, country_code) ||
+    normalizeDropiDate(order.created_at) ||
+    null;
 
   return order;
 }
@@ -267,8 +297,11 @@ async function enriquecerConDetalle(order, integracion) {
       if (obj.guia_urls3 && !merged.guia_urls3) {
         merged.guia_urls3 = obj.guia_urls3;
       }
-      merged.created_at = normalizeDropiDate(
-        merged.created_at || obj.created_at,
+      // El detalle REST trae created_at ya en hora local: es la fuente más
+      // confiable; el del webhook (UTC convertida) queda como respaldo.
+      merged.created_at = dropiDateToLocal(
+        obj.created_at || merged.created_at,
+        integracion.country_code,
       );
       return merged;
     }
@@ -323,7 +356,14 @@ async function processOne(payload) {
     }
   }
 
-  let order = buildOrderFromWebhook(payload, base);
+  // Integración "dueña" de la orden (su cuenta Dropi la creó): define el
+  // país para convertir fechas UTC y es la que puede pedir getOrderDetail.
+  const uidShop = Number(payload?.shop?.user_id || 0);
+  const integDuena =
+    integraciones.find((i) => Number(i.dropi_user_id) === uidShop) ||
+    integraciones[0];
+
+  let order = buildOrderFromWebhook(payload, base, integDuena.country_code);
   const estadoConfig = mapDropiStatusToEstadoConfig(order.status);
 
   // 4) Enriquecer 'contenido' SOLO si hace falta: sin productos y con alguna
@@ -342,11 +382,7 @@ async function processOne(payload) {
       }
     }
     if (necesitaDetalle) {
-      const uid = Number(payload?.shop?.user_id || 0);
-      const duena =
-        integraciones.find((i) => Number(i.dropi_user_id) === uid) ||
-        integraciones[0];
-      order = await enriquecerConDetalle(order, duena);
+      order = await enriquecerConDetalle(order, integDuena);
     }
   }
 
@@ -460,4 +496,5 @@ module.exports = {
   buildOrderFromWebhook,
   resolverIntegraciones,
   normalizeDropiDate,
+  dropiDateToLocal,
 };
