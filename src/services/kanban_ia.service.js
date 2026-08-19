@@ -914,6 +914,11 @@ async function procesarMensajeKanban(params) {
      resumen completo CON el tag, sin volver a preguntar nada que el cliente
      ya dio — el interrogatorio repetido es justo la enfermedad que ya se curó
      una vez en contextoColumna. */
+  /* Cuántas peticiones del paso 12 ya se mandaron (misma ventana de 10):
+     la usa el paso 12 para NO repetir la misma petición una tercera vez —
+     al tercer cierre bloqueado consecutivo escala a asesor (caso 495, Iván:
+     4 peticiones idénticas seguidas → "ya no las necesito", venta muerta). */
+  let peticionesCierrePrevias = 0;
   const accCierreVenta = getAcciones('cambiar_estado')
     .map((ac) => parseConfig(ac))
     .find((c) => c.estado_destino === 'generar_guia' && c.trigger);
@@ -930,9 +935,11 @@ async function procesarMensajeKanban(params) {
           type: db.QueryTypes.SELECT,
         },
       );
-      const peticion = ultimosBot.find((m) =>
+      const peticiones = ultimosBot.filter((m) =>
         String(m.texto_mensaje || '').startsWith(PREFIJO_PETICION_DATOS),
       );
+      peticionesCierrePrevias = peticiones.length;
+      const peticion = peticiones[0]; // la más reciente (orden DESC)
       if (peticion) {
         const faltaba = String(peticion.texto_mensaje)
           .split('\n')
@@ -1786,10 +1793,18 @@ async function procesarMensajeKanban(params) {
     .map((ac) => parseConfig(ac).trigger)
     .filter(Boolean);
 
+  /* Un cierre BLOQUEADO no es avance: el tag está en respuestaRaw (por eso el
+     some() lo encontraba) pero la columna NO se movió y al cliente le llegó la
+     petición de datos. Contarlo reseteaba turnos_sin_avance en cada vuelta del
+     loop y la red del asesor nunca saltaba, justo en el único escenario donde
+     más falta hace (caso 495, Iván: 4 cierres bloqueados seguidos con el
+     contador siempre en cero). */
   const avanzo =
-    triggersColumna.some((t) =>
-      respuestaRaw.toLowerCase().includes(String(t).toLowerCase()),
-    ) || escribioBloqueCita;
+    (!cierreBloqueado &&
+      triggersColumna.some((t) =>
+        respuestaRaw.toLowerCase().includes(String(t).toLowerCase()),
+      )) ||
+    escribioBloqueCita;
 
   if (avanzo) {
     await db.query(
@@ -1932,15 +1947,57 @@ async function procesarMensajeKanban(params) {
        bloquearía por una cosa y esta petición pediría otra. */
     const faltan = camposFaltantesCierre(respuestaRaw);
 
-    soloTexto =
-      faltan.length === 1
-        ? `${PREFIJO_PETICION_DATOS} este dato 😊:\n${faltan[0]}`
-        : `${PREFIJO_PETICION_DATOS} estos datos 😊:\n` +
-          (faltan.length
-            ? faltan.join('\n')
-            : '- Nombre completo\n- Teléfono\n- Ciudad y provincia\n' +
-              '- Dirección exacta (dos calles y una referencia), o la ' +
-              'agencia Servientrega si prefieres retirarlo');
+    /* Tope de reintentos: si ya hay DOS peticiones en los últimos mensajes,
+       este es el TERCER cierre bloqueado seguido — el modelo no está logrando
+       armar el resumen ni con la nota de rescate del 6.7. Repetir la misma
+       línea otra vez es enseñarle al cliente un robot roto (caso 495, Iván:
+       4 idénticas y se fue). Se escala a asesor, igual que cuando una cita
+       falla: que lo cierre una persona. */
+    let escaladoAsesor = false;
+    if (peticionesCierrePrevias >= 2) {
+      try {
+        const [colAsesor] = await db.query(
+          `SELECT id FROM kanban_columnas
+            WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
+            LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (colAsesor) {
+          await db.query(
+            `UPDATE clientes_chat_center
+                SET estado_contacto = 'asesor', turnos_sin_avance = 0
+              WHERE id = ?`,
+            { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+          );
+          soloTexto =
+            '¡Gracias por tu paciencia! 🙏 Un asesor va a revisar tu pedido y te confirma enseguida.';
+          escaladoAsesor = true;
+          await log(
+            `🚨 Tercer cierre bloqueado consecutivo (faltaba: ${
+              faltan.map((f) => f.replace(/^- /, '')).join(' | ') || '?'
+            }): cliente ${id_cliente} movido a "asesor" en vez de repetir la petición`,
+          );
+        } else {
+          await log(
+            `⚠️ Tercer cierre bloqueado consecutivo y la config ${id_configuracion} no tiene columna "asesor": se repite la petición`,
+          );
+        }
+      } catch (e) {
+        await log(`⚠️ Error escalando cierre bloqueado a asesor: ${e.message}`);
+      }
+    }
+
+    if (!escaladoAsesor) {
+      soloTexto =
+        faltan.length === 1
+          ? `${PREFIJO_PETICION_DATOS} este dato 😊:\n${faltan[0]}`
+          : `${PREFIJO_PETICION_DATOS} estos datos 😊:\n` +
+            (faltan.length
+              ? faltan.join('\n')
+              : '- Nombre completo\n- Teléfono\n- Ciudad y provincia\n' +
+                '- Dirección exacta (dos calles y una referencia), o la ' +
+                'agencia Servientrega si prefieres retirarlo');
+    }
     media.imagenes = [];
     media.videos = [];
   }
