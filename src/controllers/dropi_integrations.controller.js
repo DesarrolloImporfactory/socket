@@ -1986,6 +1986,10 @@ async function upsertOrdersToCache(cacheCtx, orders) {
         'shipping_company',
         'shipping_guide',
         'product_names',
+        // La API REST trae created_at en hora local: re-sincronizar corrige
+        // filas que el webhook insertó con hora UTC (+5h) antes del fix de
+        // dropiDateToLocal. Sin esto, la primera inserción mala era eterna.
+        'order_created_at',
         'order_data',
         'synced_at',
         'devolution_alert',
