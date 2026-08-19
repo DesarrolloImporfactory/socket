@@ -792,6 +792,49 @@ async function getColumnaPrincipalDropi(id_configuracion) {
   return null;
 }
 
+/* ¿Este teléfono tiene una orden MÁS NUEVA y viva en esta config?
+
+   Es el patrón del rescate manual: el bot (o alguien) creó una orden con
+   datos malos, el equipo la CANCELA en Dropi y crea otra bien. El evento
+   CANCELADO de la vieja llegaba igual —por el cron o por el webhook— y movía
+   el chat a la columna de cancelados, enterrando como "cancelado" a un
+   comprador con pedido vigente. Caso 285 (2026-08-19): orden 6599680
+   cancelada + 6601103 PENDIENTE viva del mismo teléfono, y el chat quedó en
+   "cancelados".
+
+   "Más nueva" = dropi_order_id mayor (los ids de Dropi crecen). La ventana de
+   30 días acota el scan y evita que una orden vieja sin relación bloquee un
+   cancelado legítimo meses después. Best-effort: ante cualquier error se
+   responde false y el flujo sigue como siempre. */
+async function hayOrdenVivaPosterior({
+  id_configuracion,
+  phone,
+  dropi_order_id,
+}) {
+  const last9 = String(phone || '')
+    .replace(/\D/g, '')
+    .slice(-9);
+  if (last9.length < 9) return false;
+  try {
+    const [row] = await db.query(
+      `SELECT dropi_order_id FROM dropi_orders_cache
+        WHERE id_configuracion = ?
+          AND dropi_order_id > ?
+          AND classified_status <> 'cancelada'
+          AND created_at >= NOW() - INTERVAL 30 DAY
+          AND RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', ''), 9) = ?
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, dropi_order_id, last9],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    return !!row;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function actualizarEstadoContactoEntregado({
   id_configuracion,
   telefono,
@@ -1361,6 +1404,27 @@ async function procesarTemplates({
         console.log(
           `[dropi-notifier] tel recuperado para orden ${order.id} (cfg ${id_configuracion}): "${order.phone}" → "${telefonoOrden}"`,
         );
+      }
+
+      /* Un CANCELADO cuyo teléfono ya tiene una orden más nueva y viva no se
+         procesa: ni plantilla ni movimiento de columna. Es la orden vieja que
+         el equipo canceló para rehacerla — el chat sigue siendo una venta
+         activa, no un cancelado (ver hayOrdenVivaPosterior). Vale para el
+         cron horario Y para el webhook: los dos entran por esta función. */
+      if (
+        estadoConfig === 'CANCELADO' &&
+        telefonoOrden &&
+        (await hayOrdenVivaPosterior({
+          id_configuracion,
+          phone: telefonoOrden,
+          dropi_order_id: order.id,
+        }))
+      ) {
+        console.log(
+          `[dropi-notifier] orden ${order.id} CANCELADA pero el teléfono tiene una orden más nueva viva → no se toca el chat (cfg ${id_configuracion})`,
+        );
+        omitidos++;
+        continue;
       }
 
       if (estadoConfig === 'ENTREGADA' && telefonoOrden) {

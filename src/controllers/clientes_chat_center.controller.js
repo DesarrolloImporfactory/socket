@@ -3318,3 +3318,75 @@ function encontrarMejorMatchProducto(anuncio, productos) {
   if (!mejor) return null;
   return { producto: mejor, score: mejorScore, matchTipo: mejorTipo };
 }
+
+/**
+ * Última ubicación que el cliente compartió por WhatsApp.
+ *
+ * La necesita el panel de pedidos de Aliclik: su API no tiene catálogo de
+ * ciudades, cotiza y entrega por lat/lng, así que las coordenadas son
+ * obligatorias. La forma natural de conseguirlas en Perú es pedirle al cliente
+ * que comparta su ubicación en el chat.
+ *
+ * El webhook de Meta ya guarda esos mensajes como tipo_mensaje='location' con
+ * {latitude, longitude} serializado en texto_mensaje
+ * (ver webhook_meta_whatsapp.controller.js, case 'location').
+ */
+exports.ultimaUbicacion = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(
+    req.body?.id_configuracion ?? req.query?.id_configuracion,
+  );
+  const id_cliente = Number(req.body?.id_cliente ?? req.query?.id_cliente);
+
+  if (!id_configuracion || !id_cliente)
+    return next(new AppError('Faltan parámetros', 400));
+
+  // OJO con los nombres de columna, están al revés de lo que parecen:
+  // el webhook guarda `id_cliente` = registro del NEGOCIO (la configuración) y
+  // `celular_recibe` = id del CONTACTO del chat, que es lo que buscamos aquí
+  // (ver webhook_meta_whatsapp.controller.js, MensajeCliente.create). Es la
+  // misma columna por la que junta vista_chats: mp.celular_recibe = ccc.id.
+  //
+  // rol_mensaje = 0 → entrante. Solo sirve la que mandó el cliente: una
+  // ubicación saliente es la de la tienda, no el destino de entrega.
+  const filas = await db.query(
+    `SELECT texto_mensaje, created_at
+       FROM mensajes_clientes
+      WHERE celular_recibe = ?
+        AND id_configuracion = ?
+        AND tipo_mensaje = 'location'
+        AND rol_mensaje = 0
+        AND deleted_at IS NULL
+      ORDER BY id DESC
+      LIMIT 5`,
+    {
+      replacements: [id_cliente, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  // Se leen las últimas 5 y no solo la última porque un texto_mensaje corrupto
+  // (JSON a medias, lat/lng nulas) dejaría al asesor sin ubicación aunque
+  // exista una válida más atrás.
+  for (const fila of filas) {
+    let coords = null;
+    try {
+      coords = JSON.parse(fila.texto_mensaje || 'null');
+    } catch (_) {
+      continue;
+    }
+
+    const lat = Number(coords?.latitude);
+    const lng = Number(coords?.longitude);
+    // El 0 se descarta a propósito: es el valor que queda cuando Meta manda el
+    // mensaje sin coordenadas, y mandaría el pedido al golfo de Guinea.
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (lat === 0 && lng === 0) continue;
+
+    return res.json({
+      isSuccess: true,
+      data: { lat, lng, compartida_en: fila.created_at },
+    });
+  }
+
+  return res.json({ isSuccess: true, data: null });
+});

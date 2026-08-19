@@ -278,6 +278,132 @@ async function suiteA() {
       motivoCierreInvalido(agenciaPorConfirmar) === null,
       `motivo=${motivoCierreInvalido(agenciaPorConfirmar)}`,
     );
+
+    // Casos 285 del 2026-08-19: el candado solo validaba las líneas que
+    // EXISTÍAN, y el modo de fallo real fue omitirlas o rellenarlas entre
+    // paréntesis. Tres resúmenes reales que pasaron limpios ese día:
+
+    // a) Alejandro (711657): cerró SOLO con cantidad/precio/producto — el
+    //    cliente respondió "¿Si sabe a dónde enviarlo???".
+    const sinNadie =
+      'Listo! Pedido confirmado, pago contra entrega:\n🔢 Cantidad: 2\n' +
+      '💰 Precio total: 25.00\n📦 Producto: Deja de Roncar Desde Esta Noche\n' +
+      '🚚 Envío: domicilio\n[generar_guia]:true';
+    caso(
+      'cierre sin nombre/teléfono/ciudad/dirección se bloquea (caso Alejandro)',
+      motivoCierreInvalido(sinNadie) !== null,
+      `motivo=${motivoCierreInvalido(sinNadie)}`,
+    );
+
+    // b) Natalia (712423): "📍 Ciudad: (necesito que me digas la ciudad)" —
+    //    relleno entre paréntesis que la blacklist de frases no veía.
+    const ciudadRelleno =
+      'Listo! Pedido confirmado, pago contra entrega:\n' +
+      '🧑 Nombre: Natalia María Guzmán Moscoso\n📞 Telefono: 0962822713\n' +
+      '📍 Ciudad: (necesito que me digas la ciudad)\n' +
+      '🏦 Agencia Servientrega: (si aplica)\n📦 Producto: Evil Goods\n' +
+      '🔢 Cantidad: 2\n💰 Precio total: 35.00\n🚚 Envio: domicilio\n' +
+      '[generar_guia]:true';
+    caso(
+      'cierre con ciudad de relleno entre paréntesis se bloquea (caso Natalia)',
+      motivoCierreInvalido(ciudadRelleno) !== null,
+      `motivo=${motivoCierreInvalido(ciudadRelleno)}`,
+    );
+
+    // c) Solanda (712250): con nombre y teléfono pero sin líneas de ciudad ni
+    //    dirección (el "1.5 km de Portoviejo" quedó dentro de Envío).
+    const sinCiudadNiDir =
+      '¡Gracias Solanda! 😊 Aquí tienes todos los datos:\n' +
+      '🧑 Nombre: Solanda Faviola Andrade Mera\n📞 Teléfono: 0969187524\n' +
+      '📦 Producto: Máscara Táctica Multifuncional\n🔢 Cantidad: 1\n' +
+      '💰 Precio total: 21.99\n🚚 Envío: Domicilio a 1.5 km de Portoviejo\n' +
+      '[generar_guia]:true';
+    caso(
+      'cierre sin líneas de ciudad y dirección se bloquea (caso Solanda)',
+      motivoCierreInvalido(sinCiudadNiDir) !== null,
+      `motivo=${motivoCierreInvalido(sinCiudadNiDir)}`,
+    );
+
+    // d) La línea de teléfono AUSENTE no bloquea: el auto-orden usa el número
+    //    desde el que escribe la persona (pedírselo sería el tic absurdo que
+    //    contextoColumna ya corrigió). Solo bloquea si vino y es falsa.
+    const sinLineaTelefono = valido.replace(/📞 Telefono: 0979462998\n/, '');
+    caso(
+      'cierre completo sin línea de teléfono sigue pasando (respaldo del chat)',
+      motivoCierreInvalido(sinLineaTelefono) === null,
+      `motivo=${motivoCierreInvalido(sinLineaTelefono)}`,
+    );
+
+    // e) La petición del paso 12 pide EXACTAMENTE lo que el candado bloqueó.
+    const { camposFaltantesCierre } = require('../src/services/kanban_ia.service');
+    const faltanSolanda = camposFaltantesCierre(sinCiudadNiDir);
+    caso(
+      'camposFaltantesCierre pide solo ciudad y dirección en el caso Solanda',
+      faltanSolanda.length === 2 &&
+        /Ciudad/.test(faltanSolanda[0]) &&
+        /Direcci/.test(faltanSolanda[1]),
+      JSON.stringify(faltanSolanda),
+    );
+  }
+
+  // 10. Resumen multi-producto (caso 889, Nicolas: "Reloj SKMEI Multifuncion,
+  //     1 x Reloj Steel Arabe" en UNA línea → la orden cayó a manual). El
+  //     formato correcto es una línea 📦 por producto; el parser convierte
+  //     eso en renglones para el auto-orden y NO toca el caso de una línea.
+  {
+    const {
+      parsearProductosResumen,
+    } = require('../src/services/kanban_ia.service');
+
+    const dosLineas =
+      'Listo! Pedido confirmado:\n🧑 Nombre: Nicolas Prueba\n' +
+      '📞 Telefono: 0960231042\n📍 Ciudad: Machala\n🏡 Direccion: Calle 1 y 2\n' +
+      '📦 Producto: Reloj SKMEI Multifuncion x1 (Variedad: NEGRO)\n' +
+      '📦 Producto: Reloj Steel Arabe x2\n' +
+      '💰 Precio total: 74.99\n[generar_guia]:true';
+    const items = parsearProductosResumen(dosLineas);
+    caso(
+      'resumen con dos líneas 📦 se parsea en 2 renglones',
+      items.length === 2,
+      JSON.stringify(items),
+    );
+    caso(
+      'renglón 1: nombre limpio, cantidad 1 y variedad NEGRO',
+      items[0]?.producto === 'Reloj SKMEI Multifuncion' &&
+        items[0]?.cantidad === '1' &&
+        items[0]?.variedad === 'NEGRO',
+      JSON.stringify(items[0]),
+    );
+    caso(
+      'renglón 2: cantidad 2 y sin variedad',
+      items[1]?.producto === 'Reloj Steel Arabe' &&
+        items[1]?.cantidad === '2' &&
+        items[1]?.variedad === '',
+      JSON.stringify(items[1]),
+    );
+
+    // Cantidad al inicio ("2 x Reloj…"), como lo escriben algunos bots.
+    const alInicio = parsearProductosResumen(
+      '📦 Producto: 2 x Reloj Steel Arabe\n📦 Producto: Evil Goods x1\n',
+    );
+    caso(
+      'cantidad al inicio ("2 x …") también se lee',
+      alInicio[0]?.cantidad === '2' &&
+        alInicio[0]?.producto === 'Reloj Steel Arabe',
+      JSON.stringify(alInicio[0]),
+    );
+
+    // Una sola línea 📦 → [] : el flujo de un producto no cambia en nada,
+    // aunque la línea traiga comas (el caso Nicolas sigue yendo a manual,
+    // donde ahora sí se puede armar con 2 productos).
+    const unaLinea = parsearProductosResumen(
+      '📦 Producto: Reloj SKMEI Multifuncion, 1 x Reloj Steel Arabe\n💰 Precio total: 74.99',
+    );
+    caso(
+      'una sola línea 📦 (aún con comas) NO activa el modo multi-producto',
+      Array.isArray(unaLinea) && unaLinea.length === 0,
+      JSON.stringify(unaLinea),
+    );
   }
 }
 

@@ -10,6 +10,10 @@ const {
   enlazarOrdenContactoOrigen,
 } = require('../services/contactoOrigenEnlace.service');
 const dropiService = require('../services/dropi.service');
+// Aliclik (Perú) tiene su propio servicio de órdenes: su flujo de creación es
+// por lat/lng y EAN, no por ciudad e id de producto (ver el encabezado de
+// services/aliclikOrders.service.js).
+const aliclikOrders = require('../services/aliclikOrders.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const { decryptToken } = require('../utils/cryptoToken');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
@@ -791,6 +795,131 @@ class Sockets {
           socket.emit('DROPI_SET_ORDER_STATUS_ERROR', {
             isSuccess: false,
             message: e?.message || 'Error cambiando estado de orden',
+          });
+        }
+      });
+
+      /* ═══════════════════════════════════════════════════════════
+         ALICLIK — crear pedido desde el chat (Perú)
+         Espeja los eventos DROPI_*. Los pasos cambian porque Aliclik no
+         tiene catálogo de ciudades: cotiza y entrega por lat/lng.
+             productos → cotización (warehouseId + lat + lng) → crear
+         ═══════════════════════════════════════════════════════════ */
+
+      socket.on('GET_ALICLIK_PRODUCTS', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+
+          const data = await aliclikOrders.listProductsForPanel({
+            id_configuracion,
+            params: {
+              page: payload?.page,
+              limit: payload?.limit,
+              search: payload?.search,
+              categoryId: payload?.categoryId,
+            },
+          });
+
+          socket.emit('ALICLIK_PRODUCTS_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('ALICLIK_PRODUCTS_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error obteniendo productos de Aliclik',
+          });
+        }
+      });
+
+      socket.on('GET_ALICLIK_SHIPPING_COST', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+
+          const data = await aliclikOrders.getShippingCostForPanel({
+            id_configuracion,
+            warehouseId: payload?.warehouseId,
+            lat: payload?.lat,
+            lng: payload?.lng,
+          });
+
+          socket.emit('ALICLIK_SHIPPING_COST_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('ALICLIK_SHIPPING_COST_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cotizando el envío en Aliclik',
+          });
+        }
+      });
+
+      socket.on('GET_ALICLIK_ORDERS_BY_CLIENT', async (payload) => {
+        try {
+          const { id_configuracion, phone, ...rest } = payload || {};
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!phone) throw new AppError('phone es requerido', 400);
+
+          const data = await aliclikOrders.listOrdersForClient({
+            id_configuracion: Number(id_configuracion),
+            phone,
+            body: rest, // { result_number, status }
+          });
+
+          socket.emit('ALICLIK_ORDERS_BY_CLIENT', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('ALICLIK_ORDERS_BY_CLIENT_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error consultando pedidos de Aliclik',
+          });
+        }
+      });
+
+      socket.on('ALICLIK_CREATE_ORDER', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+
+          const data = await aliclikOrders.createOrderForClient({
+            id_configuracion,
+            body: payload,
+          });
+
+          socket.emit('ALICLIK_CREATE_ORDER_OK', { isSuccess: true, data });
+        } catch (e) {
+          socket.emit('ALICLIK_CREATE_ORDER_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error creando el pedido en Aliclik',
+          });
+        }
+      });
+
+      socket.on('ALICLIK_CANCEL_ORDER', async (payload) => {
+        try {
+          const id_configuracion = toInt(payload?.id_configuracion);
+          const orderNumber = strOrNull(payload?.orderNumber);
+
+          if (!id_configuracion)
+            throw new AppError('id_configuracion es requerido', 400);
+          if (!orderNumber)
+            throw new AppError('orderNumber es requerido', 400);
+
+          const data = await aliclikOrders.cancelOrderForClient({
+            id_configuracion,
+            orderNumber,
+          });
+
+          socket.emit('ALICLIK_CANCEL_ORDER_OK', {
+            isSuccess: true,
+            data,
+            orderNumber,
+          });
+        } catch (e) {
+          socket.emit('ALICLIK_CANCEL_ORDER_ERROR', {
+            isSuccess: false,
+            message: e?.message || 'Error cancelando el pedido en Aliclik',
           });
         }
       });

@@ -7,18 +7,53 @@ const Configuraciones = require('../models/configuraciones.model');
 const aliclikService = require('../services/aliclik.service');
 
 /**
- * URL pública del backend, para poder devolverle al cliente la dirección
- * completa que tiene que pegar en el panel de Aliclik.
+ * URL pública de ESTE backend. La necesita el cliente para pegar en el panel de
+ * Aliclik la dirección completa a la que le van a notificar.
+ *
+ * No se puede deducir del request: la app no tiene app.set('trust proxy'), así
+ * que detrás del proxy req.protocol diría http y Aliclik exige https.
+ *
+ * Cada entorno tiene su propio valor y su propio .env (el workflow de deploy
+ * excluye .env del rsync):
+ *   producción  → https://chat.imporfactory.app
+ *   desarrollo  → https://developer.imporfactory.app
+ *   local       → hace falta un túnel (ngrok/cloudflared); localhost no es
+ *                 alcanzable desde los servidores de Aliclik.
  */
-const PUBLIC_URL = (
-  process.env.PUBLIC_BASE_URL ||
-  process.env.APP_URL ||
-  ''
-).replace(/\/+$/, '');
+function resolvePublicBase() {
+  const raw = String(
+    process.env.PUBLIC_BASE_URL || process.env.APP_URL || '',
+  ).trim();
+  if (!raw) return null;
 
+  const base = raw.replace(/\/+$/, '');
+  // Tiene que ser absoluta: una base sin esquema produce una URL que Aliclik
+  // no puede resolver, y el error recién se vería cuando no llegue ningún
+  // evento (días después, sin rastro).
+  if (!/^https?:\/\/[^/\s]+/i.test(base)) return null;
+
+  return base;
+}
+
+const FALTA_PUBLIC_URL =
+  'No se puede construir la URL de notificaciones: falta configurar ' +
+  'PUBLIC_BASE_URL en el servidor (ej. https://chat.imporfactory.app). ' +
+  'Avisa a soporte: sin eso Aliclik no puede notificar los cambios de estado.';
+
+/**
+ * Devuelve la URL absoluta del webhook, o null si el entorno no está
+ * configurado.
+ *
+ * Antes, sin PUBLIC_BASE_URL, esto devolvía la ruta relativa
+ * ("/api/v1/aliclik_webhook/orders/<secreto>"). Eso no le sirve a nadie —
+ * Aliclik no puede POSTear a una ruta sin host — pero se veía como una
+ * respuesta válida, así que el cliente la pegaba y no volvía a llegar un solo
+ * evento, sin ningún error de por medio. Mejor null y avisar.
+ */
 function webhookUrl(secret) {
-  const path = `/api/v1/aliclik_webhook/orders/${secret}`;
-  return PUBLIC_URL ? `${PUBLIC_URL}${path}` : path;
+  const base = resolvePublicBase();
+  if (!base) return null;
+  return `${base}/api/v1/aliclik_webhook/orders/${secret}`;
 }
 
 function safeRow(row) {
@@ -33,6 +68,11 @@ function safeRow(row) {
     company_id: row.company_id,
     integration_id: row.integration_id,
     webhook_url: webhookUrl(row.webhook_secret),
+    // Null cuando el entorno no tiene PUBLIC_BASE_URL. El front muestra este
+    // aviso en vez de una URL que no se puede pegar en ningún lado.
+    webhook_url_error: webhookUrl(row.webhook_secret)
+      ? null
+      : FALTA_PUBLIC_URL,
     is_active: row.is_active,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -136,8 +176,9 @@ exports.create = catchAsync(async (req, res, next) => {
     data: safeRow(created),
     // El cliente tiene que pegar esta URL en el panel de Aliclik, en
     // "Webhook de notificaciones".
-    instrucciones:
-      'Copia la webhook_url y pégala en el panel de Aliclik, en "Webhook de notificaciones".',
+    instrucciones: webhookUrl(created.webhook_secret)
+      ? 'Copia la webhook_url y pégala en el panel de Aliclik, en "Webhook de notificaciones".'
+      : FALTA_PUBLIC_URL,
   });
 });
 
@@ -242,6 +283,9 @@ exports.probarConexion = catchAsync(async (req, res, next) => {
       token_exp_at: row.token_exp_at,
       token_dias_restantes: diasRestantes(row.token_exp_at),
       webhook_url: webhookUrl(row.webhook_secret),
+      webhook_url_error: webhookUrl(row.webhook_secret)
+        ? null
+        : FALTA_PUBLIC_URL,
     },
   });
 });

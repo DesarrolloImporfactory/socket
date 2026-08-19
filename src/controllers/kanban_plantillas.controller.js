@@ -653,6 +653,25 @@ exports.listarGlobales = catchAsync(async (req, res) => {
 
     const columnas_ia = cols.filter((c) => c.activa_ia).length;
 
+    /* Qué instala DE VERDAD esta plantilla, para que el modal del front pinte
+       solo los chips que aplican. Antes el front mostraba "Auto Dropi",
+       "Templates Meta" y "Respuestas rápidas" hardcodeados en TODAS las
+       tarjetas — el asistente inmobiliario salía anunciando Auto Dropi. La
+       fuente de verdad es el mismo bloque `setup` que usa aplicarGlobal
+       (_resolverSetup: plantillas viejas sin setup → todo true, que para las
+       de e-commerce es además lo correcto), más las acciones del tablero
+       para lo que el setup no cubre (agenda de citas). */
+    const setup = _resolverSetup(parsed);
+    const caracteristicas = {
+      templates_meta: setup.templates_meta,
+      respuestas_rapidas: setup.respuestas_rapidas,
+      dropi_config: setup.dropi_config,
+      remarketing: setup.remarketing,
+      citas: cols.some((c) =>
+        (c.acciones || []).some((a) => a.tipo_accion === 'agendar_cita'),
+      ),
+    };
+
     const columnasPreview = cols
       .slice()
       .sort((a, b) => (a.orden || 0) - (b.orden || 0))
@@ -683,6 +702,7 @@ exports.listarGlobales = catchAsync(async (req, res) => {
       total_columnas: p.total_columnas,
       columnas_ia,
       columnas: columnasPreview,
+      caracteristicas,
       tipo: 'global',
     };
   });
