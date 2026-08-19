@@ -802,6 +802,34 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  // ── 6.6 Retiro en agencia: el plazo que la tienda comunica ──
+  // El prompt de esa columna prohíbe inventar plazos, así que "¿hasta cuándo
+  // lo guardan?" terminaba SIEMPRE en asesor — pudiendo responderse con el
+  // dato que la propia cuenta configuró (configuraciones.dias_retiro_agencia,
+  // el mismo que sale en las plantillas k1/k2/k3 y en los prompts del cron de
+  // remarketing). Scopeado a esta columna a propósito: en el resto del
+  // tablero el plazo no significa nada y sería ruido en cada mensaje.
+  if (String(estado_contacto).toLowerCase() === 'retiro_agencia') {
+    try {
+      const [cfgPlazo] = await db.query(
+        `SELECT dias_retiro_agencia FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      const diasPlazo = Number(cfgPlazo?.dias_retiro_agencia) || 0;
+      if (diasPlazo > 0) {
+        bloqueContexto +=
+          `⏳ PLAZO DE RETIRO EN AGENCIA: ${diasPlazo} día${diasPlazo === 1 ? '' : 's'}.\n` +
+          `Si preguntan cuánto tiempo guardan el paquete o hasta cuándo pueden ` +
+          `retirarlo, responde con ESTE plazo — es el que la tienda comunica en ` +
+          `todos sus mensajes. Cumplido el plazo, el paquete regresa al ` +
+          `remitente; no ofrezcas extenderlo ni ninguna otra alternativa.\n\n`;
+        await log(`⏳ Plazo de retiro inyectado: ${diasPlazo} día(s)`);
+      }
+    } catch (e) {
+      await log(`⚠️ Error inyectando plazo de retiro: ${e.message}`);
+    }
+  }
+
   // ── 7. Construir input / enviar al thread ─────────────────
   let inputFinal = mensajeFinal;
 
