@@ -372,8 +372,14 @@ async function generarMensajeRemarketingIA({
   // acciones, así que si se cuela un tag viaja tal cual al cliente.
   // Require perezoso para no arrastrar todo el árbol de kanban_ia al arrancar el
   // server, que es cuando se carga este cron.
-  const { limpiarTagsAcciones } = require('../services/kanban_ia.service');
+  const {
+    limpiarTagsAcciones,
+    limpiarMetaRemarketing,
+  } = require('../services/kanban_ia.service');
   texto = limpiarTagsAcciones(texto);
+  // El acuse al sistema ("¡Entendido! Aquí tienes el mensaje de
+  // remarketing:") viajaba tal cual al cliente — caso 569, 2026-08-19.
+  texto = limpiarMetaRemarketing(texto);
 
   if (
     (texto.startsWith('"') && texto.endsWith('"')) ||
@@ -994,6 +1000,7 @@ cron.schedule('*/1 * * * *', async () => {
                 const {
                   ejecutarConResponsesAPI,
                   limpiarTagsAcciones,
+                  limpiarMetaRemarketing,
                 } = require('../services/kanban_ia.service');
                 const {
                   obtenerUltimoResponseId,
@@ -1026,10 +1033,11 @@ cron.schedule('*/1 * * * *', async () => {
                 });
 
                 // ejecutarConResponsesAPI ya limpia las citas, pero NO los tags
-                // de acción ([asesor]:true…). Acá nadie los evalúa: si se cuela
-                // uno, viaja tal cual al cliente.
-                textoIA = limpiarTagsAcciones(
-                  (r?.respuesta || '').trim(),
+                // de acción ([asesor]:true…) ni el acuse al sistema ("Aquí
+                // tienes el mensaje de remarketing:"). Acá nadie los evalúa:
+                // si se cuela algo, viaja tal cual al cliente.
+                textoIA = limpiarMetaRemarketing(
+                  limpiarTagsAcciones((r?.respuesta || '').trim()),
                 ).trim();
               } else {
                 if (!colRow?.assistant_id) {

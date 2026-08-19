@@ -2543,6 +2543,48 @@ function limpiarTagsAcciones(texto) {
     .trim();
 }
 
+/* El remarketing se genera con un mensaje-trigger interno ("[ACCIÓN INTERNA:
+   GENERAR_REMARKETING] … Devuelve ÚNICAMENTE el mensaje…") y el modelo a
+   veces le responde AL SISTEMA antes de escribir el mensaje: al cliente de la
+   569 (2026-08-19) le llegó "¡Entendido! 😊 Aquí tienes el mensaje de
+   remarketing:" seguido del mensaje real. Esto corta ese acuse y cualquier
+   línea con jerga interna, en el único formato que puede viajar al cliente.
+
+   Fail-safe: si después de limpiar no queda nada usable, se devuelve el
+   original — un preámbulo feo es mejor que un mensaje vacío que tumba el
+   envío y dispara el fallback. */
+function limpiarMetaRemarketing(texto) {
+  const original = String(texto || '').trim();
+  let t = original;
+
+  // 1) Preámbulo que anuncia el mensaje y termina en dos puntos:
+  //    "¡Entendido! 😊 Aquí tienes el mensaje de remarketing:" / "Te comparto
+  //    el mensaje de reenganche:".
+  t = t.replace(
+    /^[^\n]{0,140}?(?:mensaje\s+de\s+(?:remarketing|reenganche|reactivaci[oó]n|seguimiento)|aqu[ií]\s+(?:tienes|est[aá])\s+(?:el|tu)\s+mensaje|te\s+comparto\s+el\s+mensaje)[^\n]{0,80}?:\s*/i,
+    '',
+  );
+
+  // 2) Primera línea que es SOLO un acuse al sistema ("¡Entendido!", "Claro").
+  //    Exige el salto de línea: un mensaje legítimo que ARRANCA con
+  //    "¡Perfecto! Tu descuento…" en la misma línea no se toca.
+  t = t.replace(
+    /^[¡!]?\s*(?:entendido|claro(?:\s+que\s+s[ií])?|listo|perfecto|de\s+acuerdo|ok)\s*[.!,…]*\s*[😊🙂👍]?\s*\n+/i,
+    '',
+  );
+
+  // 3) Jerga interna que jamás puede llegarle a un cliente.
+  t = t
+    .split('\n')
+    .filter(
+      (l) => !/remarketing|reenganche|GENERAR_REMARKETING|ACCI[ÓO]N\s+INTERNA/i.test(l),
+    )
+    .join('\n')
+    .trim();
+
+  return t.length >= 5 ? t : original;
+}
+
 /**
  * @param {string} mensajeGPT   respuesta cruda del modelo, con el bloque de cita
  * @param {number} id_configuracion
@@ -3167,6 +3209,10 @@ module.exports = {
   // una columna pueden traer tags de acción, y ahí nadie los interpretaba ni los
   // limpiaba (ver cron/remarketing.js → generarMensajeRemarketingIA).
   limpiarTagsAcciones,
+  // Corta el acuse al sistema ("Aquí tienes el mensaje de remarketing:") que
+  // el modelo antepone a veces al mensaje generado. La usan los tres canales
+  // de remarketing (WA/IG/MS).
+  limpiarMetaRemarketing,
   // Expuesta para poder verificar el agendamiento sin levantar toda la
   // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
   // igual aunque la cita no se cree).
