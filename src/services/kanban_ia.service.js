@@ -87,6 +87,12 @@ const {
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
 const { esperarRafaga } = require('../utils/agruparRafaga');
 
+// Ubicación compartida por WhatsApp → dirección/ciudad/provincia en palabras
+const {
+  parseUbicacionJson,
+  reverseGeocode,
+} = require('../utils/geoUbicacion');
+
 // Candados para que dos cierres seguidos no creen dos órdenes ni manden el
 // resumen del pedido dos veces
 const {
@@ -718,7 +724,7 @@ async function procesarMensajeKanban(params) {
      eso es quedarse sin el dato justo después de conseguirlo.
      Se traduce solo para el modelo; lo guardado no se toca. */
   const textoDelSistema =
-    textoDeUbicacion(mensaje) || textoDeMensajeIlegible(mensaje);
+    (await textoDeUbicacion(mensaje)) || textoDeMensajeIlegible(mensaje);
 
   let mensajeFinal = textoDelSistema || mensaje;
 
@@ -2267,31 +2273,53 @@ function extraerMedia(texto) {
  * mapita. Para el asistente eso no es un mensaje: es ruido, y responde pidiendo
  * "la dirección en palabras" a alguien que le acaba de mandar exactamente eso.
  *
+ * Además se geocodifica en reversa (utils/geoUbicacion): con la dirección,
+ * ciudad y provincia resueltas, el bot puede escribirlas en el resumen de
+ * cierre — que es de donde salen el auto-orden de Dropi y el auto-llenado del
+ * panel de pedido. Antes el cliente mandaba su ubicación y el bot igual tenía
+ * que pedirle ciudad y dirección "en palabras", porque no sabía leerla.
+ *
  * Devuelve `null` si el texto no es una ubicación, para que el mensaje siga su
- * camino sin tocarse.
+ * camino sin tocarse. Si el geocoder no responde, cae al texto de siempre
+ * (coordenadas + mapa) y el bot pide los datos como antes.
  */
-function textoDeUbicacion(texto) {
-  const s = String(texto || '').trim();
-  if (!s.startsWith('{') || !s.includes('latitude')) return null;
+async function textoDeUbicacion(texto) {
+  const coords = parseUbicacionJson(texto);
+  if (!coords) return null;
 
-  try {
-    const o = JSON.parse(s);
-    const lat = Number(o?.latitude);
-    const lng = Number(o?.longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const { lat, lng } = coords;
+  const mapa = `https://www.google.com/maps?q=${lat},${lng}`;
+  const geo = await reverseGeocode(lat, lng);
 
+  if (!geo) {
     return (
       `[El cliente compartió su ubicación por WhatsApp]\n` +
       `Coordenadas: ${lat}, ${lng}\n` +
-      `Mapa: https://www.google.com/maps?q=${lat},${lng}\n` +
+      `Mapa: ${mapa}\n` +
       `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
       `dirección "en palabras". Si necesitas el nombre del sector o una ` +
       `referencia para llegar, pídele eso puntual. Cuando tengas que dejar la ` +
       `ubicación registrada en una ficha, escribe el enlace del mapa tal cual.`
     );
-  } catch {
-    return null;
   }
+
+  return (
+    `[El cliente compartió su ubicación por WhatsApp]\n` +
+    `Coordenadas: ${lat}, ${lng}\n` +
+    `Mapa: ${mapa}\n` +
+    `Según el mapa, la ubicación corresponde a:\n` +
+    `- Dirección: ${geo.direccion || '(sin calle identificable en el mapa)'}\n` +
+    `- Ciudad: ${geo.ciudad || '(no identificada)'}\n` +
+    `- Provincia: ${geo.provincia || '(no identificada)'}\n` +
+    `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
+    `dirección "en palabras", y NO le vuelvas a preguntar la ciudad ni la ` +
+    `provincia si aquí aparecen. Si estás cerrando un pedido con entrega, usa ` +
+    `esta ciudad, provincia y dirección tal cual en el resumen de cierre, y ` +
+    `pídele al cliente solo una referencia puntual para llegar (color de la ` +
+    `casa, negocio cercano) para completar la dirección. Cuando tengas que ` +
+    `dejar la ubicación registrada en una ficha, escribe el enlace del mapa ` +
+    `tal cual.`
+  );
 }
 
 /* ── Qué ítem del catálogo nombró el bot ────────────────────────
@@ -3226,4 +3254,9 @@ module.exports = {
   // el auto-orden sube 1 o N renglones, y un cambio silencioso ahí rompe
   // pedidos reales.
   parsearProductosResumen,
+  // Expuesta para la batería: la traducción de la ubicación de WhatsApp es lo
+  // que le da al bot la ciudad/provincia/dirección del resumen de cierre; si
+  // se rompe, el síntoma es un bot que vuelve a pedir la dirección "en
+  // palabras" a quien acaba de mandarla.
+  textoDeUbicacion,
 };
