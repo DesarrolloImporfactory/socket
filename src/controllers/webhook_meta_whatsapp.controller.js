@@ -1234,6 +1234,29 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const leido = descripcion || '[El cliente envió una imagen]';
             texto_mensaje = caption ? `${leido}\nCliente: ${caption}` : leido;
 
+            // Persistir la descripción en el mensaje ya creado, igual que la
+            // transcripción de audio de más arriba y por la misma razón:
+            // construirRecapConversacion() rearma el historial leyendo
+            // texto_mensaje de la BD, así que sin esto lo que decía la imagen
+            // desaparecía del recap (caso 495, Iván: la foto de la agencia
+            // Servientrega no dejaba rastro). De paso queda auditable qué leyó
+            // la visión, y el panel la muestra como texto bajo la imagen.
+            // Solo cuando la visión SÍ leyó algo: persistir el aviso genérico
+            // "[El cliente envió una imagen]" bajo cada foto ilegible es ruido.
+            if (descripcion) {
+              try {
+                await MensajeCliente.update(
+                  { texto_mensaje },
+                  { where: { id: creacion_mensaje.id } },
+                );
+              } catch (errUpd) {
+                await fsp.appendFile(
+                  path.join(logsDir, 'debug_log.txt'),
+                  `[${new Date().toISOString()}] ⚠️ No se pudo guardar la descripción de la imagen en BD: ${errUpd.message}\n`,
+                );
+              }
+            }
+
             if (referral) {
               mensaje_para_ia = `[CONTEXTO: El cliente viene de un anuncio publicitario]
               Nombre del producto anunciado: ${referral.headline || ''}
