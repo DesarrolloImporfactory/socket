@@ -117,7 +117,19 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
           ).catch(() => {});
           return { producto: p, via: 'mapa' };
         }
-        // El producto del mapa fue eliminado: se cae a los niveles de texto.
+        /* El producto del mapa ya no existe (lo borraron del catálogo y lo
+           re-crearon con otro id): la fila rota se ELIMINA, no solo se ignora.
+           Dejarla era una trampa doble — el nivel 0 fallaba para siempre Y el
+           ON DUPLICATE del aprendizaje solo subía `veces`, sin corregir el
+           id_producto muerto. Caso real (403, 2026-08-19): el mapa del anuncio
+           "SSD PORTATIL DE 8TB" apuntaba al producto borrado 2375, el nivel 3
+           quedó solo con la palabra "PORTATIL" y el bot terminó cotizando la
+           Máquina de Hielo SOKANY con foto y todo. */
+        db.query(
+          `DELETE FROM anuncios_producto
+            WHERE id_configuracion = ? AND source_id = ?`,
+          { replacements: [id_configuracion, ad], type: db.QueryTypes.DELETE },
+        ).catch(() => {});
       }
     }
 
@@ -161,12 +173,23 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
           .map(() => '(CASE WHEN nombre LIKE ? THEN 1 ELSE 0 END)')
           .join(' + ');
 
-        productos = await db.query(
+        /* Se piden 3 filas y se decide en JS, con la misma filosofía del
+           matcher del auto-orden: EN EMPATE, MEJOR NO ADIVINAR. Antes el
+           LIMIT 1 con desempate por nombre corto era una lotería: "SSD
+           PORTATIL DE 8TB" deja una sola palabra útil ("PORTATIL" — SSD y
+           8TB miden 3 letras y el filtro exige 4), tres productos empataban
+           a score 1 y ganaba la Máquina de Hielo por tener el nombre más
+           corto. Además, con 2+ palabras útiles una sola coincidencia es
+           señal demasiado floja para inyectar "usa SOLO estos precios".
+           Devolver null aquí NO deja mudo al bot: sin ficha del anuncio, el
+           modelo usa el catálogo (inline/file_search) — que en este mismo
+           caso respondió el SSD correcto cuando el cliente lo nombró. */
+        const filas = await db.query(
           `SELECT ${CAMPOS_PRODUCTO}, (${scoring}) AS score
              FROM productos_chat_center
             WHERE id_configuracion = ? AND eliminado = 0 AND (${condiciones})
             ORDER BY score DESC, CHAR_LENGTH(nombre) ASC
-            LIMIT 1`,
+            LIMIT 3`,
           {
             replacements: [
               ...palabras.map((w) => `%${w}%`),
@@ -176,6 +199,12 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
             type: db.QueryTypes.SELECT,
           },
         );
+        const top = filas[0];
+        const minScore = Math.min(2, palabras.length);
+        const empate =
+          filas.length > 1 && Number(filas[1].score) === Number(top?.score);
+        productos =
+          top && Number(top.score) >= minScore && !empate ? [top] : [];
       }
       via = 'palabras';
     }
@@ -189,7 +218,10 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
         `INSERT INTO anuncios_producto
            (id_configuracion, source_id, id_producto, headline, via)
          VALUES (?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE veces = veces + 1`,
+         ON DUPLICATE KEY UPDATE
+           id_producto = VALUES(id_producto),
+           via = VALUES(via),
+           veces = veces + 1`,
         {
           replacements: [
             id_configuracion,

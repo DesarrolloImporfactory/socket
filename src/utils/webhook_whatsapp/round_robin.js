@@ -21,6 +21,98 @@ async function log(msg) {
   );
 }
 
+/* Elige, entre los CONECTADOS, al que lleva más tiempo sin recibir un chat
+   del round robin (rotación real por antigüedad de última asignación).
+
+   Reemplaza al puntero viejo ("el siguiente del último asignado"), que tenía
+   un sesgo medido con datos reales: si el último asignado NO estaba online en
+   ese momento, la elección se caía a lista[0] — el sub-usuario de id más
+   bajo — en vez de continuar la rueda. En la cfg 666 eso pasó 285 veces en
+   una semana (la asesora de id más bajo recibió 751 chats contra 254 de la
+   última) y en la 242 el reparto quedó 12x entre el primero y el último.
+   Con "gana el de asignación más vieja" el reparto queda parejo entre los
+   que SÍ están conectados, sin importar cuántos parpadeos de presencia haya.
+
+   Solo cuentan las asignaciones del propio round robin (motivo auto_%): las
+   manuales no corren el turno de nadie. La ventana de 30 días acota el scan;
+   quien no recibe nada hace más de 30 días cuenta como "nunca" y gana el
+   siguiente turno — que es exactamente lo justo. */
+async function elegirMenosReciente(id_configuracion, lista) {
+  const ultimas = await db.query(
+    `SELECT he.id_encargado_nuevo AS enc, MAX(he.id) AS ult
+       FROM historial_encargados he
+       INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
+      WHERE cc.id_configuracion = ?
+        AND (he.motivo = 'auto_round_robin' OR he.motivo LIKE 'auto_round_robin_%')
+        AND he.id_encargado_nuevo IN (?)
+        AND he.fecha_registro >= NOW() - INTERVAL 30 DAY
+      GROUP BY he.id_encargado_nuevo`,
+    { replacements: [id_configuracion, lista], type: db.QueryTypes.SELECT },
+  );
+  const ult = new Map(ultimas.map((r) => [Number(r.enc), Number(r.ult)]));
+  let elegido = lista[0];
+  for (const id of lista) {
+    if ((ult.get(id) || 0) < (ult.get(elegido) || 0)) elegido = id;
+  }
+  return elegido;
+}
+
+/* Evidencia para las quejas de reparto: quiénes eran candidatos y a quiénes
+   vio ONLINE la rueda en el momento exacto de asignar. Se guarda en la
+   columna historial_encargados.candidatos_online (migración
+   historial_encargados_candidatos_migration.sql); si la columna aún no
+   existe, el INSERT clásico sigue funcionando igual que siempre. */
+function textoCandidatos(listaOnline, listaAuto) {
+  return `online:${listaOnline.join(',')} | auto:${listaAuto.join(',')}`.slice(
+    0,
+    255,
+  );
+}
+
+async function insertarHistorial({
+  id_cliente,
+  id_departamento_asginado,
+  id_encargado_nuevo,
+  motivo,
+  candidatos_online,
+}) {
+  try {
+    await db.query(
+      `INSERT INTO historial_encargados
+         (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo, candidatos_online)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_cliente,
+          id_departamento_asginado,
+          null,
+          id_encargado_nuevo,
+          motivo,
+          candidatos_online,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch (_) {
+    // Columna candidatos_online aún no migrada → INSERT clásico.
+    await db.query(
+      `INSERT INTO historial_encargados
+         (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+       VALUES (?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_cliente,
+          id_departamento_asginado,
+          null,
+          id_encargado_nuevo,
+          motivo,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  }
+}
+
 async function crearClienteConRoundRobinUnDepto({
   id_configuracion,
   business_phone_id,
@@ -167,17 +259,20 @@ async function crearClienteConRoundRobinUnDepto({
       },
     );
 
-    let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
+    // listaAuto = todos los candidatos con asignacion_auto; lista = los que
+    // además están conectados. Se guardan AMBAS en el historial: son la
+    // evidencia de por qué un chat le tocó a quien le tocó.
+    const listaAuto = encargados
+      .map((x) => Number(x.id_sub_usuario))
+      .filter(Boolean);
 
-    console.log('lista encargados sin filtrar: ' + JSON.stringify(lista));
+    console.log('lista encargados sin filtrar: ' + JSON.stringify(listaAuto));
 
     // ✅ Filtrar SOLO conectados
-    const listaOnline = lista.filter((id) => {
+    let lista = listaAuto.filter((id) => {
       const p = presenceStore.getPresence(id); // { online, socket_count, ... }
       return p?.online === true; // (si quiere más estricto, también p.socket_count > 0)
     });
-
-    lista = listaOnline;
 
     console.log('lista encargados con filtrar: ' + JSON.stringify(lista));
 
@@ -215,40 +310,14 @@ async function crearClienteConRoundRobinUnDepto({
       return { cliente, id_encargado_nuevo: null, id_departamento_asginado };
     }
 
-    // 3) Obtener el último encargado asignado (puntero) — ✅ soporte multi motivo
-    const last = await db.query(
-      `
-      SELECT he.id_encargado_nuevo
-      FROM historial_encargados he
-      INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
-      WHERE cc.id_configuracion = ?
-        AND (
-          he.motivo = 'auto_round_robin'
-          OR he.motivo LIKE 'auto_round_robin_%'
-        )
-      ORDER BY he.id DESC
-      LIMIT 1
-      `,
-      {
-        replacements: [id_configuracion],
-        type: db.QueryTypes.SELECT,
-      },
+    // 3-4) Elegir al conectado con la asignación más vieja. Reemplaza al
+    // puntero "siguiente del último": ver elegirMenosReciente (el puntero
+    // se reseteaba a lista[0] cuando el último asignado estaba offline y
+    // cargaba de más al sub-usuario de id más bajo).
+    const id_encargado_nuevo = await elegirMenosReciente(
+      id_configuracion,
+      lista,
     );
-
-    const lastAssigned = last?.[0]?.id_encargado_nuevo
-      ? Number(last[0].id_encargado_nuevo)
-      : null;
-
-    // 4) Elegir siguiente
-    let id_encargado_nuevo = null;
-
-    if (!lastAssigned) {
-      id_encargado_nuevo = lista[0];
-    } else {
-      const idx = lista.indexOf(lastAssigned);
-      id_encargado_nuevo =
-        idx === -1 ? lista[0] : lista[(idx + 1) % lista.length];
-    }
 
     // 5) Crear cliente con encargado
     console.log(
@@ -279,25 +348,15 @@ async function crearClienteConRoundRobinUnDepto({
       ...metaClienteTimestamps,
     });
 
-    // 6) Guardar historial (cliente NUEVO => anterior NULL)
-    await db.query(
-      `
-      INSERT INTO historial_encargados
-        (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
-      VALUES
-        (?, ?, ?, ?, ?)
-      `,
-      {
-        replacements: [
-          cliente.id,
-          id_departamento_asginado,
-          null,
-          id_encargado_nuevo,
-          motivo,
-        ],
-        type: db.QueryTypes.INSERT,
-      },
-    );
+    // 6) Guardar historial (cliente NUEVO => anterior NULL) + evidencia de
+    // quiénes estaban online al momento de asignar.
+    await insertarHistorial({
+      id_cliente: cliente.id,
+      id_departamento_asginado,
+      id_encargado_nuevo,
+      motivo,
+      candidatos_online: textoCandidatos(lista, listaAuto),
+    });
 
     await log(
       `✅ Cliente creado. id_cliente=${cliente.id} id_encargado=${id_encargado_nuevo} motivo=${motivo}`,
@@ -381,9 +440,11 @@ async function asignarRoundRobinClienteExistente({
       },
     );
 
-    let lista = encargados.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
+    const listaAuto = encargados
+      .map((x) => Number(x.id_sub_usuario))
+      .filter(Boolean);
 
-    lista = lista.filter((id) => {
+    const lista = listaAuto.filter((id) => {
       const p = presenceStore.getPresence(id);
       return p?.online === true;
     });
@@ -400,30 +461,13 @@ async function asignarRoundRobinClienteExistente({
       return null;
     }
 
-    // 3) Puntero RR
-    const last = await db.query(
-      `SELECT he.id_encargado_nuevo
-       FROM historial_encargados he
-       INNER JOIN clientes_chat_center cc ON cc.id = he.id_cliente_chat_center
-       WHERE cc.id_configuracion = ?
-         AND (he.motivo = 'auto_round_robin' OR he.motivo LIKE 'auto_round_robin_%')
-       ORDER BY he.id DESC LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    // 3-4) Elegir al conectado con la asignación más vieja (ver
+    // elegirMenosReciente: reemplaza al puntero, que se reseteaba a
+    // lista[0] cuando el último asignado estaba offline).
+    const id_encargado_nuevo = await elegirMenosReciente(
+      id_configuracion,
+      lista,
     );
-
-    const lastAssigned = last?.[0]?.id_encargado_nuevo
-      ? Number(last[0].id_encargado_nuevo)
-      : null;
-
-    // 4) Elegir siguiente
-    let id_encargado_nuevo = null;
-    if (!lastAssigned) {
-      id_encargado_nuevo = lista[0];
-    } else {
-      const idx = lista.indexOf(lastAssigned);
-      id_encargado_nuevo =
-        idx === -1 ? lista[0] : lista[(idx + 1) % lista.length];
-    }
 
     // 5) Update cliente existente
     await ClientesChatCenter.update(
@@ -435,22 +479,14 @@ async function asignarRoundRobinClienteExistente({
       { where: { id: id_cliente } },
     );
 
-    // 6) Guardar historial
-    await db.query(
-      `INSERT INTO historial_encargados
-         (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
-       VALUES (?, ?, ?, ?, ?)`,
-      {
-        replacements: [
-          id_cliente,
-          id_departamento_asginado,
-          null,
-          id_encargado_nuevo,
-          motivo,
-        ],
-        type: db.QueryTypes.INSERT,
-      },
-    );
+    // 6) Guardar historial + evidencia de quiénes estaban online.
+    await insertarHistorial({
+      id_cliente,
+      id_departamento_asginado,
+      id_encargado_nuevo,
+      motivo,
+      candidatos_online: textoCandidatos(lista, listaAuto),
+    });
 
     await log(
       `✅ RR reopen: id_cliente=${id_cliente} asignado a id_encargado=${id_encargado_nuevo}`,

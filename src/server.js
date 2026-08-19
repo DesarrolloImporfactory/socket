@@ -70,6 +70,9 @@ async function startServer() {
     require('./cron/cronEncuestasEnvio.js');
     require('./cron/metricasSnapshot.js');
     require('./cron/imporsuitEmailSync.js');
+    // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
+    // con NODE_ENV=production; ver el comentario del archivo).
+    require('./cron/rescatarTurnosPerdidos.js');
 
     // Server HTTP
     server = app.listen(process.env.PORT, () => {

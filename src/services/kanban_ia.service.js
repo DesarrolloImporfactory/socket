@@ -301,11 +301,26 @@ function camposFaltantesCierre(respuesta) {
     return m === undefined ? null : m.replace(/[*_]/g, '').trim();
   };
 
-  const nombre = campo(/🧑?\s*Nombre:\s*([^\n]+)/i);
-  const telefono = campo(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i);
-  const ciudad = campo(/📍?\s*Ciudad:\s*([^\n]+)/i);
-  const direccion = campo(/🏡?\s*Direcci[oó]n:\s*([^\n]+)/i);
-  const agencia = campo(/🏦?\s*Agencia[^:\n]*:\s*([^\n]+)/i);
+  /* ⚠️ Los rótulos se buscan al inicio de la línea con hasta 6 caracteres de
+     adorno antes (emoji, asteriscos, guión) y SIN el emoji dentro del regex.
+     El patrón viejo /🧑?\s*Nombre:/ parecía hacer el emoji opcional, pero sin
+     el flag `u` el `?` aplica solo a la SEGUNDA mitad del surrogate pair: la
+     primera mitad quedaba OBLIGATORIA, y cualquier resumen con otro adorno
+     ("🧑 *Nombre:* Rosa", "📍 *Agencia de retiro:* …") no matcheaba NINGÚN
+     campo. El validador creía que faltaba todo, bloqueaba el cierre y le
+     pedía los datos una y otra vez a una clienta que ya los había dado
+     (caso 666, Rosy, 2026-08-19: la venta la terminó rescatando una humana).
+     El ancla de línea es a propósito: sin ella, "Nombre del producto:" o un
+     "producto:" a mitad de frase contarían como rótulos. */
+  const nombre = campo(
+    /(?:^|\n)[^\n]{0,6}?Nombre(?:\s+completo)?\s*:\s*([^\n]+)/i,
+  );
+  const telefono = campo(/(?:^|\n)[^\n]{0,6}?Tel[eé]fono\s*:\s*([^\n]+)/i);
+  const ciudad = campo(/(?:^|\n)[^\n]{0,6}?Ciudad\s*:\s*([^\n]+)/i);
+  const direccion = campo(
+    /(?:^|\n)[^\n]{0,6}?Direcci[oó]n[^:\n]{0,25}:\s*([^\n]+)/i,
+  );
+  const agencia = campo(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*([^\n]+)/i);
 
   const faltan = [];
 
@@ -343,7 +358,16 @@ function camposFaltantesCierre(respuesta) {
       direccion !== null &&
       !esValorRelleno(direccion) &&
       !/por confirmar/i.test(direccion);
-    if (!direccionReal) faltan.push('- Ciudad y provincia');
+    /* Con una AGENCIA concreta pasa lo mismo que con la dirección: la línea
+       ya dice dónde ("Agencia de retiro: Servientrega Tumbaco" — caso 666,
+       Rosy) y la ciudad exacta la extrae el auto-orden de los mensajes del
+       cliente. Solo la agencia "por confirmar" sigue exigiendo ciudad: ahí
+       es el único dato de destino que existe. */
+    const agenciaReal =
+      agencia !== null &&
+      !esValorRelleno(agencia) &&
+      !/por confirmar/i.test(agencia);
+    if (!direccionReal && !agenciaReal) faltan.push('- Ciudad y provincia');
   }
 
   /* La entrega puede ser a domicilio (🏡 Direccion) o retiro en agencia
@@ -371,8 +395,15 @@ function camposFaltantesCierre(respuesta) {
    auto-orden recibe la lista en datosBot.productos y sube la orden con
    todos los renglones (Dropi la acepta si salen de la misma bodega). */
 function parsearProductosResumen(respuesta) {
+  /* Mismo criterio que camposFaltantesCierre: rótulo al inicio de línea con
+     hasta 6 caracteres de adorno, sin emoji en el regex (el "📦?" viejo hacía
+     el emoji OBLIGATORIO por el surrogate pair, y un resumen "- *Producto:*"
+     no parseaba). El ancla evita que un "Nombre del producto:" a mitad de
+     frase cuente como renglón fantasma. */
   const lineas = [
-    ...String(respuesta || '').matchAll(/📦?\s*Producto:\s*([^\n]+)/gi),
+    ...String(respuesta || '').matchAll(
+      /(?:^|\n)[^\n]{0,6}?Producto\s*:\s*([^\n]+)/gi,
+    ),
   ].map((m) => m[1].trim());
   if (lineas.length < 2) return [];
 
@@ -1077,9 +1108,30 @@ async function procesarMensajeKanban(params) {
       buscarProductoPorReferral,
     } = require('../utils/webhook_whatsapp/buscar_producto_referral');
 
+    /* El source_id restaura el nivel 0 del resolver (el mapa
+       anuncio→producto) en los turnos siguientes al click. Sin él, la
+       reinyección resolvía SOLO por texto del headline, y un headline flojo
+       ("SSD PORTATIL DE 8TB": una sola palabra útil) terminaba anclando otro
+       producto — caso 403: cotizó la Máquina de Hielo SOKANY con la
+       instrucción "usa SOLO estos precios". */
+    let sourceIdAd = null;
+    try {
+      const [adRow] = await db.query(
+        `SELECT source_id FROM cliente_productos_ad
+          WHERE id_cliente = ? AND id_configuracion = ?
+          ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      sourceIdAd = adRow?.source_id || null;
+    } catch (_) {}
+
     const bloqueProd = await buscarProductoPorReferral(
       id_configuracion,
       ultimoProductoAd,
+      sourceIdAd,
     );
 
     if (bloqueProd) {
@@ -1484,36 +1536,52 @@ async function procesarMensajeKanban(params) {
       // PENDIENTE; en cualquier otra columna (contacto_inicial) se CREA nueva.
       if (estadoDestino === 'generar_guia') {
         try {
-          const g = (re) => respuestaRaw.match(re)?.[1]?.trim() || '';
+          /* Rótulos SIN emoji en el regex y anclados a inicio de línea (hasta
+             6 caracteres de adorno: emoji, asteriscos, guión). El "🧑?" viejo
+             hacía el emoji OBLIGATORIO —sin flag `u`, el `?` aplica solo a la
+             segunda mitad del surrogate pair— y un resumen "🧑 *Nombre:*" no
+             extraía nada: el auto-orden se quedaba sin datos y todo caía al
+             extractor IA. Los valores se limpian de asteriscos/guiones bajos
+             de negrita, igual que hace camposFaltantesCierre. */
+          const g = (re) =>
+            respuestaRaw
+              .match(re)?.[1]
+              ?.replace(/[*_]/g, '')
+              .trim() || '';
           const datosBot = {
-            nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
-            telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i) || telefono,
+            nombre: g(/(?:^|\n)[^\n]{0,6}?Nombre(?:\s+completo)?\s*:\s*(.+)/i),
+            telefono: g(/(?:^|\n)[^\n]{0,6}?Tel[eé]fono\s*:\s*(.+)/i) || telefono,
             // Acepta el término regional según el país (provincia EC/PA,
             // departamento CO/PE/GT, estado MX, región CL).
             provincia: g(
-              /📍?\s*(?:Provincia|Departamento|Depto\.?|Estado|Regi[oó]n):\s*(.+)/i,
+              /(?:^|\n)[^\n]{0,6}?(?:Provincia|Departamento|Depto\.?|Estado|Regi[oó]n)\s*:\s*(.+)/i,
             ),
-            ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
-            direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
-            producto: g(/📦?\s*Producto:\s*(.+)/i),
-            precio: g(/💰?\s*Precio total:\s*(.+)/i),
-            cantidad: g(/🔢?\s*Cantidad:\s*(.+)/i) || '',
+            ciudad: g(/(?:^|\n)[^\n]{0,6}?Ciudad\s*:\s*(.+)/i),
+            direccion: g(/(?:^|\n)[^\n]{0,6}?Direcci[oó]n[^:\n]{0,25}:\s*(.+)/i),
+            producto: g(/(?:^|\n)[^\n]{0,6}?Producto\s*:\s*(.+)/i),
+            // "Total:" con \b para que un "Subtotal:" no cuente como total.
+            precio: g(/(?:^|\n)[^\n]{0,6}?(?:Precio\s+total|\bTotal)\s*:\s*(.+)/i),
+            cantidad: g(/(?:^|\n)[^\n]{0,6}?Cantidad\s*:\s*(.+)/i) || '',
             // Modalidad de envío (opcional): "domicilio" o "agencia
             // servientrega". Si el bot la incluye, el auto-orden fuerza
             // Servientrega cuando es agencia.
             modalidad_envio:
-              g(/🚚?\s*Env[ií]o:\s*(.+)/i) ||
-              g(/📦?\s*Modalidad:\s*(.+)/i) ||
-              '',
+              g(/(?:^|\n)[^\n]{0,6}?Env[ií]o\s*:\s*(.+)/i) ||
+              g(/(?:^|\n)[^\n]{0,6}?Modalidad\s*:\s*(.+)/i) ||
+              // Una línea "Agencia de retiro: X" implica retiro en agencia
+              // aunque el resumen no traiga línea "Envío:" (formato cfg 666).
+              (g(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*(.+)/i)
+                ? 'agencia servientrega'
+                : ''),
             // Variedad elegida en productos variables (talla/color). Sin esto
             // el auto-orden no sabe qué variante subir y Dropi rechaza la
             // orden. Se aceptan varios rótulos porque el prompt de cada
             // cliente los escribe distinto.
             variedad:
-              g(/🎨?\s*Variedad:\s*(.+)/i) ||
-              g(/🎨?\s*Variante:\s*(.+)/i) ||
-              g(/🎨?\s*Color:\s*(.+)/i) ||
-              g(/📏?\s*Talla:\s*(.+)/i) ||
+              g(/(?:^|\n)[^\n]{0,6}?Variedad\s*:\s*(.+)/i) ||
+              g(/(?:^|\n)[^\n]{0,6}?Variante\s*:\s*(.+)/i) ||
+              g(/(?:^|\n)[^\n]{0,6}?Color\s*:\s*(.+)/i) ||
+              g(/(?:^|\n)[^\n]{0,6}?Talla\s*:\s*(.+)/i) ||
               '',
           };
 
@@ -1525,10 +1593,10 @@ async function procesarMensajeKanban(params) {
 
           // Datos que el cliente pudo corregir (para el flujo de actualizar).
           const cambios = {
-            nombre: g(/🧑?\s*Nombre:\s*(.+)/i),
-            telefono: g(/📞?\s*Tel[eé]fono:\s*(.+)/i),
-            ciudad: g(/📍?\s*Ciudad:\s*(.+)/i),
-            direccion: g(/🏡?\s*Direcci[oó]n:\s*(.+)/i),
+            nombre: g(/(?:^|\n)[^\n]{0,6}?Nombre(?:\s+completo)?\s*:\s*(.+)/i),
+            telefono: g(/(?:^|\n)[^\n]{0,6}?Tel[eé]fono\s*:\s*(.+)/i),
+            ciudad: g(/(?:^|\n)[^\n]{0,6}?Ciudad\s*:\s*(.+)/i),
+            direccion: g(/(?:^|\n)[^\n]{0,6}?Direcci[oó]n[^:\n]{0,25}:\s*(.+)/i),
           };
 
           /* ── Candado anti-duplicado ──

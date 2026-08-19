@@ -86,37 +86,30 @@ async function rrMessengerUnDepto({
       return { id_encargado_nuevo: null, id_departamento_asginado };
     }
 
-    // 3) puntero: último asignado en historial
-    const last = await db.query(
-      `
-      SELECT he.id_encargado_nuevo
-        FROM historial_encargados_messenger he
-        INNER JOIN messenger_conversations mc
-          ON mc.id = he.id_messenger_conversation
-       WHERE mc.id_configuracion = ?
-         AND he.id_encargado_nuevo IS NOT NULL
-         AND he.motivo IN ('auto_round_robin_messenger')
-       ORDER BY he.id DESC
-       LIMIT 1
-      `,
+    // 3-4) Elegir al conectado con la asignación más vieja (rotación real).
+    // El puntero viejo ("el siguiente del último asignado") se reseteaba a
+    // lista[0] cuando el último no estaba online, cargando de más al
+    // sub-usuario de id más bajo — mismo sesgo medido en WhatsApp
+    // (round_robin.js → elegirMenosReciente).
+    const ultimas = await db.query(
+      `SELECT he.id_encargado_nuevo AS enc, MAX(he.id) AS ult
+         FROM historial_encargados_messenger he
+         INNER JOIN messenger_conversations mc
+           ON mc.id = he.id_messenger_conversation
+        WHERE mc.id_configuracion = ?
+          AND he.motivo IN ('auto_round_robin_messenger')
+          AND he.id_encargado_nuevo IN (?)
+        GROUP BY he.id_encargado_nuevo`,
       {
-        replacements: [id_configuracion],
+        replacements: [id_configuracion, lista],
         type: db.QueryTypes.SELECT,
       }
     );
-
-    const lastAssigned = last?.[0]?.id_encargado_nuevo
-      ? Number(last[0].id_encargado_nuevo)
-      : null;
-
-    // 4) elegir siguiente
-    let id_encargado_nuevo = null;
-    if (!lastAssigned) {
-      id_encargado_nuevo = lista[0];
-    } else {
-      const idx = lista.indexOf(lastAssigned);
-      id_encargado_nuevo =
-        idx === -1 ? lista[0] : lista[(idx + 1) % lista.length];
+    const ult = new Map(ultimas.map((r) => [Number(r.enc), Number(r.ult)]));
+    let id_encargado_nuevo = lista[0];
+    for (const id of lista) {
+      if ((ult.get(id) || 0) < (ult.get(id_encargado_nuevo) || 0))
+        id_encargado_nuevo = id;
     }
 
     return { id_encargado_nuevo, id_departamento_asginado };
