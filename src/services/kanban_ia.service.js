@@ -334,6 +334,45 @@ function camposFaltantesCierre(respuesta) {
   return faltan;
 }
 
+/* ── Resumen con VARIOS productos ──
+   Cuando el pedido lleva más de un producto distinto, contextoColumna le
+   dicta al bot escribir UNA línea "📦 Producto:" por cada uno, con este
+   formato:
+     📦 Producto: <nombre> x<cantidad> (Variedad: <la elegida>)
+   Esta función devuelve esos renglones parseados, o [] si el resumen trae
+   una sola línea de producto — el caso de siempre, donde nada cambia. El
+   auto-orden recibe la lista en datosBot.productos y sube la orden con
+   todos los renglones (Dropi la acepta si salen de la misma bodega). */
+function parsearProductosResumen(respuesta) {
+  const lineas = [
+    ...String(respuesta || '').matchAll(/📦?\s*Producto:\s*([^\n]+)/gi),
+  ].map((m) => m[1].trim());
+  if (lineas.length < 2) return [];
+
+  return lineas.map((linea) => {
+    let txt = linea;
+    const variedad =
+      txt
+        .match(/\(?\s*(?:Variedad|Variante|Color|Talla):\s*([^)\n]+)\)?/i)?.[1]
+        ?.trim() || '';
+    txt = txt
+      .replace(/\(?\s*(?:Variedad|Variante|Color|Talla):\s*[^)\n]*\)?/i, '')
+      .trim();
+    // Cantidad: "… x2" al final (el formato dictado) o "2 x …" al inicio
+    // (como lo escriben algunos bots por su cuenta).
+    const alFinal = txt.match(/\bx\s*(\d+)\s*$/i);
+    const alInicio = txt.match(/^(\d+)\s*x\s+/i);
+    const cantidad = alFinal?.[1] || alInicio?.[1] || '1';
+    txt = txt
+      .replace(/\bx\s*\d+\s*$/i, '')
+      .replace(/^\d+\s*x\s+/i, '')
+      .replace(/[*_]/g, '')
+      .replace(/[—–,-]\s*$/, '')
+      .trim();
+    return { producto: txt, cantidad, variedad };
+  });
+}
+
 function motivoCierreInvalido(respuesta) {
   const texto = String(respuesta || '')
     .replace(RE_TAGS_SISTEMA, '')
@@ -1383,6 +1422,12 @@ async function procesarMensajeKanban(params) {
               g(/📏?\s*Talla:\s*(.+)/i) ||
               '',
           };
+
+          /* Renglones cuando el resumen trae varias líneas "📦 Producto:"
+             (pedido de más de un producto). Con una sola línea, `productos`
+             no se agrega y el auto-orden corre el flujo de siempre. */
+          const productosResumen = parsearProductosResumen(respuestaRaw);
+          if (productosResumen.length) datosBot.productos = productosResumen;
 
           // Datos que el cliente pudo corregir (para el flujo de actualizar).
           const cambios = {
@@ -3131,4 +3176,8 @@ module.exports = {
   // silencio.
   motivoCierreInvalido,
   camposFaltantesCierre,
+  // Expuesta para la batería: el parseo del resumen multi-producto decide si
+  // el auto-orden sube 1 o N renglones, y un cambio silencioso ahí rompe
+  // pedidos reales.
+  parsearProductosResumen,
 };

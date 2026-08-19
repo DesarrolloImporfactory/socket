@@ -1066,6 +1066,60 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
     }
   }
 
+  /* ── Cierre con VARIOS productos ────────────────────────────
+     Dropi acepta una orden con más de un producto (misma bodega), pero el
+     motor solo puede leerla si cada producto va en SU PROPIA línea del
+     resumen: el caso real de la 889 cerró con "Reloj SKMEI Multifuncion,
+     1 x Reloj Steel Arabe" en una sola línea 📦 y la orden cayó a manual
+     porque esa cadena no matchea ningún producto del catálogo.
+
+     Va solo en columnas Dropi: en la vertical de servicios no existe este
+     resumen y la instrucción sería ruido puro (regla del archivo: todo
+     bloque se prueba en las dos verticales — este ni llega a la otra). El
+     formato es EL MISMO que parsea parsearProductosResumen en
+     kanban_ia.service: cambiar uno obliga a cambiar el otro.
+
+     Cómo se decide "columna Dropi" — la misma cascada del gate del
+     auto-orden (kanban_ia, paso 10):
+      1. La columna tiene la acción crear/actualizar_orden_dropi ACTIVA
+         (las acciones llegan ya filtradas por activo=1).
+      2. Sin acción activa, el respaldo son los flags globales de la config
+         (modelo viejo, hoy 8 configs siguen así). Este respaldo también
+         cubre la columna con la acción APAGADA y el flag prendido: ahí el
+         auto-orden no corre, pero un resumen bien formateado igual sirve
+         para armar el pedido a mano en el panel — la instrucción no
+         dispara nada por sí sola. */
+  let esColumnaDropi =
+    tiene('crear_orden_dropi') || tiene('actualizar_orden_dropi');
+  if (!esColumnaDropi) {
+    try {
+      const [cfgDropi] = await db.query(
+        `SELECT auto_crear_orden_dropi, auto_actualizar_orden_dropi
+           FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      esColumnaDropi =
+        Number(cfgDropi?.auto_crear_orden_dropi) === 1 ||
+        Number(cfgDropi?.auto_actualizar_orden_dropi) === 1;
+    } catch (e) {
+      say(`⚠️ flags dropi para cierre multi-producto: ${e.message}`);
+    }
+  }
+  if (esColumnaDropi) {
+    bloque +=
+      `🧾 SI EL PEDIDO LLEVA MÁS DE UN PRODUCTO DISTINTO: en el resumen de ` +
+      `cierre escribe UNA línea "📦 Producto:" POR CADA producto, con su ` +
+      `cantidad y su variedad (si aplica) EN ESA MISMA línea, con este ` +
+      `formato exacto:\n` +
+      `📦 Producto: <nombre del producto> x<cantidad> (Variedad: <la elegida>)\n` +
+      `📦 Producto: <otro producto> x<cantidad>\n` +
+      `Nunca juntes dos productos en una sola línea 📦 ni los separes por ` +
+      `comas: el sistema lee una línea por producto. La línea "💰 Precio ` +
+      `total:" sigue siendo una sola, con la suma de todo el pedido. Con un ` +
+      `solo producto, el resumen es el de siempre.\n\n`;
+    say(`✅ Instrucción de cierre multi-producto inyectada`);
+  }
+
   if (tiene('contexto_productos')) {
     try {
       const variables = await db.query(
@@ -1093,7 +1147,11 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           `Si pide varias, escribe cuántas unidades de cada una ` +
           `("🎨 Variedad: Negro x2, Cafe x1") y que sumen la cantidad total del ` +
           `pedido. Cualquier otro producto es simple: no preguntes variedad ni ` +
-          `pongas esa línea.\n\n`;
+          `pongas esa línea.\n` +
+          `Y si el pedido lleva VARIOS productos distintos, la variedad de cada ` +
+          `uno va en SU propia línea "📦 Producto:" del resumen — ` +
+          `"📦 Producto: <nombre> x<cantidad> (Variedad: <la elegida>)" — no en ` +
+          `una línea 🎨 aparte: ahí el sistema no sabría de cuál producto es.\n\n`;
         say(`✅ Contexto productos variables inyectado (${conOpciones.length})`);
       }
     } catch (err) {

@@ -345,6 +345,66 @@ async function suiteA() {
       JSON.stringify(faltanSolanda),
     );
   }
+
+  // 10. Resumen multi-producto (caso 889, Nicolas: "Reloj SKMEI Multifuncion,
+  //     1 x Reloj Steel Arabe" en UNA línea → la orden cayó a manual). El
+  //     formato correcto es una línea 📦 por producto; el parser convierte
+  //     eso en renglones para el auto-orden y NO toca el caso de una línea.
+  {
+    const {
+      parsearProductosResumen,
+    } = require('../src/services/kanban_ia.service');
+
+    const dosLineas =
+      'Listo! Pedido confirmado:\n🧑 Nombre: Nicolas Prueba\n' +
+      '📞 Telefono: 0960231042\n📍 Ciudad: Machala\n🏡 Direccion: Calle 1 y 2\n' +
+      '📦 Producto: Reloj SKMEI Multifuncion x1 (Variedad: NEGRO)\n' +
+      '📦 Producto: Reloj Steel Arabe x2\n' +
+      '💰 Precio total: 74.99\n[generar_guia]:true';
+    const items = parsearProductosResumen(dosLineas);
+    caso(
+      'resumen con dos líneas 📦 se parsea en 2 renglones',
+      items.length === 2,
+      JSON.stringify(items),
+    );
+    caso(
+      'renglón 1: nombre limpio, cantidad 1 y variedad NEGRO',
+      items[0]?.producto === 'Reloj SKMEI Multifuncion' &&
+        items[0]?.cantidad === '1' &&
+        items[0]?.variedad === 'NEGRO',
+      JSON.stringify(items[0]),
+    );
+    caso(
+      'renglón 2: cantidad 2 y sin variedad',
+      items[1]?.producto === 'Reloj Steel Arabe' &&
+        items[1]?.cantidad === '2' &&
+        items[1]?.variedad === '',
+      JSON.stringify(items[1]),
+    );
+
+    // Cantidad al inicio ("2 x Reloj…"), como lo escriben algunos bots.
+    const alInicio = parsearProductosResumen(
+      '📦 Producto: 2 x Reloj Steel Arabe\n📦 Producto: Evil Goods x1\n',
+    );
+    caso(
+      'cantidad al inicio ("2 x …") también se lee',
+      alInicio[0]?.cantidad === '2' &&
+        alInicio[0]?.producto === 'Reloj Steel Arabe',
+      JSON.stringify(alInicio[0]),
+    );
+
+    // Una sola línea 📦 → [] : el flujo de un producto no cambia en nada,
+    // aunque la línea traiga comas (el caso Nicolas sigue yendo a manual,
+    // donde ahora sí se puede armar con 2 productos).
+    const unaLinea = parsearProductosResumen(
+      '📦 Producto: Reloj SKMEI Multifuncion, 1 x Reloj Steel Arabe\n💰 Precio total: 74.99',
+    );
+    caso(
+      'una sola línea 📦 (aún con comas) NO activa el modo multi-producto',
+      Array.isArray(unaLinea) && unaLinea.length === 0,
+      JSON.stringify(unaLinea),
+    );
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.

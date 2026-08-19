@@ -462,8 +462,12 @@ async function completarDatosConIA({
 
     const ia = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
 
-    // Merge: regex gana, IA rellena vacíos
+    // Merge: regex gana, IA rellena vacíos. El spread inicial conserva las
+    // llaves que este merge no conoce — `productos` (pedido multi-producto),
+    // `producto_id` y `_correccion_manual` del panel se PERDÍAN aquí y el
+    // flujo seguía sin ellas.
     return {
+      ...datosBot,
       nombre: datosBot.nombre || ia.nombre || '',
       telefono: datosBot.telefono || ia.telefono || '',
       provincia: datosBot.provincia || ia.provincia || '',
@@ -671,12 +675,52 @@ async function autoCrearOrdenDropi({
       }
     }
 
+    /* ── Renglones del pedido ──
+       Un pedido puede traer VARIOS productos distintos: Dropi acepta la orden
+       multi-producto siempre que todos salgan de la MISMA bodega (eso se
+       valida más abajo, al resolver el origen). `datosBot.productos` es la
+       forma explícita — la mandan el panel de pedidos sin subir y el resumen
+       multi-producto del bot (kanban_ia parsea una línea "📦 Producto:" por
+       cada uno). Sin ella, el pedido es el de los campos sueltos de siempre:
+       UN renglón, con exactamente la misma semántica que tenía este flujo. */
+    const itemsPedido =
+      Array.isArray(datosBot.productos) && datosBot.productos.length
+        ? datosBot.productos.map((p) => ({
+            producto: String(p?.producto || '').trim(),
+            producto_id: Number(p?.producto_id) || null,
+            cantidad: p?.cantidad,
+            variedad: String(p?.variedad || '').trim(),
+            // total del RENGLÓN (no unitario). Opcional: sin él se usa el
+            // precio de catálogo/combo del producto.
+            precio: p?.precio,
+          }))
+        : [
+            {
+              producto: datosBot.producto,
+              producto_id: Number(datosBot.producto_id) || null,
+              cantidad: datosBot.cantidad,
+              variedad: String(
+                datosBot?.variedad ??
+                  datosBot?.variacion ??
+                  datosBot?.variante ??
+                  '',
+              ).trim(),
+              // En el pedido de un solo producto el total del renglón ES el
+              // total del pedido — la misma cuenta que se hacía antes.
+              precio: datosBot.precio,
+            },
+          ];
+    const esMultiProducto = itemsPedido.length > 1;
+
     // 1. Producto local con vínculo a Dropi (external_id)
     //    Cascada de identificación:
     //    a) Lo que el bot puso en el resumen (refleja la venta real)
     //    b) Headline del último anuncio CTWA (sistema referral: el dueño
     //       configura el headline = nombre EXACTO del producto)
     //    c) ultimo_producto_ad del cliente (respaldo del mismo sistema)
+    //    Los respaldos b) y c) solo aplican al pedido de UN producto: apuntan
+    //    al anuncio por el que entró la persona, y en un pedido de varios no
+    //    hay forma de saber a cuál renglón corresponden.
     const productos = await db.query(
       `SELECT id, nombre, precio, external_id, combos_producto
        FROM productos_chat_center
@@ -685,20 +729,59 @@ async function autoCrearOrdenDropi({
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
 
+    /* Cada renglón se resuelve con LOS MISMOS pasos que siempre tuvo el
+       pedido de un producto (match local → combo → detalle Dropi → variantes
+       y stock → precio). El resultado queda en `renglones` y las secciones de
+       abajo (origen, cotización, creación) trabajan sobre esa lista. */
+    const renglones = [];
+    let costoProveedorTotal = 0;
+
+    // Mensajes del cliente para el candado de variedad (se leen UNA vez por
+    // pedido, no por renglón). Lazy: un pedido sin variables no los necesita.
+    let _textoClienteCache = null;
+    const textoClienteParaCandado = async () => {
+      if (_textoClienteCache !== null) return _textoClienteCache;
+      const sinAcentos = (s) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '');
+      const msgsCliente = await db.query(
+        `SELECT texto_mensaje FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 0 AND deleted_at IS NULL
+          ORDER BY id DESC LIMIT 30`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      _textoClienteCache = sinAcentos(
+        msgsCliente.map((m) => m.texto_mensaje).join(' '),
+      );
+      return _textoClienteCache;
+    };
+
+    for (let idx = 0; idx < itemsPedido.length; idx++) {
+      const item = itemsPedido[idx];
+      // Prefijo del renglón para los mensajes de fallo: en un pedido de uno
+      // no aporta nada; en uno de varios dice cuál renglón se cayó.
+      const R = esMultiProducto ? `[renglón ${idx + 1}] ` : '';
+
     // Si el front mandó un producto_id explícito (select del catálogo), se
     // usa directo — evita los errores del match por nombre.
     let prodLocal = null;
     let fuenteProducto = 'bot';
-    const prodIdDirecto = Number(datosBot.producto_id) || null;
+    const prodIdDirecto = Number(item.producto_id) || null;
     if (prodIdDirecto) {
       prodLocal = productos.find((p) => Number(p.id) === prodIdDirecto) || null;
       if (prodLocal) fuenteProducto = 'producto_id (select)';
     }
 
     if (!prodLocal)
-      prodLocal = matchEnLista(productos, datosBot.producto, (p) => p.nombre);
+      prodLocal = matchEnLista(productos, item.producto, (p) => p.nombre);
 
-    if (!prodLocal) {
+    if (!prodLocal && !esMultiProducto) {
       // b) headline del último anuncio por el que entró este cliente
       const [ad] = await db.query(
         `SELECT headline FROM cliente_productos_ad
@@ -716,7 +799,7 @@ async function autoCrearOrdenDropi({
       }
     }
 
-    if (!prodLocal) {
+    if (!prodLocal && !esMultiProducto) {
       // c) respaldo: ultimo_producto_ad guardado en el cliente
       const [cli] = await db.query(
         `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
@@ -732,14 +815,15 @@ async function autoCrearOrdenDropi({
     if (!prodLocal) {
       return fail(
         'producto',
-        `Sin match para "${datosBot.producto}" (ni headline/producto_ad). Vinculados: ${productos.length}`,
+        `${R}Sin match para "${item.producto}"` +
+          `${esMultiProducto ? '' : ' (ni headline/producto_ad)'}. Vinculados: ${productos.length}`,
       );
     }
 
     // 1.5 Cantidad → producto/combo a despachar
     const cantidad = Math.max(
       1,
-      parseInt(String(datosBot.cantidad || '1').replace(/\D/g, ''), 10) || 1,
+      parseInt(String(item.cantidad || '1').replace(/\D/g, ''), 10) || 1,
     );
 
     let dropiProductId = Number(prodLocal.external_id);
@@ -785,7 +869,7 @@ async function autoCrearOrdenDropi({
       if (combosMapeados.length) {
         return fail(
           'producto',
-          `Pedido de ${cantidad} unidad(es) sin combo configurado para esa cantidad. ` +
+          `${R}Pedido de ${cantidad} unidad(es) sin combo configurado para esa cantidad. ` +
             `Combos mapeados: ${combosMapeados
               .map((c) => `${c.cantidad}u → #${c.id_dropi || c.external_id}`)
               .join(', ')}. ` +
@@ -880,7 +964,7 @@ async function autoCrearOrdenDropi({
     if (!prodDropi?.id)
       return fail(
         'producto_detalle',
-        `Producto #${dropiProductId} no apareció ni en /products/v2/:id ni en /products/index`,
+        `${R}Producto #${dropiProductId} no apareció ni en /products/v2/:id ni en /products/index`,
       );
     /* Producto variable: hasta ahora se rechazaba en seco y la orden quedaba
        sin subir. Ahora se resuelve la variante que pidió el cliente:
@@ -923,21 +1007,21 @@ async function autoCrearOrdenDropi({
       if (!variantes.length) {
         return fail(
           'producto',
-          `Producto #${dropiProductId} es ${prodDropi.type} pero Dropi no devolvió variantes`,
+          `${R}Producto #${dropiProductId} es ${prodDropi.type} pero Dropi no devolvió variantes`,
         );
       }
 
-      let pedida = String(
-        datosBot?.variedad ?? datosBot?.variacion ?? datosBot?.variante ?? '',
-      )
+      let pedida = String(item.variedad || '')
         .trim()
         .toLowerCase();
 
       /* Si el resumen del bot no trajo la variedad, se relee la conversación
          con el extractor IA. Solo acá: para un producto simple sería un gasto
          inútil, pero en uno variable es la diferencia entre subir la orden o
-         dejarla manual. */
-      if (!pedida && api_key_openai && !datosBot?._fuente_ia) {
+         dejarla manual. Solo en el pedido de UN producto: el extractor
+         devuelve UNA variedad y en un pedido de varios no sabría de cuál
+         renglón es. */
+      if (!pedida && !esMultiProducto && api_key_openai && !datosBot?._fuente_ia) {
         datosBot = await completarDatosConIA({
           id_configuracion,
           id_cliente,
@@ -1020,24 +1104,12 @@ async function autoCrearOrdenDropi({
             .toLowerCase()
             .normalize('NFD')
             .replace(/[̀-ͯ]/g, '');
-        const msgsCliente = await db.query(
-          `SELECT texto_mensaje FROM mensajes_clientes
-            WHERE celular_recibe = ? AND id_configuracion = ?
-              AND rol_mensaje = 0 AND deleted_at IS NULL
-            ORDER BY id DESC LIMIT 30`,
-          {
-            replacements: [id_cliente, id_configuracion],
-            type: db.QueryTypes.SELECT,
-          },
-        );
-        const textoCliente = sinAcentos(
-          msgsCliente.map((m) => m.texto_mensaje).join(' '),
-        );
+        const textoCliente = await textoClienteParaCandado();
         for (const v of variacionesElegidas) {
           if (!textoCliente.includes(sinAcentos(v.etiqueta))) {
             return fail(
               'producto',
-              `Variedad "${v.etiqueta}" no confirmada por el cliente ` +
+              `${R}Variedad "${v.etiqueta}" no confirmada por el cliente ` +
                 `(no aparece en sus mensajes; posible invento del bot). ` +
                 `Opciones: ${variantes.map((x) => `${x.etiqueta} (stock ${x.stock})`).join(', ')}`,
             );
@@ -1054,7 +1126,7 @@ async function autoCrearOrdenDropi({
       if (!variacionesElegidas.length) {
         return fail(
           'producto',
-          `Producto #${dropiProductId} es variable y falta elegir la variedad. ` +
+          `${R}Producto #${dropiProductId} es variable y falta elegir la variedad. ` +
             `Opciones: ${variantes.map((v) => `${v.etiqueta} (stock ${v.stock})`).join(', ')}`,
         );
       }
@@ -1062,7 +1134,7 @@ async function autoCrearOrdenDropi({
         if (v.stock < v.qty) {
           return fail(
             'producto',
-            `Stock insuficiente de "${v.etiqueta}": ${v.stock} < ${v.qty}`,
+            `${R}Stock insuficiente de "${v.etiqueta}": ${v.stock} < ${v.qty}`,
           );
         }
       }
@@ -1076,28 +1148,78 @@ async function autoCrearOrdenDropi({
       if (Number.isFinite(stockDropi) && stockDropi < cantidadOrden) {
         return fail(
           'producto',
-          `Stock insuficiente #${dropiProductId}: ${stockDropi} < ${cantidadOrden}`,
+          `${R}Stock insuficiente #${dropiProductId}: ${stockDropi} < ${cantidadOrden}`,
         );
       }
     }
 
-    // 2.5 🛡️ Cinturón de margen: precio del bot vs costo proveedor.
-    // Si el total cobrado al cliente es MENOR que el costo proveedor del
-    // despacho, el bot alucinó precio o el combo está mal mapeado → manual.
-    const precioVenta = parsearPrecio(datosBot.precio);
-    if (precioVenta <= 0)
-      return fail('precio', `Precio inválido del bot: "${datosBot.precio}"`);
+    // 2.5 🛡️ Cinturón de margen: precio del renglón vs costo proveedor.
+    // Si lo que se cobra por este producto es MENOR que su costo proveedor,
+    // el bot alucinó precio o el combo está mal mapeado → manual.
+    //
+    // El total del renglón: lo que mandó el panel/resumen para este producto
+    // o, en pedidos de varios sin precio explícito, el del catálogo (combo si
+    // aplica; si no, unitario x cantidad). Con UN producto es el precio total
+    // del pedido — la misma cuenta de siempre.
+    let precioRenglon = parsearPrecio(item.precio);
+    if (precioRenglon <= 0 && esMultiProducto) {
+      precioRenglon = comboUsado
+        ? parsearPrecio(comboUsado.precio)
+        : Math.round(Number(prodLocal.precio || 0) * cantidad * 100) / 100;
+    }
+    if (precioRenglon <= 0)
+      return fail(
+        'precio',
+        `${R}Precio inválido: "${item.precio ?? datosBot.precio}"`,
+      );
 
     const costoProveedor =
       Number(
         prodDropi.sale_price ?? prodDropi.variations?.[0]?.sale_price ?? 0,
       ) * cantidadOrden;
-    if (costoProveedor > 0 && precioVenta < costoProveedor) {
+    costoProveedorTotal += costoProveedor;
+    if (costoProveedor > 0 && precioRenglon < costoProveedor) {
       return fail(
         'precio',
-        `Total bot $${precioVenta} < costo proveedor $${costoProveedor} ` +
+        `${R}Total bot $${precioRenglon} < costo proveedor $${costoProveedor} ` +
           `(#${dropiProductId} x${cantidadOrden}). Posible precio alucinado o combo mal mapeado.`,
       );
+    }
+
+    renglones.push({
+      item,
+      prodLocal,
+      fuenteProducto,
+      cantidad,
+      cantidadOrden,
+      comboUsado,
+      dropiProductId,
+      prodDropi,
+      esVariable,
+      variacionesElegidas,
+      precioRenglon,
+    });
+    } // ── fin del loop por renglón ──
+
+    /* Total del pedido. Con un producto: el precio del resumen, la misma
+       cuenta de siempre. Con varios: la suma de los renglones — y si el
+       resumen además trajo un total, tiene que cuadrar (±$1): un total
+       distinto significa que los renglones y el resumen no hablan del mismo
+       pedido, y eso se corrige a mano, no adivinando. */
+    const sumaRenglones =
+      Math.round(renglones.reduce((a, r) => a + r.precioRenglon, 0) * 100) /
+      100;
+    let precioVenta = sumaRenglones;
+    if (esMultiProducto) {
+      const totalResumen = parsearPrecio(datosBot.precio);
+      if (totalResumen > 0 && Math.abs(totalResumen - sumaRenglones) > 1) {
+        return fail(
+          'precio',
+          `Los renglones suman $${sumaRenglones} pero el total del pedido ` +
+            `dice $${totalResumen}. Corrige los precios.`,
+        );
+      }
+      if (totalResumen > 0) precioVenta = totalResumen;
     }
 
     // 3. Provincia → ciudad (catálogo Dropi) + cod_dane destino
@@ -1183,54 +1305,109 @@ async function autoCrearOrdenDropi({
     //    → "ALARMA MOTOS") y no encontraba nada, así que ventas legítimas
     //    morían con "sin warehouse city". El id ya lo teníamos desde el
     //    principio: no hay por qué buscar por texto.
+    /* Se resuelve POR RENGLÓN con la misma cascada de siempre (API → bodega
+       embebida en el producto → null) y después se valida que todos los que
+       SÍ se resolvieron apunten a la misma ciudad de origen: Dropi solo
+       acepta la orden multi-producto si sale de una misma bodega. Mejor
+       fallar acá con un mensaje claro que dejar que Dropi rechace la orden
+       ya armada. Con UN renglón esto es exactamente el flujo anterior. */
     let remitCityObj = null;
     let fuenteRemitente = 'dropi_api';
+    const origenesRenglon = []; // { r, cityObj|null, fuente }
 
-    try {
-      const origResp = await conReintento429(() =>
-        dropiService.getOriginCityForShipping({
-          integrationKey,
-          productId: dropiProductId,
-          // el type lo manda Dropi en el propio producto; si no vino, se
-          // deduce de si el bot eligió variantes (igual criterio que el
-          // payload de cotización de más abajo).
-          productType:
-            prodDropi?.type ||
-            (variacionesElegidas.length ? 'VARIABLE' : 'SIMPLE'),
-          destination: destCodDane,
-          country_code,
-        }),
-      );
-      const oc =
-        origResp?.objects ||
-        origResp?.data?.objects ||
-        origResp?.data ||
-        origResp;
-      if (oc && (oc.cod_dane || oc.id)) {
-        const deptOrigen = states.find(
-          (s) => Number(s.id || s.department_id) === Number(oc.department_id),
+    for (const r of renglones) {
+      let cityObjR = null;
+      let fuenteR = 'dropi_api';
+      try {
+        const origResp = await conReintento429(() =>
+          dropiService.getOriginCityForShipping({
+            integrationKey,
+            productId: r.dropiProductId,
+            // el type lo manda Dropi en el propio producto; si no vino, se
+            // deduce de si el bot eligió variantes (igual criterio que el
+            // payload de cotización de más abajo).
+            productType:
+              r.prodDropi?.type ||
+              (r.variacionesElegidas.length ? 'VARIABLE' : 'SIMPLE'),
+            destination: destCodDane,
+            country_code,
+          }),
         );
-        remitCityObj = oc.department
-          ? oc
-          : {
-              ...oc,
-              department: deptOrigen ? buildDepartment(deptOrigen) : undefined,
-            };
+        const oc =
+          origResp?.objects ||
+          origResp?.data?.objects ||
+          origResp?.data ||
+          origResp;
+        if (oc && (oc.cod_dane || oc.id)) {
+          const deptOrigen = states.find(
+            (s) => Number(s.id || s.department_id) === Number(oc.department_id),
+          );
+          cityObjR = oc.department
+            ? oc
+            : {
+                ...oc,
+                department: deptOrigen
+                  ? buildDepartment(deptOrigen)
+                  : undefined,
+              };
+        }
+      } catch (e) {
+        console.log(
+          `[AutoOrden] getOriginCityForShipping falló (producto ${r.dropiProductId}): ${e?.message || e}`,
+        );
       }
-    } catch (e) {
-      console.log(
-        `[AutoOrden] getOriginCityForShipping falló (producto ${dropiProductId}): ${e?.message || e}`,
+
+      // Respaldo 1: la bodega embebida en el producto crudo, si Dropi la mandó
+      // en el detalle. Es gratis (ya está en memoria) y evita el último recurso.
+      if (!cityObjR?.cod_dane) {
+        const wCity = pickWarehouseCityFromProduct(r.prodDropi);
+        if (wCity?.cod_dane) {
+          cityObjR = wCity;
+          fuenteR = 'producto';
+        }
+      }
+
+      origenesRenglon.push({ r, cityObj: cityObjR, fuente: fuenteR });
+    }
+
+    // ── Candado de misma bodega (solo pesa con 2+ renglones) ──
+    const resueltos = origenesRenglon.filter((o) => o.cityObj?.cod_dane);
+    const codDanesOrigen = [
+      ...new Set(resueltos.map((o) => String(o.cityObj.cod_dane).trim())),
+    ];
+    if (codDanesOrigen.length > 1) {
+      return fail(
+        'remitente',
+        `Los productos salen de bodegas distintas: ` +
+          resueltos
+            .map(
+              (o) =>
+                `#${o.r.dropiProductId} (${o.r.prodLocal.nombre}) desde ${o.cityObj.name || o.cityObj.cod_dane}`,
+            )
+            .join(' | ') +
+          `. Dropi solo acepta la orden si todos los productos están en la misma bodega: súbelos como pedidos separados.`,
+      );
+    }
+    // Mismo criterio con el warehouse_id embebido, cuando más de uno lo trae.
+    const warehouseIds = [
+      ...new Set(
+        renglones
+          .map((r) => pickWarehouseIdFromProduct(r.prodDropi))
+          .filter(Boolean),
+      ),
+    ];
+    if (warehouseIds.length > 1) {
+      return fail(
+        'remitente',
+        `Los productos tienen bodegas (warehouse) distintas en Dropi ` +
+          `(${warehouseIds.join(', ')}). Dropi solo acepta la orden si todos ` +
+          `salen de la misma bodega: súbelos como pedidos separados.`,
       );
     }
 
-    // Respaldo 1: la bodega embebida en el producto crudo, si Dropi la mandó
-    // en el detalle. Es gratis (ya está en memoria) y evita el último recurso.
-    if (!remitCityObj?.cod_dane) {
-      const wCity = pickWarehouseCityFromProduct(prodDropi);
-      if (wCity?.cod_dane) {
-        remitCityObj = wCity;
-        fuenteRemitente = 'producto';
-      }
+    if (resueltos.length) {
+      remitCityObj = resueltos[0].cityObj;
+      fuenteRemitente = resueltos[0].fuente;
     }
 
     // Último recurso: cotizar como si la bodega estuviera en la misma ciudad
@@ -1240,7 +1417,9 @@ async function autoCrearOrdenDropi({
       remitCityObj = { ...city };
       fuenteRemitente = 'fallback_destino';
       console.log(
-        `[AutoOrden] origen sin resolver para producto ${dropiProductId} → se cotiza desde la ciudad de destino (${city.name || ''})`,
+        `[AutoOrden] origen sin resolver (${renglones
+          .map((r) => `#${r.dropiProductId}`)
+          .join(', ')}) → se cotiza desde la ciudad de destino (${city.name || ''})`,
       );
     }
 
@@ -1279,7 +1458,8 @@ async function autoCrearOrdenDropi({
       };
     }
 
-    const warehouseId = pickWarehouseIdFromProduct(prodDropi);
+    // Ya validado arriba que hay a lo sumo UNA bodega distinta entre renglones.
+    const warehouseId = warehouseIds[0] || null;
 
     let quoteResp;
     try {
@@ -1290,9 +1470,13 @@ async function autoCrearOrdenDropi({
             EnvioConCobro: true,
             ciudad_destino,
             ciudad_remitente,
-            products: [
-              { id: dropiProductId, quantity: cantidadOrden, type: 'SIMPLE' },
-            ],
+            // Un producto por renglón, la misma forma (type SIMPLE) que
+            // siempre se cotizó — con un renglón es el payload de antes.
+            products: renglones.map((r) => ({
+              id: r.dropiProductId,
+              quantity: r.cantidadOrden,
+              type: 'SIMPLE',
+            })),
             amount: precioVenta,
             ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
           },
@@ -1363,11 +1547,20 @@ async function autoCrearOrdenDropi({
       );
     }
 
-    // 6. Precios coherentes: unitario redondeado y total = unitario * qty
-    // (mismo criterio del front: total_order = suma de qty*price)
-    const precioUnitario =
-      Math.round((precioVenta / cantidadOrden) * 100) / 100;
-    const totalOrder = Math.round(precioUnitario * cantidadOrden * 100) / 100;
+    // 6. Precios coherentes POR RENGLÓN: unitario redondeado y total del
+    // pedido = suma de qty*price (mismo criterio del front). Con un renglón
+    // es la misma cuenta de siempre: unitario = total/cantidad.
+    for (const r of renglones) {
+      r.precioUnitario =
+        Math.round((r.precioRenglon / r.cantidadOrden) * 100) / 100;
+    }
+    const totalOrder =
+      Math.round(
+        renglones.reduce(
+          (a, r) => a + r.precioUnitario * r.cantidadOrden,
+          0,
+        ) * 100,
+      ) / 100;
 
     const [nombre, ...resto] = String(datosBot.nombre || '')
       .trim()
@@ -1376,23 +1569,23 @@ async function autoCrearOrdenDropi({
 
     // Renglones de la orden. Se arman fuera del payload porque también
     // alimentan las variables de la plantilla de seguimiento ({{contenido}}).
-    const productosOrden = (() => {
+    const productosOrden = renglones.flatMap((r) => {
       // "(combo xN)" solo desde 2: con un combo de 1 unidad el rótulo
       // "combo x1" no le dice nada a quien despacha.
       const base =
-        comboUsado && cantidad > 1
-          ? `${prodLocal.nombre} (combo x${cantidad})`
-          : prodLocal.nombre;
-      if (!variacionesElegidas.length) {
+        r.comboUsado && r.cantidad > 1
+          ? `${r.prodLocal.nombre} (combo x${r.cantidad})`
+          : r.prodLocal.nombre;
+      if (!r.variacionesElegidas.length) {
         return [
           {
-            id: dropiProductId,
+            id: r.dropiProductId,
             name: base,
             type: 'SIMPLE',
             variation_id: null,
             variations: [],
-            quantity: cantidadOrden,
-            price: precioUnitario,
+            quantity: r.cantidadOrden,
+            price: r.precioUnitario,
             sale_price: null,
             suggested_price: null,
           },
@@ -1401,18 +1594,18 @@ async function autoCrearOrdenDropi({
       // Un renglón por variante (igual que el selector manual del panel).
       // La variedad va en el nombre para que se lea en Dropi y en la
       // guía sin tener que abrir el detalle.
-      return variacionesElegidas.map((v) => ({
-        id: dropiProductId,
+      return r.variacionesElegidas.map((v) => ({
+        id: r.dropiProductId,
         name: `${base} — ${v.etiqueta}`,
         type: 'VARIABLE',
         variation_id: v.id,
         variations: [{ id: v.id, quantity: v.qty }],
         quantity: v.qty,
-        price: precioUnitario,
+        price: r.precioUnitario,
         sale_price: null,
         suggested_price: null,
       }));
-    })();
+    });
 
     const data = await createOrderForClient({
       id_configuracion,
@@ -1495,20 +1688,28 @@ async function autoCrearOrdenDropi({
       dropi_order_id: orderId,
       detalle:
         `Transportadora: ${distributionCompany.name} ($${mejor?.objects?.precioEnvio}) | ` +
-        `total: ${totalOrder} | qty: ${cantidad} | producto via ${fuenteProducto}` +
+        `total: ${totalOrder}` +
+        (esMultiProducto ? ` | ${renglones.length} productos` : '') +
+        ` | ` +
+        renglones
+          .map(
+            (r) =>
+              `qty: ${r.cantidad} via ${r.fuenteProducto}` +
+              (r.comboUsado
+                ? ` COMBO #${r.dropiProductId}`
+                : r.cantidadOrden > 1
+                  ? ` base x${r.cantidadOrden}`
+                  : ` #${r.dropiProductId}`) +
+              (r.variacionesElegidas.length
+                ? ` var: ${r.variacionesElegidas.map((v) => `${v.etiqueta} x${v.qty}`).join(' + ')}`
+                : ''),
+          )
+          .join(' | ') +
         // deja rastro de cómo se resolvió la bodega: si aparece
         // "fallback_destino" es que Dropi no devolvió el origen y se cotizó
         // desde la ciudad del cliente.
         (fuenteRemitente !== 'dropi_api'
           ? ` | origen via ${fuenteRemitente}`
-          : '') +
-        (comboUsado
-          ? ` | COMBO #${dropiProductId}`
-          : cantidadOrden > 1
-            ? ` | base x${cantidadOrden}`
-            : '') +
-        (variacionesElegidas.length
-          ? ` | var: ${variacionesElegidas.map((v) => `${v.etiqueta} x${v.qty}`).join(' + ')}`
           : '') +
         (datosBot._fuente_ia ? ' | datos via extractor IA' : ''),
     });
