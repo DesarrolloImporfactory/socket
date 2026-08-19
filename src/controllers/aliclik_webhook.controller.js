@@ -56,12 +56,29 @@ function esEventoAliclik(body) {
 exports.aliclikOrdersWebhook = catchAsync(async (req, res, next) => {
   const body = req.body || {};
 
-  const integracion = await resolverIntegracionPorSecret(req.params.secret);
+  // Las peticiones RECHAZADAS no dejaban ningún rastro: ni acá, ni en
+  // aliclik_webhook_events (que solo guarda las aceptadas), ni en el access log
+  // (morgan está mal configurado en producción). O sea que si el cliente pega
+  // mal la URL, el síntoma es "no llega nada" y no había forma de distinguirlo
+  // de que Aliclik no estuviera enviando. Por eso se registran los dos motivos.
+  //
+  // Del secreto solo se loguea el prefijo: sirve para reconocer cuál pegaron
+  // sin dejar la credencial completa escrita en el log.
+  const secretRecibido = String(req.params.secret || '');
+  const pista = secretRecibido ? `${secretRecibido.slice(0, 8)}…` : '(vacío)';
+
+  const integracion = await resolverIntegracionPorSecret(secretRecibido);
   if (!integracion) {
+    console.log(
+      `[AliclikWebhook] 401 secreto no reconocido (${pista}, ${secretRecibido.length} chars) — revisa la URL pegada en el panel de Aliclik`,
+    );
     return next(new AppError('Unauthorized webhook', 401));
   }
 
   if (!esEventoAliclik(body)) {
+    console.log(
+      `[AliclikWebhook] 400 payload inválido (cfg ${integracion.id_configuracion}): ${JSON.stringify(body).slice(0, 300)}`,
+    );
     return next(new AppError('Payload inválido', 400));
   }
 
@@ -87,10 +104,20 @@ exports.aliclikOrdersWebhook = catchAsync(async (req, res, next) => {
   } catch (err) {
     // Duplicado por hash: Aliclik reenvió el mismo evento → no reprocesar.
     if (err?.name === 'SequelizeUniqueConstraintError') {
+      console.log(
+        `[AliclikWebhook] duplicado ${orderNumber} (cfg ${integracion.id_configuracion}) — ya procesado, se ignora`,
+      );
       return res.status(200).json({ ok: true, duplicated: true });
     }
     return next(err);
   }
+
+  // Una línea por evento aceptado. El procesador solo loguea cuando envía algo
+  // o cuando falla, así que sin esto un evento que entra bien y no dispara
+  // ninguna plantilla pasaba completamente en silencio.
+  console.log(
+    `[AliclikWebhook] 200 ${orderNumber} (cfg ${integracion.id_configuracion}) call=${body.callStatus || '-'} status=${body.status || '-'} dispatch=${body.dispatchStatus || '-'}`,
+  );
 
   if (REALTIME_ENABLED) {
     encolarEventoWebhook({ payload: body, integracion });
