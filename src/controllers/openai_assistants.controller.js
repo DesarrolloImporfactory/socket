@@ -1116,6 +1116,49 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
     return next(new AppError('Faltan parámetros requeridos', 400));
   }
 
+  /* La secuencia no puede programar recordatorios más allá del plazo de
+     retiro: cada paso cuenta desde el envío anterior, así que el último sale
+     a la SUMA de los tiempos. Con plazo de 2 días y pasos que suman 3, el
+     último recordatorio avisa de un paquete que ya regresó al remitente.
+     El criterio es EL MISMO del front (RemarketingColumna.handleGuardar):
+     suma de tiempos ≤ días × 1440. Va ANTES de guardar nada para que un
+     rechazo no deje el plazo actualizado y la secuencia vieja. */
+  if (estado_contacto === 'retiro_agencia') {
+    let diasEfectivos = Number(dias_retiro_agencia);
+    if (
+      !Number.isInteger(diasEfectivos) ||
+      diasEfectivos < 1 ||
+      diasEfectivos > 30
+    ) {
+      try {
+        const [cfg] = await db.query(
+          `SELECT dias_retiro_agencia FROM configuraciones WHERE id = ? LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        diasEfectivos = Number(cfg?.dias_retiro_agencia) || 7;
+      } catch (_) {
+        diasEfectivos = 7;
+      }
+    }
+    const totalMin = remarketings.slice(0, 3).reduce((acc, r) => {
+      const min =
+        r?.tiempo_espera_minutos != null
+          ? Number(r.tiempo_espera_minutos)
+          : Number(r?.tiempo_espera_horas || 0) * 60;
+      return acc + (Number.isFinite(min) ? min : 0);
+    }, 0);
+    if (totalMin > diasEfectivos * 1440) {
+      return next(
+        new AppError(
+          `Los recordatorios suman ${Math.round((totalMin / 1440) * 10) / 10} ` +
+            `días y el plazo de retiro es de ${diasEfectivos}: el último ` +
+            `saldría con el paquete ya devuelto. Acorta los tiempos o sube el plazo.`,
+          400,
+        ),
+      );
+    }
+  }
+
   if (dias_retiro_agencia != null && dias_retiro_agencia !== '') {
     const dias = Number(dias_retiro_agencia);
     if (!Number.isInteger(dias) || dias < 1 || dias > 30) {
