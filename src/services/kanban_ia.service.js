@@ -87,6 +87,12 @@ const {
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
 const { esperarRafaga } = require('../utils/agruparRafaga');
 
+// Ubicación compartida por WhatsApp → dirección/ciudad/provincia en palabras
+const {
+  parseUbicacionJson,
+  reverseGeocode,
+} = require('../utils/geoUbicacion');
+
 // Candados para que dos cierres seguidos no creen dos órdenes ni manden el
 // resumen del pedido dos veces
 const {
@@ -279,6 +285,12 @@ function esValorRelleno(valor) {
    a quien te está escribiendo por WhatsApp es el tic absurdo que contextoColumna
    ya corrigió). Pero si la línea vino, tiene que ser un número real — caso 569:
    "📞 Teléfono: 09XXXXXXXX (a confirmar)". */
+/* Prefijo de la petición de datos que el paso 12 manda cuando bloquea un
+   cierre. Es también la huella con la que el paso 6.7 detecta "el turno
+   anterior fue un cierre bloqueado" leyendo mensajes_clientes: si cambias
+   este texto, cambia en los dos lados o el rescate deja de funcionar. */
+const PREFIJO_PETICION_DATOS = 'Para confirmar tu pedido, ayúdame con';
+
 function camposFaltantesCierre(respuesta) {
   const texto = String(respuesta || '')
     .replace(RE_TAGS_SISTEMA, '')
@@ -316,7 +328,22 @@ function camposFaltantesCierre(respuesta) {
   }
 
   if (ciudad === null || esValorRelleno(ciudad)) {
-    faltan.push('- Ciudad y provincia');
+    /* Caso real (302, 2026-08-19, Carmen): la clienta dio "Provincia
+       Tungurahua Canton Quero avenida 17 de abril..." y el modelo fundió
+       ciudad y provincia dentro de la línea Dirección, sin escribir la línea
+       "Ciudad:". Este candado bloqueaba ese cierre —con todos los datos
+       reales a la vista— y de ahí en adelante la venta quedaba muerta (ver
+       paso 6.7). Con una Dirección REAL la falta de la línea Ciudad no
+       bloquea: la ciudad suele venir dentro de la dirección, y quien la
+       necesita exacta es el auto-orden, que la extrae de los mensajes DEL
+       CLIENTE y tiene su propio candado anti-invento. Si tampoco hay
+       dirección concreta (relleno o "por confirmar"), se sigue exigiendo:
+       ahí nadie más la rescata. */
+    const direccionReal =
+      direccion !== null &&
+      !esValorRelleno(direccion) &&
+      !/por confirmar/i.test(direccion);
+    if (!direccionReal) faltan.push('- Ciudad y provincia');
   }
 
   /* La entrega puede ser a domicilio (🏡 Direccion) o retiro en agencia
@@ -718,7 +745,7 @@ async function procesarMensajeKanban(params) {
      eso es quedarse sin el dato justo después de conseguirlo.
      Se traduce solo para el modelo; lo guardado no se toca. */
   const textoDelSistema =
-    textoDeUbicacion(mensaje) || textoDeMensajeIlegible(mensaje);
+    (await textoDeUbicacion(mensaje)) || textoDeMensajeIlegible(mensaje);
 
   let mensajeFinal = textoDelSistema || mensaje;
 
@@ -866,6 +893,66 @@ async function procesarMensajeKanban(params) {
       }
     } catch (e) {
       await log(`⚠️ Error inyectando plazo de retiro: ${e.message}`);
+    }
+  }
+
+  // ── 6.7 Cierre bloqueado en el turno anterior: rescatarlo ──
+  /* Cuando el paso 10 bloquea un cierre (resumen incompleto), el paso 12 le
+     manda al cliente la petición de datos — pero el mensaje ORIGINAL del
+     modelo (resumen + tag) queda en el thread/cadena, así que para el modelo
+     la venta YA se cerró: al siguiente mensaje repite el cierre SIN el tag,
+     el trigger nunca coincide y el cliente se queda clavado en la columna
+     (caso 302, Carmen, 2026-08-19: compró, el cierre quedó bloqueado por la
+     línea Ciudad, y una hora después el cron de remarketing le escribió como
+     si no hubiera comprado).
+     El estado "hubo un cierre bloqueado" no se guarda en ningún lado, pero la
+     petición del paso 12 SÍ quedó en mensajes_clientes con un texto que solo
+     escribe el código (PREFIJO_PETICION_DATOS): esa es la marca. Se mira solo
+     en los últimos mensajes del bot para que la nota decaiga sola si la
+     conversación siguió por otro lado.
+     La nota va como contexto del turno (nada de tocar prompts): re-emitir el
+     resumen completo CON el tag, sin volver a preguntar nada que el cliente
+     ya dio — el interrogatorio repetido es justo la enfermedad que ya se curó
+     una vez en contextoColumna. */
+  const accCierreVenta = getAcciones('cambiar_estado')
+    .map((ac) => parseConfig(ac))
+    .find((c) => c.estado_destino === 'generar_guia' && c.trigger);
+  if (accCierreVenta) {
+    try {
+      const ultimosBot = await db.query(
+        `SELECT texto_mensaje FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL
+            AND tipo_mensaje = 'text'
+          ORDER BY id DESC LIMIT 10`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const peticion = ultimosBot.find((m) =>
+        String(m.texto_mensaje || '').startsWith(PREFIJO_PETICION_DATOS),
+      );
+      if (peticion) {
+        const faltaba = String(peticion.texto_mensaje)
+          .split('\n')
+          .slice(1)
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith('- '))
+          .map((l) => l.replace(/^- /, ''))
+          .join(' | ');
+        bloqueContexto +=
+          `⚠️ CIERRE PENDIENTE: tu último resumen de cierre fue RECHAZADO por el sistema porque estaba incompleto` +
+          (faltaba ? ` (faltaba: ${faltaba})` : '') +
+          `. La venta NO está cerrada, aunque en la conversación parezca que sí.\n` +
+          `En cuanto tengas ese dato —revisa la conversación: es probable que el cliente YA lo haya dado— escribe otra vez el resumen COMPLETO del pedido con TODAS sus líneas y el tag ${accCierreVenta.trigger}, todo en un solo mensaje.\n` +
+          `NO le pidas al cliente datos que ya dio, NO le pidas que confirme otra vez si ya confirmó, y NO menciones que hubo un error del sistema.\n\n`;
+        await log(
+          `🩹 Cierre bloqueado detectado en turno anterior (faltaba: ${faltaba || '?'}): nota de rescate inyectada cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ Error detectando cierre bloqueado previo: ${e.message}`);
     }
   }
 
@@ -1847,8 +1934,8 @@ async function procesarMensajeKanban(params) {
 
     soloTexto =
       faltan.length === 1
-        ? `Para confirmar tu pedido, ayúdame con este dato 😊:\n${faltan[0]}`
-        : `Para confirmar tu pedido, ayúdame con estos datos 😊:\n` +
+        ? `${PREFIJO_PETICION_DATOS} este dato 😊:\n${faltan[0]}`
+        : `${PREFIJO_PETICION_DATOS} estos datos 😊:\n` +
           (faltan.length
             ? faltan.join('\n')
             : '- Nombre completo\n- Teléfono\n- Ciudad y provincia\n' +
@@ -2267,31 +2354,53 @@ function extraerMedia(texto) {
  * mapita. Para el asistente eso no es un mensaje: es ruido, y responde pidiendo
  * "la dirección en palabras" a alguien que le acaba de mandar exactamente eso.
  *
+ * Además se geocodifica en reversa (utils/geoUbicacion): con la dirección,
+ * ciudad y provincia resueltas, el bot puede escribirlas en el resumen de
+ * cierre — que es de donde salen el auto-orden de Dropi y el auto-llenado del
+ * panel de pedido. Antes el cliente mandaba su ubicación y el bot igual tenía
+ * que pedirle ciudad y dirección "en palabras", porque no sabía leerla.
+ *
  * Devuelve `null` si el texto no es una ubicación, para que el mensaje siga su
- * camino sin tocarse.
+ * camino sin tocarse. Si el geocoder no responde, cae al texto de siempre
+ * (coordenadas + mapa) y el bot pide los datos como antes.
  */
-function textoDeUbicacion(texto) {
-  const s = String(texto || '').trim();
-  if (!s.startsWith('{') || !s.includes('latitude')) return null;
+async function textoDeUbicacion(texto) {
+  const coords = parseUbicacionJson(texto);
+  if (!coords) return null;
 
-  try {
-    const o = JSON.parse(s);
-    const lat = Number(o?.latitude);
-    const lng = Number(o?.longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const { lat, lng } = coords;
+  const mapa = `https://www.google.com/maps?q=${lat},${lng}`;
+  const geo = await reverseGeocode(lat, lng);
 
+  if (!geo) {
     return (
       `[El cliente compartió su ubicación por WhatsApp]\n` +
       `Coordenadas: ${lat}, ${lng}\n` +
-      `Mapa: https://www.google.com/maps?q=${lat},${lng}\n` +
+      `Mapa: ${mapa}\n` +
       `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
       `dirección "en palabras". Si necesitas el nombre del sector o una ` +
       `referencia para llegar, pídele eso puntual. Cuando tengas que dejar la ` +
       `ubicación registrada en una ficha, escribe el enlace del mapa tal cual.`
     );
-  } catch {
-    return null;
   }
+
+  return (
+    `[El cliente compartió su ubicación por WhatsApp]\n` +
+    `Coordenadas: ${lat}, ${lng}\n` +
+    `Mapa: ${mapa}\n` +
+    `Según el mapa, la ubicación corresponde a:\n` +
+    `- Dirección: ${geo.direccion || '(sin calle identificable en el mapa)'}\n` +
+    `- Ciudad: ${geo.ciudad || '(no identificada)'}\n` +
+    `- Provincia: ${geo.provincia || '(no identificada)'}\n` +
+    `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
+    `dirección "en palabras", y NO le vuelvas a preguntar la ciudad ni la ` +
+    `provincia si aquí aparecen. Si estás cerrando un pedido con entrega, usa ` +
+    `esta ciudad, provincia y dirección tal cual en el resumen de cierre, y ` +
+    `pídele al cliente solo una referencia puntual para llegar (color de la ` +
+    `casa, negocio cercano) para completar la dirección. Cuando tengas que ` +
+    `dejar la ubicación registrada en una ficha, escribe el enlace del mapa ` +
+    `tal cual.`
+  );
 }
 
 /* ── Qué ítem del catálogo nombró el bot ────────────────────────
@@ -3226,4 +3335,9 @@ module.exports = {
   // el auto-orden sube 1 o N renglones, y un cambio silencioso ahí rompe
   // pedidos reales.
   parsearProductosResumen,
+  // Expuesta para la batería: la traducción de la ubicación de WhatsApp es lo
+  // que le da al bot la ciudad/provincia/dirección del resumen de cierre; si
+  // se rompe, el síntoma es un bot que vuelve a pedir la dirección "en
+  // palabras" a quien acaba de mandarla.
+  textoDeUbicacion,
 };

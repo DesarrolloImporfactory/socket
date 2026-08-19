@@ -1,6 +1,9 @@
 'use strict';
 
-const { autoCrearOrdenDropi } = require('../services/dropiAutoOrder.service');
+const {
+  autoCrearOrdenDropi,
+  ubicacionCompartidaCliente,
+} = require('../services/dropiAutoOrder.service');
 const { db } = require('../database/config');
 
 /**
@@ -422,6 +425,25 @@ exports.datosBotCliente = async (req, res) => {
           if (!datos.producto && d.producto) datos.producto = d.producto;
           if (d.provincia || d.ciudad) origenGeo = origenGeo || 'shopify';
         }
+      }
+    }
+
+    /* Fallback ubicación GPS: si ni el bot ni Shopify dejaron la geo pero el
+       cliente compartió su ubicación por WhatsApp (queda como JSON crudo en
+       mensajes_clientes), se geocodifica y con eso el panel se prellena igual
+       — incluso cuando el auto-orden está apagado y no hay log del bot. */
+    if (!datos.provincia || !datos.ciudad || !datos.direccion) {
+      const geo = await ubicacionCompartidaCliente({
+        id_configuracion,
+        id_cliente,
+      });
+      if (geo) {
+        if (!datos.provincia && geo.provincia) datos.provincia = geo.provincia;
+        if (!datos.ciudad && geo.ciudad) datos.ciudad = geo.ciudad;
+        if (!datos.direccion && (geo.direccion || geo.referencia)) {
+          datos.direccion = `${geo.direccion || geo.referencia} (ubicación GPS: ${geo.mapa})`;
+        }
+        if (geo.provincia || geo.ciudad) origenGeo = origenGeo || 'ubicacion';
       }
     }
 

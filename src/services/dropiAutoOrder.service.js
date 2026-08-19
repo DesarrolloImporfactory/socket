@@ -58,6 +58,11 @@ const {
   enviarConfirmacionOrdenBot,
 } = require('./seguimiento_plantillas.service');
 const { resolveRegion } = require('../utils/phoneFactor');
+// Ubicación GPS compartida por WhatsApp → ciudad/provincia/dirección reales
+const {
+  parseUbicacionJson,
+  geocodificarMensaje,
+} = require('../utils/geoUbicacion');
 
 /* ────────────────────────── helpers ────────────────────────── */
 
@@ -413,16 +418,29 @@ async function completarDatosConIA({
     );
     if (!msgs.length) return datosBot;
 
-    const transcript = msgs
-      .reverse()
-      .map(
-        (m) =>
-          `${String(m.rol_mensaje) === '0' ? 'CLIENTE' : 'VENDEDOR'}: ${String(
-            m.texto_mensaje || '',
-          ).slice(0, 400)}`,
-      )
-      .join('\n')
-      .slice(-8000);
+    /* Una ubicación compartida por WhatsApp está guardada como el JSON crudo
+       de Meta ({"latitude":...}). Al extractor eso no le dice nada — y la
+       regla "ciudad = la que escribió el CLIENTE" lo dejaba sin ciudad aunque
+       el cliente hubiera mandado exactamente dónde vive. Se traduce con la
+       geocodificación (cacheada) para que cuente como dato del cliente. */
+    const lineas = await Promise.all(
+      msgs.reverse().map(async (m) => {
+        const rol = String(m.rol_mensaje) === '0' ? 'CLIENTE' : 'VENDEDOR';
+        let texto = String(m.texto_mensaje || '');
+        if (parseUbicacionJson(texto)) {
+          const geo = await geocodificarMensaje(texto);
+          texto = geo
+            ? `[UBICACIÓN GPS COMPARTIDA] Dirección: ${
+                geo.direccion || 'sin calle identificable'
+              } | Ciudad: ${geo.ciudad || 's/d'} | Provincia: ${
+                geo.provincia || 's/d'
+              }`
+            : '[UBICACIÓN GPS COMPARTIDA]';
+        }
+        return `${rol}: ${texto.slice(0, 400)}`;
+      }),
+    );
+    const transcript = lineas.join('\n').slice(-8000);
 
     const { data } = await axios.post(
       'https://api.openai.com/v1/chat/completions',
@@ -485,6 +503,44 @@ async function completarDatosConIA({
     console.log('[AutoOrden] extractor IA falló:', err?.message);
     return datosBot; // sigue con lo que haya; los fails normales lo registran
   }
+}
+
+/**
+ * Última ubicación GPS que el CLIENTE compartió por WhatsApp, geocodificada.
+ *
+ * En mensajes_clientes la ubicación queda como el JSON crudo de Meta, así que
+ * ni el resumen del bot ni el candado de ciudad podían aprovecharla. Se busca
+ * solo en mensajes del cliente (rol 0) y recientes (3 días): una ubicación de
+ * un pedido viejo puede apuntar a otra dirección y no debe contaminar este.
+ *
+ * Devuelve el objeto geocodificado ({ciudad, provincia, direccion, mapa, …})
+ * o null. Best-effort: cualquier error cae a null y el flujo sigue como antes.
+ */
+async function ubicacionCompartidaCliente({ id_configuracion, id_cliente }) {
+  try {
+    const msgs = await db.query(
+      `SELECT texto_mensaje FROM mensajes_clientes
+        WHERE celular_recibe = ? AND id_configuracion = ?
+          AND rol_mensaje = 0 AND deleted_at IS NULL
+          AND texto_mensaje LIKE '{%latitude%'
+          AND created_at >= NOW() - INTERVAL 3 DAY
+        ORDER BY id DESC LIMIT 5`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    for (const m of msgs) {
+      const geo = await geocodificarMensaje(m.texto_mensaje);
+      if (geo) return geo;
+    }
+  } catch (err) {
+    console.log(
+      '[AutoOrden] ubicación compartida no se pudo leer:',
+      err?.message,
+    );
+  }
+  return null;
 }
 
 /* ────────────────────── flujo principal ────────────────────── */
@@ -581,6 +637,36 @@ async function autoCrearOrdenDropi({
     );
     const paisNombre = nombrePais(cfgPais?.pais_plantilla || country_code);
 
+    /* 0.4 Ubicación GPS compartida: si el cliente mandó su ubicación por
+       WhatsApp, geocodificarla da la ciudad/provincia/dirección REALES aunque
+       el resumen del bot no las traiga (Dropi, a diferencia de Aliclik, no
+       acepta coordenadas: exige provincia y ciudad de su catálogo). Solo
+       rellena los campos vacíos — lo que el cliente escribió a mano y el bot
+       recogió en el resumen sigue mandando. */
+    const geoCliente = await ubicacionCompartidaCliente({
+      id_configuracion,
+      id_cliente,
+    });
+    if (geoCliente && datosBot) {
+      if (!datosBot.ciudad && geoCliente.ciudad) {
+        datosBot.ciudad = geoCliente.ciudad;
+        datosBot._fuente_ubicacion = true;
+      }
+      if (!datosBot.provincia && geoCliente.provincia) {
+        datosBot.provincia = geoCliente.provincia;
+        datosBot._fuente_ubicacion = true;
+      }
+      if (!datosBot.direccion && (geoCliente.direccion || geoCliente.referencia)) {
+        // El pin exacto va como link: la calle geocodificada puede quedarse
+        // corta (sin número) y el mapa es lo que el repartidor de verdad usa.
+        datosBot.direccion = `${
+          geoCliente.direccion || geoCliente.referencia
+        } (ubicación GPS: ${geoCliente.mapa})`;
+        datosBot._fuente_ubicacion = true;
+      }
+      ctx.datos_bot = datosBot;
+    }
+
     // 0.5 Si el regex no extrajo los campos clave (prompt del cliente sin
     // resumen estructurado), completar con extractor IA sobre la conversación.
     // La provincia también cuenta como clave: el resumen del bot la omite
@@ -654,9 +740,18 @@ async function autoCrearOrdenDropi({
           type: db.QueryTypes.SELECT,
         },
       );
-      const textoCliente = sinAcentos(
-        msgsCiudad.map((m) => m.texto_mensaje).join(' '),
-      );
+      /* La ciudad también puede venir de la ubicación GPS que el propio
+         cliente compartió: en sus mensajes quedó solo el JSON de coordenadas,
+         así que los tokens de la ciudad jamás aparecerían por texto. La
+         geocodificación cuenta como palabra del cliente — la mandó él. */
+      const textoCliente =
+        sinAcentos(msgsCiudad.map((m) => m.texto_mensaje).join(' ')) +
+        (geoCliente
+          ? ' ' +
+            sinAcentos(
+              `${geoCliente.ciudad} ${geoCliente.provincia} ${geoCliente.referencia}`,
+            )
+          : '');
       /* Por palabras y no por frase entera: el bot normaliza el nombre
          ("Santo Domingo de los Tsáchilas") y el cliente escribe "santo
          domingo". Con que UNA palabra significativa aparezca, alcanza. */
@@ -1711,7 +1806,8 @@ async function autoCrearOrdenDropi({
         (fuenteRemitente !== 'dropi_api'
           ? ` | origen via ${fuenteRemitente}`
           : '') +
-        (datosBot._fuente_ia ? ' | datos via extractor IA' : ''),
+        (datosBot._fuente_ia ? ' | datos via extractor IA' : '') +
+        (datosBot._fuente_ubicacion ? ' | datos via ubicación GPS' : ''),
     });
 
     return { orderId, data };
@@ -1830,4 +1926,5 @@ module.exports = {
   autoCrearOrdenDropi,
   autoActualizarOrdenDropi,
   matchEnLista,
+  ubicacionCompartidaCliente,
 };
