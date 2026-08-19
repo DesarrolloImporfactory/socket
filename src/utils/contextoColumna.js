@@ -1118,6 +1118,36 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       `total:" sigue siendo una sola, con la suma de todo el pedido. Con un ` +
       `solo producto, el resumen es el de siempre.\n\n`;
     say(`✅ Instrucción de cierre multi-producto inyectada`);
+
+    /* ── Regla de agencias (retiro Servientrega) ──
+       Los prompts ya traen el flujo completo (buscar por ciudad exacta,
+       máx. 3 opciones, "por confirmar" si no hay) y el modelo igual recae:
+       caso real 569 (2026-08-19, Manuel/Paltas) — mostró agencias de CUENCA
+       como si fueran de Loja (las calles de Cuenca contienen "LOJA" y el
+       retrieval trajo ese fragmento), nunca dijo la ciudad de cada agencia,
+       y cuando el cliente respondió CINCO veces "en la Servientrega del
+       cantón Paltas" siguió re-listando y re-preguntando "¿en cuál?" hasta
+       que la venta se enfrió. La regla viaja acá, al inicio del input de
+       cada turno, por el mismo motivo que la REGLA DE AVANCE: es donde el
+       modelo sí la obedece. Mismo gate Dropi del bloque de arriba: en la
+       vertical de servicios no existen agencias de courier. */
+    bloque +=
+      `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega):\n` +
+      `- Cada agencia que muestres va CON su ciudad, la que dice su propia ` +
+      `línea del archivo. Solo puedes mostrar agencias cuya línea diga ` +
+      `EXACTAMENTE la ciudad del cliente: que una calle se llame como otra ` +
+      `provincia no la vuelve de ahí. Si el archivo no trae agencias de su ` +
+      `ciudad o cantón, dilo con honestidad — JAMÁS presentes las de otra ` +
+      `ciudad como si fueran de la suya.\n` +
+      `- La lista se muestra UNA sola vez. Si el cliente responde sin elegir ` +
+      `una puntual — repite su cantón/ciudad, dice "en la Servientrega de mi ` +
+      `pueblo", "yo retiro en Servientrega", o pregunta otra cosa — ESO YA ES ` +
+      `SU ELECCIÓN: el dato queda como "Agencia Servientrega por confirmar — ` +
+      `<su ciudad o cantón>" y AVANZAS al siguiente dato o al cierre. ` +
+      `Prohibido volver a mostrar la lista o repetir "¿en cuál agencia?": ` +
+      `insistir es lo que hace que rechacen la venta. Un humano confirma la ` +
+      `agencia exacta antes del envío.\n\n`;
+    say(`✅ Regla de agencias inyectada`);
   }
 
   if (tiene('contexto_productos')) {

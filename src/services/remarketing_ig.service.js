@@ -163,6 +163,7 @@ async function generarRemarketingIgIA({
   const {
     ejecutarAsistente,
     ejecutarConResponsesAPI,
+    limpiarMetaRemarketing,
   } = require('./kanban_ia.service');
 
   const [col] = await db.query(
@@ -202,7 +203,9 @@ async function generarRemarketingIgIA({
     // context_length_exceeded). El remarketing SÍ lee el contexto vía
     // previous_response_id, pero el próximo mensaje real del cliente encadena
     // desde su última respuesta real, no desde los remarketings.
-    return (r?.respuesta || '').trim();
+    // limpiarMetaRemarketing: el modelo a veces antepone el acuse al sistema
+    // ("Aquí tienes el mensaje de remarketing:") y eso viajaba al cliente.
+    return limpiarMetaRemarketing((r?.respuesta || '').trim());
   }
 
   // Assistants API (threads)
@@ -228,7 +231,7 @@ async function generarRemarketingIgIA({
     additional_instructions: prompt_ia || null,
   });
 
-  return (r?.respuesta || '').trim();
+  return limpiarMetaRemarketing((r?.respuesta || '').trim());
 }
 
 module.exports = {

@@ -405,6 +405,54 @@ async function suiteA() {
       JSON.stringify(unaLinea),
     );
   }
+
+  // 11. Fuga del acuse en el remarketing IA (caso 569, 2026-08-19): al
+  //     cliente le llegó "¡Entendido! 😊 Aquí tienes el mensaje de
+  //     remarketing:" antes del mensaje real. limpiarMetaRemarketing corta el
+  //     acuse y la jerga interna SIN tocar mensajes legítimos.
+  {
+    const {
+      limpiarMetaRemarketing,
+    } = require('../src/services/kanban_ia.service');
+
+    // El mensaje real que se filtró en la 569
+    const filtrado = limpiarMetaRemarketing(
+      '¡Entendido! 😊 Aquí tienes el mensaje de remarketing:\n\n' +
+        'Quiero informarte que hemos reservado un descuento exclusivo del 5% ' +
+        'para ti en el *Shampoo Cubre Canas IVSI 400gr*.\n\n' +
+        '🟢 Precio con descuento: $21.84\n\n¿Te gustaría aprovecharlo? 📍',
+    );
+    caso(
+      'el acuse "Aquí tienes el mensaje de remarketing:" se corta (caso 569)',
+      filtrado.startsWith('Quiero informarte') && !/remarketing/i.test(filtrado),
+      filtrado.slice(0, 60),
+    );
+
+    // Acuse solo en su propia línea, sin nombrar el mensaje
+    const acuseSolo = limpiarMetaRemarketing(
+      '¡Entendido!\nHola María, tu pedido sigue reservado. ¿Lo confirmamos hoy? 😊',
+    );
+    caso(
+      'un "¡Entendido!" solo en la primera línea se corta',
+      acuseSolo.startsWith('Hola María'),
+      acuseSolo.slice(0, 50),
+    );
+
+    // Mensaje legítimo que ARRANCA con "¡Perfecto!" en la misma línea: intacto
+    const legitimo =
+      '¡Perfecto! Tu descuento del 10% sigue activo hasta las 20:00. ¿Aprovechamos? 😊';
+    caso(
+      'un mensaje legítimo que arranca con "¡Perfecto!" no se toca',
+      limpiarMetaRemarketing(legitimo) === legitimo,
+    );
+
+    // Fail-safe: si limpiar deja el texto vacío, vuelve el original
+    const soloJerga = '[ACCIÓN INTERNA: GENERAR_REMARKETING]';
+    caso(
+      'fail-safe: si todo era jerga, devuelve el original (no un vacío)',
+      limpiarMetaRemarketing(soloJerga) === soloJerga,
+    );
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.
