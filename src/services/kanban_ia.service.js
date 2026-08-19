@@ -285,6 +285,12 @@ function esValorRelleno(valor) {
    a quien te está escribiendo por WhatsApp es el tic absurdo que contextoColumna
    ya corrigió). Pero si la línea vino, tiene que ser un número real — caso 569:
    "📞 Teléfono: 09XXXXXXXX (a confirmar)". */
+/* Prefijo de la petición de datos que el paso 12 manda cuando bloquea un
+   cierre. Es también la huella con la que el paso 6.7 detecta "el turno
+   anterior fue un cierre bloqueado" leyendo mensajes_clientes: si cambias
+   este texto, cambia en los dos lados o el rescate deja de funcionar. */
+const PREFIJO_PETICION_DATOS = 'Para confirmar tu pedido, ayúdame con';
+
 function camposFaltantesCierre(respuesta) {
   const texto = String(respuesta || '')
     .replace(RE_TAGS_SISTEMA, '')
@@ -322,7 +328,22 @@ function camposFaltantesCierre(respuesta) {
   }
 
   if (ciudad === null || esValorRelleno(ciudad)) {
-    faltan.push('- Ciudad y provincia');
+    /* Caso real (302, 2026-08-19, Carmen): la clienta dio "Provincia
+       Tungurahua Canton Quero avenida 17 de abril..." y el modelo fundió
+       ciudad y provincia dentro de la línea Dirección, sin escribir la línea
+       "Ciudad:". Este candado bloqueaba ese cierre —con todos los datos
+       reales a la vista— y de ahí en adelante la venta quedaba muerta (ver
+       paso 6.7). Con una Dirección REAL la falta de la línea Ciudad no
+       bloquea: la ciudad suele venir dentro de la dirección, y quien la
+       necesita exacta es el auto-orden, que la extrae de los mensajes DEL
+       CLIENTE y tiene su propio candado anti-invento. Si tampoco hay
+       dirección concreta (relleno o "por confirmar"), se sigue exigiendo:
+       ahí nadie más la rescata. */
+    const direccionReal =
+      direccion !== null &&
+      !esValorRelleno(direccion) &&
+      !/por confirmar/i.test(direccion);
+    if (!direccionReal) faltan.push('- Ciudad y provincia');
   }
 
   /* La entrega puede ser a domicilio (🏡 Direccion) o retiro en agencia
@@ -872,6 +893,66 @@ async function procesarMensajeKanban(params) {
       }
     } catch (e) {
       await log(`⚠️ Error inyectando plazo de retiro: ${e.message}`);
+    }
+  }
+
+  // ── 6.7 Cierre bloqueado en el turno anterior: rescatarlo ──
+  /* Cuando el paso 10 bloquea un cierre (resumen incompleto), el paso 12 le
+     manda al cliente la petición de datos — pero el mensaje ORIGINAL del
+     modelo (resumen + tag) queda en el thread/cadena, así que para el modelo
+     la venta YA se cerró: al siguiente mensaje repite el cierre SIN el tag,
+     el trigger nunca coincide y el cliente se queda clavado en la columna
+     (caso 302, Carmen, 2026-08-19: compró, el cierre quedó bloqueado por la
+     línea Ciudad, y una hora después el cron de remarketing le escribió como
+     si no hubiera comprado).
+     El estado "hubo un cierre bloqueado" no se guarda en ningún lado, pero la
+     petición del paso 12 SÍ quedó en mensajes_clientes con un texto que solo
+     escribe el código (PREFIJO_PETICION_DATOS): esa es la marca. Se mira solo
+     en los últimos mensajes del bot para que la nota decaiga sola si la
+     conversación siguió por otro lado.
+     La nota va como contexto del turno (nada de tocar prompts): re-emitir el
+     resumen completo CON el tag, sin volver a preguntar nada que el cliente
+     ya dio — el interrogatorio repetido es justo la enfermedad que ya se curó
+     una vez en contextoColumna. */
+  const accCierreVenta = getAcciones('cambiar_estado')
+    .map((ac) => parseConfig(ac))
+    .find((c) => c.estado_destino === 'generar_guia' && c.trigger);
+  if (accCierreVenta) {
+    try {
+      const ultimosBot = await db.query(
+        `SELECT texto_mensaje FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL
+            AND tipo_mensaje = 'text'
+          ORDER BY id DESC LIMIT 10`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const peticion = ultimosBot.find((m) =>
+        String(m.texto_mensaje || '').startsWith(PREFIJO_PETICION_DATOS),
+      );
+      if (peticion) {
+        const faltaba = String(peticion.texto_mensaje)
+          .split('\n')
+          .slice(1)
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith('- '))
+          .map((l) => l.replace(/^- /, ''))
+          .join(' | ');
+        bloqueContexto +=
+          `⚠️ CIERRE PENDIENTE: tu último resumen de cierre fue RECHAZADO por el sistema porque estaba incompleto` +
+          (faltaba ? ` (faltaba: ${faltaba})` : '') +
+          `. La venta NO está cerrada, aunque en la conversación parezca que sí.\n` +
+          `En cuanto tengas ese dato —revisa la conversación: es probable que el cliente YA lo haya dado— escribe otra vez el resumen COMPLETO del pedido con TODAS sus líneas y el tag ${accCierreVenta.trigger}, todo en un solo mensaje.\n` +
+          `NO le pidas al cliente datos que ya dio, NO le pidas que confirme otra vez si ya confirmó, y NO menciones que hubo un error del sistema.\n\n`;
+        await log(
+          `🩹 Cierre bloqueado detectado en turno anterior (faltaba: ${faltaba || '?'}): nota de rescate inyectada cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ Error detectando cierre bloqueado previo: ${e.message}`);
     }
   }
 
@@ -1853,8 +1934,8 @@ async function procesarMensajeKanban(params) {
 
     soloTexto =
       faltan.length === 1
-        ? `Para confirmar tu pedido, ayúdame con este dato 😊:\n${faltan[0]}`
-        : `Para confirmar tu pedido, ayúdame con estos datos 😊:\n` +
+        ? `${PREFIJO_PETICION_DATOS} este dato 😊:\n${faltan[0]}`
+        : `${PREFIJO_PETICION_DATOS} estos datos 😊:\n` +
           (faltan.length
             ? faltan.join('\n')
             : '- Nombre completo\n- Teléfono\n- Ciudad y provincia\n' +
