@@ -88,31 +88,25 @@ async function rrInstagramUnDepto({
       return { id_encargado_nuevo: null, id_departamento_asginado };
     }
 
-    // 3) puntero (✅ AISLADO por id_configuracion)
-    const last = await db.query(
-      `SELECT h.id_encargado_nuevo
-     FROM historial_encargados_instagram h
-     JOIN instagram_conversations c ON c.id = h.id_instagram_conversation
-    WHERE c.id_configuracion = ?
-      AND h.id_encargado_nuevo IS NOT NULL
-      AND h.motivo IN ('auto_round_robin_instagram')
-    ORDER BY h.id DESC
-    LIMIT 1`,
-      { replacements: [id_configuracion], type: db.QueryTypes.SELECT }
+    // 3-4) Elegir al conectado con la asignación más vieja (rotación real).
+    // El puntero viejo se reseteaba a lista[0] cuando el último asignado no
+    // estaba online — mismo sesgo medido en WhatsApp (round_robin.js →
+    // elegirMenosReciente).
+    const ultimas = await db.query(
+      `SELECT h.id_encargado_nuevo AS enc, MAX(h.id) AS ult
+         FROM historial_encargados_instagram h
+         JOIN instagram_conversations c ON c.id = h.id_instagram_conversation
+        WHERE c.id_configuracion = ?
+          AND h.motivo IN ('auto_round_robin_instagram')
+          AND h.id_encargado_nuevo IN (?)
+        GROUP BY h.id_encargado_nuevo`,
+      { replacements: [id_configuracion, lista], type: db.QueryTypes.SELECT }
     );
-
-    const lastAssigned = last?.[0]?.id_encargado_nuevo
-      ? Number(last[0].id_encargado_nuevo)
-      : null;
-
-    // 4) elegir siguiente
-    let id_encargado_nuevo = null;
-    if (!lastAssigned) {
-      id_encargado_nuevo = lista[0];
-    } else {
-      const idx = lista.indexOf(lastAssigned);
-      id_encargado_nuevo =
-        idx === -1 ? lista[0] : lista[(idx + 1) % lista.length];
+    const ult = new Map(ultimas.map((r) => [Number(r.enc), Number(r.ult)]));
+    let id_encargado_nuevo = lista[0];
+    for (const id of lista) {
+      if ((ult.get(id) || 0) < (ult.get(id_encargado_nuevo) || 0))
+        id_encargado_nuevo = id;
     }
 
     return { id_encargado_nuevo, id_departamento_asginado };
