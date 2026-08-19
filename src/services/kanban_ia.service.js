@@ -233,15 +233,106 @@ async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
    una venta mueve columna y dispara el auto-orden de Dropi, así que un resumen
    con placeholders no puede contar como cierre.
 
-   Se revisan las señales de plantilla copiada, no la completitud campo por
-   campo (el auto-orden ya completa faltantes con su extractor): corchetes
-   tipo "[nombre completo real]" —quitando antes los tags del sistema y de
-   media, que también usan corchetes— y las frases de relleno que el arnés de
-   prompts ya cazaba en las pruebas. Devuelve el motivo, o null si el cierre
-   es válido. */
+   Dos familias de señales:
+   1. Plantilla copiada: corchetes tipo "[nombre completo real]" —quitando
+      antes los tags del sistema y de media, que también usan corchetes— y las
+      frases de relleno que el arnés de prompts ya cazaba en las pruebas.
+   2. Resumen incompleto. La versión anterior solo validaba las líneas que
+      EXISTÍAN, y el modo de fallo real de la 285 (2026-08-19) fue omitirlas:
+      un cierre con solo Cantidad/Precio/Producto pasó limpio ("¿Si sabe a
+      dónde enviarlo???", preguntó el cliente), y otro cerró con "📍 Ciudad:
+      (necesito que me digas la ciudad)" — relleno entre paréntesis que la
+      blacklist de frases no veía. El extractor del auto-orden no puede
+      rescatar lo que el cliente nunca dijo, así que esas órdenes caían a
+      manual o, peor, subían con datos inventados.
+
+   Devuelve el motivo, o null si el cierre es válido. */
 const RE_TAGS_SISTEMA = /\[[a-z_]+\]\s*:\s*(?:true|false)/gi;
 const RE_TAGS_MEDIA =
   /\[(?:producto|servicio|upsell)_(?:imagen|video)_url\]\s*:[^\n]*/gi;
+
+/* ¿Este valor es el bot pidiendo el dato dentro del propio resumen, en vez de
+   traerlo? Se detecta por FORMA (corchetes, paréntesis que envuelven todo el
+   valor) y por palabras de pedido, no por frases exactas: cada cuenta lo
+   redacta distinto y una blacklist de frases siempre corre por detrás —
+   "(necesito que me digas la ciudad)" y "(si aplica)" pasaron limpias. */
+function esValorRelleno(valor) {
+  const t = String(valor || '')
+    .replace(/[*_]/g, '')
+    .trim();
+  if (!t) return true;
+  if (/[\[\]]/.test(t)) return true;
+  if (/^\(.+\)$/.test(t)) return true;
+  return /necesito|ind[ií]ca|ind[ií]que|proporcion|por favor|pendiente|falta|\bdime\b|d[ií]game|seg[uú]n tu elecci[oó]n|no registra/i.test(
+    t,
+  );
+}
+
+/* Campos del resumen de cierre — los mismos rótulos que extrae el auto-orden.
+   Devuelve la lista de lo que FALTA (línea ausente o de relleno), redactada
+   lista para pedírsela al cliente. La usan el candado del paso 10 (decidir si
+   el cierre se bloquea) y el paso 12 (redactar la petición): un solo criterio,
+   o el candado bloquearía por una cosa y la petición pediría otra.
+
+   El teléfono NO se exige presente a propósito: si la línea no vino, el
+   auto-orden usa el número desde el que la persona escribe (pedirle su número
+   a quien te está escribiendo por WhatsApp es el tic absurdo que contextoColumna
+   ya corrigió). Pero si la línea vino, tiene que ser un número real — caso 569:
+   "📞 Teléfono: 09XXXXXXXX (a confirmar)". */
+function camposFaltantesCierre(respuesta) {
+  const texto = String(respuesta || '')
+    .replace(RE_TAGS_SISTEMA, '')
+    .replace(RE_TAGS_MEDIA, '');
+  // null = la línea no existe en el resumen (distinto de existir vacía)
+  const campo = (re) => {
+    const m = texto.match(re)?.[1];
+    return m === undefined ? null : m.replace(/[*_]/g, '').trim();
+  };
+
+  const nombre = campo(/🧑?\s*Nombre:\s*([^\n]+)/i);
+  const telefono = campo(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i);
+  const ciudad = campo(/📍?\s*Ciudad:\s*([^\n]+)/i);
+  const direccion = campo(/🏡?\s*Direcci[oó]n:\s*([^\n]+)/i);
+  const agencia = campo(/🏦?\s*Agencia[^:\n]*:\s*([^\n]+)/i);
+
+  const faltan = [];
+
+  /* Un nombre de UNA palabra no genera guía (falta el apellido) y todos los
+     prompts lo exigen en dos. */
+  if (nombre === null || esValorRelleno(nombre) || !/\s/.test(nombre)) {
+    faltan.push('- Nombre completo');
+  }
+
+  if (telefono !== null) {
+    const digitos = (telefono.match(/\d/g) || []).length;
+    if (
+      esValorRelleno(telefono) ||
+      /x{2,}/i.test(telefono) ||
+      /confirmar/i.test(telefono) ||
+      digitos < 9
+    ) {
+      faltan.push('- Teléfono');
+    }
+  }
+
+  if (ciudad === null || esValorRelleno(ciudad)) {
+    faltan.push('- Ciudad y provincia');
+  }
+
+  /* La entrega puede ser a domicilio (🏡 Direccion) o retiro en agencia
+     (🏦 Agencia). "Por confirmar" es legítimo SOLO en estas dos líneas:
+     la agencia por confirmar del flujo 7.4 cierra así a propósito. */
+  const entregaOk = (v) =>
+    v !== null && (/por confirmar/i.test(v) || !esValorRelleno(v));
+  if (!entregaOk(direccion) && !entregaOk(agencia)) {
+    faltan.push(
+      '- Dirección exacta (dos calles y una referencia), o la agencia ' +
+        'Servientrega si prefieres retirarlo',
+    );
+  }
+
+  return faltan;
+}
 
 function motivoCierreInvalido(respuesta) {
   const texto = String(respuesta || '')
@@ -258,30 +349,25 @@ function motivoCierreInvalido(respuesta) {
   ) {
     return 'texto de relleno en el resumen';
   }
-  const nombre = texto.match(/🧑?\s*Nombre:\s*([^\n]+)/i)?.[1];
-  if (nombre !== undefined) {
-    const limpio = nombre.replace(/[*_]/g, '').trim();
-    if (limpio === '') return 'línea de nombre vacía';
-    /* Un nombre de UNA palabra no genera guía (falta el apellido) y todos
-       los prompts lo exigen en dos. Si el modelo cerró así, se saltó el
-       candado: mejor pedirlo que crear una orden coja. */
-    if (!/\s/.test(limpio)) return 'nombre de una sola palabra en el resumen';
-  }
 
-  /* Teléfono enmascarado o de relleno. Caso real (569, 2026-08-18): el
-     modelo nunca pidió el celular y cerró con "📞 Teléfono: 09XXXXXXXX (a
-     confirmar)" — ninguna señal de plantilla de las de arriba, pero un
-     número que no existe. La validación es POR LÍNEA a propósito: "por
-     confirmar" en 🏡 Direccion es legítimo (agencia por confirmar del flujo
-     7.4) y no puede bloquear el cierre. */
-  const telefono = texto.match(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i)?.[1];
-  if (telefono !== undefined) {
-    const t = telefono.replace(/[*_]/g, '').trim();
-    const digitos = (t.match(/\d/g) || []).length;
-    if (/x{2,}/i.test(t) || /confirmar|pendiente|falta/i.test(t) || digitos < 9) {
-      return 'teléfono enmascarado o de relleno en el resumen';
+  /* Completitud. Solo se exige cuando la respuesta SE PARECE al resumen
+     estándar (trae algún rótulo conocido): si una cuenta usa otro formato de
+     cierre, bloquearle todos los cierres la dejaría sin ventas — ahí la red
+     sigue siendo el candado de datos del propio auto-orden. */
+  const pareceResumen =
+    /(?:Nombre|Tel[eé]fono|Ciudad|Direcci[oó]n|Producto|Cantidad|Precio)\s*:/i.test(
+      texto,
+    );
+  if (pareceResumen) {
+    const faltan = camposFaltantesCierre(respuesta);
+    if (faltan.length) {
+      return (
+        'resumen incompleto o con relleno: falta ' +
+        faltan.map((f) => f.replace(/^- /, '').toLowerCase()).join(' | ')
+      );
     }
   }
+
   return null;
 }
 
@@ -1681,39 +1767,10 @@ async function procesarMensajeKanban(params) {
     /* Se pide SOLO lo que de verdad falta o vino de relleno. Pedir los
        cuatro grupos cuando el cliente ya dio tres suena a bot perdido y
        repregunta datos ya dados — la misma enfermedad que se curó en
-       contextoColumna. Un campo es válido si existe, no trae corchetes de
-       plantilla y no es texto de relleno; el teléfono además necesita
-       dígitos reales sin máscaras. */
-    const campo = (re) =>
-      respuestaRaw
-        .match(re)?.[1]
-        ?.replace(/[*_]/g, '')
-        .trim() || '';
-    const deRelleno = (v) =>
-      !v || v.includes('[') || /confirmar|pendiente|falta|proporcionad/i.test(v);
-
-    const nombre = campo(/🧑?\s*Nombre:\s*([^\n]+)/i);
-    const telefono = campo(/📞?\s*Tel[eé]fono:\s*([^\n]+)/i);
-    const ciudad = campo(/📍?\s*Ciudad:\s*([^\n]+)/i);
-    const direccion = campo(/🏡?\s*Direcci[oó]n:\s*([^\n]+)/i);
-
-    const faltan = [];
-    if (deRelleno(nombre) || !/\s/.test(nombre)) faltan.push('- Nombre completo');
-    if (
-      deRelleno(telefono) ||
-      /x{2,}/i.test(telefono) ||
-      (telefono.match(/\d/g) || []).length < 9
-    ) {
-      faltan.push('- Teléfono');
-    }
-    if (deRelleno(ciudad)) faltan.push('- Ciudad y provincia');
-    /* En Direccion, "por confirmar" es legítimo (agencia por confirmar). */
-    if (!direccion || direccion.includes('[')) {
-      faltan.push(
-        '- Dirección exacta (dos calles y una referencia), o la agencia ' +
-          'Servientrega si prefieres retirarlo',
-      );
-    }
+       contextoColumna. El análisis campo por campo es EL MISMO del candado
+       del paso 10 (camposFaltantesCierre): un solo criterio, o el candado
+       bloquearía por una cosa y esta petición pediría otra. */
+    const faltan = camposFaltantesCierre(respuestaRaw);
 
     soloTexto =
       faltan.length === 1
@@ -3041,7 +3098,9 @@ module.exports = {
   // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
   // igual aunque la cita no se cree).
   procesarAgendarCita,
-  // Expuesta para la batería de regresión: que un cierre con placeholders no
-  // cuente como venta es una garantía que no puede perderse en silencio.
+  // Expuestas para la batería de regresión: que un cierre con placeholders o
+  // incompleto no cuente como venta es una garantía que no puede perderse en
+  // silencio.
   motivoCierreInvalido,
+  camposFaltantesCierre,
 };

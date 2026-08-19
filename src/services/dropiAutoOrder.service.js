@@ -440,7 +440,14 @@ async function completarDatosConIA({
               'producto = nombre del producto tal como lo menciona el VENDEDOR. ' +
               'precio_total = número, el total que el cliente acordó pagar. ' +
               'cantidad = número de unidades (1 si no se especifica). ' +
-              `provincia = provincia de ${paisNombre} a la que pertenece la ciudad. ` +
+              // Ciudad con la misma regla que la variedad: el bot a veces la
+              // inventa en su resumen (caso 285: "Quito" para un cliente de
+              // Otavalo), así que solo vale la que dio el CLIENTE.
+              'ciudad = la ciudad que el CLIENTE escribió en SUS mensajes; lo que diga el VENDEDOR no vale. Si el cliente nunca la nombró, null. ' +
+              // La provincia es la EXCEPCIÓN del "no inventes": deducirla de la
+              // ciudad es geografía, no invento, y sin ella la orden cae a
+              // manual con "Sin match provincia" aunque la ciudad esté clara.
+              `provincia = provincia de ${paisNombre} a la que pertenece la ciudad: dedúcela SIEMPRE de la ciudad, aunque nadie la haya escrito en la conversación. ` +
               'modalidad_envio = "agencia servientrega" si el cliente pidió retirar en una agencia/oficina Servientrega; si es envío normal a domicilio, "domicilio". ' +
               'Si un dato no aparece en la conversación, usa null. NO inventes.',
           },
@@ -572,9 +579,17 @@ async function autoCrearOrdenDropi({
 
     // 0.5 Si el regex no extrajo los campos clave (prompt del cliente sin
     // resumen estructurado), completar con extractor IA sobre la conversación.
-    const faltanClaves = ['producto', 'ciudad', 'direccion', 'precio'].some(
-      (k) => !datosBot?.[k],
-    );
+    // La provincia también cuenta como clave: el resumen del bot la omite
+    // seguido aunque la ciudad esté (caso 285, Franklin: ciudad Quito y
+    // provincia vacía → "Sin match provincia" y orden a manual). El extractor
+    // la deduce de la ciudad.
+    const faltanClaves = [
+      'producto',
+      'ciudad',
+      'direccion',
+      'precio',
+      'provincia',
+    ].some((k) => !datosBot?.[k]);
     if (faltanClaves && api_key_openai) {
       datosBot = await completarDatosConIA({
         id_configuracion,
@@ -605,6 +620,56 @@ async function autoCrearOrdenDropi({
         'datos',
         `Teléfono inválido: "${String(datosBot.telefono || '').slice(0, 40)}"`,
       );
+
+    /* 0.7 Candado de ciudad real (solo camino del bot): la ciudad del resumen
+       la escribe el BOT y a veces la inventa — caso 285 (2026-08-17): cerró
+       con "Provincia: Pichincha / Ciudad: Quito" para un cliente de Otavalo
+       que solo había dado nombre y teléfono, y la orden SÍ se creó… a la
+       ciudad equivocada (6583444, cancelada y rehecha a mano). Igual que el
+       candado de variedad de más abajo: alguna palabra de la ciudad tiene que
+       venir de los mensajes DEL CLIENTE; si no, mejor manual que una guía a
+       otra provincia. La provincia NO se somete al candado: deducirla de la
+       ciudad es legítimo.
+
+       En el panel manual (dedupe=false) no aplica: ahí un humano puso la
+       ciudad mirando el chat — incluida una ubicación compartida que acá no
+       se puede leer. */
+    if (dedupe && String(datosBot.ciudad || '').trim() && !datosBot?._correccion_manual) {
+      const sinAcentos = (s) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '');
+      const msgsCiudad = await db.query(
+        `SELECT texto_mensaje FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 0 AND deleted_at IS NULL
+          ORDER BY id DESC LIMIT 40`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const textoCliente = sinAcentos(
+        msgsCiudad.map((m) => m.texto_mensaje).join(' '),
+      );
+      /* Por palabras y no por frase entera: el bot normaliza el nombre
+         ("Santo Domingo de los Tsáchilas") y el cliente escribe "santo
+         domingo". Con que UNA palabra significativa aparezca, alcanza. */
+      const tokensCiudad = sinAcentos(datosBot.ciudad)
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 3 && !['los', 'las', 'del'].includes(t));
+      if (
+        tokensCiudad.length &&
+        !tokensCiudad.some((t) => textoCliente.includes(t))
+      ) {
+        return fail(
+          'ciudad',
+          `Ciudad "${datosBot.ciudad}" no confirmada por el cliente ` +
+            `(no aparece en sus mensajes; posible invento del bot).`,
+        );
+      }
+    }
 
     // 1. Producto local con vínculo a Dropi (external_id)
     //    Cascada de identificación:
