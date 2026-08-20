@@ -57,7 +57,11 @@ const textoLibre = () =>
     .join(' ')
     .trim();
 
-const ID_CLIENTE = Number(opcion('cliente', 566217));
+/* `let`: un guion puede traer su propio contacto de prueba (`cliente`), y si
+   no se pasó --cliente se usa ese. Así los guiones de dropshipping corren
+   sobre la cuenta de pruebas de dropshipping sin tener que acordarse del id. */
+const CLIENTE_FLAG = Number(opcion('cliente', 0));
+let ID_CLIENTE = CLIENTE_FLAG || 566217;
 
 /* --referral <source_id>: el PRIMER mensaje de la corrida llega "desde un
    anuncio", con el objeto referral que manda Meta cuando alguien toca un
@@ -85,7 +89,112 @@ const PAUSA_MS = Number(opcion('pausa', 20)) * 1000;
    Cada uno es una conversación completa, en el orden en que la escribiría una
    persona. Lo que se está probando va en `busca`: no es una aserción automática
    —el bot redacta distinto cada vez— es lo que hay que mirar en la respuesta. */
+/* ── Aserciones automáticas de los guiones de dropshipping ──
+   Cada guion puede traer `verificar({ turnos, estadoFinal })` y devolver la
+   lista de fallas. `turnos` es la conversación tal como salió: [{ cliente,
+   bot: [textos] }] o [{ humano }] para los pasos de una persona del negocio.
+   Son aserciones de FORMA (qué NO puede volver a preguntar, a qué columna
+   tiene que llegar, cuántos resúmenes), no de redacción: el bot escribe
+   distinto cada vez, pero lo que nos trae soportes es siempre lo mismo. */
+const RE_PIDE_DIRECCION = /direcci[oó]n (?:exacta|completa|de (?:entrega|env[ií]o))|dos calles|2 calles|calle principal|y una referencia|referencia (?:para|de) (?:llegar|entrega)/i;
+const RE_PIDE_NOMBRE = /(?:tu|su|el) nombre(?: completo)?\??|nombre y apellido|apellido\??|c[oó]mo te llamas/i;
+const RE_RESUMEN = /(?:^|\n)[^\n]{0,6}?Producto\s*:/i;
+const botDijo = (t, re) => (t.bot || []).some((b) => re.test(b));
+const desdeTurno = (turnos, i) => turnos.slice(i).filter((t) => t.bot);
+const fallasComunes = ({ turnos, estadoFinal }, { desdeNombre, desdeDireccion, estadoEsperado = 'generar_guia', maxResumenes = 2 }) => {
+  const fallas = [];
+  if (desdeDireccion !== undefined) {
+    desdeTurno(turnos, desdeDireccion).forEach((t) => {
+      if (botDijo(t, RE_PIDE_DIRECCION)) fallas.push(`volvió a pedir la dirección después de "${t.cliente}"`);
+    });
+  }
+  if (desdeNombre !== undefined) {
+    desdeTurno(turnos, desdeNombre).forEach((t) => {
+      if (botDijo(t, RE_PIDE_NOMBRE) && !botDijo(t, RE_RESUMEN)) fallas.push(`volvió a pedir el nombre después de "${t.cliente}"`);
+    });
+  }
+  const resumenes = turnos.filter((t) => botDijo(t, RE_RESUMEN)).length;
+  if (resumenes > maxResumenes) fallas.push(`mandó el resumen del pedido ${resumenes} veces (máximo ${maxResumenes})`);
+  if (estadoEsperado && estadoFinal !== estadoEsperado) fallas.push(`terminó en "${estadoFinal}" y debía terminar en "${estadoEsperado}"`);
+  return fallas;
+};
+
 const ESCENARIOS = {
+  /* ── Dropshipping sobre la cuenta de pruebas (cfg 610, contacto 452858) ──
+     Reproducen los soportes del 19 y 20 de agosto de 2026: el bot que pide
+     la dirección a quien retira en agencia (360, Delfin), el que pierde el
+     apellido y cierra sin tag (302, Josué), y el que repregunta lo ya dado.
+     Correr con --columna contacto_inicial para arrancar limpio. */
+  dropi_agencia: {
+    cliente: 452858,
+    titulo: 'Retiro en agencia: NO debe pedir dirección de domicilio ni repreguntar (caso 360, Delfin)',
+    mensajes: [
+      'Hola, quiero comprar el Guante Anticorte de Acero Inoxidable',
+      'Soy de Orellana, del Coca',
+      'Uno nomás',
+      'Quiero retirar en la Servientrega del Coca, mi número es 0961871183',
+      'Delfin Alvarado',
+      { tipo: 'humano', texto: 'La Servientrega del Coca queda en la 9 de Octubre y Francisco de Orellana' },
+      'ok ya le pasé esa dirección a mi hija, ella retira y paga',
+    ],
+    busca:
+      'Después de "retiro en la Servientrega" NUNCA puede pedir "dirección exacta / dos calles / referencia". ' +
+      'Con el nombre tiene que cerrar (resumen + tag) y el contacto terminar en Generar Guia. ' +
+      'La línea Direccion del resumen debe ser la agencia por confirmar — Coca.',
+    verificar: (r) => fallasComunes(r, { desdeDireccion: 3, desdeNombre: 5 }),
+  },
+
+  dropi_datos_sueltos: {
+    cliente: 452858,
+    titulo: 'Datos en pedazos + gracias repetidos: un solo cierre, sin repreguntar (caso 302, Josué)',
+    mensajes: [
+      'Hola! Quiero comprar el Onn Watch TV',
+      'Quito',
+      'Solo uno, ¿cuánto está?',
+      'A domicilio',
+      'Josué',
+      'Yumbulema, mi teléfono es 0995438411',
+      'Vilcabamba y Mariscal Sucre, referencia licorería Vivanco',
+      'Si está correcto muchas gracias',
+      'Muchas gracias, le espero',
+      'Listo',
+    ],
+    busca:
+      'Con "Josué" solo puede pedir el APELLIDO (no el nombre otra vez). Tras el apellido+teléfono no puede volver a pedir ' +
+      'nombre ni teléfono; tras la dirección no puede volver a pedirla. Un solo resumen con el tag (máximo dos si su flujo ' +
+      'confirma antes), el contacto termina en Generar Guia, y a "Muchas gracias, le espero" / "Listo" NO responde con otro resumen.',
+    verificar: (r) => {
+      const f = fallasComunes(r, { desdeNombre: 6, desdeDireccion: 7 });
+      const t = r.turnos;
+      const resumenTras = (i) => t[i] && botDijo(t[i], RE_RESUMEN);
+      if (resumenTras(8) || resumenTras(9)) f.push('volvió a mandar el resumen después de que el cliente ya había confirmado');
+      const ultimo = [...t].reverse().find((x) => botDijo(x, RE_RESUMEN));
+      if (ultimo && !(ultimo.bot || []).some((b) => /0995438411/.test(b))) f.push('el resumen no lleva el teléfono que dio el cliente');
+      if (ultimo && !(ultimo.bot || []).some((b) => /Yumbulema/i.test(b))) f.push('el resumen no lleva el apellido que dio el cliente');
+      return f;
+    },
+  },
+
+  dropi_todo_junto: {
+    cliente: 452858,
+    titulo: 'El cliente manda TODOS los datos de una: cero repreguntas, cierre directo',
+    mensajes: [
+      'Hola, quiero el Onn Watch TV, solo uno. Soy Carlos Pérez, de Guayaquil, mi celular es 0991234567, envíenlo a domicilio a Av. 9 de Octubre y Malecón, referencia frente al Banco Pichincha',
+      'Sí, todo correcto, gracias',
+      'Gracias, quedo atento',
+    ],
+    busca:
+      'No puede pedir nombre, teléfono, ciudad ni dirección (ya los dio todos). Como mucho confirma/cierra. ' +
+      'Un solo resumen con el tag, el contacto termina en Generar Guia, y al "quedo atento" no responde con otro resumen.',
+    verificar: (r) => {
+      const f = fallasComunes(r, { desdeNombre: 0, desdeDireccion: 0 });
+      const t = r.turnos;
+      if (t.some((x) => botDijo(x, /tu (?:n[uú]mero|tel[eé]fono|celular)\??|a qu[eé] ciudad/i) && !botDijo(x, RE_RESUMEN))) f.push('volvió a pedir teléfono o ciudad ya dados');
+      if (t[2] && botDijo(t[2], RE_RESUMEN)) f.push('volvió a mandar el resumen después del cierre');
+      return f;
+    },
+  },
+
   /* Dropshipping (correr con --cliente <id> --referral <source_id>).
      El primer mensaje NO nombra el producto a propósito: obliga a que el ancla
      salga del mapa del anuncio (anuncios_producto), que es el caso real. */
@@ -455,6 +564,29 @@ async function reset(estado = 'contacto_inicial') {
     replacements: [ID_CLIENTE],
     type: db.QueryTypes.DELETE,
   });
+  /* Mismo corte que el botón "Reiniciar conversación" del panel: el recap y
+     la ficha del pedido solo miran lo que venga DESPUÉS. Sin esto, la prueba
+     heredaría el nombre/dirección de la corrida anterior como datos "ya
+     dados" y no probaría nada. Si la columna no existe (migración no
+     aplicada), se sigue como antes. */
+  await db
+    .query(
+      `UPDATE clientes_chat_center
+          SET reinicio_conversacion_at = NOW(), turnos_sin_avance = 0
+        WHERE id = ?`,
+      { replacements: [ID_CLIENTE], type: db.QueryTypes.UPDATE },
+    )
+    .catch(() =>
+      /* sin la columna reinicio_conversacion_at (migración no aplicada) al
+         menos se limpia el contador: si no, la red de "15 turnos sin avance"
+         suma las corridas anteriores y manda la prueba a asesor a mitad. */
+      db
+        .query(`UPDATE clientes_chat_center SET turnos_sin_avance = 0 WHERE id = ?`, {
+          replacements: [ID_CLIENTE],
+          type: db.QueryTypes.UPDATE,
+        })
+        .catch(() => {}),
+    );
 
   const [s] = await db.query(
     `UPDATE citas_solicitudes SET estado = 'descartada'
@@ -469,8 +601,67 @@ async function reset(estado = 'contacto_inicial') {
   );
 }
 
+/* Un mensaje de una PERSONA del negocio en medio del guion: se inserta como
+   saliente (rol 1, responsable humano), igual que lo deja el panel cuando un
+   asesor escribe. El bot tiene que verlo como contexto (6.8 del servicio). */
+async function insertarMensajeHumano(cli, cfg, texto) {
+  const [ult] = await db.query(
+    `SELECT id_cliente, mid_mensaje, uid_whatsapp FROM mensajes_clientes
+      WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 1
+      ORDER BY id DESC LIMIT 1`,
+    { replacements: [cfg.id, String(ID_CLIENTE)], type: db.QueryTypes.SELECT },
+  );
+  if (!ult) throw new Error('no hay un mensaje saliente previo del que copiar los campos');
+  await db.query(
+    `INSERT INTO mensajes_clientes
+       (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje, responsable,
+        texto_mensaje, rol_mensaje, celular_recibe, uid_whatsapp,
+        id_wamid_mensaje, visto, created_at, updated_at)
+     VALUES (?, ?, ?, 'text', 'Asesor (prueba)', ?, 1, ?, ?, ?, 1, NOW(), NOW())`,
+    {
+      replacements: [
+        cfg.id,
+        ult.id_cliente,
+        ult.mid_mensaje,
+        texto,
+        String(ID_CLIENTE),
+        ult.uid_whatsapp,
+        `wamid.HUMANO${Date.now()}`,
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+}
+
+/* El servicio no manda dos resúmenes de cierre al mismo contacto en menos de
+   5 minutos (utils/dedupeAutoOrden → reclamarResumenCierre). Dos guiones
+   seguidos sobre el MISMO contacto de prueba chocan con eso: el segundo
+   cierre se procesa (columna, orden) pero el resumen no sale y la prueba
+   parece fallar. Si hubo un resumen hace menos de 5 min, se espera. */
+async function esperarCandadoResumen(idc) {
+  const [r] = await db.query(
+    `SELECT TIMESTAMPDIFF(SECOND, MAX(created_at), NOW()) AS hace
+       FROM mensajes_clientes
+      WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 1
+        AND texto_mensaje LIKE '%Producto:%'
+        AND created_at >= NOW() - INTERVAL 5 MINUTE`,
+    { replacements: [idc, String(ID_CLIENTE)], type: db.QueryTypes.SELECT },
+  );
+  const hace = r?.hace === null || r?.hace === undefined ? null : Number(r.hace);
+  if (hace === null) return;
+  const faltan = 5 * 60 - hace + 5;
+  if (faltan <= 0) return;
+  console.log(
+    `⏳ Hace ${hace}s salió un resumen de cierre a este contacto: espero ${faltan}s ` +
+      `por el candado anti-resumen-repetido (5 min) antes de empezar.\n`,
+  );
+  await dormir(faltan * 1000);
+}
+
 async function enviar(mensajes) {
   const { cli, cfg } = await contexto();
+  await esperarCandadoResumen(cfg.id);
+  const turnos = [];
 
   console.log(
     `\n⚠️  El bot va a responder por WhatsApp DE VERDAD al ${cli.celular_cliente} ` +
@@ -518,6 +709,19 @@ async function enviar(mensajes) {
     }
 
     const mensaje = mensajes[i];
+
+    // Paso de una persona del negocio: se inserta y se sigue (no dispara al bot).
+    if (mensaje && typeof mensaje === 'object' && mensaje.tipo === 'humano') {
+      try {
+        await insertarMensajeHumano(cli, cfg, mensaje.texto);
+        console.log(`👩‍💼 (asesor) ${mensaje.texto}\n`);
+        turnos.push({ humano: mensaje.texto });
+      } catch (e) {
+        console.log(`⚠️  No se pudo insertar el mensaje del asesor: ${e.message}\n`);
+      }
+      continue;
+    }
+
     const desdeId = await ultimoId(cfg.id);
     const { payload } = armarPayload({
       cli,
@@ -567,11 +771,17 @@ async function enviar(mensajes) {
         if (r.responsable) console.log(`   ↳ ${r.responsable}`);
       });
     }
+    turnos.push({
+      cliente: texto,
+      bot: respuestas.map((r) => String(r.texto_mensaje || '')),
+    });
     console.log('');
   }
 
   console.log('── Cómo quedó ──');
   await mostrarEstado('  ');
+  const { cli: fin } = await contexto();
+  return { turnos, estadoFinal: String(fin.estado_contacto || '').toLowerCase() };
 }
 
 (async () => {
@@ -609,13 +819,30 @@ async function enviar(mensajes) {
       );
       process.exit(1);
     }
+    // El guion trae su contacto de prueba; --cliente explícito manda.
+    if (!CLIENTE_FLAG && esc.cliente) ID_CLIENTE = esc.cliente;
     console.log(`\n═══ ${esc.titulo} ═══`);
     console.log(`Qué mirar: ${esc.busca}`);
     if (columna) {
       await reset(columna);
       console.log('');
     }
-    await enviar(esc.mensajes);
+    const resultado = await enviar(esc.mensajes);
+    if (typeof esc.verificar === 'function') {
+      let fallas = [];
+      try {
+        fallas = esc.verificar(resultado) || [];
+      } catch (e) {
+        fallas = [`la verificación reventó: ${e.message}`];
+      }
+      console.log('\n── Verificación automática ──');
+      if (fallas.length) {
+        fallas.forEach((f) => console.log(`  ❌ ${f}`));
+        console.log(`\n❌ ${fallas.length} falla(s) en "${nombreEsc}"`);
+        process.exit(1);
+      }
+      console.log('  ✅ sin fallas conocidas');
+    }
     process.exit(0);
   }
 

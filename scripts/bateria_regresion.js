@@ -453,6 +453,198 @@ async function suiteA() {
       limpiarMetaRemarketing(soloJerga) === soloJerga,
     );
   }
+
+  // 12. Ficha del pedido (casos 302 Josué y 360 Delfin, 2026-08-19/20): el
+  //     cierre se completa con lo que el cliente YA dijo en vez de pedírselo
+  //     otra vez; el cierre "narrado" sin tag se reconoce; y la ficha no
+  //     inventa (cada valor tiene que estar en las palabras del cliente).
+  {
+    const {
+      completarResumenConFicha,
+      esCierreNarrado,
+      pareceResumenDePedido,
+      faltantesFicha,
+      bloqueFichaPedido,
+      aparecioEnCliente,
+    } = require('../src/utils/fichaPedido');
+    const { motivoCierreInvalido } = require('../src/services/kanban_ia.service');
+
+    // a) Caso 302 (Josué): "Nombre: Josué" con el apellido dicho por el cliente,
+    //    y "gracias por tu compra" SIN tag → cierre narrado con resumen.
+    const r302 =
+      '¡Perfecto, Josué! 😊 Aquí tienes el resumen de tu pedido:\n\n' +
+      '🧑 **Nombre:** Josué  \n📞 **Teléfono:** 0995438411  \n' +
+      '📍 **Provincia:** Pichincha  \n📍 **Ciudad:** Quito  \n' +
+      '🏡 **Dirección:** Vilcabamba  \n🔖 **Referencia:** Licorería Vivanco  \n' +
+      '📦 **Producto:** Cinturón Anticólicos x1  \n💰 **Total:** $21.99\n\n' +
+      '¡Muchas gracias por tu compra! 😊 Agradecemos tu confianza.';
+    const ficha302 = {
+      nombre: 'Josué yumbulema',
+      telefono: '0995438411',
+      ciudad: 'Quito',
+      provincia: 'Pichincha',
+      direccion: 'Vilcabamba',
+      referencia: 'licorería Vivanco',
+      entrega: 'domicilio',
+      agencia: '',
+      producto: 'Cinturón Anticólicos',
+      cantidad: '1',
+      variedad: '',
+      confirmo_pedido: true,
+    };
+    caso(
+      'caso 302: "gracias por tu compra" + resumen sin tag se reconoce como cierre narrado',
+      esCierreNarrado(r302) && pareceResumenDePedido(r302),
+    );
+    const c302 = completarResumenConFicha(r302, ficha302);
+    caso(
+      'caso 302: el nombre de una palabra se completa con el apellido que dio el cliente',
+      c302.completados.includes('nombre') &&
+        /Nombre:\*\* Josué yumbulema/.test(c302.texto) &&
+        motivoCierreInvalido(c302.texto) === null,
+      `completados=${c302.completados} motivo=${motivoCierreInvalido(c302.texto)}`,
+    );
+
+    // b) Caso 360 (Delfin, retiro en agencia): resumen con solo
+    //    Producto/Precio/Envío → se completa Nombre, Provincia, Ciudad y la
+    //    agencia por confirmar, y el validador lo deja pasar.
+    const r360 =
+      'Aquí está el resumen:\n\n📦 Producto: Mascara protectora facial transparente x2  \n' +
+      '💰 Precio total: $19.99  \n🚚 Envío: Agencia Servientrega, Orellana\n\n' +
+      'Gracias por tu compra. ¡Tu hija podrá retirar y pagar al momento!  \n[generar_guia]:true';
+    const ficha360 = {
+      nombre: 'Delfin Alvarado',
+      telefono: '0961871183',
+      ciudad: 'Coca',
+      provincia: 'Orellana',
+      direccion: '',
+      referencia: '',
+      entrega: 'agencia',
+      agencia: '',
+      producto: 'Mascara protectora facial transparente',
+      cantidad: '2',
+      variedad: '',
+      confirmo_pedido: false,
+    };
+    caso(
+      'caso 360: el resumen sin nombre/ciudad se bloqueaba antes de la ficha',
+      motivoCierreInvalido(r360) !== null,
+    );
+    const c360 = completarResumenConFicha(r360, ficha360);
+    caso(
+      'caso 360: la ficha completa nombre, provincia, ciudad y agencia y el cierre pasa',
+      ['nombre', 'provincia', 'ciudad', 'agencia'].every((k) =>
+        c360.completados.includes(k),
+      ) &&
+        /Nombre: Delfin Alvarado/.test(c360.texto) &&
+        /Direccion: Agencia Servientrega por confirmar — Coca/.test(c360.texto) &&
+        motivoCierreInvalido(c360.texto) === null,
+      `completados=${c360.completados} motivo=${motivoCierreInvalido(c360.texto)}`,
+    );
+
+    // c) Placeholders del prompt: se reemplazan por lo que el cliente dio; la
+    //    línea de teléfono falsa se quita si el cliente no dio número.
+    const rPh =
+      'Listo! Pedido confirmado:\n🧑 Nombre: [nombre completo]\n📞 Telefono: [tu numero]\n' +
+      '📍 Ciudad: Quito\n🏡 Direccion: (pendiente)\n📦 Producto: Reloj x1\n💰 Precio total: $20\n[generar_guia]:true';
+    const cPh = completarResumenConFicha(rPh, {
+      nombre: 'Ana María Pérez',
+      telefono: '',
+      ciudad: 'Quito',
+      provincia: 'Pichincha',
+      direccion: 'Av. Amazonas y Colón',
+      referencia: 'frente al parque',
+      entrega: 'domicilio',
+    });
+    caso(
+      'placeholders del resumen se reemplazan con la ficha y el cierre pasa',
+      /Nombre: Ana María Pérez/.test(cPh.texto) &&
+        !/\[tu numero\]/.test(cPh.texto) &&
+        /Direccion: Av\. Amazonas y Colón \(frente al parque\)/.test(cPh.texto) &&
+        motivoCierreInvalido(cPh.texto) === null,
+      `motivo=${motivoCierreInvalido(cPh.texto)}`,
+    );
+
+    // d) Lo que NO se toca: sin ficha, sin resumen, o un nombre DISTINTO al
+    //    de la ficha (ahí decide el validador, no se pisa).
+    caso(
+      'sin resumen reconocible no se completa nada',
+      completarResumenConFicha('¡Gracias por tu compra!', ficha302).completados
+        .length === 0,
+    );
+    const otroNombre = r302.replace('Josué  ', 'Carlos  ');
+    caso(
+      'un nombre distinto al de la ficha no se pisa',
+      !completarResumenConFicha(otroNombre, ficha302).completados.includes(
+        'nombre',
+      ),
+    );
+    caso(
+      'un "pedido registrado" sin resumen NO se infiere como cierre',
+      esCierreNarrado('¡Tu pedido ha sido registrado con éxito! Gracias') &&
+        !pareceResumenDePedido('¡Tu pedido ha sido registrado con éxito! Gracias'),
+    );
+
+    // e) Qué falta según la ficha = el mismo criterio del validador.
+    caso(
+      'ficha: retiro en agencia con ciudad NO pide dirección',
+      faltantesFicha(ficha360).length === 0,
+      JSON.stringify(faltantesFicha(ficha360)),
+    );
+    caso(
+      'ficha: nombre de pila solo pide el APELLIDO, no el nombre otra vez',
+      /Apellido/.test(faltantesFicha({ ...ficha302, nombre: 'Josué' }).join(' ')),
+    );
+    caso(
+      'ficha vacía pide nombre, ciudad y dirección/agencia (no teléfono)',
+      (() => {
+        const f = faltantesFicha({}).join(' | ');
+        return /Nombre completo/.test(f) && /Ciudad/.test(f) && /Direcci/.test(f) && !/Tel/.test(f);
+      })(),
+    );
+    const bloqueAg = bloqueFichaPedido(ficha360, { trigger: '[generar_guia]:true' });
+    caso(
+      'bloque de ficha en agencia: prohíbe pedir dirección de domicilio y dicta el cierre',
+      /NO existe dirección de domicilio/.test(bloqueAg) &&
+        /No falta ningún dato/.test(bloqueAg) &&
+        /\[generar_guia\]:true/.test(bloqueAg),
+    );
+    caso(
+      'bloque de ficha con faltante: dice qué falta y no dicta el cierre todavía',
+      (() => {
+        const b = bloqueFichaPedido({ ...ficha302, nombre: 'Josué' }, {});
+        return /❌ FALTA: Apellido/.test(b) && /pide SOLO lo que está en ❌/.test(b);
+      })(),
+    );
+
+    // g) Apellido en mensaje aparte (prueba 610 del 2026-08-20): "Josué" → el
+    //    bot pide el apellido → "Yumbulema, mi teléfono es…" = Josué Yumbulema.
+    //    Y un "Listo"/"Quito" después de pedir el apellido NO es apellido.
+    const { completarApellido } = require('../src/utils/fichaPedido');
+    const charla = [
+      { rol: 'CLIENTE', texto: 'Josué' },
+      { rol: 'ASISTENTE', texto: 'Genial, Josué. Para proceder, necesito tu apellido y la dirección exacta.' },
+      { rol: 'CLIENTE', texto: 'Yumbulema, mi teléfono es 0995438411' },
+    ];
+    caso(
+      'apellido dado en otro mensaje se une al nombre de pila',
+      completarApellido('Josué', charla) === 'Josué Yumbulema',
+      completarApellido('Josué', charla),
+    );
+    caso(
+      'un "Listo" después de pedir el apellido no se toma como apellido',
+      completarApellido('Josué', [charla[0], charla[1], { rol: 'CLIENTE', texto: 'Listo' }]) === 'Josué' &&
+        completarApellido('Delfin Alvarado', charla) === 'Delfin Alvarado',
+    );
+
+    // f) Anti-invento: un valor que no está en las palabras del cliente no vale.
+    caso(
+      'anti-invento: el nombre tiene que estar en lo que escribió el cliente',
+      aparecioEnCliente('Josué Yumbulema', 'mi nombre es josue yumbulema') &&
+        !aparecioEnCliente('Pedro Pérez', 'hola soy Juan') &&
+        aparecioEnCliente('0961871183', 'mi número es 0961871183', { esTelefono: true }),
+    );
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.
