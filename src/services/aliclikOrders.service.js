@@ -428,6 +428,150 @@ async function bloquearConfirmacionEnFrio({
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Imágenes de producto
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Caché en memoria del catálogo, por configuración: { nombre → urlImage }.
+ *
+ * Hace falta porque los pedidos NO traen imagen: `products[]` da
+ * {skuId, product, quantity, price, subtotal} y nada más. Y el `skuId` no
+ * sirve para cruzar — el catálogo público no expone ningún id de SKU
+ * (comprobado: sus SKUs son {ean, name, regularPrice, dropPrice,
+ * stockVirtual, warehouseId, warehouseName}). Lo único común entre las dos
+ * respuestas es el NOMBRE del producto.
+ *
+ * Se cachea porque el listado de pedidos se pide cada vez que el asesor abre
+ * un chat, y sin esto cada apertura dispararía una llamada al catálogo.
+ */
+const catalogoImgCache = new Map(); // id_configuracion → { at, mapa }
+const CATALOGO_TTL_MS = 10 * 60 * 1000;
+
+async function getMapaImagenes(id_configuracion, token) {
+  const cacheado = catalogoImgCache.get(id_configuracion);
+  if (cacheado && Date.now() - cacheado.at < CATALOGO_TTL_MS) {
+    return cacheado.mapa;
+  }
+
+  const mapa = new Map();
+  try {
+    // limit=100 es el máximo que acepta Aliclik. Con catálogos más grandes
+    // quedarían productos sin imagen, que degrada bien (se ve el placeholder).
+    const data = await aliclikService.listProducts({
+      token,
+      params: { page: 1, limit: 100 },
+    });
+    for (const p of Array.isArray(data?.result) ? data.result : []) {
+      const nombre = String(p?.name || '').trim().toLowerCase();
+      if (nombre && p?.urlImage && !mapa.has(nombre)) {
+        mapa.set(nombre, p.urlImage);
+      }
+    }
+  } catch (err) {
+    // Si el catálogo falla, el listado igual se muestra: sin imagen, no roto.
+    console.log(
+      `[Aliclik] no se pudo cargar el catálogo para imágenes (cfg ${id_configuracion}): ${err?.message || err}`,
+    );
+  }
+
+  catalogoImgCache.set(id_configuracion, { at: Date.now(), mapa });
+  return mapa;
+}
+
+/**
+ * Deja un nombre en forma comparable: sin acentos, en minúsculas, sin la
+ * cantidad que Aliclik antepone en el resumen ("1 Mouse…"), sin el código de
+ * tienda entre paréntesis del final ("… (TEC97X)") y con los espacios
+ * colapsados. Se aplica a los dos lados del cruce para que un acento o un
+ * espacio doble no rompan la coincidencia.
+ */
+function normalizarNombreProducto(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/^\s*\d+\s+/, '')
+    .replace(/\s*\([^()]*\)\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Convierte el resumen de texto del pedido en ítems.
+ *
+ * Los pedidos cacheados antes de que se guardara `productos` solo tienen
+ * `product_detail`, el string que arma Aliclik:
+ *   "1 Mouse Vertical Recargable Ergonómico (TEC97X)"
+ * Guardarlo tal cual como nombre dejaba la cantidad pegada al texto y, sobre
+ * todo, impedía cruzarlo con el catálogo (ningún producto se llama
+ * "1 Mouse…"), que es por lo que no aparecía la foto.
+ *
+ * Se corta antes de cada "N " que abre un ítem nuevo, para no partir nombres
+ * que lleven comas dentro.
+ */
+function parseProductDetail(texto) {
+  const crudo = String(texto || '').trim();
+  if (!crudo) return [];
+
+  return crudo
+    .split(/\s*[\n,]\s*(?=\d+\s+\S)/)
+    .map((parte) => {
+      const m = parte.trim().match(/^(\d+)\s+(.*)$/);
+      const cantidad = m ? Number(m[1]) : null;
+      // El código entre paréntesis del final es de la tienda, no del
+      // producto: no le dice nada al asesor y estorba en la tarjeta.
+      const nombre = (m ? m[2] : parte)
+        .replace(/\s*\([^()]*\)\s*$/, '')
+        .trim();
+      return nombre ? { name: nombre, quantity: cantidad, image: null } : null;
+    })
+    .filter(Boolean);
+}
+
+/** Rellena `image` en cada producto de cada pedido, cruzando por nombre. */
+async function adjuntarImagenesDeCatalogo({ id_configuracion, token, ordenes }) {
+  const necesita = ordenes.some((o) =>
+    (o.productos || []).some((p) => p?.name && !p.image),
+  );
+  if (!necesita) return;
+
+  const mapa = await getMapaImagenes(id_configuracion, token);
+  if (!mapa.size) return;
+
+  // El mapa se indexa por el nombre ya normalizado, y se guardan los nombres
+  // del más largo al más corto para el segundo intento: se prefiere la
+  // coincidencia más específica y así un nombre corto y genérico no le gana a
+  // uno que describe mejor el producto.
+  const mapaNorm = new Map();
+  for (const [nombre, url] of mapa) {
+    const clave = normalizarNombreProducto(nombre);
+    if (clave && !mapaNorm.has(clave)) mapaNorm.set(clave, url);
+  }
+  const nombresCatalogo = [...mapaNorm.keys()].sort((a, b) => b.length - a.length);
+
+  for (const orden of ordenes) {
+    for (const prod of orden.productos || []) {
+      if (prod.image || !prod.name) continue;
+      const nombre = normalizarNombreProducto(prod.name);
+
+      // 1) Coincidencia exacta, que es el caso normal.
+      let url = mapaNorm.get(nombre);
+
+      // 2) El pedido suele traer el nombre CON la variante
+      //    ("Gorra azul- rojo") mientras que el catálogo guarda solo el
+      //    producto ("Gorra"). Se busca el nombre de catálogo más largo con el
+      //    que empiece.
+      if (!url) {
+        const base = nombresCatalogo.find((n) => nombre.startsWith(n));
+        if (base) url = mapaNorm.get(base);
+      }
+
+      prod.image = url || null;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
    Puntos de entrada
    ═══════════════════════════════════════════════════════════ */
 
@@ -501,11 +645,39 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
       shipping_company: '',
       order_created_at: r.order_created_at,
       shop_name: integration.store_name || 'Aliclik',
-      productos: r.product_detail
-        ? [{ name: r.product_detail, sku: '', quantity: null, image: null }]
-        : [],
+
+      // Detalle real por ítem cuando el pedido se cacheó con la versión nueva
+      // de normalizarOrden. Los cacheados antes solo tienen el resumen de
+      // texto (product_detail), así que se cae a eso para no dejar la columna
+      // vacía hasta que el cron los refresque.
+      productos:
+        Array.isArray(od?.productos) && od.productos.length
+          ? od.productos.map((p) => ({
+              name: p.name || '',
+              quantity: p.quantity ?? null,
+              price: Number(p.price || 0),
+              subtotal: Number(p.subtotal || 0),
+              sku_id: p.sku_id ?? null,
+              image: null, // se rellena abajo con el catálogo
+            }))
+          : parseProductDetail(r.product_detail),
     };
   });
+
+  // Imágenes: una sola pasada para todo el lote, con caché de 10 min.
+  // Best-effort — si el catálogo falla, la lista se muestra igual sin fotos.
+  try {
+    const token = decryptToken(integration.token_enc);
+    if (token?.trim()) {
+      await adjuntarImagenesDeCatalogo({
+        id_configuracion,
+        token,
+        ordenes: objects,
+      });
+    }
+  } catch (err) {
+    console.log(`[Aliclik] imágenes de catálogo: ${err?.message || err}`);
+  }
 
   const enriched = await enrichOrdersWithChatAndAgent({
     id_configuracion,
