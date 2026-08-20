@@ -199,10 +199,28 @@ function normalizarOrden(o) {
     channel: o?.channel || null,
     notes: o?.note || null,
 
-    // Aliclik no devuelve el nombre del producto por item (solo skuId), pero sí
-    // un resumen textual en productDetail. resolveVariable('contenido') lo
-    // prefiere cuando existe.
+    // Resumen textual del pedido ("1 Mouse Vertical Recargable (TEC97X)").
+    // resolveVariable('contenido') lo prefiere cuando existe.
     contenido_texto: o?.productDetail || null,
+
+    // Detalle por ítem. La documentación de Aliclik solo menciona
+    // {skuId, quantity, price, subtotal}, pero la respuesta real TAMBIÉN trae
+    // `product` con el nombre — verificado contra un pedido real. Se conserva
+    // porque es lo que permite listar los productos uno por uno en el panel en
+    // vez de mostrar solo el resumen de texto.
+    //
+    // No hay imagen acá: la única forma de obtenerla es cruzar contra el
+    // catálogo (ver adjuntarImagenesDeCatalogo en aliclikOrders.service).
+    productos: (Array.isArray(o?.products) ? o.products : []).map((p) => ({
+      sku_id: p?.skuId ?? null,
+      name: p?.product || null,
+      quantity: Number(p?.quantity ?? 0) || null,
+      price: Number(p?.price ?? 0),
+      subtotal: Number(p?.subtotal ?? 0),
+    })),
+
+    // Se deja vacío a propósito: los helpers de plantillas de Dropi lo leen y
+    // esperan su forma, que no es la de Aliclik.
     orderdetails: [],
 
     created_at: o?.createdAt || null,
