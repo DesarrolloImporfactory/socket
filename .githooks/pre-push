@@ -19,7 +19,7 @@
 
 [ -n "$SKIP_BATERIA" ] && exit 0
 
-MOTOR='^src/utils/contextoColumna\.js$|^src/utils/palabrasFrecuentesChat\.json$|^src/utils/dedupeMedia\.js$|^src/utils/openia/|^src/utils/webhook_whatsapp/|^src/services/kanban_ia\.service\.js$|^src/services/syncCatalogoKanbanColumna\.service\.js$|^src/controllers/webhook_meta_whatsapp\.controller\.js$'
+MOTOR='^src/utils/contextoColumna\.js$|^src/utils/palabrasFrecuentesChat\.json$|^src/utils/dedupeMedia\.js$|^src/utils/fichaPedido\.js$|^src/utils/productoNombrado\.js$|^src/utils/agruparRafaga\.js$|^src/utils/turnoPorCliente\.js$|^src/utils/openia/|^src/utils/webhook_whatsapp/|^src/services/kanban_ia\.service\.js$|^src/services/syncCatalogoKanbanColumna\.service\.js$|^src/controllers/webhook_meta_whatsapp\.controller\.js$'
 
 toca=0
 while read local_ref local_sha remote_ref remote_sha; do

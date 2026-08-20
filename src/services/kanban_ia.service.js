@@ -87,6 +87,28 @@ const {
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
 const { esperarRafaga } = require('../utils/agruparRafaga');
 
+// Un turno de OpenAI a la vez por cliente: los huecos >8s que la ráfaga ya no
+// agrupa corrían en paralelo y bifurcaban la cadena de previous_response_id
+// (ver el encabezado de utils/turnoPorCliente.js).
+const { tomarTurnoCliente } = require('../utils/turnoPorCliente');
+
+// Ficha del pedido: lo que el CLIENTE ya dijo, leído de mensajes_clientes.
+// Se le dicta al modelo (no repreguntar), completa el resumen de cierre cuando
+// el modelo omite un dato que el cliente sí dio, y detecta el cierre narrado
+// sin tag (ver el encabezado de utils/fichaPedido.js).
+const {
+  extraerFichaPedido,
+  bloqueFichaPedido,
+  completarResumenConFicha,
+  esCierreNarrado,
+  pareceResumenDePedido,
+  nombrePaisDe,
+} = require('../utils/fichaPedido');
+
+// ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
+// venta_producto y el adjunto de la foto del producto (ver su encabezado).
+const { productoNombrado } = require('../utils/productoNombrado');
+
 // Ubicación compartida por WhatsApp → dirección/ciudad/provincia en palabras
 const {
   parseUbicacionJson,
@@ -950,19 +972,38 @@ async function procesarMensajeKanban(params) {
      al tercer cierre bloqueado consecutivo escala a asesor (caso 495, Iván:
      4 peticiones idénticas seguidas → "ya no las necesito", venta muerta). */
   let peticionesCierrePrevias = 0;
+  // Últimos mensajes salientes (IA y personas): los usan el 6.7, el 6.8 y la
+  // detección del cierre narrado. Se declara afuera para no consultarlos tres
+  // veces.
+  let ultimosBot = [];
   const accCierreVenta = getAcciones('cambiar_estado')
     .map((ac) => parseConfig(ac))
     .find((c) => c.estado_destino === 'generar_guia' && c.trigger);
   if (accCierreVenta) {
     try {
-      const ultimosBot = await db.query(
-        `SELECT texto_mensaje FROM mensajes_clientes
+      /* Mismo corte que el recap y la ficha: después de "Reiniciar
+         conversación" no cuentan ni la petición de datos, ni el cierre
+         narrado, ni los mensajes del asesor de la conversación anterior. */
+      let desdeReinicio = null;
+      try {
+        const [cliR] = await db.query(
+          `SELECT reinicio_conversacion_at FROM clientes_chat_center
+            WHERE id = ? LIMIT 1`,
+          { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+        );
+        desdeReinicio = cliR?.reinicio_conversacion_at || null;
+      } catch (_) {}
+      ultimosBot = await db.query(
+        `SELECT texto_mensaje, responsable, created_at FROM mensajes_clientes
           WHERE celular_recibe = ? AND id_configuracion = ?
             AND rol_mensaje = 1 AND deleted_at IS NULL
             AND tipo_mensaje = 'text'
+            ${desdeReinicio ? 'AND created_at > ?' : ''}
           ORDER BY id DESC LIMIT 10`,
         {
-          replacements: [id_cliente, id_configuracion],
+          replacements: desdeReinicio
+            ? [id_cliente, id_configuracion, desdeReinicio]
+            : [id_cliente, id_configuracion],
           type: db.QueryTypes.SELECT,
         },
       );
@@ -991,6 +1032,135 @@ async function procesarMensajeKanban(params) {
       }
     } catch (e) {
       await log(`⚠️ Error detectando cierre bloqueado previo: ${e.message}`);
+    }
+  }
+
+  /* ── 6.8 Ficha del pedido + asesor humano + cierre narrado ──
+     Todo lo que sigue es código, no prompt: vale igual para todas las cuentas
+     con cierre de venta (accCierreVenta). Ver utils/fichaPedido.js.
+
+     a) MENSAJES DE UNA PERSONA DEL NEGOCIO. Cuando un asesor escribe en el
+        chat, el modelo no lo ve (la cadena de OpenAI solo lleva lo que este
+        código le manda) y lo contradice o repite (caso 360, Delfin: la
+        asesora confirmó la agencia y el bot siguió pidiendo "dirección
+        exacta"). Se le pasan como contexto para que los tenga en cuenta.
+
+     b) FICHA DEL PEDIDO: lo que el cliente YA dijo, extraído de SUS mensajes
+        y verificado contra ellos. Se inyecta solo en la fase de datos (el bot
+        ya pidió/mencionó datos, o el mensaje trae uno) para no gastar la
+        llamada en el "hola, precio". La ficha también se usa en el paso 10
+        para completar el resumen antes de validarlo.
+
+     c) CIERRE NARRADO SIN TAG en el turno anterior: el último mensaje de la
+        IA dijo "gracias por tu compra"/"pedido registrado" y, como seguimos en
+        esta columna, el sistema NO lo procesó (caso 302, Josué: 4 "resúmenes
+        finales" seguidos). Se le dice que la venta NO está cerrada y que
+        cierre bien, una sola vez, con el tag. */
+  let fichaPedido = null;
+  if (accCierreVenta) {
+    // a) persona del negocio en el chat (últimas 24 h)
+    try {
+      const hace24h = Date.now() - 24 * 60 * 60 * 1000;
+      const humanos = ultimosBot
+        .filter(
+          (m) =>
+            m.responsable &&
+            !/^IA_/i.test(String(m.responsable)) &&
+            String(m.texto_mensaje || '').trim() &&
+            !String(m.texto_mensaje || '').startsWith(PREFIJO_PETICION_DATOS) &&
+            new Date(m.created_at).getTime() >= hace24h,
+        )
+        .slice(0, 5)
+        .reverse();
+      if (humanos.length) {
+        bloqueContexto +=
+          `👩‍💼 UNA PERSONA DEL NEGOCIO TAMBIÉN LE ESCRIBIÓ AL CLIENTE en este chat (tú no escribiste esto):\n` +
+          humanos
+            .map((m) => `- "${String(m.texto_mensaje).trim().slice(0, 200)}"`)
+            .join('\n') +
+          `\nTenlo en cuenta: no la contradigas, no repitas lo que ya dijo y no vuelvas a preguntar lo que ella ya resolvió. Si ella ya respondió lo que el cliente preguntó, no lo respondas otra vez.\n\n`;
+        await log(
+          `👩‍💼 ${humanos.length} mensaje(s) de persona del negocio inyectados como contexto cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ Error inyectando mensajes de asesor: ${e.message}`);
+    }
+
+    /* b) ficha del pedido. NO en la columna principal de Dropi (Pendiente
+       confirmación): ahí el pedido YA existe y sus datos se inyectan desde la
+       orden (6.5); una ficha armada solo con lo que el cliente escribió en
+       esta conversación diría "falta nombre" y el bot se lo pediría a quien
+       ya compró. */
+    try {
+      const PIDE_DATOS =
+        /nombre|tel[eé]fono|direcci[oó]n|ciudad|provincia|agencia|servientrega|domicilio|referencia|resumen|pedido/i;
+      const enFaseDatos =
+        ultimosBot.some((m) => PIDE_DATOS.test(String(m.texto_mensaje || ''))) ||
+        PIDE_DATOS.test(String(mensaje || '')) ||
+        /\d{9,}/.test(String(mensaje || ''));
+      if (enFaseDatos && api_key_openai && !columna.es_dropi_principal) {
+        const [cfgPais] = await db.query(
+          `SELECT pais_plantilla FROM configuraciones WHERE id = ? LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        fichaPedido = await extraerFichaPedido({
+          id_configuracion,
+          id_cliente,
+          api_key_openai,
+          paisNombre: nombrePaisDe({
+            pais_plantilla: cfgPais?.pais_plantilla,
+            telefono,
+          }),
+          log,
+        });
+        const bloqueFicha = bloqueFichaPedido(fichaPedido, {
+          trigger: accCierreVenta.trigger,
+        });
+        if (bloqueFicha) {
+          bloqueContexto += bloqueFicha;
+          await log(
+            `📋 Ficha del pedido inyectada cliente=${id_cliente}: ${JSON.stringify(
+              {
+                nombre: fichaPedido.nombre,
+                telefono: fichaPedido.telefono,
+                ciudad: fichaPedido.ciudad,
+                entrega: fichaPedido.entrega,
+                direccion: fichaPedido.direccion,
+                producto: fichaPedido.producto,
+                cantidad: fichaPedido.cantidad,
+                confirmo: fichaPedido.confirmo_pedido,
+              },
+            )}`,
+          );
+        }
+      }
+    } catch (e) {
+      await log(`⚠️ Error armando la ficha del pedido: ${e.message}`);
+      fichaPedido = null;
+    }
+
+    // c) cierre narrado sin tag en el turno anterior
+    try {
+      const ultimoIA = ultimosBot.find((m) =>
+        /^IA_/i.test(String(m.responsable || '')),
+      );
+      const textoUltimo = String(ultimoIA?.texto_mensaje || '');
+      if (
+        ultimoIA &&
+        !columna.es_dropi_principal &&
+        esCierreNarrado(textoUltimo) &&
+        !textoUltimo.startsWith(PREFIJO_PETICION_DATOS)
+      ) {
+        bloqueContexto +=
+          `⚠️ CIERRE NO PROCESADO: en tu mensaje anterior diste el pedido por registrado/confirmado, pero el sistema NO lo procesó porque no traía el resumen completo con el tag ${accCierreVenta.trigger}. La venta NO está cerrada.\n` +
+          `Ahora: si ya tienes todos los datos (revisa la ficha y la conversación), tu mensaje ES el resumen COMPLETO del pedido + ${accCierreVenta.trigger} en la última línea — sin volver a pedir nada que ya dio ni a pedir otra confirmación. Si de verdad falta un dato, pide SOLO ese. No vuelvas a agradecer la compra ni a decir "registrado" sin el tag, y no menciones ningún error.\n\n`;
+        await log(
+          `🩹 Cierre narrado sin tag en el turno anterior: nota de rescate inyectada cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ Error detectando cierre narrado previo: ${e.message}`);
     }
   }
 
@@ -1199,7 +1369,36 @@ async function procesarMensajeKanban(params) {
     : null;
 
   // ── 9. Ejecutar ───────────────────────────────────────────
+  /* Candado por cliente: los huecos >8s que la ráfaga ya no agrupa corrían en
+     paralelo, y las dos corridas leían el MISMO previous_response_id — la
+     cadena se bifurcaba y el turno de la primera en guardar desaparecía de la
+     memoria del bot para siempre (caso 569, Edgar, 2026-08-19: preguntó "¿qué
+     producto necesitas?" 4 segundos después de presentar el shampoo; la rama
+     del referral se perdió de la cadena). Se espera a que la corrida anterior
+     del MISMO cliente guarde su response_id y se RELEE la cadena antes de
+     llamar a OpenAI. Va después de la ráfaga a propósito —puesto antes
+     bloquearía la agrupación— y cubre hasta después de guardarResponseId,
+     porque soltar antes de guardar re-abre la ventana de la carrera.
+     El try/finally abraza el try/catch que ya existía; la sangría interior se
+     deja como estaba para que el diff sea legible. */
+  const soltarTurnoCliente = await tomarTurnoCliente(id_cliente);
   let resultado;
+  try {
+  /* Releer la cadena: si otra corrida guardó mientras se esperaba el turno,
+     acá se recoge. Si pasó de null a un id, el input ya se armó con la
+     siembra del recap y va así: contexto repetido una vez sale más barato
+     que perder la rama. */
+  if (USAR_RESPONSES_API) {
+    const cadenaFresca = await obtenerUltimoResponseId(id_cliente);
+    if (cadenaFresca !== previous_response_id) {
+      await log(
+        `🔒 La cadena avanzó mientras se esperaba el turno: ` +
+          `${previous_response_id || 'null'} → ${cadenaFresca || 'null'}`,
+      );
+      previous_response_id = cadenaFresca;
+    }
+  }
+
   try {
     if (USAR_RESPONSES_API) {
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
@@ -1328,10 +1527,17 @@ async function procesarMensajeKanban(params) {
     await guardarResponseId(id_cliente, resultado.response_id);
     await log(`💾 response_id guardado: ${resultado.response_id}`);
   }
+  } finally {
+    // Pase lo que pase (retorno temprano, throw del asistente), el turno se
+    // suelta: si no, el próximo mensaje del cliente esperaría el tope de 90s.
+    soltarTurnoCliente();
+  }
 
   total_tokens += resultado.total_tokens;
   const respuestaCruda = resultado.respuesta;
-  const respuestaRaw = sanitizarRespuestaAgente(respuestaCruda);
+  // `let`: el paso 10 puede completarla con la ficha del pedido o inferirle el
+  // tag de cierre (ver 9.9).
+  let respuestaRaw = sanitizarRespuestaAgente(respuestaCruda);
 
   // Log solo si el sanitizador modificó algo
   if (respuestaCruda !== respuestaRaw) {
@@ -1445,20 +1651,13 @@ async function procesarMensajeKanban(params) {
           .replace(/\s+/g, ' ')
           .trim();
 
-      const palabras = norm(mensaje)
-        .split(' ')
-        .filter((p) => p.length > 3);
-
-      /* Se pide que coincidan DOS palabras del nombre, no una: "profesional" o
-         "facial" sueltas aparecen en medio catálogo y mandarían a la columna
-         equivocada a quien pregunta por un tratamiento. */
-      const nombrado = productos.find((p) => {
-        const tokens = norm(p.nombre)
-          .split(' ')
-          .filter((t) => t.length > 3);
-        const aciertos = tokens.filter((t) => palabras.includes(t)).length;
-        return aciertos >= Math.min(2, tokens.length);
-      });
+      /* Se pide que coincidan las palabras que DISTINGUEN el nombre, no una
+         suelta: "profesional" o "facial" aparecen en medio catálogo y
+         mandarían a la columna equivocada a quien pregunta por un
+         tratamiento. La regla (palabras vacías, match por palabra entera,
+         el más específico gana) vive en utils/productoNombrado.js, compartida
+         con el adjunto de fotos del paso 12. */
+      const nombrado = productoNombrado(mensaje, productos);
 
       if (nombrado) {
         await db.query(
@@ -1470,6 +1669,38 @@ async function procesarMensajeKanban(params) {
           `🛍️ "${nombrado.nombre}" es un producto y el mensaje muestra intención de compra: cliente ${id_cliente} movido a "venta_producto" sin depender del tag`,
         );
       }
+    }
+  }
+
+  /* ── 9.9 Cierre narrado sin tag: inferirlo ──
+     El modelo escribe el resumen completo y "¡Gracias por tu compra!" pero se
+     come el tag (caso 302, Josué, 2026-08-19: tres cierres seguidos sin
+     `[generar_guia]:true`; el chat nunca se movió y al cliente le llegó el
+     "resumen final" cuatro veces). Para el cliente ESO es un cierre; para el
+     sistema no era nada. Si la respuesta trae un resumen reconocible (3+
+     rótulos, con Producto) y una frase de cierre, y NINGÚN tag de esta
+     columna, se le agrega el tag de cierre y sigue por el paso 10 como
+     cualquier cierre: el validador decide si los datos alcanzan, y si no, se
+     le piden al cliente SOLO los que falten. Sin resumen no se infiere nada
+     (ahí va la nota de rescate del 6.8 en el turno siguiente). */
+  let cierreInferido = false;
+  // No en la columna principal de Dropi: ahí "gracias por tu compra" es la
+  // confirmación de una orden que ya existe, no un cierre nuevo.
+  if (accCierreVenta && !columna.es_dropi_principal) {
+    const trajoAlgunTag = getAcciones('cambiar_estado')
+      .map((ac) => parseConfig(ac).trigger)
+      .filter(Boolean)
+      .some((t) => respuestaRaw.toLowerCase().includes(String(t).toLowerCase()));
+    if (
+      !trajoAlgunTag &&
+      esCierreNarrado(respuestaRaw) &&
+      pareceResumenDePedido(respuestaRaw)
+    ) {
+      respuestaRaw = `${respuestaRaw.trimEnd()}\n${accCierreVenta.trigger}`;
+      cierreInferido = true;
+      await log(
+        `🧷 Cierre narrado SIN tag: resumen + frase de cierre sin ${accCierreVenta.trigger}. Se infiere el tag y sigue por el validador.`,
+      );
     }
   }
 
@@ -1502,6 +1733,23 @@ async function procesarMensajeKanban(params) {
          columna con lo que fuera. Cerrar una venta es un acto con consecuencias
          (columna + auto-orden en Dropi): solo vale con datos de verdad. */
       if (estadoDestino === 'generar_guia') {
+        /* Completar con la ficha ANTES de validar: si el modelo omitió la
+           línea Nombre/Ciudad o la escribió a medias ("Nombre: Josué") y el
+           cliente SÍ lo dijo, se completa acá. Así el cierre pasa con los
+           datos reales y la petición del paso 12 queda solo para lo que de
+           verdad no está en la conversación (caso 360, Delfin: la petición le
+           pedía "Nombre completo" a quien ya lo había escrito dos veces). Lo
+           que se completa sale también en el mensaje al cliente, que ve el
+           resumen entero. */
+        if (fichaPedido) {
+          const comp = completarResumenConFicha(respuestaRaw, fichaPedido);
+          if (comp.completados.length) {
+            respuestaRaw = comp.texto;
+            await log(
+              `📋 Resumen de cierre completado con la ficha: ${comp.completados.join(', ')}`,
+            );
+          }
+        }
         const motivo = motivoCierreInvalido(respuestaRaw);
         if (motivo) {
           cierreBloqueado = motivo;
@@ -1959,17 +2207,14 @@ async function procesarMensajeKanban(params) {
           .replace(/\s+/g, ' ')
           .trim();
 
-      const dicho = norm(respuestaRaw);
-
-      // Dos palabras del nombre, igual que en el enrutado: una sola ("facial",
-      // "profesional") aparece en medio catálogo.
-      const mencionado = conImagen.find((p) => {
-        const tk = norm(p.nombre)
-          .split(' ')
-          .filter((t) => t.length > 3);
-        const aciertos = tk.filter((t) => dicho.includes(t)).length;
-        return aciertos >= Math.min(2, tk.length);
-      });
+      /* Mismo matcher que el enrutado (utils/productoNombrado.js). La copia
+         vieja —"dos palabras del nombre de más de 3 letras", sin palabras
+         vacías— le adjuntaba la foto del "Kit COMPLETO 800 vinchas PARA Auto"
+         cada vez que el bot decía "tu nombre COMPLETO… PARA completar el
+         pedido" (405, Celia y 4 clientes más, 2026-08-20): al pedir la
+         dirección llegaba la foto de otro producto y el negocio la borraba a
+         mano. */
+      const mencionado = productoNombrado(respuestaRaw, conImagen);
 
       if (mencionado) {
         /* No se comprueba acá si ya se envió: de eso se encarga el filtro del
