@@ -105,6 +105,10 @@ const {
   nombrePaisDe,
 } = require('../utils/fichaPedido');
 
+// ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
+// venta_producto y el adjunto de la foto del producto (ver su encabezado).
+const { productoNombrado } = require('../utils/productoNombrado');
+
 // Ubicación compartida por WhatsApp → dirección/ciudad/provincia en palabras
 const {
   parseUbicacionJson,
@@ -1647,20 +1651,13 @@ async function procesarMensajeKanban(params) {
           .replace(/\s+/g, ' ')
           .trim();
 
-      const palabras = norm(mensaje)
-        .split(' ')
-        .filter((p) => p.length > 3);
-
-      /* Se pide que coincidan DOS palabras del nombre, no una: "profesional" o
-         "facial" sueltas aparecen en medio catálogo y mandarían a la columna
-         equivocada a quien pregunta por un tratamiento. */
-      const nombrado = productos.find((p) => {
-        const tokens = norm(p.nombre)
-          .split(' ')
-          .filter((t) => t.length > 3);
-        const aciertos = tokens.filter((t) => palabras.includes(t)).length;
-        return aciertos >= Math.min(2, tokens.length);
-      });
+      /* Se pide que coincidan las palabras que DISTINGUEN el nombre, no una
+         suelta: "profesional" o "facial" aparecen en medio catálogo y
+         mandarían a la columna equivocada a quien pregunta por un
+         tratamiento. La regla (palabras vacías, match por palabra entera,
+         el más específico gana) vive en utils/productoNombrado.js, compartida
+         con el adjunto de fotos del paso 12. */
+      const nombrado = productoNombrado(mensaje, productos);
 
       if (nombrado) {
         await db.query(
@@ -2210,17 +2207,14 @@ async function procesarMensajeKanban(params) {
           .replace(/\s+/g, ' ')
           .trim();
 
-      const dicho = norm(respuestaRaw);
-
-      // Dos palabras del nombre, igual que en el enrutado: una sola ("facial",
-      // "profesional") aparece en medio catálogo.
-      const mencionado = conImagen.find((p) => {
-        const tk = norm(p.nombre)
-          .split(' ')
-          .filter((t) => t.length > 3);
-        const aciertos = tk.filter((t) => dicho.includes(t)).length;
-        return aciertos >= Math.min(2, tk.length);
-      });
+      /* Mismo matcher que el enrutado (utils/productoNombrado.js). La copia
+         vieja —"dos palabras del nombre de más de 3 letras", sin palabras
+         vacías— le adjuntaba la foto del "Kit COMPLETO 800 vinchas PARA Auto"
+         cada vez que el bot decía "tu nombre COMPLETO… PARA completar el
+         pedido" (405, Celia y 4 clientes más, 2026-08-20): al pedir la
+         dirección llegaba la foto de otro producto y el negocio la borraba a
+         mano. */
+      const mencionado = productoNombrado(respuestaRaw, conImagen);
 
       if (mencionado) {
         /* No se comprueba acá si ya se envió: de eso se encarga el filtro del

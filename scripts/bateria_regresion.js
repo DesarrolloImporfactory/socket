@@ -637,6 +637,38 @@ async function suiteA() {
         completarApellido('Delfin Alvarado', charla) === 'Delfin Alvarado',
     );
 
+    // h) ¿Qué producto nombra el texto? (caso 405, Celia, 2026-08-20): "nombre
+    //    completo… para completar el pedido" NO es el "Kit Completo 800
+    //    vinchas para Auto"; las palabras vacías y genéricas no cuentan, el
+    //    match es por palabra entera y gana el nombre más específico.
+    const { productoNombrado } = require('../src/utils/productoNombrado');
+    const catalogo405 = [
+      { id: 1160, nombre: 'Kit Completo 800 vinchas para Auto' },
+      { id: 2205, nombre: 'Pistola Masajeador Muscular' },
+      { id: 3983, nombre: 'Boquilla a Presión de Manguera' },
+      { id: 9, nombre: 'Cabezal de ducha' },
+    ];
+    caso(
+      'pedir "nombre completo… para completar el pedido" no adjunta la foto de las vinchas',
+      productoNombrado(
+        'Ahora, solo me falta tu nombre completo, teléfono y dirección exacta (2 calles + referencia) para completar el pedido.',
+        catalogo405,
+      ) === null,
+    );
+    caso(
+      'nombrar la Boquilla a Presión de Manguera sí la identifica',
+      productoNombrado('vamos a enviarte la *Boquilla a Presión de Manguera* a tu domicilio', catalogo405)?.id === 3983,
+    );
+    caso(
+      'el kit de vinchas se identifica cuando de verdad se nombra',
+      productoNombrado('quiero el kit de 800 vinchas para el auto', catalogo405)?.id === 1160,
+    );
+    caso(
+      '"cabeza" no es "Cabezal de ducha" (palabra entera, no substring)',
+      productoNombrado('¿protege la cabeza?', catalogo405) === null &&
+        productoNombrado('quiero el cabezal de ducha', catalogo405)?.id === 9,
+    );
+
     // f) Anti-invento: un valor que no está en las palabras del cliente no vale.
     caso(
       'anti-invento: el nombre tiene que estar en lo que escribió el cliente',
