@@ -163,7 +163,10 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
               },
             );
           } catch (e) {
-            console.log('[referidos] no se pudo sellar la atribución:', e?.message);
+            console.log(
+              '[referidos] no se pudo sellar la atribución:',
+              e?.message,
+            );
           }
         }
 
@@ -431,7 +434,7 @@ const aplicarPlanCortesiaRol16 = async (email) => {
         SET id_plan = :idPlan,
             estado = 'activo',
             fecha_inicio = NOW(),
-            fecha_renovacion = DATE_ADD(NOW(), INTERVAL 3 MONTH)
+            fecha_renovacion = DATE_ADD(NOW(), INTERVAL 2 MONTH)
       WHERE email_propietario = :email
         AND (stripe_subscription_id IS NULL OR stripe_subscription_id = '')`,
     {
@@ -812,13 +815,12 @@ exports.newLogin = async (req, res) => {
             });
           }
 
-          let subusuarios_chat_center =
-            await Sub_usuarios_chat_center.findOne({
-              where: {
-                id_usuario: usuarios_chat_center.id_usuario,
-                rol: 'administrador',
-              },
-            });
+          let subusuarios_chat_center = await Sub_usuarios_chat_center.findOne({
+            where: {
+              id_usuario: usuarios_chat_center.id_usuario,
+              rol: 'administrador',
+            },
+          });
 
           // 🩹 Self-heal: la plataforma existe pero quedó SIN sub-usuario admin
           // (cuenta creada sin sub). En vez de fallar el SSO, lo creamos desde
@@ -828,7 +830,8 @@ exports.newLogin = async (req, res) => {
               usuario_users && String(usuario_users).trim().length >= 3
                 ? usuario_users
                 : String(nombre_users || 'admin').replace(/\s+/g, '');
-            const usernameUnicoHeal = await generarUsernameUnico(usernameBaseHeal);
+            const usernameUnicoHeal =
+              await generarUsernameUnico(usernameBaseHeal);
             const adminCreadoHeal = await crearSubUsuario({
               id_usuario: usuarios_chat_center.id_usuario,
               usuario: usernameUnicoHeal,
