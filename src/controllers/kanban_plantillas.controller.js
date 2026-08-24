@@ -2264,17 +2264,14 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
           // dos UPDATE de abajo y el resync no dejaba rastro —y por Responses
           // el prompt que manda es el de acá—. Desde el 2026-08-26 esa llamada
           // falla siempre, así que el resync entero se volvía inútil.
-          /* El modelo de la plantilla también viaja en el resync, pero SIN
-             pisar una elección deliberada del cliente: solo se actualiza si la
-             columna sigue en el default viejo (gpt-4o-mini o vacío). Así, subir
-             la plantilla a gpt-5-mini migra a todos los que nunca lo tocaron y
-             respeta al que pagó por gpt-4o o ya eligió otro. */
+          /* El modelo de la plantilla también viaja en el resync: "Actualizar"
+             significa quedar alineado con la plantilla COMPLETA (prompt y
+             modelo). Es opt-in —solo corre cuando el cliente pulsa el botón—
+             y si después prefiere otro modelo, lo cambia en TabAsistente. */
           const modeloPlantilla = String(colPlantilla.modelo || '').trim();
           const modeloActual = String(col.modelo || '').trim();
           const migrarModelo =
-            modeloPlantilla &&
-            modeloPlantilla !== modeloActual &&
-            ['', 'gpt-4o-mini'].includes(modeloActual);
+            Boolean(modeloPlantilla) && modeloPlantilla !== modeloActual;
 
           await db.query(
             `UPDATE kanban_columnas
