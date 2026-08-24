@@ -31,6 +31,9 @@ function aNumero(v) {
 function fmtPrecio(v) {
   const n = aNumero(v);
   if (n === null) return '';
+  // "$45" y no "$45,00": el ",00" solo mete ruido en el mensaje; los decimales
+  // reales ($58,99) sí se conservan.
+  if (Number.isInteger(n)) return `$${n}`;
   return `$${n.toFixed(2).replace('.', ',')}`;
 }
 

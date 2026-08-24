@@ -132,7 +132,7 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
     if (!claves.size) return;
     let score = 0;
     for (const c of claves) if (toksMensaje.has(c)) score += 1;
-    if (score > 0) candidatos.push({ faq, indice, score });
+    if (score > 0) candidatos.push({ faq, indice, score, claves });
   });
 
   if (!candidatos.length) return null;
@@ -151,8 +151,30 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
   if (top.score === 1 && esPregunta && toksMensaje.size <= 6 && cobertura >= 0.5) {
     return top;
   }
+  /* Una clave también alcanza cuando TODO lo demás del mensaje son palabras
+     genéricas de uso/duda: "¿sirve para mi moto, cierto?" = moto (clave) +
+     sirve/cierto (duda) → es exactamente la pregunta de la quemada. En cambio
+     "sirve para una tele de tubo vieja" deja "tubo" y "vieja" sin cubrir:
+     matiz nuevo → IA (el caso real del 3087 sigue protegido). */
+  if (top.score >= 1 && esPregunta) {
+    const sinCubrir = [...toksMensaje].filter(
+      (t) => !top.claves.has(t) && !USO_DUDA.has(t),
+    );
+    if (!sinCubrir.length) return top;
+  }
   return null;
 }
+
+/* Palabras con las que el cliente pregunta si algo aplica/funciona, sin
+   aportar un matiz nuevo. Van con raíz (singular). */
+const USO_DUDA = new Set(
+  `sirve funciona funcionara compatible puedo puede usar usarlo usarla uso
+   cierto verdad seguro segura real original bueno buena buenos buenas calidad
+   recomendable confiable aplica vale valido valida`
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(raiz),
+);
 
 module.exports = {
   normalizar,
