@@ -64,13 +64,41 @@ const COLUMNA_ENTREGADA_DEFAULT = 'entregada';
 const SIEMPRE_TEMPLATE = new Set(['PENDIENTE CONFIRMACION']);
 
 /**
+ * ── Guía de envío: interruptor único ────────────────────────────────────────
+ *
+ * Aliclik todavía NO entrega guía, transportadora, link de tracking ni PDF.
+ * Verificado contra un pedido real: GET /integration/order devuelve
+ * { orderNumber, total, callStatus, status, dispatchStatus, channel,
+ *   productDetail, note, createdAt, updatedAt, customer, shipping, products }
+ * y `shipping` solo trae dirección y coordenadas. No hay dónde sacarlo.
+ *
+ * Cuando lo expongan, el trabajo es este y nada más:
+ *   1. Poner los nombres reales de los campos en extraerGuia().
+ *   2. Cargar TRACKING_POR_COURIER con la URL pública de cada courier
+ *      (solo si mandan guía + transportadora en vez de la URL ya armada).
+ *   3. Prender esta bandera.
+ *   4. En el front (pages/dropi/DropisPlantillas.jsx): sumar 'GUIA GENERADA'
+ *      a ESTADOS_ALICLIK y vaciar VARIABLES_SIN_GUIA.
+ *
+ * Al prenderla, los estados que hoy se degradan a "solo mover" por depender
+ * de la guía (ver getPlantillasAliclik) vuelven a enviar solos: no hay que
+ * reconfigurar nada en las cuentas.
+ *
+ * Apagada, el estado no aparece en la pantalla de plantillas —no tendría cómo
+ * dispararse— y {{tracking}}, {{guia_pdf}}, {{numero_guia}} y
+ * {{transportadora}} resuelven a cadena vacía en vez de romper el envío.
+ */
+const ALICLIK_EXPONE_GUIA = false;
+
+/**
  * Estados canónicos que Aliclik puede alcanzar. Es un subconjunto de los de
- * Dropi: faltan 'GUIA GENERADA' (Aliclik no expone guías) y
- * 'CARRITOS ABANDONADOS' (no tiene ese concepto).
+ * Dropi: falta 'CARRITOS ABANDONADOS' (no tiene ese concepto) y
+ * 'GUIA GENERADA' entra solo cuando ALICLIK_EXPONE_GUIA está prendida.
  */
 const ESTADOS_ALICLIK = [
   'PENDIENTE CONFIRMACION',
   'PENDIENTE',
+  ...(ALICLIK_EXPONE_GUIA ? ['GUIA GENERADA'] : []),
   'EN TRANSITO',
   'RETIRO EN AGENCIA',
   'ENTREGADA',
@@ -78,6 +106,48 @@ const ESTADOS_ALICLIK = [
   'DEVOLUCION',
   'CANCELADO',
 ];
+
+/**
+ * Tracking público por transportadora, para cuando Aliclik mande guía +
+ * courier pero no la URL ya armada. Vacío a propósito: todavía no sabemos con
+ * qué couriers despacha ni con qué formato de URL, y una URL inventada le
+ * mandaría al cliente un link roto. Sin entrada, {{tracking}} sale vacío.
+ *
+ * Formato: 'NOMBRE EN MAYUSCULAS': (guia) => 'https://…'
+ */
+const TRACKING_POR_COURIER = {};
+
+function getTrackingUrlAliclik(courier, guia) {
+  if (!guia) return '';
+  const armar = TRACKING_POR_COURIER[String(courier || '').trim().toUpperCase()];
+  return armar ? armar(String(guia).trim()) : '';
+}
+
+/**
+ * Saca guía / transportadora / tracking / PDF del pedido crudo de Aliclik.
+ *
+ * Hoy devuelve todo vacío: ninguno de estos campos existe en su respuesta. Los
+ * nombres son una apuesta razonable para que, si aparecen con alguno de ellos,
+ * funcione sin tocar nada; el día que confirmemos el nombre real, se agrega
+ * acá y ese es el único cambio en esta capa.
+ */
+function extraerGuia(o) {
+  const shipping = o?.shipping || {};
+  const primero = (...valores) => {
+    for (const v of valores) {
+      const s = String(v ?? '').trim();
+      if (s) return s;
+    }
+    return '';
+  };
+
+  return {
+    guia: primero(o?.trackingCode, o?.guideNumber, shipping.trackingCode),
+    courier: primero(o?.courierName, o?.courier, shipping.courierName),
+    tracking_url: primero(o?.trackingUrl, shipping.trackingUrl),
+    guia_pdf_url: primero(o?.labelUrl, o?.guideUrl, shipping.labelUrl),
+  };
+}
 
 /* ═══════════════════════════════════════════════════════════
    Mapeo: tripleta de Aliclik → estado canónico
@@ -101,6 +171,7 @@ function mapAliclikStatusToEstadoConfig({
   callStatus,
   status,
   dispatchStatus,
+  guia,
 } = {}) {
   const call = String(callStatus || '').trim().toUpperCase();
   const st = String(status || '').trim().toUpperCase();
@@ -141,7 +212,13 @@ function mapAliclikStatusToEstadoConfig({
 
   // 7) Todavía en almacén: la llamada de confirmación decide cuál de los dos.
   if (disp === 'TO_PREPARE' || disp === 'PREPARED') {
-    return call === 'CONFIRMED' ? 'PENDIENTE' : 'PENDIENTE CONFIRMACION';
+    if (call !== 'CONFIRMED') return 'PENDIENTE CONFIRMACION';
+    // Con la guía ya emitida el pedido dejó de estar "listo para despachar" y
+    // pasó a "documento generado", que es lo que anuncia GUIA GENERADA en
+    // Dropi. Hoy nunca entra acá: Aliclik no manda guía (ver
+    // ALICLIK_EXPONE_GUIA).
+    if (ALICLIK_EXPONE_GUIA && guia) return 'GUIA GENERADA';
+    return 'PENDIENTE';
   }
 
   // Sin despacho conocido, la confirmación pendiente sigue siendo notificable.
@@ -160,14 +237,16 @@ function mapAliclikStatusToEstadoConfig({
  * resolveVariable / buildTemplateComponents / buildRutaArchivo, para no tener
  * dos implementaciones de las variables de plantilla.
  *
- * Los campos sin equivalente (shipping_guide, shipping_company) quedan sin
- * definir a propósito: getTrackingUrl y getGuiaPdfUrl ya devuelven '' cuando
- * faltan, así que una plantilla mal configurada con {{tracking}} degrada a
- * vacío en vez de romper el envío.
+ * Los campos de guía (shipping_guide, shipping_company, tracking_url,
+ * guia_pdf_url) salen de extraerGuia() y hoy vienen todos en null porque
+ * Aliclik no los expone. resolveVariable los prefiere cuando existen, así que
+ * una plantilla con {{tracking}} o {{guia_pdf}} degrada a vacío en vez de
+ * romper el envío, y empezará a llenarse sola el día que Aliclik los mande.
  */
 function normalizarOrden(o) {
   const shipping = o?.shipping || {};
   const customer = o?.customer || {};
+  const guiaInfo = extraerGuia(o);
 
   const dir = [shipping.address1, shipping.address2]
     .map((v) => String(v || '').trim())
@@ -199,6 +278,17 @@ function normalizarOrden(o) {
     channel: o?.channel || null,
     notes: o?.note || null,
 
+    // Guía de envío. Todo null hoy (ver ALICLIK_EXPONE_GUIA).
+    shipping_guide: guiaInfo.guia || null,
+    shipping_company: guiaInfo.courier || null,
+    // Si mandan la URL armada se usa esa; si mandan guía + courier, se arma
+    // con TRACKING_POR_COURIER.
+    tracking_url:
+      guiaInfo.tracking_url ||
+      getTrackingUrlAliclik(guiaInfo.courier, guiaInfo.guia) ||
+      null,
+    guia_pdf_url: guiaInfo.guia_pdf_url || null,
+
     // Resumen textual del pedido ("1 Mouse Vertical Recargable (TEC97X)").
     // resolveVariable('contenido') lo prefiere cuando existe.
     contenido_texto: o?.productDetail || null,
@@ -228,6 +318,22 @@ function normalizarOrden(o) {
   };
 }
 
+/**
+ * Estado canónico de una orden YA normalizada.
+ *
+ * Existe para que los dos caminos que lo calculan (el upsert al cache y el
+ * bucle de plantillas) no puedan divergir: si mañana el mapeo necesita otro
+ * campo de la orden, se agrega acá una sola vez.
+ */
+function estadoDeOrden(order) {
+  return mapAliclikStatusToEstadoConfig({
+    callStatus: order?.call_status,
+    status: order?.status_entrega,
+    dispatchStatus: order?.dispatch_status,
+    guia: order?.shipping_guide,
+  });
+}
+
 /* ═══════════════════════════════════════════════════════════
    Cache local
    ═══════════════════════════════════════════════════════════ */
@@ -247,11 +353,7 @@ async function upsertOrders(id_configuracion, ordenes) {
     call_status: o.call_status || null,
     status: o.status_entrega || null,
     dispatch_status: o.dispatch_status || null,
-    estado_config: mapAliclikStatusToEstadoConfig({
-      callStatus: o.call_status,
-      status: o.status_entrega,
-      dispatchStatus: o.dispatch_status,
-    }),
+    estado_config: estadoDeOrden(o),
     total: Number(o.total_order || 0),
     name: o.name || null,
     surname: o.surname || null,
@@ -387,6 +489,96 @@ async function completarEnvio({
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Configuración de plantillas: Aliclik HEREDA de Dropi
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Variables que solo existen si hay guía de envío. Mientras
+ * ALICLIK_EXPONE_GUIA esté apagada, cualquiera de estas resuelve a cadena
+ * vacía y buildTemplateComponents la manda como '-' (Meta rechaza el
+ * parámetro vacío). Un "Rastrea tu pedido: -" es peor que no escribir.
+ */
+const VARIABLES_DE_GUIA = new Set([
+  'numero_guia',
+  'transportadora',
+  'tracking',
+  'guia_pdf',
+]);
+
+/** ¿La plantilla de este estado depende de la guía para armarse? */
+function dependeDeLaGuia(cfg) {
+  let p;
+  try {
+    p = cfg?.parametros_json ? JSON.parse(cfg.parametros_json) : null;
+  } catch {
+    return false;
+  }
+  if (!p) return false;
+  const enBody = (p.body || []).some((v) => VARIABLES_DE_GUIA.has(v));
+  const enBotones = (p.buttons || []).some((b) =>
+    VARIABLES_DE_GUIA.has(b?.variable),
+  );
+  return enBody || enBotones;
+}
+
+/**
+ * Config de plantillas para Aliclik.
+ *
+ * El cliente configura sus estados UNA vez (pestaña Dropi, o automáticamente
+ * al aplicar una plantilla global de kanban) y Aliclik los reutiliza. La
+ * pestaña Aliclik ya no es una segunda configuración que llenar de cero: es
+ * una lista de EXCEPCIONES. Si un estado tiene fila propia con proveedor
+ * 'aliclik', esa gana entera; si no, se hereda la de Dropi.
+ *
+ * Sin esto la pestaña de Aliclik nace vacía para todos (0 filas en las 303
+ * cuentas que sí tienen Dropi configurado) y no se envía absolutamente nada
+ * hasta que alguien la llene a mano estado por estado.
+ *
+ * Único recorte al heredar: los estados cuya plantilla necesita la guía. Como
+ * Aliclik todavía no la entrega, se degradan a "solo mover de columna" —el
+ * contacto igual avanza en el kanban, pero no se le manda un mensaje con un
+ * link roto—. El día que se prenda ALICLIK_EXPONE_GUIA, empiezan a enviarse
+ * solos sin tocar nada más.
+ */
+async function getPlantillasAliclik(id_configuracion) {
+  const [propias, heredadas] = await Promise.all([
+    getPlantillasActivas(id_configuracion, PROVEEDOR),
+    getPlantillasActivas(id_configuracion, 'dropi'),
+  ]);
+
+  const map = {};
+  for (const estado of ESTADOS_ALICLIK) {
+    const propia = propias[estado];
+    const cfg = propia || heredadas[estado];
+    if (!cfg) continue;
+
+    // El recorte se aplica también a las filas propias: si Aliclik no tiene
+    // guía, no la tiene para nadie. El front oculta esas variables, así que
+    // llegar acá significa una fila vieja o editada por fuera.
+    if (!ALICLIK_EXPONE_GUIA && dependeDeLaGuia(cfg)) {
+      if (!cfg.columna_destino) continue; // sin columna no queda nada que hacer
+      console.log(
+        `[aliclik-notifier] cfg ${id_configuracion}: "${estado}" usa la guía (${cfg.nombre_template}) → solo mueve de columna, no envía`,
+      );
+      map[estado] = {
+        ...cfg,
+        heredada: !propia,
+        nombre_template: null,
+        mensaje_rapido: null,
+        usar_respuesta_rapida: false,
+        parametros_json: null,
+        body_text: null,
+        solo_mover: true,
+      };
+      continue;
+    }
+
+    map[estado] = propia ? cfg : { ...cfg, heredada: true };
+  }
+  return map;
+}
+
+/* ═══════════════════════════════════════════════════════════
    Procesar templates para un lote de órdenes
    ═══════════════════════════════════════════════════════════ */
 
@@ -412,7 +604,7 @@ async function procesarTemplates({ ordenes, id_configuracion }) {
     };
   }
 
-  const plantillas = await getPlantillasActivas(id_configuracion, PROVEEDOR);
+  const plantillas = await getPlantillasAliclik(id_configuracion);
   const creds = await getWaCredentials(id_configuracion);
   const credsValidas = !!(creds?.phone_number_id && creds?.waba_token);
   const telefonoConfig = creds?.telefono || null;
@@ -434,11 +626,7 @@ async function procesarTemplates({ ordenes, id_configuracion }) {
 
   for (const order of ordenes) {
     try {
-      const estadoConfig = mapAliclikStatusToEstadoConfig({
-        callStatus: order.call_status,
-        status: order.status_entrega,
-        dispatchStatus: order.dispatch_status,
-      });
+      const estadoConfig = estadoDeOrden(order);
 
       // Aliclik entrega el teléfono completo y con código de país
       // ("51918993266"), así que no hace falta la recuperación de números
@@ -722,12 +910,18 @@ module.exports = {
   PROVEEDOR,
   COUNTRY_CODE,
   ESTADOS_ALICLIK,
+  ALICLIK_EXPONE_GUIA,
   mapAliclikStatusToEstadoConfig,
+  estadoDeOrden,
+  extraerGuia,
+  getTrackingUrlAliclik,
   normalizarOrden,
   normalizeFecha,
   upsertOrders,
   getOrdenDeCache,
   procesarTemplates,
+  getPlantillasAliclik,
+  dependeDeLaGuia,
   // exportados para pruebas / diagnóstico
   reclamarEnvio,
   liberarEnvio,

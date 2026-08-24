@@ -79,7 +79,12 @@ const ALICLIK_TOKEN_MESSAGE =
 function isAliclikUnavailable(err, status) {
   if (err?.code === 'ECONNABORTED') return true; // timeout
   if (!err?.response) return true; // sin respuesta (red/DNS/caído)
-  return status === 502 || status === 503 || status === 504;
+  // Cualquier 5xx es un fallo del lado de Aliclik, incluido el 500. Sus
+  // errores accionables son 400 con mensaje en español (validación de
+  // parámetros), así que un 500 nunca es algo que el asesor pueda corregir:
+  // sin esto se le mostraba el "Internal server error" crudo, que parece que
+  // el que se cayó es ChatCenter. Cubre también los 52x de Cloudflare.
+  return status >= 500;
 }
 
 function normalizeAliclikError(err) {
