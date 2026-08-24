@@ -43,6 +43,7 @@ const {
 const {
   esSaludoOGenerico,
   pareceIntencionCompra,
+  pareceRegunta,
   elegirRespuestaRapida,
 } = require('../utils/wizardProducto/respuestasRapidas');
 const { resolverUpsell, directivaUpsell } = require('../utils/upsellProducto');
@@ -178,33 +179,6 @@ async function productosConWizard(id_configuracion) {
   }
   CACHE_LISTA_WIZARD.set(clave, { lista, ts: Date.now() });
   return lista;
-}
-
-/* ¿El mensaje es SOLO "quiero / info / precio + el nombre del producto"?
-   Se quitan las palabras del nombre, los conectores y el relleno típico de
-   apertura; si no queda nada sustancial, el paquete fijo ya lo responde
-   completo. Una cantidad ("quiero 2"), una pregunta ("sirve para motos") o
-   cualquier dato extra dejan palabras vivas → sigue la IA o la FAQ. */
-const RELLENO_PEDIDO = new Set([
-  'hola', 'holaa', 'holaaa', 'buenas', 'buenos', 'dias', 'tardes', 'noches',
-  'quiero', 'queria', 'quisiera', 'deseo', 'necesito', 'dame', 'busco',
-  'envie', 'enviame', 'mandame', 'info', 'informacion', 'precio', 'precios',
-  'costo', 'valor', 'cuanto', 'vale', 'cuesta', 'esta', 'estan', 'comprar',
-  'compra', 'pedir', 'adquirir', 'interesa', 'interesado', 'interesada',
-  'me', 'te', 'le', 'lo', 'les', 'porfa', 'favor', 'porfavor', 'gracias',
-  'vi', 'anuncio', 'publicacion', 'ese', 'este', 'saber', 'tienen', 'tiene',
-  'hay', 'disponible', 'mas', 'aun', 'todavia', 'quierooo', 'x', 'xfa',
-]);
-
-function esSoloPedidoDelProducto(texto, producto) {
-  const palabrasProducto = new Set(normalizarPalabras(producto?.nombre));
-  const restantes = normalizarPalabras(texto).filter(
-    (w) =>
-      !palabrasProducto.has(w) &&
-      !STOPWORDS_NOMBRE.has(w) &&
-      !RELLENO_PEDIDO.has(w),
-  );
-  return restantes.length === 0;
 }
 
 function elegirProductoPorTexto(mensaje, lista) {
@@ -486,6 +460,15 @@ async function enviarPaqueteInicial({
   for (const url of imgsNuevas) await mandarMedia('image', url);
   for (const url of vidsNuevos) await mandarMedia('video', url);
 
+  /* El texto SIEMPRE debe llegar después de los adjuntos. El envío ya es
+     secuencial, pero Meta procesa la media (descarga/transcodifica) y un texto
+     despachado enseguida puede llegarle al teléfono ANTES que la última
+     imagen. La pausa le da ventaja a la media; 2 s no se notan en un primer
+     mensaje con fotos. */
+  if (enviados > 0 && texto) {
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
   if (texto) {
     await enviarMensajeWhatsapp({
       phone_whatsapp_to: telefono,
@@ -718,27 +701,18 @@ async function intentarMensajeFijoWizard({
     log: decir,
   });
 
-  // ¿Hace falta la IA en este turno?
+  /* ¿Hace falta la IA en este turno?
+     Regla ESTRUCTURAL (no de lista de palabras): el paquete ya presenta el
+     producto, sus precios/combos, el envío y cierra preguntando. Después de
+     enviarlo, la IA solo entra si el mensaje trae algo que el paquete NO
+     responde:
+       1. Calza con una respuesta rápida → se contesta la quemada (0 tokens).
+       2. Es intención de compra ("quiero 2", "dale el combo") → IA, a cerrar.
+       3. Es una pregunta real que las quemadas no cubren → IA con la ficha.
+       4. TODO lo demás (saludos, "quiero info", typos, relleno, stickers de
+          texto) → el paquete ES la respuesta: turno cerrado sin IA. */
   const texto = String(texto_mensaje || '');
-  if (esSaludoOGenerico(texto)) {
-    await decir(`wizard: mensaje genérico → turno cerrado sin IA (0 tokens)`);
-    return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
-  }
-  // "Hola, quiero el <producto>" / "info del <producto>" / "precio del
-  // <producto>": el paquete ES la respuesta (fotos, precio y pregunta de
-  // cierre). Meter a la IA aquí duplicaba la presentación con un segundo
-  // saludo. Solo si el mensaje trae algo MÁS (una pregunta, una cantidad,
-  // datos), sigue la IA.
-  if (esSoloPedidoDelProducto(texto, producto)) {
-    await decir(
-      `wizard: solo pide el producto → el paquete responde, turno cerrado sin IA (0 tokens)`,
-    );
-    return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
-  }
-  if (pareceIntencionCompra(texto)) {
-    await decir(`wizard: intención de compra en el primer mensaje → sigue la IA`);
-    return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
-  }
+
   if (Number(wizard.usar_respuestas_rapidas) === 1) {
     const faqs = leerJson(wizard.respuestas_rapidas_json, []);
     const match = elegirRespuestaRapida(texto, faqs);
@@ -756,8 +730,22 @@ async function intentarMensajeFijoWizard({
       return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
     }
   }
-  await decir(`wizard: pregunta fuera de las rápidas → sigue la IA con la ficha`);
-  return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
+  if (pareceIntencionCompra(texto)) {
+    await decir(`wizard: intención de compra en el primer mensaje → sigue la IA`);
+    return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
+  }
+  // Una pregunta de verdad que las quemadas no cubrieron ("sirve para una
+  // tele de tubo vieja") merece respuesta: IA con la ficha. Lo que NO es
+  // pregunta ni compra es una variante de "quiero el producto" — con o sin
+  // typos — y eso ya lo respondió el paquete.
+  if (pareceRegunta(texto) && !esSaludoOGenerico(texto)) {
+    await decir(`wizard: pregunta fuera de las rápidas → sigue la IA con la ficha`);
+    return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
+  }
+  await decir(
+    `wizard: sin pregunta ni compra → el paquete responde, turno cerrado sin IA (0 tokens)`,
+  );
+  return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
 }
 
 /* El último mensaje del bot pidió datos del cierre (nombre, dirección...):
