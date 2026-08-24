@@ -34,6 +34,13 @@ const {
   buscarProductoPorReferral,
 } = require('../utils/webhook_whatsapp/buscar_producto_referral');
 
+// Wizard de producto (/productos2): primer mensaje FIJO desde el anuncio y
+// respuestas rápidas sin IA. Solo actúa si el producto tiene wizard activo.
+const {
+  intentarMensajeFijoWizard,
+  intentarRespuestaRapida,
+} = require('../services/producto_wizard_runtime.service');
+
 // Lectura de imágenes del cliente (equivalente visual de la transcripción)
 const {
   describirImagenDesdeArchivo,
@@ -2192,18 +2199,69 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               id_configuracion,
             );
 
+            // 1.5 Wizard de producto: si el cliente llega desde un anuncio de
+            // un producto configurado, sale el paquete FIJO (fotos + video +
+            // texto con precio y pregunta gancho) sin tocar la IA. Si el
+            // mensaje fue un saludo o "quiero info", el turno termina ahí. En
+            // los turnos siguientes, una pregunta que calce con una respuesta
+            // rápida del producto también se contesta sin IA. Todo lo demás
+            // sigue por enviarAsistenteKanban como siempre.
+            let saltarIA = false;
+            const logWizard = (m) =>
+              fsp
+                .appendFile(
+                  path.join(logsDir, 'debug_log.txt'),
+                  `[${new Date().toISOString()}] ${m}\n`,
+                )
+                .catch(() => {});
+            try {
+              const wiz = await intentarMensajeFijoWizard({
+                id_configuracion,
+                id_cliente,
+                telefono: phone_whatsapp_from,
+                business_phone_id,
+                accessToken,
+                estado_contacto,
+                referral,
+                texto_mensaje,
+                log: logWizard,
+              });
+              // La ficha del wizard reemplaza al bloque genérico del referral:
+              // trae descripción IA, combos válidos, FAQs y stock en vivo.
+              if (wiz?.bloqueMotor) bloque_producto_referral = wiz.bloqueMotor;
+              if (wiz?.saltarIA) saltarIA = true;
+
+              if (!saltarIA && !wiz?.paqueteEnviado) {
+                const rapida = await intentarRespuestaRapida({
+                  id_configuracion,
+                  id_cliente,
+                  telefono: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  estado_contacto,
+                  texto_mensaje,
+                  log: logWizard,
+                });
+                if (rapida?.manejado) saltarIA = true;
+              }
+            } catch (eWiz) {
+              await logWizard(`⚠️ wizard producto: ${eWiz.message}`);
+            }
+
             // 2. Correr IA (solo si la columna tiene activa_ia=1)
-            await enviarAsistenteKanban({
-              mensaje: mensaje_para_ia,
-              id_configuracion,
-              id_cliente,
-              telefono: phone_whatsapp_from,
-              api_key_openai,
-              business_phone_id,
-              accessToken,
-              estado_contacto,
-              bloque_producto_referral,
-            });
+            if (!saltarIA) {
+              await enviarAsistenteKanban({
+                mensaje: mensaje_para_ia,
+                id_configuracion,
+                id_cliente,
+                telefono: phone_whatsapp_from,
+                api_key_openai,
+                business_phone_id,
+                accessToken,
+                estado_contacto,
+                bloque_producto_referral,
+              });
+            }
 
             // 3. Re-leer estado actual (la IA pudo haberlo cambiado con un trigger)
             const clienteActualizado = await ClientesChatCenter.findByPk(

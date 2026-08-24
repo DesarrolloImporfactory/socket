@@ -72,6 +72,7 @@ async function enviarEnBloques({
   texto,
   responsable,
   total_tokens,
+  analytics = null,
   id_cliente,
   turno,
   log,
@@ -85,6 +86,7 @@ async function enviarEnBloques({
     texto: bloques[0],
     responsable,
     total_tokens,
+    analytics,
   });
 
   if (bloques.length === 1) {

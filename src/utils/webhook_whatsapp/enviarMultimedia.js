@@ -17,6 +17,8 @@ const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
  * Se devuelve el resultado y no se lanza a propósito: hay cinco puntos de
  * llamada y en varios el envío de la imagen va antes del texto de la respuesta.
  * Si esto lanzara, una foto rota se llevaría por delante el mensaje completo. */
+const { registrarErrorEnvio } = require('./erroresEnvio');
+
 async function enviarMedioWhatsapp({
   tipo, // "image" o "video"
   url_archivo,
@@ -93,6 +95,7 @@ async function enviarMedioWhatsapp({
       const errorMsg = respData?.error
         ? JSON.stringify(respData.error)
         : 'Respuesta inesperada';
+      registrarErrorEnvio(phone_whatsapp_to, respData?.error || errorMsg);
       await logToFile(
         `[${new Date().toISOString()}] ❌ Error al enviar ${tipo}: ${errorMsg}\n`
       );
@@ -109,6 +112,7 @@ async function enviarMedioWhatsapp({
     const detalle = err.response?.data?.error
       ? JSON.stringify(err.response.data.error)
       : err.message;
+    registrarErrorEnvio(phone_whatsapp_to, err.response?.data?.error || detalle);
     return { ok: false, error: detalle };
   }
 }

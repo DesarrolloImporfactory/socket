@@ -110,9 +110,14 @@ async function procesarAsistenteMensajeVentas(body) {
             pc.descripcion_upsell AS descripcion_upsell,
             pc.precio_upsell AS precio_upsell,
             pc.imagen_upsell_url AS imagen_upsell_path,
+            pu.nombre AS upsell_ref_nombre,
+            pu.precio AS upsell_ref_precio,
+            pu.imagen_url AS upsell_ref_imagen,
             pc.combos_producto AS combos_producto,
         cc.nombre AS nombre_categoria
       FROM productos_chat_center pc
+      LEFT JOIN productos_chat_center pu
+        ON pu.id = pc.id_producto_upsell AND pu.eliminado = 0
       INNER JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
       WHERE pc.nombre LIKE :producto
       AND pc.id_configuracion = :id_configuracion`,
@@ -141,10 +146,19 @@ async function procesarAsistenteMensajeVentas(body) {
             bloqueProductos += `[producto_video_url]: ${infoProducto.video_path}\n\n`; // Recurso para el asistente
             bloqueProductos += `Tipo: ${infoProducto.tipo}\n`;
             bloqueProductos += `Categoría: ${infoProducto.nombre_categoria}\n`;
-            bloqueProductos += `Nombre_upsell: ${infoProducto.nombre_upsell}\n`;
-            bloqueProductos += `Descripcion_upsell: ${infoProducto.descripcion_upsell}\n`;
-            bloqueProductos += `Precio_upsell: ${infoProducto.precio_upsell}\n`;
-            bloqueProductos += ` [upsell_imagen_url]: ${infoProducto.imagen_upsell_path}\n`;
+            // Referencia en vivo primero; campos de texto legacy después.
+            const upNombre =
+              infoProducto.upsell_ref_nombre || infoProducto.nombre_upsell;
+            const upPrecio =
+              infoProducto.upsell_ref_precio ?? infoProducto.precio_upsell;
+            const upImagen =
+              infoProducto.upsell_ref_imagen || infoProducto.imagen_upsell_path;
+            if (upNombre) {
+              const { directivaUpsell } = require('../utils/upsellProducto');
+              bloqueProductos += `${directivaUpsell({ nombre: upNombre, precio: upPrecio })}\n`;
+              if (upImagen)
+                bloqueProductos += ` [upsell_imagen_url]: ${upImagen}\n`;
+            }
             bloqueProductos += `\n`;
           }
         }

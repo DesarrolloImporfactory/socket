@@ -32,6 +32,7 @@ const {
   obtenerOCrearContactoWa,
 } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+const { resolverLugarRetiro } = require('../utils/lugarRetiroAgencia');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -76,8 +77,10 @@ async function construirParamsRetiroAgencia({ id_configuracion, order }) {
   }
 
   const nombre = `${order?.name || ''} ${order?.surname || ''}`.trim();
-  // La dirección de la agencia viene en `dir` cuando el envío es a oficina;
-  // si no, la ciudad ya orienta al cliente sobre dónde retirar.
+  // `dir` ya viene resuelto como LUGAR DE RETIRO por procesarTemplates
+  // (agencia real de Servientrega, o la agencia que escribió el vendedor, o
+  // "agencia de Servientrega en {ciudad}") — ver utils/lugarRetiroAgencia.
+  // Nunca es el domicilio del cliente aunque la orden se haya creado así.
   const agencia = String(order?.dir || order?.city || '').trim();
 
   return [
@@ -1575,10 +1578,38 @@ async function procesarTemplates({
       let jsonMensajeEnviado = null;
       // Las variables del mensaje ({{telefono}}, ruta_archivo) también deben
       // llevar el número confiable, no el mocho que trae la orden.
-      const orderParaMsg =
+      let orderParaMsg =
         telefonoOrden === order.phone
           ? order
           : { ...order, phone: telefonoOrden };
+
+      /* RETIRO EN AGENCIA: `dir` es lo que el vendedor escribió al crear la
+         orden. Cuando Servientrega no entregó a domicilio y dejó el paquete en
+         una agencia, eso sigue siendo la CASA del cliente — y así salía en la
+         plantilla ("retira en cdla. Héctor Cobos mz S villa 2…", cfg 889,
+         orden 6612199). Dropi no manda la agencia; se resuelve aquí (tracking
+         de Servientrega, con fallback) y se reemplaza `dir` para que la
+         plantilla de estado, los recordatorios k1/k2/k3 y la ruta del chat
+         hablen todos del mismo lugar. El domicilio queda en dir_domicilio.
+         Va DESPUÉS del reclamo: solo se consulta cuando sí va a salir algo. */
+      if (estadoConfig === 'RETIRO EN AGENCIA') {
+        const retiro = await resolverLugarRetiro({
+          order: orderParaMsg,
+          country_code,
+        });
+        if (retiro?.lugar && retiro.lugar !== orderParaMsg.dir) {
+          console.log(
+            `[dropi-notifier] orden ${order.id} (cfg ${id_configuracion}) lugar de retiro ← ${retiro.fuente}: "${retiro.lugar}"` +
+              (retiro.motivo ? ` (motivo: ${retiro.motivo})` : ''),
+          );
+          orderParaMsg = {
+            ...orderParaMsg,
+            dir_domicilio: orderParaMsg.dir,
+            dir: retiro.lugar,
+            agencia_retiro: retiro.agencia,
+          };
+        }
+      }
       const components = buildTemplateComponents(
         config.parametros_json,
         orderParaMsg,

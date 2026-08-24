@@ -355,6 +355,11 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     landing_url: landing_url || null,
     es_privado: esPrivadoParsed,
     id_dropi: Number.isFinite(idDropiParsed) ? idDropiParsed : null,
+    id_producto_upsell: await validarIdProductoUpsell(
+      req.body.id_producto_upsell,
+      id_configuracion,
+      0,
+    ),
     nombre_upsell: nombre_upsell || null,
     descripcion_upsell: descripcion_upsell || null,
     precio_upsell: precioUpsellNum,
@@ -390,6 +395,19 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
 });
 
 // ========== ACTUALIZAR ==========
+// Valida el upsell por referencia: debe ser OTRO producto vivo de la misma
+// cuenta. Devuelve el id validado o null (sin upsell).
+async function validarIdProductoUpsell(valor, id_configuracion, id_propio) {
+  const idUp = toNullableNumber(valor);
+  if (!idUp || Number(idUp) === Number(id_propio)) return null;
+  const [existe] = await db.query(
+    `SELECT id FROM productos_chat_center
+      WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
+    { replacements: [idUp, id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return existe ? Number(idUp) : null;
+}
+
 exports.actualizarProducto = catchAsync(async (req, res, next) => {
   const {
     id_producto,
@@ -597,6 +615,12 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
       v && v > 0 ? Math.max(v, Number(producto.sesiones_min) || 1) : null;
   }
   if (typeof id_categoria !== 'undefined') producto.id_categoria = id_categoria;
+  if (typeof req.body.id_producto_upsell !== 'undefined')
+    producto.id_producto_upsell = await validarIdProductoUpsell(
+      req.body.id_producto_upsell,
+      producto.id_configuracion,
+      producto.id,
+    );
   if (typeof nombre_upsell !== 'undefined')
     producto.nombre_upsell = nombre_upsell || null;
   if (typeof descripcion_upsell !== 'undefined')

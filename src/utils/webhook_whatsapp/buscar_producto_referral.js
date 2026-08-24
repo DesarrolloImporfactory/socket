@@ -1,5 +1,6 @@
 // utils/webhook_whatsapp/buscar_producto_referral.js
 const { db } = require('../../database/config');
+const { resolverUpsell, directivaUpsell } = require('../upsellProducto');
 
 // Codifica el filename de la URL (igual que hace tu sync de catálogo)
 function encodeUrl(url) {
@@ -40,11 +41,11 @@ function formatearCombos(combosProducto) {
   return txt.trim();
 }
 
-// Arma el bloque de texto que se le inyecta a la IA
-function armarBloqueProducto(p) {
+// Arma el bloque de texto que se le inyecta a la IA. `upsell` viene de
+// resolverUpsell (referencia en vivo o campos legacy); con null no se ofrece.
+function armarBloqueProducto(p, upsell = null) {
   const imagen = encodeUrl(p.imagen_url);
   const video = encodeUrl(p.video_url);
-  const imagenUpsell = encodeUrl(p.imagen_upsell_url);
   const combos = formatearCombos(p.combos_producto);
 
   let b = '';
@@ -54,15 +55,17 @@ function armarBloqueProducto(p) {
   if (combos) b += `${combos}\n`;
   if (imagen) b += `[producto_imagen_url]: ${imagen}\n`;
   if (video) b += `[producto_video_url]: ${video}\n`;
-  if (p.nombre_upsell) b += `Nombre_upsell: ${p.nombre_upsell}\n`;
-  if (p.precio_upsell != null) b += `Precio_upsell: ${p.precio_upsell}\n`;
-  if (imagenUpsell) b += `[upsell_imagen_url]: ${imagenUpsell}\n`;
+  if (upsell) {
+    b += `${directivaUpsell(upsell)}\n`;
+    const imgUp = encodeUrl(upsell.imagen_url);
+    if (imgUp) b += `[upsell_imagen_url]: ${imgUp}\n`;
+  }
   return b.trim();
 }
 
-const CAMPOS_PRODUCTO = `id, nombre, descripcion, precio, imagen_url, video_url,
-              combos_producto, stock, nombre_upsell, descripcion_upsell,
-              precio_upsell, imagen_upsell_url`;
+const CAMPOS_PRODUCTO = `id, id_configuracion, nombre, descripcion, precio,
+              imagen_url, video_url, combos_producto, stock, id_producto_upsell,
+              nombre_upsell, descripcion_upsell, precio_upsell, imagen_upsell_url`;
 
 /**
  * Resuelve QUÉ producto publicita un anuncio. Es la única fuente de esa
@@ -251,7 +254,8 @@ async function buscarProductoPorReferral(id_configuracion, headline, source_id) 
   const r = await resolverProductoAnuncio(id_configuracion, headline, source_id);
   if (!r) return '';
   // Devuelve SOLO los datos del producto. La instrucción la arma el webhook.
-  return armarBloqueProducto(r.producto);
+  const upsell = await resolverUpsell(r.producto);
+  return armarBloqueProducto(r.producto, upsell);
 }
 
 module.exports = { buscarProductoPorReferral, resolverProductoAnuncio };

@@ -557,12 +557,37 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
              parecerse a producción. Mismo formato y mismo orden que la
              consulta: {rol_mensaje, texto_mensaje}, del más nuevo al más
              viejo. En producción no llega y se lee la BD. */
+          /* Corte por reinicio de conversación, igual que el recap y la ficha
+             del pedido: lo que el cliente nombró ANTES de un reinicio es otra
+             conversación. Sin este corte, el contacto de pruebas que habló del
+             Guante en un guion viejo seguía anclado al Guante después de
+             reiniciar y entrar por el anuncio del Onn Watch TV (2026-08-20):
+             el bot respondió "te aparto 2 guantes". Si la columna no existe o
+             la consulta falla, se sigue sin corte como siempre. */
+          let desdeReinicio = null;
+          if (!Array.isArray(opts?.historial)) {
+            try {
+              const [cli] = await db.query(
+                `SELECT reinicio_conversacion_at FROM clientes_chat_center
+                  WHERE id = ? LIMIT 1`,
+                {
+                  replacements: [opts.id_cliente],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
+              desdeReinicio = cli?.reinicio_conversacion_at || null;
+            } catch (_) {
+              desdeReinicio = null;
+            }
+          }
+
           const previos = Array.isArray(opts?.historial)
             ? opts.historial
             : await db.query(
             `SELECT rol_mensaje, texto_mensaje FROM mensajes_clientes
               WHERE id_configuracion = ? AND celular_recibe = ?
                 AND texto_mensaje IS NOT NULL AND texto_mensaje <> ''
+                ${desdeReinicio ? 'AND created_at > ?' : ''}
               /* Ventana amplia a propósito: el producto suele nombrarse en el
                  PRIMER mensaje —el del anuncio— y después la conversación se
                  llena de precios, ciudad y forma de pago. Con una ventana corta
@@ -571,7 +596,9 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               ORDER BY id DESC
               LIMIT 40`,
             {
-              replacements: [id_configuracion, String(opts.id_cliente)],
+              replacements: desdeReinicio
+                ? [id_configuracion, String(opts.id_cliente), desdeReinicio]
+                : [id_configuracion, String(opts.id_cliente)],
               type: db.QueryTypes.SELECT,
             },
           );

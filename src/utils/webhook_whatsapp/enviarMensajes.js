@@ -98,6 +98,8 @@ async function enviarMensajeTextoWhatsApp(
   }
 }
 
+const { registrarErrorEnvio } = require('./erroresEnvio');
+
 async function enviarMensajeWhatsapp({
   phone_whatsapp_to,
   texto_mensaje,
@@ -106,6 +108,8 @@ async function enviarMensajeWhatsapp({
   id_configuracion,
   responsable = '',
   total_tokens = 0,
+  // { modelo, input, cached, output, reasoning } de la respuesta de la IA.
+  analytics = null,
 }) {
   await fs.mkdir(logsDir, { recursive: true });
 
@@ -159,14 +163,20 @@ async function enviarMensajeWhatsapp({
         responsable,
         wamid: mensajeId,
         total_tokens,
+        analytics,
       });
     } else {
       const errorMsg = respData.error
         ? JSON.stringify(respData.error)
         : 'Respuesta inesperada';
+      registrarErrorEnvio(phone_whatsapp_to, respData.error || errorMsg);
       await logError(`❌ Error al enviar: ${errorMsg}`);
     }
   } catch (err) {
+    registrarErrorEnvio(
+      phone_whatsapp_to,
+      err.response?.data?.error || err.message,
+    );
     await logError(`❌ Error en enviarMensajeWhatsapp: ${err.message}`);
   }
 }

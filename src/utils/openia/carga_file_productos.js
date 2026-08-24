@@ -1,6 +1,7 @@
 const axios = require('axios');
 const FormData = require('form-data');
 const { db, db_2 } = require('../../database/config');
+const { directivaUpsell } = require('../upsellProducto');
 
 /**
  * Sincroniza catálogo de productos/servicios al file_search (vector store) de los assistants
@@ -121,11 +122,19 @@ async function syncCatalogoAsistentesPorConfiguracion(
         bloque_prompt += `[producto_video_url]: ${r.video_url}\n`;
       bloque_prompt += `Tipo: ${r.tipo || ''}\n`;
       bloque_prompt += `Categoría: ${r.nombre_categoria || ''}\n`;
-      bloque_prompt += `Nombre_upsell: ${r.nombre_upsell || ''}\n`;
-      bloque_prompt += `Descripcion_upsell: ${r.descripcion_upsell || ''}\n`;
-      bloque_prompt += `Precio_upsell: ${r.precio_upsell ?? ''}\n`;
-      if (r.imagen_upsell_url)
-        bloque_prompt += `[upsell_imagen_url]: ${r.imagen_upsell_url}\n`;
+      // Upsell: la referencia a otro producto (datos en vivo) manda sobre los
+      // campos de texto legacy. Sin upsell no se escribe nada: el bot no
+      // ofrece ni cierra con productos extra.
+      const upStock = Number(r.upsell_ref_stock);
+      const upRefVivo =
+        r.upsell_ref_nombre && !(Number.isFinite(upStock) && upStock <= 0);
+      const upNombre = upRefVivo ? r.upsell_ref_nombre : r.nombre_upsell;
+      const upPrecio = upRefVivo ? r.upsell_ref_precio : r.precio_upsell;
+      const upImagen = upRefVivo ? r.upsell_ref_imagen : r.imagen_upsell_url;
+      if (upNombre) {
+        bloque_prompt += `${directivaUpsell({ nombre: upNombre, precio: upPrecio })}\n`;
+        if (upImagen) bloque_prompt += `[upsell_imagen_url]: ${upImagen}\n`;
+      }
 
       console.log('bloque_prompt: ' + bloque_prompt);
       return {
@@ -151,10 +160,10 @@ async function syncCatalogoAsistentesPorConfiguracion(
         producto_imagen_url: r.imagen_url || null,
         producto_video_url: r.video_url || null,
 
-        nombre_upsell: r.nombre_upsell || null,
+        nombre_upsell: upNombre || null,
         descripcion_upsell: r.descripcion_upsell || null,
-        precio_upsell: r.precio_upsell ?? null,
-        upsell_imagen_url: r.imagen_upsell_url || null,
+        precio_upsell: upPrecio ?? null,
+        upsell_imagen_url: upImagen || null,
 
         combos_producto: combos_json, // estructura útil
         combos_producto_texto: combos_texto, // texto útil para retrieval/prompt
@@ -417,11 +426,18 @@ async function syncCatalogoAsistentesPorConfiguracion(
       pc.descripcion_upsell,
       pc.precio_upsell,
       pc.imagen_upsell_url,
+      pc.id_producto_upsell,
+      pu.nombre AS upsell_ref_nombre,
+      pu.precio AS upsell_ref_precio,
+      pu.imagen_url AS upsell_ref_imagen,
+      pu.stock AS upsell_ref_stock,
       pc.combos_producto,
       pc.fecha_actualizacion,
       cc.nombre AS nombre_categoria
     FROM productos_chat_center pc
     LEFT JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
+    LEFT JOIN productos_chat_center pu
+      ON pu.id = pc.id_producto_upsell AND pu.eliminado = 0
     WHERE pc.id_configuracion = :id_configuracion
     ORDER BY pc.id DESC
     `,
