@@ -101,36 +101,171 @@ function olvidarWizard(id_producto) {
  * Producto del anuncio + su wizard activo. Devuelve null si el anuncio no se
  * resuelve o si el producto no tiene wizard completado.
  */
+/* Variedades + upsell del producto, para que la ficha del motor los conozca.
+   Compartido entre la resolución por anuncio y la resolución por texto. */
+async function enriquecerProductoWizard(producto) {
+  try {
+    const [fila] = await db.query(
+      `SELECT es_variable FROM productos_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [producto.id], type: db.QueryTypes.SELECT },
+    );
+    producto.es_variable = Number(fila?.es_variable) === 1 ? 1 : 0;
+    producto.variaciones = producto.es_variable
+      ? await db.query(
+          `SELECT atributo, valor, stock, precio_sugerido
+             FROM productos_variaciones
+            WHERE id_producto = ? AND activo = 1 ORDER BY id`,
+          { replacements: [producto.id], type: db.QueryTypes.SELECT },
+        )
+      : [];
+  } catch {
+    producto.variaciones = [];
+  }
+  // Upsell configurado (referencia a otro producto o campos legacy).
+  try {
+    producto.upsell = await resolverUpsell(producto);
+  } catch {
+    producto.upsell = null;
+  }
+  return producto;
+}
+
 async function resolverWizardDelAnuncio(id_configuracion, headline, source_id) {
   const r = await resolverProductoAnuncio(id_configuracion, headline, source_id);
   if (!r?.producto) return null;
   const wizard = await wizardActivoDeProducto(r.producto.id);
   if (!wizard) return null;
-  // Variedades (color, talla…) para que la ficha del motor las conozca.
-  try {
-    const [fila] = await db.query(
-      `SELECT es_variable FROM productos_chat_center WHERE id = ? LIMIT 1`,
-      { replacements: [r.producto.id], type: db.QueryTypes.SELECT },
-    );
-    r.producto.es_variable = Number(fila?.es_variable) === 1 ? 1 : 0;
-    r.producto.variaciones = r.producto.es_variable
-      ? await db.query(
-          `SELECT atributo, valor, stock, precio_sugerido
-             FROM productos_variaciones
-            WHERE id_producto = ? AND activo = 1 ORDER BY id`,
-          { replacements: [r.producto.id], type: db.QueryTypes.SELECT },
-        )
-      : [];
-  } catch {
-    r.producto.variaciones = [];
-  }
-  // Upsell configurado (referencia a otro producto o campos legacy).
-  try {
-    r.producto.upsell = await resolverUpsell(r.producto);
-  } catch {
-    r.producto.upsell = null;
-  }
+  await enriquecerProductoWizard(r.producto);
   return { producto: r.producto, wizard, via: r.via };
+}
+
+/* ── Resolución por TEXTO (cliente sin anuncio) ──
+   Si el mensaje nombra sin ambigüedad un producto que TIENE bot configurado,
+   el flujo del wizard aplica igual que si viniera del anuncio. Si el nombre no
+   se identifica con confianza (cobertura baja o dos productos que calzan), se
+   devuelve null y el bot sigue el flujo normal con IA. */
+const STOPWORDS_NOMBRE = new Set([
+  'de', 'del', 'la', 'las', 'el', 'los', 'un', 'una', 'unos', 'unas', 'para',
+  'con', 'sin', 'por', 'en', 'y', 'o', 'u', 'a', 'al', 'tu', 'su', 'mas',
+]);
+
+const normalizarPalabras = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+const CACHE_LISTA_WIZARD = new Map();
+async function productosConWizard(id_configuracion) {
+  const clave = String(id_configuracion);
+  const hit = CACHE_LISTA_WIZARD.get(clave);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.lista;
+  let lista = [];
+  try {
+    lista = await db.query(
+      `SELECT p.id, p.nombre
+         FROM productos_chat_center p
+         JOIN productos_wizard w
+           ON w.id_producto = p.id AND w.wizard_completado = 1 AND w.activo = 1
+        WHERE p.id_configuracion = ? AND p.eliminado = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+  } catch {
+    lista = [];
+  }
+  CACHE_LISTA_WIZARD.set(clave, { lista, ts: Date.now() });
+  return lista;
+}
+
+function elegirProductoPorTexto(mensaje, lista) {
+  const palabrasMsg = new Set(normalizarPalabras(mensaje));
+  if (!palabrasMsg.size) return null;
+
+  let mejor = null;
+  let mejorCobertura = 0;
+  let empate = false;
+  for (const p of lista) {
+    const sig = normalizarPalabras(p.nombre).filter(
+      (w) => w.length >= 3 && !STOPWORDS_NOMBRE.has(w),
+    );
+    if (!sig.length) continue;
+    const aciertos = sig.filter((w) => palabrasMsg.has(w)).length;
+    const cobertura = aciertos / sig.length;
+    // Con una sola palabra significativa se exige la palabra completa y larga
+    // ("cabeza" nunca debe calzar con "Cabezal"); con dos o más, 60% de
+    // cobertura mínimo ("el cargador" solo, no basta para "cargador de
+    // bateria": podría ser cualquier cargador del catálogo).
+    const calza =
+      sig.length === 1 ? aciertos === 1 && sig[0].length >= 4 : cobertura >= 0.6;
+    if (!calza) continue;
+    if (cobertura > mejorCobertura) {
+      mejor = p;
+      mejorCobertura = cobertura;
+      empate = false;
+    } else if (cobertura === mejorCobertura && mejor && p.id !== mejor.id) {
+      empate = true;
+    }
+  }
+  return empate ? null : mejor;
+}
+
+async function resolverWizardPorTexto(id_configuracion, mensaje) {
+  const lista = await productosConWizard(id_configuracion);
+  if (!lista.length) return null;
+  const elegido = elegirProductoPorTexto(mensaje, lista);
+  if (!elegido) return null;
+  const wizard = await wizardActivoDeProducto(elegido.id);
+  if (!wizard) return null;
+  const [producto] = await db.query(
+    `SELECT id, id_configuracion, nombre, descripcion, precio, imagen_url,
+            video_url, combos_producto, stock, id_producto_upsell,
+            nombre_upsell, descripcion_upsell, precio_upsell, imagen_upsell_url
+       FROM productos_chat_center
+      WHERE id = ? LIMIT 1`,
+    { replacements: [elegido.id], type: db.QueryTypes.SELECT },
+  );
+  if (!producto) return null;
+  await enriquecerProductoWizard(producto);
+  return { producto, wizard, via: 'texto' };
+}
+
+/* Ancla el producto identificado por texto como "producto en juego" del
+   cliente (cliente_productos_ad con headline = nombre del producto). Así los
+   turnos siguientes —respuestas rápidas, ficha del motor, ancla del
+   contexto— funcionan igual que si hubiera entrado por el anuncio. */
+async function sembrarProductoEnJuego({
+  id_cliente,
+  id_configuracion,
+  producto,
+  texto_mensaje,
+}) {
+  try {
+    const [ultimo] = await db.query(
+      `SELECT headline FROM cliente_productos_ad
+        WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    );
+    if (String(ultimo?.headline || '') === String(producto.nombre)) return;
+    await db.query(
+      `INSERT INTO cliente_productos_ad
+         (id_cliente, id_configuracion, headline, body_ad, source_url, source_id, ctwa_clid, mensaje_cliente)
+       VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      {
+        replacements: [
+          id_cliente,
+          id_configuracion,
+          producto.nombre,
+          String(texto_mensaje || '').slice(0, 500),
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch {
+    /* sin ancla no se rompe nada: el turno actual ya resolvió por texto */
+  }
 }
 
 /**
@@ -495,13 +630,31 @@ async function intentarMensajeFijoWizard({
 }) {
   const nada = { paqueteEnviado: false, saltarIA: false, bloqueMotor: null };
   const decir = logDe(log);
-  if (!referral) return nada;
 
-  const r = await resolverWizardDelAnuncio(
-    id_configuracion,
-    referral.headline || '',
-    referral.source_id || null,
-  );
+  let r = null;
+  if (referral) {
+    r = await resolverWizardDelAnuncio(
+      id_configuracion,
+      referral.headline || '',
+      referral.source_id || null,
+    );
+  } else {
+    // Sin anuncio: si el mensaje nombra sin ambigüedad un producto con bot
+    // configurado, el flujo aplica igual. Si no se identifica con confianza,
+    // r queda null y el bot sigue el flujo normal con IA.
+    r = await resolverWizardPorTexto(id_configuracion, texto_mensaje);
+    if (r) {
+      await decir(
+        `wizard: producto identificado por TEXTO → "${r.producto.nombre}" (id ${r.producto.id})`,
+      );
+      await sembrarProductoEnJuego({
+        id_cliente,
+        id_configuracion,
+        producto: r.producto,
+        texto_mensaje,
+      });
+    }
+  }
   if (!r) return nada;
 
   const { producto, wizard } = r;
