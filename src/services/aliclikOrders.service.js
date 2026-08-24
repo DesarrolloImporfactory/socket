@@ -639,10 +639,13 @@ async function listOrdersForClient({ id_configuracion, phone, body = {} }) {
       delivery_status: r.status || '',
       dispatch_status: r.dispatch_status || '',
       total_order: Number(r.total || 0),
-      // Aliclik no expone guía ni transportadora en ningún endpoint: el
-      // orderNumber es toda la referencia de seguimiento que hay.
-      shipping_guide: '',
-      shipping_company: '',
+      // Aliclik todavía no expone guía ni transportadora en ningún endpoint,
+      // así que hoy salen vacías y el orderNumber es toda la referencia de
+      // seguimiento que hay. Se leen del pedido cacheado —y no se fuerzan a
+      // ''— para que el panel las muestre solo cuando empiecen a llegar
+      // (ver ALICLIK_EXPONE_GUIA en aliclik_notifier.service).
+      shipping_guide: od?.shipping_guide || '',
+      shipping_company: od?.shipping_company || '',
       order_created_at: r.order_created_at,
       shop_name: integration.store_name || 'Aliclik',
 

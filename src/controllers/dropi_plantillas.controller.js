@@ -2,6 +2,8 @@ const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const {
   ESTADOS_ALICLIK,
+  ALICLIK_EXPONE_GUIA,
+  dependeDeLaGuia,
 } = require('../services/aliclik_notifier.service');
 
 const ESTADOS_DROPI = [
@@ -40,21 +42,43 @@ exports.obtener = catchAsync(async (req, res) => {
   const { id_configuracion } = req.body;
   const proveedor = resolverProveedor(req.body.proveedor);
 
-  const registros = await db.query(
-    `SELECT estado_dropi, nombre_template, language_code, activo,
-            mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
-            columna_destino, enviar_en_orden_bot
-     FROM dropi_plantillas_config
-     WHERE id_configuracion = ? AND proveedor = ?`,
-    {
-      replacements: [id_configuracion, proveedor],
-      type: db.QueryTypes.SELECT,
-    },
-  );
+  const traerFilas = (prov) =>
+    db.query(
+      `SELECT estado_dropi, nombre_template, language_code, activo,
+              mensaje_rapido, usar_respuesta_rapida, parametros_json, body_text,
+              columna_destino, enviar_en_orden_bot
+       FROM dropi_plantillas_config
+       WHERE id_configuracion = ? AND proveedor = ?`,
+      {
+        replacements: [id_configuracion, prov],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+  const registros = await traerFilas(proveedor);
+
+  // HERENCIA: Aliclik no arranca de cero. Si un estado no tiene fila propia,
+  // se muestra la de Dropi —que es la que de verdad va a usar el notifier
+  // (services/aliclik_notifier.service.js → getPlantillasAliclik)— marcada
+  // como heredada. Guardar en esta pestaña crea la fila propia, que pasa a
+  // pisar la de Dropi solo para ese estado.
+  const hereda = proveedor === 'aliclik';
+  const registrosBase = hereda ? await traerFilas('dropi') : [];
 
   const resultado = {};
   for (const estado of ESTADOS_POR_PROVEEDOR[proveedor]) {
-    const encontrado = registros.find((r) => r.estado_dropi === estado);
+    const propio = registros.find((r) => r.estado_dropi === estado);
+    const heredado = propio
+      ? null
+      : registrosBase.find((r) => r.estado_dropi === estado) || null;
+    const encontrado = propio || heredado;
+
+    // Aliclik todavía no entrega guía: si la plantilla heredada la necesita,
+    // el notifier la degrada a "solo mover de columna". Se avisa acá para que
+    // la pantalla lo diga en vez de prometer un envío que no ocurre.
+    const sinEnvioPorGuia =
+      hereda && !ALICLIK_EXPONE_GUIA && dependeDeLaGuia(encontrado);
+
     resultado[estado] = {
       nombre_template: encontrado?.nombre_template || '',
       language_code: encontrado?.language_code || 'es',
@@ -68,6 +92,10 @@ exports.obtener = catchAsync(async (req, res) => {
       // cuando el bot cierra la venta por WhatsApp y crea la orden.
       // Encendido por defecto (registros previos a la columna incluidos).
       enviar_en_orden_bot: encontrado?.enviar_en_orden_bot ?? 1,
+      // Viene de la pestaña Dropi, no hay fila propia para este proveedor.
+      heredado: !!heredado,
+      // Está configurado, pero no va a enviar mensaje: le falta la guía.
+      sin_envio_por_guia: !!sinEnvioPorGuia,
     };
   }
 

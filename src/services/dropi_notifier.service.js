@@ -534,9 +534,16 @@ function resolveVariable(varName, order) {
     case 'transportadora':
       return order.shipping_company || '';
     case 'tracking':
-      return getTrackingUrl(order.shipping_company, order.shipping_guide);
+      // Un proveedor puede traer la URL ya resuelta en vez de guía +
+      // transportadora (será el caso de Aliclik cuando exponga el tracking).
+      // Las órdenes de Dropi nunca setean estos campos, así que su camino es
+      // exactamente el de siempre.
+      return (
+        order.tracking_url ||
+        getTrackingUrl(order.shipping_company, order.shipping_guide)
+      );
     case 'guia_pdf':
-      return getGuiaPdfUrl(order);
+      return order.guia_pdf_url || getGuiaPdfUrl(order);
     case 'order_id':
       return String(order.id || '');
     case 'telefono':
@@ -573,7 +580,9 @@ function buildRutaArchivo(order, estadoConfig) {
         .join(','),
     costo: String(order.total_order || '0'),
     ciudad: order.city || '',
-    tracking: getTrackingUrl(order.shipping_company, order.shipping_guide),
+    tracking:
+      order.tracking_url ||
+      getTrackingUrl(order.shipping_company, order.shipping_guide),
     transportadora: order.shipping_company || '',
     numero_guia: order.shipping_guide || '',
     estado_notificacion: estadoConfig,
