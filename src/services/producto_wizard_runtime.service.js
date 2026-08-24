@@ -180,6 +180,33 @@ async function productosConWizard(id_configuracion) {
   return lista;
 }
 
+/* ¿El mensaje es SOLO "quiero / info / precio + el nombre del producto"?
+   Se quitan las palabras del nombre, los conectores y el relleno típico de
+   apertura; si no queda nada sustancial, el paquete fijo ya lo responde
+   completo. Una cantidad ("quiero 2"), una pregunta ("sirve para motos") o
+   cualquier dato extra dejan palabras vivas → sigue la IA o la FAQ. */
+const RELLENO_PEDIDO = new Set([
+  'hola', 'holaa', 'holaaa', 'buenas', 'buenos', 'dias', 'tardes', 'noches',
+  'quiero', 'queria', 'quisiera', 'deseo', 'necesito', 'dame', 'busco',
+  'envie', 'enviame', 'mandame', 'info', 'informacion', 'precio', 'precios',
+  'costo', 'valor', 'cuanto', 'vale', 'cuesta', 'esta', 'estan', 'comprar',
+  'compra', 'pedir', 'adquirir', 'interesa', 'interesado', 'interesada',
+  'me', 'te', 'le', 'lo', 'les', 'porfa', 'favor', 'porfavor', 'gracias',
+  'vi', 'anuncio', 'publicacion', 'ese', 'este', 'saber', 'tienen', 'tiene',
+  'hay', 'disponible', 'mas', 'aun', 'todavia', 'quierooo', 'x', 'xfa',
+]);
+
+function esSoloPedidoDelProducto(texto, producto) {
+  const palabrasProducto = new Set(normalizarPalabras(producto?.nombre));
+  const restantes = normalizarPalabras(texto).filter(
+    (w) =>
+      !palabrasProducto.has(w) &&
+      !STOPWORDS_NOMBRE.has(w) &&
+      !RELLENO_PEDIDO.has(w),
+  );
+  return restantes.length === 0;
+}
+
 function elegirProductoPorTexto(mensaje, lista) {
   const palabrasMsg = new Set(normalizarPalabras(mensaje));
   if (!palabrasMsg.size) return null;
@@ -695,6 +722,17 @@ async function intentarMensajeFijoWizard({
   const texto = String(texto_mensaje || '');
   if (esSaludoOGenerico(texto)) {
     await decir(`wizard: mensaje genérico → turno cerrado sin IA (0 tokens)`);
+    return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
+  }
+  // "Hola, quiero el <producto>" / "info del <producto>" / "precio del
+  // <producto>": el paquete ES la respuesta (fotos, precio y pregunta de
+  // cierre). Meter a la IA aquí duplicaba la presentación con un segundo
+  // saludo. Solo si el mensaje trae algo MÁS (una pregunta, una cantidad,
+  // datos), sigue la IA.
+  if (esSoloPedidoDelProducto(texto, producto)) {
+    await decir(
+      `wizard: solo pide el producto → el paquete responde, turno cerrado sin IA (0 tokens)`,
+    );
     return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
   }
   if (pareceIntencionCompra(texto)) {
