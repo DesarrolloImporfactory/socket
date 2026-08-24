@@ -19,6 +19,7 @@ async function procesarMensajeTexto({
   responsable = 'sistema',
   wamid,
   total_tokens = 0,
+  analytics = null,
 }) {
   try {
     await fs.mkdir(logsDir, { recursive: true });
@@ -68,6 +69,10 @@ async function procesarMensajeTexto({
       uid_whatsapp: phone_whatsapp_to,
       id_wamid_mensaje: wamid,
       total_tokens_openai_mensaje: total_tokens,
+      // Modelo + desglose de tokens (panel de consumo). Solo cuando viene.
+      ...(analytics && typeof analytics === 'object'
+        ? { json_analytics_mensaje: JSON.stringify(analytics).slice(0, 1000) }
+        : {}),
     });
 
     await logInfo(

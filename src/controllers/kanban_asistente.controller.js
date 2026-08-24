@@ -84,16 +84,28 @@ const EXT_LABEL = {
   'text/csv': 'CSV',
 };
 
+// Lanza un AppError operacional (400) — antes era un Error plano y el handler
+// global lo convertía en el 500 genérico "Something went very wrong", sin
+// pista de que lo que faltaba era la API key de la cuenta.
 async function getApiKey(id_configuracion) {
+  const key = await getApiKeyOpcional(id_configuracion);
+  if (!key)
+    throw new AppError(
+      'Esta cuenta no tiene API Key de OpenAI configurada. Agrégala en Asistentes para usar la IA.',
+      400,
+    );
+  return key;
+}
+
+// Igual que getApiKey pero devuelve null en vez de fallar: para los endpoints
+// de solo lectura, que deben seguir mostrando lo que hay en BD aunque la
+// cuenta se haya quedado sin key.
+async function getApiKeyOpcional(id_configuracion) {
   const [row] = await db.query(
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  if (!row?.api_key_openai)
-    throw new Error(
-      `Sin api_key_openai para id_configuracion=${id_configuracion}`,
-    );
-  return row.api_key_openai;
+  return row?.api_key_openai || null;
 }
 
 function headersJson(apiKey) {
@@ -190,12 +202,15 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
     return res.status(200).json({ success: true, data: null });
   }
 
-  const apiKey = await getApiKey(col.id_configuracion);
+  // Sin key la cuenta no puede hablar con OpenAI, pero el prompt y el modelo
+  // viven en BD: se devuelven igual (con `sin_api_key`) para que el panel
+  // siga mostrando la configuración en vez de un 500.
+  const apiKey = await getApiKeyOpcional(col.id_configuracion);
   const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   let asistenteData;
 
-  if (USAR_RESPONSES_API) {
+  if (USAR_RESPONSES_API || !apiKey) {
     // Nuevo sistema: no hay objeto Assistant en OpenAI, todo vive en BD.
     asistenteData = {
       assistant_id: col.assistant_id,
@@ -204,7 +219,8 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
       modelo: col.modelo,
     };
 
-    console.log('SISTEMA NUEVO SIN ASSISTANTS');
+    if (!apiKey) console.log('SIN API KEY: se devuelve lo que hay en BD');
+    else console.log('SISTEMA NUEVO SIN ASSISTANTS');
   } else {
     console.log('SISTEMA VIEJO CON ASSISTANTS');
     try {
@@ -239,7 +255,7 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
   // forma a la respuesta; cada archivo trae `origen` por si el front quiere
   // separarlos en la biblioteca más adelante.
   const listarArchivos = async (vectorStoreId, origen) => {
-    if (!vectorStoreId) return [];
+    if (!vectorStoreId || !apiKey) return [];
     try {
       const vsFiles = await axios.get(
         `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files?limit=20`,
@@ -292,6 +308,7 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
       vector_store_id: col.vector_store_id,
       vector_store_docs_id: col.vector_store_docs_id,
       archivos,
+      sin_api_key: !apiKey,
     },
   });
 });
@@ -322,7 +339,7 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
     instrucciones?.trim() ||
     `Eres un asistente de ventas. Responde en español de forma cordial y profesional.`;
 
-  const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
+  const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
   if (!MODELOS_VALIDOS.includes(modelo))
     return next(
       new AppError(
@@ -450,9 +467,18 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
     instruccionesFinal = compilarPromptFinal(estructura, perso || {});
   }
 
+  /* Solo se pisa lo que SÍ vino en el request. El interruptor "IA activa" del
+     panel manda únicamente { id, activa_ia, max_tokens }: sin el COALESCE ese
+     toggle escribía instrucciones = NULL y modelo = NULL — el prompt de la
+     columna se borraba de la BD (con la Responses API el prompt vive ahí:
+     columna muda) y el modelo volvía al default. Es el origen de las columnas
+     "vacías" que hubo que restaurar el 17/08. */
   await db.query(
     `UPDATE kanban_columnas
-     SET activa_ia = ?, max_tokens = ?, instrucciones = ?, modelo = ?
+     SET activa_ia = COALESCE(?, activa_ia),
+         max_tokens = COALESCE(?, max_tokens),
+         instrucciones = COALESCE(?, instrucciones),
+         modelo = COALESCE(?, modelo)
      WHERE id = ?`,
     {
       replacements: [
@@ -476,7 +502,7 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
   ) {
     console.log('SISTEMA VIEJO CON ASSISTANTS');
     const apiKey = await getApiKey(col.id_configuracion);
-    const MODELOS_VALIDOS = ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
+    const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
     const modeloFinal =
       modelo && MODELOS_VALIDOS.includes(modelo) ? modelo : undefined;
 

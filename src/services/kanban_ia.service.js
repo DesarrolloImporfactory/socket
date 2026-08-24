@@ -103,6 +103,7 @@ const {
   esCierreNarrado,
   pareceResumenDePedido,
   nombrePaisDe,
+  aparecioEnCliente,
 } = require('../utils/fichaPedido');
 
 // ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
@@ -313,7 +314,17 @@ function esValorRelleno(valor) {
    este texto, cambia en los dos lados o el rescate deja de funcionar. */
 const PREFIJO_PETICION_DATOS = 'Para confirmar tu pedido, ayúdame con';
 
-function camposFaltantesCierre(respuesta) {
+/* `ficha` (opcional) es la ficha del pedido de utils/fichaPedido: trae
+   `_textoCliente` (lo que escribió el cliente). Con ella se aplica el candado
+   ANTI-INVENTO: una ciudad o un teléfono que aparecen en el resumen pero que
+   el cliente nunca escribió los puso el modelo (caso real 2026-08-20, cfg
+   610/10: el bot "cerró" con "Ciudad: Quito, Provincia: Pichincha" sin que el
+   cliente dijera su ciudad). Se tratan como faltantes: se bloquea el cierre y
+   se le pide el dato. Sin ficha, el comportamiento es el de siempre. */
+function camposFaltantesCierre(respuesta, ficha = null) {
+  const textoCliente = String(ficha?._textoCliente || '');
+  const dichoPorCliente = (valor, opts) =>
+    !textoCliente || aparecioEnCliente(valor, textoCliente, opts);
   const texto = String(respuesta || '')
     .replace(RE_TAGS_SISTEMA, '')
     .replace(RE_TAGS_MEDIA, '');
@@ -358,13 +369,25 @@ function camposFaltantesCierre(respuesta) {
       esValorRelleno(telefono) ||
       /x{2,}/i.test(telefono) ||
       /confirmar/i.test(telefono) ||
-      digitos < 9
+      digitos < 9 ||
+      // Anti-invento: un número que el cliente nunca escribió.
+      !dichoPorCliente(telefono.replace(/\D/g, ''), { esTelefono: true })
     ) {
       faltan.push('- Teléfono');
     }
   }
 
-  if (ciudad === null || esValorRelleno(ciudad)) {
+  /* Anti-invento de la ciudad: si la línea trae una ciudad que el cliente no
+     escribió, vale tanto como si faltara (y es peor: la guía saldría a otra
+     parte). Se pide aunque haya dirección. */
+  const ciudadInventada =
+    ciudad !== null &&
+    !esValorRelleno(ciudad) &&
+    Boolean(textoCliente) &&
+    !dichoPorCliente(ciudad);
+  if (ciudadInventada) {
+    faltan.push('- Ciudad y provincia');
+  } else if (ciudad === null || esValorRelleno(ciudad)) {
     /* Caso real (302, 2026-08-19, Carmen): la clienta dio "Provincia
        Tungurahua Canton Quero avenida 17 de abril..." y el modelo fundió
        ciudad y provincia dentro de la línea Dirección, sin escribir la línea
@@ -453,7 +476,7 @@ function parsearProductosResumen(respuesta) {
   });
 }
 
-function motivoCierreInvalido(respuesta) {
+function motivoCierreInvalido(respuesta, ficha = null) {
   const texto = String(respuesta || '')
     .replace(RE_TAGS_SISTEMA, '')
     .replace(RE_TAGS_MEDIA, '');
@@ -478,7 +501,7 @@ function motivoCierreInvalido(respuesta) {
       texto,
     );
   if (pareceResumen) {
-    const faltan = camposFaltantesCierre(respuesta);
+    const faltan = camposFaltantesCierre(respuesta, ficha);
     if (faltan.length) {
       return (
         'resumen incompleto o con relleno: falta ' +
@@ -573,7 +596,7 @@ async function procesarMensajeKanban(params) {
   //   canal.enviarMedia({ tipo: 'image'|'video', url, responsable })
   const canal = params.canal || {
     source: 'wa',
-    enviarTexto: async ({ texto, responsable, total_tokens }) =>
+    enviarTexto: async ({ texto, responsable, total_tokens, analytics }) =>
       enviarMensajeWhatsapp({
         phone_whatsapp_to: telefono,
         texto_mensaje: texto,
@@ -582,6 +605,7 @@ async function procesarMensajeKanban(params) {
         id_configuracion,
         responsable,
         total_tokens,
+        analytics,
       }),
     enviarMedia: async ({ tipo, url, responsable }) => {
       /* `enviarMedioWhatsapp` no lanza: devuelve `{ ok, error }`. Acá sí se
@@ -790,6 +814,8 @@ async function procesarMensajeKanban(params) {
 
   let bloqueContexto = '';
   let total_tokens = 0;
+  // Modelo y desglose de tokens de la respuesta (para el panel de consumo).
+  let analyticsIA = null;
   /* Una ubicación compartida por WhatsApp se guarda como el JSON crudo que
      manda Meta (`{"latitude":-0.3,"longitude":-78.4}`) porque así lo pinta el
      chat. Al asistente le llegaba eso literal y contestaba lo que se puede
@@ -946,6 +972,73 @@ async function procesarMensajeKanban(params) {
       }
     } catch (e) {
       await log(`⚠️ Error inyectando plazo de retiro: ${e.message}`);
+    }
+
+    /* Dónde retirar. La orden del cache trae en `dir` lo que el vendedor
+       escribió al crearla; si Servientrega desvió el envío a una agencia,
+       eso es la CASA del cliente (cfg 889, orden 6612199). Se le da al bot el
+       lugar resuelto (utils/lugarRetiroAgencia: agencia real guardada por el
+       notifier, o `dir` si es agencia, o "agencia Servientrega en {ciudad}").
+       Sin red en el turno: si aún no está guardada se dispara en segundo
+       plano y la toma el siguiente mensaje. */
+    try {
+      const {
+        resolverLugarRetiro,
+        completarAgenciaEnBackground,
+      } = require('../utils/lugarRetiroAgencia');
+      const tel9 = String(telefono || '')
+        .replace(/\D/g, '')
+        .slice(-9);
+      if (tel9.length >= 9) {
+        const [ord] = await db.query(
+          `SELECT dropi_order_id, city, shipping_company, shipping_guide, order_data
+             FROM dropi_orders_cache
+            WHERE id_configuracion = ?
+              AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 9) = ?
+              AND classified_status = 'retiro_agencia'
+            ORDER BY order_created_at DESC LIMIT 1`,
+          {
+            replacements: [id_configuracion, tel9],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        if (ord) {
+          let od = {};
+          try {
+            od = JSON.parse(ord.order_data || '{}') || {};
+          } catch (_) {}
+          const order = {
+            id: ord.dropi_order_id,
+            dir: od.dir || '',
+            city: ord.city || od.city || '',
+            country: od.country || '',
+            shipping_company: ord.shipping_company || od.shipping_company,
+            shipping_guide: ord.shipping_guide || od.shipping_guide,
+          };
+          const retiro = await resolverLugarRetiro({
+            order,
+            consultar: false,
+          });
+          if (!retiro.agencia) completarAgenciaEnBackground({ order });
+          bloqueContexto +=
+            `📍 LUGAR DE RETIRO DEL PAQUETE: ${retiro.lugar}` +
+            (order.shipping_guide ? ` · Guía ${order.shipping_guide}` : '') +
+            `.\n` +
+            `Si preguntan dónde retirar, responde con ESTE lugar. La dirección ` +
+            `del pedido${order.dir ? ` ("${String(order.dir).slice(0, 80)}")` : ''} ` +
+            `es el domicilio que se registró al comprar, NO el lugar de retiro: ` +
+            `no la des como agencia.` +
+            (retiro.fuente === 'ciudad'
+              ? ` No se conoce la agencia exacta: dile que es la agencia de ` +
+                `Servientrega de su ciudad y que puede confirmarla con su guía ` +
+                `en el tracking.`
+              : '') +
+            `\n\n`;
+          await log(`📍 Lugar de retiro inyectado (${retiro.fuente})`);
+        }
+      }
+    } catch (e) {
+      await log(`⚠️ Error inyectando lugar de retiro: ${e.message}`);
     }
   }
 
@@ -1256,6 +1349,7 @@ async function procesarMensajeKanban(params) {
   // Si el webhook ya mandó el bloque (primer mensaje del click), se usa.
   // Si no vino (mensajes siguientes), se reconstruye desde ultimo_producto_ad.
   let instruccionesProducto = bloque_producto_referral || null;
+  let prefacioWizard = null;
 
   /* if (
     !instruccionesProducto &&
@@ -1314,6 +1408,31 @@ async function procesarMensajeKanban(params) {
         `📎 Producto reinyectado desde ultimo_producto_ad="${ultimoProductoAd}"`,
       );
     }
+  }
+
+  // ── 8.4 Wizard de producto (/productos2) ───────────────────
+  // Si el producto del anuncio tiene wizard activo, su ficha (descripción IA,
+  // bullets, FAQs, combos válidos y stock EN VIVO) reemplaza al bloque
+  // genérico del referral. El modelo sigue siendo el de la columna
+  // (kanban_columnas.modelo, se elige en la config del kanban). Gateado por el
+  // wizard: las cuentas que no configuraron nada no cambian en nada.
+  try {
+    const {
+      wizardDelClienteEnJuego,
+      bloqueWizardParaMotor,
+    } = require('./producto_wizard_runtime.service');
+    const enJuego = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
+    if (enJuego) {
+      // En Responses el bloque va al INICIO del prompt (prefacio): una regla
+      // que debe cumplirse va arriba, no al final (caso 569: gpt-4o-mini
+      // ignoraba lo enterrado). En Assistants (legacy) no se puede prefijar
+      // el prompt del assistant, así que sigue por additional_instructions.
+      instruccionesProducto = bloqueWizardParaMotor(enJuego);
+      prefacioWizard = instruccionesProducto;
+      await log(`🧩 wizard: ficha del producto ${enJuego.producto.id} inyectada (prefacio)`);
+    }
+  } catch (eWiz) {
+    await log(`⚠️ wizard motor: ${eWiz.message}`);
   }
 
   // ── 8.5 Catálogo: inline vs file_search ───────────────────
@@ -1403,14 +1522,19 @@ async function procesarMensajeKanban(params) {
     if (USAR_RESPONSES_API) {
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
 
-      const instruccionesFinales = bloqueCatalogo
+      let instruccionesFinales = bloqueCatalogo
         ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
         : assistantInfo.instructions;
+      if (prefacioWizard) {
+        instruccionesFinales = `${prefacioWizard}\n\n${instruccionesFinales}`;
+      }
 
       resultado = await ejecutarConResponsesAPI({
         previous_response_id,
         instructions: instruccionesFinales,
-        additional_instructions: instruccionesProducto || null,
+        additional_instructions: prefacioWizard
+          ? null
+          : instruccionesProducto || null,
         input: inputFinal,
         model: assistantInfo.model,
         max_tokens: columna.max_tokens || 500,
@@ -1534,6 +1658,7 @@ async function procesarMensajeKanban(params) {
   }
 
   total_tokens += resultado.total_tokens;
+  if (resultado.usage) analyticsIA = resultado.usage;
   const respuestaCruda = resultado.respuesta;
   // `let`: el paso 10 puede completarla con la ficha del pedido o inferirle el
   // tag de cierre (ver 9.9).
@@ -1750,7 +1875,7 @@ async function procesarMensajeKanban(params) {
             );
           }
         }
-        const motivo = motivoCierreInvalido(respuestaRaw);
+        const motivo = motivoCierreInvalido(respuestaRaw, fichaPedido);
         if (motivo) {
           cierreBloqueado = motivo;
           await log(
@@ -2258,7 +2383,7 @@ async function procesarMensajeKanban(params) {
        contextoColumna. El análisis campo por campo es EL MISMO del candado
        del paso 10 (camposFaltantesCierre): un solo criterio, o el candado
        bloquearía por una cosa y esta petición pediría otra. */
-    const faltan = camposFaltantesCierre(respuestaRaw);
+    const faltan = camposFaltantesCierre(respuestaRaw, fichaPedido);
 
     /* Tope de reintentos: si ya hay DOS peticiones en los últimos mensajes,
        este es el TERCER cierre bloqueado seguido — el modelo no está logrando
@@ -2431,6 +2556,7 @@ async function procesarMensajeKanban(params) {
         texto: soloTexto,
         responsable: `IA_${columna.nombre}`,
         total_tokens,
+        analytics: analyticsIA,
         id_cliente,
         turno,
         log,
@@ -2444,6 +2570,7 @@ async function procesarMensajeKanban(params) {
         texto: soloTexto,
         responsable: `IA_${columna.nombre}`,
         total_tokens,
+        analytics: analyticsIA,
       });
     }
   }
@@ -2683,26 +2810,61 @@ async function ejecutarConResponsesAPI({
     body.tools = tools;
   }
 
-  const res = await axios.post('https://api.openai.com/v1/responses', body, {
+  // gpt-5* son modelos de razonamiento: los tokens de razonamiento descuentan
+  // de max_output_tokens, así que con el tope de 500 de una columna normal la
+  // respuesta puede volver VACÍA (status "incomplete"). Se razona poco
+  // (effort low), se sube el piso del tope y, si aun así vuelve vacío, se
+  // reintenta UNA vez con más tope y razonamiento mínimo. No aplica
+  // temperature (gpt-5 no la acepta) — acá nunca se mandó, así que no cambia.
+  const esGpt5 = /^gpt-5/i.test(body.model);
+  if (esGpt5) {
+    body.reasoning = { effort: 'low' };
+    body.max_output_tokens = Math.max(Number(body.max_output_tokens) || 0, 2000);
+  }
+
+  let res = await axios.post('https://api.openai.com/v1/responses', body, {
     headers,
     timeout: 60000,
   });
 
+  const leerTexto = (data) => {
+    const items = data?.output || [];
+    const msg = items.find((item) => item.type === 'message');
+    const c = msg?.content?.find((x) => x.type === 'output_text');
+    return { rawText: c?.text || '', annotations: c?.annotations || [] };
+  };
+
+  let { rawText, annotations } = leerTexto(res.data);
+
+  if (esGpt5 && !rawText.trim() && res.data?.status === 'incomplete') {
+    const reintento = {
+      ...body,
+      reasoning: { effort: 'minimal' },
+      max_output_tokens: Math.min(body.max_output_tokens * 2, 8000),
+    };
+    res = await axios.post('https://api.openai.com/v1/responses', reintento, {
+      headers,
+      timeout: 60000,
+    });
+    ({ rawText, annotations } = leerTexto(res.data));
+  }
+
   const response_id = res.data.id;
   const total_tokens = res.data.usage?.total_tokens || 0;
-
-  const outputItems = res.data.output || [];
-  const messageItem = outputItems.find((item) => item.type === 'message');
-  const textContent = messageItem?.content?.find(
-    (c) => c.type === 'output_text',
-  );
-
-  const rawText = textContent?.text || '';
-  const annotations = textContent?.annotations || [];
+  // Desglose para el panel de consumo: con el modelo y los tokens de entrada
+  // (cacheados aparte) y salida se calcula el costo exacto de la respuesta.
+  const u = res.data.usage || {};
+  const usage = {
+    modelo: body.model,
+    input: Number(u.input_tokens) || 0,
+    cached: Number(u.input_tokens_details?.cached_tokens) || 0,
+    output: Number(u.output_tokens) || 0,
+    reasoning: Number(u.output_tokens_details?.reasoning_tokens) || 0,
+  };
 
   const respuesta = limpiarCitasResponsesAPI(rawText, annotations);
 
-  return { respuesta, response_id, total_tokens };
+  return { respuesta, response_id, total_tokens, usage };
 }
 
 // ══════════════════════════════════════════════════════════════

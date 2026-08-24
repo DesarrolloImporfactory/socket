@@ -234,11 +234,16 @@ async function extraerFichaPedido({
   api_key_openai,
   paisNombre = 'Ecuador',
   log = async () => {},
+  /* Transcript armado por quien llama (simulador del wizard de producto: la
+     conversación vive en memoria, no en mensajes_clientes). Mismo formato que
+     devuelve cargarTranscript: { transcript, textoCliente, items, firma,
+     nCliente }. Si no viene, se lee la BD como siempre. */
+  transcriptExterno = null,
 }) {
   if (!api_key_openai) return null;
   const ahora = Date.now();
   const { transcript, textoCliente, items, firma, nCliente } =
-    await cargarTranscript(id_configuracion, id_cliente);
+    transcriptExterno || (await cargarTranscript(id_configuracion, id_cliente));
   if (!nCliente) return null;
 
   const clave = String(id_cliente);
@@ -331,6 +336,9 @@ async function extraerFichaPedido({
     variedad: aparecioEnCliente(v('variedad'), textoCliente) ? v('variedad') : '',
     confirmo_pedido: ia.confirmo_pedido === true && huboResumen,
     _firma: firma,
+    /* Lo que escribió el CLIENTE, para el candado anti-invento del cierre: un
+       dato del resumen (ciudad, teléfono) que no esté acá lo inventó el modelo. */
+    _textoCliente: textoCliente,
   };
 
   CACHE.set(clave, { firma, ficha, ts: ahora });

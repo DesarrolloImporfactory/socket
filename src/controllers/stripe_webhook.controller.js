@@ -9,6 +9,13 @@ const isProd =
   String(process.env.NODE_ENV || '').toLowerCase() === 'production';
 
 // En producción => PROD; en no-prod => TEST (si no existe, cae a PROD)
+
+// Stripe API 2025-03+ ("basil", la que usa el SDK 18) quitó current_period_end
+// del objeto Subscription: ahora vive en cada item. Leerlo directo del sub
+// devolvía undefined y dejaba fecha_renovacion sin actualizar (o Invalid Date).
+const periodEndDeSub = (sub) =>
+  sub?.current_period_end || sub?.items?.data?.[0]?.current_period_end || null;
+
 const envPick = (prodKey, testKey, fallback = '') => {
   const prodVal = process.env[prodKey];
   const testVal = process.env[testKey];
@@ -452,8 +459,8 @@ exports.stripeWebhook = async (req, res) => {
 
             if (subscription.current_period_start)
               start = new Date(subscription.current_period_start * 1000);
-            if (subscription.current_period_end)
-              end = new Date(subscription.current_period_end * 1000);
+            if (periodEndDeSub(subscription))
+              end = new Date(periodEndDeSub(subscription) * 1000);
             if (subscription.trial_end)
               trialEnd = new Date(subscription.trial_end * 1000);
 
@@ -1122,11 +1129,20 @@ exports.stripeWebhook = async (req, res) => {
           ? new Date(sub.canceled_at * 1000)
           : null;
 
-        const currentPeriodEnd = sub.current_period_end
-          ? new Date(sub.current_period_end * 1000)
+        const currentPeriodEnd = periodEndDeSub(sub)
+          ? new Date(periodEndDeSub(sub) * 1000)
           : null;
 
         const status = sub.status || null;
+
+        // El trial también cambia por este evento (extensión desde el
+        // dashboard, Thrive, etc.). Antes no se sincronizaba y la BD se quedaba
+        // con el trial_end viejo: el login mandaba a /planes y checkPlanActivo
+        // bloqueaba al vencer la gracia aunque en Stripe el trial siguiera vivo.
+        // En trial, la "renovación" es el fin del trial (primer cobro).
+        const trialEndUpd = sub.trial_end ? new Date(sub.trial_end * 1000) : null;
+        const fechaRenovacionUpd =
+          status === 'trialing' && trialEndUpd ? trialEndUpd : currentPeriodEnd;
 
         const addonMapUpd = await getAddonPriceMap();
         const allItemsUpd = sub.items?.data || [];
@@ -1207,6 +1223,7 @@ exports.stripeWebhook = async (req, res) => {
                SET id_costumer = COALESCE(?, id_costumer),
                    stripe_subscription_id = COALESCE(?, stripe_subscription_id),
                    fecha_renovacion = COALESCE(?, fecha_renovacion),
+                   trial_end = COALESCE(?, trial_end),
                    stripe_subscription_status = ?,
                    cancel_at_period_end = ?,
                    cancel_at = ?,
@@ -1216,7 +1233,8 @@ exports.stripeWebhook = async (req, res) => {
                 replacements: [
                   customerId || null,
                   subscriptionId || null,
-                  currentPeriodEnd,
+                  fechaRenovacionUpd,
+                  trialEndUpd,
                   status,
                   cancelAtPeriodEnd,
                   cancelAt,
@@ -1239,6 +1257,7 @@ exports.stripeWebhook = async (req, res) => {
                    id_costumer = COALESCE(?, id_costumer),
                    stripe_subscription_id = COALESCE(?, stripe_subscription_id),
                    fecha_renovacion = COALESCE(?, fecha_renovacion),
+                   trial_end = COALESCE(?, trial_end),
                    stripe_subscription_status = ?,
                    cancel_at_period_end = ?,
                    cancel_at = ?,
@@ -1249,7 +1268,8 @@ exports.stripeWebhook = async (req, res) => {
                   idPlanToWrite,
                   customerId || null,
                   subscriptionId || null,
-                  currentPeriodEnd,
+                  fechaRenovacionUpd,
+                  trialEndUpd,
                   status,
                   cancelAtPeriodEnd,
                   cancelAt,
@@ -1257,6 +1277,22 @@ exports.stripeWebhook = async (req, res) => {
                   id_usuario,
                 ],
               },
+            );
+          }
+
+          // Si checkPlanActivo ya lo había marcado 'vencido' (marca pegajosa)
+          // pero Stripe dice que sigue en trial/activo con fecha por delante,
+          // se le devuelve el acceso: el vencimiento era del dato viejo.
+          if (
+            (status === 'trialing' || status === 'active') &&
+            fechaRenovacionUpd &&
+            fechaRenovacionUpd.getTime() > Date.now()
+          ) {
+            await db.query(
+              `UPDATE usuarios_chat_center
+               SET estado = 'activo'
+               WHERE id_usuario = ? AND estado = 'vencido'`,
+              { replacements: [id_usuario] },
             );
           }
 

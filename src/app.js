@@ -76,6 +76,9 @@ const citas_solicitudesRouter = require('./routes/citas_solicitudes.routes');
 const profesionales_chat_centerRouter = require('./routes/profesionales_chat_center.routes');
 
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
+const producto_wizardRouter = require('./routes/producto_wizard.routes');
+const consumo_iaRouter = require('./routes/consumo_ia.routes');
+const pruebas_webhookRouter = require('./routes/pruebas_webhook.routes');
 
 const catalogos_chat_centerRouter = require('./routes/catalogos_chat_center.routes');
 
@@ -308,6 +311,11 @@ app.use((req, res, next) => {
     // que no hay nada que verificar contra el cuerpo crudo — la autenticación
     // es el secreto de la URL (ver aliclik_webhook.controller.js).
     '/api/v1/aliclik_webhook',
+    // Wizard de producto y simulador: el mensaje fijo y las respuestas rápidas
+    // llevan "$" en los precios ("💵 1 por $45,00") y el sanitizador noSQL lo
+    // borraba al guardar (quedaba "1 por 45,00"). Todo va con protect + plan.
+    '/api/v1/producto-wizard',
+    '/api/v1/pruebas_webhook',
   ];
 
   if (skipExact.includes(req.path)) return next();
@@ -359,6 +367,9 @@ app.use('/api/v1/establecimientos', establecimientos_chat_centerRouter);
 app.use('/api/v1/citas_solicitudes', citas_solicitudesRouter);
 app.use('/api/v1/profesionales', profesionales_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
+app.use('/api/v1/producto-wizard', producto_wizardRouter);
+app.use('/api/v1/consumo_ia', consumo_iaRouter);
+app.use('/api/v1/pruebas_webhook', pruebas_webhookRouter);
 app.use('/api/v1/catalogos', catalogos_chat_centerRouter);
 app.use('/api/v1/public', catalogos_publicRouter);
 app.use('/api/v1/automatizador', automatizadorRouter);

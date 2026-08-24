@@ -64,6 +64,13 @@ const ProductosChatCenter = db.define(
       type: DataTypes.SMALLINT,
       allowNull: true,
     },
+    // Upsell por referencia: id de OTRO producto del mismo catálogo que el
+    // bot ofrece al confirmar la compra (ver utils/upsellProducto.js). Los
+    // campos *_upsell de texto quedan como fallback informativo legacy.
+    id_producto_upsell: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     nombre_upsell: {
       type: DataTypes.STRING(255),
       allowNull: true,

@@ -18,6 +18,13 @@ const envPick = (prodKey, testKey, fallback = '') => {
 
 const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
 
+// Stripe API 2025-03+ ("basil", la que usa el SDK 18) quitó current_period_end
+// del objeto Subscription: ahora vive en cada item. Leerlo directo del sub
+// devolvía undefined y dejaba fecha_renovacion sin actualizar (o Invalid Date).
+const periodEndDeSub = (sub) =>
+  sub?.current_period_end || sub?.items?.data?.[0]?.current_period_end || null;
+
+
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
   'FRONT_SUCCESS_URL_TEST',
@@ -691,8 +698,10 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     cancelAt = sub?.cancel_at ? new Date(sub.cancel_at * 1000) : null;
     canceledAt = sub?.canceled_at ? new Date(sub.canceled_at * 1000) : null;
 
-    if (sub?.current_period_end)
-      fechaRenovacion = new Date(sub.current_period_end * 1000);
+    if (sub?.status === 'trialing' && sub?.trial_end)
+      fechaRenovacion = new Date(sub.trial_end * 1000);
+    else if (periodEndDeSub(sub))
+      fechaRenovacion = new Date(periodEndDeSub(sub) * 1000);
     else if (sub?.trial_end) fechaRenovacion = new Date(sub.trial_end * 1000);
 
     if (sub.status === 'canceled' && !sub.cancel_at_period_end) {
@@ -1022,7 +1031,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
       replacements: [
         id_plan_nuevo,
         esUpgrade ? 'upgrade' : 'downgrade',
-        esUpgrade ? new Date() : new Date(sub.current_period_end * 1000),
+        esUpgrade ? new Date() : new Date(periodEndDeSub(sub) * 1000),
         id_usuario,
       ],
     },
@@ -1175,7 +1184,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
 
   // ─── DOWNGRADE ───
   if (esDowngrade) {
-    const periodEnd = sub.current_period_end;
+    const periodEnd = periodEndDeSub(sub);
     const currentPriceId = subItem.price?.id;
 
     let scheduleId = sub.schedule;

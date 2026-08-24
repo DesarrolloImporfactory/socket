@@ -113,17 +113,33 @@ async function suiteA() {
   }
 
   // 5. Ancla por recencia: el cambio pedido por el cliente mueve el ancla…
+  //    El producto se toma EN VIVO del catálogo de la 285: antes era la
+  //    "Rodillera Ortopedica" quemada, el cliente la borró de su catálogo y el
+  //    caso quedó en rojo sin que hubiera ninguna regresión de código.
   {
+    const { db } = require('../src/database/config');
+    const [otro] = await db.query(
+      `SELECT nombre FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0
+          AND nombre NOT LIKE '%Mascara%' AND nombre NOT LIKE '%Cabezal%'
+          AND CHAR_LENGTH(nombre) BETWEEN 8 AND 60
+        ORDER BY id LIMIT 1`,
+      { replacements: [CFG_DROPI], type: db.QueryTypes.SELECT },
+    );
+    const nombre = otro?.nombre || 'Rodillera Ortopedica';
+    const primera = nombre.split(/\s+/)[0];
     const b = await ctx('y si llevo 2?', [
       { rol_mensaje: 0, texto_mensaje: 'y si llevo 2?' },
-      { rol_mensaje: 1, texto_mensaje: 'La Rodillera Ortopedica cuesta $24.99. Combos: 2 x $29.99' },
-      { rol_mensaje: 0, texto_mensaje: 'cuanto cuesta la rodillera?' },
+      { rol_mensaje: 1, texto_mensaje: `La ${nombre} cuesta $24.99. Combos: 2 x $29.99` },
+      { rol_mensaje: 0, texto_mensaje: `cuanto cuesta la ${nombre}?` },
       { rol_mensaje: 1, texto_mensaje: 'La Mascara Tactica Multi Funcional cuesta $21.99' },
       { rol_mensaje: 0, texto_mensaje: 'Hola, vi el anuncio de la Máscara Táctica Multifuncional' },
     ]);
+    const esc = primera.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     caso(
-      'cambio pedido por el cliente mueve el ancla (rodillera)',
-      /PRODUCTO DE ESTA CONVERSACIÓN: Rodillera/i.test(b),
+      `cambio pedido por el cliente mueve el ancla (${primera})`,
+      new RegExp(`PRODUCTO DE ESTA CONVERSACIÓN:[^\\n]*${esc}`, 'i').test(b),
+      `producto vivo usado: ${nombre}`,
     );
   }
 
