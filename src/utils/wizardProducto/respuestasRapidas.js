@@ -116,6 +116,23 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
   if (largo > 40) return null;
 
   const esPregunta = pareceRegunta(mensaje);
+
+  /* 0. El cliente escribió (casi) la MISMA pregunta que una quemada: esa gana
+     directo, sin puntajes. Sin esto, dos quemadas parecidas ("¿De qué material
+     es la malla?" y "De que material es") empataban por la clave compartida
+     ("material") y el empate devolvía null → IA, aunque la pregunta fuera
+     textual (caso real cfg 324). */
+  const llano = (s) => tokens(s).sort().join(' ');
+  const msgLlano = llano(mensaje);
+  if (msgLlano) {
+    for (let i = 0; i < faqs.length; i++) {
+      const faq = faqs[i];
+      if (!faq || faq.activa === 0 || faq.activa === false) continue;
+      if (!String(faq.respuesta || '').trim()) continue;
+      if (llano(faq.pregunta) === msgLlano) return { faq, indice: i, score: 99 };
+    }
+  }
+
   const candidatos = [];
 
   faqs.forEach((faq, indice) => {
@@ -140,8 +157,27 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
   const top = candidatos[0];
   const empate = candidatos.length > 1 && candidatos[1].score === top.score;
 
-  // En empate, mejor no adivinar (misma filosofía que el resolver de anuncios).
-  if (empate) return null;
+  /* En empate, se desempata por las palabras de la PREGUNTA de cada quemada
+     ("¿qué material tiene la malla?" acierta malla+material en una y solo
+     material en la otra). Si ni así hay un ganador claro, mejor no adivinar
+     (misma filosofía que el resolver de anuncios). */
+  if (empate) {
+    const empatados = candidatos
+      .filter((c) => c.score === top.score)
+      .map((c) => ({
+        c,
+        enPregunta: tokens(c.faq.pregunta).filter((t) => toksMensaje.has(t))
+          .length,
+      }))
+      .sort((a, b) => b.enPregunta - a.enPregunta);
+    if (
+      empatados[0].enPregunta > 0 &&
+      empatados[0].enPregunta > (empatados[1]?.enPregunta ?? 0)
+    ) {
+      return empatados[0].c;
+    }
+    return null;
+  }
   if (top.score >= 2) return top;
   /* Una sola clave alcanza solo si es casi todo lo que dijo el cliente
      ("¿tiene garantía?", "¿el envío es gratis?"). "¿sirve para una tele de
