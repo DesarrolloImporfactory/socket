@@ -25,6 +25,8 @@ const {
   syncCatalogoTodasColumnasConfig,
 } = require('./syncCatalogoKanbanColumna.service');
 const {
+  MAX_IMAGENES,
+  MAX_VIDEOS,
   leerJson,
   combosValidos,
   fmtPrecio,
@@ -196,8 +198,19 @@ async function listarProductosConWizard(id_configuracion) {
             activo: Number(f.activo) === 1,
             usar_respuestas_rapidas: Number(f.usar_respuestas_rapidas) === 1,
             updated_at: f.wizard_updated_at,
-            n_imagenes: media.filter((m) => m.tipo === 'image').length,
-            n_videos: media.filter((m) => m.tipo === 'video').length,
+            // Lo que el cliente RECIBE: la foto y el video del catálogo van
+            // primero en el paquete; media_json son solo las adicionales.
+            // Contar solo extras mostraba "0 img" en productos con foto.
+            n_imagenes: Math.min(
+              MAX_IMAGENES,
+              (f.imagen_url ? 1 : 0) +
+                media.filter((m) => m.tipo === 'image').length,
+            ),
+            n_videos: Math.min(
+              MAX_VIDEOS,
+              (f.video_url ? 1 : 0) +
+                media.filter((m) => m.tipo === 'video').length,
+            ),
             n_respuestas_rapidas: Array.isArray(faqs) ? faqs.length : 0,
             tiene_mensaje: Boolean((f.mensaje_inicial || '').trim()),
           }
