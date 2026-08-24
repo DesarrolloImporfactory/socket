@@ -209,15 +209,32 @@ function tokensSignificativos(s) {
  * @returns {Array} [{ ...variante, qty }] o []
  */
 function leerRepartoExplicito(texto, variantes) {
-  const t = String(texto || '').toLowerCase();
+  const t = String(texto || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
   if (!t) return [];
 
   const escapar = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  /* La misma variante llega escrita distinto según la fuente: el catálogo
+     local (y por lo tanto el panel de pedidos sin subir) guarda "S-M-L" y
+     Dropi la etiqueta "S/M/L". El patrón se arma por partes aceptando
+     cualquier separador entre ellas, no la puntuación literal, para que
+     "S-M-L x1" enganche con la etiqueta "S/M/L". */
+  const etPatron = (etiqueta) =>
+    String(etiqueta)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .split(/[\s\/\-_.,]+/)
+      .filter(Boolean)
+      .map(escapar)
+      .join('[\\s\\/\\-_.,]*');
 
   const mencionadas = [];
   for (const v of variantes) {
-    const et = escapar(String(v.etiqueta).toLowerCase());
-    if (!new RegExp(et, 'i').test(t)) continue;
+    const et = etPatron(v.etiqueta);
+    if (!et || !new RegExp(et, 'i').test(t)) continue;
 
     // "negro x2" / "negro *2" / "negro (2)" / "2 negro" / "2x negro"
     const patrones = [
@@ -1152,10 +1169,16 @@ async function autoCrearOrdenDropi({
         }
         variacionesElegidas = reparto;
       } else if (pedida) {
-        const unica =
-          variantes.find((v) => v.etiqueta.toLowerCase() === pedida) ||
-          variantes.find((v) => v.etiqueta.toLowerCase().includes(pedida)) ||
-          null;
+        /* Se compara con normalizarTexto (colapsa acentos y separadores):
+           "S-M-L" del panel y "S/M/L" de Dropi son la misma variante. */
+        const nPedida = normalizarTexto(pedida);
+        const unica = nPedida
+          ? variantes.find((v) => normalizarTexto(v.etiqueta) === nPedida) ||
+            variantes.find((v) =>
+              normalizarTexto(v.etiqueta).includes(nPedida),
+            ) ||
+            null
+          : null;
         if (unica) {
           variacionesElegidas = [{ ...unica, qty: cantidadOrden }];
         } else {
@@ -1165,9 +1188,11 @@ async function autoCrearOrdenDropi({
              coinciden con las unidades pedidas → una unidad de cada una;
              varias sin cómo repartirlas (ej. 3 unidades, 2 colores) → manual,
              el resumen no dice cuántas van de cada color. */
-          const dentro = variantes.filter((v) =>
-            pedida.includes(v.etiqueta.toLowerCase()),
-          );
+          const dentro = nPedida
+            ? variantes.filter((v) =>
+                nPedida.includes(normalizarTexto(v.etiqueta)),
+              )
+            : [];
           if (dentro.length === 1) {
             variacionesElegidas = [{ ...dentro[0], qty: cantidadOrden }];
           } else if (dentro.length > 1 && dentro.length === cantidadOrden) {
@@ -1194,14 +1219,11 @@ async function autoCrearOrdenDropi({
          es exactamente la verificación que este bloque intenta automatizar.
          Aplicarlo igual dejaba la orden atascada sin salida manual. */
       if (variacionesElegidas.length && !datosBot?._correccion_manual) {
-        const sinAcentos = (s) =>
-          String(s || '')
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[̀-ͯ]/g, '');
-        const textoCliente = await textoClienteParaCandado();
+        /* Mismo criterio de comparación que el match de arriba: el cliente
+           escribe "s-m-l" o "s m l", nunca la etiqueta literal "S/M/L". */
+        const textoCliente = normalizarTexto(await textoClienteParaCandado());
         for (const v of variacionesElegidas) {
-          if (!textoCliente.includes(sinAcentos(v.etiqueta))) {
+          if (!textoCliente.includes(normalizarTexto(v.etiqueta))) {
             return fail(
               'producto',
               `${R}Variedad "${v.etiqueta}" no confirmada por el cliente ` +
