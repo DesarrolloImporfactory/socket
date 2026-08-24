@@ -1869,7 +1869,7 @@ async function _getPromptBaseDeGlobal(id_plantilla, nombreColumna) {
 
 async function _getColumnasIADelCliente(id_configuracion) {
   return db.query(
-    `SELECT kc.id, kc.nombre, kc.assistant_id, kc.estado_db
+    `SELECT kc.id, kc.nombre, kc.assistant_id, kc.estado_db, kc.modelo
      FROM kanban_columnas kc
      WHERE kc.id_configuracion = ?
        AND kc.activo = 1
@@ -2264,10 +2264,26 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
           // dos UPDATE de abajo y el resync no dejaba rastro —y por Responses
           // el prompt que manda es el de acá—. Desde el 2026-08-26 esa llamada
           // falla siempre, así que el resync entero se volvía inútil.
+          /* El modelo de la plantilla también viaja en el resync, pero SIN
+             pisar una elección deliberada del cliente: solo se actualiza si la
+             columna sigue en el default viejo (gpt-4o-mini o vacío). Así, subir
+             la plantilla a gpt-5-mini migra a todos los que nunca lo tocaron y
+             respeta al que pagó por gpt-4o o ya eligió otro. */
+          const modeloPlantilla = String(colPlantilla.modelo || '').trim();
+          const modeloActual = String(col.modelo || '').trim();
+          const migrarModelo =
+            modeloPlantilla &&
+            modeloPlantilla !== modeloActual &&
+            ['', 'gpt-4o-mini'].includes(modeloActual);
+
           await db.query(
-            `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
+            `UPDATE kanban_columnas
+                SET instrucciones = ?${migrarModelo ? ', modelo = ?' : ''}
+              WHERE id = ?`,
             {
-              replacements: [promptCompilado, col.id],
+              replacements: migrarModelo
+                ? [promptCompilado, modeloPlantilla, col.id]
+                : [promptCompilado, col.id],
               type: db.QueryTypes.UPDATE,
             },
           );
