@@ -488,6 +488,13 @@ async function enviarPaqueteInicial({
   return { enviados, imagenes: imgsNuevas.length, videos: vidsNuevos.length };
 }
 
+/* Cierre de venta al ENVIAR una respuesta rápida: si no termina preguntando,
+   se le añade el remate (una sola fuente, compartida con el simulador). */
+const {
+  conCierreDeVenta,
+  semillaCierre,
+} = require('../utils/wizardProducto/cierreVenta');
+
 async function enviarTextoWizard({
   id_configuracion,
   telefono,
@@ -722,7 +729,10 @@ async function intentarMensajeFijoWizard({
         telefono,
         business_phone_id,
         accessToken,
-        texto: match.faq.respuesta,
+        texto: conCierreDeVenta(
+          match.faq.respuesta,
+          semillaCierre(telefono, match.indice),
+        ),
       });
       await decir(
         `wizard: respuesta rápida #${match.indice} ("${match.faq.pregunta}") → sin IA`,
@@ -812,7 +822,10 @@ async function intentarRespuestaRapida({
     telefono,
     business_phone_id,
     accessToken,
-    texto: match.faq.respuesta,
+    texto: conCierreDeVenta(
+      match.faq.respuesta,
+      semillaCierre(telefono, match.indice),
+    ),
   });
   await decir(
     `⚡ wizard: respuesta rápida #${match.indice} ("${match.faq.pregunta}") producto ${r.producto.id} → sin IA`,

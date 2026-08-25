@@ -655,7 +655,7 @@ Devuelves SOLO el JSON pedido. Cada campo:
 - Si tipo_venta es "servicio": no hables de envío, unidades, combos ni "pagas al recibir"; habla de agendar, duración, qué incluye y cómo se reserva. Los prompts de imagen deben mostrar el servicio (persona atendida, resultado, lugar) y la pieza "logistica" pasa a ser "Cómo reservar" con textos "AGENDA TU CITA", "ATENCIÓN PERSONALIZADA", "GARANTÍA".
 - bullets_beneficios: exactamente 4 beneficios de máximo 6 palabras cada uno, sin emoji.
 - texto_antes / texto_despues: una frase corta cada una (máximo 80 caracteres) para una imagen de antes/después.
-- respuestas_rapidas: entre 6 y 10 preguntas que un cliente hace por WhatsApp sobre ESTE producto y que se pueden contestar con la ficha (uso, para quién sirve, qué incluye, materiales, tallas/medidas, duración, garantía, envío y pago contra entrega, tiempo de entrega, cómo se usa, diferencias entre combos). Cada respuesta: 1 a 3 frases, lista para enviar tal cual, en tuteo. "claves": de 3 a 6 palabras clave (sustantivos o verbos, sin tildes, en minúscula, sin artículos) que identifican esa pregunta y NO aparecen en las otras. Si la ficha no trae el dato, NO inventes la respuesta: omite esa pregunta.
+- respuestas_rapidas: entre 6 y 10 preguntas que un cliente hace por WhatsApp sobre ESTE producto y que se pueden contestar con la ficha (uso, para quién sirve, qué incluye, materiales, tallas/medidas, duración, garantía, envío y pago contra entrega, tiempo de entrega, cómo se usa, diferencias entre combos). Cada respuesta: 1 a 3 frases, lista para enviar tal cual, en tuteo, y TERMINA SIEMPRE con una pregunta corta de cierre de venta ligada a lo que se acaba de responder, que empuje el pedido (ej. tras responder tallas: "¿Cuál te aparto?"; tras responder envío: "¿Te lo envío con pago contra entrega?"; tras responder uso: "¿Te confirmo tu pedido?"). Varía la pregunta entre respuestas: nunca la misma dos veces. La respuesta informa Y cierra: contestar sin rematar mata la venta. "claves": de 3 a 6 palabras clave (sustantivos o verbos, sin tildes, en minúscula, sin artículos) que identifican esa pregunta y NO aparecen en las otras. Si la ficha no trae el dato, NO inventes la respuesta: omite esa pregunta.
 - prompt_imagen_*: tres prompts en inglés para un modelo de imagen, uno por pieza: (beneficios) el producto en primer plano con los 4 beneficios como texto grande y legible en español; (antes_despues) composición dividida antes/después con las dos frases en español; (logistica) el producto con los textos "ENVÍO GRATIS", "PAGAS AL RECIBIR" y "GARANTÍA" en español. Especifica estilo fotográfico publicitario, fondo limpio, texto en español exacto entre comillas.
 
 Reglas obligatorias:
@@ -1139,9 +1139,19 @@ async function simularTurno({
     ? elegirRespuestaRapida(texto, faqs, { ignorarCompra: true })
     : null;
   if (matchFaq && !compra) {
+    /* Mismo remate que en producción: si la respuesta no termina preguntando,
+       el cierre de venta se agrega aquí también — lo que se prueba en el
+       simulador es exactamente lo que le llega al cliente. */
+    const {
+      conCierreDeVenta,
+      semillaCierre,
+    } = require('../utils/wizardProducto/cierreVenta');
     return {
       tipo: 'rapida',
-      respuesta: matchFaq.faq.respuesta,
+      respuesta: conCierreDeVenta(
+        matchFaq.faq.respuesta,
+        semillaCierre('', matchFaq.indice),
+      ),
       responsable: 'IA_respuesta_rapida',
       remitente: 'Respuesta rápida',
       tokens: 0,
