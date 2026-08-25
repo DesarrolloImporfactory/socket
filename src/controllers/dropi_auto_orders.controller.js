@@ -5,6 +5,7 @@ const {
   ubicacionCompartidaCliente,
 } = require('../services/dropiAutoOrder.service');
 const { db } = require('../database/config');
+const dashboardEmitter = require('./dashboardEmitter');
 
 /**
  * POST /dropi/auto-orden/probar
@@ -235,7 +236,8 @@ exports.listShopifyHuerfanas = async (req, res) => {
     const clienteByTel = new Map();
     if (tels.length) {
       const clientes = await db.query(
-        `SELECT id, RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) AS tel9
+        `SELECT id, estado_contacto,
+                RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) AS tel9
            FROM clientes_chat_center
           WHERE id_configuracion = :cfg AND deleted_at IS NULL
             AND RIGHT(REGEXP_REPLACE(celular_cliente,'[^0-9]',''),9) IN (:tels)
@@ -246,10 +248,18 @@ exports.listShopifyHuerfanas = async (req, res) => {
         },
       );
       for (const c of clientes)
-        if (!clienteByTel.has(c.tel9)) clienteByTel.set(c.tel9, c.id);
+        if (!clienteByTel.has(c.tel9)) clienteByTel.set(c.tel9, c);
     }
 
-    const data = rows.map((r) => {
+    // Este listado no depende de estado_contacto (matchea webhook vs cache),
+    // así que una venta caída se quedaba 15 días en pantalla sin forma de
+    // sacarla. Si el contacto ya está en una columna de cancelados —a mano o
+    // con el botón "el cliente canceló" del panel— la huérfana no es un
+    // pedido pendiente: no se lista.
+    const cancelSet = new Set(await estadosCancelados(id_configuracion));
+
+    const data = [];
+    for (const r of rows) {
       let datos = null;
       if (r.datos_orden) {
         try {
@@ -260,9 +270,11 @@ exports.listShopifyHuerfanas = async (req, res) => {
         } catch (_) {}
       }
       const tel9 = String(r.phone_normalizado || '').slice(-9);
-      return {
+      const cli = clienteByTel.get(tel9) || null;
+      if (cli && cancelSet.has(cli.estado_contacto)) continue;
+      data.push({
         id: r.id,
-        id_cliente: clienteByTel.get(tel9) || null,
+        id_cliente: cli?.id || null,
         shopify_order_id: r.shopify_order_id,
         order_number: r.order_number,
         telefono: r.phone_normalizado,
@@ -270,8 +282,8 @@ exports.listShopifyHuerfanas = async (req, res) => {
         financial_status: r.financial_status,
         shopify_created_at: r.shopify_created_at,
         datos, // null en órdenes viejas (antes del snapshot)
-      };
-    });
+      });
+    }
 
     return res.json({ ok: true, total: data.length, data });
   } catch (err) {
@@ -599,6 +611,104 @@ exports.listPendientesGenerarGuia = async (req, res) => {
     );
 
     return res.json({ ok: true, total: Number(total), data });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err?.message });
+  }
+};
+
+/* Estados del kanban que significan "venta caída" en una configuración: la
+   columna configurada como destino del CANCELADO de Dropi
+   (dropi_plantillas_config) primero — es el destino preferido al mover — y
+   después toda columna activa cuyo estado_db huela a cancelado/anulado.
+   Lo usan el botón "el cliente canceló" (a dónde mover) y el listado de
+   huérfanas Shopify (a quién ya no listar). */
+async function estadosCancelados(id_configuracion) {
+  const cols = await db.query(
+    `SELECT estado_db FROM kanban_columnas
+      WHERE id_configuracion = ? AND activo = 1
+        AND (estado_db LIKE '%cancel%' OR estado_db LIKE '%anulad%')
+      ORDER BY id`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const set = new Set(cols.map((c) => c.estado_db).filter(Boolean));
+
+  const [cfg] = await db.query(
+    `SELECT pc.columna_destino
+       FROM dropi_plantillas_config pc
+       JOIN kanban_columnas kc
+         ON kc.id_configuracion = pc.id_configuracion
+        AND kc.estado_db = pc.columna_destino AND kc.activo = 1
+      WHERE pc.id_configuracion = ? AND pc.proveedor = 'dropi'
+        AND pc.activo = 1 AND pc.estado_dropi = 'CANCELADO'
+        AND pc.columna_destino IS NOT NULL AND pc.columna_destino <> ''
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const preferido = cfg?.columna_destino || null;
+  if (preferido) {
+    set.delete(preferido);
+    return [preferido, ...set];
+  }
+  return [...set];
+}
+
+/**
+ * POST /dropi_integrations/auto-orders/marcar-cancelado
+ * Body: { id_configuracion, id_cliente }
+ *
+ * "El cliente canceló el pedido": mueve el CONTACTO a la columna de
+ * cancelados (estado_contacto). No toca órdenes ni logs — es la misma
+ * semántica que arrastrar la tarjeta en el kanban, sin salir del panel.
+ * Con eso el pedido deja de cumplir el filtro estado_contacto='generar_guia'
+ * de listPendientesGenerarGuia, y las huérfanas Shopify se dejan de listar
+ * porque ese listado excluye contactos en columnas de cancelados.
+ */
+exports.marcarClienteCancelado = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body?.id_configuracion);
+    const id_cliente = Number(req.body?.id_cliente);
+    if (!id_configuracion || !id_cliente) {
+      return res.status(400).json({
+        ok: false,
+        message: 'id_configuracion e id_cliente requeridos',
+      });
+    }
+
+    const cancelados = await estadosCancelados(id_configuracion);
+    if (!cancelados.length) {
+      return res.status(409).json({
+        ok: false,
+        message:
+          'Este embudo no tiene columna de cancelados. Crea una en el kanban ' +
+          '(o configura la columna destino del estado CANCELADO en las ' +
+          'plantillas de Dropi) y vuelve a intentar.',
+      });
+    }
+    const destino = cancelados[0];
+
+    const [cliente] = await db.query(
+      `SELECT id, estado_contacto FROM clientes_chat_center
+        WHERE id = ? AND id_configuracion = ? AND deleted_at IS NULL LIMIT 1`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!cliente) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Cliente no encontrado' });
+    }
+
+    if (cliente.estado_contacto !== destino) {
+      await db.query(
+        `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+        { replacements: [destino, id_cliente], type: db.QueryTypes.UPDATE },
+      );
+      dashboardEmitter.emitByConfig(id_configuracion, 'queue_change');
+    }
+
+    return res.json({ ok: true, estado_destino: destino });
   } catch (err) {
     return res.status(500).json({ ok: false, message: err?.message });
   }

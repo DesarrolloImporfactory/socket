@@ -1775,6 +1775,34 @@ async function procesarTemplates({
               order: orderParaMsg,
             }),
           });
+        } else if (estadoConfig === 'PENDIENTE CONFIRMACION' && columnaDestino) {
+          /* La otra columna donde la orden se muere en silencio. El comprador
+             (casi siempre entra por Shopify) muchas veces NUNCA ha escrito,
+             así que el bot jamás agenda su seguimiento: las secuencias
+             configuradas en la columna no corrían para el que no responde —
+             exactamente el caso que el recordatorio existe para rescatar.
+             Sin template_parameters a propósito: en esta columna el
+             formulario solo permite plantillas sin variables, y el cron
+             cuadra los parámetros contra la plantilla real antes de enviar.
+             Cuentas sin secuencias configuradas no envían nada (el
+             programador retorna sin config). */
+          try {
+            /* Un pedido NUEVO reinicia el seguimiento aunque un ciclo viejo
+               haya dejado enviar_remarketing=0 (respondió a un recordatorio
+               anterior, o aquel ciclo se agotó). Sin esto, el comprador
+               reincidente jamás vuelve a recibir recordatorios: el
+               programador se salta a los clientes con el flag apagado. */
+            await db.query(
+              `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
+              { replacements: [clienteId], type: db.QueryTypes.UPDATE },
+            );
+          } catch (_) {}
+          await programarSeguimientoColumna({
+            id_configuracion,
+            id_cliente: clienteId,
+            telefono: phoneNorm,
+            estado_contacto: columnaDestino,
+          });
         }
       }
 

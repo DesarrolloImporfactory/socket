@@ -59,6 +59,11 @@ router.get(
 );
 
 router.get(
+  '/sin_respuesta',
+  clientes_chat_centerController.chatsSinRespuesta,
+);
+
+router.get(
   '/enlace_orden_contacto',
   clientes_chat_centerController.enlaceOrdenContacto,
 );

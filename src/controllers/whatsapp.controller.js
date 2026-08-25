@@ -3786,6 +3786,18 @@ exports.programarTemplateMasivo = async (req, res) => {
 
     const meta = parseMaybeJSON(req.body?.meta, null);
 
+    /* Flujos masivos: valores del template POR CLIENTE. El lote clásico
+       repite los mismos template_parameters para todos, así que una
+       plantilla con {{nombre}} o {{total}} salía con el dato de una sola
+       persona pegado a todo el lote. La tab de flujos resuelve los valores
+       de cada contacto (orden Dropi/Shopify o ficha del contacto) y los
+       manda como { [id_cliente]: ["v1", "v2", ...] }; el cliente que no
+       tenga entrada usa los template_parameters globales, como siempre. */
+    const parametros_por_cliente = parseMaybeJSON(
+      req.body?.parametros_por_cliente,
+      null,
+    );
+
     // ==========================================
     // 2) Validaciones mínimas
     // ==========================================
@@ -4045,6 +4057,21 @@ exports.programarTemplateMasivo = async (req, res) => {
       ? crypto.randomUUID()
       : `lote_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
+    /* Meta rechaza parámetros con saltos de línea, tabs o 4+ espacios
+       (#132000) y con texto vacío. Los valores por cliente salen de órdenes
+       reales (direcciones con TABs incluidas), así que se limpian igual que
+       hace el notifier de Dropi. Solo aplica a la rama por-cliente para no
+       alterar los lotes clásicos que ya funcionan. */
+    const sanitizeParamsLote = (params) =>
+      (Array.isArray(params) ? params : []).map(
+        (p) =>
+          String(p ?? '')
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/ {4,}/g, '   ')
+            .trim()
+            .slice(0, 1024) || '-',
+      );
+
     const rows = clientesValidos.map((c) => ({
       uuid_lote,
       id_configuracion,
@@ -4056,7 +4083,11 @@ exports.programarTemplateMasivo = async (req, res) => {
       waba_id: waba_id || null,
       nombre_template: nombre_template,
       language_code: language_code || 'es',
-      template_parameters_json: JSON.stringify(template_parameters || []),
+      template_parameters_json: JSON.stringify(
+        parametros_por_cliente && parametros_por_cliente[String(c.id)]
+          ? sanitizeParamsLote(parametros_por_cliente[String(c.id)])
+          : template_parameters || [],
+      ),
       header_format: scheduledHeaderInfo.header_format || null,
       header_parameters_json: Array.isArray(header_parameters)
         ? JSON.stringify(header_parameters)

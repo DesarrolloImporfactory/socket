@@ -57,24 +57,37 @@ class ChatService {
           500,
         );
       }
-      let whereClause = '';
+      /* Filtro «sin responder»: chats donde el último mensaje es del
+         cliente y ya pasaron X minutos. Se resuelve acá arriba porque no
+         agrega solo una condición: también cambia el alcance y el orden. */
+      const minutosSinRespuesta = Number(filtros.selectedSinRespuesta?.value);
+      const filtrandoSinRespuesta =
+        Number.isFinite(minutosSinRespuesta) && minutosSinRespuesta > 0;
 
-      if (rol == 'administrador' || rol == 'admin_limitado') {
-        whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
+      const esAdmin = rol == 'administrador' || rol == 'admin_limitado';
+      let usaSubUsuario = false;
 
-        if (scopeChats != 'mine') {
-          whereClause += ` AND id_encargado IS NULL`;
-        } else {
-          whereClause += ` AND id_encargado IS NOT NULL `;
+      let whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
+
+      if (filtrandoSinRespuesta) {
+        /* La cola de espera no se parte por pestaña: se ve completa. Si
+           respetara el scope, un chat sin asignar no saldría en «Mis
+           chats» aunque el aviso lo esté contando, y el filtro parecería
+           roto justo cuando más se lo necesita. */
+        if (!esAdmin) {
+          whereClause += ` AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+          usaSubUsuario = true;
         }
+      } else if (esAdmin) {
+        whereClause +=
+          scopeChats != 'mine'
+            ? ` AND id_encargado IS NULL`
+            : ` AND id_encargado IS NOT NULL `;
+      } else if (scopeChats == 'mine') {
+        whereClause += ` AND id_encargado = :id_sub_usuario `;
+        usaSubUsuario = true;
       } else {
-        whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
-
-        if (scopeChats == 'mine') {
-          whereClause += ` AND id_encargado = :id_sub_usuario `;
-        } else {
-          whereClause += ` AND id_encargado IS NULL`;
-        }
+        whereClause += ` AND id_encargado IS NULL`;
       }
 
       if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
@@ -218,15 +231,28 @@ class ChatService {
         }
       }
 
+      /* Al filtrar por espera se invierte el orden: la gracia es ver
+         primero al que lleva más tiempo esperando, que con el orden
+         normal queda al final de todo el scroll. */
+      if (filtrandoSinRespuesta) {
+        whereClause += ` AND mensaje_rol = 0 AND chat_cerrado = 0`;
+        whereClause += ` AND mensaje_created_at <= NOW() - INTERVAL :minutosSinRespuesta MINUTE`;
+      }
+
+      // El cursor tiene que seguir la misma dirección que el ORDER BY o la
+      // paginación devuelve siempre la primera página.
+      const orden = filtrandoSinRespuesta ? 'ASC' : 'DESC';
+      const comparador = filtrandoSinRespuesta ? '>' : '<';
+
       if (cursorFecha && cursorId) {
-        whereClause += ` AND (mensaje_created_at < :cursorFecha OR (mensaje_created_at = :cursorFecha AND id < :cursorId))`;
+        whereClause += ` AND (mensaje_created_at ${comparador} :cursorFecha OR (mensaje_created_at = :cursorFecha AND id ${comparador} :cursorId))`;
       }
 
       const sqlQuery = `
       SELECT c.*
       FROM vista_chats c
       ${whereClause}
-      ORDER BY mensaje_created_at DESC, id DESC
+      ORDER BY mensaje_created_at ${orden}, id ${orden}
       LIMIT :limit;
       `;
 
@@ -252,6 +278,9 @@ class ChatService {
         cursorFecha,
         cursorId,
         limit,
+        ...(filtrandoSinRespuesta && {
+          minutosSinRespuesta: Math.floor(minutosSinRespuesta),
+        }),
         source:
           filtros.source && filtros.source !== 'all'
             ? String(filtros.source)
@@ -265,11 +294,10 @@ class ChatService {
           }),
       };
 
-      // Solo agregar id_sub_usuario si el rol no es 'administrador' o 'admin_limitado'
-      if (rol !== 'administrador' || rol !== 'admin_limitado') {
-        if (scopeChats == 'mine') {
-          replacements.id_sub_usuario = id_sub_usuario;
-        }
+      // Se manda solo si el WHERE realmente lo referencia: que sobre no
+      // rompe nada, que falte hace fallar la consulta entera.
+      if (usaSubUsuario) {
+        replacements.id_sub_usuario = id_sub_usuario;
       }
 
       // Construir e imprimir la SQL final con valores reales (solo para debug)
@@ -1558,6 +1586,80 @@ class ChatService {
         status: 'success',
         message: 'Chat asignado correctamente',
         data: ultimoMensaje,
+      };
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
+  }
+
+  /**
+   * Chats en los que el cliente escribió y sigue sin respuesta hace más de
+   * `minutos`. Recorre TODA la configuración, no solo la página cargada en
+   * la vista: los chats que más tiempo llevan esperando son justamente los
+   * que quedan al final del listado y rara vez alcanzan a cargarse.
+   *
+   * El corte de tiempo se hace con NOW() de MySQL contra la misma columna,
+   * así que no interviene la zona horaria del navegador.
+   *
+   * Alcance: el administrador ve toda la configuración; el asesor ve los
+   * chats asignados a él y los que están sin asignar, que son los mismos
+   * que puede abrir desde sus pestañas.
+   */
+  async findChatsSinRespuesta(
+    id_configuracion,
+    id_sub_usuario,
+    rol,
+    { minutos = 15, limit = 300 } = {},
+  ) {
+    try {
+      const esAdmin = rol == 'administrador' || rol == 'admin_limitado';
+
+      let whereClause = `
+        WHERE id_configuracion = :id_configuracion
+          AND propietario != 1
+          AND chat_cerrado = 0
+          AND mensaje_rol = 0
+          AND mensaje_created_at <= NOW() - INTERVAL :minutos MINUTE`;
+
+      if (!esAdmin) {
+        whereClause += ` AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+      }
+
+      // Se pide una fila de más: si vuelve, es que quedó recortado. Sale
+      // más barato que un COUNT aparte, que era otra pasada completa por
+      // la vista para un número que casi siempre es el largo de la lista.
+      const replacements = {
+        id_configuracion,
+        minutos,
+        limit: limit + 1,
+      };
+      if (!esAdmin) replacements.id_sub_usuario = id_sub_usuario;
+
+      const chats = await db.query(
+        `
+        SELECT id,
+               nombre_cliente,
+               celular_cliente,
+               texto_mensaje,
+               source,
+               id_encargado,
+               nombre_encargado,
+               mensaje_created_at,
+               TIMESTAMPDIFF(MINUTE, mensaje_created_at, NOW()) AS minutos
+        FROM vista_chats
+        ${whereClause}
+        ORDER BY mensaje_created_at ASC
+        LIMIT :limit;
+        `,
+        { replacements, type: Sequelize.QueryTypes.SELECT },
+      );
+
+      const truncado = chats.length > limit;
+
+      return {
+        chats: truncado ? chats.slice(0, limit) : chats,
+        total: truncado ? limit : chats.length,
+        truncado,
       };
     } catch (error) {
       throw new AppError(error.message, 500);

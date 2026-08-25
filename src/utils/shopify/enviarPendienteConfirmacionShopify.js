@@ -573,6 +573,37 @@ async function procesarPedidoShopify({
     columnaDestino: colDropiPrincipal,
   });
 
+  /* Seguimiento de confirmación: mismas secuencias de la columna que agenda
+     el notifier de Dropi. El comprador de Shopify no ha escrito nunca por
+     WhatsApp, así que si no se agenda aquí nadie lo hace y el remarketing de
+     la columna no corre para él. Best-effort: el aviso ya salió, esto no lo
+     tumba. Require perezoso por el ciclo kanban_ia → dropiAutoOrder. */
+  if (colDropiPrincipal && clienteId) {
+    try {
+      /* Pedido nuevo → seguimiento nuevo: si un ciclo anterior dejó
+         enviar_remarketing=0, el programador se saltaría a este cliente y el
+         comprador reincidente se quedaría sin recordatorios. */
+      await db.query(
+        `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
+        { replacements: [clienteId], type: db.QueryTypes.UPDATE },
+      );
+      const {
+        programarRemarketingKanban,
+      } = require('../../services/kanban_ia.service');
+      await programarRemarketingKanban({
+        id_configuracion,
+        id_cliente: clienteId,
+        telefono: phone_normalizado,
+        estado_contacto: colDropiPrincipal,
+      });
+    } catch (e) {
+      console.log(
+        `[Shopify Confirmación] no se pudo agendar seguimiento (cfg ${id_configuracion}):`,
+        e?.message,
+      );
+    }
+  }
+
   return { procesado: true, enviado: true, wamid: result.wamid };
 }
 
