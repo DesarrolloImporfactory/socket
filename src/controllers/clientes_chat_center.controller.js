@@ -3390,3 +3390,35 @@ exports.ultimaUbicacion = catchAsync(async (req, res, next) => {
 
   return res.json({ isSuccess: true, data: null });
 });
+
+/**
+ * Chats sin respuesta de toda la configuración (no solo la página cargada).
+ *
+ * El rol y el sub-usuario salen del token, no de la query: son los que
+ * deciden qué chats puede ver quien consulta.
+ */
+exports.chatsSinRespuesta = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!Number.isInteger(id_configuracion) || id_configuracion <= 0) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  const minutos = Number(req.query.minutos);
+  const minutosValido =
+    Number.isFinite(minutos) && minutos > 0 ? Math.floor(minutos) : 15;
+
+  const chatService = new ChatService();
+  const { chats, total, truncado } = await chatService.findChatsSinRespuesta(
+    id_configuracion,
+    req.sessionUser?.id_sub_usuario,
+    req.sessionUser?.rol,
+    { minutos: minutosValido },
+  );
+
+  return res.status(200).json({
+    status: 'success',
+    data: chats,
+    total,
+    truncado,
+  });
+});
