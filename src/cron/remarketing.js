@@ -1204,6 +1204,66 @@ cron.schedule('*/1 * * * *', async () => {
               }
             }
 
+            /* Cuadre contra la plantilla REAL antes de enviar. Los parámetros
+               del pedido se heredan de paso en paso, pero la plantilla de la
+               secuencia no siempre los usa: la 889 configuró una "sin
+               parámetros" en retiro_agencia y cada envío moría en (#132000)
+               agotando los 3 reintentos — el remarketing entero parecía roto.
+               Se lee la definición de Meta (cacheada) y:
+               - sobran parámetros → se recortan a los {{n}} del body;
+               - faltan, o la plantilla exige variables que el cron no tiene
+                 cómo llenar (header con {{n}}, botón URL dinámico) → se
+                 cancela con un motivo accionable; reintentar no lo cura. */
+            try {
+              const tplDef = await obtenerTextoPlantilla(
+                record.nombre_template,
+                cfg.ACCESS_TOKEN,
+                cfg.WABA_ID,
+              );
+              if (tplDef?.text) {
+                const indices = [
+                  ...String(tplDef.text).matchAll(/\{\{(\d+)\}\}/g),
+                ].map((m) => Number(m[1]));
+                const esperados = indices.length ? Math.max(...indices) : 0;
+
+                if (bodyParamsRecord.length > esperados) {
+                  bodyParamsRecord = bodyParamsRecord.slice(0, esperados);
+                }
+
+                let motivoIncompatible = null;
+                if (/\{\{\d+\}\}/.test(tplDef.header?.text || '')) {
+                  motivoIncompatible = `La plantilla "${record.nombre_template}" tiene variables en el encabezado y el remarketing no puede llenarlas. Usa una plantilla con encabezado fijo.`;
+                } else if (
+                  (tplDef.buttons || []).some(
+                    (b) => b?.url && /\{\{\d+\}\}/.test(b.url),
+                  )
+                ) {
+                  motivoIncompatible = `La plantilla "${record.nombre_template}" tiene un botón URL con variable y el remarketing no puede llenarlo. Usa una plantilla con botón de URL fija o sin botón.`;
+                } else if (bodyParamsRecord.length < esperados) {
+                  motivoIncompatible = `La plantilla "${record.nombre_template}" espera ${esperados} variable(s) y este seguimiento solo tiene ${bodyParamsRecord.length}. Usa una plantilla con ${bodyParamsRecord.length || 'cero'} variables o revisa el mapeo de la columna.`;
+                }
+
+                if (motivoIncompatible) {
+                  await db.query(
+                    `UPDATE remarketing_pendientes
+                     SET cancelado = 1, error_message = ?, ultimo_intento_at = NOW()
+                     WHERE id = ?`,
+                    {
+                      replacements: [motivoIncompatible, record.id],
+                      type: db.QueryTypes.UPDATE,
+                    },
+                  );
+                  console.log(
+                    `⏭️ [remarketing] id=${record.id} plantilla incompatible — ${motivoIncompatible}`,
+                  );
+                  continue;
+                }
+              }
+            } catch (_) {
+              // Meta no respondió la definición: se envía como siempre y que
+              // Meta diga si algo no cuadra (el flujo previo a este cuadre).
+            }
+
             if (esMediaHeader) {
               const tplData = await obtenerTextoPlantilla(
                 record.nombre_template,

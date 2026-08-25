@@ -43,6 +43,14 @@ router.post(
   dropiAutoOrderController.listPendientesGenerarGuia,
 );
 
+// "El cliente canceló el pedido": mueve el contacto a la columna de
+// cancelados para que el pedido salga de la lista de pedidos sin subir.
+router.post(
+  '/auto-orders/marcar-cancelado',
+  auth.protectConfigOwner,
+  dropiAutoOrderController.marcarClienteCancelado,
+);
+
 // Datos del bot de un cliente (prellenar panel de crear orden)
 router.post(
   '/auto-orders/datos-cliente',

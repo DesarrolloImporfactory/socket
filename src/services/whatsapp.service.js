@@ -901,15 +901,54 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     });
   }
 
-  if (template_parameters.length > 0) {
+  /* Botones URL con variable ({{1}} en la url): este pipeline no tenía cómo
+     llenarlos y una plantilla así moría en Meta por parámetro faltante.
+     Convención con quien programa (flujos masivos): template_parameters trae
+     primero los {{n}} del BODY y a continuación un valor por cada botón URL
+     dinámico, en el orden en que aparecen en la plantilla. Aquí se reparte
+     usando la definición real de Meta (ya obtenida arriba). Si no hay
+     valores de sobra, todo se comporta como siempre. */
+  const idxBody = [...String(templateText).matchAll(/\{\{(\d+)\}\}/g)].map(
+    (m) => Number(m[1]),
+  );
+  const nBody = idxBody.length ? Math.max(...idxBody) : 0;
+  const botonesDinamicos = [];
+  (Array.isArray(templateResult.buttons) ? templateResult.buttons : []).forEach(
+    (b, i) => {
+      if (/\{\{\d+\}\}/.test(b?.url || ''))
+        botonesDinamicos.push({ ...b, index: i });
+    },
+  );
+
+  let bodyParams = template_parameters;
+  let buttonParams = [];
+  if (botonesDinamicos.length && template_parameters.length > nBody) {
+    bodyParams = template_parameters.slice(0, nBody);
+    buttonParams = template_parameters.slice(
+      nBody,
+      nBody + botonesDinamicos.length,
+    );
+  }
+
+  if (bodyParams.length > 0) {
     componentsPayload.push({
       type: 'body',
-      parameters: template_parameters.map((param) => ({
+      parameters: bodyParams.map((param) => ({
         type: 'text',
         text: String(param ?? ''),
       })),
     });
   }
+
+  botonesDinamicos.forEach((b, i) => {
+    if (buttonParams[i] == null) return;
+    componentsPayload.push({
+      type: 'button',
+      sub_type: 'url',
+      index: String(b.index),
+      parameters: [{ type: 'text', text: String(buttonParams[i]) }],
+    });
+  });
 
   // 4) Enviar a Meta
   const payload = {

@@ -133,6 +133,13 @@ router.post(
   uploadSingle('header_file'),
   whatsappCtrl.programarTemplateMasivo,
 );
+
+// Audiencia de flujos masivos (tab "Flujos" de /contactos): filtros por
+// columna + "no ha respondido", con los valores de la plantilla resueltos
+// POR CONTACTO desde su orden Dropi/Shopify. La programación del lote sigue
+// yendo por /programar_template_masivo (con parametros_por_cliente).
+const flujosMasivosCtrl = require('../controllers/flujos_masivos.controller');
+router.post('/flujos_audiencia', flujosMasivosCtrl.previewAudiencia);
 router.post(
   '/enviar-video-file',
   uploadSingle('file'),
