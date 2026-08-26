@@ -11,4 +11,13 @@ router.get('/', auth.protectConfigOwner, ctrl.listarApiKeys);
 router.post('/', auth.protectConfigOwner, ctrl.crearApiKey);
 router.post('/revocar', auth.protectConfigOwner, ctrl.revocarApiKey);
 
+// Actividad de los CRMs conectados: qué cambiaron y deshacerlo. SOLO el
+// dueño desde su sesión — la llave API jamás puede revertir.
+router.get('/auditoria', auth.protectConfigOwner, ctrl.listarAuditoria);
+router.post(
+  '/auditoria/revertir',
+  auth.protectConfigOwner,
+  ctrl.revertirAuditoria,
+);
+
 module.exports = router;

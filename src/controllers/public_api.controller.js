@@ -478,6 +478,29 @@ exports.crearApiKey = catchAsync(async (req, res, next) => {
     return next(new AppError('id_configuracion es requerido', 400));
   if (!nombre) return next(new AppError('nombre es requerido', 400));
 
+  /* Scopes opcionales (array o "a,b"): por defecto la llave es solo-lectura.
+     Los de escritura (bot:write, flujos:write, plantillas:write) se piden
+     explícitos al crearla — nunca se amplía una llave ya entregada. */
+  const { SCOPES_VALIDOS } = require('./public_config.controller');
+  const scopesInput = Array.isArray(req.body?.scopes)
+    ? req.body.scopes
+    : String(req.body?.scopes || 'read').split(',');
+  const scopes = [
+    ...new Set(
+      scopesInput.map((s) => String(s).trim().toLowerCase()).filter(Boolean),
+    ),
+  ];
+  const invalidos = scopes.filter((s) => !SCOPES_VALIDOS.includes(s));
+  if (invalidos.length) {
+    return next(
+      new AppError(
+        `Scopes inválidos: ${invalidos.join(', ')}. Válidos: ${SCOPES_VALIDOS.join(', ')}.`,
+        400,
+      ),
+    );
+  }
+  if (!scopes.includes('read') && !scopes.includes('*')) scopes.unshift('read');
+
   const { raw, hash, prefix } = generarKey();
   const row = await ApiKeys.create({
     id_configuracion,
@@ -487,10 +510,30 @@ exports.crearApiKey = catchAsync(async (req, res, next) => {
     key_hash: hash,
   });
 
+  /* La columna scopes llega con api_public_scopes_migration.sql; si aún no
+     corrió, la llave queda solo-lectura (el default del middleware) y se
+     avisa en la respuesta en vez de fallar la creación. */
+  let scopesAplicados = 'read';
+  try {
+    await db.query(`UPDATE api_keys SET scopes = ? WHERE id = ?`, {
+      replacements: [scopes.join(','), row.id],
+      type: db.QueryTypes.UPDATE,
+    });
+    scopesAplicados = scopes.join(',');
+  } catch (e) {
+    if (!/Unknown column/i.test(e?.message || '')) throw e;
+  }
+
   return res.json({
     isSuccess: true,
     // La key en claro solo se ve acá; después queda solo el hash.
-    data: { id: row.id, nombre, api_key: raw, key_prefix: prefix },
+    data: {
+      id: row.id,
+      nombre,
+      api_key: raw,
+      key_prefix: prefix,
+      scopes: scopesAplicados,
+    },
   });
 });
 
@@ -516,6 +559,21 @@ exports.listarApiKeys = catchAsync(async (req, res, next) => {
     order: [['id', 'DESC']],
     raw: true,
   });
+
+  /* Scopes por llave (columna de api_public_scopes_migration.sql). Se leen
+     aparte y tolerante: sin la migración, el panel muestra "read". */
+  try {
+    const filas = await db.query(
+      `SELECT id, scopes FROM api_keys WHERE id_configuracion = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const porId = new Map(filas.map((f) => [Number(f.id), f.scopes]));
+    for (const k of keys) k.scopes = porId.get(Number(k.id)) || 'read';
+  } catch (e) {
+    if (!/Unknown column/i.test(e?.message || '')) throw e;
+    for (const k of keys) k.scopes = 'read';
+  }
+
   return res.json({ isSuccess: true, data: keys });
 });
 
@@ -523,6 +581,44 @@ exports.listarApiKeys = catchAsync(async (req, res, next) => {
    chat arma el mismo bloque de KPIs, pero autenticada con la sesión del asesor
    en vez de con una API key). */
 exports._internal = { formatearResumen, resolverRango, leerTablero };
+
+/* ── Auditoría de escrituras de terceros: el dueño la ve y REVIERTE desde
+   su panel (pestaña Actividad de /api-metricas). Misma lógica que el script
+   de soporte: src/services/apiAuditoria.service.js. ── */
+
+exports.listarAuditoria = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(
+    req.query?.id_configuracion || req.body?.id_configuracion,
+  );
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  const { listarAuditoria, obtenerCambio } = require('../services/apiAuditoria.service');
+
+  // ?id=<n> devuelve el detalle (previo vs nuevo) de un cambio puntual
+  const idDetalle = Number(req.query?.id || 0);
+  if (idDetalle) {
+    const fila = await obtenerCambio(idDetalle, id_configuracion);
+    if (!fila) return next(new AppError('Cambio no encontrado', 404));
+    return res.json({ isSuccess: true, data: fila });
+  }
+
+  const filas = await listarAuditoria(id_configuracion, 30);
+  return res.json({ isSuccess: true, data: filas });
+});
+
+exports.revertirAuditoria = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion);
+  const id = Number(req.body?.id);
+  if (!id_configuracion || !id)
+    return next(new AppError('id e id_configuracion son requeridos', 400));
+  const { revertirCambio } = require('../services/apiAuditoria.service');
+  try {
+    const r = await revertirCambio({ id, id_configuracion, actor: 'panel' });
+    return res.json({ isSuccess: true, message: r.mensaje });
+  } catch (e) {
+    return next(new AppError(e.message, e.statusCode || 500));
+  }
+});
 
 exports.revocarApiKey = catchAsync(async (req, res, next) => {
   const id = Number(req.body?.id || req.params?.id);
