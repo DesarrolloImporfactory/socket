@@ -436,6 +436,48 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
+    /* Respaldo del remarketing de pendiente_confirmacion (secuencia 1). La
+       IA solo puede escribir si el cliente respondió hace <24h; el comprador
+       de Shopify que nunca contesta —justo el del recordatorio— necesita
+       plantilla o no le sale nada. Sin variables ni emojis en botones (Meta
+       los rechaza en botones). Probada primero en la 889 y promovida aquí. */
+    name: 'recordatorio_confirmacion_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hola 👋 Tenemos tu pedido listo para ser despachado, pero aún está pendiente de confirmación. ¿Nos confirmas que deseas recibirlo? Respóndenos por aquí y lo procesamos de inmediato.',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Sí, confirmar' },
+          { type: 'QUICK_REPLY', text: 'Cancelar pedido' },
+        ],
+      },
+    ],
+  },
+  {
+    // Respaldo del remarketing de pendiente_confirmacion (secuencia 2 y última).
+    name: 'recordatorio_confirmacion_k2',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: '⏰ Tu pedido sigue reservado, pero está a punto de liberarse. Confírmalo hoy y lo despachamos de inmediato 🚚 Si ya no lo deseas, también puedes decírnoslo por aquí.',
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'Confirmar ahora' },
+          { type: 'QUICK_REPLY', text: 'Ya no lo quiero' },
+        ],
+      },
+    ],
+  },
+  {
     name: 'zona_entrega_k1',
     language: 'es',
     category: 'UTILITY',
@@ -921,12 +963,17 @@ const REMARKETING_POR_DEFECTO = [
     // YA tiene su pedido creado en Dropi (PENDIENTE CONFIRMACION) y no ha
     // confirmado. Los nudges lo DEJAN en pendiente_confirmacion: si responde,
     // lo atiende el bot de confirmación (no el de ventas) y no se duplica orden.
+    //
+    // Con PLANTILLA de respaldo obligatoria: el que entra por Shopify muchas
+    // veces NUNCA ha escrito, la ventana de 24h está cerrada y la IA no puede
+    // hablarle — sin plantilla el motor cancelaba sin enviar y el remarketing
+    // no existía justo para quien más lo necesita (caso 889).
     estado_contacto: 'pendiente_confirmacion',
     secuencias: [
       {
         secuencia: 1,
         tiempo_espera_minutos: 120, // 2h
-        nombre_template: '', // dentro de 24h → IA
+        nombre_template: 'recordatorio_confirmacion_k1',
         language_code: 'es',
         estado_destino: 'pendiente_confirmacion', // se queda
         header_format: null,
@@ -954,7 +1001,7 @@ const REMARKETING_POR_DEFECTO = [
       {
         secuencia: 2,
         tiempo_espera_minutos: 480, // 8h
-        nombre_template: '',
+        nombre_template: 'recordatorio_confirmacion_k2',
         language_code: 'es',
         estado_destino: 'pendiente_confirmacion', // se queda
         header_format: null,
