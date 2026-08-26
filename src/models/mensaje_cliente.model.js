@@ -58,6 +58,15 @@ const MensajesClientes = db.define(
 
     texto_mensaje: { type: DataTypes.TEXT('long'), allowNull: true },
     texto_corregido_mensaje: { type: DataTypes.STRING(4000), allowNull: true },
+
+    // ── Edición / eliminación hecha por el cliente (webhooks `edit` y `revoke`)
+    // `texto_mensaje` siempre guarda el texto vigente; `texto_original`
+    // conserva el que había antes de la primera edición o del borrado, que es
+    // el dato que a la operación le interesa (la dirección que corrigió, el
+    // precio que ya no quiere que se vea).
+    texto_original: { type: DataTypes.TEXT, allowNull: true },
+    editado_at: { type: DataTypes.DATE, allowNull: true },
+    eliminado_at: { type: DataTypes.DATE, allowNull: true },
     ruta_archivo: { type: DataTypes.STRING(4000), allowNull: true },
 
     calificacion_mensaje: {

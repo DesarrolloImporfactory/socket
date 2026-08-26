@@ -325,10 +325,64 @@ class ChatService {
       // clientes de ImporChat. Una consulta por página, no por chat.
       await marcarClientesImporchat(chats, id_configuracion);
 
+      // Si el último mensaje de un chat quedó editado o eliminado, el preview
+      // del sidebar tiene que decirlo en vez de mostrar el texto viejo.
+      await this.marcarUltimoMensajeEditado(chats);
+
       return chats;
     } catch (error) {
       console.error('Error en la consulta:', error);
       throw new AppError('Error al obtener los chats', 500);
+    }
+  }
+
+  /**
+   * Marca en cada chat de la página si su último mensaje quedó editado o
+   * eliminado por el cliente, para que el preview del sidebar no siga
+   * mostrando el texto de algo que el cliente ya borró.
+   *
+   * Va como consulta aparte y no dentro de `vista_chats` a propósito: la vista
+   * la comparten varias pantallas y recrearla en caliente es bastante más
+   * riesgoso que esto, que es un lookup por clave primaria de a lo sumo una
+   * página de ids (igual que `marcarClientesImporchat`). El WHERE final deja
+   * pasar sólo lo que está marcado, que en la práctica es casi nada.
+   *
+   * También pisa `texto_mensaje`: la vista no lee `mensajes_clientes`, lee
+   * `clientes_chat_center.ultimo_texto`, que es una copia escrita cuando el
+   * mensaje llegó. Si después se editó, esa copia quedó vieja y el preview
+   * mostraría el texto anterior a la edición.
+   */
+  async marcarUltimoMensajeEditado(chats) {
+    if (!Array.isArray(chats) || chats.length === 0) return;
+
+    // `mensaje_id` lo expone la propia vista (clientes_chat_center.ultimo_msg_id),
+    // así que es exactamente el mismo mensaje que el preview está mostrando.
+    const ids = [...new Set(chats.map((c) => c?.mensaje_id).filter(Boolean))];
+    if (ids.length === 0) return;
+
+    const filas = await db.query(
+      `
+      SELECT id, texto_mensaje, editado_at, eliminado_at
+      FROM mensajes_clientes
+      WHERE id IN (:ids)
+        AND (editado_at IS NOT NULL OR eliminado_at IS NOT NULL)
+      `,
+      {
+        replacements: { ids },
+        type: Sequelize.QueryTypes.SELECT,
+      },
+    );
+
+    if (filas.length === 0) return;
+
+    const porMensaje = new Map(filas.map((f) => [String(f.id), f]));
+    for (const chat of chats) {
+      const marca = porMensaje.get(String(chat?.mensaje_id));
+      if (!marca) continue;
+
+      chat.mensaje_editado_at = marca.editado_at;
+      chat.mensaje_eliminado_at = marca.eliminado_at;
+      chat.texto_mensaje = marca.texto_mensaje;
     }
   }
 
@@ -386,6 +440,12 @@ class ChatService {
               'json_mensaje',
               'context_wamid',
               'estado_meta',
+              // Edición / borrado hecho por el cliente: el chat necesita
+              // pintar el mensaje como eliminado o como editado, y poder
+              // mostrar el texto que tenía antes.
+              'texto_original',
+              'editado_at',
+              'eliminado_at',
             ],
             include: [
               {
