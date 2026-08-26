@@ -5,15 +5,17 @@
  * motiva: PENDIENTE CONFIRMACION — una confirmación con la foto del pedido
  * vende más que texto plano).
  *
- * Escalera de resolución, de la más exacta a la más laxa — el cliente tiene
- * VARIOS modelos parecidos (relojes) y una foto equivocada es peor que
- * ninguna:
- *  1. La galería de la orden Dropi (orderdetails[].product.gallery[0].urlS3):
- *     es LA foto de ese producto, cero ambigüedad.
- *  2. El catálogo del cliente por external_id de Dropi (product_id de la
- *     orden) — match por ID, también exacto.
- *  3. El catálogo por NOMBRE: exacto normalizado, o contains solo si UN único
- *     producto matchea. Dos candidatos = ambiguo = sin foto.
+ * Escalera de resolución — el cliente tiene VARIOS modelos parecidos
+ * (relojes) y una foto equivocada es peor que ninguna. EL CATÁLOGO MANDA:
+ * al importar de Dropi queda la foto de Dropi, pero el negocio casi siempre
+ * la reemplaza por la suya (editada, con su marca) — esa personalizada es la
+ * que debe salir, no la cruda de Dropi:
+ *  1. El catálogo del cliente por external_id de Dropi (product_id de la
+ *     orden) — la imagen que el negocio MANTIENE en su producto.
+ *  2. El catálogo por NOMBRE: exacto normalizado, o contains solo si UN único
+ *     producto matchea. Dos candidatos = ambiguo = se sigue bajando.
+ *  3. La galería de la orden Dropi (orderdetails[].product.gallery[0].urlS3):
+ *     respaldo para productos no importados al catálogo o sin imagen.
  *  4. Nada → quien llama decide (imagen de ejemplo de la plantilla, o error
  *     visible).
  */
@@ -102,10 +104,6 @@ async function resolverImagenProductoOrden({
   nombres = [],
 }) {
   try {
-    // 1) La foto que viene EN la orden: exacta por definición.
-    const deOrden = urlGaleriaDropi(order);
-    if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
-
     const details = Array.isArray(order?.orderdetails) ? order.orderdetails : [];
     const externalIds = details
       .map((d) => d?.product_id ?? d?.product?.id)
@@ -117,17 +115,21 @@ async function resolverImagenProductoOrden({
       id_configuracion,
     );
 
-    // 2) Por ID de Dropi (external_id): match exacto.
+    // 1) El catálogo por ID de Dropi: la imagen que el negocio mantiene.
     for (const id of externalIds) {
       const url = porExternalId.get(id);
       if (url) return { url, fuente: 'catalogo_id' };
     }
 
-    // 3) Por nombre, solo si es inequívoco.
+    // 2) El catálogo por nombre, solo si es inequívoco.
     for (const nombre of [...nombresOrden, ...nombres]) {
       const url = matchImagenPorNombre(lista, nombre);
       if (url) return { url, fuente: 'catalogo_nombre' };
     }
+
+    // 3) Respaldo: la foto cruda que viene en la orden de Dropi.
+    const deOrden = urlGaleriaDropi(order);
+    if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
   } catch (_) {
     // best-effort: sin foto, quien llama decide
   }

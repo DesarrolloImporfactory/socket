@@ -292,10 +292,11 @@ exports.previewAudiencia = async (req, res) => {
     }
 
     /* Foto del producto por contacto (para plantillas con encabezado de
-       imagen). El match va del más exacto al más laxo — el cliente tiene
-       varios modelos parecidos y una foto equivocada es peor que ninguna:
-       galería de la orden Dropi → catálogo por external_id → nombre solo si
-       es inequívoco. Catálogo cargado UNA vez para todo el lote. */
+       imagen). EL CATÁLOGO MANDA: al importar de Dropi queda la foto de
+       Dropi, pero el negocio casi siempre la cambia por la suya — esa es la
+       que debe salir. Catálogo por external_id → nombre inequívoco →
+       respaldo la galería cruda de la orden. Catálogo cargado UNA vez para
+       todo el lote. */
     let catalogoImg = { porExternalId: new Map(), lista: [] };
     try {
       catalogoImg = await mapaImagenesCatalogo(id_configuracion);
@@ -303,8 +304,6 @@ exports.previewAudiencia = async (req, res) => {
 
     const imagenDe = (od, os) => {
       if (od) {
-        const deOrden = urlDesdeUrlS3(od.producto_img_s3);
-        if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
         if (od.producto_dropi_id) {
           const porId = catalogoImg.porExternalId.get(
             String(od.producto_dropi_id),
@@ -321,6 +320,8 @@ exports.previewAudiencia = async (req, res) => {
         } catch (_) {}
         const porNombre = matchImagenPorNombre(catalogoImg.lista, nombreProd);
         if (porNombre) return { url: porNombre, fuente: 'catalogo_nombre' };
+        const deOrden = urlDesdeUrlS3(od.producto_img_s3);
+        if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
         return null;
       }
       if (os) {
