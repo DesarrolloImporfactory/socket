@@ -23,6 +23,7 @@ const {
   validarRespuestasRequeridas,
 } = require('../utils/encuestaPreguntas');
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
+const { enviarMensajeBienvenida } = require('../utils/encuestaBienvenida');
 const {
   asignarRoundRobinClienteExistente,
 } = require('../utils/webhook_whatsapp/round_robin');
