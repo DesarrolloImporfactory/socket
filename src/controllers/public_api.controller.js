@@ -582,6 +582,44 @@ exports.listarApiKeys = catchAsync(async (req, res, next) => {
    en vez de con una API key). */
 exports._internal = { formatearResumen, resolverRango, leerTablero };
 
+/* ── Auditoría de escrituras de terceros: el dueño la ve y REVIERTE desde
+   su panel (pestaña Actividad de /api-metricas). Misma lógica que el script
+   de soporte: src/services/apiAuditoria.service.js. ── */
+
+exports.listarAuditoria = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(
+    req.query?.id_configuracion || req.body?.id_configuracion,
+  );
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  const { listarAuditoria, obtenerCambio } = require('../services/apiAuditoria.service');
+
+  // ?id=<n> devuelve el detalle (previo vs nuevo) de un cambio puntual
+  const idDetalle = Number(req.query?.id || 0);
+  if (idDetalle) {
+    const fila = await obtenerCambio(idDetalle, id_configuracion);
+    if (!fila) return next(new AppError('Cambio no encontrado', 404));
+    return res.json({ isSuccess: true, data: fila });
+  }
+
+  const filas = await listarAuditoria(id_configuracion, 30);
+  return res.json({ isSuccess: true, data: filas });
+});
+
+exports.revertirAuditoria = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.body?.id_configuracion);
+  const id = Number(req.body?.id);
+  if (!id_configuracion || !id)
+    return next(new AppError('id e id_configuracion son requeridos', 400));
+  const { revertirCambio } = require('../services/apiAuditoria.service');
+  try {
+    const r = await revertirCambio({ id, id_configuracion, actor: 'panel' });
+    return res.json({ isSuccess: true, message: r.mensaje });
+  } catch (e) {
+    return next(new AppError(e.message, e.statusCode || 500));
+  }
+});
+
 exports.revocarApiKey = catchAsync(async (req, res, next) => {
   const id = Number(req.body?.id || req.params?.id);
   const id_configuracion = Number(req.body?.id_configuracion);
