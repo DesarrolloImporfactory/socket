@@ -874,8 +874,10 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   const body = {
     model: columna.modelo || 'gpt-4o-mini',
     instructions: columna.instrucciones,
+    // El mensaje va MARCADO al final del contexto: pegado sin rótulo tras
+    // miles de caracteres, un "1" o un "Una" se pierde (incidente cfg 366).
     input: bloqueContexto.trim()
-      ? `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n${mensaje}`
+      ? `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
       : mensaje,
     store: true,
     ...(tools.length > 0 && { tools }),
