@@ -105,6 +105,103 @@ async function ensureDir(dir) {
   } catch (_) {}
 }
 
+/**
+ * Avisa al chat abierto que un mensaje que ya estaba en pantalla cambió.
+ *
+ * Se emite igual que MESSAGE_STATUS_UPDATE (los ticks de Meta): a todos, con
+ * el id_configuracion adentro para que cada pestaña descarte lo que no es
+ * suyo. Sin esto el agente tendría que recargar el chat para enterarse de que
+ * el cliente borró o corrigió algo.
+ */
+function emitirMensajeActualizado(id_configuracion, mensaje, esUltimo) {
+  if (!global.io) return;
+
+  global.io.emit('MESSAGE_UPDATED', {
+    id_configuracion,
+    id: mensaje.id,
+    // `celular_recibe` guarda el id del chat, que es con lo que el sidebar
+    // identifica su fila. `es_ultimo` decide si el preview debe cambiar: si el
+    // cliente borró un mensaje viejo, la fila del sidebar no se toca.
+    chat_id: mensaje.celular_recibe,
+    es_ultimo: !!esUltimo,
+    wamid: mensaje.id_wamid_mensaje,
+    texto_mensaje: mensaje.texto_mensaje,
+    texto_original: mensaje.texto_original,
+    editado_at: mensaje.editado_at,
+    eliminado_at: mensaje.eliminado_at,
+  });
+}
+
+/**
+ * Aplica sobre el mensaje original la edición o el borrado que el cliente hizo
+ * desde su WhatsApp. Devuelve true si encontró el original y lo actualizó.
+ *
+ * Tanto el webhook `edit` como el `revoke` traen `original_message_id`, que es
+ * el wamid del mensaje que ya tenemos guardado; el evento en sí no es un
+ * mensaje nuevo. Las ventanas las hace cumplir WhatsApp del lado del cliente
+ * (15 minutos para editar, 2 días para eliminar para todos), así que si el
+ * evento llegó es porque estaba dentro de plazo: no hace falta revalidarlo.
+ */
+async function aplicarEdicionORevoke({
+  tipo_mensaje,
+  mensaje_recibido,
+  id_configuracion,
+  texto_nuevo,
+}) {
+  const originalWamid =
+    tipo_mensaje === 'revoke'
+      ? mensaje_recibido?.revoke?.original_message_id
+      : mensaje_recibido?.edit?.original_message_id;
+
+  if (!originalWamid) return false;
+
+  const original = await MensajeCliente.findOne({
+    where: { id_wamid_mensaje: originalWamid, id_configuracion },
+  });
+
+  // Puede no estar: mensajes anteriores a que guardáramos el wamid, o de otra
+  // conexión. En ese caso el llamador sigue con el flujo viejo y deja al menos
+  // el rastro de que el cliente tocó algo.
+  if (!original) return false;
+
+  const ahora = new Date();
+  const cambios = {
+    // Se guarda una sola vez: si el cliente edita dos veces, "el original"
+    // sigue siendo el primer texto, no la edición intermedia.
+    texto_original: original.texto_original ?? original.texto_mensaje,
+    updated_at: ahora,
+  };
+
+  if (tipo_mensaje === 'revoke') {
+    cambios.eliminado_at = ahora;
+  } else {
+    cambios.editado_at = ahora;
+    cambios.texto_mensaje = texto_nuevo || '';
+  }
+
+  await original.update(cambios);
+
+  // El preview del sidebar sólo cambia si lo que se tocó es el último mensaje
+  // del chat: si el cliente borra algo de más arriba, la fila se queda igual.
+  // `ultimo_msg_id` es la misma columna que `vista_chats` expone como
+  // `mensaje_id`, así que la comparación es contra lo que el sidebar muestra.
+  const [chat] = await db.query(
+    `SELECT ultimo_msg_id FROM clientes_chat_center WHERE id = :id LIMIT 1`,
+    {
+      replacements: { id: original.celular_recibe },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  emitirMensajeActualizado(
+    id_configuracion,
+    original,
+    String(chat?.ultimo_msg_id) === String(original.id),
+  );
+
+  return true;
+}
+
 // controllers/clientes_chat_centerController.js
 exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
   logger.info('entro en el webhook');
@@ -790,6 +887,36 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         default:
           texto_mensaje = 'Tipo de mensaje no reconocido.';
+      }
+
+      // ── El cliente editó o eliminó SU propio mensaje ─────────────────────
+      // Estos dos eventos no son mensajes nuevos: apuntan a uno que ya
+      // tenemos guardado. Antes se insertaban como una fila más, así que el
+      // chat mostraba el texto viejo intacto y, aparte, un globito suelto
+      // ("🚫 Mensaje eliminado por el usuario") que no se veía relacionado con
+      // él. Ahora el cambio se aplica sobre el mensaje original y el chat lo
+      // pinta como lo pinta WhatsApp.
+      //
+      // Nota: hoy Meta entrega las ediciones como tipo `unsupported` en vez de
+      // `edit` ("temporarily unsupported" en su documentación), así que la
+      // rama de edición sólo se activará cuando lo reactiven.
+      if (tipo_mensaje === 'revoke' || tipo_mensaje === 'edit') {
+        const aplicado = await aplicarEdicionORevoke({
+          tipo_mensaje,
+          mensaje_recibido,
+          id_configuracion,
+          texto_nuevo: texto_mensaje,
+        });
+
+        if (aplicado) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] ✏️ Evento ${tipo_mensaje} aplicado sobre el mensaje original\n`,
+          );
+          return;
+        }
+        // Si no se encontró el original se sigue de largo y se guarda como
+        // antes, para no perder el rastro del evento.
       }
 
       // ── Detectar referral (click desde anuncio) ──────────────
