@@ -57,6 +57,9 @@ const ExcelJS = require('exceljs');
 const {
   rellenarEmailClienteSiVacio,
 } = require('../services/imporsuitEmailSync.service');
+const {
+  enviarConsultaAPI,
+} = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -116,6 +119,81 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
           Number(nuevoEstado) === 1 ? 'chat_resolved' : 'queue_change';
         const deltas = tipo === 'chat_resolved' ? { chatsResolved: 1 } : null;
         dashboardEmitter.emitByConfig(chat.id_configuracion, tipo, deltas);
+      }
+    }
+
+    // ── Nota automática de cierre en la conversación ──
+    // Se registra como `notificacion` (rol_mensaje 3), igual que las notas de
+    // transferencia y de autoasignación: se pinta centrada dentro del chat y
+    // NO se envía a WhatsApp, el cliente no la ve. Sirve para que cualquier
+    // asesor que abra la conversación sepa quién la cerró sin ir a buscar el
+    // historial.
+    if (Number(nuevoEstado) === 1) {
+      try {
+        // Una sola consulta: el chat, el cliente propietario de la conexión
+        // (de quien cuelgan los mensajes de sistema) y el teléfono de la
+        // configuración.
+        const [datosNota] = await db.query(
+          `SELECT c.id_configuracion  AS id_configuracion,
+                  c.celular_cliente   AS celular_cliente,
+                  p.id                AS propietario_id,
+                  cfg.id_telefono     AS id_telefono
+             FROM clientes_chat_center c
+             LEFT JOIN clientes_chat_center p
+                    ON p.id_configuracion = c.id_configuracion
+                   AND p.propietario = 1
+             LEFT JOIN configuraciones cfg
+                    ON cfg.id = c.id_configuracion
+            WHERE c.id = ?
+            LIMIT 1`,
+          { replacements: [chatId], type: db.QueryTypes.SELECT },
+        );
+
+        if (datosNota?.propietario_id) {
+          const quienCerro =
+            req.sessionUser?.nombre_encargado ||
+            req.sessionUser?.usuario ||
+            req.sessionUser?.email ||
+            'un usuario';
+
+          // Misma zona horaria que usa la BD (-05:00) para que la hora del
+          // texto coincida con la que el chat muestra junto a la burbuja.
+          const cuando = new Date().toLocaleString('es-EC', {
+            timeZone: 'America/Guayaquil',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+
+          await db.query(
+            `INSERT INTO mensajes_clientes
+               (id_configuracion, id_cliente, mid_mensaje, tipo_mensaje,
+                rol_mensaje, celular_recibe, texto_mensaje, visto, uid_whatsapp)
+             VALUES
+               (:id_config, :id_cliente, :mid, 'notificacion',
+                3, :cel_recibe, :texto, 0, :uid)`,
+            {
+              replacements: {
+                id_config: datosNota.id_configuracion,
+                id_cliente: datosNota.propietario_id,
+                mid: datosNota.id_telefono ?? null,
+                cel_recibe: chatId,
+                texto: `Chat cerrado por ${quienCerro} — ${cuando}`,
+                uid: datosNota.celular_cliente ?? null,
+              },
+              type: db.QueryTypes.INSERT,
+            },
+          );
+
+          // Refresca el chat que los demás asesores tengan abierto.
+          await enviarConsultaAPI(datosNota.id_configuracion, chatId);
+        }
+      } catch (notaErr) {
+        // Que falle la nota no puede impedir que el chat se cierre: es
+        // informativa y el cierre ya quedó guardado más arriba.
+        console.error('[cierre] No se pudo registrar la nota:', notaErr.message);
       }
     }
 
