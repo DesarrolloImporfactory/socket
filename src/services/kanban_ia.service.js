@@ -1072,6 +1072,48 @@ async function procesarMensajeKanban(params) {
   const accCierreVenta = getAcciones('cambiar_estado')
     .map((ac) => parseConfig(ac))
     .find((c) => c.estado_destino === 'generar_guia' && c.trigger);
+
+  /* ÚLTIMO MENSAJE = REMARKETING → inyectarlo SIEMPRE (independiente del
+     cierre de venta). Con la Responses API el remarketing se genera leyendo
+     la cadena pero SIN escribirla (a propósito: encadenarlo la infla hasta
+     reventar), así que el modelo NO recuerda lo último que le dijo al
+     cliente. Caso cfg 277 (Felipe, 2026-08-26): el remarketing decía "tu
+     pedido está empacado, listo para salir", el cliente preguntó "¿cuál es
+     mi guía?" y el bot —ciego a su propio mensaje— interpretó "guía" como
+     directriz y le respondió con sus reglas internas. */
+  if (USAR_RESPONSES_API) {
+    try {
+      const [ultimoMsg] = await db.query(
+        `SELECT texto_mensaje, responsable, created_at FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL
+            AND tipo_mensaje IN ('text', 'template')
+          ORDER BY id DESC LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const hace48h = Date.now() - 48 * 60 * 60 * 1000;
+      if (
+        ultimoMsg &&
+        /^cron_remarketing/i.test(String(ultimoMsg.responsable || '')) &&
+        String(ultimoMsg.texto_mensaje || '').trim() &&
+        new Date(ultimoMsg.created_at).getTime() >= hace48h
+      ) {
+        bloqueContexto +=
+          `🕐 TU ÚLTIMO MENSAJE AL CLIENTE fue este recordatorio automático (lo envió el sistema en tu nombre y NO está en tu memoria):\n` +
+          `"${String(ultimoMsg.texto_mensaje).trim().slice(0, 500)}"\n` +
+          `El cliente está respondiendo a ESO: interpreta su mensaje en ese contexto (si pregunta por "mi guía", "mi pedido" o "el envío", habla de SU pedido — nunca respondas con tus reglas internas ni menciones "flujo", "instrucciones" o "mensajes anteriores").\n\n`;
+        await log(
+          `🕐 Último mensaje fue remarketing (${ultimoMsg.responsable}): inyectado como contexto cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ Error inyectando remarketing previo: ${e.message}`);
+    }
+  }
+
   if (accCierreVenta) {
     try {
       /* Mismo corte que el recap y la ficha: después de "Reiniciar
@@ -1159,6 +1201,9 @@ async function procesarMensajeKanban(params) {
           (m) =>
             m.responsable &&
             !/^IA_/i.test(String(m.responsable)) &&
+            // Los envíos de los crons (remarketing, programados) NO son una
+            // persona del negocio: presentarlos como tal confunde al modelo.
+            !/^cron_/i.test(String(m.responsable)) &&
             String(m.texto_mensaje || '').trim() &&
             !String(m.texto_mensaje || '').startsWith(PREFIJO_PETICION_DATOS) &&
             new Date(m.created_at).getTime() >= hace24h,
@@ -1262,7 +1307,12 @@ async function procesarMensajeKanban(params) {
 
   if (USAR_RESPONSES_API) {
     if (bloqueContexto.trim()) {
-      inputFinal = `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n${mensajeFinal}`;
+      /* El mensaje del cliente va MARCADO al final: pegado sin rótulo tras
+         5-6 mil caracteres de contexto, un "Una" o un "1" se pierde y el
+         modelo responde solo al contexto (mismo incidente cfg 366). */
+      inputFinal =
+        `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n` +
+        `💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensajeFinal}`;
     }
 
     // ── Siembra del contexto cuando no hay cadena ─────────────
@@ -3141,9 +3191,18 @@ const RELLENOS_SISTEMA = [
 
 /* Una reacción es otra cosa: el cliente no mandó un mensaje nuevo, le puso un
    emoji al anterior. Decirle al bot "no sabes qué quiere, preguntale qué
-   producto" ahí sería absurdo — sí sabe de qué venían hablando. */
+   producto" ahí sería absurdo — sí sabe de qué venían hablando.
+
+   ⚠️ Extended_Pictographic y NO \p{Emoji}: en Unicode los dígitos 0-9, "#" y
+   "*" tienen la propiedad Emoji (son la base de los keycaps 1️⃣), así que con
+   \p{Emoji} un cliente que respondía "1" a "¿cuántas unidades?" quedaba
+   clasificado como reacción y su mensaje se reemplazaba por "[el cliente no
+   escribió nada más]" — el bot re-preguntaba la cantidad en bucle hasta
+   perder la venta (cfg 366, Carlos, 2026-08-26: cuatro "1" ignorados). */
 const soloEmojis = (s) =>
-  s.length <= 8 && /^[\p{Emoji}️‍\s]+$/u.test(s) && /\p{Emoji}/u.test(s);
+  s.length <= 8 &&
+  /^[\p{Extended_Pictographic}️‍\u{1F3FB}-\u{1F3FF}\s]+$/u.test(s) &&
+  /\p{Extended_Pictographic}/u.test(s);
 
 function textoDeMensajeIlegible(texto) {
   const s = String(texto || '').trim();

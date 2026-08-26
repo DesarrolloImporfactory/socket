@@ -300,7 +300,7 @@ async function generarMensajeRemarketingIA({
         {
           role: 'user',
           content:
-            '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados.',
+            '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados. Si la conversación NO menciona un producto o necesidad concreta, redacta el mensaje genérico (tu pedido, lo que te interesó) SIN inventar nombres y SIN placeholders como [producto].',
         },
       ],
       max_completion_tokens: max_tokens,
@@ -1023,7 +1023,7 @@ cron.schedule('*/1 * * * *', async () => {
                   previous_response_id,
                   instructions: colRow.instrucciones,
                   additional_instructions: prompt_ia_resuelto,
-                  input: '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados.',
+                  input: '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados. Si la conversación NO menciona un producto o necesidad concreta, redacta el mensaje genérico (tu pedido, lo que te interesó) SIN inventar nombres y SIN placeholders como [producto].',
                   model: colRow.modelo || 'gpt-4o-mini',
                   max_tokens: colRow.max_tokens || 300,
                   vector_store_id: colRow.vector_store_id || null,
@@ -1074,6 +1074,19 @@ cron.schedule('*/1 * * * *', async () => {
 
               if (!textoIA || textoIA.trim().length < 5) {
                 throw new Error('IA devolvió texto vacío o muy corto');
+              }
+
+              /* Placeholders sin resolver: cuando la conversación no tiene
+                 producto ni necesidad concreta (el cliente solo dijo "hola"),
+                 el modelo rellena la estructura del prompt con literales tipo
+                 "[producto]" — y eso viajaba tal cual al cliente (cfg 277,
+                 Felipe, 2026-08-26: "tu necesidad de [producto] sigue sin
+                 resolverse"). Mejor no mandar la IA y caer a la plantilla (o
+                 reintentar) que mandar un mensaje roto que delata al bot. */
+              if (/\[[^\]\n]{2,40}\]|\{\{[^}\n]{1,40}\}\}|<[a-záéíóúñ_ ]{3,30}>/i.test(textoIA)) {
+                throw new Error(
+                  `IA devolvió placeholders sin resolver: "${textoIA.slice(0, 120)}"`,
+                );
               }
 
               const iaSent = await enviarTextoLibreWhatsApp({
