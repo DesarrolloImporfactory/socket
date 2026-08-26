@@ -3798,6 +3798,16 @@ exports.programarTemplateMasivo = async (req, res) => {
       null,
     );
 
+    /* Flujos masivos con plantilla de encabezado IMAGE: la foto del producto
+       de CADA contacto viaja como { [id_cliente]: url }. La fila del lote ya
+       guarda header_media_url por registro y el cron ya la manda por fila,
+       así que esto solo la individualiza. Sin entrada para un cliente se usa
+       la global de siempre (si la hay). */
+    const header_media_por_cliente = parseMaybeJSON(
+      req.body?.header_media_por_cliente,
+      null,
+    );
+
     // ==========================================
     // 2) Validaciones mínimas
     // ==========================================
@@ -3975,7 +3985,11 @@ exports.programarTemplateMasivo = async (req, res) => {
       ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(
         String(scheduledHeaderInfo.header_format || '').toUpperCase(),
       ) &&
-      !scheduledHeaderInfo.header_media_url
+      !scheduledHeaderInfo.header_media_url &&
+      !(
+        header_media_por_cliente &&
+        Object.keys(header_media_por_cliente).length
+      )
     ) {
       await t.rollback();
       return res.status(400).json({
@@ -4092,7 +4106,11 @@ exports.programarTemplateMasivo = async (req, res) => {
       header_parameters_json: Array.isArray(header_parameters)
         ? JSON.stringify(header_parameters)
         : null,
-      header_media_url: scheduledHeaderInfo.header_media_url || null,
+      header_media_url:
+        (header_media_por_cliente &&
+          header_media_por_cliente[String(c.id)]) ||
+        scheduledHeaderInfo.header_media_url ||
+        null,
       header_media_name: scheduledHeaderInfo.header_media_name || null,
       fecha_programada: dtLocal.toFormat('yyyy-LL-dd HH:mm:ss'),
       fecha_programada_utc,

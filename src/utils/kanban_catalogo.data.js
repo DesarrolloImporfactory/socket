@@ -390,6 +390,52 @@ const KANBAN_TEMPLATES_META = [
     ],
   },
   {
+    /* Versión con encabezado de IMAGEN: es la que instala por defecto el
+       estado PENDIENTE CONFIRMACION (ver DROPI_CONFIG_POR_DEFECTO). La
+       imagen de ejemplo es genérica; en cada envío el sistema la reemplaza
+       por la FOTO DEL PRODUCTO del pedido (galería de la orden Dropi →
+       catálogo por ID → nombre; ver utils/imagenProductoOrden). La k1 de
+       texto se conserva para las cuentas que ya la tienen aprobada. */
+    name: 'confirmacion_pedido_img_k1',
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'IMAGE',
+        example: {
+          header_handle: [
+            'https://imp-datas.s3.amazonaws.com/images/2026-08-26T16-07-59-102Z-img_example.png',
+          ],
+        },
+      },
+      {
+        type: 'BODY',
+        text: 'Hola {{1}}, Acabo de recibir tu pedido de compra por el valor de ${{2}}\nQuiero confirmar tus datos de envío:\n\n✅Producto: {{3}}\n👤Nombre: {{4}}\n📱Teléfono: {{5}}\n📍Dirección: {{6}}\n🏙️Ciudad: {{7}}\n\nPor favor, selecciona *CONFIRMAR PEDIDO* si tus datos son correctos ✅, o *ACTUALIZAR INFORMACIÓN* para corregirlos antes de proceder con el envío de tu producto. 🚚',
+        example: {
+          body_text: [
+            [
+              'Daniel',
+              '35.00',
+              'Audífonos Bluetooth',
+              'Daniel Bonilla',
+              '0987654321',
+              'Av. Simón Bolívar y Mariscal Sucre',
+              'Quito',
+            ],
+          ],
+        },
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: 'CONFIRMAR PEDIDO' },
+          { type: 'QUICK_REPLY', text: 'ACTUALIZAR INFORMACIÓN' },
+        ],
+      },
+    ],
+  },
+  {
     name: 'zona_entrega_k1',
     language: 'es',
     category: 'UTILITY',
@@ -558,7 +604,9 @@ const KANBAN_RESPUESTAS_RAPIDAS = [
 const DROPI_CONFIG_POR_DEFECTO = [
   {
     estado_dropi: 'PENDIENTE CONFIRMACION',
-    nombre_template: 'confirmacion_pedido_k1',
+    /* La versión con imagen: el header lo llena el sistema con la foto del
+       producto de cada pedido. Mismo body y mismos parámetros que la k1. */
+    nombre_template: 'confirmacion_pedido_img_k1',
     columna_destino: null,
     activo: 1,
     usar_respuesta_rapida: 1,
