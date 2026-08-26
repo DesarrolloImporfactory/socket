@@ -1624,6 +1624,51 @@ async function procesarTemplates({
         orderParaMsg,
       );
 
+      /* Plantilla con encabezado de IMAGEN → se llena con la foto del
+         producto del pedido (galería de la orden Dropi → catálogo del
+         cliente por nombre). El caso que lo motiva es PENDIENTE
+         CONFIRMACION: una confirmación con la foto vende más que texto.
+         El notifier nunca soportó headers — una plantilla con imagen aquí
+         fallaba siempre — así que esto es puramente aditivo. Best-effort:
+         sin definición o sin foto, se envía como siempre y Meta dirá. */
+      try {
+        const {
+          obtenerTextoPlantilla,
+        } = require('../services/whatsapp.service');
+        const def = await obtenerTextoPlantilla(
+          config.nombre_template,
+          creds.waba_token,
+          creds.waba_id,
+        );
+        if (String(def?.header?.format || '').toUpperCase() === 'IMAGE') {
+          const {
+            resolverImagenProductoOrden,
+            headerImagenParaEnvio,
+          } = require('../utils/imagenProductoOrden');
+          const img = await resolverImagenProductoOrden({
+            id_configuracion,
+            order: orderParaMsg,
+          });
+          const header = await headerImagenParaEnvio({
+            def,
+            imagenUrl: img?.url || null,
+            business_phone_id: creds.phone_number_id,
+            accessToken: creds.waba_token,
+            nombre_template: config.nombre_template,
+          });
+          if (header) {
+            components.unshift(header);
+            console.log(
+              `[dropi-notifier] header imagen (${img?.fuente || 'ejemplo_plantilla'}) orden ${order.id}`,
+            );
+          } else {
+            console.log(
+              `[dropi-notifier] plantilla "${config.nombre_template}" pide imagen y no hay producto NI ejemplo (orden ${order.id}, cfg ${id_configuracion}) — el envío va a fallar`,
+            );
+          }
+        }
+      } catch (_) {}
+
       // ── BLOQUE DE ENVÍO. Si algo aquí falla, el mensaje NO salió:
       // liberamos el reclamo para reintentar en la próxima corrida.
       try {

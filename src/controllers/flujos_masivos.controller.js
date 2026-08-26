@@ -5,6 +5,11 @@ const {
   resolverLugarRetiro,
   completarAgenciaEnBackground,
 } = require('../utils/lugarRetiroAgencia');
+const {
+  mapaImagenesCatalogo,
+  matchImagenPorNombre,
+  urlDesdeUrlS3,
+} = require('../utils/imagenProductoOrden');
 
 /* ═══════════════════════════════════════════════════════════
    Flujos de envío masivo ("audiencia → mensaje → cuándo").
@@ -192,6 +197,10 @@ exports.previewAudiencia = async (req, res) => {
                      THEN JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.dir')) END AS dir,
                 CASE WHEN JSON_VALID(order_data)
                      THEN JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.guia_urls3')) END AS guia_urls3,
+                CASE WHEN JSON_VALID(order_data)
+                     THEN JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.orderdetails[0].product_id')) END AS producto_dropi_id,
+                CASE WHEN JSON_VALID(order_data)
+                     THEN JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.orderdetails[0].product.gallery[0].urlS3')) END AS producto_img_s3,
                 RIGHT(REGEXP_REPLACE(COALESCE(phone,''),'[^0-9]',''),9) AS t9
            FROM dropi_orders_cache
           WHERE id_configuracion = :cfg
@@ -205,8 +214,9 @@ exports.previewAudiencia = async (req, res) => {
       for (const o of ordenes) {
         if (o.t9 && !dropiByTel.has(o.t9)) {
           // JSON_UNQUOTE de un null JSON devuelve el string 'null'
-          if (o.dir === 'null') o.dir = null;
-          if (o.guia_urls3 === 'null') o.guia_urls3 = null;
+          for (const k of ['dir', 'guia_urls3', 'producto_dropi_id', 'producto_img_s3']) {
+            if (o[k] === 'null') o[k] = null;
+          }
           dropiByTel.set(o.t9, o);
         }
       }
@@ -281,6 +291,48 @@ exports.previewAudiencia = async (req, res) => {
       );
     }
 
+    /* Foto del producto por contacto (para plantillas con encabezado de
+       imagen). El match va del más exacto al más laxo — el cliente tiene
+       varios modelos parecidos y una foto equivocada es peor que ninguna:
+       galería de la orden Dropi → catálogo por external_id → nombre solo si
+       es inequívoco. Catálogo cargado UNA vez para todo el lote. */
+    let catalogoImg = { porExternalId: new Map(), lista: [] };
+    try {
+      catalogoImg = await mapaImagenesCatalogo(id_configuracion);
+    } catch (_) {}
+
+    const imagenDe = (od, os) => {
+      if (od) {
+        const deOrden = urlDesdeUrlS3(od.producto_img_s3);
+        if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
+        if (od.producto_dropi_id) {
+          const porId = catalogoImg.porExternalId.get(
+            String(od.producto_dropi_id),
+          );
+          if (porId) return { url: porId, fuente: 'catalogo_id' };
+        }
+        let nombreProd = '';
+        try {
+          const arr =
+            typeof od.product_names === 'string'
+              ? JSON.parse(od.product_names)
+              : od.product_names;
+          nombreProd = Array.isArray(arr) ? arr[0] || '' : '';
+        } catch (_) {}
+        const porNombre = matchImagenPorNombre(catalogoImg.lista, nombreProd);
+        if (porNombre) return { url: porNombre, fuente: 'catalogo_nombre' };
+        return null;
+      }
+      if (os) {
+        const porNombre = matchImagenPorNombre(
+          catalogoImg.lista,
+          os.datos?.producto || '',
+        );
+        if (porNombre) return { url: porNombre, fuente: 'catalogo_nombre' };
+      }
+      return null;
+    };
+
     const CF_PREFIX = 'https://d39ru7awumhhs2.cloudfront.net/';
     const data = entradas.map(({ c, od, os, lugar_retiro }) => {
       const valores = resolverValores(c, od, os);
@@ -289,6 +341,7 @@ exports.previewAudiencia = async (req, res) => {
       valores.guia_pdf = g.startsWith(CF_PREFIX)
         ? g.slice(CF_PREFIX.length)
         : g;
+      const img = imagenDe(od, os);
       return {
         id: c.id,
         nombre:
@@ -298,6 +351,8 @@ exports.previewAudiencia = async (req, res) => {
         estado_contacto: c.estado_contacto,
         ultimo_mensaje_at: c.ultimo_mensaje_at,
         fuente: od ? 'dropi' : os ? 'shopify' : 'contacto',
+        imagen_producto: img?.url || null,
+        imagen_fuente: img?.fuente || null,
         valores,
       };
     });

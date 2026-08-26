@@ -266,7 +266,8 @@ function buildRutaArchivoShopify(ctx) {
 
 async function getWaCredentials(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id_telefono AS phone_number_id, token AS waba_token, telefono
+    `SELECT id_telefono AS phone_number_id, token AS waba_token, telefono,
+            id_whatsapp AS waba_id
      FROM configuraciones
      WHERE id = ? AND id_telefono IS NOT NULL AND token IS NOT NULL
      LIMIT 1`,
@@ -520,6 +521,46 @@ async function procesarPedidoShopify({
   };
   const components = buildTemplateComponents(plantilla.parametros_json, ctx);
   const rutaArchivo = buildRutaArchivoShopify(ctx);
+
+  /* Plantilla con encabezado de IMAGEN → foto del producto. Shopify no manda
+     imágenes en el webhook, así que se busca por nombre de los line_items en
+     el catálogo del cliente (productos_chat_center.imagen_url). Best-effort:
+     si la plantilla no pide imagen o no hay match, se envía como siempre. */
+  try {
+    const { obtenerTextoPlantilla } = require('../../services/whatsapp.service');
+    const def = await obtenerTextoPlantilla(
+      plantilla.nombre_template,
+      creds.waba_token,
+      creds.waba_id,
+    );
+    if (String(def?.header?.format || '').toUpperCase() === 'IMAGE') {
+      const {
+        resolverImagenProductoOrden,
+        headerImagenParaEnvio,
+      } = require('../imagenProductoOrden');
+      const img = await resolverImagenProductoOrden({
+        id_configuracion,
+        nombres: lineItems.map((p) => p?.title).filter(Boolean),
+      });
+      const header = await headerImagenParaEnvio({
+        def,
+        imagenUrl: img?.url || null,
+        business_phone_id: creds.phone_number_id,
+        accessToken: creds.waba_token,
+        nombre_template: plantilla.nombre_template,
+      });
+      if (header) {
+        components.unshift(header);
+        console.log(
+          `[Shopify Confirmación] header imagen (${img?.fuente || 'ejemplo_plantilla'}) cfg ${id_configuracion}`,
+        );
+      } else {
+        console.log(
+          `[Shopify Confirmación] plantilla "${plantilla.nombre_template}" pide imagen y no hay producto NI ejemplo (cfg ${id_configuracion}) — el envío va a fallar`,
+        );
+      }
+    }
+  } catch (_) {}
 
   let result;
   try {

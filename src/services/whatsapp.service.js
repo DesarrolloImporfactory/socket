@@ -1161,3 +1161,8 @@ exports.cachearTemplatesDeRespuesta = cacheTemplatesFromResponse;
 exports.invalidarTemplatesDeWaba = invalidarTemplatesDeWaba;
 exports.definicionDesdeComponents = definicionDesdeComponents;
 exports.getDefinicionCacheada = getCachedTemplate;
+// Para el header de imagen dinámico (foto del producto en pendiente
+// confirmación): el fallback usa la imagen de EJEMPLO de la plantilla, que es
+// un handle efímero de Meta y hay que resubirlo como media id.
+exports.esHandleEfimeroDeMeta = esHandleEfimeroDeMeta;
+exports.resolverMediaIdDeHeader = resolverMediaIdDeHeader;
