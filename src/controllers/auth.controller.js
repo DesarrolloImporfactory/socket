@@ -421,26 +421,75 @@ async function generarUsernameUnico(base, transaction = null) {
   return `${baseLimpia}_${Date.now().toString().slice(-6)}`;
 }
 
-// Plan cortesía para usuarios que llegan con id_rol = 16 (3 meses gratis) --> ESTUDIANTES
-const PLAN_CORTESIA_ROL16 = 21;
+/**
+ * Plan cortesía de los alumnos que llegan desde Imporsuit: 2 meses del plan
+ * "Method Ecommerce" (21) sin tarjeta.
+ *
+ * Lo reciben los de `id_lanzamiento` —el alumno que entró por un lanzamiento
+ * lo tiene incluido en lo que compró—, los de `id_rol = 16`, que era el
+ * único criterio hasta ahora y dejaba fuera a los alumnos de lanzamiento con
+ * otro rol, y los del paquete `dropsystem`, que lo incluye desde ago-2026.
+ *
+ * Nunca pisa una suscripción de Stripe: quien ya paga un plan se queda con el
+ * suyo.
+ */
+const PLAN_CORTESIA_ESTUDIANTE = 21;
+const MESES_CORTESIA_ESTUDIANTE = 2;
 
-const aplicarPlanCortesiaRol16 = async (email) => {
+const aplicarPlanCortesiaEstudiante = async (email) => {
   if (!email) return null;
 
   const sequelize = Usuarios_chat_center.sequelize;
 
+  // Se mira antes para poder DECIR por qué no se aplicó. El UPDATE a secas
+  // dejaba iguales los dos casos en que no hace nada —no hay cuenta con ese
+  // correo, o ya tiene suscripción—: en silencio. El alumno se quedaba sin
+  // sus meses y no quedaba rastro de por qué.
+  const [cuenta] = await sequelize.query(
+    `SELECT id_usuario, stripe_subscription_id
+       FROM usuarios_chat_center
+      WHERE email_propietario = :email
+      LIMIT 1`,
+    { replacements: { email }, type: sequelize.QueryTypes.SELECT },
+  );
+
+  if (!cuenta) {
+    console.warn('[cortesia] no hay cuenta de chatcenter para', email);
+    return null;
+  }
+
+  if (cuenta.stripe_subscription_id) {
+    console.warn(
+      '[cortesia] no se aplica, ya tiene suscripcion de Stripe:',
+      email,
+      cuenta.stripe_subscription_id,
+    );
+    return null;
+  }
+
+  // La condición del WHERE se queda aunque ya la comprobamos: entre el SELECT
+  // y el UPDATE puede haberse creado la suscripción desde el checkout.
   const result = await sequelize.query(
     `UPDATE usuarios_chat_center
         SET id_plan = :idPlan,
             estado = 'activo',
             fecha_inicio = NOW(),
-            fecha_renovacion = DATE_ADD(NOW(), INTERVAL 2 MONTH)
+            fecha_renovacion = DATE_ADD(NOW(), INTERVAL :meses MONTH)
       WHERE email_propietario = :email
         AND (stripe_subscription_id IS NULL OR stripe_subscription_id = '')`,
     {
-      replacements: { idPlan: PLAN_CORTESIA_ROL16, email },
+      replacements: {
+        idPlan: PLAN_CORTESIA_ESTUDIANTE,
+        meses: MESES_CORTESIA_ESTUDIANTE,
+        email,
+      },
       type: sequelize.QueryTypes.UPDATE,
     },
+  );
+
+  console.log(
+    `[cortesia] plan ${PLAN_CORTESIA_ESTUDIANTE} por ${MESES_CORTESIA_ESTUDIANTE} meses:`,
+    email,
   );
 
   return result;
@@ -532,10 +581,11 @@ exports.newLogin = async (req, res) => {
       let usuarioEncontrado = null;
       const idUsuarioFromToken = decoded?.data?.id;
 
-      // 👇 Ahora también traemos email_users
+      // 👇 Ahora también traemos email_users, id_lanzamiento y dropsystem
       const [user_imporauit] = await db_2.query(
-        `SELECT id_rol, ecommerce, membresia_ecommerce, importacion, 
-                nombre_users, con_users, usuario_users, email_users
+        `SELECT id_rol, ecommerce, membresia_ecommerce, importacion,
+                id_lanzamiento, nombre_users, con_users, usuario_users,
+                email_users, dropsystem
          FROM users 
          WHERE id_users = ? 
          LIMIT 1`,
@@ -559,6 +609,22 @@ exports.newLogin = async (req, res) => {
       let usuario_users = user_imporauit.usuario_users;
       let email_users = user_imporauit.email_users;
       let id_rol = user_imporauit.id_rol;
+      let id_lanzamiento = user_imporauit.id_lanzamiento;
+      let dropsystem = user_imporauit.dropsystem;
+
+      // Quién se lleva los 2 meses de cortesía. `id_lanzamiento` es el
+      // criterio comercial —el alumno que entra por un lanzamiento los tiene
+      // incluidos—; el rol 16 se queda por los que ya venían entrando así.
+      //
+      // `dropsystem` entró en ago-2026 con el relanzamiento del paquete: los 2
+      // meses de ImporChat son parte de lo que compra, junto con el curso The
+      // Ecommerce Method y la Calculadora Ecommerce. Va por flag y no por rol
+      // porque el alta desde el panel de asesor deja el rol que elija el
+      // asesor, no necesariamente el 16.
+      const tieneCortesiaEstudiante =
+        Number(id_lanzamiento || 0) > 0 ||
+        id_rol == 16 ||
+        Number(dropsystem || 0) === 1;
 
       // 🛡️ Validar email real
       if (!email_users || !String(email_users).includes('@')) {
@@ -572,11 +638,13 @@ exports.newLogin = async (req, res) => {
       let id_sub_usuario_encontrado = '';
       let estado_creacion = '';
 
+      // Los de lanzamiento entran aunque no tengan ninguno de los flags: su
+      // cuenta de ImporChat es parte de lo que compraron.
       if (
         ecommerce == 1 ||
         membresia_ecommerce == 1 ||
         importacion == 1 ||
-        id_rol == 16
+        tieneCortesiaEstudiante
       ) {
         const validar_usuario_plataforma = await Usuarios_chat_center.findOne({
           where: { id_plataforma: tienda },
@@ -610,13 +678,13 @@ exports.newLogin = async (req, res) => {
               });
             }
 
-            // Plan cortesía rol 16 -> ESTUDIANTE
-            if (id_rol == 16) {
+            // Plan cortesía del alumno: 2 meses del plan Method Ecommerce
+            if (tieneCortesiaEstudiante) {
               try {
-                await aplicarPlanCortesiaRol16(email_users);
+                await aplicarPlanCortesiaEstudiante(email_users);
               } catch (e) {
                 console.error(
-                  '⚠️ No se pudo aplicar plan cortesía rol 16 (escenario B):',
+                  '⚠️ No se pudo aplicar plan cortesía (escenario B):',
                   e.message,
                 );
               }
@@ -631,7 +699,7 @@ exports.newLogin = async (req, res) => {
             return res.status(200).json({
               status: 'success',
               estado_creacion:
-                id_rol == 16
+                tieneCortesiaEstudiante
                   ? 'completo'
                   : usuarioExistentePorEmail.estado === 'activo'
                     ? 'completo'
@@ -734,13 +802,13 @@ exports.newLogin = async (req, res) => {
                 };
               });
 
-            //  Plan cortesía rol 16 (después del commit, best-effort)
-            if (id_rol == 16) {
+            //  Plan cortesía del alumno (después del commit, best-effort)
+            if (tieneCortesiaEstudiante) {
               try {
-                await aplicarPlanCortesiaRol16(email_users);
+                await aplicarPlanCortesiaEstudiante(email_users);
               } catch (e) {
                 console.error(
-                  '⚠️ No se pudo aplicar plan cortesía rol 16 (escenario A):',
+                  '⚠️ No se pudo aplicar plan cortesía (escenario A):',
                   e.message,
                 );
               }
@@ -750,7 +818,9 @@ exports.newLogin = async (req, res) => {
 
             return res.status(200).json({
               status: 'success',
-              estado_creacion: id_rol == 16 ? 'completo' : 'incompleto',
+              estado_creacion: tieneCortesiaEstudiante
+                ? 'completo'
+                : 'incompleto',
               token: sessionToken,
               user: subUsuarioCreado,
               id_plataforma: tienda,
@@ -848,22 +918,22 @@ exports.newLogin = async (req, res) => {
           id_sub_usuario_encontrado = subusuarios_chat_center.id_sub_usuario;
           usuarioEncontrado = subusuarios_chat_center;
 
-          //  Plan cortesía rol 16
-          if (id_rol == 16) {
+          //  Plan cortesía del alumno
+          if (tieneCortesiaEstudiante) {
             try {
-              await aplicarPlanCortesiaRol16(
+              await aplicarPlanCortesiaEstudiante(
                 usuarios_chat_center.email_propietario || email_users,
               );
             } catch (e) {
               console.error(
-                '⚠️ No se pudo aplicar plan cortesía rol 16 (ya asociado):',
+                '⚠️ No se pudo aplicar plan cortesía (ya asociado):',
                 e.message,
               );
             }
           }
 
           estado_creacion =
-            id_rol == 16
+            tieneCortesiaEstudiante
               ? 'completo'
               : usuarios_chat_center.estado === 'activo'
                 ? 'completo'

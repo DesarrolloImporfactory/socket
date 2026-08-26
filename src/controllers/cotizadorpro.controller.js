@@ -173,6 +173,64 @@ const enviarTemplateWhatsApp = async (plantilla) => {
   return response.data;
 };
 
+/**
+ * TEMPLATE PACING — el estado real de un envío de plantilla.
+ *
+ * `message_status` no es un booleano de éxito. Meta devuelve:
+ *
+ *   - `accepted`                    → sale ya, dispara `sent` y `delivered`.
+ *   - `held_for_quality_assessment` → RETENIDO. Meta está midiendo la calidad
+ *     de la plantilla antes de mandarla a toda la audiencia. Si el feedback es
+ *     bueno la libera (objetivo de Meta: dentro de la hora); si es malo, pausa
+ *     la plantilla y DESCARTA los retenidos con el código 132015.
+ *
+ * Están sujetas a pacing las plantillas que no tengan calidad `GREEN`; en las
+ * de categoría UTILITY, durante los 7 días siguientes a que alguna utility
+ * haya sido pausada. A 26-ago-2026 las 57 plantillas de la cuenta están en
+ * calidad UNKNOWN, así que TODAS pueden ser retenidas.
+ *   https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-pacing
+ *
+ * Exigir `=== 'accepted'` hacía que el endpoint respondiera 500 por un mensaje
+ * que Meta sí había aceptado, y cortaba antes de registrarlo en el chat: si
+ * después lo liberaba, el cliente lo recibía y en el sistema no había nada.
+ *
+ * Comprobado el 26-ago-2026: 9 mensajes retenidos se entregaron solos a los
+ * ~40 minutos, sin reenviarlos.
+ *
+ * Lo que prueba que Meta se hizo cargo del envío es el `wamid`.
+ *
+ * @returns {{ok: boolean, retenido: boolean, wamid: string|null, estado: string|null}}
+ */
+const estadoDeEnvio = (response, etiqueta) => {
+  const msg = response?.messages?.[0];
+  const estado = msg?.message_status ?? null;
+  const wamid = msg?.id ?? null;
+
+  if (!wamid) {
+    // Sin esto el endpoint devolvía "Error al enviar mensaje de WhatsApp" y no
+    // quedaba rastro de la respuesta: imposible saber por qué falló.
+    console.error(
+      `[${etiqueta}] Meta no devolvió wamid. Respuesta completa:`,
+      JSON.stringify(response),
+    );
+    return { ok: false, retenido: false, wamid: null, estado };
+  }
+
+  const retenido = estado === 'held_for_quality_assessment';
+  if (retenido) {
+    console.warn(
+      `[${etiqueta}] RETENIDO por template pacing (wamid ${wamid}). ` +
+        'No hay que reenviar: Meta lo suelta solo en el transcurso del día.',
+    );
+  } else if (estado && estado !== 'accepted') {
+    console.warn(
+      `[${etiqueta}] Meta devolvió un estado inesperado: "${estado}" (wamid ${wamid})`,
+    );
+  }
+
+  return { ok: true, retenido, wamid, estado };
+};
+
 // Helper: Crear mensaje en base de datos
 const crearMensajeBD = async (
   idChat,
@@ -652,10 +710,8 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   const midMensaje2 = response2?.messages?.[0]?.id || null;
 
   // Verificar si el primer mensaje fue aceptado
-  if (
-    !response1?.messages?.[0]?.message_status ||
-    response1.messages[0].message_status !== 'accepted'
-  ) {
+  const envio1 = estadoDeEnvio(response1, 'COTIZACION_P1');
+  if (!envio1.ok) {
     return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
   }
 
@@ -737,7 +793,10 @@ exports.enviarCotizacion = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 200,
     title: 'Petición exitosa',
-    message: 'Cotización enviada correctamente',
+    message: envio1.retenido
+      ? 'Cotización enviada — MENSAJE RETENIDO por WhatsApp. Llegará en el transcurso del día, no hace falta reenviarla.'
+      : 'Cotización enviada correctamente',
+    retenida_por_pacing: envio1.retenido,
     cotizacion: cotizacionInfo,
   });
 });
@@ -872,10 +931,8 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
   const midMensaje1 = response1?.messages?.[0]?.id || null;
   const midMensaje2 = response2?.messages?.[0]?.id || null;
 
-  if (
-    !response1?.messages?.[0]?.message_status ||
-    response1.messages[0].message_status !== 'accepted'
-  ) {
+  const envio1 = estadoDeEnvio(response1, 'REENVIO_P1');
+  if (!envio1.ok) {
     return next(new AppError('Error al enviar mensaje de WhatsApp', 500));
   }
 
@@ -940,7 +997,10 @@ exports.reenviarCotizacion = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 200,
     title: 'Petición exitosa',
-    message: 'Cotización reenviada correctamente',
+    message: envio1.retenido
+      ? 'Cotización enviada — MENSAJE RETENIDO por WhatsApp. Llegará en el transcurso del día, no hace falta reenviarla.'
+      : 'Cotización reenviada correctamente',
+    retenida_por_pacing: envio1.retenido,
     cotizacion: cotizacionInfo,
   });
 });
