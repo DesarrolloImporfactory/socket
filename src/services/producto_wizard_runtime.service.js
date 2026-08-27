@@ -604,7 +604,9 @@ function bloqueWizardParaMotor({ producto, wizard }) {
   lineas.push(
     `INSTRUCCIÓN: Responde puntual lo que pregunte usando SOLO estos datos (precios, stock, combos y variedades de arriba son la verdad actual) y avanza hacia los datos de cierre sin repetir las fotos. ${
       wizard.tipo_venta === 'natural_salud'
-        ? 'Este producto es natural/salud: nunca digas que cura, trata o previene enfermedades; usa "ayuda a" o "alivia la molestia". '
+        ? 'Este producto es natural/salud: nunca digas que cura, trata o previene enfermedades; usa "ayuda a" o "alivia la molestia". ' +
+          'Las preguntas normales (para qué sirve, cómo se usa o se toma, si ayuda con su molestia) respóndelas con seguridad usando esta ficha y cierra la venta: NO mandes al cliente a "consultar con su médico" por preguntar eso. ' +
+          'Recomienda atención médica ÚNICAMENTE si menciona una emergencia o algo serio (síntomas graves, embarazo, cirugía reciente, medicación delicada). '
         : ''
     }Si pregunta por CUALQUIER OTRO producto, usa tu catálogo normalmente.`,
   );

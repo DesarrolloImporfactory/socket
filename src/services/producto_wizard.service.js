@@ -746,9 +746,21 @@ async function generarTextos({ id_configuracion, id_producto, wizardInput }) {
   /* Una sola descripción: la del catálogo. La generada se guarda directo en
      productos_chat_center.descripcion (lo que el bot ya lee en el flujo
      normal) y se resincroniza el catálogo del kanban, igual que cuando se
-     edita desde el formulario de productos. */
+     edita desde el formulario de productos.
+
+     PERO solo cuando el producto NO tiene descripción propia (o el caller lo
+     pide explícito con aplicar_descripcion: true). Antes pisaba SIEMPRE:
+     quien generaba su descripción en el paso 1 y luego tocaba "Completar con
+     IA" en el paso 2 la perdía sin darse cuenta — al reabrir el modal
+     aparecía "la vieja" y parecía que el guardado no funcionaba. */
+  const tieneDescripcion =
+    String(producto.descripcion || '').trim().length > 0;
   let descripcion_actualizada = false;
-  if (w.aplicar_descripcion !== false && textos.descripcion_ia) {
+  if (
+    textos.descripcion_ia &&
+    (w.aplicar_descripcion === true ||
+      (!tieneDescripcion && w.aplicar_descripcion !== false))
+  ) {
     try {
       await ProductosChatCenter.update(
         { descripcion: textos.descripcion_ia, fecha_actualizacion: new Date() },

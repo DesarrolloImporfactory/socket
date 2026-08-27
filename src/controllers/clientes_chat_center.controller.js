@@ -899,6 +899,7 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     bot_openia = null,
     fecha_desde = null,
     fecha_hasta = null,
+    productos = null,
   } = filtros;
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -906,11 +907,29 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   const fh = fecha_hasta && DATE_RE.test(fecha_hasta) ? fecha_hasta : null;
   const has = (v) => v !== null && v !== '' && v !== undefined;
 
+  /* Filtro por producto del anuncio (multiselect). El contacto no guarda un
+     id_producto: guarda el referral crudo en cliente_productos_ad y el mapa
+     anuncios_producto es quien sabe qué producto publicita cada source_id
+     (ver utils/webhook_whatsapp/buscar_producto_referral.js). Se filtra por
+     ese cruce y no por headline: adivinar por texto es justo lo que el mapa
+     vino a eliminar. */
+  const productosIds = (Array.isArray(productos) ? productos : [])
+    .map((v) => parseInt(v, 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  /* Agente: acepta array (multiselect del front) o escalar (compatibilidad). */
+  const encargadosIds = (
+    Array.isArray(id_encargado) ? id_encargado : has(id_encargado) ? [id_encargado] : []
+  )
+    .map((v) => parseInt(v, 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
   // ultimo_msg se mantiene como alias por compatibilidad con el front
   const SELECT_COLS = `
     c.id, c.nombre_cliente, c.apellido_cliente, c.celular_cliente,
     c.estado_contacto, c.created_at, c.bot_openia, c.id_encargado,
-    c.ultimo_mensaje_at, c.ultimo_mensaje_at AS ultimo_msg
+    c.ultimo_mensaje_at, c.ultimo_mensaje_at AS ultimo_msg,
+    c.ultimo_rol_mensaje
   `;
 
   /** WHERE común. Sin LOWER(): la collation utf8mb4_unicode_ci ya es case-insensitive. */
@@ -927,9 +946,10 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       conds.push(s.frag);
       params.push(...s.params);
     }
-    if (has(id_encargado)) {
-      conds.push('c.id_encargado = ?');
-      params.push(Number(id_encargado));
+    if (encargadosIds.length) {
+      const ph = encargadosIds.map(() => '?').join(',');
+      conds.push(`c.id_encargado IN (${ph})`);
+      params.push(...encargadosIds);
     }
     if (has(bot_openia)) {
       conds.push('c.bot_openia = ?');
@@ -942,6 +962,19 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     if (fh) {
       conds.push('c.ultimo_mensaje_at < DATE_ADD(?, INTERVAL 1 DAY)');
       params.push(fh);
+    }
+    if (productosIds.length) {
+      const ph = productosIds.map(() => '?').join(',');
+      conds.push(`EXISTS (
+        SELECT 1
+          FROM cliente_productos_ad cpa
+          JOIN anuncios_producto ap
+            ON ap.id_configuracion = cpa.id_configuracion
+           AND ap.source_id = cpa.source_id
+         WHERE cpa.id_cliente = c.id
+           AND ap.id_producto IN (${ph})
+      )`);
+      params.push(...productosIds);
     }
     return { conds, params };
   };
@@ -959,6 +992,65 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     total: 0,
     page: { has_more: false, next_cursor: null, limit: pageSize },
   });
+
+  /* Adorna las tarjetas YA paginadas (≤20 por columna) con las etiquetas del
+     chat y el producto del anuncio por el que entró el cliente. Son 2 queries
+     batch sobre los ids devueltos; meterlo en la query grande del tablero lo
+     ejecutaría para todas las filas candidatas, no solo las visibles. */
+  const enriquecerItems = async (items) => {
+    const ids = [...new Set(items.map((i) => i.id).filter(Boolean))];
+    if (!ids.length) return;
+    try {
+      const [etiquetas, productosAd] = await Promise.all([
+        db.query(
+          `SELECT ea.id_cliente_chat_center AS id_cliente,
+                  e.nombre_etiqueta, e.color_etiqueta
+             FROM etiquetas_asignadas ea
+             JOIN etiquetas_chat_center e ON e.id_etiqueta = ea.id_etiqueta
+            WHERE ea.id_configuracion = :cfg
+              AND ea.id_cliente_chat_center IN (:ids)`,
+          {
+            replacements: { cfg: id_configuracion, ids },
+            type: db.QueryTypes.SELECT,
+          },
+        ),
+        db.query(
+          `SELECT cpa.id_cliente, p.nombre
+             FROM cliente_productos_ad cpa
+             JOIN anuncios_producto ap
+               ON ap.id_configuracion = cpa.id_configuracion
+              AND ap.source_id = cpa.source_id
+             JOIN productos_chat_center p ON p.id = ap.id_producto
+            WHERE cpa.id_configuracion = :cfg
+              AND cpa.id_cliente IN (:ids)
+            ORDER BY cpa.id ASC`,
+          {
+            replacements: { cfg: id_configuracion, ids },
+            type: db.QueryTypes.SELECT,
+          },
+        ),
+      ]);
+
+      const tagsPor = new Map();
+      etiquetas.forEach((t) => {
+        if (!tagsPor.has(t.id_cliente)) tagsPor.set(t.id_cliente, []);
+        tagsPor.get(t.id_cliente).push({
+          nombre: t.nombre_etiqueta,
+          color: t.color_etiqueta,
+        });
+      });
+      // ORDER BY cpa.id ASC + overwrite: queda el anuncio más reciente
+      const prodPor = new Map();
+      productosAd.forEach((p) => prodPor.set(p.id_cliente, p.nombre));
+
+      items.forEach((i) => {
+        i.etiquetas = tagsPor.get(i.id) || [];
+        i.producto_ad = prodPor.get(i.id) || null;
+      });
+    } catch {
+      /* adorno opcional: el tablero nunca se cae por esto */
+    }
+  };
 
   const hayCursores = Object.values(cursors || {}).some(Boolean);
 
@@ -1053,6 +1145,8 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       };
     });
 
+    await enriquecerItems(Object.values(data).flatMap((c) => c.items));
+
     return res.status(200).json({ success: true, data });
   }
 
@@ -1110,6 +1204,8 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   const keysConCursor = Object.keys(cursors).filter((k) => cursors[k]);
   const results = await Promise.all(keysConCursor.map(fetchOne));
 
+  await enriquecerItems(results.flatMap((r) => r.items));
+
   const data = {};
   results.forEach((r) => {
     data[r.key] = { items: r.items, total: r.total, page: r.page };
@@ -1141,6 +1237,31 @@ exports.listarAgentes = catchAsync(async (req, res, next) => {
   );
 
   return res.status(200).json({ success: true, data: agentes });
+});
+
+/* Catálogo liviano para el filtro por producto del kanban: solo id + nombre
+   (listarProductos carga variaciones y toda la ficha; acá sería peso muerto).
+   `veces_anuncio` dice cuántas entradas por anuncio tiene mapeadas ese
+   producto, para que el front pueda señalar cuáles vienen de ads. */
+exports.listarProductosFiltro = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta id_configuracion', 400));
+
+  const productos = await db.query(
+    `SELECT p.id, p.nombre,
+            COALESCE(SUM(ap.veces), 0) AS veces_anuncio
+       FROM productos_chat_center p
+       LEFT JOIN anuncios_producto ap
+         ON ap.id_configuracion = p.id_configuracion
+        AND ap.id_producto = p.id
+      WHERE p.id_configuracion = ? AND p.eliminado = 0
+      GROUP BY p.id, p.nombre
+      ORDER BY veces_anuncio DESC, p.nombre ASC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  return res.status(200).json({ success: true, data: productos });
 });
 
 function encodeCursor(obj) {

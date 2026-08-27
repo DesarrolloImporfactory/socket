@@ -2067,6 +2067,11 @@ async function _sincronizarEstructuraColumnas(
 
         if (debeEncender) {
           const assistant_id = await crearAsistente(col, prompt);
+          const modeloCol = col.modelo || 'gpt-4o-mini';
+          // gpt-5* razona descontando del tope: con uno chico responde vacío.
+          const topeCol = /^gpt-5/i.test(modeloCol)
+            ? Math.max(Number(col.max_tokens) || 0, 2000)
+            : col.max_tokens || 500;
           await db.query(
             `UPDATE kanban_columnas
              SET activa_ia = 1, instrucciones = ?, assistant_id = ?,
@@ -2076,8 +2081,8 @@ async function _sincronizarEstructuraColumnas(
               replacements: [
                 prompt,
                 assistant_id,
-                col.modelo || 'gpt-4o-mini',
-                col.max_tokens || 500,
+                modeloCol,
+                topeCol,
                 existente.id,
               ],
               type: db.QueryTypes.UPDATE,
@@ -2273,9 +2278,16 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
           const migrarModelo =
             Boolean(modeloPlantilla) && modeloPlantilla !== modeloActual;
 
+          // Si el resync mueve la columna a gpt-5*, el tope viejo (500) queda
+          // corto para un modelo que razona: se sube al piso de 2000 de una.
+          const pisoGpt5 = migrarModelo && /^gpt-5/i.test(modeloPlantilla);
           await db.query(
             `UPDATE kanban_columnas
-                SET instrucciones = ?${migrarModelo ? ', modelo = ?' : ''}
+                SET instrucciones = ?${migrarModelo ? ', modelo = ?' : ''}${
+                  pisoGpt5
+                    ? ', max_tokens = GREATEST(COALESCE(max_tokens, 500), 2000)'
+                    : ''
+                }
               WHERE id = ?`,
             {
               replacements: migrarModelo

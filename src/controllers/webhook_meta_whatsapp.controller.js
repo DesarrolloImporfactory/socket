@@ -41,6 +41,12 @@ const {
   intentarRespuestaRapida,
 } = require('../services/producto_wizard_runtime.service');
 
+// Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
+// columnas del flujo Dropi que no tienen agente.
+const {
+  intentarRespuestaLogistica,
+} = require('../utils/respondedorLogistico');
+
 // Lectura de imágenes del cliente (equivalente visual de la transcripción)
 const {
   describirImagenDesdeArchivo,
@@ -2373,6 +2379,29 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               }
             } catch (eWiz) {
               await logWizard(`⚠️ wizard producto: ${eWiz.message}`);
+            }
+
+            // 1.7 Respondedor logístico sin IA: si el chat está en una columna
+            // del flujo Dropi SIN agente (guía generada, en tránsito, retiro,
+            // entregada…), responde guía/tracking, lugar de retiro y demora
+            // con los datos reales de su orden (0 tokens). Todo lo demás
+            // sigue quedando para el humano.
+            if (!saltarIA) {
+              try {
+                const logi = await intentarRespuestaLogistica({
+                  id_configuracion,
+                  id_cliente,
+                  telefono: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  estado_contacto,
+                  texto_mensaje,
+                  log: logWizard,
+                });
+                if (logi?.manejado) saltarIA = true;
+              } catch (eLogi) {
+                await logWizard(`⚠️ respondedor logístico: ${eLogi.message}`);
+              }
             }
 
             // 2. Correr IA (solo si la columna tiene activa_ia=1)

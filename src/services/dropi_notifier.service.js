@@ -698,6 +698,33 @@ async function upsertOrders(cacheInsertFields, orders) {
       ],
     });
   }
+
+  /* Fecha real de entrega: primera vez que ESTA corrida ve la orden en
+     'entregada'. Es honesta porque el cron/webhook solo traen órdenes con
+     cambio de estatus reciente (±24h) — una entregada vieja nunca entra al
+     lote y no se estampa tarde. Alimenta la estadística de días de entrega
+     por ciudad del respondedor logístico. Best-effort: no rompe el upsert. */
+  try {
+    const ids = orders.map((o) => o?.id).filter(Boolean);
+    if (ids.length) {
+      await db.query(
+        `UPDATE dropi_orders_cache
+            SET delivered_at = NOW()
+          WHERE id_configuracion = :cfg AND id_usuario = :usr
+            AND dropi_order_id IN (:ids)
+            AND classified_status = 'entregada'
+            AND delivered_at IS NULL`,
+        {
+          replacements: {
+            cfg: cacheInsertFields.id_configuracion ?? 0,
+            usr: cacheInsertFields.id_usuario ?? 0,
+            ids,
+          },
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+    }
+  } catch (_) {}
 }
 
 /* ═══════════════════════════════════════════════════════════

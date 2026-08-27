@@ -492,6 +492,19 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
     },
   );
 
+  /* Piso para modelos de razonamiento: gpt-5* gasta parte del tope "pensando"
+     y con un max_tokens chico la respuesta vuelve VACÍA (caso cfg 396:
+     gpt-5-nano con 200). El motor Responses ya clampa a 2000 en runtime
+     (kanban_ia); esto deja el dato de BD honesto y cubre el camino legacy de
+     Assistants, que no clampa. Aplica sea que el panel cambie el modelo, el
+     tope o ambos. */
+  await db.query(
+    `UPDATE kanban_columnas SET max_tokens = 2000
+      WHERE id = ? AND modelo LIKE 'gpt-5%'
+        AND (max_tokens IS NULL OR max_tokens < 2000)`,
+    { replacements: [id], type: db.QueryTypes.UPDATE },
+  );
+
   const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
 
   // OpenAI: solo sistema viejo (hay Assistant real que sincronizar)
