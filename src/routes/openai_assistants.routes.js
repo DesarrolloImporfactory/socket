@@ -67,4 +67,14 @@ router.post('/eliminar_thread', openai_assistantsController.eliminar_thread);
 
 router.get('/openai_status', openai_assistantsController.openai_status);
 
+/* "Ya pagué": comprueba contra OpenAI y reactiva si de verdad hay saldo.
+   Va con protect —a diferencia del resto de este router— porque dispara una
+   llamada facturable contra la cuenta del cliente: sin sesión, cualquiera
+   podría hacerle gastar saldo repitiendo la petición. */
+router.post(
+  '/openai_reintentar',
+  protect,
+  openai_assistantsController.openai_reintentar,
+);
+
 module.exports = router;
