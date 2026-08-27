@@ -70,6 +70,9 @@ async function startServer() {
     require('./cron/cronEncuestasEnvio.js');
     require('./cron/metricasSnapshot.js');
     require('./cron/imporsuitEmailSync.js');
+    // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
+    // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
+    require('./cron/messengerPagesHealth.js');
     // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
     // con NODE_ENV=production; ver el comentario del archivo).
     require('./cron/rescatarTurnosPerdidos.js');

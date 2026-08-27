@@ -258,3 +258,46 @@ exports.listConnections = async (req, res) => {
     });
   }
 };
+
+/**
+ * Salud de las conexiones de una configuración.
+ *
+ * Existe porque `status='active'` NO garantiza que el page_access_token viva:
+ * nada en el código lo pasaba a 'revoked' y los envíos salientes fallaban en
+ * silencio.
+ *
+ * Sirve el diagnóstico ya guardado y solo consulta a Meta lo que lleva más de
+ * 6h sin revisar. NO se consulta en vivo en cada llamada a propósito:
+ * `debug_token` gasta el cupo horario compartido de toda la app (X-App-Usage),
+ * y este endpoint lo invoca el front en cada carga de la pestaña de conexiones.
+ * El cron diario es quien refresca de verdad.
+ *
+ * ?forzar=1 salta la caché (para el botón de "revisar ahora").
+ */
+exports.salud = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion || 0);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Falta id_configuracion' });
+    }
+
+    const {
+      saludConCache,
+    } = require('../services/messenger_pages_health.service');
+
+    const resultado = await saludConCache({
+      id_configuracion,
+      forzar: String(req.query.forzar || '') === '1',
+    });
+
+    return res.json({ success: true, ...resultado });
+  } catch (err) {
+    console.error('[MS][salud] Error:', err?.response?.data || err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al verificar la salud de las conexiones',
+    });
+  }
+};
