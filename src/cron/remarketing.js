@@ -1019,11 +1019,46 @@ cron.schedule('*/1 * * * *', async () => {
                   `🟦 [DEBUG IA] responses: previous_response_id=${previous_response_id || 'NO'}`,
                 );
 
+                /* Sin cadena de Responses (el cliente entró por un anuncio,
+                   recibió el paquete del wizard y nunca escribió → la IA
+                   jamás corrió con él) el modelo generaba el recordatorio A
+                   CIEGAS: solo con el prompt de la columna, anclaba OTRO
+                   producto del catálogo (cfg 610: entró por cuchillos y el
+                   remarketing le ofreció el cinturón para dolor menstrual).
+                   Se siembra el recap real de mensajes_clientes, donde el
+                   paquete y el referral sí dicen de qué producto se trata. */
+                const TRIGGER_RM =
+                  '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados. Si la conversación NO menciona un producto o necesidad concreta, redacta el mensaje genérico (tu pedido, lo que te interesó) SIN inventar nombres y SIN placeholders como [producto].';
+                let inputRemarketing = TRIGGER_RM;
+                if (!previous_response_id) {
+                  const {
+                    construirRecapConversacion,
+                  } = require('../services/kanban_ia.service');
+                  const recap = await construirRecapConversacion(
+                    record.id_cliente_chat_center,
+                  );
+                  if (recap && recap.trim()) {
+                    inputRemarketing =
+                      `[CONTEXTO DE LA CONVERSACIÓN — el recordatorio habla SOLO del producto de ESTA conversación, jamás de otro del catálogo]\n${recap}\n\n` +
+                      TRIGGER_RM;
+                    console.log(
+                      `🟦 [DEBUG IA] sin cadena: recap sembrado (${recap.length} chars)`,
+                    );
+                  } else {
+                    inputRemarketing =
+                      TRIGGER_RM +
+                      ' IMPORTANTE: no hay historial de esta conversación: NO nombres NINGÚN producto específico del catálogo — habla solo de "tu pedido".';
+                    console.log(
+                      `🟦 [DEBUG IA] sin cadena NI historial: remarketing genérico forzado`,
+                    );
+                  }
+                }
+
                 const r = await ejecutarConResponsesAPI({
                   previous_response_id,
                   instructions: colRow.instrucciones,
                   additional_instructions: prompt_ia_resuelto,
-                  input: '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados. Si la conversación NO menciona un producto o necesidad concreta, redacta el mensaje genérico (tu pedido, lo que te interesó) SIN inventar nombres y SIN placeholders como [producto].',
+                  input: inputRemarketing,
                   model: colRow.modelo || 'gpt-4o-mini',
                   max_tokens: colRow.max_tokens || 300,
                   vector_store_id: colRow.vector_store_id || null,
@@ -1083,7 +1118,11 @@ cron.schedule('*/1 * * * *', async () => {
                  Felipe, 2026-08-26: "tu necesidad de [producto] sigue sin
                  resolverse"). Mejor no mandar la IA y caer a la plantilla (o
                  reintentar) que mandar un mensaje roto que delata al bot. */
-              if (/\[[^\]\n]{2,40}\]|\{\{[^}\n]{1,40}\}\}|<[a-záéíóúñ_ ]{3,30}>/i.test(textoIA)) {
+              if (
+                /\[[^\]\n]{2,40}\]|\{\{[^}\n]{1,40}\}\}|<[a-záéíóúñ_ ]{3,30}>/i.test(
+                  textoIA,
+                )
+              ) {
                 throw new Error(
                   `IA devolvió placeholders sin resolver: "${textoIA.slice(0, 120)}"`,
                 );
