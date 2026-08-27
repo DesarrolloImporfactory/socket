@@ -16,6 +16,11 @@ const MensajesClientes = require('../models/mensaje_cliente.model');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 
 const {
+  buscarContactoWa,
+  esErrorDuplicado,
+} = require('../utils/unified/dedupeContacto');
+
+const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 
@@ -694,35 +699,63 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
             );
           }
 
-          /* ✅ findOrCreate: busca y crea de forma atómica usando EXACTAMENTE
-     las columnas del índice único uq_ccc_dedupe, evitando el 500 */
-          // Replica la lógica de celular_last9: últimos 9 dígitos numéricos
-          const last9 = clienteActual.celular_cliente
-            .replace(/\D/g, '')
-            .slice(-9);
+          /* Busca el contacto en la configuración destino por los últimos 9
+             dígitos (columna generada celular_last9), que es lo que compone la
+             clave del índice único uq_ccc_dedupe. Si no existe se crea, y si
+             se pierde la carrera contra otro proceso se relee en vez de
+             devolver un 500. */
+          const telDestino = clienteActual.celular_cliente;
+          const sourceDestino = clienteActual.source || 'wa';
 
-          const [cliente_destino, creado] =
-            await Clientes_chat_center.findOrCreate({
-              where: {
+          const buscarDestino = () =>
+            buscarContactoWa({
+              id_configuracion: configuracion_transferida.id_configuracion,
+              telefono: telDestino,
+            });
+
+          let id_destino = await buscarDestino();
+
+          if (!id_destino) {
+            try {
+              const nuevo = await Clientes_chat_center.create({
                 id_configuracion: configuracion_transferida.id_configuracion,
-                source: clienteActual.source ?? 'wa',
-                celular_last9: last9, // ✅ esta es la columna que realmente compone dedupe_key
-              },
-              defaults: {
                 nombre_cliente: clienteActual.nombre_cliente,
                 apellido_cliente: clienteActual.apellido_cliente,
-                celular_cliente: clienteActual.celular_cliente,
+                celular_cliente: telDestino,
                 id_encargado: id_encargado,
                 propietario: 0,
                 uid_cliente: cliente_configuracion.uid_cliente,
-                source: clienteActual.source ?? 'wa',
-              },
-            });
-
-          if (!creado) {
-            // ya existía → actualízalo (mismo comportamiento que tu rama "validar_cliente_new_conf")
-            await cliente_destino.update({ id_encargado, chat_cerrado: 0 });
+                source: sourceDestino,
+              });
+              id_destino = nuevo.id;
+            } catch (errDup) {
+              if (!esErrorDuplicado(errDup)) throw errDup;
+              // Otro proceso lo creó entre el SELECT y el INSERT → releer.
+              id_destino = await buscarDestino();
+              if (!id_destino) {
+                // La clave del índice está tomada por un contacto que ya NO
+                // tiene ese número (dedupe_key desincronizado tras editar el
+                // celular). Sin esto el usuario solo veía "Validation error".
+                throw new AppError(
+                  'No se pudo transferir el chat: el número ya está reservado por otro contacto en la cuenta destino. Contacte a soporte.',
+                  409,
+                );
+              }
+            }
           }
+
+          const cliente_destino = await Clientes_chat_center.findByPk(
+            id_destino,
+          );
+
+          if (!cliente_destino) {
+            throw new AppError(
+              'No se pudo resolver el contacto destino de la transferencia',
+              500,
+            );
+          }
+
+          await cliente_destino.update({ id_encargado, chat_cerrado: 0 });
 
           // ✅ mensaje en el chat destino (usa cliente_destino en vez de nuevo_cliente/validar_cliente_new_conf)
           await MensajesClientes.create({

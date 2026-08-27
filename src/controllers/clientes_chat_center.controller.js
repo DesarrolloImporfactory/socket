@@ -1847,6 +1847,68 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
   if (setParts.length === 0)
     return res.status(200).json({ status: 'success', data: null });
 
+  /* Guardia de número duplicado.
+     La identidad de un contacto WA son los últimos 9 dígitos (columna
+     generada celular_last9) dentro de la misma id_configuracion. Cambiar el
+     celular a uno que ya existe en la cuenta dejaba dos contactos con el
+     mismo número, y el índice único uq_ccc_dedupe respondía con un 500
+     ilegible ("Validation error"). Se comprueba antes y se responde 409.
+
+     La comprobación previa también cubre los contactos sin dedupe_key
+     (mayoría histórica), que el índice no protege. El catch de más abajo es
+     la red para la carrera entre este SELECT y el UPDATE. */
+  if (req.body.hasOwnProperty('celular_cliente')) {
+    const nuevoLast9 = last9(req.body.celular_cliente);
+
+    const [actual] = await db.query(
+      `SELECT id_configuracion, celular_last9
+         FROM clientes_chat_center
+        WHERE id = ? AND deleted_at IS NULL`,
+      { replacements: [id], type: db.QueryTypes.SELECT },
+    );
+
+    if (!actual) return next(new AppError('Cliente no encontrado', 404));
+
+    const cfgDestino = req.body.hasOwnProperty('id_configuracion')
+      ? req.body.id_configuracion
+      : actual.id_configuracion;
+
+    const cambiaNumero = nuevoLast9 !== (actual.celular_last9 || '');
+    const cambiaCuenta = String(cfgDestino) !== String(actual.id_configuracion);
+
+    if (nuevoLast9.length >= 8 && (cambiaNumero || cambiaCuenta)) {
+      const [ocupado] = await db.query(
+        `SELECT id, nombre_cliente, apellido_cliente
+           FROM clientes_chat_center
+          WHERE id_configuracion = ?
+            AND celular_last9 = ?
+            AND id <> ?
+            AND deleted_at IS NULL
+          ORDER BY id ASC
+          LIMIT 1`,
+        {
+          replacements: [cfgDestino, nuevoLast9, id],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      if (ocupado) {
+        const quien = [ocupado.nombre_cliente, ocupado.apellido_cliente]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        return next(
+          new AppError(
+            `Ese número ya pertenece a otro contacto de esta cuenta${
+              quien ? ` (${quien})` : ''
+            }. Edítalo desde ese contacto o usa un número distinto.`,
+            409,
+          ),
+        );
+      }
+    }
+  }
+
   setParts.push('updated_at = NOW()');
 
   const updateSql = `
@@ -1856,10 +1918,22 @@ exports.actualizarCliente = catchAsync(async (req, res, next) => {
   `;
   params.push(id);
 
-  const upd = await db.query(updateSql, {
-    replacements: params,
-    type: db.QueryTypes.UPDATE,
-  });
+  try {
+    await db.query(updateSql, {
+      replacements: params,
+      type: db.QueryTypes.UPDATE,
+    });
+  } catch (err) {
+    // Red de seguridad: otro proceso pudo tomar el número entre la
+    // comprobación de arriba y este UPDATE (índice único uq_ccc_dedupe).
+    if (!esErrorDuplicado(err)) throw err;
+    return next(
+      new AppError(
+        'Ese número ya pertenece a otro contacto de esta cuenta. Recarga la lista e inténtalo de nuevo.',
+        409,
+      ),
+    );
+  }
 
   // devolver fila actualizada
   const [row] = await db.query(
