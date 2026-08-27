@@ -87,6 +87,24 @@ function pareceIntencionCompra(texto) {
   return RE_COMPRA.test(normalizar(texto));
 }
 
+/* El prefill del anuncio de WhatsApp ("¡Hola! Quiero comprar el Set de 9
+   Cuchillos", "Quiero más información") matchea RE_COMPRA — por el "quiero
+   comprar" y hasta por el número del NOMBRE del producto ("9 Cuchillos").
+   Pero no es una decisión de compra: es el timbre de la puerta que el
+   anuncio escribe por el cliente. Tratarlo como intención dejaba correr la
+   IA después del paquete y esta repetía la pregunta gancho que el paquete
+   acababa de hacer (cfg 610, bautista, 2026-08-26). Solo cuenta como
+   intención real si trae una CANTIDAD explícita de compra. */
+const RE_PREFILL_ANUNCIO =
+  /^(hola[\s,.:!]*)?(quiero (comprar|mas informacion|informacion|info|saber mas)|me interesa|mas informacion|informacion)\b/;
+const RE_CANTIDAD_EXPLICITA =
+  /\b(\d+|un|una|dos|tres|cuatro|cinco)\s*(unidad|unidades|set|sets|combo|combos|par|pares|kit|kits|caja|cajas|frasco|frascos)\b/;
+
+function esSaludoDeAnuncio(texto) {
+  const n = normalizar(texto);
+  return RE_PREFILL_ANUNCIO.test(n) && !RE_CANTIDAD_EXPLICITA.test(n);
+}
+
 const RE_INTERROGATIVO =
   /^(que|cual|cuales|como|cuanto|cuanta|cuantos|cuantas|donde|cuando|tiene|tienen|sirve|sirven|viene|vienen|incluye|incluyen|es|son|hay|puedo|puede|pueden|se puede|trae|traen|funciona|funcionan|dura|duran|hacen|hace|aceptan|acepta|entregan|entrega|llega|llegan|envian|envia|tardan|tarda|demora|demoran)\b/;
 
@@ -217,6 +235,7 @@ module.exports = {
   tokens,
   esSaludoOGenerico,
   pareceIntencionCompra,
+  esSaludoDeAnuncio,
   pareceRegunta,
   elegirRespuestaRapida,
 };

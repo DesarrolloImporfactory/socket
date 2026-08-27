@@ -3913,6 +3913,11 @@ module.exports = {
   // el modelo antepone a veces al mensaje generado. La usan los tres canales
   // de remarketing (WA/IG/MS).
   limpiarMetaRemarketing,
+  // La usa el cron de remarketing cuando el cliente no tiene cadena de
+  // Responses (nunca corrió la IA con él): sin recap, el modelo generaba el
+  // recordatorio a ciegas y ofrecía OTRO producto del catálogo (cfg 610:
+  // entró por cuchillos y el remarketing le habló del cinturón menstrual).
+  construirRecapConversacion,
   // Expuesta para poder verificar el agendamiento sin levantar toda la
   // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
   // igual aunque la cita no se cree).

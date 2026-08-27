@@ -43,6 +43,7 @@ const {
 const {
   esSaludoOGenerico,
   pareceIntencionCompra,
+  esSaludoDeAnuncio,
   pareceRegunta,
   elegirRespuestaRapida,
 } = require('../utils/wizardProducto/respuestasRapidas');
@@ -740,9 +741,20 @@ async function intentarMensajeFijoWizard({
       return { paqueteEnviado: true, saltarIA: true, bloqueMotor };
     }
   }
-  if (pareceIntencionCompra(texto)) {
+  /* El prefill del anuncio ("¡Hola! Quiero comprar el Set de 9 Cuchillos")
+     matchea intención de compra por el "quiero comprar" — y hasta por el
+     número del NOMBRE del producto. Pero el paquete que se acaba de enviar
+     ES la respuesta a ese timbre (precios + pregunta gancho): dejar correr
+     la IA aquí hacía que repitiera la pregunta de cantidad un mensaje
+     después (caso bautista). Solo si trae cantidad explícita sigue la IA. */
+  if (pareceIntencionCompra(texto) && !esSaludoDeAnuncio(texto)) {
     await decir(`wizard: intención de compra en el primer mensaje → sigue la IA`);
     return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
+  }
+  if (pareceIntencionCompra(texto)) {
+    await decir(
+      `wizard: prefill del anuncio (no intención real) → el paquete responde, sin IA`,
+    );
   }
   // Una pregunta de verdad que las quemadas no cubrieron ("sirve para una
   // tele de tubo vieja") merece respuesta: IA con la ficha. Lo que NO es
