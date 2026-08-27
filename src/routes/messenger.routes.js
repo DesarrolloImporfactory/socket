@@ -7,6 +7,7 @@ const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middle
 const conversationsController = require('../controllers/messenger_conversations.controller');
 const messengerProfiles = require('../controllers/messenger_profiles.controller');
 const messengerPagesController = require('../controllers/messenger_pages.controller');
+const { protect } = require('../middlewares/auth.middleware');
 
 //No colocamos authMiddleware: Facebook no enviara el JWT.
 
@@ -43,5 +44,14 @@ router.post('/profiles/fetch', messengerProfiles.fetchAndStoreProfile);
 router.post('/profiles/refresh-missing', messengerProfiles.refreshMissing);
 
 router.get('/pages/connections', messengerPagesController.listConnections);
+
+// Salud de las conexiones: pregunta a Meta si el page_access_token sigue vivo.
+// ?guardar=1 persiste el diagnóstico, ?marcar=1 además marca status='revoked'.
+//
+// Este router va sin authMiddleware global porque Facebook no manda JWT en los
+// webhooks, pero esta ruta sí la pide: la llama el front (no Meta), devuelve
+// diagnóstico de conexiones de un cliente y dispara llamadas a Graph, así que
+// dejarla abierta sería un vector de abuso.
+router.get('/pages/health', protect, messengerPagesController.salud);
 
 module.exports = router;
