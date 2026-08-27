@@ -67,6 +67,10 @@ function safeRow(row) {
     token_dias_restantes: diasRestantes(row.token_exp_at),
     company_id: row.company_id,
     integration_id: row.integration_id,
+    // Datos de Shalom (ver el modelo). Viajan en claro a propósito: no son
+    // secretos y el bot se los tiene que dictar al comprador.
+    yape_number: row.yape_number,
+    ruc: row.ruc,
     webhook_url: webhookUrl(row.webhook_secret),
     // Null cuando el entorno no tiene PUBLIC_BASE_URL. El front muestra este
     // aviso en vez de una URL que no se puede pegar en ningún lado.
@@ -77,6 +81,46 @@ function safeRow(row) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/**
+ * Deja el número de Yape en el formato con el que trabaja Perú: 9 dígitos
+ * empezando en 9. El cliente lo escribe como se le ocurre ("987 654 321",
+ * "+51 987654321"), y el bot después lo va a dictar y comparar, así que se
+ * guarda limpio y de una sola forma.
+ *
+ * Devuelve undefined si el campo no vino (no se toca), null si vino vacío (se
+ * borra a propósito). Guardar '' obligaría a chequear dos cosas en cada
+ * lectura.
+ */
+function normalizarYape(v) {
+  if (v === undefined) return undefined;
+  let d = String(v ?? '').replace(/\D/g, '');
+  // "+51 987654321" y "51987654321" son el mismo celular con prefijo de país.
+  if (d.length === 11 && d.startsWith('51')) d = d.slice(2);
+  return d || null;
+}
+
+function normalizarRuc(v) {
+  if (v === undefined) return undefined;
+  const d = String(v ?? '').replace(/\D/g, '');
+  return d || null;
+}
+
+/**
+ * Valida solo lo que vino con contenido: ambos campos son opcionales y la
+ * integración funciona sin ellos. Se rechaza lo mal escrito en vez de
+ * guardarlo, porque un Yape equivocado se descubre recién cuando un comprador
+ * transfiere los S/ 20 a un número que no existe.
+ */
+function validarDatosShalom({ yape_number, ruc }) {
+  if (yape_number && !/^9\d{8}$/.test(yape_number)) {
+    return 'El número de Yape debe ser un celular peruano de 9 dígitos que empiece con 9.';
+  }
+  if (ruc && !/^\d{11}$/.test(ruc)) {
+    return 'El RUC debe tener 11 dígitos.';
+  }
+  return null;
 }
 
 function diasRestantes(exp) {
@@ -144,13 +188,18 @@ exports.list = catchAsync(async (req, res, next) => {
 });
 
 exports.create = catchAsync(async (req, res, next) => {
-  const { id_configuracion, store_name, token } = req.body;
+  const { id_configuracion, store_name, token, yape_number, ruc } = req.body;
 
   if (!id_configuracion || !store_name || !token) {
     return next(
       new AppError('id_configuracion, store_name y token son obligatorios', 400),
     );
   }
+
+  const yape = normalizarYape(yape_number);
+  const rucLimpio = normalizarRuc(ruc);
+  const errorShalom = validarDatosShalom({ yape_number: yape, ruc: rucLimpio });
+  if (errorShalom) return next(new AppError(errorShalom, 400));
 
   const claims = leerClaimsToken(token);
 
@@ -166,6 +215,8 @@ exports.create = catchAsync(async (req, res, next) => {
     token_exp_at: claims.exp || null,
     company_id: claims.companyId || null,
     integration_id: claims.integrationId || null,
+    yape_number: yape ?? null,
+    ruc: rucLimpio ?? null,
     webhook_secret: secret,
     is_active: 1,
     deleted_at: null,
@@ -192,7 +243,12 @@ exports.update = catchAsync(async (req, res, next) => {
 
   await assertConfigBelongsToOwner(req, row.id_configuracion);
 
-  const { store_name, token, is_active } = req.body;
+  const { store_name, token, is_active, yape_number, ruc } = req.body;
+
+  const yape = normalizarYape(yape_number);
+  const rucLimpio = normalizarRuc(ruc);
+  const errorShalom = validarDatosShalom({ yape_number: yape, ruc: rucLimpio });
+  if (errorShalom) return next(new AppError(errorShalom, 400));
 
   if (store_name !== undefined) row.store_name = String(store_name).trim();
 
@@ -206,6 +262,11 @@ exports.update = catchAsync(async (req, res, next) => {
   }
 
   if (is_active !== undefined) row.is_active = is_active ? 1 : 0;
+
+  // undefined = el front no mandó el campo, se deja como está.
+  // null = el cliente lo vació a propósito, se borra.
+  if (yape !== undefined) row.yape_number = yape;
+  if (rucLimpio !== undefined) row.ruc = rucLimpio;
 
   await row.save();
 
