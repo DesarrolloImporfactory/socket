@@ -89,6 +89,11 @@ router.post(
 router.post('/listar_agentes', clientes_chat_centerController.listarAgentes);
 
 router.post(
+  '/listar_productos_filtro',
+  clientes_chat_centerController.listarProductosFiltro,
+);
+
+router.post(
   '/actualizar_estado',
   clientes_chat_centerController.actualizarEstado,
 );

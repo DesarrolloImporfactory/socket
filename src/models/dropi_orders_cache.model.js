@@ -48,6 +48,10 @@ const DropiOrdersCache = db.define(
     },
     order_data: DataTypes.TEXT('long'),
     synced_at: DataTypes.DATE,
+    /* Primera vez que el sync/webhook vio la orden en 'entregada'. La estampa
+       upsertOrders; alimenta los días de entrega por ciudad del respondedor
+       logístico. Ver delivered_at_migration.sql. */
+    delivered_at: DataTypes.DATE,
     // Origen de la orden (IMPORSUIT/SHOPIFY/null). Las columnas existen en la
     // tabla, pero sin declararlas aquí Sequelize las descarta en silencio al
     // hacer bulkCreate/update → quedaban vacías aunque order_data sí traía shop.
