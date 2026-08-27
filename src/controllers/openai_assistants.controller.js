@@ -7,6 +7,12 @@ const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
 const { olvidarCliente } = require('../utils/dedupeMedia');
 const {
+  esSinSaldoOpenAI,
+  esApiKeyInvalida,
+  esRateLimitTransitorio,
+  mensajeErrorOpenAI,
+} = require('../utils/openia/sinSaldo');
+const {
   obtenerDatosClienteParaAssistant,
   informacionProductos,
   informacionProductosVinculado,
@@ -1456,5 +1462,150 @@ exports.openai_status = catchAsync(async (req, res, next) => {
     openai_activo: row?.openai_activo ?? 1,
     openai_error_at: row?.openai_error_at || null,
     openai_error_msg: row?.openai_error_msg || null,
+  });
+});
+
+/* ── "Ya pagué": reactivar OpenAI a pedido del cliente ───────────────────────
+   El flag openai_activo vuelve a 1 solo con la PRIMERA llamada exitosa del
+   bot, o sea con el próximo mensaje que entre. Quien acaba de recargar no
+   tiene cómo comprobarlo, y de ahí salen los tickets en cadena ("ya recargué
+   y me sigue apareciendo").
+
+   Este endpoint NO se limita a poner el flag en 1. Encenderlo a ciegas solo
+   escondería el aviso: el bot seguiría mudo y el siguiente mensaje entrante lo
+   volvería a apagar — el mismo problema, pero ahora sin aviso.
+
+   Se comprueba de verdad, con una llamada mínima contra la cuenta del cliente.
+   Tiene que ser una que CONSUMA cuota: /v1/models responde 200 aunque el saldo
+   esté en cero, por eso acá no sirve validarApiKeyOpenAI(), que es la que usa
+   el alta de la key.
+
+   La clasificación del fallo reusa utils/openia/sinSaldo — el mismo detector
+   que apagó el flag. Si usara criterios propios, podrían discrepar y el
+   cliente vería "ya está" mientras el bot sigue sin responder.
+─────────────────────────────────────────────────────────────────────────── */
+
+// El que usan casi todas las cuentas (3.838 de ~4.060 columnas kanban), así que
+// es el que mejor representa lo que el bot va a intentar de verdad.
+const MODELO_SONDA_OPENAI = 'gpt-4o-mini';
+
+exports.openai_reintentar = catchAsync(async (req, res, next) => {
+  const id_configuracion =
+    req.body?.id_configuracion || req.query?.id_configuracion;
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta el campo id_configuracion', 400));
+  }
+
+  const [row] = await db.query(
+    `SELECT api_key_openai, openai_activo
+     FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!row) return next(new AppError('Configuración no encontrada', 404));
+
+  // Ya lo reactivó otra cosa: un mensaje entrante, u otra pestaña abierta.
+  if (Number(row.openai_activo) === 1) {
+    return res.status(200).json({
+      status: '200',
+      ok: true,
+      motivo: 'ya_activo',
+      mensaje: 'Tu asistente ya está funcionando con normalidad.',
+    });
+  }
+
+  if (!row.api_key_openai) {
+    return res.status(200).json({
+      status: '200',
+      ok: false,
+      motivo: 'sin_key',
+      mensaje:
+        'Esta cuenta no tiene una API Key de OpenAI cargada. Agrégala desde Asistentes para que el bot pueda responder.',
+    });
+  }
+
+  try {
+    await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: MODELO_SONDA_OPENAI,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+      },
+      { headers: getClientHeaders(row.api_key_openai), timeout: 20000 },
+    );
+  } catch (err) {
+    const detalle = mensajeErrorOpenAI(err).slice(0, 500);
+
+    if (esSinSaldoOpenAI(err)) {
+      // Se refresca el diagnóstico: el guardado era de la falla vieja, y esa
+      // fecha es la que termina viendo el cliente.
+      await db.query(
+        `UPDATE configuraciones
+            SET openai_error_at = NOW(), openai_error_msg = ?
+          WHERE id = ?`,
+        {
+          replacements: [detalle || 'Sin saldo OpenAI', id_configuracion],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'sin_saldo',
+        mensaje:
+          'OpenAI sigue rechazando la llamada por falta de saldo. Si acabas de pagar, puede tardar unos minutos en acreditarse.',
+        detalle,
+      });
+    }
+
+    if (esApiKeyInvalida(err)) {
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'key_invalida',
+        mensaje:
+          'Tu API Key de OpenAI ya no es válida. Recargar saldo no alcanza: hay que generar una nueva y cargarla en Asistentes.',
+        detalle,
+      });
+    }
+
+    if (esRateLimitTransitorio(err)) {
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'rate_limit',
+        mensaje:
+          'OpenAI está limitando las peticiones en este momento. Es pasajero: vuelve a intentarlo en un minuto.',
+        detalle,
+      });
+    }
+
+    /* Cualquier otra cosa —por ejemplo que la cuenta no tenga acceso al modelo
+       de la sonda— no permite concluir nada sobre el saldo. Se dice así, en vez
+       de reactivar sin fundamento o de afirmar que sigue sin saldo. */
+    return res.status(200).json({
+      status: '200',
+      ok: false,
+      motivo: 'indeterminado',
+      mensaje:
+        'No pudimos comprobar el estado de tu cuenta de OpenAI en este momento.',
+      detalle,
+    });
+  }
+
+  await db.query(
+    `UPDATE configuraciones
+        SET openai_activo = 1, openai_error_at = NULL, openai_error_msg = NULL
+      WHERE id = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  return res.status(200).json({
+    status: '200',
+    ok: true,
+    motivo: 'reactivado',
+    mensaje: 'Listo, tu cuenta de OpenAI vuelve a responder.',
   });
 });
