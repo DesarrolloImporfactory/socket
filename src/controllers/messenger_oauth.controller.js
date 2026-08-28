@@ -67,10 +67,31 @@ exports.connectPage = catchAsync(async (req, res, next) => {
       )
     );
   }
-  const result = await MessengerConnectService.connect({
-    oauth_session_id,
-    id_configuracion,
-    page_id,
-  });
+  // El manejador global de errores no escribe nada en los logs, así que sin
+  // este catch un fallo al conectar sólo se ve en el navegador del cliente y
+  // en el servidor no queda rastro. Se vuelve a lanzar: el comportamiento de
+  // la respuesta no cambia, sólo se deja la traza.
+  let result;
+  try {
+    result = await MessengerConnectService.connect({
+      oauth_session_id,
+      id_configuracion,
+      page_id,
+    });
+  } catch (err) {
+    const meta = err.response?.data?.error;
+    console.error(
+      `[FB_CONNECT][ERROR] cfg=${id_configuracion} page_id=${page_id} · ` +
+        (meta
+          ? `Meta code=${meta.code}${meta.error_subcode ? `/${meta.error_subcode}` : ''}: ${meta.message}`
+          : err.message),
+    );
+    throw err;
+  }
+
+  console.log(
+    `[FB_CONNECT] ✅ conectada "${result.page_name}" (${result.page_id}) ` +
+      `en cfg=${id_configuracion}`,
+  );
   res.json({ ok: true, ...result });
 });
