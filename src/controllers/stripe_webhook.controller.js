@@ -1,6 +1,9 @@
 const Stripe = require('stripe');
 const { db } = require('../database/config');
 const referidosService = require('../services/referidos.service');
+const {
+  auditarDesdeSistema,
+} = require('../services/suspension_audit.service');
 
 /* =========================
    Selección automática de variables por entorno (production vs test)
@@ -1339,6 +1342,15 @@ exports.stripeWebhook = async (req, res) => {
 
           // Suspender las conexiones que el cliente eligió al programar el downgrade
           try {
+            // Los ids se leen ANTES del UPDATE: la propia sentencia limpia
+            // pending_suspension, así que después ya no se sabe a cuáles pegó
+            // y no se podrían auditar.
+            const conexionesASuspender = await db.query(
+              `SELECT id FROM configuraciones
+                WHERE id_usuario = ? AND pending_suspension = 1`,
+              { replacements: [id_usuario], type: db.QueryTypes.SELECT },
+            );
+
             const [resSusp] = await db.query(
               `UPDATE configuraciones
                SET suspendido = 1,
@@ -1353,6 +1365,17 @@ exports.stripeWebhook = async (req, res) => {
               '[stripe] downgrade suspendió conexiones:',
               resSusp?.affectedRows,
             );
+
+            for (const c of conexionesASuspender) {
+              await auditarDesdeSistema({
+                id_configuracion: c.id,
+                id_usuario,
+                accion: 'suspender',
+                origen: 'stripe_downgrade',
+                motivo: 'downgrade',
+                detalle: `sub ${subscriptionId || '-'} → plan ${pendingPlanId}`,
+              });
+            }
           } catch (e) {
             console.log('[stripe] downgrade suspend failed:', e?.message);
           }
