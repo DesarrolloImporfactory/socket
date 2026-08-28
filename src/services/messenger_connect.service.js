@@ -93,6 +93,11 @@ class MessengerConnectService {
     const subscribed_fields =
       'messages,messaging_postbacks,message_deliveries,message_reads,message_echoes,feed';
 
+    console.log(
+      `[FB_CONNECT] 4/5 suscribiendo "${page_name}" (${page_id}) · ` +
+        `cfg=${id_configuracion} · campos=${subscribed_fields}`,
+    );
+
     const subRes = await axios.post(
       `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
       {}, // cuerpo vacío
@@ -109,6 +114,32 @@ class MessengerConnectService {
       `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,
       { params: { access_token: page_access_token } }
     );
+
+    // Meta puede responder success:true y NO aplicar un campo (por permisos).
+    // Por eso se compara lo pedido contra lo que quedó de verdad, en vez de
+    // confiar en la respuesta del POST.
+    const mia = (status?.data || []).find(
+      (a) => String(a.id) === String(process.env.FB_APP_ID),
+    );
+    const confirmados = mia?.subscribed_fields || [];
+    console.log(
+      `[FB_CONNECT] 5/5 Meta confirmó: ${confirmados.join(', ') || '(ninguno)'}`,
+    );
+    console.log(
+      `[FB_CONNECT]     campo 'feed' (comentarios): ` +
+        `${confirmados.includes('feed') ? '✅ activo' : '❌ NO quedó'}`,
+    );
+
+    const faltantes = subscribed_fields
+      .split(',')
+      .filter((c) => !confirmados.includes(c));
+    if (faltantes.length) {
+      console.warn(
+        `[FB_CONNECT]     pedidos pero NO aplicados: ${faltantes.join(', ')} ` +
+          `— suele ser permisos del token, o el campo no está habilitado en ` +
+          `App Dashboard > Webhooks > Page`,
+      );
+    }
 
     // 4) Guardar/actualizar en BD
     const session = await db

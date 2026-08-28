@@ -53,6 +53,10 @@ class MessengerOAuthService {
     const base = `https://www.facebook.com/${FB_VERSION}/dialog/oauth`;
 
     if (config_id) {
+      console.log(
+        `[FB_CONNECT] 1/5 login-url · cfg=${id_configuracion} · ` +
+          `Login for Business config_id=${config_id} · redirect=${redirect_uri}`,
+      );
       // ✅ Facebook Login for Business (usa config_id, NO scope)
       return `${base}?client_id=${encodeURIComponent(
         FB_APP_ID
@@ -130,6 +134,48 @@ class MessengerOAuthService {
       }
     );
 
+    // 3.b) Qué permisos otorgó (y cuáles rechazó) el usuario.
+    //
+    // Es lo primero que hay que mirar cuando "se conectó pero no funciona":
+    // Meta deja que el usuario destilde permisos en la pantalla de consentimiento
+    // y la conexión igual se completa. Los rechazados no aparecen en ningún
+    // error, sólo acá. Nunca lanza: es diagnóstico, no parte del flujo.
+    try {
+      const { data: permisos } = await axios.get(
+        `https://graph.facebook.com/${FB_VERSION}/me/permissions`,
+        { params: { access_token: user_token_long } },
+      );
+      const otorgados = (permisos.data || [])
+        .filter((p) => p.status === 'granted')
+        .map((p) => p.permission);
+      const rechazados = (permisos.data || [])
+        .filter((p) => p.status !== 'granted')
+        .map((p) => p.permission);
+
+      console.log(
+        `[FB_CONNECT] 2/5 token OK · usuario="${me.name}" (${me.id}) · cfg=${id_configuracion}`,
+      );
+      console.log(`[FB_CONNECT]     otorgados : ${otorgados.join(', ') || '(ninguno)'}`);
+      if (rechazados.length) {
+        console.warn(`[FB_CONNECT]     RECHAZADOS: ${rechazados.join(', ')}`);
+      }
+      // Los tres que decide si el módulo de comentarios va a servir.
+      for (const p of [
+        'pages_messaging',
+        'pages_read_engagement',
+        'pages_manage_engagement',
+      ]) {
+        console.log(
+          `[FB_CONNECT]     ${otorgados.includes(p) ? '✅' : '❌'} ${p}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        '[FB_CONNECT] no se pudieron leer los permisos:',
+        err.response?.data?.error?.message || err.message,
+      );
+    }
+
     // 4) crear sesión temporal (15 min)
     const state = crypto.randomBytes(16).toString('hex');
     const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 min
@@ -158,7 +204,20 @@ class MessengerOAuthService {
         params: { access_token: session.user_token_long },
       }
     );
-    return data.data || [];
+    const paginas = data.data || [];
+    // Sólo id y nombre: /me/accounts devuelve el access_token de cada página
+    // y eso no debe terminar nunca en un log.
+    console.log(
+      `[FB_CONNECT] 3/5 páginas del usuario: ${paginas.length} · ` +
+        (paginas.map((p) => `"${p.name}" (${p.id})`).join(', ') || '(ninguna)'),
+    );
+    if (!paginas.length) {
+      console.warn(
+        '[FB_CONNECT]     sin páginas: falta pages_show_list, o el usuario no ' +
+          'tiene rol de admin/editor en ninguna página',
+      );
+    }
+    return paginas;
   }
 
   // Para connectPage, necesitamos: page token concreto
