@@ -937,8 +937,23 @@ async function procesarMensajeKanban(params) {
             `- Valor a pagar: ${ord.total_order || ''}\n\n`;
           await log(`📦 Contexto orden Dropi inyectado cliente=${id_cliente}`);
         } else {
+          /* Decirlo EXPLÍCITO, no omitir el bloque: el prompt de esta columna
+             gira alrededor de confirmar un pedido, y ante el silencio el
+             modelo asumía uno del catálogo y "confirmaba" un producto que la
+             persona jamás compró (escriben desde otro número, o los movieron
+             a mano a la columna). Una línea de contexto evita el peor error
+             posible. */
+          bloqueContexto +=
+            `📦 SIN PEDIDO REGISTRADO PARA ESTE NÚMERO: se buscó por su ` +
+            `teléfono entre las órdenes pendientes de confirmación y no hay ` +
+            `ninguna.\n` +
+            `NO asumas ni inventes qué compró, ni "confirmes" ningún ` +
+            `producto ni des datos de un pedido — no existe ninguno a la ` +
+            `vista. Pregúntale qué producto le interesa, o si dice que ya ` +
+            `hizo un pedido, pídele el teléfono con el que lo hizo (puede ` +
+            `estar escribiendo desde otro número).\n\n`;
           await log(
-            `ℹ️ Sin orden PENDIENTE CONFIRMACION en cache cliente=${id_cliente}`,
+            `ℹ️ Sin orden PENDIENTE CONFIRMACION en cache cliente=${id_cliente} — contexto "sin pedido" inyectado`,
           );
         }
       }
@@ -1035,6 +1050,19 @@ async function procesarMensajeKanban(params) {
               : '') +
             `\n\n`;
           await log(`📍 Lugar de retiro inyectado (${retiro.fuente})`);
+        } else {
+          /* Mismo principio que en pendiente confirmación: sin orden a la
+             vista, decirlo — omitir el bloque dejaba al modelo libre de
+             inventar una agencia o una guía. */
+          bloqueContexto +=
+            `📍 SIN ORDEN EN RETIRO EN AGENCIA PARA ESTE NÚMERO: se buscó ` +
+            `por su teléfono y no hay ninguna.\n` +
+            `NO inventes agencia, guía ni estado del envío. Si pregunta por ` +
+            `un paquete, pídele el teléfono con el que hizo el pedido o su ` +
+            `número de guía.\n\n`;
+          await log(
+            `ℹ️ Sin orden retiro_agencia en cache — contexto "sin orden" inyectado`,
+          );
         }
       }
     } catch (e) {
