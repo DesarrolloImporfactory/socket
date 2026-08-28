@@ -94,6 +94,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
         c.id_whatsapp,       -- WABA_ID        (WPP)
         c.webhook_url,
         c.metodo_pago,
+        c.openai_activo,
         c.suspendido,
         c.tipo_configuracion,
         c.sincronizo_coexistencia,
@@ -215,6 +216,10 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
       c.id_whatsapp,
       c.webhook_url,
       c.metodo_pago,
+      -- Estado del saldo de OpenAI (0 = el motor marcó una falla por saldo y
+      -- el asistente está en pausa). La vista de conexiones lo pinta junto al
+      -- pago de Meta para que la tarjeta no diga "al día" con el bot muerto.
+      c.openai_activo,
       c.suspendido,
       c.tipo_configuracion,
       c.sincronizo_coexistencia,
