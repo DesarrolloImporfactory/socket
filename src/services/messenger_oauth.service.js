@@ -197,13 +197,29 @@ class MessengerOAuthService {
     const session = await getSessionById(oauth_session_id);
     if (!session) throw new Error('Sesión OAuth inválida o expirada');
 
-    // /me/accounts trae páginas + tokens de página del usuario
-    const { data } = await axios.get(
-      `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
-      {
-        params: { access_token: session.user_token_long },
-      }
-    );
+    // /me/accounts trae páginas + tokens de página del usuario.
+    // Requiere pages_show_list: sin ese permiso Meta responde error y, como el
+    // manejador global no loguea, el flujo moría en silencio justo acá.
+    let data;
+    try {
+      ({ data } = await axios.get(
+        `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
+        {
+          params: { access_token: session.user_token_long },
+        }
+      ));
+    } catch (err) {
+      const meta = err.response?.data?.error;
+      console.error(
+        `[FB_CONNECT][ERROR] 3/5 no se pudieron listar las páginas · ` +
+          `cfg=${session.id_configuracion} · ` +
+          (meta
+            ? `Meta code=${meta.code}: ${meta.message}`
+            : err.message) +
+          ` — casi siempre falta pages_show_list en la configuración de login`,
+      );
+      throw err;
+    }
     const paginas = data.data || [];
     // Sólo id y nombre: /me/accounts devuelve el access_token de cada página
     // y eso no debe terminar nunca en un log.
