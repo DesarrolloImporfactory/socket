@@ -3903,6 +3903,22 @@ exports.programarTemplateMasivo = async (req, res) => {
             return p?.text ?? p?.value ?? '';
           });
         }
+
+        /* Botones URL dinámicos: el modal individual manda su valor como
+           components type "button" dentro de body_json, pero aquí solo se
+           leían los del body — el valor del botón se PERDÍA y el envío
+           moría en Meta con #131008 (Required parameter is missing) al
+           salir por el cron. Se agregan DESPUÉS de los del body, en orden
+           de index: la misma convención con que el cron los reparte. */
+        const btnComps = comps
+          .filter((c) => String(c?.type || '').toLowerCase() === 'button')
+          .sort((a, b) => Number(a?.index ?? 0) - Number(b?.index ?? 0));
+        for (const bc of btnComps) {
+          const first = Array.isArray(bc?.parameters)
+            ? bc.parameters[0]
+            : null;
+          template_parameters.push(String(first?.text ?? first?.value ?? ''));
+        }
       }
 
       if (header_parameters == null) {
@@ -4006,6 +4022,57 @@ exports.programarTemplateMasivo = async (req, res) => {
       header_parameters = Array.isArray(header_parameters)
         ? header_parameters
         : [];
+    }
+
+    /* Guardia contra el #131008: una plantilla con botón URL dinámico
+       ({{n}} en la url) necesita SU valor ADEMÁS de los del body. Antes esto
+       se programaba igual y cada envío moría en Meta con "Button at index 0
+       of type Url requires a parameter" — el cliente solo veía "error" horas
+       después. Mejor rechazar aquí con el motivo. Best-effort: si Meta no
+       responde la definición, no se bloquea el lote. */
+    try {
+      const {
+        obtenerTextoPlantilla,
+      } = require('../services/whatsapp.service');
+      const def = await obtenerTextoPlantilla(
+        nombre_template,
+        cfg.ACCESS_TOKEN,
+        waba_id,
+      );
+      const idxBody = [
+        ...String(def?.text || '').matchAll(/\{\{(\d+)\}\}/g),
+      ].map((m) => Number(m[1]));
+      const nBody = idxBody.length ? Math.max(...idxBody) : 0;
+      const nBotones = (Array.isArray(def?.buttons) ? def.buttons : []).filter(
+        (b) => /\{\{\d+\}\}/.test(b?.url || ''),
+      ).length;
+
+      if (nBotones > 0) {
+        const esperado = nBody + nBotones;
+        const msgBoton =
+          `La plantilla "${nombre_template}" tiene ${nBotones} botón(es) URL ` +
+          `dinámico(s): se esperan ${esperado} valores (${nBody} del cuerpo + ` +
+          `${nBotones} del botón). Complete el valor del botón o programe ` +
+          `desde Flujos masivos, que lo llena automáticamente.`;
+
+        if (parametros_por_cliente && typeof parametros_por_cliente === 'object') {
+          const cortos = Object.values(parametros_por_cliente).filter(
+            (arr) => !Array.isArray(arr) || arr.length < esperado,
+          ).length;
+          if (cortos > 0) {
+            await t.rollback();
+            return res.status(400).json({ ok: false, msg: msgBoton });
+          }
+        } else if ((template_parameters || []).length < esperado) {
+          await t.rollback();
+          return res.status(400).json({ ok: false, msg: msgBoton });
+        }
+      }
+    } catch (eDef) {
+      console.warn(
+        '⚠️ [programarTemplateMasivo] no se pudo validar botones URL:',
+        eDef?.message,
+      );
     }
 
     // ==========================================

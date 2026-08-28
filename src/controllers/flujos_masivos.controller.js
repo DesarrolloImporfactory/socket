@@ -8,7 +8,9 @@ const {
 const {
   mapaImagenesCatalogo,
   matchImagenPorNombre,
+  matchVideoPorNombre,
   urlDesdeUrlS3,
+  normNombreProducto,
 } = require('../utils/imagenProductoOrden');
 
 /* ═══════════════════════════════════════════════════════════
@@ -297,10 +299,78 @@ exports.previewAudiencia = async (req, res) => {
        que debe salir. Catálogo por external_id → nombre inequívoco →
        respaldo la galería cruda de la orden. Catálogo cargado UNA vez para
        todo el lote. */
-    let catalogoImg = { porExternalId: new Map(), lista: [] };
+    let catalogoImg = {
+      porExternalId: new Map(),
+      porExternalIdVideo: new Map(),
+      porIdProducto: new Map(),
+      lista: [],
+    };
     try {
       catalogoImg = await mapaImagenesCatalogo(id_configuracion);
     } catch (_) {}
+
+    /* El producto del ANUNCIO por el que entró el contacto. La mayoría de la
+       audiencia "solo contacto" (sin orden todavía) SÍ tiene anuncio
+       rastreado, y sin esto salía sin producto ni foto — un remarketing con
+       imagen por producto los dejaba en blanco. Resolución: anuncios_producto
+       (mapeo explícito anuncio → producto) y, si no está mapeado, el
+       headline contra el nombre del catálogo (solo si es inequívoco). El
+       anuncio más reciente gana (ORDER ASC + overwrite, como el kanban). */
+    const adPorCliente = new Map();
+    try {
+      const idsC = contactos.map((c) => c.id);
+      if (idsC.length) {
+        const adRows = await db.query(
+          `SELECT cpa.id_cliente, cpa.headline, ap.id_producto
+             FROM cliente_productos_ad cpa
+             LEFT JOIN anuncios_producto ap
+               ON ap.id_configuracion = cpa.id_configuracion
+              AND ap.source_id = cpa.source_id
+            WHERE cpa.id_configuracion = :cfg
+              AND cpa.id_cliente IN (:ids)
+            ORDER BY cpa.id ASC`,
+          {
+            replacements: { cfg: id_configuracion, ids: idsC },
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        for (const r of adRows) adPorCliente.set(r.id_cliente, r);
+      }
+    } catch (_) {}
+
+    const productoPorTexto = (texto) => {
+      const obj = normNombreProducto(texto);
+      if (!obj) return null;
+      const exacto = catalogoImg.lista.find((p) => p.nombre === obj);
+      if (exacto) return exacto;
+      const contains = catalogoImg.lista.filter(
+        (p) =>
+          p.nombre && (p.nombre.includes(obj) || obj.includes(p.nombre)),
+      );
+      return contains.length === 1 ? contains[0] : null;
+    };
+
+    const productoDeAnuncio = (idCliente) => {
+      const ad = adPorCliente.get(idCliente);
+      if (!ad) return null;
+      if (ad.id_producto != null) {
+        const p = catalogoImg.porIdProducto.get(Number(ad.id_producto));
+        if (p) return p;
+      }
+      return productoPorTexto(ad.headline || '');
+    };
+
+    const primerNombreProducto = (od) => {
+      try {
+        const arr =
+          typeof od.product_names === 'string'
+            ? JSON.parse(od.product_names)
+            : od.product_names;
+        return Array.isArray(arr) ? arr[0] || '' : '';
+      } catch (_) {
+        return '';
+      }
+    };
 
     const imagenDe = (od, os) => {
       if (od) {
@@ -310,15 +380,10 @@ exports.previewAudiencia = async (req, res) => {
           );
           if (porId) return { url: porId, fuente: 'catalogo_id' };
         }
-        let nombreProd = '';
-        try {
-          const arr =
-            typeof od.product_names === 'string'
-              ? JSON.parse(od.product_names)
-              : od.product_names;
-          nombreProd = Array.isArray(arr) ? arr[0] || '' : '';
-        } catch (_) {}
-        const porNombre = matchImagenPorNombre(catalogoImg.lista, nombreProd);
+        const porNombre = matchImagenPorNombre(
+          catalogoImg.lista,
+          primerNombreProducto(od),
+        );
         if (porNombre) return { url: porNombre, fuente: 'catalogo_nombre' };
         const deOrden = urlDesdeUrlS3(od.producto_img_s3);
         if (deOrden) return { url: deOrden, fuente: 'orden_dropi' };
@@ -334,6 +399,31 @@ exports.previewAudiencia = async (req, res) => {
       return null;
     };
 
+    /* Video del producto (plantillas con encabezado de VIDEO): solo del
+       catálogo (video_url) — las órdenes no traen video, así que no hay
+       respaldo por galería. Quien no tenga, recibe el video de la plantilla
+       (el front manda el default asset como respaldo del lote). */
+    const videoDe = (od, os) => {
+      if (od) {
+        if (od.producto_dropi_id) {
+          const porId = catalogoImg.porExternalIdVideo.get(
+            String(od.producto_dropi_id),
+          );
+          if (porId) return porId;
+        }
+        return matchVideoPorNombre(
+          catalogoImg.lista,
+          primerNombreProducto(od),
+        );
+      }
+      if (os)
+        return matchVideoPorNombre(
+          catalogoImg.lista,
+          os.datos?.producto || '',
+        );
+      return null;
+    };
+
     const CF_PREFIX = 'https://d39ru7awumhhs2.cloudfront.net/';
     const data = entradas.map(({ c, od, os, lugar_retiro }) => {
       const valores = resolverValores(c, od, os);
@@ -343,6 +433,17 @@ exports.previewAudiencia = async (req, res) => {
         ? g.slice(CF_PREFIX.length)
         : g;
       const img = imagenDe(od, os);
+
+      /* Sin orden: el producto del anuncio llena producto/precio y da la
+         foto y el video para el header — el contacto entra al remarketing
+         con SU producto en vez de salir en blanco. */
+      const pAd = !od && !os ? productoDeAnuncio(c.id) : null;
+      if (pAd) {
+        if (!valores.producto) valores.producto = pAd.nombre_original || '';
+        if (!valores.total && pAd.precio && Number(pAd.precio) > 0)
+          valores.total = pAd.precio;
+      }
+
       return {
         id: c.id,
         nombre:
@@ -351,9 +452,10 @@ exports.previewAudiencia = async (req, res) => {
         telefono: c.celular_cliente,
         estado_contacto: c.estado_contacto,
         ultimo_mensaje_at: c.ultimo_mensaje_at,
-        fuente: od ? 'dropi' : os ? 'shopify' : 'contacto',
-        imagen_producto: img?.url || null,
-        imagen_fuente: img?.fuente || null,
+        fuente: od ? 'dropi' : os ? 'shopify' : pAd ? 'anuncio' : 'contacto',
+        imagen_producto: img?.url || pAd?.imagen_url || null,
+        imagen_fuente: img?.fuente || (pAd?.imagen_url ? 'anuncio' : null),
+        video_producto: videoDe(od, os) || pAd?.video_url || null,
         valores,
       };
     });
@@ -364,6 +466,14 @@ exports.previewAudiencia = async (req, res) => {
       con_orden: data.filter((d) => d.fuente !== 'contacto').length,
       limite,
       variables: VARIABLES_FLUJO,
+      /* Para que el paso 2 hable en términos del catálogo ("N productos
+         tienen video"), no solo de contactos. */
+      catalogo: {
+        productos_con_imagen: catalogoImg.lista.filter((p) => p.imagen_url)
+          .length,
+        productos_con_video: catalogoImg.lista.filter((p) => p.video_url)
+          .length,
+      },
       data,
     });
   } catch (err) {

@@ -87,4 +87,19 @@ router.post(
   productos_chat_centerController.guardarFichaPreset,
 );
 
+/* Anuncios de Meta ligados al producto (mapeo anuncio → producto self-service):
+   listar vinculados + detectados sin vincular, vincular y desvincular. */
+router.post(
+  '/anunciosDeProducto',
+  productos_chat_centerController.anunciosDeProducto,
+);
+router.post(
+  '/vincularAnuncioProducto',
+  productos_chat_centerController.vincularAnuncioProducto,
+);
+router.post(
+  '/desvincularAnuncioProducto',
+  productos_chat_centerController.desvincularAnuncioProducto,
+);
+
 module.exports = router;

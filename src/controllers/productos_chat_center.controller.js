@@ -1571,3 +1571,161 @@ exports.guardarFichaPreset = catchAsync(async (req, res, next) => {
      `atributos_json` simplemente no se lee ni se muestra. */
   return res.status(200).json({ status: 'success', data: { preset: limpio } });
 });
+
+/* ═══════════════════════════════════════════════════════════
+   Anuncios de Meta vinculados a un producto (self-service del
+   mapeo anuncio → producto de scripts/mapearAnuncio.js).
+
+   El cliente liga el ID del anuncio (source_id del referral) a su
+   producto y todo lead que entre por ese anuncio queda anclado al
+   producto desde el primer mensaje: el 🎯 del bot, el filtro por
+   producto del kanban y la fuente "por anuncio" de flujos masivos
+   leen anuncios_producto. Pensado para anuncios con título de puro
+   marketing ("ENVIO GRATIS"), que ningún match por texto resuelve.
+   ═══════════════════════════════════════════════════════════ */
+
+exports.anunciosDeProducto = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body?.id_configuracion || 0);
+  const id_producto = Number(req.body?.id_producto || 0);
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ ok: false, msg: 'id_configuracion es requerido' });
+  }
+
+  const vinculados = await db.query(
+    `SELECT ap.source_id, ap.headline, ap.via, ap.id_producto,
+            p.nombre AS producto_nombre
+       FROM anuncios_producto ap
+       LEFT JOIN productos_chat_center p ON p.id = ap.id_producto
+      WHERE ap.id_configuracion = :cfg
+        ${id_producto ? 'AND ap.id_producto = :idp' : ''}
+      ORDER BY ap.updated_at DESC`,
+    {
+      replacements: { cfg: id_configuracion, idp: id_producto },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  /* Anuncios que el sistema YA VIO llegar (referrals) y nadie ha ligado a
+     un producto: el cliente elige de esta lista y no tiene que ir a buscar
+     el ID a ningún lado. Ordenados por cuántos contactos trajeron. */
+  const detectados = await db.query(
+    `SELECT cpa.source_id,
+            SUBSTRING_INDEX(
+              GROUP_CONCAT(cpa.headline ORDER BY cpa.id DESC SEPARATOR '\n'),
+              '\n', 1) AS headline,
+            COUNT(DISTINCT cpa.id_cliente) AS clientes,
+            MAX(cpa.created_at) AS ultimo_lead
+       FROM cliente_productos_ad cpa
+       LEFT JOIN anuncios_producto ap
+         ON ap.id_configuracion = cpa.id_configuracion
+        AND ap.source_id = cpa.source_id
+      WHERE cpa.id_configuracion = :cfg
+        AND cpa.source_id IS NOT NULL AND cpa.source_id != ''
+        AND ap.id IS NULL
+      GROUP BY cpa.source_id
+      ORDER BY clientes DESC
+      LIMIT 30`,
+    {
+      replacements: { cfg: id_configuracion },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  return res.status(200).json({ ok: true, vinculados, detectados });
+});
+
+exports.vincularAnuncioProducto = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body?.id_configuracion || 0);
+  const id_producto = Number(req.body?.id_producto || 0);
+  const source_id = String(req.body?.source_id || '').trim();
+
+  if (!id_configuracion || !id_producto) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'id_configuracion e id_producto son requeridos',
+    });
+  }
+  // El ID de anuncio de Meta es numérico (típicamente 15-20 dígitos).
+  if (!/^\d{10,25}$/.test(source_id)) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'El ID del anuncio debe ser numérico (ej. 120242836177870488). Cópialo del recuadro del anuncio en el chat o del Administrador de anuncios de Meta.',
+    });
+  }
+
+  const [prod] = await db.query(
+    `SELECT id, nombre FROM productos_chat_center
+      WHERE id = :idp AND id_configuracion = :cfg AND eliminado = 0`,
+    {
+      replacements: { idp: id_producto, cfg: id_configuracion },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!prod) {
+    return res
+      .status(404)
+      .json({ ok: false, msg: 'Producto no encontrado en esta configuración' });
+  }
+
+  // El headline más reciente visto para ese anuncio (si ya trajo leads).
+  const [visto] = await db.query(
+    `SELECT headline FROM cliente_productos_ad
+      WHERE id_configuracion = :cfg AND source_id = :sid
+      ORDER BY id DESC LIMIT 1`,
+    {
+      replacements: { cfg: id_configuracion, sid: source_id },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  await db.query(
+    `INSERT INTO anuncios_producto
+       (id_configuracion, source_id, id_producto, headline, via)
+     VALUES (:cfg, :sid, :idp, :headline, 'manual')
+     ON DUPLICATE KEY UPDATE id_producto = VALUES(id_producto),
+                             via = 'manual',
+                             headline = COALESCE(VALUES(headline), headline)`,
+    {
+      replacements: {
+        cfg: id_configuracion,
+        sid: source_id,
+        idp: id_producto,
+        headline: visto?.headline || null,
+      },
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  return res.status(200).json({
+    ok: true,
+    msg: `Anuncio ${source_id} vinculado a "${prod.nombre}"`,
+    source_id,
+    headline: visto?.headline || null,
+  });
+});
+
+exports.desvincularAnuncioProducto = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body?.id_configuracion || 0);
+  const id_producto = Number(req.body?.id_producto || 0);
+  const source_id = String(req.body?.source_id || '').trim();
+  if (!id_configuracion || !source_id) {
+    return res.status(400).json({
+      ok: false,
+      msg: 'id_configuracion y source_id son requeridos',
+    });
+  }
+  /* El filtro por id_producto evita que desde la ficha de un producto se
+     borre el vínculo de otro (el source_id es único por configuración). */
+  await db.query(
+    `DELETE FROM anuncios_producto
+      WHERE id_configuracion = :cfg AND source_id = :sid
+        ${id_producto ? 'AND id_producto = :idp' : ''}`,
+    {
+      replacements: { cfg: id_configuracion, sid: source_id, idp: id_producto },
+      type: db.QueryTypes.DELETE,
+    },
+  );
+  return res.status(200).json({ ok: true });
+});

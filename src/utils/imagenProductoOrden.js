@@ -59,35 +59,64 @@ const normNombreProducto = (s) =>
  * también sirve tal cual.
  */
 async function mapaImagenesCatalogo(id_configuracion) {
+  /* video_url viaja junto a la imagen para las plantillas con encabezado de
+     VIDEO (flujos masivos): mismo catálogo, misma escalera. Se carga el
+     catálogo COMPLETO (también productos sin media): el producto del ANUNCIO
+     por el que entró un contacto sirve aunque no tenga foto — da nombre y
+     precio para las variables. Los match por campo filtran solo donde el
+     campo existe, así que el comportamiento de imagen/video no cambia. */
   const prods = await db.query(
-    `SELECT nombre, imagen_url, external_id FROM productos_chat_center
-      WHERE id_configuracion = ? AND eliminado = 0
-        AND imagen_url IS NOT NULL AND imagen_url != ''`,
+    `SELECT id, nombre, precio, imagen_url, video_url, external_id
+       FROM productos_chat_center
+      WHERE id_configuracion = ? AND eliminado = 0`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   const porExternalId = new Map();
+  const porExternalIdVideo = new Map();
+  const porIdProducto = new Map();
   const lista = [];
   for (const p of prods) {
-    const item = { nombre: normNombreProducto(p.nombre), imagen_url: p.imagen_url };
+    const item = {
+      id: p.id,
+      nombre: normNombreProducto(p.nombre),
+      nombre_original: p.nombre,
+      precio: p.precio != null ? String(p.precio) : null,
+      imagen_url: p.imagen_url || null,
+      video_url: p.video_url || null,
+    };
     lista.push(item);
+    porIdProducto.set(Number(p.id), item);
     if (p.external_id != null && String(p.external_id).trim()) {
-      porExternalId.set(String(p.external_id).trim(), p.imagen_url);
+      const eid = String(p.external_id).trim();
+      if (p.imagen_url) porExternalId.set(eid, p.imagen_url);
+      if (p.video_url) porExternalIdVideo.set(eid, p.video_url);
     }
   }
-  return { porExternalId, lista };
+  return { porExternalId, porExternalIdVideo, porIdProducto, lista };
 }
 
 /* Nombre exacto normalizado; contains bidireccional SOLO si un único producto
-   matchea — con dos candidatos es ambiguo y se prefiere no mandar foto. */
-function matchImagenPorNombre(lista, nombre) {
+   matchea — con dos candidatos es ambiguo y se prefiere no mandar nada.
+   Se matchea SOLO entre productos que tienen el campo pedido, para que un
+   producto sin imagen (pero con video) no "gane" un match de imagen vacío. */
+function matchCampoPorNombre(lista, nombre, campo) {
   const objetivo = normNombreProducto(nombre);
   if (!objetivo) return null;
-  const exacto = lista.find((p) => p.nombre === objetivo);
-  if (exacto) return exacto.imagen_url;
-  const contains = lista.filter(
+  const candidatos = lista.filter((p) => p[campo]);
+  const exacto = candidatos.find((p) => p.nombre === objetivo);
+  if (exacto) return exacto[campo];
+  const contains = candidatos.filter(
     (p) => p.nombre && (p.nombre.includes(objetivo) || objetivo.includes(p.nombre)),
   );
-  return contains.length === 1 ? contains[0].imagen_url : null;
+  return contains.length === 1 ? contains[0][campo] : null;
+}
+
+function matchImagenPorNombre(lista, nombre) {
+  return matchCampoPorNombre(lista, nombre, 'imagen_url');
+}
+
+function matchVideoPorNombre(lista, nombre) {
+  return matchCampoPorNombre(lista, nombre, 'video_url');
 }
 
 /**
@@ -202,6 +231,7 @@ module.exports = {
   resolverImagenProductoOrden,
   mapaImagenesCatalogo,
   matchImagenPorNombre,
+  matchVideoPorNombre,
   urlDesdeUrlS3,
   urlGaleriaDropi,
   normNombreProducto,

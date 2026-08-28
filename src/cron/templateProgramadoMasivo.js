@@ -321,6 +321,37 @@ cron.schedule('* * * * *', async () => {
               },
             );
 
+            /* Mover de columna del kanban DESPUÉS del envío, si el lote lo
+               pidió (meta_json.estado_destino — lo manda el paso 3 de
+               flujos masivos). Solo tras envío exitoso: el que falló se
+               queda en su columna para poder reintentarle el flujo. */
+            try {
+              const metaLote = parseJsonSafe(item.meta_json, null);
+              const destino = String(metaLote?.estado_destino || '').trim();
+              if (destino && item.id_cliente_chat_center) {
+                await db.query(
+                  `UPDATE clientes_chat_center
+                      SET estado_contacto = ?
+                    WHERE id = ?
+                      AND id_configuracion = ?
+                      AND deleted_at IS NULL`,
+                  {
+                    replacements: [
+                      destino,
+                      item.id_cliente_chat_center,
+                      item.id_configuracion,
+                    ],
+                    type: db.QueryTypes.UPDATE,
+                  },
+                );
+              }
+            } catch (eMove) {
+              console.warn(
+                `⚠️ [CRON templateProgramadoMasivo] No se pudo mover de columna el envío ${item.id}:`,
+                eMove.message,
+              );
+            }
+
             // Avisar al chat abierto que este programado ya salió, para que
             // el aviso de "tiene una plantilla programada" desaparezca solo.
             emitirProgramadoEstado({
