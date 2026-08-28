@@ -1609,7 +1609,15 @@ exports.anunciosDeProducto = catchAsync(async (req, res) => {
 
   /* Anuncios que el sistema YA VIO llegar (referrals) y nadie ha ligado a
      un producto: el cliente elige de esta lista y no tiene que ir a buscar
-     el ID a ningún lado. Ordenados por cuántos contactos trajeron. */
+     el ID a ningún lado. Ordenados por cuántos contactos trajeron; como una
+     cuenta puede tener CIENTOS sin vincular (la 320: 158) y el corte por
+     volumen esconde al anuncio chico o recién creado, `q` busca por título
+     o por ID sobre TODOS, no solo sobre la página devuelta. */
+  const q = String(req.body?.q || '').trim();
+  const filtroQ = q
+    ? 'AND (cpa.source_id LIKE :q OR cpa.headline LIKE :q)'
+    : '';
+
   const detectados = await db.query(
     `SELECT cpa.source_id,
             SUBSTRING_INDEX(
@@ -1624,16 +1632,45 @@ exports.anunciosDeProducto = catchAsync(async (req, res) => {
       WHERE cpa.id_configuracion = :cfg
         AND cpa.source_id IS NOT NULL AND cpa.source_id != ''
         AND ap.id IS NULL
+        ${filtroQ}
       GROUP BY cpa.source_id
       ORDER BY clientes DESC
       LIMIT 30`,
     {
-      replacements: { cfg: id_configuracion },
+      replacements: { cfg: id_configuracion, q: `%${q}%` },
       type: db.QueryTypes.SELECT,
     },
   );
 
-  return res.status(200).json({ ok: true, vinculados, detectados });
+  /* El COUNT solo hace falta cuando la página vino llena (pudo haber más):
+     con menos de 30 resultados, el total ES lo devuelto y se ahorra la
+     segunda consulta — el caso de la mayoría de cuentas. */
+  let total_detectados = detectados.length;
+  if (detectados.length === 30) {
+    const [conteo] = await db.query(
+      `SELECT COUNT(DISTINCT cpa.source_id) AS total
+         FROM cliente_productos_ad cpa
+         LEFT JOIN anuncios_producto ap
+           ON ap.id_configuracion = cpa.id_configuracion
+          AND ap.source_id = cpa.source_id
+        WHERE cpa.id_configuracion = :cfg
+          AND cpa.source_id IS NOT NULL AND cpa.source_id != ''
+          AND ap.id IS NULL
+          ${filtroQ}`,
+      {
+        replacements: { cfg: id_configuracion, q: `%${q}%` },
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    total_detectados = Number(conteo?.total || 0);
+  }
+
+  return res.status(200).json({
+    ok: true,
+    vinculados,
+    detectados,
+    total_detectados,
+  });
 });
 
 exports.vincularAnuncioProducto = catchAsync(async (req, res) => {
