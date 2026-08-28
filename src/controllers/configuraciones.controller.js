@@ -5,6 +5,10 @@ const { db } = require('../database/config');
 const {
   liberarConexionesDeConfiguracion,
 } = require('../utils/unified/conexionCanal');
+const {
+  auditarDesdePanel,
+  ipDePeticion,
+} = require('../services/suspension_audit.service');
 
 exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
@@ -640,6 +644,19 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
     });
   }
   if (Number(rows[0].id_usuario) !== Number(id_usuario)) {
+    // Queda en el log: es el único caso en que alguien intenta suspender una
+    // conexión que no le corresponde, y no deja fila en la auditoría.
+    console.warn(
+      '[toggle_suspension] intento rechazado (la conexión no es del usuario):',
+      {
+        id_configuracion,
+        id_usuario_enviado: id_usuario,
+        id_usuario_real: rows[0].id_usuario,
+        sesion: req.sessionUser?.id_sub_usuario,
+        sesion_email: req.sessionUser?.email,
+        ip: ipDePeticion(req),
+      },
+    );
     return res.status(403).json({
       status: 403,
       message: 'La configuración no pertenece a este usuario',
@@ -652,10 +669,25 @@ exports.toggleSuspension = catchAsync(async (req, res, next) => {
     `UPDATE configuraciones
        SET suspendido = ?,
            suspended_at = CASE WHEN ? = 1 THEN NOW() ELSE NULL END,
+           suspended_reason = CASE WHEN ? = 1 THEN 'panel' ELSE NULL END,
+           suspended_by_cliente = ?,
            updated_at = NOW()
      WHERE id = ?`,
-    { replacements: [setSusp, setSusp, id_configuracion] },
+    {
+      replacements: [setSusp, setSusp, setSusp, setSusp, id_configuracion],
+    },
   );
+
+  /* Auditoría: `suspendido` no dejaba rastro de quién lo cambió, así que
+     cuando un cliente decía que su conexión "se suspendió sola" no había
+     forma de comprobarlo. Aquí queda el subusuario, su cuenta, la IP y el
+     navegador. Nunca interrumpe la operación (el servicio traga sus errores). */
+  await auditarDesdePanel(req, {
+    id_configuracion,
+    id_usuario,
+    accion: setSusp ? 'suspender' : 'reactivar',
+    motivo: setSusp ? 'panel' : null,
+  });
 
   // 3) Al suspender, liberar también las páginas de Messenger/Instagram. El
   // número de WhatsApp queda libre solo con suspendido=1 (así lo valida el
