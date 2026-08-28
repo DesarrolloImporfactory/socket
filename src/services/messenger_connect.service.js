@@ -87,8 +87,11 @@ class MessengerConnectService {
       );
 
     // 2) Suscribir app a la página (para que lleguen los webhooks)
+    // `feed` es el que trae los comentarios de las publicaciones (llega en
+    // entry.changes[], no en entry.messaging[]). Las páginas conectadas antes
+    // de esto quedan sin él: se re-suscriben con scripts/suscribirFeedPaginas.js.
     const subscribed_fields =
-      'messages,messaging_postbacks,message_deliveries,message_reads,message_echoes';
+      'messages,messaging_postbacks,message_deliveries,message_reads,message_echoes,feed';
 
     const subRes = await axios.post(
       `https://graph.facebook.com/${FB_VERSION}/${page_id}/subscribed_apps`,

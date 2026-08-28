@@ -65,11 +65,22 @@ class MessengerOAuthService {
       )}`;
     }
 
-    // (fallback) Login “clásico” con scope – por si algún día se requiere
+    // (fallback) Login “clásico” con scope – por si algún día se requiere.
+    //
+    // Ojo: con Facebook Login for Business (la rama de arriba, la que se usa
+    // hoy) esta lista NO se aplica. Los permisos salen de la configuración
+    // `config_id` en el App Dashboard de Meta y `scope` se ignora. Si hace
+    // falta agregar un permiso al flujo real, se agrega allá, no acá.
     const scope = [
-      'pages_messaging',
       'pages_show_list',
+      'pages_messaging',
+      'pages_manage_metadata',
+      // Comentarios: leer el autor de cada comentario y poder responderlos.
+      // pages_manage_engagement necesita Advanced Access (App Review) para
+      // usuarios normales; con una cuenta admin/dev/tester de la app funciona
+      // en modo desarrollo sin esperar la revisión.
       'pages_read_engagement',
+      'pages_manage_engagement',
     ].join(',');
     return `${base}?client_id=${encodeURIComponent(
       FB_APP_ID

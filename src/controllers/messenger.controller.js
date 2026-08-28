@@ -4,6 +4,7 @@ const catchAsync = require('../utils/catchAsync');
 // Importa tus servicios existentes
 const MessengerService = require('../services/messenger.service');
 const InstagramService = require('../services/instagram.service');
+const FacebookComments = require('../services/facebook_comments.service');
 
 exports.verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
@@ -35,8 +36,43 @@ exports.receiveWebhook = catchAsync(async (req, res) => {
             ? entry.standby
             : [];
 
+      // Comentarios de publicaciones: llegan en entry.changes[], no en
+      // messaging[]. Va ANTES del early-return de abajo porque un entry de
+      // `feed` no trae messaging ni standby y se descartaba entero.
+      //
+      // Se aísla en su propio try: un fallo guardando un comentario no debe
+      // hacer que Meta reintente el entry completo y se reprocesen los
+      // mensajes de Messenger que venían en el mismo lote.
+      if (entry.changes && entry.changes.length) {
+        // Traza cruda ANTES de filtrar nada. Sin esto no hay forma de
+        // distinguir "Meta no mandó el evento" de "llegó y lo descartamos",
+        // que es justo la duda al depurar la suscripción del webhook.
+        console.log(
+          '[FB_FEED][RAW]',
+          JSON.stringify({
+            page_id: entry.id,
+            cambios: entry.changes.map((c) => ({
+              field: c.field,
+              item: c.value?.item,
+              verb: c.value?.verb,
+            })),
+          }),
+        );
+
+        for (const change of entry.changes) {
+          try {
+            await FacebookComments.procesarCambioFeed(entry.id, change);
+          } catch (err) {
+            // console.error va a stderr → chatapi-error.log, no a -out.log.
+            console.error('[FB_FEED][ERROR]', err.message);
+          }
+        }
+      }
+
       if (!events.length) {
-        console.log('[PAGE_WEBHOOK] entry sin messaging/standby[]');
+        if (!entry.changes?.length) {
+          console.log('[PAGE_WEBHOOK] entry sin messaging/standby[]');
+        }
         return;
       }
 
