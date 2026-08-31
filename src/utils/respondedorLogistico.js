@@ -27,6 +27,12 @@
  * notifier Dropi (dropi_plantillas_config) — o sea cuentas e-commerce con
  * ese flujo —, la columna NO tiene IA activa, la pregunta calza con una
  * intención y el teléfono tiene una orden en el cache.
+ *
+ * ── Ajustes por cuenta ─────────────────────────────────────────────────────
+ * respondedor_logistico_config (pantalla "Plantillas de seguimiento" del
+ * kanban) permite: apagar el respondedor completo (activo=0) o fijar un rango
+ * manual de días para "demora" (demora_dias_min/max) que pisa el histórico.
+ * Sin fila: encendido y automático — el default vive acá, no en la BD.
  */
 
 const { db } = require('../database/config');
@@ -46,6 +52,64 @@ const RESPONSABLE = 'IA_respuesta_rapida';
 // Timeout corto para el scraping de Servientrega: esto corre en el flujo del
 // webhook; si no responde a tiempo, resolverLugarRetiro cae a su fallback.
 const TIMEOUT_AGENCIA_MS = 8000;
+
+/* ═══════════════════════════════════════════════════════════
+   0. Ajustes por cuenta (respondedor_logistico_config)
+   ═══════════════════════════════════════════════════════════ */
+
+// Sin fila en la tabla, todo sigue como siempre: encendido y rango automático.
+const CONFIG_DEFAULT = Object.freeze({
+  activo: 1,
+  demora_dias_min: null,
+  demora_dias_max: null,
+});
+
+// Esto corre por CADA mensaje entrante en columnas logísticas: un cache corto
+// evita repetir la consulta en ráfagas. Se invalida al guardar desde la
+// pantalla (mismo proceso); entre procesos el TTL lo resuelve solo.
+const CONFIG_TTL_MS = 60 * 1000;
+const configCache = new Map(); // id_configuracion -> { at, cfg }
+
+async function getConfigRespondedor(id_configuracion) {
+  const key = Number(id_configuracion);
+  const hit = configCache.get(key);
+  if (hit && Date.now() - hit.at < CONFIG_TTL_MS) return hit.cfg;
+
+  let cfg = CONFIG_DEFAULT;
+  try {
+    const [row] = await db.query(
+      `SELECT activo, demora_dias_min, demora_dias_max
+         FROM respondedor_logistico_config
+        WHERE id_configuracion = ? LIMIT 1`,
+      { replacements: [key], type: db.QueryTypes.SELECT },
+    );
+    if (row) {
+      cfg = {
+        activo: Number(row.activo) === 0 ? 0 : 1,
+        demora_dias_min: row.demora_dias_min ?? null,
+        demora_dias_max: row.demora_dias_max ?? null,
+      };
+    }
+  } catch (_) {
+    // Tabla aún no creada (db.sync pendiente): defaults, nunca romper el flujo.
+  }
+  configCache.set(key, { at: Date.now(), cfg });
+  return cfg;
+}
+
+function invalidarConfigRespondedor(id_configuracion) {
+  configCache.delete(Number(id_configuracion));
+}
+
+/* Rango manual válido: ambos enteros ≥1 y max ≥ min. Cualquier otra cosa se
+   ignora y se cae al cálculo automático. */
+function rangoManual(cfg) {
+  const min = Number(cfg?.demora_dias_min);
+  const max = Number(cfg?.demora_dias_max);
+  if (!Number.isInteger(min) || !Number.isInteger(max)) return null;
+  if (min < 1 || max < min) return null;
+  return { desde: min, hasta: max };
+}
 
 /* ═══════════════════════════════════════════════════════════
    1. Intención
@@ -169,7 +233,7 @@ function lineaTracking(orden) {
   return url ? `Puedes ver el avance en tiempo real aquí:\n${url}` : '';
 }
 
-async function componerRespuesta({ intencion, orden, id_configuracion }) {
+async function componerRespuesta({ intencion, orden, id_configuracion, cfg }) {
   const guia = String(orden.shipping_guide || '').trim();
   const entregada = orden.classified_status === 'entregada';
 
@@ -223,9 +287,20 @@ async function componerRespuesta({ intencion, orden, id_configuracion }) {
   if (entregada) {
     return `Tu pedido ya figura como *entregado* ✅ Si aún no lo tienes en tus manos, avísanos por aquí y un asesor lo revisa de inmediato.`;
   }
-  const rango = await rangoDiasEntrega(id_configuracion, orden.city);
+  // Rango manual fijado por el negocio desde la pantalla del kanban: pisa el
+  // cálculo automático. Si no hay (o es inválido), historial real como siempre.
+  const manual = rangoManual(cfg);
+  const rango = manual || (await rangoDiasEntrega(id_configuracion, orden.city));
   const partes = [];
-  if (rango) {
+  if (manual) {
+    const dias =
+      manual.desde === manual.hasta
+        ? `de *${manual.desde} ${manual.desde === 1 ? 'día' : 'días'}*`
+        : `de *${manual.desde} a ${manual.hasta} días*`;
+    partes.push(
+      `Tu pedido va en camino 🚚 El tiempo estimado de entrega es ${dias} desde la compra, aunque puede variar un poco según la zona.`,
+    );
+  } else if (rango) {
     const destino =
       rango.ambito === 'ciudad' && orden.city
         ? `a ${capitalizar(orden.city)}`
@@ -288,6 +363,14 @@ async function intentarRespuestaLogistica({
   const intencion = detectarIntencion(texto_mensaje);
   if (!intencion) return { manejado: false };
 
+  // Interruptor por cuenta: el negocio puede apagar el respondedor desde la
+  // configuración del kanban y estas preguntas vuelven a quedar para el humano.
+  const cfg = await getConfigRespondedor(id_configuracion);
+  if (!cfg.activo) {
+    await decir(`📦 logístico: apagado por configuración → no respondo`);
+    return { manejado: false };
+  }
+
   if (!(await esColumnaLogisticaSinIA(id_configuracion, estado_contacto))) {
     return { manejado: false };
   }
@@ -295,7 +378,12 @@ async function intentarRespuestaLogistica({
   const orden = await ultimaOrden(id_configuracion, telefono);
   if (!orden) return { manejado: false };
 
-  const texto = await componerRespuesta({ intencion, orden, id_configuracion });
+  const texto = await componerRespuesta({
+    intencion,
+    orden,
+    id_configuracion,
+    cfg,
+  });
   if (!texto) return { manejado: false };
 
   if (await yaSeRespondioHacePoco(id_configuracion, id_cliente, texto)) {
@@ -322,4 +410,5 @@ module.exports = {
   intentarRespuestaLogistica,
   detectarIntencion,
   rangoDiasEntrega,
+  invalidarConfigRespondedor,
 };

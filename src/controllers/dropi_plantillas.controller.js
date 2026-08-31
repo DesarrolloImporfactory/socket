@@ -5,6 +5,10 @@ const {
   ALICLIK_EXPONE_GUIA,
   dependeDeLaGuia,
 } = require('../services/aliclik_notifier.service');
+const {
+  rangoDiasEntrega,
+  invalidarConfigRespondedor,
+} = require('../utils/respondedorLogistico');
 
 const ESTADOS_DROPI = [
   'PENDIENTE CONFIRMACION',
@@ -237,6 +241,107 @@ exports.guardar = catchAsync(async (req, res) => {
       },
     );
   }
+
+  return res.json({ success: true, message: 'Configuración guardada' });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   Respondedor logístico sin IA (utils/respondedorLogistico.js)
+   Ajustes por cuenta: interruptor general + rango manual de
+   días para la intención "demora". Sin fila = encendido y
+   automático (histórico real de entregas).
+   ═══════════════════════════════════════════════════════════ */
+
+// Tope alto a propósito: solo evita basura (0, negativos, "999"), no opina
+// sobre la promesa comercial — eso es decisión del negocio.
+const DEMORA_DIAS_TOPE = 60;
+
+// ── Obtener config del respondedor ──────────────────────────
+exports.obtenerRespondedor = catchAsync(async (req, res) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Falta id_configuracion' });
+  }
+
+  const [row] = await db.query(
+    `SELECT activo, demora_dias_min, demora_dias_max
+       FROM respondedor_logistico_config
+      WHERE id_configuracion = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  // El rango real (últimos 90 días, toda la tienda) se muestra en la pantalla
+  // como referencia: que el negocio decida el manual viendo sus datos.
+  const rango_auto = await rangoDiasEntrega(id_configuracion, null).catch(
+    () => null,
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      activo: row ? Number(row.activo) : 1,
+      demora_dias_min: row?.demora_dias_min ?? null,
+      demora_dias_max: row?.demora_dias_max ?? null,
+      rango_auto,
+    },
+  });
+});
+
+// ── Guardar config del respondedor ──────────────────────────
+exports.guardarRespondedor = catchAsync(async (req, res) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Falta id_configuracion' });
+  }
+
+  const activo = req.body.activo ? 1 : 0;
+
+  // Rango manual: o los dos días válidos, o ninguno (automático).
+  let min = req.body.demora_dias_min;
+  let max = req.body.demora_dias_max;
+  const vacio = (v) => v === null || v === undefined || v === '';
+  if (vacio(min) && vacio(max)) {
+    min = null;
+    max = null;
+  } else {
+    min = Number(min);
+    max = Number(max);
+    if (
+      !Number.isInteger(min) ||
+      !Number.isInteger(max) ||
+      min < 1 ||
+      max < min ||
+      max > DEMORA_DIAS_TOPE
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: `El rango manual debe ser en días enteros: mínimo 1, máximo ${DEMORA_DIAS_TOPE}, y el "hasta" no puede ser menor que el "desde"`,
+      });
+    }
+  }
+
+  await db.query(
+    `INSERT INTO respondedor_logistico_config
+       (id_configuracion, activo, demora_dias_min, demora_dias_max)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       activo = VALUES(activo),
+       demora_dias_min = VALUES(demora_dias_min),
+       demora_dias_max = VALUES(demora_dias_max),
+       updated_at = NOW()`,
+    {
+      replacements: [id_configuracion, activo, min, max],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+
+  // El webhook cachea esta config 60s en memoria: al guardar desde la
+  // pantalla, que el cambio aplique al siguiente mensaje.
+  invalidarConfigRespondedor(id_configuracion);
 
   return res.json({ success: true, message: 'Configuración guardada' });
 });
