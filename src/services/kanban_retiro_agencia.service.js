@@ -599,14 +599,31 @@ async function contenidoArchivo(id_configuracion) {
       const texto = await fs.promises.readFile(ruta, 'utf8');
       return { origen: 'cuenta', nombre: archivo.nombre_original, texto };
     } catch (_) {
-      /* copia local perdida: se trata como archivo sin copia (abajo) */
+      /* copia local perdida: se resuelve abajo */
     }
   }
 
-  // Archivo propio del cliente adoptado del vector store: no hay copia local
-  // y OpenAI no permite descargar files de purpose assistants. Mostrar el
-  // default acá sería MENTIR (el bot usa otro contenido): se devuelve sin
-  // texto y el front lo explica.
+  /* Copia local ausente pero el archivo registrado ES el default de la
+     plataforma (mismos bytes): el contenido es idéntico al del repo, así que
+     se sirve ese. Caso real: el toggle se activó desde una máquina (la copia
+     quedó en SU src/uploads) y la vista previa se pide desde otra — uploads/
+     no viaja en el deploy, pero assets/ sí. */
+  if (archivo && existeDefault()) {
+    try {
+      const st = await fs.promises.stat(RUTA_DEFAULT);
+      if (Number(archivo.bytes) === st.size) {
+        const texto = await fs.promises.readFile(RUTA_DEFAULT, 'utf8');
+        return { origen: 'cuenta', nombre: archivo.nombre_original, texto };
+      }
+    } catch (_) {
+      /* sigue al caso sin copia */
+    }
+  }
+
+  // Archivo propio del cliente sin copia local (adoptado del vector store, o
+  // con bytes distintos al default): OpenAI no permite descargar files de
+  // purpose assistants y mostrar el default acá sería MENTIR (el bot usa otro
+  // contenido). Se devuelve sin texto y el front lo explica.
   if (archivo) {
     return { origen: 'cliente_sin_copia', nombre: archivo.nombre_original, texto: null };
   }
