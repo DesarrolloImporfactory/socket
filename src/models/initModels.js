@@ -31,6 +31,7 @@ const ImporsuitCursos = require('./imporsuit/cursos.model');
 const ImporsuitApiCursos = require('./imporsuit/api_cursos.model');
 const ProductosChatCenter = require('./productos_chat_center.model');
 const ProductosWizard = require('./productos_wizard.model');
+const RespondedorLogisticoConfig = require('./respondedor_logistico_config.model');
 const CategoriasChatCenter = require('./categorias_chat_center.model');
 const CatalogosChatCenter = require('./catalogos_chat_center.model');
 const CatalogosItemsChatCenter = require('./catalogos_items_chat_center.model');
