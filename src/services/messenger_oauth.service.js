@@ -69,6 +69,12 @@ class MessengerOAuthService {
       )}`;
     }
 
+    console.warn(
+      `[FB_CONNECT] 1/5 login-url · cfg=${id_configuracion} · ` +
+        `SIN config_id → login clásico. Los permisos saldrán de la lista de ` +
+        `abajo, NO de la configuración de Business Login del App Dashboard.`,
+    );
+
     // (fallback) Login “clásico” con scope – por si algún día se requiere.
     //
     // Ojo: con Facebook Login for Business (la rama de arriba, la que se usa

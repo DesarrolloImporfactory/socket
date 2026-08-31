@@ -30,11 +30,30 @@ exports.exchangeCode = catchAsync(async (req, res, next) => {
       new AppError('code, id_configuracion y redirect_uri son requeridos', 400)
     );
   }
-  const session = await MessengerOAuthService.exchangeCodeAndCreateSession({
-    code,
-    id_configuracion,
-    redirect_uri,
-  });
+  let session;
+  try {
+    session = await MessengerOAuthService.exchangeCodeAndCreateSession({
+      code,
+      id_configuracion,
+      redirect_uri,
+    });
+  } catch (err) {
+    // El `code` de Meta es de un solo uso y dura ~10 minutos. Las dos causas
+    // que más se ven acá son recargar la página de retorno (reusa el code) y
+    // un redirect_uri que no coincide carácter por carácter con el que se usó
+    // para pedir el login. El mensaje de Meta distingue una de otra, y sin
+    // este catch no llegaba a ningún lado.
+    const meta = err.response?.data?.error;
+    console.error(
+      `[FB_CONNECT][ERROR] 2/5 falló el intercambio del code · ` +
+        `cfg=${id_configuracion} · redirect_uri=${redirect_uri} · ` +
+        `code=…${String(code).slice(-8)} · ` +
+        (meta
+          ? `Meta code=${meta.code}${meta.error_subcode ? `/${meta.error_subcode}` : ''}: ${meta.message}`
+          : err.message),
+    );
+    throw err;
+  }
   res.json({
     ok: true,
     oauth_session_id: session.id_oauth_session,
