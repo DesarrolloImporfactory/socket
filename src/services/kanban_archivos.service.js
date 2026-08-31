@@ -700,4 +700,6 @@ module.exports = {
   reindexarEnCatalogo,
   vectorStoresDeColumna,
   asegurarVectorStoreDocs,
+  desadjuntarDeVectorStore,
+  guardarCopiaLocal,
 };

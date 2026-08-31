@@ -464,7 +464,16 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
       },
     );
 
-    instruccionesFinal = compilarPromptFinal(estructura, perso || {});
+    /* El flag de retiro en agencia viaja en cada compilación: sin él, guardar
+       el prompt a mano con el switch encendido le quitaría el bloque (la
+       compilación siempre lo quita primero y solo lo repone si el flag va). */
+    const {
+      estaActivo: retiroAgenciaActivo,
+    } = require('../services/kanban_retiro_agencia.service');
+    instruccionesFinal = compilarPromptFinal(estructura, {
+      ...(perso || {}),
+      retiro_agencia: await retiroAgenciaActivo(col.id_configuracion),
+    });
   }
 
   /* Solo se pisa lo que SÍ vino en el request. El interruptor "IA activa" del
@@ -752,6 +761,36 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
         });
       });
     }
+
+    /* ── Adopción del directorio de agencias ──────────────────
+       Si el archivo subido se llama EXACTAMENTE como el directorio del switch
+       de retiro en agencia y el switch está encendido, se adopta como el
+       directorio de la cuenta: se registra en la biblioteca (con copia local
+       para la vista previa), se retira el anterior de todos los stores y se
+       propaga a TODAS las columnas IA. Así el cliente cambia su directorio
+       sin apagar nada: elimina el actual, sube el suyo con el mismo nombre y
+       listo. El chequeo del nombre y del switch vive en el service. */
+    setImmediate(() => {
+      try {
+        const retiro = require('../services/kanban_retiro_agencia.service');
+        retiro
+          .adoptarArchivoSubido({
+            id_configuracion: col.id_configuracion,
+            openai_file_id: file_id,
+            filename: archivo.originalname,
+            buffer: archivo.buffer,
+            bytes: archivo.size,
+          })
+          .catch((e) =>
+            console.error(
+              '[subirArchivo] adopción retiro_agencia:',
+              e.message,
+            ),
+          );
+      } catch (_) {
+        /* nunca tumba la subida */
+      }
+    });
 
     return res.status(200).json({
       success: true,

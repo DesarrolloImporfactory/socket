@@ -1280,9 +1280,62 @@ async function procesarMensajeKanban(params) {
           }),
           log,
         });
+        /* Con el switch de retiro en agencia, la ficha cambia el orden de los
+           datos (ciudad → oficina del directorio → nombre) y el formato de la
+           línea de dirección — sin el flag, la ficha dictaba "pide el nombre"
+           apenas el cliente decía agencia y el cierre "Agencia Servientrega —
+           ciudad" sin oficina. */
+        let retiroDirectorioFicha = false;
+        try {
+          const {
+            estaActivo: retiroAgenciaActivo,
+          } = require('./kanban_retiro_agencia.service');
+          retiroDirectorioFicha = await retiroAgenciaActivo(id_configuracion);
+        } catch (_) {
+          /* sin el service: comportamiento de siempre */
+        }
         const bloqueFicha = bloqueFichaPedido(fichaPedido, {
           trigger: accCierreVenta.trigger,
+          retiroDirectorio: retiroDirectorioFicha,
         });
+        /* Si el último mensaje al cliente lo generó la GUARDIA de oficinas
+           (reemplazo en código), el modelo no lo tiene en su memoria: se le
+           inyecta igual que el remarketing (caso Felipe 277) para que
+           entienda a qué responde el cliente ("la 2", "esa"). */
+        if (retiroDirectorioFicha && fichaPedido?.entrega === 'agencia') {
+          try {
+            const {
+              GUARDIA_MARCA_CIUDAD,
+              GUARDIA_MARCA_LISTA,
+              GUARDIA_MARCA_OFERTA,
+            } = require('./kanban_retiro_agencia.service');
+            const [ultBot] = await db.query(
+              `SELECT texto_mensaje FROM mensajes_clientes
+                WHERE id_configuracion = ? AND celular_recibe = ?
+                  AND rol_mensaje = 1 AND deleted_at IS NULL
+                ORDER BY id DESC LIMIT 1`,
+              {
+                replacements: [id_configuracion, String(id_cliente)],
+                type: db.QueryTypes.SELECT,
+              },
+            );
+            const txtUlt = String(ultBot?.texto_mensaje || '');
+            if (
+              txtUlt.includes(GUARDIA_MARCA_LISTA) ||
+              txtUlt.includes(GUARDIA_MARCA_CIUDAD) ||
+              txtUlt.includes(GUARDIA_MARCA_OFERTA) ||
+              /retiras en\s+[^\n]{6,}/i.test(txtUlt)
+            ) {
+              bloqueContexto +=
+                `🏦 TU ÚLTIMO MENSAJE AL CLIENTE fue este (lo envió el sistema en tu nombre y NO está en tu memoria):\n` +
+                `"${txtUlt.slice(0, 700)}"\n` +
+                `El cliente está respondiendo a ESO. Reglas: si dice "la 1", "la 2", "la primera" o un sector, eligió esa oficina de la lista; si el mensaje ofrecía UNA oficina ("¿Retiramos ahí?") y responde "sí", "esa", "dale" u otra afirmación, ESA oficina queda ELEGIDA — es la dirección del pedido, no la vuelvas a preguntar ni ofrezcas otras: confírmala y pide el siguiente dato que falte.\n\n`;
+              await log(`🏦 Último mensaje fue de la guardia de oficinas: inyectado como contexto`);
+            }
+          } catch (_) {
+            /* nota opcional: nunca tumba el turno */
+          }
+        }
         if (bloqueFicha) {
           bloqueContexto += bloqueFicha;
           await log(
@@ -1875,6 +1928,30 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── 9.85 Guardia del paso de oficina (switch retiro en agencia) ──
+     Si el pedido es con retiro, no hay oficina elegida ni lista ofrecida, y
+     el modelo pide nombre/teléfono (el guion base le gana a los prompts), su
+     respuesta se REEMPLAZA en código: pregunta de ciudad, o la lista real de
+     oficinas del directorio. Determinístico, nunca revienta el turno. */
+  try {
+    const {
+      guardiaOficinaRetiro,
+    } = require('./kanban_retiro_agencia.service');
+    const guardia = await guardiaOficinaRetiro({
+      respuesta: respuestaRaw,
+      ficha: fichaPedido,
+      id_configuracion,
+      id_cliente,
+      mensajeCliente: mensaje,
+    });
+    if (guardia) {
+      respuestaRaw = guardia.texto;
+      await log(`🏦 Guardia de oficina de retiro: ${guardia.motivo} (respuesta reemplazada)`);
+    }
+  } catch (eGuard) {
+    await log(`⚠️ Guardia de oficina falló (se sigue igual): ${eGuard.message}`);
+  }
+
   /* ── 9.9 Cierre narrado sin tag: inferirlo ──
      El modelo escribe el resumen completo y "¡Gracias por tu compra!" pero se
      come el tag (caso 302, Josué, 2026-08-19: tres cierres seguidos sin
@@ -1952,6 +2029,30 @@ async function procesarMensajeKanban(params) {
               `📋 Resumen de cierre completado con la ficha: ${comp.completados.join(', ')}`,
             );
           }
+        }
+        /* Red de seguridad del retiro en agencia (switch retiro_agencia):
+           la línea 🏡 de un cierre con agencia se valida contra el
+           directorio real y se corrige en código — el modelo a veces
+           confirma la oficina bien en la conversación y la pierde al armar
+           el resumen. Lo corregido llega igual al cliente, a la columna y
+           al auto-orden. Nunca bloquea el cierre. */
+        try {
+          const {
+            corregirDireccionRetiro,
+          } = require('./kanban_retiro_agencia.service');
+          const corr = await corregirDireccionRetiro(
+            respuestaRaw,
+            id_configuracion,
+            id_cliente,
+          );
+          if (corr) {
+            respuestaRaw = corr.texto;
+            await log(`📍 Dirección de retiro corregida: ${corr.motivo}`);
+          }
+        } catch (eDir) {
+          await log(
+            `⚠️ Validación de dirección de retiro falló (se sigue igual): ${eDir.message}`,
+          );
         }
         const motivo = motivoCierreInvalido(respuestaRaw, fichaPedido);
         if (motivo) {

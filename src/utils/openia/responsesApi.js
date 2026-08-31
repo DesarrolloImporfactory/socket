@@ -84,7 +84,12 @@ function usaResponsesApi(id_configuracion) {
 // diez turnos hablando. Son dos problemas distintos aunque usen la misma
 // función. Si alguna vez hace falta apagar también ese, es otra lista.
 // ─────────────────────────────────────────────────────────────
-const CONFIGS_SIN_RECAP = [818,10];
+// La 10 salió de la lista el 2026-08-31: sin recap, la IA arrancaba ciega a
+// los mensajes fijos del wizard ("¿cuántas unidades?" ya respondido) y las
+// pruebas del piloto de retiro en agencia no se parecían a producción. El
+// botón "Reiniciar conversación" sigue dando arranques limpios igual — el
+// reinicio corta el recap por fecha (reinicio_conversacion_at).
+const CONFIGS_SIN_RECAP = [818];
 
 function usaRecapConversacion(id_configuracion) {
   return !CONFIGS_SIN_RECAP.includes(Number(id_configuracion));
