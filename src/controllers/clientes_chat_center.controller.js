@@ -11,6 +11,10 @@ const Planes_chat_centerModel = require('../models/planes_chat_center.model');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Usuarios_chat_centerModel = require('../models/usuarios_chat_center.model');
 const { QueryTypes } = require('sequelize');
+const {
+  last9,
+  esErrorDuplicado,
+} = require('../utils/unified/dedupeContacto');
 
 /**
  * ¿`clientes_chat_center` ya tiene las columnas de programas de Imporsuit?
