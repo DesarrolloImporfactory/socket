@@ -1,8 +1,8 @@
 /**
  * Ingesta de comentarios de publicaciones de Facebook (webhook `feed`).
  *
- * Fase 1: sólo recibe y guarda. Publicar respuestas y el puente "responder en
- * privado" van en fases siguientes.
+ * Ingesta (webhook) y lectura (bandeja). Publicar respuestas y el puente
+ * "responder en privado" van en una fase siguiente.
  *
  * Los comentarios viven en `facebook_posts` / `facebook_comments`, tablas
  * propias, y deliberadamente NO en `mensajes_clientes`. El motivo: el `source`
@@ -256,14 +256,20 @@ async function procesarCambioFeed(page_id, change) {
     return;
   }
 
-  console.log('[FB_FEED]', {
-    page_id,
-    id_configuracion,
-    verb,
-    comment_id: valor.comment_id,
-    post_id: valor.post_id,
-    from: valor.from?.id || '(sin from: falta pages_read_engagement)',
-  });
+  // En una sola línea a propósito: console.log de un objeto lo imprime en
+  // varias, y al filtrar los logs con grep sólo sobrevive la primera — que es
+  // justo la que no lleva datos.
+  console.log(
+    '[FB_FEED] ' +
+      JSON.stringify({
+        page_id,
+        id_configuracion,
+        verb,
+        comment_id: valor.comment_id,
+        post_id: valor.post_id,
+        from: valor.from?.id || '(sin from: falta pages_read_engagement)',
+      }),
+  );
 
   switch (verb) {
     case 'add':
@@ -281,8 +287,141 @@ async function procesarCambioFeed(page_id, change) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Lectura (bandeja de comentarios)
+ * ------------------------------------------------------------------ */
+
+const LIMITE_POR_DEFECTO = 20;
+const LIMITE_MAXIMO = 100;
+
+function normalizarPaginacion({ pagina, limite }) {
+  const p = Math.max(1, Number.parseInt(pagina, 10) || 1);
+  const l = Math.min(
+    LIMITE_MAXIMO,
+    Math.max(1, Number.parseInt(limite, 10) || LIMITE_POR_DEFECTO),
+  );
+  return { pagina: p, limite: l, offset: (p - 1) * l };
+}
+
+/**
+ * Publicaciones con actividad, la más reciente primero.
+ *
+ * Ordena por `ultimo_comentario_at` y no por fecha de publicación: lo que
+ * importa en una bandeja es dónde está pasando algo ahora, no cuándo se
+ * publicó. Con `solo_pendientes` quedan sólo las que tienen comentarios sin
+ * responder. Ambos caminos usan el índice ix_fbp_bandeja.
+ */
+async function listarPosts({
+  id_configuracion,
+  pagina,
+  limite,
+  solo_pendientes = false,
+}) {
+  const pag = normalizarPaginacion({ pagina, limite });
+  const filtro = solo_pendientes ? 'AND sin_responder > 0' : '';
+
+  const posts = await db.query(
+    `SELECT id_facebook_post, page_id, post_id, mensaje, tipo, media_url,
+            permalink_url, publicado_at, total_comentarios, sin_responder,
+            ultimo_comentario_at
+       FROM facebook_posts
+      WHERE id_configuracion = ? ${filtro}
+      ORDER BY ultimo_comentario_at DESC, id_facebook_post DESC
+      LIMIT ? OFFSET ?`,
+    {
+      replacements: [id_configuracion, pag.limite, pag.offset],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const [{ total }] = await db.query(
+    `SELECT COUNT(*) AS total FROM facebook_posts
+      WHERE id_configuracion = ? ${filtro}`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  return {
+    posts,
+    paginacion: {
+      pagina: pag.pagina,
+      limite: pag.limite,
+      total: Number(total),
+      total_paginas: Math.ceil(Number(total) / pag.limite) || 1,
+    },
+  };
+}
+
+/**
+ * Hilo completo de una publicación, ya armado como árbol.
+ *
+ * El árbol se arma acá y no en el front porque la relación es por
+ * `comment_id` (el id de Meta), no por la clave primaria, y dejar esa
+ * traducción del lado del cliente obliga a repetirla en cada pantalla.
+ *
+ * Un comentario cuyo padre no está en la lista —porque se borró, o porque el
+ * webhook del padre nunca llegó— se cuelga de la raíz en vez de descartarse:
+ * en una bandeja es peor perder un comentario que mostrarlo fuera de sitio.
+ */
+async function listarComentarios({
+  id_configuracion,
+  id_facebook_post,
+  incluir_ocultos = true,
+}) {
+  const filtro = incluir_ocultos ? '' : 'AND oculto = 0';
+
+  const filas = await db.query(
+    `SELECT id_facebook_comment, comment_id, parent_comment_id, from_id,
+            from_nombre, mensaje, media_url, permalink_url, es_de_la_pagina,
+            oculto, respondido, respondido_at, respuesta_comment_id,
+            privado_enviado, privado_at, privado_error, id_cliente, comentado_at
+       FROM facebook_comments
+      WHERE id_configuracion = ?
+        AND id_facebook_post = ?
+        AND eliminado_at IS NULL ${filtro}
+      ORDER BY comentado_at ASC, id_facebook_comment ASC`,
+    {
+      replacements: [id_configuracion, id_facebook_post],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const porCommentId = new Map();
+  for (const f of filas) porCommentId.set(f.comment_id, { ...f, respuestas: [] });
+
+  const raiz = [];
+  for (const nodo of porCommentId.values()) {
+    const padre = nodo.parent_comment_id
+      ? porCommentId.get(nodo.parent_comment_id)
+      : null;
+    if (padre) padre.respuestas.push(nodo);
+    else raiz.push(nodo);
+  }
+
+  return { comentarios: raiz, total: filas.length };
+}
+
+/**
+ * Contadores para el badge del menú. Dos COUNT sobre ix_fbp_bandeja.
+ */
+async function resumen({ id_configuracion }) {
+  const [fila] = await db.query(
+    `SELECT COUNT(*) AS posts_con_pendientes,
+            COALESCE(SUM(sin_responder), 0) AS comentarios_pendientes
+       FROM facebook_posts
+      WHERE id_configuracion = ? AND sin_responder > 0`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return {
+    posts_con_pendientes: Number(fila.posts_con_pendientes),
+    comentarios_pendientes: Number(fila.comentarios_pendientes),
+  };
+}
+
 module.exports = {
   procesarCambioFeed,
   guardarComentario,
   recalcularContadores,
+  listarPosts,
+  listarComentarios,
+  resumen,
 };
