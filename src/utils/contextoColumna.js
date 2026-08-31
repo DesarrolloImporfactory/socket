@@ -1158,23 +1158,60 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
        cada turno, por el mismo motivo que la REGLA DE AVANCE: es donde el
        modelo sí la obedece. Mismo gate Dropi del bloque de arriba: en la
        vertical de servicios no existen agencias de courier. */
-    bloque +=
-      `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega):\n` +
-      `- Cada agencia que muestres va CON su ciudad, la que dice su propia ` +
-      `línea del archivo. Solo puedes mostrar agencias cuya línea diga ` +
-      `EXACTAMENTE la ciudad del cliente: que una calle se llame como otra ` +
-      `provincia no la vuelve de ahí. Si el archivo no trae agencias de su ` +
-      `ciudad o cantón, dilo con honestidad — JAMÁS presentes las de otra ` +
-      `ciudad como si fueran de la suya.\n` +
-      `- La lista se muestra UNA sola vez. Si el cliente responde sin elegir ` +
-      `una puntual — repite su cantón/ciudad, dice "en la Servientrega de mi ` +
-      `pueblo", "yo retiro en Servientrega", o pregunta otra cosa — ESO YA ES ` +
-      `SU ELECCIÓN: el dato queda como "Agencia Servientrega por confirmar — ` +
-      `<su ciudad o cantón>" y AVANZAS al siguiente dato o al cierre. ` +
-      `Prohibido volver a mostrar la lista o repetir "¿en cuál agencia?": ` +
-      `insistir es lo que hace que rechacen la venta. Un humano confirma la ` +
-      `agencia exacta antes del envío.\n\n`;
-    say(`✅ Regla de agencias inyectada`);
+    /* Con el switch de retiro en agencia (directorio Servientrega) encendido,
+       la regla legacy de acá abajo es VENENO: su "si el cliente responde sin
+       elegir una puntual ESO YA ES SU ELECCIÓN → por confirmar y AVANZAS" le
+       gana al bloque del directorio (esta posición, al inicio del input, es
+       la que el modelo más obedece) y el bot cierra sin ofrecer ni una
+       oficina (caso real cfg 10, 2026-08-31). Con el switch ON, esta misma
+       posición lleva la regla DEL DIRECTORIO; la legacy queda para las
+       cuentas sin switch, que no tienen directorio que consultar. */
+    let retiroDirectorio = false;
+    try {
+      const {
+        estaActivo: retiroAgenciaActivo,
+      } = require('../services/kanban_retiro_agencia.service');
+      retiroDirectorio = await retiroAgenciaActivo(id_configuracion);
+    } catch (_) {
+      /* sin el service (tests aislados): rige la legacy */
+    }
+
+    if (retiroDirectorio) {
+      bloque +=
+        `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +
+        `"RETIRO EN AGENCIA SERVIENTREGA" DE TUS INSTRUCCIONES:\n` +
+        `- En cuanto el cliente elija agencia/oficina, tu SIGUIENTE mensaje es ` +
+        `ofrecerle de 3 a 5 oficinas REALES del directorio (file_search) de SU ` +
+        `ciudad, cada una con sector y dirección copiados tal cual. Los demás ` +
+        `datos (nombre, teléfono) se piden DESPUÉS de que elija la oficina.\n` +
+        `- Si menciona un sector, centro comercial o referencia, BÚSCALA en el ` +
+        `directorio antes de responder (hasta 2 búsquedas). Elecciones por ` +
+        `número u ordinal ("la 1", "la primera", aun con typos) son sobre tu ` +
+        `última lista: confirma sector + dirección de la elegida y avanza.\n` +
+        `- Solo si tras 2 intentos no se resuelve, cierras con "Agencia ` +
+        `Servientrega de [ciudad] — por confirmar con un asesor (cliente ` +
+        `sugirió: [su referencia])". Nunca digas "no hay cobertura" y con ` +
+        `retiro NUNCA pidas la dirección del domicilio.\n\n`;
+      say(`✅ Regla de agencias (directorio) inyectada`);
+    } else {
+      bloque +=
+        `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega):\n` +
+        `- Cada agencia que muestres va CON su ciudad, la que dice su propia ` +
+        `línea del archivo. Solo puedes mostrar agencias cuya línea diga ` +
+        `EXACTAMENTE la ciudad del cliente: que una calle se llame como otra ` +
+        `provincia no la vuelve de ahí. Si el archivo no trae agencias de su ` +
+        `ciudad o cantón, dilo con honestidad — JAMÁS presentes las de otra ` +
+        `ciudad como si fueran de la suya.\n` +
+        `- La lista se muestra UNA sola vez. Si el cliente responde sin elegir ` +
+        `una puntual — repite su cantón/ciudad, dice "en la Servientrega de mi ` +
+        `pueblo", "yo retiro en Servientrega", o pregunta otra cosa — ESO YA ES ` +
+        `SU ELECCIÓN: el dato queda como "Agencia Servientrega por confirmar — ` +
+        `<su ciudad o cantón>" y AVANZAS al siguiente dato o al cierre. ` +
+        `Prohibido volver a mostrar la lista o repetir "¿en cuál agencia?": ` +
+        `insistir es lo que hace que rechacen la venta. Un humano confirma la ` +
+        `agencia exacta antes del envío.\n\n`;
+      say(`✅ Regla de agencias inyectada`);
+    }
   }
 
   if (tiene('contexto_productos')) {

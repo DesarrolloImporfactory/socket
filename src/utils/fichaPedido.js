@@ -364,6 +364,32 @@ const nombreCompleto = (n) => /\s/.test(String(n || '').trim());
 /* "Agencia Servientrega <la que nombró>" sin duplicar la palabra cuando el
    cliente ya dijo "Servientrega del Coca"; sin agencia nombrada, "por
    confirmar" (el validador acepta ese valor en la línea de dirección). */
+/* ¿La agencia de la ficha es una oficina CONCRETA o solo la palabra
+   "Servientrega"/"agencia" que el cliente usó para elegir la modalidad? El
+   extractor llena `agencia` con lo que el cliente nombró, y "agencia
+   servientrega por favor" produce agencia="Servientrega" — eso NO es una
+   oficina elegida (caso cfg 10, 2026-08-31: la guardia de oficinas se
+   desactivaba creyendo que ya había elección). Es concreta solo si, quitando
+   las palabras de la modalidad, queda algo con sustancia (un sector, una
+   ciudad, una calle, un punto de referencia). */
+function agenciaConcreta(valor) {
+  const s = String(valor || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+  if (!s) return false;
+  const limpio = s
+    .replace(
+      /\b(AGENCIA|OFICINA|SUCURSAL|SERVIENTREGA|SERVI|RETIRO|RETIRAR|PUNTO|LA|EL|DE|DEL|EN|UNA|UN|POR|FAVOR|XFA|PORFA)\b/g,
+      ' ',
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+  return limpio.length >= 4;
+}
+
 function etiquetaAgencia(f) {
   const ag = String((f && f.agencia) || '').trim();
   if (!ag) return 'Agencia Servientrega por confirmar';
@@ -376,9 +402,23 @@ function etiquetaAgencia(f) {
    concreta; dirección o agencia). El teléfono no se exige: el auto-orden usa
    el número desde el que escribe. Si acá se exigiera algo que el validador no
    exige, el bot pediría datos que el cierre no necesita. */
-function faltantesFicha(ficha) {
+function faltantesFicha(ficha, opts = {}) {
   const f = ficha || {};
   const faltan = [];
+
+  /* Con el switch de retiro en agencia (directorio Servientrega) el DESTINO
+     manda sobre los datos personales: primero la ciudad, luego la elección de
+     la oficina del directorio, y recién después nombre/teléfono. Sin este
+     orden, el "pide SOLO lo que está en ❌" de la ficha hacía que el bot
+     pidiera el nombre apenas el cliente decía "agencia" y cerrara sin ofrecer
+     ni una oficina (caso real cfg 10, 2026-08-31). */
+  if (opts.retiroDirectorio && f.entrega === 'agencia' && !agenciaConcreta(f.agencia)) {
+    if (!f.ciudad) faltan.push('Ciudad (para buscar las oficinas del directorio)');
+    faltan.push(
+      'La oficina Servientrega elegida — ofrécele de 3 a 5 reales del directorio (file_search) y espera su elección; solo si tras 2 intentos no elige, cierra con "por confirmar"',
+    );
+  }
+
   if (!f.nombre) faltan.push('Nombre completo');
   else if (!nombreCompleto(f.nombre))
     faltan.push(`Apellido (solo dio el nombre "${f.nombre}")`);
@@ -402,7 +442,10 @@ function faltantesFicha(ficha) {
  * @param {object} ficha
  * @param {{ trigger: string }} opts  el tag de cierre de la columna
  */
-function bloqueFichaPedido(ficha, { trigger = '[generar_guia]:true' } = {}) {
+function bloqueFichaPedido(
+  ficha,
+  { trigger = '[generar_guia]:true', retiroDirectorio = false } = {},
+) {
   if (!fichaTieneDatos(ficha)) return '';
   const f = ficha;
   const lineas = [];
@@ -417,7 +460,20 @@ function bloqueFichaPedido(ficha, { trigger = '[generar_guia]:true' } = {}) {
   if (f.telefono) lineas.push(`✅ Teléfono: ${f.telefono}`);
   if (f.ciudad)
     lineas.push(`✅ Ciudad: ${f.ciudad}${f.provincia ? ` (${f.provincia})` : ''}`);
-  if (f.entrega === 'agencia') {
+  if (f.entrega === 'agencia' && retiroDirectorio) {
+    /* Cuenta con el directorio de oficinas activo: la dirección del cierre
+       sale del directorio (o del "por confirmar" canónico), nunca del
+       formato "Agencia Servientrega — ciudad" de abajo, que dictaba cierres
+       sin oficina. "Servientrega" a secas no cuenta como oficina elegida. */
+    const oficinaElegida = agenciaConcreta(f.agencia) ? f.agencia : '';
+    lineas.push(
+      `✅ Entrega: RETIRO EN AGENCIA Servientrega${oficinaElegida ? ` (oficina elegida: ${oficinaElegida})` : ''}. ` +
+        `Para retiro en agencia NO existe dirección de domicilio: NO se la pidas, ni "dos calles", ni "referencia". ` +
+        (oficinaElegida
+          ? `En el resumen, la línea de dirección lleva la oficina elegida con su sector y dirección TAL CUAL el directorio, y "🚚 Envio: agencia servientrega".`
+          : `La oficina se elige del directorio ANTES de pedir nombre o teléfono (mira la sección RETIRO EN AGENCIA SERVIENTREGA). En el resumen, la línea de dirección es la oficina elegida (sector — dirección del directorio) o, solo si el cliente no eligió tras 2 intentos, "Agencia Servientrega de ${f.ciudad || '[su ciudad]'} — por confirmar con un asesor". "🚚 Envio: agencia servientrega".`),
+    );
+  } else if (f.entrega === 'agencia') {
     lineas.push(
       `✅ Entrega: RETIRO EN AGENCIA Servientrega${f.agencia ? ` (${f.agencia})` : f.ciudad ? ` (${f.ciudad})` : ''}. ` +
         `Para retiro en agencia NO existe dirección de domicilio: NO se la pidas, ni "dos calles", ni "referencia". ` +
@@ -437,7 +493,7 @@ function bloqueFichaPedido(ficha, { trigger = '[generar_guia]:true' } = {}) {
     );
   else if (f.cantidad) lineas.push(`✅ Cantidad: ${f.cantidad}`);
 
-  const faltan = faltantesFicha(f);
+  const faltan = faltantesFicha(f, { retiroDirectorio });
 
   let txt =
     `📋 FICHA DEL PEDIDO — lo que el cliente YA DIJO en esta conversación. La leyó el sistema de SUS mensajes y manda sobre tu memoria:\n` +
@@ -648,6 +704,7 @@ module.exports = {
   extraerFichaPedido,
   bloqueFichaPedido,
   faltantesFicha,
+  agenciaConcreta,
   fichaTieneDatos,
   completarResumenConFicha,
   esCierreNarrado,

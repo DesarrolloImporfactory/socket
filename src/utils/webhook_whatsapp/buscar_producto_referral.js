@@ -67,6 +67,26 @@ const CAMPOS_PRODUCTO = `id, id_configuracion, nombre, descripcion, precio,
               imagen_url, video_url, combos_producto, stock, id_producto_upsell,
               nombre_upsell, descripcion_upsell, precio_upsell, imagen_upsell_url`;
 
+/* Normalización para el nivel 2.5: minúsculas, sin tildes, sin signos.
+   `nucleo` además bota los tokens con dígitos (gramajes/tallas: "400GR",
+   "567G") y `compacto` quita los espacios, para que "CubreCanas" (junto)
+   calce con "Cubre Canas" (separado). */
+function normalizar(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9ñ]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+function nucleoCompacto(s) {
+  return normalizar(s)
+    .split(' ')
+    .filter((t) => !/\d/.test(t))
+    .join('');
+}
+
 /**
  * Resuelve QUÉ producto publicita un anuncio. Es la única fuente de esa
  * verdad: la usan el webhook (para armar el bloque del referral) y
@@ -160,6 +180,39 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
           type: db.QueryTypes.SELECT,
         },
       );
+      via = 'contenido';
+    }
+
+    /* ── Nivel 2.5: contenido NORMALIZADO ─────────────────────
+       El LIKE del nivel 2 compara los textos tal cual, y el catálogo real
+       viene con ruido de formato que lo rompe: en la 569 el anuncio decía
+       "Shampoo CubreCanas IVSI" y el producto "Shampoo Cubre Canas 400GR*"
+       (junto vs separado + gramaje), o "FIBER GUMMIES" contra "*FIBER
+       Gummies*" (asteriscos). Nada aprendía y 6.000 tarjetas del kanban
+       quedaron sin producto. Aquí se compara el núcleo compactado (sin
+       signos, sin gramajes, sin espacios) en JS sobre el catálogo de la
+       config, que es chico. Mismo espíritu que el nivel 2: gana el nombre
+       más largo y EN EMPATE NO SE ADIVINA. El piso de 8 caracteres evita
+       que un nombre cortito calce dentro de cualquier titular. */
+    if (!productos.length) {
+      const hc = nucleoCompacto(nombre);
+      if (hc.length >= 8) {
+        const catalogo = await db.query(
+          `SELECT ${CAMPOS_PRODUCTO} FROM productos_chat_center
+            WHERE id_configuracion = ? AND eliminado = 0`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        const matches = catalogo
+          .map((p) => ({ p, pn: nucleoCompacto(p.nombre) }))
+          .filter(
+            ({ pn }) =>
+              pn.length >= 8 && (hc.includes(pn) || pn.includes(hc)),
+          )
+          .sort((a, b) => b.pn.length - a.pn.length);
+        const empate =
+          matches.length > 1 && matches[1].pn.length === matches[0].pn.length;
+        if (matches.length && !empate) productos = [matches[0].p];
+      }
       via = 'contenido';
     }
 

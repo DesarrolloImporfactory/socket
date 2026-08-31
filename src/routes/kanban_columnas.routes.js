@@ -50,4 +50,10 @@ router.post('/eliminar_archivo', KanbanAsisteController.eliminarArchivo);
 
 router.post('/chat_prueba', KanbanAsisteController.chat_prueba);
 
+/* SWITCH DE RETIRO EN AGENCIA SERVIENTREGA (piloto: config 10) */
+const RetiroAgenciaController = require('../controllers/kanban_retiro_agencia.controller');
+router.post('/retiro_agencia_estado', RetiroAgenciaController.estado);
+router.post('/retiro_agencia_toggle', RetiroAgenciaController.toggle);
+router.post('/retiro_agencia_preview', RetiroAgenciaController.preview);
+
 module.exports = router;
