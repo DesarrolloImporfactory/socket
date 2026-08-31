@@ -52,6 +52,21 @@ exports.exchangeCode = catchAsync(async (req, res, next) => {
           ? `Meta code=${meta.code}${meta.error_subcode ? `/${meta.error_subcode}` : ''}: ${meta.message}`
           : err.message),
     );
+
+    // Un code quemado (36009) o vencido (36007) no es una caída del servidor:
+    // es el usuario recargando la pantalla de retorno, y la salida es volver a
+    // conectar. Devolverlo como 500 "Something went very wrong!" dejaba al
+    // cliente sin saber qué hacer y a nosotros sin poder distinguirlo de un
+    // fallo real en los logs de errores.
+    if (meta?.error_subcode === 36007 || meta?.error_subcode === 36009) {
+      return next(
+        new AppError(
+          'El enlace de conexión con Facebook ya se usó o expiró. ' +
+            'Vuelve a pulsar "Conectar Messenger" para empezar de nuevo.',
+          400,
+        ),
+      );
+    }
     throw err;
   }
   res.json({
