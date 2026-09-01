@@ -725,13 +725,19 @@ const GUIONES_B = [
       'Hola, vi el anuncio de la Máscara Táctica Multifuncional',
       'mejor quiero la licuadora', 'y si llevo 2?'],
     prohibido: /roncar|antironquido/i,
-    requerido: /licuadora/i,
+    // El prompt vigente de la 285 deriva el cambio de producto al asesor, a
+    // veces nombrando la licuadora y a veces no. Ambas cosas son "el cambio
+    // se reconoció"; la garantía dura de este caso es el prohibido (que el
+    // ancla no lo arrastre al producto del incidente).
+    requerido: /licuadora|asesor/i,
   },
   {
-    nombre: 'servicios 818: agendamiento no se rompe',
-    args: [String(CFG_SERVICIOS), String(CLIENTE_SERVICIOS), '--desde=captacion', '--guion=laser'],
-    prohibido: /error|exception/i,
-    requerido: /cita|agend/i,
+    // La 818 es inmobiliaria: se agenda la VISITA al inmueble desde
+    // por_agendar (el guion laser de cuando era estética ya no aplica ahí).
+    nombre: 'servicios 818: agendar visita no se rompe',
+    args: [String(CFG_SERVICIOS), String(CLIENTE_SERVICIOS), '--desde=por_agendar', '--guion=visita'],
+    prohibido: /depilaci|l[aá]ser|error|exception/i,
+    requerido: /visita|agend|solicitud/i,
   },
 ];
 

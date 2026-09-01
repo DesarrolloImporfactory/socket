@@ -1547,21 +1547,15 @@ async function procesarMensajeKanban(params) {
   // genérico del referral. El modelo sigue siendo el de la columna
   // (kanban_columnas.modelo, se elige en la config del kanban). Gateado por el
   // wizard: las cuentas que no configuraron nada no cambian en nada.
+  //
+  // Acá solo se RESUELVE si hay ficha en juego; el bloque se arma después de
+  // 8.5, porque su última línea depende de si el modelo verá catálogo o no.
+  let wizardEnJuego = null;
   try {
     const {
       wizardDelClienteEnJuego,
-      bloqueWizardParaMotor,
     } = require('./producto_wizard_runtime.service');
-    const enJuego = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
-    if (enJuego) {
-      // En Responses el bloque va al INICIO del prompt (prefacio): una regla
-      // que debe cumplirse va arriba, no al final (caso 569: gpt-4o-mini
-      // ignoraba lo enterrado). En Assistants (legacy) no se puede prefijar
-      // el prompt del assistant, así que sigue por additional_instructions.
-      instruccionesProducto = bloqueWizardParaMotor(enJuego);
-      prefacioWizard = instruccionesProducto;
-      await log(`🧩 wizard: ficha del producto ${enJuego.producto.id} inyectada (prefacio)`);
-    }
+    wizardEnJuego = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
   } catch (eWiz) {
     await log(`⚠️ wizard motor: ${eWiz.message}`);
   }
@@ -1589,6 +1583,12 @@ async function procesarMensajeKanban(params) {
 
   if (usarInline) {
     await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
+  } else if (columna.vector_store_id && wizardEnJuego) {
+    // Fase 3 del wizard: con la ficha en juego el catálogo NO va por
+    // file_search — sus fragmentos duplican lo que la ficha ya trae y quedan
+    // pegados a la cadena de previous_response_id, re-cobrándose cada turno.
+    // Los documentos (vector_store_docs_id) sí siguen: no tienen otra vía.
+    await log(`🧩 Catálogo por file_search APAGADO: manda la ficha del wizard`);
   } else if (columna.vector_store_id) {
     // Se distingue POR QUÉ no fue inline. Sin esto, una cuenta habilitada que
     // se pasa del tope y una que nunca se habilitó dan el mismo log, y no hay
@@ -1617,6 +1617,30 @@ async function procesarMensajeKanban(params) {
   const bloqueCatalogo = usarInline
     ? `${PUENTE_INLINE}\n\n${catalogoInline}`
     : null;
+
+  if (wizardEnJuego) {
+    try {
+      const {
+        bloqueWizardParaMotor,
+      } = require('./producto_wizard_runtime.service');
+      // En Responses el bloque va al INICIO del prompt (prefacio): una regla
+      // que debe cumplirse va arriba, no al final (caso 569: gpt-4o-mini
+      // ignoraba lo enterrado). En Assistants (legacy) no se puede prefijar
+      // el prompt del assistant, así que sigue por additional_instructions.
+      // hayCatalogo: con inline la ficha remite al catálogo para otros
+      // productos; sin catálogo (file_search apagado por la ficha) remite al
+      // asesor.
+      instruccionesProducto = bloqueWizardParaMotor(wizardEnJuego, {
+        hayCatalogo: usarInline,
+      });
+      prefacioWizard = instruccionesProducto;
+      await log(
+        `🧩 wizard: ficha del producto ${wizardEnJuego.producto.id} inyectada (prefacio)`,
+      );
+    } catch (eWiz) {
+      await log(`⚠️ wizard motor: ${eWiz.message}`);
+    }
+  }
 
   // ── 9. Ejecutar ───────────────────────────────────────────
   /* Candado por cliente: los huecos >8s que la ráfaga ya no agrupa corrían en
@@ -1669,9 +1693,12 @@ async function procesarMensajeKanban(params) {
         input: inputFinal,
         model: assistantInfo.model,
         max_tokens: columna.max_tokens || 500,
-        // El catálogo se apaga cuando va inline; los documentos NO, porque no
-        // tienen otra vía de llegar al modelo.
-        vector_store_id: usarInline ? null : columna.vector_store_id || null,
+        // El catálogo se apaga cuando va inline o cuando la ficha del wizard
+        // está en juego (Fase 3); los documentos NO, porque no tienen otra
+        // vía de llegar al modelo. Se gatea con prefacioWizard y no con
+        // wizardEnJuego: si el armado de la ficha falló, el catálogo se queda.
+        vector_store_id:
+          usarInline || prefacioWizard ? null : columna.vector_store_id || null,
         vector_store_docs_id: columna.vector_store_docs_id || null,
         api_key_openai,
         id_configuracion,
@@ -1737,7 +1764,10 @@ async function procesarMensajeKanban(params) {
           input: inputConRecap,
           model: assistantInfo.model,
           max_tokens: columna.max_tokens || 500,
-          vector_store_id: usarInline ? null : columna.vector_store_id || null,
+          vector_store_id:
+            usarInline || prefacioWizard
+              ? null
+              : columna.vector_store_id || null,
           vector_store_docs_id: columna.vector_store_docs_id || null,
           api_key_openai,
           id_configuracion,
@@ -4030,6 +4060,9 @@ module.exports = {
   procesarMensajeKanban,
   cancelarRemarketingKanban,
   programarRemarketingKanban,
+  // Lo usa simular_conversacion.js para armar el catálogo inline EXACTAMENTE
+  // como producción: si el puente cambia acá, la simulación cambia sola.
+  PUENTE_INLINE,
   // Exportados para reutilizar la generación IA desde el remarketing de IG
   // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
   ejecutarAsistente,

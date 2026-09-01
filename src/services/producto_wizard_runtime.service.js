@@ -524,7 +524,7 @@ async function enviarTextoWizard({
  * y stock leídos EN VIVO de productos_chat_center. Sin URLs de media a
  * propósito (las fotos ya salieron en el paquete y el dedupe las frena).
  */
-function bloqueWizardParaMotor({ producto, wizard }) {
+function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}) {
   const combos = combosValidos(producto.combos_producto);
   const bullets = leerJson(wizard.bullets_json, []);
   const faqs = leerJson(wizard.respuestas_rapidas_json, []).filter(
@@ -608,7 +608,13 @@ function bloqueWizardParaMotor({ producto, wizard }) {
           'Las preguntas normales (para qué sirve, cómo se usa o se toma, si ayuda con su molestia) respóndelas con seguridad usando esta ficha y cierra la venta: NO mandes al cliente a "consultar con su médico" por preguntar eso. ' +
           'Recomienda atención médica ÚNICAMENTE si menciona una emergencia o algo serio (síntomas graves, embarazo, cirugía reciente, medicación delicada). '
         : ''
-    }Si pregunta por CUALQUIER OTRO producto, usa tu catálogo normalmente.`,
+    }${
+      hayCatalogo
+        ? 'Si pregunta por CUALQUIER OTRO producto, usa tu catálogo normalmente.'
+        : // Sin catálogo a la vista (Fase 3: la ficha apagó el file_search y no
+          // hay inline), "usa tu catálogo" era invitar a inventar precios.
+          'Si pregunta por CUALQUIER OTRO producto que no esté en esta ficha, no inventes precios ni datos: dile que un asesor le confirma esa información y sigue con este pedido.'
+    }`,
   );
   return lineas.join('\n');
 }
