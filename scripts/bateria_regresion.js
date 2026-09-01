@@ -692,6 +692,261 @@ async function suiteA() {
         !aparecioEnCliente('Pedro Pérez', 'hola soy Juan') &&
         aparecioEnCliente('0961871183', 'mi número es 0961871183', { esTelefono: true }),
     );
+
+    // g) Typo de ciudad (caso UP NOW 2026-09-01): "Guayuquil" es Guayaquil y
+    //    la ficha no debe volver a pedir la ciudad. El anti-invento sigue:
+    //    "quiero" NO es Quito.
+    const { ciudadAproxEnCliente } = require('../src/utils/fichaPedido');
+    caso(
+      'ciudad con typo: "guayuquil" cuenta como Guayaquil',
+      ciudadAproxEnCliente('Guayaquil', 'mandalo a guayuquil porfa') === true,
+    );
+    caso(
+      'ciudad con typo: "quiero 2 frascos" NO es Quito (anti-invento intacto)',
+      ciudadAproxEnCliente('Quito', 'quiero 2 frascos') === false,
+    );
+    caso(
+      'ciudad con typo: nombre compuesto ("santo dmingo" → Santo Domingo)',
+      ciudadAproxEnCliente('Santo Domingo', 'vivo en santo dmingo') === true,
+    );
+    caso(
+      'ciudad con typo: las cortas (Loja) solo valen exactas',
+      ciudadAproxEnCliente('Loja', 'hola buenas') === false &&
+        ciudadAproxEnCliente('Loja', 'soy de loja') === true,
+    );
+    const { corregirCiudadTypo } = require('../src/utils/fichaPedido');
+    caso(
+      'ciudad con typo: "Guayuquil" se corrige a Guayaquil (para el auto-orden)',
+      corregirCiudadTypo('Guayuquil') === 'Guayaquil' &&
+        corregirCiudadTypo('Quevedo') === 'Quevedo' &&
+        corregirCiudadTypo('quiero') === 'quiero',
+    );
+    // El validador del cierre tampoco debe tratar la corrección como invento:
+    // "Ciudad: Guayaquil" con el cliente habiendo escrito "guayuquil" pasa.
+    const { camposFaltantesCierre: faltantesTypo } = require('../src/services/kanban_ia.service');
+    const resumenTypo = [
+      '🧑 Nombre: Michael Ordonez',
+      '📞 Telefono: 0962803007',
+      '📍 Provincia: Guayas',
+      '📍 Ciudad: Guayaquil',
+      '🏡 Direccion: calderon calle geovanny rivera frente al portal',
+      '📦 Producto: Up Now',
+      '🔢 Cantidad: 3',
+      '💰 Precio total: $39.99',
+      '🚚 Envio: domicilio',
+    ].join('\n');
+    caso(
+      'cierre: la ciudad corregida de un typo del cliente NO cuenta como inventada',
+      (() => {
+        const f = faltantesTypo(resumenTypo, {
+          _textoCliente: 'tiene 16\nguayuquil\ndame 3\ndomicilio\nMichael Ordonez, calderon calle geovanny rivera frente al portal, 0962803007',
+        });
+        return !f.some((x) => /Ciudad/i.test(x));
+      })(),
+    );
+    caso(
+      'cierre: una ciudad que el cliente JAMÁS escribió sigue bloqueando',
+      (() => {
+        const f = faltantesTypo(resumenTypo, {
+          _textoCliente: 'tiene 16\ndame 3\ndomicilio\nMichael Ordonez, mi direccion es el centro, 0962803007',
+        });
+        return f.some((x) => /Ciudad/i.test(x));
+      })(),
+    );
+  }
+
+  /* ── Flujo de venta por pasos (embudo manual del wizard) ──
+     Validadores PUROS: deciden si la respuesta del cliente avanza el embudo
+     (copy fijo, 0 tokens) o cae a respuestas rápidas / IA. Nacen con el caso
+     UP NOW (cfg 1028): edad 10-22, "Ecuador" no es una ciudad, y la promo se
+     elige por número o precio. */
+  {
+    const {
+      validarPasoFlujo,
+      extraerEdad,
+      pasosDelFlujo,
+    } = require('../src/services/producto_wizard_runtime.service');
+
+    const pasoEdad = {
+      espera: 'edad', min: 10, max: 22,
+      copy: 'beneficios…', copy_invalido: 'aún es pequeño…',
+    };
+    caso(
+      'flujo edad: "tiene 15 años" valida y extrae 15',
+      validarPasoFlujo(pasoEdad, 'tiene 15 años').valida === true &&
+        extraerEdad('tiene 15 años') === 15,
+    );
+    caso(
+      'flujo edad: "doce" en palabras también valida',
+      validarPasoFlujo(pasoEdad, 'doce').valida === true,
+    );
+    caso(
+      'flujo edad: 9 años queda fuera de rango (no valida, marca fuera_rango)',
+      (() => {
+        const v = validarPasoFlujo(pasoEdad, 'tiene 9 añitos');
+        return v.valida === false && v.fuera_rango === true && v.edad === 9;
+      })(),
+    );
+    caso(
+      'flujo edad: una pregunta sin edad NO valida (cae a FAQ/IA)',
+      validarPasoFlujo(pasoEdad, 'tiene registro sanitario?').valida === false,
+    );
+
+    const pasoCiudad = {
+      espera: 'ciudad', copy: 'envío gratis…',
+      casos: [{ contiene: ['ecuador'], copy: '¿De qué ciudad del Ecuador?' }],
+    };
+    caso(
+      'flujo ciudad: "Quito" valida',
+      validarPasoFlujo(pasoCiudad, 'Quito').valida === true,
+    );
+    caso(
+      'flujo ciudad: "Ecuador" dispara el caso especial sin avanzar',
+      (() => {
+        const v = validarPasoFlujo(pasoCiudad, 'de ecuador');
+        return v.valida === false && !!v.caso;
+      })(),
+    );
+    caso(
+      'flujo ciudad: una pregunta con "?" NO valida',
+      validarPasoFlujo(pasoCiudad, 'hacen envíos a todo el país?').valida === false,
+    );
+    // Caso real UP NOW (2026-09-01): "tiene registro sanitario" sin "?" se
+    // tomaba como ciudad y el bot contestó "envíos GRATIS a Tiene Registro
+    // Sanitario". Corto y sin "?" NO basta.
+    caso(
+      'flujo ciudad: "tiene registro sanitario" (sin ?) NO es una ciudad',
+      validarPasoFlujo(pasoCiudad, 'tiene registro sanitario').valida === false,
+    );
+    caso(
+      'flujo ciudad: "el domingo le confirmo" NO es una ciudad',
+      validarPasoFlujo(pasoCiudad, 'el domingo le confirmo').valida === false,
+    );
+    caso(
+      'flujo ciudad: "estoy en quito" valida y extrae el lugar "quito"',
+      (() => {
+        const v = validarPasoFlujo(pasoCiudad, 'estoy en quito');
+        return v.valida === true && v.lugar === 'quito';
+      })(),
+    );
+    caso(
+      'flujo ciudad: "santo domingo" valida (nombre compuesto)',
+      validarPasoFlujo(pasoCiudad, 'santo domingo').valida === true,
+    );
+    caso(
+      'flujo ciudad: una ciudad chica desconocida corta también valida',
+      validarPasoFlujo(pasoCiudad, 'pelileo').valida === true,
+    );
+
+    const pasoPromo = {
+      espera: 'opcion',
+      opciones: [
+        { claves: ['1', '24.99', 'uno', 'un frasco'], copy: 'elegiste 1…' },
+        { claves: ['2', '32.99', 'dos'], copy: 'elegiste 2…' },
+        { claves: ['3', '39.99', 'tres', 'completo'], copy: 'elegiste 3…' },
+      ],
+    };
+    caso(
+      'flujo opción: "el de 39.99" matchea la promo 3',
+      (() => {
+        const v = validarPasoFlujo(pasoPromo, 'el de 39.99');
+        return v.valida === true && v.indice === 2;
+      })(),
+    );
+    caso(
+      'flujo opción: la clave corta "1" no matchea dentro de "21.99"',
+      validarPasoFlujo(pasoPromo, 'vi uno de 21.99 en otro lado').valida === false ||
+        validarPasoFlujo(pasoPromo, 'vi algo de 21.99 por ahi').valida === false,
+    );
+    caso(
+      'flujo opción: respuesta ambigua ("1 o 2?") NO avanza',
+      validarPasoFlujo(pasoPromo, 'mejor 1 o 2?').valida === false,
+    );
+
+    // Ronda UP NOW 2026-09-01 (2ª tanda de casos reales):
+    caso(
+      'flujo edad: "tiene19" pegado sin espacio también valida',
+      validarPasoFlujo(pasoEdad, 'tiene19').valida === true &&
+        extraerEdad('tiene19') === 19,
+    );
+    const pasoEnvio = {
+      espera: 'opcion',
+      opciones: [
+        { claves: ['domicilio', 'casa'], copy: 'a domicilio…' },
+        { claves: ['servientrega', 'agencia'], copy: 'a servientrega…' },
+      ],
+    };
+    caso(
+      'flujo opción: el typo "a domiclo" matchea DOMICILIO',
+      (() => {
+        const v = validarPasoFlujo(pasoEnvio, 'a domiclo');
+        return v.valida === true && v.indice === 0;
+      })(),
+    );
+    caso(
+      'flujo opción: "serbientrega" matchea SERVIENTREGA',
+      (() => {
+        const v = validarPasoFlujo(pasoEnvio, 'serbientrega porfa');
+        return v.valida === true && v.indice === 1;
+      })(),
+    );
+    caso(
+      'flujo opción: pedido complejo ("dos combos de 3, es decir 6") va a la IA',
+      (() => {
+        const v = validarPasoFlujo(pasoPromo, 'puedes ayudarme con dos combos de 3 porfa. es decir 6');
+        return v.valida === false && v.pedido_complejo === true;
+      })(),
+    );
+    caso(
+      'flujo opción: "dos combos de x 3porfa" también es pedido complejo (no elige la promo 2)',
+      validarPasoFlujo(pasoPromo, 'dos combos de x 3porfa').pedido_complejo === true,
+    );
+    caso(
+      'flujo opción: "dame 3 por favor" (un solo número) sigue eligiendo la promo 3',
+      (() => {
+        const v = validarPasoFlujo(pasoPromo, 'dame 3 por favor');
+        return v.valida === true && v.indice === 2;
+      })(),
+    );
+    // Caso real 782: "quiero adquirir el army bomb" no identificaba
+    // "ARMY BOMB LIGTHSTICK BTS V4" (2/4 = 50% < 60%) y el paquete fijo
+    // jamás salió. Nombrar el ARRANQUE del nombre identifica; los guardas
+    // viejos ("el cargador" ambiguo, dos productos que arrancan igual) siguen.
+    const {
+      elegirProductoPorTexto,
+    } = require('../src/services/producto_wizard_runtime.service');
+    caso(
+      'resolver por texto: "army bomb" identifica el nombre largo (arranque)',
+      elegirProductoPorTexto('quiero adquirir el army bomb', [
+        { id: 1, nombre: 'ARMY BOMB LIGTHSTICK BTS V4' },
+        { id: 2, nombre: 'Reloj SKMEI Multifuncion' },
+      ])?.id === 1,
+    );
+    caso(
+      'resolver por texto: "el cargador" solo sigue siendo ambiguo (no calza)',
+      elegirProductoPorTexto('quiero el cargador', [
+        { id: 1, nombre: 'Cargador de Bateria Rapido' },
+        { id: 2, nombre: 'Cargador Inalambrico Premium' },
+      ]) === null,
+    );
+    caso(
+      'resolver por texto: dos productos con el mismo arranque empatan → IA',
+      elegirProductoPorTexto('quiero el army bomb', [
+        { id: 1, nombre: 'ARMY BOMB LIGTHSTICK BTS V4' },
+        { id: 2, nombre: 'ARMY BOMB LIGTHSTICK BTS V3' },
+      ]) === null,
+    );
+    caso(
+      'flujo: pasosDelFlujo respeta el switch usar_flujo_pasos',
+      pasosDelFlujo({
+        usar_flujo_pasos: 0,
+        flujo_pasos_json: JSON.stringify([pasoEdad]),
+      }).length === 0 &&
+        pasosDelFlujo({
+          usar_flujo_pasos: 1,
+          flujo_pasos_json: JSON.stringify([pasoEdad]),
+        }).length === 1,
+    );
   }
 }
 

@@ -39,6 +39,7 @@ const {
 const {
   intentarMensajeFijoWizard,
   intentarRespuestaRapida,
+  intentarPasoFlujo,
 } = require('../services/producto_wizard_runtime.service');
 
 // Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
@@ -2363,6 +2364,25 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               // trae descripción IA, combos válidos, FAQs y stock en vivo.
               if (wiz?.bloqueMotor) bloque_producto_referral = wiz.bloqueMotor;
               if (wiz?.saltarIA) saltarIA = true;
+
+              // 1.6 Flujo de venta por pasos: si el producto tiene embudo
+              // manual configurado y la respuesta del cliente valida el paso
+              // pendiente (edad, ciudad, opción), sale el copy siguiente tal
+              // cual (0 tokens). Si el cliente se desvió, cae a respuestas
+              // rápidas → IA, que retoman la pregunta del paso.
+              if (!saltarIA && !wiz?.paqueteEnviado) {
+                const pasoFlujo = await intentarPasoFlujo({
+                  id_configuracion,
+                  id_cliente,
+                  telefono: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  estado_contacto,
+                  texto_mensaje,
+                  log: logWizard,
+                });
+                if (pasoFlujo?.manejado) saltarIA = true;
+              }
 
               if (!saltarIA && !wiz?.paqueteEnviado) {
                 const rapida = await intentarRespuestaRapida({

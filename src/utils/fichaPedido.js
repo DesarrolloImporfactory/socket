@@ -107,6 +107,82 @@ function aparecioEnCliente(valor, textoCliente, { esTelefono = false } = {}) {
   return palabras.every((w) => base.includes(w));
 }
 
+/* Distancia de edición con corte: para typos basta saber si es ≤ tope. */
+function distanciaEdicion(a, b, tope) {
+  if (Math.abs(a.length - b.length) > tope) return tope + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const fila = [i];
+    let minFila = i;
+    for (let j = 1; j <= b.length; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1;
+      fila[j] = Math.min(fila[j - 1] + 1, prev[j] + 1, prev[j - 1] + costo);
+      if (fila[j] < minFila) minFila = fila[j];
+    }
+    if (minFila > tope) return tope + 1;
+    prev = fila;
+  }
+  return prev[b.length];
+}
+
+/* ¿La CIUDAD aparece en las palabras del cliente aunque la haya escrito con
+   un typo? Caso real (UP NOW, 2026-09-01): el cliente escribió "Guayuquil",
+   el extractor la corrigió a "Guayaquil", la verificación literal la descartó
+   y el bot volvió a pedir la ciudad que ya le habían dado.
+   SOLO para ciudad — el anti-invento de nombre/teléfono/dirección no se toca.
+   Umbrales cortos a propósito: 1 letra de error en palabras de 5-7, 2 en 8+
+   ("quiero" NO es "Quito"; "guayuquil" SÍ es "guayaquil"). */
+function ciudadAproxEnCliente(valor, textoCliente) {
+  const palabrasValor = normalizar(valor)
+    .split(/[^a-zñ]+/)
+    .filter((w) => w.length >= 3);
+  if (!palabrasValor.length) return false;
+  const palabrasCliente = normalizar(textoCliente)
+    .split(/[^a-zñ]+/)
+    .filter((w) => w.length >= 3);
+  return palabrasValor.every((pv) => {
+    if (palabrasCliente.includes(pv)) return true;
+    if (pv.length < 5) return false;
+    const tope = pv.length >= 8 ? 2 : 1;
+    return palabrasCliente.some(
+      (pc) =>
+        Math.abs(pc.length - pv.length) <= tope &&
+        distanciaEdicion(pv, pc, tope) <= tope,
+    );
+  });
+}
+
+/* Si la ciudad aceptada trae un typo ("Guayuquil"), se corrige a la ciudad
+   conocida más cercana de la lista EC del embudo — el resumen y el auto-orden
+   Dropi necesitan una ciudad real, no la variante del cliente. Si no hay
+   candidata clara, se deja como vino (mejor el typo que inventar). */
+function corregirCiudadTypo(ciudad) {
+  if (!ciudad) return ciudad;
+  try {
+    const {
+      LUGARES_EC,
+      LUGARES_EC_FRASES,
+    } = require('../services/producto_wizard_runtime.service');
+    const n = normalizar(ciudad).trim();
+    if (LUGARES_EC.has(n) || LUGARES_EC_FRASES.includes(n)) {
+      return ciudad; // ya es una ciudad conocida, tal cual
+    }
+    if (n.length < 5) return ciudad;
+    const tope = n.length >= 8 ? 2 : 1;
+    for (const conocida of LUGARES_EC) {
+      if (
+        Math.abs(conocida.length - n.length) <= tope &&
+        distanciaEdicion(n, conocida, tope) <= tope
+      ) {
+        return conocida.charAt(0).toUpperCase() + conocida.slice(1);
+      }
+    }
+  } catch {
+    /* lista no disponible: la ciudad queda como vino */
+  }
+  return ciudad;
+}
+
 function limpiarTexto(v) {
   if (v === null || v === undefined) return '';
   if (typeof v !== 'string') v = String(v);
@@ -304,7 +380,14 @@ async function extraerFichaPedido({
   })
     ? v('telefono').replace(/\D/g, '')
     : '';
-  const ciudad = aparecioEnCliente(v('ciudad'), textoCliente) ? v('ciudad') : '';
+  /* La ciudad tolera el typo del cliente ("Guayuquil"): se acepta aunque no
+     coincida literal, y después se corrige contra la lista de ciudades EC
+     para que el resumen y el auto-orden reciban una ciudad real. */
+  const ciudad =
+    aparecioEnCliente(v('ciudad'), textoCliente) ||
+    ciudadAproxEnCliente(v('ciudad'), textoCliente)
+      ? corregirCiudadTypo(v('ciudad'))
+      : '';
   const direccion = aparecioEnCliente(v('direccion'), textoCliente)
     ? v('direccion')
     : '';
@@ -710,6 +793,13 @@ module.exports = {
   esCierreNarrado,
   pareceResumenDePedido,
   aparecioEnCliente,
+  // Exportadas para la batería: que el typo de ciudad se tolere (y se corrija
+  // a la ciudad real) sin abrirle la puerta al anti-invento es una garantía
+  // que no puede perderse.
+  ciudadAproxEnCliente,
+  corregirCiudadTypo,
+  // La usa el embudo para tolerar typos en las claves de opción ("domiclo").
+  distanciaEdicion,
   completarApellido,
   nombrePaisDe,
   limpiarCacheFicha,
