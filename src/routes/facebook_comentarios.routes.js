@@ -16,4 +16,8 @@ router.get('/posts', ctrl.listarPosts);
 router.get('/posts/:id_facebook_post/comentarios', ctrl.listarComentarios);
 router.get('/resumen', ctrl.resumen);
 
+// Escritura: publican en Facebook con el token de la página.
+router.post('/responder', ctrl.responder);
+router.post('/responder-privado', ctrl.responderEnPrivado);
+
 module.exports = router;
