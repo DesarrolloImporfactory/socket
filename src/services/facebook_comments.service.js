@@ -417,6 +417,220 @@ async function resumen({ id_configuracion }) {
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Escritura (responder)
+ * ------------------------------------------------------------------ */
+
+const axios = require('axios');
+const crypto = require('crypto');
+
+const GRAPH_VERSION = process.env.GRAPH_VERSION || 'v22.0';
+const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+
+const appsecretProof = (token) =>
+  crypto
+    .createHmac('sha256', process.env.FB_APP_SECRET)
+    .update(token)
+    .digest('hex');
+
+/**
+ * Comentario + token de su página, ambos acotados a la configuración.
+ *
+ * El token se busca por (id_configuracion, page_id) y no sólo por page_id como
+ * hace getPageTokenByPageId(): si la misma página estuviera en dos cuentas, esa
+ * versión devuelve la primera que encuentre y se publicaría con las
+ * credenciales equivocadas.
+ */
+async function cargarComentarioConToken({ id_configuracion, comment_id }) {
+  const [fila] = await db.query(
+    `SELECT c.id_facebook_comment, c.id_facebook_post, c.comment_id, c.page_id,
+            c.es_de_la_pagina, c.eliminado_at, c.privado_enviado,
+            p.page_access_token, p.status AS page_status
+       FROM facebook_comments c
+       JOIN messenger_pages p
+         ON p.page_id = c.page_id
+        AND p.id_configuracion = c.id_configuracion
+      WHERE c.id_configuracion = ? AND c.comment_id = ?
+      LIMIT 1`,
+    {
+      replacements: [id_configuracion, comment_id],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  return fila || null;
+}
+
+// Traduce el error de Meta a algo accionable. `err.response.data.error` trae
+// code/error_subcode/message; el message crudo es en inglés y muy técnico.
+function describirErrorMeta(err) {
+  const m = err.response?.data?.error;
+  if (!m) return err.message;
+  const codigo = `${m.code}${m.error_subcode ? `/${m.error_subcode}` : ''}`;
+  return `Meta ${codigo}: ${m.message}`;
+}
+
+/**
+ * Publica una respuesta pública a un comentario.
+ *
+ * Marca el padre como respondido de una vez, sin esperar al webhook: Meta nos
+ * va a notificar nuestra propia respuesta en unos segundos y `guardarComentario`
+ * hará lo mismo, pero si la bandeja tarda ese rato en actualizarse el usuario
+ * cree que no se envió y responde dos veces. La operación es idempotente
+ * (COALESCE en respondido_at), así que que ocurra dos veces no hace daño.
+ */
+async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario }) {
+  const texto = String(mensaje || '').trim();
+  if (!texto) throw new Error('El mensaje no puede estar vacío');
+
+  const c = await cargarComentarioConToken({ id_configuracion, comment_id });
+  if (!c) throw new Error('El comentario no existe en esta cuenta');
+  if (c.eliminado_at) throw new Error('El comentario fue eliminado en Facebook');
+  if (!c.page_access_token || c.page_status !== 'active') {
+    throw new Error(
+      'La página no tiene una conexión activa. Vuelve a conectarla en Canal de Conexiones.',
+    );
+  }
+
+  let respuesta_comment_id = null;
+  try {
+    const { data } = await axios.post(
+      `${GRAPH_BASE}/${encodeURIComponent(c.comment_id)}/comments`,
+      null,
+      {
+        params: {
+          message: texto,
+          access_token: c.page_access_token,
+          appsecret_proof: appsecretProof(c.page_access_token),
+        },
+        timeout: 20000,
+      },
+    );
+    respuesta_comment_id = data?.id || null;
+  } catch (err) {
+    const detalle = describirErrorMeta(err);
+    console.error(
+      `[FB_COMENT][ERROR] responder cfg=${id_configuracion} ` +
+        `comment=${comment_id} · ${detalle}`,
+    );
+    throw new Error(detalle);
+  }
+
+  await db.query(
+    `UPDATE facebook_comments
+        SET respondido = 1,
+            respondido_at = COALESCE(respondido_at, NOW()),
+            respondido_por = COALESCE(respondido_por, ?),
+            respuesta_comment_id = COALESCE(respuesta_comment_id, ?)
+      WHERE id_configuracion = ? AND comment_id = ?`,
+    {
+      replacements: [
+        id_sub_usuario || null,
+        respuesta_comment_id,
+        id_configuracion,
+        comment_id,
+      ],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+  await recalcularContadores(c.id_facebook_post);
+
+  console.log(
+    `[FB_COMENT] ✅ respondido comment=${comment_id} → ${respuesta_comment_id} ` +
+      `· cfg=${id_configuracion}`,
+  );
+
+  return { respuesta_comment_id, id_facebook_post: c.id_facebook_post };
+}
+
+/**
+ * "Responder en privado": abre un DM de Messenger con quien comentó.
+ *
+ * Meta sólo lo permite UNA vez por comentario, y por eso el resultado se guarda
+ * en la fila. Sin ese registro la interfaz ofrecería el botón otra vez y el
+ * segundo intento fallaría con un error que el usuario no puede interpretar.
+ *
+ * No abre la ventana de 24h de forma indefinida: es un único mensaje. La
+ * conversación que se cree llegará por el webhook de Messenger como cualquier
+ * otra y entrará al inbox por su camino normal.
+ */
+async function responderEnPrivado({
+  id_configuracion,
+  comment_id,
+  mensaje,
+  id_sub_usuario,
+}) {
+  const texto = String(mensaje || '').trim();
+  if (!texto) throw new Error('El mensaje no puede estar vacío');
+
+  const c = await cargarComentarioConToken({ id_configuracion, comment_id });
+  if (!c) throw new Error('El comentario no existe en esta cuenta');
+  if (c.es_de_la_pagina) {
+    throw new Error('No se puede responder en privado a un comentario propio');
+  }
+  if (c.privado_enviado) {
+    throw new Error('Ya se envió un mensaje privado por este comentario');
+  }
+  if (!c.page_access_token || c.page_status !== 'active') {
+    throw new Error(
+      'La página no tiene una conexión activa. Vuelve a conectarla en Canal de Conexiones.',
+    );
+  }
+
+  try {
+    const { data } = await axios.post(
+      `${GRAPH_BASE}/${encodeURIComponent(c.comment_id)}/private_replies`,
+      null,
+      {
+        params: {
+          message: texto,
+          access_token: c.page_access_token,
+          appsecret_proof: appsecretProof(c.page_access_token),
+        },
+        timeout: 20000,
+      },
+    );
+
+    await db.query(
+      `UPDATE facebook_comments
+          SET privado_enviado = 1, privado_at = NOW(),
+              privado_mid = ?, privado_error = NULL,
+              respondido_por = COALESCE(respondido_por, ?)
+        WHERE id_configuracion = ? AND comment_id = ?`,
+      {
+        replacements: [
+          data?.id || data?.message_id || null,
+          id_sub_usuario || null,
+          id_configuracion,
+          comment_id,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+
+    console.log(
+      `[FB_COMENT] ✅ privado enviado comment=${comment_id} · cfg=${id_configuracion}`,
+    );
+    return { privado_mid: data?.id || null };
+  } catch (err) {
+    const detalle = describirErrorMeta(err);
+    // El error se persiste, no sólo se devuelve: así la bandeja puede mostrar
+    // por qué no salió sin que el usuario tenga que reintentar para enterarse.
+    await db.query(
+      `UPDATE facebook_comments SET privado_error = ?
+        WHERE id_configuracion = ? AND comment_id = ?`,
+      {
+        replacements: [detalle.slice(0, 255), id_configuracion, comment_id],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    console.error(
+      `[FB_COMENT][ERROR] privado cfg=${id_configuracion} ` +
+        `comment=${comment_id} · ${detalle}`,
+    );
+    throw new Error(detalle);
+  }
+}
+
 module.exports = {
   procesarCambioFeed,
   guardarComentario,
@@ -424,4 +638,6 @@ module.exports = {
   listarPosts,
   listarComentarios,
   resumen,
+  responder,
+  responderEnPrivado,
 };

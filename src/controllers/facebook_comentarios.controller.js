@@ -46,3 +46,54 @@ exports.resumen = catchAsync(async (req, res) => {
   });
   res.json({ ok: true, ...data });
 });
+
+// En los POST el id_configuracion viaja en el body — protectConfigOwner lo
+// busca en body, query y params, así que sigue validando igual.
+const leerIdConfiguracionBody = (req) =>
+  Number(req.body?.id_configuracion ?? req.query?.id_configuracion);
+
+// POST /api/v1/facebook_comentarios/responder
+// body: { id_configuracion, comment_id, mensaje }
+exports.responder = catchAsync(async (req, res, next) => {
+  const { comment_id, mensaje } = req.body;
+  if (!comment_id || !String(mensaje || '').trim()) {
+    return next(new AppError('comment_id y mensaje son requeridos', 400));
+  }
+
+  try {
+    const data = await FacebookComments.responder({
+      id_configuracion: leerIdConfiguracionBody(req),
+      comment_id,
+      mensaje,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    // Publicar en Facebook falla por motivos del negocio, no del servidor:
+    // comentario borrado, página desconectada, token sin permisos. Devolverlo
+    // como 400 con el detalle deja que la bandeja muestre algo accionable en
+    // vez de un 500 genérico.
+    return next(new AppError(err.message, 400));
+  }
+});
+
+// POST /api/v1/facebook_comentarios/responder-privado
+// body: { id_configuracion, comment_id, mensaje }
+exports.responderEnPrivado = catchAsync(async (req, res, next) => {
+  const { comment_id, mensaje } = req.body;
+  if (!comment_id || !String(mensaje || '').trim()) {
+    return next(new AppError('comment_id y mensaje son requeridos', 400));
+  }
+
+  try {
+    const data = await FacebookComments.responderEnPrivado({
+      id_configuracion: leerIdConfiguracionBody(req),
+      comment_id,
+      mensaje,
+      id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+    });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    return next(new AppError(err.message, 400));
+  }
+});
