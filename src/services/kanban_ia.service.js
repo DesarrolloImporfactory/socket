@@ -104,6 +104,7 @@ const {
   pareceResumenDePedido,
   nombrePaisDe,
   aparecioEnCliente,
+  ciudadAproxEnCliente,
 } = require('../utils/fichaPedido');
 
 // ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
@@ -380,11 +381,16 @@ function camposFaltantesCierre(respuesta, ficha = null) {
   /* Anti-invento de la ciudad: si la línea trae una ciudad que el cliente no
      escribió, vale tanto como si faltara (y es peor: la guía saldría a otra
      parte). Se pide aunque haya dirección. */
+  /* El typo del cliente no es invento: "Guayuquil" en sus palabras valida la
+     línea "Ciudad: Guayaquil" del resumen (la ficha ya la corrige a la ciudad
+     real para el auto-orden). Caso UP NOW 2026-09-01: la ciudad corregida no
+     coincidía literal y el bot re-pedía la ciudad que ya le habían dado. */
   const ciudadInventada =
     ciudad !== null &&
     !esValorRelleno(ciudad) &&
     Boolean(textoCliente) &&
-    !dichoPorCliente(ciudad);
+    !dichoPorCliente(ciudad) &&
+    !ciudadAproxEnCliente(ciudad, textoCliente);
   if (ciudadInventada) {
     faltan.push('- Ciudad y provincia');
   } else if (ciudad === null || esValorRelleno(ciudad)) {
@@ -1633,6 +1639,29 @@ async function procesarMensajeKanban(params) {
       instruccionesProducto = bloqueWizardParaMotor(wizardEnJuego, {
         hayCatalogo: usarInline,
       });
+      // Con un flujo de venta por pasos activo, la IA solo atiende el desvío:
+      // responde la duda y retoma el embudo con la pregunta pendiente, tal
+      // cual el negocio lo opera a mano. La pregunta va LITERAL.
+      try {
+        const {
+          preguntaPendienteFlujo,
+        } = require('./producto_wizard_runtime.service');
+        const preguntaFlujo = await preguntaPendienteFlujo(
+          id_configuracion,
+          id_cliente,
+        );
+        if (preguntaFlujo) {
+          instruccionesProducto +=
+            `\n\n⚠️ FLUJO DE VENTA ACTIVO: este chat sigue un embudo por pasos que avanza SOLO con mensajes fijos del sistema. ` +
+            `Tu ÚNICO trabajo en este turno es responder la duda puntual del cliente en 1-2 frases, sin re-presentar el producto. ` +
+            `PROHIBIDO en este turno: pedir datos (nombre, teléfono, dirección), preguntar por envío o entrega, ofrecer promociones, ` +
+            `intentar cerrar el pedido o hacer CUALQUIER otra pregunta propia. ` +
+            `Tu mensaje debe terminar EXACTAMENTE con esta pregunta, escrita LITERAL y sin nada después:\n${preguntaFlujo}`;
+          await log(`🪜 flujo: directiva de retome inyectada ("${preguntaFlujo.slice(0, 60)}")`);
+        }
+      } catch (eFlujo) {
+        await log(`⚠️ flujo pregunta pendiente: ${eFlujo.message}`);
+      }
       prefacioWizard = instruccionesProducto;
       await log(
         `🧩 wizard: ficha del producto ${wizardEnJuego.producto.id} inyectada (prefacio)`,
@@ -2743,12 +2772,39 @@ async function procesarMensajeKanban(params) {
      Solo se descarta el resumen repetido. El resto de la conversación sale como
      siempre: descartar toda respuesta que quedó vieja tocaría el 28% de los
      mensajes (ver utils/dedupeAutoOrden.js) y eso es otro problema. */
-  if (soloTexto && cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
-    await log(
-      `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
-        `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
-    );
-    soloTexto = '';
+  let resumenRepetido = false;
+  if (cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
+    resumenRepetido = true;
+    if (soloTexto) {
+      await log(
+        `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
+          `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
+      );
+      soloTexto = '';
+    }
+  }
+
+  /* Opción del embudo: cerrar SIN mandarle el resumen técnico al cliente —
+     solo el mensaje de venta realizada (abajo). El cambio de columna y el
+     auto-orden Dropi NO se afectan: corrieron en el paso 10 sobre
+     respuestaRaw, mucho antes de este envío. */
+  let finFlujo = null;
+  if (cerroLaVenta && wizardEnJuego) {
+    try {
+      const {
+        mensajeVentaRealizada,
+      } = require('./producto_wizard_runtime.service');
+      finFlujo = mensajeVentaRealizada(wizardEnJuego.wizard);
+    } catch (eFin) {
+      await log(`⚠️ venta realizada: ${eFin.message}`);
+    }
+    if (finFlujo?.ocultar_resumen && soloTexto) {
+      await log(
+        `🙈 flujo: resumen de cierre NO enviado al cliente (opción del embudo); ` +
+          `la columna y el auto-orden ya se procesaron con él`,
+      );
+      soloTexto = '';
+    }
   }
 
   if (soloTexto) {
@@ -2781,6 +2837,39 @@ async function procesarMensajeKanban(params) {
         total_tokens,
         analytics: analyticsIA,
       });
+    }
+  }
+
+  /* Mensaje de VENTA REALIZADA del embudo (el "Flujo 7" del wizard): si esta
+     respuesta cerró la venta y el producto en juego lo tiene configurado,
+     sale DESPUÉS del resumen — copy fijo + imagen, 0 tokens. En ráfaga
+     (resumen repetido) tampoco se repite este mensaje. */
+  if (cerroLaVenta && !resumenRepetido && finFlujo) {
+    try {
+      for (const url of (finFlujo.media || []).slice(0, 4)) {
+        const tipoM = /\.(mp4|mov|3gp)(\?|$)/i.test(url) ? 'video' : 'image';
+        await canal
+          .enviarMedia({ tipo: tipoM, url, responsable: 'IA_flujo_venta' })
+          .catch(async (e) =>
+            log(`⚠️ venta realizada: falló ${tipoM} ${url}: ${e.message}`),
+          );
+      }
+      // El copy después de la media, misma razón que el paquete inicial.
+      if ((finFlujo.media || []).length && finFlujo.copy) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (finFlujo.copy) {
+        await canal.enviarTexto({
+          texto: finFlujo.copy,
+          responsable: 'IA_flujo_venta',
+          total_tokens: 0,
+        });
+      }
+      await log(
+        `🏁 flujo: mensaje de VENTA REALIZADA enviado (${(finFlujo.media || []).length} media)`,
+      );
+    } catch (eFin) {
+      await log(`⚠️ venta realizada: ${eFin.message}`);
     }
   }
 

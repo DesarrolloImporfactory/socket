@@ -58,6 +58,18 @@ const ProductosWizard = db.define(
     // JSON: [{ pregunta, respuesta, claves:[...] , activa:1 }]
     respuestas_rapidas_json: { type: DataTypes.TEXT('long'), allowNull: true },
 
+    // Flujo de venta por pasos (embudo manual por copys, 0 tokens).
+    // JSON: [{ espera:'edad'|'ciudad'|'opcion'|'libre', min, max, copy,
+    //          copy_invalido, pregunta, media:[url],
+    //          casos:[{contiene:[...], copy}],
+    //          opciones:[{claves:[...], copy, media:[url]}] }]
+    // DDL aplicado a mano el 2026-09-01 (db.sync no altera tablas existentes;
+    // ver el encabezado de este archivo):
+    //   ALTER TABLE productos_wizard
+    //     ADD COLUMN flujo_pasos_json LONGTEXT NULL AFTER respuestas_rapidas_json,
+    //     ADD COLUMN usar_flujo_pasos TINYINT(1) NOT NULL DEFAULT 0 AFTER usar_respuestas_rapidas;
+    flujo_pasos_json: { type: DataTypes.TEXT('long'), allowNull: true },
+
     // El mensaje FIJO ya compuesto (paso 4). Se manda tal cual, sin modelo.
     mensaje_inicial: { type: DataTypes.TEXT, allowNull: true },
 
@@ -66,6 +78,12 @@ const ProductosWizard = db.define(
       type: DataTypes.TINYINT,
       allowNull: false,
       defaultValue: 1,
+    },
+    // Apagado por defecto: el flujo por pasos es opt-in por producto.
+    usar_flujo_pasos: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
     },
     wizard_completado: {
       type: DataTypes.TINYINT,

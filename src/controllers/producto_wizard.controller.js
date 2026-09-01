@@ -150,6 +150,7 @@ exports.simular = conErrores(async (req, res) => {
     previous_response_id: b.previous_response_id || null,
     id_columna: Number(b.id_columna) || null,
     historial: Array.isArray(b.historial) ? b.historial.slice(-40) : [],
+    flujo_paso: Number.isInteger(b.flujo_paso) ? b.flujo_paso : null,
   });
   res.status(200).json({ status: 'success', data });
 });
