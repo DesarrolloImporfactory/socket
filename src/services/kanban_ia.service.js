@@ -104,6 +104,7 @@ const {
   pareceResumenDePedido,
   nombrePaisDe,
   aparecioEnCliente,
+  ciudadAproxEnCliente,
 } = require('../utils/fichaPedido');
 
 // ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
@@ -380,11 +381,16 @@ function camposFaltantesCierre(respuesta, ficha = null) {
   /* Anti-invento de la ciudad: si la línea trae una ciudad que el cliente no
      escribió, vale tanto como si faltara (y es peor: la guía saldría a otra
      parte). Se pide aunque haya dirección. */
+  /* El typo del cliente no es invento: "Guayuquil" en sus palabras valida la
+     línea "Ciudad: Guayaquil" del resumen (la ficha ya la corrige a la ciudad
+     real para el auto-orden). Caso UP NOW 2026-09-01: la ciudad corregida no
+     coincidía literal y el bot re-pedía la ciudad que ya le habían dado. */
   const ciudadInventada =
     ciudad !== null &&
     !esValorRelleno(ciudad) &&
     Boolean(textoCliente) &&
-    !dichoPorCliente(ciudad);
+    !dichoPorCliente(ciudad) &&
+    !ciudadAproxEnCliente(ciudad, textoCliente);
   if (ciudadInventada) {
     faltan.push('- Ciudad y provincia');
   } else if (ciudad === null || esValorRelleno(ciudad)) {
@@ -1547,21 +1553,15 @@ async function procesarMensajeKanban(params) {
   // genérico del referral. El modelo sigue siendo el de la columna
   // (kanban_columnas.modelo, se elige en la config del kanban). Gateado por el
   // wizard: las cuentas que no configuraron nada no cambian en nada.
+  //
+  // Acá solo se RESUELVE si hay ficha en juego; el bloque se arma después de
+  // 8.5, porque su última línea depende de si el modelo verá catálogo o no.
+  let wizardEnJuego = null;
   try {
     const {
       wizardDelClienteEnJuego,
-      bloqueWizardParaMotor,
     } = require('./producto_wizard_runtime.service');
-    const enJuego = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
-    if (enJuego) {
-      // En Responses el bloque va al INICIO del prompt (prefacio): una regla
-      // que debe cumplirse va arriba, no al final (caso 569: gpt-4o-mini
-      // ignoraba lo enterrado). En Assistants (legacy) no se puede prefijar
-      // el prompt del assistant, así que sigue por additional_instructions.
-      instruccionesProducto = bloqueWizardParaMotor(enJuego);
-      prefacioWizard = instruccionesProducto;
-      await log(`🧩 wizard: ficha del producto ${enJuego.producto.id} inyectada (prefacio)`);
-    }
+    wizardEnJuego = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
   } catch (eWiz) {
     await log(`⚠️ wizard motor: ${eWiz.message}`);
   }
@@ -1589,6 +1589,12 @@ async function procesarMensajeKanban(params) {
 
   if (usarInline) {
     await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
+  } else if (columna.vector_store_id && wizardEnJuego) {
+    // Fase 3 del wizard: con la ficha en juego el catálogo NO va por
+    // file_search — sus fragmentos duplican lo que la ficha ya trae y quedan
+    // pegados a la cadena de previous_response_id, re-cobrándose cada turno.
+    // Los documentos (vector_store_docs_id) sí siguen: no tienen otra vía.
+    await log(`🧩 Catálogo por file_search APAGADO: manda la ficha del wizard`);
   } else if (columna.vector_store_id) {
     // Se distingue POR QUÉ no fue inline. Sin esto, una cuenta habilitada que
     // se pasa del tope y una que nunca se habilitó dan el mismo log, y no hay
@@ -1617,6 +1623,53 @@ async function procesarMensajeKanban(params) {
   const bloqueCatalogo = usarInline
     ? `${PUENTE_INLINE}\n\n${catalogoInline}`
     : null;
+
+  if (wizardEnJuego) {
+    try {
+      const {
+        bloqueWizardParaMotor,
+      } = require('./producto_wizard_runtime.service');
+      // En Responses el bloque va al INICIO del prompt (prefacio): una regla
+      // que debe cumplirse va arriba, no al final (caso 569: gpt-4o-mini
+      // ignoraba lo enterrado). En Assistants (legacy) no se puede prefijar
+      // el prompt del assistant, así que sigue por additional_instructions.
+      // hayCatalogo: con inline la ficha remite al catálogo para otros
+      // productos; sin catálogo (file_search apagado por la ficha) remite al
+      // asesor.
+      instruccionesProducto = bloqueWizardParaMotor(wizardEnJuego, {
+        hayCatalogo: usarInline,
+      });
+      // Con un flujo de venta por pasos activo, la IA solo atiende el desvío:
+      // responde la duda y retoma el embudo con la pregunta pendiente, tal
+      // cual el negocio lo opera a mano. La pregunta va LITERAL.
+      try {
+        const {
+          preguntaPendienteFlujo,
+        } = require('./producto_wizard_runtime.service');
+        const preguntaFlujo = await preguntaPendienteFlujo(
+          id_configuracion,
+          id_cliente,
+        );
+        if (preguntaFlujo) {
+          instruccionesProducto +=
+            `\n\n⚠️ FLUJO DE VENTA ACTIVO: este chat sigue un embudo por pasos que avanza SOLO con mensajes fijos del sistema. ` +
+            `Tu ÚNICO trabajo en este turno es responder la duda puntual del cliente en 1-2 frases, sin re-presentar el producto. ` +
+            `PROHIBIDO en este turno: pedir datos (nombre, teléfono, dirección), preguntar por envío o entrega, ofrecer promociones, ` +
+            `intentar cerrar el pedido o hacer CUALQUIER otra pregunta propia. ` +
+            `Tu mensaje debe terminar EXACTAMENTE con esta pregunta, escrita LITERAL y sin nada después:\n${preguntaFlujo}`;
+          await log(`🪜 flujo: directiva de retome inyectada ("${preguntaFlujo.slice(0, 60)}")`);
+        }
+      } catch (eFlujo) {
+        await log(`⚠️ flujo pregunta pendiente: ${eFlujo.message}`);
+      }
+      prefacioWizard = instruccionesProducto;
+      await log(
+        `🧩 wizard: ficha del producto ${wizardEnJuego.producto.id} inyectada (prefacio)`,
+      );
+    } catch (eWiz) {
+      await log(`⚠️ wizard motor: ${eWiz.message}`);
+    }
+  }
 
   // ── 9. Ejecutar ───────────────────────────────────────────
   /* Candado por cliente: los huecos >8s que la ráfaga ya no agrupa corrían en
@@ -1669,9 +1722,12 @@ async function procesarMensajeKanban(params) {
         input: inputFinal,
         model: assistantInfo.model,
         max_tokens: columna.max_tokens || 500,
-        // El catálogo se apaga cuando va inline; los documentos NO, porque no
-        // tienen otra vía de llegar al modelo.
-        vector_store_id: usarInline ? null : columna.vector_store_id || null,
+        // El catálogo se apaga cuando va inline o cuando la ficha del wizard
+        // está en juego (Fase 3); los documentos NO, porque no tienen otra
+        // vía de llegar al modelo. Se gatea con prefacioWizard y no con
+        // wizardEnJuego: si el armado de la ficha falló, el catálogo se queda.
+        vector_store_id:
+          usarInline || prefacioWizard ? null : columna.vector_store_id || null,
         vector_store_docs_id: columna.vector_store_docs_id || null,
         api_key_openai,
         id_configuracion,
@@ -1737,7 +1793,10 @@ async function procesarMensajeKanban(params) {
           input: inputConRecap,
           model: assistantInfo.model,
           max_tokens: columna.max_tokens || 500,
-          vector_store_id: usarInline ? null : columna.vector_store_id || null,
+          vector_store_id:
+            usarInline || prefacioWizard
+              ? null
+              : columna.vector_store_id || null,
           vector_store_docs_id: columna.vector_store_docs_id || null,
           api_key_openai,
           id_configuracion,
@@ -2713,12 +2772,39 @@ async function procesarMensajeKanban(params) {
      Solo se descarta el resumen repetido. El resto de la conversación sale como
      siempre: descartar toda respuesta que quedó vieja tocaría el 28% de los
      mensajes (ver utils/dedupeAutoOrden.js) y eso es otro problema. */
-  if (soloTexto && cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
-    await log(
-      `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
-        `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
-    );
-    soloTexto = '';
+  let resumenRepetido = false;
+  if (cerroLaVenta && !reclamarResumenCierre(claveResumen)) {
+    resumenRepetido = true;
+    if (soloTexto) {
+      await log(
+        `🔁 Resumen de cierre repetido para cliente=${id_cliente}: no se envía ` +
+          `(ya salió uno hace menos de 5 min; el cliente escribió en ráfaga)`,
+      );
+      soloTexto = '';
+    }
+  }
+
+  /* Opción del embudo: cerrar SIN mandarle el resumen técnico al cliente —
+     solo el mensaje de venta realizada (abajo). El cambio de columna y el
+     auto-orden Dropi NO se afectan: corrieron en el paso 10 sobre
+     respuestaRaw, mucho antes de este envío. */
+  let finFlujo = null;
+  if (cerroLaVenta && wizardEnJuego) {
+    try {
+      const {
+        mensajeVentaRealizada,
+      } = require('./producto_wizard_runtime.service');
+      finFlujo = mensajeVentaRealizada(wizardEnJuego.wizard);
+    } catch (eFin) {
+      await log(`⚠️ venta realizada: ${eFin.message}`);
+    }
+    if (finFlujo?.ocultar_resumen && soloTexto) {
+      await log(
+        `🙈 flujo: resumen de cierre NO enviado al cliente (opción del embudo); ` +
+          `la columna y el auto-orden ya se procesaron con él`,
+      );
+      soloTexto = '';
+    }
   }
 
   if (soloTexto) {
@@ -2751,6 +2837,39 @@ async function procesarMensajeKanban(params) {
         total_tokens,
         analytics: analyticsIA,
       });
+    }
+  }
+
+  /* Mensaje de VENTA REALIZADA del embudo (el "Flujo 7" del wizard): si esta
+     respuesta cerró la venta y el producto en juego lo tiene configurado,
+     sale DESPUÉS del resumen — copy fijo + imagen, 0 tokens. En ráfaga
+     (resumen repetido) tampoco se repite este mensaje. */
+  if (cerroLaVenta && !resumenRepetido && finFlujo) {
+    try {
+      for (const url of (finFlujo.media || []).slice(0, 4)) {
+        const tipoM = /\.(mp4|mov|3gp)(\?|$)/i.test(url) ? 'video' : 'image';
+        await canal
+          .enviarMedia({ tipo: tipoM, url, responsable: 'IA_flujo_venta' })
+          .catch(async (e) =>
+            log(`⚠️ venta realizada: falló ${tipoM} ${url}: ${e.message}`),
+          );
+      }
+      // El copy después de la media, misma razón que el paquete inicial.
+      if ((finFlujo.media || []).length && finFlujo.copy) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (finFlujo.copy) {
+        await canal.enviarTexto({
+          texto: finFlujo.copy,
+          responsable: 'IA_flujo_venta',
+          total_tokens: 0,
+        });
+      }
+      await log(
+        `🏁 flujo: mensaje de VENTA REALIZADA enviado (${(finFlujo.media || []).length} media)`,
+      );
+    } catch (eFin) {
+      await log(`⚠️ venta realizada: ${eFin.message}`);
     }
   }
 
@@ -4030,6 +4149,9 @@ module.exports = {
   procesarMensajeKanban,
   cancelarRemarketingKanban,
   programarRemarketingKanban,
+  // Lo usa simular_conversacion.js para armar el catálogo inline EXACTAMENTE
+  // como producción: si el puente cambia acá, la simulación cambia sola.
+  PUENTE_INLINE,
   // Exportados para reutilizar la generación IA desde el remarketing de IG
   // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
   ejecutarAsistente,

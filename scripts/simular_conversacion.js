@@ -1,13 +1,15 @@
 /**
- * Simula una conversación completa contra los asistentes REALES de una cuenta,
- * sin mandar un solo mensaje de WhatsApp.
+ * Simula una conversación completa contra los prompts y modelos REALES de una
+ * cuenta (Responses API, igual que producción), sin mandar un solo mensaje de
+ * WhatsApp.
  *
  * Reproduce el camino de producción: inyecta el mismo contexto que arma
  * kanban_ia.service (sedes, agenda, precios, fichas, planes de sesiones), corre
- * el asistente de la columna donde está el contacto, aplica los tags para
+ * el prompt de la columna donde está el contacto con su catálogo (inline o
+ * file_search, la misma decisión que el runtime), aplica los tags para
  * moverlo de columna, limpia las coletillas de relleno y trocea el texto igual
- * que el envío real. El hilo es del cliente, no de la columna: al cambiar de
- * etapa cambia el asistente pero la conversación sigue.
+ * que el envío real. La cadena es del cliente, no de la columna: al cambiar de
+ * etapa cambian las instrucciones pero la conversación sigue.
  *
  * Existe para no tener que desplegar y probar con clientes de verdad.
  *
@@ -17,8 +19,18 @@
  */
 
 require('dotenv').config();
-const axios = require('axios');
 const { db } = require('../src/database/config');
+/* La MISMA función que usa producción para hablar con OpenAI (Responses API,
+   piso de tokens para gpt-5, tope de fragmentos de file_search, reintento si
+   vuelve vacío). Antes el simulador corría los assistants de las columnas por
+   la API de Assistants, pero esos assistants murieron (404) con la migración
+   a Responses del 2026-08-26: el prompt ahora vive en la BD
+   (kanban_columnas.instrucciones) y acá se lee de ahí, igual que kanban_ia. */
+const {
+  ejecutarConResponsesAPI,
+  PUENTE_INLINE,
+} = require('../src/services/kanban_ia.service');
+const { catalogoInlineActivo } = require('../src/utils/openia/fileSearch');
 const { construirContextoColumna } = require('../src/utils/contextoColumna');
 const { limpiarColetillas } = require('../src/utils/limpiarColetillas');
 const { humanizarFechas } = require('../src/utils/humanizarFechas');
@@ -52,15 +64,26 @@ const GUIONES = {
      guiones existen para correrlos ANTES de subir cualquier cambio a
      contextoColumna o al pipeline de respuesta. */
   dropi_combo: [
-    // Nombra el producto: sin eso el bot pregunta cuál y el guion no llega a
-    // los combos, que es lo que se quiere verificar.
-    'hola, cuanto cuesta la rodillera?',
+    // Nombra el producto con el nombre del CATÁLOGO: la regla vigente del
+    // prompt deriva al asesor cuando el nombre no coincide ("la rodillera" a
+    // secas se iba a asesor). Con el nombre bueno el guion llega a los
+    // combos, que es lo que se quiere verificar.
+    'hola, cuanto cuestan las rodilleras para bebe?',
     'y si llevo 2?',
     'dale, quiero 2',
   ],
   dropi_pedido: [
     'quiero comprar uno',
     'Juan Perez, 0987654321, Av. Amazonas y Colon, Quito, Pichincha',
+  ],
+
+  // ── Servicios (inmobiliaria) ────────────────────────────────────
+  // La 818 dejó de ser estética: su tablero capta propietarios y agenda
+  // visitas a inmuebles. Este guion arranca en por_agendar (--desde).
+  visita: [
+    'hola, me interesa el departamento, quisiera ir a verlo',
+    'puede ser manana?',
+    'a las 10 esta bien',
   ],
 
   // ── Servicios (estética / clínica) ──────────────────────────────
@@ -123,39 +146,40 @@ if (!ID_CONFIG || !ID_CLIENTE || !MENSAJES.length) {
   process.exit(1);
 }
 
-let headers;
+let API_KEY;
 
-const post = (url, body) => axios.post(url, body, { headers, timeout: 90000 });
+/* Un turno contra la Responses API con la MISMA decisión de catálogo que
+   producción: inline dentro de las instrucciones si está habilitado y cabe
+   (y entonces el vector store del catálogo va en null), file_search si no.
+   Los documentos del cliente siempre viajan. Devuelve el texto y el id de la
+   respuesta para encadenar el turno siguiente. */
+async function correr(col, input, previous_response_id) {
+  const usarInline =
+    !!(col.catalogo_inline || '').trim() &&
+    catalogoInlineActivo(ID_CONFIG, Number(col.catalogo_inline_tokens || 0));
 
-async function correr(thread, assistant_id, maxTokens) {
-  const { data: run } = await post(
-    `https://api.openai.com/v1/threads/${thread}/runs`,
-    { assistant_id, max_completion_tokens: maxTokens || 700 },
-  );
+  const instructions = usarInline
+    ? `${col.instrucciones}\n\n${PUENTE_INLINE}\n\n${col.catalogo_inline.trim()}`
+    : col.instrucciones;
 
-  let estado = 'queued';
-  let intentos = 0;
-  while (!['completed', 'failed', 'incomplete'].includes(estado) && intentos < 40) {
-    await new Promise((r) => setTimeout(r, 1200));
-    intentos += 1;
-    const { data } = await axios.get(
-      `https://api.openai.com/v1/threads/${thread}/runs/${run.id}`,
-      { headers },
-    );
-    estado = data.status;
-  }
+  const r = await ejecutarConResponsesAPI({
+    previous_response_id,
+    instructions,
+    additional_instructions: null,
+    input,
+    model: col.modelo,
+    max_tokens: col.max_tokens || 700,
+    vector_store_id: usarInline ? null : col.vector_store_id || null,
+    vector_store_docs_id: col.vector_store_docs_id || null,
+    api_key_openai: API_KEY,
+    id_configuracion: ID_CONFIG,
+  });
 
-  const { data: msgs } = await axios.get(
-    `https://api.openai.com/v1/threads/${thread}/messages`,
-    { headers },
-  );
-
-  return (
-    msgs.data
-      .reverse()
-      .find((m) => m.role === 'assistant' && m.run_id === run.id)
-      ?.content?.[0]?.text?.value || '(sin respuesta)'
-  );
+  return {
+    texto: r.respuesta || '(sin respuesta)',
+    response_id: r.response_id,
+    catalogo: usarInline ? 'inline' : col.vector_store_id ? 'file_search' : 'sin catálogo',
+  };
 }
 
 async function main() {
@@ -166,14 +190,12 @@ async function main() {
   if (!cfg?.api_key_openai)
     throw new Error(`La configuración ${ID_CONFIG} no tiene api_key_openai`);
 
-  headers = {
-    Authorization: `Bearer ${cfg.api_key_openai}`,
-    'Content-Type': 'application/json',
-    'OpenAI-Beta': 'assistants=v2',
-  };
+  API_KEY = cfg.api_key_openai;
 
   const columnas = await db.query(
-    `SELECT id, estado_db, nombre, assistant_id, max_tokens, modelo
+    `SELECT id, estado_db, nombre, max_tokens, modelo, instrucciones,
+            vector_store_id, vector_store_docs_id,
+            catalogo_inline, catalogo_inline_tokens
        FROM kanban_columnas
       WHERE id_configuracion = ? AND activo = 1 AND activa_ia = 1`,
     { replacements: [ID_CONFIG], type: db.QueryTypes.SELECT },
@@ -209,11 +231,14 @@ async function main() {
   const desde = resto.find((a) => a.startsWith('--desde='));
   // Permite probar una columna sin tener que mover el contacto a mano.
   let estado = desde ? desde.split('=')[1] : contacto?.estado_contacto || 'contacto_inicial';
-  const { data: thread } = await post('https://api.openai.com/v1/threads', {});
+  /* La conversación encadena por previous_response_id, como producción, pero
+     con una cadena local desechable: el hilo real del cliente (el guardado
+     por obtener_response.service) no se lee ni se escribe. */
+  let cadena = null;
 
   console.log(
     `Config ${ID_CONFIG} · contacto ${ID_CLIENTE} · empieza en "${estado}"\n` +
-      `(thread desechable ${thread.id} — no se toca el hilo real del cliente)\n`,
+      `(cadena de Responses desechable — no se toca el hilo real del cliente)\n`,
   );
 
   const alertas = [];
@@ -247,18 +272,25 @@ async function main() {
       },
     );
 
-    if (contexto.trim()) {
-      await post(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-        role: 'user',
-        content: `🧾 Contexto adicional:\n\n${contexto.trim()}`,
-      });
+    /* Mismo freno que producción: IA activa con el prompt vacío no se corre
+       (sería un modelo desnudo inventando precios). */
+    if (!String(col.instrucciones || '').trim()) {
+      console.log(
+        `\n⛔ La columna "${col.nombre}" tiene IA activa pero el prompt en BD está vacío (producción tampoco la ejecuta). Fin.`,
+      );
+      break;
     }
-    await post(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-      role: 'user',
-      content: mensaje,
-    });
 
-    const cruda = await correr(thread.id, col.assistant_id, col.max_tokens);
+    /* El mensaje va MARCADO al final del contexto, como en producción: pegado
+       sin rótulo tras miles de caracteres, un "1" o un "Una" se pierde
+       (incidente cfg 366). */
+    const input = contexto.trim()
+      ? `🧾 Contexto adicional:\n\n${contexto.trim()}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
+      : mensaje;
+
+    const turno = await correr(col, input, cadena);
+    cadena = turno.response_id || cadena;
+    const cruda = turno.texto;
 
     const tags = TAGS_CUENTA.filter((t) =>
       cruda.toLowerCase().includes(t.toLowerCase()),
@@ -275,7 +307,7 @@ async function main() {
     historial.unshift({ rol_mensaje: 1, texto_mensaje: texto });
 
     console.log(
-      `🤖 [${col.nombre} · ${col.modelo}] → ${partes.length} mensaje(s)`,
+      `🤖 [${col.nombre} · ${col.modelo} · catálogo ${turno.catalogo}] → ${partes.length} mensaje(s)`,
     );
     partes.forEach((p, i) =>
       console.log(`   ${i + 1}│ ${p.replace(/\n/g, '\n    │ ')}`),

@@ -145,9 +145,11 @@ function serializarWizard(w) {
   plano.bullets = leerJson(plano.bullets_json, []);
   plano.media = limitarMedia(leerJson(plano.media_json, []));
   plano.respuestas_rapidas = leerJson(plano.respuestas_rapidas_json, []);
+  plano.flujo_pasos = leerJson(plano.flujo_pasos_json, []);
   delete plano.bullets_json;
   delete plano.media_json;
   delete plano.respuestas_rapidas_json;
+  delete plano.flujo_pasos_json;
   return plano;
 }
 
@@ -302,6 +304,91 @@ const CAMPOS_TEXTO = [
   'mensaje_inicial',
 ];
 
+/* Sanitiza el flujo de venta por pasos que llega del modal. Topes generosos
+   pero firmes: 12 pasos, copys de hasta 3000 chars, 6 opciones, 4 medias y 4
+   casos por paso. Un paso sin `espera` válida o sin ningún copy se descarta. */
+const ESPERAS_FLUJO = ['edad', 'ciudad', 'opcion', 'libre'];
+
+function limpiarPasosFlujo(lista) {
+  if (!Array.isArray(lista)) return [];
+  const texto = (v, tope = 3000) =>
+    String(v == null ? '' : v).trim().slice(0, tope);
+  const urls = (v) =>
+    (Array.isArray(v) ? v : [])
+      .map((u) => texto(u, 500))
+      .filter((u) => /^https?:\/\//i.test(u))
+      .slice(0, 4);
+  const claves = (v) =>
+    (Array.isArray(v) ? v : [])
+      .map((c) => texto(c, 60))
+      .filter(Boolean)
+      .slice(0, 10);
+
+  return lista
+    .map((p) => {
+      // Entrada especial: el mensaje de VENTA REALIZADA (copy + media al
+      // cerrar). No es un paso de la secuencia; el runtime lo lee aparte.
+      if (p && p.espera === 'venta_realizada') {
+        const fin = {
+          espera: 'venta_realizada',
+          copy: texto(p.copy),
+          media: urls(p.media),
+          // Cerrar SIN mandarle el resumen técnico al cliente: solo este
+          // mensaje. El auto-orden y el cambio de columna no se afectan.
+          ocultar_resumen: p.ocultar_resumen ? 1 : 0,
+        };
+        return fin.copy || fin.media.length ? fin : null;
+      }
+      if (!p || !ESPERAS_FLUJO.includes(p.espera)) return null;
+      const retraso = Number(p.retraso);
+      const paso = {
+        espera: p.espera,
+        copy: texto(p.copy),
+        pregunta: texto(p.pregunta, 500),
+        media: urls(p.media),
+        // Segundos de espera antes de responder este paso (0 = al instante).
+        // Tope 3 minutos; el candado 'respondiendo' del runtime cubre la
+        // ventana para que un mensaje del cliente durante la espera no
+        // duplique el copy.
+        retraso: Number.isFinite(retraso)
+          ? Math.min(Math.max(Math.round(retraso), 0), 180)
+          : 0,
+      };
+      if (p.espera === 'edad') {
+        paso.min = Number.isFinite(Number(p.min)) ? Number(p.min) : 0;
+        paso.max = Number.isFinite(Number(p.max)) ? Number(p.max) : 120;
+        paso.copy_invalido = texto(p.copy_invalido);
+        // Fuera de rango → derivar a OTRO producto del listado (opcional):
+        // se envía copy_invalido como presentación + el paquete del alterno,
+        // y las rápidas/ficha/IA pasan a responder por ese producto.
+        paso.id_producto_alterno =
+          Number(p.id_producto_alterno) > 0 ? Number(p.id_producto_alterno) : 0;
+      }
+      if (p.espera === 'opcion') {
+        paso.opciones = (Array.isArray(p.opciones) ? p.opciones : [])
+          .map((o) => ({
+            claves: claves(o?.claves),
+            copy: texto(o?.copy),
+            media: urls(o?.media),
+          }))
+          .filter((o) => o.claves.length)
+          .slice(0, 6);
+        if (!paso.opciones.length) return null;
+      }
+      paso.casos = (Array.isArray(p.casos) ? p.casos : [])
+        .map((c) => ({ contiene: claves(c?.contiene), copy: texto(c?.copy) }))
+        .filter((c) => c.contiene.length && c.copy)
+        .slice(0, 4);
+      const tieneCopy =
+        paso.copy ||
+        (paso.opciones || []).some((o) => o.copy) ||
+        paso.media.length;
+      return tieneCopy ? paso : null;
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
 function limpiarFaqs(lista) {
   if (!Array.isArray(lista)) return [];
   return lista
@@ -357,6 +444,12 @@ async function guardarWizard(id_producto, id_configuracion, payload = {}) {
   }
   if (payload.usar_respuestas_rapidas !== undefined) {
     datos.usar_respuestas_rapidas = payload.usar_respuestas_rapidas ? 1 : 0;
+  }
+  if (payload.flujo_pasos !== undefined) {
+    datos.flujo_pasos_json = aJsonTexto(limpiarPasosFlujo(payload.flujo_pasos));
+  }
+  if (payload.usar_flujo_pasos !== undefined) {
+    datos.usar_flujo_pasos = payload.usar_flujo_pasos ? 1 : 0;
   }
   if (payload.activo !== undefined) datos.activo = payload.activo ? 1 : 0;
 
@@ -1129,12 +1222,185 @@ async function simularTurno({
   // ella se arma la FICHA DEL PEDIDO (qué datos ya dio el cliente y cuáles
   // faltan) igual que en producción, donde se lee de mensajes_clientes.
   historial = [],
+  // Índice del paso del flujo de venta que está ESPERANDO respuesta (lo lleva
+  // el front, igual que en producción lo lleva productos_wizard_flujo).
+  // null/0 = paso 0; -1 = flujo terminado.
+  flujo_paso = null,
 }) {
   const texto = String(mensaje || '').trim();
   if (!texto) throw errorCon('Escribe un mensaje para simular.', 'SIN_MENSAJE');
+  /* desde_bd: el front lo manda cuando la simulación ya NO está en el
+     producto del modal (una derivación cambió el producto en juego): las
+     rápidas, el flujo y la ficha se leen del wizard GUARDADO de ese otro
+     producto, no del formulario en pantalla. */
+  if (wizardInput && wizardInput.desde_bd) {
+    const deBd = await obtenerWizard(id_producto, id_configuracion);
+    wizardInput = deBd?.wizard || {};
+  }
   const producto = await cargarProducto(id_producto, id_configuracion);
   if (!producto) throw errorCon('Producto no encontrado.', 'NOT_FOUND', 404);
   producto.variaciones = await cargarVariaciones(producto);
+
+  // 0.5) Flujo de venta por pasos — ANTES que la rápida, como en producción.
+  // Se valida contra los pasos que el usuario tiene EN PANTALLA (sin guardar),
+  // para que pruebe lo que está editando.
+  const { validarPasoFlujo } = require('./producto_wizard_runtime.service');
+  const pasosFlujoTodos =
+    Number(wizardInput.usar_flujo_pasos) === 1
+      ? limpiarPasosFlujo(wizardInput.flujo_pasos || [])
+      : [];
+  // La secuencia excluye la entrada de venta realizada (no es un paso).
+  const pasosFlujo = pasosFlujoTodos.filter(
+    (p) => p.espera !== 'venta_realizada',
+  );
+  let pasoActual = Number.isInteger(flujo_paso) ? flujo_paso : 0;
+  // Pregunta del paso pendiente: la rápida y la IA retoman el embudo con ella.
+  let preguntaFlujo = null;
+  if (pasosFlujo.length && pasoActual >= 0 && pasoActual < pasosFlujo.length) {
+    const paso = pasosFlujo[pasoActual];
+    preguntaFlujo = String(paso.pregunta || '').trim() || null;
+    /* La FAQ le gana a los pasos de validación débil (ciudad/libre), igual
+       que en producción: "tiene registro sanitario" sin "?" no es una ciudad. */
+    const {
+      elegirRespuestaRapida: faqDelFlujo,
+    } = require('../utils/wizardProducto/respuestasRapidas');
+    const faqGana =
+      ['ciudad', 'libre'].includes(paso.espera) &&
+      (wizardInput.usar_respuestas_rapidas === undefined ||
+        Boolean(Number(wizardInput.usar_respuestas_rapidas))) &&
+      Boolean(
+        faqDelFlujo(texto, limpiarFaqs(wizardInput.respuestas_rapidas || [])),
+      );
+    const v = faqGana ? { valida: false } : validarPasoFlujo(paso, texto);
+    /* Pedido complejo ("dos combos de 3"): igual que en vivo, el embudo se
+       hace a un lado del todo y la IA toma el pedido — sin retome. */
+    if (v.pedido_complejo) {
+      preguntaFlujo = null;
+      pasoActual = -1;
+    }
+    // Si el validador detectó un lugar dentro de la frase, {{respuesta}}
+    // interpola solo el lugar; en pasos de ciudad el typo se corrige a la
+    // ciudad real ("Guayuquil" → "Guayaquil"), igual que la ficha.
+    let respuestaBase = String(v.lugar || texto);
+    if (paso.espera === 'ciudad') {
+      const { corregirCiudadTypo } = require('../utils/fichaPedido');
+      respuestaBase = corregirCiudadTypo(respuestaBase);
+    }
+    const respuestaTitulo = respuestaBase
+      .toLowerCase()
+      .replace(/\p{L}+/gu, (w) => w.charAt(0).toUpperCase() + w.slice(1));
+    const conResp = (c) =>
+      String(c || '').replace(/\{\{\s*respuesta\s*\}\}/gi, respuestaTitulo);
+    const turnoFlujo = (respuesta, siguiente, extra = {}) => ({
+      tipo: 'flujo',
+      respuesta,
+      responsable: 'IA_flujo_venta',
+      remitente: 'Flujo de venta',
+      tokens: 0,
+      flujo_paso: siguiente,
+      previous_response_id,
+      ...extra,
+    });
+    if (v.caso) {
+      return turnoFlujo(conResp(v.caso.copy).trim(), pasoActual);
+    }
+    /* Fuera de rango con producto ALTERNO: igual que en vivo — presentación
+       + paquete del alterno (+ paso 0 auto si hereda la edad) y el front
+       cambia de producto para los turnos siguientes (cambiar_producto). */
+    if (
+      v.fuera_rango &&
+      Number(paso.id_producto_alterno) > 0 &&
+      Number(paso.id_producto_alterno) !== Number(id_producto)
+    ) {
+      try {
+        const alternoId = Number(paso.id_producto_alterno);
+        const alterno = await obtenerWizard(alternoId, id_configuracion);
+        const w2 = alterno?.wizard;
+        const p2 = alterno?.producto;
+        if (
+          w2 &&
+          p2 &&
+          Number(w2.wizard_completado) === 1 &&
+          Number(w2.activo) === 1
+        ) {
+          const pasos2 = limpiarPasosFlujo(w2.flujo_pasos || []).filter(
+            (x) => x.espera !== 'venta_realizada',
+          );
+          let v2 = null;
+          const hereda =
+            Number(w2.usar_flujo_pasos) === 1 &&
+            pasos2.length > 0 &&
+            pasos2[0].espera === 'edad' &&
+            Number.isFinite(Number(v.edad)) &&
+            (v2 = validarPasoFlujo(pasos2[0], String(v.edad))).valida === true;
+
+          let textoPaquete = String(w2.mensaje_inicial || '').trim();
+          const gancho = String(w2.pregunta_gancho || '').trim();
+          if (hereda && gancho && textoPaquete.includes(gancho)) {
+            textoPaquete = textoPaquete.split(gancho).join('').trim();
+          }
+          const partes = [conResp(paso.copy_invalido).trim(), textoPaquete];
+          if (hereda) {
+            const copy0 = String(
+              (v2.opcion && v2.opcion.copy) || pasos2[0].copy || '',
+            )
+              .replace(/\{\{\s*respuesta\s*\}\}/gi, String(v.edad))
+              .trim();
+            if (copy0) partes.push(copy0);
+          }
+          const media = [];
+          if (p2.imagen_url) media.push({ tipo: 'image', url: p2.imagen_url });
+          for (const m of Array.isArray(w2.media) ? w2.media : []) {
+            if (m?.url && !media.some((x) => x.url === m.url)) {
+              media.push({
+                tipo: m.tipo === 'video' ? 'video' : 'image',
+                url: m.url,
+              });
+            }
+          }
+          const sinFlujo2 =
+            Number(w2.usar_flujo_pasos) !== 1 || !pasos2.length;
+          const pasoAlterno = sinFlujo2
+            ? -1
+            : hereda
+              ? pasos2.length > 1
+                ? 1
+                : -1
+              : 0;
+          return {
+            ...turnoFlujo(
+              partes.filter(Boolean).join('\n\n'),
+              pasoAlterno,
+            ),
+            media_flujo: media.slice(0, 4),
+            cambiar_producto: { id: alternoId, nombre: p2.nombre },
+          };
+        }
+      } catch {
+        /* alterno no disponible: cae al copy_invalido de siempre */
+      }
+    }
+    if (v.fuera_rango && String(paso.copy_invalido || '').trim()) {
+      return turnoFlujo(conResp(paso.copy_invalido).trim(), -1, {
+        flujo_terminado: true,
+      });
+    }
+    if (v.valida) {
+      const copy = conResp((v.opcion && v.opcion.copy) || paso.copy).trim();
+      const media =
+        v.opcion && Array.isArray(v.opcion.media) && v.opcion.media.length
+          ? v.opcion.media
+          : paso.media || [];
+      if (copy || media.length) {
+        const sig = pasoActual + 1;
+        return turnoFlujo(copy, sig >= pasosFlujo.length ? -1 : sig, {
+          media_flujo: media,
+          flujo_completo: sig >= pasosFlujo.length,
+        });
+      }
+    }
+    // No validó: el turno sigue por rápida / IA, que retoman con preguntaFlujo.
+  }
 
   const {
     elegirRespuestaRapida,
@@ -1160,13 +1426,18 @@ async function simularTurno({
     } = require('../utils/wizardProducto/cierreVenta');
     return {
       tipo: 'rapida',
-      respuesta: conCierreDeVenta(
-        matchFaq.faq.respuesta,
-        semillaCierre('', matchFaq.indice),
-      ),
+      // Con el flujo activo, la quemada retoma la PREGUNTA del paso pendiente
+      // en lugar del remate genérico — igual que en producción.
+      respuesta: preguntaFlujo
+        ? `${String(matchFaq.faq.respuesta).trim()}\n\n${preguntaFlujo}`
+        : conCierreDeVenta(
+            matchFaq.faq.respuesta,
+            semillaCierre('', matchFaq.indice),
+          ),
       responsable: 'IA_respuesta_rapida',
       remitente: 'Respuesta rápida',
       tokens: 0,
+      flujo_paso: pasoActual,
       previous_response_id,
     };
   }
@@ -1243,7 +1514,17 @@ async function simularTurno({
   } catch {
     producto.upsell = null;
   }
-  const prefacio = bloqueWizardParaMotor({ producto, wizard: wizardLike });
+  let prefacio = bloqueWizardParaMotor({ producto, wizard: wizardLike });
+  // Con el flujo activo, la IA solo atiende el desvío y retoma el embudo con
+  // la pregunta pendiente — la misma directiva que inyecta kanban_ia en vivo.
+  if (preguntaFlujo) {
+    prefacio +=
+      `\n\n⚠️ FLUJO DE VENTA ACTIVO: este chat sigue un embudo por pasos que avanza SOLO con mensajes fijos del sistema. ` +
+      `Tu ÚNICO trabajo en este turno es responder la duda puntual del cliente en 1-2 frases, sin re-presentar el producto. ` +
+      `PROHIBIDO en este turno: pedir datos (nombre, teléfono, dirección), preguntar por envío o entrega, ofrecer promociones, ` +
+      `intentar cerrar el pedido o hacer CUALQUIER otra pregunta propia. ` +
+      `Tu mensaje debe terminar EXACTAMENTE con esta pregunta, escrita LITERAL y sin nada después:\n${preguntaFlujo}`;
+  }
 
   let bloqueContexto = '';
   let acciones = [];
@@ -1482,15 +1763,55 @@ async function simularTurno({
   }
 
   let limpio = limpiarTagsAcciones(crudo);
+  /* Igual que producción: los marcadores [producto_imagen_url]/[..._video_url]
+     se convierten en ADJUNTOS y sus líneas salen del texto. Sin esto, la
+     vista previa mostraba la URL pelada dentro del mensaje. */
+  let media_ia = [];
+  try {
+    const { extraerUrlsMedia } = require('../utils/urlsMedia');
+    const ext = extraerUrlsMedia(limpio);
+    media_ia = [
+      ...(ext.imagenes || []).map((u) => ({ tipo: 'image', url: u })),
+      ...(ext.videos || []).map((u) => ({ tipo: 'video', url: u })),
+    ];
+    limpio = ext.texto;
+  } catch {
+    /* sin extractor: el texto queda como vino */
+  }
   try {
     limpio = limpiarMarkdown(limpio);
   } catch {
     /* sin limpieza extra */
   }
 
+  // Mensaje de VENTA REALIZADA del embudo: si este turno cerró la venta (el
+  // trigger pasó el validador), el front lo muestra como turno extra — igual
+  // que en vivo lo envía kanban_ia después del resumen.
+  let post_venta = null;
+  let resumen_oculto = false;
+  if (
+    accCierre &&
+    !cierre_bloqueado &&
+    textoBajo.includes(String(accCierre.cfg.trigger).toLowerCase())
+  ) {
+    const fin = pasosFlujoTodos.find((p) => p.espera === 'venta_realizada');
+    if (fin && (fin.copy || (fin.media || []).length)) {
+      post_venta = { copy: fin.copy || '', media: fin.media || [] };
+      // Igual que en vivo: con la opción activa, el resumen técnico no se le
+      // muestra al cliente (la orden se procesa internamente con él).
+      if (Number(fin.ocultar_resumen) === 1) {
+        resumen_oculto = true;
+        limpio = '';
+      }
+    }
+  }
+
   return {
     tipo: 'ia',
     respuesta: limpio.trim(),
+    media_ia,
+    post_venta,
+    resumen_oculto,
     responsable: `IA_${col.nombre}`,
     remitente: `IA ${col.nombre}`,
     columna: col.nombre,
@@ -1503,6 +1824,7 @@ async function simularTurno({
     faq_omitida,
     cierre_bloqueado,
     resumen_completado,
+    flujo_paso: pasoActual,
     ficha: fichaPedido
       ? {
           nombre: fichaPedido.nombre,

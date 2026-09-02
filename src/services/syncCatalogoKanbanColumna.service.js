@@ -125,115 +125,21 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
   // Ahora la limpieza va en el paso 11, después de guardar el reemplazo.
 
   // ── 4. Obtener catálogo de productos ──────────────────────
-  // Si es proveedor, traemos external_id/external_source. Si no, omitimos.
-  const selectExternal = esProveedor
-    ? ', pc.external_id, pc.external_source'
-    : '';
+  // El armado vive en armarCatalogPayload, compartido con
+  // generarInlineColumna: una sola fuente de verdad para el contenido.
+  const catalogPayload = await armarCatalogPayload({
+    id_configuracion,
+    id_kanban_columna,
+    columna_nombre: columna.nombre,
+    esProveedor,
+  });
 
-  const productos = await db.query(
-    `SELECT pc.id AS id_producto, pc.id_configuracion,
-            pc.nombre, pc.descripcion, pc.tipo, pc.precio,
-            pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
-            pc.stock, pc.combos_producto, pc.es_variable,
-            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
-            -- Solo el nombre del atributo y sus valores: "Color: Negro, Cafe".
-            -- Sin stock y sin repetir el atributo en cada opción, porque el
-            -- bot copia literal lo que ve y terminaba recitándole al cliente
-            -- "Variante: Negro (stock 387)".
-            (SELECT CONCAT(
-                      MAX(pv.atributo), ': ',
-                      GROUP_CONCAT(pv.valor ORDER BY pv.id SEPARATOR ', '))
-               FROM productos_variaciones pv
-              WHERE pv.id_producto = pc.id AND pv.activo = 1) AS variantes_texto
-            ${selectExternal},
-            cc.nombre AS nombre_categoria
-     FROM   productos_chat_center pc
-     LEFT JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
-     WHERE  pc.id_configuracion = ?
-     ORDER  BY pc.id DESC`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
-
-  if (!productos.length) {
+  if (!catalogPayload) {
     await logger(
       `ℹ️ Sin productos para id_configuracion=${id_configuracion}. No se sincroniza.`,
     );
     return { ok: true, skipped: true, reason: 'Sin productos' };
   }
-
-  const catalogoNormalizado = normalizeCatalogProducts(productos, esProveedor);
-
-  const catalogoProductos = catalogoNormalizado.filter(
-    (p) => String(p.tipo || '').toLowerCase() !== 'servicio',
-  );
-  const catalogoServicios = catalogoNormalizado.filter(
-    (p) => String(p.tipo || '').toLowerCase() === 'servicio',
-  );
-
-  /* Van SIEMPRE los dos. Antes era `productos.length ? productos : servicios`,
-     o sea que un solo producto suelto dejaba al asistente sin ver ningún
-     servicio: una estética que además vende una plancha de cabello perdía todo
-     su catálogo de tratamientos y el bot respondía que no ofrecen nada.
-
-     Los negocios de servicios que también venden algo (estéticas, barberías,
-     veterinarias, talleres) son la norma, no la excepción. Lo que sí cambia es
-     QUÉ se hace con cada uno: un servicio se agenda, un producto se despacha.
-     Por eso van juntos pero etiquetados, y las instrucciones se lo explican. */
-  const itemsFinales = [...catalogoServicios, ...catalogoProductos];
-  const tipoCatalogo =
-    catalogoServicios.length && catalogoProductos.length
-      ? 'mixto'
-      : catalogoProductos.length
-        ? 'productos'
-        : 'servicios';
-
-  // Instrucciones diferenciadas según tipo de cuenta
-  const instrucciones_uso_ia = esProveedor
-    ? [
-        'Use este catálogo como base de conocimiento.',
-        'Cada item incluye id_dropi (cuando aplica): el cliente puede pedir un producto solo con su ID Dropi (ej: "tienes el 158923?", "info del #158923", "ID 158923"). Búsquelo por id_dropi/external_id.',
-        'Cada item incluye stock al momento de la sincronización. Es referencial.',
-        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
-        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
-        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
-        'Si el sistema provee datos de stock/precio en tiempo real por base de datos, prefiera esos sobre los del catálogo.',
-      ]
-    : [
-        'Use este catálogo como base de conocimiento.',
-        'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
-        'IMPORTANTE: este catálogo es información INTERNA de consulta. NUNCA copie el formato de estos bloques (🛒 Producto, 📃 Descripción, etc.) en sus mensajes ni en el resumen del pedido: el formato del resumen lo define el prompt del agente, no este archivo.',
-        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
-        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
-        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
-        'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
-        'Priorice datos en tiempo real sobre file_search si hay diferencias.',
-      ];
-
-  /* Con catálogo mixto hay que decirle explícitamente qué hacer con cada tipo:
-     si no, ofrece agendar una cita para comprar una plancha, o intenta vender
-     un tratamiento como si se lo llevara a casa. */
-  if (tipoCatalogo === 'mixto') {
-    instrucciones_uso_ia.push(
-      'Este catálogo tiene SERVICIOS y PRODUCTOS mezclados. Cada item trae su campo "tipo": respételo.',
-      'Un item con tipo "servicio" se PRESTA en el local y se AGENDA (cita con fecha y hora).',
-      'Un item con tipo "producto" se VENDE y se entrega o se despacha: NO se agenda cita para comprarlo.',
-      'Si el cliente pregunta por algo que se vende, respóndale con el producto; no lo redirija a agendar una cita salvo que él lo pida.',
-      'Si un cliente quiere las dos cosas (por ejemplo un tratamiento y llevarse un producto), atienda primero lo que agenda y mencione el producto al cerrar.',
-    );
-  }
-
-  const catalogPayload = {
-    schema_version: esProveedor ? '1.1-proveedor' : '1.0',
-    id_configuracion: Number(id_configuracion),
-    id_kanban_columna: Number(id_kanban_columna),
-    columna_nombre: columna.nombre,
-    tipo_catalogo: tipoCatalogo,
-    modo: esProveedor ? 'proveedor' : 'dropshipper',
-    generado_en: new Date().toISOString(),
-    total_items: itemsFinales.length,
-    items: itemsFinales,
-    instrucciones_uso_ia,
-  };
 
   // El texto plano se arma acá, antes de tocar OpenAI, porque de sus tokens
   // depende una decisión que se toma más abajo: si un fallo indexando puede
@@ -481,7 +387,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
 
   await logger(
     `${indexado ? '✅ Sync completo' : '⚠️ Sync parcial (solo catálogo inline)'}: ` +
-      `columna="${columna.nombre}" assistant=${assistant_id} items=${catalogoNormalizado.length} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
+      `columna="${columna.nombre}" assistant=${assistant_id} items=${catalogPayload.total_items} modo=${esProveedor ? 'proveedor' : 'dropshipper'}`,
   );
 
   return {
@@ -494,7 +400,7 @@ async function syncCatalogoKanbanColumna(id_kanban_columna, opts = {}) {
     assistant_id,
     vector_store_id: indexado ? vectorStoreId : vsAnterior || null,
     catalog_file_id: indexado ? fileIdFinal : columna.catalog_file_id || null,
-    total_items: catalogoNormalizado.length,
+    total_items: catalogPayload.total_items,
     local_file_path: localFilePath, // ← NUEVO
   };
 }
@@ -1024,6 +930,197 @@ async function ensureAssistantHasFileSearch(
 //
 // Solo se llama si GENERAR_CATALOGO_INLINE está en true.
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// armarCatalogPayload
+// Lee los productos de la config y arma el payload del catálogo (items
+// normalizados + instrucciones de uso). Compartido entre el sync completo y
+// generarInlineColumna: el contenido del catálogo tiene UNA sola fuente de
+// verdad — duplicar esta lógica es cómo se desincronizan los dos caminos.
+// Devuelve null si la config no tiene productos.
+// ─────────────────────────────────────────────────────────────
+async function armarCatalogPayload({
+  id_configuracion,
+  id_kanban_columna,
+  columna_nombre,
+  esProveedor,
+}) {
+  // Si es proveedor, traemos external_id/external_source. Si no, omitimos.
+  const selectExternal = esProveedor
+    ? ', pc.external_id, pc.external_source'
+    : '';
+
+  const productos = await db.query(
+    `SELECT pc.id AS id_producto, pc.id_configuracion,
+            pc.nombre, pc.descripcion, pc.tipo, pc.precio,
+            pc.duracion, pc.id_categoria, pc.imagen_url, pc.video_url,
+            pc.stock, pc.combos_producto, pc.es_variable,
+            pc.fecha_actualizacion, pc.material, pc.landing_url, pc.precio_proveedor,
+            -- Solo el nombre del atributo y sus valores: "Color: Negro, Cafe".
+            -- Sin stock y sin repetir el atributo en cada opción, porque el
+            -- bot copia literal lo que ve y terminaba recitándole al cliente
+            -- "Variante: Negro (stock 387)".
+            (SELECT CONCAT(
+                      MAX(pv.atributo), ': ',
+                      GROUP_CONCAT(pv.valor ORDER BY pv.id SEPARATOR ', '))
+               FROM productos_variaciones pv
+              WHERE pv.id_producto = pc.id AND pv.activo = 1) AS variantes_texto
+            ${selectExternal},
+            cc.nombre AS nombre_categoria
+     FROM   productos_chat_center pc
+     LEFT JOIN categorias_chat_center cc ON cc.id = pc.id_categoria
+     WHERE  pc.id_configuracion = ?
+     ORDER  BY pc.id DESC`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!productos.length) return null;
+
+  const catalogoNormalizado = normalizeCatalogProducts(productos, esProveedor);
+
+  const catalogoProductos = catalogoNormalizado.filter(
+    (p) => String(p.tipo || '').toLowerCase() !== 'servicio',
+  );
+  const catalogoServicios = catalogoNormalizado.filter(
+    (p) => String(p.tipo || '').toLowerCase() === 'servicio',
+  );
+
+  /* Van SIEMPRE los dos. Antes era `productos.length ? productos : servicios`,
+     o sea que un solo producto suelto dejaba al asistente sin ver ningún
+     servicio: una estética que además vende una plancha de cabello perdía todo
+     su catálogo de tratamientos y el bot respondía que no ofrecen nada.
+
+     Los negocios de servicios que también venden algo (estéticas, barberías,
+     veterinarias, talleres) son la norma, no la excepción. Lo que sí cambia es
+     QUÉ se hace con cada uno: un servicio se agenda, un producto se despacha.
+     Por eso van juntos pero etiquetados, y las instrucciones se lo explican. */
+  const itemsFinales = [...catalogoServicios, ...catalogoProductos];
+  const tipoCatalogo =
+    catalogoServicios.length && catalogoProductos.length
+      ? 'mixto'
+      : catalogoProductos.length
+        ? 'productos'
+        : 'servicios';
+
+  // Instrucciones diferenciadas según tipo de cuenta
+  const instrucciones_uso_ia = esProveedor
+    ? [
+        'Use este catálogo como base de conocimiento.',
+        'Cada item incluye id_dropi (cuando aplica): el cliente puede pedir un producto solo con su ID Dropi (ej: "tienes el 158923?", "info del #158923", "ID 158923"). Búsquelo por id_dropi/external_id.',
+        'Cada item incluye stock al momento de la sincronización. Es referencial.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
+        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
+        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
+        'Si el sistema provee datos de stock/precio en tiempo real por base de datos, prefiera esos sobre los del catálogo.',
+      ]
+    : [
+        'Use este catálogo como base de conocimiento.',
+        'Cada item puede incluir un campo "bloque_prompt" con etiquetas compatibles con datos_pedido.',
+        'IMPORTANTE: este catálogo es información INTERNA de consulta. NUNCA copie el formato de estos bloques (🛒 Producto, 📃 Descripción, etc.) en sus mensajes ni en el resumen del pedido: el formato del resumen lo define el prompt del agente, no este archivo.',
+        'Use los identificadores [producto_imagen_url], [producto_video_url] cuando existan.',
+        'Si un item dice "PRODUCTO VARIABLE", PREGUNTE al cliente qué variedad quiere (color, talla…) antes de cerrar la venta y agregue la línea "🎨 Variedad: <la elegida>" al resumen del pedido. Si el item no es variable, NO agregue esa línea.',
+        'Si el cliente pide MÁS DE UNA variedad, escriba cuántas unidades de cada una: "🎨 Variedad: Negro x2, Cafe x1". Las cantidades tienen que sumar exactamente la cantidad total del pedido. Con una sola variedad basta el nombre.',
+        'No asuma stock/precio en tiempo real si el sistema provee esos datos por base de datos.',
+        'Priorice datos en tiempo real sobre file_search si hay diferencias.',
+      ];
+
+  /* Con catálogo mixto hay que decirle explícitamente qué hacer con cada tipo:
+     si no, ofrece agendar una cita para comprar una plancha, o intenta vender
+     un tratamiento como si se lo llevara a casa. */
+  if (tipoCatalogo === 'mixto') {
+    instrucciones_uso_ia.push(
+      'Este catálogo tiene SERVICIOS y PRODUCTOS mezclados. Cada item trae su campo "tipo": respételo.',
+      'Un item con tipo "servicio" se PRESTA en el local y se AGENDA (cita con fecha y hora).',
+      'Un item con tipo "producto" se VENDE y se entrega o se despacha: NO se agenda cita para comprarlo.',
+      'Si el cliente pregunta por algo que se vende, respóndale con el producto; no lo redirija a agendar una cita salvo que él lo pida.',
+      'Si un cliente quiere las dos cosas (por ejemplo un tratamiento y llevarse un producto), atienda primero lo que agenda y mencione el producto al cerrar.',
+    );
+  }
+
+  return {
+    schema_version: esProveedor ? '1.1-proveedor' : '1.0',
+    id_configuracion: Number(id_configuracion),
+    id_kanban_columna: Number(id_kanban_columna),
+    columna_nombre,
+    tipo_catalogo: tipoCatalogo,
+    modo: esProveedor ? 'proveedor' : 'dropshipper',
+    generado_en: new Date().toISOString(),
+    total_items: itemsFinales.length,
+    items: itemsFinales,
+    instrucciones_uso_ia,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// generarInlineColumna
+// Genera y guarda SOLO kanban_columnas.catalogo_inline (+ tokens), sin tocar
+// OpenAI: no sube archivos, no crea ni borra vector stores, no necesita la
+// API key del cliente. Es el camino del backfill de columnas que nunca
+// sincronizaron: para ellas basta con que el texto exista — usarlo o no lo
+// decide el runtime solo (TODAS_INLINE + tope de tokens).
+// catalog_synced_at NO se toca a propósito: esa fecha habla del vector store,
+// que acá queda exactamente como estaba.
+// ─────────────────────────────────────────────────────────────
+async function generarInlineColumna(id_kanban_columna, opts = {}) {
+  const logger = opts.logger || (async (...a) => console.log(...a));
+
+  if (!GENERAR_CATALOGO_INLINE) {
+    return { ok: true, skipped: true, reason: 'GENERAR_CATALOGO_INLINE off' };
+  }
+
+  const [columna] = await db.query(
+    `SELECT id, id_configuracion, nombre FROM kanban_columnas WHERE id = ?`,
+    { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+  );
+  if (!columna)
+    throw new Error(`kanban_columna id=${id_kanban_columna} no encontrada`);
+
+  const [conf] = await db.query(
+    `SELECT COALESCE(es_proveedor, 0) AS es_proveedor
+     FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [columna.id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const esProveedor = Number(conf?.es_proveedor || 0) === 1;
+
+  const catalogPayload = await armarCatalogPayload({
+    id_configuracion: columna.id_configuracion,
+    id_kanban_columna,
+    columna_nombre: columna.nombre,
+    esProveedor,
+  });
+  if (!catalogPayload) {
+    return { ok: true, skipped: true, reason: 'Sin productos' };
+  }
+
+  const inline = construirCatalogoInline(catalogPayload);
+
+  if (opts.dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      tokens: inline.tokens,
+      total_items: catalogPayload.total_items,
+      // El texto viaja en el dry-run para poder compararlo contra el inline
+      // guardado (prueba de equivalencia del refactor) sin escribir nada.
+      texto: inline.texto,
+    };
+  }
+
+  await db.query(
+    `UPDATE kanban_columnas
+       SET catalogo_inline = ?, catalogo_inline_tokens = ?
+     WHERE id = ?`,
+    {
+      replacements: [inline.texto, inline.tokens, id_kanban_columna],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+  await logger(
+    `📄 inline generado: columna=${id_kanban_columna} "${columna.nombre}" ` +
+      `config=${columna.id_configuracion} items=${catalogPayload.total_items} tokens=${inline.tokens}`,
+  );
+  return { ok: true, tokens: inline.tokens, total_items: catalogPayload.total_items };
+}
+
 function construirCatalogoInline(catalogPayload) {
   const encabezado = [
     '=== CATÁLOGO (información interna de consulta) ===',
@@ -1223,6 +1320,8 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
 module.exports = {
   syncCatalogoKanbanColumna,
   syncCatalogoTodasColumnasConfig,
+  // Camino liviano del backfill: solo genera el inline, sin tocar OpenAI.
+  generarInlineColumna,
   // Exportada para la batería de regresión: que el doc de file_search salga
   // sin URLs de media es una garantía que no puede perderse en silencio.
   sinMediaParaFileSearch,
