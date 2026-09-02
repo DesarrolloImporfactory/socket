@@ -12,6 +12,7 @@
 
 const { db } = require('../database/config');
 const { log } = require('./remarketing_ig.service');
+const { botApagadoExplicito } = require('../utils/interruptorBot');
 
 // ─────────────────────────────────────────────────────────────
 // programarRemarketingMS
@@ -30,6 +31,12 @@ async function programarRemarketingMS({
       await log(
         `[ms] ⚠️ Falta page_id/external_id — no se programa (cliente=${id_cliente})`,
       );
+      return;
+    }
+
+    // Bot apagado desde Asistentes → todo en manual: no se programa nada.
+    if (await botApagadoExplicito(id_configuracion)) {
+      await log(`[ms] 🔌 SKIP — bot apagado en Asistentes (cfg=${id_configuracion})`);
       return;
     }
 

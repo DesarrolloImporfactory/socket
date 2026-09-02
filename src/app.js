@@ -146,6 +146,7 @@ const referidosRouter = require('./routes/referidos.routes');
 const webhookTriveRouter = require('./routes/webhook_trive.routes');
 
 const adminDashboardRouter = require('./routes/admin_dashboard.routes');
+const adminBotSaludRouter = require('./routes/admin_bot_salud.routes');
 
 const seguimientosRouter = require('./routes/seguimientos.routes');
 
@@ -416,6 +417,7 @@ app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/referidos', referidosRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
 app.use('/api/v1/admin_dashboard', adminDashboardRouter);
+app.use('/api/v1/admin_bot_salud', adminBotSaludRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
 // API pública para terceros (auth por API key) + gestión de llaves
 app.use('/api/public/v1', require('./routes/public_api.routes'));

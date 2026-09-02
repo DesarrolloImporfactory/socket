@@ -23,6 +23,7 @@ const {
   generarRemarketingIgIA,
   log,
 } = require('../services/remarketing_ig.service');
+const { botApagadoExplicito } = require('../utils/interruptorBot');
 
 const VENTANA_HORAS = 24;
 
@@ -167,6 +168,13 @@ cron.schedule('*/1 * * * *', async () => {
           // 2.5) Remarketing desactivado → cancelar
           if (Number(cliente.enviar_remarketing) === 0) {
             await cancelar(record.id, 'Cliente con enviar_remarketing=0');
+            continue;
+          }
+
+          // 2.7) Bot apagado en Asistentes → no envía ni cancela ni suma
+          // intento (mismo criterio del cron de WA): si lo reenciende dentro
+          // de la ventana de 3 días, el seguimiento se reanuda solo.
+          if (await botApagadoExplicito(record.id_configuracion)) {
             continue;
           }
 
