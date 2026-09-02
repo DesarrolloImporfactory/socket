@@ -5,6 +5,9 @@ const express = require('express');
 const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
+const {
+  requireImporiaSecret,
+} = require('../middlewares/imporiaSecret.middleware');
 
 // routes/openai_assistants.routes.js
 router.post('/datosCliente', openai_assistantsController.datosCliente);
@@ -14,8 +17,13 @@ router.post(
   openai_assistantsController.mensaje_assistant,
 );
 
+/* Motor de ImporIA. Va con requireImporiaSecret —y no con protect— porque
+   quien llama es el PHP de imporsuit-pro de servidor a servidor, no un
+   navegador con sesión de ChatCenter. Estuvo abierto sin auth hasta el
+   2026-09-02, corriendo contra la API key de Imporfactory. */
 router.post(
   '/enviar_mensaje_gpt',
+  requireImporiaSecret,
   openai_assistantsController.enviar_mensaje_gpt,
 );
 
