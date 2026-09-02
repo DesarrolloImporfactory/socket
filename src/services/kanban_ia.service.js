@@ -8,6 +8,7 @@ const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+const { botApagadoExplicito } = require('../utils/interruptorBot');
 const { construirContextoColumna } = require('../utils/contextoColumna');
 const { limpiarColetillas } = require('../utils/limpiarColetillas');
 const {
@@ -3992,6 +3993,18 @@ async function programarRemarketingKanban({
   template_parameters = null,
 }) {
   try {
+    /* Bot apagado desde Asistentes: no se CREA el remarketing. El cron ya no
+       enviaba con el bot apagado, pero los pendientes se seguían creando y el
+       cliente los veía como "programados" en el chat — automatización a
+       medias. Apagado = todo en manual, y esto corta a TODOS los que agendan
+       (webhook WA, notifier Dropi/Aliclik, Shopify, gateway, citas). */
+    if (await botApagadoExplicito(id_configuracion)) {
+      await log(
+        `🔌 SKIP programarRemarketing — bot apagado en Asistentes (cfg=${id_configuracion})`,
+      );
+      return;
+    }
+
     // 🚫 Verificar si el cliente tiene el remarketing desactivado
     const [clienteRM] = await db.query(
       `SELECT enviar_remarketing FROM clientes_chat_center WHERE id = ? LIMIT 1`,

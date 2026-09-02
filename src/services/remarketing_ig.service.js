@@ -23,6 +23,7 @@ const fs = require('fs').promises;
 const { obtenerUltimoResponseId } = require('./obtener_response.service');
 // Mismo interruptor que el flujo de kanban: acá NO se decide nada.
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
+const { botApagadoExplicito } = require('../utils/interruptorBot');
 
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 async function log(msg) {
@@ -51,6 +52,12 @@ async function programarRemarketingIG({
   try {
     if (!page_id || !external_id) {
       await log(`⚠️ Falta page_id/external_id — no se programa (cliente=${id_cliente})`);
+      return;
+    }
+
+    // Bot apagado desde Asistentes → todo en manual: no se programa nada.
+    if (await botApagadoExplicito(id_configuracion)) {
+      await log(`🔌 SKIP — bot apagado en Asistentes (cfg=${id_configuracion})`);
       return;
     }
 

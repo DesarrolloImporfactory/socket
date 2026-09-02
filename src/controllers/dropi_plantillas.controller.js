@@ -326,8 +326,9 @@ exports.guardarRespondedor = catchAsync(async (req, res) => {
 
   await db.query(
     `INSERT INTO respondedor_logistico_config
-       (id_configuracion, activo, demora_dias_min, demora_dias_max)
-     VALUES (?, ?, ?, ?)
+       (id_configuracion, activo, demora_dias_min, demora_dias_max,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, NOW(), NOW())
      ON DUPLICATE KEY UPDATE
        activo = VALUES(activo),
        demora_dias_min = VALUES(demora_dias_min),

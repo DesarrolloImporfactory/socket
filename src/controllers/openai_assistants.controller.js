@@ -7,6 +7,7 @@ const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
 const { responderImporia } = require('../services/imporia.service');
 const { olvidarCliente } = require('../utils/dedupeMedia');
+const { invalidarInterruptorBot } = require('../utils/interruptorBot');
 const {
   esSinSaldoOpenAI,
   esApiKeyInvalida,
@@ -750,6 +751,10 @@ exports.actualizar_ia_ventas = catchAsync(async (req, res, next) => {
         },
       );
     }
+
+    // Las automatizaciones cachean el switch 60s (utils/interruptorBot): al
+    // guardar desde Asistentes, que el apagado/encendido aplique de una.
+    invalidarInterruptorBot(id_configuracion);
 
     res.status(200).json({
       status: '200',

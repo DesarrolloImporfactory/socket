@@ -69,6 +69,7 @@ async function startServer() {
     require('./cron/syncAliclikOrders.js');
     require('./cron/cronEncuestasEnvio.js');
     require('./cron/metricasSnapshot.js');
+    require('./cron/botMetricasSnapshot.js');
     require('./cron/imporsuitEmailSync.js');
     // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
     // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
