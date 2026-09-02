@@ -5,6 +5,7 @@ const { db, db_2 } = require('../database/config');
 const axios = require('axios');
 const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
+const { responderImporia } = require('../services/imporia.service');
 const { olvidarCliente } = require('../utils/dedupeMedia');
 const {
   esSinSaldoOpenAI,
@@ -779,127 +780,44 @@ const obtenerURLImagen = (imagePath, serverURL) => {
   }
 };
 
-exports.enviar_mensaje_gpt = async (req, res) => {
-  const { mensaje, id_chat, id_thread_chat, id_plataforma, pais } = req.body;
+/* ══════════════════════════════════════════════════════════════
+   ImporIA — motor de chat del ERP (imporsuit-pro / newimporsuit)
 
-  if (!mensaje || !id_chat || !id_thread_chat) {
+   Lo llama el PHP de imporsuit-pro (ImporiaModel::enviarMensaje) por cURL. El
+   navegador no le pega directo: el front nuevo pasa por PHP para validar el
+   JWT, y desde 2026-09-02 este endpoint además exige el secreto compartido
+   (ver requireImporiaSecret en las rutas).
+
+   Hasta el 2026-08-26 esto corría threads + runs + polling contra la
+   Assistants API. Ese día OpenAI la apagó: los dos assistants empezaron a dar
+   404 y ImporIA dejó de responder —69 mensajes de usuarios sin una sola
+   respuesta— sin que nada lo avisara. Toda la lógica vive ahora en
+   services/imporia.service.js, por la Responses API.
+
+   La forma de la respuesta se mantiene igual (`assistant_message`) porque el
+   PHP y el JS de la vista legacy la leen de ahí.
+   ══════════════════════════════════════════════════════════════ */
+exports.enviar_mensaje_gpt = async (req, res) => {
+  /* id_chat e id_thread_chat siguen llegando en el body de los llamadores
+     viejos y ya no se usan: la conversación se resuelve por id_plataforma, que
+     es lo único que el PHP saca del JWT y que no se puede falsear desde el
+     cliente. */
+  const { mensaje, id_plataforma, pais } = req.body;
+
+  if (!mensaje || !id_plataforma) {
     return res.status(400).json({
       status: 400,
       title: 'Error',
-      message: 'Faltan parámetros',
+      message: 'Faltan parámetros: mensaje e id_plataforma son obligatorios',
     });
   }
 
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('Missing OPENAI_API_KEY env var');
-    }
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    let assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
-
-    if (pais == 'EC') {
-      assistantId = 'asst_UVA7p8j7JINZi7M0BkrKMUSF';
-    } else if (pais == 'MX') {
-      assistantId = 'asst_shnGt8Pr5raINBP5oDktNhuT';
-    }
-
-    // Insertar mensaje del usuario (rol_mensaje = 1)
-    await db_2.query(
-      `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
-       VALUES (?, ?, 1, NOW())`,
-      {
-        replacements: [id_chat, mensaje],
-        type: QueryTypes.INSERT,
-      },
-    );
-
-    const headers = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'OpenAI-Beta': 'assistants=v2',
-    };
-
-    // Enviar mensaje del usuario
-    await axios.post(
-      `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
-      {
-        role: 'user',
-        content: mensaje,
-      },
-      { headers },
-    );
-
-    // Ejecutar assistant
-    const run = await axios.post(
-      `https://api.openai.com/v1/threads/${id_thread_chat}/runs`,
-      {
-        assistant_id: assistantId,
-        max_completion_tokens: 800,
-      },
-      { headers },
-    );
-
-    const run_id = run.data.id;
-
-    if (!run_id) {
-      return res.status(400).json({
-        status: 400,
-        error: 'No se pudo ejecutar el assistant.',
-      });
-    }
-
-    // Esperar respuesta
-    let status = 'queued';
-    let intentos = 0;
-
-    while (status !== 'completed' && status !== 'failed' && intentos < 20) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      intentos++;
-
-      const statusRes = await axios.get(
-        `https://api.openai.com/v1/threads/${id_thread_chat}/runs/${run_id}`,
-        { headers },
-      );
-
-      status = statusRes.data.status;
-    }
-
-    if (status === 'failed') {
-      return res.status(400).json({
-        status: 400,
-        error: 'Falló la ejecución del assistant.',
-      });
-    }
-
-    // Obtener respuesta final
-    const messagesRes = await axios.get(
-      `https://api.openai.com/v1/threads/${id_thread_chat}/messages`,
-      { headers },
-    );
-
-    const mensajes = messagesRes.data.data || [];
-    const respuesta = mensajes
-      .reverse()
-      .find((msg) => msg.role === 'assistant' && msg.run_id === run_id)
-      ?.content?.[0]?.text?.value;
-
-    if (!respuesta) {
-      return res.status(500).json({
-        status: 500,
-        message: 'No se obtuvo respuesta del assistant.',
-      });
-    }
-
-    // Guardar respuesta del assistant (rol_mensaje = 0)
-    await db_2.query(
-      `INSERT INTO mensajes_gpt_imporsuit (id_thread, texto_mensaje, rol_mensaje, fecha_creacion)
-       VALUES (?, ?, 0, NOW())`,
-      {
-        replacements: [id_chat, respuesta],
-        type: QueryTypes.INSERT,
-      },
-    );
+    const { respuesta } = await responderImporia({
+      id_plataforma,
+      mensaje,
+      pais,
+    });
 
     res.status(200).json({
       status: 200,
