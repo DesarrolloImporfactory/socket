@@ -59,9 +59,74 @@ async function subirImagen({ conn, buffer, filename }) {
   return { hash: primera.hash, url: primera.url || null, filename };
 }
 
+/* ── Video del anuncio ──
+   Los videos van a act_X/advideos (host graph-video) y el creativo los
+   referencia por video_id + una miniatura obligatoria. Meta procesa el video
+   de forma asíncrona: la miniatura se obtiene con un pequeño polling. */
+async function subirVideo({ conn, buffer, filename, mimetype }) {
+  const act = ACT(conn.ad_account_id);
+  const fd = new FormData();
+  fd.append(
+    'source',
+    new Blob([buffer], { type: mimetype || 'video/mp4' }),
+    filename || 'video.mp4',
+  );
+  const resp = await axios.post(
+    `https://graph-video.facebook.com/${process.env.GRAPH_VERSION}/${act}/advideos`,
+    fd,
+    {
+      headers: { Authorization: `Bearer ${conn.access_token}` },
+      timeout: 180000,
+      maxBodyLength: Infinity,
+      validateStatus: () => true,
+    },
+  );
+  const data = assertMeta(resp, 'advideos');
+  if (!data?.id) {
+    const err = new Error('Meta no devolvió el id del video.');
+    err.meta_error = data;
+    throw err;
+  }
+  return { video_id: String(data.id) };
+}
+
+async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
+  const ax = metaAx(conn.access_token);
+  for (let i = 0; i < intentos; i++) {
+    const r = await ax.get(`${GRAPH_BASE}/${video_id}/thumbnails`, {
+      params: { fields: 'uri,is_preferred' },
+    });
+    if (r.status >= 200 && r.status < 300) {
+      const lista = r.data?.data || [];
+      const pref = lista.find((t) => t.is_preferred) || lista[0];
+      if (pref?.uri) return pref.uri;
+    }
+    await new Promise((res) => setTimeout(res, 3000));
+  }
+  return null;
+}
+
 function construirTargeting(cfg) {
+  // Dos modos de alcance: países completos, o provincias/ciudades puntuales
+  // (regions/cities de Meta, elegidas con la búsqueda adgeolocation).
+  const geo = cfg.geo || { modo: 'paises', paises: cfg.paises };
+  let geo_locations;
+  if (geo.modo === 'especifico') {
+    geo_locations = {};
+    const regions = (geo.lugares || [])
+      .filter((l) => l.type === 'region')
+      .map((l) => ({ key: String(l.key) }));
+    const cities = (geo.lugares || [])
+      .filter((l) => l.type === 'city')
+      .map((l) => ({ key: String(l.key) }));
+    if (regions.length) geo_locations.regions = regions;
+    if (cities.length) geo_locations.cities = cities;
+  } else {
+    geo_locations = { countries: geo.paises };
+  }
+
   const targeting = {
-    geo_locations: { countries: cfg.paises },
+    geo_locations,
     age_min: cfg.edad_min,
     age_max: cfg.edad_max,
     // Sin esta bandera explícita las versiones nuevas de la API rechazan el
@@ -72,6 +137,29 @@ function construirTargeting(cfg) {
   if (cfg.genero === 'male') targeting.genders = [1];
   if (cfg.genero === 'female') targeting.genders = [2];
   return targeting;
+}
+
+/* Búsqueda de zonas de segmentación (provincias y ciudades) con la misma
+   búsqueda que usa el Administrador de anuncios. */
+async function buscarGeo({ conn, q, pais }) {
+  const ax = metaAx(conn.access_token);
+  const resp = await ax.get(`${GRAPH_BASE}/search`, {
+    params: {
+      type: 'adgeolocation',
+      q,
+      country_code: pais || undefined,
+      location_types: JSON.stringify(['region', 'city']),
+      limit: 12,
+    },
+  });
+  const data = assertMeta(resp, 'buscar geo');
+  return (data?.data || []).map((l) => ({
+    key: String(l.key),
+    name: l.name,
+    type: l.type, // 'region' | 'city'
+    region: l.region || null,
+    country_code: l.country_code || null,
+  }));
 }
 
 /* Mensaje de bienvenida del CTWA: lo que WhatsApp autocompleta cuando el
@@ -153,8 +241,10 @@ async function lanzarPaquete({ conn, cfg }) {
     });
     const adset_id = assertMeta(adsetResp, 'crear conjunto').id;
 
-    // 3) Creativo — link fijo a WhatsApp con CTA WHATSAPP_MESSAGE
-    const linkData = {
+    // 3-4) Un anuncio por imagen (hasta 5 variaciones dentro del mismo
+    // conjunto): Meta reparte el presupuesto entre ellas y concentra el
+    // gasto en el creativo ganador — la práctica estándar del Ads Manager.
+    const linkDataBase = {
       link: 'https://api.whatsapp.com/send',
       message: cfg.texto_principal || '',
       name: cfg.titulo || cfg.nombre,
@@ -163,52 +253,96 @@ async function lanzarPaquete({ conn, cfg }) {
         value: { app_destination: 'WHATSAPP' },
       },
     };
-    if (cfg.descripcion) linkData.description = cfg.descripcion;
-    if (cfg.imagen_hash) linkData.image_hash = cfg.imagen_hash;
+    if (cfg.descripcion) linkDataBase.description = cfg.descripcion;
 
-    let welcome_aplicado = false;
-    let creative_id = null;
+    const creativos = (
+      Array.isArray(cfg.creativos) && cfg.creativos.length
+        ? cfg.creativos
+        : [{ tipo: 'imagen', hash: cfg.imagen_hash }]
+    ).slice(0, 6);
 
-    const crearCreativo = async (conWelcome) => {
-      const ld = { ...linkData };
-      if (conWelcome && cfg.mensaje_bienvenida) {
-        ld.page_welcome_message = construirWelcomeMessage(
-          cfg.mensaje_bienvenida,
-        );
+    let usarWelcome = !!cfg.mensaje_bienvenida;
+    const ads = [];
+
+    for (let i = 0; i < creativos.length; i++) {
+      const creativo = creativos[i];
+      const sufijo = creativos.length > 1 ? ` · V${i + 1}` : '';
+
+      // Los videos necesitan miniatura; si no llegó guardada (el video aún
+      // se procesaba al subirlo), se reintenta obtenerla aquí.
+      let thumbVideo = null;
+      if (creativo.tipo === 'video') {
+        thumbVideo =
+          creativo.thumb_url ||
+          (await obtenerMiniaturaVideo(conn, creativo.video_id));
       }
-      return ax.post(`${GRAPH_BASE}/${act}/adcreatives`, {
-        name: nombreBase,
-        object_story_spec: { page_id: cfg.page_id, link_data: ld },
-      });
-    };
 
-    let creaResp = await crearCreativo(true);
-    if (
-      (creaResp.status < 200 || creaResp.status >= 300) &&
-      cfg.mensaje_bienvenida
-    ) {
-      logger.error(
-        `metaAdsLauncher: creativo con welcome rechazado (${JSON.stringify(
-          creaResp.data?.error?.message || '',
-        )}); reintentando sin mensaje de bienvenida.`,
-      );
-      creaResp = await crearCreativo(false);
-      creative_id = assertMeta(creaResp, 'crear creativo').id;
-    } else {
-      creative_id = assertMeta(creaResp, 'crear creativo').id;
-      welcome_aplicado = !!cfg.mensaje_bienvenida;
+      const crearCreativo = async (conWelcome) => {
+        let spec;
+        if (creativo.tipo === 'video') {
+          const vd = {
+            video_id: creativo.video_id,
+            image_url: thumbVideo,
+            title: cfg.titulo || cfg.nombre,
+            message: cfg.texto_principal || '',
+            call_to_action: {
+              type: 'WHATSAPP_MESSAGE',
+              value: { app_destination: 'WHATSAPP' },
+            },
+          };
+          if (cfg.descripcion) vd.link_description = cfg.descripcion;
+          if (conWelcome) {
+            vd.page_welcome_message = construirWelcomeMessage(
+              cfg.mensaje_bienvenida,
+            );
+          }
+          spec = { page_id: cfg.page_id, video_data: vd };
+        } else {
+          const ld = { ...linkDataBase };
+          if (creativo.hash) ld.image_hash = creativo.hash;
+          if (conWelcome) {
+            ld.page_welcome_message = construirWelcomeMessage(
+              cfg.mensaje_bienvenida,
+            );
+          }
+          spec = { page_id: cfg.page_id, link_data: ld };
+        }
+        return ax.post(`${GRAPH_BASE}/${act}/adcreatives`, {
+          name: nombreBase + sufijo,
+          object_story_spec: spec,
+        });
+      };
+
+      let creaResp = await crearCreativo(usarWelcome);
+      if ((creaResp.status < 200 || creaResp.status >= 300) && usarWelcome) {
+        logger.error(
+          `metaAdsLauncher: creativo con welcome rechazado (${JSON.stringify(
+            creaResp.data?.error?.message || '',
+          )}); reintentando sin mensaje de bienvenida.`,
+        );
+        usarWelcome = false;
+        creaResp = await crearCreativo(false);
+      }
+      const creative_id = assertMeta(creaResp, `crear creativo${sufijo}`).id;
+
+      const adResp = await ax.post(`${GRAPH_BASE}/${act}/ads`, {
+        name: nombreBase + sufijo,
+        adset_id,
+        creative: { creative_id },
+        status,
+      });
+      const ad_id = assertMeta(adResp, `crear anuncio${sufijo}`).id;
+      ads.push({ ad_id, creative_id });
     }
 
-    // 4) Anuncio
-    const adResp = await ax.post(`${GRAPH_BASE}/${act}/ads`, {
-      name: nombreBase,
+    return {
+      campaign_id,
       adset_id,
-      creative: { creative_id },
-      status,
-    });
-    const ad_id = assertMeta(adResp, 'crear anuncio').id;
-
-    return { campaign_id, adset_id, creative_id, ad_id, welcome_aplicado };
+      creative_id: ads[0]?.creative_id || null,
+      ad_id: ads[0]?.ad_id || null,
+      ads,
+      welcome_aplicado: usarWelcome,
+    };
   } catch (err) {
     // Si cualquier paso posterior a la campaña falla, se limpia todo el
     // paquete para que el cliente no encuentre campañas fantasma a medias.
@@ -367,7 +501,10 @@ async function obtenerTitularToken(conn) {
 
 module.exports = {
   subirImagen,
+  subirVideo,
+  obtenerMiniaturaVideo,
   lanzarPaquete,
   listarPaginasDelToken,
   obtenerTitularToken,
+  buscarGeo,
 };

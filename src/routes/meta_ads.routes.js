@@ -35,6 +35,36 @@ const subirCreativoHandler = (req, res, next) => {
   });
 };
 
+/* Media del anuncio (imagen o video). Los videos van a act_X/advideos;
+   64 MB cubre de sobra un video de anuncio vertical. */
+const MIMES_MEDIA = new Set([
+  ...MIMES_IMAGEN,
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+]);
+const subirMediaAd = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 64 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (MIMES_MEDIA.has(file.mimetype)) return cb(null, true);
+    cb(new Error('Formato no permitido: usa JPG, PNG, WEBP o MP4.'));
+  },
+}).single('archivo');
+
+const subirMediaAdHandler = (req, res, next) => {
+  subirMediaAd(req, res, (err) => {
+    if (err) {
+      const message =
+        err.code === 'LIMIT_FILE_SIZE'
+          ? 'El archivo supera los 64 MB.'
+          : err.message;
+      return res.status(400).json({ success: false, message });
+    }
+    next();
+  });
+};
+
 // ── Conexión / Desconexión ──
 router.post('/conectar', metaAdsCtrl.conectarAdAccount);
 router.post('/desconectar', metaAdsCtrl.desconectarAdAccount);
@@ -82,7 +112,14 @@ router.post(
   subirCreativoHandler,
   launcherCtrl.subirImagen,
 );
+router.post(
+  '/launcher/subir-media',
+  protect,
+  subirMediaAdHandler,
+  launcherCtrl.subirMedia,
+);
 router.post('/launcher/lanzar', protect, launcherCtrl.lanzar);
+router.get('/launcher/geo/buscar', protect, launcherCtrl.buscarGeo);
 router.get('/launcher/lanzamientos', protect, launcherCtrl.listarLanzamientos);
 
 module.exports = router;
