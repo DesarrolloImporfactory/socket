@@ -1,0 +1,373 @@
+/**
+ * metaAdsLauncher.service.js
+ * Escritura contra la Meta Marketing API: crea el paquete completo de una
+ * campaña CTWA (click-to-WhatsApp) — campaña + conjunto + creativo + anuncio —
+ * en la cuenta publicitaria conectada (meta_ad_connections.access_token).
+ *
+ * Todo el embudo del sistema es CTWA: el ad_id que sale de aquí es exactamente
+ * el referral.source_id que después llega por el webhook de WhatsApp, así que
+ * el controller pre-registra el vínculo en anuncios_producto al lanzar.
+ */
+
+const axios = require('axios');
+const logger = require('../utils/logger');
+
+const FB_APP_ID = process.env.FB_APP_ID;
+const FB_APP_SECRET = process.env.FB_APP_SECRET;
+const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
+
+const ACT = (id) => (String(id).startsWith('act_') ? String(id) : `act_${id}`);
+
+function metaAx(token) {
+  return axios.create({
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+}
+
+function assertMeta(resp, label) {
+  if (resp.status >= 200 && resp.status < 300) return resp.data;
+  const err = new Error(
+    `Meta ${label}: ${resp.status} - ${JSON.stringify(
+      resp.data?.error || resp.data,
+    )}`,
+  );
+  err.meta_status = resp.status;
+  err.meta_error = resp.data?.error || resp.data;
+  err.paso = label;
+  throw err;
+}
+
+/* ── Imagen del anuncio ──
+   Meta exige que la imagen viva en la cuenta publicitaria (act_X/adimages);
+   el creativo la referencia por hash, no por URL. Se sube en base64. */
+async function subirImagen({ conn, buffer, filename }) {
+  const ax = metaAx(conn.access_token);
+  const resp = await ax.post(`${GRAPH_BASE}/${ACT(conn.ad_account_id)}/adimages`, {
+    bytes: buffer.toString('base64'),
+  });
+  const data = assertMeta(resp, 'adimages');
+  // La respuesta viene como { images: { <clave>: { hash, url } } } y la clave
+  // no es predecible cuando se sube por bytes: se toma la primera.
+  const primera = Object.values(data?.images || {})[0];
+  if (!primera?.hash) {
+    const err = new Error('Meta no devolvió el hash de la imagen.');
+    err.meta_error = data;
+    throw err;
+  }
+  return { hash: primera.hash, url: primera.url || null, filename };
+}
+
+function construirTargeting(cfg) {
+  const targeting = {
+    geo_locations: { countries: cfg.paises },
+    age_min: cfg.edad_min,
+    age_max: cfg.edad_max,
+    // Sin esta bandera explícita las versiones nuevas de la API rechazan el
+    // conjunto ("advantage audience flag required"); 0 = respetar el alcance
+    // que definió el cliente en lugar de expandirlo automáticamente.
+    targeting_automation: { advantage_audience: 0 },
+  };
+  if (cfg.genero === 'male') targeting.genders = [1];
+  if (cfg.genero === 'female') targeting.genders = [2];
+  return targeting;
+}
+
+/* Mensaje de bienvenida del CTWA: lo que WhatsApp autocompleta cuando el
+   cliente toca el anuncio. El formato es el del editor visual de Meta; si la
+   versión de la API lo rechaza, el creativo se reintenta sin él (el anuncio
+   sale igual, solo que sin autocompletar). */
+function construirWelcomeMessage(texto) {
+  return JSON.stringify({
+    type: 'VISUAL_EDITOR',
+    version: 2,
+    landing_screen_type: 'welcome_message',
+    media_type: 'text',
+    text_format: {
+      customer_action_type: 'autofill_message',
+      message: {
+        autofill_message: { content: texto },
+        text: texto,
+      },
+    },
+  });
+}
+
+/* Borrado best-effort de la campaña cuando un paso posterior falla: borrar la
+   campaña arrastra conjuntos, creativos y anuncios hijos, y evita dejar
+   basura a medias en la cuenta del cliente. */
+async function eliminarCampania(ax, campaignId) {
+  try {
+    await ax.delete(`${GRAPH_BASE}/${campaignId}`);
+  } catch (e) {
+    logger.error(
+      `metaAdsLauncher: no se pudo limpiar la campaña ${campaignId}: ${e.message}`,
+    );
+  }
+}
+
+/**
+ * Crea el paquete completo. `cfg` viene normalizado desde el controller:
+ * { nombre, page_id, presupuesto_diario, paises[], edad_min, edad_max,
+ *   genero, titulo, texto_principal, descripcion, mensaje_bienvenida,
+ *   imagen_hash, estado_inicial }
+ * Devuelve { campaign_id, adset_id, creative_id, ad_id, welcome_aplicado }.
+ */
+async function lanzarPaquete({ conn, cfg }) {
+  const ax = metaAx(conn.access_token);
+  const act = ACT(conn.ad_account_id);
+  const status = cfg.estado_inicial === 'ACTIVE' ? 'ACTIVE' : 'PAUSED';
+
+  // Cada lanzamiento crea una campaña nueva; el sufijo de fecha permite
+  // relanzar la misma plantilla sin chocar nombres en el Ads Manager.
+  const sello = new Date()
+    .toISOString()
+    .slice(0, 16)
+    .replace('T', ' ');
+  const nombreBase = `${cfg.nombre} · ${sello}`;
+
+  // 1) Campaña — objetivo de mensajes (CTWA)
+  const campResp = await ax.post(`${GRAPH_BASE}/${act}/campaigns`, {
+    name: `[ChatCenter] ${nombreBase}`,
+    objective: 'OUTCOME_ENGAGEMENT',
+    buying_type: 'AUCTION',
+    special_ad_categories: [],
+    status,
+  });
+  const campaign_id = assertMeta(campResp, 'crear campaña').id;
+
+  try {
+    // 2) Conjunto — presupuesto en centavos, destino WhatsApp
+    const adsetResp = await ax.post(`${GRAPH_BASE}/${act}/adsets`, {
+      name: nombreBase,
+      campaign_id,
+      daily_budget: Math.round(Number(cfg.presupuesto_diario) * 100),
+      billing_event: 'IMPRESSIONS',
+      optimization_goal: 'CONVERSATIONS',
+      bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+      destination_type: 'WHATSAPP',
+      promoted_object: { page_id: cfg.page_id },
+      targeting: construirTargeting(cfg),
+      status,
+    });
+    const adset_id = assertMeta(adsetResp, 'crear conjunto').id;
+
+    // 3) Creativo — link fijo a WhatsApp con CTA WHATSAPP_MESSAGE
+    const linkData = {
+      link: 'https://api.whatsapp.com/send',
+      message: cfg.texto_principal || '',
+      name: cfg.titulo || cfg.nombre,
+      call_to_action: {
+        type: 'WHATSAPP_MESSAGE',
+        value: { app_destination: 'WHATSAPP' },
+      },
+    };
+    if (cfg.descripcion) linkData.description = cfg.descripcion;
+    if (cfg.imagen_hash) linkData.image_hash = cfg.imagen_hash;
+
+    let welcome_aplicado = false;
+    let creative_id = null;
+
+    const crearCreativo = async (conWelcome) => {
+      const ld = { ...linkData };
+      if (conWelcome && cfg.mensaje_bienvenida) {
+        ld.page_welcome_message = construirWelcomeMessage(
+          cfg.mensaje_bienvenida,
+        );
+      }
+      return ax.post(`${GRAPH_BASE}/${act}/adcreatives`, {
+        name: nombreBase,
+        object_story_spec: { page_id: cfg.page_id, link_data: ld },
+      });
+    };
+
+    let creaResp = await crearCreativo(true);
+    if (
+      (creaResp.status < 200 || creaResp.status >= 300) &&
+      cfg.mensaje_bienvenida
+    ) {
+      logger.error(
+        `metaAdsLauncher: creativo con welcome rechazado (${JSON.stringify(
+          creaResp.data?.error?.message || '',
+        )}); reintentando sin mensaje de bienvenida.`,
+      );
+      creaResp = await crearCreativo(false);
+      creative_id = assertMeta(creaResp, 'crear creativo').id;
+    } else {
+      creative_id = assertMeta(creaResp, 'crear creativo').id;
+      welcome_aplicado = !!cfg.mensaje_bienvenida;
+    }
+
+    // 4) Anuncio
+    const adResp = await ax.post(`${GRAPH_BASE}/${act}/ads`, {
+      name: nombreBase,
+      adset_id,
+      creative: { creative_id },
+      status,
+    });
+    const ad_id = assertMeta(adResp, 'crear anuncio').id;
+
+    return { campaign_id, adset_id, creative_id, ad_id, welcome_aplicado };
+  } catch (err) {
+    // Si cualquier paso posterior a la campaña falla, se limpia todo el
+    // paquete para que el cliente no encuentre campañas fantasma a medias.
+    await eliminarCampania(ax, campaign_id);
+    throw err;
+  }
+}
+
+/* Páginas visibles con el token de ads, por TODOS los caminos que Meta
+   ofrece. Ninguno es universal: un token de usuario clásico responde por
+   me/accounts; un system user (flujo de portafolio) solo ve páginas que le
+   asignaron (assigned_pages) o las del portafolio (businesses); y
+   promote_pages lista las promocionables por la cuenta publicitaria. Como
+   último recurso se rescatan los page_id de los anuncios ya existentes de la
+   cuenta (el nombre no es legible sin permisos de páginas, pero el id sirve
+   para crear el creativo). El controller mezcla esto con messenger_pages. */
+async function listarPaginasDelToken(conn) {
+  const ax = metaAx(conn.access_token);
+  const act = ACT(conn.ad_account_id);
+  const paginas = new Map(); // page_id -> { page_id, page_name, origen }
+
+  const agregar = (lista, origen) => {
+    for (const p of lista || []) {
+      const id = String(p.id || '');
+      if (!id) continue;
+      const previa = paginas.get(id);
+      // Un origen con nombre real pisa a uno sin nombre.
+      if (!previa || (!previa.con_nombre && p.name)) {
+        paginas.set(id, {
+          page_id: id,
+          page_name: p.name || `Página ${id}`,
+          origen,
+          con_nombre: !!p.name,
+        });
+      }
+    }
+  };
+
+  const intentos = [
+    ['promote_pages', `${GRAPH_BASE}/${act}/promote_pages`],
+    ['me/accounts', `${GRAPH_BASE}/me/accounts`],
+    ['assigned_pages', `${GRAPH_BASE}/me/assigned_pages`],
+  ];
+  for (const [origen, url] of intentos) {
+    try {
+      const r = await ax.get(url, { params: { fields: 'id,name', limit: 50 } });
+      if (r.status >= 200 && r.status < 300) agregar(r.data?.data, origen);
+    } catch (e) {
+      logger.error(`metaAdsLauncher: ${origen} falló: ${e.message}`);
+    }
+  }
+
+  // Páginas otorgadas en el propio token (granular_scopes de debug_token).
+  // Es el camino más fiable para tokens de Login for Business: cuando la
+  // configuración de login incluye el activo Páginas, los ids elegidos por
+  // el cliente vienen aquí aunque me/accounts no responda.
+  try {
+    const dbg = await axios.get(`${GRAPH_BASE}/debug_token`, {
+      params: {
+        input_token: conn.access_token,
+        access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
+      },
+      validateStatus: () => true,
+      timeout: 15000,
+    });
+    const ids = new Set();
+    for (const g of dbg.data?.data?.granular_scopes || []) {
+      if (
+        [
+          'pages_read_engagement',
+          'pages_manage_metadata',
+          'pages_show_list',
+          'pages_messaging',
+        ].includes(g.scope)
+      ) {
+        for (const id of g.target_ids || []) ids.add(String(id));
+      }
+    }
+    if (ids.size) {
+      const detalles = await Promise.all(
+        [...ids].map(async (id) => {
+          const r = await ax.get(`${GRAPH_BASE}/${id}`, {
+            params: { fields: 'id,name' },
+          });
+          return r.status >= 200 && r.status < 300
+            ? r.data
+            : { id, name: null };
+        }),
+      );
+      agregar(detalles, 'permisos_token');
+    }
+  } catch (e) {
+    logger.error(`metaAdsLauncher: granular pages falló: ${e.message}`);
+  }
+
+  // Por portafolio (owned + client)
+  try {
+    const rb = await ax.get(`${GRAPH_BASE}/me/businesses`, {
+      params: { limit: 25 },
+    });
+    if (rb.status >= 200 && rb.status < 300) {
+      for (const b of rb.data?.data || []) {
+        for (const edge of ['owned_pages', 'client_pages']) {
+          const r = await ax.get(`${GRAPH_BASE}/${b.id}/${edge}`, {
+            params: { fields: 'id,name', limit: 50 },
+          });
+          if (r.status >= 200 && r.status < 300)
+            agregar(r.data?.data, `business/${edge}`);
+        }
+      }
+    }
+  } catch (e) {
+    logger.error(`metaAdsLauncher: businesses falló: ${e.message}`);
+  }
+
+  // Último recurso: páginas usadas en los anuncios existentes de la cuenta.
+  // El token de ads siempre puede leer sus propios creativos, aunque no
+  // pueda leer la página; el nombre queda genérico.
+  try {
+    const r = await ax.get(`${GRAPH_BASE}/${act}/ads`, {
+      params: { fields: 'creative{object_story_spec}', limit: 50 },
+    });
+    if (r.status >= 200 && r.status < 300) {
+      const vistos = [];
+      for (const a of r.data?.data || []) {
+        const pid = a.creative?.object_story_spec?.page_id;
+        if (pid) vistos.push({ id: pid, name: null });
+      }
+      agregar(vistos, 'ads_existentes');
+    }
+  } catch (e) {
+    logger.error(`metaAdsLauncher: ads existentes falló: ${e.message}`);
+  }
+
+  return [...paginas.values()].map(({ con_nombre, ...p }) => p);
+}
+
+/* Quién es el dueño del token (usuario o system user). Sirve para guiar la
+   asignación de la página: Meta no permite asignar activos a un system user
+   por API, así que el front muestra el nombre exacto a buscar en el
+   Business Manager. */
+async function obtenerTitularToken(conn) {
+  try {
+    const ax = metaAx(conn.access_token);
+    const r = await ax.get(`${GRAPH_BASE}/me`, {
+      params: { fields: 'id,name' },
+    });
+    if (r.status >= 200 && r.status < 300) {
+      return { id: String(r.data?.id || ''), name: r.data?.name || null };
+    }
+  } catch (e) {
+    logger.error(`metaAdsLauncher: me falló: ${e.message}`);
+  }
+  return null;
+}
+
+module.exports = {
+  subirImagen,
+  lanzarPaquete,
+  listarPaginasDelToken,
+  obtenerTitularToken,
+};
