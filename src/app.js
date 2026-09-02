@@ -319,6 +319,10 @@ app.use((req, res, next) => {
     // borraba al guardar (quedaba "1 por 45,00"). Todo va con protect + plan.
     '/api/v1/producto-wizard',
     '/api/v1/pruebas_webhook',
+    // Lanzador de campañas Meta: los copys del anuncio llevan "$" en los
+    // precios y el sanitizador noSQL los borraría. Todo el grupo va con
+    // protect (ver meta_ads.routes.js).
+    '/api/v1/meta_ads/launcher',
   ];
 
   if (skipExact.includes(req.path)) return next();
