@@ -71,6 +71,19 @@ router.post(
   productos_chat_centerController.importarProductoDropi,
 );
 
+/* Mismo par que Dropi, para Aliclik. El catálogo de Aliclik no tiene
+   endpoint de detalle, así que el import resuelve el producto dentro del
+   propio listado: el detalle está en el controlador. */
+router.post(
+  '/listarProductosAliclik',
+  productos_chat_centerController.listarProductosAliclik,
+);
+
+router.post(
+  '/importarProductoAliclik',
+  productos_chat_centerController.importarProductoAliclik,
+);
+
 /* Lee un anuncio publicado (o su texto pegado) y devuelve un borrador para
    revisar. No guarda nada: el alta sigue pasando por /agregarProducto. */
 router.post(

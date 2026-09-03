@@ -786,9 +786,159 @@ async function cancelOrderForClient({ id_configuracion, orderNumber }) {
   };
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Catálogo para importar al catálogo propio
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Deja un producto del catálogo de Aliclik en la forma que consume el
+ * importador. Se comparte entre el listado y la búsqueda por id para que la
+ * tarjeta del modal y lo que termina guardado no puedan discrepar.
+ *
+ * Los SKUs sin `ean` se descartan: es el único identificador con el que
+ * Aliclik acepta un pedido, así que una variante sin él no se podría vender.
+ */
+function normalizarProductoAliclik(p) {
+  const skus = (Array.isArray(p?.skus) ? p.skus : [])
+    .filter((s) => s?.ean)
+    .map((s) => ({
+      ean: String(s.ean),
+      // `skus[].name` es la VARIANTE ("Color rojo"), no el producto. Viene
+      // vacío en la mayoría del catálogo: ahí el producto es de una sola
+      // presentación y no hay nada que preguntarle al comprador.
+      nombre: strOrNull(s.name) || '',
+      precio_sugerido: Number(s.regularPrice || 0),
+      precio_proveedor: Number(s.dropPrice || 0),
+      stock: Number(s.stockVirtual || 0),
+      warehouse_id: toInt(s.warehouseId),
+      warehouse_name: s.warehouseName || '',
+    }));
+
+  const stock_total = skus.reduce((acc, s) => acc + (s.stock || 0), 0);
+  const precios = skus.map((s) => s.precio_sugerido).filter((n) => n > 0);
+
+  return {
+    id: toInt(p?.id),
+    nombre: p?.name || '',
+    descripcion: p?.shortDescription || '',
+    imagen: p?.urlImage || null,
+    categoria: p?.category || null,
+    skus,
+    stock_total,
+    // Con varios almacenes el precio puede variar entre SKUs; la tarjeta
+    // muestra el rango y el import se queda con el del primer SKU.
+    precio_min: precios.length ? Math.min(...precios) : 0,
+    precio_max: precios.length ? Math.max(...precios) : 0,
+  };
+}
+
+/**
+ * Catálogo agrupado por producto, para el importador.
+ *
+ * A diferencia de `listProductsForPanel` —que aplana a una fila por SKU porque
+ * el panel arma un pedido y elige un SKU concreto— acá se conserva la jerarquía
+ * producto → SKUs: se importa un producto de ChatCenter por producto de
+ * Aliclik y sus SKUs entran como variantes, igual que hace Dropi con sus
+ * `variations`.
+ */
+async function listCatalogoParaImportar({ id_configuracion, params = {} }) {
+  const { token } = await getIntegrationWithToken(id_configuracion);
+
+  const page = Math.max(1, toInt(params.page) || 1);
+  const limit = Math.min(100, Math.max(1, toInt(params.limit) || 20));
+  const search = strOrNull(params.search);
+
+  const data = await aliclikService.listProducts({
+    token,
+    params: {
+      page,
+      limit,
+      ...(search ? { search } : {}),
+      ...(toInt(params.categoryId)
+        ? { categoryId: toInt(params.categoryId) }
+        : {}),
+    },
+  });
+
+  const productos = (Array.isArray(data?.result) ? data.result : [])
+    .map(normalizarProductoAliclik)
+    // Un producto cuyos SKUs no tienen EAN no se puede pedir: mostrarlo solo
+    // llevaría a importar algo invendible.
+    .filter((p) => p.id && p.skus.length);
+
+  return {
+    isSuccess: true,
+    status: 200,
+    objects: productos,
+    count: Number(data?.count || productos.length),
+    page: Number(data?.page || page),
+  };
+}
+
+/* Tope de páginas del recorrido de respaldo. A 100 por página cubre 5.000
+   productos, holgado frente a los ~2.300 de los catálogos actuales, y evita
+   que un catálogo que crezca mucho convierta un import en decenas de llamadas. */
+const MAX_PAGINAS_BUSQUEDA_ALICLIK = 50;
+
+/**
+ * Trae UN producto del catálogo por su id de Aliclik.
+ *
+ * Aliclik no expone detalle de producto ni filtro por id —comprobado contra su
+ * API: `search` solo cruza el nombre, y cualquier otro parámetro lo ignora y
+ * devuelve el catálogo entero—, así que el id se resuelve en dos pasos:
+ *
+ *  1. acotando por el nombre que el importador ya tiene a la vista;
+ *  2. si eso falla (el producto se renombró entre listar e importar),
+ *     recorriendo el catálogo por páginas hasta encontrarlo.
+ *
+ * El nombre es solo una pista para buscar más rápido: lo que se guarda sale
+ * siempre del producto que Aliclik devuelve con ese id, nunca de lo que mandó
+ * el navegador.
+ */
+async function buscarProductoAliclikPorId({
+  id_configuracion,
+  productId,
+  nombreHint = null,
+}) {
+  const { token } = await getIntegrationWithToken(id_configuracion);
+  const buscado = toInt(productId);
+  if (!buscado) throw new AppError('aliclik_product_id es requerido', 400);
+
+  const hallarEn = (data) =>
+    (Array.isArray(data?.result) ? data.result : []).find(
+      (p) => toInt(p?.id) === buscado,
+    ) || null;
+
+  const hint = strOrNull(nombreHint);
+  if (hint) {
+    const data = await aliclikService.listProducts({
+      token,
+      params: { page: 1, limit: 100, search: hint.slice(0, 120) },
+    });
+    const encontrado = hallarEn(data);
+    if (encontrado) return normalizarProductoAliclik(encontrado);
+  }
+
+  for (let page = 1; page <= MAX_PAGINAS_BUSQUEDA_ALICLIK; page++) {
+    const data = await aliclikService.listProducts({
+      token,
+      params: { page, limit: 100 },
+    });
+    const encontrado = hallarEn(data);
+    if (encontrado) return normalizarProductoAliclik(encontrado);
+
+    const traidos = Array.isArray(data?.result) ? data.result.length : 0;
+    if (traidos < 100) break; // última página
+  }
+
+  return null;
+}
+
 module.exports = {
   getActiveIntegration,
   listProductsForPanel,
+  listCatalogoParaImportar,
+  buscarProductoAliclikPorId,
   getShippingCostForPanel,
   listOrdersForClient,
   createOrderForClient,
