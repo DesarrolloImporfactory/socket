@@ -23,6 +23,7 @@ const {
   markWabaThrottled,
   processBucHeader,
 } = require('../utils/wabaThrottleGuard');
+const { esConexionCerrada } = require('../utils/conexionCerrada');
 
 /* ================================================================
    Detectores de tipo de error
@@ -467,7 +468,13 @@ async function withLock(lockName, fn) {
           transaction: t,
         });
       } catch (_) {}
-      await t.commit();
+      // La conexión que sostiene el lock queda ociosa todo el ciclo: si MySQL
+      // la cerró mientras tanto (wait_timeout/KILL/reinicio), el commit revienta
+      // con "connection is in closed state". El lock ya murió junto con la sesión,
+      // así que no hay nada que salvar: se ignora y el ciclo termina limpio.
+      try {
+        await t.commit();
+      } catch (_) {}
     }
   } catch (e) {
     try {
@@ -1819,6 +1826,17 @@ cron.schedule('*/1 * * * *', async () => {
         }
       }
     });
+  } catch (e) {
+    // Conexión MySQL muerta (wait_timeout/KILL/reinicio): el pool la descarta
+    // y el tick del próximo minuto arranca con una sana. Antes no había catch
+    // acá y esto salía como unhandled rejection.
+    if (esConexionCerrada(e)) {
+      console.warn(
+        `⚠️ [remarketing] Ciclo saltado: conexión MySQL cerrada (${e.message})`,
+      );
+    } else {
+      console.error(`❌ [remarketing] Error ciclo cron: ${e.message}`, e);
+    }
   } finally {
     isRunning = false;
   }

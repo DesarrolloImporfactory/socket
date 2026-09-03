@@ -23,7 +23,30 @@ let server;
 let io;
 let shuttingDown = false;
 
+// Interruptor de crons. El porqué está en el bloque de crons de startServer().
+const cronsHabilitados =
+  String(process.env.CRONS_ENABLED ?? 'true').toLowerCase() !== 'false';
+
+// Aviso ruidoso cuando un proceso de desarrollo habla con una BD remota. No
+// aborta nada (a veces es a propósito), pero deja de ser un accidente mudo.
+function avisarBaseRemota() {
+  const host = String(process.env.DB_HOST_PRINCIPAL || '');
+  const esLocal = ['localhost', '127.0.0.1', '::1', ''].includes(host);
+  if (esLocal || process.env.NODE_ENV === 'production') return;
+
+  console.warn(`⚠️  NODE_ENV != production y la BD es REMOTA (${host}).`);
+  if (cronsHabilitados) {
+    console.warn('⚠️  Los crons ESTÁN ACTIVOS contra esa base: este proceso');
+    console.warn('    puede enviar mensajes reales a clientes y mover el kanban.');
+    console.warn('    Poné CRONS_ENABLED=false en tu .env para apagarlos.');
+  } else {
+    console.warn('✅ Crons desactivados (CRONS_ENABLED=false).');
+  }
+}
+
 async function startServer() {
+  avisarBaseRemota();
+
   try {
     await Promise.all([db.authenticate(), db_2.authenticate()]);
 
@@ -57,26 +80,38 @@ async function startServer() {
     console.log('Database synced 😁');
     console.log('Database 2 synced 😁 (API & Cursos tables created)');
 
-    // Cron
-    require('./cron/remarketing');
-    require('./cron/remarketing_ig');
-    require('./cron/remarketing_ms');
-    require('./cron/aviso_calendarios');
-    require('./cron/seguimiento_citas.js');
-    require('./cron/templateProgramadoMasivo.js');
-    require('./cron/syncDropiStock.js');
-    require('./cron/syncDropiOrdersHourly.js');
-    require('./cron/syncAliclikOrders.js');
-    require('./cron/cronEncuestasEnvio.js');
-    require('./cron/metricasSnapshot.js');
-    require('./cron/botMetricasSnapshot.js');
-    require('./cron/imporsuitEmailSync.js');
-    // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
-    // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
-    require('./cron/messengerPagesHealth.js');
-    // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
-    // con NODE_ENV=production; ver el comentario del archivo).
-    require('./cron/rescatarTurnosPerdidos.js');
+    // ─── Crons ────────────────────────────────────────────────────
+    // Los crons son GLOBALES, no locales al proceso: el GET_LOCK que usan
+    // vive en el servidor MySQL. Un `npm run dev` apuntando a la BD de
+    // producción compite por ese lock y puede terminar mandando WhatsApps
+    // reales a clientes reales, además de llevarse hasta 60 conexiones del
+    // pool (max 30 x db + db_2) que producción necesita.
+    //
+    // Default ENCENDIDO a propósito: producción no tiene la variable y su
+    // comportamiento no debe cambiar. En local se apaga con CRONS_ENABLED=false.
+    if (cronsHabilitados) {
+      require('./cron/remarketing');
+      require('./cron/remarketing_ig');
+      require('./cron/remarketing_ms');
+      require('./cron/aviso_calendarios');
+      require('./cron/seguimiento_citas.js');
+      require('./cron/templateProgramadoMasivo.js');
+      require('./cron/syncDropiStock.js');
+      require('./cron/syncDropiOrdersHourly.js');
+      require('./cron/syncAliclikOrders.js');
+      require('./cron/cronEncuestasEnvio.js');
+      require('./cron/metricasSnapshot.js');
+      require('./cron/botMetricasSnapshot.js');
+      require('./cron/imporsuitEmailSync.js');
+      // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
+      // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
+      require('./cron/messengerPagesHealth.js');
+      // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
+      // con NODE_ENV=production; ver el comentario del archivo).
+      require('./cron/rescatarTurnosPerdidos.js');
+    } else {
+      console.warn('⏸️  Crons DESACTIVADOS (CRONS_ENABLED=false)');
+    }
 
     // Server HTTP
     server = app.listen(process.env.PORT, () => {
