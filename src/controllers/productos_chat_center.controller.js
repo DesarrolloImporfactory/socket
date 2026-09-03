@@ -1429,6 +1429,248 @@ exports.importarProductoDropi = catchAsync(async (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// IMPORTAR PRODUCTOS DESDE ALICLIK
+//
+// Espeja el importador de Dropi de arriba, pero el catálogo de Aliclik es más
+// pobre y eso cambia tres cosas:
+//
+//  · No hay endpoint de detalle ni filtro por id. Todo sale del listado
+//    público (`/integration/product/public`), así que importar exige buscar el
+//    producto dentro del listado — de eso se encarga el servicio.
+//  · La identidad para pedir NO es el producto sino el `ean` del SKU, y cada
+//    SKU vive en un almacén concreto. Por eso las variantes se guardan SIEMPRE,
+//    incluso cuando el producto tiene una sola: si no, el ean y el almacén se
+//    perderían y el producto quedaría importado pero no pedible.
+//  · No manda descripción larga ni galería: solo `shortDescription` y una
+//    imagen. Lo que llegue es lo que hay; el resto se completa a mano o con el
+//    botón de descripción con IA.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ALICLIK_SOURCE = 'ALICLIK';
+
+const aliclikOrdersService = require('../services/aliclikOrders.service');
+
+/* Variantes de Aliclik.
+   Va aparte de `guardarVariaciones` a propósito: aquella escribe las 8
+   columnas que ya existían y la sigue usando el import de Dropi, que funciona
+   hoy. Estas dos columnas nuevas (`ean`, `warehouse_id`) llegan con la
+   migración `aliclik_variantes_migration.sql`; teniéndolas separadas, un
+   despliegue que se adelante a la migración rompe solo el botón nuevo y no el
+   import de Dropi que ya está en producción. */
+async function guardarVariacionesAliclik({
+  id_producto,
+  id_configuracion,
+  skus,
+}) {
+  await db.query(`DELETE FROM productos_variaciones WHERE id_producto = ?`, {
+    replacements: [id_producto],
+    type: db.QueryTypes.DELETE,
+  });
+  if (!skus?.length) return 0;
+
+  const valores = [];
+  const marcas = skus
+    .map((s) => {
+      valores.push(
+        id_producto,
+        id_configuracion,
+        s.ean,
+        // Aliclik no dice de qué atributo es la variante ("Color rojo" viene
+        // suelto), así que queda el rótulo neutro que el cliente puede
+        // corregir desde el formulario.
+        'Variedad',
+        s.nombre || 'Única',
+        s.stock ?? 0,
+        s.precio_proveedor,
+        s.precio_sugerido,
+        s.ean,
+        s.warehouse_id,
+      );
+      return '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    })
+    .join(', ');
+
+  await db.query(
+    `INSERT INTO productos_variaciones
+       (id_producto, id_configuracion, dropi_variation_id, atributo, valor,
+        stock, precio_proveedor, precio_sugerido, ean, warehouse_id)
+     VALUES ${marcas}`,
+    { replacements: valores, type: db.QueryTypes.INSERT },
+  );
+  return skus.length;
+}
+
+/* Catálogo de Aliclik paginado, para el modal de importación. */
+exports.listarProductosAliclik = catchAsync(async (req, res, next) => {
+  const t0 = Date.now();
+
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const data = await aliclikOrdersService.listCatalogoParaImportar({
+    id_configuracion,
+    params: {
+      page: toInt(req.body?.page) || 1,
+      limit: toInt(req.body?.limit) || 20,
+      search: str(req.body?.search || ''),
+    },
+  });
+
+  console.log(
+    `[listarProductosAliclik] conf=${id_configuracion} devueltos=${data.objects.length} total=${Date.now() - t0}ms`,
+  );
+
+  return res.json({ isSuccess: true, data });
+});
+
+exports.importarProductoAliclik = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const aliclik_product_id = toInt(req.body?.aliclik_product_id);
+
+  // Por defecto el precio de venta es el `regularPrice` de Aliclik.
+  const precio_override =
+    req.body?.precio != null ? Number(req.body.precio) : null;
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!aliclik_product_id)
+    return next(new AppError('aliclik_product_id es requerido', 400));
+
+  // 1) evitar duplicado
+  const existente = await ProductosChatCenter.findOne({
+    where: {
+      id_configuracion,
+      external_source: ALICLIK_SOURCE,
+      external_id: aliclik_product_id,
+      eliminado: 0,
+    },
+  });
+
+  if (existente) {
+    return res.status(200).json({
+      status: 'success',
+      alreadyImported: true,
+      data: existente,
+      message: 'Este producto de Aliclik ya fue importado anteriormente.',
+    });
+  }
+
+  // 2) traerlo del catálogo (fuente oficial: lo que mande el navegador solo
+  //    sirve como pista de búsqueda)
+  const prod = await aliclikOrdersService.buscarProductoAliclikPorId({
+    id_configuracion,
+    productId: aliclik_product_id,
+    nombreHint: str(req.body?.nombre || ''),
+  });
+
+  if (!prod)
+    return next(
+      new AppError(
+        'No se encontró ese producto en el catálogo de Aliclik. Puede que ya no esté disponible.',
+        404,
+      ),
+    );
+  if (!prod.skus.length)
+    return next(
+      new AppError(
+        'El producto no tiene ninguna variante con EAN, así que no se puede pedir a Aliclik.',
+        409,
+      ),
+    );
+
+  // 3) imagen: se rehospeda igual que en Dropi. Acá pesa más todavía porque
+  //    buena parte del catálogo apunta a Firebase con un token en la URL, que
+  //    puede dejar de servir la imagen sin previo aviso.
+  let imagen_url = null;
+  if (prod.imagen) {
+    imagen_url = await downloadAndConvertToJpgS3(
+      prod.imagen,
+      `aliclik-${aliclik_product_id}`,
+      'productos/aliclik',
+    );
+    if (!imagen_url) {
+      imagen_url = prod.imagen;
+      console.warn(
+        `[IMPORT_ALICLIK] Producto ${aliclik_product_id} importado con URL original (fallback)`,
+      );
+    }
+  }
+
+  // 4) precios: el primer SKU manda, igual que Dropi con variations[0].
+  const primero = prod.skus[0];
+  const precio_final = Number.isFinite(precio_override)
+    ? precio_override
+    : primero.precio_sugerido;
+
+  // 5) categoría
+  let id_categoria_asignada = null;
+  if (prod.categoria) {
+    const catCreada = await getOrCreateCategoria({
+      id_configuracion,
+      nombre: prod.categoria,
+      descripcion: null,
+    });
+    id_categoria_asignada = catCreada?.id || null;
+  }
+
+  // 6) crear producto
+  const nuevo = await ProductosChatCenter.create({
+    id_configuracion,
+    nombre: prod.nombre || 'Producto Aliclik',
+    descripcion: sanitizeText(prod.descripcion),
+    tipo: 'producto',
+    // Con un solo SKU no hay nada que preguntarle al comprador, aunque la
+    // variante igual se guarde para conservar el ean y el almacén.
+    es_variable: prod.skus.length > 1 ? 1 : 0,
+    precio: precio_final,
+    precio_proveedor: primero.precio_proveedor,
+    duracion: 0,
+    id_categoria: id_categoria_asignada,
+    imagen_url,
+    video_url: null,
+    nombre_upsell: null,
+    descripcion_upsell: null,
+    precio_upsell: null,
+    imagen_upsell_url: null,
+    combos_producto: null,
+    stock: prod.stock_total,
+
+    external_source: ALICLIK_SOURCE,
+    external_id: aliclik_product_id,
+  });
+
+  // 7) variantes: siempre, incluso una sola (ver cabecera del bloque)
+  try {
+    await guardarVariacionesAliclik({
+      id_producto: nuevo.id,
+      id_configuracion,
+      skus: prod.skus,
+    });
+  } catch (e) {
+    // El producto ya quedó creado; no se aborta por esto.
+    console.error(
+      `[IMPORT_ALICLIK] no se pudieron guardar variantes de ${aliclik_product_id}: ${e.message}`,
+    );
+  }
+
+  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) =>
+    console.error(`Error sync kanban catálogo: ${e.message}`),
+  );
+
+  const nVar = prod.skus.length;
+  return res.status(201).json({
+    status: 'success',
+    data: nuevo,
+    variaciones: nVar,
+    message:
+      nVar > 1
+        ? `Producto importado desde Aliclik con ${nVar} variante(s).`
+        : 'Producto importado desde Aliclik correctamente.',
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GENERAR DESCRIPCIÓN CON IA
 // La descripción es el campo que más se deja vacío del modal —y el que más
 // necesita el asistente para vender: sin ella el bot solo sabe el nombre y el
