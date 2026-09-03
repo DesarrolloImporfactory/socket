@@ -204,7 +204,8 @@ async function syncIntegration(integration, from, until) {
     start = 0,
     keepGoing = true,
     retries = 0,
-    delay = DELAY_BETWEEN_PAGES;
+    delay = DELAY_BETWEEN_PAGES,
+    rateLimited = false;
 
   while (keepGoing) {
     try {
@@ -230,7 +231,10 @@ async function syncIntegration(integration, from, until) {
     } catch (err) {
       const status = err?.statusCode || err?.status || 500;
       if (status === 429) {
-        if (++retries >= MAX_RETRIES_429) break;
+        if (++retries >= MAX_RETRIES_429) {
+          rateLimited = true;
+          break;
+        }
         delay = Math.min(delay * 2, 20000);
         await new Promise((r) => setTimeout(r, delay));
         continue;
@@ -282,6 +286,7 @@ async function syncIntegration(integration, from, until) {
     label,
     synced: allOrders.length,
     skipped: false,
+    rateLimited,
     templates: templateStats,
     profit: profitStats,
   };
@@ -292,12 +297,35 @@ async function syncIntegration(integration, from, until) {
    ═══════════════════════════════════════════════════════════ */
 
 async function runHourlyDropiSync() {
-  const [row] = await db.query(
-    `SELECT GET_LOCK('dropi_sync_hourly', 1) AS got`,
-    { type: db.QueryTypes.SELECT },
-  );
-  if (!row || Number(row.got) !== 1) return;
+  // GET_LOCK/RELEASE_LOCK son por SESIÓN (conexión). Antes el GET_LOCK iba en
+  // una conexión cualquiera del pool (que se cierra a los 10 s de idle y
+  // suelta el lock) y el RELEASE_LOCK en otra: el lock no bloqueaba nada y
+  // CADA tick de 15 min arrancaba un ciclo completo nuevo. Los ciclos se
+  // solapaban, Dropi respondía 429, syncIntegration cortaba con `break` y las
+  // integraciones del final de la lista quedaban ~1 visita exitosa al día
+  // (caso cfg 793, 2026-09-03: órdenes de la noche vistas a las 09:44).
+  // Se fija UNA conexión con una transacción: GET_LOCK y RELEASE_LOCK van en
+  // esa misma sesión; el trabajo del ciclo sigue usando el pool.
+  const t = await db.transaction();
+  let got = false;
+  try {
+    const [row] = await db.query(
+      `SELECT GET_LOCK('dropi_sync_hourly', 1) AS got`,
+      { type: db.QueryTypes.SELECT, transaction: t },
+    );
+    got = !!row && Number(row.got) === 1;
+  } catch (err) {
+    got = false;
+  }
+  if (!got) {
+    try {
+      await t.rollback();
+    } catch (_) {}
+    return;
+  }
 
+  const inicio = Date.now();
+  let resumen = null;
   try {
     const { from, until } = getDateRange();
 
@@ -318,10 +346,12 @@ async function runHourlyDropiSync() {
     );
 
     const totals = {
+      integraciones: integrations.length,
       ordenes: 0,
       enviados: 0,
       skipped: 0,
       errores: 0,
+      rate_limited: 0,
       entregadas: 0,
       profit_calculated: 0,
     };
@@ -338,20 +368,46 @@ async function runHourlyDropiSync() {
           totals.entregadas += r.templates?.entregadas_actualizadas || 0;
           totals.profit_calculated += r.profit?.calculated || 0;
         }
+        if (r.rateLimited) totals.rate_limited++;
       } catch (err) {
         totals.errores++;
+      }
+      // Keepalive de la sesión que sostiene el lock: un ciclo puede durar
+      // más que el wait_timeout de MySQL y, si la conexión muere, el lock se
+      // suelta y volvemos a los ciclos solapados.
+      if (i % 10 === 0) {
+        await db
+          .query(`SELECT 1`, { type: db.QueryTypes.SELECT, transaction: t })
+          .catch(() => {});
       }
       if (i < integrations.length - 1)
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
     }
+    resumen = totals;
   } catch (err) {
-    // error general silencioso
+    console.error('[Cron Dropi] error general del ciclo:', err?.message);
   } finally {
+    // Una línea por ciclo: sin esto era imposible saber cuánto tarda la
+    // vuelta completa ni si Dropi está limitando (429).
+    const min = ((Date.now() - inicio) / 60000).toFixed(1);
+    console.log(
+      `[Cron Dropi] ciclo terminado en ${min} min ${
+        resumen ? JSON.stringify(resumen) : '(sin resumen)'
+      }`,
+    );
     try {
       await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
         type: db.QueryTypes.RAW,
+        transaction: t,
       });
     } catch (e) {}
+    try {
+      await t.commit();
+    } catch (e) {
+      try {
+        await t.rollback();
+      } catch (_) {}
+    }
   }
 }
 
