@@ -21,6 +21,21 @@ const BotMetricasDiarias = require('../models/bot_metricas_diarias.model');
 
 const DIAS_ATRIBUCION = 30; // orden atribuida si hubo conversación IA en los 30 días previos
 
+/* Estados del kanban e-commerce que significan "la venta se cerró": el chat
+   llegó a generar guía o a cualquier etapa posterior del flujo logístico.
+   'cancelados' cuenta como cierre (hubo orden) — la pérdida se ve aparte. */
+const ESTADOS_CIERRE = [
+  'generar_guia',
+  'guia_generada',
+  'guia_creada',
+  'en_transito',
+  'entregada',
+  'retiro_agencia',
+  'novedad',
+  'devolucion',
+  'cancelados',
+];
+
 function normTel(t) {
   const d = String(t || '').replace(/\D/g, '');
   return d.length >= 9 ? d.slice(-9) : d;
@@ -51,13 +66,20 @@ async function recalcularVentana(diasVentana = 35) {
   const dias = Math.min(Math.max(Number(diasVentana) || 35, 1), 120);
 
   /* 1) Embudo de conversación por (día, cuenta). Todo se agrega en MySQL:
-        el detalle por contacto solo vive en la tabla derivada. */
+        el detalle por contacto solo vive en la tabla derivada. El join a
+        clientes_chat_center trae el estado ACTUAL del kanban: una
+        conversación cuenta como cierre si ese contacto llegó a
+        generar_guia o más allá (no hay historial de cambios de estado,
+        así que los días recientes maduran con cada recálculo). */
+  const listaCierre = ESTADOS_CIERRE.map(() => '?').join(',');
   const embudo = await q(
     `
     SELECT t.fecha, t.id_configuracion,
            COUNT(*)                                    AS convers_ia,
            SUM(t.ultimo_in > t.primer_ia)              AS convers_respondieron,
-           SUM(t.resp_ia)                              AS respuestas_ia
+           SUM(t.resp_ia)                              AS respuestas_ia,
+           SUM(cc.estado_contacto IN (${listaCierre})) AS cierres_kanban,
+           SUM(cc.estado_contacto = 'entregada')       AS entregadas_kanban
       FROM (
         SELECT DATE(created_at) AS fecha,
                id_configuracion,
@@ -71,9 +93,10 @@ async function recalcularVentana(diasVentana = 35) {
          GROUP BY DATE(created_at), id_configuracion, celular_recibe
         HAVING resp_ia > 0
       ) t
+      LEFT JOIN clientes_chat_center cc ON cc.id = t.celular_recibe
      GROUP BY t.fecha, t.id_configuracion
     `,
-    [dias],
+    [...ESTADOS_CIERRE, dias],
   );
 
   /* 2) Auto-orden por (día, cuenta). Tabla chica, directo. */
@@ -183,6 +206,8 @@ async function recalcularVentana(diasVentana = 35) {
         convers_ia: 0,
         convers_respondieron: 0,
         respuestas_ia: 0,
+        cierres_kanban: 0,
+        entregadas_kanban: 0,
         auto_intentos: 0,
         auto_creadas: 0,
         auto_fallidas: 0,
@@ -201,6 +226,8 @@ async function recalcularVentana(diasVentana = 35) {
     f.convers_ia = Number(e.convers_ia) || 0;
     f.convers_respondieron = Number(e.convers_respondieron) || 0;
     f.respuestas_ia = Number(e.respuestas_ia) || 0;
+    f.cierres_kanban = Number(e.cierres_kanban) || 0;
+    f.entregadas_kanban = Number(e.entregadas_kanban) || 0;
   }
   for (const a of auto) {
     const f = fila(fechaStr(a.fecha), a.id_configuracion);
@@ -221,6 +248,8 @@ async function recalcularVentana(diasVentana = 35) {
         'convers_ia',
         'convers_respondieron',
         'respuestas_ia',
+        'cierres_kanban',
+        'entregadas_kanban',
         'auto_intentos',
         'auto_creadas',
         'auto_fallidas',
