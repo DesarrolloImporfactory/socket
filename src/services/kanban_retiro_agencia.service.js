@@ -37,11 +37,14 @@ const kanbanArchivos = require('./kanban_archivos.service');
 // Configuraciones habilitadas durante la fase de pruebas.
 //   10  — WAPP IMPORTSUIT, cuenta de pruebas. Primera del piloto; toda la
 //         batería de E2E del 2026-08-31 se corrió acá.
+//   411 — CLICKYCOMPRA (2026-08-31). Cliente real con tablero personalizado:
+//         su prompt trae un flujo de agencias propio (pedir nombre/referencia
+//         sin verificar) que el bloque anula; el validador cubre lo demás.
 //   610 — Global Outlet ec Pruebas (2026-08-31). Entra con el switch YA
 //         ENCENDIDO: ofrece oficinas del directorio cuando el cliente pide
 //         retiro en agencia.
 // null = abierto para todas (el gate pasa a ser solo la plantilla E-commerce).
-const PILOTO_CONFIGS = [10, 610];
+const PILOTO_CONFIGS = [10, 610, 411];
 
 // Archivo default de la plataforma (viaja con el deploy — NO va en uploads/,
 // que está excluido del rsync).
