@@ -26,6 +26,16 @@ const BotMetricasDiarias = db.define(
     auto_creadas: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
     auto_fallidas: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
 
+    /* Cierre según el KANBAN del asistente e-commerce: contactos atendidos
+       ese día cuyo chat está HOY en "generar_guia" o más allá (guía
+       generada, en tránsito, entregada, retiro, novedad, devolución,
+       cancelados). Es la señal del propio bot de que la venta se cerró,
+       tenga o no la cuenta integración/auto-orden Dropi. Como no hay
+       historial de cambios de estado, se usa el estado actual (cohorte):
+       los días recientes maduran con cada recálculo. */
+    cierres_kanban: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
+    entregadas_kanban: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
+
     /* Órdenes Dropi del día (dropi_orders_cache, creadas por quien sea) */
     ordenes_total: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
     /* Cierres atribuidos al bot: orden cuyo teléfono tuvo conversación IA en
