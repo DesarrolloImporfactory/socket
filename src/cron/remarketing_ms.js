@@ -17,6 +17,7 @@ const {
   log,
 } = require('../services/remarketing_ig.service');
 const { botApagadoExplicito } = require('../utils/interruptorBot');
+const { esConexionCerrada } = require('../utils/conexionCerrada');
 
 const VENTANA_HORAS = 24;
 
@@ -42,7 +43,13 @@ async function withLock(lockName, fn) {
           transaction: t,
         });
       } catch (_) {}
-      await t.commit();
+      // La conexión que sostiene el lock queda ociosa todo el ciclo: si MySQL
+      // la cerró mientras tanto (wait_timeout/KILL/reinicio), el commit revienta
+      // con "connection is in closed state". El lock ya murió junto con la sesión,
+      // así que no hay nada que salvar: se ignora y el ciclo termina limpio.
+      try {
+        await t.commit();
+      } catch (_) {}
     }
   } catch (e) {
     try {
@@ -348,7 +355,13 @@ cron.schedule('*/1 * * * *', async () => {
       }
     });
   } catch (e) {
-    await log(`[ms] ❌ Error ciclo cron MS: ${e.message}`);
+    // Conexión MySQL muerta: no es un fallo del remarketing, el pool la
+    // descarta y el tick del próximo minuto arranca con una sana.
+    if (esConexionCerrada(e)) {
+      await log(`[ms] ⚠️ Ciclo MS saltado: conexión MySQL cerrada (${e.message})`);
+    } else {
+      await log(`[ms] ❌ Error ciclo cron MS: ${e.message}`);
+    }
   } finally {
     isRunning = false;
   }
