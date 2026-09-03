@@ -24,7 +24,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
 /* Scopes válidos de una llave. Cualquier otro valor se rechaza al crear. */
-const SCOPES_VALIDOS = ['read', 'bot:write', 'flujos:write', 'plantillas:write', '*'];
+const SCOPES_VALIDOS = ['read', 'bot:write', 'flujos:write', 'plantillas:write', 'mensajes:write', '*'];
 exports.SCOPES_VALIDOS = SCOPES_VALIDOS;
 
 /* ── Auditoría (tolerante a la tabla ausente) ── */
@@ -69,6 +69,10 @@ async function auditar(req, { recurso, accion, previo, nuevo }) {
     }
   }
 }
+
+/* Reutilizada por public_mensajes.controller: los envíos se auditan igual
+   que las escrituras de configuración. */
+exports.auditar = auditar;
 
 async function credsMeta(id_configuracion) {
   const [row] = await db.query(

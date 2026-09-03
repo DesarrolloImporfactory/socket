@@ -2,6 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const ctrl = require('../controllers/public_api.controller');
 const cfgCtrl = require('../controllers/public_config.controller');
+const msjCtrl = require('../controllers/public_mensajes.controller');
 const { apiKeyAuth, requireScope } = require('../middlewares/apiKey.middleware');
 
 const router = express.Router();
@@ -16,6 +17,20 @@ const limiter = rateLimit({
   keyGenerator: (req) => String(req.apiKey?.id || req.ip),
   message: {
     error: 'Demasiadas solicitudes. Máximo 60 por minuto por API key.',
+  },
+});
+
+/* Los envíos gastan plata y reputación del número: tope propio, más corto
+   que el general. 20/min alcanza para un CRM operando a mano; un masivo
+   se hace con la pantalla de flujos, no por esta API. */
+const limiterEnvios = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.apiKey?.id || req.ip),
+  message: {
+    error: 'Demasiados envíos. Máximo 20 por minuto por API key.',
   },
 });
 
@@ -63,6 +78,37 @@ router.delete(
   '/respuestas-rapidas/:id',
   requireScope('plantillas:write'),
   cfgCtrl.rapidasEliminar,
+);
+
+/* ═══ Mensajería para CRMs externos ═══
+   Lecturas con 'read'; envíos SOLO con 'mensajes:write'. Fuera de la
+   ventana de 24h únicamente pasan plantillas aprobadas (regla de Meta). */
+
+// Buscar la conversación por teléfono (encuentra el chat sin id previo)
+router.get('/conversaciones', requireScope('read'), msjCtrl.conversacionBuscar);
+
+// Mensajes de un chat; los audios traen `transcripcion` (si el bot la generó)
+router.get(
+  '/conversaciones/:id/mensajes',
+  requireScope('read'),
+  msjCtrl.conversacionMensajes,
+);
+
+// Plantilla aprobada a cualquier número (crea el chat si nunca escribió);
+// soporta header con imagen y botón URL con variable
+router.post(
+  '/mensajes/plantilla',
+  limiterEnvios,
+  requireScope('mensajes:write'),
+  msjCtrl.enviarPlantilla,
+);
+
+// Foto o video a un chat dentro de la ventana de 24h
+router.post(
+  '/mensajes/media',
+  limiterEnvios,
+  requireScope('mensajes:write'),
+  msjCtrl.enviarMedia,
 );
 
 // Plantillas Meta de WhatsApp
