@@ -34,6 +34,42 @@ const COND_ACCESO_MANUAL = `
   AND ${FILTRO_NO_TEST}
 `;
 
+// Un cobro REAL en transacciones_stripe_chat (alias t): factura de Stripe
+// (in_...) con plata efectivamente cobrada (monto = amount_paid). Excluye la
+// factura en $0 del trial y las filas de auditoría (upgrade_applied, etc.).
+// NO se filtra por estado_suscripcion a propósito: id_pago es único y una
+// factura que primero falló (payment_failed) y después se cobró conserva ese
+// estado viejo; el monto > 0 es la verdad de Stripe.
+const COND_COBRO_REAL = `
+  t.id_pago LIKE 'in\\_%'
+  AND t.monto > 0
+`;
+
+/**
+ * ¿transacciones_stripe_chat ya tiene la columna monto (agregada 2026-09-04)?
+ * dev y prod comparten base, y develop se despliega solo: si este código llega
+ * antes que la migración, ninguna query con `t.monto` puede romper el
+ * dashboard entero. Se cachea el "sí" para siempre y el "no" por 5 minutos.
+ */
+let _montoCache = { ok: null, at: 0 };
+async function tieneColumnaMonto() {
+  const now = Date.now();
+  if (_montoCache.ok === true) return true;
+  if (_montoCache.ok === false && now - _montoCache.at < 5 * 60 * 1000) {
+    return false;
+  }
+  try {
+    const rows = await db.query(
+      `SHOW COLUMNS FROM transacciones_stripe_chat LIKE 'monto'`,
+      { type: db.QueryTypes.SELECT },
+    );
+    _montoCache = { ok: rows.length > 0, at: now };
+  } catch {
+    _montoCache = { ok: false, at: now };
+  }
+  return _montoCache.ok;
+}
+
 async function calcularSnapshot(fecha = null, esEstimado = false) {
   const dia = fecha || new Date().toISOString().split('T')[0];
   const diaFin = `${dia} 23:59:59`;
@@ -271,6 +307,36 @@ async function metricasEnVivo(dias = 30) {
     `,
     { type: db.QueryTypes.SELECT },
   );
+  // Clientes recurrentes: pagando en Stripe hoy Y con 2+ cobros REALES.
+  // Se cuenta sobre transacciones_stripe_chat con monto > 0: la factura en $0
+  // del trial (subscription_create) también dispara payment_succeeded y sin
+  // ese filtro todo el mundo aparecería con un "pago" de más. Las filas sin
+  // monto (anteriores a la migración y sin backfill) no cuentan.
+  const montoDisponible = await tieneColumnaMonto();
+  const [rec] = !montoDisponible
+    ? [null]
+    : await db.query(
+        `
+    SELECT
+      COUNT(*) AS pagando,
+      SUM(CASE WHEN x.pagos >= 2 THEN 1 ELSE 0 END) AS recurrentes,
+      SUM(CASE WHEN x.pagos >= 3 THEN 1 ELSE 0 END) AS recurrentes_3mas,
+      SUM(CASE WHEN x.pagos = 1 THEN 1 ELSE 0 END) AS primer_cobro,
+      SUM(CASE WHEN x.pagos = 0 THEN 1 ELSE 0 END) AS sin_cobro_registrado
+    FROM (
+      SELECT u.id_usuario, COUNT(DISTINCT t.id_pago) AS pagos
+      FROM usuarios_chat_center u
+      LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
+      LEFT JOIN transacciones_stripe_chat t
+             ON t.id_usuario = u.id_usuario
+            AND ${COND_COBRO_REAL}
+      WHERE ${COND_MRR_STRIPE}
+      GROUP BY u.id_usuario
+    ) x
+    `,
+        { type: db.QueryTypes.SELECT },
+      );
+
   const tasaConversion =
     Number(conv?.total_post_gratis || 0) > 0
       ? (Number(conv.convertidos) / Number(conv.total_post_gratis)) * 100
@@ -358,6 +424,18 @@ async function metricasEnVivo(dias = 30) {
       convertidos: Number(conv?.convertidos || 0),
     },
 
+    // Recurrentes = pagando en Stripe con 2+ cobros reales (monto > 0).
+    // recurrentes_disponible=false → falta aplicar la migración de monto.
+    recurrentes_disponible: montoDisponible,
+    clientes_recurrentes: Number(rec?.recurrentes || 0),
+    clientes_recurrentes_3mas: Number(rec?.recurrentes_3mas || 0),
+    clientes_primer_cobro: Number(rec?.primer_cobro || 0),
+    clientes_sin_cobro_registrado: Number(rec?.sin_cobro_registrado || 0),
+    recurrentes_pct:
+      Number(rec?.pagando || 0) > 0
+        ? (Number(rec.recurrentes) / Number(rec.pagando)) * 100
+        : null,
+
     nuevos_mes: Number(nuevosMes.n),
     cancelados_mes: Number(cancelMes.n),
     churn_pct: churnMes,
@@ -390,4 +468,10 @@ async function metricasEnVivo(dias = 30) {
   };
 }
 
-module.exports = { calcularSnapshot, guardarSnapshot, metricasEnVivo };
+module.exports = {
+  calcularSnapshot,
+  guardarSnapshot,
+  metricasEnVivo,
+  COND_COBRO_REAL,
+  tieneColumnaMonto,
+};
