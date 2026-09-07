@@ -15,6 +15,7 @@ async function upsertMessengerPage({
   page_access_token,
   subscribed,
   fb_user_id,
+  fb_app_id,
 }) {
   // ¿Existe ya?
   const [existing] = await db.query(
@@ -31,6 +32,7 @@ async function upsertMessengerPage({
       `UPDATE messenger_pages
           SET page_name = ?,
               page_access_token = ?,
+              fb_app_id = ?,
               subscribed = ?,
               connected_by_fb_user_id = ?,
               status = 'active'
@@ -39,6 +41,7 @@ async function upsertMessengerPage({
         replacements: [
           page_name,
           page_access_token,
+          fb_app_id || null,
           subscribed ? 1 : 0,
           fb_user_id || null,
           existing.id_messenger_page,
@@ -51,14 +54,15 @@ async function upsertMessengerPage({
     // INSERT sin created_at/updated_at
     const [result] = await db.query(
       `INSERT INTO messenger_pages
-         (id_configuracion, page_id, page_name, page_access_token, subscribed, connected_by_fb_user_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+         (id_configuracion, page_id, page_name, page_access_token, fb_app_id, subscribed, connected_by_fb_user_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
       {
         replacements: [
           id_configuracion,
           page_id,
           page_name,
           page_access_token,
+          fb_app_id || null,
           subscribed ? 1 : 0,
           fb_user_id || null,
         ],
@@ -80,6 +84,9 @@ class MessengerConnectService {
     await verificarPaginaMessengerDisponible({ page_id, id_configuracion });
 
     // 1) Page token + nombre desde la sesión
+    const fbApp = await MessengerOAuthService.getAppFromSession(
+      oauth_session_id,
+    );
     const { page_access_token, page_name } =
       await MessengerOAuthService.getPageTokenFromSession(
         oauth_session_id,
@@ -119,7 +126,7 @@ class MessengerConnectService {
     // Por eso se compara lo pedido contra lo que quedó de verdad, en vez de
     // confiar en la respuesta del POST.
     const mia = (status?.data || []).find(
-      (a) => String(a.id) === String(process.env.FB_APP_ID),
+      (a) => String(a.id) === String(fbApp.id),
     );
     const confirmados = mia?.subscribed_fields || [];
     console.log(
@@ -158,6 +165,7 @@ class MessengerConnectService {
       page_access_token,
       subscribed: true,
       fb_user_id: session?.fb_user_id || null,
+      fb_app_id: fbApp.id,
     });
 
     // 5) Marcar sesión usada (opcional)

@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const MessengerOAuthService = require('../services/messenger_oauth.service');
 const MessengerConnectService = require('../services/messenger_connect.service');
+const { defaultMessengerApp, resolveApp } = require('../config/metaApps');
 
 // GET /api/v1/messenger/facebook/login-url?id_configuracion=123&redirect_uri=https://tu.front/conexiones
 exports.getLoginUrl = catchAsync(async (req, res, next) => {
@@ -12,19 +13,27 @@ exports.getLoginUrl = catchAsync(async (req, res, next) => {
       new AppError('id_configuracion y redirect_uri son requeridos', 400)
     );
   }
+  const app = req.query.fb_app
+    ? resolveApp(req.query.fb_app)
+    : defaultMessengerApp();
+
   const url = MessengerOAuthService.buildLoginUrl({
     id_configuracion,
     redirect_uri,
     config_id,
+    app,
   });
-  res.json({ ok: true, url });
+  res.json({ ok: true, url, fb_app: app.key, fb_app_id: app.id });
 });
 
 // POST /api/v1/messenger/facebook/oauth/exchange
 // body: { code, id_configuracion, redirect_uri }
 // crea sesión oauth (guarda user_token_largo) y devuelve oauth_session_id
 exports.exchangeCode = catchAsync(async (req, res, next) => {
-  const { code, id_configuracion, redirect_uri } = req.body;
+  const { code, id_configuracion, redirect_uri, fb_app } = req.body;
+  // Tiene que ser la misma app con la que se pidió el login: el code de Meta
+  // pertenece a una app concreta.
+  const app = fb_app ? resolveApp(fb_app) : defaultMessengerApp();
   if (!code || !id_configuracion || !redirect_uri) {
     return next(
       new AppError('code, id_configuracion y redirect_uri son requeridos', 400)
@@ -36,6 +45,7 @@ exports.exchangeCode = catchAsync(async (req, res, next) => {
       code,
       id_configuracion,
       redirect_uri,
+      app,
     });
   } catch (err) {
     // El `code` de Meta es de un solo uso y dura ~10 minutos. Las dos causas
@@ -46,7 +56,8 @@ exports.exchangeCode = catchAsync(async (req, res, next) => {
     const meta = err.response?.data?.error;
     console.error(
       `[FB_CONNECT][ERROR] 2/5 falló el intercambio del code · ` +
-        `cfg=${id_configuracion} · redirect_uri=${redirect_uri} · ` +
+        `cfg=${id_configuracion} · app=${app.key}(${app.id}) · ` +
+        `redirect_uri=${redirect_uri} · ` +
         `code=…${String(code).slice(-8)} · ` +
         (meta
           ? `Meta code=${meta.code}${meta.error_subcode ? `/${meta.error_subcode}` : ''}: ${meta.message}`

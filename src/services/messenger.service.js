@@ -8,8 +8,7 @@ const {
   transcribirAudioDesdeUrl,
   TEXTO_AUDIO_ILEGIBLE,
 } = require('../utils/openia/transcribirAudio');
-
-const FB_APP_ID = process.env.FB_APP_ID;
+const { isOwnAppId } = require('../config/metaApps');
 
 /**
  * Guarda la transcripción en el mensaje entrante ya insertado.
@@ -376,8 +375,8 @@ class MessengerService {
       const pageIdEcho = event.sender?.id; // en echos: sender.id = PAGE
       const psidEcho = event.recipient?.id; // recipient.id = USER
 
-      // Si el echo es de nuestra propia app, ignoramos
-      if (String(appId || '') === String(FB_APP_ID)) {
+      // Si el echo es de alguna de nuestras apps, ignoramos
+      if (isOwnAppId(appId)) {
         console.log('[SKIP][ECHO][OWN]', { mid: event.message?.mid, appId });
         return;
       }
