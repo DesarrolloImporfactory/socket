@@ -34,17 +34,17 @@ const {
 } = require('../utils/promptCompiler');
 const kanbanArchivos = require('./kanban_archivos.service');
 
-// Configuraciones habilitadas durante la fase de pruebas.
-//   10  — WAPP IMPORTSUIT, cuenta de pruebas. Primera del piloto; toda la
-//         batería de E2E del 2026-08-31 se corrió acá.
-//   411 — CLICKYCOMPRA (2026-08-31). Cliente real con tablero personalizado:
-//         su prompt trae un flujo de agencias propio (pedir nombre/referencia
-//         sin verificar) que el bloque anula; el validador cubre lo demás.
-//   610 — Global Outlet ec Pruebas (2026-08-31). Entra con el switch YA
-//         ENCENDIDO: ofrece oficinas del directorio cuando el cliente pide
-//         retiro en agencia.
-// null = abierto para todas (el gate pasa a ser solo la plantilla E-commerce).
-const PILOTO_CONFIGS = [10, 610, 411];
+// Piloto TERMINADO el 2026-09-07 (corrió en la 10, la 610 y la 411 desde el
+// 31-08 sin fallas). null = abierto para todas las cuentas que cumplan el gate
+// real de abajo. La lista queda como override rápido: si hubiera que volver a
+// restringir, se pone [ids] y vuelve a mandar sobre la plantilla.
+const PILOTO_CONFIGS = null;
+
+// El gate real: plantillas que venden con Servientrega. El directorio es de
+// Ecuador, así que solo la plantilla "Agente de E-commerce" EC (id 13); las
+// verticales de servicios (clínicas, abogados, inmobiliaria) y los países
+// MX/CO/PE/GT no tienen courier de retiro y no ven el switch.
+const PLANTILLAS_HABILITADAS = [13];
 
 // Archivo default de la plataforma (viaja con el deploy — NO va en uploads/,
 // que está excluido del rsync).
@@ -58,9 +58,22 @@ const RUTA_DEFAULT = path.join(
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function enPiloto(id_configuracion) {
-  if (!Array.isArray(PILOTO_CONFIGS)) return true;
-  return PILOTO_CONFIGS.includes(Number(id_configuracion));
+// ¿Esta cuenta ve el switch? Con lista de piloto activa manda la lista; si no,
+// la plantilla instalada. Ante un error de BD devuelve false (no mostrar la
+// función por un fallo transitorio es mejor que mostrarla donde no aplica).
+async function enPiloto(id_configuracion) {
+  if (Array.isArray(PILOTO_CONFIGS)) {
+    return PILOTO_CONFIGS.includes(Number(id_configuracion));
+  }
+  try {
+    const [row] = await db.query(
+      `SELECT kanban_global_id FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    return PLANTILLAS_HABILITADAS.includes(Number(row?.kanban_global_id));
+  } catch (_) {
+    return false;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -570,7 +583,7 @@ async function estado(id_configuracion) {
   const activo = await estaActivo(id_configuracion);
   const archivo = await archivoAgenciasDeLaCuenta(id_configuracion);
   return {
-    piloto: enPiloto(id_configuracion),
+    piloto: await enPiloto(id_configuracion),
     activo,
     archivo: archivo
       ? {

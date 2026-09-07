@@ -33,9 +33,12 @@ exports.toggle = catchAsync(async (req, res, next) => {
   const id = validarIdConfig(req, next);
   if (!id) return;
 
-  if (!retiroAgencia.enPiloto(id)) {
+  if (!(await retiroAgencia.enPiloto(id))) {
     return next(
-      new AppError('Esta función está en piloto y tu cuenta aún no la tiene', 403),
+      new AppError(
+        'El retiro en agencia Servientrega está disponible para tableros de E-commerce Ecuador',
+        403,
+      ),
     );
   }
 
