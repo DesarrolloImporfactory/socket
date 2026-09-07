@@ -25,6 +25,13 @@
  *   node scripts/reenviarPlantillasDropiPerdidas.js                 (dry-run, todas)
  *   node scripts/reenviarPlantillasDropiPerdidas.js --cfg=793       (dry-run, una)
  *   node scripts/reenviarPlantillasDropiPerdidas.js --horas=48 --apply
+ *   node scripts/reenviarPlantillasDropiPerdidas.js --horas=96 --cache-horas=26 --apply
+ *
+ * --cache-horas=N: solo órdenes cuyo `synced_at` en el cache tenga menos de
+ * N horas, es decir, cuyo estado actual se sabe fresco. Sirve cuando el cron
+ * estuvo días sin visitar integraciones (04 al 07-09-2026): para esas el
+ * cache está viejo y avisar "guía generada" de algo que ya se entregó es
+ * peor que no avisar. Sin este flag se toma todo el cache.
  */
 
 require('dotenv').config({
@@ -44,6 +51,7 @@ const arg = (k) =>
 const CFG = Number(arg('cfg')) || null;
 const HORAS = Number(arg('horas')) || 48;
 const HORAS_SOLO_MOVER = 24;
+const CACHE_HORAS = Number(arg('cache-horas')) || null;
 const APPLY = args.includes('--apply');
 
 function fmtLocal(d) {
@@ -95,8 +103,14 @@ async function candidatasDeConfig(integ, ahoraMs) {
         AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.updated_at')),
                      JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.created_at')), '')
             >= ?
+        ${CACHE_HORAS ? 'AND synced_at >= NOW() - INTERVAL ? HOUR' : ''}
       ORDER BY dropi_order_id ASC`,
-    { replacements: [cfg, fmtLocal(desde)], type: db.QueryTypes.SELECT },
+    {
+      replacements: CACHE_HORAS
+        ? [cfg, fmtLocal(desde), CACHE_HORAS]
+        : [cfg, fmtLocal(desde)],
+      type: db.QueryTypes.SELECT,
+    },
   );
 
   const orders = [];
@@ -144,6 +158,7 @@ async function candidatasDeConfig(integ, ahoraMs) {
   const ahoraMs = Date.now();
   console.log(
     `${APPLY ? 'APLICANDO' : 'DRY-RUN'} · ventana ${HORAS}h (solo mover ${HORAS_SOLO_MOVER}h)` +
+      (CACHE_HORAS ? ` · cache fresco <${CACHE_HORAS}h` : '') +
       (CFG ? ` · cfg ${CFG}` : ' · todas las configs'),
   );
 
