@@ -55,8 +55,21 @@ class MessengerOAuthService {
    */
   static buildLoginUrl({ id_configuracion, redirect_uri, config_id, app }) {
     const fbApp = app || defaultMessengerApp();
-    // Si el front no manda config_id, se usa el de la app (FB_*_LOGIN_CONFIG_ID).
-    const cfgId = config_id || fbApp.loginConfigId;
+    // Una configuración de Business Login pertenece a UNA app. El front trae
+    // el config_id quemado (el de la app legacy), así que si la app resuelta
+    // tiene el suyo en el .env, ese manda: mezclar el client_id de una app con
+    // el config_id de otra hace que Meta rechace el diálogo. Si la app no tiene
+    // config propio (caso legacy en producción), se respeta el del front.
+    let cfgId = config_id || null;
+    if (fbApp.loginConfigId) {
+      if (cfgId && String(cfgId) !== String(fbApp.loginConfigId)) {
+        console.warn(
+          `[FB_CONNECT] 1/5 config_id=${cfgId} no pertenece a la app ` +
+            `${fbApp.key}(${fbApp.id}); se ignora y se usa ${fbApp.loginConfigId}.`,
+        );
+      }
+      cfgId = fbApp.loginConfigId;
+    }
     // incluye el id_configuracion en el state
     const state = `cfg_${id_configuracion}_${crypto
       .randomBytes(8)
