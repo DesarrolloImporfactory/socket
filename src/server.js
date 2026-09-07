@@ -103,6 +103,9 @@ async function startServer() {
       require('./cron/metricasSnapshot.js');
       require('./cron/botMetricasSnapshot.js');
       require('./cron/imporsuitEmailSync.js');
+      // Reglas automáticas del Lanzador de campañas Meta: pausa anuncios sin
+      // resultados y escala ganadores según las reglas de cada cuenta.
+      require('./cron/metaAdsReglasCron.js');
       // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
       // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
       require('./cron/messengerPagesHealth.js');

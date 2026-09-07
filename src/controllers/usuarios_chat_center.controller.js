@@ -502,3 +502,62 @@ exports.actualizarWhatsappLead = catchAsync(async (req, res) => {
     },
   });
 });
+
+// ──────────────────────────────────────────────────────────────
+// Información principal del dueño de la cuenta (vista Mi Perfil):
+// datos básicos + el WhatsApp personal donde recibe TODOS los
+// avisos del sistema (reglas de Meta Ads y los que vengan).
+// ──────────────────────────────────────────────────────────────
+exports.infoPropietario = catchAsync(async (req, res) => {
+  const { id_usuario } = req.body;
+  if (!id_usuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'id_usuario es requerido',
+    });
+  }
+  const u = await Usuarios_chat_center.findByPk(id_usuario, {
+    attributes: [
+      'id_usuario',
+      'nombre',
+      'email_propietario',
+      'estado',
+      'tipo_plan',
+      'fecha_renovacion',
+      'whatsapp_lead',
+      'whatsapp_lead_pais',
+      'created_at',
+    ],
+  });
+  if (!u) {
+    return res.status(404).json({
+      status: 'fail',
+      message: 'Usuario no encontrado.',
+    });
+  }
+  return res.status(200).json({ status: 'success', data: u });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Avisos que el sistema le ha enviado al dueño (bitácora de la
+// tarjeta "Avisos" en Mi Perfil).
+// ──────────────────────────────────────────────────────────────
+exports.avisosEnviados = catchAsync(async (req, res) => {
+  const { id_usuario } = req.body;
+  if (!id_usuario) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'id_usuario es requerido',
+    });
+  }
+  const { db } = require('../database/config');
+  const rows = await db.query(
+    `SELECT id, id_configuracion, evento, resumen, created_at
+       FROM avisos_enviados
+      WHERE id_usuario = ?
+      ORDER BY id DESC
+      LIMIT 30`,
+    { replacements: [id_usuario], type: db.QueryTypes.SELECT },
+  );
+  return res.status(200).json({ status: 'success', data: rows });
+});

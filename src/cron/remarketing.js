@@ -624,6 +624,24 @@ cron.schedule('*/1 * * * *', async () => {
                     AND oa.tipo = 'ventas'
                     AND oa.deleted_at IS NULL
                     AND oa.activo = 1
+               )
+           /* El WhatsApp PERSONAL del dueño (whatsapp_lead) recibe avisos
+              del sistema desde su propio número conectado — y suele escribir
+              para probar el bot. Un aviso es solo un aviso: al dueño jamás
+              se le hace remarketing. Match por sufijo porque whatsapp_lead
+              se guarda sin código de país (y a veces con 0 inicial). */
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM clientes_chat_center cli_dueno
+                   JOIN configuraciones cfg_dueno
+                     ON cfg_dueno.id = rp.id_configuracion
+                   JOIN usuarios_chat_center u_dueno
+                     ON u_dueno.id_usuario = cfg_dueno.id_usuario
+                  WHERE cli_dueno.id = rp.id_cliente_chat_center
+                    AND u_dueno.whatsapp_lead IS NOT NULL
+                    AND LENGTH(TRIM(LEADING '0' FROM u_dueno.whatsapp_lead)) >= 7
+                    AND REPLACE(REPLACE(cli_dueno.celular, '+', ''), ' ', '')
+                        LIKE CONCAT('%', TRIM(LEADING '0' FROM u_dueno.whatsapp_lead))
                )`;
 
       // ── Configs bloqueadas se filtran ANTES del LIMIT ──

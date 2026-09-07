@@ -106,6 +106,25 @@ async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
   return null;
 }
 
+/* Offset UTC de la zona horaria de la cuenta publicitaria (ej. "-05:00"
+   para America/Guayaquil). La hora programada se interpreta en la hora
+   local del cliente, no en UTC. */
+function offsetDeZona(timeZone) {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      timeZoneName: 'longOffset',
+    });
+    const parte =
+      dtf.formatToParts(new Date()).find((p) => p.type === 'timeZoneName')
+        ?.value || '';
+    const m = /GMT([+-]\d{2}:\d{2})/.exec(parte);
+    if (m) return m[1];
+    if (/^GMT$/.test(parte.trim())) return '+00:00';
+  } catch {}
+  return '-05:00';
+}
+
 function construirTargeting(cfg) {
   // Dos modos de alcance: países completos, o provincias/ciudades puntuales
   // (regions/cities de Meta, elegidas con la búsqueda adgeolocation).
@@ -227,7 +246,7 @@ async function lanzarPaquete({ conn, cfg }) {
 
   try {
     // 2) Conjunto — presupuesto en centavos, destino WhatsApp
-    const adsetResp = await ax.post(`${GRAPH_BASE}/${act}/adsets`, {
+    const adsetPayload = {
       name: nombreBase,
       campaign_id,
       daily_budget: Math.round(Number(cfg.presupuesto_diario) * 100),
@@ -238,7 +257,14 @@ async function lanzarPaquete({ conn, cfg }) {
       promoted_object: { page_id: cfg.page_id },
       targeting: construirTargeting(cfg),
       status,
-    });
+    };
+    // Programación: si hay hora de inicio futura, el conjunto arranca solo
+    // a esa hora (hora local de la cuenta publicitaria). Meta la respeta
+    // aunque la campaña ya esté activa y aprobada.
+    if (cfg.inicio_at) {
+      adsetPayload.start_time = `${String(cfg.inicio_at).replace(' ', 'T')}${offsetDeZona(conn.timezone_name)}`;
+    }
+    const adsetResp = await ax.post(`${GRAPH_BASE}/${act}/adsets`, adsetPayload);
     const adset_id = assertMeta(adsetResp, 'crear conjunto').id;
 
     // 3-4) Un anuncio por imagen (hasta 5 variaciones dentro del mismo
@@ -381,101 +407,129 @@ async function listarPaginasDelToken(conn) {
     }
   };
 
-  const intentos = [
-    ['promote_pages', `${GRAPH_BASE}/${act}/promote_pages`],
-    ['me/accounts', `${GRAPH_BASE}/me/accounts`],
-    ['assigned_pages', `${GRAPH_BASE}/me/assigned_pages`],
-  ];
-  for (const [origen, url] of intentos) {
+  /* Todos los caminos se consultan EN PARALELO (en serie eran ~8 llamadas a
+     Graph y el contexto tardaba varios segundos). El merge respeta la
+     prioridad: cualquier fuente con nombre real pisa a los ids genéricos
+     rescatados de anuncios existentes. */
+  const buscarSimple = async (origen, url) => {
     try {
       const r = await ax.get(url, { params: { fields: 'id,name', limit: 50 } });
-      if (r.status >= 200 && r.status < 300) agregar(r.data?.data, origen);
+      if (r.status >= 200 && r.status < 300)
+        return { origen, lista: r.data?.data || [] };
     } catch (e) {
       logger.error(`metaAdsLauncher: ${origen} falló: ${e.message}`);
     }
-  }
+    return { origen, lista: [] };
+  };
 
   // Páginas otorgadas en el propio token (granular_scopes de debug_token).
   // Es el camino más fiable para tokens de Login for Business: cuando la
   // configuración de login incluye el activo Páginas, los ids elegidos por
   // el cliente vienen aquí aunque me/accounts no responda.
-  try {
-    const dbg = await axios.get(`${GRAPH_BASE}/debug_token`, {
-      params: {
-        input_token: conn.access_token,
-        access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
-      },
-      validateStatus: () => true,
-      timeout: 15000,
-    });
-    const ids = new Set();
-    for (const g of dbg.data?.data?.granular_scopes || []) {
-      if (
-        [
-          'pages_read_engagement',
-          'pages_manage_metadata',
-          'pages_show_list',
-          'pages_messaging',
-        ].includes(g.scope)
-      ) {
-        for (const id of g.target_ids || []) ids.add(String(id));
-      }
-    }
-    if (ids.size) {
-      const detalles = await Promise.all(
-        [...ids].map(async (id) => {
-          const r = await ax.get(`${GRAPH_BASE}/${id}`, {
-            params: { fields: 'id,name' },
-          });
-          return r.status >= 200 && r.status < 300
-            ? r.data
-            : { id, name: null };
-        }),
-      );
-      agregar(detalles, 'permisos_token');
-    }
-  } catch (e) {
-    logger.error(`metaAdsLauncher: granular pages falló: ${e.message}`);
-  }
-
-  // Por portafolio (owned + client)
-  try {
-    const rb = await ax.get(`${GRAPH_BASE}/me/businesses`, {
-      params: { limit: 25 },
-    });
-    if (rb.status >= 200 && rb.status < 300) {
-      for (const b of rb.data?.data || []) {
-        for (const edge of ['owned_pages', 'client_pages']) {
-          const r = await ax.get(`${GRAPH_BASE}/${b.id}/${edge}`, {
-            params: { fields: 'id,name', limit: 50 },
-          });
-          if (r.status >= 200 && r.status < 300)
-            agregar(r.data?.data, `business/${edge}`);
+  const buscarGranular = async () => {
+    try {
+      const dbg = await axios.get(`${GRAPH_BASE}/debug_token`, {
+        params: {
+          input_token: conn.access_token,
+          access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
+        },
+        validateStatus: () => true,
+        timeout: 15000,
+      });
+      const ids = new Set();
+      for (const g of dbg.data?.data?.granular_scopes || []) {
+        if (
+          [
+            'pages_read_engagement',
+            'pages_manage_metadata',
+            'pages_show_list',
+            'pages_messaging',
+          ].includes(g.scope)
+        ) {
+          for (const id of g.target_ids || []) ids.add(String(id));
         }
       }
+      if (ids.size) {
+        const detalles = await Promise.all(
+          [...ids].map(async (id) => {
+            const r = await ax.get(`${GRAPH_BASE}/${id}`, {
+              params: { fields: 'id,name' },
+            });
+            return r.status >= 200 && r.status < 300
+              ? r.data
+              : { id, name: null };
+          }),
+        );
+        return { origen: 'permisos_token', lista: detalles };
+      }
+    } catch (e) {
+      logger.error(`metaAdsLauncher: granular pages falló: ${e.message}`);
     }
-  } catch (e) {
-    logger.error(`metaAdsLauncher: businesses falló: ${e.message}`);
-  }
+    return { origen: 'permisos_token', lista: [] };
+  };
+
+  // Por portafolio (owned + client), con los edges en paralelo
+  const buscarBusinesses = async () => {
+    try {
+      const rb = await ax.get(`${GRAPH_BASE}/me/businesses`, {
+        params: { limit: 25 },
+      });
+      if (rb.status >= 200 && rb.status < 300) {
+        const tareas = [];
+        for (const b of rb.data?.data || []) {
+          for (const edge of ['owned_pages', 'client_pages']) {
+            tareas.push(
+              ax
+                .get(`${GRAPH_BASE}/${b.id}/${edge}`, {
+                  params: { fields: 'id,name', limit: 50 },
+                })
+                .then((r) =>
+                  r.status >= 200 && r.status < 300 ? r.data?.data || [] : [],
+                )
+                .catch(() => []),
+            );
+          }
+        }
+        const listas = await Promise.all(tareas);
+        return { origen: 'business', lista: listas.flat() };
+      }
+    } catch (e) {
+      logger.error(`metaAdsLauncher: businesses falló: ${e.message}`);
+    }
+    return { origen: 'business', lista: [] };
+  };
 
   // Último recurso: páginas usadas en los anuncios existentes de la cuenta.
   // El token de ads siempre puede leer sus propios creativos, aunque no
   // pueda leer la página; el nombre queda genérico.
-  try {
-    const r = await ax.get(`${GRAPH_BASE}/${act}/ads`, {
-      params: { fields: 'creative{object_story_spec}', limit: 50 },
-    });
-    if (r.status >= 200 && r.status < 300) {
-      const vistos = [];
-      for (const a of r.data?.data || []) {
-        const pid = a.creative?.object_story_spec?.page_id;
-        if (pid) vistos.push({ id: pid, name: null });
+  const buscarAdsExistentes = async () => {
+    try {
+      const r = await ax.get(`${GRAPH_BASE}/${act}/ads`, {
+        params: { fields: 'creative{object_story_spec}', limit: 50 },
+      });
+      if (r.status >= 200 && r.status < 300) {
+        const vistos = [];
+        for (const a of r.data?.data || []) {
+          const pid = a.creative?.object_story_spec?.page_id;
+          if (pid) vistos.push({ id: pid, name: null });
+        }
+        return { origen: 'ads_existentes', lista: vistos };
       }
-      agregar(vistos, 'ads_existentes');
+    } catch (e) {
+      logger.error(`metaAdsLauncher: ads existentes falló: ${e.message}`);
     }
-  } catch (e) {
-    logger.error(`metaAdsLauncher: ads existentes falló: ${e.message}`);
-  }
+    return { origen: 'ads_existentes', lista: [] };
+  };
+
+  const resultados = await Promise.all([
+    buscarSimple('promote_pages', `${GRAPH_BASE}/${act}/promote_pages`),
+    buscarSimple('me/accounts', `${GRAPH_BASE}/me/accounts`),
+    buscarSimple('assigned_pages', `${GRAPH_BASE}/me/assigned_pages`),
+    buscarGranular(),
+    buscarBusinesses(),
+    buscarAdsExistentes(),
+  ]);
+  for (const r of resultados) agregar(r.lista, r.origen);
 
   return [...paginas.values()].map(({ con_nombre, ...p }) => p);
 }

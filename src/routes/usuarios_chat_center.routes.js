@@ -53,5 +53,15 @@ router.post(
   '/actualizarWhatsappLead',
   usuarios_chat_centerController.actualizarWhatsappLead,
 );
+// Datos del dueño de la cuenta (vista Mi Perfil)
+router.post(
+  '/infoPropietario',
+  usuarios_chat_centerController.infoPropietario,
+);
+// Bitácora de avisos enviados al dueño (vista Mi Perfil)
+router.post(
+  '/avisosEnviados',
+  usuarios_chat_centerController.avisosEnviados,
+);
 
 module.exports = router;
