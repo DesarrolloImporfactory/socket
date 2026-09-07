@@ -2,9 +2,9 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { db } = require('../database/config');
 
+const { defaultMessengerApp, resolveApp } = require('../config/metaApps');
+
 const FB_VERSION = 'v22.0';
-const FB_APP_ID = process.env.FB_APP_ID;
-const FB_APP_SECRET = process.env.FB_APP_SECRET;
 
 // Helpers SQL
 async function insertOAuthSession({
@@ -13,14 +13,16 @@ async function insertOAuthSession({
   fb_user_id,
   user_token_long,
   expires_at,
+  fb_app_id,
 }) {
   const [result] = await db.query(
-    `INSERT INTO messenger_oauth_sessions (id_configuracion, state, fb_user_id, user_token_long, expires_at)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO messenger_oauth_sessions (id_configuracion, state, fb_app_id, fb_user_id, user_token_long, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     {
       replacements: [
         id_configuracion,
         state,
+        fb_app_id,
         fb_user_id,
         user_token_long,
         expires_at,
@@ -45,25 +47,48 @@ async function markSessionUsed(id) {
 }
 
 class MessengerOAuthService {
-  static buildLoginUrl({ id_configuracion, redirect_uri, config_id }) {
+  /**
+   * @param {object} p
+   * @param {object} [p.app] App de Meta a usar. Por defecto la que indique
+   *   FB_MESSENGER_APP. Debe ser LA MISMA en el intercambio del code, o Meta
+   *   responde que el code no pertenece a la app.
+   */
+  static buildLoginUrl({ id_configuracion, redirect_uri, config_id, app }) {
+    const fbApp = app || defaultMessengerApp();
+    // Una configuración de Business Login pertenece a UNA app. El front trae
+    // el config_id quemado (el de la app legacy), así que si la app resuelta
+    // tiene el suyo en el .env, ese manda: mezclar el client_id de una app con
+    // el config_id de otra hace que Meta rechace el diálogo. Si la app no tiene
+    // config propio (caso legacy en producción), se respeta el del front.
+    let cfgId = config_id || null;
+    if (fbApp.loginConfigId) {
+      if (cfgId && String(cfgId) !== String(fbApp.loginConfigId)) {
+        console.warn(
+          `[FB_CONNECT] 1/5 config_id=${cfgId} no pertenece a la app ` +
+            `${fbApp.key}(${fbApp.id}); se ignora y se usa ${fbApp.loginConfigId}.`,
+        );
+      }
+      cfgId = fbApp.loginConfigId;
+    }
     // incluye el id_configuracion en el state
     const state = `cfg_${id_configuracion}_${crypto
       .randomBytes(8)
       .toString('hex')}`;
     const base = `https://www.facebook.com/${FB_VERSION}/dialog/oauth`;
 
-    if (config_id) {
+    if (cfgId) {
       console.log(
         `[FB_CONNECT] 1/5 login-url · cfg=${id_configuracion} · ` +
-          `Login for Business config_id=${config_id} · redirect=${redirect_uri}`,
+          `app=${fbApp.key}(${fbApp.id}) · ` +
+          `Login for Business config_id=${cfgId} · redirect=${redirect_uri}`,
       );
       // ✅ Facebook Login for Business (usa config_id, NO scope)
       return `${base}?client_id=${encodeURIComponent(
-        FB_APP_ID
+        fbApp.id
       )}&redirect_uri=${encodeURIComponent(
         redirect_uri
       )}&config_id=${encodeURIComponent(
-        config_id
+        cfgId
       )}&response_type=code&override_default_response_type=true&state=${encodeURIComponent(
         state
       )}`;
@@ -93,7 +118,7 @@ class MessengerOAuthService {
       'pages_manage_engagement',
     ].join(',');
     return `${base}?client_id=${encodeURIComponent(
-      FB_APP_ID
+      fbApp.id
     )}&redirect_uri=${encodeURIComponent(
       redirect_uri
     )}&scope=${encodeURIComponent(
@@ -103,17 +128,25 @@ class MessengerOAuthService {
     )}&auth_type=rerequest`;
   }
 
+  /**
+   * @param {object} [p.app] Debe ser la misma app con la que se construyó la
+   *   URL de login: el `code` de Meta pertenece a una app concreta y con
+   *   credenciales de otra la respuesta es un 400 poco descriptivo.
+   */
   static async exchangeCodeAndCreateSession({
     code,
     id_configuracion,
     redirect_uri,
+    app,
   }) {
+    const fbApp = app || defaultMessengerApp();
+
     // 1) code -> user token corto
     const { data: tokenShort } = await axios.post(
       `https://graph.facebook.com/${FB_VERSION}/oauth/access_token`,
       new URLSearchParams({
-        client_id: FB_APP_ID,
-        client_secret: FB_APP_SECRET,
+        client_id: fbApp.id,
+        client_secret: fbApp.secret,
         redirect_uri,
         code,
       }).toString(),
@@ -124,8 +157,8 @@ class MessengerOAuthService {
       `https://graph.facebook.com/${FB_VERSION}/oauth/access_token`,
       new URLSearchParams({
         grant_type: 'fb_exchange_token',
-        client_id: FB_APP_ID,
-        client_secret: FB_APP_SECRET,
+        client_id: fbApp.id,
+        client_secret: fbApp.secret,
         fb_exchange_token: tokenShort.access_token,
       }).toString(),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
@@ -159,7 +192,8 @@ class MessengerOAuthService {
         .map((p) => p.permission);
 
       console.log(
-        `[FB_CONNECT] 2/5 token OK · usuario="${me.name}" (${me.id}) · cfg=${id_configuracion}`,
+        `[FB_CONNECT] 2/5 token OK · usuario="${me.name}" (${me.id}) · ` +
+          `cfg=${id_configuracion} · app=${fbApp.key}(${fbApp.id})`,
       );
       console.log(`[FB_CONNECT]     otorgados : ${otorgados.join(', ') || '(ninguno)'}`);
       if (rechazados.length) {
@@ -191,6 +225,7 @@ class MessengerOAuthService {
       fb_user_id: me.id,
       user_token_long,
       expires_at: expires,
+      fb_app_id: fbApp.id,
     });
     return {
       id_oauth_session: session.id_oauth_session,
@@ -248,6 +283,12 @@ class MessengerOAuthService {
     const page = pages.find((p) => String(p.id) === String(page_id));
     if (!page) throw new Error('El usuario no tiene acceso a esa página');
     return { page_access_token: page.access_token, page_name: page.name };
+  }
+
+  /** Con qué app de Meta se abrió esta sesión (sesiones viejas -> legacy). */
+  static async getAppFromSession(oauth_session_id) {
+    const session = await getSessionById(oauth_session_id);
+    return resolveApp(session?.fb_app_id);
   }
 
   static async consumeSession(oauth_session_id) {

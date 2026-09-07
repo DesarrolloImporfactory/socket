@@ -37,6 +37,19 @@ const STRIPE_WEBHOOK_SECRET_PLAN = envPick(
 
 const stripe = new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' });
 
+// ¿El error es "Unknown column 'monto'" (o moneda/billing_reason)? Pasa si
+// la tabla no tiene aún las columnas monto/moneda/billing_reason (se
+// agregaron el 2026-09-04); en ese caso se cae al
+// INSERT/UPDATE viejo para no perder la transacción.
+const esColumnaMontoFaltante = (e) => {
+  const code = e?.original?.code || e?.parent?.code || e?.code;
+  const msg = String(e?.original?.sqlMessage || e?.message || '');
+  return (
+    code === 'ER_BAD_FIELD_ERROR' &&
+    /'(monto|moneda|billing_reason)'/i.test(msg)
+  );
+};
+
 /* =========================
    Helpers
 ========================= */
@@ -380,25 +393,66 @@ exports.stripeWebhook = async (req, res) => {
           invoice.parent?.subscription_details?.metadata || {};
         const metaFromLine = firstLine?.metadata || {};
 
+        // Importe real cobrado (en unidades, no centavos). Se guarda para que
+        // el dashboard distinga un cobro de verdad de la factura en $0 del
+        // trial (subscription_create): ambas disparan este mismo evento.
+        const invoiceMonto = invoiceAmountPaid / 100;
+        const invoiceMoneda = invoice.currency
+          ? String(invoice.currency).toLowerCase()
+          : null;
+        const invoiceBillingReason = invoice.billing_reason
+          ? String(invoice.billing_reason).slice(0, 40)
+          : null;
+
         // 1) Insertar transacción (idempotente)
         try {
           await db.query(
             `INSERT IGNORE INTO transacciones_stripe_chat
-              (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
-              VALUES (?, ?, ?, ?, NOW(), ?)`,
+              (id_pago, id_suscripcion, id_usuario, estado_suscripcion, monto, moneda, billing_reason, fecha, customer_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
             {
               replacements: [
                 invoice.id,
                 subscriptionId || null,
                 null,
                 'payment_succeeded',
+                invoiceMonto,
+                invoiceMoneda,
+                invoiceBillingReason,
                 customerId || null,
               ],
             },
           );
           console.log('[stripe] transacciones inserted/ignored:', invoice.id);
         } catch (e) {
-          console.log('[stripe] transacciones insert failed:', e?.message);
+          if (esColumnaMontoFaltante(e)) {
+            // La tabla todavía no tiene la columna monto:
+            // registrar igual la transacción como antes para no perderla.
+            try {
+              await db.query(
+                `INSERT IGNORE INTO transacciones_stripe_chat
+                  (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+                  VALUES (?, ?, ?, ?, NOW(), ?)`,
+                {
+                  replacements: [
+                    invoice.id,
+                    subscriptionId || null,
+                    null,
+                    'payment_succeeded',
+                    customerId || null,
+                  ],
+                },
+              );
+              console.log(
+                '[stripe] transacciones inserted sin monto (falta migración):',
+                invoice.id,
+              );
+            } catch (e2) {
+              console.log('[stripe] transacciones insert failed:', e2?.message);
+            }
+          } else {
+            console.log('[stripe] transacciones insert failed:', e?.message);
+          }
         }
 
         // 2) Resolver id_usuario / plan + fechas + flags Stripe
@@ -767,15 +821,22 @@ exports.stripeWebhook = async (req, res) => {
         try {
           await db.query(
             `UPDATE transacciones_stripe_chat
-             SET id_usuario = COALESCE(id_usuario, ?),
+             SET estado_suscripcion = 'payment_succeeded',
+                 id_usuario = COALESCE(id_usuario, ?),
                  id_suscripcion = COALESCE(id_suscripcion, ?),
-                 customer_id = COALESCE(customer_id, ?)
+                 customer_id = COALESCE(customer_id, ?),
+                 monto = COALESCE(monto, ?),
+                 moneda = COALESCE(moneda, ?),
+                 billing_reason = COALESCE(billing_reason, ?)
              WHERE id_pago = ?`,
             {
               replacements: [
                 id_usuario,
                 subscriptionId || null,
                 customerId || null,
+                invoiceMonto,
+                invoiceMoneda,
+                invoiceBillingReason,
                 invoice.id,
               ],
             },
@@ -785,7 +846,34 @@ exports.stripeWebhook = async (req, res) => {
             invoice.id,
           );
         } catch (e) {
-          console.log('[stripe] transacciones update failed:', e?.message);
+          if (esColumnaMontoFaltante(e)) {
+            try {
+              await db.query(
+                `UPDATE transacciones_stripe_chat
+                 SET estado_suscripcion = 'payment_succeeded',
+                     id_usuario = COALESCE(id_usuario, ?),
+                     id_suscripcion = COALESCE(id_suscripcion, ?),
+                     customer_id = COALESCE(customer_id, ?)
+                 WHERE id_pago = ?`,
+                {
+                  replacements: [
+                    id_usuario,
+                    subscriptionId || null,
+                    customerId || null,
+                    invoice.id,
+                  ],
+                },
+              );
+              console.log(
+                '[stripe] transacciones updated sin monto (falta migración):',
+                invoice.id,
+              );
+            } catch (e2) {
+              console.log('[stripe] transacciones update failed:', e2?.message);
+            }
+          } else {
+            console.log('[stripe] transacciones update failed:', e?.message);
+          }
         }
 
         // =========

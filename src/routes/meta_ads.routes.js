@@ -122,4 +122,20 @@ router.post('/launcher/lanzar', protect, launcherCtrl.lanzar);
 router.get('/launcher/geo/buscar', protect, launcherCtrl.buscarGeo);
 router.get('/launcher/lanzamientos', protect, launcherCtrl.listarLanzamientos);
 
+// ── Reglas automáticas (motor propio de Imporchat) ──
+router.get('/launcher/reglas', protect, launcherCtrl.listarReglas);
+router.post('/launcher/reglas/guardar', protect, launcherCtrl.guardarRegla);
+router.post('/launcher/reglas/eliminar', protect, launcherCtrl.eliminarRegla);
+router.post(
+  '/launcher/reglas/aplicar-recomendadas',
+  protect,
+  launcherCtrl.aplicarRecomendadas,
+);
+router.get('/launcher/reglas/log', protect, launcherCtrl.logReglas);
+router.post('/launcher/reglas/ejecutar', protect, launcherCtrl.ejecutarReglas);
+
+// ── Avisos por WhatsApp al dueño cuando una regla actúa ──
+router.get('/launcher/avisos', protect, launcherCtrl.estadoAvisos);
+router.post('/launcher/avisos/toggle', protect, launcherCtrl.toggleAvisos);
+
 module.exports = router;

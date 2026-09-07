@@ -11,6 +11,7 @@
 const { db } = require('../database/config');
 const logger = require('../utils/logger');
 const launcher = require('../services/metaAdsLauncher.service');
+const reglasSvc = require('../services/metaAdsReglas.service');
 
 async function getAdConnection(id_configuracion) {
   const rows = await db.query(
@@ -105,6 +106,13 @@ function normalizarPlantilla(body) {
     : 'all';
   const estado_inicial = body.estado_inicial === 'ACTIVE' ? 'ACTIVE' : 'PAUSED';
 
+  // Programación: fecha-hora local de la cuenta ('YYYY-MM-DDTHH:mm' del
+  // datetime-local del front). Vacío = lanzar de inmediato.
+  const inicioRaw = String(body.inicio_at || '').trim();
+  const inicio_at = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(inicioRaw)
+    ? `${inicioRaw.replace('T', ' ').slice(0, 16)}:00`
+    : null;
+
   return {
     ok: true,
     cfg: {
@@ -130,6 +138,7 @@ function normalizarPlantilla(body) {
         null,
       imagenes_json: imagenes.length ? JSON.stringify(imagenes) : null,
       estado_inicial,
+      inicio_at,
     },
   };
 }
@@ -290,7 +299,8 @@ exports.guardarPlantilla = async (req, res) => {
            presupuesto_diario = ?, paises = ?, geo_json = ?, edad_min = ?,
            edad_max = ?, genero = ?, titulo = ?, texto_principal = ?,
            descripcion = ?, mensaje_bienvenida = ?, imagen_url = ?,
-           imagen_hash = ?, imagenes_json = ?, estado_inicial = ?
+           imagen_hash = ?, imagenes_json = ?, estado_inicial = ?,
+           inicio_at = ?
          WHERE id = ? AND id_configuracion = ? AND eliminado = 0`,
         {
           replacements: [
@@ -298,8 +308,8 @@ exports.guardarPlantilla = async (req, res) => {
             c.presupuesto_diario, c.paises, c.geo_json, c.edad_min,
             c.edad_max, c.genero, c.titulo, c.texto_principal,
             c.descripcion, c.mensaje_bienvenida, c.imagen_url,
-            c.imagen_hash, c.imagenes_json, c.estado_inicial, id,
-            id_configuracion,
+            c.imagen_hash, c.imagenes_json, c.estado_inicial, c.inicio_at,
+            id, id_configuracion,
           ],
         },
       );
@@ -316,15 +326,15 @@ exports.guardarPlantilla = async (req, res) => {
          (id_configuracion, nombre, id_producto, page_id, page_name,
           presupuesto_diario, paises, geo_json, edad_min, edad_max, genero,
           titulo, texto_principal, descripcion, mensaje_bienvenida,
-          imagen_url, imagen_hash, imagenes_json, estado_inicial)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          imagen_url, imagen_hash, imagenes_json, estado_inicial, inicio_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       {
         replacements: [
           id_configuracion, c.nombre, c.id_producto, c.page_id, c.page_name,
           c.presupuesto_diario, c.paises, c.geo_json, c.edad_min, c.edad_max,
           c.genero, c.titulo, c.texto_principal, c.descripcion,
           c.mensaje_bienvenida, c.imagen_url, c.imagen_hash, c.imagenes_json,
-          c.estado_inicial,
+          c.estado_inicial, c.inicio_at,
         ],
         type: db.QueryTypes.INSERT,
       },
@@ -470,7 +480,8 @@ exports.lanzar = async (req, res) => {
     }
 
     const [plantilla] = await db.query(
-      `SELECT p.*, pr.nombre AS producto_nombre
+      `SELECT p.*, pr.nombre AS producto_nombre,
+              DATE_FORMAT(p.inicio_at, '%Y-%m-%d %H:%i:%s') AS inicio_at_str
          FROM meta_ads_plantillas p
          LEFT JOIN productos_chat_center pr
            ON pr.id = p.id_producto AND pr.eliminado = 0
@@ -544,6 +555,15 @@ exports.lanzar = async (req, res) => {
         }
       })(),
       estado_inicial,
+      // Programación: solo se manda si la hora sigue en el futuro (con 5 min
+      // de margen); una plantilla con hora vieja lanza de inmediato.
+      inicio_at: (() => {
+        if (!plantilla.inicio_at_str) return null;
+        const f = new Date(plantilla.inicio_at_str.replace(' ', 'T'));
+        return f.getTime() > Date.now() + 5 * 60 * 1000
+          ? plantilla.inicio_at_str
+          : null;
+      })(),
     };
 
     let paquete;
@@ -720,6 +740,335 @@ exports.listarLanzamientos = async (req, res) => {
     return res.json({ success: true, data: rows });
   } catch (err) {
     logger.error(`launcher listarLanzamientos: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 6) REGLAS AUTOMÁTICAS (motor propio, ver metaAdsReglas.service.js)
+// ══════════════════════════════════════════════
+
+exports.listarReglas = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const reglas = await db.query(
+      `SELECT * FROM meta_ads_reglas
+        WHERE id_configuracion = ?
+        ORDER BY es_recomendada DESC, id ASC`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    // Recomendadas que aún no se han aplicado (para ofrecerlas en el front)
+    const nombres = new Set(reglas.map((r) => r.nombre));
+    const recomendadas_pendientes = reglasSvc.REGLAS_RECOMENDADAS.filter(
+      (r) => !nombres.has(r.nombre),
+    );
+    return res.json({ success: true, data: reglas, recomendadas_pendientes });
+  } catch (err) {
+    logger.error(`launcher listarReglas: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+function normalizarRegla(body) {
+  const nombre = String(body.nombre || '').trim();
+  if (!nombre) return { ok: false, msg: 'El nombre de la regla es requerido.' };
+  const nivel = body.nivel === 'campaign' ? 'campaign' : 'ad';
+
+  // Ámbito: sobre qué campañas opina la regla.
+  const ambito = ['imporchat', 'externas', 'todas', 'personalizado'].includes(
+    body.ambito,
+  )
+    ? body.ambito
+    : 'imporchat';
+  let campanias_json = null;
+  if (ambito === 'personalizado') {
+    const lista = (Array.isArray(body.campanias) ? body.campanias : [])
+      .filter((c) => c && (c.id || typeof c === 'string'))
+      .map((c) => ({
+        id: String(c.id || c).slice(0, 64),
+        nombre: String(c.nombre || '').slice(0, 255),
+      }))
+      .slice(0, 50);
+    if (!lista.length) {
+      return {
+        ok: false,
+        msg: 'Elige al menos una campaña para el ámbito personalizado.',
+      };
+    }
+    campanias_json = JSON.stringify(lista);
+  }
+  const metrica = ['cpa_msg', 'msgs', 'spend'].includes(body.metrica)
+    ? body.metrica
+    : 'cpa_msg';
+  const operador = ['>', '<', '='].includes(body.operador)
+    ? body.operador
+    : '>';
+  const umbral = Number(body.umbral);
+  if (!Number.isFinite(umbral) || umbral < 0) {
+    return { ok: false, msg: 'El umbral debe ser un número válido.' };
+  }
+  const accion =
+    body.accion === 'subir_presupuesto' ? 'subir_presupuesto' : 'pausar';
+  if (accion === 'subir_presupuesto' && nivel !== 'campaign') {
+    return {
+      ok: false,
+      msg: 'La acción de presupuesto aplica a nivel campaña.',
+    };
+  }
+  return {
+    ok: true,
+    cfg: {
+      nombre: nombre.slice(0, 150),
+      nivel,
+      ambito,
+      campanias_json,
+      metrica,
+      operador,
+      umbral: Math.round(umbral * 100) / 100,
+      gasto_minimo: Math.max(0, Number(body.gasto_minimo) || 0),
+      periodo: body.periodo === '7d' ? '7d' : 'hoy',
+      accion,
+      accion_valor:
+        accion === 'subir_presupuesto'
+          ? Math.min(100, Math.max(1, Number(body.accion_valor) || 10))
+          : null,
+      accion_limite:
+        accion === 'subir_presupuesto'
+          ? Math.max(1, Number(body.accion_limite) || 50)
+          : null,
+      frecuencia: body.frecuencia === 'diaria' ? 'diaria' : '30m',
+      activa: body.activa === 0 || body.activa === false ? 0 : 1,
+    },
+  };
+}
+
+exports.guardarRegla = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const norm = normalizarRegla(req.body);
+    if (!norm.ok) {
+      return res.status(400).json({ success: false, message: norm.msg });
+    }
+    const c = norm.cfg;
+    const id = Number(req.body.id) || null;
+
+    if (id) {
+      await db.query(
+        `UPDATE meta_ads_reglas SET
+           nombre = ?, nivel = ?, ambito = ?, campanias_json = ?,
+           metrica = ?, operador = ?, umbral = ?, gasto_minimo = ?,
+           periodo = ?, accion = ?, accion_valor = ?, accion_limite = ?,
+           frecuencia = ?, activa = ?
+         WHERE id = ? AND id_configuracion = ?`,
+        {
+          replacements: [
+            c.nombre, c.nivel, c.ambito, c.campanias_json, c.metrica,
+            c.operador, c.umbral, c.gasto_minimo, c.periodo, c.accion,
+            c.accion_valor, c.accion_limite, c.frecuencia, c.activa,
+            id, id_configuracion,
+          ],
+        },
+      );
+      return res.json({ success: true, id });
+    }
+
+    const [insertId] = await db.query(
+      `INSERT INTO meta_ads_reglas
+         (id_configuracion, nombre, nivel, ambito, campanias_json, metrica,
+          operador, umbral, gasto_minimo, periodo, accion, accion_valor,
+          accion_limite, frecuencia, activa, es_recomendada)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      {
+        replacements: [
+          id_configuracion, c.nombre, c.nivel, c.ambito, c.campanias_json,
+          c.metrica, c.operador, c.umbral, c.gasto_minimo, c.periodo,
+          c.accion, c.accion_valor, c.accion_limite, c.frecuencia, c.activa,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    return res.json({ success: true, id: insertId });
+  } catch (err) {
+    logger.error(`launcher guardarRegla: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.eliminarRegla = async (req, res) => {
+  try {
+    const { id, id_configuracion } = req.body;
+    if (!Number(id) || !Number(id_configuracion)) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id e id_configuracion requeridos.' });
+    }
+    await db.query(
+      `DELETE FROM meta_ads_reglas WHERE id = ? AND id_configuracion = ?`,
+      { replacements: [Number(id), Number(id_configuracion)] },
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    logger.error(`launcher eliminarRegla: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.aplicarRecomendadas = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const existentes = await db.query(
+      `SELECT nombre FROM meta_ads_reglas WHERE id_configuracion = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const nombres = new Set(existentes.map((r) => r.nombre));
+    // Selección parcial: si llega body.nombres, solo se aplican esas
+    // (el cliente elige cuáles del paquete quiere).
+    const elegidas = Array.isArray(req.body.nombres)
+      ? new Set(req.body.nombres.map(String))
+      : null;
+    let creadas = 0;
+    for (const r of reglasSvc.REGLAS_RECOMENDADAS) {
+      if (nombres.has(r.nombre)) continue;
+      if (elegidas && !elegidas.has(r.nombre)) continue;
+      await db.query(
+        `INSERT INTO meta_ads_reglas
+           (id_configuracion, nombre, nivel, metrica, operador, umbral,
+            gasto_minimo, periodo, accion, accion_valor, accion_limite,
+            frecuencia, activa, es_recomendada)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+        {
+          replacements: [
+            id_configuracion, r.nombre, r.nivel, r.metrica, r.operador,
+            r.umbral, r.gasto_minimo, r.periodo, r.accion, r.accion_valor,
+            r.accion_limite, r.frecuencia,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+      creadas++;
+    }
+    return res.json({ success: true, creadas });
+  } catch (err) {
+    logger.error(`launcher aplicarRecomendadas: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.logReglas = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const rows = await db.query(
+      `SELECT * FROM meta_ads_reglas_log
+        WHERE id_configuracion = ?
+        ORDER BY id DESC
+        LIMIT 60`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    logger.error(`launcher logReglas: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 7) AVISOS POR WHATSAPP (check por configuración)
+// ══════════════════════════════════════════════
+
+exports.estadoAvisos = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const avisos = require('../services/metaAdsAvisos.service');
+    const datos = await avisos.obtenerDatosAviso(id_configuracion);
+    const lead = String(datos?.whatsapp_lead || '').replace(/\D/g, '');
+    return res.json({
+      success: true,
+      data: {
+        activo: Number(datos?.avisos_reglas) === 1,
+        tiene_lead: lead.length >= 7,
+        lead: lead || null,
+        lead_pais: datos?.whatsapp_lead_pais || null,
+      },
+    });
+  } catch (err) {
+    logger.error(`launcher estadoAvisos: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.toggleAvisos = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    const activo = req.body.activo ? 1 : 0;
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    await db.query(
+      `UPDATE meta_ad_connections SET avisos_reglas = ?
+        WHERE id_configuracion = ? AND status = 'active'`,
+      { replacements: [activo, id_configuracion] },
+    );
+
+    // Al encender el switch se aseguran las plantillas aprobadas en la WABA
+    // del cliente (en segundo plano: "already exists" se ignora).
+    if (activo === 1) {
+      const avisos = require('../services/metaAdsAvisos.service');
+      setImmediate(() =>
+        avisos
+          .asegurarPlantillasWaba(id_configuracion)
+          .catch((e) =>
+            logger.error(`toggleAvisos plantillas WABA: ${e.message}`),
+          ),
+      );
+    }
+    return res.json({ success: true, activo: activo === 1 });
+  } catch (err) {
+    logger.error(`launcher toggleAvisos: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Corre el motor YA para una configuración (además del cron de 30 min).
+// Útil para probar una regla recién creada sin esperar el ciclo.
+exports.ejecutarReglas = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const resumen = await reglasSvc.evaluarReglasConfig(id_configuracion);
+    return res.json({ success: true, data: resumen });
+  } catch (err) {
+    logger.error(`launcher ejecutarReglas: ${err.message}`);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

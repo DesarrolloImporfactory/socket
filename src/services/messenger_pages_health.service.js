@@ -16,22 +16,19 @@
  */
 
 const axios = require('axios');
-const crypto = require('crypto');
 const { db } = require('../database/config');
 
 const GRAPH_VERSION = process.env.GRAPH_VERSION || 'v22.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
-const FB_APP_ID = process.env.FB_APP_ID;
-const FB_APP_SECRET = process.env.FB_APP_SECRET;
+const { resolveApp, appSecretProof } = require('../config/metaApps');
 
-const APP_TOKEN = () => `${FB_APP_ID}|${FB_APP_SECRET}`;
+// Tanto el token de app como el proof dependen de qué app emitió el token de
+// la página. Con dos apps ya no hay un par id|secreto único: se resuelve desde
+// messenger_pages.fb_app_id (NULL -> app legacy).
+const APP_TOKEN = (fbAppId) => resolveApp(fbAppId).appAccessToken;
 
-function appsecretProof(accessToken) {
-  if (!FB_APP_SECRET) return null;
-  return crypto
-    .createHmac('sha256', FB_APP_SECRET)
-    .update(accessToken)
-    .digest('hex');
+function appsecretProof(accessToken, fbAppId) {
+  return appSecretProof(accessToken, resolveApp(fbAppId));
 }
 
 /**
@@ -80,13 +77,13 @@ const CODIGOS_TOKEN_MUERTO = new Set([190, 102]);
  * conexiones sanas y obliga al cliente a reconectar sin motivo. Por eso el
  * retorno separa `concluyente` de `valido`.
  */
-async function inspeccionarToken(token, { intentos = 3 } = {}) {
+async function inspeccionarToken(token, { intentos = 3, fbAppId = null } = {}) {
   let ultimoError = null;
 
   for (let i = 0; i < intentos; i++) {
     try {
       const r = await axios.get(`${GRAPH_BASE}/debug_token`, {
-        params: { input_token: token, access_token: APP_TOKEN() },
+        params: { input_token: token, access_token: APP_TOKEN(fbAppId) },
         validateStatus: () => true,
         timeout: 20000,
       });
@@ -150,9 +147,9 @@ async function inspeccionarToken(token, { intentos = 3 } = {}) {
  * pages_read_engagement, que es lo que necesitará el módulo de comentarios.
  * Nunca lanza: si falla se devuelve false con el motivo.
  */
-async function puedeLeerFeed(pageId, token) {
+async function puedeLeerFeed(pageId, token, fbAppId = null) {
   try {
-    const proof = appsecretProof(token);
+    const proof = appsecretProof(token, fbAppId);
     const r = await axios.get(`${GRAPH_BASE}/${pageId}/feed`, {
       params: {
         fields: 'id',
@@ -195,7 +192,9 @@ async function revisarPagina(pagina) {
     };
   }
 
-  const info = await inspeccionarToken(pagina.page_access_token);
+  const info = await inspeccionarToken(pagina.page_access_token, {
+    fbAppId: pagina.fb_app_id,
+  });
 
   // Si no se pudo concluir, se reporta pero NO se toca el estado.
   if (!info.concluyente) {
@@ -222,7 +221,11 @@ async function revisarPagina(pagina) {
     };
   }
 
-  const feed = await puedeLeerFeed(pagina.page_id, pagina.page_access_token);
+  const feed = await puedeLeerFeed(
+    pagina.page_id,
+    pagina.page_access_token,
+    pagina.fb_app_id,
+  );
 
   return {
     ...base,
@@ -328,7 +331,7 @@ async function revisarPaginas({
 
   const paginas = await db.query(
     `SELECT id_messenger_page, id_configuracion, page_id, page_name,
-            page_access_token, status, connected_at
+            page_access_token, fb_app_id, status, connected_at
        FROM messenger_pages
        ${where}
       ORDER BY connected_at DESC`,

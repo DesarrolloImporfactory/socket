@@ -1,9 +1,8 @@
 const axios = require('axios');
-const crypto = require('crypto');
 const { db } = require('../database/config');
+const { resolveApp, appSecretProof } = require('../config/metaApps');
 
 const GRAPH_VERSION = 'v22.0';
-const APP_SECRET = process.env.FB_APP_SECRET;
 
 // Campos extendidos (tipo IG)
 const PAGE_FIELDS = [
@@ -23,30 +22,26 @@ const PAGE_FIELDS = [
 // refresco cada 24h
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 
-function buildAppSecretProof(accessToken) {
-  return crypto
-    .createHmac('sha256', APP_SECRET)
-    .update(accessToken)
-    .digest('hex');
-}
-
 const graph = axios.create({
   baseURL: `https://graph.facebook.com/${GRAPH_VERSION}/`,
   timeout: 15000,
 });
 
-graph.interceptors.request.use((config) => {
-  const token = config?.params?.access_token;
-  if (token && APP_SECRET) {
-    const proof = buildAppSecretProof(token);
-    config.params = { ...(config.params || {}), appsecret_proof: proof };
-  }
-  return config;
-});
+/**
+ * Params con appsecret_proof firmado por la app dueña del token.
+ * fbAppId viene de messenger_pages.fb_app_id; NULL resuelve a la app legacy.
+ */
+function conProof(params, fbAppId) {
+  const proof = appSecretProof(params.access_token, resolveApp(fbAppId));
+  return proof ? { ...params, appsecret_proof: proof } : params;
+}
 
-async function fetchPageInfoFromGraph(pageId, pageAccessToken) {
+async function fetchPageInfoFromGraph(pageId, pageAccessToken, fbAppId) {
   const { data } = await graph.get(`${pageId}`, {
-    params: { fields: PAGE_FIELDS, access_token: pageAccessToken },
+    params: conProof(
+      { fields: PAGE_FIELDS, access_token: pageAccessToken },
+      fbAppId,
+    ),
   });
   return {
     name: data?.name ?? null,
@@ -63,9 +58,12 @@ async function fetchPageInfoFromGraph(pageId, pageAccessToken) {
   };
 }
 
-async function fetchPagePictureOnly(pageId, pageAccessToken) {
+async function fetchPagePictureOnly(pageId, pageAccessToken, fbAppId) {
   const { data } = await graph.get(`${pageId}/picture`, {
-    params: { redirect: 0, type: 'large', access_token: pageAccessToken },
+    params: conProof(
+      { redirect: 0, type: 'large', access_token: pageAccessToken },
+      fbAppId,
+    ),
   });
   return data?.data?.url ?? null;
 }
@@ -89,6 +87,7 @@ exports.listConnections = async (req, res) => {
          page_id,
          page_name,
          page_access_token,
+         fb_app_id,
          profile_picture_url,
          page_username,
          about,
@@ -142,7 +141,8 @@ exports.listConnections = async (req, res) => {
       try {
         const info = await fetchPageInfoFromGraph(
           p.page_id,
-          p.page_access_token
+          p.page_access_token,
+          p.fb_app_id
         );
 
         await db.query(
@@ -190,7 +190,8 @@ exports.listConnections = async (req, res) => {
         try {
           const pictureUrl = await fetchPagePictureOnly(
             p.page_id,
-            p.page_access_token
+            p.page_access_token,
+            p.fb_app_id
           );
           if (pictureUrl) {
             await db.query(

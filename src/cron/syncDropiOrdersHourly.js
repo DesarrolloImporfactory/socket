@@ -1,7 +1,36 @@
 'use strict';
 
 /**
- * cron/syncDropiOrdersHourly.js  — v8
+ * cron/syncDropiOrdersHourly.js  — v9
+ *
+ * NUEVO EN v9 (2026-09-07):
+ *  El candado de MySQL del v8 no aguantaba: la sesión que sostiene GET_LOCK
+ *  queda ociosa mientras se procesa cada integración y el `wait_timeout` de
+ *  producción es de 120 s. El keepalive "cada 10 integraciones" llegaba
+ *  tarde (la primera integración del loop, IMPORSHOP PROVEEDOR, trae hasta
+ *  2000 órdenes), MySQL mataba la sesión, el lock se soltaba y cada tick de
+ *  15 min volvía a arrancar un ciclo desde la primera integración. Medido
+ *  entre el 04 y el 07 de septiembre: el cron solo notificó órdenes de 1-2
+ *  configuraciones por día (las primeras del loop); el resto de las ~380
+ *  integraciones no recibió ni una visita desde el deploy del 03.
+ *
+ *  Tres cambios:
+ *   1. Candado EN MEMORIA (`cicloEnCurso`): un solo proceso por servidor, así
+ *      que esto es lo que realmente impide solapar ciclos. El GET_LOCK queda
+ *      solo como defensa contra otro proceso apuntando a la misma BD.
+ *   2. Keepalive del lock por TIEMPO (cada 30 s), no por cantidad de
+ *      integraciones. Si igual se pierde, se avisa una vez en el log.
+ *   3. Orden JUSTO: las integraciones se recorren de la menos recientemente
+ *      sincronizada a la más reciente (`dropi_integrations.last_sync_at`).
+ *      Si un ciclo muere a la mitad (reinicio, deploy, error), el siguiente
+ *      arranca por las que quedaron sin atender en vez de repetir siempre
+ *      las mismas primeras. La columna es opcional: sin la migración
+ *      (dropi_integrations_last_sync_migration.sql) se recorre por id como
+ *      antes y se avisa en el log.
+ *
+ *  Recuperación de eventos perdidos (ventana de 24 h ya pasada):
+ *  scripts/refrescarCacheDropi.js --desde=YYYY-MM-DD (en el servidor) y
+ *  después scripts/reenviarPlantillasDropiPerdidas.js --horas=N --apply.
  *
  * NUEVO EN v8:
  *  La lógica de clasificación de estados, upsert al cache y envío de
@@ -53,6 +82,10 @@ const MAX_RETRIES_429 = 4;
 const PROFIT_MAX_PER_RUN = 30;
 const PROFIT_DELAY_MS = 2500;
 const PROFIT_LOOKBACK_HOURS = 48;
+
+// Keepalive de la sesión que sostiene GET_LOCK. El wait_timeout de MySQL en
+// producción es de 120 s: con 30 s hay margen aunque una query se demore.
+const LOCK_KEEPALIVE_MS = 30 * 1000;
 
 /* ═══════════════════════════════════════════════════════════
    Helpers
@@ -174,6 +207,75 @@ async function syncProfitForRecentOrders({
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Fetch de órdenes de una integración (paginado, con backoff 429)
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Trae de Dropi las órdenes con cambio de estatus entre `from` y `until`.
+ * Devuelve { orders, rateLimited, error }:
+ *  - rateLimited: Dropi respondió 429 MAX_RETRIES_429 veces seguidas; lo que
+ *    haya en `orders` es parcial.
+ *  - error: mensaje del primer error NO 429 (401 llave revocada, timeout…);
+ *    en ese caso el fetch se corta y `orders` queda como estaba.
+ * Compartido con scripts/refrescarCacheDropi.js para no duplicar la
+ * paginación.
+ */
+async function fetchOrdenesIntegracion({
+  integrationKey,
+  country_code,
+  from,
+  until,
+  maxOrders = MAX_ORDERS_PER_INTEGRATION,
+}) {
+  let orders = [],
+    start = 0,
+    keepGoing = true,
+    retries = 0,
+    delay = DELAY_BETWEEN_PAGES,
+    rateLimited = false,
+    error = null;
+
+  while (keepGoing) {
+    try {
+      const resp = await dropiService.listMyOrders({
+        integrationKey,
+        params: {
+          result_number: PAGE_SIZE,
+          start,
+          filter_date_by: 'FECHA DE CAMBIO DE ESTATUS',
+          from,
+          until,
+        },
+        country_code,
+      });
+      const objects = resp?.objects || [];
+      orders = orders.concat(objects);
+      keepGoing = objects.length >= PAGE_SIZE;
+      start += PAGE_SIZE;
+      retries = 0;
+      delay = DELAY_BETWEEN_PAGES;
+      if (orders.length >= maxOrders) break;
+      if (keepGoing) await new Promise((r) => setTimeout(r, delay));
+    } catch (err) {
+      const status = err?.statusCode || err?.status || 500;
+      if (status === 429) {
+        if (++retries >= MAX_RETRIES_429) {
+          rateLimited = true;
+          break;
+        }
+        delay = Math.min(delay * 2, 20000);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      error = `${status} ${err?.dropiRawMessage || err?.message || ''}`.trim();
+      break;
+    }
+  }
+
+  return { orders, rateLimited, error };
+}
+
+/* ═══════════════════════════════════════════════════════════
    Sync de una integración
    ═══════════════════════════════════════════════════════════ */
 
@@ -200,48 +302,16 @@ async function syncIntegration(integration, from, until) {
     : { id_usuario: Number(integration.id_usuario) };
 
   // Fase 1: Fetch Dropi
-  let allOrders = [],
-    start = 0,
-    keepGoing = true,
-    retries = 0,
-    delay = DELAY_BETWEEN_PAGES,
-    rateLimited = false;
-
-  while (keepGoing) {
-    try {
-      const resp = await dropiService.listMyOrders({
-        integrationKey,
-        params: {
-          result_number: PAGE_SIZE,
-          start,
-          filter_date_by: 'FECHA DE CAMBIO DE ESTATUS',
-          from,
-          until,
-        },
-        country_code: integration.country_code,
-      });
-      const objects = resp?.objects || [];
-      allOrders = allOrders.concat(objects);
-      keepGoing = objects.length >= PAGE_SIZE;
-      start += PAGE_SIZE;
-      retries = 0;
-      delay = DELAY_BETWEEN_PAGES;
-      if (allOrders.length >= MAX_ORDERS_PER_INTEGRATION) break;
-      if (keepGoing) await new Promise((r) => setTimeout(r, delay));
-    } catch (err) {
-      const status = err?.statusCode || err?.status || 500;
-      if (status === 429) {
-        if (++retries >= MAX_RETRIES_429) {
-          rateLimited = true;
-          break;
-        }
-        delay = Math.min(delay * 2, 20000);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      break;
-    }
-  }
+  const {
+    orders: allOrders,
+    rateLimited,
+    error: fetchError,
+  } = await fetchOrdenesIntegracion({
+    integrationKey,
+    country_code: integration.country_code,
+    from,
+    until,
+  });
 
   // Fase 2: Upsert cache + aprender dropi_user_id (para el webhook)
   if (allOrders.length > 0) {
@@ -287,25 +357,108 @@ async function syncIntegration(integration, from, until) {
     synced: allOrders.length,
     skipped: false,
     rateLimited,
+    fetchError,
     templates: templateStats,
     profit: profitStats,
   };
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Job principal — con MySQL GET_LOCK
+   Orden justo: last_sync_at (columna opcional)
    ═══════════════════════════════════════════════════════════ */
 
-async function runHourlyDropiSync() {
-  // GET_LOCK/RELEASE_LOCK son por SESIÓN (conexión). Antes el GET_LOCK iba en
-  // una conexión cualquiera del pool (que se cierra a los 10 s de idle y
-  // suelta el lock) y el RELEASE_LOCK en otra: el lock no bloqueaba nada y
-  // CADA tick de 15 min arrancaba un ciclo completo nuevo. Los ciclos se
-  // solapaban, Dropi respondía 429, syncIntegration cortaba con `break` y las
-  // integraciones del final de la lista quedaban ~1 visita exitosa al día
-  // (caso cfg 793, 2026-09-03: órdenes de la noche vistas a las 09:44).
-  // Se fija UNA conexión con una transacción: GET_LOCK y RELEASE_LOCK van en
-  // esa misma sesión; el trabajo del ciclo sigue usando el pool.
+// null = todavía no se comprobó; true/false una vez por proceso.
+let _colLastSync = null;
+async function tieneColumnaLastSync() {
+  if (_colLastSync !== null) return _colLastSync;
+  try {
+    await db.query(`SELECT last_sync_at FROM dropi_integrations LIMIT 1`, {
+      type: db.QueryTypes.SELECT,
+    });
+    _colLastSync = true;
+  } catch (_) {
+    _colLastSync = false;
+    console.warn(
+      '[Cron Dropi] dropi_integrations.last_sync_at no existe: falta correr ' +
+        'dropi_integrations_last_sync_migration.sql. El ciclo recorre por id; ' +
+        'si un ciclo se corta, las mismas integraciones quedan sin visitar.',
+    );
+  }
+  return _colLastSync;
+}
+
+/**
+ * Integraciones a recorrer en este ciclo. Solo activas y con config no
+ * suspendida (igual que el webhook). Con la columna, primero las que nunca
+ * se sincronizaron y después de la más vieja a la más reciente: un ciclo
+ * cortado a la mitad no deja a nadie esperando para siempre.
+ */
+async function listarIntegraciones() {
+  const conLastSync = await tieneColumnaLastSync();
+  return db.query(
+    `SELECT di.id, di.id_configuracion, di.id_usuario, di.country_code,
+            di.integration_key_enc, di.dropi_user_id
+     FROM dropi_integrations di
+     LEFT JOIN configuraciones c ON c.id = di.id_configuracion
+     WHERE di.is_active = 1
+       AND di.deleted_at IS NULL
+       AND (
+         di.id_configuracion IS NULL
+         OR di.id_configuracion = 0
+         OR (c.id IS NOT NULL AND COALESCE(c.suspendido, 0) = 0)
+       )
+     ORDER BY ${
+       conLastSync
+         ? 'di.last_sync_at IS NULL DESC, di.last_sync_at ASC, di.id ASC'
+         : 'di.id ASC'
+     }`,
+    { type: db.QueryTypes.SELECT },
+  );
+}
+
+/* Marca la visita. Best-effort: si falla, la integración vuelve a quedar
+   primera en la cola del próximo ciclo, que es el lado seguro. */
+async function marcarVisita(integrationId) {
+  if (!(await tieneColumnaLastSync())) return;
+  try {
+    await db.query(
+      `UPDATE dropi_integrations SET last_sync_at = NOW() WHERE id = ?`,
+      { replacements: [integrationId], type: db.QueryTypes.UPDATE },
+    );
+  } catch (_) {}
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Job principal — candado en memoria + MySQL GET_LOCK
+   ═══════════════════════════════════════════════════════════ */
+
+// Candado en memoria. Hay un solo proceso por servidor, así que esto es lo
+// que de verdad impide que dos ticks corran a la vez. El GET_LOCK de abajo
+// solo cubre el caso de OTRO proceso contra la misma BD (un dev local con
+// CRONS_ENABLED sin apagar, un deploy que arranca antes de que el anterior
+// termine).
+let cicloEnCurso = false;
+let cicloInicioMs = 0;
+
+// Si un ciclo se colgara (un await que nunca resuelve), el candado en memoria
+// dejaría al cron muerto para siempre sin una sola línea de log. Pasado este
+// tope se asume colgado y se deja arrancar el siguiente. Un ciclo sano con
+// ~390 integraciones tarda bastante menos.
+const CICLO_MAX_MS = 3 * 60 * 60 * 1000;
+
+// integ.id → último error de fetch avisado en el log (ver el loop).
+const fetchErrorsAvisados = new Map();
+
+/**
+ * Sostiene GET_LOCK en una sesión fija (transacción) y la mantiene viva con
+ * un SELECT 1 cada LOCK_KEEPALIVE_MS. Devuelve null si otro proceso lo tiene.
+ *
+ * Historia: en v8 el keepalive iba "cada 10 integraciones". La primera
+ * integración del loop trae hasta 2000 órdenes y tarda varios minutos; con
+ * wait_timeout=120 s MySQL cerraba la sesión antes del primer keepalive, el
+ * lock se soltaba y el siguiente tick arrancaba otro ciclo encima.
+ */
+async function tomarLockMysql() {
   const t = await db.transaction();
   let got = false;
   try {
@@ -314,36 +467,81 @@ async function runHourlyDropiSync() {
       { type: db.QueryTypes.SELECT, transaction: t },
     );
     got = !!row && Number(row.got) === 1;
-  } catch (err) {
+  } catch (_) {
     got = false;
   }
   if (!got) {
     try {
       await t.rollback();
     } catch (_) {}
-    return;
+    return null;
   }
 
+  let perdido = false;
+  const timer = setInterval(() => {
+    db.query(`SELECT 1`, { type: db.QueryTypes.SELECT, transaction: t }).catch(
+      (e) => {
+        if (perdido) return;
+        perdido = true;
+        // El ciclo sigue: lo protege el candado en memoria. Solo se avisa.
+        console.warn(
+          `[Cron Dropi] la sesión del lock murió a mitad del ciclo (${e?.message}); el ciclo sigue con el candado en memoria`,
+        );
+      },
+    );
+  }, LOCK_KEEPALIVE_MS);
+  timer.unref?.();
+
+  return {
+    async soltar() {
+      clearInterval(timer);
+      try {
+        await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
+          type: db.QueryTypes.RAW,
+          transaction: t,
+        });
+      } catch (_) {}
+      // Si la sesión ya murió, el commit revienta con "connection is in
+      // closed state"; el lock murió con ella, no hay nada que salvar.
+      try {
+        await t.commit();
+      } catch (_) {
+        try {
+          await t.rollback();
+        } catch (__) {}
+      }
+    },
+  };
+}
+
+async function runHourlyDropiSync() {
+  if (cicloEnCurso) {
+    const min = ((Date.now() - cicloInicioMs) / 60000).toFixed(0);
+    if (Date.now() - cicloInicioMs < CICLO_MAX_MS) {
+      console.log(
+        `[Cron Dropi] tick omitido: el ciclo anterior sigue en curso (${min} min)`,
+      );
+      return;
+    }
+    console.error(
+      `[Cron Dropi] el ciclo anterior lleva ${min} min sin terminar: se asume colgado y se arranca otro`,
+    );
+  }
+  cicloEnCurso = true;
+  cicloInicioMs = Date.now();
+
+  let lock = null;
   const inicio = Date.now();
   let resumen = null;
   try {
-    const { from, until } = getDateRange();
+    lock = await tomarLockMysql();
+    if (!lock) {
+      console.log('[Cron Dropi] tick omitido: lock tomado por otro proceso');
+      return;
+    }
 
-    // Solo integraciones activas + configs no suspendidas
-    const integrations = await db.query(
-      `SELECT di.id, di.id_configuracion, di.id_usuario, di.country_code,
-              di.integration_key_enc, di.dropi_user_id
-       FROM dropi_integrations di
-       LEFT JOIN configuraciones c ON c.id = di.id_configuracion
-       WHERE di.is_active = 1
-         AND di.deleted_at IS NULL
-         AND (
-           di.id_configuracion IS NULL
-           OR di.id_configuracion = 0
-           OR (c.id IS NOT NULL AND COALESCE(c.suspendido, 0) = 0)
-         )`,
-      { type: db.QueryTypes.SELECT },
-    );
+    const { from, until } = getDateRange();
+    const integrations = await listarIntegraciones();
 
     const totals = {
       integraciones: integrations.length,
@@ -352,13 +550,16 @@ async function runHourlyDropiSync() {
       skipped: 0,
       errores: 0,
       rate_limited: 0,
+      fetch_errors: 0,
       entregadas: 0,
       profit_calculated: 0,
     };
 
     for (let i = 0; i < integrations.length; i++) {
+      const integ = integrations[i];
+      let visitada = true;
       try {
-        const r = await syncIntegration(integrations[i], from, until);
+        const r = await syncIntegration(integ, from, until);
         if (r.skipped) {
           totals.skipped++;
         } else {
@@ -368,18 +569,35 @@ async function runHourlyDropiSync() {
           totals.entregadas += r.templates?.entregadas_actualizadas || 0;
           totals.profit_calculated += r.profit?.calculated || 0;
         }
-        if (r.rateLimited) totals.rate_limited++;
+        if (r.rateLimited) {
+          totals.rate_limited++;
+          // Dropi no dejó traer nada: que vuelva a ser de las primeras.
+          if (!r.synced) visitada = false;
+        }
+        if (r.fetchError) {
+          totals.fetch_errors++;
+          // Llave revocada (401), timeout… Se deja rastro por integración
+          // porque antes esto moría en silencio y "el cron no notifica".
+          // Una vez por integración y por error distinto: hay ~40 llaves
+          // muertas y repetirlas cada ciclo tapaba el resto del log.
+          if (fetchErrorsAvisados.get(integ.id) !== r.fetchError) {
+            fetchErrorsAvisados.set(integ.id, r.fetchError);
+            console.warn(
+              `[Cron Dropi] ${r.label} cfg ${integ.id_configuracion ?? '-'}: fetch falló (${r.fetchError})`,
+            );
+          }
+        } else {
+          fetchErrorsAvisados.delete(integ.id);
+        }
       } catch (err) {
         totals.errores++;
+        console.error(
+          `[Cron Dropi] integ#${integ.id} cfg ${integ.id_configuracion ?? '-'}: error del ciclo:`,
+          err?.message,
+        );
       }
-      // Keepalive de la sesión que sostiene el lock: un ciclo puede durar
-      // más que el wait_timeout de MySQL y, si la conexión muere, el lock se
-      // suelta y volvemos a los ciclos solapados.
-      if (i % 10 === 0) {
-        await db
-          .query(`SELECT 1`, { type: db.QueryTypes.SELECT, transaction: t })
-          .catch(() => {});
-      }
+      if (visitada) await marcarVisita(integ.id);
+
       if (i < integrations.length - 1)
         await new Promise((r) => setTimeout(r, DELAY_BETWEEN_INTEGRATIONS));
     }
@@ -387,31 +605,27 @@ async function runHourlyDropiSync() {
   } catch (err) {
     console.error('[Cron Dropi] error general del ciclo:', err?.message);
   } finally {
-    // Una línea por ciclo: sin esto era imposible saber cuánto tarda la
-    // vuelta completa ni si Dropi está limitando (429).
-    const min = ((Date.now() - inicio) / 60000).toFixed(1);
-    console.log(
-      `[Cron Dropi] ciclo terminado en ${min} min ${
-        resumen ? JSON.stringify(resumen) : '(sin resumen)'
-      }`,
-    );
-    try {
-      await db.query(`DO RELEASE_LOCK('dropi_sync_hourly')`, {
-        type: db.QueryTypes.RAW,
-        transaction: t,
-      });
-    } catch (e) {}
-    try {
-      await t.commit();
-    } catch (e) {
-      try {
-        await t.rollback();
-      } catch (_) {}
+    if (lock) {
+      // Una línea por ciclo: sin esto era imposible saber cuánto tarda la
+      // vuelta completa ni si Dropi está limitando (429).
+      const min = ((Date.now() - inicio) / 60000).toFixed(1);
+      console.log(
+        `[Cron Dropi] ciclo terminado en ${min} min ${
+          resumen ? JSON.stringify(resumen) : '(sin resumen)'
+        }`,
+      );
+      await lock.soltar();
     }
+    cicloEnCurso = false;
   }
 }
 
-const CRONS_ENABLED = process.env.NODE_ENV === 'production';
+// Los scripts de scripts/ que reusan las funciones de este módulo corren en
+// el servidor con NODE_ENV=production: sin este freno, el require agendaría
+// el cron dentro del script y correría un ciclo completo en paralelo.
+const CRONS_ENABLED =
+  process.env.NODE_ENV === 'production' &&
+  process.env.DROPI_CRON_SIN_AGENDAR !== '1';
 
 // v8: */15 (antes */5). El webhook de Dropi ya notifica en tiempo real las
 // órdenes IMPORSUIT; este cron queda como red de seguridad para el resto
@@ -427,4 +641,11 @@ if (CRONS_ENABLED) {
   console.log('[Cron Dropi] Deshabilitado — entorno no productivo');
 }
 
-module.exports = { runHourlyDropiSync };
+module.exports = {
+  runHourlyDropiSync,
+  // Reusados por scripts/refrescarCacheDropi.js
+  fetchOrdenesIntegracion,
+  listarIntegraciones,
+  aprenderDropiUserId,
+  DELAY_BETWEEN_INTEGRATIONS,
+};

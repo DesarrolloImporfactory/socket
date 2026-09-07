@@ -422,16 +422,16 @@ async function resumen({ id_configuracion }) {
  * ------------------------------------------------------------------ */
 
 const axios = require('axios');
-const crypto = require('crypto');
 
 const GRAPH_VERSION = process.env.GRAPH_VERSION || 'v22.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
-const appsecretProof = (token) =>
-  crypto
-    .createHmac('sha256', process.env.FB_APP_SECRET)
-    .update(token)
-    .digest('hex');
+const { resolveApp, appSecretProof } = require('../config/metaApps');
+
+// El proof se firma con el secreto de la app que emitió el token de la página
+// (messenger_pages.fb_app_id). Cruzarlos hace que Meta rechace la llamada.
+const appsecretProof = (token, fbAppId) =>
+  appSecretProof(token, resolveApp(fbAppId));
 
 /**
  * Comentario + token de su página, ambos acotados a la configuración.
@@ -445,7 +445,7 @@ async function cargarComentarioConToken({ id_configuracion, comment_id }) {
   const [fila] = await db.query(
     `SELECT c.id_facebook_comment, c.id_facebook_post, c.comment_id, c.page_id,
             c.es_de_la_pagina, c.eliminado_at, c.privado_enviado,
-            p.page_access_token, p.status AS page_status
+            p.page_access_token, p.fb_app_id, p.status AS page_status
        FROM facebook_comments c
        JOIN messenger_pages p
          ON p.page_id = c.page_id
@@ -500,7 +500,7 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
         params: {
           message: texto,
           access_token: c.page_access_token,
-          appsecret_proof: appsecretProof(c.page_access_token),
+          appsecret_proof: appsecretProof(c.page_access_token, c.fb_app_id),
         },
         timeout: 20000,
       },
@@ -584,7 +584,7 @@ async function responderEnPrivado({
         params: {
           message: texto,
           access_token: c.page_access_token,
-          appsecret_proof: appsecretProof(c.page_access_token),
+          appsecret_proof: appsecretProof(c.page_access_token, c.fb_app_id),
         },
         timeout: 20000,
       },

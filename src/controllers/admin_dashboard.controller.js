@@ -1,6 +1,19 @@
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
-const { metricasEnVivo } = require('../services/metricas.service');
+const {
+  metricasEnVivo,
+  COND_COBRO_REAL,
+  tieneColumnaMonto,
+} = require('../services/metricas.service');
+
+// Cobros reales (monto > 0) del usuario `u`. Misma definición que usa el KPI
+// de recurrentes en metricas.service, para que el número de la tarjeta y la
+// lista del drawer no se desfasen.
+const SUB_PAGOS_REALES = `
+  SELECT COUNT(DISTINCT t.id_pago)
+    FROM transacciones_stripe_chat t
+   WHERE t.id_usuario = u.id_usuario AND ${COND_COBRO_REAL}
+`;
 
 /* ══════════════════════════════════════════════════════════════
    GET /admin_dashboard/resumen
@@ -178,6 +191,17 @@ exports.clientesPorCategoria = catchAsync(async (req, res) => {
     Math.max(1, parseInt(req.query.limit, 10) || 100),
   );
 
+  // Sin la migración de monto, las subconsultas de cobros romperían TODAS las
+  // listas del drawer: se omiten y el front simplemente no ve la etiqueta.
+  const conMonto = await tieneColumnaMonto();
+  const colsCobros = conMonto
+    ? `,
+      (${SUB_PAGOS_REALES}) AS pagos_reales,
+      (SELECT MAX(t.fecha)
+         FROM transacciones_stripe_chat t
+        WHERE t.id_usuario = u.id_usuario AND ${COND_COBRO_REAL}) AS ultimo_cobro`
+    : '';
+
   const baseSelect = `
     SELECT
       u.id_usuario,
@@ -206,13 +230,14 @@ exports.clientesPorCategoria = catchAsync(async (req, res) => {
       (SELECT MAX(mm.created_at)
          FROM mensajes_clientes mm
          INNER JOIN configuraciones cc ON cc.id = mm.id_configuracion
-        WHERE cc.id_usuario = u.id_usuario) AS ultimo_mensaje
+        WHERE cc.id_usuario = u.id_usuario) AS ultimo_mensaje${colsCobros}
     FROM usuarios_chat_center u
     LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
   `;
 
   const NO_TEST = `(p.nombre_plan IS NULL OR p.nombre_plan NOT LIKE '%TEST%')`;
   let where = '';
+  let orderBy = 'ORDER BY u.fecha_renovacion ASC, u.fecha_inicio DESC';
 
   switch (categoria) {
     case 'pagando_stripe':
@@ -267,13 +292,34 @@ exports.clientesPorCategoria = catchAsync(async (req, res) => {
                  AND u.fecha_renovacion BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 30 DAY)
                  AND ${NO_TEST}`;
       break;
+    case 'recurrentes': {
+      // Pagando en Stripe con N+ cobros reales (default 2). ?min_pagos=3
+      // devuelve solo los que ya van por el tercer cobro.
+      if (!conMonto) {
+        return res.json({
+          status: 'success',
+          categoria,
+          total: 0,
+          data: [],
+          message:
+            'transacciones_stripe_chat no tiene la columna monto: no se puede calcular cobros reales',
+        });
+      }
+      const minPagos = Math.max(1, parseInt(req.query.min_pagos, 10) || 2);
+      where = `WHERE u.stripe_subscription_id IS NOT NULL
+                 AND u.stripe_subscription_status = 'active'
+                 AND u.permanente = 0 AND ${NO_TEST}
+                 AND (${SUB_PAGOS_REALES}) >= ${minPagos}`;
+      orderBy = 'ORDER BY pagos_reales DESC, ultimo_cobro DESC';
+      break;
+    }
     default:
       return res
         .status(400)
         .json({ status: 'error', message: 'categoria inválida' });
   }
 
-  const sql = `${baseSelect} ${where} ORDER BY u.fecha_renovacion ASC, u.fecha_inicio DESC LIMIT ${limit}`;
+  const sql = `${baseSelect} ${where} ${orderBy} LIMIT ${limit}`;
   const rows = await db.query(sql, { type: db.QueryTypes.SELECT });
   return res.json({
     status: 'success',
