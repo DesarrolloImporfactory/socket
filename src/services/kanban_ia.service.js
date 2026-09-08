@@ -107,6 +107,12 @@ const {
   aparecioEnCliente,
   ciudadAproxEnCliente,
 } = require('../utils/fichaPedido');
+// Lectura del resumen de cierre: renglón de producto ("… x2") y corrección
+// del total cuando el bot ignoró el combo del catálogo (caso 411, Aracelly).
+const {
+  parsearLineaProducto,
+  corregirPrecioCombo,
+} = require('../utils/resumenPedido');
 
 // ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
 // venta_producto y el adjunto de la foto del producto (ver su encabezado).
@@ -459,28 +465,9 @@ function parsearProductosResumen(respuesta) {
   ].map((m) => m[1].trim());
   if (lineas.length < 2) return [];
 
-  return lineas.map((linea) => {
-    let txt = linea;
-    const variedad =
-      txt
-        .match(/\(?\s*(?:Variedad|Variante|Color|Talla):\s*([^)\n]+)\)?/i)?.[1]
-        ?.trim() || '';
-    txt = txt
-      .replace(/\(?\s*(?:Variedad|Variante|Color|Talla):\s*[^)\n]*\)?/i, '')
-      .trim();
-    // Cantidad: "… x2" al final (el formato dictado) o "2 x …" al inicio
-    // (como lo escriben algunos bots por su cuenta).
-    const alFinal = txt.match(/\bx\s*(\d+)\s*$/i);
-    const alInicio = txt.match(/^(\d+)\s*x\s+/i);
-    const cantidad = alFinal?.[1] || alInicio?.[1] || '1';
-    txt = txt
-      .replace(/\bx\s*\d+\s*$/i, '')
-      .replace(/^\d+\s*x\s+/i, '')
-      .replace(/[*_]/g, '')
-      .replace(/[—–,-]\s*$/, '')
-      .trim();
-    return { producto: txt, cantidad, variedad };
-  });
+  // El lector de cada renglón ("… x2", "2 x …", "(Variedad: …)") es el
+  // mismo que usa el pedido de UN producto: utils/resumenPedido.js.
+  return lineas.map(parsearLineaProducto);
 }
 
 function motivoCierreInvalido(respuesta, ficha = null) {
@@ -1309,12 +1296,21 @@ async function procesarMensajeKanban(params) {
            (reemplazo en código), el modelo no lo tiene en su memoria: se le
            inyecta igual que el remarketing (caso Felipe 277) para que
            entienda a qué responde el cliente ("la 2", "esa"). */
-        if (retiroDirectorioFicha && fichaPedido?.entrega === 'agencia') {
+        /* No se condiciona a ficha.entrega === 'agencia': la guardia también
+           reemplaza respuestas ANTES de que el cliente elija modalidad (lista
+           de oficinas inventada → pregunta de modalidad) y esa pregunta
+           tampoco está en la memoria del modelo. */
+        if (retiroDirectorioFicha) {
           try {
             const {
               GUARDIA_MARCA_CIUDAD,
               GUARDIA_MARCA_LISTA,
               GUARDIA_MARCA_OFERTA,
+              GUARDIA_MARCA_SECTOR,
+              GUARDIA_MARCA_MODALIDAD,
+              GUARDIA_MARCA_DOMICILIO,
+              GUARDIA_MARCA_REFERENCIA,
+              GUARDIA_MARCA_PORCONFIRMAR,
             } = require('./kanban_retiro_agencia.service');
             const [ultBot] = await db.query(
               `SELECT texto_mensaje FROM mensajes_clientes
@@ -1327,16 +1323,34 @@ async function procesarMensajeKanban(params) {
               },
             );
             const txtUlt = String(ultBot?.texto_mensaje || '');
+            const fueSector =
+              txtUlt.includes(GUARDIA_MARCA_SECTOR) ||
+              txtUlt.includes(GUARDIA_MARCA_REFERENCIA);
+            const fueModalidad = txtUlt.includes(GUARDIA_MARCA_MODALIDAD);
+            const fueAvance =
+              txtUlt.includes(GUARDIA_MARCA_DOMICILIO) ||
+              txtUlt.includes(GUARDIA_MARCA_PORCONFIRMAR);
             if (
               txtUlt.includes(GUARDIA_MARCA_LISTA) ||
               txtUlt.includes(GUARDIA_MARCA_CIUDAD) ||
               txtUlt.includes(GUARDIA_MARCA_OFERTA) ||
-              /retiras en\s+[^\n]{6,}/i.test(txtUlt)
+              fueSector ||
+              fueModalidad ||
+              fueAvance ||
+              (fichaPedido?.entrega === 'agencia' &&
+                /retiras en\s+[^\n]{6,}/i.test(txtUlt))
             ) {
               bloqueContexto +=
                 `🏦 TU ÚLTIMO MENSAJE AL CLIENTE fue este (lo envió el sistema en tu nombre y NO está en tu memoria):\n` +
                 `"${txtUlt.slice(0, 700)}"\n` +
-                `El cliente está respondiendo a ESO. Reglas: si dice "la 1", "la 2", "la primera" o un sector, eligió esa oficina de la lista; si el mensaje ofrecía UNA oficina ("¿Retiramos ahí?") y responde "sí", "esa", "dale" u otra afirmación, ESA oficina queda ELEGIDA — es la dirección del pedido, no la vuelvas a preguntar ni ofrezcas otras: confírmala y pide el siguiente dato que falte.\n\n`;
+                `El cliente está respondiendo a ESO. ` +
+                (fueModalidad
+                  ? `Si responde "domicilio" (o da una dirección de casa), el envío es a domicilio: sigue pidiendo los datos que falten. Si responde "agencia", "oficina" o "retiro", eligió retiro en oficina Servientrega: tu siguiente mensaje sigue la sección RETIRO EN AGENCIA (ciudad → sector si hace falta → oficinas del directorio), sin pedir dirección de domicilio.\n\n`
+                  : fueSector
+                    ? `Si responde con un sector, barrio, centro comercial o calle, BUSCA oficinas de su ciudad por esa referencia en el directorio y ofrécele las 3 a 5 que coincidan (dirección copiada tal cual). Si dice que no sabe o "cualquiera", ofrécele las oficinas de su ciudad sin volver a preguntar el sector.\n\n`
+                    : fueAvance
+                      ? `Ese mensaje ya resolvió la entrega (domicilio, o agencia por confirmar con un asesor): NO vuelvas a ofrecer oficinas ni a preguntar la modalidad; sigue pidiendo SOLO los datos que falten para cerrar.\n\n`
+                      : `Reglas: si dice "la 1", "la 2", "la primera" o un sector, eligió esa oficina de la lista; si el mensaje ofrecía UNA oficina ("¿Retiramos ahí?") y responde "sí", "esa", "dale" u otra afirmación, ESA oficina queda ELEGIDA — es la dirección del pedido, no la vuelvas a preguntar ni ofrezcas otras: confírmala y pide el siguiente dato que falte.\n\n`);
               await log(`🏦 Último mensaje fue de la guardia de oficinas: inyectado como contexto`);
             }
           } catch (_) {
@@ -2090,6 +2104,25 @@ async function procesarMensajeKanban(params) {
             );
           }
         }
+        /* Total del pedido contra el catálogo: si el bot cobró unitario x N
+           habiendo un combo de N unidades (caso 411: 2 x $20 = $40 con
+           combo de 2 por $25), el total se corrige ANTES de que lo vea el
+           cliente, la plantilla de confirmación y el auto-orden. Solo esa
+           firma; cualquier otro total se respeta. Nunca bloquea el cierre. */
+        try {
+          const corrPrecio = await corregirPrecioCombo(
+            respuestaRaw,
+            id_configuracion,
+          );
+          if (corrPrecio) {
+            respuestaRaw = corrPrecio.texto;
+            await log(
+              `💰 Precio total corregido al combo del catálogo: $${corrPrecio.de} → $${corrPrecio.a} (${corrPrecio.motivo})`,
+            );
+          }
+        } catch (ePrecio) {
+          await log(`⚠️ Corrección de precio por combo falló (se sigue igual): ${ePrecio.message}`);
+        }
         /* Red de seguridad del retiro en agencia (switch retiro_agencia):
            la línea 🏡 de un cierre con agencia se valida contra el
            directorio real y se corrige en código — el modelo a veces
@@ -2202,6 +2235,27 @@ async function procesarMensajeKanban(params) {
              no se agrega y el auto-orden corre el flujo de siempre. */
           const productosResumen = parsearProductosResumen(respuestaRaw);
           if (productosResumen.length) datosBot.productos = productosResumen;
+
+          /* Pedido de UN producto escrito con el formato multi ("📦 Producto:
+             Dr Melaxin x2", sin línea Cantidad): la cantidad va en el renglón.
+             Caso real cfg 411 (2026-09-08, Aracelly): el bot cerró "x2", el
+             lector solo miraba "🔢 Cantidad:", el auto-orden asumió 1 y la
+             clienta recibió plantilla y orden por UNA unidad. La cantidad del
+             renglón vale solo si no vino la línea Cantidad (esa manda); el
+             nombre se limpia del "x2" siempre, que al matcher del catálogo no
+             le aporta nada. */
+          if (!productosResumen.length && datosBot.producto) {
+            const renglon = parsearLineaProducto(datosBot.producto);
+            if (renglon.producto) datosBot.producto = renglon.producto;
+            if (!datosBot.cantidad && renglon.cantidad !== '1') {
+              datosBot.cantidad = renglon.cantidad;
+              await log(
+                `🔢 Cantidad leída del renglón de producto: x${renglon.cantidad} (el resumen no traía línea Cantidad)`,
+              );
+            }
+            if (!datosBot.variedad && renglon.variedad)
+              datosBot.variedad = renglon.variedad;
+          }
 
           // Datos que el cliente pudo corregir (para el flujo de actualizar).
           const cambios = {

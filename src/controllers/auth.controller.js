@@ -14,6 +14,7 @@ const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
 const { db, db_2 } = require('../database/config');
+const { tieneGraciaDeCobro } = require('../utils/planAcceso');
 
 exports.registrarUsuario = catchAsync(async (req, res, next) => {
   const {
@@ -302,10 +303,28 @@ exports.login = catchAsync(async (req, res, next) => {
         'id_plan',
         'fecha_renovacion',
         'permanente',
+        'stripe_subscription_id',
+        'stripe_subscription_status',
+        'cancel_at_period_end',
       ],
     });
     if (usuarioPrincipal) {
-      planData = usuarioPrincipal.toJSON();
+      const {
+        stripe_subscription_id,
+        stripe_subscription_status,
+        cancel_at_period_end,
+        ...visible
+      } = usuarioPrincipal.toJSON();
+
+      // El front redirige a /planes si fecha_renovacion ya pasó. Con una
+      // renovación que rebotó y se cobró horas después, la fecha queda
+      // vencida un rato aunque checkPlanActivo sí lo deje entrar (gracia de
+      // cobro). Se le manda la misma decisión que toma el backend para que
+      // el login no rebote a quien el panel va a aceptar.
+      planData = {
+        ...visible,
+        en_gracia_cobro: tieneGraciaDeCobro(usuarioPrincipal.toJSON()),
+      };
     }
   }
 
@@ -315,7 +334,7 @@ exports.login = catchAsync(async (req, res, next) => {
     token,
     data: {
       ...usuarioSinPassword,
-      ...planData, // estado, trial_end, id_plan, fecha_renovacion, permanente
+      ...planData, // estado, trial_end, id_plan, fecha_renovacion, permanente, en_gracia_cobro
     },
   });
 });

@@ -208,7 +208,7 @@ exports.listar = catchAsync(async (req, res) => {
 
   const plantillas = await db.query(
     `SELECT id, nombre, descripcion, icono, color, pais, paises, grupo, activo,
-            creado_por, created_at, updated_at,
+            creado_por, created_at, updated_at, version,
             JSON_LENGTH(JSON_EXTRACT(data, '$.columnas')) AS total_columnas,
             data
      FROM kanban_plantillas_globales
@@ -228,6 +228,7 @@ exports.listar = catchAsync(async (req, res) => {
       icono: p.icono,
       color: p.color,
       activo: !!p.activo,
+      version: p.version != null ? Number(p.version) : null,
       pais: p.pais || 'EC',
       paises: normalizarPaises(p.paises, p.pais),
       grupo: p.grupo || null,
@@ -427,9 +428,11 @@ exports.actualizarMetadata = catchAsync(async (req, res, next) => {
 // POST /kanban_plantillas_admin/actualizar_data
 // ═════════════════════════════════════════════════════════════
 exports.actualizarData = catchAsync(async (req, res, next) => {
-  const { id, data } = req.body || {};
+  const { id, data, salto = 'menor' } = req.body || {};
   if (!id) return next(new AppError('Falta id', 400));
   if (!data) return next(new AppError('Falta data', 400));
+  if (!['menor', 'mayor'].includes(salto))
+    return next(new AppError('salto debe ser "menor" o "mayor"', 400));
 
   const dataObj = typeof data === 'string' ? JSON.parse(data) : data;
 
@@ -452,11 +455,20 @@ exports.actualizarData = catchAsync(async (req, res, next) => {
   );
   if (!existe) return next(new AppError('Plantilla no encontrada', 404));
 
-  // version + 1: cambiar la data cambia el prompt, así los clientes ven que
-  // hay una versión más nueva disponible en su tablero.
+  /* Cambiar la data cambia el prompt, así los clientes ven que hay una versión
+     más nueva disponible en su tablero. Desde 2026-09-08 el número es
+     DECIMAL(5,1) (ver plantillas_version_decimal_migration.sql): un cambio
+     menor (una frase, una regla) sube 0.1 → 7.0, 7.1, 7.2…; un salto fuerte
+     (flujo nuevo, reestructura) sube la versión completa → 8.0. Antes cada
+     guardado sumaba 1 y en dos meses se llegó a v7 sin que ninguna fuera un
+     salto real. */
+  const bump =
+    salto === 'mayor'
+      ? 'FLOOR(version) + 1'
+      : 'ROUND(version + 0.1, 1)';
   await db.query(
     `UPDATE kanban_plantillas_globales
-       SET data = ?, version = version + 1 WHERE id = ?`,
+       SET data = ?, version = ${bump} WHERE id = ?`,
     {
       replacements: [JSON.stringify(dataNormalizada), id],
       type: db.QueryTypes.UPDATE,
@@ -472,7 +484,8 @@ exports.actualizarData = catchAsync(async (req, res, next) => {
     success: true,
     message: 'Data actualizada',
     total_columnas: dataNormalizada.columnas.length,
-    version: row?.version || null,
+    salto,
+    version: row?.version != null ? Number(row.version) : null,
   });
 });
 

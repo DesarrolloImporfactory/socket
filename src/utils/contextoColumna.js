@@ -1143,7 +1143,10 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       `Nunca juntes dos productos en una sola línea 📦 ni los separes por ` +
       `comas: el sistema lee una línea por producto. La línea "💰 Precio ` +
       `total:" sigue siendo una sola, con la suma de todo el pedido. Con un ` +
-      `solo producto, el resumen es el de siempre.\n\n`;
+      `solo producto, el resumen es el de siempre (con su línea de cantidad ` +
+      `si tu formato la trae). Si el pedido es de 2 o más unidades y el ` +
+      `producto tiene un combo para esa cantidad, el precio total es el DEL ` +
+      `COMBO, no el unitario multiplicado.\n\n`;
     say(`✅ Instrucción de cierre multi-producto inyectada`);
 
     /* ── Regla de agencias (retiro Servientrega) ──
@@ -1180,10 +1183,15 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       bloque +=
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +
         `"RETIRO EN AGENCIA SERVIENTREGA" DE TUS INSTRUCCIONES:\n` +
+        `- Ninguna oficina antes de que el cliente ELIJA retiro con sus ` +
+        `palabras: saber su ciudad no es elegir. Sin modalidad, pregúntala.\n` +
         `- En cuanto el cliente elija agencia/oficina, tu SIGUIENTE mensaje es ` +
         `ofrecerle de 3 a 5 oficinas REALES del directorio (file_search) de SU ` +
-        `ciudad, cada una con sector y dirección copiados tal cual. Los demás ` +
-        `datos (nombre, teléfono) se piden DESPUÉS de que elija la oficina.\n` +
+        `ciudad, cada una con sector y dirección copiados tal cual. Si la ` +
+        `ciudad tiene MÁS de 5 oficinas y el cliente no dio sector ni ` +
+        `referencia, primero pregúntale UNA vez "¿En qué sector estás o cerca ` +
+        `de qué punto conocido? 📍" y recién ahí lista las que coincidan. Los ` +
+        `demás datos (nombre, teléfono) se piden DESPUÉS de que elija la oficina.\n` +
         `- Si menciona un sector, centro comercial o referencia, BÚSCALA en el ` +
         `directorio antes de responder (hasta 2 búsquedas). Elecciones por ` +
         `número u ordinal ("la 1", "la primera", aun con typos) son sobre tu ` +

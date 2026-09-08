@@ -115,6 +115,74 @@ const resolverIdUsuarioPorStripe = async (subscriptionId, customerId) => {
   return null;
 };
 
+// Completa la fila de transacciones_stripe_chat de una factura pagada con el
+// id_usuario ya resuelto (el INSERT inicial se hace antes de conocerlo).
+// Tolera que la tabla aún no tenga las columnas monto/moneda/billing_reason.
+const completarTransaccionPagada = async ({
+  invoiceId,
+  id_usuario,
+  subscriptionId,
+  customerId,
+  invoiceMonto,
+  invoiceMoneda,
+  invoiceBillingReason,
+}) => {
+  try {
+    await db.query(
+      `UPDATE transacciones_stripe_chat
+       SET estado_suscripcion = 'payment_succeeded',
+           id_usuario = COALESCE(id_usuario, ?),
+           id_suscripcion = COALESCE(id_suscripcion, ?),
+           customer_id = COALESCE(customer_id, ?),
+           monto = COALESCE(monto, ?),
+           moneda = COALESCE(moneda, ?),
+           billing_reason = COALESCE(billing_reason, ?)
+       WHERE id_pago = ?`,
+      {
+        replacements: [
+          id_usuario,
+          subscriptionId || null,
+          customerId || null,
+          invoiceMonto,
+          invoiceMoneda,
+          invoiceBillingReason,
+          invoiceId,
+        ],
+      },
+    );
+    console.log('[stripe] transacciones updated with id_usuario:', invoiceId);
+  } catch (e) {
+    if (esColumnaMontoFaltante(e)) {
+      try {
+        await db.query(
+          `UPDATE transacciones_stripe_chat
+           SET estado_suscripcion = 'payment_succeeded',
+               id_usuario = COALESCE(id_usuario, ?),
+               id_suscripcion = COALESCE(id_suscripcion, ?),
+               customer_id = COALESCE(customer_id, ?)
+           WHERE id_pago = ?`,
+          {
+            replacements: [
+              id_usuario,
+              subscriptionId || null,
+              customerId || null,
+              invoiceId,
+            ],
+          },
+        );
+        console.log(
+          '[stripe] transacciones updated sin monto (falta migración):',
+          invoiceId,
+        );
+      } catch (e2) {
+        console.log('[stripe] transacciones update failed:', e2?.message);
+      }
+    } else {
+      console.log('[stripe] transacciones update failed:', e?.message);
+    }
+  }
+};
+
 // Columnas válidas para addons (seguridad: el UPDATE interpola el nombre)
 const ADDON_COLUMNS_PERMITIDAS = new Set([
   'conexiones_adicionales',
@@ -579,6 +647,44 @@ exports.stripeWebhook = async (req, res) => {
         }
 
         /**
+         * Factura SIN suscripción: creada a mano en el dashboard de Stripe
+         * (billing_reason 'manual') o un cobro puntual. Se registra el cobro
+         * y nada más: el acceso lo gobierna la suscripción.
+         *
+         * Antes seguía el flujo completo y rompía la cuenta en vez de
+         * activarla: el período de un ítem manual es un instante (inicio =
+         * fin), así que fecha_renovacion quedaba vencida en el mismo segundo
+         * en que se escribía, y stripe_subscription_id se pisaba con NULL
+         * porque la factura no trae suscripción. El login mandaba a /planes a
+         * un cliente que acababa de pagar.
+         *
+         * Si se cobra a mano un mes cuya factura de suscripción rebotó, hay
+         * que saldar ESA factura (scripts/saldarFacturaSuscripcion.js o
+         * "marcar como pagada" en Stripe); ese pago sí entra por aquí con
+         * suscripción y sincroniza fechas y estado.
+         */
+        if (!subscriptionId) {
+          console.log(
+            '[stripe] factura sin suscripción: solo se registra la transacción',
+            {
+              invoiceId: invoice.id,
+              billing_reason: invoice.billing_reason,
+              id_usuario,
+            },
+          );
+          await completarTransaccionPagada({
+            invoiceId: invoice.id,
+            id_usuario,
+            subscriptionId: null,
+            customerId,
+            invoiceMonto,
+            invoiceMoneda,
+            invoiceBillingReason,
+          });
+          break;
+        }
+
+        /**
          * ✅ CAMBIO SOLICITADO (blindaje extra):
          * Si existe UPGRADE pendiente (pending_change + pending_plan_id),
          * pero NO hubo cobro real, NO aplicar el plan por priceId.
@@ -818,63 +924,15 @@ exports.stripeWebhook = async (req, res) => {
         // =========
         // 4) Completar id_usuario en transacciones
         // =========
-        try {
-          await db.query(
-            `UPDATE transacciones_stripe_chat
-             SET estado_suscripcion = 'payment_succeeded',
-                 id_usuario = COALESCE(id_usuario, ?),
-                 id_suscripcion = COALESCE(id_suscripcion, ?),
-                 customer_id = COALESCE(customer_id, ?),
-                 monto = COALESCE(monto, ?),
-                 moneda = COALESCE(moneda, ?),
-                 billing_reason = COALESCE(billing_reason, ?)
-             WHERE id_pago = ?`,
-            {
-              replacements: [
-                id_usuario,
-                subscriptionId || null,
-                customerId || null,
-                invoiceMonto,
-                invoiceMoneda,
-                invoiceBillingReason,
-                invoice.id,
-              ],
-            },
-          );
-          console.log(
-            '[stripe] transacciones updated with id_usuario:',
-            invoice.id,
-          );
-        } catch (e) {
-          if (esColumnaMontoFaltante(e)) {
-            try {
-              await db.query(
-                `UPDATE transacciones_stripe_chat
-                 SET estado_suscripcion = 'payment_succeeded',
-                     id_usuario = COALESCE(id_usuario, ?),
-                     id_suscripcion = COALESCE(id_suscripcion, ?),
-                     customer_id = COALESCE(customer_id, ?)
-                 WHERE id_pago = ?`,
-                {
-                  replacements: [
-                    id_usuario,
-                    subscriptionId || null,
-                    customerId || null,
-                    invoice.id,
-                  ],
-                },
-              );
-              console.log(
-                '[stripe] transacciones updated sin monto (falta migración):',
-                invoice.id,
-              );
-            } catch (e2) {
-              console.log('[stripe] transacciones update failed:', e2?.message);
-            }
-          } else {
-            console.log('[stripe] transacciones update failed:', e?.message);
-          }
-        }
+        await completarTransaccionPagada({
+          invoiceId: invoice.id,
+          id_usuario,
+          subscriptionId,
+          customerId,
+          invoiceMonto,
+          invoiceMoneda,
+          invoiceBillingReason,
+        });
 
         // =========
         // 5) Programa de referidos: contar el ciclo y devengar comisión
