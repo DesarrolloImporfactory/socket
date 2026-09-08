@@ -26,7 +26,11 @@
  */
 
 const { db } = require('../database/config');
-const { getConfigIdByPageId } = require('./messenger.service');
+const {
+  getConfigIdByPageId,
+  emitUpdateChatMS,
+} = require('./messenger.service');
+const Store = require('./messenger_store.service');
 
 // Verbos que Meta manda en value.verb para item='comment'.
 const VERBOS_CONOCIDOS = new Set(['add', 'edited', 'remove', 'hide', 'unhide']);
@@ -876,10 +880,79 @@ async function responderEnPrivado({
       },
     );
 
+    // El privado también es un mensaje de Messenger: se guarda en la
+    // conversación para que quede en el historial del cliente.
+    //
+    // Hace falta hacerlo acá porque cae en un hueco: los salientes normales se
+    // persisten en el momento de enviarlos, y por eso messenger.service ignora
+    // el echo de nuestras propias apps (si no, se duplicarían). Este mensaje no
+    // pasaba por ninguno de los dos caminos, así que no se guardaba en ningún
+    // lado y el agente no veía en el chat lo que él mismo había escrito.
+    //
+    // Queda diferenciado en `meta_unificado`, con el comentario que lo originó:
+    // sin eso es indistinguible de una respuesta escrita desde el chat.
+    //
+    // Va en su propio try y NO relanza: el mensaje ya salió a Messenger. Fallar
+    // acá haría que el agente lo diera por no enviado y lo intentara otra vez,
+    // y Facebook sólo permite uno por comentario.
+    const privado_mid = data?.message_id || data?.id || null;
+    try {
+      const psid = data?.recipient_id || null;
+      if (psid) {
+        const uni = await Store.ensureUnifiedConversation({
+          id_configuracion,
+          source: 'ms',
+          page_id: c.page_id,
+          external_id: psid,
+          customer_name: c.from_nombre || '',
+        });
+
+        if (uni?.id_cliente) {
+          const saved = await Store.saveOutgoingMessageUnified({
+            id_configuracion,
+            id_plataforma: null,
+            id_cliente: uni.id_cliente,
+            celular_recibe: uni.id_cliente_contacto,
+            source: 'ms',
+            page_id: c.page_id,
+            external_id: psid,
+            mid: privado_mid,
+            text: texto,
+            status_unificado: 'sent',
+            responsable: id_sub_usuario || null,
+            meta: {
+              origen: 'respuesta_privada_comentario',
+              comment_id: c.comment_id,
+              id_facebook_comment: c.id_facebook_comment,
+              post_id: c.post_id,
+            },
+            id_encargado: uni?.id_encargado ?? null,
+          });
+
+          emitUpdateChatMS({
+            id_configuracion,
+            chatId: uni.id_cliente_contacto,
+            pageId: c.page_id,
+            external_id: psid,
+            uni,
+            saved,
+            rawMessage: { mid: privado_mid, text: texto, attachments: null },
+            kind: 'out-echo',
+          });
+        }
+      }
+    } catch (errGuardado) {
+      console.error(
+        `[FB_COMENT][WARN] privado enviado pero no guardado en la ` +
+          `conversación · cfg=${id_configuracion} · comment=${comment_id} · ` +
+          errGuardado.message,
+      );
+    }
+
     console.log(
       `[FB_COMENT] ✅ privado enviado comment=${comment_id} · cfg=${id_configuracion}`,
     );
-    return { privado_mid: data?.message_id || data?.id || null };
+    return { privado_mid };
   } catch (err) {
     const edadDias = c.comentado_at
       ? (Date.now() - new Date(c.comentado_at).getTime()) / 864e5
