@@ -583,10 +583,35 @@ async function cargarComentarioConToken({ id_configuracion, comment_id }) {
 }
 
 // Traduce el error de Meta a algo accionable. `err.response.data.error` trae
-// code/error_subcode/message; el message crudo es en inglés y muy técnico.
+// code/error_subcode/message; el message crudo es en inglés y muy técnico, y
+// va directo a la bandeja: el agente lo lee y no sabe qué hacer con él.
+//
+// Sólo se traducen los casos que tienen una salida concreta. El resto conserva
+// código y mensaje originales a propósito, porque es lo que sirve para buscar
+// en la documentación de Meta cuando aparece algo nuevo.
 function describirErrorMeta(err) {
   const m = err.response?.data?.error;
   if (!m) return err.message;
+
+  // La firma se calcula con el secreto de la app que emitió el token
+  // (messenger_pages.fb_app_id). Con dos apps conviviendo, este error significa
+  // que la fila quedó apuntando a la app equivocada — normalmente una conexión
+  // vieja — y se arregla reconectando la página.
+  if (/appsecret_proof/i.test(m.message || '')) {
+    return (
+      'La firma de seguridad no coincide con la app que conectó esta página.' +
+      ' Vuelve a conectarla en Canal de Conexiones.'
+    );
+  }
+
+  // 190: token caducado o revocado. 200/10: falta un permiso.
+  if (m.code === 190) {
+    return (
+      'La conexión con Facebook caducó. Vuelve a conectar la página en Canal' +
+      ' de Conexiones.'
+    );
+  }
+
   const codigo = `${m.code}${m.error_subcode ? `/${m.error_subcode}` : ''}`;
   return `Meta ${codigo}: ${m.message}`;
 }
