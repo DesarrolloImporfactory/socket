@@ -752,6 +752,32 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
 }
 
 /**
+ * Nombre del agente para `mensajes_clientes.responsable`.
+ *
+ * Esa columna es un varchar que la bandeja muestra tal cual — conviven ahí
+ * nombres de personas ("Evelyn Cherrez") y etiquetas de origen
+ * ("IA_CONTACTO INICIAL", "cron_remarketing_ia"). No es una clave foránea:
+ * pasarle el id_sub_usuario hace que el chat diga "enviado por 7".
+ */
+async function nombreDelAgente(id_sub_usuario) {
+  if (!id_sub_usuario) return 'Respuesta a comentario';
+  try {
+    const [u] = await db.query(
+      `SELECT nombre_encargado, usuario
+         FROM sub_usuarios_chat_center
+        WHERE id_sub_usuario = ?
+        LIMIT 1`,
+      { replacements: [id_sub_usuario], type: db.QueryTypes.SELECT },
+    );
+    return u?.nombre_encargado || u?.usuario || 'Respuesta a comentario';
+  } catch {
+    // El nombre es decorativo: si no se puede leer, no vale la pena tumbar
+    // el guardado del mensaje por eso.
+    return 'Respuesta a comentario';
+  }
+}
+
+/**
  * Traduce los fallos típicos del mensaje privado.
  *
  * Meta devuelve el mismo 100/33 —"Object with ID ... does not exist, cannot be
@@ -919,7 +945,7 @@ async function responderEnPrivado({
             mid: privado_mid,
             text: texto,
             status_unificado: 'sent',
-            responsable: id_sub_usuario || null,
+            responsable: await nombreDelAgente(id_sub_usuario),
             meta: {
               origen: 'respuesta_privada_comentario',
               comment_id: c.comment_id,
