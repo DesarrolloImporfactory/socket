@@ -593,6 +593,14 @@ function describirErrorMeta(err) {
   const m = err.response?.data?.error;
   if (!m) return err.message;
 
+  // Cuando Meta manda `error_user_msg` ya viene redactado para el usuario final
+  // y en su idioma. Es mejor que cualquier traducción nuestra, así que gana.
+  if (m.error_user_msg) {
+    return m.error_user_title
+      ? `${m.error_user_title}: ${m.error_user_msg}`
+      : m.error_user_msg;
+  }
+
   // La firma se calcula con el secreto de la app que emitió el token
   // (messenger_pages.fb_app_id). Con dos apps conviviendo, este error significa
   // que la fila quedó apuntando a la app equivocada — normalmente una conexión
@@ -754,17 +762,29 @@ function describirErrorPrivado(err, { edadDias } = {}) {
   const m = err.response?.data?.error;
   if (!m) return err.message;
 
-  if (m.code === 100 && m.error_subcode === 33) {
-    const edad =
-      typeof edadDias === 'number'
-        ? ` El comentario tiene ${edadDias.toFixed(1)} días.`
-        : '';
+  // Meta ya replicó por este comentario. Pasa cuando alguien respondió desde
+  // Facebook, o cuando el envío salió pero no llegamos a marcarlo en la fila.
+  if (m.code === 10900) {
     return (
-      'Facebook no acepta el mensaje privado para este comentario.' +
-      edad +
-      ' Solo se puede responder en privado dentro de los 7 días siguientes al' +
-      ' comentario, y solo a comentarios hechos directamente sobre la' +
-      ' publicación (no a respuestas de otros comentarios).'
+      'Ya se envió un mensaje privado por este comentario. Facebook solo' +
+      ' permite uno.'
+    );
+  }
+
+  // El comment_id ya no resuelve: casi siempre el comentario fue borrado.
+  if (m.error_subcode === 1893060) {
+    return (
+      'El comentario ya no existe en Facebook, así que no se le puede' +
+      ' responder en privado.'
+    );
+  }
+
+  // Fuera de la ventana de 7 días. No hay un código propio, así que se apoya
+  // en la edad del comentario, que es la única señal fiable que tenemos.
+  if (typeof edadDias === 'number' && edadDias > 7) {
+    return (
+      `El comentario tiene ${edadDias.toFixed(0)} días. Facebook solo permite` +
+      ' responder en privado dentro de los 7 días siguientes al comentario.'
     );
   }
 
@@ -813,12 +833,24 @@ async function responderEnPrivado({
   }
 
   try {
+    // Se envía por la Send API, NO por `/{comment-id}/private_replies`.
+    //
+    // Ese edge era la forma original y hoy devuelve 100/33 ("does not support
+    // this operation") aunque el comentario exista, sea de primer nivel y Meta
+    // informe `can_reply_privately: true`. Comprobado contra v22.0 con el mismo
+    // comentario y el mismo token: el edge viejo falla y este funciona.
+    //
+    // El error del edge viejo era además indistinguible de "comentario
+    // borrado" o "fuera de plazo", que es lo que nos tuvo buscando en el sitio
+    // equivocado.
     const { data } = await axios.post(
-      `${GRAPH_BASE}/${encodeURIComponent(c.comment_id)}/private_replies`,
-      null,
+      `${GRAPH_BASE}/${encodeURIComponent(c.page_id)}/messages`,
+      {
+        recipient: { comment_id: c.comment_id },
+        message: { text: texto },
+      },
       {
         params: {
-          message: texto,
           access_token: c.page_access_token,
           appsecret_proof: appsecretProof(c.page_access_token, c.fb_app_id),
         },
@@ -834,7 +866,8 @@ async function responderEnPrivado({
         WHERE id_configuracion = ? AND comment_id = ?`,
       {
         replacements: [
-          data?.id || data?.message_id || null,
+          // La Send API responde { recipient_id, message_id }.
+          data?.message_id || data?.id || null,
           id_sub_usuario || null,
           id_configuracion,
           comment_id,
@@ -846,7 +879,7 @@ async function responderEnPrivado({
     console.log(
       `[FB_COMENT] ✅ privado enviado comment=${comment_id} · cfg=${id_configuracion}`,
     );
-    return { privado_mid: data?.id || null };
+    return { privado_mid: data?.message_id || data?.id || null };
   } catch (err) {
     const edadDias = c.comentado_at
       ? (Date.now() - new Date(c.comentado_at).getTime()) / 864e5
