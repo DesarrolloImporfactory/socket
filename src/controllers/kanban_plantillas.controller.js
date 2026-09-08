@@ -255,6 +255,21 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
     type: db.QueryTypes.DELETE,
   });
 
+  /* Reiniciar borra TODAS las columnas (arriba), incluidas las de tableros
+     secundarios: sus estados por contacto y los tableros quedarían colgando. */
+  try {
+    await db.query(
+      `DELETE FROM clientes_estados_tablero WHERE id_configuracion = ?`,
+      { replacements: [id_configuracion], type: db.QueryTypes.DELETE },
+    );
+    await db.query(`DELETE FROM kanban_tableros WHERE id_configuracion = ?`, {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.DELETE,
+    });
+  } catch (e) {
+    /* migración kanban_tableros sin aplicar: no hay nada que limpiar */
+  }
+
   await db.query(
     `DELETE FROM configuracion_remarketing WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.DELETE },

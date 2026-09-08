@@ -26,7 +26,11 @@
  */
 
 const { db } = require('../database/config');
-const { getConfigIdByPageId } = require('./messenger.service');
+const {
+  getConfigIdByPageId,
+  emitUpdateChatMS,
+} = require('./messenger.service');
+const Store = require('./messenger_store.service');
 
 // Verbos que Meta manda en value.verb para item='comment'.
 const VERBOS_CONOCIDOS = new Set(['add', 'edited', 'remove', 'hide', 'unhide']);
@@ -583,10 +587,43 @@ async function cargarComentarioConToken({ id_configuracion, comment_id }) {
 }
 
 // Traduce el error de Meta a algo accionable. `err.response.data.error` trae
-// code/error_subcode/message; el message crudo es en inglés y muy técnico.
+// code/error_subcode/message; el message crudo es en inglés y muy técnico, y
+// va directo a la bandeja: el agente lo lee y no sabe qué hacer con él.
+//
+// Sólo se traducen los casos que tienen una salida concreta. El resto conserva
+// código y mensaje originales a propósito, porque es lo que sirve para buscar
+// en la documentación de Meta cuando aparece algo nuevo.
 function describirErrorMeta(err) {
   const m = err.response?.data?.error;
   if (!m) return err.message;
+
+  // Cuando Meta manda `error_user_msg` ya viene redactado para el usuario final
+  // y en su idioma. Es mejor que cualquier traducción nuestra, así que gana.
+  if (m.error_user_msg) {
+    return m.error_user_title
+      ? `${m.error_user_title}: ${m.error_user_msg}`
+      : m.error_user_msg;
+  }
+
+  // La firma se calcula con el secreto de la app que emitió el token
+  // (messenger_pages.fb_app_id). Con dos apps conviviendo, este error significa
+  // que la fila quedó apuntando a la app equivocada — normalmente una conexión
+  // vieja — y se arregla reconectando la página.
+  if (/appsecret_proof/i.test(m.message || '')) {
+    return (
+      'La firma de seguridad no coincide con la app que conectó esta página.' +
+      ' Vuelve a conectarla en Canal de Conexiones.'
+    );
+  }
+
+  // 190: token caducado o revocado. 200/10: falta un permiso.
+  if (m.code === 190) {
+    return (
+      'La conexión con Facebook caducó. Vuelve a conectar la página en Canal' +
+      ' de Conexiones.'
+    );
+  }
+
   const codigo = `${m.code}${m.error_subcode ? `/${m.error_subcode}` : ''}`;
   return `Meta ${codigo}: ${m.message}`;
 }
@@ -715,6 +752,32 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
 }
 
 /**
+ * Nombre del agente para `mensajes_clientes.responsable`.
+ *
+ * Esa columna es un varchar que la bandeja muestra tal cual — conviven ahí
+ * nombres de personas ("Evelyn Cherrez") y etiquetas de origen
+ * ("IA_CONTACTO INICIAL", "cron_remarketing_ia"). No es una clave foránea:
+ * pasarle el id_sub_usuario hace que el chat diga "enviado por 7".
+ */
+async function nombreDelAgente(id_sub_usuario) {
+  if (!id_sub_usuario) return 'Respuesta a comentario';
+  try {
+    const [u] = await db.query(
+      `SELECT nombre_encargado, usuario
+         FROM sub_usuarios_chat_center
+        WHERE id_sub_usuario = ?
+        LIMIT 1`,
+      { replacements: [id_sub_usuario], type: db.QueryTypes.SELECT },
+    );
+    return u?.nombre_encargado || u?.usuario || 'Respuesta a comentario';
+  } catch {
+    // El nombre es decorativo: si no se puede leer, no vale la pena tumbar
+    // el guardado del mensaje por eso.
+    return 'Respuesta a comentario';
+  }
+}
+
+/**
  * Traduce los fallos típicos del mensaje privado.
  *
  * Meta devuelve el mismo 100/33 —"Object with ID ... does not exist, cannot be
@@ -729,17 +792,29 @@ function describirErrorPrivado(err, { edadDias } = {}) {
   const m = err.response?.data?.error;
   if (!m) return err.message;
 
-  if (m.code === 100 && m.error_subcode === 33) {
-    const edad =
-      typeof edadDias === 'number'
-        ? ` El comentario tiene ${edadDias.toFixed(1)} días.`
-        : '';
+  // Meta ya replicó por este comentario. Pasa cuando alguien respondió desde
+  // Facebook, o cuando el envío salió pero no llegamos a marcarlo en la fila.
+  if (m.code === 10900) {
     return (
-      'Facebook no acepta el mensaje privado para este comentario.' +
-      edad +
-      ' Solo se puede responder en privado dentro de los 7 días siguientes al' +
-      ' comentario, y solo a comentarios hechos directamente sobre la' +
-      ' publicación (no a respuestas de otros comentarios).'
+      'Ya se envió un mensaje privado por este comentario. Facebook solo' +
+      ' permite uno.'
+    );
+  }
+
+  // El comment_id ya no resuelve: casi siempre el comentario fue borrado.
+  if (m.error_subcode === 1893060) {
+    return (
+      'El comentario ya no existe en Facebook, así que no se le puede' +
+      ' responder en privado.'
+    );
+  }
+
+  // Fuera de la ventana de 7 días. No hay un código propio, así que se apoya
+  // en la edad del comentario, que es la única señal fiable que tenemos.
+  if (typeof edadDias === 'number' && edadDias > 7) {
+    return (
+      `El comentario tiene ${edadDias.toFixed(0)} días. Facebook solo permite` +
+      ' responder en privado dentro de los 7 días siguientes al comentario.'
     );
   }
 
@@ -788,12 +863,24 @@ async function responderEnPrivado({
   }
 
   try {
+    // Se envía por la Send API, NO por `/{comment-id}/private_replies`.
+    //
+    // Ese edge era la forma original y hoy devuelve 100/33 ("does not support
+    // this operation") aunque el comentario exista, sea de primer nivel y Meta
+    // informe `can_reply_privately: true`. Comprobado contra v22.0 con el mismo
+    // comentario y el mismo token: el edge viejo falla y este funciona.
+    //
+    // El error del edge viejo era además indistinguible de "comentario
+    // borrado" o "fuera de plazo", que es lo que nos tuvo buscando en el sitio
+    // equivocado.
     const { data } = await axios.post(
-      `${GRAPH_BASE}/${encodeURIComponent(c.comment_id)}/private_replies`,
-      null,
+      `${GRAPH_BASE}/${encodeURIComponent(c.page_id)}/messages`,
+      {
+        recipient: { comment_id: c.comment_id },
+        message: { text: texto },
+      },
       {
         params: {
-          message: texto,
           access_token: c.page_access_token,
           appsecret_proof: appsecretProof(c.page_access_token, c.fb_app_id),
         },
@@ -809,7 +896,8 @@ async function responderEnPrivado({
         WHERE id_configuracion = ? AND comment_id = ?`,
       {
         replacements: [
-          data?.id || data?.message_id || null,
+          // La Send API responde { recipient_id, message_id }.
+          data?.message_id || data?.id || null,
           id_sub_usuario || null,
           id_configuracion,
           comment_id,
@@ -818,10 +906,79 @@ async function responderEnPrivado({
       },
     );
 
+    // El privado también es un mensaje de Messenger: se guarda en la
+    // conversación para que quede en el historial del cliente.
+    //
+    // Hace falta hacerlo acá porque cae en un hueco: los salientes normales se
+    // persisten en el momento de enviarlos, y por eso messenger.service ignora
+    // el echo de nuestras propias apps (si no, se duplicarían). Este mensaje no
+    // pasaba por ninguno de los dos caminos, así que no se guardaba en ningún
+    // lado y el agente no veía en el chat lo que él mismo había escrito.
+    //
+    // Queda diferenciado en `meta_unificado`, con el comentario que lo originó:
+    // sin eso es indistinguible de una respuesta escrita desde el chat.
+    //
+    // Va en su propio try y NO relanza: el mensaje ya salió a Messenger. Fallar
+    // acá haría que el agente lo diera por no enviado y lo intentara otra vez,
+    // y Facebook sólo permite uno por comentario.
+    const privado_mid = data?.message_id || data?.id || null;
+    try {
+      const psid = data?.recipient_id || null;
+      if (psid) {
+        const uni = await Store.ensureUnifiedConversation({
+          id_configuracion,
+          source: 'ms',
+          page_id: c.page_id,
+          external_id: psid,
+          customer_name: c.from_nombre || '',
+        });
+
+        if (uni?.id_cliente) {
+          const saved = await Store.saveOutgoingMessageUnified({
+            id_configuracion,
+            id_plataforma: null,
+            id_cliente: uni.id_cliente,
+            celular_recibe: uni.id_cliente_contacto,
+            source: 'ms',
+            page_id: c.page_id,
+            external_id: psid,
+            mid: privado_mid,
+            text: texto,
+            status_unificado: 'sent',
+            responsable: await nombreDelAgente(id_sub_usuario),
+            meta: {
+              origen: 'respuesta_privada_comentario',
+              comment_id: c.comment_id,
+              id_facebook_comment: c.id_facebook_comment,
+              post_id: c.post_id,
+            },
+            id_encargado: uni?.id_encargado ?? null,
+          });
+
+          emitUpdateChatMS({
+            id_configuracion,
+            chatId: uni.id_cliente_contacto,
+            pageId: c.page_id,
+            external_id: psid,
+            uni,
+            saved,
+            rawMessage: { mid: privado_mid, text: texto, attachments: null },
+            kind: 'out-echo',
+          });
+        }
+      }
+    } catch (errGuardado) {
+      console.error(
+        `[FB_COMENT][WARN] privado enviado pero no guardado en la ` +
+          `conversación · cfg=${id_configuracion} · comment=${comment_id} · ` +
+          errGuardado.message,
+      );
+    }
+
     console.log(
       `[FB_COMENT] ✅ privado enviado comment=${comment_id} · cfg=${id_configuracion}`,
     );
-    return { privado_mid: data?.id || null };
+    return { privado_mid };
   } catch (err) {
     const edadDias = c.comentado_at
       ? (Date.now() - new Date(c.comentado_at).getTime()) / 864e5

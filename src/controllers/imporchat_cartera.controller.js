@@ -25,7 +25,7 @@ const { _internal: publicApi } = require('./public_api.controller');
 
 /* Configuraciones de soporte donde se habilita la sección. Agregar ids acá
    es lo único que hace falta para extenderla a otra conexión. */
-const CONFIGS_SOPORTE = [251, 265];
+const { CONFIGS_SOPORTE } = require('../utils/configsSoporte');
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 

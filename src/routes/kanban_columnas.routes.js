@@ -16,8 +16,22 @@ router.post('/eliminar', KanbanColumnasController.eliminarColumna);
 router.post('/reordenar', KanbanColumnasController.reordenarColumnas);
 router.post('/marcar_principal', KanbanColumnasController.marcarPrincipal);
 router.post('/quitar_principal', KanbanColumnasController.quitarPrincipal);
-router.post('/marcar_dropi_principal', KanbanColumnasController.marcarDropiPrincipal);
-router.post('/quitar_dropi_principal', KanbanColumnasController.quitarDropiPrincipal);
+// Ajustes del tablero por cuenta (volver_al_cerrar)
+router.post('/actualizar_config', KanbanColumnasController.actualizarConfig);
+
+// Tableros secundarios (un contacto puede estar en varios embudos)
+router.post('/tableros_crear', KanbanColumnasController.crearTablero);
+router.post('/tableros_actualizar', KanbanColumnasController.actualizarTablero);
+router.post('/tableros_eliminar', KanbanColumnasController.eliminarTablero);
+router.post('/mover_a_tablero', KanbanColumnasController.moverColumnaATablero);
+router.post(
+  '/marcar_dropi_principal',
+  KanbanColumnasController.marcarDropiPrincipal,
+);
+router.post(
+  '/quitar_dropi_principal',
+  KanbanColumnasController.quitarDropiPrincipal,
+);
 
 router.post('/sync_catalogo', KanbanColumnasController.syncCatalogo);
 

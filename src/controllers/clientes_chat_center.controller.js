@@ -64,6 +64,11 @@ const {
 const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
+const { getKanbanConfigCuenta } = require('../utils/kanbanConfigCuenta');
+const { adornarMembresias } = require('../utils/membresiaImporsuit');
+const {
+  _internal: { parseTablero },
+} = require('./kanban_columnas.controller');
 
 // controllers/clientes_chat_centerController.js
 exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
@@ -78,19 +83,28 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
 
     const replacements = [nuevoEstado, bot_openia];
 
-    // Si bot_openia == 1 → actualizar estado_contacto a la columna principal
-    if (Number(bot_openia) === 1) {
-      const [chat] = await db.query(
-        `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
-        { replacements: [chatId], type: db.QueryTypes.SELECT },
-      );
+    // Si bot_openia == 1 → actualizar estado_contacto a la columna principal.
+    // Salvo que la cuenta lo haya apagado en /kanban_config
+    // (kanban_volver_al_cerrar = 0): en un embudo de atención sin bot cerrar
+    // el chat no significa que el cliente retrocedió a "Contacto inicial".
+    const [chatCierre] = await db.query(
+      `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [chatId], type: db.QueryTypes.SELECT },
+    );
+    const { volver_al_cerrar } = await getKanbanConfigCuenta(
+      chatCierre?.id_configuracion,
+    );
+
+    if (Number(bot_openia) === 1 && volver_al_cerrar) {
+      const chat = chatCierre;
 
       let estadoPrincipal = 'contacto_inicial';
 
       if (chat?.id_configuracion) {
         const [colPrincipal] = await db.query(
-          `SELECT estado_db FROM kanban_columnas 
-       WHERE id_configuracion = ? AND es_principal = 1 AND activo = 1 
+          `SELECT estado_db FROM kanban_columnas
+       WHERE id_configuracion = ? AND es_principal = 1 AND activo = 1
+         AND id_tablero IS NULL
        LIMIT 1`,
           { replacements: [chat.id_configuracion], type: db.QueryTypes.SELECT },
         );
@@ -885,17 +899,58 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   };
 
   // ── Columnas activas ─────────────────────────────────────────────
+  // id_tablero: omitido/null = principal, 'todos' = todos los tableros,
+  // número = un tablero secundario. Las columnas del principal viven en
+  // clientes_chat_center.estado_contacto; las secundarias en
+  // clientes_estados_tablero (un contacto puede estar en varios embudos).
+  const tablero = parseTablero(req.body.id_tablero);
+  const tableroFrag =
+    tablero === 'todos'
+      ? ''
+      : tablero === null
+        ? ' AND id_tablero IS NULL'
+        : ' AND id_tablero = ?';
   const columnasDB = await db.query(
-    `SELECT estado_db FROM kanban_columnas
-     WHERE id_configuracion = ? AND activo = 1 ORDER BY orden ASC`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    `SELECT estado_db, id_tablero FROM kanban_columnas
+     WHERE id_configuracion = ? AND activo = 1${tableroFrag}
+     ORDER BY id_tablero IS NOT NULL, id_tablero, orden ASC`,
+    {
+      replacements:
+        tablero === null || tablero === 'todos'
+          ? [id_configuracion]
+          : [id_configuracion, tablero],
+      type: db.QueryTypes.SELECT,
+    },
   );
-  const estadosValidosArr = columnasDB.map((c) => c.estado_db);
-  const estadosValidos = new Set(estadosValidosArr);
+  const tableroPorEstado = new Map(
+    columnasDB.map((c) => [c.estado_db, c.id_tablero ?? null]),
+  );
+  const estadosValidos = new Set(tableroPorEstado.keys());
+
+  /* Huérfanos = contactos cuyo estado_contacto no es ninguna columna del
+     tablero PRINCIPAL (los secundarios no participan: ahí solo está quien
+     fue puesto a mano). Se calcula siempre sobre el principal completo. */
+  const estadosValidosArr = (
+    tablero === null || tablero === 'todos'
+      ? columnasDB.filter((c) => c.id_tablero === null)
+      : await db.query(
+          `SELECT estado_db FROM kanban_columnas
+            WHERE id_configuracion = ? AND activo = 1 AND id_tablero IS NULL`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        )
+  ).map((c) => c.estado_db);
 
   const keys = (Array.isArray(columnKeys) ? columnKeys : []).filter((k) =>
     estadosValidos.has(k),
   );
+  const keysPrincipal = keys.filter((k) => tableroPorEstado.get(k) === null);
+  const keysPorTablero = new Map(); // id_tablero → [estado_db]
+  keys.forEach((k) => {
+    const t = tableroPorEstado.get(k);
+    if (t === null) return;
+    if (!keysPorTablero.has(t)) keysPorTablero.set(t, []);
+    keysPorTablero.get(t).push(k);
+  });
 
   // ── Filtros ──────────────────────────────────────────────────────
   const {
@@ -1054,6 +1109,45 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     } catch {
       /* adorno opcional: el tablero nunca se cae por esto */
     }
+
+    /* Membresía Imporsuit (fecha de inscripción + días para vencer). Solo
+       en cuentas que lo activaron en /kanban_config: en una cuenta con bot
+       de ventas el contacto no es usuario de Imporsuit y el dato no existe. */
+    if (configCuenta.mostrar_membresia) {
+      try {
+        await adornarMembresias(items);
+      } catch {
+        /* idem: adorno opcional */
+      }
+    }
+  };
+
+  const configCuenta = await getKanbanConfigCuenta(id_configuracion);
+
+  /* Consulta de un tablero SECUNDARIO: mismas columnas/filtros que el
+     principal, pero la pertenencia sale de clientes_estados_tablero. */
+  const SELECT_SECUNDARIO = `${SELECT_COLS}, cet.estado_db AS estado_tablero`;
+  const fetchTableroSecundario = async (idTablero, keysT, term) => {
+    const { conds, params: whereParams } = buildBaseWhere(term);
+    const ph = keysT.map(() => '?').join(',');
+    const sql = `
+      SELECT * FROM (
+        SELECT ${SELECT_SECUNDARIO},
+               cet.estado_db AS bucket,
+               ROW_NUMBER() OVER (PARTITION BY cet.estado_db ORDER BY c.id DESC) AS rn,
+               COUNT(*)     OVER (PARTITION BY cet.estado_db)                    AS total
+        FROM   clientes_estados_tablero cet
+        JOIN   clientes_chat_center c ON c.id = cet.id_cliente
+        WHERE  cet.id_tablero = ? AND cet.estado_db IN (${ph})
+          AND  ${conds.join(' AND ')}
+      ) t
+      WHERE t.rn <= ?
+      ORDER BY t.bucket, t.id DESC
+    `;
+    return db.query(sql, {
+      replacements: [idTablero, ...keysT, ...whereParams, pageSize + 1],
+      type: db.QueryTypes.SELECT,
+    });
   };
 
   const hayCursores = Object.values(cursors || {}).some(Boolean);
@@ -1067,68 +1161,82 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       search?.[keys[0]] ?? search?.[ORPHANS_KEY] ?? '',
     ).trim();
 
-    const wantedBuckets = include_orphans ? [...keys, ORPHANS_KEY] : keys;
+    // Huérfanos solo tienen sentido mirando el tablero principal
+    const quiereHuerfanos =
+      include_orphans && (tablero === null || tablero === 'todos');
+    const wantedBuckets = quiereHuerfanos ? [...keys, ORPHANS_KEY] : keys;
     if (!wantedBuckets.length)
       return res.status(200).json({ success: true, data: {} });
-
-    const { conds, params: whereParams } = buildBaseWhere(term);
-    const params = [...whereParams];
-
-    // Restringimos en el WHERE interno para NO rankear filas que no queremos
-    const bucketWhere = [];
-    if (keys.length) {
-      const ph = keys.map(() => '?').join(',');
-      bucketWhere.push(`c.estado_contacto IN (${ph})`);
-      params.push(...keys);
-    }
-    if (include_orphans) bucketWhere.push(orphanCond(params));
-    if (bucketWhere.length) conds.push(`(${bucketWhere.join(' OR ')})`);
-
-    // Expresión "bucket" = a qué columna pertenece cada fila
-    const bucketParams = [];
-    let bucketExpr = `'${ORPHANS_KEY}'`;
-    if (keys.length) {
-      const ph = keys.map(() => '?').join(',');
-      bucketExpr = `CASE WHEN c.estado_contacto IN (${ph})
-                         THEN c.estado_contacto ELSE '${ORPHANS_KEY}' END`;
-      bucketParams.push(...keys);
-    }
-
-    const sql = `
-      SELECT * FROM (
-        SELECT ${SELECT_COLS},
-               ${bucketExpr} AS bucket,
-               ROW_NUMBER() OVER (PARTITION BY ${bucketExpr} ORDER BY c.id DESC) AS rn,
-               COUNT(*)     OVER (PARTITION BY ${bucketExpr})                    AS total
-        FROM   clientes_chat_center c
-        WHERE  ${conds.join(' AND ')}
-      ) t
-      WHERE t.rn <= ?
-      ORDER BY t.bucket, t.id DESC
-    `;
-
-    // ⚠️ Orden de params: bucket(SELECT) → bucket(ROW_NUMBER) → bucket(COUNT) → WHERE → LIMIT
-    const rows = await db.query(sql, {
-      replacements: [
-        ...bucketParams,
-        ...bucketParams,
-        ...bucketParams,
-        ...params,
-        pageSize + 1,
-      ],
-      type: db.QueryTypes.SELECT,
-    });
 
     const data = {};
     wantedBuckets.forEach((k) => {
       data[k] = emptyCol();
     });
-
     const porBucket = {};
-    rows.forEach((r) => {
-      if (!porBucket[r.bucket]) porBucket[r.bucket] = [];
-      porBucket[r.bucket].push(r);
-    });
+
+    // ── Principal (+ huérfanos): 1 query ──
+    if (keysPrincipal.length || quiereHuerfanos) {
+      const { conds, params: whereParams } = buildBaseWhere(term);
+      const params = [...whereParams];
+
+      // Restringimos en el WHERE interno para NO rankear filas que no queremos
+      const bucketWhere = [];
+      if (keysPrincipal.length) {
+        const ph = keysPrincipal.map(() => '?').join(',');
+        bucketWhere.push(`c.estado_contacto IN (${ph})`);
+        params.push(...keysPrincipal);
+      }
+      if (quiereHuerfanos) bucketWhere.push(orphanCond(params));
+      if (bucketWhere.length) conds.push(`(${bucketWhere.join(' OR ')})`);
+
+      // Expresión "bucket" = a qué columna pertenece cada fila
+      const bucketParams = [];
+      let bucketExpr = `'${ORPHANS_KEY}'`;
+      if (keysPrincipal.length) {
+        const ph = keysPrincipal.map(() => '?').join(',');
+        bucketExpr = `CASE WHEN c.estado_contacto IN (${ph})
+                           THEN c.estado_contacto ELSE '${ORPHANS_KEY}' END`;
+        bucketParams.push(...keysPrincipal);
+      }
+
+      const sql = `
+        SELECT * FROM (
+          SELECT ${SELECT_COLS},
+                 ${bucketExpr} AS bucket,
+                 ROW_NUMBER() OVER (PARTITION BY ${bucketExpr} ORDER BY c.id DESC) AS rn,
+                 COUNT(*)     OVER (PARTITION BY ${bucketExpr})                    AS total
+          FROM   clientes_chat_center c
+          WHERE  ${conds.join(' AND ')}
+        ) t
+        WHERE t.rn <= ?
+        ORDER BY t.bucket, t.id DESC
+      `;
+
+      // ⚠️ Orden de params: bucket(SELECT) → bucket(ROW_NUMBER) → bucket(COUNT) → WHERE → LIMIT
+      const rows = await db.query(sql, {
+        replacements: [
+          ...bucketParams,
+          ...bucketParams,
+          ...bucketParams,
+          ...params,
+          pageSize + 1,
+        ],
+        type: db.QueryTypes.SELECT,
+      });
+      rows.forEach((r) => {
+        if (!porBucket[r.bucket]) porBucket[r.bucket] = [];
+        porBucket[r.bucket].push(r);
+      });
+    }
+
+    // ── Tableros secundarios: 1 query por tablero ──
+    for (const [idTablero, keysT] of keysPorTablero) {
+      const rows = await fetchTableroSecundario(idTablero, keysT, term);
+      rows.forEach((r) => {
+        if (!porBucket[r.bucket]) porBucket[r.bucket] = [];
+        porBucket[r.bucket].push(r);
+      });
+    }
 
     Object.entries(porBucket).forEach(([k, arr]) => {
       const total = Number(arr[0]?.total || 0);
@@ -1167,12 +1275,16 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     const term = String(search?.[colKey] || '').trim();
 
     const { conds, params } = buildBaseWhere(term);
+    const idTablero = esOrphan ? null : tableroPorEstado.get(colKey);
 
     if (esOrphan) {
       conds.push(orphanCond(params));
-    } else {
+    } else if (idTablero === null) {
       conds.push('c.estado_contacto = ?'); // sin LOWER → usa idx_ccc_conf_estado_id
       params.push(colKey);
+    } else {
+      conds.push('cet.id_tablero = ? AND cet.estado_db = ?');
+      params.push(idTablero, colKey);
     }
 
     if (cursorId) {
@@ -1181,11 +1293,18 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     }
 
     const rows = await db.query(
-      `SELECT ${SELECT_COLS}
-       FROM   clientes_chat_center c
-       WHERE  ${conds.join(' AND ')}
-       ORDER  BY c.id DESC
-       LIMIT  ?`,
+      idTablero === null || esOrphan
+        ? `SELECT ${SELECT_COLS}
+           FROM   clientes_chat_center c
+           WHERE  ${conds.join(' AND ')}
+           ORDER  BY c.id DESC
+           LIMIT  ?`
+        : `SELECT ${SELECT_SECUNDARIO}
+           FROM   clientes_estados_tablero cet
+           JOIN   clientes_chat_center c ON c.id = cet.id_cliente
+           WHERE  ${conds.join(' AND ')}
+           ORDER  BY c.id DESC
+           LIMIT  ?`,
       { replacements: [...params, pageSize + 1], type: db.QueryTypes.SELECT },
     );
 
@@ -1216,6 +1335,52 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
   });
 
   return res.status(200).json({ success: true, data });
+});
+
+/* Saca a un contacto de un tablero secundario (deja de aparecer en él). No
+   existe el equivalente para el principal: ahí todo contacto tiene estado. */
+exports.quitarDeTablero = catchAsync(async (req, res, next) => {
+  const { id_cliente, id_tablero, id_configuracion } = req.body;
+  if (!id_cliente || !id_tablero || !id_configuracion)
+    return next(new AppError('Faltan parámetros obligatorios', 400));
+
+  await db.query(
+    `DELETE FROM clientes_estados_tablero
+      WHERE id_cliente = ? AND id_tablero = ? AND id_configuracion = ?`,
+    {
+      replacements: [id_cliente, id_tablero, id_configuracion],
+      type: db.QueryTypes.DELETE,
+    },
+  );
+  dashboardEmitter.emitByConfig(id_configuracion, 'queue_change');
+  return res.json({ success: true });
+});
+
+/* En qué columna está un contacto en cada tablero secundario (para el pill
+   de estado de /chat). El principal ya viaja en el chat como estado_contacto. */
+exports.estadosTableroCliente = catchAsync(async (req, res, next) => {
+  const { id_cliente, id_configuracion } = req.body;
+  if (!id_cliente || !id_configuracion)
+    return next(new AppError('Faltan parámetros obligatorios', 400));
+
+  let rows = [];
+  try {
+    rows = await db.query(
+      `SELECT cet.id_tablero, cet.estado_db, kc.nombre, kc.color_texto
+         FROM clientes_estados_tablero cet
+         LEFT JOIN kanban_columnas kc
+           ON kc.id_configuracion = cet.id_configuracion
+          AND kc.estado_db = cet.estado_db
+        WHERE cet.id_cliente = ? AND cet.id_configuracion = ?`,
+      {
+        replacements: [id_cliente, id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+  } catch (e) {
+    /* migración kanban_tableros sin aplicar → sin tableros secundarios */
+  }
+  return res.json({ success: true, data: rows });
 });
 
 exports.listarAgentes = catchAsync(async (req, res, next) => {
@@ -1307,8 +1472,9 @@ exports.actualizarEstadoDinamico = async (req, res) => {
     }
 
     // ── Validar que el estado exista en kanban_columnas ──
+    // estado_db es único por cuenta: la columna dice sola en qué tablero va.
     const [columna] = await db.query(
-      `SELECT id FROM kanban_columnas 
+      `SELECT id, id_tablero FROM kanban_columnas
        WHERE id_configuracion = ? AND estado_db = ? AND activo = 1 LIMIT 1`,
       {
         replacements: [id_configuracion, nuevo_estado],
@@ -1335,14 +1501,33 @@ exports.actualizarEstadoDinamico = async (req, res) => {
       });
     }
 
+    const id_tablero = columna.id_tablero ?? null;
+
     // ── Actualizar ──
-    await cliente.update({ estado_contacto: nuevo_estado });
+    if (id_tablero === null) {
+      // Tablero principal: es lo que leen el bot, remarketing y el webhook.
+      await cliente.update({ estado_contacto: nuevo_estado });
+    } else {
+      // Tablero secundario: no toca estado_contacto. Un contacto ocupa una
+      // sola columna por tablero (uq_cliente_tablero).
+      await db.query(
+        `INSERT INTO clientes_estados_tablero
+           (id_configuracion, id_tablero, id_cliente, estado_db)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE estado_db = VALUES(estado_db)`,
+        {
+          replacements: [id_configuracion, id_tablero, id_cliente, nuevo_estado],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    }
 
     // Emitir al dashboard
     dashboardEmitter.emitByConfig(id_configuracion, 'queue_change');
 
     return res.json({
       success: true,
+      id_tablero,
       message: 'Estado actualizado correctamente',
       data: cliente,
     });

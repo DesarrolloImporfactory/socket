@@ -856,3 +856,6 @@ class MessengerService {
 module.exports = MessengerService;
 module.exports.getPageTokenByPageId = getPageTokenByPageId;
 module.exports.getConfigIdByPageId = getConfigIdByPageId;
+// Lo usa facebook_comments.service para que la respuesta privada de un
+// comentario aparezca en el chat sin esperar a que se recargue la pantalla.
+module.exports.emitUpdateChatMS = emitUpdateChatMS;
