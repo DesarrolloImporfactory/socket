@@ -178,20 +178,45 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
 
       await logShopify(`📝 draft_orders/create id=${draft_id} tags="${tags}"`);
 
-      /* 🔑 Filtrar SOLO los drafts que vienen de Releasit como abandono */
-      const RELEASIT_TAG = 'abandoned_checkout_releasit_cod_form';
-      const tagsArray = tags.split(',').map((t) => t.trim());
+      /* 🔑 Filtrar SOLO los drafts que vienen de Releasit como abandono.
 
-      if (!tagsArray.includes(RELEASIT_TAG)) {
-        /* Diagnóstico: cuando el draft llega SIN la etiqueta necesitamos saber
-           qué lo generó realmente y si trae los datos que usaríamos igual
-           (Recovery URL, contacto). Sin esto el log solo dice "ignorado" y no
-           hay forma de reconstruir el payload después. */
-        const attrs = Array.isArray(draft.note_attributes)
-          ? draft.note_attributes
-          : [];
-        const attrNames = attrs.map((a) => a?.name).filter(Boolean);
-        const tieneRecoveryUrl = attrNames.includes('Recovery URL');
+         Hay DOS señales válidas, porque no todas las versiones de la app
+         etiquetan el draft en el momento de crearlo:
+
+         1. La etiqueta `abandoned_checkout_releasit_cod_form`, que Releasit
+            documenta en su panel (Impulsor de Ventas → Carrito Abandonado).
+
+         2. El `Recovery URL` de note_attributes firmado con `?rsiacd=<base64>`.
+            Ese base64 decodifica a `abandoned_order_id=…&rsi_turnstyle_token=…`,
+            o sea que solo Releasit lo puede generar y solo lo pone en un
+            abandono. Un pedido preliminar creado a mano por el vendedor jamás
+            lo trae, así que la señal es tan segura como la etiqueta.
+
+         Sin la señal 2, tiendas como gregor-accesorios (889) y dm9r14-yf (724)
+         perdían el 100% de sus abandonos: Releasit se los crea correctamente
+         pero les manda `tags: ""`. */
+      const RELEASIT_TAG = 'abandoned_checkout_releasit_cod_form';
+      const RELEASIT_RECOVERY_PARAM = 'rsiacd=';
+
+      const noteAttrs = Array.isArray(draft.note_attributes)
+        ? draft.note_attributes
+        : [];
+      const getNoteAttr = (name) => {
+        const found = noteAttrs.find((a) => a?.name === name);
+        return found?.value || null;
+      };
+      const recoveryUrl = getNoteAttr('Recovery URL');
+
+      const tagsArray = tags.split(',').map((t) => t.trim());
+      const tieneTagReleasit = tagsArray.includes(RELEASIT_TAG);
+      const tieneRecoveryReleasit = !!(
+        recoveryUrl && recoveryUrl.includes(RELEASIT_RECOVERY_PARAM)
+      );
+
+      if (!tieneTagReleasit && !tieneRecoveryReleasit) {
+        /* Diagnóstico: cuando el draft no cumple ninguna señal necesitamos
+           saber qué lo generó y qué traía, porque el payload no se guarda. */
+        const attrNames = noteAttrs.map((a) => a?.name).filter(Boolean);
         const contacto =
           draft.email ||
           draft.customer?.phone ||
@@ -203,13 +228,18 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
             `source_name=${draft.source_name || 'n/a'} | ` +
             `status=${draft.status || 'n/a'} | ` +
             `note_attributes=[${attrNames.join(' | ')}] | ` +
-            `recovery_url=${tieneRecoveryUrl ? 'SI' : 'NO'} | ` +
+            `recovery_url=${recoveryUrl ? 'SI (sin rsiacd)' : 'NO'} | ` +
             `invoice_url=${draft.invoice_url ? 'SI' : 'NO'} | ` +
             `contacto=${contacto ? 'SI' : 'NO'} | ` +
             `items=${(draft.line_items || []).length}`,
         );
         return;
       }
+
+      await logShopify(
+        `✔️ Abandono Releasit aceptado: id=${draft_id} ` +
+          `(señal: ${tieneTagReleasit ? 'etiqueta' : 'recovery_url'})`,
+      );
 
       const shopifyConfig = req.shopifyConfig;
       const id_configuracion = shopifyConfig.id_configuracion;
@@ -309,15 +339,9 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
         vendor: item.vendor,
       }));
 
-      /* 💎 Extraer Recovery URL (lo más valioso para el WhatsApp) */
-      const noteAttrs = Array.isArray(draft.note_attributes)
-        ? draft.note_attributes
-        : [];
-      const getNoteAttr = (name) => {
-        const found = noteAttrs.find((a) => a?.name === name);
-        return found?.value || null;
-      };
-      const recoveryUrl = getNoteAttr('Recovery URL');
+      /* 💎 El Recovery URL (lo más valioso para el WhatsApp) ya se extrajo
+         arriba, porque además es una de las dos señales que identifican el
+         abandono de Releasit. */
 
       /* Upsert */
       const [registro, creado] = await ShopifyCarritosAbandonados.upsert({
