@@ -183,8 +183,30 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
       const tagsArray = tags.split(',').map((t) => t.trim());
 
       if (!tagsArray.includes(RELEASIT_TAG)) {
+        /* Diagnóstico: cuando el draft llega SIN la etiqueta necesitamos saber
+           qué lo generó realmente y si trae los datos que usaríamos igual
+           (Recovery URL, contacto). Sin esto el log solo dice "ignorado" y no
+           hay forma de reconstruir el payload después. */
+        const attrs = Array.isArray(draft.note_attributes)
+          ? draft.note_attributes
+          : [];
+        const attrNames = attrs.map((a) => a?.name).filter(Boolean);
+        const tieneRecoveryUrl = attrNames.includes('Recovery URL');
+        const contacto =
+          draft.email ||
+          draft.customer?.phone ||
+          draft.shipping_address?.phone ||
+          null;
+
         await logShopify(
-          `⏭️ Draft ignorado (no es abandono de Releasit): id=${draft_id}`,
+          `⏭️ Draft ignorado (no es abandono de Releasit): id=${draft_id} | ` +
+            `source_name=${draft.source_name || 'n/a'} | ` +
+            `status=${draft.status || 'n/a'} | ` +
+            `note_attributes=[${attrNames.join(' | ')}] | ` +
+            `recovery_url=${tieneRecoveryUrl ? 'SI' : 'NO'} | ` +
+            `invoice_url=${draft.invoice_url ? 'SI' : 'NO'} | ` +
+            `contacto=${contacto ? 'SI' : 'NO'} | ` +
+            `items=${(draft.line_items || []).length}`,
         );
         return;
       }
@@ -412,6 +434,15 @@ exports.handleDebugWebhook = catchAsync(async (req, res) => {
       const body = req.body || {};
       const bodyPreview = JSON.stringify(body).substring(0, 500);
 
+      /* Campos que en un draft_orders/* viven al final del payload y por eso
+         nunca caían dentro del preview de 500 chars. */
+      const attrs = Array.isArray(body.note_attributes)
+        ? body.note_attributes
+        : [];
+      const attrResumen = attrs
+        .map((a) => `${a?.name}=${a?.value}`)
+        .join(' | ');
+
       const logLine = `
 ═══════════════════════════════════════════════════════════════
 🔬 WEBHOOK DEBUG RECIBIDO
@@ -423,6 +454,10 @@ exports.handleDebugWebhook = catchAsync(async (req, res) => {
 ⏰ Triggered At:    ${triggeredAt}
 🆔 Webhook ID:      ${webhookId}
 📊 Body keys:       ${Object.keys(body).join(', ')}
+🏷️  Tags:            "${body.tags ?? 'SIN CAMPO tags'}"
+🧩 Note attributes: ${attrResumen || '(ninguno)'}
+🔗 Invoice URL:     ${body.invoice_url || '(ninguno)'}
+📮 Source name:     ${body.source_name || '(ninguno)'}
 📝 Body preview:    ${bodyPreview}...
 ═══════════════════════════════════════════════════════════════
 `;
@@ -433,11 +468,11 @@ exports.handleDebugWebhook = catchAsync(async (req, res) => {
       await fsp.appendFile(path.join(logsDir, 'debug_webhooks.txt'), logLine);
 
       // También guardar el body completo en un archivo separado por topic
-      /* const safeTopic = topic.replace(/[^a-z0-9]/gi, '_');
+      const safeTopic = topic.replace(/[^a-z0-9]/gi, '_');
       await fsp.appendFile(
         path.join(logsDir, `payload_${safeTopic}.json`),
         JSON.stringify(body, null, 2) + '\n\n---\n\n',
-      ); */
+      );
     } catch (err) {
       console.error('[Shopify DEBUG] Error:', err.message);
     }
