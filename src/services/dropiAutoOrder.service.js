@@ -690,6 +690,22 @@ async function autoCrearOrdenDropi({
     // seguido aunque la ciudad esté (caso 285, Franklin: ciudad Quito y
     // provincia vacía → "Sin match provincia" y orden a manual). El extractor
     // la deduce de la ciudad.
+    /* Cantidad escrita en el renglón del producto ("Dr Melaxin x2") sin
+       línea Cantidad: kanban_ia ya la lee, pero quien llegue por otro camino
+       (log viejo, retry, panel con el texto del bot) pasa por aquí. Caso
+       real cfg 411: "x2" → cantidad 1 → orden y plantilla por una unidad. */
+    if (!datosBot.productos && datosBot.producto) {
+      const {
+        parsearLineaProducto,
+      } = require('../utils/resumenPedido');
+      const renglon = parsearLineaProducto(datosBot.producto);
+      if (renglon.producto) datosBot.producto = renglon.producto;
+      if (!datosBot.cantidad && renglon.cantidad !== '1')
+        datosBot.cantidad = renglon.cantidad;
+      if (!datosBot.variedad && renglon.variedad)
+        datosBot.variedad = renglon.variedad;
+    }
+
     const faltanClaves = [
       'producto',
       'ciudad',
@@ -1290,6 +1306,31 @@ async function autoCrearOrdenDropi({
         `${R}Precio inválido: "${item.precio ?? datosBot.precio}"`,
       );
 
+    /* El bot cobró unitario x N teniendo el catálogo un combo de N más
+       barato (caso 411: "Dr Melaxin x2" a $40 con combo de 2 por $25). Es
+       la firma exacta de "se olvidó del combo": se cobra lo que el catálogo
+       dice para esa cantidad. Cualquier otro total (envío sumado, descuento,
+       precio negociado) se respeta tal cual. kanban_ia ya corrige el resumen
+       antes de que lo vea el cliente; esto cubre los caminos que no pasan
+       por ahí. */
+    let precioCorregidoDe = null;
+    if (comboUsado && cantidad > 1) {
+      const precioCombo = parsearPrecio(comboUsado.precio);
+      const unitario = Number(prodLocal.precio || 0);
+      if (
+        precioCombo > 0 &&
+        unitario > 0 &&
+        Math.abs(precioRenglon - unitario * cantidad) <= 0.5 &&
+        precioCombo < precioRenglon - 0.5
+      ) {
+        precioCorregidoDe = precioRenglon;
+        precioRenglon = precioCombo;
+        console.log(
+          `[AutoOrden] ${R}precio corregido al combo x${cantidad}: $${precioCorregidoDe} → $${precioCombo}`,
+        );
+      }
+    }
+
     const costoProveedor =
       Number(
         prodDropi.sale_price ?? prodDropi.variations?.[0]?.sale_price ?? 0,
@@ -1315,6 +1356,7 @@ async function autoCrearOrdenDropi({
       esVariable,
       variacionesElegidas,
       precioRenglon,
+      precioCorregidoDe,
     });
     } // ── fin del loop por renglón ──
 
@@ -1819,6 +1861,9 @@ async function autoCrearOrdenDropi({
                   : ` #${r.dropiProductId}`) +
               (r.variacionesElegidas.length
                 ? ` var: ${r.variacionesElegidas.map((v) => `${v.etiqueta} x${v.qty}`).join(' + ')}`
+                : '') +
+              (r.precioCorregidoDe
+                ? ` precio corregido $${r.precioCorregidoDe}→$${r.precioRenglon} (combo)`
                 : ''),
           )
           .join(' | ') +

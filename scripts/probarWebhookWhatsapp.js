@@ -195,6 +195,93 @@ const ESCENARIOS = {
     },
   },
 
+  /* ── Caso 411 (2026-09-08, Aracelly / Santa Elena): cantidad "x2" leída
+     como 1, precio unitario x2 en vez del combo, y oficinas Servientrega
+     inventadas sin que la clienta eligiera retiro. Tres guiones sobre la
+     cuenta de pruebas 610 (Onn Watch TV: combo de 2 por $58.99; Guante
+     Anticorte: combo de 2 por $34.99; switch de retiro encendido). */
+  dropi_x2_combo: {
+    cliente: 452858,
+    titulo: 'Pedido de 2 unidades: cantidad 2 para el sistema y precio del combo (caso 411, Aracelly)',
+    mensajes: [
+      'Hola, quiero el Onn Watch TV',
+      'Quito',
+      'Quiero 2',
+      'A domicilio',
+      'Carlos Pérez Mora, 0991234567, Av. Amazonas y Naciones Unidas, frente al CCI',
+    ],
+    busca:
+      'El resumen final lleva cantidad 2 ("x2" o "Cantidad: 2") y precio total $58.99 (combo de 2), NUNCA $79.98. ' +
+      'En dropi_auto_ordenes_log el datos_bot debe traer cantidad "2" (en local Dropi da 401: el fallo esperado es en la API, no antes).',
+    verificar: (r) => {
+      const f = fallasComunes(r, { desdeNombre: 4, desdeDireccion: 4 });
+      const ultimo = [...r.turnos].reverse().find((x) => botDijo(x, RE_RESUMEN));
+      if (!ultimo) f.push('no hubo resumen de cierre');
+      else {
+        const txt = (ultimo.bot || []).join('\n');
+        if (!/x\s*2\b|Cantidad:\s*\**\s*2\b/i.test(txt)) f.push('el resumen no lleva cantidad 2');
+        if (/79[.,]98/.test(txt)) f.push('cobró unitario x2 ($79.98) en vez del combo');
+        if (!/58[.,]99/.test(txt)) f.push('el resumen no trae el precio del combo ($58.99)');
+      }
+      return f;
+    },
+  },
+
+  dropi_santa_elena: {
+    cliente: 452858,
+    titulo: 'Retiro: sin elegir modalidad NO se listan oficinas; con retiro, solo oficinas reales (caso 411, Santa Elena)',
+    mensajes: [
+      'Hola, quiero el Guante Anticorte de Acero Inoxidable',
+      'Dónde son ustedes?',
+      'Yo soy en Santa Elena',
+      'Uno',
+      'en agencia',
+      'la 1',
+      'Carlos Pérez Mora',
+      '0991234567',
+    ],
+    busca:
+      'Tras "Yo soy en Santa Elena" NO puede listar oficinas (pregunta modalidad o cantidad). Tras "en agencia" la lista solo puede traer la ' +
+      'oficina real de Santa Elena (Comercial Aguilar — GUAYAQUIL S/N Y 9 OCTUBRE); nada de Febres-Cordero, Malecón o Manabí. ' +
+      'Con retiro no pide dirección de domicilio. El cierre lleva esa dirección y termina en Generar Guia.',
+    verificar: (r) => {
+      const f = fallasComunes(r, { desdeNombre: 7, desdeDireccion: 4 });
+      const t = r.turnos;
+      if (t.slice(0, 4).some((x) => botDijo(x, /Direcci[oó]n:|\b1\)\s|Oficina Servientrega\s*[—-]/i)))
+        f.push('listó oficinas antes de que el cliente eligiera retiro');
+      const todo = t.flatMap((x) => x.bot || []).join('\n');
+      if (/Febres|Malec[oó]n|Manab[ií]/i.test(todo)) f.push('inventó oficinas de Santa Elena');
+      if (!/9 (?:DE )?OCTUBRE/i.test(todo)) f.push('nunca ofreció la oficina real (Guayaquil S/N y 9 de Octubre)');
+      return f;
+    },
+  },
+
+  dropi_cuenca_sector: {
+    cliente: 452858,
+    titulo: 'Retiro en ciudad grande: pide el sector antes de listar y ordena por la referencia (Cuenca, 21 oficinas)',
+    mensajes: [
+      'Hola, quiero el Guante Anticorte de Acero Inoxidable',
+      'Cuenca',
+      'Uno',
+      'retiro en agencia',
+      'cerca del Monay Shopping',
+      'la 1',
+      'Carlos Pérez Mora',
+      '0991234567',
+    ],
+    busca:
+      'Tras "retiro en agencia" pregunta el sector (no lista 21 oficinas ni 5 al azar). Tras "cerca del Monay Shopping" la lista trae la ' +
+      'oficina de Gonzalez Suarez / Monay primero. Cierre con esa dirección, sin pedir dirección de domicilio.',
+    verificar: (r) => {
+      const f = fallasComunes(r, { desdeNombre: 7, desdeDireccion: 3 });
+      const t = r.turnos;
+      if (t[3] && botDijo(t[3], /\b1\)\s|Direcci[oó]n:/i) && !botDijo(t[3], /sector|referencia|punto conocido/i))
+        f.push('listó oficinas sin preguntar el sector');
+      if (t[4] && !botDijo(t[4], /MONAY/i)) f.push('tras la referencia no ofreció la oficina de Monay');
+      return f;
+    },
+  },
+
   /* Dropshipping (correr con --cliente <id> --referral <source_id>).
      El primer mensaje NO nombra el producto a propósito: obliga a que el ancla
      salga del mapa del anuncio (anuncios_producto), que es el caso real. */

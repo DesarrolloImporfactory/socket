@@ -777,9 +777,7 @@ async function corregirDireccionRetiro(texto, id_configuracion, id_cliente = nul
   const nCiudad = normTxt(ciudadTxt);
 
   // 2. ¿Nombra un sector que identifica UNA oficina de la ciudad?
-  const enCiudad = nCiudad
-    ? oficinas.filter((o) => normTxt(o.ciudad) === nCiudad)
-    : [];
+  const enCiudad = nCiudad ? oficinasDeCiudad(oficinas, ciudadTxt) : [];
   const porSector = enCiudad.filter((o) => {
     const ns = normTxt(o.sector);
     return ns.length >= 4 && nd.includes(ns);
@@ -811,34 +809,240 @@ async function corregirDireccionRetiro(texto, id_configuracion, id_cliente = nul
 // 2026-08-31). Misma filosofía que el respondedor logístico: el paso que se
 // puede derivar con datos no se le ruega al modelo, se hace en código.
 //
-// Si el modelo pide datos personales cuando el pedido es con retiro y aún no
-// hay oficina elegida NI se ofreció una lista, su respuesta se REEMPLAZA:
-//   - sin ciudad  → pregunta de ciudad (texto fijo).
-//   - con ciudad  → la lista real de oficinas de esa ciudad, del directorio.
-// Los textos son marcas fijas: el turno siguiente los reconoce (kanban_ia
-// inyecta la nota "tu último mensaje no está en tu memoria") para que el
-// modelo no se desoriente con la respuesta del cliente a un mensaje que él
-// no escribió.
+// Lo que la guardia REEMPLAZA (siempre con marcas fijas, que el turno
+// siguiente reconoce: kanban_ia inyecta la nota "tu último mensaje no está en
+// tu memoria" para que el modelo entienda a qué responde el cliente):
+//
+//  A) El modelo ESCRIBE UNA LISTA DE OFICINAS (caso 411, 2026-09-08,
+//     Aracelly/Santa Elena: la clienta dijo dónde vivía, sin elegir retiro,
+//     y gpt-4o-mini le "ofreció" tres oficinas de Santa Elena que NO EXISTEN
+//     —Santa Elena tiene una sola, Comercial Aguilar— con calles inventadas;
+//     el bloque del prompt lo prohíbe con todas las letras y el modelo igual
+//     lo hizo). Toda lista que escriba el modelo se valida contra el
+//     directorio real:
+//       - el cliente no eligió retiro todavía → pregunta de modalidad
+//         (o, si ya dijo domicilio, sigue con los datos del envío);
+//       - eligió retiro pero no hay ciudad → pregunta de ciudad;
+//       - la ciudad tiene más de MAX_LISTA oficinas y no hay sector ni
+//         referencia → se pregunta el sector UNA vez antes de listar (pedido
+//         del cliente 411: "ofrece agencias sin tener una referencia para
+//         indicar una correcta o cercana");
+//       - alguna oficina de su lista no está en el directorio → la lista se
+//         reemplaza por la real (ordenada por la referencia del cliente);
+//       - lista real y completa → se respeta.
+//  B) El modelo PIDE DATOS PERSONALES con retiro elegido y sin oficina
+//     resuelta ni lista ofrecida → ciudad, sector (si hace falta) o lista.
+//  C) Rompe-bucle y rescate por referencia (ver casos 0 y 1 abajo).
 // ─────────────────────────────────────────────────────────────
 const GUARDIA_MARCA_CIUDAD =
   '¿En qué ciudad te encuentras? 😊 Así te paso las oficinas Servientrega disponibles para retirar 📦';
 const GUARDIA_MARCA_LISTA = 'tienes estas oficinas Servientrega para retirar:';
 const GUARDIA_MARCA_OFERTA = 'Por ahí tenemos la oficina';
+const GUARDIA_MARCA_SECTOR =
+  '¿En qué sector estás o cerca de qué punto conocido? 📍 Así te paso las oficinas Servientrega que te quedan más cerca';
+const GUARDIA_MARCA_MODALIDAD =
+  '¿Te lo enviamos a tu domicilio o prefieres retirarlo en una oficina Servientrega? 📦';
+const GUARDIA_MARCA_DOMICILIO = 'Perfecto, te lo enviamos a domicilio 😊';
+const GUARDIA_MARCA_REFERENCIA =
+  'prefieres retirar? Dame el sector o una referencia cercana 📍';
+const GUARDIA_MARCA_PORCONFIRMAR = 'queda por confirmar con un asesor';
+
+// Más oficinas que esto no se listan de golpe: si la ciudad tiene más y el
+// cliente no dio sector ni referencia, primero se le pregunta el sector.
+const MAX_LISTA = 5;
+
+/* Oficinas de una ciudad. El directorio distingue homónimos con la provincia
+   entre paréntesis ("SALINAS (SANTA ELENA)", "SAN PABLO (SANTA ELENA)"): el
+   cliente escribe "Salinas" y eso tiene que calzar. Si hay coincidencia
+   exacta manda; si no, se prueba sin el paréntesis. */
+function oficinasDeCiudad(oficinas, ciudad) {
+  const n = normTxt(ciudad);
+  if (!n) return [];
+  const exactas = oficinas.filter((o) => normTxt(o.ciudad) === n);
+  if (exactas.length) return exactas;
+  return oficinas.filter(
+    (o) => normTxt(String(o.ciudad).replace(/\(.*?\)/g, '')) === n,
+  );
+}
+
+const STOP_REF = new Set([
+  'AGENCIA', 'OFICINA', 'SERVIENTREGA', 'SERVI', 'RETIRO', 'RETIRAR',
+  'RETIRARLO', 'CERCA', 'QUEDA', 'TENGO', 'TIENE', 'TIENES', 'ESTA', 'HAY',
+  'SOBRE', 'CALLE', 'AVENIDA', 'SECTOR', 'CENTRO', 'COMERCIAL', 'FAVOR',
+  'MEJOR', 'PREFIERO', 'QUIERO', 'PARA', 'DESDE', 'HASTA', 'ENTRE', 'JUNTO',
+  'FRENTE', 'DIAGONAL', 'ESQUINA', 'BARRIO', 'CIUDAD', 'PUNTO', 'CUAL',
+  'DONDE', 'ESTOY', 'VIVO', 'SOMOS', 'PUEDO', 'PUEDE', 'CUALQUIERA',
+  'MISMO', 'ALGUNA', 'ALGUNO', 'NINGUNA', 'CERCANA', 'CERCANO', 'GRACIAS',
+  'BUENAS', 'BUENOS', 'HOLA', 'TARDES', 'NOCHES', 'DIAS', 'PEDIDO',
+  'PRODUCTO', 'ENVIO', 'DOMICILIO', 'CASA', 'ZONA', 'NORTE', 'SUR', 'ESTE',
+  'OESTE', 'PRINCIPAL', 'UNIDAD', 'UNIDADES',
+]);
+
+/* Tokens con los que se busca una oficina por referencia libre ("por la
+   Kennedy", "cerca del terminal"). Se descartan las palabras vacías y las
+   del nombre de la ciudad: "Yo soy en Santa Elena" no es una referencia. */
+function tokensReferencia(texto, ciudad = '') {
+  const deCiudad = new Set(normTxt(ciudad).split(' ').filter(Boolean));
+  return normTxt(texto)
+    .split(' ')
+    .filter(
+      (w) =>
+        w.length >= 4 && !STOP_REF.has(w) && !deCiudad.has(w) && !/^\d+$/.test(w),
+    );
+}
+
+/* Ordena las oficinas de una ciudad por cuántos tokens de la referencia
+   aparecen en su sector+dirección (estable: a igual puntaje, el orden del
+   directorio). `coincidencias` = cuántas oficinas tienen al menos un token. */
+function ordenarPorReferencia(oficinas, referencia, ciudad = '') {
+  const tokens = tokensReferencia(referencia, ciudad);
+  if (!tokens.length) return { lista: oficinas.slice(), coincidencias: 0 };
+  const puntuadas = oficinas.map((o, i) => {
+    const texto = normTxt(`${o.sector} ${o.direccion}`);
+    const score = tokens.reduce((n, w) => n + (texto.includes(w) ? 1 : 0), 0);
+    return { o, i, score };
+  });
+  puntuadas.sort((a, b) => b.score - a.score || a.i - b.i);
+  return {
+    lista: puntuadas.map((p) => p.o),
+    coincidencias: puntuadas.filter((p) => p.score > 0).length,
+  };
+}
+
+/* ¿Un renglón escrito por el modelo corresponde a una oficina real? Vale si
+   contiene su dirección (tolerante a "Av.", "de", puntuación: al menos el
+   70 % de las palabras de la dirección, y nunca menos de 2). El sector solo
+   no alcanza: "Sector Centro" existe en media docena de ciudades y es
+   justamente lo que el modelo inventa. */
+function coincideOficina(textoItem, oficina) {
+  const item = normTxt(textoItem);
+  if (!item) return false;
+  const palabras = normTxt(oficina.direccion)
+    .split(' ')
+    .filter((w) => w.length >= 3 || /^\d+$/.test(w));
+  if (!palabras.length) return false;
+  const necesarias = Math.max(2, Math.ceil(palabras.length * 0.7));
+  const presentes = palabras.filter((w) => item.includes(w)).length;
+  return presentes >= necesarias;
+}
+
+/* Renglones de la respuesta del modelo que parecen ítems de una lista de
+   oficinas. Cada ítem arrastra la línea "Dirección:" que lo sigue (formato
+   "1. Oficina X\n - Dirección: Y"). Devuelve [] si no hay lista. */
+function itemsOficinaEnRespuesta(texto) {
+  const lineas = String(texto || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const esItem = (l) =>
+    // Un encabezado o pregunta ("…oficinas Servientrega — ¿cuál te queda
+    // mejor?") no es una oficina, aunque lleve guión.
+    !/[¿?]/.test(l) &&
+    (/oficina servientrega/i.test(l) ||
+    /servientrega\s+[^\n]{0,40}[—–-]\s*\S/i.test(l) ||
+    /^(?:\d+[).:-]|[-•*▪️]|\p{Extended_Pictographic})\s*[^\n]*\b(?:sector|oficina|agencia|servientrega|sucursal)\b/iu.test(
+      l,
+    ) ||
+    // "1) Av. Gonzalez Suarez - Monay — AV. GONZALEZ SUAREZ S/N Y ..." (el
+    // formato de la propia guardia, sin la palabra "sector"): ítem numerado
+    // con separador y una dirección adentro.
+    /^(?:\d+[).:-]|[-•*▪️])\s*[^\n]*[—–]\s*[^\n]*\b(?:av|avenida|calle|km|s\/n|junto a|frente a|diagonal|esquina|cuadra)\b/i.test(
+      l,
+    ));
+  const esDireccion = (l) => /^[^:\n]{0,12}direcci[oó]n\s*:/i.test(l);
+  const items = [];
+  for (let i = 0; i < lineas.length; i++) {
+    if (!esItem(lineas[i])) continue;
+    let texto = lineas[i];
+    if (lineas[i + 1] && esDireccion(lineas[i + 1])) texto += ` ${lineas[i + 1]}`;
+    items.push(texto);
+  }
+  return items;
+}
+
+/* ¿El mensaje del cliente ELIGE retiro (no pregunta por él)? "en agencia",
+   "retiro en oficina", "prefiero retirar" sí; "¿puedo retirar?", "¿hay
+   agencia en Loja?" no — eso se responde con la pregunta de modalidad. */
+function eligeRetiroEnMensaje(msg) {
+  const m = String(msg || '');
+  if (!/\b(retir\w*|agencia|oficina|servientrega|sucursal)\b/i.test(m)) return false;
+  if (/domicilio|a mi casa|a la casa/i.test(m)) return false;
+  if (/\?|¿|puedo|se puede|podr[ií]a|hay\s|tienen|cu[aá]nto|d[oó]nde/i.test(m))
+    return false;
+  return true;
+}
+
+function siguientePregunta(ficha, retiro = false) {
+  if (!ficha?.nombre) return '¿Me das tu nombre completo?';
+  if (!ficha?.telefono) return '¿Tu número de teléfono? 📞';
+  if (!retiro && !ficha?.direccion)
+    return '¿Cuál es tu dirección exacta? (2 calles y una referencia) 🏡';
+  return '¿Confirmamos el pedido?';
+}
+
+/* Últimos mensajes del bot desde el reinicio de la conversación (mismo corte
+   que el recap y la ficha). */
+async function ultimosDelBot(id_configuracion, id_cliente, limite = 12) {
+  const [rows] = await db.query(
+    `SELECT m.texto_mensaje FROM mensajes_clientes m
+      WHERE m.id_configuracion = ? AND m.celular_recibe = ? AND m.rol_mensaje = 1
+        AND m.created_at >= COALESCE(
+          (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
+          '1970-01-01')
+      ORDER BY m.id DESC LIMIT ${Number(limite) || 12}`,
+    { replacements: [id_configuracion, String(id_cliente), id_cliente] },
+  );
+  return rows.map((m) => String(m.texto_mensaje || ''));
+}
+
+/* Referencia del cliente para ordenar/buscar oficinas: lo que la ficha
+   recogió (agencia concreta, referencia, dirección con retiro) más el
+   mensaje de este turno. */
+function referenciaDelCliente(ficha, mensajeCliente) {
+  const { agenciaConcreta } = require('../utils/fichaPedido');
+  return [
+    agenciaConcreta(ficha?.agencia) ? ficha.agencia : '',
+    ficha?.referencia || '',
+    ficha?.entrega === 'agencia' ? ficha?.direccion || '' : '',
+    mensajeCliente || '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function textoLista(ciudad, oficinas) {
+  const top = oficinas.slice(0, MAX_LISTA);
+  const lista = top.map((o, i) => `${i + 1}) ${o.sector} — ${o.direccion}`).join('\n');
+  return `Perfecto! En ${ciudad} ${GUARDIA_MARCA_LISTA}\n${lista}\n¿Cuál te queda mejor? 😊`;
+}
+
+/* ¿Ya se ofrecieron o resolvieron oficinas en ESTA conversación? Cuenta la
+   lista de la guardia, una lista del propio modelo (ítems reconocibles o la
+   pregunta "¿cuál eliges / prefieres / te queda mejor?"), una oferta única y
+   la confirmación "retiras en X". Caso real cfg 610 (2026-09-08): el modelo
+   listó con "¿Cuál eliges?", confirmó "retiras en …" y, al pedir el teléfono,
+   la guardia volvió a listar porque solo reconocía su propia marca. */
+function yaOfrecioOficinas(historialBot) {
+  return (historialBot || []).some((x) => {
+    const t = String(x || '');
+    return (
+      t.includes(GUARDIA_MARCA_LISTA) ||
+      t.includes(GUARDIA_MARCA_OFERTA) ||
+      /cu[aá]l (?:te queda mejor|eliges|prefieres|te conviene)/i.test(t) ||
+      /retiras en\s+[^\n]{6,}/i.test(t) ||
+      itemsOficinaEnRespuesta(t).length > 0
+    );
+  });
+}
 
 // Busca la oficina que el cliente describe por una referencia libre ("la de
 // la general maldonado", "por el terminal"): tokens significativos del
 // mensaje contra sector+dirección de las oficinas de SU ciudad. Devuelve la
 // oficina solo si hay UN ganador claro — en empate no se adivina.
 function oficinaPorReferencia(oficinasCiudad, mensajeCliente) {
-  const stop = new Set([
-    'AGENCIA', 'OFICINA', 'SERVIENTREGA', 'SERVI', 'RETIRO', 'RETIRAR',
-    'CERCA', 'QUEDA', 'TENGO', 'TIENE', 'TIENES', 'ESTA', 'HAY', 'SOBRE',
-    'CALLE', 'AVENIDA', 'SECTOR', 'CENTRO', 'COMERCIAL', 'FAVOR', 'MEJOR',
-    'PREFIERO', 'QUIERO',
-  ]);
   const tokens = normTxt(mensajeCliente)
     .split(' ')
-    .filter((w) => w.length >= 5 && !stop.has(w));
+    .filter((w) => w.length >= 5 && !STOP_REF.has(w));
   if (!tokens.length) return null;
 
   let mejor = null;
@@ -858,6 +1062,136 @@ function oficinaPorReferencia(oficinasCiudad, mensajeCliente) {
   return mejorScore > 0 && !empate ? mejor : null;
 }
 
+/**
+ * Decide qué mandar cuando hay que ofrecer oficinas: ciudad, sector o lista.
+ * Pura (recibe el directorio ya parseado y el historial del bot): es lo que
+ * prueba la batería sin BD.
+ *
+ * @returns {null|{texto, motivo}} null = no hay nada que ofrecer (ciudad sin
+ *   oficinas en el directorio: eso lo maneja quien llama).
+ */
+function decidirOfertaOficinas({
+  ficha,
+  oficinas,
+  mensajeCliente = '',
+  historialBot = [],
+}) {
+  const ciudad = String(ficha?.ciudad || '').trim();
+  if (!ciudad) {
+    return {
+      texto: GUARDIA_MARCA_CIUDAD,
+      motivo: 'faltaba la ciudad: se pregunta antes de ofrecer oficinas',
+    };
+  }
+  const deCiudad = oficinasDeCiudad(oficinas, ciudad);
+  if (!deCiudad.length) return null;
+
+  const referencia = referenciaDelCliente(ficha, mensajeCliente);
+  const { lista, coincidencias } = ordenarPorReferencia(deCiudad, referencia, ciudad);
+  const yaPidioSector = historialBot.some((m) => m.includes(GUARDIA_MARCA_SECTOR));
+
+  if (deCiudad.length > MAX_LISTA && !coincidencias && !yaPidioSector) {
+    return {
+      texto: `Perfecto, retiro en ${ciudad} 😊 ${GUARDIA_MARCA_SECTOR}`,
+      motivo: `${ciudad} tiene ${deCiudad.length} oficinas y no hay sector ni referencia: se pregunta el sector antes de listar`,
+    };
+  }
+  return {
+    texto: textoLista(ciudad, lista),
+    motivo:
+      `lista de ${Math.min(lista.length, MAX_LISTA)} oficina(s) de ${ciudad} ` +
+      (coincidencias
+        ? `ordenada por la referencia del cliente (${coincidencias} coinciden)`
+        : `generada del directorio (${deCiudad.length} en total)`),
+  };
+}
+
+/**
+ * Caso A: el modelo escribió una lista de oficinas. Pura (sin BD): recibe el
+ * directorio parseado y el historial. Devuelve el reemplazo o null si la
+ * lista es legítima.
+ */
+function validarListaDelModelo({
+  respuesta,
+  ficha,
+  oficinas,
+  mensajeCliente = '',
+  historialBot = [],
+}) {
+  const items = itemsOficinaEnRespuesta(respuesta);
+  if (!items.length) return null;
+
+  const ciudad = String(ficha?.ciudad || '').trim();
+  const eligioRetiro =
+    ficha?.entrega === 'agencia' || eligeRetiroEnMensaje(mensajeCliente);
+
+  if (!eligioRetiro) {
+    if (ficha?.entrega === 'domicilio') {
+      return {
+        texto: `${GUARDIA_MARCA_DOMICILIO} ${siguientePregunta(ficha, false)}`,
+        motivo: 'ofreció oficinas a un cliente que ya eligió domicilio',
+      };
+    }
+    return {
+      texto: `${ciudad ? `Perfecto, enviamos a ${ciudad} 😊 ` : ''}${GUARDIA_MARCA_MODALIDAD}`,
+      motivo: 'ofreció oficinas sin que el cliente eligiera retiro: se pregunta la modalidad',
+    };
+  }
+
+  if (!ciudad) {
+    return {
+      texto: GUARDIA_MARCA_CIUDAD,
+      motivo: 'ofreció oficinas sin conocer la ciudad del cliente',
+    };
+  }
+
+  const deCiudad = oficinasDeCiudad(oficinas, ciudad);
+  if (!deCiudad.length) {
+    /* Ciudad que no está en el directorio y el modelo igual "encontró"
+       oficinas: son inventadas. Primera vez se pide la referencia (como la
+       569); si ya se pidió, se avanza con la agencia por confirmar —
+       nunca se frena la venta ni se dice "no hay cobertura". */
+    const yaPidio = historialBot.some((m) => m.includes(GUARDIA_MARCA_REFERENCIA));
+    if (!yaPidio) {
+      return {
+        texto: `Perfecto 😊 ¿En qué agencia Servientrega de ${ciudad} ${GUARDIA_MARCA_REFERENCIA}`,
+        motivo: `ofreció oficinas de ${ciudad}, que no está en el directorio: se pide la referencia`,
+      };
+    }
+    const ref = String(mensajeCliente || '').trim();
+    return {
+      texto:
+        `Listo 😊 La agencia Servientrega de ${ciudad} ${GUARDIA_MARCA_PORCONFIRMAR}` +
+        (ref ? ` (nos indicaste: ${ref.slice(0, 80)})` : '') +
+        `. ${siguientePregunta(ficha, true)}`,
+      motivo: `ofreció oficinas de ${ciudad}, que no está en el directorio, tras pedir referencia: queda por confirmar`,
+    };
+  }
+
+  const referencia = referenciaDelCliente(ficha, mensajeCliente);
+  const { coincidencias } = ordenarPorReferencia(deCiudad, referencia, ciudad);
+  const yaPidioSector = historialBot.some((m) => m.includes(GUARDIA_MARCA_SECTOR));
+  const todasReales = items.every((it) => deCiudad.some((o) => coincideOficina(it, o)));
+
+  if (deCiudad.length > MAX_LISTA && !coincidencias && !yaPidioSector) {
+    return {
+      texto: `Perfecto, retiro en ${ciudad} 😊 ${GUARDIA_MARCA_SECTOR}`,
+      motivo: `listó oficinas de ${ciudad} (${deCiudad.length} en el directorio) sin sector ni referencia: se pregunta el sector primero`,
+    };
+  }
+  if (todasReales) return null;
+
+  const decision = decidirOfertaOficinas({ ficha, oficinas, mensajeCliente, historialBot });
+  if (!decision) return null;
+  const inventadas = items.filter((it) => !deCiudad.some((o) => coincideOficina(it, o)));
+  return {
+    texto: decision.texto,
+    motivo:
+      `la lista del modelo traía ${inventadas.length} de ${items.length} oficina(s) que no están en el directorio de ${ciudad} ` +
+      `(ej. "${inventadas[0].slice(0, 80)}") → ${decision.motivo}`,
+  };
+}
+
 async function guardiaOficinaRetiro({
   respuesta,
   ficha,
@@ -867,9 +1201,31 @@ async function guardiaOficinaRetiro({
 }) {
   const t = String(respuesta || '');
   const { agenciaConcreta } = require('../utils/fichaPedido');
-  if (!ficha || ficha.entrega !== 'agencia') return null;
   if (/\[(generar_guia|asesor|cancelados)\]:true/i.test(t)) return null;
   if (!(await estaActivo(id_configuracion))) return null;
+
+  /* Caso A — el modelo escribió una lista de oficinas: se valida contra el
+     directorio real ANTES de mirar la modalidad (la lista inventada del caso
+     411 salió sin que la clienta eligiera retiro). */
+  if (itemsOficinaEnRespuesta(t).length) {
+    const cont = await contenidoArchivo(id_configuracion);
+    if (cont?.texto) {
+      const oficinas = parseDirectorio(cont.texto);
+      if (oficinas.length) {
+        const historialBot = await ultimosDelBot(id_configuracion, id_cliente);
+        const r = validarListaDelModelo({
+          respuesta: t,
+          ficha,
+          oficinas,
+          mensajeCliente,
+          historialBot,
+        });
+        if (r) return r;
+      }
+    }
+  }
+
+  if (!ficha || ficha.entrega !== 'agencia') return null;
 
   /* Caso 0 — ROMPE-BUCLE: el cliente AFIRMÓ una oferta de la guardia ("Sí
      por favor") y el modelo —que no tiene ese mensaje en su memoria, porque
@@ -883,28 +1239,15 @@ async function guardiaOficinaRetiro({
   const vuelveAPreguntarOficina =
     /cu[aá]l (?:de las|oficina|te queda|prefieres)|qu[eé] oficina|prefieres:/i.test(t);
   if (msgAfirma && vuelveAPreguntarOficina) {
-    const [ultimos] = await db.query(
-      `SELECT m.texto_mensaje FROM mensajes_clientes m
-        WHERE m.id_configuracion = ? AND m.celular_recibe = ? AND m.rol_mensaje = 1
-          AND m.created_at >= COALESCE(
-            (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
-            '1970-01-01')
-        ORDER BY m.id DESC LIMIT 3`,
-      { replacements: [id_configuracion, String(id_cliente), id_cliente] },
-    );
+    const ultimos = await ultimosDelBot(id_configuracion, id_cliente, 3);
     for (const m of ultimos) {
-      const mm = String(m.texto_mensaje || '').match(
+      const mm = m.match(
         /(?:Por ahí tenemos la oficina|retiras en)\s+([^\n😊?¿]{6,160})/i,
       );
       if (!mm) continue;
       const oficinaTxt = mm[1].trim().replace(/[.\s]+$/, '');
-      const pregunta = !ficha.nombre
-        ? '¿Tu nombre completo?'
-        : !ficha.telefono
-          ? '¿Tu número de teléfono? 📞'
-          : '¿Confirmamos el pedido?';
       return {
-        texto: `Perfecto, retiras en ${oficinaTxt} 😊 ${pregunta}`,
+        texto: `Perfecto, retiras en ${oficinaTxt} 😊 ${siguientePregunta(ficha, true)}`,
         motivo: `rompe-bucle: el cliente afirmó la oferta y el modelo volvía a preguntar cuál oficina`,
       };
     }
@@ -925,9 +1268,7 @@ async function guardiaOficinaRetiro({
   if (seRinde && ficha.ciudad && mensajeCliente) {
     const cont = await contenidoArchivo(id_configuracion);
     if (cont?.texto) {
-      const deCiudad = parseDirectorio(cont.texto).filter(
-        (o) => normTxt(o.ciudad) === normTxt(ficha.ciudad),
-      );
+      const deCiudad = oficinasDeCiudad(parseDirectorio(cont.texto), ficha.ciudad);
       const hallada = oficinaPorReferencia(deCiudad, mensajeCliente);
       if (hallada) {
         return {
@@ -954,20 +1295,8 @@ async function guardiaOficinaRetiro({
   // candado del cierre protege el final). Con el MISMO corte del recap y la
   // ficha: lo anterior a "Reiniciar conversación" no cuenta — sin el corte,
   // las listas de una prueba vieja hacían que la guardia se abstuviera.
-  const [prev] = await db.query(
-    `SELECT m.texto_mensaje FROM mensajes_clientes m
-      WHERE m.id_configuracion = ? AND m.celular_recibe = ? AND m.rol_mensaje = 1
-        AND m.created_at >= COALESCE(
-          (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
-          '1970-01-01')
-      ORDER BY m.id DESC LIMIT 12`,
-    { replacements: [id_configuracion, String(id_cliente), id_cliente] },
-  );
-  const yaOfrecio = prev.some((m) => {
-    const x = String(m.texto_mensaje || '');
-    return x.includes(GUARDIA_MARCA_LISTA) || /cu[aá]l te queda mejor/i.test(x);
-  });
-  if (yaOfrecio) return null;
+  const historialBot = await ultimosDelBot(id_configuracion, id_cliente);
+  if (yaOfrecioOficinas(historialBot)) return null;
 
   if (!ficha.ciudad) {
     return { texto: GUARDIA_MARCA_CIUDAD, motivo: 'faltaba la ciudad: se pregunta antes que el nombre' };
@@ -975,19 +1304,14 @@ async function guardiaOficinaRetiro({
 
   const cont = await contenidoArchivo(id_configuracion);
   if (!cont?.texto) return null;
-  const deCiudad = parseDirectorio(cont.texto).filter(
-    (o) => normTxt(o.ciudad) === normTxt(ficha.ciudad),
-  );
   // Ciudad sin oficinas en el directorio: que el modelo maneje el "por
   // confirmar" (la guardia no puede mejorar eso).
-  if (!deCiudad.length) return null;
-
-  const top = deCiudad.slice(0, 5);
-  const lista = top.map((o, i) => `${i + 1}) ${o.sector} — ${o.direccion}`).join('\n');
-  return {
-    texto: `Perfecto! En ${ficha.ciudad} ${GUARDIA_MARCA_LISTA}\n${lista}\n¿Cuál te queda mejor? 😊`,
-    motivo: `lista de ${top.length} oficina(s) de ${ficha.ciudad} generada del directorio`,
-  };
+  return decidirOfertaOficinas({
+    ficha,
+    oficinas: parseDirectorio(cont.texto),
+    mensajeCliente,
+    historialBot,
+  });
 }
 
 module.exports = {
@@ -1004,7 +1328,23 @@ module.exports = {
   GUARDIA_MARCA_CIUDAD,
   GUARDIA_MARCA_LISTA,
   GUARDIA_MARCA_OFERTA,
+  GUARDIA_MARCA_SECTOR,
+  GUARDIA_MARCA_MODALIDAD,
+  GUARDIA_MARCA_DOMICILIO,
+  GUARDIA_MARCA_REFERENCIA,
+  GUARDIA_MARCA_PORCONFIRMAR,
+  MAX_LISTA,
   estado,
   contenidoArchivo,
   RUTA_DEFAULT,
+  // Puras, para la batería de regresión (sin BD ni OpenAI):
+  parseDirectorio,
+  oficinasDeCiudad,
+  itemsOficinaEnRespuesta,
+  coincideOficina,
+  eligeRetiroEnMensaje,
+  ordenarPorReferencia,
+  decidirOfertaOficinas,
+  validarListaDelModelo,
+  yaOfrecioOficinas,
 };

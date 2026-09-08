@@ -1,51 +1,10 @@
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const Planes_chat_center = require('../models/planes_chat_center.model');
 const { db } = require('../database/config');
-const { DIAS_GRACIA } = require('../utils/planAcceso');
-
-/**
- * ¿Este usuario merece la ventana de gracia tras vencer fecha_renovacion?
- *
- * PROBLEMA QUE RESUELVE
- * El cobro de Stripe nunca cae exactamente en fecha_renovacion: entre el cierre
- * del ciclo, la finalización de la factura y los reintentos de tarjeta pasan
- * minutos u horas. Sin gracia, al cliente que SÍ va a pagar se le bloquea el
- * panel en ese hueco. `utils/planAcceso` ya protegía así al bot (DIAS_GRACIA);
- * esto alinea el panel con ese mismo criterio.
- *
- * Solo aplica a quien está realmente suscrito y no programó cancelación. El que
- * no tiene suscripción en Stripe —por ejemplo un Plan Method Ecommerce en sus
- * meses de cortesía que nunca registró tarjeta— se bloquea como siempre: ahí el
- * vencimiento es real, no un desfase de cobro.
- *
- * Estados de Stripe excluidos por denylist, no allowlist: un status nulo suele
- * ser un registro viejo al que el webhook todavía no le escribió nada, y
- * bloquearlo por eso sería el mismo error que estamos corrigiendo.
- */
-const STRIPE_STATUS_SIN_GRACIA = new Set([
-  'canceled',
-  'incomplete',
-  'incomplete_expired',
-  'unpaid',
-]);
-
-const tieneGraciaDeCobro = (usuario, ahora) => {
-  if (!usuario.stripe_subscription_id) return false;
-  if (Number(usuario.cancel_at_period_end) === 1) return false;
-
-  const status = String(usuario.stripe_subscription_status || '')
-    .toLowerCase()
-    .trim();
-  if (STRIPE_STATUS_SIN_GRACIA.has(status)) return false;
-
-  if (!usuario.fecha_renovacion) return false;
-
-  const limite =
-    new Date(usuario.fecha_renovacion).getTime() +
-    DIAS_GRACIA * 24 * 60 * 60 * 1000;
-
-  return ahora.getTime() <= limite;
-};
+// La gracia de cobro (DIAS_GRACIA tras fecha_renovacion para quien sigue
+// suscrito) vive en utils/planAcceso: la comparten el bot, este middleware y
+// el login, que deben decidir igual.
+const { tieneGraciaDeCobro } = require('../utils/planAcceso');
 
 const checkPlanActivo = async (req, res, next) => {
   try {

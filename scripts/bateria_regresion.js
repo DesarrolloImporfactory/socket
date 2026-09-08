@@ -948,6 +948,194 @@ async function suiteA() {
         }).length === 1,
     );
   }
+
+  /* ── Bloque 15: resumen "x2" y precio del combo (caso 411, Aracelly, 2026-09-08) ──
+     La clienta pidió "dos", el bot cerró "📦 Producto: Dr Melaxin x2" a $40 sin
+     línea Cantidad; el sistema leyó cantidad 1 y cobró unitario x2 aunque el
+     catálogo tiene combo de 2 por $25. */
+  {
+    console.log('\n── Bloque 15: cantidad en el renglón y precio del combo ──');
+    const {
+      parsearLineaProducto,
+      corregirPrecioCombo,
+    } = require('../src/utils/resumenPedido');
+    const { parsearProductosResumen } = require('../src/services/kanban_ia.service');
+
+    const l1 = parsearLineaProducto('Dr Melaxin x2');
+    caso('renglón "Dr Melaxin x2" → cantidad 2 y nombre limpio', l1.cantidad === '2' && l1.producto === 'Dr Melaxin', JSON.stringify(l1));
+    const l2 = parsearLineaProducto('2 x Reloj Steel Arabe');
+    caso('renglón "2 x Reloj" → cantidad 2', l2.cantidad === '2' && l2.producto === 'Reloj Steel Arabe', JSON.stringify(l2));
+    const l3 = parsearLineaProducto('*Dr Melaxin* (Variedad: Negro) x3');
+    caso('renglón con variedad y x3', l3.cantidad === '3' && l3.variedad === 'Negro' && l3.producto === 'Dr Melaxin', JSON.stringify(l3));
+    const l4 = parsearLineaProducto('Camisa Oversize x 2 unidades');
+    caso('renglón "x 2 unidades"', l4.cantidad === '2' && l4.producto === 'Camisa Oversize', JSON.stringify(l4));
+    const l5 = parsearLineaProducto('Aceite de Batana 100ml');
+    caso('un "100ml" no es cantidad', l5.cantidad === '1' && l5.producto === 'Aceite de Batana 100ml', JSON.stringify(l5));
+    const l6 = parsearLineaProducto('Dr Melaxin (x2)');
+    caso('renglón "(x2)"', l6.cantidad === '2' && l6.producto === 'Dr Melaxin', JSON.stringify(l6));
+    caso(
+      'multi-producto sigue parseando igual (2 líneas → 2 renglones)',
+      (() => {
+        const r = parsearProductosResumen('📦 Producto: Reloj SKMEI x1\n📦 Producto: Reloj Steel x2 (Variedad: Negro)');
+        return r.length === 2 && r[1].cantidad === '2' && r[1].variedad === 'Negro' && r[1].producto === 'Reloj Steel';
+      })(),
+    );
+
+    const catalogo411 = [
+      {
+        id: 2018,
+        nombre: 'Dr Melaxin',
+        precio: '20.00',
+        combos_producto: JSON.stringify([
+          { cantidad: '1', precio: '20', id_dropi: '144476' },
+          { cantidad: '2', precio: '25', id_dropi: '142847' },
+          { cantidad: '3', precio: '30', id_dropi: '159920' },
+        ]),
+      },
+      { id: 9, nombre: 'Onn Watch TV', precio: '35.00', combos_producto: '[]' },
+    ];
+    const resumen411 =
+      'Todo está listo, Aracelly. Aquí está el resumen de tu pedido:\n' +
+      '🧑 Nombre: Aracelly Lucas Solis\n📞 Teléfono: 0979500161\n📍 Provincia: Santa Elena\n' +
+      '📍 Ciudad: Santa Elena\n🏡 Dirección: 10 de mayo Vinicio Yagual 1\n' +
+      '📦 Producto: Dr Melaxin x2\n💰 Precio total: $40.00\n🚚 Envío: domicilio\n[generar_guia]:true';
+    const c1 = await corregirPrecioCombo(resumen411, 411, { productos: catalogo411 });
+    caso(
+      'caso 411: "Dr Melaxin x2" a $40 → $25 (combo de 2)',
+      !!c1 && c1.a === 25 && /Precio total: \$25\.00/.test(c1.texto) && !/\$40/.test(c1.texto),
+      c1 ? c1.texto.slice(-120) : 'no corrigió',
+    );
+    caso(
+      'con línea "🔢 Cantidad: 2" y "Producto: Dr Melaxin" también corrige',
+      !!(await corregirPrecioCombo(
+        resumen411.replace('Dr Melaxin x2', 'Dr Melaxin').replace('💰', '🔢 Cantidad: 2\n💰'),
+        411,
+        { productos: catalogo411 },
+      )),
+    );
+    caso(
+      'total ya correcto ($25) → no toca',
+      (await corregirPrecioCombo(resumen411.replace('$40.00', '$25.00'), 411, { productos: catalogo411 })) === null,
+    );
+    caso(
+      'total distinto por otra razón ($45, envío sumado) → no toca',
+      (await corregirPrecioCombo(resumen411.replace('$40.00', '$45.00'), 411, { productos: catalogo411 })) === null,
+    );
+    caso(
+      'una unidad → no toca',
+      (await corregirPrecioCombo(resumen411.replace('Dr Melaxin x2', 'Dr Melaxin').replace('$40.00', '$20.00'), 411, { productos: catalogo411 })) === null,
+    );
+    caso(
+      'producto sin combos → no toca',
+      (await corregirPrecioCombo(resumen411.replace('Dr Melaxin x2', 'Onn Watch TV x2').replace('$40.00', '$70.00'), 411, { productos: catalogo411 })) === null,
+    );
+    caso(
+      'resumen multi-producto → no toca (lo valida el auto-orden)',
+      (await corregirPrecioCombo(resumen411.replace('📦 Producto: Dr Melaxin x2', '📦 Producto: Dr Melaxin x2\n📦 Producto: Onn Watch TV x1'), 411, { productos: catalogo411 })) === null,
+    );
+  }
+
+  /* ── Bloque 16: guardia de listas de oficinas (caso 411, Santa Elena, 2026-09-08) ──
+     gpt-4o-mini "ofreció" 3 oficinas de Santa Elena que no existen (la ciudad
+     tiene UNA: Comercial Aguilar) sin que la clienta eligiera retiro. Toda
+     lista del modelo se valida contra el directorio real. */
+  {
+    console.log('\n── Bloque 16: listas de oficinas validadas contra el directorio ──');
+    const fs = require('fs');
+    const R = require('../src/services/kanban_retiro_agencia.service');
+    const oficinas = R.parseDirectorio(fs.readFileSync(R.RUTA_DEFAULT, 'utf8'));
+    caso('directorio default parseado (≈597 oficinas)', oficinas.length > 500, String(oficinas.length));
+
+    const lista411 =
+      'En Santa Elena, puedes retirar tu pedido en una de las siguientes oficinas de Servientrega:\n' +
+      '1. *Oficina Servientrega — Sector Centro*\n - Dirección: Av. León Febres-Cordero y Av. 10 de Agosto\n' +
+      '2. *Oficina Servientrega — Sector La Libertad*\n - Dirección: Av. Manabí S/N y Av. Libertad\n' +
+      '3. *Oficina Servientrega — Sector Salinas*\n - Dirección: Av. Malecón y Calle 38\n' +
+      'Confirma cuál te queda mejor para poder avanzar con el pedido. 😊';
+    caso('detecta los 3 ítems de la lista inventada', R.itemsOficinaEnRespuesta(lista411).length === 3, String(R.itemsOficinaEnRespuesta(lista411).length));
+    caso('un mensaje normal no parece lista', R.itemsOficinaEnRespuesta('Perfecto! ¿A qué ciudad te lo enviamos? 📍').length === 0);
+    caso('un resumen de cierre no parece lista', R.itemsOficinaEnRespuesta('🏡 Dirección: Av. Solano y Remigio Crespo\n📦 Producto: Dr Melaxin').length === 0);
+
+    const fichaSE = { ciudad: 'Santa Elena', entrega: '', nombre: '', telefono: '', agencia: '', referencia: '', direccion: '' };
+    const sinElegir = R.validarListaDelModelo({ respuesta: lista411, ficha: fichaSE, oficinas, mensajeCliente: 'Pero dónde son usted Yo soy en santa Elena' });
+    caso(
+      'caso 411: lista sin que eligiera retiro → pregunta de modalidad',
+      !!sinElegir && sinElegir.texto.includes(R.GUARDIA_MARCA_MODALIDAD) && /Santa Elena/.test(sinElegir.texto),
+      sinElegir ? sinElegir.texto : 'no intervino',
+    );
+    const conRetiro = R.validarListaDelModelo({ respuesta: lista411, ficha: { ...fichaSE, entrega: 'agencia' }, oficinas, mensajeCliente: 'en agencia' });
+    caso(
+      'con retiro elegido: la lista inventada se reemplaza por la real (Comercial Aguilar)',
+      !!conRetiro && conRetiro.texto.includes(R.GUARDIA_MARCA_LISTA) && /GUAYAQUIL S\/N Y 9 OCTUBRE/.test(conRetiro.texto) && !/Febres/.test(conRetiro.texto),
+      conRetiro ? conRetiro.texto : 'no intervino',
+    );
+    const eligeAhora = R.validarListaDelModelo({ respuesta: lista411, ficha: fichaSE, oficinas, mensajeCliente: 'prefiero retirar en agencia' });
+    caso('el mensaje "prefiero retirar en agencia" cuenta como elección aunque la ficha no la traiga', !!eligeAhora && eligeAhora.texto.includes(R.GUARDIA_MARCA_LISTA));
+    const listaReal = 'Perfecto! En Santa Elena tienes esta oficina:\n1) Sector Comercial Aguilar — Av. Guayaquil S/N y 9 de Octubre\n¿Retiramos ahí? 😊';
+    caso(
+      'lista REAL (dirección copiada, con "Av." y "de") se respeta',
+      R.validarListaDelModelo({ respuesta: listaReal, ficha: { ...fichaSE, entrega: 'agencia' }, oficinas, mensajeCliente: 'agencia' }) === null,
+    );
+    const domicilio = R.validarListaDelModelo({ respuesta: lista411, ficha: { ...fichaSE, entrega: 'domicilio' }, oficinas, mensajeCliente: 'a domicilio' });
+    caso('cliente que ya dijo domicilio → sigue con los datos, sin oficinas', !!domicilio && domicilio.texto.includes(R.GUARDIA_MARCA_DOMICILIO) && /nombre/.test(domicilio.texto));
+
+    // Ciudad grande: primero el sector.
+    const fichaCue = { ...fichaSE, ciudad: 'Cuenca', entrega: 'agencia' };
+    const cuenca = R.decidirOfertaOficinas({ ficha: fichaCue, oficinas, mensajeCliente: 'en agencia' });
+    caso('Cuenca (21 oficinas) sin referencia → pregunta el sector antes de listar', !!cuenca && cuenca.texto.includes(R.GUARDIA_MARCA_SECTOR), cuenca?.texto);
+    const cuencaRef = R.decidirOfertaOficinas({ ficha: fichaCue, oficinas, mensajeCliente: 'cerca del Monay Shopping' });
+    caso(
+      'Cuenca con referencia "Monay" → lista directa, la coincidente primero',
+      !!cuencaRef && cuencaRef.texto.includes(R.GUARDIA_MARCA_LISTA) && /MONAY/i.test(cuencaRef.texto.split('\n')[1]),
+      cuencaRef?.texto,
+    );
+    const cuencaYaPidio = R.decidirOfertaOficinas({ ficha: fichaCue, oficinas, mensajeCliente: 'no sé, cualquiera', historialBot: [`Perfecto, retiro en Cuenca 😊 ${R.GUARDIA_MARCA_SECTOR}`] });
+    caso('Cuenca, sector ya preguntado → lista de 5 sin volver a preguntar', !!cuencaYaPidio && cuencaYaPidio.texto.includes(R.GUARDIA_MARCA_LISTA) && cuencaYaPidio.texto.split('\n').filter((l) => /^\d\)/.test(l)).length === 5);
+    const listaCuencaValida = cuencaRef ? cuencaRef.texto : '';
+    caso(
+      'Cuenca: lista real del modelo con referencia conocida se respeta',
+      !!R.itemsOficinaEnRespuesta(listaCuencaValida).length &&
+        R.validarListaDelModelo({ respuesta: listaCuencaValida, ficha: fichaCue, oficinas, mensajeCliente: 'cerca del Monay Shopping' }) === null,
+    );
+    const laLibertad = R.decidirOfertaOficinas({ ficha: { ...fichaSE, ciudad: 'La Libertad', entrega: 'agencia' }, oficinas, mensajeCliente: 'agencia' });
+    caso('La Libertad (4 oficinas) → lista directa, sin pedir sector', !!laLibertad && laLibertad.texto.includes(R.GUARDIA_MARCA_LISTA) && laLibertad.texto.split('\n').filter((l) => /^\d\)/.test(l)).length === 4);
+    caso('"Salinas" encuentra "SALINAS (SANTA ELENA)"', R.oficinasDeCiudad(oficinas, 'Salinas').length === 1 && R.oficinasDeCiudad(oficinas, 'Santa Elena').length === 1);
+
+    // Ciudad fuera del directorio (Galápagos): referencia y luego por confirmar.
+    const fichaGal = { ...fichaSE, ciudad: 'Puerto Ayora', entrega: 'agencia' };
+    const g1 = R.validarListaDelModelo({ respuesta: lista411.replace(/Santa Elena/g, 'Puerto Ayora'), ficha: fichaGal, oficinas, mensajeCliente: 'agencia' });
+    caso('ciudad fuera del directorio → pide referencia (no dice "no hay cobertura")', !!g1 && g1.texto.includes(R.GUARDIA_MARCA_REFERENCIA) && !/no hay|cobertura/i.test(g1.texto), g1?.texto);
+    const g2 = R.validarListaDelModelo({ respuesta: lista411.replace(/Santa Elena/g, 'Puerto Ayora'), ficha: fichaGal, oficinas, mensajeCliente: 'la del muelle', historialBot: [g1?.texto || ''] });
+    caso('segunda vez → avanza con "por confirmar" y pide el dato que falta', !!g2 && g2.texto.includes(R.GUARDIA_MARCA_PORCONFIRMAR) && /muelle/.test(g2.texto) && /nombre/.test(g2.texto), g2?.texto);
+
+    // E2E cfg 610 (2026-09-08): gpt-5-mini listó oficinas REALES de La Libertad
+    // y Ancón como si fueran de Santa Elena, con un encabezado que termina en
+    // "¿cuál te queda mejor?". El encabezado no es un ítem; los 4 sí, y son de
+    // otra ciudad → se reemplazan por la única real de Santa Elena.
+    const listaOtraCiudad =
+      'Perfecto! En Santa Elena puedes retirar en estas oficinas Servientrega — ¿cuál te queda mejor? 😊\n\n' +
+      '- Sector Barrio 28 De Mayo — DIAGONAL AL SHOPPING LA LIBERTAD BARRIO 28 DE MAYO AV. 12 38 E./ CALLES 11 Y 12 FRENTE A RESTAURANT SAN SEBASTIAN\n' +
+      '- Sector Eleodoro Solorzano — AV ELEODORO SOLORZANO ENTRE CALLE 21-22 DIAGONAL AL PARQUE DE LOS HAMBRIENTOS, FRENTE A PERNIACERO.\n' +
+      '- Sector Jose Tamariz Mora — BARRIO JOSE TAMARIZ MORA AV 6TA Y CALLE 32\n' +
+      '- Sector Barrio Central (ANCÓN) — BARRIO CENTRAL DIAGONAL UPC ZONA CENTRICA';
+    caso('el encabezado con "¿cuál…?" no cuenta como ítem (4 ítems, no 5)', R.itemsOficinaEnRespuesta(listaOtraCiudad).length === 4, String(R.itemsOficinaEnRespuesta(listaOtraCiudad).length));
+    const otraCiudad = R.validarListaDelModelo({ respuesta: listaOtraCiudad, ficha: { ...fichaSE, entrega: 'agencia' }, oficinas, mensajeCliente: 'en agencia' });
+    caso('oficinas reales pero de OTRA ciudad (La Libertad/Ancón) → se reemplazan por la de Santa Elena', !!otraCiudad && /GUAYAQUIL S\/N Y 9 OCTUBRE/.test(otraCiudad.texto) && !/LIBERTAD/.test(otraCiudad.texto), otraCiudad?.texto);
+
+    // E2E cfg 610 (2026-09-08): tras la lista del modelo ("¿Cuál eliges?") y
+    // la confirmación "retiras en …", al pedir el teléfono la guardia volvía a
+    // listar. Una lista del modelo o una confirmación ya cuentan como oferta.
+    const listaModeloCuenca =
+      'Perfecto — te dejo las oficinas cerca del *Monay Shopping* en Cuenca:\n' +
+      '1) Sector Av. Gonzalez Suarez - Monay — AV. GONZALEZ SUAREZ S/N Y PANCHO VILLA 1 REF A UNA CUADRA DEL MONAY SHOPPING\n' +
+      '2) Sector Av. Gil Ramirez Davalos — AV.GIL RAMIREZ DAVALOS Y FRANCISCO PIZARRO N3-89 FRENTE A LA GASOLINERA PYS\n¿Cuál eliges? 😊';
+    caso('una lista del propio modelo cuenta como "ya ofreció"', R.yaOfrecioOficinas(['Gracias!', listaModeloCuenca]));
+    caso('la confirmación "retiras en …" cuenta como oficina resuelta', R.yaOfrecioOficinas(['Perfecto, retiras en Av. Gonzalez Suarez - Monay — AV. GONZALEZ SUAREZ S/N 😊 ¿Tu nombre completo?']));
+    caso('sin listas ni confirmaciones → no ofreció', !R.yaOfrecioOficinas(['¿A qué ciudad te lo enviamos? 📍', `Perfecto, retiro en Cuenca 😊 ${R.GUARDIA_MARCA_SECTOR}`]));
+
+    caso('"¿puedo retirar en agencia?" NO es elegir retiro', !R.eligeRetiroEnMensaje('¿puedo retirar en agencia?') && !R.eligeRetiroEnMensaje('hay agencia en Loja'));
+    caso('"en agencia" / "retiro en oficina" SÍ es elegir retiro', R.eligeRetiroEnMensaje('en agencia') && R.eligeRetiroEnMensaje('retiro en oficina servientrega') && !R.eligeRetiroEnMensaje('a domicilio'));
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.

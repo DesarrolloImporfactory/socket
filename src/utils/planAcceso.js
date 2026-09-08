@@ -35,6 +35,51 @@ const { db } = require('../database/config');
 // pleno horario de ventas a alguien que sí va a pagar.
 const DIAS_GRACIA = 3;
 
+// Estados de Stripe que NO merecen gracia: la suscripción ya no va a cobrar.
+// Es denylist y no allowlist: un status nulo suele ser un registro viejo al
+// que el webhook todavía no le escribió nada, y bloquearlo por eso sería el
+// mismo error que la gracia corrige.
+const STRIPE_STATUS_SIN_GRACIA = new Set([
+  'canceled',
+  'incomplete',
+  'incomplete_expired',
+  'unpaid',
+]);
+
+/**
+ * ¿Este usuario merece la ventana de gracia tras vencer fecha_renovacion?
+ *
+ * El cobro de Stripe nunca cae exactamente en fecha_renovacion: entre el cierre
+ * del ciclo, la finalización de la factura y los reintentos de tarjeta pasan
+ * minutos u horas (o días, si la tarjeta rebota y luego se cobra a mano). Sin
+ * gracia, al cliente que SÍ va a pagar se le bloquea el panel en ese hueco.
+ *
+ * Solo aplica a quien está realmente suscrito y no programó cancelación. El que
+ * no tiene suscripción en Stripe —por ejemplo un Plan Method Ecommerce en sus
+ * meses de cortesía que nunca registró tarjeta— vence de verdad.
+ *
+ * La usan checkPlanActivo (panel) y el login (redirección a /planes): las dos
+ * puertas deben decidir igual, o el cliente rebota en el login aunque el
+ * backend lo hubiera dejado pasar.
+ */
+function tieneGraciaDeCobro(usuario, ahora = new Date()) {
+  if (!usuario?.stripe_subscription_id) return false;
+  if (Number(usuario.cancel_at_period_end) === 1) return false;
+
+  const status = String(usuario.stripe_subscription_status || '')
+    .toLowerCase()
+    .trim();
+  if (STRIPE_STATUS_SIN_GRACIA.has(status)) return false;
+
+  if (!usuario.fecha_renovacion) return false;
+
+  const limite =
+    new Date(usuario.fecha_renovacion).getTime() +
+    DIAS_GRACIA * 24 * 60 * 60 * 1000;
+
+  return ahora.getTime() <= limite;
+}
+
 // Caché en memoria: el bot consulta esto en CADA mensaje entrante.
 const TTL_MS = 60 * 1000;
 const cache = new Map(); // id_configuracion → { at, permitido, motivo }
@@ -147,5 +192,6 @@ module.exports = {
   verificarAccesoAutomatizaciones,
   puedeAutomatizar,
   invalidarAccesoCache,
+  tieneGraciaDeCobro,
   DIAS_GRACIA,
 };
