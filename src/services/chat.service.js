@@ -518,7 +518,17 @@ class ChatService {
                   acc.productos || Number(row.productos) === 1 ? 1 : 0;
                 acc.ecommerce =
                   acc.ecommerce || Number(row.ecommerce) === 1 ? 1 : 0;
-                acc.fecha_suscripcion = row.fecha_suscripcion; // Puedes ajustar esto si quieres la fecha más reciente o alguna lógica específica
+                // Un mismo WhatsApp puede colgar de varios usuarios Imporsuit
+                // (tiendas/plataformas distintas). La membresía vigente es la
+                // de la suscripción más reciente, no la de la última fila.
+                if (
+                  row.fecha_suscripcion &&
+                  (!acc.fecha_suscripcion ||
+                    new Date(row.fecha_suscripcion) >
+                      new Date(acc.fecha_suscripcion))
+                ) {
+                  acc.fecha_suscripcion = row.fecha_suscripcion;
+                }
                 return acc;
               },
               {

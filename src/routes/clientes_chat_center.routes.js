@@ -58,10 +58,7 @@ router.get(
   clientes_chat_centerController.findFullByPhone,
 );
 
-router.get(
-  '/sin_respuesta',
-  clientes_chat_centerController.chatsSinRespuesta,
-);
+router.get('/sin_respuesta', clientes_chat_centerController.chatsSinRespuesta);
 
 router.get(
   '/enlace_orden_contacto',
@@ -71,10 +68,7 @@ router.get(
 // Última ubicación compartida por el cliente en el chat. La usa el panel de
 // pedidos de Aliclik, que cotiza y entrega por lat/lng (no tiene catálogo de
 // ciudades como Dropi).
-router.get(
-  '/ultima_ubicacion',
-  clientes_chat_centerController.ultimaUbicacion,
-);
+router.get('/ultima_ubicacion', clientes_chat_centerController.ultimaUbicacion);
 
 router.post(
   '/listar_contactos_estado',
@@ -101,6 +95,16 @@ router.post(
 router.post(
   '/actualizar_estado_dinamico',
   clientes_chat_centerController.actualizarEstadoDinamico,
+);
+
+// Tableros secundarios del kanban (un contacto puede estar en varios embudos)
+router.post(
+  '/quitar_de_tablero',
+  clientes_chat_centerController.quitarDeTablero,
+);
+router.post(
+  '/estados_tablero_cliente',
+  clientes_chat_centerController.estadosTableroCliente,
 );
 
 router.post(

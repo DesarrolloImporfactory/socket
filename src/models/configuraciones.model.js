@@ -103,6 +103,15 @@ const Configuraciones = db.define(
       type: DataTypes.STRING(40),
       allowNull: true,
     },
+    /* 1 = al cerrar un chat desde /chat el contacto vuelve a la columna
+       principal del kanban (histórico). 0 = se queda en su columna: para
+       embudos de atención sin bot donde cerrar no es retroceder.
+       Se edita en /kanban_config. Ver utils/kanbanConfigCuenta.js. */
+    kanban_volver_al_cerrar: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 1,
+    },
     api_key_gemini: {
       type: DataTypes.STRING(1000),
       allowNull: true,
