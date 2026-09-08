@@ -303,6 +303,122 @@ function normalizarPaginacion({ pagina, limite }) {
   return { pagina: p, limite: l, offset: (p - 1) * l };
 }
 
+// Tope por petición y frescura del detalle. La cuota de Graph es de TODA la
+// app y la comparte WhatsApp, así que abrir la bandeja no puede convertirse en
+// una ráfaga de llamadas: se refrescan unas pocas por vez y el resto cae en la
+// siguiente apertura.
+const TOPE_REFRESCO_POSTS = 8;
+const HORAS_FRESCURA_POSTS = 24;
+
+/**
+ * Rellena el detalle de las publicaciones que aún no lo tienen.
+ *
+ * Los posts se descubren por el webhook `feed`, que sólo trae ids: el texto,
+ * la foto, el permalink y la fecha de publicación hay que pedírselos a Graph.
+ * Esto es la "Fase 2" que menciona asegurarPost().
+ *
+ * Se hace acá —perezosamente, al abrir la bandeja— y NO en la ingesta, porque
+ * el webhook no debe hacer llamadas de red: si una falla, Meta reintenta el
+ * entry completo y se reprocesarían también los mensajes de Messenger que
+ * venían en el mismo lote.
+ *
+ * Un fallo por publicación no rompe la bandeja: se marca el intento igual, para
+ * no reintentar en cada apertura una publicación que el negocio ya borró de
+ * Facebook.
+ */
+async function refrescarDetallePosts({ id_configuracion, posts }) {
+  const pendientes = (posts || [])
+    .filter((p) => {
+      if (!p.detalle_refrescado_at) return true;
+      const horas =
+        (Date.now() - new Date(p.detalle_refrescado_at).getTime()) / 36e5;
+      return horas >= HORAS_FRESCURA_POSTS;
+    })
+    .slice(0, TOPE_REFRESCO_POSTS);
+
+  if (!pendientes.length) return posts;
+
+  // Un token por página, no uno por publicación.
+  const filas = await db.query(
+    `SELECT page_id, page_access_token, fb_app_id
+       FROM messenger_pages
+      WHERE id_configuracion = ? AND status = 'active'`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const paginas = new Map(filas.map((f) => [String(f.page_id), f]));
+
+  await Promise.allSettled(
+    pendientes.map(async (post) => {
+      const pagina = paginas.get(String(post.page_id));
+      if (!pagina?.page_access_token) return;
+
+      try {
+        const proof = appsecretProof(
+          pagina.page_access_token,
+          pagina.fb_app_id,
+        );
+        const { data } = await axios.get(
+          `${GRAPH_BASE}/${encodeURIComponent(post.post_id)}`,
+          {
+            params: {
+              // `story` cubre las publicaciones sin texto propio ("X actualizó
+              // su foto de portada"), que si no salen en blanco en la bandeja.
+              fields:
+                'message,story,permalink_url,created_time,full_picture,attachments{media_type}',
+              access_token: pagina.page_access_token,
+              ...(proof ? { appsecret_proof: proof } : {}),
+            },
+            timeout: 8000,
+          },
+        );
+
+        const detalle = {
+          mensaje: data.message || data.story || '',
+          media_url: data.full_picture || null,
+          permalink_url: data.permalink_url || null,
+          publicado_at: data.created_time ? new Date(data.created_time) : null,
+          tipo: data.attachments?.data?.[0]?.media_type || null,
+        };
+
+        await db.query(
+          `UPDATE facebook_posts
+              SET mensaje = ?, media_url = ?, permalink_url = ?,
+                  publicado_at = ?, tipo = ?, detalle_refrescado_at = NOW()
+            WHERE id_facebook_post = ?`,
+          {
+            replacements: [
+              detalle.mensaje,
+              detalle.media_url,
+              detalle.permalink_url,
+              detalle.publicado_at,
+              detalle.tipo,
+              post.id_facebook_post,
+            ],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+
+        Object.assign(post, detalle);
+      } catch (err) {
+        console.warn(
+          `[FB_COMENTARIOS] sin detalle del post ${post.post_id}: ` +
+            describirErrorMeta(err),
+        );
+        await db.query(
+          `UPDATE facebook_posts SET detalle_refrescado_at = NOW()
+            WHERE id_facebook_post = ?`,
+          {
+            replacements: [post.id_facebook_post],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+      }
+    }),
+  );
+
+  return posts;
+}
+
 /**
  * Publicaciones con actividad, la más reciente primero.
  *
@@ -323,7 +439,7 @@ async function listarPosts({
   const posts = await db.query(
     `SELECT id_facebook_post, page_id, post_id, mensaje, tipo, media_url,
             permalink_url, publicado_at, total_comentarios, sin_responder,
-            ultimo_comentario_at
+            ultimo_comentario_at, detalle_refrescado_at
        FROM facebook_posts
       WHERE id_configuracion = ? ${filtro}
       ORDER BY ultimo_comentario_at DESC, id_facebook_post DESC
@@ -339,6 +455,10 @@ async function listarPosts({
       WHERE id_configuracion = ? ${filtro}`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
+
+  // Rellena texto, foto, permalink y fecha de las que todavía no los tienen.
+  // Muta `posts` en sitio, así que lo de abajo ya sale completo.
+  await refrescarDetallePosts({ id_configuracion, posts });
 
   return {
     posts,
@@ -444,8 +564,10 @@ const appsecretProof = (token, fbAppId) =>
 async function cargarComentarioConToken({ id_configuracion, comment_id }) {
   const [fila] = await db.query(
     `SELECT c.id_facebook_comment, c.id_facebook_post, c.comment_id, c.page_id,
-            c.es_de_la_pagina, c.eliminado_at, c.privado_enviado,
-            p.page_access_token, p.fb_app_id, p.status AS page_status
+            c.post_id, c.es_de_la_pagina, c.eliminado_at, c.privado_enviado,
+            c.parent_comment_id, c.comentado_at,
+            p.page_access_token, p.fb_app_id, p.status AS page_status,
+            p.page_name
        FROM facebook_comments c
        JOIN messenger_pages p
          ON p.page_id = c.page_id
@@ -532,6 +654,56 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
       type: db.QueryTypes.UPDATE,
     },
   );
+  // La respuesta se guarda acá mismo, sin esperar al webhook.
+  //
+  // Meta nos devuelve nuestro propio comentario por el evento `feed`, pero eso
+  // tarda —y si la suscripción se cae, no llega nunca—. Hasta entonces el
+  // agente escribía, veía "enviado" y el hilo seguía igual, así que volvía a
+  // responder pensando que no había salido. Insertándola ya, el recargarHilo()
+  // del front la muestra al instante.
+  //
+  // Cuando el webhook llegue caerá en el ON DUPLICATE KEY de guardarComentario
+  // —la única es (id_configuracion, comment_id)— y sólo refrescará el texto. No
+  // se duplica.
+  //
+  // Va en su propio try y NO relanza: el comentario ya se publicó en Facebook.
+  // Fallar acá haría que el agente viera un error de algo que sí funcionó, y
+  // volvería a escribirlo.
+  if (respuesta_comment_id) {
+    try {
+      await db.query(
+        `INSERT INTO facebook_comments
+           (id_configuracion, id_facebook_post, page_id, post_id, comment_id,
+            parent_comment_id, from_id, from_nombre, mensaje,
+            es_de_la_pagina, comentado_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+         ON DUPLICATE KEY UPDATE
+           mensaje    = VALUES(mensaje),
+           updated_at = NOW()`,
+        {
+          replacements: [
+            id_configuracion,
+            c.id_facebook_post,
+            c.page_id,
+            c.post_id,
+            respuesta_comment_id,
+            c.comment_id,
+            c.page_id, // el autor es la página
+            c.page_name || null,
+            texto,
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+    } catch (err) {
+      console.error(
+        `[FB_COMENT][WARN] respuesta publicada en Facebook pero no guardada ` +
+          `localmente · cfg=${id_configuracion} · ${respuesta_comment_id} · ` +
+          err.message,
+      );
+    }
+  }
+
   await recalcularContadores(c.id_facebook_post);
 
   console.log(
@@ -540,6 +712,45 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
   );
 
   return { respuesta_comment_id, id_facebook_post: c.id_facebook_post };
+}
+
+/**
+ * Traduce los fallos típicos del mensaje privado.
+ *
+ * Meta devuelve el mismo 100/33 —"Object with ID ... does not exist, cannot be
+ * loaded due to missing permissions, or does not support this operation"— para
+ * causas completamente distintas, y en inglés. Volcado tal cual en la bandeja
+ * no le dice nada al agente, que se queda reintentando.
+ *
+ * La causa más frecuente es la ventana de 7 días: pasado ese plazo desde que
+ * se escribió el comentario, Facebook ya no acepta el privado.
+ */
+function describirErrorPrivado(err, { edadDias } = {}) {
+  const m = err.response?.data?.error;
+  if (!m) return err.message;
+
+  if (m.code === 100 && m.error_subcode === 33) {
+    const edad =
+      typeof edadDias === 'number'
+        ? ` El comentario tiene ${edadDias.toFixed(1)} días.`
+        : '';
+    return (
+      'Facebook no acepta el mensaje privado para este comentario.' +
+      edad +
+      ' Solo se puede responder en privado dentro de los 7 días siguientes al' +
+      ' comentario, y solo a comentarios hechos directamente sobre la' +
+      ' publicación (no a respuestas de otros comentarios).'
+    );
+  }
+
+  if (m.code === 10 || m.code === 200) {
+    return (
+      'La página no tiene permiso para enviar mensajes privados. Vuelve a' +
+      ' conectarla en Canal de Conexiones.'
+    );
+  }
+
+  return describirErrorMeta(err);
 }
 
 /**
@@ -612,7 +823,10 @@ async function responderEnPrivado({
     );
     return { privado_mid: data?.id || null };
   } catch (err) {
-    const detalle = describirErrorMeta(err);
+    const edadDias = c.comentado_at
+      ? (Date.now() - new Date(c.comentado_at).getTime()) / 864e5
+      : undefined;
+    const detalle = describirErrorPrivado(err, { edadDias });
     // El error se persiste, no sólo se devuelve: así la bandeja puede mostrar
     // por qué no salió sin que el usuario tenga que reintentar para enterarse.
     await db.query(
