@@ -7,8 +7,23 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const logger = require('../utils/logger');
 
-const FB_APP_ID = process.env.FB_APP_ID;
-const FB_APP_SECRET = process.env.FB_APP_SECRET;
+// Con dos apps de Meta conviviendo, el id/secreto dejan de ser constantes
+// globales: cada conexión de cuenta publicitaria pertenece a UNA app, la que
+// emitió su token, y queda anotada en meta_ad_connections.fb_app_id.
+//
+// Ojo con el alcance: las llamadas de anuncios usan el token del cliente tal
+// cual (Bearer) y NO firman con appsecret_proof, así que la app sólo importa
+// en dos sitios — debug_token y el intercambio del code.
+const {
+  resolveApp,
+  defaultAdsApp,
+} = require('../config/metaApps');
+const crypto = require('crypto');
+
+// El diálogo de OAuth vive en facebook.com, no en graph.facebook.com.
+const GRAPH_DIALOG = `https://www.facebook.com/${
+  process.env.GRAPH_VERSION || 'v22.0'
+}`;
 const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
 const { findAdMatchesForOrders } = require('../cron/capiSenderCron');
 const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
@@ -93,11 +108,14 @@ function assertMeta(resp, label) {
    ads_read/ads_management y Meta responde a /me/adaccounts con
    "(#100) Unsupported get request", que no le dice nada a nadie.
    debug_token es la única forma de ver qué otorgó de verdad. */
-async function inspeccionarToken(userToken) {
+async function inspeccionarToken(userToken, app) {
+  // debug_token exige el token de LA app que emitió el token inspeccionado.
+  // Cruzarlas devuelve un error que no dice qué pasó.
+  const fbApp = app || defaultAdsApp();
   const resp = await axios.get(`${GRAPH_BASE}/debug_token`, {
     params: {
       input_token: userToken,
-      access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
+      access_token: fbApp.appAccessToken,
     },
     validateStatus: () => true,
     timeout: 15000,
@@ -215,6 +233,90 @@ function buildDateParams(query) {
 // 1) CONECTAR AD ACCOUNT
 // ══════════════════════════════════════════════
 
+/**
+ * URL del diálogo de OAuth para conectar una cuenta publicitaria.
+ *
+ * Por qué existe, si el frontend ya sabía hacer esto con FB.login():
+ *
+ * El SDK de JavaScript se inicializa con UNA sola app por página
+ * (`FB.init({appId})`), y en la pantalla de conexiones esa misma instancia la
+ * comparten WhatsApp, Messenger, Instagram y anuncios — las cuatro con
+ * configuraciones de la app histórica. Cambiar ese appId para que anuncios use
+ * la app nueva rompería a las otras tres.
+ *
+ * Con la redirección el problema desaparece: cada integración pide su diálogo
+ * con su propio client_id, sin tocar el SDK compartido. Es además el mismo
+ * patrón que ya usa Messenger.
+ *
+ * Devuelve `url: null` cuando la app de anuncios no tiene configuración de
+ * Business Login — el caso de producción hoy. El frontend lo interpreta como
+ * "sigue con FB.login como siempre", así que este endpoint no cambia nada
+ * mientras no se ponga FB_ADS_APP en el entorno.
+ *
+ * GET /api/v1/meta_ads/login-url?id_configuracion=10&redirect_uri=https://…
+ */
+exports.getAdsLoginUrl = async (req, res) => {
+  try {
+    const { id_configuracion, redirect_uri } = req.query;
+    if (!id_configuracion || !redirect_uri) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y redirect_uri son requeridos',
+      });
+    }
+
+    const fbApp = req.query.fb_app
+      ? resolveApp(req.query.fb_app)
+      : defaultAdsApp();
+
+    if (!fbApp.adsLoginConfigId) {
+      // Sin configuración de anuncios no hay redirección posible. No es un
+      // error: es el entorno diciendo "esta app todavía no migró".
+      return res.json({
+        success: true,
+        url: null,
+        fb_app: fbApp.key,
+        fb_app_id: fbApp.id,
+        motivo: 'sin configuracion de Business Login para anuncios',
+      });
+    }
+
+    // El state identifica el flujo (ads) y la cuenta, para que la pantalla de
+    // retorno sepa qué hacer con el code. Messenger usa `cfg_`; acá `ads_`.
+    const state = `ads_${id_configuracion}_${crypto
+      .randomBytes(8)
+      .toString('hex')}`;
+
+    const url =
+      `${GRAPH_DIALOG}/dialog/oauth` +
+      `?client_id=${encodeURIComponent(fbApp.id)}` +
+      `&redirect_uri=${encodeURIComponent(redirect_uri)}` +
+      `&config_id=${encodeURIComponent(fbApp.adsLoginConfigId)}` +
+      `&response_type=code&override_default_response_type=true` +
+      `&state=${encodeURIComponent(state)}`;
+
+    console.log(
+      `[ADS_CONNECT] login-url · cfg=${id_configuracion} · ` +
+        `app=${fbApp.key}(${fbApp.id}) · config_id=${fbApp.adsLoginConfigId} · ` +
+        `redirect=${redirect_uri}`,
+    );
+
+    return res.json({
+      success: true,
+      url,
+      state,
+      fb_app: fbApp.key,
+      fb_app_id: fbApp.id,
+    });
+  } catch (e) {
+    console.error('[ADS_CONNECT][ERROR] login-url:', e.message);
+    return res.status(500).json({
+      success: false,
+      message: 'No se pudo construir la URL de conexión.',
+    });
+  }
+};
+
 exports.conectarAdAccount = async (req, res) => {
   try {
     const {
@@ -224,7 +326,12 @@ exports.conectarAdAccount = async (req, res) => {
       redirect_uri,
       ad_account_id,
       access_token: providedToken,
+      fb_app,
     } = req.body;
+
+    // App con la que se abre esta conexión. El front puede forzarla con
+    // `fb_app`; si no, manda FB_ADS_APP del entorno (legacy en producción).
+    const fbApp = fb_app ? resolveApp(fb_app) : defaultAdsApp();
 
     if (ad_account_id && providedToken && id_configuracion) {
       const ax = metaAx(providedToken);
@@ -244,12 +351,13 @@ exports.conectarAdAccount = async (req, res) => {
       if (existing.length) {
         await db.query(
           `UPDATE meta_ad_connections SET
-             access_token = ?, ad_account_name = ?, currency = ?,
+             access_token = ?, fb_app_id = ?, ad_account_name = ?, currency = ?,
              timezone_name = ?, account_status = ?, status = 'active', updated_at = NOW()
            WHERE id_configuracion = ? AND ad_account_id = ?`,
           {
             replacements: [
               providedToken,
+              fbApp.id,
               acct.name,
               acct.currency,
               acct.timezone_name,
@@ -262,8 +370,8 @@ exports.conectarAdAccount = async (req, res) => {
       } else {
         await db.query(
           `INSERT INTO meta_ad_connections
-             (id_configuracion, id_usuario, ad_account_id, ad_account_name, access_token, currency, timezone_name, account_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id_configuracion, id_usuario, ad_account_id, ad_account_name, access_token, fb_app_id, currency, timezone_name, account_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           {
             replacements: [
               id_configuracion,
@@ -271,6 +379,7 @@ exports.conectarAdAccount = async (req, res) => {
               ad_account_id,
               acct.name,
               providedToken,
+              fbApp.id,
               acct.currency,
               acct.timezone_name,
               acct.account_status,
@@ -297,15 +406,19 @@ exports.conectarAdAccount = async (req, res) => {
     let userToken;
     try {
       const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-        params: { client_id: FB_APP_ID, client_secret: FB_APP_SECRET, code },
+        params: {
+          client_id: fbApp.id,
+          client_secret: fbApp.secret,
+          code,
+        },
       });
       userToken = tokenResp.data?.access_token;
     } catch (e1) {
       try {
         const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
           params: {
-            client_id: FB_APP_ID,
-            client_secret: FB_APP_SECRET,
+            client_id: fbApp.id,
+            client_secret: fbApp.secret,
             code,
             redirect_uri:
               redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
@@ -326,7 +439,7 @@ exports.conectarAdAccount = async (req, res) => {
     const ax = metaAx(userToken);
 
     // Qué otorgó realmente el usuario (ver inspeccionarToken)
-    const info = await inspeccionarToken(userToken).catch(() => null);
+    const info = await inspeccionarToken(userToken, fbApp).catch(() => null);
     const permisosAds = (info?.scopes || []).filter((s) =>
       ['ads_read', 'ads_management'].includes(s),
     );

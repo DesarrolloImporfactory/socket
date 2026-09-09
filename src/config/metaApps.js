@@ -10,9 +10,14 @@
  * legible — da un 401 de firma inválida o un `appsecret_proof` que Meta
  * rechaza sin decir por qué.
  *
- * WhatsApp, Instagram y Meta Ads siguen en la app `legacy` y no se tocan:
- * mover una WABA de app es una migración con Meta de por medio, no un cambio
- * de variable de entorno.
+ * WhatsApp e Instagram siguen en la app `legacy` y no se tocan: mover una
+ * WABA de app es una migración con Meta de por medio, no un cambio de variable
+ * de entorno.
+ *
+ * Meta Ads sí puede moverse, y por eso tiene su propio interruptor
+ * (`FB_ADS_APP`) separado del de Messenger: son dos integraciones distintas,
+ * con configuraciones de Business Login distintas, y no tienen por qué migrar
+ * a la vez.
  */
 
 const crypto = require('crypto');
@@ -21,7 +26,7 @@ const crypto = require('crypto');
 const LEGACY = 'legacy';
 const MESSENGER = 'messenger';
 
-function build(key, idEnv, secretEnv, loginConfigEnv) {
+function build(key, idEnv, secretEnv, loginConfigEnv, adsConfigEnv) {
   const id = process.env[idEnv];
   const secret = process.env[secretEnv];
   if (!id || !secret) return null;
@@ -30,6 +35,11 @@ function build(key, idEnv, secretEnv, loginConfigEnv) {
     id: String(id),
     secret,
     loginConfigId: process.env[loginConfigEnv] || null,
+    /** Config de Business Login para anuncios. Es OTRA distinta de la de
+     *  Messenger: pide ads_management/ads_read/pages_manage_ads. */
+    adsLoginConfigId: adsConfigEnv
+      ? process.env[adsConfigEnv] || null
+      : null,
     /** Token de app (`id|secreto`), para endpoints que no usan token de usuario. */
     appAccessToken: `${id}|${secret}`,
   };
@@ -41,12 +51,14 @@ const REGISTRY = {
     'FB_APP_ID',
     'FB_APP_SECRET',
     'FB_LOGIN_CONFIG_ID',
+    'FB_ADS_LOGIN_CONFIG_ID',
   ),
   [MESSENGER]: build(
     MESSENGER,
     'FB_MS_APP_ID',
     'FB_MS_APP_SECRET',
     'FB_MS_LOGIN_CONFIG_ID',
+    'FB_MS_ADS_LOGIN_CONFIG_ID',
   ),
 };
 
@@ -91,6 +103,27 @@ function defaultMessengerApp() {
  * correcto para las 13 páginas que se conectaron antes de que existiera la
  * columna `fb_app_id` y la tienen en NULL.
  */
+/**
+ * App con la que se abren las conexiones NUEVAS de Meta Ads.
+ *
+ * Separada de defaultMessengerApp a propósito: Messenger y anuncios son dos
+ * integraciones con configuraciones de Business Login distintas, y se migran
+ * por separado. Si `FB_ADS_APP` no está puesta —el caso de producción— se
+ * queda en la app histórica y no cambia nada.
+ */
+function defaultAdsApp() {
+  const pedida = (process.env.FB_ADS_APP || LEGACY).trim().toLowerCase();
+  const app = REGISTRY[pedida];
+  if (app) return app;
+  if (pedida !== LEGACY) {
+    console.warn(
+      `[META_APPS] FB_ADS_APP="${pedida}" pero esa app no está configurada ` +
+        `(faltan FB_MS_APP_ID/FB_MS_APP_SECRET). Se usa "${LEGACY}".`,
+    );
+  }
+  return legacyApp();
+}
+
 function resolveApp(keyOrId) {
   if (!keyOrId) return legacyApp();
   const v = String(keyOrId).trim().toLowerCase();
@@ -124,6 +157,7 @@ module.exports = {
   listApps,
   legacyApp,
   defaultMessengerApp,
+  defaultAdsApp,
   resolveApp,
   isOwnAppId,
   appSecretProof,
