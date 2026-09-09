@@ -26,6 +26,7 @@ const {
   normalizePhoneNumber,
   generatePhoneVariations,
 } = require('../utils/phoneUtils');
+const { reactivarMetodoPagoSiCorresponde } = require('../utils/metaPagoStatus');
 const UsuarioPlataforma = require('../models/usuario_plataforma.model');
 const { logging } = require('googleapis/build/src/apis/logging');
 class ChatService {
@@ -607,6 +608,17 @@ class ChatService {
           'meta_business_id',
         ],
       });
+
+      /* Antes de que el front muestre "Acción requerida en Meta": si el
+         cliente ya arregló la facturación, Meta lo confirma acá y el aviso no
+         sale (candado de 10 min por cuenta, ver utils/metaPagoStatus). Muta
+         configuraciones.metodo_pago a 1 cuando reactiva. */
+      if (configuraciones && Number(configuraciones.metodo_pago) === 0) {
+        await reactivarMetodoPagoSiCorresponde(
+          configuraciones,
+          'GET_DATA_ADMIN',
+        );
+      }
 
       return configuraciones;
     } catch (error) {

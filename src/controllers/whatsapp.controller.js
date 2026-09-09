@@ -36,6 +36,7 @@ const {
 } = require('../utils/encuestaTemplateLink');
 
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
+const { comprobarYReactivarMetodoPago } = require('../utils/metaPagoStatus');
 const {
   obtenerDefinicionPorNombre,
   precargarTemplatesDelWaba,
@@ -1585,6 +1586,87 @@ exports.editarConfiguracionCalendario = async (req, res) => {
   }
 };
 
+/* "Ya lo corregí en Meta": comprueba el estado real de la cuenta con
+   health_status y reactiva metodo_pago si Meta deja enviar. Espejo de
+   openai_reintentar: mismos campos (ok, motivo, mensaje) para que el front
+   reutilice el flujo del aviso. */
+exports.metodoPagoReintentar = async (req, res) => {
+  const id_configuracion =
+    req.body?.id_configuracion || req.query?.id_configuracion;
+
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ success: false, message: 'Falta el campo id_configuracion' });
+  }
+
+  try {
+    const [row] = await db.query(
+      `SELECT id, id_telefono, id_whatsapp, token, metodo_pago
+         FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    if (!row) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Configuración no encontrada' });
+    }
+
+    // Ya lo reactivó otra cosa: el webhook, u otra pestaña abierta.
+    if (Number(row.metodo_pago) === 1) {
+      return res.json({
+        status: 200,
+        success: true,
+        ok: true,
+        motivo: 'ya_activo',
+        mensaje: 'Tu cuenta de WhatsApp ya está enviando con normalidad.',
+      });
+    }
+
+    const veredicto = await comprobarYReactivarMetodoPago(
+      row,
+      'boton_reintentar',
+    );
+
+    if (veredicto.ok) {
+      return res.json({
+        status: 200,
+        success: true,
+        ok: true,
+        motivo: 'reactivado',
+        mensaje:
+          'Listo, Meta confirma que tu cuenta de WhatsApp vuelve a enviar mensajes.',
+      });
+    }
+
+    const MENSAJES = {
+      bloqueado:
+        'Meta todavía reporta la cuenta bloqueada para enviar. Si acabas de corregir la facturación, puede tardar unos minutos en reflejarse.',
+      sin_conexion:
+        'Esta conexión no tiene WhatsApp vinculado, así que no hay nada que comprobar en Meta.',
+      indeterminado:
+        'No pudimos consultar el estado de tu cuenta en Meta en este momento.',
+    };
+
+    return res.json({
+      status: 200,
+      success: true,
+      ok: false,
+      motivo: veredicto.motivo,
+      mensaje: MENSAJES[veredicto.motivo] || MENSAJES.indeterminado,
+      detalle: veredicto.detalle || null,
+    });
+  } catch (error) {
+    console.error('Error al reintentar el método de pago', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor.',
+      error: error.message,
+    });
+  }
+};
+
 exports.actualizarMetodoPago = async (req, res) => {
   const { metodo_pago, id } = req.body;
 
@@ -2785,7 +2867,9 @@ exports.prepararHeaderMasivo = async (req, res) => {
     let header_default_asset = null;
     if (rawDefault) {
       header_default_asset =
-        typeof rawDefault === 'object' ? rawDefault : parseMaybeJSON(rawDefault);
+        typeof rawDefault === 'object'
+          ? rawDefault
+          : parseMaybeJSON(rawDefault);
     }
 
     if (req.file) {
@@ -3914,9 +3998,7 @@ exports.programarTemplateMasivo = async (req, res) => {
           .filter((c) => String(c?.type || '').toLowerCase() === 'button')
           .sort((a, b) => Number(a?.index ?? 0) - Number(b?.index ?? 0));
         for (const bc of btnComps) {
-          const first = Array.isArray(bc?.parameters)
-            ? bc.parameters[0]
-            : null;
+          const first = Array.isArray(bc?.parameters) ? bc.parameters[0] : null;
           template_parameters.push(String(first?.text ?? first?.value ?? ''));
         }
       }
@@ -4003,8 +4085,7 @@ exports.programarTemplateMasivo = async (req, res) => {
       ) &&
       !scheduledHeaderInfo.header_media_url &&
       !(
-        header_media_por_cliente &&
-        Object.keys(header_media_por_cliente).length
+        header_media_por_cliente && Object.keys(header_media_por_cliente).length
       )
     ) {
       await t.rollback();
@@ -4031,9 +4112,7 @@ exports.programarTemplateMasivo = async (req, res) => {
        después. Mejor rechazar aquí con el motivo. Best-effort: si Meta no
        responde la definición, no se bloquea el lote. */
     try {
-      const {
-        obtenerTextoPlantilla,
-      } = require('../services/whatsapp.service');
+      const { obtenerTextoPlantilla } = require('../services/whatsapp.service');
       const def = await obtenerTextoPlantilla(
         nombre_template,
         cfg.ACCESS_TOKEN,
@@ -4055,7 +4134,10 @@ exports.programarTemplateMasivo = async (req, res) => {
           `${nBotones} del botón). Complete el valor del botón o programe ` +
           `desde Flujos masivos, que lo llena automáticamente.`;
 
-        if (parametros_por_cliente && typeof parametros_por_cliente === 'object') {
+        if (
+          parametros_por_cliente &&
+          typeof parametros_por_cliente === 'object'
+        ) {
           const cortos = Object.values(parametros_por_cliente).filter(
             (arr) => !Array.isArray(arr) || arr.length < esperado,
           ).length;
@@ -4174,8 +4256,7 @@ exports.programarTemplateMasivo = async (req, res) => {
         ? JSON.stringify(header_parameters)
         : null,
       header_media_url:
-        (header_media_por_cliente &&
-          header_media_por_cliente[String(c.id)]) ||
+        (header_media_por_cliente && header_media_por_cliente[String(c.id)]) ||
         scheduledHeaderInfo.header_media_url ||
         null,
       header_media_name: scheduledHeaderInfo.header_media_name || null,

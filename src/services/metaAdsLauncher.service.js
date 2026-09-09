@@ -242,6 +242,10 @@ async function lanzarPaquete({ conn, cfg }) {
     objective: 'OUTCOME_ENGAGEMENT',
     buying_type: 'AUCTION',
     special_ad_categories: [],
+    // El presupuesto vive en el conjunto (no hay presupuesto de campaña / CBO).
+    // Desde Graph v25 Meta exige declarar este flag en ese caso; con un solo
+    // conjunto por campaña el reparto entre conjuntos no aplica -> false.
+    is_adset_budget_sharing_enabled: false,
     status,
   });
   const campaign_id = assertMeta(campResp, 'crear campaña').id;
