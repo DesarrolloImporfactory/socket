@@ -453,7 +453,7 @@ async function generarUsernameUnico(base, transaction = null) {
  * suyo.
  */
 const PLAN_CORTESIA_ESTUDIANTE = 21;
-const MESES_CORTESIA_ESTUDIANTE = 2;
+const MESES_CORTESIA_ESTUDIANTE = 3;
 
 const aplicarPlanCortesiaEstudiante = async (email) => {
   if (!email) return null;
@@ -717,12 +717,11 @@ exports.newLogin = async (req, res) => {
 
             return res.status(200).json({
               status: 'success',
-              estado_creacion:
-                tieneCortesiaEstudiante
+              estado_creacion: tieneCortesiaEstudiante
+                ? 'completo'
+                : usuarioExistentePorEmail.estado === 'activo'
                   ? 'completo'
-                  : usuarioExistentePorEmail.estado === 'activo'
-                    ? 'completo'
-                    : 'incompleto',
+                  : 'incompleto',
               token: sessionToken,
               user: subUserSinPassword,
               id_plataforma: tienda,
@@ -951,12 +950,11 @@ exports.newLogin = async (req, res) => {
             }
           }
 
-          estado_creacion =
-            tieneCortesiaEstudiante
+          estado_creacion = tieneCortesiaEstudiante
+            ? 'completo'
+            : usuarios_chat_center.estado === 'activo'
               ? 'completo'
-              : usuarios_chat_center.estado === 'activo'
-                ? 'completo'
-                : 'incompleto';
+              : 'incompleto';
 
           const sessionToken = await generarToken(id_sub_usuario_encontrado);
           const usuarioPlano = usuarioEncontrado.toJSON();
