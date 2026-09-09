@@ -293,7 +293,24 @@ exports.guardarPlantilla = async (req, res) => {
     }
 
     if (id) {
-      const [result] = await db.query(
+      // La existencia se comprueba con un SELECT y no con affectedRows del
+      // UPDATE: Sequelize abre MySQL con -FOUND_ROWS, así que affectedRows
+      // cuenta filas CAMBIADAS, no coincidentes. Reguardar una plantilla sin
+      // tocar nada (editar → paso 4 → lanzar) devolvía 0 y caía en el 404.
+      const [existe] = await db.query(
+        `SELECT id FROM meta_ads_plantillas
+          WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
+        {
+          replacements: [id, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      if (!existe) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'Plantilla no encontrada.' });
+      }
+      await db.query(
         `UPDATE meta_ads_plantillas SET
            nombre = ?, id_producto = ?, page_id = ?, page_name = ?,
            presupuesto_diario = ?, paises = ?, geo_json = ?, edad_min = ?,
@@ -313,11 +330,6 @@ exports.guardarPlantilla = async (req, res) => {
           ],
         },
       );
-      if (!result || result.affectedRows === 0) {
-        return res
-          .status(404)
-          .json({ success: false, message: 'Plantilla no encontrada.' });
-      }
       return res.json({ success: true, id });
     }
 
