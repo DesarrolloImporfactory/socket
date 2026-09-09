@@ -66,6 +66,9 @@ const subirMediaAdHandler = (req, res, next) => {
 };
 
 // ── Conexión / Desconexión ──
+// Devuelve la URL del diálogo de OAuth, o url:null si la app de anuncios
+// todavía no migró (entonces el front sigue con FB.login).
+router.get('/login-url', metaAdsCtrl.getAdsLoginUrl);
 router.post('/conectar', metaAdsCtrl.conectarAdAccount);
 router.post('/desconectar', metaAdsCtrl.desconectarAdAccount);
 router.get('/conexion', metaAdsCtrl.obtenerConexion); // ?id_configuracion=

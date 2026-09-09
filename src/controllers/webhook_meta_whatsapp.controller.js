@@ -13,6 +13,10 @@ const Errores_chat_meta = require('../models/errores_chat_meta.model');
 const logger = require('../utils/logger');
 const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { reclamarWamid } = require('../utils/dedupeWamid');
+const {
+  reactivarMetodoPagoSiCorresponde,
+  olvidarComprobacion,
+} = require('../utils/metaPagoStatus');
 const { extraerUrlsMedia } = require('../utils/urlsMedia');
 const dashboardEmitter = require('./dashboardEmitter');
 
@@ -44,9 +48,7 @@ const {
 
 // Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
 // columnas del flujo Dropi que no tienen agente.
-const {
-  intentarRespuestaLogistica,
-} = require('../utils/respondedorLogistico');
+const { intentarRespuestaLogistica } = require('../utils/respondedorLogistico');
 
 // Lectura de imágenes del cliente (equivalente visual de la transcripción)
 const {
@@ -395,6 +397,21 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         const messageStatus = status?.status || '';
         const error = status?.errors?.[0];
 
+        /* Un status bueno con metodo_pago = 0 es la señal de que el cliente
+           pudo haber arreglado la facturación: se comprueba contra Meta
+           (health_status, con candado de 10 min) y se reactiva sola, sin que
+           nadie toque el switch. Sin await: no frena el procesamiento. */
+        if (
+          !error &&
+          ['sent', 'delivered', 'read'].includes(messageStatus) &&
+          Number(configuracion.metodo_pago) === 0
+        ) {
+          reactivarMetodoPagoSiCorresponde(
+            configuracion,
+            `webhook:${messageStatus}`,
+          );
+        }
+
         // ✅ Entregado al teléfono del cliente
         if (messageStatus === 'delivered') {
           await MensajeCliente.update(
@@ -440,6 +457,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               { metodo_pago: 0 },
               { where: { id: id_configuracion } },
             );
+            configuracion.metodo_pago = 0;
+            // Se suelta el candado: el próximo status bueno comprueba de una.
+            olvidarComprobacion(id_configuracion);
             break;
 
           case 131026: {
@@ -942,28 +962,28 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_configuracion == 324 ||
           id_configuracion == 476
         ) { */
-          // Buscar el producto exacto en la BD
-          /* El source_id habilita el nivel 0 del resolver (el mapa
+        // Buscar el producto exacto en la BD
+        /* El source_id habilita el nivel 0 del resolver (el mapa
              anuncio→producto): es lo único que resuelve los títulos de puro
              marketing, que no contienen ningún nombre de producto. */
-          const bloqueProducto = await buscarProductoPorReferral(
-            id_configuracion,
-            headline,
-            referral.source_id || null,
-          );
+        const bloqueProducto = await buscarProductoPorReferral(
+          id_configuracion,
+          headline,
+          referral.source_id || null,
+        );
 
-          if (bloqueProducto) {
-            // El producto va como instrucción del run (NO contamina el thread)
-            bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
+        if (bloqueProducto) {
+          // El producto va como instrucción del run (NO contamina el thread)
+          bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
 
           ${bloqueProducto}
 
           INSTRUCCIÓN: Estos son los datos EXACTOS del producto del anuncio. Usa SOLO estos precios y URLs para este producto. Si el cliente pregunta por CUALQUIER OTRO producto distinto, usa tu catálogo (file_search) normalmente.`;
-          } else {
-            // Fallback: no encontró el producto en BD, manda solo el nombre del ad
-            bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
+        } else {
+          // Fallback: no encontró el producto en BD, manda solo el nombre del ad
+          bloque_producto_referral = `[ORIGEN DEL CLIENTE: vino de un anuncio del producto "${headline}"]
             No se encontró este producto exacto en el catálogo. Búscalo en tu catálogo (file_search) por ese nombre.`;
-          }
+        }
         /* } */
 
         const body_ad = referral.body || '';
@@ -1409,7 +1429,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             await fsp.appendFile(
               path.join(logsDir, 'debug_log.txt'),
               `[${new Date().toISOString()}] ${
-                descripcion ? '🖼️ Imagen descrita' : '⚠️ No se pudo leer la imagen'
+                descripcion
+                  ? '🖼️ Imagen descrita'
+                  : '⚠️ No se pudo leer la imagen'
               }: ${texto_mensaje}\n`,
             );
           }

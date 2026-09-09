@@ -3,6 +3,7 @@ const multer = require('multer');
 const router = express.Router();
 
 const whatsappCtrl = require('../controllers/whatsapp.controller');
+const { protect } = require('../middlewares/auth.middleware');
 
 /* ────────────────────────────────────────────────
    Multer (memoria) + wrapper de errores limpio
@@ -87,6 +88,15 @@ router.put(
   whatsappCtrl.editarConfiguracionCalendario,
 );
 router.put('/actualizarMetodoPago', whatsappCtrl.actualizarMetodoPago);
+/* "Ya lo corregí en Meta": comprueba health_status y reactiva metodo_pago.
+   Con protect —a diferencia del resto de este router— porque dispara una
+   llamada a Graph con el token del cliente y no debe poder repetirse sin
+   sesión. */
+router.post(
+  '/metodoPagoReintentar',
+  protect,
+  whatsappCtrl.metodoPagoReintentar,
+);
 router.post('/obtenerConfiguracion', whatsappCtrl.obtenerConfiguracion);
 router.post(
   '/configuracionesAutomatizador',

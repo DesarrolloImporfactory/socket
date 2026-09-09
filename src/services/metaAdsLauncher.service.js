@@ -12,8 +12,10 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-const FB_APP_ID = process.env.FB_APP_ID;
-const FB_APP_SECRET = process.env.FB_APP_SECRET;
+// La app se resuelve por conexión (meta_ad_connections.fb_app_id), no por
+// entorno: las conexiones anteriores a la app nueva tienen la columna en NULL
+// y resolveApp las manda a la app histórica, que es la que emitió su token.
+const { resolveApp } = require('../config/metaApps');
 const GRAPH_BASE = `https://graph.facebook.com/${process.env.GRAPH_VERSION}`;
 
 const ACT = (id) => (String(id).startsWith('act_') ? String(id) : `act_${id}`);
@@ -240,6 +242,10 @@ async function lanzarPaquete({ conn, cfg }) {
     objective: 'OUTCOME_ENGAGEMENT',
     buying_type: 'AUCTION',
     special_ad_categories: [],
+    // El presupuesto vive en el conjunto (no hay presupuesto de campaña / CBO).
+    // Desde Graph v25 Meta exige declarar este flag en ese caso; con un solo
+    // conjunto por campaña el reparto entre conjuntos no aplica -> false.
+    is_adset_budget_sharing_enabled: false,
     status,
   });
   const campaign_id = assertMeta(campResp, 'crear campaña').id;
@@ -431,7 +437,8 @@ async function listarPaginasDelToken(conn) {
       const dbg = await axios.get(`${GRAPH_BASE}/debug_token`, {
         params: {
           input_token: conn.access_token,
-          access_token: `${FB_APP_ID}|${FB_APP_SECRET}`,
+          // Token de app de la MISMA app que emitió conn.access_token.
+          access_token: resolveApp(conn.fb_app_id).appAccessToken,
         },
         validateStatus: () => true,
         timeout: 15000,
