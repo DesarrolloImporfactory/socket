@@ -22,6 +22,9 @@ async function getAdConnection(id_configuracion) {
 }
 
 const PAISES_VALIDOS = /^[A-Z]{2}$/;
+// Tope de creativos por plantilla (= anuncios por conjunto). Debe coincidir
+// con MAX_IMAGENES del wizard del front.
+const MAX_CREATIVOS = 10;
 
 /* Normaliza y valida el cuerpo de una plantilla. Devuelve { ok, cfg | msg }. */
 function normalizarPlantilla(body) {
@@ -63,6 +66,9 @@ function normalizarPlantilla(body) {
         key: String(l.key).slice(0, 32),
         name: String(l.name || '').slice(0, 120),
         type: l.type,
+        country_code: l.country_code
+          ? String(l.country_code).slice(0, 2).toUpperCase()
+          : null,
       }))
       .slice(0, 25);
     if (!lugares.length) {
@@ -72,11 +78,26 @@ function normalizarPlantilla(body) {
       };
     }
   }
+  // Zonas excluidas (provincias/ciudades donde NO se muestra el anuncio).
+  // Aplica en los dos modos: "todo Ecuador menos Galápagos" o "Pichincha
+  // menos Cayambe". Van a excluded_geo_locations del conjunto.
+  const incluidas = new Set(lugares.map((l) => l.key));
+  const excluir = (Array.isArray(geo?.excluir) ? geo.excluir : [])
+    .filter((l) => l && l.key && ['region', 'city'].includes(l.type))
+    .filter((l) => !incluidas.has(String(l.key)))
+    .map((l) => ({
+      key: String(l.key).slice(0, 32),
+      name: String(l.name || '').slice(0, 120),
+      type: l.type,
+      country_code: l.country_code
+        ? String(l.country_code).slice(0, 2).toUpperCase()
+        : null,
+    }))
+    .slice(0, 25);
 
-  // Hasta 6 creativos (imágenes o videos) = hasta 6 anuncios en el mismo
-  // conjunto. Meta recomienda máximo ~6 activos por conjunto para no romper
-  // la fase de aprendizaje. El primero queda también en imagen_hash/
-  // imagen_url por compatibilidad.
+  // Hasta 10 creativos (imágenes o videos) = hasta 10 anuncios en el mismo
+  // conjunto. El primero queda también en imagen_hash/imagen_url por
+  // compatibilidad.
   const imagenes = (Array.isArray(body.imagenes) ? body.imagenes : [])
     .map((i) => {
       if (i?.tipo === 'video' && i.video_id) {
@@ -97,7 +118,7 @@ function normalizarPlantilla(body) {
       return null;
     })
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, MAX_CREATIVOS);
 
   const edad_min = Math.max(18, Math.min(65, Number(body.edad_min) || 18));
   const edad_max = Math.max(edad_min, Math.min(65, Number(body.edad_max) || 65));
@@ -122,7 +143,7 @@ function normalizarPlantilla(body) {
       page_name: body.page_name ? String(body.page_name).slice(0, 255) : null,
       presupuesto_diario: Math.round(presupuesto * 100) / 100,
       paises: paises.join(','),
-      geo_json: JSON.stringify({ modo, paises, lugares }),
+      geo_json: JSON.stringify({ modo, paises, lugares, excluir }),
       edad_min,
       edad_max,
       genero,
@@ -722,6 +743,42 @@ exports.buscarGeo = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'No se pudo buscar la zona. Inténtalo de nuevo.',
+      meta_error: err.meta_error || err.message,
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 4c) INFO DE UN VIDEO subido a la cuenta (fuente reproducible + miniatura)
+// ══════════════════════════════════════════════
+// Los videos viven en la cuenta publicitaria y Meta no da una URL estable:
+// `source` es un enlace temporal del CDN. Sirve para la vista previa del
+// wizard y de la tarjeta, y para recuperar la miniatura cuando el video
+// seguía procesándose al subirlo.
+exports.videoInfo = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    const video_id = String(req.query.video_id || '').replace(/\D/g, '');
+    if (!id_configuracion || !video_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y video_id requeridos.',
+      });
+    }
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+    const data = await launcher.obtenerInfoVideo(conn, video_id);
+    return res.json({ success: true, data });
+  } catch (err) {
+    logger.error(`launcher videoInfo: ${err.message}`);
+    return res.status(500).json({
+      success: false,
+      message: 'No se pudo obtener el video desde Meta.',
       meta_error: err.meta_error || err.message,
     });
   }

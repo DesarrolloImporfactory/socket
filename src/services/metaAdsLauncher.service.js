@@ -108,6 +108,24 @@ async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
   return null;
 }
 
+/* Fuente reproducible + miniatura de un video de la cuenta. `source` es un
+   enlace temporal del CDN de Meta (dura horas, no días): se pide cada vez
+   que se abre la vista previa y no se guarda en la plantilla. */
+async function obtenerInfoVideo(conn, video_id) {
+  const ax = metaAx(conn.access_token);
+  const r = await ax.get(`${GRAPH_BASE}/${video_id}`, {
+    params: { fields: 'source,picture,status,length' },
+  });
+  const data = assertMeta(r, 'video info');
+  return {
+    video_id: String(video_id),
+    source: data?.source || null,
+    picture: data?.picture || null,
+    status: data?.status?.video_status || null,
+    length: data?.length || null,
+  };
+}
+
 /* Offset UTC de la zona horaria de la cuenta publicitaria (ej. "-05:00"
    para America/Guayaquil). La hora programada se interpreta en la hora
    local del cliente, no en UTC. */
@@ -146,8 +164,24 @@ function construirTargeting(cfg) {
     geo_locations = { countries: geo.paises };
   }
 
+  // Zonas excluidas (provincias/ciudades): "todo el país menos X".
+  let excluded_geo_locations;
+  const excluir = Array.isArray(geo.excluir) ? geo.excluir : [];
+  if (excluir.length) {
+    const exRegions = excluir
+      .filter((l) => l.type === 'region')
+      .map((l) => ({ key: String(l.key) }));
+    const exCities = excluir
+      .filter((l) => l.type === 'city')
+      .map((l) => ({ key: String(l.key) }));
+    excluded_geo_locations = {};
+    if (exRegions.length) excluded_geo_locations.regions = exRegions;
+    if (exCities.length) excluded_geo_locations.cities = exCities;
+  }
+
   const targeting = {
     geo_locations,
+    ...(excluded_geo_locations ? { excluded_geo_locations } : {}),
     age_min: cfg.edad_min,
     age_max: cfg.edad_max,
     // Sin esta bandera explícita las versiones nuevas de la API rechazan el
@@ -273,7 +307,7 @@ async function lanzarPaquete({ conn, cfg }) {
     const adsetResp = await ax.post(`${GRAPH_BASE}/${act}/adsets`, adsetPayload);
     const adset_id = assertMeta(adsetResp, 'crear conjunto').id;
 
-    // 3-4) Un anuncio por imagen (hasta 5 variaciones dentro del mismo
+    // 3-4) Un anuncio por creativo (hasta 10 variaciones dentro del mismo
     // conjunto): Meta reparte el presupuesto entre ellas y concentra el
     // gasto en el creativo ganador — la práctica estándar del Ads Manager.
     const linkDataBase = {
@@ -291,7 +325,7 @@ async function lanzarPaquete({ conn, cfg }) {
       Array.isArray(cfg.creativos) && cfg.creativos.length
         ? cfg.creativos
         : [{ tipo: 'imagen', hash: cfg.imagen_hash }]
-    ).slice(0, 6);
+    ).slice(0, 10);
 
     let usarWelcome = !!cfg.mensaje_bienvenida;
     const ads = [];
@@ -564,6 +598,7 @@ module.exports = {
   subirImagen,
   subirVideo,
   obtenerMiniaturaVideo,
+  obtenerInfoVideo,
   lanzarPaquete,
   listarPaginasDelToken,
   obtenerTitularToken,

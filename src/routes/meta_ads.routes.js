@@ -123,6 +123,7 @@ router.post(
 );
 router.post('/launcher/lanzar', protect, launcherCtrl.lanzar);
 router.get('/launcher/geo/buscar', protect, launcherCtrl.buscarGeo);
+router.get('/launcher/media/video', protect, launcherCtrl.videoInfo); // ?id_configuracion=&video_id=
 router.get('/launcher/lanzamientos', protect, launcherCtrl.listarLanzamientos);
 
 // ── Reglas automáticas (motor propio de Imporchat) ──
