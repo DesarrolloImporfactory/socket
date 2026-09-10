@@ -33,6 +33,7 @@ const {
 } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { resolverLugarRetiro } = require('../utils/lugarRetiroAgencia');
+const { esRetiroEnOrigen } = require('../utils/retiroEnOrigen');
 
 /* ═══════════════════════════════════════════════════════════
    Constantes
@@ -1469,6 +1470,26 @@ async function procesarTemplates({
         );
         omitidos++;
         continue;
+      }
+
+      /* "PARA RETIRO EN AGENCIA" recién despachado: Dropi manda ese estado
+         también cuando el PROVEEDOR deja el paquete en su agencia de origen
+         (Servientrega registra "Ingresando en Agencia" igual que en destino).
+         Sin esto, la plantilla de retiro salía apenas despachaban y apuntaba
+         a la agencia del proveedor (cfg 841, orden 6923831: cliente en
+         Cotacachi avisado de retirar en GUAYAQUIL - MALL DEL FORTIN). Va
+         ANTES del "solo mover" y del reclamo: no se avisa, no se mueve el
+         chat y no queda reclamo, así el retiro real (si llega) sí sale.
+         Aplica al cron y al webhook. Ver utils/retiroEnOrigen.js. */
+      if (estadoConfig === 'RETIRO EN AGENCIA') {
+        const origen = await esRetiroEnOrigen({ order, country_code });
+        if (origen.enOrigen) {
+          console.log(
+            `[dropi-notifier] orden ${order.id} (cfg ${id_configuracion}): "${order.status}" es el despacho en la agencia de ORIGEN (${origen.fuente}: ${origen.detalle}) → no se avisa ni se mueve el chat`,
+          );
+          omitidos++;
+          continue;
+        }
       }
 
       if (estadoConfig === 'ENTREGADA' && telefonoOrden) {
