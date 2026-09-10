@@ -83,7 +83,50 @@ const PUENTE_INLINE =
 const {
   autoCrearOrdenDropi,
   autoActualizarOrdenDropi,
+  matchEnLista,
 } = require('./dropiAutoOrder.service');
+// Variedades (color/talla/modelo): matching tolerante compartido con el
+// auto-orden, para saber si el cliente ya eligió antes de cerrar.
+const { resolverVariedad, etiquetaEnTexto } = require('../utils/variedadMatch');
+
+/* Opciones (color/talla/modelo) del producto de la ficha según el catálogo
+   local de la cuenta. [] si el producto no es variable o no se reconoce.
+   Con esto la ficha pide la variedad ANTES de cerrar: en ago-sep 2026, 388
+   auto-órdenes cayeron a manual porque el bot cerró un producto variable sin
+   preguntar color/talla, y ahí ya nadie lo rescata (solo 6 de 81 contactos
+   con fallo terminan con orden el mismo día). */
+async function variantesProductoFicha(id_configuracion, nombreProducto) {
+  const nombre = String(nombreProducto || '').trim();
+  if (!nombre) return [];
+  try {
+    const productos = await db.query(
+      `SELECT p.id, p.nombre
+         FROM productos_chat_center p
+        WHERE p.id_configuracion = ? AND p.eliminado = 0 AND p.es_variable = 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (!productos.length) return [];
+    const prod = matchEnLista(productos, nombre, (p) => p.nombre);
+    if (!prod) return [];
+    const vars = await db.query(
+      `SELECT valor, stock FROM productos_variaciones
+        WHERE id_producto = ? AND activo = 1
+        ORDER BY id`,
+      { replacements: [prod.id], type: db.QueryTypes.SELECT },
+    );
+    /* El stock local suele estar desactualizado (el catálogo se importa una
+       vez; el auto-orden lo refresca cuando pasa por el producto). Si alguna
+       opción tiene stock, se ofrecen solo esas; si todas están en 0 es que
+       el dato está viejo, no que no haya: se ofrecen todas. */
+    const conStock = vars.filter((v) => Number(v.stock) > 0);
+    const lista = conStock.length ? conStock : vars;
+    return [
+      ...new Set(lista.map((v) => String(v.valor || '').trim()).filter(Boolean)),
+    ].slice(0, 12);
+  } catch (_) {
+    return [];
+  }
+}
 
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
 const { esperarRafaga } = require('../utils/agruparRafaga');
@@ -439,6 +482,34 @@ function camposFaltantesCierre(respuesta, ficha = null) {
       '- Dirección exacta (dos calles y una referencia), o la agencia ' +
         'Servientrega si prefieres retirarlo',
     );
+  }
+
+  /* Producto variable sin variedad elegida. `ficha._variantes` trae las
+     opciones reales del catálogo (color/talla/modelo con stock). Vale la
+     línea Variedad/Color/Talla del resumen, la "(Variedad: X)" del renglón
+     de producto o lo que el cliente escribió en sus mensajes — comparado
+     con tolerancia ("roja" = ROJO, "M negra" = MN). Si nada de eso resuelve
+     a una opción real, se bloquea el cierre y se le pregunta con las
+     opciones, en vez de mandar a Dropi una orden que va a fallar. */
+  const variantes = Array.isArray(ficha?._variantes) ? ficha._variantes : [];
+  if (variantes.length) {
+    const lineaVar = campo(
+      /(?:^|\n)[^\n]{0,6}?(?:Variedad|Variante|Color|Talla)\s*:\s*([^\n]+)/i,
+    );
+    const enProducto =
+      texto.match(/\(\s*(?:Variedad|Variante|Color|Talla)\s*:\s*([^)\n]+)\)/i)?.[1] ||
+      '';
+    const dicha = String(lineaVar || enProducto || ficha?.variedad || '').trim();
+    const resuelta =
+      dicha && !esValorRelleno(dicha) ? resolverVariedad(dicha, variantes) : null;
+    const clienteLaDijo =
+      Boolean(textoCliente) &&
+      variantes.some((et) => etiquetaEnTexto(et, textoCliente));
+    if (!resuelta && !clienteLaDijo) {
+      faltan.push(
+        `- Color/talla/modelo del producto (opciones: ${variantes.join(', ')})`,
+      );
+    }
   }
 
   return faltan;
@@ -1275,6 +1346,19 @@ async function procesarMensajeKanban(params) {
           }),
           log,
         });
+        /* Opciones del producto variable (catálogo local): la ficha las
+           pide como dato faltante y el candado del cierre las exige. */
+        if (fichaPedido?.producto) {
+          fichaPedido._variantes = await variantesProductoFicha(
+            id_configuracion,
+            fichaPedido.producto,
+          );
+          if (fichaPedido._variantes.length) {
+            await log(
+              `🎨 Producto variable "${fichaPedido.producto}": opciones ${fichaPedido._variantes.join(', ')}${fichaPedido.variedad ? ` · el cliente dijo "${fichaPedido.variedad}"` : ' · aún sin elegir'}`,
+            );
+          }
+        }
         /* Con el switch de retiro en agencia, la ficha cambia el orden de los
            datos (ciudad → oficina del directorio → nombre) y el formato de la
            línea de dirección — sin el flag, la ficha dictaba "pide el nombre"
@@ -1292,6 +1376,7 @@ async function procesarMensajeKanban(params) {
         const bloqueFicha = bloqueFichaPedido(fichaPedido, {
           trigger: accCierreVenta.trigger,
           retiroDirectorio: retiroDirectorioFicha,
+          variantes: fichaPedido?._variantes || [],
         });
         /* Si el último mensaje al cliente lo generó la GUARDIA de oficinas
            (reemplazo en código), el modelo no lo tiene en su memoria: se le
@@ -2219,6 +2304,10 @@ async function procesarMensajeKanban(params) {
               (g(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*(.+)/i)
                 ? 'agencia servientrega'
                 : ''),
+            // La agencia elegida, si el resumen la trae en su propia línea:
+            // el auto-orden la usa como `dir` cuando no hay domicilio
+            // (Dropi exige una dirección aunque sea retiro en agencia).
+            agencia: g(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*(.+)/i) || '',
             // Variedad elegida en productos variables (talla/color). Sin esto
             // el auto-orden no sabe qué variante subir y Dropi rechaza la
             // orden. Se aceptan varios rótulos porque el prompt de cada

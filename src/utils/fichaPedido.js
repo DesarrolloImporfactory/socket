@@ -523,6 +523,24 @@ function faltantesFicha(ficha, opts = {}) {
   }
   // Retiro en agencia sin ciudad: la ciudad es el único dato de destino.
   if (agenciaOk && !f.ciudad && !f.agencia) faltan.push('Ciudad (para la agencia)');
+
+  /* Producto variable (color/talla/modelo) sin elección: las opciones
+     vienen del catálogo local (kanban_ia las carga en ficha._variantes y las
+     pasa en opts.variantes). Se pide con las opciones a la vista para que el
+     bot no invente una ni cierre sin ella — cerrar sin variedad manda a
+     Dropi una orden que falla seguro. Si el cliente ya dijo algo que calza
+     con una opción (tolerante: "roja" = ROJO), no se pide. */
+  const variantes = Array.isArray(opts.variantes) ? opts.variantes : [];
+  if (variantes.length) {
+    const { resolverVariedad, etiquetaEnTexto } = require('./variedadMatch');
+    const elegida = f.variedad ? resolverVariedad(f.variedad, variantes) : null;
+    const dichaEnChat = variantes.some((et) => etiquetaEnTexto(et, f._textoCliente || ''));
+    if (!elegida && !dichaEnChat) {
+      faltan.push(
+        `La opción del producto: pregúntale cuál quiere entre ${variantes.join(', ')} (ofrécele SOLO esas)`,
+      );
+    }
+  }
   return faltan;
 }
 
@@ -533,7 +551,11 @@ function faltantesFicha(ficha, opts = {}) {
  */
 function bloqueFichaPedido(
   ficha,
-  { trigger = '[generar_guia]:true', retiroDirectorio = false } = {},
+  {
+    trigger = '[generar_guia]:true',
+    retiroDirectorio = false,
+    variantes = [],
+  } = {},
 ) {
   if (!fichaTieneDatos(ficha)) return '';
   const f = ficha;
@@ -582,7 +604,7 @@ function bloqueFichaPedido(
     );
   else if (f.cantidad) lineas.push(`✅ Cantidad: ${f.cantidad}`);
 
-  const faltan = faltantesFicha(f, { retiroDirectorio });
+  const faltan = faltantesFicha(f, { retiroDirectorio, variantes });
 
   let txt =
     `📋 FICHA DEL PEDIDO — lo que el cliente YA DIJO en esta conversación. La leyó el sistema de SUS mensajes y manda sobre tu memoria:\n` +
