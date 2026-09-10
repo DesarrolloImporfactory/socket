@@ -173,7 +173,13 @@ exports.fotoPrincipal = conErrores(async (req, res) => {
 exports.subirMedia = conErrores(async (req, res) => {
   const id_configuracion = idConfig(req);
   if (!id_configuracion) return falla(res, 'id_configuracion es obligatorio.');
-  const data = await servicio.subirMedia({ id_configuracion, file: req.file });
+  // El JWT va a la Video API (videos); para imágenes no se usa.
+  const { extractBearerToken } = require('../utils/whatsappTemplate.helpers');
+  const data = await servicio.subirMedia({
+    id_configuracion,
+    file: req.file,
+    jwtToken: extractBearerToken(req),
+  });
   res.status(200).json({ status: 'success', data });
 });
 
