@@ -45,42 +45,54 @@ const CAMPOS_SUMA = `
   SUM(m.canceladas_bot)        AS canceladas_bot`;
 
 /* ══════════════════════════════════════════════════════════════
-   GET /admin_bot_salud/resumen?dias=30
-   KPIs globales del período + comparación con el período anterior
-   + serie diaria para el gráfico. Solo cuentas e-commerce.
+   GET /admin_bot_salud/resumen?dias=30[&id_configuracion=610]
+   KPIs del período + comparación con el período anterior + serie
+   diaria para los gráficos. Sin id_configuracion: todas las cuentas
+   e-commerce. Con id_configuracion: solo esa cuenta (lo usa el
+   detalle por cuenta del tablero, que muestra su propia serie de
+   cierres del bot vs órdenes creadas en Dropi).
    ══════════════════════════════════════════════════════════════ */
 exports.resumen = catchAsync(async (req, res) => {
   const dias = rangoDias(req);
+  const idConfig = parseInt(req.query.id_configuracion, 10) || null;
+
+  /* Con cuenta: filtro por id y sin la restricción e-commerce (la tabla
+     ya solo lista cuentas e-commerce). Se usan replacements con nombre
+     para no depender de la posición del '?' en cada consulta. */
+  const filtro = idConfig
+    ? 'AND m.id_configuracion = :cfg'
+    : SOLO_ECOMMERCE;
+  const base = { cfg: idConfig, d: dias, d2: dias * 2 };
 
   const [actual] = await q(
     `SELECT ${CAMPOS_SUMA}
        FROM bot_metricas_diarias m
-      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ${SIN_HOY} ${SOLO_ECOMMERCE}`,
-    [dias],
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) ${SIN_HOY} ${filtro}`,
+    base,
   );
   const [previo] = await q(
     `SELECT ${CAMPOS_SUMA}
        FROM bot_metricas_diarias m
-      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-        AND m.fecha <  DATE_SUB(CURDATE(), INTERVAL ? DAY) ${SOLO_ECOMMERCE}`,
-    [dias * 2, dias],
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d2 DAY)
+        AND m.fecha <  DATE_SUB(CURDATE(), INTERVAL :d DAY) ${filtro}`,
+    base,
   );
 
   const serie = await q(
     `SELECT m.fecha, ${CAMPOS_SUMA}
        FROM bot_metricas_diarias m
-      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ${SIN_HOY} ${SOLO_ECOMMERCE}
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) ${SIN_HOY} ${filtro}
       GROUP BY m.fecha
       ORDER BY m.fecha ASC`,
-    [dias],
+    base,
   );
 
   const [cuentasIA] = await q(
     `SELECT COUNT(DISTINCT m.id_configuracion) AS n
        FROM bot_metricas_diarias m
-      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ${SIN_HOY}
-        AND m.convers_ia > 0 ${SOLO_ECOMMERCE}`,
-    [dias],
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) ${SIN_HOY}
+        AND m.convers_ia > 0 ${filtro}`,
+    base,
   );
 
   const [ultimaCorrida] = await q(
@@ -91,6 +103,7 @@ exports.resumen = catchAsync(async (req, res) => {
     status: 'success',
     data: {
       dias,
+      id_configuracion: idConfig,
       actual: actual || {},
       previo: previo || {},
       serie,

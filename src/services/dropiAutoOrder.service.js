@@ -58,6 +58,8 @@ const {
   enviarConfirmacionOrdenBot,
 } = require('./seguimiento_plantillas.service');
 const { resolveRegion } = require('../utils/phoneFactor');
+const { resolverVariedad, etiquetaEnTexto } = require('../utils/variedadMatch');
+const { elegirTelefonoOrden } = require('../utils/telefonoDropi');
 // Ubicación GPS compartida por WhatsApp → ciudad/provincia/dirección reales
 const {
   parseUbicacionJson,
@@ -122,6 +124,34 @@ function parsearPrecio(s) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* Cache en memoria de /trajectory/bycity por (país, provincia). La lista de
+   ciudades de una provincia no cambia de un pedido a otro y cada pedido la
+   pedía de nuevo; con la búsqueda en otras provincias (paso 3) sin cache
+   serían ~24 llamadas por pedido. Es la misma para todas las cuentas del
+   país. TTL 12 h. */
+const CACHE_CIUDADES = new Map(); // 'CC|dep' -> { ts, cities }
+const TTL_CIUDADES_MS = 12 * 60 * 60 * 1000;
+async function listarCiudadesProvincia({ integrationKey, country_code, department_id }) {
+  const key = `${String(country_code || '').toUpperCase()}|${Number(department_id)}`;
+  const hit = CACHE_CIUDADES.get(key);
+  if (hit && Date.now() - hit.ts < TTL_CIUDADES_MS) return hit.cities;
+  const resp = await conReintento429(() =>
+    dropiService.listCities({
+      integrationKey,
+      payload: { department_id: Number(department_id), rate_type: 'CON RECAUDO' },
+      country_code,
+    }),
+  );
+  const cities =
+    resp?.objects?.cities ||
+    resp?.data?.objects?.cities ||
+    resp?.cities ||
+    resp?.data?.cities ||
+    [];
+  if (cities.length) CACHE_CIUDADES.set(key, { ts: Date.now(), cities });
+  return cities;
+}
 
 /**
  * Reintenta una llamada a Dropi SOLO cuando responde 429 (rate limit).
@@ -706,6 +736,31 @@ async function autoCrearOrdenDropi({
         datosBot.variedad = renglon.variedad;
     }
 
+    /* 0.45 Retiro en agencia sin dirección. Con el switch de retiro en
+       agencia el bot ya no pide domicilio, así que la línea Dirección llega
+       vacía y Dropi rechaza la orden entera con "dir es requerido" (134 en
+       30 días, ago-sep 2026, todas de cuentas con agencia). Dropi exige un
+       texto en `dir`: va la agencia elegida o, si no la hay, "retiro en
+       agencia Servientrega" con la ciudad — lo mismo que escribe a mano un
+       vendedor en ese caso. Se hace ANTES del extractor IA para no gastar
+       una llamada buscando una dirección que no existe. */
+    const direccionDeAgencia = () => {
+      if (datosBot.direccion || !esEnvioAgenciaServientrega(datosBot)) return;
+      const ag = String(datosBot.agencia || '').trim();
+      datosBot.direccion =
+        ag && !/por confirmar/i.test(ag)
+          ? `Retiro en agencia Servientrega: ${ag}`
+          : `Retiro en agencia Servientrega${
+              datosBot.ciudad ? ` - ${datosBot.ciudad}` : ''
+            } (agencia por confirmar con el cliente)`;
+      datosBot._direccion_agencia = true;
+      ctx.datos_bot = datosBot;
+      console.log(
+        `[AutoOrden] retiro en agencia sin dirección → dir = "${datosBot.direccion}"`,
+      );
+    };
+    direccionDeAgencia();
+
     const faltanClaves = [
       'producto',
       'ciudad',
@@ -722,6 +777,8 @@ async function autoCrearOrdenDropi({
         paisNombre,
       });
       ctx.datos_bot = datosBot; // que el log refleje lo que realmente se usó
+      // La modalidad "agencia" pudo aparecer recién con el extractor.
+      direccionDeAgencia();
     }
     if (!datosBot.cantidad) datosBot.cantidad = '1';
 
@@ -737,12 +794,38 @@ async function autoCrearOrdenDropi({
           `Campo ${campo} sin dato real: "${String(datosBot[campo]).slice(0, 80)}"`,
         );
     }
-    const digitosTel = String(datosBot.telefono || '').replace(/\D/g, '');
-    if (digitosTel.length < 9)
-      return fail(
-        'datos',
-        `Teléfono inválido: "${String(datosBot.telefono || '').slice(0, 40)}"`,
-      );
+    /* Teléfono válido para el país de la integración (utils/telefonoDropi).
+       Dropi rechazaba la orden entera ("El teléfono del cliente no es válido
+       o está incompleto", 103 en 30 días) cuando el bot copiaba el número
+       con un dígito de más o de menos, o con el 593 pegado. Se normaliza al
+       formato local y, si el del resumen no sirve, va el número de WhatsApp
+       desde el que escribe el cliente — el mismo respaldo que ya se usa
+       cuando el resumen no trae la línea Teléfono. */
+    {
+      let cli = null;
+      if (id_cliente) {
+        [cli] = await db.query(
+          `SELECT celular_cliente, telefono_limpio
+             FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+          { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+        );
+      }
+      const tel = elegirTelefonoOrden({
+        telBot: datosBot.telefono,
+        telWhatsApp: cli?.telefono_limpio || cli?.celular_cliente || '',
+        country_code,
+      });
+      if (!tel.telefono) return fail('datos', `Teléfono inválido: ${tel.motivo}`);
+      if (tel.fuente === 'whatsapp') {
+        console.log(
+          `[AutoOrden] teléfono del resumen inválido → se usa el de WhatsApp ${tel.telefono} (${tel.motivo})`,
+        );
+        datosBot._telefono_whatsapp = true;
+      }
+      datosBot.telefono = tel.telefono;
+      ctx.telefono = tel.telefono;
+      ctx.datos_bot = datosBot;
+    }
 
     /* 0.7 Candado de ciudad real (solo camino del bot): la ciudad del resumen
        la escribe el BOT y a veces la inventa — caso 285 (2026-08-17): cerró
@@ -1139,6 +1222,71 @@ async function autoCrearOrdenDropi({
         );
       }
 
+      /* Catálogo local al día: si Dropi dice que el producto es variable y
+         el catálogo de la cuenta no lo sabe (es_variable = 0, sin filas en
+         productos_variaciones), se marca y se guardan sus opciones. Con eso
+         la ficha del pedido (kanban_ia) sabe que debe pedir color/talla
+         ANTES de cerrar, que es donde se evitan de verdad los "falta
+         elegir la variedad". Best-effort: nunca frena la orden. */
+      if (prodLocal?.id) {
+        try {
+          const [pl] = await db.query(
+            `SELECT es_variable,
+                    (SELECT COUNT(*) FROM productos_variaciones pv
+                      WHERE pv.id_producto = p.id) AS n_var
+               FROM productos_chat_center p WHERE p.id = ? LIMIT 1`,
+            { replacements: [prodLocal.id], type: db.QueryTypes.SELECT },
+          );
+          if (pl && Number(pl.es_variable) !== 1) {
+            await db.query(
+              `UPDATE productos_chat_center SET es_variable = 1 WHERE id = ?`,
+              { replacements: [prodLocal.id], type: db.QueryTypes.UPDATE },
+            );
+          }
+          if (pl && Number(pl.n_var) === 0) {
+            const vals = [];
+            const marcas = variantes
+              .map((v) => {
+                vals.push(
+                  prodLocal.id,
+                  id_configuracion,
+                  String(v.id),
+                  'Variedad',
+                  String(v.etiqueta).slice(0, 190),
+                  Number(v.stock) || 0,
+                  v.sale_price ?? null,
+                );
+                return '(?, ?, ?, ?, ?, ?, ?)';
+              })
+              .join(', ');
+            await db.query(
+              `INSERT INTO productos_variaciones
+                 (id_producto, id_configuracion, dropi_variation_id, atributo, valor, stock, precio_sugerido)
+               VALUES ${marcas}`,
+              { replacements: vals, type: db.QueryTypes.INSERT },
+            );
+            console.log(
+              `[AutoOrden] producto local #${prodLocal.id} marcado variable con ${variantes.length} opciones (venían de Dropi, el catálogo no las tenía)`,
+            );
+          } else if (pl) {
+            /* Ya había opciones: se refresca el stock con el de Dropi, que
+               es el que la ficha usa para ofrecer solo las disponibles. */
+            for (const v of variantes) {
+              await db.query(
+                `UPDATE productos_variaciones SET stock = ?
+                  WHERE id_producto = ? AND dropi_variation_id = ?`,
+                {
+                  replacements: [Number(v.stock) || 0, prodLocal.id, String(v.id)],
+                  type: db.QueryTypes.UPDATE,
+                },
+              );
+            }
+          }
+        } catch (eVar) {
+          console.log(`[AutoOrden] no se pudo actualizar variantes locales: ${eVar.message}`);
+        }
+      }
+
       let pedida = String(item.variedad || '')
         .trim()
         .toLowerCase();
@@ -1223,6 +1371,25 @@ async function autoCrearOrdenDropi({
           }
         }
       }
+      /* ── Matching tolerante (utils/variedadMatch) ──
+         Lo de arriba compara literal; el cliente escribe "roja" (etiqueta
+         ROJO), "café" (Cafe), "M negra" (MN), "XXL" (XL/2XL). 156 de los 388
+         "falta elegir la variedad" de ago-sep 2026 traían la variedad y se
+         perdían por esto. Solo si resuelve a UNA etiqueta; ambigua → manual. */
+      if (!variacionesElegidas.length && pedida) {
+        const tol = resolverVariedad(
+          pedida,
+          variantes.map((v) => v.etiqueta),
+        );
+        const vTol = tol ? variantes.find((v) => v.etiqueta === tol) : null;
+        if (vTol) {
+          variacionesElegidas = [{ ...vTol, qty: cantidadOrden }];
+          console.log(
+            `[AutoOrden] variedad "${pedida}" resuelta por matching tolerante → "${vTol.etiqueta}"`,
+          );
+        }
+      }
+
       /* ── Candado anti-alucinación ──
          La variedad del resumen la escribe el BOT, y a veces la inventa
          ("Has elegido Negro" sin que el cliente lo dijera). Antes de confiar,
@@ -1237,9 +1404,15 @@ async function autoCrearOrdenDropi({
       if (variacionesElegidas.length && !datosBot?._correccion_manual) {
         /* Mismo criterio de comparación que el match de arriba: el cliente
            escribe "s-m-l" o "s m l", nunca la etiqueta literal "S/M/L". */
-        const textoCliente = normalizarTexto(await textoClienteParaCandado());
+        const textoClienteCrudo = await textoClienteParaCandado();
+        const textoCliente = normalizarTexto(textoClienteCrudo);
         for (const v of variacionesElegidas) {
-          if (!textoCliente.includes(normalizarTexto(v.etiqueta))) {
+          /* Literal o tolerante: "roja" en los mensajes confirma la etiqueta
+             ROJO; "talla m negro" confirma MN. */
+          if (
+            !textoCliente.includes(normalizarTexto(v.etiqueta)) &&
+            !etiquetaEnTexto(v.etiqueta, textoClienteCrudo)
+          ) {
             return fail(
               'producto',
               `${R}Variedad "${v.etiqueta}" no confirmada por el cliente ` +
@@ -1402,7 +1575,7 @@ async function autoCrearOrdenDropi({
       statesResp?.data?.objects ||
       statesResp?.data ||
       [];
-    const state = matchEnLista(
+    let state = matchEnLista(
       states,
       datosBot.provincia,
       (x) => x.name || x.department || x.nombre,
@@ -1410,45 +1583,86 @@ async function autoCrearOrdenDropi({
     if (!state)
       return fail('provincia', `Sin match provincia "${datosBot.provincia}"`);
 
-    let citiesResp;
+    let cities;
     try {
-      citiesResp = await conReintento429(() =>
-        dropiService.listCities({
-          integrationKey,
-          payload: {
-            department_id: Number(state.id),
-            rate_type: 'CON RECAUDO',
-          },
-          country_code,
-        }),
-      );
+      cities = await listarCiudadesProvincia({
+        integrationKey,
+        country_code,
+        department_id: state.id,
+      });
     } catch (e) {
       return fail(
         'ciudad',
         `listCities /trajectory/bycity (dep ${state.id}): ${e?.message || e} (status ${e?.statusCode || '?'})`,
       );
     }
-    const cities =
-      citiesResp?.objects?.cities ||
-      citiesResp?.data?.objects?.cities ||
-      citiesResp?.cities ||
-      citiesResp?.data?.cities ||
-      [];
-    const city = matchEnLista(
-      cities,
-      datosBot.ciudad,
-      (x) => x.name || x.city || x.nombre,
-    );
-    if (!city)
-      return fail(
-        'ciudad',
-        `Sin match ciudad "${datosBot.ciudad}" en ${state.name || ''} (${cities.length} ciudades)`,
+    const nombreCiudad = (x) => x.name || x.city || x.nombre;
+    let city = matchEnLista(cities, datosBot.ciudad, nombreCiudad);
+
+    /* Ciudad que no está en la provincia que puso el bot: casi siempre la
+       ciudad es real y la provincia es la equivocada ("Tabacundo" en
+       Imbabura, "Palenque" en Guayas, "Yantzaza" en Morona — 358 fallos en
+       30 días). Se busca la ciudad, con nombre EXACTO, en las demás
+       provincias del país; si está en una sola, se corrige la provincia.
+       Solo nombres reales: los placeholders "(tu ciudad aquí)" no se buscan. */
+    if (!city) {
+      const nCiudad = normalizarTexto(datosBot.ciudad);
+      const buscable = nCiudad.length >= 4 && !/^\(/.test(String(datosBot.ciudad || '').trim());
+      const halladas = [];
+      if (buscable) {
+        for (const st of states) {
+          if (Number(st.id) === Number(state.id)) continue;
+          let lista = [];
+          try {
+            lista = await listarCiudadesProvincia({
+              integrationKey,
+              country_code,
+              department_id: st.id,
+            });
+          } catch (_) {
+            continue;
+          }
+          const exacta = lista.find(
+            (x) => normalizarTexto(nombreCiudad(x)) === nCiudad,
+          );
+          if (exacta) halladas.push({ city: exacta, state: st });
+          if (halladas.length > 1) break; // ambigua: mejor no adivinar
+        }
+      }
+      if (halladas.length !== 1) {
+        return fail(
+          'ciudad',
+          `Sin match ciudad "${datosBot.ciudad}" en ${state.name || ''} (${cities.length} ciudades` +
+            `${halladas.length > 1 ? '; existe en varias provincias' : buscable ? '; tampoco en las demás provincias' : ''})`,
+        );
+      }
+      console.log(
+        `[AutoOrden] ciudad "${datosBot.ciudad}" no está en ${state.name || ''}: se usa ${nombreCiudad(halladas[0].city)} de ${halladas[0].state.name || halladas[0].state.department || ''} (provincia corregida)`,
       );
+      city = halladas[0].city;
+      state = halladas[0].state;
+      datosBot.provincia = state.name || state.department || state.nombre || datosBot.provincia;
+      datosBot._provincia_corregida = true;
+      ctx.datos_bot = datosBot;
+    }
+
+    /* Ciudad sin cod_dane. Dropi devuelve algunas ciudades del catálogo sin
+       ese código (La Troncal, El Empalme, San Lorenzo, La Concordia… 408
+       fallos en 30 días) aunque sí recibe órdenes a ellas (La Troncal: 293
+       órdenes reales en el mismo período). Antes se abortaba en seco; ahora
+       se sigue con el objeto de ciudad completo (id + department), que es
+       lo que el flujo manual del front manda a cotizar. Si Dropi lo rechaza
+       igual, el fallo queda en 'cotizacion' con la respuesta cruda. */
     const destCodDane = String(
-      city.cod_dane || city.codDane || city.code_dane || '',
+      city.cod_dane || city.codDane || city.code_dane || city.codigo_dane || '',
     );
-    if (!destCodDane)
-      return fail('ciudad', `Ciudad "${city.name}" sin cod_dane`);
+    if (!destCodDane) {
+      console.log(
+        `[AutoOrden] ciudad "${nombreCiudad(city)}" sin cod_dane: se cotiza con el objeto completo ${JSON.stringify(city).slice(0, 300)}`,
+      );
+      datosBot._ciudad_sin_cod_dane = true;
+      ctx.datos_bot = datosBot;
+    }
 
     // 4. Ciudad remitente (bodega de origen) — SIEMPRE por ID de producto.
     //
@@ -1601,7 +1815,12 @@ async function autoCrearOrdenDropi({
     // recurso de arriba). Si no, se le embebe su department buscándolo en
     // states por department_id.
     let ciudad_remitente;
-    if (remitCodDane === destCodDane) {
+    /* Sin cod_dane en el destino, la igualdad se decide por id: si no, dos
+       vacíos darían "misma ciudad" y se cotizaría desde el destino. */
+    const mismaCiudad = destCodDane
+      ? remitCodDane === destCodDane
+      : Number(remitCityObj?.id) > 0 && Number(remitCityObj.id) === Number(city.id);
+    if (mismaCiudad) {
       ciudad_remitente = { ...ciudad_destino };
     } else {
       const deptRemit = states.find(
