@@ -640,7 +640,7 @@ cron.schedule('*/1 * * * *', async () => {
                   WHERE cli_dueno.id = rp.id_cliente_chat_center
                     AND u_dueno.whatsapp_lead IS NOT NULL
                     AND LENGTH(TRIM(LEADING '0' FROM u_dueno.whatsapp_lead)) >= 7
-                    AND REPLACE(REPLACE(cli_dueno.celular, '+', ''), ' ', '')
+                    AND REPLACE(REPLACE(cli_dueno.celular_cliente, '+', ''), ' ', '')
                         LIKE CONCAT('%', TRIM(LEADING '0' FROM u_dueno.whatsapp_lead))
                )`;
 
