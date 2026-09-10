@@ -140,10 +140,17 @@ function parsearTrackingServientrega(html) {
   let agencia = null;
   let fechaAgencia = null;
   let motivo = null;
+  // "Ingresando en Agencia X" también se registra cuando el PROVEEDOR deja
+  // el paquete en su agencia para despacharlo. Se reconoce porque después
+  // (o sea, más arriba en la página) aparece la recolección: "Recolectado en
+  // Agencia X", "Ingresando de Recoleccion…". Esa agencia es de origen y no
+  // es lugar de retiro (caso: cfg 841, GUAYAQUIL_MALL DEL FORTIN).
+  let recoleccionPosterior = false;
   for (const mov of movimientos) {
+    if (/recolec/i.test(mov.texto)) recoleccionPosterior = true;
     if (!agencia) {
       const a = mov.texto.match(/ingresando en agencia\s+(.+)$/i);
-      if (a) {
+      if (a && !recoleccionPosterior) {
         agencia = a[1].trim();
         fechaAgencia = mov.fecha;
       }
