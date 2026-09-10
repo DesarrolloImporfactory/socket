@@ -309,15 +309,37 @@ const CAMPOS_TEXTO = [
    casos por paso. Un paso sin `espera` válida o sin ningún copy se descarta. */
 const ESPERAS_FLUJO = ['edad', 'ciudad', 'opcion', 'libre'];
 
+/* Datos del cierre que el negocio puede pedirle al bot que NO pida. Vive en
+   la entrada especial espera:'ajustes' de flujo_pasos_json (mismo mecanismo
+   que venta_realizada: cero migración) y aplica aunque el embudo esté
+   apagado. El teléfono es seguro de omitir: el auto-orden y la guía usan el
+   número de WhatsApp desde el que escribe (kanban_ia no exige la línea). */
+/* - telefono: la orden y la guía salen con el número de WhatsApp del chat.
+   - referencia: con calle/número/barrio la guía sale igual; la referencia
+     es opcional para el courier.
+   - confirmacion: con todos los datos cierra directo, sin pedir que confirme
+     el resumen (menos pasos; el candado de datos reales sigue vigente). */
+const DATOS_NO_PEDIR = ['telefono', 'referencia', 'confirmacion'];
+
+const textoCorto = (v, tope = 3000) =>
+  String(v == null ? '' : v).trim().slice(0, tope);
+const urlsMedia = (v) =>
+  (Array.isArray(v) ? v : [])
+    .map((u) => textoCorto(u, 500))
+    .filter((u) => /^https?:\/\//i.test(u))
+    .slice(0, 4);
+
+/* Solo los pasos de la SECUENCIA (sin venta_realizada ni ajustes). */
+function pasosSecuencia(lista) {
+  return (Array.isArray(lista) ? lista : []).filter(
+    (p) => p && ESPERAS_FLUJO.includes(p.espera),
+  );
+}
+
 function limpiarPasosFlujo(lista) {
   if (!Array.isArray(lista)) return [];
-  const texto = (v, tope = 3000) =>
-    String(v == null ? '' : v).trim().slice(0, tope);
-  const urls = (v) =>
-    (Array.isArray(v) ? v : [])
-      .map((u) => texto(u, 500))
-      .filter((u) => /^https?:\/\//i.test(u))
-      .slice(0, 4);
+  const texto = textoCorto;
+  const urls = urlsMedia;
   const claves = (v) =>
     (Array.isArray(v) ? v : [])
       .map((c) => texto(c, 60))
@@ -326,6 +348,16 @@ function limpiarPasosFlujo(lista) {
 
   return lista
     .map((p) => {
+      // Entrada especial: ajustes del bot para este producto (qué datos NO
+      // pedir). Tampoco es un paso; el runtime la lee aparte.
+      if (p && p.espera === 'ajustes') {
+        const noPedir = (Array.isArray(p.no_pedir) ? p.no_pedir : [])
+          .map((d) => texto(d, 30).toLowerCase())
+          .filter((d) => DATOS_NO_PEDIR.includes(d));
+        return noPedir.length
+          ? { espera: 'ajustes', no_pedir: [...new Set(noPedir)] }
+          : null;
+      }
       // Entrada especial: el mensaje de VENTA REALIZADA (copy + media al
       // cerrar). No es un paso de la secuencia; el runtime lo lee aparte.
       if (p && p.espera === 'venta_realizada') {
@@ -357,6 +389,10 @@ function limpiarPasosFlujo(lista) {
       if (p.espera === 'edad') {
         paso.min = Number.isFinite(Number(p.min)) ? Number(p.min) : 0;
         paso.max = Number.isFinite(Number(p.max)) ? Number(p.max) : 120;
+        // Qué número es ("edad", "horas de sueño", "peso en kg"): solo
+        // etiqueta para la UI y la vista previa — el validador es el mismo
+        // (un número dentro del rango). Vacío = edad, como siempre.
+        paso.dato = texto(p.dato, 40);
         paso.copy_invalido = texto(p.copy_invalido);
         // Fuera de rango → derivar a OTRO producto del listado (opcional):
         // se envía copy_invalido como presentación + el paquete del alterno,
@@ -398,6 +434,9 @@ function limpiarFaqs(lista) {
       claves: Array.isArray(f?.claves)
         ? f.claves.map((c) => String(c || '').trim()).filter(Boolean)
         : [],
+      // Fotos/videos que acompañan la respuesta ("¿tienen fotos reales?" →
+      // sale la foto real y después el texto). Mismo tope que un paso.
+      media: urlsMedia(f?.media),
       activa: f?.activa === 0 || f?.activa === false ? 0 : 1,
     }))
     .filter((f) => f.pregunta && f.respuesta)
@@ -961,10 +1000,30 @@ async function subirBuffer({ buffer, mimetype, nombre, carpeta }) {
  * JPG (WhatsApp acepta JPG/PNG; así se evitan HEIC/WEBP raros); el video va
  * tal cual.
  */
-async function subirMedia({ id_configuracion, file }) {
+async function subirMedia({ id_configuracion, file, jwtToken = null }) {
   if (!file?.buffer) throw errorCon('No llegó ningún archivo.', 'SIN_ARCHIVO');
   const esVideo = /^video\//.test(file.mimetype);
   if (esVideo) {
+    /* El uploader S3 responde 500 a cualquier video (probado 2026-09-10), así
+       que antes TODO video caía al disco local con la URL de producción
+       hardcodeada: subido desde un `npm run dev` quedaba una URL muerta
+       (404) que ni la vista previa ni WhatsApp podían abrir. La Video API
+       (la misma de los videos de plantillas) sirve desde cualquier servidor;
+       necesita el JWT del usuario. Si falla, se sigue con el camino de antes. */
+    if (jwtToken) {
+      try {
+        const { uploadVideoToVideoAPI } = require('../utils/whatsappTemplate.helpers');
+        const r = await uploadVideoToVideoAPI({
+          buffer: file.buffer,
+          originalname: file.originalname || 'video.mp4',
+          mimetype: file.mimetype,
+          jwtToken,
+        });
+        if (r?.fileUrl) return { tipo: 'video', url: r.fileUrl, origen: 'subida' };
+      } catch (e) {
+        console.warn(`[WIZARD_UPLOAD] Video API falló (${e.message}); sigo con uploader/local`);
+      }
+    }
     const url = await subirBuffer({
       buffer: file.buffer,
       mimetype: file.mimetype,
@@ -1245,14 +1304,14 @@ async function simularTurno({
   // Se valida contra los pasos que el usuario tiene EN PANTALLA (sin guardar),
   // para que pruebe lo que está editando.
   const { validarPasoFlujo } = require('./producto_wizard_runtime.service');
-  const pasosFlujoTodos =
+  // Se limpia siempre: los ajustes del bot (entrada 'ajustes') aplican
+  // aunque el embudo esté apagado. La secuencia de pasos, solo con el toggle.
+  const pasosFlujoTodos = limpiarPasosFlujo(wizardInput.flujo_pasos || []);
+  // La secuencia excluye las entradas especiales (venta realizada, ajustes).
+  const pasosFlujo =
     Number(wizardInput.usar_flujo_pasos) === 1
-      ? limpiarPasosFlujo(wizardInput.flujo_pasos || [])
+      ? pasosSecuencia(pasosFlujoTodos)
       : [];
-  // La secuencia excluye la entrada de venta realizada (no es un paso).
-  const pasosFlujo = pasosFlujoTodos.filter(
-    (p) => p.espera !== 'venta_realizada',
-  );
   let pasoActual = Number.isInteger(flujo_paso) ? flujo_paso : 0;
   // Pregunta del paso pendiente: la rápida y la IA retoman el embudo con ella.
   let preguntaFlujo = null;
@@ -1323,8 +1382,8 @@ async function simularTurno({
           Number(w2.wizard_completado) === 1 &&
           Number(w2.activo) === 1
         ) {
-          const pasos2 = limpiarPasosFlujo(w2.flujo_pasos || []).filter(
-            (x) => x.espera !== 'venta_realizada',
+          const pasos2 = pasosSecuencia(
+            limpiarPasosFlujo(w2.flujo_pasos || []),
           );
           let v2 = null;
           const hereda =
@@ -1437,6 +1496,9 @@ async function simularTurno({
       responsable: 'IA_respuesta_rapida',
       remitente: 'Respuesta rápida',
       tokens: 0,
+      // Fotos/videos de la rápida: el front los pinta como adjuntos antes
+      // del texto, igual que la media de un paso del flujo.
+      media_flujo: Array.isArray(matchFaq.faq.media) ? matchFaq.faq.media : [],
       flujo_paso: pasoActual,
       previous_response_id,
     };
@@ -1506,6 +1568,9 @@ async function simularTurno({
     descripcion_ia: wizardInput.descripcion_ia || '',
     bullets_json: aJsonTexto(wizardInput.bullets || []),
     respuestas_rapidas_json: aJsonTexto(faqs),
+    // Los ajustes del bot (qué datos NO pedir) viven en flujo_pasos_json:
+    // el simulador prueba lo que está EN PANTALLA, igual que los pasos.
+    flujo_pasos_json: aJsonTexto(pasosFlujoTodos),
   };
   // El simulador ve el mismo upsell que el bot en vivo.
   try {
@@ -1577,11 +1642,17 @@ async function simularTurno({
     { rol: 'CLIENTE', texto },
   ];
   const textosCliente = itemsTranscript.filter((i) => i.rol === 'CLIENTE').map((i) => i.texto);
+  // Recortes por code point: un slice() que parte un emoji de los copys
+  // rompía el JSON del extractor (400) y la ficha volvía null — solo con
+  // ciertas ciudades, según dónde cayera el corte (ver utils/textoSeguro).
+  const { recortar } = require('../utils/textoSeguro');
   const transcriptExterno = {
-    transcript: itemsTranscript
-      .map((i) => `${i.rol}: ${i.texto.slice(0, i.rol === 'CLIENTE' ? 500 : 300)}`)
-      .join('\n')
-      .slice(-9000),
+    transcript: recortar(
+      itemsTranscript
+        .map((i) => `${i.rol}: ${recortar(i.texto, i.rol === 'CLIENTE' ? 500 : 300)}`)
+        .join('\n'),
+      -9000,
+    ),
     textoCliente: textosCliente.join('\n'),
     items: itemsTranscript,
     firma: `${textosCliente.length}:${texto.length}`,
@@ -1612,7 +1683,11 @@ async function simularTurno({
           transcriptExterno,
         });
         bloqueFicha = bloqueFichaPedido(fichaPedido, { trigger: accCierre.cfg.trigger }) || '';
-      } catch {
+      } catch (eFicha) {
+        // Sin ficha la IA vuelve a pedir datos ya dados: que quede rastro.
+        console.warn(
+          `[wizard simular] ficha del pedido falló (cfg ${id_configuracion}): ${eFicha.message}`,
+        );
         fichaPedido = null;
         bloqueFicha = '';
       }
@@ -1658,14 +1733,31 @@ async function simularTurno({
     .filter(Boolean)
     .join('\n\n');
 
-  // Primer turno: el mensaje fijo ya fue "dicho" por el asistente.
+  /* Primer turno de IA: el mensaje fijo ya fue "dicho" por el asistente. Y si
+     antes hubo turnos SIN IA (pasos del embudo, respuestas rápidas), la
+     cadena de OpenAI no los conoce: sin sembrarlos el modelo arrancaba en
+     blanco, saludaba de nuevo y volvía a pedir la ciudad que el embudo ya
+     había tomado (caso 1125, 2026-09-10). Misma siembra que hace kanban_ia
+     en vivo con el recap de mensajes_clientes. */
+  let textoInput = texto;
+  if (!previous_response_id && hist.length) {
+    const recap = hist
+      .map(
+        (h) =>
+          `${h.rol === 'bot' ? 'Asistente' : 'Cliente'}: ${recortar(h.texto, 500)}`,
+      )
+      .join('\n');
+    textoInput =
+      `[CONTEXTO DE LA CONVERSACIÓN PREVIA — retómala, NO saludes de nuevo ni pidas datos ya dados]\n${recap}\n\n` +
+      `[MENSAJE ACTUAL DEL CLIENTE]\n${texto}`;
+  }
   const input = previous_response_id
     ? [{ role: 'user', content: texto }]
     : [
         ...(mensaje_fijo
           ? [{ role: 'assistant', content: String(mensaje_fijo) }]
           : []),
-        { role: 'user', content: texto },
+        { role: 'user', content: textoInput },
       ];
 
   let r;
@@ -1794,7 +1886,11 @@ async function simularTurno({
     !cierre_bloqueado &&
     textoBajo.includes(String(accCierre.cfg.trigger).toLowerCase())
   ) {
-    const fin = pasosFlujoTodos.find((p) => p.espera === 'venta_realizada');
+    // Igual que mensajeVentaRealizada en vivo: solo con el embudo encendido.
+    const fin =
+      Number(wizardInput.usar_flujo_pasos) === 1
+        ? pasosFlujoTodos.find((p) => p.espera === 'venta_realizada')
+        : null;
     if (fin && (fin.copy || (fin.media || []).length)) {
       post_venta = { copy: fin.copy || '', media: fin.media || [] };
       // Igual que en vivo: con la opción activa, el resumen técnico no se le

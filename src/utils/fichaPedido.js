@@ -46,6 +46,8 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const { parseUbicacionJson, geocodificarMensaje } = require('./geoUbicacion');
 
+const { recortar, sinSurrogatesSueltos } = require('./textoSeguro');
+
 const CACHE = new Map(); // id_cliente → { firma, ficha, ts }
 const TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ENTRADAS = 5000;
@@ -243,21 +245,23 @@ async function cargarTranscript(id_configuracion, id_cliente, limite = 30) {
           }`
         : '[UBICACIÓN GPS COMPARTIDA]';
     }
+    // Recortes por code point: un slice() que parte un emoji deja un
+    // surrogate suelto y OpenAI rechaza el body con 400 (ver textoSeguro).
     if (esCliente) {
       idsCliente.push(m.id);
       textosCliente.push(texto);
       items.push({ rol: 'CLIENTE', texto });
-      lineas.push(`CLIENTE: ${texto.slice(0, 500)}`);
+      lineas.push(`CLIENTE: ${recortar(texto, 500)}`);
     } else if (/^IA_/i.test(String(m.responsable || ''))) {
       items.push({ rol: 'ASISTENTE', texto });
-      lineas.push(`ASISTENTE: ${texto.slice(0, 300)}`);
+      lineas.push(`ASISTENTE: ${recortar(texto, 300)}`);
     } else {
       items.push({ rol: 'VENDEDOR', texto });
-      lineas.push(`VENDEDOR (persona): ${texto.slice(0, 300)}`);
+      lineas.push(`VENDEDOR (persona): ${recortar(texto, 300)}`);
     }
   }
   return {
-    transcript: lineas.join('\n').slice(-9000),
+    transcript: recortar(lineas.join('\n'), -9000),
     textoCliente: textosCliente.join('\n'),
     items,
     firma: `${idsCliente.length}:${idsCliente[idsCliente.length - 1] || 0}`,
@@ -353,7 +357,9 @@ async function extraerFichaPedido({
               'producto = el producto que el cliente quiere, con el nombre que usa el ASISTENTE para ese producto (acá sí vale el asistente porque es el nombre del catálogo). cantidad = número de unidades que el cliente eligió ("uno", "solo uno", "una" = 1; "combo de dos", "el de 2", "dos unidades" = 2); null si no eligió. variedad = color/talla/modelo que el cliente eligió, si el producto lo pide; null si no. ' +
               'confirmo_pedido = true SOLO si el asistente ya le mostró un resumen del pedido y el cliente respondió afirmando que está correcto ("sí", "correcto", "así es", "listo", "dale", "está bien"); false en cualquier otro caso.',
           },
-          { role: 'user', content: transcript },
+          // El transcript puede venir de afuera (simulador) ya recortado a
+          // mano: se limpia igual por si trae un emoji partido.
+          { role: 'user', content: sinSurrogatesSueltos(transcript) },
         ],
       },
       { headers: { Authorization: `Bearer ${api_key_openai}` }, timeout: 15000 },

@@ -253,9 +253,10 @@ async function construirRecapConversacion(id_cliente, maxMsgs = 30) {
       .reverse()
       .map((m) => {
         const quien = Number(m.rol_mensaje) === 1 ? 'Asistente' : 'Cliente';
-        const txt = String(m.texto_mensaje || '')
-          .slice(0, 500)
-          .trim();
+        // Recorte por code point: partir un emoji deja un surrogate suelto y
+        // OpenAI rechaza el input entero con 400 (ver utils/textoSeguro).
+        const { recortar } = require('../utils/textoSeguro');
+        const txt = recortar(String(m.texto_mensaje || ''), 500).trim();
         return txt ? `${quien}: ${txt}` : null;
       })
       .filter(Boolean)
@@ -3190,9 +3191,15 @@ async function ejecutarConResponsesAPI({
   let { rawText, annotations } = leerTexto(res.data);
 
   if (esGpt5 && !rawText.trim() && res.data?.status === 'incomplete') {
+    /* OpenAI rechaza effort 'minimal' cuando van herramientas ("The following
+       tools cannot be used with reasoning.effort 'minimal': file_search"):
+       el reintento reventaba con 400 y el turno entero moría — el bot se
+       quedaba callado justo en las columnas con directorio/catálogo por
+       file_search (caso 1125, 2026-09-10). Con tools se mantiene 'low' y
+       solo se sube el tope; sin tools, 'minimal' como siempre. */
     const reintento = {
       ...body,
-      reasoning: { effort: 'minimal' },
+      reasoning: { effort: tools.length > 0 ? 'low' : 'minimal' },
       max_output_tokens: Math.min(body.max_output_tokens * 2, 8000),
     };
     res = await axios.post('https://api.openai.com/v1/responses', reintento, {

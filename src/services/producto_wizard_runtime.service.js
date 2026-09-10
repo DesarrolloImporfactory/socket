@@ -546,6 +546,32 @@ async function enviarTextoWizard({
  * y stock leídos EN VIVO de productos_chat_center. Sin URLs de media a
  * propósito (las fotos ya salieron en el paquete y el dedupe las frena).
  */
+/* Ajustes del bot por producto: qué datos del cierre NO debe pedir. Viven en
+   la entrada especial espera:'ajustes' de flujo_pasos_json (mismo truco que
+   venta_realizada, cero migración) y aplican aunque el embudo esté apagado:
+   es una regla del producto, no del flujo. Hoy solo 'telefono' — seguro de
+   omitir porque el auto-orden y la guía usan el número de WhatsApp desde el
+   que escribe el cliente (kanban_ia no exige la línea Teléfono al cerrar). */
+function ajustesIaWizard(wizard) {
+  const pasos = leerJson(wizard?.flujo_pasos_json, []);
+  const aj = (Array.isArray(pasos) ? pasos : []).find(
+    (p) => p && p.espera === 'ajustes',
+  );
+  const noPedir = (Array.isArray(aj?.no_pedir) ? aj.no_pedir : [])
+    .map((d) => String(d || '').toLowerCase().trim())
+    .filter(Boolean);
+  return {
+    no_pedir: noPedir,
+    sinTelefono: noPedir.includes('telefono'),
+    // Dirección sin "dos calles y una referencia": con lo que dé el cliente
+    // (calle, número, barrio) la guía sale igual.
+    sinReferencia: noPedir.includes('referencia'),
+    // Con todos los datos, cierra directo: no muestra el resumen para que
+    // el cliente lo confirme. El candado de datos reales sigue vigente.
+    sinConfirmacion: noPedir.includes('confirmacion'),
+  };
+}
+
 function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}) {
   const combos = combosValidos(producto.combos_producto);
   const bullets = leerJson(wizard.bullets_json, []);
@@ -554,6 +580,7 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
   );
   const stock = Number(producto.stock);
   const sinStock = Number.isFinite(stock) && stock <= 0;
+  const ajustes = ajustesIaWizard(wizard);
 
   const hayVariedades =
     Array.isArray(producto.variaciones) && producto.variaciones.length > 0;
@@ -564,8 +591,23 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
   lineas.push(
     wizard.tipo_venta === 'servicio'
       ? `La fase de PRESENTACIÓN de este servicio YA FUE COMPLETADA por el sistema: el cliente recibió fotos, precio y la pregunta de cierre en un mensaje fijo. No saludes de nuevo ni vuelvas a presentarlo. Sigue tu guion desde el punto posterior a la presentación SIN SALTARTE ningún dato que tu guion pida (ciudad o sede, fecha, horario, datos del cliente): pregunta lo que todavía no sepas, en el orden de tu guion, una pregunta por mensaje.`
-      : `La fase de PRESENTACIÓN de este producto YA FUE COMPLETADA por el sistema: el cliente recibió fotos, precio${combos.length ? ', combos' : ''} y la pregunta de cierre en un mensaje fijo. No saludes de nuevo, no vuelvas a presentar el producto ni repitas precios que no te pidan. Sigue tu guion desde el punto posterior a la presentación SIN SALTARTE ningún dato que tu guion pida (ciudad, cantidad${hayVariedades ? ', variedad' : ''}, tipo de envío, nombre, teléfono, dirección u oficina): pregunta lo que todavía no sepas, en el orden de tu guion, una pregunta por mensaje. Nunca deduzcas la ciudad de una dirección: si el cliente no la dijo, pregúntala.`,
+      : `La fase de PRESENTACIÓN de este producto YA FUE COMPLETADA por el sistema: el cliente recibió fotos, precio${combos.length ? ', combos' : ''} y la pregunta de cierre en un mensaje fijo. No saludes de nuevo, no vuelvas a presentar el producto ni repitas precios que no te pidan. Sigue tu guion desde el punto posterior a la presentación SIN SALTARTE ningún dato que tu guion pida (ciudad, cantidad${hayVariedades ? ', variedad' : ''}, tipo de envío, nombre${ajustes.sinTelefono ? '' : ', teléfono'}, dirección u oficina): pregunta lo que todavía no sepas, en el orden de tu guion, una pregunta por mensaje. Nunca deduzcas la ciudad de una dirección: si el cliente no la dijo, pregúntala.`,
   );
+  if (ajustes.sinTelefono) {
+    lineas.push(
+      `📵 TELÉFONO: el negocio decidió NO pedirlo. Nunca le pidas ni le menciones el teléfono al cliente, aunque tu guion lo incluya: el sistema ya tiene el número de WhatsApp desde el que escribe. En el resumen del pedido OMITE la línea "Teléfono" por completo (no la escribas vacía, ni "por confirmar", ni con el número del chat).`,
+    );
+  }
+  if (ajustes.sinReferencia) {
+    lineas.push(
+      `🏠 DIRECCIÓN: el negocio decidió NO pedir referencia. Pide la dirección UNA vez y con lo que el cliente dé (calle y número, barrio o sector) es suficiente: no le pidas "dos calles", "una referencia", "punto conocido" ni que la complete. En el resumen va tal cual la dio.`,
+    );
+  }
+  if (ajustes.sinConfirmacion) {
+    lineas.push(
+      `✅ CIERRE DIRECTO: el negocio decidió NO pedir confirmación del resumen. En cuanto tengas todos los datos del pedido, tu mensaje ES el cierre (el resumen completo con el tag de cierre en la última línea): no preguntes "¿está todo correcto?", "¿confirmas?" ni esperes un "sí". Tu flujo cierra directo.`,
+    );
+  }
   lineas.push('');
   lineas.push(
     `[PRODUCTO EN JUEGO — configurado por el negocio, datos EN VIVO]`,
@@ -879,6 +921,21 @@ async function intentarRespuestaRapida({
     id_configuracion,
     id_cliente,
   );
+  /* Fotos/videos de la rápida ("¿tienen fotos reales?" → la foto real y
+     después el texto). Pasan por el mismo dedupe que todo lo demás: una URL
+     que ya salió en el paquete no se repite. */
+  if (Array.isArray(match.faq.media) && match.faq.media.length) {
+    await enviarMediaFlujo({
+      id_configuracion,
+      id_cliente,
+      telefono,
+      business_phone_id,
+      accessToken,
+      urls: match.faq.media,
+      responsable: RESPONSABLE_RAPIDA,
+      log: decir,
+    });
+  }
   await enviarTextoWizard({
     id_configuracion,
     telefono,
@@ -1208,6 +1265,7 @@ async function enviarMediaFlujo({
   business_phone_id,
   accessToken,
   urls,
+  responsable = RESPONSABLE_FLUJO,
   log,
 }) {
   const decir = logDe(log);
@@ -1228,7 +1286,11 @@ async function enviarMediaFlujo({
 
   let enviados = 0;
   for (const url of nuevas) {
-    const tipo = /\.(mp4|mov|3gp)(\?|$)/i.test(url) ? 'video' : 'image';
+    // Extensión de video, o una URL de la Video API (/Videos/stream/<id>,
+    // sin extensión): mandarla como imagen la haría fallar en Meta.
+    const tipo = /\.(mp4|mov|3gp)(\?|$)|\/Videos\/stream\//i.test(url)
+      ? 'video'
+      : 'image';
     const r = await enviarMedioWhatsapp({
       tipo,
       url_archivo: url,
@@ -1236,7 +1298,7 @@ async function enviarMediaFlujo({
       business_phone_id,
       accessToken,
       id_configuracion,
-      responsable: RESPONSABLE_FLUJO,
+      responsable,
     });
     if (r?.ok) enviados += 1;
     else {
@@ -1633,6 +1695,7 @@ module.exports = {
   resolverWizardDelAnuncio,
   wizardDelClienteEnJuego,
   bloqueWizardParaMotor,
+  ajustesIaWizard,
   wizardParaMotor,
   enviarPaqueteInicial,
   intentarMensajeFijoWizard,
