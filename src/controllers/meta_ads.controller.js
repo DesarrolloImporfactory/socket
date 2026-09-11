@@ -403,36 +403,62 @@ exports.conectarAdAccount = async (req, res) => {
       });
     }
 
+    // Intercambio del code por el token.
+    //
+    // El orden importa y depende de cómo se obtuvo el code:
+    //
+    //   - Por REDIRECCIÓN: Meta lo ató a un redirect_uri concreto y exige el
+    //     mismo, carácter por carácter, al intercambiarlo. Se intenta primero
+    //     con él.
+    //   - Por POPUP (FB.login): el code no va atado a ninguna URL y hay que
+    //     intercambiarlo SIN redirect_uri.
+    //
+    // Antes se probaba siempre primero sin él. Eso gastaba un intento fallido
+    // en el camino de redirección y dejaba la duda de si Meta invalidaba el
+    // code al rechazarlo. Probando primero el que corresponde, cada flujo
+    // acierta a la primera y el otro intento queda sólo como red de seguridad.
+    const variantes = redirect_uri
+      ? [{ redirect_uri }, {}]
+      : [{}, { redirect_uri: 'https://chatcenter.imporfactory.app/conexiones' }];
+
     let userToken;
-    try {
-      const tokenResp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
-        params: {
-          client_id: fbApp.id,
-          client_secret: fbApp.secret,
-          code,
-        },
-      });
-      userToken = tokenResp.data?.access_token;
-    } catch (e1) {
+    const fallos = [];
+    for (const extra of variantes) {
       try {
-        const tokenResp2 = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
+        const resp = await axios.get(`${GRAPH_BASE}/oauth/access_token`, {
           params: {
             client_id: fbApp.id,
             client_secret: fbApp.secret,
             code,
-            redirect_uri:
-              redirect_uri || 'https://chatcenter.imporfactory.app/conexiones',
+            ...extra,
           },
         });
-        userToken = tokenResp2.data?.access_token;
-      } catch (e2) {
-        return res.status(400).json({
-          success: false,
-          message: 'No se pudo intercambiar el código por token.',
-          error_sin: e1?.response?.data || e1.message,
-          error_con: e2?.response?.data || e2.message,
+        userToken = resp.data?.access_token;
+        if (userToken) break;
+      } catch (err) {
+        fallos.push({
+          redirect_uri: extra.redirect_uri || '(sin redirect_uri)',
+          error: err?.response?.data?.error || err.message,
         });
       }
+    }
+
+    if (!userToken) {
+      // Se registra en el servidor, no sólo se devuelve: el front muestra un
+      // mensaje genérico y el detalle de Meta —que es el que dice qué pasó—
+      // se perdía si nadie abría la respuesta en el inspector.
+      console.error(
+        `[ADS_CONNECT][ERROR] intercambio del code · cfg=${id_configuracion} · ` +
+          `app=${fbApp.key}(${fbApp.id}) · ` +
+          fallos
+            .map((f) => `[${f.redirect_uri}] ${JSON.stringify(f.error)}`)
+            .join(' · '),
+      );
+      return res.status(400).json({
+        success: false,
+        message: 'No se pudo intercambiar el código por token.',
+        intentos: fallos,
+      });
     }
     if (!userToken) throw new Error('No se obtuvo access_token de Meta');
 
