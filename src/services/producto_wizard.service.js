@@ -358,6 +358,14 @@ function limpiarPasosFlujo(lista) {
           ? { espera: 'ajustes', no_pedir: [...new Set(noPedir)] }
           : null;
       }
+      /* Entrada especial: las respuestas que salen DESPUÉS del cierre. Viven
+         junto al mensaje de venta realizada (mismo truco, cero migración) y
+         son una lista aparte de las respuestas rápidas: aquellas venden, estas
+         acompañan a quien ya compró. */
+      if (p && p.espera === 'post_venta') {
+        const faqs = limpiarFaqs(p.faqs);
+        return faqs.length ? { espera: 'post_venta', faqs } : null;
+      }
       // Entrada especial: el mensaje de VENTA REALIZADA (copy + media al
       // cerrar). No es un paso de la secuencia; el runtime lo lee aparte.
       if (p && p.espera === 'venta_realizada') {
@@ -1303,7 +1311,11 @@ async function simularTurno({
   // 0.5) Flujo de venta por pasos — ANTES que la rápida, como en producción.
   // Se valida contra los pasos que el usuario tiene EN PANTALLA (sin guardar),
   // para que pruebe lo que está editando.
-  const { validarPasoFlujo } = require('./producto_wizard_runtime.service');
+  const {
+    validarPasoFlujo,
+    buscarPasoAdelantado,
+    buscarPasoPorCompra,
+  } = require('./producto_wizard_runtime.service');
   // Se limpia siempre: los ajustes del bot (entrada 'ajustes') aplican
   // aunque el embudo esté apagado. La secuencia de pasos, solo con el toggle.
   const pasosFlujoTodos = limpiarPasosFlujo(wizardInput.flujo_pasos || []);
@@ -1316,21 +1328,40 @@ async function simularTurno({
   // Pregunta del paso pendiente: la rápida y la IA retoman el embudo con ella.
   let preguntaFlujo = null;
   if (pasosFlujo.length && pasoActual >= 0 && pasoActual < pasosFlujo.length) {
-    const paso = pasosFlujo[pasoActual];
+    let paso = pasosFlujo[pasoActual];
     preguntaFlujo = String(paso.pregunta || '').trim() || null;
-    /* La FAQ le gana a los pasos de validación débil (ciudad/libre), igual
-       que en producción: "tiene registro sanitario" sin "?" no es una ciudad. */
+    /* Desvío con quemada, igual que en producción: si la frase no responde el
+       paso, contesta la rápida y retoma; si además lo responde, la rápida sale
+       primero y el embudo avanza en el mismo turno. */
     const {
       elegirRespuestaRapida: faqDelFlujo,
     } = require('../utils/wizardProducto/respuestasRapidas');
-    const faqGana =
-      ['ciudad', 'libre'].includes(paso.espera) &&
-      (wizardInput.usar_respuestas_rapidas === undefined ||
-        Boolean(Number(wizardInput.usar_respuestas_rapidas))) &&
-      Boolean(
-        faqDelFlujo(texto, limpiarFaqs(wizardInput.respuestas_rapidas || [])),
-      );
-    const v = faqGana ? { valida: false } : validarPasoFlujo(paso, texto);
+    let v = validarPasoFlujo(paso, texto);
+    /* Contestó por adelantado un paso posterior ("a Cuenca" en la pregunta
+       gancho): el embudo se adelanta a ese paso, igual que en producción. */
+    {
+      const salto =
+        buscarPasoPorCompra(pasosFlujo, pasoActual, texto) ||
+        (!v.valida && !v.caso && !v.fuera_rango && !v.pedido_complejo
+          ? buscarPasoAdelantado(pasosFlujo, pasoActual, texto)
+          : null);
+      if (salto) {
+        pasoActual = salto.indice;
+        paso = salto.paso;
+        v = salto.v;
+        preguntaFlujo = String(paso.pregunta || '').trim() || null;
+      }
+    }
+    const usaRapidasFlujo =
+      wizardInput.usar_respuestas_rapidas === undefined ||
+      Boolean(Number(wizardInput.usar_respuestas_rapidas));
+    const faqFlujo = usaRapidasFlujo
+      ? faqDelFlujo(texto, limpiarFaqs(wizardInput.respuestas_rapidas || []))
+      : null;
+    // Si la frase no valida el paso, v.valida ya es false y el turno cae solo
+    // a la cadena rápida / IA, que retoma con preguntaFlujo.
+    const faqPrevia = faqFlujo && v.valida ? faqFlujo : null;
+
     /* Pedido complejo ("dos combos de 3"): igual que en vivo, el embudo se
        hace a un lado del todo y la IA toma el pedido — sin retome. */
     if (v.pedido_complejo) {
@@ -1452,9 +1483,14 @@ async function simularTurno({
           : paso.media || [];
       if (copy || media.length) {
         const sig = pasoActual + 1;
-        return turnoFlujo(copy, sig >= pasosFlujo.length ? -1 : sig, {
+        // Contestó el paso y de paso preguntó: primero la quemada, luego el copy.
+        const textoFlujo = faqPrevia
+          ? [String(faqPrevia.faq.respuesta).trim(), copy].filter(Boolean).join('\n\n')
+          : copy;
+        return turnoFlujo(textoFlujo, sig >= pasosFlujo.length ? -1 : sig, {
           media_flujo: media,
           flujo_completo: sig >= pasosFlujo.length,
+          ...(faqPrevia ? { rapida_previa: faqPrevia.indice } : {}),
         });
       }
     }
@@ -1475,6 +1511,75 @@ async function simularTurno({
   const matchFaq = usaRapidas
     ? elegirRespuestaRapida(texto, faqs, { ignorarCompra: true })
     : null;
+  /* ¿La simulación ya pasó el cierre? El front manda la columna destino
+     (id_columna) desde el turno siguiente al cierre, igual que en producción
+     el contacto queda en "generar guía".
+       · postVentaSim  → la venta ya cerró: la quemada sale SIN remate.
+       · postVentaMudo → además esa columna no tiene IA, que es el caso real:
+         ahí NO contestan las rápidas (en vivo el bot está apagado), solo las
+         respuestas de después del cierre. */
+  let postVentaSim = false;
+  let postVentaMudo = false;
+  if (id_columna) {
+    try {
+      const { esColumnaPostVenta } = require('./producto_wizard_runtime.service');
+      const [colAct] = await db.query(
+        `SELECT estado_db, activa_ia FROM kanban_columnas WHERE id = ? LIMIT 1`,
+        { replacements: [id_columna], type: db.QueryTypes.SELECT },
+      );
+      if (colAct) {
+        postVentaSim = await esColumnaPostVenta(
+          id_configuracion,
+          colAct.estado_db,
+          { exigirSinIA: false },
+        );
+        postVentaMudo = postVentaSim && Number(colAct.activa_ia) !== 1;
+      }
+    } catch {
+      postVentaSim = false;
+    }
+  }
+
+  /* Columna post-venta sin IA: en vivo solo contestan las respuestas de
+     después del cierre. Si ninguna calza, el turno cae al aviso de "lo atiende
+     una persona" — igual que en producción, donde el bot no habla ahí. */
+  if (postVentaMudo) {
+    const { elegirPostVenta } = require('./producto_wizard_runtime.service');
+    const post = pasosFlujoTodos.find((p) => p.espera === 'post_venta');
+    const faqsPost = (Array.isArray(post?.faqs) ? post.faqs : []).filter(
+      (f) => f && f.activa !== 0 && f.pregunta && f.respuesta,
+    );
+    const m = faqsPost.length ? elegirPostVenta(texto, faqsPost) : null;
+    if (m) {
+      return {
+        tipo: 'rapida',
+        respuesta: String(m.faq.respuesta).trim(),
+        post_venta_sin_remate: true,
+        responsable: 'IA_respuesta_rapida',
+        remitente: 'Respuesta después del cierre',
+        tokens: 0,
+        media_flujo: Array.isArray(m.faq.media) ? m.faq.media : [],
+        flujo_paso: pasoActual,
+        previous_response_id,
+      };
+    }
+    /* Sin match el turno TERMINA acá, igual que en vivo: en una etapa de
+       seguimiento el bot no habla. La nota dice por qué, que es lo accionable
+       (agregar esa pregunta a la lista). */
+    return {
+      tipo: 'silencio',
+      respuesta: '',
+      responsable: 'sistema',
+      remitente: 'Sin respuesta',
+      tokens: 0,
+      nota: faqsPost.length
+        ? 'El pedido ya está cerrado y ninguna de tus "respuestas después del cierre" calza con ese mensaje: en vivo no se le contesta nada y queda para una persona. Si quieres que se conteste, agrégala en el paso 2 (Embudo), debajo del mensaje final.'
+        : 'El pedido ya está cerrado y el chat está en una etapa de seguimiento: en vivo el bot no responde. Si quieres que conteste preguntas como esta, agrégalas en "Respuestas después del cierre" (paso 2, debajo del mensaje final).',
+      flujo_paso: pasoActual,
+      previous_response_id,
+    };
+  }
+
   if (matchFaq && !compra) {
     /* Mismo remate que en producción: si la respuesta no termina preguntando,
        el cierre de venta se agrega aquí también — lo que se prueba en el
@@ -1483,16 +1588,37 @@ async function simularTurno({
       conCierreDeVenta,
       semillaCierre,
     } = require('../utils/wizardProducto/cierreVenta');
-    return {
-      tipo: 'rapida',
-      // Con el flujo activo, la quemada retoma la PREGUNTA del paso pendiente
-      // en lugar del remate genérico — igual que en producción.
-      respuesta: preguntaFlujo
+    const {
+      textoPostVenta,
+    } = require('./producto_wizard_runtime.service');
+    const respuestaRapida = postVentaSim
+      ? textoPostVenta(matchFaq.faq.respuesta)
+      : preguntaFlujo
         ? `${String(matchFaq.faq.respuesta).trim()}\n\n${preguntaFlujo}`
         : conCierreDeVenta(
             matchFaq.faq.respuesta,
             semillaCierre('', matchFaq.indice),
-          ),
+          );
+    if (!respuestaRapida) {
+      return {
+        tipo: 'silencio',
+        respuesta: '',
+        responsable: 'sistema',
+        remitente: 'Sin respuesta',
+        tokens: 0,
+        nota:
+          'La respuesta rápida que calzaba es solo una pregunta de venta y el ' +
+          'pedido ya está cerrado: no se le manda nada, queda para una persona.',
+        flujo_paso: pasoActual,
+        previous_response_id,
+      };
+    }
+    return {
+      tipo: 'rapida',
+      // Con el flujo activo, la quemada retoma la PREGUNTA del paso pendiente
+      // en lugar del remate genérico — igual que en producción.
+      respuesta: respuestaRapida,
+      post_venta_sin_remate: postVentaSim,
       responsable: 'IA_respuesta_rapida',
       remitente: 'Respuesta rápida',
       tokens: 0,

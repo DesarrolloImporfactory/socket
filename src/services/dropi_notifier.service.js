@@ -122,44 +122,29 @@ const CLASE_A_ESTADO_PLANTILLA = {
   retiro_agencia: 'RETIRO EN AGENCIA',
   novedad: 'NOVEDAD',
   guia_generada: 'GUIA GENERADA',
-  // El cliente no configura "en reparto" aparte: los dos avisan lo mismo.
+  /* La plantilla "EN TRANSITO" es el aviso de "tu pedido está por llegar", y
+     sale en la ÚLTIMA MILLA: EN REPARTO, ZONA DE ENTREGA, EN DISTRIBUCION A
+     CLIENTE, SALIO A RUTA. La clase 'en_transito' (recolección, bodega, centro
+     logístico, despacho) NO notifica a propósito: esos movimientos pasan el
+     MISMO día en que se genera la guía y el cliente recibía "va en tránsito"
+     por un paquete que sale días después (cfg 793, 2026-09). Además el aviso
+     sale UNA sola vez por orden, así que gastarlo el día 1 deja al cliente sin
+     el aviso del día en que de verdad se lo llevan. */
   en_reparto: 'EN TRANSITO',
-  en_transito: 'EN TRANSITO',
 };
 
-/* Estados de seguimiento que el kanban SÍ mueve pero que NO se le anuncian al
-   cliente, porque el aviso sería falso o prematuro. Solo aplican a las clases
-   de seguimiento (tránsito / reparto / retiro), nunca a un estado terminal. */
-const SIN_AVISO = [
-  // Alistamiento antes de que la transportadora recoja: el paquete no ha
-  // salido. "EN BODEGA (ORIGEN)" NO entra: ahí ya fue recolectado.
-  /\b(PACKING|PICKING|POR RECOLECTAR|INVENTARIO|PREPARADO|PROCESAMIENTO|GENERAD[OA])\b/,
-  /* "La guía SERÁ entregada en oficina para su retiro" (Servientrega): va en
-     camino a la agencia, todavía no se puede retirar. Si se avisara acá, el
-     dedupe por estado se comería el aviso bueno —el que sí trae la agencia
-     resuelta— cuando el paquete llegue de verdad. */
-  /EN DISTRIBUCION PARA ENTREGA EN AGENCIA/,
-  // La transportadora está confirmando datos del destinatario (le faltan);
-  // no es tránsito. Mismo criterio que utils/retiroEnOrigen.js.
-  /INGRESO A CONFIRMACION/,
-  // Retraso por factores externos (cierre de vías, derrumbes): no es "va en
-  // camino", y el cliente que recibe eso entiende lo contrario.
-  /INCIDENCIA/,
-];
+/* "La guía SERÁ entregada en oficina para su retiro" (Servientrega): va camino
+   a la agencia, todavía no se puede retirar. Avisar acá quemaría —por el
+   dedupe— el aviso bueno, el que ya trae la agencia resuelta. */
+const RE_RETIRO_PREMATURO = /EN DISTRIBUCION PARA ENTREGA EN AGENCIA/;
 
-const CLASES_DE_SEGUIMIENTO = new Set([
-  'en_transito',
-  'en_reparto',
-  'retiro_agencia',
-]);
-
-/* Esta función decidía a mano, con su propia lista, y se quedó MUY corta frente
-   a classifyDropiStatus (la que sí conoce el vocabulario real de las
-   transportadoras): "EN TRANSITO", "EN BODEGA", "POR RECOLECTAR", "PACKING",
-   "GUÍA GENERADA" con tilde, "RECHAZADA", "CANCELADO POR TRANSPORTADORA"…
-   todos devolvían null y el cliente nunca recibía ese aviso, aunque tuviera la
-   plantilla configurada y el chat sí se moviera de columna. Ahora las dos leen
-   el mismo mapa: lo que el kanban clasifica es lo que el notifier avisa. */
+/* Esta función tenía su propia lista de estados, paralela a la de
+   classifyDropiStatus (la que sí conoce el vocabulario real de las
+   transportadoras), y se le escapaban variantes que existen en producción:
+   "GUÍA GENERADA" con tilde o con espacio, "RECHAZADA", "CANCELADO POR
+   TRANSPORTADORA", "DEVUELTA". Esos avisos nunca salían aunque la plantilla
+   estuviera configurada. Ahora las dos leen el mismo vocabulario; lo que cambia
+   por estado es SOLO qué plantilla le toca, en el mapa de arriba. */
 function mapDropiStatusToEstadoConfig(rawStatus) {
   const s = normalizarStatus(rawStatus);
 
@@ -170,10 +155,7 @@ function mapDropiStatusToEstadoConfig(rawStatus) {
 
   const clase = classifyDropiStatus(rawStatus);
 
-  // Cada aviso sale UNA sola vez por orden (dedupe por estado): gastarlo en un
-  // evento prematuro deja al cliente sin el aviso bueno.
-  if (CLASES_DE_SEGUIMIENTO.has(clase) && SIN_AVISO.some((re) => re.test(s)))
-    return null;
+  if (clase === 'retiro_agencia' && RE_RETIRO_PREMATURO.test(s)) return null;
 
   return CLASE_A_ESTADO_PLANTILLA[clase] || null;
 }

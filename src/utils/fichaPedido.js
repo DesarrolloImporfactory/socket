@@ -169,6 +169,18 @@ function corregirCiudadTypo(ciudad) {
     if (LUGARES_EC.has(n) || LUGARES_EC_FRASES.includes(n)) {
       return ciudad; // ya es una ciudad conocida, tal cual
     }
+    /* Ciudad a medias: el cliente se come las últimas letras ("Quit",
+       "Guayaqui"). Si UNA sola ciudad conocida empieza así, esa es. Va antes
+       del umbral de 5 porque "Quit" tiene 4 y cerraba pedidos con la ciudad
+       "Quit" — que en Dropi no existe (caso 1125, 2026-09-11). */
+    if (n.length >= 4) {
+      const empiezan = [...LUGARES_EC].filter(
+        (c) => c.startsWith(n) && c.length - n.length <= 3,
+      );
+      if (empiezan.length === 1) {
+        return empiezan[0].charAt(0).toUpperCase() + empiezan[0].slice(1);
+      }
+    }
     if (n.length < 5) return ciudad;
     const tope = n.length >= 8 ? 2 : 1;
     for (const conocida of LUGARES_EC) {
@@ -425,6 +437,10 @@ async function extraerFichaPedido({
     variedad: aparecioEnCliente(v('variedad'), textoCliente) ? v('variedad') : '',
     confirmo_pedido: ia.confirmo_pedido === true && huboResumen,
     _firma: firma,
+    /* Veces que el bot ya pidió numeración/referencia después de que el
+       cliente diera la dirección: a la segunda, el candado ofrece la agencia
+       en vez de volver a pedirla. */
+    _intentosDireccion: intentosPedirReferencia(items, direccion),
     /* Lo que escribió el CLIENTE, para el candado anti-invento del cierre: un
        dato del resumen (ciudad, teléfono) que no esté acá lo inventó el modelo. */
     _textoCliente: textoCliente,
@@ -479,6 +495,61 @@ function agenciaConcreta(valor) {
   return limpio.length >= 4;
 }
 
+/* ── Candado de la dirección a domicilio ──
+   "Av. Juan Montalvo y Sucre" no es una dirección entregable: sin numeración
+   de casa ni un punto de referencia el repartidor no la encuentra y la orden
+   vuelve como NO ENTREGADA. Se pide UNA vez lo que falta; si el cliente no lo
+   da, en vez de insistir se le ofrece el retiro en agencia Servientrega. */
+const RE_CALLE_FECHA = /\b\d{1,2}\s+de\s+[a-zA-ZáéíóúñÁÉÍÓÚÑ]+/g;
+const RE_REFERENCIA_TEXTO =
+  /\b(?:frente|junto|diagonal|esquina|altura|cerca|media cuadra|detr[aá]s|atr[aá]s|al lado|color|port[oó]n|edificio|piso|dpto|departamento|villa|conjunto|urbanizaci[oó]n|ciudadela|mz|manzana|solar|lote|referencia)\b/i;
+/* El bot ya pidió lo que falta (numeración o referencia). Reconoce también la
+   fórmula que traen todos los prompts: "dos calles y una referencia". */
+const RE_PIDE_REFERENCIA =
+  /numeraci[oó]n|n[uú]mero de (?:la )?casa|punto de referencia|una referencia|la referencia|dos calles/i;
+
+/* Numeración = un dígito que no sea parte del nombre de una calle-fecha
+   ("10 de Agosto", "24 de Mayo"), que es el falso positivo de siempre. */
+function direccionTieneNumeracion(direccion) {
+  return /\d/.test(String(direccion || '').replace(RE_CALLE_FECHA, ' '));
+}
+
+function direccionTieneReferencia(f) {
+  return (
+    Boolean(String(f?.referencia || '').trim()) ||
+    RE_REFERENCIA_TEXTO.test(String(f?.direccion || ''))
+  );
+}
+
+/** ¿La dirección del cliente son SOLO calles? (el retiro en agencia no aplica). */
+function direccionIncompleta(ficha) {
+  const f = ficha || {};
+  if (f.entrega === 'agencia') return false;
+  if (!String(f.direccion || '').trim()) return false;
+  return !direccionTieneNumeracion(f.direccion) && !direccionTieneReferencia(f);
+}
+
+/* Cuántas veces el bot ya pidió numeración/referencia DESPUÉS de que el
+   cliente diera la dirección. Lo de antes no cuenta: pedirla junto con la
+   dirección es la pregunta normal, no una insistencia. */
+function intentosPedirReferencia(items, direccion) {
+  const dir = String(direccion || '').trim();
+  if (!dir || !Array.isArray(items)) return 0;
+  const aguja = normalizar(dir).slice(0, 15);
+  if (!aguja) return 0;
+  /* La PRIMERA vez que la dio: si se cuenta desde la última, el cliente que
+     repite la misma calle ("solo sé que se llama Geovanny Calles") reinicia el
+     contador y el bot se la pide para siempre (caso 1125, bucle de 4). */
+  const desde = items.findIndex(
+    (it) => it.rol === 'CLIENTE' && normalizar(it.texto).includes(aguja),
+  );
+  if (desde < 0) return 0;
+  return items
+    .slice(desde + 1)
+    .filter((it) => it.rol === 'ASISTENTE' && RE_PIDE_REFERENCIA.test(it.texto))
+    .length;
+}
+
 function etiquetaAgencia(f) {
   const ag = String((f && f.agencia) || '').trim();
   if (!ag) return 'Agencia Servientrega por confirmar';
@@ -519,6 +590,13 @@ function faltantesFicha(ficha, opts = {}) {
       f.entrega === 'domicilio'
         ? 'Dirección exacta (dos calles y una referencia)'
         : 'Dirección exacta (dos calles y una referencia), o si prefiere retirar en una agencia Servientrega',
+    );
+  } else if (direccionIncompleta(f) && Number(f._intentosDireccion || 0) < 1) {
+    /* Dirección de solo calles: se pide UNA vez lo que le falta. A la segunda
+       ya no se insiste (el bloque de la ficha ofrece la agencia): repetirlo
+       es el muro que espanta al cliente. */
+    faltan.push(
+      `La numeración de la casa y una referencia para llegar (dio "${f.direccion}": solo calles, y así la transportadora no entrega)`,
     );
   }
   // Retiro en agencia sin ciudad: la ciudad es el único dato de destino.
@@ -598,6 +676,23 @@ function bloqueFichaPedido(
       `✅ Dirección: ${f.direccion}${f.referencia ? ` — referencia: ${f.referencia}` : ''}`,
     );
   else if (f.referencia) lineas.push(`✅ Referencia: ${f.referencia}`);
+  /* Candado de la dirección: solo calles = guía que vuelve como no entregada.
+     Primera vez se pide lo que falta; a la segunda se ofrece la agencia en vez
+     de insistir. */
+  if (direccionIncompleta(f)) {
+    const intentos = Number(f._intentosDireccion || 0);
+    lineas.push(
+      intentos < 1
+        ? `⚠️ CANDADO DE DIRECCIÓN: "${f.direccion}" son solo calles, sin numeración de casa ni referencia — así la transportadora NO entrega. ` +
+            `En ESTE mensaje pídele el número de la casa y una referencia para llegar (un negocio cercano, el color de la casa, un punto conocido). No cierres el pedido todavía.`
+        : `⚠️ CANDADO DE DIRECCIÓN: ya le pediste la numeración y la referencia y no las dio. NO se las vuelvas a pedir. ` +
+            `Dile con naturalidad que sin numeración ni referencia el repartidor no llega, y ofrécele retirar el pedido en la agencia Servientrega más cercana a esa dirección` +
+            (retiroDirectorio
+              ? ` (ofrécele de 3 a 5 oficinas REALES del directorio de su ciudad y espera cuál elige).`
+              : ` de su ciudad.`) +
+            ` Si aun así prefiere el domicilio, respétalo: cierra con la dirección tal cual la dio.`,
+    );
+  }
   if (f.producto)
     lineas.push(
       `✅ Producto: ${f.producto}${f.cantidad ? ` x${f.cantidad}` : ''}${f.variedad ? ` (${f.variedad})` : ''}`,
@@ -817,6 +912,10 @@ module.exports = {
   faltantesFicha,
   agenciaConcreta,
   fichaTieneDatos,
+  // Candado de la dirección a domicilio (puras, para la batería).
+  direccionIncompleta,
+  direccionTieneNumeracion,
+  intentosPedirReferencia,
   completarResumenConFicha,
   esCierreNarrado,
   pareceResumenDePedido,

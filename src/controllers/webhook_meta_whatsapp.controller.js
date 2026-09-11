@@ -44,6 +44,7 @@ const {
   intentarMensajeFijoWizard,
   intentarRespuestaRapida,
   intentarPasoFlujo,
+  intentarRespuestaPostVenta,
 } = require('../services/producto_wizard_runtime.service');
 
 // Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
@@ -2443,6 +2444,29 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 if (logi?.manejado) saltarIA = true;
               } catch (eLogi) {
                 await logWizard(`⚠️ respondedor logístico: ${eLogi.message}`);
+              }
+            }
+
+            // 1.8 Post-venta sin IA: cerrada la venta el chat queda en una
+            // columna muda (generar guía, en tránsito…) y el cliente sigue
+            // preguntando ("¿cómo participo en el sorteo?"). Contestan las
+            // respuestas rápidas del producto —texto del negocio, 0 tokens—;
+            // todo lo demás sigue quedando para el humano.
+            if (!saltarIA) {
+              try {
+                const post = await intentarRespuestaPostVenta({
+                  id_configuracion,
+                  id_cliente,
+                  telefono: phone_whatsapp_from,
+                  business_phone_id,
+                  accessToken,
+                  estado_contacto,
+                  texto_mensaje,
+                  log: logWizard,
+                });
+                if (post?.manejado) saltarIA = true;
+              } catch (ePost) {
+                await logWizard(`⚠️ post-venta: ${ePost.message}`);
               }
             }
 
