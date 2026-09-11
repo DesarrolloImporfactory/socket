@@ -15,6 +15,11 @@ const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 const { isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
 const { matchEnLista } = require('../services/dropiAutoOrder.service');
+/* Antes había acá una copia literal de classifyDropiStatus. Dos listas de
+   estados que nadie sincroniza divergen solas: la del notifier se quedó sin
+   "EN TRANSITO", "EN BODEGA" ni "GUÍA GENERADA" con tilde y esos avisos nunca
+   salían. Una sola función, un solo vocabulario. */
+const { classifyDropiStatus } = require('../services/dropi_notifier.service');
 
 /* =========================
    Helpers
@@ -1695,153 +1700,6 @@ exports.listAllMyIntegrations = catchAsync(async (req, res, next) => {
 if (!global._dropiSyncDone) global._dropiSyncDone = {};
 if (!global._dropiSyncLock) global._dropiSyncLock = {};
 if (!global._profitSyncLock) global._profitSyncLock = {};
-
-// ── Clasificar status Dropi ──
-function classifyDropiStatus(status) {
-  const s = String(status || '')
-    .trim()
-    .toUpperCase();
-
-  // ENTREGADA
-  if (
-    s === 'ENTREGADO' ||
-    s.includes('ENTREGADA') ||
-    s === 'REPORTADO ENTREGADO' ||
-    s.includes('REPORTADO ENTREGADO') ||
-    s === 'ENTREGA DIGITALIZADA' ||
-    s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
-  )
-    return 'entregada';
-
-  // DEVOLUCION
-  if (
-    s.includes('DEVOLUCION') ||
-    s.includes('DEVOLUCIÓN') ||
-    s === 'DEVUELTO' ||
-    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
-    s === 'DESAPLICADO'
-  )
-    return 'devolucion';
-
-  // CANCELADA
-  if (
-    s.includes('CANCELADO') ||
-    s.includes('CANCELADA') ||
-    s === 'ANULADA' ||
-    s === 'RECHAZADO' ||
-    s === 'GUIA_ANULADA'
-  )
-    return 'cancelada';
-
-  // PENDIENTE
-  if (s === 'PENDIENTE' || s === 'PENDIENTE CONFIRMACION') return 'pendiente';
-
-  // RETIRO EN AGENCIA
-  if (
-    s.includes('RETIRO EN AGENCIA') ||
-    s.includes('ENTREGA EN AGENCIA') ||
-    s.includes('ENVÍO LISTO EN OFICINA') ||
-    s === 'ENVIO LISTO EN OFICINA'
-  )
-    return 'retiro_agencia';
-
-  // Novedad ya resuelta ("SOLUCIONADA" / "SOLUCION APROBADA") → sigue en ruta,
-  // no cuenta como novedad. "SOLUCION INCORRECTA" NO entra (sigue en novedad).
-  if (s.includes('SOLUCIONAD') || s.includes('SOLUCION APROBADA'))
-    return 'en_transito';
-
-  // NOVEDAD
-  if (
-    s.includes('NOVEDAD') ||
-    s.includes('SOLUCION') ||
-    s.includes('SOLUCIÓN') ||
-    s === 'CON NOVEDAD' ||
-    s === 'DESTINATARIO FALLECIDO' ||
-    s.includes('DESTINATARIO RE-PROGRAMA') ||
-    s.includes('DESTINATARIO SOLICITA') ||
-    s.includes('DESTINATARIO INDICA') ||
-    s.includes('FUERA DE COBERTURA') ||
-    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
-    s.includes('PROBLEMAS DE ORDEN') ||
-    s.includes('VISITA A DESTINATARIO') ||
-    s.includes('ACCIDENTE EN CARRETERA') ||
-    s.includes('EN ESPERA DE FIRMA') ||
-    s.includes('INCONFORME')
-  )
-    return 'novedad';
-
-  // INDEMNIZADA
-  if (
-    s.includes('INDEMNIZ') ||
-    s.includes('SINIESTRO') ||
-    s.includes('INCAUTADO') ||
-    s.includes('HURTAD') ||
-    s.includes('AVERÍA')
-  )
-    return 'indemnizada';
-
-  // GUIA GENERADA — guía recién creada, aún no se mueve
-  if (s === 'GUIA_GENERADA') return 'guia_generada';
-
-  // EN REPARTO — last-mile real (próximo a entregar al cliente)
-  if (
-    s === 'EN REPARTO' || // GINTRACOM
-    s === 'ZONA DE ENTREGA' || // LAAR
-    s === 'EN DISTRIBUCION A CLIENTE' || // SERVIENTREGA (sin tilde)
-    s === 'EN DISTRIBUCIÓN A CLIENTE' || // SERVIENTREGA (con tilde)
-    s.includes('EN DISTRIBUCION A') ||
-    s.includes('EN DISTRIBUCIÓN A') ||
-    s === 'EN CAMINO' || // VELOCES
-    s.includes('SALIDA A REPARTO') ||
-    s.includes('REPARTIDOR ASIGNADO') ||
-    s === 'INTENTO DE ENTREGA' ||
-    s === 'LISTO PARA ENTREGAR' ||
-    s.includes('SALIO A RUTA')
-  )
-    return 'en_reparto';
-
-  // EN TRANSITO — todo lo demás del flujo logístico interno
-  if (
-    s.includes('TRÁNSITO') ||
-    s.includes('TRANSITO') ||
-    s.includes('EN RUTA') ||
-    s.includes('BODEGA') ||
-    s.includes('EMBARCANDO') ||
-    s.includes('RECOLECT') ||
-    s.includes('RECOGIDO') ||
-    s.includes('ASIGNADO') ||
-    s.includes('PICKING') ||
-    s.includes('PACKING') ||
-    s.includes('GENERADO') ||
-    s.includes('GENERADA') ||
-    s.includes('PREPARADO') ||
-    s.includes('INVENTARIO') ||
-    s.includes('INGRES') ||
-    s.includes('RECIBIDO') ||
-    s === 'POR RECOLECTAR' ||
-    s === 'PROCESAMIENTO' ||
-    // Estados logísticos de transportadoras que antes caían en 'otro'
-    s.includes('CENTRO DE') ||
-    s.includes('DISTRIBUCION') ||
-    s.includes('DISTRIBUCIÓN') ||
-    s.includes('CIUDAD DE') ||
-    s.includes('ARRIBAD') ||
-    s.includes('DESEMBARQUE') ||
-    s.includes('RECEPCION') ||
-    s.includes('RECEPCIÓN') ||
-    s.includes('INSTALACION') ||
-    s.includes('INSTALACIÓN') ||
-    s.includes('DESPACHAD') ||
-    s.includes('A TRANSPORTADORA') ||
-    s.includes('LLEGANDO') ||
-    s.includes('CEDIS') ||
-    s.includes('CIRCUITO') ||
-    s.includes('PREPARANDO RUTA')
-  )
-    return 'en_transito';
-
-  return 'otro';
-}
 
 /* ═══════════════════════════════════════════════════════════
    Cache context helpers

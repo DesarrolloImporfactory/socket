@@ -1453,6 +1453,66 @@ async function preguntaPendienteFlujo(id_configuracion, id_cliente) {
   }
 }
 
+/* Texto comparable: sin tildes, sin signos y con los espacios colapsados, para
+   reconocer la misma pregunta aunque el modelo le cambie un emoji o la tilde. */
+function normalizarParaComparar(t) {
+  return String(t || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/* Cuántas veces SEGUIDAS el bot ya cerró con la pregunta pendiente del embudo
+   sin que el cliente la conteste. Con 2 o más, repetirla literal dejó de ser un
+   retome y es un muro: el cliente pregunta otra cosa y recibe siempre la misma
+   línea (cfg 366, cliente 593980916789: tres "¿A qué ciudad te las enviamos?"
+   seguidas ante "¿qué talla sería?", hasta que se fue). */
+async function repeticionesPreguntaRetome(id_cliente, pregunta) {
+  const aguja = normalizarParaComparar(pregunta);
+  if (!aguja) return 0;
+  try {
+    const rows = await db.query(
+      `SELECT rol_mensaje, texto_mensaje
+         FROM mensajes_clientes
+        WHERE celular_recibe = ?
+          AND texto_mensaje IS NOT NULL
+          AND texto_mensaje <> ''
+          AND deleted_at IS NULL
+        ORDER BY id DESC
+        LIMIT 12`,
+      { replacements: [String(id_cliente)], type: db.QueryTypes.SELECT },
+    );
+    let veces = 0;
+    for (const m of rows) {
+      // Solo cuentan los mensajes del negocio; los del cliente se saltan
+      // (entre dos repeticiones siempre hay uno).
+      if (Number(m.rol_mensaje) !== 1) continue;
+      if (normalizarParaComparar(m.texto_mensaje).includes(aguja)) veces++;
+      else break; // la racha se corta en el primer mensaje que no la repite
+    }
+    return veces;
+  } catch {
+    return 0;
+  }
+}
+
+/* Soltar el embudo sin avanzarlo: el paso pendiente ya no manda y la IA sigue
+   con su guion normal. Se usa cuando el retome se volvió repetición. */
+async function soltarFlujoPorDesvio(id_configuracion, id_cliente) {
+  try {
+    const r = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
+    if (!r) return false;
+    const prog = await progresoFlujo(id_cliente, r.producto.id);
+    if (!prog || prog.estado === 'terminado') return false;
+    await terminarFlujo(prog.id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* El turno del flujo: va en el webhook DESPUÉS del mensaje fijo y ANTES de
    las respuestas rápidas. Si la respuesta valida el paso, sale el copy
    siguiente (0 tokens) y avanza; si no, devuelve manejado:false y el turno
@@ -1706,6 +1766,8 @@ module.exports = {
   // la batería de regresión.
   intentarPasoFlujo,
   preguntaPendienteFlujo,
+  repeticionesPreguntaRetome,
+  soltarFlujoPorDesvio,
   validarPasoFlujo,
   extraerEdad,
   // Para la batería: identificar el producto por texto sin falsos positivos
