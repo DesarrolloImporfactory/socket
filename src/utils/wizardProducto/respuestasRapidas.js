@@ -44,15 +44,42 @@ function raiz(palabra) {
   return palabra;
 }
 
-function tokens(texto, { quitarVacias = true } = {}) {
+/* Vacías que SÍ son contenido cuando el negocio las declara como clave de una
+   quemada ("Precio", "¿cuánto vale?"). Se rescatan solo en ese caso; la
+   gramática y los interrogativos nunca se rescatan. */
+const RESCATABLES = new Set(
+  `precio costo cuesta vale valor producto articulo`
+    .split(' ')
+    .filter(Boolean)
+    .map(raiz),
+);
+
+function tokens(texto, { quitarVacias = true, salvar = null } = {}) {
   const limpio = normalizar(texto).replace(/[?¿]/g, ' ');
   const salida = [];
   for (const w of limpio.split(' ')) {
     if (!w || w.length < 3) continue;
-    if (quitarVacias && VACIAS_BASE.has(w)) continue;
-    salida.push(raiz(w));
+    const r = raiz(w);
+    if (quitarVacias && VACIAS_BASE.has(w) && !(salvar && salvar.has(r))) {
+      continue;
+    }
+    salida.push(r);
   }
   return salida;
+}
+
+/* Raíces rescatables que el negocio declaró como clave en ESTE producto. */
+function salvablesDe(faqs) {
+  const set = new Set();
+  for (const faq of faqs || []) {
+    if (!faq || faq.activa === 0 || faq.activa === false) continue;
+    for (const c of Array.isArray(faq.claves) ? faq.claves : []) {
+      for (const t of tokens(c, { quitarVacias: false })) {
+        if (RESCATABLES.has(t)) set.add(t);
+      }
+    }
+  }
+  return set;
 }
 
 /* Primer mensaje típico desde un anuncio: saludo y/o "quiero info / precio".
@@ -114,6 +141,12 @@ function pareceRegunta(texto) {
   return RE_INTERROGATIVO.test(n);
 }
 
+/** Quemada activa y con texto: las demás ni se miran. */
+function usable(faq) {
+  if (!faq || faq.activa === 0 || faq.activa === false) return false;
+  return Boolean(String(faq.respuesta || '').trim());
+}
+
 /**
  * @param {string} mensaje texto del cliente
  * @param {Array<{pregunta:string, respuesta:string, claves?:string[], activa?:number}>} faqs
@@ -126,7 +159,38 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
   // calzado con X, pero como quería comprar respondió la IA".
   if (!ignorarCompra && pareceIntencionCompra(mensaje)) return null;
 
-  const toksMensaje = new Set(tokens(mensaje));
+  /* Sin esto, "precio" / "cuánto vale" quedaban en CERO tokens (están en
+     VACIAS_BASE) y la quemada de Precio era inalcanzable aunque sus claves
+     fueran correctas (caso real cfg 1125, 2026-09-11). */
+  const salvar = salvablesDe(faqs);
+
+  /* 0a. Escribió TEXTUALMENTE una clave declarada ("precio", "donde estan"):
+     esa frase la puso el negocio, no hay nada que puntuar. Va antes del corte
+     por tokens porque esas claves son puras palabras vacías. */
+  const crudo = (t) =>
+    normalizar(t).replace(/[?¿]/g, ' ').replace(/ +/g, ' ').trim();
+  const msgCrudo = crudo(mensaje);
+  const exacta = (norm, valor) => {
+    if (!valor) return null;
+    // La PREGUNTA de la quemada gana sobre la clave de otra (caso cfg 324).
+    for (const ronda of [0, 1]) {
+      for (let i = 0; i < faqs.length; i++) {
+        const faq = faqs[i];
+        if (!usable(faq)) continue;
+        const textos = ronda === 0
+          ? [faq.pregunta]
+          : (Array.isArray(faq.claves) ? faq.claves : []);
+        if (textos.some((t) => norm(t) === valor)) {
+          return { faq, indice: i, score: 99 };
+        }
+      }
+    }
+    return null;
+  };
+  const verbatim = exacta(crudo, msgCrudo);
+  if (verbatim) return verbatim;
+
+  const toksMensaje = new Set(tokens(mensaje, { salvar }));
   if (!toksMensaje.size) return null;
   const largo = tokens(mensaje, { quitarVacias: false }).length;
   // Un mensaje largo es una historia, una dirección o varios pedidos juntos:
@@ -140,29 +204,21 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
      es la malla?" y "De que material es") empataban por la clave compartida
      ("material") y el empate devolvía null → IA, aunque la pregunta fuera
      textual (caso real cfg 324). */
-  const llano = (s) => tokens(s).sort().join(' ');
-  const msgLlano = llano(mensaje);
-  if (msgLlano) {
-    for (let i = 0; i < faqs.length; i++) {
-      const faq = faqs[i];
-      if (!faq || faq.activa === 0 || faq.activa === false) continue;
-      if (!String(faq.respuesta || '').trim()) continue;
-      if (llano(faq.pregunta) === msgLlano) return { faq, indice: i, score: 99 };
-    }
-  }
+  const llano = (s) => tokens(s, { salvar }).sort().join(' ');
+  const casi = exacta(llano, llano(mensaje));
+  if (casi) return casi;
 
   const candidatos = [];
 
   faqs.forEach((faq, indice) => {
-    if (!faq || faq.activa === 0 || faq.activa === false) return;
-    if (!String(faq.respuesta || '').trim()) return;
+    if (!usable(faq)) return;
     const clavesRaw = Array.isArray(faq.claves) && faq.claves.length
       ? faq.claves
       : [];
     // Claves declaradas + las palabras con contenido de la propia pregunta.
     const claves = new Set([
-      ...clavesRaw.flatMap((c) => tokens(c)),
-      ...tokens(faq.pregunta),
+      ...clavesRaw.flatMap((c) => tokens(c, { salvar })),
+      ...tokens(faq.pregunta, { salvar }),
     ]);
     if (!claves.size) return;
     let score = 0;
@@ -184,8 +240,9 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
       .filter((c) => c.score === top.score)
       .map((c) => ({
         c,
-        enPregunta: tokens(c.faq.pregunta).filter((t) => toksMensaje.has(t))
-          .length,
+        enPregunta: tokens(c.faq.pregunta, { salvar }).filter((t) =>
+          toksMensaje.has(t),
+        ).length,
       }))
       .sort((a, b) => b.enPregunta - a.enPregunta);
     if (
@@ -210,12 +267,13 @@ function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
      sirve/cierto (duda) → es exactamente la pregunta de la quemada. En cambio
      "sirve para una tele de tubo vieja" deja "tubo" y "vieja" sin cubrir:
      matiz nuevo → IA (el caso real del 3087 sigue protegido). */
-  if (top.score >= 1 && esPregunta) {
-    const sinCubrir = [...toksMensaje].filter(
-      (t) => !top.claves.has(t) && !USO_DUDA.has(t),
-    );
-    if (!sinCubrir.length) return top;
-  }
+  const sinCubrir = [...toksMensaje].filter(
+    (t) => !top.claves.has(t) && !USO_DUDA.has(t),
+  );
+  if (top.score >= 1 && esPregunta && !sinCubrir.length) return top;
+  /* "precio", "garantia": una o dos palabras que son exactamente la clave.
+     No tienen forma de pregunta, pero son la pregunta. */
+  if (top.score >= 1 && toksMensaje.size <= 2 && !sinCubrir.length) return top;
   return null;
 }
 
