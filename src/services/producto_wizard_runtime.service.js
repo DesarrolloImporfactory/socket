@@ -46,6 +46,7 @@ const {
   esSaludoDeAnuncio,
   pareceRegunta,
   elegirRespuestaRapida,
+  tokens: tokensMensaje,
 } = require('../utils/wizardProducto/respuestasRapidas');
 const { resolverUpsell, directivaUpsell } = require('../utils/upsellProducto');
 
@@ -516,6 +517,7 @@ async function enviarPaqueteInicial({
 const {
   conCierreDeVenta,
   semillaCierre,
+  terminaPreguntando,
 } = require('../utils/wizardProducto/cierreVenta');
 
 async function enviarTextoWizard({
@@ -920,10 +922,23 @@ async function intentarRespuestaRapida({
   /* Con un flujo de pasos activo, la quemada retoma la pregunta pendiente del
      embudo en vez del remate genérico: "predefinida y termina con la pregunta
      anterior", que es como el negocio lo opera a mano. */
-  const preguntaFlujo = await preguntaPendienteFlujo(
+  let preguntaFlujo = await preguntaPendienteFlujo(
     id_configuracion,
     id_cliente,
   );
+  /* Mismo escape del muro que la IA: si esa pregunta ya salió 2 veces
+     seguidas sin que el cliente la conteste, dejó de ser un retome. Se suelta
+     el embudo y la quemada cierra con su remate de siempre. */
+  if (preguntaFlujo) {
+    const repes = await repeticionesPreguntaRetome(id_cliente, preguntaFlujo);
+    if (repes >= 2) {
+      await soltarFlujoPorDesvio(id_configuracion, id_cliente);
+      preguntaFlujo = null;
+      await decir(
+        `🪜 flujo: la pregunta de retome ya salió ${repes} veces seguidas → embudo soltado; la quemada cierra normal`,
+      );
+    }
+  }
   /* Fotos/videos de la rápida ("¿tienen fotos reales?" → la foto real y
      después el texto). Pasan por el mismo dedupe que todo lo demás: una URL
      que ya salió en el paquete no se repite. */
@@ -939,22 +954,274 @@ async function intentarRespuestaRapida({
       log: decir,
     });
   }
+  /* Venta ya cerrada (el chat vive en una columna post-venta): la quemada sale
+     PELADA. Rematar con "¿cuántas unidades te aparto?" a quien acaba de
+     comprar es insistirle una compra que ya hizo. */
+  const postVenta = await esColumnaPostVenta(id_configuracion, estado_contacto, {
+    exigirSinIA: false,
+  });
+  const salida = postVenta
+    ? textoPostVenta(match.faq.respuesta)
+    : preguntaFlujo
+      ? `${String(match.faq.respuesta).trim()}\n\n${preguntaFlujo}`
+      : conCierreDeVenta(
+          match.faq.respuesta,
+          semillaCierre(telefono, match.indice),
+        );
+  if (!salida) {
+    await decir(`⚡ wizard: la rápida #${match.indice} es solo pregunta de venta y el pedido ya cerró → no contesto`);
+    return { manejado: false };
+  }
   await enviarTextoWizard({
     id_configuracion,
     telefono,
     business_phone_id,
     accessToken,
-    texto: preguntaFlujo
-      ? `${String(match.faq.respuesta).trim()}\n\n${preguntaFlujo}`
-      : conCierreDeVenta(
-          match.faq.respuesta,
-          semillaCierre(telefono, match.indice),
-        ),
+    texto: salida,
   });
   await decir(
     `⚡ wizard: respuesta rápida #${match.indice} ("${match.faq.pregunta}") producto ${r.producto.id} → sin IA`,
   );
   return { manejado: true, id_producto: r.producto.id, indice: match.indice };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Respuestas rápidas DESPUÉS del cierre
+   ══════════════════════════════════════════════════════════════
+   Cerrada la venta, el chat vive en una columna sin IA (generar guía, guía
+   creada, en tránsito…) y el negocio NO quiere encender el bot ahí: la venta
+   ya está hecha. Pero el cliente sigue escribiendo ("¿cómo participo en el
+   sorteo?", "¿en cuánto llega?") y nadie le contesta hasta que un humano
+   entra. Esto responde SOLO con las respuestas rápidas del producto —el texto
+   que escribió el propio negocio, 0 tokens, sin IA y sin remate de venta— y
+   calla en todo lo demás. La guía, el lugar de retiro y la demora siguen
+   siendo del respondedor logístico, que contesta con datos reales de la orden
+   y corre antes que esto. */
+
+/* Las respuestas que el negocio escribió para DESPUÉS del cierre. Viven en
+   flujo_pasos_json como entrada espera:'post_venta' (junto al mensaje de venta
+   realizada, cero migración) y son una lista APARTE de las respuestas rápidas:
+   aquellas venden y rematan con una pregunta, estas acompañan a quien ya
+   compró. Sin lista configurada, después del cierre no se contesta nada — que
+   es como funcionaba hasta ahora. Aplica con el embudo encendido o apagado:
+   es una propiedad del producto, no del embudo. */
+function respuestasPostVenta(wizard) {
+  const pasos = leerJson(wizard?.flujo_pasos_json, []);
+  const entrada = (Array.isArray(pasos) ? pasos : []).find(
+    (p) => p && p.espera === 'post_venta',
+  );
+  const faqs = Array.isArray(entrada?.faqs) ? entrada.faqs : [];
+  return faqs.filter((f) => f && f.activa !== 0 && f.pregunta && f.respuesta);
+}
+
+/* ¿La palabra del cliente es la clave con un typo de dedos? Mismos umbrales
+   que el embudo (1 error en 5-7 letras, 2 en 8+) más la transposición
+   contigua, que es el typo más común al escribir rápido: "sortoe" = "sorteo",
+   "domiclio" = "domicilio". */
+function casiIgual(a, b) {
+  if (a === b) return true;
+  if (!/^[a-zñ]+$/.test(a) || !/^[a-zñ]+$/.test(b) || b.length < 5) return false;
+  const { distanciaEdicion } = require('../utils/fichaPedido');
+  const tope = b.length >= 8 ? 2 : 1;
+  if (Math.abs(a.length - b.length) <= tope && distanciaEdicion(a, b, tope) <= tope) {
+    return true;
+  }
+  if (a.length === b.length) {
+    const dif = [];
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) dif.push(i);
+    return (
+      dif.length === 2 &&
+      dif[1] === dif[0] + 1 &&
+      a[dif[0]] === b[dif[1]] &&
+      a[dif[1]] === b[dif[0]]
+    );
+  }
+  return false;
+}
+
+/* Matcher de las respuestas de DESPUÉS del cierre. Primero el estricto de
+   siempre; si no calza, uno relajado: una sola clave basta —tolerando el typo
+   de dedos— y solo si calza UNA respuesta. Se relaja acá y no en la venta
+   porque el cliente ya compró: dejarlo hablando solo ("comp aprtiicpo en el
+   sorteo" → silencio) es peor que contestarle de más, y la lista es corta y
+   escrita por el negocio. Si empatan dos, no se adivina. */
+function elegirPostVenta(texto, faqs) {
+  const estricto = elegirRespuestaRapida(texto, faqs);
+  if (estricto) return estricto;
+
+  const toks = tokensMensaje(texto);
+  if (!toks.length || toks.length > 8) return null;
+
+  const candidatos = [];
+  faqs.forEach((faq, indice) => {
+    if (!faq || faq.activa === 0 || !faq.respuesta) return;
+    const claves = [
+      ...(Array.isArray(faq.claves) ? faq.claves : []).flatMap((c) =>
+        tokensMensaje(c),
+      ),
+      ...tokensMensaje(faq.pregunta),
+    ];
+    const score = toks.filter((t) => claves.some((c) => casiIgual(t, c))).length;
+    if (score > 0) candidatos.push({ faq, indice, score });
+  });
+  if (candidatos.length !== 1) return null;
+  return candidatos[0];
+}
+
+/* El texto que sale DESPUÉS del cierre: sin la pregunta de venta.
+   En vivo la quemada siempre termina preguntando ("¿te confirmo tu pedido?"),
+   pero ese remate lo pone el código al enviar (conCierreDeVenta) y acá no se
+   llama. Falta el caso del negocio que escribió la pregunta DENTRO de la
+   quemada: esa línea se recorta. Si sin ella no queda contenido, no se
+   contesta — mejor el silencio que empujarle otra compra a quien ya compró. */
+function textoPostVenta(respuesta) {
+  const lineas = String(respuesta || '').trim().split('\n');
+  // Hasta dos: algunas quemadas rematan con la pregunta y un emoji suelto.
+  for (let i = 0; i < 2; i += 1) {
+    while (lineas.length && !lineas[lineas.length - 1].trim()) lineas.pop();
+    if (!lineas.length || !terminaPreguntando(lineas[lineas.length - 1])) break;
+    lineas.pop();
+  }
+  const t = lineas.join('\n').trim();
+  return t.length >= 15 ? t : '';
+}
+
+/* Columnas donde el chat cae DESPUÉS del cierre: el destino del cierre de
+   venta (kanban_acciones → estado_destino 'generar_guia') y los destinos del
+   notifier Dropi. Fuera de esas —una columna de asesor humano, por ejemplo—
+   no se contesta nada. */
+async function esColumnaPostVenta(
+  id_configuracion,
+  estado_contacto,
+  /* exigirSinIA=false: solo interesa saber si la venta YA se cerró, tenga la
+     columna IA o no. Lo usa la quemada normal para no rematar con "¿cuántas
+     unidades te aparto?" a alguien que acaba de comprar. */
+  { exigirSinIA = true } = {},
+) {
+  const estado = String(estado_contacto || '').trim();
+  if (!estado) return false;
+  try {
+    const [col] = await db.query(
+      `SELECT activa_ia FROM kanban_columnas
+        WHERE id_configuracion = ? AND LOWER(estado_db) = LOWER(?) AND activo = 1
+        LIMIT 1`,
+      { replacements: [id_configuracion, estado], type: db.QueryTypes.SELECT },
+    );
+    // Con IA activa contesta la IA; el respondedor es solo para las mudas.
+    if (exigirSinIA && col && Number(col.activa_ia) === 1) return false;
+
+    const destinos = new Set();
+    /* SOLO el destino del CIERRE DE VENTA, con el mismo criterio que usa
+       kanban_ia para reconocerlo: cambiar_estado con estado_destino
+       'generar_guia' y su trigger. Barrer TODOS los cambiar_estado metía
+       columnas que no son post-venta —"contacto inicial", "asesor",
+       "cancelados"— y ahí la quemada perdía su remate en plena venta. */
+    const acciones = await db.query(
+      `SELECT ka.config
+         FROM kanban_acciones ka
+         JOIN kanban_columnas kc ON kc.id = ka.id_kanban_columna
+        WHERE kc.id_configuracion = ? AND ka.activo = 1
+          AND ka.tipo_accion = 'cambiar_estado'`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    for (const a of acciones) {
+      let cfg = a.config;
+      try {
+        while (typeof cfg === 'string') cfg = JSON.parse(cfg);
+      } catch {
+        cfg = null;
+      }
+      if (String(cfg?.estado_destino || '').trim() === 'generar_guia' && cfg?.trigger) {
+        destinos.add('generar_guia');
+      }
+    }
+    const notifier = await db.query(
+      `SELECT DISTINCT columna_destino FROM dropi_plantillas_config
+        WHERE id_configuracion = ? AND activo = 1
+          AND columna_destino IS NOT NULL AND columna_destino != ''`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    for (const n of notifier) {
+      destinos.add(String(n.columna_destino).toLowerCase());
+    }
+    return destinos.has(estado.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/* La misma respuesta hace menos de 15 min no se repite: el cliente que
+   insiste con la misma duda recibiría el mismo párrafo en bucle. */
+async function yaSeRespondioHacePoco(id_configuracion, id_cliente, texto) {
+  try {
+    const [fila] = await db.query(
+      `SELECT id FROM mensajes_clientes
+        WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 1
+          AND texto_mensaje = ? AND deleted_at IS NULL
+          AND created_at >= NOW() - INTERVAL 15 MINUTE
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, String(id_cliente), texto],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    return Boolean(fila);
+  } catch {
+    return false;
+  }
+}
+
+async function intentarRespuestaPostVenta({
+  id_configuracion,
+  id_cliente,
+  telefono,
+  business_phone_id,
+  accessToken,
+  estado_contacto,
+  texto_mensaje,
+  log,
+}) {
+  const decir = logDe(log);
+  const texto = String(texto_mensaje || '').trim();
+  if (!texto || texto.length > 300) return { manejado: false };
+  // Intención de compra en una columna post-venta es un pedido nuevo: eso lo
+  // atiende una persona, no una quemada.
+  if (pareceIntencionCompra(texto)) return { manejado: false };
+
+  if (!(await esColumnaPostVenta(id_configuracion, estado_contacto))) {
+    return { manejado: false };
+  }
+  // El switch general del bot manda: apagado, no contesta ni esto.
+  if (!(await botHabilitado(id_configuracion, null))) return { manejado: false };
+
+  const r = await wizardDelClienteEnJuego(id_configuracion, id_cliente);
+  if (!r) return { manejado: false };
+  /* Lista PROPIA del post-venta, no las respuestas rápidas: esas venden y
+     rematan con una pregunta. Si el negocio no configuró ninguna, después del
+     cierre no se contesta nada — como funcionaba hasta ahora. */
+  const faqs = respuestasPostVenta(r.wizard);
+  if (!faqs.length) return { manejado: false };
+  const match = elegirPostVenta(texto, faqs);
+  if (!match) return { manejado: false };
+
+  // Tal cual la escribió el negocio: acá nunca se agrega remate de venta.
+  const respuesta = String(match.faq.respuesta).trim();
+  if (!respuesta) return { manejado: false };
+  if (await yaSeRespondioHacePoco(id_configuracion, id_cliente, respuesta)) {
+    await decir(`📮 post-venta: misma respuesta hace <15 min → no repito`);
+    return { manejado: true };
+  }
+  await enviarTextoWizard({
+    id_configuracion,
+    telefono,
+    business_phone_id,
+    accessToken,
+    texto: respuesta,
+  });
+  await decir(
+    `📮 post-venta: rápida #${match.indice} ("${match.faq.pregunta}") en la columna "${estado_contacto}" → sin IA`,
+  );
+  return { manejado: true, indice: match.indice };
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1181,10 +1448,54 @@ function validarPasoFlujo(paso, texto) {
       return { valida: false };
     }
     case 'libre':
-      return { valida: true };
+      /* Un paso libre vale con cualquier respuesta… menos con una pregunta
+         ("¿hacen envíos a Cuenca?"): tomarla como respuesta avanzaba el
+         embudo y dejaba la duda sin contestar. Marcado como desvío, la
+         quemada o la IA la contestan y retoman este mismo paso. */
+      return /[?¿]/.test(String(texto || ''))
+        ? { valida: false, desvio: true }
+        : { valida: true };
     default:
       return { valida: false };
   }
+}
+
+/* ¿El cliente contestó por adelantado alguno de los pasos que vienen después?
+   Devuelve el primero que calce, o null. Solo cuentan los matcheos FUERTES:
+   una ciudad EC reconocida y una opción que pegue con una sola clave. La edad
+   queda fuera a propósito: un número suelto ("3") significa cualquier cosa
+   según el paso en el que esté el cliente, y saltar por eso sería adivinar. */
+function buscarPasoAdelantado(pasos, desde, texto) {
+  for (let i = desde + 1; i < pasos.length; i += 1) {
+    const paso = pasos[i];
+    if (!['ciudad', 'opcion'].includes(paso.espera)) continue;
+    const v = validarPasoFlujo(paso, texto);
+    if (!v.valida) continue;
+    if (paso.espera === 'ciudad' && !v.lugar) continue;
+    return { indice: i, paso, v };
+  }
+  return null;
+}
+
+/* Verbo de compra + cantidad: "quiero 2", "dame el combo de 2". Un "2" pelado
+   NO cuenta — en la pregunta gancho son las horas que duerme, no la promo
+   (por eso no sirve pareceIntencionCompra, que acepta el número solo). */
+const RE_VERBO_COMPRA =
+  /\b(quiero|quisiera|deseo|dame|deme|damelo|llevo|me llevo|llevame|compro|comprar|pido|pedir|ordeno|ordenar|mandame|enviame|envieme|mandeme|separame|apartame)\b/;
+
+/* La compra manda sobre el paso pendiente: "quiero 2" en la pregunta gancho es
+   la promo, no las horas de sueño (cfg 1125). Solo salta a un paso de OPCIÓN y
+   solo si el paso pendiente no es ya uno (ahí la respuesta es de ese paso). */
+function buscarPasoPorCompra(pasos, desde, texto) {
+  if (pasos[desde] && pasos[desde].espera === 'opcion') return null;
+  const t = normFlujo(texto);
+  if (!RE_VERBO_COMPRA.test(t)) return null;
+  for (let i = desde + 1; i < pasos.length; i += 1) {
+    if (pasos[i].espera !== 'opcion') continue;
+    const v = validarPasoFlujo(pasos[i], texto);
+    if (v.valida) return { indice: i, paso: pasos[i], v };
+  }
+  return null;
 }
 
 /* El "mensaje de VENTA REALIZADA" (Flujo 7 del embudo): copy + imagen que
@@ -1571,21 +1882,48 @@ async function intentarPasoFlujo({
     return { manejado: false };
   }
 
-  const paso = pasos[prog.paso];
+  let indiceActual = prog.paso;
+  let paso = pasos[indiceActual];
+  let v = validarPasoFlujo(paso, texto);
 
-  /* La FAQ le gana a los pasos de validación DÉBIL (ciudad/libre): "tiene
-     registro sanitario" no es una ciudad aunque venga sin "?". Devolver
-     manejado:false deja que la respuesta rápida conteste y retome la
-     pregunta del paso, que es el comportamiento del embudo a mano. */
-  if (
-    ['ciudad', 'libre'].includes(paso.espera) &&
-    Number(r.wizard.usar_respuestas_rapidas) === 1
-  ) {
-    const faqs = leerJson(r.wizard.respuestas_rapidas_json, []);
-    if (elegirRespuestaRapida(texto, faqs)) return { manejado: false };
+  /* El cliente contestó POR ADELANTADO un paso que viene después ("hacen
+     envíos a Cuenca" cuando el embudo recién va en la pregunta gancho): el
+     embudo se adelanta a ese paso y sigue desde el siguiente. Preguntarle
+     después la ciudad que acaba de decir es el muro de siempre. Los copys de
+     los pasos que quedan atrás no salen: su pregunta ya no se va a hacer.
+     La compra explícita ("quiero 2") salta aunque el paso pendiente acepte la
+     respuesta: en la pregunta gancho ese 2 se leía como horas de sueño y la
+     promo se le volvía a preguntar tres mensajes después. */
+  const salto =
+    buscarPasoPorCompra(pasos, indiceActual, texto) ||
+    (!v.valida && !v.caso && !v.fuera_rango && !v.pedido_complejo
+      ? buscarPasoAdelantado(pasos, indiceActual, texto)
+      : null);
+  if (salto) {
+    indiceActual = salto.indice;
+    paso = salto.paso;
+    v = salto.v;
+    await decir(
+      `🪜 flujo: el cliente ya contestó el paso ${salto.indice} (${paso.espera}) → el embudo salta del ${prog.paso} al ${salto.indice}`,
+    );
   }
 
-  const v = validarPasoFlujo(paso, texto);
+  /* Desvío con quemada: si la frase no responde el paso, contesta la rápida y
+     retoma; si además lo responde ("hacen envíos a Cuenca" cuando se pide la
+     ciudad), se contesta la duda Y el embudo avanza en el mismo turno. Los
+     desenlaces especiales del paso mandan sobre la quemada (tienen su copy). */
+  let faqPrevia = null;
+  if (Number(r.wizard.usar_respuestas_rapidas) === 1) {
+    const faqs = leerJson(r.wizard.respuestas_rapidas_json, []);
+    const match = elegirRespuestaRapida(texto, faqs);
+    if (match && v.valida) faqPrevia = match;
+    else if (match && !v.caso && !v.fuera_rango && !v.pedido_complejo) {
+      await decir(
+        `🪜 flujo: la duda del cliente la cubre la rápida #${match.indice} → contesta ella y retoma el paso ${indiceActual}`,
+      );
+      return { manejado: false };
+    }
+  }
 
   // {{respuesta}} en un copy = lo que el cliente contestó, en Título ("quito"
   // → "Quito"). Si el validador detectó un lugar dentro de una frase, se
@@ -1638,7 +1976,7 @@ async function intentarPasoFlujo({
   // Caso especial ("Ecuador" → "¿de qué ciudad?"): copy fijo, sin avanzar.
   if (v.caso) {
     await enviarCopy(conRespuesta(v.caso.copy).trim(), v.caso.media);
-    await decir(`🪜 flujo: caso especial en paso ${prog.paso} → copy sin avanzar`);
+    await decir(`🪜 flujo: caso especial en paso ${indiceActual} → copy sin avanzar`);
     return { manejado: true };
   }
 
@@ -1719,6 +2057,32 @@ async function intentarPasoFlujo({
   }
 
   try {
+    /* El cliente contestó el paso Y de paso preguntó algo: primero su
+       respuesta (la quemada del negocio), después el copy del embudo. */
+    if (faqPrevia) {
+      if (Array.isArray(faqPrevia.faq.media) && faqPrevia.faq.media.length) {
+        await enviarMediaFlujo({
+          id_configuracion,
+          id_cliente,
+          telefono,
+          business_phone_id,
+          accessToken,
+          urls: faqPrevia.faq.media,
+          responsable: RESPONSABLE_RAPIDA,
+          log: decir,
+        });
+      }
+      await enviarTextoWizard({
+        id_configuracion,
+        telefono,
+        business_phone_id,
+        accessToken,
+        texto: String(faqPrevia.faq.respuesta).trim(),
+      });
+      await decir(
+        `⚡ flujo: la duda la contestó la rápida #${faqPrevia.indice} ("${faqPrevia.faq.pregunta}") y el embudo sigue con el paso ${indiceActual}`,
+      );
+    }
     await enviarCopy(copy, media);
   } catch (eEnvio) {
     // Se devuelve el paso a 'activo' para no dejar el embudo colgado.
@@ -1730,7 +2094,7 @@ async function intentarPasoFlujo({
     throw eEnvio;
   }
 
-  const siguiente = prog.paso + 1;
+  const siguiente = indiceActual + 1;
   const completo = siguiente >= pasos.length;
   await db.query(
     `UPDATE productos_wizard_flujo SET paso = ?, estado = ?, updated_at = NOW()
@@ -1741,10 +2105,10 @@ async function intentarPasoFlujo({
     },
   );
   await decir(
-    `🪜 flujo: paso ${prog.paso} (${paso.espera}) validado → copy enviado` +
+    `🪜 flujo: paso ${indiceActual} (${paso.espera}) validado → copy enviado` +
       (completo ? ' — flujo COMPLETO, lo que siga es de la IA' : ''),
   );
-  return { manejado: true, paso: prog.paso, completo };
+  return { manejado: true, paso: indiceActual, completo };
 }
 
 module.exports = {
@@ -1763,6 +2127,11 @@ module.exports = {
   enviarPaqueteInicial,
   intentarMensajeFijoWizard,
   intentarRespuestaRapida,
+  intentarRespuestaPostVenta,
+  textoPostVenta,
+  esColumnaPostVenta,
+  respuestasPostVenta,
+  elegirPostVenta,
   yaSeEnvioMensajeInicial,
   // Flujo de venta por pasos. Los dos primeros los usa el webhook / kanban_ia;
   // los puros (validarPasoFlujo, extraerEdad, pasosDelFlujo) son garantías de
@@ -1772,6 +2141,8 @@ module.exports = {
   repeticionesPreguntaRetome,
   soltarFlujoPorDesvio,
   validarPasoFlujo,
+  buscarPasoAdelantado,
+  buscarPasoPorCompra,
   extraerEdad,
   // Para la batería: identificar el producto por texto sin falsos positivos
   // es la puerta de entrada del mensaje fijo sin anuncio.

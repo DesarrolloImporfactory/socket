@@ -721,6 +721,23 @@ async function suiteA() {
         corregirCiudadTypo('Quevedo') === 'Quevedo' &&
         corregirCiudadTypo('quiero') === 'quiero',
     );
+    /* Ciudad a medias (cfg 1125, 2026-09-11): el cliente cerró con "Quit
+       pichincha" y la orden salía a Dropi con la ciudad "Quit". Con 4 letras y
+       una sola ciudad que empiece así, se completa. */
+    caso(
+      'ciudad a medias: "Quit" se completa a Quito (y "Guayaqui" a Guayaquil)',
+      corregirCiudadTypo('Quit') === 'Quito' &&
+        corregirCiudadTypo('Guayaqui') === 'Guayaquil',
+    );
+    caso(
+      'ciudad a medias: "sant" es ambigua (Santa Elena / Santo Domingo) → no se adivina',
+      corregirCiudadTypo('sant') === 'sant',
+    );
+    caso(
+      'ciudad a medias: "quie" no es Quito (no es su arranque) → se deja',
+      corregirCiudadTypo('quie') === 'quie',
+    );
+
     // El validador del cierre tampoco debe tratar la corrección como invento:
     // "Ciudad: Guayaquil" con el cliente habiendo escrito "guayuquil" pasa.
     const { camposFaltantesCierre: faltantesTypo } = require('../src/services/kanban_ia.service');
@@ -936,6 +953,303 @@ async function suiteA() {
         { id: 2, nombre: 'ARMY BOMB LIGTHSTICK BTS V3' },
       ]) === null,
     );
+    /* Caso cfg 1125, 2026-09-11: el embudo "explotaba" cuando el cliente se
+       desviaba. Un paso libre se tragaba la pregunta (avanzaba sin
+       contestarla) y la dirección de solo calles cerraba pedidos que la
+       transportadora no podía entregar. */
+    caso(
+      'flujo libre: una pregunta NO avanza el paso (la contesta la rápida/IA y retoma)',
+      validarPasoFlujo({ espera: 'libre', copy: 'gracias' }, '¿hacen envíos a Cuenca?')
+        .valida === false,
+    );
+    caso(
+      'flujo libre: una respuesta normal sigue avanzando',
+      validarPasoFlujo({ espera: 'libre', copy: 'gracias' }, 'Av. Amazonas 123')
+        .valida === true,
+    );
+    caso(
+      'flujo ciudad: "hacen envíos a Cuenca" contesta el paso (la ciudad manda)',
+      validarPasoFlujo({ espera: 'ciudad', copy: 'envío gratis…' }, 'hacen envios a cuenca')
+        .valida === true,
+    );
+
+    /* Salto por dato adelantado (cfg 1125, Super Cacao): el cliente escribió
+       "hacen envíos a cuenca" en la pregunta gancho y tres mensajes después el
+       embudo le preguntaba la ciudad que ya había dicho. */
+    const {
+      buscarPasoAdelantado,
+      buscarPasoPorCompra,
+    } = require('../src/services/producto_wizard_runtime.service');
+    const pasosCacao = [
+      { espera: 'libre', pregunta: '❓CUÁNTAS HORAS DUERMES❓', copy: 'pitch… ❓DE QUÉ CIUDAD❓' },
+      { espera: 'ciudad', pregunta: '❓DE QUÉ CIUDAD❓', copy: 'a {{respuesta}} llega en 2-3 días' },
+      {
+        espera: 'opcion', pregunta: '❓CUÁNTOS FRASCOS❓', copy: 'dame tus datos',
+        opciones: [{ claves: ['1', 'uno'], copy: 'uno' }, { claves: ['2', 'dos'], copy: 'dos' }],
+      },
+    ];
+    caso(
+      'salto: "hacen envios a cuenca" en el paso 0 adelanta el embudo al paso de la ciudad',
+      (() => {
+        const s = buscarPasoAdelantado(pasosCacao, 0, 'hacen envios a cuenca');
+        return s && s.indice === 1 && s.v.lugar === 'cuenca';
+      })(),
+    );
+    caso(
+      'salto: un número suelto ("3") NO adelanta el embudo (significa otra cosa en cada paso)',
+      buscarPasoAdelantado(pasosCacao, 0, '3') === null,
+    );
+    caso(
+      'salto: "esta bien" NO adelanta (no es una ciudad reconocida)',
+      buscarPasoAdelantado(pasosCacao, 0, 'esta bien') === null,
+    );
+    caso(
+      'salto: un paso libre posterior nunca atrapa el salto',
+      buscarPasoAdelantado(
+        [{ espera: 'ciudad', copy: 'c' }, { espera: 'libre', copy: 'l' }],
+        0,
+        'cualquier cosa',
+      ) === null,
+    );
+
+    /* Compra explícita en la pregunta gancho (mismo caso 1125): "quiero 2" se
+       leía como 2 horas de sueño y la promo se volvía a preguntar después. */
+    const pasosPromo = [
+      ...pasosCacao,
+      {
+        espera: 'opcion', pregunta: '❓DOMICILIO O AGENCIA❓', copy: 'perfecto',
+        opciones: [{ claves: ['domicilio'], copy: 'd' }, { claves: ['agencia'], copy: 'a' }],
+      },
+    ];
+    caso(
+      'compra: "quiero 2" en la pregunta gancho adelanta el embudo a la promo',
+      (() => {
+        const s = buscarPasoPorCompra(pasosPromo, 0, 'quiero 2');
+        return s && s.indice === 2 && s.v.indice === 1;
+      })(),
+    );
+    caso(
+      'compra: un "2" pelado NO adelanta (en la pregunta gancho son las horas)',
+      buscarPasoPorCompra(pasosPromo, 0, '2') === null,
+    );
+    caso(
+      'compra: en el paso de la promo no salta a la siguiente opción',
+      buscarPasoPorCompra(pasosPromo, 2, 'quiero 2') === null,
+    );
+
+    /* Post-venta (cfg 1125): cerrada la venta, la quemada sale SIN la pregunta
+       de cierre. En vivo el remate lo pone el código (conCierreDeVenta) y por
+       eso las 11 quemadas del Super Cacao terminan preguntando; después del
+       cierre eso sería empujarle otra compra a quien ya compró. */
+    {
+      const {
+        textoPostVenta,
+      } = require('../src/services/producto_wizard_runtime.service');
+      const {
+        conCierreDeVenta,
+        terminaPreguntando,
+      } = require('../src/utils/wizardProducto/cierreVenta');
+      const sinPregunta = '🎁 Mándanos la foto con tu frasco y entras al sorteo.';
+      const conPregunta =
+        'El envío es gratis y pagas al recibir. 💵\n\n¿Te confirmo tu pedido? 😊';
+      caso(
+        'post-venta: la quemada normal sale igual pero SIN remate de venta',
+        terminaPreguntando(conCierreDeVenta(sinPregunta, 1)) &&
+          textoPostVenta(sinPregunta) === sinPregunta,
+      );
+      /* Las respuestas de después del cierre son una LISTA APARTE de las
+         rápidas: viven en flujo_pasos_json como espera:'post_venta'. Sin ella
+         configurada, después del cierre no se contesta nada. */
+      const {
+        respuestasPostVenta,
+      } = require('../src/services/producto_wizard_runtime.service');
+      caso(
+        'post-venta: la lista propia se lee de flujo_pasos_json',
+        respuestasPostVenta({
+          flujo_pasos_json: JSON.stringify([
+            { espera: 'ciudad', copy: 'c' },
+            { espera: 'venta_realizada', copy: 'gracias' },
+            {
+              espera: 'post_venta',
+              faqs: [
+                { pregunta: 'sorteo', respuesta: 'mándanos la foto', claves: ['sorteo'] },
+                { pregunta: 'apagada', respuesta: 'x', activa: 0 },
+              ],
+            },
+          ]),
+        }).length === 1,
+      );
+      /* Typos reales del cliente (cfg 1125, 2026-09-11): "comp aprtiicpo en el
+         sorteo" no calzaba y el cliente quedaba sin respuesta. Después del
+         cierre el matcher se relaja (una clave basta, tolerando el typo de
+         dedos) porque el silencio ahí es peor que una respuesta de más. */
+      {
+        const {
+          elegirPostVenta,
+        } = require('../src/services/producto_wizard_runtime.service');
+        const lista = [
+          {
+            pregunta: 'COMO PARTICIPO EN EL SORTEO',
+            respuesta: 'Mándanos la foto con tu frasco y entras al sorteo.',
+            claves: ['sorteo', 'rifa', 'premio', 'participo'],
+          },
+          {
+            pregunta: 'CAMBIAR LA DIRECCION',
+            respuesta: 'Escríbenos la dirección correcta y un asesor la ajusta.',
+            claves: ['cambiar la direccion', 'me equivoque en la direccion'],
+          },
+        ];
+        const pega = (m) => elegirPostVenta(m, lista)?.faq.pregunta || null;
+        caso(
+          'post-venta: "comp aprtiicpo en el sorteo" (typos) igual se contesta',
+          pega('comp aprtiicpo en el sorteo') === 'COMO PARTICIPO EN EL SORTEO',
+        );
+        caso(
+          'post-venta: "sortoe" (letras cambiadas de lugar) también',
+          pega('comp articpio e nel sortoe') === 'COMO PARTICIPO EN EL SORTEO',
+        );
+        caso(
+          'post-venta: "soltero" NO se confunde con "sorteo"',
+          pega('soy soltero') === null,
+        );
+        caso(
+          'post-venta: un reclamo largo queda para una persona',
+          pega('quiero reclamar porque el producto llego roto y quiero que me devuelvan mi plata ya mismo') === null,
+        );
+        caso(
+          'post-venta: "gracias" no dispara nada',
+          pega('gracias') === null,
+        );
+      }
+
+      caso(
+        'post-venta: sin lista configurada no se contesta nada',
+        respuestasPostVenta({
+          flujo_pasos_json: JSON.stringify([{ espera: 'ciudad', copy: 'c' }]),
+        }).length === 0,
+      );
+      caso(
+        'post-venta: la entrada post_venta NO es un paso de la secuencia',
+        pasosDelFlujo({
+          usar_flujo_pasos: 1,
+          flujo_pasos_json: JSON.stringify([
+            { espera: 'ciudad', copy: 'c' },
+            { espera: 'post_venta', faqs: [{ pregunta: 'a', respuesta: 'b' }] },
+          ]),
+        }).length === 1,
+      );
+      caso(
+        'post-venta: si el negocio escribió la pregunta dentro, se recorta',
+        textoPostVenta(conPregunta) === 'El envío es gratis y pagas al recibir. 💵',
+      );
+      caso(
+        'post-venta: una quemada que es solo pregunta → silencio, no se contesta',
+        textoPostVenta('¿Te confirmo tu pedido? 😊') === '',
+      );
+      caso(
+        'post-venta: durante la venta esa quemada NO se toca',
+        conCierreDeVenta(conPregunta, 1) === conPregunta,
+      );
+    }
+
+    /* Qué columnas cuentan como post-venta. La primera versión barría TODOS
+       los cambiar_estado y marcaba "contacto inicial" y "asesor": ahí la
+       quemada habría salido sin su remate EN PLENA VENTA. */
+    {
+      const {
+        esColumnaPostVenta,
+      } = require('../src/services/producto_wizard_runtime.service');
+      const sinIA = { exigirSinIA: false };
+      caso(
+        'post-venta: la columna donde se VENDE nunca cuenta como post-venta',
+        (await esColumnaPostVenta(CFG_DROPI, 'contacto_inicial', sinIA)) === false,
+      );
+      caso(
+        'post-venta: el destino del cierre (generar_guia) sí cuenta',
+        (await esColumnaPostVenta(CFG_DROPI, 'generar_guia', sinIA)) === true,
+      );
+      caso(
+        'post-venta: las columnas del flujo Dropi (en tránsito) sí cuentan',
+        (await esColumnaPostVenta(CFG_DROPI, 'en_transito', sinIA)) === true,
+      );
+      caso(
+        'post-venta: una columna inexistente no cuenta',
+        (await esColumnaPostVenta(CFG_DROPI, 'no_existe_esta', sinIA)) === false,
+      );
+    }
+
+    /* Candado de la dirección a domicilio (cfg 1125): "dos calles y nada más"
+       es una guía que vuelve como NO ENTREGADA. Se pide UNA vez la numeración
+       y la referencia; a la segunda se ofrece la agencia Servientrega. */
+    const {
+      direccionIncompleta,
+      intentosPedirReferencia,
+      faltantesFicha: faltantesDir,
+      bloqueFichaPedido: bloqueDir,
+    } = require('../src/utils/fichaPedido');
+    const dirSolaCalles = {
+      entrega: 'domicilio',
+      nombre: 'Ana Perez',
+      ciudad: 'Quito',
+      direccion: 'Juan Montalvo y Sucre',
+      producto: 'X',
+      cantidad: '1',
+    };
+    caso(
+      'dirección: solo calles es incompleta',
+      direccionIncompleta(dirSolaCalles) === true,
+    );
+    caso(
+      'dirección: "Av. 10 de Agosto y Colón" sigue incompleta (la fecha no es numeración)',
+      direccionIncompleta({ ...dirSolaCalles, direccion: 'Av. 10 de Agosto y Colon' }) === true,
+    );
+    caso(
+      'dirección: con numeración o con referencia ya está completa',
+      direccionIncompleta({ ...dirSolaCalles, direccion: 'Juan Montalvo 456 y Sucre' }) === false &&
+        direccionIncompleta({ ...dirSolaCalles, referencia: 'frente a la farmacia' }) === false,
+    );
+    caso(
+      'dirección: el retiro en agencia no dispara el candado',
+      direccionIncompleta({ ...dirSolaCalles, entrega: 'agencia' }) === false,
+    );
+    caso(
+      'dirección: repetir la misma calle NO reinicia el contador (bucle de 4 en la 1125)',
+      intentosPedirReferencia(
+        [
+          { rol: 'ASISTENTE', texto: '🏙️ Dirección Exacta: calles, número de casa y una referencia' },
+          { rol: 'CLIENTE', texto: 'Michael Ordonez, en la geovany calle' },
+          { rol: 'ASISTENTE', texto: 'Solo me falta el número de casa y una referencia' },
+          { rol: 'CLIENTE', texto: 'solo se que se llama geovany calle' },
+          { rol: 'ASISTENTE', texto: '¿Me das el número de la casa o una referencia más clara?' },
+          { rol: 'CLIENTE', texto: 'solo se que la calle se llama geovany calle' },
+        ],
+        'en la geovany calle',
+      ) >= 2,
+    );
+    caso(
+      'dirección: solo cuenta lo que el bot pidió DESPUÉS de la dirección',
+      intentosPedirReferencia(
+        [
+          { rol: 'ASISTENTE', texto: '¿Tu dirección exacta (dos calles y una referencia)?' },
+          { rol: 'CLIENTE', texto: 'Juan Montalvo y Sucre' },
+          { rol: 'ASISTENTE', texto: '¿Me das el número de la casa y una referencia?' },
+          { rol: 'CLIENTE', texto: 'ahi nomas' },
+        ],
+        'Juan Montalvo y Sucre',
+      ) === 1,
+    );
+    caso(
+      'dirección: 1ª vez se pide numeración; 2ª vez ya no se insiste',
+      faltantesDir({ ...dirSolaCalles, _intentosDireccion: 0 }).some((x) => /numeraci/i.test(x)) &&
+        !faltantesDir({ ...dirSolaCalles, _intentosDireccion: 1 }).some((x) => /numeraci/i.test(x)),
+    );
+    caso(
+      'dirección: tras insistir, la ficha ofrece la agencia Servientrega',
+      /agencia Servientrega más cercana/.test(
+        bloqueDir({ ...dirSolaCalles, _intentosDireccion: 1 }, {}),
+      ),
+    );
+
     caso(
       'flujo: pasosDelFlujo respeta el switch usar_flujo_pasos',
       pasosDelFlujo({

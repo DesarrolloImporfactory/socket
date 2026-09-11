@@ -1782,6 +1782,30 @@ cron.schedule('*/1 * * * *', async () => {
               { estado_contacto: record.estado_destino },
               { where: { id: record.id_cliente_chat_center } },
             );
+            /* El embudo por pasos se da por terminado cuando el contacto
+               cambia de columna (ahí manda otro dueño). Pero ESTE movimiento
+               lo hizo el propio bot: se le mueve el ancla para que, cuando el
+               cliente conteste la pregunta con la que termina el remarketing
+               ("¿de qué ciudad nos escribes?"), el wizard siga desde su paso
+               en vez de caer a la IA. */
+            try {
+              await db.query(
+                `UPDATE productos_wizard_flujo
+                    SET estado_contacto_inicio = ?, updated_at = NOW()
+                  WHERE id_cliente = ? AND estado <> 'terminado'`,
+                {
+                  replacements: [
+                    record.estado_destino,
+                    record.id_cliente_chat_center,
+                  ],
+                  type: db.QueryTypes.UPDATE,
+                },
+              );
+            } catch (eFlujo) {
+              console.log(
+                `⚠️ [remarketing] no se pudo mover el ancla del embudo: ${eFlujo.message}`,
+              );
+            }
           }
 
           await db.query(
