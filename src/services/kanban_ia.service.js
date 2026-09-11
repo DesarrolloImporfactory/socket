@@ -1746,19 +1746,42 @@ async function procesarMensajeKanban(params) {
       try {
         const {
           preguntaPendienteFlujo,
+          repeticionesPreguntaRetome,
+          soltarFlujoPorDesvio,
         } = require('./producto_wizard_runtime.service');
         const preguntaFlujo = await preguntaPendienteFlujo(
           id_configuracion,
           id_cliente,
         );
-        if (preguntaFlujo) {
+        /* Escape del muro: con la misma pregunta 2 veces seguidas el retome
+           dejó de funcionar (cfg 366: tres "¿A qué ciudad te las enviamos?"
+           ante "¿qué talla sería?"). Se suelta el embudo y sigue la IA. */
+        const repes = preguntaFlujo
+          ? await repeticionesPreguntaRetome(id_cliente, preguntaFlujo)
+          : 0;
+        if (preguntaFlujo && repes >= 2) {
+          await soltarFlujoPorDesvio(id_configuracion, id_cliente);
+          await log(
+            `🪜 flujo: la pregunta de retome ya salió ${repes} veces seguidas sin respuesta → embudo soltado, la IA toma la conversación`,
+          );
+        } else if (preguntaFlujo) {
           instruccionesProducto +=
             `\n\n⚠️ FLUJO DE VENTA ACTIVO: este chat sigue un embudo por pasos que avanza SOLO con mensajes fijos del sistema. ` +
-            `Tu ÚNICO trabajo en este turno es responder la duda puntual del cliente en 1-2 frases, sin re-presentar el producto. ` +
-            `PROHIBIDO en este turno: pedir datos (nombre, teléfono, dirección), preguntar por envío o entrega, ofrecer promociones, ` +
-            `intentar cerrar el pedido o hacer CUALQUIER otra pregunta propia. ` +
-            `Tu mensaje debe terminar EXACTAMENTE con esta pregunta, escrita LITERAL y sin nada después:\n${preguntaFlujo}`;
-          await log(`🪜 flujo: directiva de retome inyectada ("${preguntaFlujo.slice(0, 60)}")`);
+            `Tu mensaje de este turno tiene DOS partes OBLIGATORIAS, en este orden:\n` +
+            `1) La respuesta a lo que el cliente acaba de decir o preguntar, en 1-2 frases y sin re-presentar el producto. ` +
+            `Si el dato no está en tu ficha ni en tu catálogo (tallas, medidas, colores, garantías…), NO lo dejes sin atender ni lo inventes: ` +
+            `dile con naturalidad que un asesor se lo confirma enseguida.\n` +
+            `2) La pregunta pendiente del embudo, LITERAL y sin nada después:\n${preguntaFlujo}\n` +
+            `PROHIBIDO mandar la pregunta sola: un mensaje que solo la repite e ignora lo que el cliente dijo espanta al cliente. ` +
+            (repes >= 1
+              ? `ATENCIÓN: esta misma pregunta ya la hiciste en tu mensaje anterior y el cliente no la contestó porque espera respuesta a LO SUYO. Atiéndelo primero. `
+              : '') +
+            `PROHIBIDO también: pedir datos (nombre, teléfono, dirección), preguntar por envío o entrega, ofrecer promociones, ` +
+            `intentar cerrar el pedido o hacer CUALQUIER otra pregunta propia.`;
+          await log(
+            `🪜 flujo: directiva de retome inyectada ("${preguntaFlujo.slice(0, 60)}")` +
+              (repes ? ` · ya repetida ${repes} vez(ces)` : ''),
+          );
         }
       } catch (eFlujo) {
         await log(`⚠️ flujo pregunta pendiente: ${eFlujo.message}`);

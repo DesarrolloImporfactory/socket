@@ -111,93 +111,104 @@ const COLUMNA_ENTREGADA_DEFAULT = 'entregada';
    Mapeo: raw status Dropi → estado en dropi_plantillas_config
    ═══════════════════════════════════════════════════════════ */
 
-function mapDropiStatusToEstadoConfig(rawStatus) {
-  const s = String(rawStatus || '')
-    .trim()
-    .toUpperCase();
+/* Qué estado de `dropi_plantillas_config` le corresponde a cada clase de
+   classifyDropiStatus. La lista de estados configurables está en
+   controllers/dropi_plantillas.controller.js (ESTADOS_DROPI); las clases que
+   no tienen estado ahí ('indemnizada', 'otro') no notifican. */
+const CLASE_A_ESTADO_PLANTILLA = {
+  entregada: 'ENTREGADA',
+  devolucion: 'DEVOLUCION',
+  cancelada: 'CANCELADO',
+  retiro_agencia: 'RETIRO EN AGENCIA',
+  novedad: 'NOVEDAD',
+  guia_generada: 'GUIA GENERADA',
+  // El cliente no configura "en reparto" aparte: los dos avisan lo mismo.
+  en_reparto: 'EN TRANSITO',
+  en_transito: 'EN TRANSITO',
+};
 
+/* Estados de seguimiento que el kanban SÍ mueve pero que NO se le anuncian al
+   cliente, porque el aviso sería falso o prematuro. Solo aplican a las clases
+   de seguimiento (tránsito / reparto / retiro), nunca a un estado terminal. */
+const SIN_AVISO = [
+  // Alistamiento antes de que la transportadora recoja: el paquete no ha
+  // salido. "EN BODEGA (ORIGEN)" NO entra: ahí ya fue recolectado.
+  /\b(PACKING|PICKING|POR RECOLECTAR|INVENTARIO|PREPARADO|PROCESAMIENTO|GENERAD[OA])\b/,
+  /* "La guía SERÁ entregada en oficina para su retiro" (Servientrega): va en
+     camino a la agencia, todavía no se puede retirar. Si se avisara acá, el
+     dedupe por estado se comería el aviso bueno —el que sí trae la agencia
+     resuelta— cuando el paquete llegue de verdad. */
+  /EN DISTRIBUCION PARA ENTREGA EN AGENCIA/,
+  // La transportadora está confirmando datos del destinatario (le faltan);
+  // no es tránsito. Mismo criterio que utils/retiroEnOrigen.js.
+  /INGRESO A CONFIRMACION/,
+  // Retraso por factores externos (cierre de vías, derrumbes): no es "va en
+  // camino", y el cliente que recibe eso entiende lo contrario.
+  /INCIDENCIA/,
+];
+
+const CLASES_DE_SEGUIMIENTO = new Set([
+  'en_transito',
+  'en_reparto',
+  'retiro_agencia',
+]);
+
+/* Esta función decidía a mano, con su propia lista, y se quedó MUY corta frente
+   a classifyDropiStatus (la que sí conoce el vocabulario real de las
+   transportadoras): "EN TRANSITO", "EN BODEGA", "POR RECOLECTAR", "PACKING",
+   "GUÍA GENERADA" con tilde, "RECHAZADA", "CANCELADO POR TRANSPORTADORA"…
+   todos devolvían null y el cliente nunca recibía ese aviso, aunque tuviera la
+   plantilla configurada y el chat sí se moviera de columna. Ahora las dos leen
+   el mismo mapa: lo que el kanban clasifica es lo que el notifier avisa. */
+function mapDropiStatusToEstadoConfig(rawStatus) {
+  const s = normalizarStatus(rawStatus);
+
+  // Los dos pendientes comparten clase en el kanban ('pendiente') pero son
+  // plantillas distintas, así que se resuelven antes de delegar.
   if (s === 'PENDIENTE CONFIRMACION') return 'PENDIENTE CONFIRMACION';
   if (s === 'PENDIENTE') return 'PENDIENTE';
-  if (s === 'GUIA_GENERADA') return 'GUIA GENERADA';
 
-  if (
-    s === 'CANCELADO' ||
-    s.includes('CANCELADA') ||
-    s === 'ANULADA' ||
-    s === 'RECHAZADO' ||
-    s === 'GUIA_ANULADA'
-  )
-    return 'CANCELADO';
+  const clase = classifyDropiStatus(rawStatus);
 
-  if (
-    s.includes('RETIRO EN AGENCIA') ||
-    s.includes('ENVÍO LISTO EN OFICINA') ||
-    s === 'ENVIO LISTO EN OFICINA'
-  )
-    return 'RETIRO EN AGENCIA';
+  // Cada aviso sale UNA sola vez por orden (dedupe por estado): gastarlo en un
+  // evento prematuro deja al cliente sin el aviso bueno.
+  if (CLASES_DE_SEGUIMIENTO.has(clase) && SIN_AVISO.some((re) => re.test(s)))
+    return null;
 
-  if (
-    s === 'ENTREGADO' ||
-    s.includes('ENTREGADA') ||
-    s === 'REPORTADO ENTREGADO' ||
-    s.includes('REPORTADO ENTREGADO') ||
-    s === 'ENTREGA DIGITALIZADA' ||
-    s === 'CERTIFICACION DE PRUEBA DE ENTREGA'
-  )
-    return 'ENTREGADA';
-
-  if (
-    s.includes('DEVOLUCION') ||
-    s.includes('DEVOLUCIÓN') ||
-    s === 'DEVUELTO' ||
-    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
-    s === 'DESAPLICADO'
-  )
-    return 'DEVOLUCION';
-
-  if (
-    s.includes('NOVEDAD') ||
-    s.includes('SOLUCION') ||
-    s.includes('SOLUCIÓN') ||
-    s === 'CON NOVEDAD' ||
-    s === 'DESTINATARIO FALLECIDO' ||
-    s.includes('DESTINATARIO RE-PROGRAMA') ||
-    s.includes('DESTINATARIO SOLICITA') ||
-    s.includes('DESTINATARIO INDICA') ||
-    s.includes('FUERA DE COBERTURA') ||
-    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
-    s.includes('PROBLEMAS DE ORDEN') ||
-    s.includes('VISITA A DESTINATARIO') ||
-    s.includes('ACCIDENTE EN CARRETERA') ||
-    s.includes('EN ESPERA DE FIRMA') ||
-    s.includes('INCONFORME')
-  )
-    return 'NOVEDAD';
-
-  if (
-    s === 'EN REPARTO' ||
-    s === 'ZONA DE ENTREGA' ||
-    s === 'EN DISTRIBUCION A CLIENTE' ||
-    s === 'EN DISTRIBUCIÓN A CLIENTE' ||
-    s.includes('EN DISTRIBUCION A') ||
-    s.includes('EN DISTRIBUCIÓN A') ||
-    s === 'EN CAMINO' ||
-    s.includes('SALIDA A REPARTO') ||
-    s.includes('REPARTIDOR ASIGNADO')
-  )
-    return 'EN TRANSITO';
-
-  return null;
+  return CLASE_A_ESTADO_PLANTILLA[clase] || null;
 }
 
 /* ═══════════════════════════════════════════════════════════
    classifyDropiStatus (para cache)
    ═══════════════════════════════════════════════════════════ */
 
+/* Mayúsculas, sin tildes y con los espacios colapsados. Las transportadoras
+   escriben el mismo estado de las dos formas ("DEVOLUCIÓN" y "DEVOLUCION",
+   "GUÍA GENERADA" y "GUIA GENERADA") y las comparaciones exactas se caían con
+   la acentuada. Los guiones bajos de Dropi (GUIA_GENERADA) pasan a espacio. */
+function normalizarStatus(status) {
+  return String(status || '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toUpperCase()
+    .replace(/[_\s]+/g, ' ')
+    .trim();
+}
+
 function classifyDropiStatus(status) {
-  const s = String(status || '')
-    .trim()
-    .toUpperCase();
+  const s = normalizarStatus(status);
+
+  /* La devolución va ANTES que la entrega a propósito: "DEVOLUCION ENTREGADA A
+     ORIGEN" (el paquete que volvió al remitente) contiene "ENTREGADA" y caía
+     como entrega exitosa — al cliente le llegaba "tu pedido fue entregado" por
+     un pedido que nunca recibió, y el chat se iba a la columna entregada. */
+  if (
+    s.includes('DEVOLUCION') ||
+    s.includes('DEVUELT') ||
+    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
+    s === 'DESAPLICADO'
+  )
+    return 'devolucion';
 
   if (
     s === 'ENTREGADO' ||
@@ -210,20 +221,12 @@ function classifyDropiStatus(status) {
     return 'entregada';
 
   if (
-    s.includes('DEVOLUCION') ||
-    s.includes('DEVOLUCIÓN') ||
-    s === 'DEVUELTO' ||
-    s === 'CERTIFICACION DEVOLUCION AL REMITENTE' ||
-    s === 'DESAPLICADO'
-  )
-    return 'devolucion';
-
-  if (
     s.includes('CANCELADO') ||
     s.includes('CANCELADA') ||
-    s === 'ANULADA' ||
-    s === 'RECHAZADO' ||
-    s === 'GUIA_ANULADA'
+    // Con guion bajo o con espacio, femenino o masculino: GUIA ANULADA,
+    // RECHAZADA. Antes eran igualdades exactas y la variante se escapaba.
+    s.includes('ANULAD') ||
+    s.includes('RECHAZAD')
   )
     return 'cancelada';
 
@@ -232,8 +235,7 @@ function classifyDropiStatus(status) {
   if (
     s.includes('RETIRO EN AGENCIA') ||
     s.includes('ENTREGA EN AGENCIA') ||
-    s.includes('ENVÍO LISTO EN OFICINA') ||
-    s === 'ENVIO LISTO EN OFICINA'
+    s.includes('ENVIO LISTO EN OFICINA')
   )
     return 'retiro_agencia';
 
@@ -247,14 +249,13 @@ function classifyDropiStatus(status) {
   if (
     s.includes('NOVEDAD') ||
     s.includes('SOLUCION') ||
-    s.includes('SOLUCIÓN') ||
     s === 'CON NOVEDAD' ||
     s === 'DESTINATARIO FALLECIDO' ||
     s.includes('DESTINATARIO RE-PROGRAMA') ||
     s.includes('DESTINATARIO SOLICITA') ||
     s.includes('DESTINATARIO INDICA') ||
     s.includes('FUERA DE COBERTURA') ||
-    s.includes('OBSTRUCCIÓN EN LA VÍA') ||
+    s.includes('OBSTRUCCION EN LA VIA') ||
     s.includes('PROBLEMAS DE ORDEN') ||
     s.includes('VISITA A DESTINATARIO') ||
     s.includes('ACCIDENTE EN CARRETERA') ||
@@ -268,19 +269,19 @@ function classifyDropiStatus(status) {
     s.includes('SINIESTRO') ||
     s.includes('INCAUTADO') ||
     s.includes('HURTAD') ||
-    s.includes('AVERÍA')
+    s.includes('AVERIA')
   )
     return 'indemnizada';
 
-  if (s === 'GUIA_GENERADA') return 'guia_generada';
+  // "GUIA_GENERADA" (Dropi) y "GUÍA GENERADA" (Laarcourier, Gintracom) son el
+  // mismo estado; la segunda caía en 'en_transito' por el includes('GENERADA')
+  // de más abajo y nunca disparaba su plantilla.
+  if (s === 'GUIA GENERADA') return 'guia_generada';
 
   if (
     s === 'EN REPARTO' ||
     s === 'ZONA DE ENTREGA' ||
-    s === 'EN DISTRIBUCION A CLIENTE' ||
-    s === 'EN DISTRIBUCIÓN A CLIENTE' ||
     s.includes('EN DISTRIBUCION A') ||
-    s.includes('EN DISTRIBUCIÓN A') ||
     s === 'EN CAMINO' ||
     s.includes('SALIDA A REPARTO') ||
     s.includes('REPARTIDOR ASIGNADO') ||
@@ -291,7 +292,6 @@ function classifyDropiStatus(status) {
     return 'en_reparto';
 
   if (
-    s.includes('TRÁNSITO') ||
     s.includes('TRANSITO') ||
     s.includes('EN RUTA') ||
     s.includes('BODEGA') ||
@@ -311,15 +311,15 @@ function classifyDropiStatus(status) {
     s === 'PROCESAMIENTO' ||
     // Estados logísticos de transportadoras que antes caían en 'otro'
     s.includes('CENTRO DE') ||
+    // "TRASLADO A CENTRO LOGISTICO" (Servientrega): el paquete ya fue
+    // recolectado y va camino al centro. 'CENTRO DE' no lo atrapaba.
+    s.includes('CENTRO LOGISTICO') ||
     s.includes('DISTRIBUCION') ||
-    s.includes('DISTRIBUCIÓN') ||
     s.includes('CIUDAD DE') ||
     s.includes('ARRIBAD') ||
     s.includes('DESEMBARQUE') ||
     s.includes('RECEPCION') ||
-    s.includes('RECEPCIÓN') ||
     s.includes('INSTALACION') ||
-    s.includes('INSTALACIÓN') ||
     s.includes('DESPACHAD') ||
     s.includes('A TRANSPORTADORA') ||
     s.includes('LLEGANDO') ||
