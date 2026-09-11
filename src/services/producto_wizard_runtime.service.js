@@ -806,7 +806,10 @@ async function intentarMensajeFijoWizard({
           texto) → el paquete ES la respuesta: turno cerrado sin IA. */
   const texto = String(texto_mensaje || '');
 
-  if (Number(wizard.usar_respuestas_rapidas) === 1) {
+  // Genérico ("hola", "precio", "quiero info"): el paquete que acaba de salir
+  // ya trae precios y combos; la quemada duplicaría. Del 2º turno en adelante
+  // sí sale (intentarRespuestaRapida).
+  if (Number(wizard.usar_respuestas_rapidas) === 1 && !esSaludoOGenerico(texto)) {
     const faqs = leerJson(wizard.respuestas_rapidas_json, []);
     const match = elegirRespuestaRapida(texto, faqs);
     if (match) {

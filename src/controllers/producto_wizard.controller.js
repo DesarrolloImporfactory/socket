@@ -193,15 +193,19 @@ exports.probarRespuesta = conErrores(async (req, res) => {
   const generico = esSaludoOGenerico(mensaje);
   const compra = pareceIntencionCompra(mensaje);
   const match = compra ? null : elegirRespuestaRapida(mensaje, faqs);
+  /* Orden del bot en vivo: compra → quemada → genérico. Antes lo genérico
+     iba primero y "precio" salía como solo_paquete pese a tener quemada. */
   let decision = 'ia';
-  if (generico) decision = 'solo_paquete';
-  else if (compra) decision = 'ia_cierre';
+  if (compra) decision = 'ia_cierre';
   else if (match) decision = 'respuesta_rapida';
+  else if (generico) decision = 'solo_paquete';
   res.status(200).json({
     status: 'success',
     data: {
       decision,
       generico,
+      // Calza la quemada, pero en el PRIMER mensaje manda el paquete.
+      solo_desde_segundo_turno: Boolean(match && generico),
       intencion_compra: compra,
       respuesta: match ? match.faq : null,
       indice: match ? match.indice : null,
