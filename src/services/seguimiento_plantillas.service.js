@@ -296,6 +296,49 @@ async function enviarConfirmacionOrdenBot({
       orderParaMsg,
     );
 
+    /* Encabezado de IMAGEN: misma escalera que el notifier (catálogo por id
+       Dropi → por nombre → galería de la orden → ejemplo). Este camino nunca
+       lo resolvía y una plantilla con imagen fallaba en Meta para las ventas
+       cerradas por el bot. Lo enviado se guarda en ruta_archivo.header para
+       que el chat muestre la foto real y no el ejemplo. Best-effort. */
+    let headerEnviado = null;
+    try {
+      const { obtenerTextoPlantilla } = require('./whatsapp.service');
+      const def = await obtenerTextoPlantilla(
+        cfg.nombre_template,
+        creds.waba_token,
+        creds.waba_id,
+      );
+      if (String(def?.header?.format || '').toUpperCase() === 'IMAGE') {
+        const {
+          resolverImagenProductoOrden,
+          headerImagenParaEnvio,
+        } = require('../utils/imagenProductoOrden');
+        const img = await resolverImagenProductoOrden({
+          id_configuracion,
+          order: orderParaMsg,
+        });
+        const header = await headerImagenParaEnvio({
+          def,
+          imagenUrl: img?.url || null,
+          business_phone_id: creds.phone_number_id,
+          accessToken: creds.waba_token,
+          nombre_template: cfg.nombre_template,
+        });
+        if (header) {
+          components.unshift(header);
+          headerEnviado = {
+            format: 'IMAGE',
+            url: img?.url || def?.header?.media_url || null,
+            fuente: img?.fuente || 'ejemplo_plantilla',
+          };
+          console.log(
+            `[seguimiento][bot] header imagen (${headerEnviado.fuente}) orden ${dropi_order_id}`,
+          );
+        }
+      }
+    } catch (_) {}
+
     let wamid = null;
     let jsonMensaje = null;
     try {
@@ -346,7 +389,10 @@ async function enviarConfirmacionOrdenBot({
       templateName: cfg.nombre_template,
       languageCode: cfg.language_code || 'es',
       waMessageId: wamid,
-      rutaArchivo: buildRutaArchivo(orderParaMsg, ESTADO),
+      rutaArchivo: {
+        ...buildRutaArchivo(orderParaMsg, ESTADO),
+        ...(headerEnviado ? { header: headerEnviado } : {}),
+      },
       jsonMensaje,
       responsable: 'Bot Confirmación',
     });

@@ -1405,6 +1405,8 @@ async function procesarTemplates({
     ? await getTemplatesAprobadas(creds.waba_id, creds.waba_token)
     : null;
   const faltantesAvisadas = new Set();
+  // Órdenes al propio número de la cuenta ya avisadas en esta corrida.
+  const propiasAvisadas = new Set();
 
   let enviados = 0,
     omitidos = 0,
@@ -1574,6 +1576,26 @@ async function procesarTemplates({
         continue;
       }
 
+      /* La orden es del PROPIO número de WhatsApp Business de la cuenta (el
+         negocio se hace pedidos a sí mismo para probar o para comprar). Meta
+         no permite mandarse una plantilla a sí mismo y responde
+         "(#100) Invalid parameter" sin más detalle; el reclamo se liberaba y
+         la orden volvía a fallar en CADA corrida (cfg 494, órdenes 7003243 y
+         7003345, 2026-09-14). Se omite ANTES de reclamar, con motivo claro. */
+      if (telefonoConfig) {
+        const propio = normalizePhone(telefonoConfig, country_code);
+        if (propio && propio === phoneNorm) {
+          if (!propiasAvisadas.has(order.id)) {
+            propiasAvisadas.add(order.id);
+            console.log(
+              `[dropi-notifier] orden ${order.id} (cfg ${id_configuracion}, ${estadoConfig}) omitida: el teléfono de la orden es el número de WhatsApp de la propia cuenta (${phoneNorm}); Meta no acepta enviarse a sí mismo`,
+            );
+          }
+          omitidos++;
+          continue;
+        }
+      }
+
       // La plantilla configurada no existe en esta WABA (típico: se copió de
       // otra cuenta). Se omite ANTES de reclamar y de tocar el chat.
       if (
@@ -1661,6 +1683,11 @@ async function procesarTemplates({
          El notifier nunca soportó headers — una plantilla con imagen aquí
          fallaba siempre — así que esto es puramente aditivo. Best-effort:
          sin definición o sin foto, se envía como siempre y Meta dirá. */
+      /* Lo que se mandó de header se guarda con el mensaje (ruta_archivo):
+         la vista del chat pinta `header` del mensaje y, si no viene, cae al
+         EJEMPLO de la plantilla — así el negocio veía la foto de ejemplo
+         aunque a Meta fue la del producto (cfg 366, 2026-09-13). */
+      let headerEnviado = null;
       try {
         const {
           obtenerTextoPlantilla,
@@ -1688,6 +1715,11 @@ async function procesarTemplates({
           });
           if (header) {
             components.unshift(header);
+            headerEnviado = {
+              format: 'IMAGE',
+              url: img?.url || def?.header?.media_url || null,
+              fuente: img?.fuente || 'ejemplo_plantilla',
+            };
             console.log(
               `[dropi-notifier] header imagen (${img?.fuente || 'ejemplo_plantilla'}) orden ${order.id}`,
             );
@@ -1792,6 +1824,10 @@ async function procesarTemplates({
       }
 
       const rutaArchivo = buildRutaArchivo(orderParaMsg, estadoConfig);
+      // Solo si salió la plantilla: la respuesta rápida no lleva header.
+      if (headerEnviado && tipoEnvio === 'template') {
+        rutaArchivo.header = headerEnviado;
+      }
 
       let columnaDestino = null;
       if (estadoConfig === 'PENDIENTE CONFIRMACION') {
@@ -1920,10 +1956,15 @@ async function procesarTemplates({
       // Sin este log era imposible saber POR QUÉ una orden nunca envió:
       // el reclamo se libera al fallar y no queda rastro en la BD.
       const metaErr = err?.response?.data?.error;
+      // error_data.details es lo único que dice POR QUÉ ("Invalid URL button
+      // parameter", "Param text cannot have new-line…"); sin él un #100 no se
+      // puede diagnosticar sin reproducir el envío a mano.
+      const detalle = metaErr?.error_data?.details;
       console.error(
-        `[dropi-notifier] fallo envío orden ${order.id} (cfg ${id_configuracion}, estado "${order.status}"):`,
+        `[dropi-notifier] fallo envío orden ${order.id} (cfg ${id_configuracion}, estado "${order.status}", tel=${order.phone || '-'}):`,
         metaErr
-          ? `code=${metaErr.code} subcode=${metaErr.error_subcode || '-'} ${metaErr.message}`
+          ? `code=${metaErr.code} subcode=${metaErr.error_subcode || '-'} ${metaErr.message}` +
+              (detalle && detalle !== metaErr.message ? ` | ${detalle}` : '')
           : err.message,
       );
       if (isMetaRateLimit(err)) await new Promise((r) => setTimeout(r, 30000));

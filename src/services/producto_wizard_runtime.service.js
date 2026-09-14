@@ -595,6 +595,18 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
       ? `La fase de PRESENTACIÓN de este servicio YA FUE COMPLETADA por el sistema: el cliente recibió fotos, precio y la pregunta de cierre en un mensaje fijo. No saludes de nuevo ni vuelvas a presentarlo. Sigue tu guion desde el punto posterior a la presentación SIN SALTARTE ningún dato que tu guion pida (ciudad o sede, fecha, horario, datos del cliente): pregunta lo que todavía no sepas, en el orden de tu guion, una pregunta por mensaje.`
       : `La fase de PRESENTACIÓN de este producto YA FUE COMPLETADA por el sistema: el cliente recibió fotos, precio${combos.length ? ', combos' : ''} y la pregunta de cierre en un mensaje fijo. No saludes de nuevo, no vuelvas a presentar el producto ni repitas precios que no te pidan. Sigue tu guion desde el punto posterior a la presentación SIN SALTARTE ningún dato que tu guion pida (ciudad, cantidad${hayVariedades ? ', variedad' : ''}, tipo de envío, nombre${ajustes.sinTelefono ? '' : ', teléfono'}, dirección u oficina): pregunta lo que todavía no sepas, en el orden de tu guion, una pregunta por mensaje. Nunca deduzcas la ciudad de una dirección: si el cliente no la dijo, pregúntala.`,
   );
+  /* La regla de arriba sola producía el bucle del caso 366 (2026-09-11): ante
+     "¿cómo sé que funciona?" el modelo mandaba "¿A qué ciudad te lo enviamos?"
+     ocho veces seguidas, y en otros turnos volvía al paso de presentación del
+     guion (precio + foto otra vez). Las dos cosas se prohíben aquí, en el
+     mismo bloque que manda sobre el guion. */
+  lineas.push(
+    `🗣️ SI EL CLIENTE PREGUNTÓ U OBJETÓ ALGO (si funciona, si es original, garantía, dudas, quejas, "no me convence"): ` +
+      `respóndelo PRIMERO en 1-2 frases con los datos de esta ficha (si el dato no está aquí, dile que un asesor se lo confirma; no lo inventes) ` +
+      `y recién después haz UNA pregunta del guion. PROHIBIDO mandar la pregunta del guion sola ignorando lo que dijo: ` +
+      `si tu mensaje anterior fue esa misma pregunta y el cliente no la contestó, es porque espera respuesta a LO SUYO. ` +
+      `PROHIBIDO también volver a la presentación: no repitas la lista de precios ni adjuntes la foto ([producto_imagen_url]) que el paquete ya envió, salvo que el cliente pida el precio.`,
+  );
   if (ajustes.sinTelefono) {
     lineas.push(
       `📵 TELÉFONO: el negocio decidió NO pedirlo. Nunca le pidas ni le menciones el teléfono al cliente, aunque tu guion lo incluya: el sistema ya tiene el número de WhatsApp desde el que escribe. En el resumen del pedido OMITE la línea "Teléfono" por completo (no la escribas vacía, ni "por confirmar", ni con el número del chat).`,
@@ -807,11 +819,19 @@ async function intentarMensajeFijoWizard({
        4. TODO lo demás (saludos, "quiero info", typos, relleno, stickers de
           texto) → el paquete ES la respuesta: turno cerrado sin IA. */
   const texto = String(texto_mensaje || '');
+  /* El nombre del producto no es contenido: el prefill del anuncio ("¿Cuánto
+     cuesta el Mini Escáner ELM327?") es "precio", que el paquete ya respondió.
+     Sin esto la IA corría sobre ese mismo mensaje y pedía la ciudad 20 s
+     después del paquete, antes de que el cliente contestara la pregunta
+     gancho (caso 366, 2026-09-11). */
+  const generico = esSaludoOGenerico(texto, {
+    nombreProducto: [producto.nombre, referral?.headline || ''],
+  });
 
   // Genérico ("hola", "precio", "quiero info"): el paquete que acaba de salir
   // ya trae precios y combos; la quemada duplicaría. Del 2º turno en adelante
   // sí sale (intentarRespuestaRapida).
-  if (Number(wizard.usar_respuestas_rapidas) === 1 && !esSaludoOGenerico(texto)) {
+  if (Number(wizard.usar_respuestas_rapidas) === 1 && !generico) {
     const faqs = leerJson(wizard.respuestas_rapidas_json, []);
     const match = elegirRespuestaRapida(texto, faqs);
     if (match) {
@@ -850,9 +870,14 @@ async function intentarMensajeFijoWizard({
   // tele de tubo vieja") merece respuesta: IA con la ficha. Lo que NO es
   // pregunta ni compra es una variante de "quiero el producto" — con o sin
   // typos — y eso ya lo respondió el paquete.
-  if (pareceRegunta(texto) && !esSaludoOGenerico(texto)) {
+  if (pareceRegunta(texto) && !generico) {
     await decir(`wizard: pregunta fuera de las rápidas → sigue la IA con la ficha`);
     return { paqueteEnviado: true, saltarIA: false, bloqueMotor };
+  }
+  if (pareceRegunta(texto) && generico) {
+    await decir(
+      `wizard: pregunta genérica del anuncio (precio/info del producto) → el paquete responde, sin IA`,
+    );
   }
   await decir(
     `wizard: sin pregunta ni compra → el paquete responde, turno cerrado sin IA (0 tokens)`,
@@ -1514,12 +1539,19 @@ function mensajeVentaRealizada(wizard) {
     /^https?:\/\//i.test(String(u || '')),
   );
   if (!copy && !media.length) return null;
+  const retraso = Number(fin.retraso);
   return {
     copy,
     media,
     // true = al cerrar NO se le envía el resumen técnico al cliente, solo
     // este mensaje. La orden y la columna se procesan igual (paso 10).
     ocultar_resumen: Number(fin.ocultar_resumen) === 1,
+    // Cierre a dos tiempos: el previo sale al instante y el final espera
+    // `retraso` segundos (tope 3 min). Ver limpiarPasosFlujo.
+    copy_previo: String(fin.copy_previo || '').trim(),
+    retraso: Number.isFinite(retraso)
+      ? Math.min(Math.max(Math.round(retraso), 0), 180)
+      : 0,
   };
 }
 
