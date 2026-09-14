@@ -2717,7 +2717,38 @@ async function procesarMensajeKanban(params) {
      vertical de servicios el modelo escribe `[servicio_imagen_url]`, y con el
      patrón viejo el código no se daba cuenta de que ya había una imagen en la
      respuesta, así que adjuntaba otra encima. */
+  /* Con el wizard en juego la presentación (foto incluida) ya salió como
+     paquete fijo. El filtro del paso 12 compara por URL, y la del paquete
+     (media del wizard) no es la misma que `imagen_url` del catálogo, así que
+     esta foto se colaba otra vez en el turno siguiente como si fuera la
+     primera vez (simulador Tazaki, 2026-09-14). Si el paquete salió hace
+     menos de 48 h, el código no propone ninguna foto. */
+  let fotoYaEnPaquete = false;
+  if (wizardEnJuego) {
+    try {
+      const [fijo] = await db.query(
+        `SELECT 1 AS ok FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND responsable = 'IA_mensaje_fijo'
+            AND tipo_mensaje IN ('image', 'video') AND deleted_at IS NULL
+            AND created_at >= NOW() - INTERVAL 48 HOUR
+          LIMIT 1`,
+        {
+          replacements: [id_cliente, id_configuracion],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      fotoYaEnPaquete = Boolean(fijo);
+      if (fotoYaEnPaquete) {
+        await log(`📷 El paquete fijo del wizard ya llevó la foto: el código no adjunta otra`);
+      }
+    } catch (_) {
+      fotoYaEnPaquete = false;
+    }
+  }
+
   if (
+    !fotoYaEnPaquete &&
     tieneAccion('contexto_productos') &&
     !/\[(producto|servicio|upsell)_imagen_url\]/i.test(respuestaRaw)
   ) {
@@ -2975,6 +3006,61 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── Guardia anti-bucle ──
+     Caso 366 (2026-09-11): "¿A qué ciudad te lo enviamos?" ocho veces seguidas
+     ante una objeción, hasta que una persona pidió disculpas por la IA. Nada
+     lo frenaba (turnos_sin_avance escala recién a los 15). Regla mínima: la
+     TERCERA respuesta idéntica a las dos últimas del bot no se manda y el
+     chat pasa a asesor. Ver utils/antiBucle.js. El cierre de venta queda
+     fuera: un resumen repetido ya lo maneja reclamarResumenCierre. */
+  if (soloTexto && !cerroLaVenta) {
+    try {
+      const { esRespuestaEnBucle } = require('../utils/antiBucle');
+      const previas = await db.query(
+        `SELECT texto_mensaje FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL
+            AND tipo_mensaje = 'text' AND responsable = ?
+          ORDER BY id DESC LIMIT 2`,
+        {
+          replacements: [id_cliente, id_configuracion, `IA_${columna.nombre}`],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      if (
+        esRespuestaEnBucle(
+          soloTexto,
+          previas.map((m) => m.texto_mensaje),
+        )
+      ) {
+        const [colAsesor] = await db.query(
+          `SELECT id FROM kanban_columnas
+            WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
+            LIMIT 1`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (colAsesor) {
+          await db.query(
+            `UPDATE clientes_chat_center
+                SET estado_contacto = 'asesor', turnos_sin_avance = 0
+              WHERE id = ?`,
+            { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+          );
+        }
+        await log(
+          `🔁 BUCLE: la respuesta "${soloTexto.slice(0, 60)}" ya salió 2 veces seguidas; ` +
+            `no se manda la tercera` +
+            (colAsesor
+              ? ` y el cliente ${id_cliente} pasa a "asesor"`
+              : ` (la configuración ${id_configuracion} no tiene columna "asesor")`),
+        );
+        soloTexto = '';
+      }
+    } catch (eBucle) {
+      await log(`⚠️ Guardia anti-bucle: ${eBucle.message}`);
+    }
+  }
+
   if (soloTexto) {
     // Si la conexión tiene el split activo, la respuesta sale en 2-3 mensajes
     // naturales. Si no, se mantiene el envío de siempre en un solo bloque.
@@ -3013,7 +3099,7 @@ async function procesarMensajeKanban(params) {
      sale DESPUÉS del resumen — copy fijo + imagen, 0 tokens. En ráfaga
      (resumen repetido) tampoco se repite este mensaje. */
   if (cerroLaVenta && !resumenRepetido && finFlujo) {
-    try {
+    const enviarFinal = async () => {
       for (const url of (finFlujo.media || []).slice(0, 4)) {
         const tipoM = /\.(mp4|mov|3gp)(\?|$)/i.test(url) ? 'video' : 'image';
         await canal
@@ -3036,6 +3122,40 @@ async function procesarMensajeKanban(params) {
       await log(
         `🏁 flujo: mensaje de VENTA REALIZADA enviado (${(finFlujo.media || []).length} media)`,
       );
+    };
+    try {
+      /* Cierre a dos tiempos (TrendiaEc, cfg 1028): el mensaje PREVIO sale
+         al instante ("De inmediato procedo a generar su orden…") y el final
+         ("PEDIDO CONFIRMADO") espera `retraso` segundos (tope 3 min), para
+         que el cliente tenga margen de corregir un dato antes de recibirlo.
+         La espera corre SUELTA del turno: el candado por cliente se libera y
+         un mensaje del cliente en ese lapso se atiende normal. Si el proceso
+         se reinicia en medio, el final no sale (mismo trade-off que el
+         retraso de los pasos). */
+      if (finFlujo.copy_previo) {
+        await canal.enviarTexto({
+          texto: finFlujo.copy_previo,
+          responsable: 'IA_flujo_venta',
+          total_tokens: 0,
+        });
+      }
+      const retrasoFin = Math.min(
+        Math.max(Number(finFlujo.retraso) || 0, 0),
+        180,
+      );
+      if (retrasoFin > 0) {
+        await log(
+          `⏳ flujo: mensaje de VENTA REALIZADA programado en ${retrasoFin}s` +
+            (finFlujo.copy_previo ? ' (el previo ya salió)' : ''),
+        );
+        setTimeout(() => {
+          enviarFinal().catch((e) =>
+            log(`⚠️ venta realizada (diferida): ${e.message}`),
+          );
+        }, retrasoFin * 1000);
+      } else {
+        await enviarFinal();
+      }
     } catch (eFin) {
       await log(`⚠️ venta realizada: ${eFin.message}`);
     }

@@ -93,14 +93,43 @@ const GENERICAS = new Set(
    promocion esto este esta eso ese esa favor porfa porfavor gracias amigo amiga
    senor senora disculpe disculpa consulta pregunta ayuda mas sobre acerca
    cotizacion cotizar cotizame dame deme pasame paseme enviame mandame brindar
-   brindeme`
+   brindeme puedo puede podria podrian obtener tener recibir conseguir
+   informe informes informarme informacion informes`
     .split(/\s+/)
     .filter(Boolean)
     .map(raiz),
 );
 
-function esSaludoOGenerico(texto) {
-  const toks = tokens(texto);
+/* Nombre del producto pegado o partido tal como lo escribe el prefill de Meta
+   ("¿Cuánto cuesta el Mini Escáner ELM327?" para "Mini Escaner ELM 327"): se
+   compara cada palabra del mensaje contra el nombre normalizado CON y SIN
+   espacios, así "elm327" cuenta como parte de "mini escaner elm 327". */
+function palabrasDelProducto(nombres) {
+  const lista = (Array.isArray(nombres) ? nombres : [nombres]).filter(Boolean);
+  const conEspacios = lista.map((n) => ` ${normalizar(n).replace(/[?¿]/g, ' ')} `);
+  const sinEspacios = conEspacios.map((n) => n.replace(/\s+/g, ''));
+  return (tok) =>
+    tok.length >= 3 &&
+    (conEspacios.some((n) => n.includes(` ${tok} `) || n.includes(` ${tok}s `)) ||
+      sinEspacios.some((n) => n.includes(tok)));
+}
+
+/**
+ * @param {string} texto
+ * @param {{ nombreProducto?: string|string[] }} [opts]
+ *   nombreProducto: nombre(s) del producto en juego (catálogo y/o headline
+ *   del anuncio). Sus palabras NO cuentan como contenido: el prefill del
+ *   anuncio "¿Cuánto cuesta el Mini Escáner ELM327?" es "precio" y nada más,
+ *   y el paquete fijo ya lo responde (caso 366, 2026-09-11: la IA corría
+ *   sobre ese prefill y pedía la ciudad antes de que el cliente contestara
+ *   la pregunta gancho).
+ */
+function esSaludoOGenerico(texto, { nombreProducto = null } = {}) {
+  let toks = tokens(texto);
+  if (nombreProducto) {
+    const esDelProducto = palabrasDelProducto(nombreProducto);
+    toks = toks.filter((t) => !esDelProducto(t));
+  }
   if (!toks.length) return true;
   return toks.every((t) => GENERICAS.has(t));
 }

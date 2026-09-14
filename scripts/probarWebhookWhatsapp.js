@@ -300,6 +300,66 @@ const ESCENARIOS = {
       'los mensajes que antes lo hacían saltar de producto (caso 285).',
   },
 
+  /* Caso 366 (2026-09-11). Correr con --referral 120248759358620142 (anuncio
+     del cuchillo Tazaki en la 610) y --columna contacto_inicial. */
+  wizard_prefill: {
+    cliente: 452858,
+    titulo: 'Prefill del anuncio "¿Cuánto cuesta el X?": el paquete responde, SIN turno de IA (caso 366)',
+    mensajes: ['¿Cuánto cuesta el cuchillo de chef - Tazaki?', '2', 'Quito'],
+    busca:
+      'Tras el paquete fijo (fotos + precios + pregunta gancho) NO debe salir ' +
+      'ningún mensaje de "IA Contacto Inicial" hasta que el cliente escriba "2". ' +
+      'Antes la IA corría sobre el prefill y pedía la ciudad 20 s después del paquete.',
+  },
+  wizard_objecion: {
+    cliente: 452858,
+    titulo: 'Objeción fuera de las FAQs: responde primero, no repite la pregunta ni re-presenta (caso 366)',
+    mensajes: [
+      'Hola, quiero información',
+      'cómo puedo saber que funciona bien?',
+      'Para ninguna sin antes decirme cómo puedo saber si funciona',
+      'ya, dame 2',
+      'Quito',
+      'a domicilio',
+      'Michael Prueba, 0962803007, Av. Amazonas N34-12 y Naciones Unidas, frente al CCI',
+    ],
+    busca:
+      'A "cómo puedo saber que funciona" la IA debe RESPONDER (filo, material, ' +
+      'garantía o "un asesor te confirma") y recién después hacer UNA pregunta. ' +
+      'Nunca dos mensajes iguales seguidos, nunca la lista de precios ni la foto ' +
+      'otra vez. Con los datos debe cerrar (resumen + tag) y terminar en Generar Guia.',
+    verificar: (r) => {
+      const fallas = fallasComunes(r, { desdeNombre: 6 });
+      const bots = r.turnos.flatMap((t) => t.bot || []);
+      for (let i = 1; i < bots.length; i += 1) {
+        if (bots[i].trim() && bots[i].trim() === bots[i - 1].trim()) {
+          fallas.push(`repitió idéntico: "${bots[i].slice(0, 50)}"`);
+        }
+      }
+      return fallas;
+    },
+  },
+
+  /* Cierre a dos tiempos (TrendiaEc 1028): requiere que el wizard del producto
+     tenga la entrada venta_realizada con copy_previo y retraso. Correr con
+     --espera >= retraso + 15 para capturar el mensaje final diferido. */
+  wizard_cierre: {
+    cliente: 452858,
+    titulo: 'Cierre con mensaje previo al instante y mensaje final diferido (copy_previo + retraso)',
+    mensajes: [
+      'Hola, quiero información',
+      '2',
+      'Quito',
+      'a domicilio',
+      'Michael Prueba, 0962803007, Av. Amazonas N34-12 y Naciones Unidas, frente al CCI',
+    ],
+    busca:
+      'Al cerrar: resumen (si no está oculto) → mensaje PREVIO al instante → ' +
+      'tras el retraso configurado, el mensaje FINAL. Los dos con responsable ' +
+      'IA_flujo_venta. El contacto termina en Generar Guia.',
+    verificar: (r) => fallasComunes(r, { desdeNombre: 4 }),
+  },
+
   zona: {
     titulo: 'Pregunta por la zona (NO debe dar la dirección exacta)',
     mensajes: [

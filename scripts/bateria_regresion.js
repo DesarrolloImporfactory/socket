@@ -1450,6 +1450,102 @@ async function suiteA() {
     caso('"¿puedo retirar en agencia?" NO es elegir retiro', !R.eligeRetiroEnMensaje('¿puedo retirar en agencia?') && !R.eligeRetiroEnMensaje('hay agencia en Loja'));
     caso('"en agencia" / "retiro en oficina" SÍ es elegir retiro', R.eligeRetiroEnMensaje('en agencia') && R.eligeRetiroEnMensaje('retiro en oficina servientrega') && !R.eligeRetiroEnMensaje('a domicilio'));
   }
+
+  // 13. Caso 366 (Alx Market, 2026-09-11): el bot repitió "¿A qué ciudad te lo
+  //     enviamos?" OCHO veces ante "¿cómo sé que funciona?", y la IA corría
+  //     sobre el prefill del anuncio ("¿Cuánto cuesta el Mini Escáner ELM327?")
+  //     pidiendo la ciudad 20 s después del paquete fijo. Tres redes en código:
+  //     el prefill con el nombre del producto es genérico, la tercera respuesta
+  //     idéntica no se manda, y el prefacio del wizard exige responder la
+  //     objeción antes de la pregunta del guion.
+  {
+    const { esSaludoOGenerico } = require('../src/utils/wizardProducto/respuestasRapidas');
+    const { esRespuestaEnBucle } = require('../src/utils/antiBucle');
+    const nombre = ['Mini Escaner ELM 327', 'Mini Escaner ELM 327'];
+
+    caso(
+      'prefill "¿Cuánto cuesta el Mini Escáner ELM327?" es genérico con el nombre del producto',
+      esSaludoOGenerico('¿Cuánto cuesta el Mini Escáner ELM327?', { nombreProducto: nombre }),
+    );
+    caso(
+      'sin el nombre del producto el mismo prefill sigue sin ser genérico (comportamiento anterior intacto)',
+      !esSaludoOGenerico('¿Cuánto cuesta el Mini Escáner ELM327?'),
+    );
+    caso(
+      '"Hola, quiero información del Cuchillo de chef - Tazaki" es genérico',
+      esSaludoOGenerico('Hola, quiero información del Cuchillo de chef - Tazaki', { nombreProducto: 'cuchillo de chef - Tazaki' }),
+    );
+    /* Los prefills que Meta pone en el botón del anuncio (los 5 más comunes de
+       la semana del 2026-09-14, 8.600 entradas): con el nombre del producto
+       descontado tienen que ser genéricos, o la IA repite la presentación 20 s
+       después del paquete fijo (caso Aida, Nova Store360 1026). */
+    for (const [pref, prod] of [
+      ['Hola. ¿Puedo obtener más información sobre ? DRENAJE LINFÁTICO', 'DRENAJE LINFÁTICO'],
+      ['¡Hola! Quiero más información sobre Cubre canas en barra', 'Cubre canas en barra'],
+      ['Hola. Quiero más información sobre el Nivel Láser 4 en 1 Multifuncional', 'Nivel Láser 4 en 1 Multifuncional'],
+      ['Hola. Deseo más información sobre Corrector de postura para juanetes', 'Corrector de postura para juanetes'],
+      ['Hola, quiero información del cuchillo de chef - Tazaki', 'cuchillo de chef - Tazaki'],
+    ]) {
+      caso(`prefill "${pref.slice(0, 40)}…" es genérico`, esSaludoOGenerico(pref, { nombreProducto: prod }));
+    }
+    caso(
+      'una pregunta real sobre el producto NO es genérica',
+      !esSaludoOGenerico('sirve para un chevrolet 2010?', { nombreProducto: nombre }) &&
+        !esSaludoOGenerico('el escaner funciona con iphone?', { nombreProducto: nombre }),
+    );
+
+    const ciudad = '¿A qué ciudad te lo enviamos?';
+    caso('tercera respuesta idéntica (con o sin emoji) se detecta como bucle', esRespuestaEnBucle(ciudad, [`${ciudad} 📦`, ciudad]));
+    caso('una sola repetición previa NO es bucle', !esRespuestaEnBucle(ciudad, [ciudad]));
+    caso('respuestas distintas NO son bucle', !esRespuestaEnBucle(ciudad, [ciudad, '¿Cuántas unidades quieres?']));
+    caso('respuestas cortísimas repetidas no cuentan ("ok")', !esRespuestaEnBucle('ok 👍', ['ok', 'ok']));
+    caso('bucle mira solo las DOS últimas (una vieja igual no cuenta)', !esRespuestaEnBucle(ciudad, ['Perfecto 😊', ciudad, ciudad]));
+
+    try {
+      const { bloqueWizardParaMotor } = require('../src/services/producto_wizard_runtime.service');
+      const b = bloqueWizardParaMotor({
+        producto: { id: 1, nombre: 'Mini Escaner ELM 327', precio: 17.5, combos_producto: '[{"cantidad":"2","precio":"25"}]', stock: 10 },
+        wizard: { tipo_venta: 'fisico', bullets_json: '[]', respuestas_rapidas_json: '[]', flujo_pasos_json: '[]' },
+      });
+      caso(
+        'el prefacio del wizard exige responder la objeción antes de la pregunta del guion',
+        /PREGUNTÓ U OBJETÓ/.test(b) && /PROHIBIDO mandar la pregunta del guion sola/.test(b) && /no repitas la lista de precios/.test(b),
+      );
+      caso('el prefacio sigue trayendo la REGLA PRIORITARIA y los combos', /REGLA PRIORITARIA/.test(b) && /2 por/.test(b));
+    } catch (e) {
+      caso('el prefacio del wizard se arma sin romperse', false, e.message);
+    }
+  }
+
+  // 14. Cierre a dos tiempos (TrendiaEc, cfg 1028, 2026-09-14): mensaje previo
+  //     al instante + mensaje final tras una pausa configurable (tope 3 min).
+  //     El campo viaja en la entrada venta_realizada de flujo_pasos_json y
+  //     tiene que sobrevivir a la limpieza al guardar y llegar al runtime.
+  {
+    const { limpiarPasosFlujo } = require('../src/services/producto_wizard.service');
+    const { mensajeVentaRealizada } = require('../src/services/producto_wizard_runtime.service');
+    const entrada = {
+      espera: 'venta_realizada',
+      copy: '✨ PEDIDO CONFIRMADO ✨',
+      media: ['https://x.test/final.jpg'],
+      ocultar_resumen: 1,
+      copy_previo: '📦 De inmediato procedo a generar su orden.',
+      retraso: 60,
+    };
+    const limpio = limpiarPasosFlujo([{ espera: 'ciudad', copy: 'Enviamos a {{respuesta}}' }, entrada]);
+    const fin = limpio.find((p) => p.espera === 'venta_realizada');
+    caso('limpiarPasosFlujo conserva copy_previo y retraso del cierre', fin && fin.copy_previo === entrada.copy_previo && fin.retraso === 60);
+    caso(
+      'el retraso del cierre se recorta a 3 minutos y nunca es negativo',
+      limpiarPasosFlujo([{ ...entrada, retraso: 999 }]).find((p) => p.espera === 'venta_realizada').retraso === 180 &&
+        limpiarPasosFlujo([{ ...entrada, retraso: -5 }]).find((p) => p.espera === 'venta_realizada').retraso === 0,
+    );
+    const runtime = mensajeVentaRealizada({ usar_flujo_pasos: 1, flujo_pasos_json: JSON.stringify([entrada]) });
+    caso('el runtime entrega copy_previo, retraso y el final al cierre', runtime && runtime.copy_previo === entrada.copy_previo && runtime.retraso === 60 && runtime.copy === entrada.copy && runtime.ocultar_resumen === true);
+    const sinPrevio = mensajeVentaRealizada({ usar_flujo_pasos: 1, flujo_pasos_json: JSON.stringify([{ espera: 'venta_realizada', copy: 'Gracias!' }]) });
+    caso('sin previo ni retraso configurados: comportamiento de siempre (retraso 0, previo vacío)', sinPrevio && sinPrevio.retraso === 0 && sinPrevio.copy_previo === '');
+    caso('con el embudo apagado no hay mensaje final', mensajeVentaRealizada({ usar_flujo_pasos: 0, flujo_pasos_json: JSON.stringify([entrada]) }) === null);
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.

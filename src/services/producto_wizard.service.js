@@ -369,6 +369,7 @@ function limpiarPasosFlujo(lista) {
       // Entrada especial: el mensaje de VENTA REALIZADA (copy + media al
       // cerrar). No es un paso de la secuencia; el runtime lo lee aparte.
       if (p && p.espera === 'venta_realizada') {
+        const retrasoFin = Number(p.retraso);
         const fin = {
           espera: 'venta_realizada',
           copy: texto(p.copy),
@@ -376,6 +377,16 @@ function limpiarPasosFlujo(lista) {
           // Cerrar SIN mandarle el resumen técnico al cliente: solo este
           // mensaje. El auto-orden y el cambio de columna no se afectan.
           ocultar_resumen: p.ocultar_resumen ? 1 : 0,
+          /* Mensaje PREVIO: sale al instante al cerrar ("De inmediato
+             procedo a generar su orden…") y el mensaje final espera
+             `retraso` segundos (tope 3 min, igual que los pasos). Es el
+             cierre a dos tiempos de TrendiaEc (cfg 1028, 2026-09-14): la
+             pausa le da al cliente margen para corregir un dato antes de
+             recibir "PEDIDO CONFIRMADO". */
+          copy_previo: texto(p.copy_previo),
+          retraso: Number.isFinite(retrasoFin)
+            ? Math.min(Math.max(Math.round(retrasoFin), 0), 180)
+            : 0,
         };
         return fin.copy || fin.media.length ? fin : null;
       }
@@ -2018,7 +2029,14 @@ async function simularTurno({
         ? pasosFlujoTodos.find((p) => p.espera === 'venta_realizada')
         : null;
     if (fin && (fin.copy || (fin.media || []).length)) {
-      post_venta = { copy: fin.copy || '', media: fin.media || [] };
+      post_venta = {
+        copy: fin.copy || '',
+        media: fin.media || [],
+        // El front pinta el previo como burbuja aparte y anota la espera;
+        // en la vista previa no se espera de verdad.
+        copy_previo: fin.copy_previo || '',
+        retraso: Number(fin.retraso) || 0,
+      };
       // Igual que en vivo: con la opción activa, el resumen técnico no se le
       // muestra al cliente (la orden se procesa internamente con él).
       if (Number(fin.ocultar_resumen) === 1) {
@@ -2064,6 +2082,7 @@ async function simularTurno({
 
 module.exports = {
   simularTurno,
+  limpiarPasosFlujo,
   cargarVariaciones,
   resumenVariaciones,
   listarProductosConWizard,

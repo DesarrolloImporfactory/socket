@@ -2048,8 +2048,11 @@ async function autoCrearOrdenDropi({
           state: state.name || state.department || state.nombre,
           total_order: totalOrder,
           orderdetails: productosOrden.map((p) => ({
+            // product_id: la foto del header se resuelve por el id de Dropi
+            // (catálogo por external_id) antes que por nombre.
+            product_id: p.id || null,
             quantity: p.quantity,
-            product: { name: p.name },
+            product: { id: p.id || null, name: p.name },
           })),
         },
       });
