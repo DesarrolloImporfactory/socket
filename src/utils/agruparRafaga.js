@@ -115,4 +115,51 @@ async function esperarRafaga(id_cliente, texto, ventanaMs = VENTANA_MS) {
   return entrada.textos.length ? entrada.textos.join('\n') : texto;
 }
 
-module.exports = { esperarRafaga, VENTANA_MS };
+/* Ventana adaptativa (2026-09-14).
+ *
+ * Los 8 s fijos se pagaban en TODOS los turnos, también en los que no hay
+ * nada que agrupar: "2", "Quito", "a domicilio", "¿tiene garantía?". Medido
+ * en producción ese día: 17,4 s de latencia media por respuesta de IA
+ * (1.422 turnos), de los cuales 8 eran esta espera. La ráfaga que se quiere
+ * agrupar es la del cliente que escribe en PEDAZOS ("En la entrada de ocho" /
+ * "Hay un Servientrega"): frases sin cerrar. Un mensaje que ya viene cerrado
+ * —termina en puntuación, es un número, un sí/no, una sola palabra— casi
+ * nunca tiene continuación, y si la tiene el segundo mensaje corre su propio
+ * turno después (el candado por cliente los serializa): dos respuestas
+ * coherentes en vez de una junta, nunca una respuesta doble a lo mismo.
+ *
+ * Panel "Probar como cliente" (wamid.PANEL…): quien prueba escribe un mensaje
+ * y espera; la ventana baja a 1,5 s para que la prueba no se sienta lenta sin
+ * cambiar nada del camino de producción. */
+const VENTANA_CORTA_MS = 3500;
+const VENTANA_PRUEBA_MS = 1500;
+
+const RE_RESPUESTA_CORTA =
+  /^\s*(?:\d{1,3}|s[ií]|no|ok|okey|okay|dale|listo|claro|bueno|perfecto|vale|ya|gracias)\b[\s.!,]*$/i;
+
+function ventanaPara(texto, { esPrueba = false } = {}) {
+  if (esPrueba) return VENTANA_PRUEBA_MS;
+  const t = String(texto ?? '').trim();
+  if (!t) return VENTANA_MS; // foto/audio sin texto: el pie puede venir aparte
+  if (/[.!?…]$/.test(t)) return VENTANA_CORTA_MS;
+  if (RE_RESPUESTA_CORTA.test(t)) return VENTANA_CORTA_MS;
+  // Una sola palabra ("Quito", "domicilio", "dos") es una respuesta, no un
+  // pedazo de frase.
+  if (!/\s/.test(t) && t.length <= 20) return VENTANA_CORTA_MS;
+  // Respuesta cortita de 2-3 palabras ("a domicilio", "ya, dame 2", "el de
+  // 2"). El pedazo de frase típico es más largo ("Hay un Servientrega",
+  // "En la entrada de ocho") y sigue esperando los 8 s.
+  const palabras = t.split(/\s+/).filter(Boolean);
+  if (palabras.length <= 3 && t.length <= 16) return VENTANA_CORTA_MS;
+  // Mensaje largo: ya dijo lo que tenía que decir.
+  if (t.length >= 80) return VENTANA_CORTA_MS;
+  return VENTANA_MS;
+}
+
+module.exports = {
+  esperarRafaga,
+  ventanaPara,
+  VENTANA_MS,
+  VENTANA_CORTA_MS,
+  VENTANA_PRUEBA_MS,
+};

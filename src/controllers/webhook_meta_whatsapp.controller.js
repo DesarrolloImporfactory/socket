@@ -2482,6 +2482,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 accessToken,
                 estado_contacto,
                 bloque_producto_referral,
+                // "Probar como cliente" inyecta con wamid.PANEL…: la IA usa
+                // una ventana de ráfaga corta para que la prueba no se
+                // sienta lenta. Un mensaje real de Meta nunca trae ese id.
+                es_prueba: /^wamid\.PANEL/.test(String(wamid_entrante || '')),
               });
             }
 

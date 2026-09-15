@@ -1357,6 +1357,11 @@ const LUGARES_EC_FRASES = [
 /* Palabras que delatan que la respuesta corta NO es una ciudad sino una
    pregunta/tema ("tiene registro sanitario", "el domingo le confirmo"). */
 const NO_ES_CIUDAD = new Set([
+  // Palabras de pregunta/tema que jamás son una ciudad ("que contiene",
+  // "cual es", "como funciona", "trae garantia").
+  'que', 'cual', 'cuales', 'contiene', 'contienen', 'contenido', 'trae',
+  'traen', 'incluye', 'incluyen', 'viene', 'vienen', 'funciona', 'funcionan',
+  'puedo', 'puede', 'pueden', 'original', 'efectos', 'dosis', 'toma', 'tomar',
   'tiene', 'tienen', 'tengo', 'hay', 'sirve', 'sirven', 'precio', 'precios',
   'cuanto', 'cuanta', 'cuantos', 'cuantas', 'como', 'donde', 'cuando',
   'quiero', 'quisiera', 'deme', 'dame', 'envio', 'envios', 'envian',
@@ -1469,7 +1474,11 @@ function validarPasoFlujo(paso, texto) {
       if (palabras.length > 4) return { valida: false };
       if (palabras.some((w) => NO_ES_CIUDAD.has(w))) return { valida: false };
       const letras = t.replace(/[^a-z]/g, '');
-      if (letras.length >= 3 && !/\d/.test(t)) return { valida: true };
+      /* `debil`: valida solo por forma (corto, sin dígitos), no porque sea un
+         lugar conocido. Si además calza una respuesta rápida, gana la rápida
+         y el paso se retoma: "que contiene" pasaba como ciudad y el copy
+         decía "envíos GRATIS a Que Contiene" (caso 1125, 2026-09-15). */
+      if (letras.length >= 3 && !/\d/.test(t)) return { valida: true, debil: true };
       return { valida: false };
     }
     case 'libre':
@@ -1479,7 +1488,8 @@ function validarPasoFlujo(paso, texto) {
          quemada o la IA la contestan y retoman este mismo paso. */
       return /[?¿]/.test(String(texto || ''))
         ? { valida: false, desvio: true }
-        : { valida: true };
+        : // Débil: cualquier texto vale, así que una rápida que calce manda.
+          { valida: true, debil: true };
     default:
       return { valida: false };
   }
@@ -1948,7 +1958,10 @@ async function intentarPasoFlujo({
   if (Number(r.wizard.usar_respuestas_rapidas) === 1) {
     const faqs = leerJson(r.wizard.respuestas_rapidas_json, []);
     const match = elegirRespuestaRapida(texto, faqs);
-    if (match && v.valida) faqPrevia = match;
+    /* Con validación DÉBIL (ciudad por forma, paso libre) la rápida gana: es
+       una pregunta del cliente, no una respuesta al paso. Solo con un lugar
+       conocido ("hacen envíos a Cuenca") se contesta Y se avanza. */
+    if (match && v.valida && !v.debil) faqPrevia = match;
     else if (match && !v.caso && !v.fuera_rango && !v.pedido_complejo) {
       await decir(
         `🪜 flujo: la duda del cliente la cubre la rápida #${match.indice} → contesta ella y retoma el paso ${indiceActual}`,

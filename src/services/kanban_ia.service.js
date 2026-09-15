@@ -129,7 +129,11 @@ async function variantesProductoFicha(id_configuracion, nombreProducto) {
 }
 
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
-const { esperarRafaga } = require('../utils/agruparRafaga');
+const {
+  esperarRafaga,
+  ventanaPara,
+  VENTANA_MS,
+} = require('../utils/agruparRafaga');
 
 // Un turno de OpenAI a la vez por cliente: los huecos >8s que la ráfaga ya no
 // agrupa corrían en paralelo y bifurcaban la cadena de previous_response_id
@@ -751,7 +755,13 @@ async function procesarMensajeKanban(params) {
 
      Ver el costo en latencia y la medición que fijó la ventana en
      utils/agruparRafaga.js. */
-  const mensajeAgrupado = await esperarRafaga(id_cliente, mensaje);
+  /* Ventana adaptativa: un mensaje que ya viene cerrado espera 3,5 s en vez de
+     8; el panel de pruebas, 1,5 s. Ver utils/agruparRafaga.js. */
+  const ventanaMs = ventanaPara(mensaje, { esPrueba: Boolean(params.es_prueba) });
+  if (ventanaMs !== VENTANA_MS) {
+    await log(`⏱️ Ráfaga: ventana ${ventanaMs} ms para este mensaje`);
+  }
+  const mensajeAgrupado = await esperarRafaga(id_cliente, mensaje, ventanaMs);
   if (mensajeAgrupado === null) {
     await log(
       `⏸️ Ráfaga: el cliente ${id_cliente} siguió escribiendo; este turno se ` +
@@ -3408,6 +3418,7 @@ async function ejecutarConResponsesAPI({
     body.max_output_tokens = Math.max(Number(body.max_output_tokens) || 0, 2000);
   }
 
+  const t0OpenAI = Date.now();
   let res = await axios.post('https://api.openai.com/v1/responses', body, {
     headers,
     timeout: 60000,
@@ -3440,6 +3451,21 @@ async function ejecutarConResponsesAPI({
     });
     ({ rawText, annotations } = leerTexto(res.data));
   }
+
+  /* Medición del turno (2026-09-14): en producción la respuesta de IA tarda
+     17 s de media y más de la mitad es esta llamada. Con este log se ve, por
+     cuenta, cuánto es el modelo, si hizo búsquedas en documentos (cada una
+     es una ida y vuelta) y cuánto razonó. */
+  try {
+    const busquedas = (res.data?.output || []).filter(
+      (i) => i?.type === 'file_search_call',
+    ).length;
+    await log(
+      `⏱️ OpenAI ${body.model}: ${Date.now() - t0OpenAI} ms · file_search=${busquedas} · ` +
+        `input=${res.data?.usage?.input_tokens ?? '?'} (cache ${res.data?.usage?.input_tokens_details?.cached_tokens ?? 0}) · ` +
+        `reasoning=${res.data?.usage?.output_tokens_details?.reasoning_tokens ?? 0}`,
+    );
+  } catch (_) {}
 
   const response_id = res.data.id;
   const total_tokens = res.data.usage?.total_tokens || 0;

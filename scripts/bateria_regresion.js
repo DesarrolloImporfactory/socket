@@ -1546,6 +1546,69 @@ async function suiteA() {
     caso('sin previo ni retraso configurados: comportamiento de siempre (retraso 0, previo vacío)', sinPrevio && sinPrevio.retraso === 0 && sinPrevio.copy_previo === '');
     caso('con el embudo apagado no hay mensaje final', mensajeVentaRealizada({ usar_flujo_pasos: 0, flujo_pasos_json: JSON.stringify([entrada]) }) === null);
   }
+
+  // 15. Ventana de ráfaga adaptativa (2026-09-14): 8 s fijos por turno eran casi
+  //     la mitad de la latencia media (17,4 s). Un mensaje cerrado espera 3,5 s;
+  //     un pedazo de frase sigue esperando 8 s; el panel de pruebas, 1,5 s.
+  {
+    const { ventanaPara, VENTANA_MS, VENTANA_CORTA_MS, VENTANA_PRUEBA_MS } = require('../src/utils/agruparRafaga');
+    for (const t of ['2', 'Quito', 'a domicilio.', 'sí', 'Ok', 'dale', '¿Tiene garantía?', 'quiero dos por favor!', 'domicilio', 'a domicilio', 'ya, dame 2', 'el de 2']) {
+      caso(`ráfaga corta para "${t}"`, ventanaPara(t) === VENTANA_CORTA_MS);
+    }
+    for (const t of ['En la entrada de ocho', 'Hay un Servientrega', 'mi dirección es la av', '']) {
+      caso(`ráfaga completa (8 s) para "${t || '(sin texto: foto/audio)'}"`, ventanaPara(t) === VENTANA_MS);
+    }
+    caso('un mensaje largo ya dijo lo suyo → ventana corta', ventanaPara('Michael Prueba, 0962803007, Av. Amazonas N34-12 y Naciones Unidas, frente al CCI, casa blanca') === VENTANA_CORTA_MS);
+    caso('panel "Probar como cliente" → 1,5 s aunque sea un pedazo de frase', ventanaPara('En la entrada de ocho', { esPrueba: true }) === VENTANA_PRUEBA_MS);
+    caso('las ventanas guardan el orden prueba < corta < completa', VENTANA_PRUEBA_MS < VENTANA_CORTA_MS && VENTANA_CORTA_MS < VENTANA_MS);
+  }
+
+  // 16. Caso 1125 (Super Cacao, 2026-09-15): en el paso de ciudad el cliente
+  //     escribió "que contiene"; validó como ciudad por forma, la rápida que
+  //     calzaba salió pegada al copy y el copy dijo "envíos GRATIS a Que
+  //     Contiene". Regla: validación DÉBIL + rápida que calza = desvío (la
+  //     rápida contesta y el paso se retoma); solo un lugar conocido avanza.
+  {
+    const { validarPasoFlujo } = require('../src/services/producto_wizard_runtime.service');
+    const pasoCiudad = { espera: 'ciudad', copy: 'Enviamos GRATIS a {{respuesta}}', pregunta: '¿DE QUÉ CIUDAD NOS ESCRIBE?' };
+    for (const t of ['que contiene', 'cual es la dosis', 'como funciona', 'trae garantia', 'es original']) {
+      caso(`"${t}" ya NO valida como ciudad`, validarPasoFlujo(pasoCiudad, t).valida === false);
+    }
+    const q = validarPasoFlujo(pasoCiudad, 'Quito');
+    caso('"Quito" valida como lugar conocido (no débil)', q.valida === true && q.lugar === 'quito' && !q.debil);
+    const g = validarPasoFlujo(pasoCiudad, 'hacen envios a guayaquil');
+    caso('"hacen envios a guayaquil" valida con lugar (rápida + avance, como antes)', g.valida === true && g.lugar === 'guayaquil' && !g.debil);
+    const d = validarPasoFlujo(pasoCiudad, 'shushufindi');
+    caso('un pueblo fuera de la lista valida pero marcado DÉBIL', d.valida === true && d.debil === true);
+    const libre = validarPasoFlujo({ espera: 'libre', copy: 'ok' }, 'mi hijo hace deporte');
+    caso('un paso libre valida siempre pero DÉBIL', libre.valida === true && libre.debil === true);
+
+    // Simulador con la configuración real de la 1125: "que contiene" en el paso
+    // de ciudad tiene que salir como RÁPIDA que retoma la pregunta, no como paso.
+    try {
+      const { simularTurno } = require('../src/services/producto_wizard.service');
+      const [w] = await require('../src/database/config').db.query(
+        `SELECT id_producto, respuestas_rapidas_json FROM productos_wizard WHERE id_configuracion = 1125 ORDER BY updated_at DESC LIMIT 1`,
+        { type: require('../src/database/config').db.QueryTypes.SELECT },
+      );
+      const faqs = JSON.parse(w.respuestas_rapidas_json || '[]');
+      const r = await simularTurno({
+        id_configuracion: 1125,
+        id_producto: w.id_producto,
+        mensaje: 'que contiene',
+        wizardInput: { usar_flujo_pasos: 1, usar_respuestas_rapidas: 1, respuestas_rapidas: faqs, flujo_pasos: [pasoCiudad, { espera: 'opcion', pregunta: '¿QUÉ PROMOCIÓN?', opciones: [{ claves: ['1'], copy: 'ok 1' }] }] },
+        flujo_paso: 0,
+        historial: [],
+      });
+      caso(
+        'simulador 1125: "que contiene" sale como rápida y retoma la pregunta de ciudad',
+        r.tipo === 'rapida' && /CIUDAD/i.test(r.respuesta) && r.flujo_paso === 0 && !/Que Contiene/.test(r.respuesta),
+        `tipo=${r.tipo} paso=${r.flujo_paso} → ${String(r.respuesta).slice(0, 80)}`,
+      );
+    } catch (e) {
+      caso('simulador 1125: "que contiene"', false, e.message);
+    }
+  }
 }
 
 /* Suite B: conversaciones completas contra los asistentes reales.

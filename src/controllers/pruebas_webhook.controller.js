@@ -197,6 +197,40 @@ async function inyectarEnWebhook(payload) {
   return res.statusCode;
 }
 
+/* ¿Hay alguien que vaya a contestar? El interruptor general de /asistentes
+   (openai_assistants.activo) apaga TODO —mensaje fijo, rápidas e IA— y la
+   columna puede no tener IA. Sin este aviso el panel se quedaba con "El
+   asistente está respondiendo…" para siempre (cfg 1026, 2026-09-14: el
+   cliente probó 25 minutos con el bot apagado). */
+async function estadoBot(id_configuracion, estado_contacto) {
+  const [sw] = await db.query(
+    `SELECT activo FROM openai_assistants
+      WHERE id_configuracion = ? AND tipo = 'ventas' AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const activo = Boolean(sw) && Number(sw.activo) === 1;
+  let columna = null;
+  if (estado_contacto) {
+    const [col] = await db.query(
+      `SELECT nombre, activa_ia FROM kanban_columnas
+        WHERE id_configuracion = ? AND LOWER(estado_db) = LOWER(?) AND activo = 1
+        LIMIT 1`,
+      { replacements: [id_configuracion, estado_contacto], type: db.QueryTypes.SELECT },
+    );
+    columna = col || null;
+  }
+  let aviso = null;
+  if (!activo) {
+    aviso =
+      'El bot está APAGADO en Asistentes: el mensaje se guardó en el chat, pero ni el mensaje fijo, ni las respuestas rápidas ni la IA van a contestar. Enciéndelo en /asistentes y vuelve a escribir.';
+  } else if (columna && Number(columna.activa_ia) !== 1) {
+    aviso = `La etapa "${columna.nombre}" no tiene IA: en vivo la atiende una persona, el bot no contesta.`;
+  }
+  return { activo, aviso };
+}
+exports.estadoBot = estadoBot;
+
 /* POST /enviar  { id_configuracion, telefono, mensaje, referral_source_id?, headline? } */
 exports.enviar = catchAsync(async (req, res, next) => {
   const id_configuracion = Number(req.body?.id_configuracion);
@@ -262,6 +296,11 @@ exports.enviar = catchAsync(async (req, res, next) => {
   // Un error viejo de otra prueba no debe confundir a esta.
   limpiarErrorEnvio(telefono);
   const { payload, wamid } = armarPayload({ cfg, telefono, nombre, mensaje, referral });
+  // Se avisa pero se inyecta igual: el panel reproduce lo que pasaría en vivo.
+  const bot = await estadoBot(
+    id_configuracion,
+    reiniciado ? 'contacto_inicial' : contacto?.estado_contacto || 'contacto_inicial',
+  );
   const status = await inyectarEnWebhook(payload);
 
   res.status(200).json({
@@ -273,6 +312,8 @@ exports.enviar = catchAsync(async (req, res, next) => {
       webhook_status: status,
       referral: Boolean(referral),
       reiniciado,
+      bot_activo: bot.activo,
+      aviso: bot.aviso,
     },
   });
 });
@@ -356,10 +397,13 @@ exports.mensajes = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.SELECT,
     },
   );
+  const bot = await estadoBot(id_configuracion, contacto.estado_contacto);
   res.status(200).json({
     status: 'success',
     data: {
       mensajes,
+      bot_activo: bot.activo,
+      aviso: bot.aviso,
       contacto: {
         id: contacto.id,
         nombre: [contacto.nombre_cliente, contacto.apellido_cliente].filter(Boolean).join(' '),
