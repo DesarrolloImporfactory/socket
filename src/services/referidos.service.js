@@ -1175,7 +1175,193 @@ const resolverSolicitud = async ({
   return { ok: true };
 };
 
+// ═══════════════════════════════════════════════════════════════
+// Rendimiento de las tiendas de los referidos
+// ═══════════════════════════════════════════════════════════════
+
+/** 'YYYY-MM-DD' en hora de Ecuador (-05:00), que es la zona de la BD. */
+const ymdEc = (d) => new Date(d.getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+
+const DIAS_RENDIMIENTO = new Set([7, 30, 90]);
+
+/** Ejecuta `fn` sobre `items` con a lo sumo `n` en paralelo. */
+const enLotes = async (items, n, fn) => {
+  const out = new Array(items.length);
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  return out;
+};
+
+const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+
+/**
+ * Cómo les va a las tiendas de los referidos en el periodo: las mismas seis
+ * cifras del hero de /conexion-dashboard (Facturado, Utilidad, Conversaciones,
+ * Pedidos, Confirmación, Tasa de entrega), calculadas por la MISMA función que
+ * pinta ese dashboard, `getConnectionSummaryCached`. No se replica ninguna
+ * fórmula: un referido que abra su dashboard y el referidor que mire esta
+ * pantalla ven exactamente el mismo número para el mismo rango.
+ *
+ * POR QUÉ EXISTE
+ * El referidor cobra un porcentaje de lo que sus referidos pagan, así que le
+ * importa que a ellos les vaya bien: si una tienda no vende, se va, y con
+ * ella la comisión. Verlo le permite ayudar (o presionar) antes de que pase.
+ *
+ * Va en su propia llamada y no dentro de `resumen`: son ~12 consultas por
+ * conexión y un referidor con 15 tiendas no tiene por qué esperar eso para
+ * ver su saldo. El front la pide después, con la pantalla ya pintada.
+ *
+ * Una tienda se cuenta por cada `configuraciones` viva del referido; si
+ * tiene varias, se suman. Las suspendidas no se consultan: no tienen
+ * actividad y solo encarecen la respuesta.
+ */
+const rendimientoReferidos = async (id_usuario, dias = 30) => {
+  const d = DIAS_RENDIMIENTO.has(Number(dias)) ? Number(dias) : 30;
+  const hoy = new Date();
+  const until = ymdEc(hoy);
+  /* Exactamente `d` días contando hoy (hoy − (d−1)), igual que
+     `rangoUltimosDias` en la tarjeta de /conexiones del referido. Es contra
+     esa tarjeta contra la que el referidor va a comparar: si aquí "7 días"
+     fueran 8, el % de confirmación no cuadraría por un día de diferencia. */
+  const from = ymdEc(new Date(hoy.getTime() - (d - 1) * 24 * 3600 * 1000));
+
+  const tiendas = await db.query(
+    `SELECT u.id_usuario, u.nombre, u.estado, u.email_propietario,
+            c.id AS id_configuracion, c.nombre_configuracion
+       FROM usuarios_chat_center u
+       LEFT JOIN configuraciones c
+              ON c.id_usuario = u.id_usuario AND c.suspendido = 0
+      WHERE u.referido_por = ?
+      ORDER BY u.id_usuario, c.id`,
+    { replacements: [id_usuario], ...SELECT },
+  );
+
+  // Se requiere aquí y no arriba: dropi_integrations.controller carga medio
+  // sistema y referidos.service lo cargan el webhook de Stripe y el login.
+  const {
+    _internal: { getConnectionSummaryCached },
+  } = require('../controllers/dropi_integrations.controller');
+
+  const conTienda = tiendas.filter((t) => t.id_configuracion);
+  const resumenes = await enLotes(conTienda, 3, async (t) => {
+    try {
+      const { data } = await getConnectionSummaryCached({
+        id_configuracion: t.id_configuracion,
+        from,
+        until,
+      });
+      return { id_configuracion: t.id_configuracion, data };
+    } catch (e) {
+      console.log(
+        `[referidos] rendimiento cfg ${t.id_configuracion} falló:`,
+        e?.message,
+      );
+      return { id_configuracion: t.id_configuracion, data: null, error: true };
+    }
+  });
+  const porCfg = new Map(resumenes.map((r) => [r.id_configuracion, r]));
+
+  const vacio = () => ({
+    facturado: 0,
+    ganancia: 0,
+    conversaciones: 0,
+    mensajes: 0,
+    pedidos: 0,
+    canceladas: 0,
+    entregadas: 0,
+    pedidos_chat: 0,
+  });
+
+  /* Mismas lecturas que las cards "Todos" del dashboard:
+       pedidos      = totalPedidos − canceladas (vivos)
+       pedidos_chat = pedidos netos del canal WhatsApp (numerador del %)
+       confirmación = pedidos_chat ÷ conversaciones, tope 100
+       tasa entrega = entregadas ÷ pedidos vivos */
+  const sumar = (acc, s) => {
+    if (!s) return acc;
+    const pedidosVivos = Math.max(
+      0,
+      Number(s.totalPedidos || 0) - Number(s.canceladas || 0),
+    );
+    acc.facturado += Number(s.totalFacturado || 0);
+    acc.ganancia += Number(s.totalGanancia || 0);
+    acc.conversaciones += Number(s.totalConversaciones || 0);
+    acc.mensajes += Number(s.totalMensajes || 0);
+    acc.pedidos += pedidosVivos;
+    acc.canceladas += Number(s.canceladas || 0);
+    acc.entregadas += Number(s.entregadas || 0);
+    acc.pedidos_chat += Number(s.canales?.wa?.pedidosNeto || 0);
+    return acc;
+  };
+
+  const cerrar = (m) => ({
+    ...m,
+    facturado: r2(m.facturado),
+    ganancia: r2(m.ganancia),
+    margen_pct: m.facturado > 0 ? r2((m.ganancia / m.facturado) * 100) : null,
+    pct_confirmacion: m.conversaciones
+      ? Math.min(100, r2((m.pedidos_chat / m.conversaciones) * 100))
+      : null,
+    // Más pedidos por chat que conversaciones: cargó órdenes a mano y el %
+    // toca el techo; el front lo avisa en vez de mostrar un 100% falso.
+    pct_confirmacion_tope:
+      m.conversaciones > 0 && m.pedidos_chat > m.conversaciones,
+    tasa_entrega: m.pedidos > 0 ? r2((m.entregadas / m.pedidos) * 100) : null,
+  });
+
+  const porReferido = new Map();
+  for (const t of tiendas) {
+    let r = porReferido.get(t.id_usuario);
+    if (!r) {
+      r = {
+        id_usuario: t.id_usuario,
+        nombre: t.nombre,
+        /* Completo, a diferencia de `resumen` que lo enmascara: aquí el
+           referidor lo usa para entrar en contacto con la tienda a la que
+           quiere ayudar, y un correo con asteriscos no sirve para eso. */
+        email: t.email_propietario || null,
+        estado: t.estado,
+        tiendas: [],
+        sin_datos: false,
+        metricas: vacio(),
+      };
+      porReferido.set(t.id_usuario, r);
+    }
+    if (!t.id_configuracion) continue;
+    const res = porCfg.get(t.id_configuracion);
+    r.tiendas.push({
+      id_configuracion: t.id_configuracion,
+      nombre: t.nombre_configuracion || `Conexión ${t.id_configuracion}`,
+      error: Boolean(res?.error),
+    });
+    if (res?.error) r.sin_datos = true;
+    sumar(r.metricas, res?.data);
+  }
+
+  const total = vacio();
+  const referidos = [...porReferido.values()].map((r) => {
+    for (const k of Object.keys(total)) total[k] += r.metricas[k];
+    return { ...r, metricas: cerrar(r.metricas) };
+  });
+
+  // Por lo que facturan: la lista es para ver quién va bien y quién no.
+  referidos.sort((a, b) => b.metricas.facturado - a.metricas.facturado);
+
+  return {
+    periodo: { dias: d, from, until },
+    total: cerrar(total),
+    referidos,
+  };
+};
+
 module.exports = {
+  rendimientoReferidos,
   obtenerOCrearCodigo,
   resolverReferidor,
   resolverReferidorPorComunidad,

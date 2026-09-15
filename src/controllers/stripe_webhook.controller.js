@@ -953,7 +953,14 @@ exports.stripeWebhook = async (req, res) => {
         // regla prometida se mantiene—; lo único que deja de restar es el
         // crédito, que es dinero que la empresa ya le debía al cliente.
         // =========
-        const facturaLiquidada = invoiceTotal > 0 && invoice.paid === true;
+        // `invoice.paid` desapareció en la API 2025-03-31.basil (la versión con
+        // la que está registrado el endpoint del webhook): llegaba undefined,
+        // esta condición era siempre falsa y desde el 05-08-2026 no se devengó
+        // NI UN ciclo. `status === 'paid'` es el equivalente en basil; se deja
+        // `paid` como respaldo por si algún evento llega con la versión vieja.
+        const facturaLiquidada =
+          invoiceTotal > 0 &&
+          (invoice.status === 'paid' || invoice.paid === true);
         if (id_usuario && facturaLiquidada) {
           try {
             await referidosService.devengarPorFactura({

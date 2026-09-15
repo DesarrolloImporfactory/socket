@@ -49,6 +49,20 @@ exports.miPrograma = catchAsync(async (req, res) => {
   return res.status(200).json({ status: 'success', data });
 });
 
+/**
+ * GET /api/v1/referidos/rendimiento?dias=30
+ * Cómo les va a las tiendas de los referidos (mismas cifras que el dashboard
+ * de conexiones). Va aparte de mi-programa porque es caro: el front lo pide
+ * con la pantalla ya pintada.
+ */
+exports.rendimiento = catchAsync(async (req, res) => {
+  const data = await referidosService.rendimientoReferidos(
+    cuentaDe(req),
+    Number(req.query?.dias) || 30,
+  );
+  return res.status(200).json({ status: 'success', data });
+});
+
 /** POST /api/v1/referidos/aplicar-credito */
 exports.aplicarCredito = catchAsync(async (req, res) => {
   const r = await referidosService.aplicarCredito(cuentaDe(req));
