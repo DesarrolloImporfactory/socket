@@ -1371,7 +1371,11 @@ async function simularTurno({
       : null;
     // Si la frase no valida el paso, v.valida ya es false y el turno cae solo
     // a la cadena rápida / IA, que retoma con preguntaFlujo.
-    const faqPrevia = faqFlujo && v.valida ? faqFlujo : null;
+    // Igual que en vivo: con validación débil (ciudad por forma, paso libre)
+    // la rápida gana y el paso se retoma; el copy no se interpola con la
+    // pregunta del cliente ("envíos GRATIS a Que Contiene").
+    const faqPrevia = faqFlujo && v.valida && !v.debil ? faqFlujo : null;
+    if (faqFlujo && v.valida && v.debil) v = { valida: false, desvio: true };
 
     /* Pedido complejo ("dos combos de 3"): igual que en vivo, el embudo se
        hace a un lado del todo y la IA toma el pedido — sin retome. */

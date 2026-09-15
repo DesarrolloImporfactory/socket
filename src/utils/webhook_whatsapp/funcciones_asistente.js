@@ -298,6 +298,9 @@ async function enviarAsistenteKanban({
   accessToken,
   estado_contacto,
   bloque_producto_referral = null,
+  // true = mensaje inyectado desde "Probar como cliente" (wamid.PANEL…):
+  // la ventana de ráfaga baja para que la prueba no se sienta lenta.
+  es_prueba = false,
 }) {
   try {
     const resultado = await procesarMensajeKanban({
@@ -310,6 +313,7 @@ async function enviarAsistenteKanban({
       accessToken,
       estado_contacto,
       bloque_producto_referral,
+      es_prueba,
     });
     await log(`✅ Kanban IA resultado: ${JSON.stringify(resultado)}`);
     return resultado;
