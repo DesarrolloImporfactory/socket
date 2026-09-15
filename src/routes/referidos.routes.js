@@ -23,6 +23,7 @@ router.use(protect);
 // entrar a ver —y a cobrar— lo que ya ganó. Bloquearle el saldo por no estar al
 // día sería quedarse con dinero suyo.
 router.get('/mi-programa', referidosController.miPrograma);
+router.get('/rendimiento', referidosController.rendimiento);
 router.post('/aplicar-credito', referidosController.aplicarCredito);
 router.post(
   '/solicitar-transferencia',
