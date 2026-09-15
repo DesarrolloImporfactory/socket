@@ -116,12 +116,9 @@ function normalizarTexto(s) {
     .toUpperCase();
 }
 
-function parsearPrecio(s) {
-  const m = String(s || '')
-    .replace(',', '.')
-    .match(/(\d+(?:\.\d{1,2})?)/);
-  return m ? Number(m[1]) : 0;
-}
+/* Lector de precio compartido (utils/parsearPrecio): entiende separadores
+   de miles ("1.283,99", "$1,499"), que aquí se leían como 1.28 y 1.49. */
+const { parsearPrecio } = require('../utils/parsearPrecio');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -500,7 +497,8 @@ async function completarDatosConIA({
             role: 'system',
             content:
               `Extrae los datos del pedido confirmado de esta conversación de ventas COD en ${paisNombre}. ` +
-              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, producto, precio_total, cantidad, modalidad_envio, variedad. ' +
+              'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, codigo_postal, producto, precio_total, cantidad, modalidad_envio, variedad. ' +
+              'codigo_postal = el código postal de 5 dígitos que el CLIENTE escribió para su dirección; null si no lo dio (no lo deduzcas). ' +
               'variedad = la opción del producto (color, talla, sabor o modelo) que el CLIENTE escribió en SUS mensajes. Solo cuenta si la escribió el CLIENTE; lo que diga el VENDEDOR no vale. Si el cliente nunca la nombró, null. ' +
               'producto = nombre del producto tal como lo menciona el VENDEDOR. ' +
               'precio_total = número, el total que el cliente acordó pagar. ' +
@@ -544,6 +542,10 @@ async function completarDatosConIA({
       modalidad_envio:
         datosBot.modalidad_envio || ia.modalidad_envio || '',
       variedad: datosBot.variedad || ia.variedad || '',
+      codigo_postal:
+        datosBot.codigo_postal ||
+        (ia.codigo_postal ? String(ia.codigo_postal) : '') ||
+        '',
       _fuente_ia: true,
     };
   } catch (err) {
@@ -761,12 +763,16 @@ async function autoCrearOrdenDropi({
     };
     direccionDeAgencia();
 
+    /* México: el código postal también es clave (Dropi MX no cotiza sin él),
+       así que si el resumen no lo trae se le pide al extractor IA. */
+    const esMexico = String(country_code || '').toUpperCase() === 'MX';
     const faltanClaves = [
       'producto',
       'ciudad',
       'direccion',
       'precio',
       'provincia',
+      ...(esMexico ? ['codigo_postal'] : []),
     ].some((k) => !datosBot?.[k]);
     if (faltanClaves && api_key_openai) {
       datosBot = await completarDatosConIA({
@@ -824,6 +830,25 @@ async function autoCrearOrdenDropi({
       }
       datosBot.telefono = tel.telefono;
       ctx.telefono = tel.telefono;
+      ctx.datos_bot = datosBot;
+    }
+
+    /* México: sin código postal Dropi responde "Debe ingresar un código
+       postal" en la cotización (50 fallos del 11 al 15-sep-2026). Mejor
+       cortar acá con un motivo claro que gastar las llamadas a Dropi. La
+       ficha del pedido y el validador del cierre ya lo piden antes de
+       cerrar, así que llegar aquí sin él debería ser la excepción. Solo
+       aplica a integraciones MX: Ecuador y el resto no cambian. */
+    if (esMexico) {
+      const cp = String(datosBot.codigo_postal || '').replace(/\D/g, '');
+      if (cp.length !== 5) {
+        return fail(
+          'datos',
+          `México: falta el código postal de 5 dígitos (Dropi MX no cotiza sin él). ` +
+            `Valor recibido: "${String(datosBot.codigo_postal || '').slice(0, 20)}"`,
+        );
+      }
+      datosBot.codigo_postal = cp;
       ctx.datos_bot = datosBot;
     }
 
@@ -1702,7 +1727,11 @@ async function autoCrearOrdenDropi({
             productType:
               r.prodDropi?.type ||
               (r.variacionesElegidas.length ? 'VARIABLE' : 'SIMPLE'),
-            destination: destCodDane,
+            /* Sin cod_dane (México), el front de Dropi manda el nombre:
+               "culiacán, sinaloa" (capturado en app.dropi.mx, 2026-09-15). */
+            destination:
+              destCodDane ||
+              `${nombreCiudad(city) || ''}, ${state.name || state.department || ''}`.toLowerCase(),
             country_code,
           }),
         );
@@ -1808,6 +1837,9 @@ async function autoCrearOrdenDropi({
       ...city,
       department:
         city.department || (state ? buildDepartment(state) : undefined),
+      // México: la cotización exige código postal. Va en la ciudad y también
+      // al nivel del payload (abajo) porque Dropi no documenta cuál lee.
+      ...(datosBot.codigo_postal ? { zip_code: datosBot.codigo_postal } : {}),
     };
 
     // ciudad_remitente: si la bodega está en la misma ciudad, se reutiliza
@@ -1857,6 +1889,22 @@ async function autoCrearOrdenDropi({
             })),
             amount: precioVenta,
             ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
+            /* México: campos que manda el propio front de Dropi al cotizar
+               (payload capturado en app.dropi.mx el 2026-09-15). El código
+               postal va en `zip_code` al nivel superior; sin él Dropi MX
+               responde "Debe ingresar un código postal". Los demás son los
+               que algunas paqueterías validan (Afimex exige teléfono). */
+            ...(datosBot.codigo_postal
+              ? {
+                  zip_code: datosBot.codigo_postal,
+                  colonia: null,
+                  dir: datosBot.direccion || null,
+                  destination_name: String(datosBot.nombre || '').trim() || ' ',
+                  destination_phone: String(datosBot.telefono || ''),
+                  insurance: false,
+                  ValorDeclarado: precioVenta,
+                }
+              : {}),
           },
           country_code,
         }),
@@ -2003,7 +2051,7 @@ async function autoCrearOrdenDropi({
         state: state.name || state.department || state.nombre,
         city: city.name || city.city || city.nombre,
         dir: datosBot.direccion,
-        zip_code: null,
+        zip_code: datosBot.codigo_postal || null,
         colonia: '',
         dni: '',
         dni_type: '',
@@ -2011,6 +2059,20 @@ async function autoCrearOrdenDropi({
         shalom_data: null,
         distributionCompany,
         products: productosOrden,
+        /* México: la creación calcada del front de Dropi (payload capturado
+           en app.dropi.mx el 2026-09-15): flete cotizado en shipping_amount,
+           insurance en false, bodega elegida y proveedor del producto. Solo
+           con integración MX; Ecuador manda exactamente lo de siempre. */
+        ...(esMexico
+          ? {
+              shipping_amount: Number(mejor?.objects?.precioEnvio) || 0,
+              insurance: false,
+              ...(warehouseId ? { warehouses_selected_id: warehouseId } : {}),
+              ...(Number(renglones[0]?.prodDropi?.user_id)
+                ? { supplier_id: Number(renglones[0].prodDropi.user_id) }
+                : {}),
+            }
+          : {}),
       },
     });
 

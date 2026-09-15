@@ -126,6 +126,15 @@ router.get('/launcher/geo/buscar', protect, launcherCtrl.buscarGeo);
 router.get('/launcher/media/video', protect, launcherCtrl.videoInfo); // ?id_configuracion=&video_id=
 router.get('/launcher/lanzamientos', protect, launcherCtrl.listarLanzamientos);
 
+// ── Centro de campañas: TODAS las campañas de la cuenta (sistema + Ads
+//    Manager) con métricas del período, y el detalle de anuncios de una.
+router.get('/launcher/campanias', protect, launcherCtrl.listarCampanias); // ?id_configuracion=&since=YYYY-MM-DD&until=YYYY-MM-DD
+router.get(
+  '/launcher/campanias/anuncios',
+  protect,
+  launcherCtrl.anunciosCampania,
+); // ?id_configuracion=&campaign_id=&since=&until=
+
 // ── Reglas automáticas (motor propio de Imporchat) ──
 router.get('/launcher/reglas', protect, launcherCtrl.listarReglas);
 router.post('/launcher/reglas/guardar', protect, launcherCtrl.guardarRegla);

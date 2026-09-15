@@ -253,7 +253,21 @@ function buildOrderFromWebhook(payload, baseOrderData, country_code) {
     order.shop_id = payload.shop_id ?? payload.shop.id ?? order.shop_id;
   }
 
-  if (Array.isArray(payload.orderdetails) && payload.orderdetails.length > 0) {
+  // Los productos de una orden no cambian (editarla crea otra orden y marca
+  // la vieja REEMPLAZADA). El webhook manda orderdetails "flacos": sin
+  // product.sale_price ni suggested_price y con quantity "2.00". Si el cache
+  // ya tiene los del REST (ricos) se conservan: el detalle por producto del
+  // Dropiboard y de metricas-internas calcula costo y venta con
+  // product.sale_price, y pisarlos dejaba esas órdenes en $0 (caso 322).
+  const baseRica =
+    Array.isArray(order.orderdetails) &&
+    order.orderdetails.length > 0 &&
+    order.orderdetails.some((d) => d?.product?.sale_price != null);
+  if (
+    Array.isArray(payload.orderdetails) &&
+    payload.orderdetails.length > 0 &&
+    !baseRica
+  ) {
     order.orderdetails = payload.orderdetails;
   } else if (!Array.isArray(order.orderdetails)) {
     order.orderdetails = [];

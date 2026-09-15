@@ -357,7 +357,7 @@ async function extraerFichaPedido({
             role: 'system',
             content:
               `Lees una conversación de ventas por WhatsApp (pago contra entrega, ${paisNombre}) y extraes los datos del pedido que el CLIENTE ya dio. ` +
-              'Responde SOLO un JSON con las claves: nombre, telefono, ciudad, provincia, direccion, referencia, entrega, agencia, producto, cantidad, variedad, confirmo_pedido. ' +
+              'Responde SOLO un JSON con las claves: nombre, telefono, ciudad, provincia, direccion, referencia, entrega, agencia, producto, cantidad, variedad, codigo_postal, confirmo_pedido. ' +
               'REGLA DE ORO: cada valor tiene que salir de un mensaje del CLIENTE, escrito por él. Lo que diga el ASISTENTE o el VENDEDOR no vale como dato del cliente (el vendedor a veces escribe la dirección de una agencia: eso NO es la dirección del cliente). Si el cliente no lo dijo, null. NO inventes ni completes. ' +
               'nombre = el nombre completo que el cliente dio para el pedido, UNIENDO nombre y apellido aunque los haya escrito en mensajes distintos (escribió "Josué" y después, cuando le pidieron el apellido, "Yumbulema" → "Josué Yumbulema"). Si solo dio el nombre de pila, solo ese; no le inventes apellido. ' +
               'telefono = el número que el cliente escribió como suyo (solo dígitos). ' +
@@ -367,6 +367,7 @@ async function extraerFichaPedido({
               'entrega = "agencia" si el cliente pidió retirar en una agencia/oficina (Servientrega, courier); "domicilio" si pidió que se lo lleven a su casa/dirección; null si no se sabe todavía. ' +
               'agencia = el nombre/ciudad de la agencia que el cliente nombró, si nombró una; null si no. ' +
               'producto = el producto que el cliente quiere, con el nombre que usa el ASISTENTE para ese producto (acá sí vale el asistente porque es el nombre del catálogo). cantidad = número de unidades que el cliente eligió ("uno", "solo uno", "una" = 1; "combo de dos", "el de 2", "dos unidades" = 2); null si no eligió. variedad = color/talla/modelo que el cliente eligió, si el producto lo pide; null si no. ' +
+              'codigo_postal = el código postal (5 dígitos) que el CLIENTE escribió para su dirección; null si no lo dio (no lo deduzcas de la ciudad). ' +
               'confirmo_pedido = true SOLO si el asistente ya le mostró un resumen del pedido y el cliente respondió afirmando que está correcto ("sí", "correcto", "así es", "listo", "dale", "está bien"); false en cualquier otro caso.',
           },
           // El transcript puede venir de afuera (simulador) ya recortado a
@@ -435,7 +436,16 @@ async function extraerFichaPedido({
     producto: v('producto'),
     cantidad: Number.isFinite(cantidadNum) && cantidadNum > 0 ? String(cantidadNum) : '',
     variedad: aparecioEnCliente(v('variedad'), textoCliente) ? v('variedad') : '',
+    /* Código postal (México: Dropi no cotiza sin él). Vale solo si son 5
+       dígitos y el cliente los escribió tal cual. */
+    codigo_postal: (() => {
+      const cp = String(ia.codigo_postal ?? '').replace(/\D/g, '');
+      return cp.length === 5 && textoCliente.replace(/\D/g, ' ').includes(cp)
+        ? cp
+        : '';
+    })(),
     confirmo_pedido: ia.confirmo_pedido === true && huboResumen,
+    _paisNombre: paisNombre,
     _firma: firma,
     /* Veces que el bot ya pidió numeración/referencia después de que el
        cliente diera la dirección: a la segunda, el candado ofrece la agencia
@@ -602,6 +612,14 @@ function faltantesFicha(ficha, opts = {}) {
   // Retiro en agencia sin ciudad: la ciudad es el único dato de destino.
   if (agenciaOk && !f.ciudad && !f.agencia) faltan.push('Ciudad (para la agencia)');
 
+  /* México: Dropi MX no cotiza ni crea la orden sin código postal ("Debe
+     ingresar un código postal", ~10 auto-órdenes/día en sep-2026). Se pide
+     como dato del pedido, junto con la dirección. Solo en cuentas de México:
+     en Ecuador y el resto no existe ese dato y pedirlo sería ruido. */
+  if ((opts.mexico || f._esMexico) && !f.codigo_postal) {
+    faltan.push('Código postal (5 dígitos) de la dirección de entrega');
+  }
+
   /* Producto variable (color/talla/modelo) sin elección: las opciones
      vienen del catálogo local (kanban_ia las carga en ficha._variantes y las
      pasa en opts.variantes). Se pide con las opciones a la vista para que el
@@ -633,6 +651,7 @@ function bloqueFichaPedido(
     trigger = '[generar_guia]:true',
     retiroDirectorio = false,
     variantes = [],
+    mexico = false,
   } = {},
 ) {
   if (!fichaTieneDatos(ficha)) return '';
@@ -676,6 +695,7 @@ function bloqueFichaPedido(
       `✅ Dirección: ${f.direccion}${f.referencia ? ` — referencia: ${f.referencia}` : ''}`,
     );
   else if (f.referencia) lineas.push(`✅ Referencia: ${f.referencia}`);
+  if (f.codigo_postal) lineas.push(`✅ Código postal: ${f.codigo_postal}`);
   /* Candado de la dirección: solo calles = guía que vuelve como no entregada.
      Primera vez se pide lo que falta; a la segunda se ofrece la agencia en vez
      de insistir. */
@@ -699,7 +719,7 @@ function bloqueFichaPedido(
     );
   else if (f.cantidad) lineas.push(`✅ Cantidad: ${f.cantidad}`);
 
-  const faltan = faltantesFicha(f, { retiroDirectorio, variantes });
+  const faltan = faltantesFicha(f, { retiroDirectorio, variantes, mexico });
 
   let txt =
     `📋 FICHA DEL PEDIDO — lo que el cliente YA DIJO en esta conversación. La leyó el sistema de SUS mensajes y manda sobre tu memoria:\n` +
@@ -720,7 +740,7 @@ function bloqueFichaPedido(
       ? `- Tu mensaje pide SOLO lo que está en ❌ (una pregunta corta y natural). Nada de resumen todavía.\n`
       : `- Ya no hay nada que preguntar: si tu flujo muestra el resumen y pide confirmarlo, hazlo UNA sola vez; ` +
         `si el cliente ya confirmó (o tu flujo cierra directo), tu mensaje ES el cierre: el resumen COMPLETO con estos valores tal cual ` +
-        `(todas las líneas de tu formato: Nombre, Teléfono, Provincia, Ciudad, Dirección, Producto, Cantidad, Precio total, Envío) ` +
+        `(todas las líneas de tu formato: Nombre, Teléfono, Provincia, Ciudad, Dirección, ${mexico || f._esMexico ? 'Código postal, ' : ''}Producto, Cantidad, Precio total, Envío) ` +
         `y en la ÚLTIMA línea, sola, ${trigger}.\n`) +
     `- NUNCA digas "gracias por tu compra", "pedido registrado/confirmado" ni "resumen final" sin ${trigger} en ESE MISMO mensaje: sin el tag el sistema no registra nada y la venta se pierde.\n\n`;
   return txt;
@@ -883,6 +903,18 @@ function completarResumenConFicha(texto, ficha) {
       if (iD >= 0) reemplazarValor(iD, val);
       else insertar(`🏡 Direccion: ${val}`);
       completados.push('agencia');
+    }
+  }
+
+  // Código postal (México): si el cliente lo dio y el modelo no lo puso.
+  if (ficha.codigo_postal) {
+    const iCP = idxDe(/^[^\n]{0,6}?(?:C[oó]digo\s+postal|C\.?P\.?)\s*:/i);
+    if (iCP < 0) {
+      insertar(`📮 Codigo postal: ${ficha.codigo_postal}`);
+      completados.push('codigo_postal');
+    } else if (!/\d{5}/.test(valorDe(iCP))) {
+      reemplazarValor(iCP, ficha.codigo_postal);
+      completados.push('codigo_postal');
     }
   }
 

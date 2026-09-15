@@ -471,10 +471,16 @@ class Sockets {
 
           if (!id_configuracion)
             throw new AppError('id_configuracion es requerido', 400);
-          if (!ciudad_destino_cod_dane)
+          /* México: las ciudades de Dropi MX no traen cod_dane (se
+             identifican por id + código postal) y la bodega se resuelve por
+             su city_id. Ecuador/Colombia siguen exigiendo cod_dane. */
+          const destinoPorId = Number(payload?.ciudad_destino_full?.id) > 0;
+          const remitentePorCiudad = Number(payload?.warehouse_city_id) > 0;
+          if (!ciudad_destino_cod_dane && !destinoPorId)
             throw new AppError('ciudad_destino_cod_dane es requerido', 400);
-          if (!ciudad_remitente_cod_dane)
+          if (!ciudad_remitente_cod_dane && !remitentePorCiudad)
             throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
+          const zip_code = strOrNull(payload?.zip_code);
 
           const integration = await getActiveIntegration(id_configuracion);
           if (!integration)
@@ -557,6 +563,7 @@ class Sockets {
 
           // Caso 1: misma ciudad que destino
           if (
+            ciudad_remitente_cod_dane &&
             ciudad_remitente_cod_dane === ciudad_destino_cod_dane &&
             ciudad_destino.id
           ) {
@@ -652,6 +659,21 @@ class Sockets {
             products,
             ...(amount != null && { amount }),
             ...(warehouseObj && { warehouse: warehouseObj }),
+            /* México: lo que manda el propio front de Dropi al cotizar
+               (payload capturado en app.dropi.mx el 2026-09-15). Sin
+               zip_code al nivel superior responde "Debe ingresar un código
+               postal". Solo entra cuando el panel manda código postal. */
+            ...(zip_code
+              ? {
+                  zip_code,
+                  colonia: null,
+                  dir: strOrNull(payload?.dir),
+                  destination_name: strOrNull(payload?.destination_name) || ' ',
+                  destination_phone: strOrNull(payload?.destination_phone) || '',
+                  insurance: false,
+                  ...(amount != null && { ValorDeclarado: amount }),
+                }
+              : {}),
           };
 
           console.log(

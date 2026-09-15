@@ -1149,6 +1149,36 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       `COMBO, no el unitario multiplicado.\n\n`;
     say(`✅ Instrucción de cierre multi-producto inyectada`);
 
+    /* ── México: código postal ──
+       Dropi MX no cotiza el envío sin código postal ("Debe ingresar un
+       código postal"): del 11 al 15-sep-2026 fueron ~10 auto-órdenes por
+       día a manual. La plantilla global MX ya lo pide (v6.2), pero las
+       cuentas que aplicaron una versión anterior siguen con su prompt viejo:
+       esta regla viaja en el contexto para que TODAS lo pidan. Solo cuentas
+       con integración Dropi de México; Ecuador y el resto no cambian. */
+    try {
+      const [integMx] = await db.query(
+        `SELECT country_code FROM dropi_integrations
+          WHERE id_configuracion = ? AND is_active = 1 AND deleted_at IS NULL
+          ORDER BY id DESC LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (String(integMx?.country_code || '').toUpperCase() === 'MX') {
+        bloque +=
+          `📮 CÓDIGO POSTAL (México): la paquetería NO cotiza el envío sin el ` +
+          `código postal de la dirección. Cuando pidas los datos de entrega, ` +
+          `pide TAMBIÉN el código postal (5 dígitos) junto con calle, número y ` +
+          `colonia. En el resumen de cierre escribe la línea ` +
+          `"📮 Codigo postal: <5 dígitos>" justo después de la dirección. Sin ` +
+          `código postal NO cierres el pedido: pídelo. Si el cliente no lo ` +
+          `sabe, pídele que lo revise en un recibo de luz o en Google Maps ` +
+          `con su colonia; nunca inventes un número.\n\n`;
+        say(`✅ Regla de código postal (México) inyectada`);
+      }
+    } catch (e) {
+      say(`⚠️ regla de código postal MX: ${e.message}`);
+    }
+
     /* ── Regla de agencias (retiro Servientrega) ──
        Los prompts ya traen el flujo completo (buscar por ciudad exacta,
        máx. 3 opciones, "por confirmar" si no hay) y el modelo igual recae:
