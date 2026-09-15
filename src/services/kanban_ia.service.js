@@ -488,6 +488,21 @@ function camposFaltantesCierre(respuesta, ficha = null) {
     );
   }
 
+  /* México: código postal obligatorio en el resumen. Dropi MX rechaza la
+     cotización sin él ("Debe ingresar un código postal") y la orden cae a
+     manual siempre. Solo cuentas de México (ficha._esMexico): en Ecuador y
+     el resto ese dato no existe. Si el cliente lo dio, completarResumenConFicha
+     ya lo insertó antes de llegar aquí. */
+  if (ficha?._esMexico) {
+    const cp = campo(
+      /(?:^|\n)[^\n]{0,6}?(?:C[oó]digo\s+postal|C\.?P\.?)\s*:\s*([^\n]+)/i,
+    );
+    const cpDigitos = String(cp || '').replace(/\D/g, '');
+    if (cpDigitos.length !== 5 && !ficha.codigo_postal) {
+      faltan.push('- Código postal (5 dígitos) de la dirección de entrega');
+    }
+  }
+
   /* Producto variable sin variedad elegida. `ficha._variantes` trae las
      opciones reales del catálogo (color/talla/modelo con stock). Vale la
      línea Variedad/Color/Talla del resumen, la "(Variedad: X)" del renglón
@@ -1356,6 +1371,25 @@ async function procesarMensajeKanban(params) {
           }),
           log,
         });
+        /* País de la cuenta: México exige código postal (Dropi MX no cotiza
+           sin él). Manda el país de la integración Dropi, que es donde se
+           crea la orden; si no hay integración, el de la plantilla aplicada. */
+        if (fichaPedido) {
+          try {
+            const [integ] = await db.query(
+              `SELECT country_code FROM dropi_integrations
+                WHERE id_configuracion = ? AND is_active = 1 AND deleted_at IS NULL
+                ORDER BY id DESC LIMIT 1`,
+              { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+            );
+            const paisIso = String(
+              integ?.country_code || cfgPais?.pais_plantilla || '',
+            ).toUpperCase();
+            fichaPedido._esMexico = paisIso === 'MX';
+          } catch (_) {
+            fichaPedido._esMexico = false;
+          }
+        }
         /* Opciones del producto variable (catálogo local): la ficha las
            pide como dato faltante y el candado del cierre las exige. */
         if (fichaPedido?.producto) {
@@ -1387,6 +1421,7 @@ async function procesarMensajeKanban(params) {
           trigger: accCierreVenta.trigger,
           retiroDirectorio: retiroDirectorioFicha,
           variantes: fichaPedido?._variantes || [],
+          mexico: Boolean(fichaPedido?._esMexico),
         });
         /* Si el último mensaje al cliente lo generó la GUARDIA de oficinas
            (reemplazo en código), el modelo no lo tiene en su memoria: se le
@@ -2341,6 +2376,9 @@ async function procesarMensajeKanban(params) {
             // el auto-orden la usa como `dir` cuando no hay domicilio
             // (Dropi exige una dirección aunque sea retiro en agencia).
             agencia: g(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*(.+)/i) || '',
+            // Código postal (México): Dropi MX no cotiza sin él.
+            codigo_postal:
+              g(/(?:^|\n)[^\n]{0,6}?(?:C[oó]digo\s+postal|C\.?P\.?)\s*:\s*(.+)/i) || '',
             // Variedad elegida en productos variables (talla/color). Sin esto
             // el auto-orden no sabe qué variante subir y Dropi rechaza la
             // orden. Se aceptan varios rótulos porque el prompt de cada

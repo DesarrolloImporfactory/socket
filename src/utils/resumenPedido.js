@@ -24,12 +24,9 @@
 
 const { db } = require('../database/config');
 
-function parsearPrecio(s) {
-  const m = String(s || '')
-    .replace(',', '.')
-    .match(/(\d+(?:\.\d{1,2})?)/);
-  return m ? Number(m[1]) : 0;
-}
+/* Lector de precio compartido (utils/parsearPrecio): entiende separadores
+   de miles ("1.283,99", "$1,499"), que aquí se leían como 1.28 y 1.49. */
+const { parsearPrecio } = require('./parsearPrecio');
 
 /**
  * Lee UNA línea "Producto:" del resumen (ya sin el rótulo).

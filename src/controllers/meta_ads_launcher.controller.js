@@ -814,6 +814,210 @@ exports.listarLanzamientos = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
+// 5b) CENTRO DE CAMPAÑAS — todas las campañas de la cuenta
+// ══════════════════════════════════════════════
+// Une lo que Meta devuelve (campañas vivas + insights del rango) con lo
+// lanzado desde aquí (meta_ads_lanzamientos) para marcar cada campaña como
+// "del sistema" (con su plantilla/producto) o "externa" (Ads Manager).
+// El rango {since, until} lo manda el front con el MISMO cálculo que
+// conexion-dashboard?view=ads para que el gasto cuadre entre las dos vistas.
+
+exports.listarCampanias = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const { since, until } = req.query;
+
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: true,
+        data: { conectado: false, campanias: [], resumen: null },
+      });
+    }
+
+    // Lanzamientos OK con su plantilla (imagen, producto) para enriquecer la
+    // fila. Una plantilla puede haber generado varias campañas.
+    const lanzamientos = await db.query(
+      `SELECT l.id, l.id_plantilla, l.plantilla_nombre, l.campaign_id,
+              l.ad_id, l.ads_json, l.estado_inicial, l.created_at,
+              p.imagen_url, p.id_producto, p.eliminado AS plantilla_eliminada,
+              pr.nombre AS producto_nombre
+         FROM meta_ads_lanzamientos l
+         LEFT JOIN meta_ads_plantillas p ON p.id = l.id_plantilla
+         LEFT JOIN productos_chat_center pr ON pr.id = p.id_producto
+        WHERE l.id_configuracion = ? AND l.resultado = 'ok'
+          AND l.campaign_id IS NOT NULL
+        ORDER BY l.id DESC`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const porCampania = new Map();
+    for (const l of lanzamientos) {
+      if (porCampania.has(String(l.campaign_id))) continue;
+      let nAds = l.ad_id ? 1 : 0;
+      try {
+        const arr = l.ads_json ? JSON.parse(l.ads_json) : null;
+        if (Array.isArray(arr) && arr.length) nAds = arr.length;
+      } catch {}
+      porCampania.set(String(l.campaign_id), {
+        lanzamiento_id: l.id,
+        lanzado_at: l.created_at,
+        n_ads: nAds,
+        plantilla: {
+          id: l.id_plantilla,
+          nombre: l.plantilla_nombre,
+          eliminada: !!l.plantilla_eliminada,
+          imagen_url: l.imagen_url || null,
+          id_producto: l.id_producto || null,
+          producto_nombre: l.producto_nombre || null,
+        },
+      });
+    }
+
+    let lectura;
+    try {
+      lectura = await launcher.listarCampaniasCuenta({ conn, since, until });
+    } catch (err) {
+      logger.error(
+        `launcher listarCampanias cfg ${id_configuracion}: ${err.message}`,
+      );
+      return res.json({
+        success: false,
+        message:
+          err.meta_error?.error_user_msg ||
+          err.meta_error?.message ||
+          'Meta no respondió al pedir tus campañas. Inténtalo de nuevo.',
+      });
+    }
+
+    const filas = lectura.campanias.map((c) => {
+      const propio = porCampania.get(c.id) || null;
+      return {
+        ...c,
+        // La imagen de la plantilla es la misma que subió el cliente; la
+        // miniatura de Meta es el respaldo (y la única para las externas).
+        thumbnail_url: propio?.plantilla?.imagen_url || c.thumbnail_url,
+        es_sistema: !!propio,
+        lanzamiento_id: propio?.lanzamiento_id || null,
+        lanzado_at: propio?.lanzado_at || null,
+        n_ads: propio?.n_ads ?? null,
+        plantilla: propio?.plantilla || null,
+      };
+    });
+
+    // Campañas lanzadas desde aquí que Meta ya no lista (archivadas o
+    // eliminadas en el Ads Manager): se consulta su estado real para que
+    // el card de la plantilla y la bitácora lo digan tal cual.
+    const idsVivos = new Set(filas.map((c) => c.id));
+    const faltantes = [...porCampania.entries()].filter(
+      ([id]) => !idsVivos.has(id),
+    );
+    const estados = await launcher.estadoDeCampanias({
+      conn,
+      ids: faltantes.map(([id]) => id),
+    });
+    const desaparecidas = faltantes.map(([id, v]) => ({
+      campaign_id: id,
+      estado_meta: estados.get(id) || null,
+      ...v,
+    }));
+
+    const activas = filas.filter((c) => c.effective_status === 'ACTIVE');
+    // Totales a nivel cuenta (= dashboard); la suma por campaña es respaldo.
+    const spend =
+      lectura.cuenta?.spend ?? filas.reduce((a, c) => a + (c.spend || 0), 0);
+    const msgs =
+      lectura.cuenta?.msgs ?? filas.reduce((a, c) => a + (c.msgs || 0), 0);
+    const resumen = {
+      total: filas.length,
+      activas: activas.length,
+      sistema: filas.filter((c) => c.es_sistema).length,
+      externas: filas.filter((c) => !c.es_sistema).length,
+      archivadas_sistema: desaparecidas.length,
+      spend: +spend.toFixed(2),
+      msgs,
+      cpa_msg: msgs > 0 ? +(spend / msgs).toFixed(2) : null,
+      presupuesto_diario_activo: +activas
+        .reduce((a, c) => a + (c.daily_budget || 0), 0)
+        .toFixed(2),
+    };
+
+    return res.json({
+      success: true,
+      data: {
+        conectado: true,
+        rango: lectura.rango,
+        currency: conn.currency || 'USD',
+        ad_account_id: conn.ad_account_id,
+        ad_account_name: conn.ad_account_name || null,
+        campanias: filas,
+        desaparecidas,
+        resumen,
+      },
+    });
+  } catch (err) {
+    logger.error(`launcher listarCampanias: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.anunciosCampania = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    const campaign_id = String(req.query.campaign_id || '').trim();
+    if (!id_configuracion || !/^\d+$/.test(campaign_id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y campaign_id requeridos.',
+      });
+    }
+    const { since, until } = req.query;
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+    let lectura;
+    try {
+      lectura = await launcher.listarAnunciosCampania({
+        conn,
+        campaign_id,
+        since,
+        until,
+      });
+    } catch (err) {
+      logger.error(
+        `launcher anunciosCampania cfg ${id_configuracion} camp ${campaign_id}: ${err.message}`,
+      );
+      return res.json({
+        success: false,
+        message:
+          err.meta_error?.error_user_msg ||
+          err.meta_error?.message ||
+          'Meta no respondió al pedir los anuncios.',
+      });
+    }
+    return res.json({
+      success: true,
+      data: {
+        rango: lectura.rango,
+        currency: conn.currency || 'USD',
+        anuncios: lectura.anuncios,
+      },
+    });
+  } catch (err) {
+    logger.error(`launcher anunciosCampania: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
 // 6) REGLAS AUTOMÁTICAS (motor propio, ver metaAdsReglas.service.js)
 // ══════════════════════════════════════════════
 

@@ -3307,6 +3307,7 @@ exports.getDailyMetrics = catchAsync(async (req, res, next) => {
     WHERE c.id_configuracion = :idCfg
       AND c.id_usuario = :idUsr
       AND c.order_created_at BETWEEN :from AND :until
+      AND c.status <> 'REEMPLAZADA'
     GROUP BY DATE(c.order_created_at)
     ORDER BY fecha DESC`,
     {
@@ -3634,6 +3635,16 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
 
   // FIX 2026-05-01 (v6): vista DROPSHIPPER correcta
   // Venta = total_order × porción del producto · Costo = qty × sale_price · Flete prorrateado
+  // FIX 2026-09-15 — dos formas de JSON conviven en order_data: la del REST
+  // (orderdetails[].product.sale_price = costo proveedor, quantity numérico)
+  // y la del webhook (orderdetails[].price = precio al cliente, sin costo,
+  // quantity "2.00"). Antes, una orden con forma webhook quedaba con
+  // subtotal NULL y aportaba $0 de venta al detalle (caso 322 del 30/08:
+  // $347.83 en el detalle vs $500.73 en la fila general).
+  //   · Peso del item = qty × COALESCE(sale_price, price): sirve en ambas.
+  //   · Costo: qty × sale_price si existe; si no, el costo de la orden
+  //     (venta − flete − ganancia, igual que la fila general) prorrateado.
+  //   · REEMPLAZADA fuera: es la versión vieja de una orden editada.
   const [rows] = await db.query(
     `WITH order_subtotals AS (
       SELECT
@@ -3641,14 +3652,21 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
         c.classified_status,
         c.total_order,
         COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0) AS shipping_amount,
-        (SELECT SUM(x.qty * x.sp) FROM JSON_TABLE(c.order_data, '$.orderdetails[*]' COLUMNS (
-          qty INT PATH '$.quantity',
-          sp DECIMAL(10,2) PATH '$.product.sale_price'
+        GREATEST(0,
+          c.total_order
+          - COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(c.order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
+          - COALESCE(c.dropshipper_profit, 0)
+        ) AS costo_orden,
+        (SELECT SUM(x.qty * COALESCE(x.sp, x.pr, 0)) FROM JSON_TABLE(c.order_data, '$.orderdetails[*]' COLUMNS (
+          qty DECIMAL(10,2) PATH '$.quantity',
+          sp DECIMAL(10,2) PATH '$.product.sale_price',
+          pr DECIMAL(10,2) PATH '$.price'
         )) AS x) AS subtotal_items
       FROM dropi_orders_cache c
       WHERE c.id_configuracion = :idCfg
         AND c.id_usuario = :idUsr
         AND DATE(c.order_created_at) = :fecha
+        AND c.status <> 'REEMPLAZADA'
     )
     SELECT
       jt.product_id,
@@ -3662,15 +3680,19 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
       SUM(CASE WHEN os.classified_status = 'devolucion' THEN 1 ELSE 0 END) AS devoluciones,
       SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS transito,
       -- COSTO del producto (lo que el dropshipper paga al proveedor IMPORSHOP)
-      SUM(CASE WHEN os.classified_status = 'entregada' THEN (jt.quantity * jt.sale_price) ELSE 0 END) AS costo_entregadas,
+      SUM(CASE
+            WHEN os.classified_status <> 'entregada' THEN 0
+            WHEN jt.sale_price IS NOT NULL THEN jt.quantity * jt.sale_price
+            WHEN os.subtotal_items > 0 THEN os.costo_orden * ((jt.quantity * COALESCE(jt.sale_price, jt.price, 0)) / os.subtotal_items)
+            ELSE 0 END) AS costo_entregadas,
       -- VENTA del producto (porción del total_order según peso del item)
       SUM(CASE WHEN os.classified_status = 'entregada' AND os.subtotal_items > 0
-              THEN os.total_order * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              THEN os.total_order * ((jt.quantity * COALESCE(jt.sale_price, jt.price, 0)) / os.subtotal_items)
               ELSE 0 END) AS venta_entregadas,
       -- FLETE prorrateado (paga el dropshipper)
       SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia')
                 AND os.subtotal_items > 0
-              THEN os.shipping_amount * ((jt.quantity * jt.sale_price) / os.subtotal_items)
+              THEN os.shipping_amount * ((jt.quantity * COALESCE(jt.sale_price, jt.price, 0)) / os.subtotal_items)
               ELSE 0 END) AS flete_movilizadas
     FROM order_subtotals os,
     JSON_TABLE(
@@ -3680,7 +3702,8 @@ exports.getDailyDetailByProduct = catchAsync(async (req, res, next) => {
         product_name VARCHAR(300) PATH '$.product.name',
         sku VARCHAR(100) PATH '$.product.sku',
         sale_price DECIMAL(10,2) PATH '$.product.sale_price',
-        quantity INT PATH '$.quantity'
+        price DECIMAL(10,2) PATH '$.price',
+        quantity DECIMAL(10,2) PATH '$.quantity'
       )
     ) AS jt
     GROUP BY jt.product_id, jt.product_name, jt.sku
@@ -3902,6 +3925,7 @@ exports.getCiudadesDevoluciones = catchAsync(async (req, res, next) => {
     WHERE c.id_configuracion = :idCfg
       AND c.id_usuario = :idUsr
       AND c.order_created_at BETWEEN :from AND :until
+      AND c.status <> 'REEMPLAZADA'
       AND c.city IS NOT NULL
       AND TRIM(c.city) != ''
     GROUP BY UPPER(TRIM(c.city))
@@ -3980,6 +4004,7 @@ exports.getProductosRentabilidad = catchAsync(async (req, res, next) => {
       WHERE c.id_configuracion = :idCfg
         AND c.id_usuario = :idUsr
         AND c.order_created_at BETWEEN :from AND :until
+        AND c.status <> 'REEMPLAZADA'
     )
     SELECT
       jt.product_id,
@@ -4134,6 +4159,7 @@ exports.getCiudadesTransportadoras = catchAsync(async (req, res, next) => {
     WHERE c.id_configuracion = :idCfg
       AND c.id_usuario       = :idUsr
       AND c.order_created_at BETWEEN :from AND :until
+      AND c.status <> 'REEMPLAZADA'
       AND c.city IS NOT NULL AND TRIM(c.city) != ''
     GROUP BY UPPER(TRIM(c.city)), UPPER(TRIM(COALESCE(c.courier, 'SIN COURIER')))
     ORDER BY UPPER(TRIM(c.city)), total_ordenes DESC`,

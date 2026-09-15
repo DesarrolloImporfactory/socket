@@ -594,7 +594,280 @@ async function obtenerTitularToken(conn) {
   return null;
 }
 
+
+/* ══════════════════════════════════════════════
+   CENTRO DE CAMPAÑAS — lectura de la cuenta completa
+   ══════════════════════════════════════════════
+   La vista /anuncios muestra TODAS las campañas de la cuenta publicitaria
+   (las lanzadas desde aquí y las creadas en el Ads Manager) con sus métricas
+   del período. Antes solo se veían plantillas + historial y el cliente no
+   tenía cómo saber qué campañas existían ni aplicarles reglas.
+
+   Rango de fechas: SIEMPRE time_range {since, until} con `until` = hoy, el
+   mismo criterio que conexion-dashboard?view=ads. Los presets de Meta
+   (last_7d, etc.) excluyen el día de hoy y los números no cuadraban entre
+   las dos vistas (35.21 vs 29.36 en la 610). */
+
+const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+function fechaLocalISO(diasAtras = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() - diasAtras);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/* Normaliza {since, until}: si falta o viene mal, últimos 7 días hasta hoy
+   (el default del dashboard). */
+function rangoDeFechas({ since, until } = {}) {
+  const u = FECHA_ISO.test(until || '') ? until : fechaLocalISO(0);
+  let s = FECHA_ISO.test(since || '') ? since : fechaLocalISO(7);
+  if (s > u) s = u;
+  return { since: s, until: u };
+}
+
+/* Recorre paging.next hasta `maxPaginas` páginas. `paging.next` ya trae los
+   query params, así que a partir de la segunda página van sin `params`. */
+async function leerPaginado(ax, url, params, label, maxPaginas = 5) {
+  const filas = [];
+  let siguiente = url;
+  let p = params;
+  for (let i = 0; i < maxPaginas && siguiente; i++) {
+    const resp = await ax.get(siguiente, p ? { params: p } : undefined);
+    const data = assertMeta(resp, label);
+    filas.push(...(data.data || []));
+    siguiente = data.paging?.next || null;
+    p = null;
+  }
+  return filas;
+}
+
+function contarMensajes(actions) {
+  if (!Array.isArray(actions)) return 0;
+  let total = 0;
+  for (const a of actions) {
+    if (a.action_type === 'onsite_conversion.messaging_conversation_started_7d')
+      total += Number(a.value) || 0;
+  }
+  return total;
+}
+
+function contarCompras(actions) {
+  if (!Array.isArray(actions)) return 0;
+  let total = 0;
+  for (const a of actions) {
+    if (a.action_type === 'purchase') total += Number(a.value) || 0;
+  }
+  return total;
+}
+
+function resumirInsight(row) {
+  const spend = Number(row?.spend) || 0;
+  const msgs = contarMensajes(row?.actions);
+  return {
+    spend: +spend.toFixed(2),
+    impressions: Number(row?.impressions) || 0,
+    clicks: Number(row?.clicks) || 0,
+    msgs,
+    cpa_msg: msgs > 0 ? +(spend / msgs).toFixed(2) : null,
+    purchases: contarCompras(row?.actions),
+  };
+}
+
+// Miniatura del creativo a 320px (el default de Meta es 64px y se ve
+// pixelada en los cards).
+const CREATIVO_THUMB =
+  'creative.thumbnail_width(320).thumbnail_height(320){thumbnail_url,image_url,title,body}';
+
+const CAMPOS_CAMPANIA = [
+  'id',
+  'name',
+  'status',
+  'effective_status',
+  'objective',
+  'daily_budget',
+  'lifetime_budget',
+  'created_time',
+  'start_time',
+  'stop_time',
+  'updated_time',
+  // El primer anuncio da la imagen de la campaña (sistema o externa).
+  `ads.limit(1){${CREATIVO_THUMB}}`,
+].join(',');
+
+/* Campañas de la cuenta (sin las eliminadas ni archivadas) + insights del
+   rango a nivel campaña. Dos llamadas paginadas en paralelo; la de insights
+   solo trae las campañas con actividad, el resto queda en cero. */
+async function listarCampaniasCuenta({ conn, since, until }) {
+  const ax = metaAx(conn.access_token);
+  const act = ACT(conn.ad_account_id);
+  const rango = rangoDeFechas({ since, until });
+  // La tercera llamada (nivel cuenta) es la MISMA que usa el dashboard:
+  // sus totales mandan en los KPIs para que ambas vistas digan lo mismo
+  // (la suma por campaña difiere centavos por redondeo de Meta).
+  const [campanias, insights, cuentaResp] = await Promise.all([
+    leerPaginado(
+      ax,
+      `${GRAPH_BASE}/${act}/campaigns`,
+      {
+        fields: CAMPOS_CAMPANIA,
+        // Meta incluye ARCHIVED por defecto; DELETED nunca. Solo lo vivo.
+        effective_status: JSON.stringify([
+          'ACTIVE',
+          'PAUSED',
+          'PENDING_REVIEW',
+          'DISAPPROVED',
+          'PREAPPROVED',
+          'PENDING_BILLING_INFO',
+          'CAMPAIGN_PAUSED',
+          'ADSET_PAUSED',
+          'IN_PROCESS',
+          'WITH_ISSUES',
+        ]),
+        limit: 200,
+      },
+      'campaigns',
+    ),
+    leerPaginado(
+      ax,
+      `${GRAPH_BASE}/${act}/insights`,
+      {
+        level: 'campaign',
+        fields: 'campaign_id,spend,impressions,clicks,actions',
+        time_range: JSON.stringify(rango),
+        limit: 500,
+      },
+      'insights_campaigns',
+    ),
+    ax.get(`${GRAPH_BASE}/${act}/insights`, {
+      params: {
+        fields: 'spend,impressions,clicks,actions',
+        time_range: JSON.stringify(rango),
+      },
+    }),
+  ]);
+
+  const porCampania = new Map();
+  for (const row of insights) porCampania.set(String(row.campaign_id), row);
+
+  const cuentaRow =
+    cuentaResp.status >= 200 && cuentaResp.status < 300
+      ? cuentaResp.data?.data?.[0] || null
+      : null;
+
+  return {
+    rango,
+    cuenta: cuentaRow ? resumirInsight(cuentaRow) : null,
+    campanias: campanias.map((c) => {
+      const creativo = c.ads?.data?.[0]?.creative || null;
+      return {
+        id: String(c.id),
+        name: c.name,
+        status: c.status,
+        effective_status: c.effective_status,
+        objective: c.objective || null,
+        daily_budget: c.daily_budget ? Number(c.daily_budget) / 100 : null,
+        lifetime_budget: c.lifetime_budget
+          ? Number(c.lifetime_budget) / 100
+          : null,
+        created_time: c.created_time || null,
+        start_time: c.start_time || null,
+        stop_time: c.stop_time || null,
+        thumbnail_url: creativo?.thumbnail_url || creativo?.image_url || null,
+        ...resumirInsight(porCampania.get(String(c.id))),
+      };
+    }),
+  };
+}
+
+/* Anuncios de una campaña con su creativo (miniatura) e insights del
+   rango. Sirve para el detalle de la campaña: ver qué variación gasta y
+   cuál trae mensajes, y pausar/activar cada una. */
+async function listarAnunciosCampania({ conn, campaign_id, since, until }) {
+  const ax = metaAx(conn.access_token);
+  const rango = rangoDeFechas({ since, until });
+  const filas = await leerPaginado(
+    ax,
+    `${GRAPH_BASE}/${campaign_id}/ads`,
+    {
+      fields: [
+        'id',
+        'name',
+        'status',
+        'effective_status',
+        'adset_id',
+        'created_time',
+        CREATIVO_THUMB,
+        `insights.time_range(${JSON.stringify(rango)}){spend,impressions,clicks,actions}`,
+      ].join(','),
+      limit: 100,
+    },
+    'campaign_ads',
+    3,
+  );
+  return {
+    rango,
+    anuncios: filas
+      .filter((a) => !['DELETED', 'ARCHIVED'].includes(a.effective_status))
+      .map((a) => ({
+        id: String(a.id),
+        name: a.name,
+        status: a.status,
+        effective_status: a.effective_status,
+        adset_id: a.adset_id ? String(a.adset_id) : null,
+        created_time: a.created_time || null,
+        thumbnail_url:
+          a.creative?.thumbnail_url || a.creative?.image_url || null,
+        titulo: a.creative?.title || null,
+        texto: a.creative?.body || null,
+        ...resumirInsight(a.insights?.data?.[0]),
+      })),
+  };
+}
+
+/* Estado actual de campañas puntuales (las lanzadas desde aquí que ya no
+   salen en el listado: archivadas o eliminadas en el Ads Manager). Una
+   sola llamada con ?ids=. Devuelve Map id -> effective_status; si Meta
+   falla se devuelve vacío y el front las muestra como "ya no está". */
+async function estadoDeCampanias({ conn, ids }) {
+  const out = new Map();
+  const lista = [...new Set((ids || []).map(String))].slice(0, 50);
+  if (!lista.length) return out;
+  try {
+    const ax = metaAx(conn.access_token);
+    const resp = await ax.get(`${GRAPH_BASE}/`, {
+      params: { ids: lista.join(','), fields: 'id,effective_status' },
+    });
+    if (resp.status >= 200 && resp.status < 300) {
+      for (const id of lista) {
+        const v = resp.data?.[id];
+        out.set(id, v?.effective_status || (v?.error ? 'DELETED' : null));
+      }
+      return out;
+    }
+    // Un solo id eliminado hace fallar el lote completo: se consultan de a
+    // uno (pocos: solo lo lanzado desde aquí que ya no está vivo).
+    for (const id of lista.slice(0, 10)) {
+      const r = await ax.get(`${GRAPH_BASE}/${id}`, {
+        params: { fields: 'id,effective_status' },
+      });
+      out.set(
+        id,
+        r.status >= 200 && r.status < 300
+          ? r.data?.effective_status || null
+          : 'DELETED',
+      );
+    }
+  } catch (err) {
+    logger.error(`estadoDeCampanias: ${err.message}`);
+  }
+  return out;
+}
+
 module.exports = {
+  listarCampaniasCuenta,
+  listarAnunciosCampania,
+  estadoDeCampanias,
   subirImagen,
   subirVideo,
   obtenerMiniaturaVideo,

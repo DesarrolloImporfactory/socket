@@ -255,6 +255,15 @@ function buildDropiCreateOrderPayload(body = {}, region = 'EC') {
 
     distributionCompany: { id: dcId, name: dcName },
 
+    /* Opcionales que manda el propio front de Dropi al crear (capturado en
+       app.dropi.mx el 2026-09-15): la bodega elegida y el proveedor del
+       producto. Solo se reenvían si el caller los manda (el auto-orden en
+       México); Ecuador sigue creando igual que siempre sin ellos. */
+    ...(toInt(body.warehouses_selected_id)
+      ? { warehouses_selected_id: toInt(body.warehouses_selected_id) }
+      : {}),
+    ...(toInt(body.supplier_id) ? { supplier_id: toInt(body.supplier_id) } : {}),
+
     products,
   };
 }
