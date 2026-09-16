@@ -190,10 +190,11 @@ async function esMediaPermitida({ id_configuracion, id_cliente, url, log }) {
         WHERE id_configuracion = ? AND eliminado = 0
           AND (imagen_url LIKE ? ESCAPE '\\\\'
             OR video_url LIKE ? ESCAPE '\\\\'
-            OR imagen_upsell_url LIKE ? ESCAPE '\\\\')
+            OR imagen_upsell_url LIKE ? ESCAPE '\\\\'
+            OR documento_url LIKE ? ESCAPE '\\\\')
         LIMIT 1`,
       {
-        replacements: [id_configuracion, patron, patron, patron],
+        replacements: [id_configuracion, patron, patron, patron, patron],
         type: db.QueryTypes.SELECT,
       },
     );

@@ -105,6 +105,20 @@ const ProductosChatCenter = db.define(
       allowNull: true,
     },
 
+    /* Brochure / ficha en PDF. Un inmueble se vende con su brochure y el bot
+       solo sabía adjuntar foto y video; con esto lo manda la primera vez que
+       habla del ítem, en la columna que sea. `documento_nombre` es lo que ve el
+       cliente en WhatsApp: sin él Meta muestra el uuid del archivo.
+       Requiere brochure_inmueble_migration.sql. */
+    documento_url: {
+      type: DataTypes.STRING(512),
+      allowNull: true,
+    },
+    documento_nombre: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+
     // ===== nuevos =====
     landing_url: {
       type: DataTypes.STRING(512),

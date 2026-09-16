@@ -8,8 +8,10 @@ const UPLOAD_BASE = path.join(__dirname, '..', 'uploads', 'productos');
 const DIR_IMG = path.join(UPLOAD_BASE, 'imagen');
 const DIR_VIDEO = path.join(UPLOAD_BASE, 'video');
 const DIR_UPSELL = path.join(UPLOAD_BASE, 'imagen_upsell');
+// Brochure / ficha en PDF del ítem (inmuebles). Ver productos_chat_center.model.
+const DIR_DOC = path.join(UPLOAD_BASE, 'documento');
 
-[UPLOAD_BASE, DIR_IMG, DIR_VIDEO, DIR_UPSELL].forEach((dir) => {
+[UPLOAD_BASE, DIR_IMG, DIR_VIDEO, DIR_UPSELL, DIR_DOC].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -18,6 +20,7 @@ const storage = multer.diskStorage({
     if (file.fieldname === 'imagen') return cb(null, DIR_IMG);
     if (file.fieldname === 'video') return cb(null, DIR_VIDEO);
     if (file.fieldname === 'imagen_upsell') return cb(null, DIR_UPSELL);
+    if (file.fieldname === 'documento') return cb(null, DIR_DOC);
     return cb(null, UPLOAD_BASE);
   },
   filename: (req, file, cb) => {
@@ -44,6 +47,9 @@ const allowed = {
     'image/jpg',
     'image/gif',
   ],
+  /* Solo PDF: es lo que WhatsApp abre en cualquier teléfono sin instalar nada
+     y lo que un brochure es en la práctica. */
+  documento: ['application/pdf'],
 };
 
 const fileFilter = (req, file, cb) => {
@@ -60,6 +66,7 @@ const uploadProductoMedia = multer({
   { name: 'imagen', maxCount: 1 },
   { name: 'video', maxCount: 1 },
   { name: 'imagen_upsell', maxCount: 1 },
+  { name: 'documento', maxCount: 1 },
 ]);
 
 // Wrapper que convierte el error de multer en respuesta JSON legible
@@ -69,7 +76,10 @@ const uploadProductoMediaHandler = (req, res, next) => {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({
           status: 'fail',
-          message: 'El video supera el límite de 16 MB permitido por WhatsApp.',
+          message:
+            err.field === 'documento'
+              ? 'El PDF supera el límite de 16 MB.'
+              : 'El video supera el límite de 16 MB permitido por WhatsApp.',
         });
       }
       return res.status(400).json({ status: 'fail', message: err.message });

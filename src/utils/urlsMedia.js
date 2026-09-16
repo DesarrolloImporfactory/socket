@@ -17,6 +17,8 @@
 // url cuando tiene espacios en el medio.
 const EXT_IMAGEN = 'jpe?g|png|webp|gif|bmp';
 const EXT_VIDEO = 'mp4|mov|webm|avi|mkv|3gp';
+// Brochure / ficha del ítem. Solo PDF (es lo único que el catálogo acepta).
+const EXT_DOCUMENTO = 'pdf';
 
 /* Se prueba primero la forma "hasta una extensión conocida", que tolera
    espacios, y sólo si no calza se cae a "hasta el primer espacio", que es el
@@ -31,6 +33,7 @@ const cuerpo = (exts) =>
 
 const TAGS_IMAGEN = 'producto_imagen_url|servicio_imagen_url|upsell_imagen_url';
 const TAGS_VIDEO = 'producto_video_url|servicio_video_url';
+const TAGS_DOCUMENTO = 'producto_documento_url|servicio_documento_url';
 
 function reImagen(flags = 'gi') {
   return new RegExp(
@@ -42,6 +45,13 @@ function reImagen(flags = 'gi') {
 function reVideo(flags = 'gi') {
   return new RegExp(
     `\\[(?:${TAGS_VIDEO})\\]:\\s*(${cuerpo(EXT_VIDEO)})`,
+    flags,
+  );
+}
+
+function reDocumento(flags = 'gi') {
+  return new RegExp(
+    `\\[(?:${TAGS_DOCUMENTO})\\]:\\s*(${cuerpo(EXT_DOCUMENTO)})`,
     flags,
   );
 }
@@ -78,8 +88,15 @@ function extraerUrlsMedia(texto) {
 
   const imagenes = sacar(reImagen());
   const videos = sacar(reVideo());
+  /* Brochure en PDF. Los callers que no lo manejan (ramas viejas del webhook)
+     igual se benefician: la etiqueta se quita del texto y al cliente no le
+     llega "[producto_documento_url]: https://…" pelado. */
+  const documentos = sacar(reDocumento());
 
-  let textoLimpio = original.replace(reImagen(), '').replace(reVideo(), '');
+  let textoLimpio = original
+    .replace(reImagen(), '')
+    .replace(reVideo(), '')
+    .replace(reDocumento(), '');
 
   /* La frase que anunciaba la foto.
      El prompt prohíbe escribir "aquí te dejo la imagen" antes de la etiqueta,
@@ -92,7 +109,7 @@ function extraerUrlsMedia(texto) {
      foto/imagen/video y termina en dos puntos o nada) y si se sacó algún
      archivo. Una línea que hable de la foto en medio de una explicación no
      termina en ":" y no se toca. */
-  if (imagenes.length || videos.length) {
+  if (imagenes.length || videos.length || documentos.length) {
     textoLimpio = textoLimpio.replace(
       /* Ojo con `\b` acá: en JS no considera a "í" ni a "á" caracteres de
          palabra, así que un `\b` después de "aquí" o "acá" nunca coincide y la
@@ -102,12 +119,12 @@ function extraerUrlsMedia(texto) {
          escribe "Aquí tienes la imagen de la casa que vas a visitar:" — 29
          caracteres después de la palabra. Con un tope de 25 esa frase se
          quedaba sin borrar, que es exactamente la que salió en las pruebas. */
-      /^[ \t]*(?:aqu[íi]|ac[áa]|te\s+(?:dejo|comparto|env[íi]o|mando|muestro)|mira|adjunto)\s[^\n]{0,70}?(?:fotos?|im[áa]gen(?:es)?|videos?|v[íi]deos?)[^\n]{0,60}:[ \t]*$/gim,
+      /^[ \t]*(?:aqu[íi]|ac[áa]|te\s+(?:dejo|comparto|env[íi]o|mando|muestro)|mira|adjunto)\s[^\n]{0,70}?(?:fotos?|im[áa]gen(?:es)?|videos?|v[íi]deos?|brochure|pdf|documento|ficha)[^\n]{0,60}:[ \t]*$/gim,
       '',
     );
   }
 
-  return { texto: textoLimpio, imagenes, videos };
+  return { texto: textoLimpio, imagenes, videos, documentos };
 }
 
 module.exports = {
@@ -115,4 +132,5 @@ module.exports = {
   normalizarUrlMedia,
   reImagen,
   reVideo,
+  reDocumento,
 };

@@ -20,6 +20,9 @@
 
 const MAX_IMAGENES = 3;
 const MAX_VIDEOS = 1;
+/* Brochure / ficha en PDF del catálogo (productos_chat_center.documento_url).
+   Una sola pieza y siempre del producto: el wizard no sube PDFs propios. */
+const MAX_DOCUMENTOS = 1;
 
 function aNumero(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -147,7 +150,13 @@ function normalizarItemMedia(m) {
   if (!m) return null;
   const url = limpiarLinea(m.url);
   if (!/^https?:\/\//i.test(url)) return null;
-  const tipo = String(m.tipo || '').toLowerCase() === 'video' ? 'video' : 'image';
+  const tipoRaw = String(m.tipo || '').toLowerCase();
+  const tipo =
+    tipoRaw === 'video'
+      ? 'video'
+      : tipoRaw === 'document' || /\.pdf(\?|#|$)/i.test(url)
+        ? 'document'
+        : 'image';
   return {
     tipo,
     url,
@@ -157,13 +166,15 @@ function normalizarItemMedia(m) {
 }
 
 /**
- * Aplica el tope del paquete: como máximo 3 imágenes y 1 video, en el orden
- * en que el negocio las dejó. Lo que sobra se descarta (no se reordena).
+ * Aplica el tope del paquete: como máximo 3 imágenes, 1 video y 1 documento,
+ * en el orden en que el negocio las dejó. Lo que sobra se descarta (no se
+ * reordena).
  */
 function limitarMedia(lista) {
   const salida = [];
   let imgs = 0;
   let vids = 0;
+  let docs = 0;
   for (const raw of Array.isArray(lista) ? lista : []) {
     const m = normalizarItemMedia(raw);
     if (!m) continue;
@@ -171,6 +182,9 @@ function limitarMedia(lista) {
     if (m.tipo === 'image') {
       if (imgs >= MAX_IMAGENES) continue;
       imgs += 1;
+    } else if (m.tipo === 'document') {
+      if (docs >= MAX_DOCUMENTOS) continue;
+      docs += 1;
     } else {
       if (vids >= MAX_VIDEOS) continue;
       vids += 1;
@@ -180,7 +194,8 @@ function limitarMedia(lista) {
   return salida;
 }
 
-/** Foto y video del catálogo: SIEMPRE son las primeras piezas del paquete. */
+/** Foto, video y brochure del catálogo: SIEMPRE son las primeras piezas del
+ *  paquete. El PDF va al final de todo (pesa y el cliente lo abre después). */
 function mediaFijaDelProducto(producto) {
   const fijos = [];
   if (producto?.imagen_url) {
@@ -197,6 +212,14 @@ function mediaFijaDelProducto(producto) {
       url: producto.video_url,
       origen: 'producto',
       etiqueta: 'Video del producto',
+    });
+  }
+  if (producto?.documento_url) {
+    fijos.push({
+      tipo: 'document',
+      url: producto.documento_url,
+      origen: 'producto',
+      etiqueta: limpiarLinea(producto.documento_nombre) || 'Brochure (PDF)',
     });
   }
   return fijos;
@@ -218,12 +241,19 @@ function paqueteMedia({ producto, wizard }) {
   ]);
   const imagenes = lista.filter((m) => m.tipo === 'image');
   const videos = lista.filter((m) => m.tipo === 'video');
-  return { imagenes, videos, todas: [...imagenes, ...videos] };
+  const documentos = lista.filter((m) => m.tipo === 'document');
+  return {
+    imagenes,
+    videos,
+    documentos,
+    todas: [...imagenes, ...videos, ...documentos],
+  };
 }
 
 module.exports = {
   MAX_IMAGENES,
   MAX_VIDEOS,
+  MAX_DOCUMENTOS,
   aNumero,
   fmtPrecio,
   leerJson,

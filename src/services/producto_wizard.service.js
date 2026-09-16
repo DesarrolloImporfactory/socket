@@ -2006,6 +2006,8 @@ async function simularTurno({
     media_ia = [
       ...(ext.imagenes || []).map((u) => ({ tipo: 'image', url: u })),
       ...(ext.videos || []).map((u) => ({ tipo: 'video', url: u })),
+      // Brochure en PDF ([producto_documento_url]): en vivo sale como documento.
+      ...(ext.documentos || []).map((u) => ({ tipo: 'document', url: u })),
     ];
     limpio = ext.texto;
   } catch {
