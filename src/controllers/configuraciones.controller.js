@@ -9,6 +9,9 @@ const {
   auditarDesdePanel,
   ipDePeticion,
 } = require('../services/suspension_audit.service');
+const {
+  SQL_STATUS_WHATSAPP,
+} = require('../services/whatsapp_numero_health.service');
 
 exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
@@ -107,6 +110,15 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
           WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
           ELSE 0
         END AS conectado,
+
+        /* Estado real del número según Meta (wa_status, alimentado por
+           numero_status, el cron de salud y el webhook account_update). El
+           front lo prioriza sobre conectado: cualquier valor distinto de
+           CONNECTED pinta "Pendiente" y muestra el botón de conectar, sin
+           limpiar credenciales. */
+        ${SQL_STATUS_WHATSAPP} AS status_whatsapp,
+        c.wa_status,
+        c.wa_status_at,
 
         /* === Estado de Messenger con su tabla messenger_pages === */
         EXISTS (
@@ -233,6 +245,11 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
         ELSE 0
       END AS conectado,
 
+      /* Estado real del número según Meta (ver listarConexiones). */
+      ${SQL_STATUS_WHATSAPP} AS status_whatsapp,
+      c.wa_status,
+      c.wa_status_at,
+
       -- ¿Alguna vez estuvo vinculada a WhatsApp? Si sí, su número y nombre
       -- quedan bloqueados para siempre: cambiarlos partiría el historial
       -- entre el número viejo y el nuevo. Un número desconectado o
@@ -343,6 +360,15 @@ exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
           WHEN COALESCE(c.id_telefono,'') <> '' AND COALESCE(c.id_whatsapp,'') <> '' THEN 1
           ELSE 0
         END AS conectado,
+
+        /* Estado real del número según Meta (wa_status, alimentado por
+           numero_status, el cron de salud y el webhook account_update). El
+           front lo prioriza sobre conectado: cualquier valor distinto de
+           CONNECTED pinta "Pendiente" y muestra el botón de conectar, sin
+           limpiar credenciales. */
+        ${SQL_STATUS_WHATSAPP} AS status_whatsapp,
+        c.wa_status,
+        c.wa_status_at,
 
         /* === Estado de Messenger con su tabla messenger_pages === */
         EXISTS (

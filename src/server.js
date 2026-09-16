@@ -109,6 +109,10 @@ async function startServer() {
       // Marca como 'revoked' las páginas de Facebook cuyo token Meta invalidó.
       // Sin esto quedan 'active' para siempre y los envíos fallan en silencio.
       require('./cron/messengerPagesHealth.js');
+      // Pregunta a Meta el estado real de cada número (wa_status) cada 6 h con
+      // freno por rate limit. Sin esto /conexiones dice "Conectado" a números
+      // que Meta ya tiene DISCONNECTED o sin acceso (cfg 1071, 2026-09-16).
+      require('./cron/whatsappNumerosHealth.js');
       // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
       // con NODE_ENV=production; ver el comentario del archivo).
       require('./cron/rescatarTurnosPerdidos.js');

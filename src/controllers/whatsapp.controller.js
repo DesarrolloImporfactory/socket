@@ -46,6 +46,9 @@ const {
   invalidarTemplatesDeWaba,
 } = require('../services/whatsapp.service');
 const { getTemplatesMetaMerged } = require('../utils/kanban_catalogo.provider');
+const {
+  revisarConfiguracion,
+} = require('../services/whatsapp_numero_health.service');
 
 exports.obtener_numeros = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
@@ -1813,6 +1816,8 @@ exports.actualizarConfiguracionMeta = async (req, res) => {
         id_whatsapp = ?,
         webhook_url = ?,
         token = ?,
+        wa_status = 'CONNECTED',
+        wa_status_at = NOW(),
         updated_at = NOW()
       WHERE id = ?
     `;
@@ -2241,6 +2246,12 @@ exports.embeddedSignupComplete = async (req, res) => {
       }
     }
 
+    /* wa_status se pisa con el estado que Meta acaba de reportar. Si no se
+       hiciera, una reconexión sobre una fila marcada DISCONNECTED por el cron
+       o el webhook seguiría saliendo "Pendiente" en /conexiones hasta la
+       próxima revisión. */
+    const waStatusNuevo = String(info?.status || 'CONNECTED').toUpperCase();
+
     if (idConfigToUse) {
       await db.query(
         `UPDATE configuraciones SET
@@ -2250,6 +2261,8 @@ exports.embeddedSignupComplete = async (req, res) => {
            id_whatsapp          = ?,
            token                = ?,
            webhook_url          = ?,
+           wa_status            = ?,
+           wa_status_at         = NOW(),
            updated_at           = NOW()
          WHERE id = ?`,
         {
@@ -2260,6 +2273,7 @@ exports.embeddedSignupComplete = async (req, res) => {
             wabaId,
             permanentPartnerTok,
             webhook_url,
+            waStatusNuevo,
             idConfigToUse,
           ],
         },
@@ -2270,8 +2284,8 @@ exports.embeddedSignupComplete = async (req, res) => {
         `INSERT INTO configuraciones
            (id_usuario, key_imporsuit, nombre_configuracion,
             telefono, id_telefono, id_whatsapp, token, webhook_url,
-            created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            wa_status, wa_status_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         {
           replacements: [
             id_usuario,
@@ -2282,6 +2296,7 @@ exports.embeddedSignupComplete = async (req, res) => {
             wabaId,
             permanentPartnerTok,
             webhook_url,
+            waStatusNuevo,
           ],
         },
       );
@@ -5587,23 +5602,26 @@ exports.reintentarLote = catchAsync(async (req, res) => {
 });
 
 // GET /whatsapp_managment/numero_status
+// La consulta a Meta y el mapeo de errores viven en
+// services/whatsapp_numero_health.service.js (compartido con el cron y el
+// webhook account_update). Aquí solo queda la caché de 1 hora.
 exports.numero_status = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.query;
   if (!id_configuracion) return res.json({ status: 'CONNECTED' });
 
   const [cfg] = await db.query(
-    `SELECT token, id_telefono, wa_status, wa_status_at
+    `SELECT id, nombre_configuracion, token, id_telefono, wa_status, wa_status_at
      FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
   if (!cfg) return res.json({ status: 'CONNECTED' });
 
+  /* Sin número vinculado no hay nada que revisar. Antes esto escribía
+     wa_status = 'CONNECTED', y como editarConexion toma cualquier wa_status
+     como "ya estuvo vinculada", una conexión nunca conectada quedaba con el
+     número bloqueado para edición con solo abrir el chat. */
   if (!cfg.token || !cfg.id_telefono) {
-    await db.query(
-      `UPDATE configuraciones SET wa_status = 'CONNECTED', wa_status_at = NOW() WHERE id = ?`,
-      { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
-    );
     return res.json({ status: 'CONNECTED', cleaned: true });
   }
 
@@ -5622,59 +5640,10 @@ exports.numero_status = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Llamar a Meta
-  try {
-    const response = await axios.get(
-      `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.id_telefono}`,
-      {
-        params: {
-          // ★ AGREGADO: status (campo oficial de Meta)
-          fields:
-            'status,display_phone_number,verified_name,quality_rating,platform_type,throughput,webhook_configuration',
-          access_token: cfg.token,
-        },
-        timeout: 8000,
-      },
-    );
-
-    const data = response.data;
-    let status = 'CONNECTED';
-
-    // PRIORIDAD 1: campo status oficial de Meta
-    if (data?.status && data.status.toUpperCase() !== 'CONNECTED') {
-      status = data.status.toUpperCase(); // DISCONNECTED, PENDING, MIGRATED, etc.
-    }
-    // PRIORIDAD 2: throughput bloqueado = baneado
-    else if (data?.throughput?.level === 'NOT_ALLOWED') {
-      status = 'BANNED';
-    }
-    // PRIORIDAD 3: calidad roja = flagged
-    else if (data?.quality_rating === 'RED') {
-      status = 'FLAGGED';
-    }
-
-    await db.query(
-      `UPDATE configuraciones SET wa_status = ?, wa_status_at = NOW() WHERE id = ?`,
-      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE },
-    );
-
-    return res.json({ status, cached: false });
-  } catch (err) {
-    const code = err?.response?.data?.error?.code;
-    const msg = err?.response?.data?.error?.message || '';
-
-    let status = 'UNKNOWN';
-    if (code === 190 || msg.includes('Invalid OAuth')) status = 'TOKEN_EXPIRED';
-    if (code === 100 || msg.includes('suspended')) status = 'SUSPENDED';
-    if (code === 80007) status = 'RATE_LIMITED';
-
-    await db.query(
-      `UPDATE configuraciones SET wa_status = ?, wa_status_at = NOW() WHERE id = ?`,
-      { replacements: [status, id_configuracion], type: db.QueryTypes.UPDATE },
-    );
-
-    return res.json({ status, cached: false });
-  }
+  // Un veredicto no definitivo (timeout, rate limit) se devuelve pero no se
+  // persiste: la próxima carga vuelve a preguntar.
+  const r = await revisarConfiguracion(cfg, 'numero_status');
+  return res.json({ status: r.status, cached: false, definitivo: r.definitivo });
 });
 
 // POST /whatsapp_managment/limpiar_credenciales_whatsapp
