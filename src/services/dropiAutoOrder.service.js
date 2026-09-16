@@ -1966,13 +1966,18 @@ async function autoCrearOrdenDropi({
               type: 'SIMPLE',
             })),
             amount: precioVenta,
-            /* La bodega va COMPLETA cuando Dropi la devolvió así (México:
-               con zip_code, colonia, city…). Con solo {id}, las paqueterías
-               MX revientan con "Undefined property: stdClass::$zip_code". En
-               Ecuador sigue yendo {id}, que es lo que siempre funcionó. */
+            /* Bodega: en Ecuador va {id}, que es lo que siempre funcionó.
+               En México con solo {id} las paqueterías revientan con
+               "Undefined property: stdClass::$zip_code", y el detalle del
+               producto por integraciones NO trae la bodega con zip_code
+               (probado en producción el 2026-09-16: warehouse_product[0]
+               solo trae warehouse_id). SIN bodega Dropi MX cotiza igual y
+               con los MISMOS precios que su propia página (Quality-post
+               184.58, Veloces 185.02): resuelve el origen por el producto.
+               Así que en México: bodega completa si la hay, si no, nada. */
             ...(warehouseFull
               ? { warehouse: warehouseFull }
-              : warehouseId
+              : warehouseId && !esMexico
                 ? { warehouse: { id: warehouseId } }
                 : {}),
             /* México: campos que manda el propio front de Dropi al cotizar

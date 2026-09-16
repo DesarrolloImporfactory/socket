@@ -691,9 +691,22 @@ class Sockets {
                 colonia: w.colonia || '',
                 city: w.city || null,
               };
+            } else {
+              /* Probado en producción el 2026-09-16: el detalle por
+                 integraciones MX no trae la bodega con zip_code, y SIN
+                 `warehouse` Dropi cotiza con los mismos precios que su
+                 página (Quality-post 184.58, Veloces 185.02). Con {id}
+                 revientan las seis paqueterías. Mejor no mandarla. */
+              warehouseObj = null;
+            }
+            /* Sin ciudad de bodega conocida, el remitente es el destino:
+               mismo último recurso del auto-orden (fallback_destino), y es
+               con lo que se obtuvieron los precios correctos en producción. */
+            if (!Number(ciudad_remitente?.id) > 0) {
+              ciudad_remitente = { ...ciudad_destino };
             }
             console.log(
-              `[Dropi Cotiza] MX bodega: ${warehouseObj?.id || '?'} cp ${warehouseObj?.zip_code || 'SIN CP'} · remitente ${ciudad_remitente?.name || '?'}`,
+              `[Dropi Cotiza] MX bodega: ${warehouseObj ? `${warehouseObj.id} cp ${warehouseObj.zip_code}` : 'sin bodega (Dropi resuelve el origen por el producto)'} · remitente ${ciudad_remitente?.name || '?'}`,
             );
           }
 
