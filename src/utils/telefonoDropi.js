@@ -28,6 +28,8 @@ function normalizarPorPais(raw, country_code) {
   if (cc === 'MX') {
     if (d.startsWith('521') && d.length === 13) d = d.slice(3);
     else if (d.startsWith('52') && d.length === 12) d = d.slice(2);
+    // "1" de móvil suelto (el bot copió "1 663 317 2519" del WhatsApp)
+    else if (d.startsWith('1') && d.length === 11) d = d.slice(1);
     return { telefono: d, valido: /^\d{10}$/.test(d) };
   }
   if (cc === 'PE') {
