@@ -14,6 +14,9 @@ const logger = require('../utils/logger');
 const { filtrarMediaNueva, olvidarEnviado } = require('../utils/dedupeMedia');
 const { reclamarWamid } = require('../utils/dedupeWamid');
 const {
+  manejarAccountUpdate,
+} = require('../services/whatsapp_numero_health.service');
+const {
   reactivarMetodoPagoSiCorresponde,
   olvidarComprobacion,
 } = require('../utils/metaPagoStatus');
@@ -295,6 +298,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       const change = data?.entry?.[0]?.changes?.[0];
       const field = change?.field;
+
+      /* account_update (suscrito el 2026-09-16): PARTNER_REMOVED,
+         ACCOUNT_DELETED, DISABLED_UPDATE, etc. Marca wa_status de las
+         conexiones de esa WABA para que /conexiones muestre "Pendiente" y el
+         botón de reconectar en el momento, sin esperar al cron. No trae
+         mensajes, así que se corta aquí. */
+      if (field === 'account_update') {
+        try {
+          await manejarAccountUpdate(data?.entry?.[0]?.id, value);
+        } catch (e) {
+          console.error('[wa-health][webhook] account_update falló:', e.message);
+        }
+        return;
+      }
 
       /* detector para mensajes de sincronizacion */
       const isHistory = field === 'history';

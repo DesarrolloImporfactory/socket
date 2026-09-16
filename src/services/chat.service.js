@@ -43,7 +43,7 @@ class ChatService {
     },
   ) {
     try {
-      console.log('Filtros:', filtros);
+      /* console.log('Filtros:', filtros); */
 
       const configuraciones = await Configuraciones.findOne({
         where: { id: id_configuracion, suspendido: 0 },
@@ -314,7 +314,7 @@ class ChatService {
         sqlFinal = sqlFinal.replace(new RegExp(`:${key}`, 'g'), replacedValue);
       });
 
-      console.log('🚀 SQL Final ejecutada:\n', sqlFinal);
+      /* console.log('🚀 SQL Final ejecutada:\n', sqlFinal); */
 
       // Ejecutar la query
       const chats = await db.query(sqlQuery, {
