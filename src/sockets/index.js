@@ -622,6 +622,7 @@ class Sockets {
 
           // Obtener warehouse_id del producto
           let warehouseObj = null;
+          let productObj = null;
           if (products.length > 0 && products[0]?.id) {
             try {
               const productDetail = await dropiService.getProductDetail({
@@ -630,6 +631,7 @@ class Sockets {
                 country_code: integration.country_code,
               });
               const obj = productDetail?.objects || productDetail;
+              productObj = obj;
               let warehouseId =
                 obj?.warehouse_product?.[0]?.warehouse_id || null;
 
@@ -652,42 +654,47 @@ class Sockets {
             }
           }
 
-          /* México: la bodega tiene que ir COMPLETA (con zip_code, colonia,
-             city…) o las paqueterías revientan con "Undefined property:
-             stdClass::$zip_code". Dropi la devuelve, junto con la ciudad de
-             origen ya armada, en getOriginCityForCalculateShipping cuando
-             el destino va como "ciudad, estado" (capturado en app.dropi.mx
-             el 2026-09-16). Solo con código postal (cuentas MX). */
-          if (zip_code && products[0]?.id) {
-            try {
-              const destinoTxt = `${ciudad_destino.name || ''}, ${
-                ciudad_destino.department?.name || ''
-              }`.toLowerCase();
-              const origResp = await dropiService.getOriginCityForShipping({
-                integrationKey,
-                productId: products[0].id,
-                productType: products[0].type || 'SIMPLE',
-                destination: destinoTxt,
-                country_code: integration.country_code,
-              });
-              const oc = origResp?.data || origResp?.objects || origResp;
-              if (Number(oc?.warehouse?.id) > 0) warehouseObj = oc.warehouse;
-              if (Number(oc?.city_dropi?.id) > 0) {
-                const cd = oc.city_dropi;
-                const dept = departments.find(
-                  (d) =>
-                    Number(d.id || d.department_id) === Number(cd.department_id),
-                );
-                ciudad_remitente = cd.department
-                  ? cd
-                  : { ...cd, department: dept ? buildDepartment(dept) : undefined };
+          /* México: la bodega tiene que llevar código postal o las
+             paqueterías revientan con "Undefined property: stdClass::
+             $zip_code" / "La bodega no tiene configurado el codigo postal".
+             Probado contra la API de Dropi el 2026-09-16: basta {id,
+             city_id, zip_code, address, city} (Afimex pide además phone y
+             colonia) y el zip_code de la CIUDAD de la bodega sirve. La ruta
+             getOriginCityForCalculateShipping, que devuelve la bodega
+             completa, NO existe en la API de integraciones MX (404), así que
+             se arma desde el detalle del producto. Solo con código postal
+             (cuentas MX); Ecuador sigue mandando {id}. */
+          if (zip_code && productObj) {
+            const normW = (w) => (Array.isArray(w) ? w[0] || null : w || null);
+            let w = normW(productObj?.warehouse_product?.[0]?.warehouse);
+            if (!w?.id && Array.isArray(productObj?.variations)) {
+              for (const v of productObj.variations) {
+                for (const wpv of v?.warehouse_product_variation || []) {
+                  const wv = normW(wpv?.warehouse);
+                  if (wv?.id) {
+                    w = wv;
+                    break;
+                  }
+                }
+                if (w?.id) break;
               }
-              console.log(
-                `[Dropi Cotiza] MX origen: bodega ${warehouseObj?.id || '?'} (cp ${warehouseObj?.zip_code || '?'}), ciudad ${ciudad_remitente?.name || '?'}`,
-              );
-            } catch (e) {
-              console.log(`[Dropi Cotiza] getOriginCityForShipping (MX) falló: ${e.message}`);
             }
+            const zipBodega = w?.zip_code || w?.city?.zip_code || '';
+            if (w?.id && zipBodega) {
+              warehouseObj = {
+                id: Number(w.id),
+                name: w.name || '',
+                city_id: Number(w.city_id || w.city?.id) || null,
+                zip_code: String(zipBodega),
+                address: w.address || w.name || '',
+                phone: w.phone || '',
+                colonia: w.colonia || '',
+                city: w.city || null,
+              };
+            }
+            console.log(
+              `[Dropi Cotiza] MX bodega: ${warehouseObj?.id || '?'} cp ${warehouseObj?.zip_code || 'SIN CP'} · remitente ${ciudad_remitente?.name || '?'}`,
+            );
           }
 
           const dropiPayload = {

@@ -379,6 +379,46 @@ function normWarehouse(w) {
 }
 
 /**
+ * Bodega mínima que Dropi MÉXICO exige para cotizar. Con solo {id} las
+ * paqueterías revientan con "Undefined property: stdClass::$zip_code" /
+ * "La bodega no tiene configurado el codigo postal". Probado contra la API
+ * de Dropi el 2026-09-16: basta {id, city_id, zip_code, address, city} para
+ * Veloces y Quality-post; Afimex pide además phone y colonia. El zip_code de
+ * la CIUDAD de la bodega sirve igual que el propio de la bodega.
+ * La ruta getOriginCityForCalculateShipping (que devuelve la bodega
+ * completa) NO existe en la API de integraciones MX (404), así que se arma
+ * desde el detalle del producto (warehouse_product[].warehouse, con city).
+ */
+function bodegaMinimaMX(rawProduct) {
+  let w = normWarehouse(rawProduct?.warehouse_product?.[0]?.warehouse);
+  if (!w?.id && Array.isArray(rawProduct?.variations)) {
+    for (const v of rawProduct.variations) {
+      for (const wpv of v?.warehouse_product_variation || []) {
+        const wv = normWarehouse(wpv?.warehouse);
+        if (wv?.id) {
+          w = wv;
+          break;
+        }
+      }
+      if (w?.id) break;
+    }
+  }
+  if (!w?.id) return null;
+  const zip = w.zip_code || w.city?.zip_code || '';
+  if (!zip) return null;
+  return {
+    id: Number(w.id),
+    name: w.name || '',
+    city_id: Number(w.city_id || w.city?.id) || null,
+    zip_code: String(zip),
+    address: w.address || w.name || '',
+    phone: w.phone || '',
+    colonia: w.colonia || '',
+    city: w.city || null,
+  };
+}
+
+/**
  * Réplica de buildDepartment del socket handler (GET_DROPI_COTIZA_ENVIO_V2):
  * Dropi espera ciudad_destino/ciudad_remitente como objetos de ciudad
  * COMPLETOS con su department embebido.
@@ -1776,11 +1816,21 @@ async function autoCrearOrdenDropi({
 
       // Respaldo 1: la bodega embebida en el producto crudo, si Dropi la mandó
       // en el detalle. Es gratis (ya está en memoria) y evita el último recurso.
+      // En México es EL camino (la ruta de origen no existe en integraciones)
+      // y las ciudades pueden venir sin cod_dane: vale con el id.
       if (!cityObjR?.cod_dane && !cityObjR?.id) {
         const wCity = pickWarehouseCityFromProduct(r.prodDropi);
-        if (wCity?.cod_dane) {
+        if (wCity?.cod_dane || wCity?.id) {
           cityObjR = wCity;
           fuenteR = 'producto';
+        }
+      }
+      if (!warehouseFullR && esMexico) {
+        warehouseFullR = bodegaMinimaMX(r.prodDropi);
+        if (!warehouseFullR) {
+          console.log(
+            `[AutoOrden] MX: el producto #${r.dropiProductId} no trae bodega con código postal en su detalle`,
+          );
         }
       }
 
