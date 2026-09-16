@@ -293,7 +293,7 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
     .replace('T', ' ');
 
   const conn = await getAdConnection(id_configuracion);
-  if (!conn) return next(new AppError('No hay cuenta de ads conectada.', 400));
+  if (!conn) throw new AppError('No hay cuenta de ads conectada.', 400);
 
   const [acctResp, adsResp, aggResult, orderResult, msgResult, whResult] =
     await Promise.all([
@@ -309,7 +309,21 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
          SUM(CASE WHEN classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') THEN 1 ELSE 0 END) AS en_camino,
          SUM(CASE WHEN classified_status = 'entregada'  THEN COALESCE(total_order, 0) ELSE 0 END) AS revenue_entregado,
          SUM(CASE WHEN classified_status = 'entregada'  THEN COALESCE(dropshipper_profit, 0) ELSE 0 END) AS utilidad_entregada,
-         SUM(COALESCE(total_order, 0)) AS venta_bruta
+         SUM(COALESCE(total_order, 0)) AS venta_bruta,
+         -- Flete de las órdenes devueltas: Dropi lo cobra a la tienda aunque
+         -- no haya venta. dropshipper_profit sólo cuenta en las entregadas,
+         -- así que este costo NO está dentro de utilidad_entregada.
+         SUM(CASE WHEN classified_status = 'devolucion'
+                  THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
+                  ELSE 0 END) AS flete_devoluciones,
+         -- Flete de las órdenes que el courier ya tomó y siguen en camino: el
+         -- flete ya se gastó y la venta aún no se cobró. Mismo conjunto que
+         -- flete_movilizadas del Dropiboard (excluye pendiente/guia_generada,
+         -- que todavía están en bodega) para que ambos reportes cuadren.
+         SUM(CASE WHEN classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia')
+                  THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(order_data, '$.shipping_amount')) AS DECIMAL(10,2)), 0)
+                  ELSE 0 END) AS flete_en_camino,
+         SUM(CASE WHEN classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia') THEN 1 ELSE 0 END) AS en_camino_courier
        FROM dropi_orders_cache
        WHERE id_configuracion = :idCfg
          AND id_usuario = 0
@@ -592,6 +606,25 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
   const ticketPromedio = entregadas > 0 ? revenue / entregadas : 0;
   const ticketUtilidad = entregadas > 0 ? utilidad / entregadas : 0;
 
+  /* Ganancia neta real. El `spend` de Meta viene ANTES de impuestos: si la
+     cuenta publicitaria factura con IVA (EC 15%, CO 19%, MX 16%…) el cliente
+     lo configura en `impuesto_ads_pct`; 0 = no aplica (tarjeta extranjera,
+     Ugly Cash, cuenta con dirección en USA). Depende de cómo factura Meta a
+     cada cuenta, no del país de la tienda, por eso no se infiere.
+     Las devoluciones no venden pero sí cuestan flete, y ese flete no está en
+     utilidad_entregada. ROI y CPA se mantienen sobre el gasto sin impuesto
+     para que coincidan con lo que el cliente ve en el administrador de Meta. */
+  const impuestoPct = Math.max(0, Number(conn.impuesto_ads_pct || 0));
+  const impuestoAds = (gasto * impuestoPct) / 100;
+  const gastoAdsTotal = gasto + impuestoAds;
+  const fleteDevoluciones = Number(agg.flete_devoluciones || 0);
+  const fleteEnCamino = Number(agg.flete_en_camino || 0);
+  // Misma fórmula que la rentabilidad del Dropiboard (daily-metrics):
+  // venta − costo − flete_movilizadas − gasto ≡ utilidad − flete dev − flete
+  // en camino − gasto. Si cambia un lado, cambiar el otro.
+  const gananciaNeta =
+    utilidad - fleteDevoluciones - fleteEnCamino - gastoAdsTotal;
+
   // Suma de utilidad atribuida (para totals del banner de ads)
   const utilidadAtribuida = enriched.reduce(
     (s, a) => s + Number(a.utilidad_estimada || 0),
@@ -613,9 +646,18 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
         devueltas: Number(agg.devueltas || 0),
         canceladas: Number(agg.canceladas || 0),
         en_camino: Number(agg.en_camino || 0),
+        // Subconjunto de en_camino que ya salió con el courier (flete gastado);
+        // el resto (pendiente, guia_generada) sigue en bodega.
+        en_camino_courier: Number(agg.en_camino_courier || 0),
       },
       dinero: {
         gasto_ads: Math.round(gasto * 100) / 100,
+        impuesto_ads_pct: impuestoPct,
+        impuesto_ads: Math.round(impuestoAds * 100) / 100,
+        gasto_ads_total: Math.round(gastoAdsTotal * 100) / 100,
+        flete_devoluciones: Math.round(fleteDevoluciones * 100) / 100,
+        flete_en_camino: Math.round(fleteEnCamino * 100) / 100,
+        ganancia_neta: Math.round(gananciaNeta * 100) / 100,
         revenue_entregado: Math.round(revenue * 100) / 100,
         utilidad_entregada: Math.round(utilidad * 100) / 100, // AGREGADO
         ticket_promedio_utilidad: Math.round(ticketUtilidad * 100) / 100, // AGREGADO
@@ -682,6 +724,31 @@ async function buildAdsDashboard({ id_configuracion, since, until, limit }) {
 }
 
 exports.buildAdsDashboard = buildAdsDashboard;
+
+// ════════════════════════════════════════════════════════════
+// POST /impuesto-ads  { id_configuracion, pct }
+// Porcentaje de impuesto que Meta agrega sobre el gasto (0 = no aplica).
+// ════════════════════════════════════════════════════════════
+exports.guardarImpuestoAds = catchAsync(async (req, res) => {
+  const id_configuracion = parseInt(req.body?.id_configuracion, 10);
+  const pct = Number(req.body?.pct);
+  if (!id_configuracion)
+    throw new AppError('id_configuracion es requerido', 400);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100)
+    throw new AppError('pct debe ser un porcentaje entre 0 y 100', 400);
+
+  const pctRedondeado = Math.round(pct * 100) / 100;
+  const [, afectadas] = await db.query(
+    `UPDATE meta_ad_connections SET impuesto_ads_pct = :pct, updated_at = NOW()
+      WHERE id_configuracion = :idCfg AND status = 'active'`,
+    {
+      replacements: { pct: pctRedondeado, idCfg: id_configuracion },
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+  if (!afectadas) throw new AppError('No hay cuenta de ads conectada.', 404);
+  return res.json({ success: true, impuesto_ads_pct: pctRedondeado });
+});
 
 exports.dashboard = catchAsync(async (req, res) => {
   return res.json(
