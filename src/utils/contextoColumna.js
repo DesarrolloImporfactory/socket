@@ -358,7 +358,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         `SELECT id, nombre, tipo, precio, duracion, descripcion,
                 imagen_url, video_url, sesiones_min, sesiones_max,
                 combos_producto, direccion, sector, ciudad, google_maps_url,
-                galeria_url, atributos_json
+                galeria_url, documento_url, documento_nombre, atributos_json
            FROM productos_chat_center
           WHERE id_configuracion = ? AND eliminado = 0
           ORDER BY tipo DESC, nombre`,
@@ -787,6 +787,8 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         for (const p of [enJuego, ...nombrados].filter(Boolean)) {
           if (p.imagen_url) ofrecidas.push(normalizarUrlMedia(p.imagen_url));
           if (p.video_url) ofrecidas.push(normalizarUrlMedia(p.video_url));
+          if (p.documento_url)
+            ofrecidas.push(normalizarUrlMedia(p.documento_url));
         }
         if (ofrecidas.length) ofrecerMedia(opts.id_cliente, ofrecidas);
       }
@@ -819,6 +821,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
             fichaDelItem(i.atributos_json),
             String(i.direccion || i.sector || i.ciudad || '').trim(),
             String(i.galeria_url || '').trim(),
+            String(i.documento_url || '').trim(),
           ].some(Boolean),
         )
         .slice(0, 3);
@@ -866,8 +869,35 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         }
         const fotoYaSalio = (i) => yaEnviada.get(normalizar(i.nombre)) === true;
 
+        /* El brochure lleva su propia marca: la foto sale en el primer turno y
+           el PDF puede salir en otro (o fallar), así que "la foto ya se envió"
+           no dice nada del documento. Mismo criterio que el filtro de envío. */
+        const docYaEnviado = new Map();
+        if (opts?.id_cliente) {
+          for (const i of conFicha) {
+            if (!i.documento_url) continue;
+            try {
+              docYaEnviado.set(
+                normalizar(i.nombre),
+                await mediaYaEnviada({
+                  id_cliente: opts.id_cliente,
+                  id_configuracion,
+                  url: normalizarUrlMedia(i.documento_url),
+                }),
+              );
+            } catch {
+              /* sin el dato se propone y el filtro de envío decide */
+            }
+          }
+        }
+        const docYaSalio = (i) =>
+          docYaEnviado.get(normalizar(i.nombre)) === true;
+
         const conMedia = conFicha.filter(
           (i) => (i.imagen_url || i.video_url) && nombradoAhora(i) && !fotoYaSalio(i),
+        );
+        const conDocumento = conFicha.filter(
+          (i) => i.documento_url && nombradoAhora(i) && !docYaSalio(i),
         );
 
         bloque +=
@@ -908,6 +938,20 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                   .join('\n');
               }
 
+              /* Brochure en PDF. Va aparte de la foto porque tienen marcas
+                 distintas: la foto pudo salir en el primer turno y el PDF
+                 todavía no. Solo aparece en cuentas que cargaron uno. */
+              let docLinea = '';
+              if (i.documento_url && nombradoAhora(i)) {
+                docLinea = docYaSalio(i)
+                  ? `  📄 Su brochure ya se le envió en esta conversación: NO ` +
+                    `lo anuncies ni lo vuelvas a adjuntar; si lo pide de ` +
+                    `nuevo, dile que está más arriba en el chat.`
+                  : `  📄 brochure (PDF${
+                      i.documento_nombre ? `, "${i.documento_nombre}"` : ''
+                    }): ${normalizarUrlMedia(i.documento_url)}`;
+              }
+
               /* Dónde queda. Solo aparece en los ítems que tienen ubicación
                  propia —un inmueble, un local—, así que un catálogo de
                  dropshipping no ve ni una línea de esto.
@@ -938,6 +982,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                 `${ficha ? `\n  📐 ${ficha}` : ''}` +
                 `${ubic ? `\n${ubic}` : ''}` +
                 `${media ? `\n${media}` : ''}` +
+                `${docLinea ? `\n${docLinea}` : ''}` +
                 `${i.galeria_url ? `\n  🖼️ álbum con más fotos: ${i.galeria_url}` : ''}`
               );
             })
@@ -1005,6 +1050,26 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
             `enlace": el cliente ve el archivo, no el link. Manda la imagen la ` +
             `PRIMERA vez que le hablas de ese producto; no la repitas en cada ` +
             `mensaje. Si un producto no tiene, simplemente no pongas la línea.\n`;
+        }
+
+        /* El brochure. Lo pidió una inmobiliaria: cuando alguien pregunta por
+           una casa, además del resumen y la foto quiere que le llegue el PDF,
+           que es lo que el asesor mandaba a mano. Sale la primera vez que se
+           habla del ítem —igual que la foto— y también si lo piden por su
+           nombre (brochure, planos, ficha, "más información"). Solo aparece
+           en cuentas que cargaron uno, así que el resto no ve esta regla. */
+        if (conDocumento.length) {
+          bloque +=
+            `\nMÁNDALE EL BROCHURE. El ítem tiene su brochure en PDF (la línea ` +
+            `📄 de arriba). Adjúntalo al final de tu mensaje, en su propia ` +
+            `línea, con este formato EXACTO:\n` +
+            `[producto_documento_url]: <la url del PDF tal cual se te entregó>\n` +
+            `Va la PRIMERA vez que le hablas de ese ítem, junto con el resumen ` +
+            `y la foto, y también si te pide el brochure, los planos, la ficha ` +
+            `o "más información" y todavía no se lo has mandado. El sistema lo ` +
+            `convierte en el archivo de verdad: no escribas la url dentro de ` +
+            `una frase ni digas "aquí te dejo el PDF". No lo repitas en cada ` +
+            `mensaje ni lo inventes para un ítem que no lo tiene.\n`;
         }
 
         bloque += `\n`;

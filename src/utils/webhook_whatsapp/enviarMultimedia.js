@@ -20,23 +20,34 @@ const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
 const { registrarErrorEnvio } = require('./erroresEnvio');
 
 async function enviarMedioWhatsapp({
-  tipo, // "image" o "video"
+  tipo, // "image", "video" o "document"
   url_archivo,
   phone_whatsapp_to,
   business_phone_id,
   accessToken,
   id_configuracion = null,
   responsable = '',
+  /* Solo documentos: el nombre que ve el cliente en el chat. Sin él, Meta
+     muestra el uuid con el que se guardó el archivo. */
+  filename = null,
 }) {
   await fs.mkdir(logsDir, { recursive: true });
 
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
+  const nombreDoc =
+    tipo === 'document'
+      ? String(filename || '').trim() ||
+        decodeURIComponent(
+          String(url_archivo).split('/').pop().split('?')[0] || 'documento.pdf',
+        )
+      : null;
   const data = {
     messaging_product: 'whatsapp',
     to: phone_whatsapp_to,
     type: tipo,
     [tipo]: {
       link: url_archivo,
+      ...(nombreDoc ? { filename: nombreDoc } : {}),
     },
   };
 
@@ -82,8 +93,13 @@ async function enviarMedioWhatsapp({
             telefono_configuracion: config.telefono,
             phone_whatsapp_to,
             tipo_mensaje: tipo,
-            texto_mensaje: null,
-            ruta_archivo: url_archivo,
+            texto_mensaje: nombreDoc,
+            /* Los documentos se guardan como los manda el chat a mano
+               ({nombre, ruta}): así el front los pinta con su nombre y el
+               dedupe (LIKE sobre ruta_archivo) los encuentra igual. */
+            ruta_archivo: nombreDoc
+              ? JSON.stringify({ nombre: nombreDoc, ruta: url_archivo })
+              : url_archivo,
             responsable,
             wamid: mensajeId,
           });

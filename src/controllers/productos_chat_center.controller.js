@@ -218,6 +218,19 @@ exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
 // URL base pública donde sirve /uploads
 const dominio = 'https://chat.imporfactory.app';
 
+/* Nombre que ve el cliente cuando el bot le manda el brochure. Multer entrega
+   `originalname` en latin1 y un "Vía Láctea.pdf" llegaba como "VÃ­a LÃ¡ctea":
+   se re-decodifica y se recorta al tamaño de la columna. */
+function nombreDocumentoDe(file) {
+  let nombre = String(file?.originalname || 'documento.pdf');
+  try {
+    nombre = Buffer.from(nombre, 'latin1').toString('utf8');
+  } catch (_) {}
+  nombre = nombre.replace(/[\r\n\t]+/g, ' ').trim() || 'documento.pdf';
+  if (!/\.pdf$/i.test(nombre)) nombre += '.pdf';
+  return nombre.slice(0, 255);
+}
+
 // ========== AGREGAR ==========
 // ========== AGREGAR ==========
 exports.agregarProducto = catchAsync(async (req, res, next) => {
@@ -282,6 +295,7 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
+  const documentoFile = req.files?.documento?.[0] || null;
 
   // ── Convertir imágenes a JPG (evita webp/heic que Meta rechaza) ──
   if (imagenFile) {
@@ -337,6 +351,14 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     ? `${dominio}/uploads/productos/video/${videoFile.filename}`
     : null;
 
+  // Brochure / ficha en PDF (ver productos_chat_center.model).
+  const documento_url = documentoFile
+    ? `${dominio}/uploads/productos/documento/${documentoFile.filename}`
+    : null;
+  const documento_nombre = documentoFile
+    ? nombreDocumentoDe(documentoFile)
+    : null;
+
   const nuevoProducto = await ProductosChatCenter.create({
     id_configuracion,
     nombre,
@@ -352,6 +374,8 @@ exports.agregarProducto = catchAsync(async (req, res, next) => {
     id_categoria: idCategoriaNum,
     imagen_url,
     video_url,
+    documento_url,
+    documento_nombre,
     landing_url: landing_url || null,
     es_privado: esPrivadoParsed,
     id_dropi: Number.isFinite(idDropiParsed) ? idDropiParsed : null,
@@ -428,6 +452,7 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
     precio_proveedor,
     remove_video,
     remove_imagen,
+    remove_documento,
   } = req.body;
 
   const producto = await ProductosChatCenter.findByPk(id_producto);
@@ -440,6 +465,35 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   const imagenFile = req.files?.imagen?.[0] || null;
   const videoFile = req.files?.video?.[0] || null;
   const imagen_upsellFile = req.files?.imagen_upsell?.[0] || null;
+  const documentoFile = req.files?.documento?.[0] || null;
+
+  // ── BROCHURE (PDF) ──
+  // Mismo contrato que imagen y video: un archivo nuevo reemplaza y borra el
+  // anterior; `remove_documento=1` lo quita; si no llega nada, se mantiene.
+  const borrarDocumentoActual = () => {
+    try {
+      if (producto.documento_url) {
+        const absPath = path.join(
+          __dirname,
+          '..',
+          'uploads',
+          'productos',
+          'documento',
+          path.basename(producto.documento_url),
+        );
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      }
+    } catch (_) {}
+  };
+  if (documentoFile) {
+    borrarDocumentoActual();
+    producto.documento_url = `${dominio}/uploads/productos/documento/${documentoFile.filename}`;
+    producto.documento_nombre = nombreDocumentoDe(documentoFile);
+  } else if (String(remove_documento) === '1') {
+    borrarDocumentoActual();
+    producto.documento_url = null;
+    producto.documento_nombre = null;
+  }
 
   // ── IMAGEN ──
   if (imagenFile) {

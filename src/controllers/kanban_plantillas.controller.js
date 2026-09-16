@@ -3055,12 +3055,52 @@ exports._crearRespuestasRapidas = _crearRespuestasRapidas;
    (nombre_tienda, tono, instrucciones_extra…), así que esa parte ya se
    actualiza sin perder nada.
    ══════════════════════════════════════════════════════════════ */
+/* Qué bloques del catálogo le corresponden a esta cuenta según la plantilla
+   global que tiene instalada. El catálogo "por defecto" (REMARKETING_POR_DEFECTO,
+   DROPI_CONFIG_POR_DEFECTO) es el de e-commerce/dropshipping, y este instalador
+   lo recorría sin mirar la plantilla: a la inmobiliaria 971 (Laveyca) el botón
+   "Actualizar tablero" le metió las tres secuencias de "pedido empacado / envío
+   gratis / descuento" y los nueve estados de Dropi dos minutos después de
+   instalar el tablero, y sus contactos recibieron "confírmame tu dirección para
+   coordinar el envío" por preguntar por una casa (2026-09-15; la 1161 igual).
+   Se lee el mismo `setup` que respeta aplicarGlobal. Sin plantilla registrada
+   se devuelve todo en true, que es el comportamiento histórico. */
+async function _setupDeLaPlantillaInstalada(id_configuracion) {
+  try {
+    const [cfg] = await db.query(
+      `SELECT kanban_global_id FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (!cfg?.kanban_global_id) return _resolverSetup(null);
+    const [pl] = await db.query(
+      `SELECT data FROM kanban_plantillas_globales WHERE id = ? LIMIT 1`,
+      { replacements: [cfg.kanban_global_id], type: db.QueryTypes.SELECT },
+    );
+    if (!pl?.data) return _resolverSetup(null);
+    const data = typeof pl.data === 'string' ? JSON.parse(pl.data) : pl.data;
+    return _resolverSetup(data);
+  } catch (e) {
+    console.error('[instalarFaltantes] setup plantilla:', e.message);
+    return _resolverSetup(null);
+  }
+}
+
 async function _instalarFaltantes(id_configuracion) {
   const resumen = {
     templates_meta: [],
     dropi_estados: [],
     remarketing_estados: [],
   };
+
+  const setup = await _setupDeLaPlantillaInstalada(id_configuracion);
+  const dropiPermitido = (cfg) =>
+    setup.dropi_config &&
+    (!setup.dropi_config_items ||
+      setup.dropi_config_items.includes(cfg.estado_dropi));
+  const remarketingPermitido = (estado_contacto, sec) =>
+    setup.remarketing &&
+    (!setup.remarketing_items ||
+      setup.remarketing_items.includes(remarketingKey(estado_contacto, sec)));
 
   // ── 1. Plantillas Meta ──
   // _crearTemplatesMeta ya consulta las existentes y salta las que están,
@@ -3073,21 +3113,30 @@ async function _instalarFaltantes(id_configuracion) {
   // limita cuántas puede tener una cuenta). Lo que no se usa, no se crea.
   const referenciadas = new Set();
   for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
-    if (cfg.nombre_template) referenciadas.add(cfg.nombre_template);
+    if (cfg.nombre_template && dropiPermitido(cfg)) {
+      referenciadas.add(cfg.nombre_template);
+    }
   }
   for (const bloque of REMARKETING_POR_DEFECTO) {
     for (const sec of bloque.secuencias || []) {
-      if (sec.nombre_template) referenciadas.add(sec.nombre_template);
+      if (
+        sec.nombre_template &&
+        remarketingPermitido(bloque.estado_contacto, sec)
+      ) {
+        referenciadas.add(sec.nombre_template);
+      }
     }
   }
 
-  try {
-    resumen.templates_meta = await _crearTemplatesMeta(
-      id_configuracion,
-      referenciadas,
-    );
-  } catch (e) {
-    resumen.templates_meta = [{ status: 'error', error: e.message }];
+  if (setup.templates_meta && referenciadas.size) {
+    try {
+      resumen.templates_meta = await _crearTemplatesMeta(
+        id_configuracion,
+        referenciadas,
+      );
+    } catch (e) {
+      resumen.templates_meta = [{ status: 'error', error: e.message }];
+    }
   }
 
   // ── 2. Estados de Dropi que el cliente NO tenga ──
@@ -3103,6 +3152,7 @@ async function _instalarFaltantes(id_configuracion) {
     const yaTiene = new Set(existentes.map((r) => r.estado_dropi));
 
     for (const cfg of DROPI_CONFIG_POR_DEFECTO) {
+      if (!dropiPermitido(cfg)) continue;
       if (yaTiene.has(cfg.estado_dropi)) continue;
       await db.query(
         `INSERT INTO dropi_plantillas_config
@@ -3136,6 +3186,10 @@ async function _instalarFaltantes(id_configuracion) {
   // una secuencia existente rompería la numeración y el encadenado.
   try {
     for (const bloque of REMARKETING_POR_DEFECTO) {
+      const secuenciasPermitidas = (bloque.secuencias || []).filter((sec) =>
+        remarketingPermitido(bloque.estado_contacto, sec),
+      );
+      if (!secuenciasPermitidas.length) continue;
       const [tiene] = await db.query(
         `SELECT 1 AS x FROM configuracion_remarketing
           WHERE id_configuracion = ? AND estado_contacto = ? LIMIT 1`,
@@ -3146,7 +3200,7 @@ async function _instalarFaltantes(id_configuracion) {
       );
       if (tiene) continue;
 
-      for (const sec of bloque.secuencias || []) {
+      for (const sec of secuenciasPermitidas) {
         const minutos = Number(sec.tiempo_espera_minutos) || 0;
         await db.query(
           `INSERT INTO configuracion_remarketing

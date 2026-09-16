@@ -238,8 +238,9 @@ async function resolverWizardPorTexto(id_configuracion, mensaje) {
   if (!wizard) return null;
   const [producto] = await db.query(
     `SELECT id, id_configuracion, nombre, descripcion, precio, imagen_url,
-            video_url, combos_producto, stock, id_producto_upsell,
-            nombre_upsell, descripcion_upsell, precio_upsell, imagen_upsell_url
+            video_url, documento_url, documento_nombre, combos_producto, stock,
+            id_producto_upsell, nombre_upsell, descripcion_upsell,
+            precio_upsell, imagen_upsell_url
        FROM productos_chat_center
       WHERE id = ? LIMIT 1`,
     { replacements: [elegido.id], type: db.QueryTypes.SELECT },
@@ -433,7 +434,7 @@ async function enviarPaqueteInicial({
   omitirGancho = false,
 }) {
   const decir = logDe(log);
-  const { imagenes, videos } = paqueteMedia({ producto, wizard });
+  const { imagenes, videos, documentos } = paqueteMedia({ producto, wizard });
   let texto =
     String(wizard.mensaje_inicial || '').trim() ||
     componerMensajeInicial({ producto, wizard });
@@ -444,7 +445,7 @@ async function enviarPaqueteInicial({
 
   ofrecerMedia(
     id_cliente,
-    [...imagenes, ...videos].map((m) => m.url),
+    [...imagenes, ...videos, ...documentos].map((m) => m.url),
   );
 
   const imgsNuevas = await filtrarMediaNueva({
@@ -461,9 +462,16 @@ async function enviarPaqueteInicial({
     etiqueta: 'video wizard',
     log: decir,
   });
+  const docsNuevos = await filtrarMediaNueva({
+    id_cliente,
+    id_configuracion,
+    urls: documentos.map((m) => m.url),
+    etiqueta: 'documento wizard',
+    log: decir,
+  });
 
   let enviados = 0;
-  const mandarMedia = async (tipo, url) => {
+  const mandarMedia = async (tipo, url, filename = null) => {
     const r = await enviarMedioWhatsapp({
       tipo,
       url_archivo: url,
@@ -472,6 +480,7 @@ async function enviarPaqueteInicial({
       accessToken,
       id_configuracion,
       responsable: RESPONSABLE,
+      filename,
     });
     if (!r?.ok) {
       olvidarEnviado(id_cliente, url);
@@ -483,6 +492,12 @@ async function enviarPaqueteInicial({
 
   for (const url of imgsNuevas) await mandarMedia('image', url);
   for (const url of vidsNuevos) await mandarMedia('video', url);
+  /* El brochure va al final del paquete: pesa y el cliente lo abre después de
+     ver las fotos. El nombre que ve en el chat es el del catálogo. */
+  for (const url of docsNuevos) {
+    const pieza = documentos.find((m) => m.url === url);
+    await mandarMedia('document', url, pieza?.etiqueta || null);
+  }
 
   /* El texto SIEMPRE debe llegar después de los adjuntos. El envío ya es
      secuencial, pero Meta procesa la media (descarga/transcodifica) y un texto
@@ -507,9 +522,14 @@ async function enviarPaqueteInicial({
   }
 
   await decir(
-    `📦 wizard: paquete fijo enviado (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, texto ${texto ? 'sí' : 'no'})`,
+    `📦 wizard: paquete fijo enviado (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, ${docsNuevos.length} pdf, texto ${texto ? 'sí' : 'no'})`,
   );
-  return { enviados, imagenes: imgsNuevas.length, videos: vidsNuevos.length };
+  return {
+    enviados,
+    imagenes: imgsNuevas.length,
+    videos: vidsNuevos.length,
+    documentos: docsNuevos.length,
+  };
 }
 
 /* Cierre de venta al ENVIAR una respuesta rápida: si no termina preguntando,
@@ -1614,6 +1634,23 @@ async function terminarFlujo(id_progreso) {
 
 /* Media fija de un paso: mismas garantías que el paquete inicial (dedupe por
    dedupeMedia, texto después de la media). */
+/* Nombre con el que el cliente ve un PDF del catálogo (documento_nombre).
+   null si la url no es de ningún producto: el envío usa el basename. */
+async function nombreDocumentoCatalogo(url) {
+  try {
+    const base = String(url).split('/').pop().split('?')[0];
+    if (!base) return null;
+    const [doc] = await db.query(
+      `SELECT documento_nombre FROM productos_chat_center
+        WHERE documento_url LIKE ? LIMIT 1`,
+      { replacements: [`%${base}%`], type: db.QueryTypes.SELECT },
+    );
+    return doc?.documento_nombre || null;
+  } catch {
+    return null;
+  }
+}
+
 async function enviarMediaFlujo({
   id_configuracion,
   id_cliente,
@@ -1646,7 +1683,9 @@ async function enviarMediaFlujo({
     // sin extensión): mandarla como imagen la haría fallar en Meta.
     const tipo = /\.(mp4|mov|3gp)(\?|$)|\/Videos\/stream\//i.test(url)
       ? 'video'
-      : 'image';
+      : /\.pdf(\?|#|$)/i.test(url)
+        ? 'document'
+        : 'image';
     const r = await enviarMedioWhatsapp({
       tipo,
       url_archivo: url,
@@ -1655,6 +1694,8 @@ async function enviarMediaFlujo({
       accessToken,
       id_configuracion,
       responsable,
+      // Un PDF del catálogo sale con su nombre real; otro, con el basename.
+      filename: tipo === 'document' ? await nombreDocumentoCatalogo(url) : null,
     });
     if (r?.ok) enviados += 1;
     else {

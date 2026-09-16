@@ -695,7 +695,7 @@ async function procesarMensajeKanban(params) {
         total_tokens,
         analytics,
       }),
-    enviarMedia: async ({ tipo, url, responsable }) => {
+    enviarMedia: async ({ tipo, url, responsable, filename = null }) => {
       /* `enviarMedioWhatsapp` no lanza: devuelve `{ ok, error }`. Acá sí se
          convierte en excepción porque los adaptadores de MS e IG fallan
          lanzando, y el `.catch` del paso 12 —el que suelta la marca del
@@ -710,6 +710,7 @@ async function procesarMensajeKanban(params) {
         accessToken,
         id_configuracion,
         responsable,
+        filename,
       });
       if (r && r.ok === false) {
         throw new Error(r.error || 'Meta rechazó el envío');
@@ -2926,6 +2927,7 @@ async function procesarMensajeKanban(params) {
     }
     media.imagenes = [];
     media.videos = [];
+    media.documentos = [];
   }
 
   /* El filtro tiene que estar ACÁ y no donde se decide adjuntarla: la etiqueta
@@ -2984,6 +2986,40 @@ async function procesarMensajeKanban(params) {
       .catch(async (err) => {
         olvidarEnviado(id_cliente, url);
         await log(`⚠️ Error enviando video URL=${url}: ${err.message}`);
+      });
+  }
+
+  /* Brochure en PDF del ítem (productos_chat_center.documento_url). Mismo
+     dedupe que la foto; el nombre que ve el cliente sale del catálogo, no de
+     la url (que es un uuid). Sin nombre, el adaptador usa el basename. */
+  const documentos = await filtrarMediaNueva({
+    id_cliente,
+    id_configuracion,
+    urls: media.documentos || [],
+    etiqueta: 'documento',
+    log,
+  });
+  for (const url of documentos) {
+    let filename = null;
+    try {
+      const patron = `%${String(url).split('/').pop().split('?')[0]}%`;
+      const [doc] = await db.query(
+        `SELECT documento_nombre FROM productos_chat_center
+          WHERE id_configuracion = ? AND documento_url LIKE ? LIMIT 1`,
+        { replacements: [id_configuracion, patron], type: db.QueryTypes.SELECT },
+      );
+      filename = doc?.documento_nombre || null;
+    } catch (_) {}
+    await canal
+      .enviarMedia({
+        tipo: 'document',
+        url,
+        filename,
+        responsable: `IA_${columna.nombre}`,
+      })
+      .catch(async (err) => {
+        olvidarEnviado(id_cliente, url);
+        await log(`⚠️ Error enviando documento URL=${url}: ${err.message}`);
       });
   }
 
