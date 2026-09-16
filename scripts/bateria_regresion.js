@@ -1587,10 +1587,25 @@ async function suiteA() {
     // de ciudad tiene que salir como RÁPIDA que retoma la pregunta, no como paso.
     try {
       const { simularTurno } = require('../src/services/producto_wizard.service');
+      /* Solo wizards cuyo producto siga en el catálogo: la 1125 borró los
+         productos de sus wizards el 2026-09-15 y el caso caía con "Producto
+         no encontrado" sin que nada del motor hubiera cambiado. */
       const [w] = await require('../src/database/config').db.query(
-        `SELECT id_producto, respuestas_rapidas_json FROM productos_wizard WHERE id_configuracion = 1125 ORDER BY updated_at DESC LIMIT 1`,
+        `SELECT w.id_producto, w.respuestas_rapidas_json
+           FROM productos_wizard w
+           JOIN productos_chat_center p ON p.id = w.id_producto AND p.eliminado = 0
+          WHERE w.id_configuracion = 1125
+          ORDER BY w.updated_at DESC LIMIT 1`,
         { type: require('../src/database/config').db.QueryTypes.SELECT },
       );
+      if (!w) {
+        caso(
+          'simulador 1125: "que contiene" (omitido: la 1125 ya no tiene wizard con producto vivo)',
+          true,
+          'sin datos para simular',
+        );
+        return;
+      }
       const faqs = JSON.parse(w.respuestas_rapidas_json || '[]');
       const r = await simularTurno({
         id_configuracion: 1125,
