@@ -560,10 +560,19 @@ function intentosPedirReferencia(items, direccion) {
     .length;
 }
 
+/* En México no existe Servientrega: allá el retiro es en la "sucursal de
+   la paquetería" (ficha._esMexico, la marca kanban_ia por el país de la
+   integración Dropi). Ecuador y el resto conservan el texto de siempre. */
 function etiquetaAgencia(f) {
   const ag = String((f && f.agencia) || '').trim();
-  if (!ag) return 'Agencia Servientrega por confirmar';
-  if (/^agencia/i.test(ag)) return ag;
+  const mx = Boolean(f && f._esMexico);
+  if (!ag) {
+    return mx
+      ? 'Sucursal de la paquetería por confirmar'
+      : 'Agencia Servientrega por confirmar';
+  }
+  if (/^(agencia|sucursal)/i.test(ag)) return ag;
+  if (mx) return `Sucursal ${ag}`;
   return /servientrega/i.test(ag) ? `Agencia ${ag}` : `Agencia Servientrega ${ag}`;
 }
 
@@ -596,10 +605,15 @@ function faltantesFicha(ficha, opts = {}) {
   const agenciaOk = f.entrega === 'agencia';
   if (!f.ciudad && !f.direccion && !agenciaOk) faltan.push('Ciudad');
   if (!f.direccion && !agenciaOk) {
+    const mxDir = Boolean(opts.mexico || f._esMexico);
     faltan.push(
       f.entrega === 'domicilio'
-        ? 'Dirección exacta (dos calles y una referencia)'
-        : 'Dirección exacta (dos calles y una referencia), o si prefiere retirar en una agencia Servientrega',
+        ? mxDir
+          ? 'Dirección exacta (calle, número, colonia y una referencia)'
+          : 'Dirección exacta (dos calles y una referencia)'
+        : mxDir
+          ? 'Dirección exacta (calle, número, colonia y una referencia), o si prefiere retirar en la sucursal de la paquetería'
+          : 'Dirección exacta (dos calles y una referencia), o si prefiere retirar en una agencia Servientrega',
     );
   } else if (direccionIncompleta(f) && Number(f._intentosDireccion || 0) < 1) {
     /* Dirección de solo calles: se pide UNA vez lo que le falta. A la segunda
@@ -681,6 +695,15 @@ function bloqueFichaPedido(
           ? `En el resumen, la línea de dirección lleva la oficina elegida con su sector y dirección TAL CUAL el directorio, y "🚚 Envio: agencia servientrega".`
           : `La oficina se elige del directorio ANTES de pedir nombre o teléfono (mira la sección RETIRO EN AGENCIA SERVIENTREGA). En el resumen, la línea de dirección es la oficina elegida (sector — dirección del directorio) o, solo si el cliente no eligió tras 2 intentos, "Agencia Servientrega de ${f.ciudad || '[su ciudad]'} — por confirmar con un asesor". "🚚 Envio: agencia servientrega".`),
     );
+  } else if (f.entrega === 'agencia' && (mexico || f._esMexico)) {
+    /* México: sin Servientrega ni directorio. El cliente nombra la sucursal
+       de la paquetería (o queda por confirmar) y el código postal se sigue
+       pidiendo porque la paquetería no cotiza sin él. */
+    lineas.push(
+      `✅ Entrega: RETIRO EN SUCURSAL de la paquetería${f.agencia ? ` (${f.agencia})` : f.ciudad ? ` (${f.ciudad})` : ''}. ` +
+        `En México NO existe Servientrega: si tus instrucciones la nombran, ignóralo. Para retiro NO pidas dirección de domicilio, pero SÍ el código postal. ` +
+        `En el resumen escribe la línea de dirección como "🏡 Direccion: ${etiquetaAgencia(f)} — ${f.ciudad || 'su ciudad'}" y "🚚 Envio: agencia".`,
+    );
   } else if (f.entrega === 'agencia') {
     lineas.push(
       `✅ Entrega: RETIRO EN AGENCIA Servientrega${f.agencia ? ` (${f.agencia})` : f.ciudad ? ` (${f.ciudad})` : ''}. ` +
@@ -706,7 +729,11 @@ function bloqueFichaPedido(
         ? `⚠️ CANDADO DE DIRECCIÓN: "${f.direccion}" son solo calles, sin numeración de casa ni referencia — así la transportadora NO entrega. ` +
             `En ESTE mensaje pídele el número de la casa y una referencia para llegar (un negocio cercano, el color de la casa, un punto conocido). No cierres el pedido todavía.`
         : `⚠️ CANDADO DE DIRECCIÓN: ya le pediste la numeración y la referencia y no las dio. NO se las vuelvas a pedir. ` +
-            `Dile con naturalidad que sin numeración ni referencia el repartidor no llega, y ofrécele retirar el pedido en la agencia Servientrega más cercana a esa dirección` +
+            `Dile con naturalidad que sin numeración ni referencia el repartidor no llega, y ofrécele retirar el pedido en ${
+              mexico || f._esMexico
+                ? 'la sucursal de la paquetería más cercana a esa dirección'
+                : 'la agencia Servientrega más cercana a esa dirección'
+            }` +
             (retiroDirectorio
               ? ` (ofrécele de 3 a 5 oficinas REALES del directorio de su ciudad y espera cuál elige).`
               : ` de su ciudad.`) +
@@ -920,12 +947,14 @@ function completarResumenConFicha(texto, ficha) {
 
   // Envío: para retiro en agencia el auto-orden necesita saberlo.
   if (ficha.entrega === 'agencia') {
+    // México: "agencia" a secas (allá no existe Servientrega).
+    const valorEnvio = ficha._esMexico ? 'agencia' : 'agencia servientrega';
     const iE = idxDe(/^[^\n]{0,6}?Env[ií]o\s*:/i);
     if (iE < 0) {
-      insertar(`🚚 Envio: agencia servientrega`);
+      insertar(`🚚 Envio: ${valorEnvio}`);
       completados.push('envio');
-    } else if (!/agencia|servientrega|oficina/i.test(valorDe(iE))) {
-      reemplazarValor(iE, 'agencia servientrega');
+    } else if (!/agencia|servientrega|oficina|sucursal/i.test(valorDe(iE))) {
+      reemplazarValor(iE, valorEnvio);
       completados.push('envio');
     }
   }

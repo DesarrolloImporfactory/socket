@@ -1156,6 +1156,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
        cuentas que aplicaron una versión anterior siguen con su prompt viejo:
        esta regla viaja en el contexto para que TODAS lo pidan. Solo cuentas
        con integración Dropi de México; Ecuador y el resto no cambian. */
+    let esCuentaMX = false;
     try {
       const [integMx] = await db.query(
         `SELECT country_code FROM dropi_integrations
@@ -1163,7 +1164,8 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           ORDER BY id DESC LIMIT 1`,
         { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
       );
-      if (String(integMx?.country_code || '').toUpperCase() === 'MX') {
+      esCuentaMX = String(integMx?.country_code || '').toUpperCase() === 'MX';
+      if (esCuentaMX) {
         bloque +=
           `📮 CÓDIGO POSTAL (México): la paquetería NO cotiza el envío sin el ` +
           `código postal de la dirección. Cuando pidas los datos de entrega, ` +
@@ -1209,7 +1211,21 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       /* sin el service (tests aislados): rige la legacy */
     }
 
-    if (retiroDirectorio) {
+    if (esCuentaMX) {
+      /* México: ni Servientrega ni directorio de agencias. Las cuentas con
+         prompt viejo (v6.0 y anteriores) todavía dicen "agencia
+         Servientrega": esta regla, al inicio del input, lo neutraliza. */
+      bloque +=
+        `🏦 RETIRO EN SUCURSAL (México): aquí NO existe Servientrega ni un ` +
+        `directorio de agencias; si tus instrucciones la nombran, ignóralo y ` +
+        `habla de "la sucursal de la paquetería". Si el cliente prefiere ` +
+        `recoger su pedido, pídele su ciudad y el nombre o una referencia ` +
+        `(colonia, calle) de la sucursal donde quiere retirar; nunca digas ` +
+        `"la más cercana" sin saber cuál es ni inventes sucursales. Sigue ` +
+        `pidiendo el código postal. Al cerrar pon "🚚 Envio: agencia" y en la ` +
+        `línea de dirección "Sucursal <referencia> — <ciudad>".\n\n`;
+      say(`✅ Regla de retiro en sucursal (México) inyectada`);
+    } else if (retiroDirectorio) {
       bloque +=
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +
         `"RETIRO EN AGENCIA SERVIENTREGA" DE TUS INSTRUCCIONES:\n` +

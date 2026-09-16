@@ -254,7 +254,10 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
 });
 
 exports.login = catchAsync(async (req, res, next) => {
-  const { usuario, password } = req.body;
+  const { password } = req.body;
+  // Correo pegado con espacio al inicio/final => "credenciales inválidas".
+  // Se limpia aquí también para cubrir a cualquier cliente, no solo al front.
+  const usuario = String(req.body.usuario ?? '').trim();
 
   const usuarioEncontrado = await Sub_usuarios_chat_center.findOne({
     where: {

@@ -57,4 +57,10 @@ router.get(
   departamentos_chat_center.subUsuariosPorConfiguracion,
 );
 
+router.get(
+  '/reparto/:id_departamento',
+  checkPlanActivo,
+  departamentos_chat_center.repartoDepartamento,
+);
+
 module.exports = router;

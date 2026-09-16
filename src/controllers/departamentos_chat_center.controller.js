@@ -952,3 +952,220 @@ exports.subUsuariosPorConfiguracion = catchAsync(async (req, res, next) => {
     data: subUsuarios,
   });
 });
+
+/**
+ * Reparto de chats de un departamento, para que el dueño de la cuenta pueda
+ * ver (y justificar a su equipo) cómo se distribuyeron los chats sin tener
+ * que pedirnos el análisis a mano.
+ *
+ * Por cada miembro del departamento devuelve, en la ventana de `dias`:
+ *  - automaticos: chats que le tocaron por la rueda (motivo auto_round_robin%).
+ *  - tomados:     chats que abrió desde "En espera" y se asignó por su cuenta
+ *                 (motivo 'Auto-asignacion de chat'). No pasan por la rueda.
+ *  - disponibilidad: en cuántos de los repartos automáticos con registro de
+ *                 candidatos estaba conectado (historial_encargados.candidatos_online).
+ *  - segundos_conectado: suma de tramos de presencia_sesiones (desde que
+ *                 existe la tabla; antes no se guardaba).
+ *
+ * Solo departamentos de configuraciones del dueño autenticado.
+ */
+exports.repartoDepartamento = catchAsync(async (req, res, next) => {
+  const id_departamento = Number(req.params.id_departamento);
+  // dias=0 → solo hoy (desde las 00:00 del servidor). Tope 90: la consulta de
+  // "clientes que escribieron" pega a mensajes_clientes.
+  const diasReq = Number(req.query.dias);
+  const hoy = diasReq === 0;
+  const dias = hoy ? 0 : Math.min(Math.max(diasReq || 30, 1), 90);
+  const desdeSql = hoy ? 'CURDATE()' : 'NOW() - INTERVAL :dias DAY';
+  const ownerId = Number(req.sessionUser?.id_usuario);
+
+  if (!id_departamento) {
+    return res
+      .status(400)
+      .json({ status: 'fail', message: 'id_departamento es requerido' });
+  }
+
+  const [dep] = await db.query(
+    `SELECT d.id_departamento, d.nombre_departamento, d.id_configuracion
+       FROM departamentos_chat_center d
+       JOIN configuraciones c ON c.id = d.id_configuracion
+      WHERE d.id_departamento = :id_departamento AND c.id_usuario = :ownerId
+      LIMIT 1`,
+    { replacements: { id_departamento, ownerId }, type: db.QueryTypes.SELECT },
+  );
+  if (!dep) {
+    return res
+      .status(404)
+      .json({ status: 'fail', message: 'Departamento no encontrado' });
+  }
+
+  const miembros = await db.query(
+    `SELECT su.id_sub_usuario, su.nombre_encargado, su.usuario, su.rol,
+            sud.asignacion_auto
+       FROM sub_usuarios_departamento sud
+       JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = sud.id_sub_usuario
+      WHERE sud.id_departamento = :id_departamento
+      ORDER BY su.nombre_encargado, su.usuario`,
+    { replacements: { id_departamento }, type: db.QueryTypes.SELECT },
+  );
+  const idsMiembros = miembros.map((m) => Number(m.id_sub_usuario));
+
+  // Conteos por encargado y tipo de asignación (solo chats de esta config).
+  const conteos = idsMiembros.length
+    ? await db.query(
+        `SELECT h.id_encargado_nuevo AS id_sub_usuario,
+                SUM(h.motivo LIKE 'auto_round_robin%') AS automaticos,
+                SUM(h.motivo = 'Auto-asignacion de chat') AS tomados
+           FROM historial_encargados h
+           JOIN clientes_chat_center c ON c.id = h.id_cliente_chat_center
+          WHERE c.id_configuracion = :id_configuracion
+            AND h.fecha_registro >= ${desdeSql}
+            AND h.id_encargado_nuevo IN (:ids)
+          GROUP BY h.id_encargado_nuevo`,
+        {
+          replacements: { id_configuracion: dep.id_configuracion, dias, ids: idsMiembros },
+          type: db.QueryTypes.SELECT,
+        },
+      )
+    : [];
+
+  // Quién estaba conectado cada vez que la rueda repartió un chat.
+  const eventos = await db.query(
+    `SELECT h.candidatos_online
+       FROM historial_encargados h
+       JOIN clientes_chat_center c ON c.id = h.id_cliente_chat_center
+      WHERE c.id_configuracion = :id_configuracion
+        AND h.fecha_registro >= ${desdeSql}
+        AND h.motivo LIKE 'auto_round_robin%'
+        AND h.candidatos_online IS NOT NULL`,
+    {
+      replacements: { id_configuracion: dep.id_configuracion, dias },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  const disponible = new Map(idsMiembros.map((id) => [id, 0]));
+  // "Todo el equipo disponible" se mide sobre quienes entran en la rueda:
+  // con reparto automático y sin contar al administrador (la rueda lo excluye).
+  const idsRueda = miembros
+    .filter((m) => Number(m.asignacion_auto) === 1 && m.rol !== 'administrador')
+    .map((m) => Number(m.id_sub_usuario));
+  let todosDisponibles = 0;
+  let nadieDisponible = 0;
+  for (const ev of eventos) {
+    // Formato: "online:1852,1998 | auto:1852,1998,2023"
+    const m = /online:([0-9,]*)/.exec(ev.candidatos_online || '');
+    const online = new Set(
+      (m?.[1] || '').split(',').filter(Boolean).map(Number),
+    );
+    const enTurno = idsMiembros.filter((id) => online.has(id));
+    if (!enTurno.length) nadieDisponible += 1;
+    if (idsRueda.length && idsRueda.every((id) => online.has(id))) {
+      todosDisponibles += 1;
+    }
+    for (const id of enTurno) disponible.set(id, disponible.get(id) + 1);
+  }
+
+  // Tiempo conectado (solo existe desde que se creó presencia_sesiones).
+  let tiempos = [];
+  let desdeCuandoSeMide = null;
+  try {
+    tiempos = idsMiembros.length
+      ? await db.query(
+          `SELECT id_sub_usuario,
+                  SUM(GREATEST(TIMESTAMPDIFF(SECOND,
+                        GREATEST(inicio, ${desdeSql}),
+                        COALESCE(fin, inicio)), 0)) AS segundos,
+                  MIN(inicio) AS primera
+             FROM presencia_sesiones
+            WHERE id_sub_usuario IN (:ids)
+              AND COALESCE(fin, inicio) >= ${desdeSql}
+            GROUP BY id_sub_usuario`,
+          { replacements: { ids: idsMiembros, dias }, type: db.QueryTypes.SELECT },
+        )
+      : [];
+    const [primera] = await db.query(
+      `SELECT MIN(inicio) AS primera FROM presencia_sesiones`,
+      { type: db.QueryTypes.SELECT },
+    );
+    desdeCuandoSeMide = primera?.primera || null;
+  } catch (e) {
+    // Tabla aún no migrada: el reporte sale sin tiempos.
+    console.warn('[reparto] presencia_sesiones no disponible:', e.message);
+  }
+
+  // Para que el cliente pueda cuadrar con otras vistas: cuántos clientes
+  // escribieron en el periodo (nuevos o antiguos) y cuántos chats nuevos
+  // quedaron sin persona. Un cliente antiguo que vuelve a escribir conserva
+  // su encargado y NO genera una asignación nueva.
+  const [contexto] = await db.query(
+    `SELECT
+       (SELECT COUNT(DISTINCT m.celular_recibe)
+          FROM mensajes_clientes m
+         WHERE m.id_configuracion = :id_configuracion
+           AND m.rol_mensaje = 0
+           AND m.created_at >= ${desdeSql}) AS clientes_que_escribieron,
+       (SELECT COUNT(*)
+          FROM clientes_chat_center c
+         WHERE c.id_configuracion = :id_configuracion
+           AND c.created_at >= ${desdeSql}) AS chats_nuevos,
+       (SELECT COUNT(*)
+          FROM clientes_chat_center c
+         WHERE c.id_configuracion = :id_configuracion
+           AND c.created_at >= ${desdeSql}
+           AND c.id_encargado IS NULL) AS chats_nuevos_sin_asignar`,
+    {
+      replacements: { id_configuracion: dep.id_configuracion, dias },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const conteoPor = new Map(conteos.map((c) => [Number(c.id_sub_usuario), c]));
+  const tiempoPor = new Map(tiempos.map((t) => [Number(t.id_sub_usuario), t]));
+
+  const data = miembros.map((m) => {
+    const id = Number(m.id_sub_usuario);
+    const c = conteoPor.get(id) || {};
+    const t = tiempoPor.get(id) || {};
+    const automaticos = Number(c.automaticos || 0);
+    const tomados = Number(c.tomados || 0);
+    return {
+      id_sub_usuario: id,
+      nombre: m.nombre_encargado || m.usuario,
+      rol: m.rol,
+      asignacion_auto: Number(m.asignacion_auto || 0) === 1,
+      en_rueda: idsRueda.includes(id),
+      automaticos,
+      tomados,
+      total: automaticos + tomados,
+      veces_disponible: disponible.get(id) || 0,
+      segundos_conectado: t.segundos != null ? Number(t.segundos) : null,
+    };
+  });
+
+  const totalAutomaticos = data.reduce((s, d) => s + d.automaticos, 0);
+  const totalTomados = data.reduce((s, d) => s + d.tomados, 0);
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      departamento: {
+        id_departamento: dep.id_departamento,
+        nombre: dep.nombre_departamento,
+        id_configuracion: dep.id_configuracion,
+      },
+      periodo: { dias, hoy },
+      resumen: {
+        total_automaticos: totalAutomaticos,
+        total_tomados: totalTomados,
+        repartos_con_registro: eventos.length,
+        veces_todos_disponibles: todosDisponibles,
+        veces_nadie_disponible: nadieDisponible,
+        clientes_que_escribieron: Number(contexto?.clientes_que_escribieron || 0),
+        chats_nuevos: Number(contexto?.chats_nuevos || 0),
+        chats_nuevos_sin_asignar: Number(contexto?.chats_nuevos_sin_asignar || 0),
+        mide_tiempo_desde: desdeCuandoSeMide,
+      },
+      miembros: data,
+    },
+  });
+});
