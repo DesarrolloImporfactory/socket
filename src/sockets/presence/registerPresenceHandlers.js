@@ -1,13 +1,21 @@
 const presenceStore = require('./presenceStore');
+const presenceSessions = require('./presenceSessions');
+
+presenceSessions.iniciarTouch();
 
 module.exports = function registerPresenceHandlers(io, socket) {
-  const { id_sub_usuario } = socket.user;
+  const { id_sub_usuario, id_usuario } = socket.user;
 
   // Útil: puede usar rooms por sub_usuario si después quiere “notificar a X”
   socket.join(`sub:${id_sub_usuario}`);
 
   // Marcar conectado al momento de conectar socket
   const stateOnConnect = presenceStore.connect(id_sub_usuario, socket.id);
+
+  // Historial en BD: solo cuando pasa de offline a online (primer socket).
+  if (stateOnConnect.socket_count === 1) {
+    presenceSessions.abrir(id_sub_usuario, id_usuario);
+  }
 
   // Emitimos update global (para dashboards, listas, etc.)
   io.emit('PRESENCE_UPDATE', stateOnConnect);
@@ -44,6 +52,7 @@ module.exports = function registerPresenceHandlers(io, socket) {
       id_sub_usuario,
       socket.id,
     );
+    if (!stateOnDisconnect.online) presenceSessions.cerrar(id_sub_usuario);
     io.emit('PRESENCE_UPDATE', stateOnDisconnect);
   });
 };
