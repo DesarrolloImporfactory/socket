@@ -92,6 +92,20 @@ function parseAny(raw, countryCode) {
  *   EC "962803007" · CO "3001234567" · MX "5512345678" · GT "55551234"
  */
 function toDropiLocal(raw, countryCode = 'EC') {
+  /* México: WhatsApp entrega los celulares como 52 + 1 + 10 dígitos (el "1"
+     de móvil que México dejó de usar en 2019 pero Meta conserva: 11.552
+     contactos así en cuentas MX). libphonenumber no valida "+521…" y el
+     fallback solo quitaba el 52, así que a Dropi llegaban 11 dígitos y
+     rechazaba la orden ("El teléfono del cliente no es válido o está
+     incompleto"). Dropi MX quiere los 10 dígitos pelados. */
+  if (resolveRegion(countryCode) === 'MX') {
+    let d = String(raw || '').replace(/\D/g, '');
+    if (d.startsWith('521') && d.length === 13) d = d.slice(3);
+    else if (d.startsWith('52') && d.length === 12) d = d.slice(2);
+    else if (d.startsWith('1') && d.length === 11) d = d.slice(1);
+    if (d.length === 10) return d;
+    raw = d;
+  }
   const p = parseAny(raw, countryCode);
   if (p) return p.nationalNumber;
 
