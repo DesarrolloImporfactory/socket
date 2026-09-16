@@ -652,6 +652,44 @@ class Sockets {
             }
           }
 
+          /* México: la bodega tiene que ir COMPLETA (con zip_code, colonia,
+             city…) o las paqueterías revientan con "Undefined property:
+             stdClass::$zip_code". Dropi la devuelve, junto con la ciudad de
+             origen ya armada, en getOriginCityForCalculateShipping cuando
+             el destino va como "ciudad, estado" (capturado en app.dropi.mx
+             el 2026-09-16). Solo con código postal (cuentas MX). */
+          if (zip_code && products[0]?.id) {
+            try {
+              const destinoTxt = `${ciudad_destino.name || ''}, ${
+                ciudad_destino.department?.name || ''
+              }`.toLowerCase();
+              const origResp = await dropiService.getOriginCityForShipping({
+                integrationKey,
+                productId: products[0].id,
+                productType: products[0].type || 'SIMPLE',
+                destination: destinoTxt,
+                country_code: integration.country_code,
+              });
+              const oc = origResp?.data || origResp?.objects || origResp;
+              if (Number(oc?.warehouse?.id) > 0) warehouseObj = oc.warehouse;
+              if (Number(oc?.city_dropi?.id) > 0) {
+                const cd = oc.city_dropi;
+                const dept = departments.find(
+                  (d) =>
+                    Number(d.id || d.department_id) === Number(cd.department_id),
+                );
+                ciudad_remitente = cd.department
+                  ? cd
+                  : { ...cd, department: dept ? buildDepartment(dept) : undefined };
+              }
+              console.log(
+                `[Dropi Cotiza] MX origen: bodega ${warehouseObj?.id || '?'} (cp ${warehouseObj?.zip_code || '?'}), ciudad ${ciudad_remitente?.name || '?'}`,
+              );
+            } catch (e) {
+              console.log(`[Dropi Cotiza] getOriginCityForShipping (MX) falló: ${e.message}`);
+            }
+          }
+
           const dropiPayload = {
             EnvioConCobro,
             ciudad_destino,
@@ -665,6 +703,10 @@ class Sockets {
                postal". Solo entra cuando el panel manda código postal. */
             ...(zip_code
               ? {
+                  peso: 1,
+                  largo: 1,
+                  ancho: 1,
+                  alto: 1,
                   zip_code,
                   colonia: null,
                   dir: strOrNull(payload?.dir),
