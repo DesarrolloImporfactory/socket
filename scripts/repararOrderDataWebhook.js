@@ -157,7 +157,15 @@ async function escribir(fila, orderdetails, fuente) {
     }
   }
 
-  const stats = { hermana: 0, dropi: 0, sin_fuente: 0, invalidas: 0, errores: 0 };
+  const stats = {
+    hermana: 0,
+    dropi: 0,
+    sin_costo_en_dropi: 0,
+    sin_fuente: 0,
+    llave_rechazada: 0,
+    invalidas: 0,
+    errores: 0,
+  };
   const pendientesDropi = [];
   for (const f of filas) {
     const h = hermanas.get(String(f.dropi_order_id));
@@ -208,13 +216,25 @@ async function escribir(fila, orderdetails, fuente) {
     if (!integPorCtx.has(k)) integPorCtx.set(k, i);
   }
 
+  // Un 401 puede ser la IP (todas las llaves fallan: correr en el servidor)
+  // o UNA llave vencida/revocada (corrida del 2026-09-15: el servidor reparó
+  // 6 y cortó por la llave de una sola integración). Se salta la integración
+  // rechazada y se sigue; solo se corta si 3 integraciones DISTINTAS seguidas
+  // devuelven 401, que es la firma de la IP bloqueada.
   let llamadas = 0;
   let cortar = false;
+  const llavesRechazadas = new Map(); // integ.id -> órdenes saltadas
+  let rechazosSeguidos = 0;
   for (const f of pendientesDropi) {
     if (cortar || llamadas >= LIMITE) break;
     const integ = integPorCtx.get(`${f.id_configuracion}/${f.id_usuario}`);
     if (!integ) {
       stats.sin_fuente++;
+      continue;
+    }
+    if (llavesRechazadas.has(integ.id)) {
+      llavesRechazadas.set(integ.id, llavesRechazadas.get(integ.id) + 1);
+      stats.llave_rechazada++;
       continue;
     }
     if (!APPLY) {
@@ -235,38 +255,71 @@ async function escribir(fila, orderdetails, fuente) {
         orderId: f.dropi_order_id,
         country_code: integ.country_code,
       });
+      rechazosSeguidos = 0;
       const obj = det?.objects;
       const od = obj?.orderdetails;
       const idOk = String(obj?.id) === String(f.dropi_order_id);
       const totalOk =
         Math.abs(Number(obj?.total_order) - Number(f.total_order)) <= 0.01;
       const itemsOk = mismosItems(parse(f.order_data)?.orderdetails, od);
-      if (!idOk || !totalOk || !itemsOk || !esRico(od)) {
+      if (idOk && totalOk && itemsOk && !esRico(od)) {
+        // Es la orden correcta pero Dropi tampoco tiene el costo por ítem
+        // (producto borrado/desactivado): no hay fuente real, se deja como
+        // está (el SQL prorratea el costo desde el total de la orden).
+        stats.sin_costo_en_dropi++;
+        console.log(
+          `  - orden ${f.dropi_order_id}: Dropi tampoco trae costo por producto, se deja`,
+        );
+      } else if (!idOk || !totalOk || !itemsOk) {
         stats.invalidas++;
         console.log(
-          `  ! orden ${f.dropi_order_id}: detalle no válido (id ${idOk}, total ${totalOk}, items ${itemsOk}, rico ${esRico(od)}), no se escribe`,
+          `  ! orden ${f.dropi_order_id}: Dropi devolvió otra cosa (id ${idOk}, total ${totalOk}, items ${itemsOk}; msg: ${det?.message || '-'}), no se escribe`,
         );
       } else {
         await escribir(f, od, 'dropi');
         stats.dropi++;
       }
     } catch (e) {
-      stats.errores++;
       const msg = e?.message || String(e);
-      console.log(`  x orden ${f.dropi_order_id}: ${msg}`);
       if (/401|Access denied/i.test(msg)) {
+        llavesRechazadas.set(integ.id, 1);
+        stats.llave_rechazada++;
+        rechazosSeguidos++;
         console.log(
-          'Dropi rechaza la IP (401): este paso hay que correrlo en el servidor. Se corta.',
+          `  x integración #${integ.id} (cfg ${f.id_configuracion}/usr ${f.id_usuario}): Dropi rechaza su llave (401). Se saltan sus órdenes.`,
         );
-        cortar = true;
+        if (rechazosSeguidos >= 3) {
+          console.log(
+            'Tres integraciones distintas seguidas con 401: Dropi está bloqueando la IP. Se corta.',
+          );
+          cortar = true;
+        }
+      } else {
+        stats.errores++;
+        console.log(`  x orden ${f.dropi_order_id}: ${msg}`);
       }
     }
     await sleep(DELAY_DROPI_MS);
   }
-  const restantes = pendientesDropi.length - stats.dropi - stats.invalidas - stats.sin_fuente - stats.errores;
+  const atendidas =
+    stats.dropi +
+    stats.invalidas +
+    stats.sin_costo_en_dropi +
+    stats.sin_fuente +
+    stats.llave_rechazada +
+    stats.errores;
+  const restantes = Math.max(0, pendientesDropi.length - atendidas);
   console.log(
-    `Paso 2 (Dropi): ${stats.dropi} ${APPLY ? 'reparadas' : 'por pedir a Dropi'} · ${stats.invalidas} inválidas · ${stats.sin_fuente} sin integración activa · ${stats.errores} errores · ${Math.max(0, restantes)} fuera del tope`,
+    `Paso 2 (Dropi): ${stats.dropi} ${APPLY ? 'reparadas' : 'por pedir a Dropi'} · ${stats.sin_costo_en_dropi} sin costo en Dropi · ${stats.invalidas} inválidas · ${stats.llave_rechazada} de llaves rechazadas · ${stats.sin_fuente} sin integración activa · ${stats.errores} errores · ${restantes} fuera del tope`,
   );
+  if (llavesRechazadas.size) {
+    console.log(
+      'Integraciones con llave rechazada por Dropi (el cliente debe reconectar Dropi): ' +
+        [...llavesRechazadas.entries()]
+          .map(([id, n]) => `#${id} (${n} órdenes)`)
+          .join(', '),
+    );
+  }
   console.log('RESUMEN', JSON.stringify(stats));
   process.exit(0);
 })().catch((e) => {
