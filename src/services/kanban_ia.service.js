@@ -483,8 +483,11 @@ function camposFaltantesCierre(respuesta, ficha = null) {
     v !== null && (/por confirmar/i.test(v) || !esValorRelleno(v));
   if (!entregaOk(direccion) && !entregaOk(agencia)) {
     faltan.push(
-      '- Dirección exacta (dos calles y una referencia), o la agencia ' +
-        'Servientrega si prefieres retirarlo',
+      ficha?._esMexico
+        ? '- Dirección exacta (calle, número, colonia y una referencia), o la ' +
+            'sucursal de la paquetería si prefieres retirarlo'
+        : '- Dirección exacta (dos calles y una referencia), o la agencia ' +
+            'Servientrega si prefieres retirarlo',
     );
   }
 

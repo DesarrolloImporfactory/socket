@@ -1837,6 +1837,17 @@ async function procesarTemplates({
       } else if (config.columna_destino) {
         columnaDestino = config.columna_destino;
       }
+      /* México: no existe Servientrega y el tablero MX ya no tiene la
+         columna retiro_agencia (2026-09-16). Si Dropi MX manda "RETIRO EN
+         AGENCIA" (casi siempre el falso retiro al despachar), el chat va a
+         en_transito y no a una columna inexistente, que lo dejaría fuera del
+         kanban. Solo MX; Ecuador conserva su columna y su flujo. */
+      if (
+        columnaDestino === 'retiro_agencia' &&
+        String(country_code || '').toUpperCase() === 'MX'
+      ) {
+        columnaDestino = 'en_transito';
+      }
 
       if (columnaDestino && clienteId) {
         try {
