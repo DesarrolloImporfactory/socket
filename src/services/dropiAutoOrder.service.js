@@ -1716,6 +1716,7 @@ async function autoCrearOrdenDropi({
     for (const r of renglones) {
       let cityObjR = null;
       let fuenteR = 'dropi_api';
+      let warehouseFullR = null; // bodega completa (México la exige con zip_code)
       try {
         const origResp = await conReintento429(() =>
           dropiService.getOriginCityForShipping({
@@ -1740,7 +1741,21 @@ async function autoCrearOrdenDropi({
           origResp?.data?.objects ||
           origResp?.data ||
           origResp;
-        if (oc && (oc.cod_dane || oc.id)) {
+        /* México: la respuesta viene como { warehouse, city, city_dropi }
+           (capturada en app.dropi.mx el 2026-09-16): la bodega COMPLETA con
+           su zip_code y la ciudad de origen ya armada con department. Sin
+           la bodega completa, las paqueterías MX revientan con "Undefined
+           property: stdClass::$zip_code". */
+        if (oc?.city_dropi?.id) {
+          const cd = oc.city_dropi;
+          const deptOrigen = states.find(
+            (s) => Number(s.id || s.department_id) === Number(cd.department_id),
+          );
+          cityObjR = cd.department
+            ? cd
+            : { ...cd, department: deptOrigen ? buildDepartment(deptOrigen) : undefined };
+          if (Number(oc.warehouse?.id) > 0) warehouseFullR = oc.warehouse;
+        } else if (oc && (oc.cod_dane || oc.id)) {
           const deptOrigen = states.find(
             (s) => Number(s.id || s.department_id) === Number(oc.department_id),
           );
@@ -1761,7 +1776,7 @@ async function autoCrearOrdenDropi({
 
       // Respaldo 1: la bodega embebida en el producto crudo, si Dropi la mandó
       // en el detalle. Es gratis (ya está en memoria) y evita el último recurso.
-      if (!cityObjR?.cod_dane) {
+      if (!cityObjR?.cod_dane && !cityObjR?.id) {
         const wCity = pickWarehouseCityFromProduct(r.prodDropi);
         if (wCity?.cod_dane) {
           cityObjR = wCity;
@@ -1769,13 +1784,23 @@ async function autoCrearOrdenDropi({
         }
       }
 
-      origenesRenglon.push({ r, cityObj: cityObjR, fuente: fuenteR });
+      origenesRenglon.push({
+        r,
+        cityObj: cityObjR,
+        fuente: fuenteR,
+        warehouseFull: warehouseFullR,
+      });
     }
 
     // ── Candado de misma bodega (solo pesa con 2+ renglones) ──
-    const resueltos = origenesRenglon.filter((o) => o.cityObj?.cod_dane);
+    // Se compara por cod_dane o, en México (ciudades sin código), por id.
+    const resueltos = origenesRenglon.filter(
+      (o) => o.cityObj?.cod_dane || o.cityObj?.id,
+    );
     const codDanesOrigen = [
-      ...new Set(resueltos.map((o) => String(o.cityObj.cod_dane).trim())),
+      ...new Set(
+        resueltos.map((o) => String(o.cityObj.cod_dane || `id:${o.cityObj.id}`).trim()),
+      ),
     ];
     if (codDanesOrigen.length > 1) {
       return fail(
@@ -1807,15 +1832,18 @@ async function autoCrearOrdenDropi({
       );
     }
 
+    // Bodega completa (México): la devolvió getOriginCityForShipping.
+    let warehouseFull = null;
     if (resueltos.length) {
       remitCityObj = resueltos[0].cityObj;
       fuenteRemitente = resueltos[0].fuente;
+      warehouseFull = resueltos[0].warehouseFull || null;
     }
 
     // Último recurso: cotizar como si la bodega estuviera en la misma ciudad
     // del destino — mismo criterio que cotizarTransportadorasOrden. Nunca
     // tumba la venta por no haber podido resolver el origen.
-    if (!remitCityObj?.cod_dane) {
+    if (!remitCityObj?.cod_dane && !remitCityObj?.id) {
       remitCityObj = { ...city };
       fuenteRemitente = 'fallback_destino';
       console.log(
@@ -1888,7 +1916,15 @@ async function autoCrearOrdenDropi({
               type: 'SIMPLE',
             })),
             amount: precioVenta,
-            ...(warehouseId ? { warehouse: { id: warehouseId } } : {}),
+            /* La bodega va COMPLETA cuando Dropi la devolvió así (México:
+               con zip_code, colonia, city…). Con solo {id}, las paqueterías
+               MX revientan con "Undefined property: stdClass::$zip_code". En
+               Ecuador sigue yendo {id}, que es lo que siempre funcionó. */
+            ...(warehouseFull
+              ? { warehouse: warehouseFull }
+              : warehouseId
+                ? { warehouse: { id: warehouseId } }
+                : {}),
             /* México: campos que manda el propio front de Dropi al cotizar
                (payload capturado en app.dropi.mx el 2026-09-15). El código
                postal va en `zip_code` al nivel superior; sin él Dropi MX
@@ -1896,6 +1932,10 @@ async function autoCrearOrdenDropi({
                que algunas paqueterías validan (Afimex exige teléfono). */
             ...(datosBot.codigo_postal
               ? {
+                  peso: 1,
+                  largo: 1,
+                  ancho: 1,
+                  alto: 1,
                   zip_code: datosBot.codigo_postal,
                   colonia: null,
                   dir: datosBot.direccion || null,
