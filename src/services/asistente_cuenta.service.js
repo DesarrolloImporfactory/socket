@@ -10,7 +10,7 @@
  * el id_configuracion lo pone el backend, ya validado por protectConfigOwner.
  */
 
-const { db } = require('../database/config');
+const { db, db_2 } = require('../database/config');
 
 const MAX_DIAS_RANGO = 366;
 const DIAS_POR_DEFECTO = 30;
@@ -562,6 +562,150 @@ async function pedidosAliclikResumen(idConfiguracion, args) {
   };
 }
 
+/* ─── Videos tutoriales (curso de Imporsuit, BD db_2) ─── */
+
+// Curso 32, módulo 136 "Crea y configura el agente de IA": los videos de
+// configuración de ImporChat. Se reproducen con el embed de Bunny Stream, igual
+// que en imporsuit-pro (Views/templates/nova/nova-player.js).
+const ID_MODULO_TUTORIALES = 136;
+const CACHE_VIDEOS_MS = 10 * 60 * 1000;
+const MAX_VIDEOS_RESPUESTA = 3;
+let cacheVideos = { at: 0, videos: null };
+
+// Solo embeds de Bunny Stream: la URL termina en un iframe del front.
+const RE_EMBED_BUNNY =
+  /^https:\/\/(?:player|iframe)\.mediadelivery\.net\/embed\/(\d+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+function embedBunny(url) {
+  const m = RE_EMBED_BUNNY.exec(String(url || '').trim());
+  return m ? `https://player.mediadelivery.net/embed/${m[1]}/${m[2]}` : null;
+}
+
+function normalizarTexto(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+// Palabras que no ayudan a elegir video ("cómo conecto mi Dropi con ImporChat").
+const PALABRAS_VACIAS = new Set(
+  'a al como con cual cuales de del donde el en es esta este hacer hago la las lo los me mi mis para por puedo que quiero se si su sus tu tus un una uno y o video videos tutorial tutoriales imporchat ver ensena ensenar explica explicame necesito ayuda'.split(
+    ' ',
+  ),
+);
+
+async function videosTutoriales() {
+  if (cacheVideos.videos && Date.now() - cacheVideos.at < CACHE_VIDEOS_MS) {
+    return cacheVideos.videos;
+  }
+  const rows = await db_2.query(
+    `SELECT id_contenido, orden, titulo, video_descripcion, video_url,
+            thumbnail, duracion_segundos
+       FROM cursos_contenidos
+      WHERE id_modulo = :modulo AND tipo = 'video' AND visible = 1
+      ORDER BY orden, id_contenido`,
+    { replacements: { modulo: ID_MODULO_TUTORIALES }, type: db_2.QueryTypes.SELECT },
+  );
+  const videos = rows
+    .map((r) => ({
+      id: Number(r.id_contenido),
+      orden: num(r.orden),
+      titulo: String(r.titulo || '').trim(),
+      descripcion: String(r.video_descripcion || '').trim(),
+      embed_url: embedBunny(r.video_url),
+      thumbnail: /^https:\/\//i.test(r.thumbnail || '') ? r.thumbnail : null,
+      duracion_segundos: num(r.duracion_segundos) || null,
+    }))
+    .filter((v) => v.embed_url && v.titulo);
+  cacheVideos = { at: Date.now(), videos };
+  return videos;
+}
+
+// Compara por raíz de 5 letras para cubrir conjugaciones ("conectar" ~
+// "conecta", "productos" ~ "producto").
+const raizPalabra = (p) => (p.length > 5 ? p.slice(0, 5) : p);
+
+// Puntaje: la palabra en el título vale 3 y en la descripción 1, dividido por
+// cuántos videos la contienen. Así "dropi" (pocos videos) pesa más que
+// "conectar" (muchos) y "conectar dropi" no trae el video de WhatsApp.
+function puntajesVideos(videos, palabras) {
+  const textos = videos.map((v) => ({
+    titulo: normalizarTexto(v.titulo),
+    desc: normalizarTexto(v.descripcion),
+  }));
+  const frecuencia = palabras.map((p) => {
+    const raiz = raizPalabra(p);
+    return textos.filter((t) => t.titulo.includes(raiz) || t.desc.includes(raiz)).length;
+  });
+  return textos.map((t) =>
+    palabras.reduce((total, p, i) => {
+      if (!frecuencia[i]) return total;
+      const raiz = raizPalabra(p);
+      const peso = t.titulo.includes(raiz) ? 3 : t.desc.includes(raiz) ? 1 : 0;
+      return total + peso / frecuencia[i];
+    }, 0),
+  );
+}
+
+async function buscarVideosTutoriales(args) {
+  const videos = await videosTutoriales();
+  const publico = (v) => ({
+    id: v.id,
+    titulo: v.titulo,
+    descripcion: v.descripcion.slice(0, 300),
+    duracion_segundos: v.duracion_segundos,
+    thumbnail: v.thumbnail,
+    embed_url: v.embed_url,
+  });
+
+  const ids = Array.isArray(args?.ids)
+    ? args.ids.map(Number).filter(Number.isFinite).slice(0, MAX_VIDEOS_RESPUESTA)
+    : [];
+  if (ids.length) {
+    const elegidos = ids
+      .map((id) => videos.find((v) => v.id === id))
+      .filter(Boolean)
+      .map(publico);
+    return { videos: elegidos };
+  }
+
+  const palabras = [
+    ...new Set(
+      normalizarTexto(args?.tema)
+        .split(/[^a-z0-9]+/)
+        .filter((p) => p.length >= 3 && !PALABRAS_VACIAS.has(p)),
+    ),
+  ];
+
+  let encontrados = [];
+  if (palabras.length) {
+    const puntos = puntajesVideos(videos, palabras);
+    encontrados = videos
+      .map((v, i) => ({ v, puntos: puntos[i] }))
+      .filter((x) => x.puntos > 0)
+      .sort((a, b) => b.puntos - a.puntos || a.v.orden - b.v.orden);
+    // Solo los que están cerca del mejor: evita rellenar con coincidencias
+    // de una palabra genérica.
+    const mejor = encontrados[0]?.puntos || 0;
+    encontrados = encontrados.filter((x) => x.puntos >= mejor * 0.6);
+  }
+
+  if (encontrados.length) {
+    return {
+      videos: encontrados.slice(0, MAX_VIDEOS_RESPUESTA).map((x) => publico(x.v)),
+    };
+  }
+
+  // Sin coincidencias: se devuelve el índice (sin URLs) para que el modelo
+  // elija por título y vuelva a llamar con ids, o diga que no hay video.
+  return {
+    videos: [],
+    mensaje: 'No hay coincidencia directa por palabras. Estos son todos los videos disponibles:',
+    indice: videos.map((v) => ({ id: v.id, titulo: v.titulo })),
+  };
+}
+
 /* ─── Búsqueda puntual ─── */
 
 async function buscarPedido(idConfiguracion, args, integraciones) {
@@ -659,7 +803,34 @@ const PARAM_FECHAS = {
 };
 
 function construirTools(integraciones) {
-  const tools = [];
+  // Los tutoriales no dependen de integraciones: sirven justo a quien empieza.
+  const tools = [
+    {
+      type: 'function',
+      function: {
+        name: 'buscar_videos_tutoriales',
+        description:
+          'Busca videos tutoriales oficiales de ImporChat (crear cuenta, conectar WhatsApp/Meta, OpenAI, métodos de pago, páginas de Facebook e Instagram, vincular Dropi, catálogos, plantillas kanban, personalizar el bot y el prompt, remarketing, orden automática de Dropi, errores en pedidos automáticos, plantillas y respuestas rápidas, productos variables y combos, Aliclik, anuncios de Meta, mensajes masivos, etc.). Úsala cuando pregunten cómo hacer o configurar algo. Los videos se muestran al usuario con reproductor.',
+        parameters: {
+          type: 'object',
+          properties: {
+            tema: {
+              type: 'string',
+              description:
+                'Palabras clave de lo que quiere aprender (p. ej. "conectar dropi", "remarketing", "mensajes masivos").',
+            },
+            ids: {
+              type: 'array',
+              items: { type: 'integer' },
+              description:
+                'IDs de videos elegidos del índice que devolvió una búsqueda anterior sin coincidencias (máximo 3).',
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+  ];
 
   if (integraciones.datosDropi) {
     tools.push(
@@ -783,6 +954,8 @@ async function ejecutarTool(nombre, args, { idConfiguracion, integraciones }) {
     case 'pedidos_aliclik_resumen':
       if (!integraciones.datosAliclik) break;
       return pedidosAliclikResumen(idConfiguracion, args);
+    case 'buscar_videos_tutoriales':
+      return buscarVideosTutoriales(args);
     case 'ventas_producto':
       return ventasProducto(idConfiguracion, args, integraciones);
     case 'buscar_pedido':
