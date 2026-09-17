@@ -8,8 +8,17 @@ const {
 
 const router = express.Router();
 
-// protectConfigOwner es obligatorio: las consultas filtran por el
-// id_configuracion del body, así que tiene que pertenecer a la sesión.
-router.post('/preguntar', protect, protectConfigOwner, controller.preguntar);
+/* Con id_configuracion hay que validar que sea de la sesión: las consultas
+   filtran por ese id. Sin él, el asistente entra en modo general (solo videos
+   tutoriales e integraciones), que no toca datos de ninguna cuenta. */
+const validarConfigSiViene = (req, res, next) =>
+  req.body?.id_configuracion ? protectConfigOwner(req, res, next) : next();
+
+router.post(
+  '/preguntar',
+  protect,
+  validarConfigSiViene,
+  controller.preguntar,
+);
 
 module.exports = router;

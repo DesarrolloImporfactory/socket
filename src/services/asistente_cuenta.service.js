@@ -10,6 +10,8 @@
  * el id_configuracion lo pone el backend, ya validado por protectConfigOwner.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { db, db_2 } = require('../database/config');
 
 const MAX_DIAS_RANGO = 366;
@@ -564,10 +566,15 @@ async function pedidosAliclikResumen(idConfiguracion, args) {
 
 /* ─── Videos tutoriales (curso de Imporsuit, BD db_2) ─── */
 
-// Curso 32, módulo 136 "Crea y configura el agente de IA": los videos de
-// configuración de ImporChat. Se reproducen con el embed de Bunny Stream, igual
-// que en imporsuit-pro (Views/templates/nova/nova-player.js).
-const ID_MODULO_TUTORIALES = 136;
+// Curso 32 de Imporsuit. Módulo 135 "Configura el ecosistema de tu tienda"
+// (pasos previos: fanpage, portafolio comercial, cuenta Dropi, WhatsApp
+// Business…) y módulo 136 "Crea y configura el agente de IA" (todo lo que se
+// configura dentro de ImporChat). Se reproducen con el embed de Bunny Stream,
+// igual que en imporsuit-pro (Views/templates/nova/nova-player.js).
+const MODULOS_TUTORIALES = [
+  { id: 135, etapa: 'Antes de ImporChat: crear tus cuentas' },
+  { id: 136, etapa: 'Configurar ImporChat' },
+];
 const CACHE_VIDEOS_MS = 10 * 60 * 1000;
 const MAX_VIDEOS_RESPUESTA = 3;
 let cacheVideos = { at: 0, videos: null };
@@ -599,17 +606,22 @@ async function videosTutoriales() {
   if (cacheVideos.videos && Date.now() - cacheVideos.at < CACHE_VIDEOS_MS) {
     return cacheVideos.videos;
   }
+  const etapas = new Map(MODULOS_TUTORIALES.map((m) => [m.id, m.etapa]));
   const rows = await db_2.query(
-    `SELECT id_contenido, orden, titulo, video_descripcion, video_url,
+    `SELECT id_contenido, id_modulo, orden, titulo, video_descripcion, video_url,
             thumbnail, duracion_segundos
        FROM cursos_contenidos
-      WHERE id_modulo = :modulo AND tipo = 'video' AND visible = 1
-      ORDER BY orden, id_contenido`,
-    { replacements: { modulo: ID_MODULO_TUTORIALES }, type: db_2.QueryTypes.SELECT },
+      WHERE id_modulo IN (:modulos) AND tipo = 'video' AND visible = 1
+      ORDER BY id_modulo, orden, id_contenido`,
+    {
+      replacements: { modulos: MODULOS_TUTORIALES.map((m) => m.id) },
+      type: db_2.QueryTypes.SELECT,
+    },
   );
   const videos = rows
     .map((r) => ({
       id: Number(r.id_contenido),
+      etapa: etapas.get(Number(r.id_modulo)) || '',
       orden: num(r.orden),
       titulo: String(r.titulo || '').trim(),
       descripcion: String(r.video_descripcion || '').trim(),
@@ -652,6 +664,7 @@ async function buscarVideosTutoriales(args) {
   const videos = await videosTutoriales();
   const publico = (v) => ({
     id: v.id,
+    etapa: v.etapa,
     titulo: v.titulo,
     descripcion: v.descripcion.slice(0, 300),
     duracion_segundos: v.duracion_segundos,
@@ -702,7 +715,125 @@ async function buscarVideosTutoriales(args) {
   return {
     videos: [],
     mensaje: 'No hay coincidencia directa por palabras. Estos son todos los videos disponibles:',
-    indice: videos.map((v) => ({ id: v.id, titulo: v.titulo })),
+    indice: videos.map((v) => ({ id: v.id, etapa: v.etapa, titulo: v.titulo })),
+  };
+}
+
+/* ─── Base de conocimiento de transportadoras (Dropi Ecuador) ─── */
+
+// src/knowledge/knowledge_base_transportadoras.md: novedades, estados,
+// cobertura, oficinas, reclamos, garantías y embalaje por transportadora. Son
+// ~190 KB, así que NO se manda entero al modelo: se parte por secciones "## " y
+// se devuelve solo la que coincide con la pregunta.
+const RUTA_KB_TRANSPORTADORAS = path.join(
+  __dirname,
+  '..',
+  'knowledge',
+  'knowledge_base_transportadoras.md',
+);
+const MAX_CHARS_SECCION = 3500;
+// Dentro de cada sección hay bloques cortos (una novedad, una oficina…). Se
+// devuelven los bloques que coinciden, no la sección entera: "Novedades -
+// Laarcourier" sola pasa de 10 000 caracteres y al recortarla se perdía justo
+// la novedad preguntada.
+const MAX_BLOQUES = 5;
+const MAX_CHARS_BLOQUE = 1200;
+let cacheSecciones = null;
+
+function seccionesTransportadoras() {
+  if (cacheSecciones) return cacheSecciones;
+  let texto = '';
+  try {
+    texto = fs.readFileSync(RUTA_KB_TRANSPORTADORAS, 'utf-8');
+  } catch (err) {
+    console.error('[AsistenteCuenta] KB transportadoras no disponible:', err.message);
+    cacheSecciones = [];
+    return cacheSecciones;
+  }
+  const partes = texto.split(/^##\s+/m);
+  cacheSecciones = partes
+    .slice(1)
+    .map((bloque) => {
+      const corte = bloque.indexOf('\n');
+      return {
+        titulo: bloque.slice(0, corte).trim(),
+        cuerpo: bloque.slice(corte + 1).trim(),
+      };
+    })
+    .filter((s) => s.titulo && s.cuerpo);
+  return cacheSecciones;
+}
+
+async function buscarAyudaTransportadoras(args) {
+  const secciones = seccionesTransportadoras();
+  if (!secciones.length) {
+    return { error: 'La base de transportadoras no está disponible.' };
+  }
+  const palabras = [
+    ...new Set(
+      normalizarTexto(args?.tema)
+        .split(/[^a-z0-9]+/)
+        .filter((p) => p.length >= 3 && !PALABRAS_VACIAS.has(p)),
+    ),
+  ];
+  if (!palabras.length) {
+    return { error: 'Indica sobre qué necesitas la información.' };
+  }
+
+  const puntuar = (texto, pesoTitulo) => {
+    const plano = normalizarTexto(texto);
+    let puntos = 0;
+    for (const p of palabras) {
+      const raiz = raizPalabra(p);
+      const apariciones = plano.split(raiz).length - 1;
+      if (apariciones) puntos += Math.min(apariciones, 3) * pesoTitulo;
+    }
+    return puntos;
+  };
+
+  // 1) Bloques (separados por línea en blanco) de las secciones que pintan.
+  const candidatas = secciones
+    .map((s) => ({ s, puntos: puntuar(s.titulo, 5) + puntuar(s.cuerpo, 1) }))
+    .filter((x) => x.puntos > 0)
+    .sort((a, b) => b.puntos - a.puntos)
+    .slice(0, 4);
+
+  if (!candidatas.length) {
+    return {
+      secciones: [],
+      mensaje: 'La base de transportadoras no cubre ese tema.',
+      temas_disponibles: secciones.map((s) => s.titulo).slice(0, 40),
+    };
+  }
+
+  const bloques = [];
+  for (const { s } of candidatas) {
+    for (const bloque of s.cuerpo.split(/\n\s*\n/)) {
+      const texto = bloque.trim();
+      if (!texto) continue;
+      const puntos = puntuar(texto, 1) + puntuar(s.titulo, 2);
+      if (puntos > 0) bloques.push({ seccion: s.titulo, texto, puntos });
+    }
+  }
+  bloques.sort((a, b) => b.puntos - a.puntos);
+
+  if (bloques.length) {
+    return {
+      fuente: 'Base de conocimiento de transportadoras de Dropi Ecuador',
+      secciones: bloques.slice(0, MAX_BLOQUES).map((b) => ({
+        titulo: b.seccion,
+        contenido: b.texto.slice(0, MAX_CHARS_BLOQUE),
+      })),
+    };
+  }
+
+  // 2) Sin bloques (tablas largas, listados): se manda el inicio de la sección.
+  return {
+    fuente: 'Base de conocimiento de transportadoras de Dropi Ecuador',
+    secciones: candidatas.slice(0, 2).map((x) => ({
+      titulo: x.s.titulo,
+      contenido: x.s.cuerpo.slice(0, MAX_CHARS_SECCION),
+    })),
   };
 }
 
@@ -810,7 +941,7 @@ function construirTools(integraciones) {
       function: {
         name: 'buscar_videos_tutoriales',
         description:
-          'Busca videos tutoriales oficiales de ImporChat (crear cuenta, conectar WhatsApp/Meta, OpenAI, métodos de pago, páginas de Facebook e Instagram, vincular Dropi, catálogos, plantillas kanban, personalizar el bot y el prompt, remarketing, orden automática de Dropi, errores en pedidos automáticos, plantillas y respuestas rápidas, productos variables y combos, Aliclik, anuncios de Meta, mensajes masivos, etc.). Úsala cuando pregunten cómo hacer o configurar algo. Los videos se muestran al usuario con reproductor.',
+          'Busca videos tutoriales oficiales. Cubren dos etapas: (1) antes de ImporChat — crear la tienda, la fanpage de Facebook, la cuenta publicitaria y el portafolio comercial de Meta, la cuenta de Dropi, configurar WhatsApp Business, Google Maps; (2) configurar ImporChat — crear la cuenta, conectar WhatsApp Business y Meta, OpenAI, métodos de pago, vincular Dropi, catálogos, plantillas kanban, personalizar el bot y el prompt, remarketing, orden automática de Dropi, plantillas y respuestas rápidas, productos variables y combos, Aliclik, anuncios de Meta, mensajes masivos. Úsala cuando pregunten cómo hacer o configurar algo. Los videos se muestran al usuario con reproductor.',
         parameters: {
           type: 'object',
           properties: {
@@ -826,6 +957,26 @@ function construirTools(integraciones) {
                 'IDs de videos elegidos del índice que devolvió una búsqueda anterior sin coincidencias (máximo 3).',
             },
           },
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'buscar_ayuda_transportadoras',
+        description:
+          'Consulta la base de conocimiento de transportadoras de Dropi Ecuador (Servientrega, Laarcourier, Gintracom, Urbano, Veloces): qué significa cada novedad y cómo responderla, estados de la guía, cobertura y recomendación de ciudades, zonas peligrosas, cobertura con/sin recaudo, oficinas, proceso de reclamos, garantías, recolección en bodega y normas de embalaje. Úsala para dudas de envíos y transportadoras, no para configurar ImporChat.',
+        parameters: {
+          type: 'object',
+          properties: {
+            tema: {
+              type: 'string',
+              description:
+                'Lo que necesita saber (p. ej. "novedad destinatario no contactado servientrega", "cobertura con recaudo", "cómo hago un reclamo").',
+            },
+          },
+          required: ['tema'],
           additionalProperties: false,
         },
       },
@@ -944,6 +1095,15 @@ function construirTools(integraciones) {
 }
 
 async function ejecutarTool(nombre, args, { idConfiguracion, integraciones }) {
+  // Modo general (sin configuración elegida): solo tutoriales. Las demás
+  // consultas necesitan una cuenta validada.
+  const SIN_CUENTA = ['buscar_videos_tutoriales', 'buscar_ayuda_transportadoras'];
+  if (!idConfiguracion && !SIN_CUENTA.includes(nombre)) {
+    return {
+      error:
+        'Para ver datos de la cuenta hay que entrar a una conexión; aquí solo puedo mostrar tutoriales.',
+    };
+  }
   switch (nombre) {
     case 'guias_dropi_resumen':
       if (!integraciones.datosDropi) break;
@@ -954,6 +1114,8 @@ async function ejecutarTool(nombre, args, { idConfiguracion, integraciones }) {
     case 'pedidos_aliclik_resumen':
       if (!integraciones.datosAliclik) break;
       return pedidosAliclikResumen(idConfiguracion, args);
+    case 'buscar_ayuda_transportadoras':
+      return buscarAyudaTransportadoras(args);
     case 'buscar_videos_tutoriales':
       return buscarVideosTutoriales(args);
     case 'ventas_producto':
@@ -966,7 +1128,59 @@ async function ejecutarTool(nombre, args, { idConfiguracion, integraciones }) {
   return { error: `Herramienta no disponible: ${nombre}` };
 }
 
+// Videos cuyo título aparece en el texto de la respuesta. Se usa cuando el
+// modelo nombra un video sin llamar a la herramienta (puede hacerlo porque el
+// prompt lleva el índice de títulos): así igual se muestra el reproductor.
+async function videosMencionados(texto, maximo = 2) {
+  const plano = normalizarTexto(texto);
+  if (!plano.trim()) return [];
+  try {
+    const videos = await videosTutoriales();
+    return videos
+      .filter((v) => {
+        const titulo = normalizarTexto(v.titulo).replace(/[.\s]+$/, '');
+        return titulo.length >= 12 && plano.includes(titulo);
+      })
+      .slice(0, maximo)
+      .map((v) => ({
+        id: v.id,
+        etapa: v.etapa,
+        titulo: v.titulo,
+        descripcion: v.descripcion.slice(0, 300),
+        duracion_segundos: v.duracion_segundos,
+        thumbnail: v.thumbnail,
+        embed_url: v.embed_url,
+      }));
+  } catch (err) {
+    console.error('[AsistenteCuenta] videos mencionados:', err.message);
+    return [];
+  }
+}
+
+// Títulos de los videos agrupados por etapa. Van en el prompt para que el
+// modelo sepa qué material existe antes de buscar, y para que no prometa
+// tutoriales que no tenemos.
+async function indiceVideosTexto() {
+  try {
+    const videos = await videosTutoriales();
+    if (!videos.length) return '';
+    const porEtapa = new Map();
+    for (const v of videos) {
+      if (!porEtapa.has(v.etapa)) porEtapa.set(v.etapa, []);
+      porEtapa.get(v.etapa).push(v.titulo);
+    }
+    return [...porEtapa.entries()]
+      .map(([etapa, titulos]) => `${etapa}: ${titulos.join(' · ')}`)
+      .join('\n');
+  } catch (err) {
+    console.error('[AsistenteCuenta] índice de videos:', err.message);
+    return '';
+  }
+}
+
 module.exports = {
+  indiceVideosTexto,
+  videosMencionados,
   ESTADOS_DROPI,
   hoyEcuador,
   integracionesActivas,
