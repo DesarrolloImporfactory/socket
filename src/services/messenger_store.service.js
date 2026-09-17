@@ -7,7 +7,7 @@ const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
 
 async function getConfigOwner(id_configuracion) {
   const [row] = await db.query(
-    `SELECT id_usuario, id_plataforma, nombre_configuracion
+    `SELECT id_usuario, id_plataforma, nombre_configuracion, permiso_round_robin
      FROM configuraciones
      WHERE id = ? AND suspendido = 0
      LIMIT 1`,
@@ -169,6 +169,10 @@ async function ensureUnifiedConversation({
     nombre_cliente: customer_name || '',
     apellido_cliente: '',
     motivo: `auto_round_robin_${source}`,
+    // Antes no se pasaba y el round robin corría siempre para Messenger e
+    // Instagram, aunque la autoasignación de la conexión estuviera apagada
+    // en /departamentos. Ahora respeta el mismo interruptor que WhatsApp.
+    permiso_round_robin: cfgOwner.permiso_round_robin,
   });
 
   if (!contacto?.id) return null;

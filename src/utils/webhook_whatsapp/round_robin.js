@@ -4,8 +4,45 @@ const { db } = require('../../database/config');
 const ClientesChatCenter = require('../../models/clientes_chat_center.model');
 
 const presenceStore = require('../../sockets/presence/presenceStore');
+const {
+  tieneColumnaCanales,
+  canalDeSource,
+} = require('../canalesDepartamento');
 
 const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
+
+/**
+ * Candidatos del departamento con asignacion_auto=1, excluyendo admins y,
+ * si la columna sub_usuarios_departamento.canales ya existe, SOLO los que
+ * reciben el canal del chat (wa | ms | ig). Así un asesor marcado solo con
+ * Instagram/Messenger no recibe WhatsApp y viceversa.
+ */
+async function candidatosDepartamento({
+  id_usuario_dueno,
+  id_departamento,
+  source,
+}) {
+  const conCanales = await tieneColumnaCanales();
+  const canal = canalDeSource(source);
+  const filtroCanal = conCanales ? 'AND FIND_IN_SET(?, sud.canales) > 0' : '';
+  const rows = await db.query(
+    `SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc
+     INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario
+     WHERE suc.id_usuario = ? AND sud.id_departamento = ? AND sud.asignacion_auto = 1
+       ${filtroCanal}
+       AND suc.rol NOT IN ('administrador', 'super_administrador')
+     ORDER BY suc.id_sub_usuario ASC`,
+    {
+      replacements: [
+        id_usuario_dueno,
+        id_departamento,
+        ...(conCanales ? [canal] : []),
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  return rows.map((x) => Number(x.id_sub_usuario)).filter(Boolean);
+}
 
 async function ensureDir(dir) {
   try {
@@ -245,26 +282,16 @@ async function crearClienteConRoundRobinUnDepto({
       };
     }
 
-    // 2) Candidatos (sub-usuarios del dueño) excluyendo admin/super_admin
-    const encargados = await db.query(
-      `
-      SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc 
-      INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario 
-      WHERE suc.id_usuario = ? AND sud.id_departamento = ? AND sud.asignacion_auto = 1
-      AND suc.rol NOT IN ('administrador', 'super_administrador') ORDER BY suc.id_sub_usuario ASC;
-      `,
-      {
-        replacements: [id_usuario_dueno, id_departamento_asginado],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-
+    // 2) Candidatos (sub-usuarios del dueño) excluyendo admin/super_admin y
+    //    filtrando por el canal del chat (wa/ms/ig) según sud.canales.
     // listaAuto = todos los candidatos con asignacion_auto; lista = los que
     // además están conectados. Se guardan AMBAS en el historial: son la
     // evidencia de por qué un chat le tocó a quien le tocó.
-    const listaAuto = encargados
-      .map((x) => Number(x.id_sub_usuario))
-      .filter(Boolean);
+    const listaAuto = await candidatosDepartamento({
+      id_usuario_dueno,
+      id_departamento: id_departamento_asginado,
+      source,
+    });
 
     console.log('lista encargados sin filtrar: ' + JSON.stringify(listaAuto));
 
@@ -427,22 +454,17 @@ async function asignarRoundRobinClienteExistente({
       return null;
     }
 
-    // 2) Candidatos online
-    const encargados = await db.query(
-      `SELECT suc.id_sub_usuario FROM sub_usuarios_chat_center suc 
-       INNER JOIN sub_usuarios_departamento sud ON suc.id_sub_usuario = sud.id_sub_usuario 
-       WHERE suc.id_usuario = ? AND sud.id_departamento = ? AND sud.asignacion_auto = 1
-       AND suc.rol NOT IN ('administrador', 'super_administrador')
-       ORDER BY suc.id_sub_usuario ASC`,
-      {
-        replacements: [id_usuario_dueno, id_departamento_asginado],
-        type: db.QueryTypes.SELECT,
-      },
+    // 2) Candidatos online, filtrados por el canal del chat que se reabre
+    //    (el source vive en el propio cliente: wa | ms | ig).
+    const [cli] = await db.query(
+      `SELECT source FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
     );
-
-    const listaAuto = encargados
-      .map((x) => Number(x.id_sub_usuario))
-      .filter(Boolean);
+    const listaAuto = await candidatosDepartamento({
+      id_usuario_dueno,
+      id_departamento: id_departamento_asginado,
+      source: cli?.source,
+    });
 
     const lista = listaAuto.filter((id) => {
       const p = presenceStore.getPresence(id);
@@ -503,4 +525,5 @@ async function asignarRoundRobinClienteExistente({
 module.exports = {
   crearClienteConRoundRobinUnDepto,
   asignarRoundRobinClienteExistente,
+  candidatosDepartamento,
 };

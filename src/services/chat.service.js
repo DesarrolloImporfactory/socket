@@ -21,6 +21,7 @@ const CoberturaGintracom = require('../models/cobertura_gintracom.model');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
+const { buildSearchClause } = require('../utils/buscarContactosClause');
 
 const {
   normalizePhoneNumber,
@@ -947,21 +948,45 @@ class ChatService {
     }
   }
 
-  async getCellphones(id_configuracion, texto) {
+  /**
+   * Buscador de destinatario del "+" del chat (nuevo chat / plantilla).
+   *
+   * Antes hacía `LIKE '%texto%'` sobre celular, nombre y apellido SIN límite:
+   * con una letra devolvía miles de filas, el navegador las pintaba todas y la
+   * pestaña se quedaba en blanco. Ahora usa exactamente la misma cláusula que
+   * el buscador de /contactos (utils/buscarContactosClause.js: teléfono por
+   * sufijo invertido, texto por FULLTEXT, 1-2 chars por prefijo), excluye
+   * borrados y el número propio, y corta en `limit` filas.
+   */
+  async getCellphones(id_configuracion, texto, limit = 30) {
     try {
-      const telefonos = await ClientesChatCenter.findAll({
-        where: {
-          id_configuracion,
-          [Op.or]: [
-            { celular_cliente: { [Op.like]: `%${texto}%` } },
-            { nombre_cliente: { [Op.like]: `%${texto}%` } },
-            { apellido_cliente: { [Op.like]: `%${texto}%` } },
-          ],
-        },
-        attributes: ['celular_cliente', 'nombre_cliente', 'id_encargado'],
-      });
+      const term = String(texto || '').trim();
+      if (!id_configuracion || !term) return [];
 
-      return telefonos;
+      const s = buildSearchClause(term, 'c');
+      if (!s) return [];
+
+      const top = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 50);
+
+      const rows = await db.query(
+        `SELECT c.id, c.celular_cliente, c.nombre_cliente, c.apellido_cliente,
+                c.id_encargado, c.source
+           FROM clientes_chat_center c
+          WHERE c.id_configuracion = ?
+            AND c.deleted_at IS NULL
+            AND c.propietario <> 1
+            AND c.celular_cliente IS NOT NULL
+            AND c.celular_cliente <> ''
+            AND ${s.frag}
+          ORDER BY c.ultimo_mensaje_at DESC, c.id DESC
+          LIMIT ?`,
+        {
+          replacements: [id_configuracion, ...s.params, top],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+
+      return rows;
     } catch (error) {
       throw new AppError(error.message, 500);
     }

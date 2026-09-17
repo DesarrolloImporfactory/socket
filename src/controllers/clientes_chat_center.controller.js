@@ -14,7 +14,14 @@ const { QueryTypes } = require('sequelize');
 const {
   last9,
   esErrorDuplicado,
+  buscarContactoWa,
 } = require('../utils/unified/dedupeContacto');
+const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
+const {
+  asignarRoundRobinClienteExistente,
+} = require('../utils/webhook_whatsapp/round_robin');
+const { normalizarCanales } = require('../utils/canalesDepartamento');
+const { buildSearchClause } = require('../utils/buscarContactosClause');
 
 /**
  * ¿`clientes_chat_center` ya tiene las columnas de programas de Imporsuit?
@@ -336,9 +343,11 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
     // Limpiar teléfono: quitar caracteres especiales y espacios
     const telefono = telefonoRaw?.replace(/[^0-9]/g, '') ?? '';
 
-    // 1. Obtener id_telefono desde configuraciones
+    // 1. Datos de la configuración que necesita ensureUnifiedClient
     const [configuracion] = await db.query(
-      'SELECT id_telefono FROM configuraciones WHERE id = ? AND suspendido = 0',
+      `SELECT id_telefono, id_usuario, permiso_round_robin
+         FROM configuraciones
+        WHERE id = ? AND suspendido = 0`,
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
@@ -351,54 +360,99 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
       );
     }
 
-    const uid_cliente = configuracion.id_telefono;
+    if (telefono.length < 8) {
+      return next(new AppError('El teléfono debe tener al menos 8 dígitos', 400));
+    }
 
-    // 2) UPSERT (si existe por UNIQUE, no falla y devuelve el id existente)
-    console.log(
-      '[clientes_chat_center INSERT] controllers/clientes_chat_center.controller.js ~L259 — agregarNumeroChat UPSERT, celular:',
-      telefono,
-      'id_configuracion:',
+    // 2) Mismo camino que el webhook de WhatsApp (ensureUnifiedClient):
+    //    - busca por los últimos 9 dígitos (0969…, 593969… son el mismo
+    //      contacto) en vez de por igualdad exacta del texto;
+    //    - si no existe lo crea con round robin / departamento, source='wa',
+    //      uid_cliente = id_telefono y el hook de email de imporsuit;
+    //    - si pierde una carrera con el webhook, relee en vez de reventar.
+    //    Antes era un UPSERT crudo que no asignaba encargado ni respetaba el
+    //    dedupe por formato, y el contacto quedaba "distinto" al que crea un
+    //    mensaje entrante.
+    const nombreLimpio = String(nombre ?? '').trim();
+    const apellidoLimpio = String(apellido ?? '').trim();
+
+    const cliente = await ensureUnifiedClient({
       id_configuracion,
-    );
-    const upsertSql = `
-      INSERT INTO clientes_chat_center
-        (id_configuracion, nombre_cliente, apellido_cliente, celular_cliente, uid_cliente, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, NOW(), NOW())
-      ON DUPLICATE KEY UPDATE
-        nombre_cliente   = VALUES(nombre_cliente),
-        apellido_cliente = VALUES(apellido_cliente),
-        celular_cliente  = VALUES(celular_cliente),
-        uid_cliente      = VALUES(uid_cliente),
-        updated_at       = NOW(),
-        id              = LAST_INSERT_ID(id)
-    `;
-
-    await db.query(upsertSql, {
-      replacements: [
-        id_configuracion,
-        nombre ?? '',
-        apellido ?? '',
-        // Solo dígitos: nunca guardar con '+' ni espacios (evita duplicados)
-        String(telefono ?? '').replace(/\D/g, ''),
-        uid_cliente,
-      ],
-      type: db.QueryTypes.INSERT,
+      id_usuario_dueno: configuracion.id_usuario,
+      source: 'wa',
+      business_phone_id: configuracion.id_telefono,
+      phone: telefono,
+      nombre_cliente: nombreLimpio,
+      apellido_cliente: apellidoLimpio,
+      motivo: 'manual_nuevo_chat',
+      // Un contacto creado a mano desde el "+" NO entra al round robin: lo
+      // abrió un asesor concreto (p. ej. alguien que solo atiende Instagram
+      // y recibió el WhatsApp del lead) y el chat es suyo. Con RR, el chat
+      // le tocaba a otro y quien lo creó ni siquiera lo veía en sus listas.
+      permiso_round_robin: 0,
     });
 
-    // 3) Recuperar ID (funciona tanto para insert como para duplicado)
-    const [{ id: lastId }] = await db.query('SELECT LAST_INSERT_ID() AS id', {
-      type: db.QueryTypes.SELECT,
-    });
+    if (!cliente?.id) {
+      return next(new AppError('No se pudo crear el contacto', 500));
+    }
 
-    // Hook "al crear cliente": rellena email_cliente desde imporsuit si el
-    // número coincide con el whatsapp de una plataforma. No rompe si falla.
-    await rellenarEmailClienteSiVacio({ id: lastId, celular: telefono });
+    // 2b) Si el contacto no tiene encargado (recién creado o en espera), se
+    //     lo queda quien lo está creando. Si ya era de otro asesor, no se
+    //     le quita: para eso está "Transferir" en el chat.
+    const idCreador = Number(req.sessionUser?.id_sub_usuario) || null;
+    if (idCreador && !cliente.id_encargado) {
+      const [depto] = await db.query(
+        `SELECT id_departamento FROM departamentos_chat_center
+          WHERE id_configuracion = ? ORDER BY id_departamento ASC LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      await ClientesChatCenter.update(
+        { id_encargado: idCreador, chat_cerrado: 0 },
+        { where: { id: cliente.id } },
+      );
+      await db.query(
+        `INSERT INTO historial_encargados
+           (id_cliente_chat_center, id_departamento_asginado, id_encargado_anterior, id_encargado_nuevo, motivo)
+         VALUES (?, ?, ?, ?, ?)`,
+        {
+          replacements: [
+            cliente.id,
+            depto?.id_departamento ?? null,
+            null,
+            idCreador,
+            'manual_nuevo_chat',
+          ],
+          type: db.QueryTypes.INSERT,
+        },
+      );
+      cliente.id_encargado = idCreador;
+    }
+
+    // 3) Si ya existía y el usuario escribió un nombre distinto, se respeta lo
+    //    que acaba de escribir (comportamiento que ya tenía el UPSERT).
+    //    ensureUnifiedClient solo rellena el nombre cuando estaba vacío.
+    if (
+      nombreLimpio &&
+      (cliente.nombre_cliente || '').trim() !== nombreLimpio
+    ) {
+      await ClientesChatCenter.update(
+        { nombre_cliente: nombreLimpio, apellido_cliente: apellidoLimpio },
+        { where: { id: cliente.id } },
+      );
+      cliente.nombre_cliente = nombreLimpio;
+      cliente.apellido_cliente = apellidoLimpio;
+    }
 
     return res.status(200).json({
       status: 200,
       title: 'Petición exitosa',
       message: 'Número agregado/actualizado correctamente',
-      id: lastId,
+      id: cliente.id,
+      // Teléfono tal como quedó guardado: si el contacto ya existía con otro
+      // formato (593… vs 0…), el front debe seguir con ESTE, no con el tecleado.
+      celular_cliente: cliente.celular_cliente,
+      nombre_cliente: cliente.nombre_cliente,
+      id_encargado: cliente.id_encargado ?? null,
     });
   } catch (error) {
     console.error('Error al agregar número de chat:', error);
@@ -410,25 +464,136 @@ exports.agregarNumeroChat = catchAsync(async (req, res, next) => {
   }
 });
 
+/**
+ * Tras enviar la plantilla de apertura desde el "+": si quien la envió NO
+ * atiende WhatsApp en el departamento de la conexión (p. ej. una asesora
+ * solo de Messenger/Instagram que consiguió el número del lead), el chat se
+ * reparte entre los asesores de WhatsApp con el round robin. Si nadie está
+ * conectado queda "En espera". Si quien envió sí atiende WhatsApp, o el chat
+ * ya es de otro asesor, no se toca.
+ * Body: { id_configuracion, id_cliente_chat_center }
+ */
+exports.traspasarTrasPlantilla = catchAsync(async (req, res, next) => {
+  const { id_configuracion, id_cliente_chat_center } = req.body;
+  const idUsuarioSesion = Number(req.sessionUser?.id_sub_usuario) || null;
+
+  if (!id_configuracion || !id_cliente_chat_center)
+    return next(new AppError('Faltan id_configuracion o id_cliente', 400));
+
+  const [cliente] = await db.query(
+    `SELECT id, id_encargado, source FROM clientes_chat_center
+      WHERE id = ? AND id_configuracion = ? AND deleted_at IS NULL LIMIT 1`,
+    {
+      replacements: [id_cliente_chat_center, id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!cliente) return next(new AppError('Contacto no encontrado', 404));
+
+  // Solo se traspasa lo que es del propio usuario (o está sin encargado).
+  if (cliente.id_encargado && Number(cliente.id_encargado) !== idUsuarioSesion) {
+    return res.status(200).json({
+      status: 200,
+      traspasado: false,
+      motivo: 'otro_encargado',
+      id_encargado: cliente.id_encargado,
+    });
+  }
+
+  const [cfg] = await db.query(
+    `SELECT id_usuario, permiso_round_robin FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  // ¿El usuario de la sesión atiende WhatsApp en el departamento?
+  let atiendeWa = true;
+  if (idUsuarioSesion) {
+    const filas = await db.query(
+      `SELECT sud.canales FROM sub_usuarios_departamento sud
+        JOIN departamentos_chat_center d ON d.id_departamento = sud.id_departamento
+       WHERE d.id_configuracion = ? AND sud.id_sub_usuario = ?`,
+      {
+        replacements: [id_configuracion, idUsuarioSesion],
+        type: db.QueryTypes.SELECT,
+      },
+    ).catch(() => []); // columna canales aún no migrada → se asume que sí
+    if (filas.length) {
+      atiendeWa = filas.some((f) => normalizarCanales(f.canales).includes('wa'));
+    }
+  }
+
+  if (atiendeWa) {
+    return res.status(200).json({
+      status: 200,
+      traspasado: false,
+      motivo: 'atiende_wa',
+      id_encargado: cliente.id_encargado,
+    });
+  }
+
+  const nuevo = await asignarRoundRobinClienteExistente({
+    id_cliente: cliente.id,
+    id_configuracion,
+    id_usuario_dueno: cfg?.id_usuario,
+    permiso_round_robin: cfg?.permiso_round_robin,
+    motivo: 'auto_round_robin_traspaso_wa',
+  });
+
+  try {
+    dashboardEmitter.emitByConfig(id_configuracion, 'chat_transferred');
+  } catch (_) {}
+
+  return res.status(200).json({
+    status: 200,
+    traspasado: true,
+    id_encargado: nuevo ?? null, // null = quedó "En espera"
+  });
+});
+
+/**
+ * Buscador del "+" del chat (destinatario de plantilla / nuevo chat).
+ * Body: { id_configuracion, texto, limit? }. Devuelve como máximo `limit`
+ * (30 por defecto, tope 50) contactos con la misma cláusula que /contactos.
+ */
+exports.buscarContactosChat = catchAsync(async (req, res, next) => {
+  const { id_configuracion, texto, limit } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('Falta el id_configuracion', 400));
+
+  const chatService = new ChatService();
+  const data = await chatService.getCellphones(id_configuracion, texto, limit);
+
+  return res.status(200).json({
+    status: 200,
+    data,
+    limit: Math.min(Math.max(parseInt(limit, 10) || 30, 1), 50),
+  });
+});
+
 exports.buscar_id_recibe = catchAsync(async (req, res, next) => {
   const { telefono, id_configuracion } = req.body;
 
   try {
     const [clientes_chat_center] = await db.query(
-      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ?',
+      'SELECT id FROM clientes_chat_center WHERE celular_cliente = ? AND id_configuracion = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT 1',
       {
         replacements: [telefono, id_configuracion],
         type: db.QueryTypes.SELECT,
       },
     );
 
-    if (!clientes_chat_center) {
+    // Igualdad exacta falla si el contacto está guardado con otro formato
+    // (593969… vs 0969…). Segundo intento con el mismo criterio del webhook:
+    // últimos 9 dígitos (celular_last9).
+    const id_recibe =
+      clientes_chat_center?.id ??
+      (await buscarContactoWa({ id_configuracion, telefono }));
+
+    if (!id_recibe) {
       return next(
         new AppError('No se encontró configuración para la plataforma', 400),
       );
     }
-
-    const id_recibe = clientes_chat_center.id;
 
     return res.status(200).json({
       status: 200,
@@ -852,51 +1017,13 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
     return next(new AppError('Falta el id_configuracion', 400));
 
   const ORPHANS_KEY = '__sin_clasificar';
-  const FT_MIN_TOKEN = 3; // innodb_ft_min_token_size (default 3)
 
   const pageSize = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
 
   // ── Helpers de búsqueda ──────────────────────────────────────────
-  const revStr = (s) => [...s].reverse().join('');
-
-  const toBooleanTerm = (term) =>
-    term
-      .replace(/[+\-><()~*"@]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length >= FT_MIN_TOKEN)
-      .map((w) => `+${w}*`)
-      .join(' ');
-
-  /** Elige la mejor estrategia según el término. null si no hay búsqueda. */
-  const buildSearchClause = (rawTerm) => {
-    const term = String(rawTerm || '').trim();
-    if (!term) return null;
-
-    const digits = term.replace(/\D/g, '');
-    const esTelefono = digits.length >= 4 && digits.length >= term.length - 3;
-
-    // Teléfono → sufijo invertido, usa idx_ccc_cfg_celrev
-    if (esTelefono) {
-      const clean = digits.replace(/^0+/, ''); // 0999… → 999…
-      return { frag: 'c.celular_rev LIKE ?', params: [`${revStr(clean)}%`] };
-    }
-
-    // Texto ≥3 chars → FULLTEXT (usa full_search_contact)
-    const bool = toBooleanTerm(term);
-    if (bool) {
-      return {
-        frag: `MATCH(c.nombre_cliente, c.apellido_cliente, c.email_cliente, c.celular_cliente, c.telefono_limpio)
-               AGAINST (? IN BOOLEAN MODE)`,
-        params: [bool],
-      };
-    }
-
-    // 1-2 chars → LIKE por PREFIJO (barato, no infix)
-    return {
-      frag: '(c.nombre_cliente LIKE ? OR c.apellido_cliente LIKE ?)',
-      params: [`${term}%`, `${term}%`],
-    };
-  };
+  // buildSearchClause (teléfono → celular_rev, texto → FULLTEXT, 1-2 chars →
+  // prefijo) vive en utils/buscarContactosClause.js; la comparte el "+" del
+  // chat. Cualquier cambio de criterio se hace ahí, una sola vez.
 
   // ── Columnas activas ─────────────────────────────────────────────
   // id_tablero: omitido/null = principal, 'todos' = todos los tableros,
