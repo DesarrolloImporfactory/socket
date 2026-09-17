@@ -476,11 +476,18 @@ class Sockets {
              su city_id. Ecuador/Colombia siguen exigiendo cod_dane. */
           const destinoPorId = Number(payload?.ciudad_destino_full?.id) > 0;
           const remitentePorCiudad = Number(payload?.warehouse_city_id) > 0;
+          const zip_code = strOrNull(payload?.zip_code);
           if (!ciudad_destino_cod_dane && !destinoPorId)
             throw new AppError('ciudad_destino_cod_dane es requerido', 400);
-          if (!ciudad_remitente_cod_dane && !remitentePorCiudad)
+          /* México (llega zip_code): el detalle del producto casi nunca trae
+             la ciudad de la bodega, así que el front no puede mandar
+             warehouse_city_id ni cod_dane. Más abajo el remitente se resuelve
+             como el destino (Dropi MX resuelve el origen por el producto).
+             Sin este salto, cotizar en MX moría aquí con
+             "ciudad_remitente_cod_dane es requerido" (visto 2026-09-17,
+             Pánuco/Veracruz, producto 14158). */
+          if (!zip_code && !ciudad_remitente_cod_dane && !remitentePorCiudad)
             throw new AppError('ciudad_remitente_cod_dane es requerido', 400);
-          const zip_code = strOrNull(payload?.zip_code);
 
           const integration = await getActiveIntegration(id_configuracion);
           if (!integration)
@@ -596,8 +603,9 @@ class Sockets {
               }
             }
           }
-          // Caso 3: fallback — buscar por cod_dane
-          else if (departments.length > 0) {
+          // Caso 3: fallback — buscar por cod_dane (sin cod_dane no hay qué
+          // buscar: evita recorrer todo el catálogo de ciudades en México)
+          else if (ciudad_remitente_cod_dane && departments.length > 0) {
             for (const dept of departments) {
               const deptId = Number(dept.id || dept.department_id);
               if (!deptId) continue;
@@ -699,10 +707,14 @@ class Sockets {
                  revientan las seis paqueterías. Mejor no mandarla. */
               warehouseObj = null;
             }
-            /* Sin ciudad de bodega conocida, el remitente es el destino:
-               mismo último recurso del auto-orden (fallback_destino), y es
-               con lo que se obtuvieron los precios correctos en producción. */
-            if (!Number(ciudad_remitente?.id) > 0) {
+          }
+          /* México, sin ciudad de bodega conocida: el remitente es el
+             destino. Mismo último recurso del auto-orden (fallback_destino) y
+             es con lo que se obtuvieron los precios correctos en producción.
+             Va fuera del bloque anterior para que aplique también cuando el
+             detalle del producto no cargó. */
+          if (zip_code) {
+            if (!(Number(ciudad_remitente?.id) > 0)) {
               ciudad_remitente = { ...ciudad_destino };
             }
             console.log(
