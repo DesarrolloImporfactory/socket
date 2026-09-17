@@ -23,6 +23,14 @@ const Sub_usuarios_departamento = db.define(
       allowNull: false,
       defaultValue: 0
     },
+    // Canales que recibe en este departamento: "wa,ms,ig" separados por coma.
+    // Columna de sub_usuarios_departamento_canales_migration.sql; el CRUD la
+    // escribe solo si existe (utils/canalesDepartamento.tieneColumnaCanales).
+    canales: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'wa',
+    },
   },
   {
     sequelize: db,

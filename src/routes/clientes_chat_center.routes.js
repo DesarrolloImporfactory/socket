@@ -38,6 +38,22 @@ router.post(
   clientes_chat_centerController.agregarNumeroChat,
 );
 
+// Buscador del "+" del chat (destinatario de plantilla). Misma cláusula que
+// /contactos, con LIMIT; reemplaza al evento socket GET_CELLPHONES.
+router.post(
+  '/buscar_contactos_chat',
+  requireIdConfiguracion,
+  clientes_chat_centerController.buscarContactosChat,
+);
+
+// Tras la plantilla de apertura del "+": si quien la envió no atiende
+// WhatsApp en el departamento, el chat pasa al round robin de WhatsApp.
+router.post(
+  '/traspasar_tras_plantilla',
+  requireIdConfiguracion,
+  clientes_chat_centerController.traspasarTrasPlantilla,
+);
+
 router.post(
   '/buscar_id_recibe',
   clientes_chat_centerController.buscar_id_recibe,

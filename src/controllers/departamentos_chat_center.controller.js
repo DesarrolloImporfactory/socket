@@ -24,6 +24,20 @@ const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 
+const {
+  tieneColumnaCanales,
+  normalizarCanales,
+  canalesToStr,
+} = require('../utils/canalesDepartamento');
+
+/** Columnas de sub_usuarios_departamento que se escriben en bulkCreate. */
+const columnasAsignacion = (conCanales) => [
+  'id_departamento',
+  'id_sub_usuario',
+  'asignacion_auto',
+  ...(conCanales ? ['canales'] : []),
+];
+
 exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   const { id_usuario } = req.body;
 
@@ -47,11 +61,17 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
     });
   }
 
+  const conCanales = await tieneColumnaCanales();
+
   const departamentosConUsuarios = await Promise.all(
     departamentos.map(async (dep) => {
       const asignaciones = await Sub_usuarios_departamento.findAll({
         where: { id_departamento: dep.id_departamento },
-        attributes: ['id_sub_usuario', 'asignacion_auto'],
+        attributes: [
+          'id_sub_usuario',
+          'asignacion_auto',
+          ...(conCanales ? ['canales'] : []),
+        ],
         raw: true,
       });
 
@@ -67,6 +87,9 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
         usuarios_asignados: asignaciones.map((a) => ({
           id_sub_usuario: Number(a.id_sub_usuario),
           asignacion_auto: Number(a.asignacion_auto) ? 1 : 0,
+          // Canales que recibe en este departamento (wa/ms/ig). Sin la
+          // migración aplicada, todos reciben 'wa' como hasta hoy.
+          canales: normalizarCanales(conCanales ? a.canales : null),
         })),
       };
     }),
@@ -75,6 +98,7 @@ exports.listarDepartamentos = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     data: departamentosConUsuarios,
+    canales_habilitados: conCanales,
   });
 });
 
@@ -170,16 +194,19 @@ exports.agregarDepartamento = catchAsync(async (req, res, next) => {
 
   const id_departamento = nuevoDepartamento.id_departamento;
 
-  // 2) Insertar asignaciones (si llegan)
+  // 2) Insertar asignaciones (si llegan), con los canales que recibe cada uno
   if (Array.isArray(usuarios_asignados) && usuarios_asignados.length > 0) {
+    const conCanales = await tieneColumnaCanales();
     const filas = usuarios_asignados.map((u) => ({
       id_departamento,
       id_sub_usuario: Number(u.id_sub_usuario),
       asignacion_auto: Number(u.asignacion_auto) ? 1 : 0,
+      canales: canalesToStr(u.canales),
     }));
 
     await Sub_usuarios_departamento.bulkCreate(filas, {
       ignoreDuplicates: true,
+      fields: columnasAsignacion(conCanales),
     });
   }
 
@@ -225,7 +252,7 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Normaliza incoming a Map<id_sub_usuario, asignacion_auto(0|1)>
+  // Normaliza incoming a Map<id_sub_usuario, { auto: 0|1, canales: 'wa,ig' }>
   const incomingArr = Array.isArray(usuarios_asignados)
     ? usuarios_asignados
     : [];
@@ -236,10 +263,12 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     if (!id) continue;
 
     const auto = Number(u?.asignacion_auto) ? 1 : 0;
-    incomingMap.set(id, auto); // si viene repetido, el último gana
+    // si viene repetido, el último gana
+    incomingMap.set(id, { auto, canales: canalesToStr(u?.canales) });
   }
 
   const incomingIds = [...incomingMap.keys()];
+  const conCanales = await tieneColumnaCanales();
 
   const t = await DepartamentosChatCenter.sequelize.transaction();
   try {
@@ -249,10 +278,14 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
       { transaction: t },
     );
 
-    // 2) Obtener asignaciones actuales (incluye asignacion_auto)
+    // 2) Obtener asignaciones actuales (incluye asignacion_auto y canales)
     const actuales = await Sub_usuarios_departamento.findAll({
       where: { id_departamento },
-      attributes: ['id_sub_usuario', 'asignacion_auto'],
+      attributes: [
+        'id_sub_usuario',
+        'asignacion_auto',
+        ...(conCanales ? ['canales'] : []),
+      ],
       raw: true,
       transaction: t,
     });
@@ -260,7 +293,10 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     const actualesMap = new Map(
       actuales.map((a) => [
         Number(a.id_sub_usuario),
-        Number(a.asignacion_auto) ? 1 : 0,
+        {
+          auto: Number(a.asignacion_auto) ? 1 : 0,
+          canales: canalesToStr(conCanales ? a.canales : null),
+        },
       ]),
     );
 
@@ -279,34 +315,37 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
       });
     }
 
-    // 5) Insertar nuevos (con asignacion_auto)
+    // 5) Insertar nuevos (con asignacion_auto y canales)
     if (toAdd.length > 0) {
       const filas = toAdd.map((id_sub_usuario) => ({
         id_departamento,
         id_sub_usuario,
-        asignacion_auto: incomingMap.get(id_sub_usuario) ?? 0,
+        asignacion_auto: incomingMap.get(id_sub_usuario)?.auto ?? 0,
+        canales: incomingMap.get(id_sub_usuario)?.canales ?? 'wa',
       }));
 
       await Sub_usuarios_departamento.bulkCreate(filas, {
         ignoreDuplicates: true, // recomendado: índice único (id_departamento, id_sub_usuario)
+        fields: columnasAsignacion(conCanales),
         transaction: t,
       });
     }
 
-    // 6) Actualizar asignacion_auto si cambió (solo para los que ya existen)
+    // 6) Actualizar asignacion_auto / canales si cambiaron (solo existentes)
     // Nota: esto hace updates individuales; si quieres optimizar, se puede hacer con bulk upsert.
     for (const id_sub_usuario of toMaybeUpdate) {
-      const nuevoAuto = incomingMap.get(id_sub_usuario) ?? 0;
-      const actualAuto = actualesMap.get(id_sub_usuario) ?? 0;
+      const nuevo = incomingMap.get(id_sub_usuario);
+      const actual = actualesMap.get(id_sub_usuario);
+      const cambios = {};
+      if (nuevo.auto !== actual.auto) cambios.asignacion_auto = nuevo.auto;
+      if (conCanales && nuevo.canales !== actual.canales)
+        cambios.canales = nuevo.canales;
 
-      if (nuevoAuto !== actualAuto) {
-        await Sub_usuarios_departamento.update(
-          { asignacion_auto: nuevoAuto },
-          {
-            where: { id_departamento, id_sub_usuario },
-            transaction: t,
-          },
-        );
+      if (Object.keys(cambios).length) {
+        await Sub_usuarios_departamento.update(cambios, {
+          where: { id_departamento, id_sub_usuario },
+          transaction: t,
+        });
       }
     }
 
@@ -315,7 +354,8 @@ exports.actualizarDepartamento = catchAsync(async (req, res, next) => {
     // 7) Respuesta con el formato nuevo
     const usuariosAsignadosResp = incomingIds.map((id) => ({
       id_sub_usuario: id,
-      asignacion_auto: incomingMap.get(id) ?? 0,
+      asignacion_auto: incomingMap.get(id)?.auto ?? 0,
+      canales: normalizarCanales(incomingMap.get(id)?.canales),
     }));
 
     return res.status(200).json({
