@@ -444,6 +444,27 @@ async function saveOutgoingMessageUnified({
 
   const insertedId = ins?.insertId ?? ins;
 
+  // Si respondimos (bot, asesor o desde la app de Meta), lo entrante de ese
+  // contacto ya no está pendiente. Sin esto, los clics en botones
+  // (postback) y textos que el bot contestaba solos quedaban con visto=0 y
+  // el sidebar mostraba "1-2 pendientes" en chats cuyo último mensaje era
+  // nuestro (30 % de los chats de Instagram abiertos).
+  if (celular_recibe) {
+    try {
+      await db.query(
+        `UPDATE mensajes_clientes
+            SET visto = 1
+          WHERE celular_recibe = ? AND rol_mensaje = 0 AND visto = 0 AND id < ?`,
+        {
+          replacements: [celular_recibe, insertedId],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+    } catch (e) {
+      console.warn('[messenger_store] no se pudo marcar visto:', e.message);
+    }
+  }
+
   const [row] = await db.query(
     `SELECT id, created_at FROM mensajes_clientes WHERE id = ? LIMIT 1`,
     { replacements: [insertedId], type: db.QueryTypes.SELECT },
