@@ -415,6 +415,23 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         const messageStatus = status?.status || '';
         const error = status?.errors?.[0];
 
+        /* TEMPORAL — prueba de la ventana FEP de 72 h (clic desde anuncio CTWA
+           o botón CTA de página). Meta manda aquí el precio real de cada
+           mensaje: pricing.billable dice si se cobró y pricing.type distingue
+           'regular' de 'free_entry_point'. El objeto conversation, desde la
+           v24.0 de la API, SOLO viene si el mensaje cayó dentro de una ventana
+           free entry point abierta, así que su sola presencia ya confirma.
+           Quitar cuando la prueba esté cerrada. */
+        if (status?.pricing) {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] 💰 FEP-TEST cfg=${id_configuracion} ` +
+              `wamid=${wamid} estado=${messageStatus} ` +
+              `pricing=${JSON.stringify(status.pricing)} ` +
+              `conv=${JSON.stringify(status.conversation || null)}\n`,
+          );
+        }
+
         /* Un status bueno con metodo_pago = 0 es la señal de que el cliente
            pudo haber arreglado la facturación: se comprueba contra Meta
            (health_status, con candado de 10 min) y se reactiva sola, sin que
