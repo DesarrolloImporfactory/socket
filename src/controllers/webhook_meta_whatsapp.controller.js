@@ -415,18 +415,27 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         const messageStatus = status?.status || '';
         const error = status?.errors?.[0];
 
-        /* TEMPORAL — prueba de la ventana FEP de 72 h (clic desde anuncio CTWA
-           o botón CTA de página). Meta manda aquí el precio real de cada
-           mensaje: pricing.billable dice si se cobró y pricing.type distingue
-           'regular' de 'free_entry_point'. El objeto conversation, desde la
-           v24.0 de la API, SOLO viene si el mensaje cayó dentro de una ventana
-           free entry point abierta, así que su sola presencia ya confirma.
-           Quitar cuando la prueba esté cerrada. */
-        if (status?.pricing) {
+        /* TEMPORAL — línea base de facturación antes del 1-oct-2026.
+           Meta manda en el status el precio real de cada mensaje: pricing.type
+           vale 'regular' (se cobra), 'free_customer_service' (gratis por caer
+           dentro de la ventana de 24 h) o 'free_entry_point' (gratis por venir
+           de un anuncio CTWA / botón CTA de página). El objeto conversation,
+           desde la v24.0 de la API, SOLO viene si el mensaje cayó dentro de una
+           ventana free entry point abierta.
+
+           Desde el 1-oct los 'free_customer_service' pasan a cobrarse, así que
+           lo que se grabe estos días dice, tienda por tienda, cuántos mensajes
+           van a cambiar de gratis a pagados.
+
+           Solo en 'sent': Meta repite el pricing en delivered/read y duplicaría
+           cada mensaje. Archivo aparte para no ensuciar debug_log.txt, porque
+           este loop corre para TODAS las configuraciones.
+           QUITAR al cerrar el análisis — el archivo no rota. */
+        if (messageStatus === 'sent' && status?.pricing) {
           await fsp.appendFile(
-            path.join(logsDir, 'debug_log.txt'),
-            `[${new Date().toISOString()}] 💰 FEP-TEST cfg=${id_configuracion} ` +
-              `wamid=${wamid} estado=${messageStatus} ` +
+            path.join(logsDir, 'fep_test.txt'),
+            `[${new Date().toISOString()}] cfg=${id_configuracion} ` +
+              `wamid=${wamid} ` +
               `pricing=${JSON.stringify(status.pricing)} ` +
               `conv=${JSON.stringify(status.conversation || null)}\n`,
           );
