@@ -59,7 +59,50 @@ function canalDeSource(source) {
   return CANALES.includes(s) ? s : CANAL_DEFAULT;
 }
 
+/**
+ * Canales que un sub-usuario atiende en una conexión (unión de sus filas en
+ * los departamentos de esa conexión). Devuelve null = SIN restricción:
+ * migración no aplicada, o el usuario no está asignado a ningún departamento
+ * de la conexión (en ese caso manda la lógica de acceso de siempre).
+ */
+async function canalesDeUsuarioEnConfig(id_sub_usuario, id_configuracion) {
+  if (!id_sub_usuario || !id_configuracion) return null;
+  if (!(await tieneColumnaCanales())) return null;
+  const filas = await db.query(
+    `SELECT sud.canales
+       FROM sub_usuarios_departamento sud
+       JOIN departamentos_chat_center d ON d.id_departamento = sud.id_departamento
+      WHERE d.id_configuracion = ? AND sud.id_sub_usuario = ?`,
+    {
+      replacements: [id_configuracion, id_sub_usuario],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!filas.length) return null;
+  const union = new Set();
+  filas.forEach((f) => normalizarCanales(f.canales).forEach((c) => union.add(c)));
+  return [...union];
+}
+
+/**
+ * Fragmento SQL (sin AND inicial) que limita una lista de chats SIN encargado
+ * a los canales del asesor. Los valores salen de la lista blanca CANALES, por
+ * eso van literales. null = no filtrar. `col` es la columna source.
+ */
+function sqlFiltroCanales(canales, col = 'source') {
+  if (!Array.isArray(canales) || !canales.length) return null;
+  const validos = canales.filter((c) => CANALES.includes(c));
+  if (!validos.length || validos.length === CANALES.length) return null;
+  const lista = validos.map((c) => `'${c}'`).join(',');
+  // Filas viejas sin source cuentan como WhatsApp
+  return validos.includes('wa')
+    ? `(${col} IN (${lista}) OR ${col} IS NULL OR ${col} = '')`
+    : `${col} IN (${lista})`;
+}
+
 module.exports = {
+  canalesDeUsuarioEnConfig,
+  sqlFiltroCanales,
   CANALES,
   CANAL_DEFAULT,
   tieneColumnaCanales,

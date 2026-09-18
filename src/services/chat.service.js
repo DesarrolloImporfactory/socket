@@ -22,6 +22,10 @@ const axios = require('axios');
 const xml2js = require('xml2js');
 const { decode } = require('html-entities');
 const { buildSearchClause } = require('../utils/buscarContactosClause');
+const {
+  canalesDeUsuarioEnConfig,
+  sqlFiltroCanales,
+} = require('../utils/canalesDepartamento');
 
 const {
   normalizePhoneNumber,
@@ -69,6 +73,20 @@ class ChatService {
       const esAdmin = rol == 'administrador' || rol == 'admin_limitado';
       let usaSubUsuario = false;
 
+      /* Canales del asesor en esta conexión (departamentos → canales). Un
+         asesor que solo atiende Messenger/Instagram NO ve en «En espera»
+         los chats de WhatsApp: esos quedan para quienes sí atienden ese
+         canal y para los administradores, que siempre ven todo. «Mis chats»
+         no se filtra: lo que se le asignó o transfirió a mano es suyo. */
+      const filtroCanalEspera = esAdmin
+        ? null
+        : sqlFiltroCanales(
+            await canalesDeUsuarioEnConfig(id_sub_usuario, id_configuracion),
+          );
+      const soloSinEncargado = filtroCanalEspera
+        ? `(id_encargado IS NULL AND ${filtroCanalEspera})`
+        : `id_encargado IS NULL`;
+
       let whereClause = `WHERE id_configuracion = :id_configuracion AND propietario != 1`;
 
       if (filtrandoSinRespuesta) {
@@ -77,7 +95,7 @@ class ChatService {
            chats» aunque el aviso lo esté contando, y el filtro parecería
            roto justo cuando más se lo necesita. */
         if (!esAdmin) {
-          whereClause += ` AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+          whereClause += ` AND (id_encargado = :id_sub_usuario OR ${soloSinEncargado})`;
           usaSubUsuario = true;
         }
       } else if (esAdmin) {
@@ -89,7 +107,7 @@ class ChatService {
         whereClause += ` AND id_encargado = :id_sub_usuario `;
         usaSubUsuario = true;
       } else {
-        whereClause += ` AND id_encargado IS NULL`;
+        whereClause += ` AND ${soloSinEncargado}`;
       }
 
       if (filtros.searchTerm && filtros.searchTerm.trim() !== '') {
@@ -1729,7 +1747,14 @@ class ChatService {
           AND mensaje_created_at <= NOW() - INTERVAL :minutos MINUTE`;
 
       if (!esAdmin) {
-        whereClause += ` AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
+        // Mismo criterio que findChats: lo sin encargado solo cuenta si es
+        // de un canal que este asesor atiende en la conexión.
+        const filtroCanal = sqlFiltroCanales(
+          await canalesDeUsuarioEnConfig(id_sub_usuario, id_configuracion),
+        );
+        whereClause += filtroCanal
+          ? ` AND (id_encargado = :id_sub_usuario OR (id_encargado IS NULL AND ${filtroCanal}))`
+          : ` AND (id_encargado = :id_sub_usuario OR id_encargado IS NULL)`;
       }
 
       // Se pide una fila de más: si vuelve, es que quedó recortado. Sale
