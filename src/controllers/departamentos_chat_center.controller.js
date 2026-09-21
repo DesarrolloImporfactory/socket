@@ -30,6 +30,12 @@ const {
   canalesToStr,
 } = require('../utils/canalesDepartamento');
 
+const {
+  tieneColumnaAccion,
+  crearHistorial,
+  puedeTransferir,
+} = require('../utils/historialEncargados');
+
 /** Columnas de sub_usuarios_departamento que se escriben en bulkCreate. */
 const columnasAsignacion = (conCanales) => [
   'id_departamento',
@@ -400,7 +406,6 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       id_cliente_chat_center, // para WhatsApp
       motivo,
       id_configuracion,
-      emisor,
     } = req.body;
 
     if (id_encargado == null && id_departamento == null) {
@@ -408,6 +413,30 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         status: 'fail',
         message: 'Debe enviar al menos id_encargado o id_departamento',
       });
+    }
+
+    /* Quién transfiere sale de la sesión (protect), no del body. Antes el
+       nombre de la notificación era el `emisor` que mandaba el navegador,
+       tomado del JWT guardado en localStorage: se podía falsear y, si el
+       usuario había cambiado de nombre, salía el nombre viejo. */
+    const actor = req.sessionUser;
+    const emisor = actor?.nombre_encargado || req.body.emisor || '';
+
+    // La lista de chats ya oculta los ajenos, pero al chat también se llega
+    // por el kanban o por /chat/:id, que no filtran por encargado.
+    if (id_cliente_chat_center) {
+      const chatOrigen = await Clientes_chat_center.findByPk(
+        id_cliente_chat_center,
+        { attributes: ['id', 'id_encargado'] },
+      );
+      if (chatOrigen && !puedeTransferir(actor, chatOrigen)) {
+        return next(
+          new AppError(
+            'Solo el encargado del chat o un administrador puede transferirlo.',
+            403,
+          ),
+        );
+      }
     }
 
     // ✅ buscar nombre encargado y propietario origen UNA SOLA VEZ
@@ -447,13 +476,16 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         // 2. Guardar el id_encargado actual en variable
         const id_encargado_anterior = clienteActual.id_encargado;
 
-        await Historial_encargados.create({
-          id_cliente_chat_center,
-          id_departamento_asginado: id_departamento,
-          id_encargado_anterior,
-          id_encargado_nuevo: id_encargado,
-          motivo,
-        });
+        await crearHistorial(
+          {
+            id_cliente_chat_center,
+            id_departamento_asginado: id_departamento,
+            id_encargado_anterior,
+            id_encargado_nuevo: id_encargado,
+            motivo,
+          },
+          actor?.id_sub_usuario,
+        );
 
         const configuracion_transferida = await DepartamentosChatCenter.findOne(
           {
@@ -549,13 +581,16 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         // 2. Guardar el id_encargado actual en variable
         const id_encargado_anterior = clienteActual.id_encargado;
 
-        await Historial_encargados.create({
-          id_cliente_chat_center,
-          id_departamento_asginado: id_departamento,
-          id_encargado_anterior,
-          id_encargado_nuevo: id_encargado,
-          motivo,
-        });
+        await crearHistorial(
+          {
+            id_cliente_chat_center,
+            id_departamento_asginado: id_departamento,
+            id_encargado_anterior,
+            id_encargado_nuevo: id_encargado,
+            motivo,
+          },
+          actor?.id_sub_usuario,
+        );
 
         const configuracion_transferida = await DepartamentosChatCenter.findOne(
           {
@@ -652,13 +687,16 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         // 2. Guardar el id_encargado actual en variable
         const id_encargado_anterior = clienteActual.id_encargado;
 
-        await Historial_encargados.create({
-          id_cliente_chat_center,
-          id_departamento_asginado: id_departamento,
-          id_encargado_anterior,
-          id_encargado_nuevo: id_encargado,
-          motivo,
-        });
+        await crearHistorial(
+          {
+            id_cliente_chat_center,
+            id_departamento_asginado: id_departamento,
+            id_encargado_anterior,
+            id_encargado_nuevo: id_encargado,
+            motivo,
+          },
+          actor?.id_sub_usuario,
+        );
 
         const configuracion_transferida = await DepartamentosChatCenter.findOne(
           {
@@ -884,12 +922,15 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
 
   const id_departamento = Departamento?.id_departamento ?? null;
 
-  await Historial_encargados.create({
-    id_cliente_chat_center,
-    id_encargado_nuevo: id_encargado,
-    motivo: 'Auto-asignacion de chat',
-    id_departamento_asginado: id_departamento,
-  });
+  await crearHistorial(
+    {
+      id_cliente_chat_center,
+      id_encargado_nuevo: id_encargado,
+      motivo: 'Auto-asignacion de chat',
+      id_departamento_asginado: id_departamento,
+    },
+    req.sessionUser?.id_sub_usuario,
+  );
 
   await Clientes_chat_center.update(
     { id_encargado },
@@ -913,6 +954,9 @@ exports.obtenerHistorialEncargados = catchAsync(async (req, res, next) => {
     return next(new AppError('Falta id_cliente_chat_center', 400));
   }
 
+  // Autor de la acción: solo si la migración ya se aplicó.
+  const conAccion = await tieneColumnaAccion();
+
   const rows = await db.query(
     `SELECT
         h.id,
@@ -928,6 +972,12 @@ exports.obtenerHistorialEncargados = catchAsync(async (req, res, next) => {
 
         sa.nombre_encargado AS nombre_anterior,
         sn.nombre_encargado AS nombre_nuevo
+        ${
+          conAccion
+            ? `, h.id_sub_usuario_accion,
+               sx.nombre_encargado AS nombre_accion`
+            : ''
+        }
 
       FROM historial_encargados h
 
@@ -939,6 +989,12 @@ exports.obtenerHistorialEncargados = catchAsync(async (req, res, next) => {
 
       LEFT JOIN sub_usuarios_chat_center sn
         ON sn.id_sub_usuario = h.id_encargado_nuevo
+      ${
+        conAccion
+          ? `LEFT JOIN sub_usuarios_chat_center sx
+               ON sx.id_sub_usuario = h.id_sub_usuario_accion`
+          : ''
+      }
 
       WHERE h.id_cliente_chat_center = :id_cliente_chat_center
       ORDER BY h.fecha_registro ASC`,
