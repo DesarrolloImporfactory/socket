@@ -1,0 +1,55 @@
+name: Validaciones antes de integrar
+
+# El gate que NO depende de la máquina de nadie. El hook .githooks/pre-push
+# protege el push de quien lo tiene activo; esto protege la rama, lo haya hecho
+# quien lo haya hecho y aunque alguien use `git push --no-verify`.
+#
+# Para que de verdad BLOQUEE el merge hay que marcarlo como obligatorio en
+# GitHub: Settings → Branches → regla de `main` → "Require status checks to
+# pass before merging" → elegir "Validaciones". Sin eso solo avisa en rojo.
+#
+# Todo lo de acá es estático: no necesita la base de datos ni ninguna API key,
+# así que no puede fallar por el saldo o los datos de un cliente. La batería de
+# regresión (scripts/bateria_regresion.js) NO corre acá porque parte de sus
+# casos leen la base; esa sigue en el hook pre-push.
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validaciones:
+    name: Validaciones
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      # Sintaxis de TODO src, no solo del punto de entrada.
+      - name: Sintaxis de todo src
+        shell: bash
+        run: |
+          fallo=0
+          while IFS= read -r archivo; do
+            node --check "$archivo" || fallo=1
+          done < <(git ls-files 'src/*.js' 'src/**/*.js')
+          exit $fallo
+
+      # Un require con las mayúsculas cambiadas funciona en Windows y tumba el
+      # servidor en Linux (caída de dev y producción del 2026-09-21).
+      - name: Requires con las mayúsculas exactas
+        run: node scripts/chequearRequires.js
