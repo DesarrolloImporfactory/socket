@@ -35,6 +35,11 @@ const {
   registrarEnvioEncuestaManual,
 } = require('../utils/encuestaTemplateLink');
 
+const {
+  resolverEnlacePagoTemplate,
+  forzarEnlacePagoEnComponents,
+} = require('../utils/enlacePagoImporsuit');
+
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
 const { comprobarYReactivarMetodoPago } = require('../utils/metaPagoStatus');
 const {
@@ -3741,6 +3746,52 @@ exports.enviarTemplateMasivo = async (req, res) => {
       );
     }
 
+    // ===== 2.95) Plantilla de cobro de Imporsuit: monto y botón de pago =====
+    // Salen de la cartera del destinatario (db_2), no de lo que escribió el
+    // asesor. Si no hay saldo vencido NO se envía: avisarle de "pagos
+    // pendientes" a quien está al día es peor que no mandar nada.
+    let enlacePago = null;
+
+    try {
+      enlacePago = await resolverEnlacePagoTemplate({
+        idConfiguracion: id_configuracion,
+        nombreTemplate: template_name,
+        telefono: toClean,
+        idClienteChatCenter: req.body?.id_cliente_chat_center,
+      });
+
+      if (enlacePago) {
+        payload.template.components = forzarEnlacePagoEnComponents(
+          payload.template.components,
+          enlacePago,
+        );
+
+        console.log(
+          `[SEND_TEMPLATE] Enlace de pago en "${template_name}" → ${enlacePago.email} saldo=${enlacePago.valores.monto} cuotas=${enlacePago.valores.cuotas}`,
+        );
+      }
+    } catch (err) {
+      if (err?.name === 'SinSaldoVencidoError') {
+        return res.status(200).json({
+          success: false,
+          step: 'resolver_enlace_pago',
+          code: err.code,
+          message: err.message,
+        });
+      }
+
+      console.error(
+        '[SEND_TEMPLATE] Error resolviendo el enlace de pago:',
+        err.message,
+      );
+      return res.status(500).json({
+        success: false,
+        step: 'resolver_enlace_pago',
+        message: 'No se pudo calcular el saldo pendiente del contacto',
+        error: err.message,
+      });
+    }
+
     // ===== 3) Enviar template a Meta =====
     console.log(
       '[SEND_TEMPLATE] Enviando a:',
@@ -3807,6 +3858,11 @@ exports.enviarTemplateMasivo = async (req, res) => {
             id_cliente_chat_center: encuestaTpl.cliente.id,
             link: encuestaTpl.link,
           }
+        : null,
+      // Valores REALES que salieron en la plantilla de cobro (el front los
+      // necesita para pintar la burbuja con el monto correcto).
+      enlace_pago: enlacePago
+        ? { email: enlacePago.email, ...enlacePago.valores }
         : null,
       data: resp.data,
       fileUrl,
