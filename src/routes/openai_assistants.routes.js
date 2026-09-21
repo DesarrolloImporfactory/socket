@@ -27,16 +27,25 @@ router.post(
   openai_assistantsController.enviar_mensaje_gpt,
 );
 
-router.post('/info_asistentes', openai_assistantsController.info_asistentes);
+/* Las tres rutas que tocan la API key van con protect. Estuvieron abiertas
+   hasta el 2026-09-21: sin sesión se podía leer la key de cualquier config,
+   reemplazarla o borrarla. Solo las llama el front (chatApi manda el token). */
+router.post(
+  '/info_asistentes',
+  protect,
+  openai_assistantsController.info_asistentes,
+);
 
 router.post(
   '/actualizar_api_key_openai',
+  protect,
   openai_assistantsController.actualizar_api_key_openai,
 );
 
 // Elimina la API Key y suspende (soft delete) los asistentes de la config
 router.post(
   '/eliminar_api_key_openai',
+  protect,
   openai_assistantsController.eliminar_api_key_openai,
 );
 
