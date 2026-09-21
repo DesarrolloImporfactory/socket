@@ -75,6 +75,13 @@ router.post('/eliminar_thread', openai_assistantsController.eliminar_thread);
 
 router.get('/openai_status', openai_assistantsController.openai_status);
 
+/* De qué cuenta de OpenAI es la key guardada. Con protect: devuelve un correo. */
+router.get(
+  '/openai_cuenta',
+  protect,
+  openai_assistantsController.openai_cuenta,
+);
+
 /* "Ya pagué": comprueba contra OpenAI y reactiva si de verdad hay saldo.
    Va con protect —a diferencia del resto de este router— porque dispara una
    llamada facturable contra la cuenta del cliente: sin sesión, cualquiera

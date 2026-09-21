@@ -8,6 +8,7 @@ const OpenaiAssistants = require('../models/openai_assistants.model');
 const { responderImporia } = require('../services/imporia.service');
 const { olvidarCliente } = require('../utils/dedupeMedia');
 const { invalidarInterruptorBot } = require('../utils/interruptorBot');
+const { obtenerCuentaOpenAI } = require('../utils/openia/cuentaOpenAI');
 const {
   leerApiKeyOpenAI,
   prepararApiKeyParaGuardar,
@@ -635,12 +636,43 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     tipo_configuracion,
   );
 
+  // 4) De qué cuenta de OpenAI es la key: el front lo muestra para que el
+  //    cliente sepa DÓNDE recargar. null si no se pudo — nunca frena el guardado.
+  const cuenta = await obtenerCuentaOpenAI(api_key);
+
   return res.status(200).json({
     status: '200',
     message:
       'API key actualizada y assistants creados/asegurados correctamente',
     bootstrap, // created / skipped / failed
+    cuenta,
   });
+});
+
+/* ── A qué cuenta de OpenAI pertenece la key guardada ────────────────────────
+   Se consulta en vivo y no se persiste: así sirve también para las keys que ya
+   estaban cargadas y nunca queda desfasada de la key actual.
+   Va con protect porque devuelve el correo del dueño de la cuenta de OpenAI.
+   GET /api/v1/openai_assistants/openai_cuenta?id_configuracion=
+─────────────────────────────────────────────────────────────────────────── */
+exports.openai_cuenta = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.query;
+
+  if (!id_configuracion) {
+    return next(new AppError('Falta el campo id_configuracion', 400));
+  }
+
+  const [row] = await db.query(
+    `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  if (!row) return next(new AppError('Configuración no encontrada', 404));
+
+  const apiKey = leerApiKeyOpenAI(row.api_key_openai);
+  const cuenta = apiKey ? await obtenerCuentaOpenAI(apiKey) : null;
+
+  res.status(200).json({ status: '200', cuenta });
 });
 
 // Elimina la API Key de OpenAI de la configuración y SUSPENDE los asistentes
