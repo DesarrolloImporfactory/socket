@@ -9,6 +9,11 @@ const { responderImporia } = require('../services/imporia.service');
 const { olvidarCliente } = require('../utils/dedupeMedia');
 const { invalidarInterruptorBot } = require('../utils/interruptorBot');
 const {
+  leerApiKeyOpenAI,
+  prepararApiKeyParaGuardar,
+  enmascararApiKeyOpenAI,
+} = require('../utils/openia/apiKeyOpenAI');
+const {
   esSinSaldoOpenAI,
   esApiKeyInvalida,
   esRateLimitTransitorio,
@@ -48,10 +53,11 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
     id_plataforma,
     id_configuracion,
     telefono,
-    api_key_openai,
     business_phone_id,
     accessToken,
   } = req.body;
+  // Quien llama puede haber leído la columna tal cual de la BD (ya cifrada).
+  const api_key_openai = leerApiKeyOpenAI(req.body.api_key_openai);
 
   const assistants = await db.query(
     `SELECT assistant_id, tipo, productos, tiempo_remarketing, tomar_productos FROM openai_assistants WHERE id_configuracion = ? AND activo = 1`,
@@ -298,7 +304,10 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
       );
     }
 
-    api_key_openai = configuracion.api_key_openai;
+    // Al navegador NUNCA le llega la key: solo enmascarada ("sk-proj-••••UVYA").
+    // Sigue siendo truthy cuando hay key, que es lo que miran Productos2View y
+    // ProductoModal para saber si hay IA disponible.
+    api_key_openai = enmascararApiKeyOpenAI(configuracion.api_key_openai);
 
     // Traer ambos tipos de asistentes (excluye suspendidos por soft delete)
     const asistentes = await db.query(
@@ -569,7 +578,8 @@ function templatesPermitidosPorTipo(tipo_configuracion) {
 
 // ============== Controller ==============
 exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
-  const { id_configuracion, api_key, tipo_configuracion } = req.body;
+  const { id_configuracion, tipo_configuracion } = req.body;
+  const api_key = String(req.body.api_key || '').trim();
 
   if (!id_configuracion || !api_key || !tipo_configuracion) {
     return next(
@@ -600,7 +610,9 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
             openai_error_msg = NULL
       WHERE id = ?`,
     {
-      replacements: [api_key, id_configuracion],
+      // Se guarda cifrada; de aquí en adelante en este handler se sigue
+      // usando `api_key`, que es la plana.
+      replacements: [prepararApiKeyParaGuardar(api_key), id_configuracion],
       type: db.QueryTypes.UPDATE,
     },
   );
@@ -1427,6 +1439,7 @@ exports.openai_reintentar = catchAsync(async (req, res, next) => {
   );
 
   if (!row) return next(new AppError('Configuración no encontrada', 404));
+  row.api_key_openai = leerApiKeyOpenAI(row.api_key_openai);
 
   // Ya lo reactivó otra cosa: un mensaje entrante, u otra pestaña abierta.
   if (Number(row.openai_activo) === 1) {

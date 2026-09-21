@@ -17,6 +17,7 @@
 
 const cron = require('node-cron');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const ig = require('../utils/instagramGraph');
 const Store = require('../services/messenger_store.service');
 const {
@@ -197,6 +198,7 @@ cron.schedule('*/1 * * * *', async () => {
             `SELECT api_key_openai, openai_activo FROM configuraciones WHERE id = ? LIMIT 1`,
             { replacements: [record.id_configuracion], type: db.QueryTypes.SELECT },
           );
+          if (cfg) cfg.api_key_openai = leerApiKeyOpenAI(cfg.api_key_openai);
           if (!cfg?.api_key_openai) {
             await cancelar(record.id, 'Sin api_key_openai');
             continue;

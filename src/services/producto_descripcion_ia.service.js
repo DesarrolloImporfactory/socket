@@ -14,6 +14,7 @@
 
 const axios = require('axios');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 
 const MODELO = 'gpt-4o-mini';
 const TIMEOUT_MS = 60000;
@@ -77,8 +78,7 @@ async function obtenerApiKeyOpenAI(id_configuracion) {
     'SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1',
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const key = String(row?.api_key_openai || '').trim();
-  return key || null;
+  return leerApiKeyOpenAI(row?.api_key_openai);
 }
 
 function hostPermitido(hostname) {

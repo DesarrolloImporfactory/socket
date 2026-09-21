@@ -5,6 +5,7 @@ const {
   ubicacionCompartidaCliente,
 } = require('../services/dropiAutoOrder.service');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const dashboardEmitter = require('./dashboardEmitter');
 
 /**
@@ -45,6 +46,9 @@ exports.probarAutoOrden = async (req, res) => {
       datosBot = null,
       api_key_openai = null,
     } = req.body || {};
+
+    // Puede venir leída tal cual de la BD, o sea cifrada.
+    api_key_openai = leerApiKeyOpenAI(api_key_openai);
 
     const force = req.body?.force ?? true;
 

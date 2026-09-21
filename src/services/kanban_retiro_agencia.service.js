@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const {
   aplicarBloqueRetiroAgencia,
   NOMBRE_ARCHIVO_AGENCIAS,
@@ -283,7 +284,7 @@ async function adoptarArchivoSubido({
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const apiKey = rowKey?.api_key_openai || null;
+  const apiKey = leerApiKeyOpenAI(rowKey?.api_key_openai);
 
   // 1. Retirar el directorio anterior (biblioteca + stores). Sin esto el bot
   // vería DOS directorios a la vez y mezclaría oficinas de ambos.
@@ -388,7 +389,7 @@ async function activar(id_configuracion, id_sub_usuario = null) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const apiKey = rowKey?.api_key_openai || null;
+  const apiKey = leerApiKeyOpenAI(rowKey?.api_key_openai);
 
   const adoptado = await adoptarArchivoDelStore(
     id_configuracion,
@@ -534,7 +535,7 @@ async function desactivar(id_configuracion) {
         `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
         { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
       );
-      apiKey = row?.api_key_openai || null;
+      apiKey = leerApiKeyOpenAI(row?.api_key_openai);
     } catch (_) {
       /* sin api key: el desvincular por BD hace lo que pueda */
     }

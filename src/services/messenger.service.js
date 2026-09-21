@@ -1,5 +1,6 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { rehostAttachments } = require('../utils/rehostMediaMeta');
@@ -176,7 +177,7 @@ async function runKanbanIaMS({
     );
     if (!cfg || cfg.tipo_configuracion !== 'kanban') return;
 
-    const api_key_openai = cfg.api_key_openai;
+    const api_key_openai = leerApiKeyOpenAI(cfg.api_key_openai);
     if (!api_key_openai) return;
 
     // 2) Estado del contacto + gate del bot (igual que en WhatsApp)

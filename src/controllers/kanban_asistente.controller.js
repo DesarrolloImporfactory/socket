@@ -8,6 +8,7 @@ const FormData = require('form-data');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 
 const {
   compilarPromptFinal,
@@ -105,7 +106,7 @@ async function getApiKeyOpcional(id_configuracion) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  return row?.api_key_openai || null;
+  return leerApiKeyOpenAI(row?.api_key_openai);
 }
 
 function headersJson(apiKey) {
@@ -887,6 +888,7 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   );
 
   if (!columna) return next(new AppError('Columna no encontrada', 404));
+  columna.api_key_openai = leerApiKeyOpenAI(columna.api_key_openai);
   if (!columna.api_key_openai)
     return next(new AppError('Sin API key de OpenAI', 400));
 
