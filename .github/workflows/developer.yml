@@ -54,6 +54,14 @@ jobs:
         if: steps.development-command.outputs.mode == 'deploy'
         run: node --check src/server.js
 
+      # `node --check` solo mira sintaxis. El 2026-09-21 un require con las
+      # mayúsculas cambiadas (utils/AppError vs appError.js) pasó este gate y
+      # tumbó el servidor al arrancar. Esto lo frena ANTES de sincronizar, venga
+      # el push de la máquina que venga (el hook pre-push es por máquina).
+      - name: Validate that every require resolves on Linux
+        if: steps.development-command.outputs.mode == 'deploy'
+        run: node scripts/chequearRequires.js
+
       - name: Configure development SSH key
         if: steps.development-command.outputs.mode != 'skip'
         env:

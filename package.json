@@ -7,6 +7,9 @@
     "dev": "nodemon src/server.js",
     "prod": "SET NODE_ENV=production&nodemon src/server.js",
     "start": "node src/server.js",
+    "prepare": "node -e \"try{require('child_process').execSync('git config core.hooksPath .githooks',{stdio:'ignore'})}catch(e){}\"",
+    "chequear": "node scripts/chequearRequires.js",
+    "bateria": "node scripts/bateria_regresion.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

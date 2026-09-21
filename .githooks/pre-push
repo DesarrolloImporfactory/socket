@@ -7,15 +7,28 @@
 # determinista, segundos). Si la batería falla, EL PUSH NO SALE — y como el
 # push a develop es lo que dispara el deploy, nada roto llega al servidor.
 #
-# Es la PRIMERA línea de defensa (por máquina). La definitiva es el gate del
-# merge a main en GitHub Actions, que no depende de la configuración local.
+# Es la PRIMERA línea de defensa (por máquina). La que no depende de la
+# configuración local es GitHub Actions: .github/workflows/ci.yml (PR a main) y
+# developer.yml (deploy de dev) corren el chequeo de requires de abajo.
 #
-# Se activa una vez por máquina con:
-#   git config core.hooksPath .githooks
+# Se activa SOLA al hacer `npm install` (script "prepare" de package.json).
+# A mano:  git config core.hooksPath .githooks
 #
 # Saltarlo (emergencia consciente, no costumbre):
-#   SKIP_BATERIA=1 git push       o       git push --no-verify
+#   SKIP_BATERIA=1 git push   → salta solo la batería
+#   git push --no-verify      → salta todo el hook
 # ─────────────────────────────────────────────────────────────
+
+# ── Requires con las mayúsculas exactas — en TODO push, toque lo que toque ──
+# La caída de dev y producción del 2026-09-21 fue un require('../utils/AppError')
+# con el archivo llamado appError.js: en Windows resuelve, en el servidor no, y
+# entró por un push que ni siquiera tocaba el motor. Es estático (sin base ni
+# API keys) y tarda menos de un segundo, por eso no tiene filtro de archivos ni
+# lo apaga SKIP_BATERIA.
+if ! node scripts/chequearRequires.js; then
+  echo "❌ Push bloqueado: ese require tumbaría el servidor al arrancar."
+  exit 1
+fi
 
 [ -n "$SKIP_BATERIA" ] && exit 0
 
