@@ -68,6 +68,9 @@ async function main() {
     { replacements: [ID_CONFIG], type: db.QueryTypes.SELECT },
   );
   if (!cfg) throw new Error(`No existe la configuración ${ID_CONFIG}`);
+  // La columna se guarda cifrada: siempre por el lector.
+  cfg.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+    .leerApiKeyOpenAI(cfg.api_key_openai);
   if (!cfg.api_key_openai)
     throw new Error(`La configuración ${ID_CONFIG} no tiene api_key_openai`);
 

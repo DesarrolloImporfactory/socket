@@ -26,6 +26,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 // Tipos aceptados por OpenAI para file_search
@@ -70,11 +71,12 @@ async function getApiKey(id_configuracion) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  if (!row?.api_key_openai)
+  const apiKey = leerApiKeyOpenAI(row?.api_key_openai);
+  if (!apiKey)
     throw new Error(
       `Sin api_key_openai para id_configuracion=${id_configuracion}`,
     );
-  return row.api_key_openai;
+  return apiKey;
 }
 
 const headersJson = (apiKey) => ({

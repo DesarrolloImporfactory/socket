@@ -561,6 +561,12 @@ async function buildSummary(configIds, fromDT, toDT, agentId = null) {
 // ════════════════════════════════════════════════════════════════════════════
 // SECCION 2: PENDING QUEUE
 // ════════════════════════════════════════════════════════════════════════════
+// Techo de seguridad, no paginación: la cola debe llegar completa. Con
+// LIMIT 50 y orden del más viejo primero, en rangos largos los 50 cupos se
+// los llevaban los chats de IG/Messenger sin responder y los de WhatsApp
+// (más recientes) nunca aparecían.
+const PENDING_QUEUE_MAX = 2000;
+
 async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
   const af = agentFilter(agentId);
   const rows = await db.query(
@@ -586,7 +592,7 @@ async function buildPendingQueue(configIds, fromDT, toDT, agentId = null) {
        AND ultimo_in.ultima_entrada_at BETWEEN ? AND ?
        AND (ultimo_out.ultima_salida_at IS NULL OR ultimo_out.ultima_salida_at < ultimo_in.ultima_entrada_at)
        ${af.sql}
-     ORDER BY ultimo_in.ultima_entrada_at ASC LIMIT 50`,
+     ORDER BY ultimo_in.ultima_entrada_at ASC LIMIT ${PENDING_QUEUE_MAX}`,
     {
       replacements: [
         configIds,

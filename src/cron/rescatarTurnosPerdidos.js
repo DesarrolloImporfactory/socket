@@ -30,6 +30,7 @@
 
 const cron = require('node-cron');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 
 const VENTANA_MIN_MINUTOS = 5; // más nuevo = puede estar procesándose aún
 const VENTANA_MAX_MINUTOS = 120; // más viejo = respuesta tardía sin sentido
@@ -144,7 +145,7 @@ async function barrido() {
 
       const cli = { celular_cliente: g.celular_cliente, estado_contacto: g.estado_contacto };
       const cfg = {
-        api_key_openai: g.api_key_openai,
+        api_key_openai: leerApiKeyOpenAI(g.api_key_openai),
         token: g.token,
         id_telefono: g.id_telefono,
       };

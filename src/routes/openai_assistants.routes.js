@@ -27,16 +27,25 @@ router.post(
   openai_assistantsController.enviar_mensaje_gpt,
 );
 
-router.post('/info_asistentes', openai_assistantsController.info_asistentes);
+/* Las tres rutas que tocan la API key van con protect. Estuvieron abiertas
+   hasta el 2026-09-21: sin sesión se podía leer la key de cualquier config,
+   reemplazarla o borrarla. Solo las llama el front (chatApi manda el token). */
+router.post(
+  '/info_asistentes',
+  protect,
+  openai_assistantsController.info_asistentes,
+);
 
 router.post(
   '/actualizar_api_key_openai',
+  protect,
   openai_assistantsController.actualizar_api_key_openai,
 );
 
 // Elimina la API Key y suspende (soft delete) los asistentes de la config
 router.post(
   '/eliminar_api_key_openai',
+  protect,
   openai_assistantsController.eliminar_api_key_openai,
 );
 
@@ -74,6 +83,13 @@ router.post(
 router.post('/eliminar_thread', openai_assistantsController.eliminar_thread);
 
 router.get('/openai_status', openai_assistantsController.openai_status);
+
+/* De qué cuenta de OpenAI es la key guardada. Con protect: devuelve un correo. */
+router.get(
+  '/openai_cuenta',
+  protect,
+  openai_assistantsController.openai_cuenta,
+);
 
 /* "Ya pagué": comprueba contra OpenAI y reactiva si de verdad hay saldo.
    Va con protect —a diferencia del resto de este router— porque dispara una

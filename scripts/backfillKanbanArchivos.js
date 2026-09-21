@@ -27,7 +27,10 @@ async function getApiKey(id_configuracion) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  return row?.api_key_openai || null;
+  // La columna se guarda cifrada: siempre por el lector.
+  return require('../src/utils/openia/apiKeyOpenAI').leerApiKeyOpenAI(
+    row?.api_key_openai,
+  );
 }
 
 async function listarArchivosDeStore(vectorStoreId, apiKey) {

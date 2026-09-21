@@ -21,6 +21,7 @@
 
 const axios = require('axios');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const {
   hoyEcuador,
   integracionesActivas,
@@ -488,7 +489,7 @@ exports.preguntar = async (req, res) => {
           { replacements: [idConfiguracion], type: db.QueryTypes.SELECT },
         );
 
-    const keyPropia = (config?.api_key_openai || '').trim() || null;
+    const keyPropia = leerApiKeyOpenAI(config?.api_key_openai);
     const keyPlataforma = process.env.OPENAI_API_KEY_SOPORTE || null;
 
     if (!keyPropia && !keyPlataforma) {

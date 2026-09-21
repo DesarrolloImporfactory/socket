@@ -160,6 +160,9 @@ async function main() {
   const cache = new Map();
 
   for (const col of columnas) {
+    // La columna se guarda cifrada: siempre por el lector.
+    col.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+      .leerApiKeyOpenAI(col.api_key_openai);
     let remoto = cache.get(col.assistant_id);
     if (remoto === undefined) {
       try {

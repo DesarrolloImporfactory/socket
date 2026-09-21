@@ -1,6 +1,7 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 
 const { getConfigFromDB } = require('../utils/whatsappTemplate.helpers');
 const {
@@ -102,7 +103,7 @@ exports.aplicar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
-  const api_key_openai = configRow?.api_key_openai || null;
+  const api_key_openai = leerApiKeyOpenAI(configRow?.api_key_openai);
 
   if (!api_key_openai) {
     return next(new AppError('No hay API key de OpenAI configurada', 400));
@@ -441,7 +442,7 @@ exports.aplicarCliente = catchAsync(async (req, res, next) => {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const api_key_openai = configRow?.api_key_openai || null;
+  const api_key_openai = leerApiKeyOpenAI(configRow?.api_key_openai);
 
   const headers = api_key_openai
     ? {
@@ -1427,7 +1428,7 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     `SELECT api_key_openai, nombre_configuracion FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const api_key_openai = configRow?.api_key_openai || null;
+  const api_key_openai = leerApiKeyOpenAI(configRow?.api_key_openai);
   const nombreEmpresaConfig = configRow?.nombre_configuracion || null;
 
   if (!api_key_openai) {
@@ -2176,6 +2177,7 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
         error: 'Configuración no encontrada',
       };
     }
+    config.api_key_openai = leerApiKeyOpenAI(config.api_key_openai);
     if (!config.kanban_global_id) {
       return {
         id_configuracion,
@@ -2600,6 +2602,7 @@ exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
   );
 
   if (!colActual) return next(new AppError('Columna no encontrada', 404));
+  colActual.api_key_openai = leerApiKeyOpenAI(colActual.api_key_openai);
   if (!colActual.kanban_global_id)
     return next(
       new AppError('Esta configuración no usa plantilla global', 400),

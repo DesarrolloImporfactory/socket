@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const axios = require('axios');
 const FormData = require('form-data');
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const {
   sendWhatsappMessageTemplateScheduled,
   obtenerTextoPlantilla,
@@ -972,6 +973,9 @@ cron.schedule('*/1 * * * *', async () => {
                   type: db.QueryTypes.SELECT,
                 },
               );
+              if (cfgRow) {
+                cfgRow.api_key_openai = leerApiKeyOpenAI(cfgRow.api_key_openai);
+              }
               console.log(
                 `🟦 [DEBUG IA] cfgRow: api_key=${cfgRow?.api_key_openai ? 'SI' : 'NO'} openai_activo=${cfgRow?.openai_activo}`,
               );
@@ -982,7 +986,7 @@ cron.schedule('*/1 * * * *', async () => {
               if (cfgRow.openai_activo === 0) {
                 throw new Error('OpenAI marcado inactivo (sin saldo)');
               }
-              const api_key_openai = cfgRow.api_key_openai;
+              const api_key_openai = leerApiKeyOpenAI(cfgRow.api_key_openai);
 
               const [colRow] = await db.query(
                 `SELECT assistant_id, max_tokens, instrucciones, modelo,

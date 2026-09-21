@@ -1,6 +1,7 @@
 const axios = require('axios');
 const FormData = require('form-data');
 const { db, db_2 } = require('../../database/config');
+const { leerApiKeyOpenAI } = require('./apiKeyOpenAI');
 const { directivaUpsell } = require('../upsellProducto');
 
 /**
@@ -191,7 +192,7 @@ async function syncCatalogoAsistentesPorConfiguracion(
       },
     );
 
-    const apiKey = rows?.[0]?.api_key_openai || null;
+    const apiKey = leerApiKeyOpenAI(rows?.[0]?.api_key_openai);
 
     if (!apiKey) {
       throw new Error(

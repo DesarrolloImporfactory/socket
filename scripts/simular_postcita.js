@@ -36,6 +36,9 @@ async function main() {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [ID_CONFIG], type: db.QueryTypes.SELECT },
   );
+  // La columna se guarda cifrada: siempre por el lector.
+  cfg.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+    .leerApiKeyOpenAI(cfg.api_key_openai);
 
   const headers = {
     Authorization: `Bearer ${cfg.api_key_openai}`,

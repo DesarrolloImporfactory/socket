@@ -187,10 +187,12 @@ async function main() {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [ID_CONFIG], type: db.QueryTypes.SELECT },
   );
-  if (!cfg?.api_key_openai)
+  // La columna se guarda cifrada: siempre por el lector.
+  API_KEY = require('../src/utils/openia/apiKeyOpenAI').leerApiKeyOpenAI(
+    cfg?.api_key_openai,
+  );
+  if (!API_KEY)
     throw new Error(`La configuración ${ID_CONFIG} no tiene api_key_openai`);
-
-  API_KEY = cfg.api_key_openai;
 
   const columnas = await db.query(
     `SELECT id, estado_db, nombre, max_tokens, modelo, instrucciones,

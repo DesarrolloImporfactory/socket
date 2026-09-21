@@ -4,6 +4,7 @@ const { db } = require('../database/config');
 const { DateTime } = require('luxon');
 const FormData = require('form-data');
 const catchAsync = require('../utils/catchAsync');
+const AppError = require('../utils/AppError');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
 const { PassThrough } = require('stream');
@@ -34,6 +35,12 @@ const {
   forzarLinkEnComponents,
   registrarEnvioEncuestaManual,
 } = require('../utils/encuestaTemplateLink');
+
+const {
+  plantillaDeEnlacePago,
+  resolverEnlacePagoTemplate,
+  forzarEnlacePagoEnComponents,
+} = require('../utils/enlacePagoImporsuit');
 
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
 const { comprobarYReactivarMetodoPago } = require('../utils/metaPagoStatus');
@@ -3741,6 +3748,52 @@ exports.enviarTemplateMasivo = async (req, res) => {
       );
     }
 
+    // ===== 2.95) Plantilla de cobro de Imporsuit: monto y botón de pago =====
+    // Salen de la cartera del destinatario (db_2), no de lo que escribió el
+    // asesor. Si no hay saldo vencido NO se envía: avisarle de "pagos
+    // pendientes" a quien está al día es peor que no mandar nada.
+    let enlacePago = null;
+
+    try {
+      enlacePago = await resolverEnlacePagoTemplate({
+        idConfiguracion: id_configuracion,
+        nombreTemplate: template_name,
+        telefono: toClean,
+        idClienteChatCenter: req.body?.id_cliente_chat_center,
+      });
+
+      if (enlacePago) {
+        payload.template.components = forzarEnlacePagoEnComponents(
+          payload.template.components,
+          enlacePago,
+        );
+
+        console.log(
+          `[SEND_TEMPLATE] Enlace de pago en "${template_name}" → ${enlacePago.email} saldo=${enlacePago.valores.monto} cuotas=${enlacePago.valores.cuotas}`,
+        );
+      }
+    } catch (err) {
+      if (err?.name === 'SinSaldoVencidoError') {
+        return res.status(200).json({
+          success: false,
+          step: 'resolver_enlace_pago',
+          code: err.code,
+          message: err.message,
+        });
+      }
+
+      console.error(
+        '[SEND_TEMPLATE] Error resolviendo el enlace de pago:',
+        err.message,
+      );
+      return res.status(500).json({
+        success: false,
+        step: 'resolver_enlace_pago',
+        message: 'No se pudo calcular el saldo pendiente del contacto',
+        error: err.message,
+      });
+    }
+
     // ===== 3) Enviar template a Meta =====
     console.log(
       '[SEND_TEMPLATE] Enviando a:',
@@ -3808,6 +3861,22 @@ exports.enviarTemplateMasivo = async (req, res) => {
             link: encuestaTpl.link,
           }
         : null,
+      // Valores REALES que salieron en la plantilla de cobro (el front los
+      // necesita para pintar la burbuja con el monto correcto).
+      enlace_pago: enlacePago
+        ? {
+            email: enlacePago.email,
+            ...enlacePago.valores,
+            // por posición, igual que los campos del modal
+            body: (enlacePago.mapeo.body || []).map(
+              (v) => enlacePago.valores[v],
+            ),
+            botones: (enlacePago.mapeo.buttons || []).map((b) => ({
+              index: String(b.index),
+              valor: enlacePago.valores[b.variable],
+            })),
+          }
+        : null,
       data: resp.data,
       fileUrl,
       meta_media_id,
@@ -3835,6 +3904,89 @@ exports.enviarTemplateMasivo = async (req, res) => {
     });
   }
 };
+
+/**
+ * GET /whatsapp_managment/enlace_pago_params
+ *   ?id_configuracion=242&nombre_template=saldo_pendiente_pago
+ *   &telefono=5939...&id_cliente_chat_center=123
+ *
+ * Lo usan los modales de plantillas (chat y /contactos). Si la plantilla es
+ * de cobro devuelve los valores de cada {{n}} y de cada botón URL para que el
+ * front los muestre bloqueados: el asesor no tipea ni el monto ni el enlace,
+ * así no puede salir "$15" en el texto y cobrarse $50 en el botón.
+ *
+ * - No es plantilla de cobro        → { data: null }
+ * - Lo es, sin telefono (/contactos, varios destinatarios)
+ *                                    → { data: { automatico, body, botones } }
+ *                                      con valor null: se resuelve al enviar.
+ * - Lo es, con telefono              → lo mismo con los valores reales, o
+ *                                      `bloqueo` si no hay nada que cobrarle.
+ *
+ * El envío vuelve a calcular todo por su cuenta: esto es solo la vista previa.
+ */
+exports.enlacePagoParams = catchAsync(async (req, res, next) => {
+  const { id_configuracion, nombre_template, telefono, id_cliente_chat_center } =
+    req.query;
+
+  if (!id_configuracion || !nombre_template) {
+    return next(new AppError('Falta id_configuracion o nombre_template', 400));
+  }
+
+  const mapeo = plantillaDeEnlacePago(id_configuracion, nombre_template);
+  if (!mapeo) return res.json({ success: true, data: null });
+
+  const armar = (valores) => ({
+    body: (mapeo.body || []).map((variable, i) => ({
+      posicion: i + 1,
+      variable,
+      valor: valores ? String(valores[variable] ?? '') : null,
+    })),
+    botones: (mapeo.buttons || []).map((b) => ({
+      index: String(b.index),
+      variable: b.variable,
+      valor: valores ? String(valores[b.variable] ?? '') : null,
+    })),
+  });
+
+  if (!onlyDigits(telefono || '') && !id_cliente_chat_center) {
+    return res.json({
+      success: true,
+      data: { automatico: true, ...armar(null), bloqueo: null },
+    });
+  }
+
+  try {
+    const r = await resolverEnlacePagoTemplate({
+      idConfiguracion: id_configuracion,
+      nombreTemplate: nombre_template,
+      telefono: onlyDigits(telefono || ''),
+      idClienteChatCenter: id_cliente_chat_center,
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        automatico: true,
+        email: r.email,
+        monto: r.valores.monto,
+        cuotas: r.valores.cuotas,
+        ...armar(r.valores),
+        bloqueo: null,
+      },
+    });
+  } catch (err) {
+    if (err?.name !== 'SinSaldoVencidoError') throw err;
+
+    return res.json({
+      success: true,
+      data: {
+        automatico: true,
+        ...armar(null),
+        bloqueo: { code: err.code, message: err.message },
+      },
+    });
+  }
+});
 
 exports.programarTemplateMasivo = async (req, res) => {
   const t = await db.transaction();

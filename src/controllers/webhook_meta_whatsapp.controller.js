@@ -5,6 +5,7 @@ const fsp = fs.promises;
 const path = require('path');
 
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajeCliente = require('../models/mensaje_cliente.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
@@ -403,7 +404,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const id_configuracion = configuracion.id;
       const telefono_configuracion = configuracion.telefono;
       const nombre_configuracion = configuracion.nombre_configuracion;
-      const api_key_openai = configuracion.api_key_openai;
+      const api_key_openai = leerApiKeyOpenAI(configuracion.api_key_openai);
       const tipo_configuracion = configuracion.tipo_configuracion;
       /* buscar id_configuracion */
 

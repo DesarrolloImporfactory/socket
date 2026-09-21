@@ -112,10 +112,6 @@ const Configuraciones = db.define(
       allowNull: false,
       defaultValue: 1,
     },
-    api_key_gemini: {
-      type: DataTypes.STRING(1000),
-      allowNull: true,
-    },
   },
   {
     tableName: 'configuraciones',

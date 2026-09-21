@@ -12,6 +12,11 @@ const {
   uploadMediaToMeta,
 } = require('../utils/whatsappTemplate.helpers');
 
+const {
+  resolverEnlacePagoTemplate,
+  construirParametrosEnlacePago,
+} = require('../utils/enlacePagoImporsuit');
+
 /* ================================================================
    CACHE DE PLANTILLAS EN MEMORIA
    - Evita consultar Meta N veces por el mismo template
@@ -744,6 +749,19 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
 
   if (!Array.isArray(template_parameters)) {
     throw new Error('template_parameters debe ser un array');
+  }
+
+  // Plantilla de cobro de Imporsuit: monto y botón de pago se calculan AHORA
+  // desde la cartera del destinatario, no con lo que se congeló al programar
+  // (pudo abonar entre medio). Sin saldo vencido lanza y el item queda en
+  // error con el motivo, que es lo correcto: no se le cobra a quien está al día.
+  const enlacePago = await resolverEnlacePagoTemplate({
+    idConfiguracion: id_configuracion,
+    nombreTemplate: nombre_template,
+    telefono: telefonoLimpio,
+  });
+  if (enlacePago) {
+    template_parameters = construirParametrosEnlacePago(enlacePago);
   }
 
   // 1) Config fresca desde BD

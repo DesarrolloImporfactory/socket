@@ -159,6 +159,11 @@ router.post(
 // Definición completa (header/body/footer/botones) para renderizar el chat
 router.post('/definiciones_templates', whatsappCtrl.definicionesTemplates);
 
+// Plantillas de cobro de Imporsuit: valores ya resueltos (nombre, saldo y
+// botón de pago) para prellenar y bloquear los campos del modal. Con protect
+// porque responde el saldo de la cartera de una persona a partir de su número.
+router.get('/enlace_pago_params', protect, whatsappCtrl.enlacePagoParams);
+
 router.get('/programados_por_chat', whatsappCtrl.listarProgramadosPorChat);
 // Resumen batch para el listado de chats (1 consulta por página visible)
 router.get('/programados_resumen_chats', whatsappCtrl.programadosResumenChats);

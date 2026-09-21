@@ -24,6 +24,7 @@
 const axios = require('axios');
 
 const { db } = require('../database/config');
+const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const { leerAnuncio } = require('./scrapers/anuncios');
 const { downloadAndConvertToJpgS3 } = require('../utils/imageConverter');
 const { obtenerPreset, resolverPreset } = require('../utils/fichaPresets');
@@ -107,7 +108,7 @@ async function apiKeyDe(id_configuracion) {
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  return cfg?.api_key_openai || null;
+  return leerApiKeyOpenAI(cfg?.api_key_openai);
 }
 
 /* Con la API de chat completions y no con Assistants: acá no hay conversación

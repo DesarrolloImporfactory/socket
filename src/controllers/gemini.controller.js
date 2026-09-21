@@ -6,7 +6,6 @@ const { db } = require('../database/config');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 
-const Configuraciones = require('../models/configuraciones.model');
 const Usuarios = require('../models/usuarios_chat_center.model');
 const Planes = require('../models/planes_chat_center.model');
 const GeneracionesIA = require('../models/generaciones_ia.model');
@@ -14,7 +13,6 @@ const GeneracionesAngulosIA = require('../models/generaciones_angulos_ia.model')
 const EtapasLanding = require('../models/etapas_landing.model');
 const TemplatesIA = require('../models/templates_ia.model');
 
-const { decryptToken } = require('../utils/cryptoToken');
 const sharp = require('sharp');
 
 // ─── constantes ─────────────────────────────────────────────────────────────
@@ -433,15 +431,14 @@ async function validateUserQuota(id_usuario, next) {
   };
 }
 
+/* La key de Gemini era UNA sola, de plataforma, pero vivía como DEFAULT de la
+   columna configuraciones.api_key_gemini: cada config nueva nacía con una copia
+   (1.106 filas el 2026-09-21) y acá se leía "la primera que tenga". Insta
+   Landing se dio de baja, la columna se elimina, y si algún día se revive la
+   herramienta la key va donde corresponde: en el .env. */
 async function getGeminiApiKey(next) {
-  const cfg = await Configuraciones.findOne({
-    where: {
-      api_key_gemini: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] },
-    },
-    attributes: ['id', 'api_key_gemini'],
-    order: [['id', 'ASC']],
-  });
-  if (!cfg || !cfg.api_key_gemini) {
+  const key = String(process.env.GEMINI_API_KEY || '').trim();
+  if (!key) {
     next(
       new AppError(
         'No hay API Key del motor de generación configurada en el sistema',
@@ -450,12 +447,7 @@ async function getGeminiApiKey(next) {
     );
     return null;
   }
-  try {
-    return decryptToken(cfg.api_key_gemini);
-  } catch {
-    next(new AppError('API Key del motor de generación inválida', 500));
-    return null;
-  }
+  return key;
 }
 
 async function autoSetPortadaIfNeeded(id_producto, image_url) {
@@ -1690,41 +1682,3 @@ exports.regenerar_etapa = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─── LEGACY ──────────────────────────────────────────────────────────────────
-
-exports.obtener_api_key = catchAsync(async (req, res, next) => {
-  const id_configuracion = Number(req.body?.id_configuracion || 0);
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-  const cfg = await Configuraciones.findOne({
-    where: { id: id_configuracion },
-    attributes: ['id', 'api_key_gemini'],
-  });
-  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-  return res.json({
-    isSuccess: true,
-    api_key: Boolean(cfg.api_key_gemini && String(cfg.api_key_gemini).trim()),
-  });
-});
-
-exports.guardar_api_key = catchAsync(async (req, res, next) => {
-  const id_configuracion = Number(req.body?.id_configuracion || 0);
-  const api_key = String(req.body?.api_key || '').trim();
-  if (!id_configuracion)
-    return next(new AppError('id_configuracion es requerido', 400));
-  if (!api_key) return next(new AppError('api_key es requerida', 400));
-  const cfg = await Configuraciones.findOne({
-    where: { id: id_configuracion },
-    attributes: ['id'],
-  });
-  if (!cfg) return next(new AppError('Configuración no encontrada', 404));
-  const { encryptToken } = require('../utils/cryptoToken');
-  await Configuraciones.update(
-    { api_key_gemini: encryptToken(api_key) },
-    { where: { id: id_configuracion } },
-  );
-  return res.json({
-    isSuccess: true,
-    message: 'API Key guardada correctamente',
-  });
-});
