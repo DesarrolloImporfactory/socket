@@ -2035,6 +2035,32 @@ async function procesarMensajeKanban(params) {
     await log(`🧹 Después: ${respuestaRaw.slice(0, 200)}`);
   }
 
+  /* ── 9.7 Wizard: no recitar otra vez la lista de precios ───────
+     El mensaje fijo ya dio precio, combos y foto y preguntó la ciudad; el
+     guion trae "precio + combos + ¿cuántas unidades?" como paso siguiente y el
+     modelo lo recita textual. Por prompt no se pudo (0 de 3 en replay), así
+     que se recorta acá. Ver utils/wizardProducto/sinRepetirPresentacion.js. */
+  if (prefacioWizard && wizardEnJuego?.producto) {
+    try {
+      const {
+        quitarPresentacionRepetida,
+      } = require('../utils/wizardProducto/sinRepetirPresentacion');
+      const sinRepetir = quitarPresentacionRepetida({
+        respuesta: respuestaRaw,
+        mensajeCliente: mensaje,
+        producto: wizardEnJuego.producto,
+      });
+      if (sinRepetir.recortado) {
+        await log(
+          `✂️ wizard: el bot repetía la lista de precios del mensaje fijo; se recortó. Queda: ${sinRepetir.texto.slice(0, 200)}`,
+        );
+        respuestaRaw = sinRepetir.texto;
+      }
+    } catch (eRep) {
+      await log(`⚠️ wizard sinRepetirPresentacion: ${eRep.message}`);
+    }
+  }
+
   /* await log(
     `✅ Respuesta asistente columna="${columna.nombre}": ${respuestaRaw.slice(0, 120)}...`,
   ); */

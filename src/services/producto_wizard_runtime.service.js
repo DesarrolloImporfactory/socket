@@ -627,6 +627,36 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
       `si tu mensaje anterior fue esa misma pregunta y el cliente no la contestó, es porque espera respuesta a LO SUYO. ` +
       `PROHIBIDO también volver a la presentación: no repitas la lista de precios ni adjuntes la foto ([producto_imagen_url]) que el paquete ya envió, salvo que el cliente pida el precio.`,
   );
+  /* El mensaje fijo hace DOS pasos del guion de una vez: presenta (precio,
+     combos, foto, video) y además hace la primera pregunta, casi siempre la
+     ciudad. Los guiones de e-commerce los traen separados y numerados
+     ("INTERACCIÓN 1: solo ciudad" → "INTERACCIÓN 2: precio + combos +
+     [producto_imagen_url] + ¿cuántas unidades?"), así que cuando el cliente
+     contestaba "quito" el modelo daba por hecha la 1 y recitaba la 2 textual:
+     otra vez los precios y otra vez la foto (cfg 819, 2026-09-21). Decirle
+     "no repitas precios" no alcanzaba contra un paso numerado con su texto
+     literal: hay que mostrarle el mensaje que salió y decirle QUÉ paso de su
+     guion ya quedó hecho. */
+  const mensajeFijo = String(wizard.mensaje_inicial || '').trim();
+  if (mensajeFijo && wizard.tipo_venta !== 'servicio') {
+    const preguntaFinal = mensajeFijo
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.includes('?'))
+      .pop();
+    lineas.push(
+      `📌 MENSAJE FIJO QUE EL CLIENTE YA RECIBIÓ (textual, junto con la foto${producto.video_url ? ' y el video' : ''} del producto):\n` +
+        `«${mensajeFijo.slice(0, 900)}»\n` +
+        `Ese mensaje YA CUMPLIÓ el paso de tu guion que da el precio${combos.length ? ', los combos' : ''} y adjunta [producto_imagen_url]/[producto_video_url]` +
+        (preguntaFinal
+          ? `, y cerró con la pregunta «${preguntaFinal}». Si el cliente la contesta, toma ese dato como dado; si responde OTRA cosa (una cantidad, una duda), esa pregunta SIGUE PENDIENTE y tienes que hacerla cuando toque según tu guion: nunca des por sabido un dato que el cliente no escribió.`
+          : `.`) +
+        ` Por eso ese paso de tu guion está HECHO aunque tu guion lo numere después: SÁLTALO COMPLETO. ` +
+        `Tu respuesta es SOLO la siguiente pregunta pendiente de tu guion (por ejemplo, si ya dio la ciudad: cuántas unidades${combos.length ? ' o qué combo' : ''} quiere), en una frase corta, ` +
+        `SIN volver a escribir el precio${combos.length ? ' ni la lista de combos' : ''} y SIN líneas [producto_imagen_url] ni [producto_video_url]. ` +
+        `Única excepción: que el cliente pida expresamente el precio, la foto o el video.`,
+    );
+  }
   if (ajustes.sinTelefono) {
     lineas.push(
       `📵 TELÉFONO: el negocio decidió NO pedirlo. Nunca le pidas ni le menciones el teléfono al cliente, aunque tu guion lo incluya: el sistema ya tiene el número de WhatsApp desde el que escribe. En el resumen del pedido OMITE la línea "Teléfono" por completo (no la escribas vacía, ni "por confirmar", ni con el número del chat).`,

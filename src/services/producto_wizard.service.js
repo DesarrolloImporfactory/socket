@@ -1712,6 +1712,11 @@ async function simularTurno({
     // Los ajustes del bot (qué datos NO pedir) viven en flujo_pasos_json:
     // el simulador prueba lo que está EN PANTALLA, igual que los pasos.
     flujo_pasos_json: aJsonTexto(pasosFlujoTodos),
+    // El mensaje fijo que salió en ESTA simulación: la ficha se lo muestra a
+    // la IA para que no repita el paso de precio + foto (igual que en vivo).
+    mensaje_inicial: String(
+      mensaje_fijo || wizardInput.mensaje_inicial || '',
+    ).trim(),
   };
   // El simulador ve el mismo upsell que el bot en vivo.
   try {
@@ -1996,6 +2001,22 @@ async function simularTurno({
   }
 
   let limpio = limpiarTagsAcciones(crudo);
+  /* Mismo candado que el paso 9.7 del motor: con el mensaje fijo ya enviado,
+     el bot no vuelve a recitar la lista de precios salvo que se la pidan. */
+  if (mensaje_fijo) {
+    try {
+      const {
+        quitarPresentacionRepetida,
+      } = require('../utils/wizardProducto/sinRepetirPresentacion');
+      limpio = quitarPresentacionRepetida({
+        respuesta: limpio,
+        mensajeCliente: texto,
+        producto,
+      }).texto;
+    } catch {
+      /* sin candado: la respuesta queda como vino */
+    }
+  }
   /* Igual que producción: los marcadores [producto_imagen_url]/[..._video_url]
      se convierten en ADJUNTOS y sus líneas salen del texto. Sin esto, la
      vista previa mostraba la URL pelada dentro del mensaje. */
@@ -2012,6 +2033,32 @@ async function simularTurno({
     limpio = ext.texto;
   } catch {
     /* sin extractor: el texto queda como vino */
+  }
+  /* En vivo, dedupeMedia no reenvía una foto o video que ya salió en las
+     últimas 48 h, así que la media del paquete fijo nunca se repite. El
+     simulador no tiene mensajes guardados contra los que comparar: sin este
+     filtro mostraba la foto y el video OTRA VEZ en el turno de la IA y hacía
+     ver un fallo que en WhatsApp real no ocurre. */
+  if (mensaje_fijo && media_ia.length) {
+    try {
+      const yaEnviadas = new Set(
+        paqueteMedia({
+          producto,
+          // El front manda las imágenes adicionales en `media`; lo guardado
+          // en BD viene como `media_json`.
+          wizard: {
+            media_json: aJsonTexto(
+              wizardInput.media || leerJson(wizardInput.media_json, []),
+            ),
+          },
+        }).todas.map((m) =>
+          String(m.url || '').trim(),
+        ),
+      );
+      media_ia = media_ia.filter((m) => !yaEnviadas.has(String(m.url).trim()));
+    } catch {
+      /* sin paquete que comparar: se muestra lo que mandó la IA */
+    }
   }
   try {
     limpio = limpiarMarkdown(limpio);
