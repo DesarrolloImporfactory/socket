@@ -132,8 +132,4 @@ router.post(
 );
 router.delete('/mis-templates/:id', ...ilGuard, templatePrivadosCtrl.eliminar);
 
-// ─── Legacy ──────────────────────────────────────────────────────────────────
-router.post('/obtener_api_key', ...ilGuard, geminiController.obtener_api_key);
-router.post('/guardar_api_key', ...ilGuard, geminiController.guardar_api_key);
-
 module.exports = router;
