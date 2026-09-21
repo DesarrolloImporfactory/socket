@@ -1263,6 +1263,103 @@ async function suiteA() {
     );
   }
 
+  /* ── Bloque 14.5: tras el mensaje fijo, el bot recitaba otra vez los precios (cfg 819, 2026-09-21) ──
+     El mensaje fijo del wizard da precio, combos, foto y video Y pregunta la
+     ciudad. El guion e-commerce trae eso en dos pasos numerados ("INTERACCIÓN
+     1: solo ciudad" → "INTERACCIÓN 2: precio + combos + foto + ¿cuántas
+     unidades?"), así que al responder "quito" el modelo recitaba la 2 textual,
+     pegada debajo del mensaje que acababa de dar los mismos precios. Por
+     prompt no se pudo (replay: 0 de 3); el candado vive en
+     utils/wizardProducto/sinRepetirPresentacion.js. Las respuestas de abajo
+     son las que dio gpt-5-mini de verdad. */
+  {
+    const {
+      quitarPresentacionRepetida: sinRep,
+    } = require('../src/utils/wizardProducto/sinRepetirPresentacion');
+    const kahi = {
+      precio: '21.99',
+      combos_producto:
+        '[{"cantidad":"2","precio":"26.99"},{"cantidad":"3","precio":"39.99"},{"cantidad":"","precio":""}]',
+    };
+    const PREGUNTA =
+      '¿Cuántas unidades quieres, o te interesa un combo? Recuerda que pagas al recibir!';
+    const reales = [
+      `El *Balsamo Kahi Seoul* cuesta *$21,99*. También tenemos combos:\n- 2 por $26,99\n- 3 por $39,99\n\n\n\n\n${PREGUNTA} 💵`,
+      `El *Bálsamo KAHI Seoul* cuesta *$21.99*. También tenemos 2 por *$26.99* y 3 por *$39.99* 💵\n${PREGUNTA}`,
+      `El *Bálsamo KAHI Seoul* cuesta *$21.99*. También tenemos combos: 2 por $26.99 · 3 por $39.99\n${PREGUNTA} 💵`,
+      `El Bálsamo cuesta $21,99. También tenemos:\n- 2 por $26,99\n- 3 por $39,99\n\n${PREGUNTA}`,
+    ];
+    reales.forEach((respuesta, i) => {
+      const r = sinRep({ respuesta, mensajeCliente: 'quito', producto: kahi });
+      caso(
+        `819 wizard: el cliente dice la ciudad y el bot NO repite la lista de precios (respuesta real ${i + 1})`,
+        r.recortado &&
+          r.texto.startsWith('¿Cuántas unidades') &&
+          !/2[16][.,]99|39[.,]99|tambi[eé]n tenemos/i.test(r.texto),
+        r.texto.slice(0, 90),
+      );
+    });
+
+    const lista =
+      'El Bálsamo KAHI Seoul cuesta $21,99; también tenemos 2 por $26,99 y 3 por $39,99. ¿A qué ciudad lo enviamos?';
+    for (const msg of ['cuanto cuesta?', 'tienen promo?', 'y el combo de 3?']) {
+      const r = sinRep({ respuesta: lista, mensajeCliente: msg, producto: kahi });
+      caso(
+        `819 wizard: si el cliente pide el precio ("${msg}") la lista SÍ sale`,
+        !r.recortado && r.texto === lista,
+      );
+    }
+    {
+      const resumen =
+        'Perfecto, confirmo tu pedido:\n👤 Nombre: Ana\n📍 Ciudad: Quito\n📦 2 unidades\n💰 Precio total: $26.99\n[generar_guia]:true';
+      const r = sinRep({ respuesta: resumen, mensajeCliente: 'si', producto: kahi });
+      caso('819 wizard: el resumen del pedido no se toca', !r.recortado && r.texto === resumen);
+    }
+    {
+      const una = 'Perfecto, 2 unidades por $26.99 😊 ¿Envío a domicilio o retiro en agencia?';
+      const r = sinRep({ respuesta: una, mensajeCliente: 'quiero 2', producto: kahi });
+      caso('819 wizard: una sola mención de precio (no es la lista) no se toca', !r.recortado);
+    }
+    {
+      const soloLista = 'El Bálsamo cuesta $21.99. También tenemos 2 por $26.99 y 3 por $39.99.';
+      const r = sinRep({ respuesta: soloLista, mensajeCliente: 'quito', producto: kahi });
+      caso(
+        '819 wizard: si al recortar no queda mensaje, se manda como vino (nunca un trozo)',
+        !r.recortado && r.texto === soloLista,
+      );
+    }
+
+    /* La ficha que ve la IA: le muestra el mensaje fijo, pero NO le dice que lo
+       que escribe el cliente "es la respuesta": con "quiero 2" esa frase hacía
+       que saltara la ciudad sin que el cliente la hubiera dicho. */
+    const {
+      bloqueWizardParaMotor,
+    } = require('../src/services/producto_wizard_runtime.service');
+    const fijo =
+      'Hola 😊 Soy María José.\n💵 1 por $21,99\n🔥 2 por $26,99\n¿Para que ciudad desea realizar el pedido?';
+    const ficha = bloqueWizardParaMotor({
+      producto: { ...kahi, nombre: 'Balsamo Kahi Seoul', video_url: 'https://x/v.mp4' },
+      wizard: { tipo_venta: 'fisico', mensaje_inicial: fijo },
+    });
+    caso(
+      '819 wizard: la ficha le muestra a la IA el mensaje fijo y su pregunta final',
+      ficha.includes('¿Para que ciudad desea realizar el pedido?') &&
+        ficha.includes('MENSAJE FIJO QUE EL CLIENTE YA RECIBIÓ'),
+    );
+    caso(
+      '819 wizard: la ficha deja la pregunta PENDIENTE si el cliente contesta otra cosa',
+      /SIGUE PENDIENTE/.test(ficha) && !/es la RESPUESTA a esa pregunta/.test(ficha),
+    );
+    const fichaServicio = bloqueWizardParaMotor({
+      producto: { precio: '50', combos_producto: '[]', nombre: 'Limpieza facial' },
+      wizard: { tipo_venta: 'servicio', mensaje_inicial: fijo },
+    });
+    caso(
+      '819 wizard: en SERVICIOS la ficha no cambia (radio de impacto)',
+      !fichaServicio.includes('MENSAJE FIJO QUE EL CLIENTE YA RECIBIÓ'),
+    );
+  }
+
   /* ── Bloque 15: resumen "x2" y precio del combo (caso 411, Aracelly, 2026-09-08) ──
      La clienta pidió "dos", el bot cerró "📦 Producto: Dr Melaxin x2" a $40 sin
      línea Cantidad; el sistema leyó cantidad 1 y cobró unitario x2 aunque el
@@ -1590,25 +1687,42 @@ async function suiteA() {
       /* Solo wizards cuyo producto siga en el catálogo: la 1125 borró los
          productos de sus wizards el 2026-09-15 y el caso caía con "Producto
          no encontrado" sin que nada del motor hubiera cambiado. */
+      /* El simulador solo necesita UN producto vivo con wizard para cargar; el
+         flujo y la FAQ van fijos abajo. Por eso ya no se ata a la 1125: cuando
+         ese cliente borró sus productos el caso pasó a "omitido" y estuvo días
+         contando como verde sin probar nada. Se prefiere la cuenta de pruebas
+         (610) y, si no, cualquiera que tenga uno. */
       const [w] = await require('../src/database/config').db.query(
-        `SELECT w.id_producto, w.respuestas_rapidas_json
+        `SELECT w.id_producto, w.id_configuracion
            FROM productos_wizard w
            JOIN productos_chat_center p ON p.id = w.id_producto AND p.eliminado = 0
-          WHERE w.id_configuracion = 1125
-          ORDER BY w.updated_at DESC LIMIT 1`,
+          ORDER BY (w.id_configuracion = 610) DESC, w.updated_at DESC LIMIT 1`,
         { type: require('../src/database/config').db.QueryTypes.SELECT },
       );
       if (!w) {
         caso(
-          'simulador 1125: "que contiene" (omitido: la 1125 ya no tiene wizard con producto vivo)',
-          true,
-          'sin datos para simular',
+          'simulador (caso 1125): "que contiene"',
+          false,
+          'no hay NINGÚN producto vivo con wizard en la BD: el caso no se pudo ejecutar',
         );
         return;
       }
-      const faqs = JSON.parse(w.respuestas_rapidas_json || '[]');
+      /* FAQ FIJA de prueba, no la del cliente. Antes se leían sus
+         respuestas_rapidas_json: el día que la 1125 editara o borrara su
+         "¿qué contiene?", el matcher no calzaría, el simulador caería a la IA
+         y este caso gastaría la API key de un CLIENTE — y sin saldo, un push
+         bloqueado por algo que no es un fallo del motor. La batería del push
+         no puede depender de la key ni del contenido de nadie. */
+      const faqs = [
+        {
+          pregunta: '¿Qué contiene?',
+          respuesta: 'Contiene cacao puro y colágeno, sin azúcar añadida.',
+          claves: ['que contiene', 'contiene', 'ingredientes'],
+          activa: 1,
+        },
+      ];
       const r = await simularTurno({
-        id_configuracion: 1125,
+        id_configuracion: w.id_configuracion,
         id_producto: w.id_producto,
         mensaje: 'que contiene',
         wizardInput: { usar_flujo_pasos: 1, usar_respuestas_rapidas: 1, respuestas_rapidas: faqs, flujo_pasos: [pasoCiudad, { espera: 'opcion', pregunta: '¿QUÉ PROMOCIÓN?', opciones: [{ claves: ['1'], copy: 'ok 1' }] }] },
@@ -1616,12 +1730,12 @@ async function suiteA() {
         historial: [],
       });
       caso(
-        'simulador 1125: "que contiene" sale como rápida y retoma la pregunta de ciudad',
+        'simulador (caso 1125): "que contiene" sale como rápida y retoma la pregunta de ciudad',
         r.tipo === 'rapida' && /CIUDAD/i.test(r.respuesta) && r.flujo_paso === 0 && !/Que Contiene/.test(r.respuesta),
-        `tipo=${r.tipo} paso=${r.flujo_paso} → ${String(r.respuesta).slice(0, 80)}`,
+        `cfg=${w.id_configuracion} prod=${w.id_producto} tipo=${r.tipo} paso=${r.flujo_paso} → ${String(r.respuesta).slice(0, 80)}`,
       );
     } catch (e) {
-      caso('simulador 1125: "que contiene"', false, e.message);
+      caso('simulador (caso 1125): "que contiene"', false, e.message);
     }
   }
 }
