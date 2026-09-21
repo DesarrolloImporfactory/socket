@@ -67,6 +67,9 @@ async function main() {
 
     const ref = `cfg ${col.id_configuracion} col ${col.id} (${col.estado_db})`;
 
+    // La columna se guarda cifrada: siempre por el lector.
+    col.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+      .leerApiKeyOpenAI(col.api_key_openai);
     if (!col.api_key_openai) {
       R.sinKey.push(ref);
       continue;

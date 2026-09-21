@@ -52,6 +52,9 @@ async function main() {
   let fallidas = 0;
 
   for (const col of columnas) {
+    // La columna se guarda cifrada: siempre por el lector.
+    col.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+      .leerApiKeyOpenAI(col.api_key_openai);
     const headers = {
       Authorization: `Bearer ${col.api_key_openai}`,
       'Content-Type': 'application/json',

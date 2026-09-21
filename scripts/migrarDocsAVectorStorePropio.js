@@ -87,6 +87,9 @@ async function main() {
   let fallidas = 0;
 
   for (const col of candidatas) {
+    // La columna se guarda cifrada: siempre por el lector.
+    col.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+      .leerApiKeyOpenAI(col.api_key_openai);
     const headersBase = { Authorization: `Bearer ${col.api_key_openai}` };
     const headersJson = { ...headersBase, 'Content-Type': 'application/json' };
     // Los endpoints de /assistants exigen este header; los de /vector_stores no

@@ -8,7 +8,10 @@ const { db } = require('../src/database/config');
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [idCfg], type: db.QueryTypes.SELECT },
   );
-  const key = row.api_key_openai;
+  // La columna se guarda cifrada: siempre por el lector.
+  const key = require('../src/utils/openia/apiKeyOpenAI').leerApiKeyOpenAI(
+    row.api_key_openai,
+  );
   const res = await axios.get(`https://api.openai.com/v1/assistants/${aid}`, {
     headers: { Authorization: `Bearer ${key}`, 'OpenAI-Beta': 'assistants=v2' },
   });

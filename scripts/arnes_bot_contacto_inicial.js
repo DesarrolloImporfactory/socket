@@ -82,6 +82,11 @@ function checksGlobales(turnos) {
         AND kc.activo = 1 LIMIT 1`,
     { type: db.QueryTypes.SELECT },
   );
+  // La columna se guarda cifrada: siempre por el lector.
+  if (col) {
+    col.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+      .leerApiKeyOpenAI(col.api_key_openai);
+  }
   if (!col?.api_key_openai) {
     console.error('cfg 610 sin columna contacto_inicial o sin api key');
     process.exit(1);

@@ -84,6 +84,9 @@ async function main() {
   /* Los asistentes de OpenAI se borran aparte: viven en la cuenta del cliente y
      si solo se borra la fila quedan colgados ahí para siempre. Que falle uno no
      puede frenar la limpieza. */
+  // La columna se guarda cifrada: siempre por el lector.
+  cfg.api_key_openai = require('../src/utils/openia/apiKeyOpenAI')
+    .leerApiKeyOpenAI(cfg.api_key_openai);
   if (cfg.api_key_openai) {
     for (const c of columnas.filter((x) => x.assistant_id)) {
       try {
