@@ -49,18 +49,34 @@ router.post(
   usuarios_chat_centerController.importacion_chat_center,
 );
 
+/* Datos del dueño y su WhatsApp de avisos: solo el administrador de la
+   cuenta, y siempre de SU cuenta. Antes tomaban id_usuario del body: un
+   subusuario de ventas leía el correo del dueño en Mi Perfil y, cambiando el
+   id, cualquier sesión podía leer o pisar el WhatsApp de otra cuenta. */
+const cuentaDeSesion = (req, res, next) => {
+  req.body = req.body || {};
+  req.body.id_usuario = req.sessionUser.id_usuario;
+  next();
+};
+
 router.post(
   '/actualizarWhatsappLead',
+  restrictToRoles('administrador'),
+  cuentaDeSesion,
   usuarios_chat_centerController.actualizarWhatsappLead,
 );
 // Datos del dueño de la cuenta (vista Mi Perfil)
 router.post(
   '/infoPropietario',
+  restrictToRoles('administrador'),
+  cuentaDeSesion,
   usuarios_chat_centerController.infoPropietario,
 );
 // Bitácora de avisos enviados al dueño (vista Mi Perfil)
 router.post(
   '/avisosEnviados',
+  restrictToRoles('administrador'),
+  cuentaDeSesion,
   usuarios_chat_centerController.avisosEnviados,
 );
 
