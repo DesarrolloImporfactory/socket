@@ -466,6 +466,11 @@ class ChatService {
               'texto_original',
               'editado_at',
               'eliminado_at',
+              // Precio que Meta confirmó en el webhook: el chat marca los
+              // mensajes que salieron gratis por la ventana de 72 h.
+              'precio_meta_tipo',
+              'precio_meta_facturable',
+              'fep_expira_at',
             ],
             include: [
               {
