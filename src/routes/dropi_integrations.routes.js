@@ -4,6 +4,7 @@ const router = express.Router();
 const auth = require('../middlewares/auth.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
+const excluirRoles = require('../middlewares/excluirRoles.middleware');
 const ctrl = require('../controllers/dropi_integrations.controller');
 const dropiAutoOrderController = require('../controllers/dropi_auto_orders.controller');
 
@@ -177,10 +178,13 @@ router.get(
   ctrl.getCiudadesTransportadoras,
 );
 
-// Dashboard por conexión (resumen KPIs + top productos)
+// Dashboard por conexión (resumen KPIs + top productos). Facturado, utilidad
+// y pedidos de la cuenta: no son para el asesor de ventas (la cabecera de
+// /conexiones y el dashboard de conexión los ocultan por rol).
 router.post(
   '/dashboard/connection-summary',
   auth.protectConfigOwner,
+  excluirRoles('ventas'),
   ctrl.getConnectionSummary,
 );
 

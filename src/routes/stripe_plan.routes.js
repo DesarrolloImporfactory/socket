@@ -1,16 +1,23 @@
 const express = require('express');
 const stripeController = require('../controllers/stripe.controller');
 const { protect } = require('../middlewares/auth.middleware');
+const restrictToRoles = require('../middlewares/restrictTo.middleware');
 
 const router = express.Router();
 
 router.use(protect);
 
+/* Facturación de la cuenta: solo el administrador. Un subusuario de ventas
+   no cambia ni cancela la suscripción ni entra al portal de cobros.
+   crearSesionPago y portalAddPaymentMethod quedan abiertos porque los
+   dispara el bloqueo de plan (CARD_CAPTURE_REQUIRED) desde cualquier sesión. */
+const soloAdministrador = restrictToRoles('administrador');
+
 // Checkout Subscription
 router.post('/crearSesionPago', stripeController.crearSesionPago);
 
 // Cambiar Plan (upgrade, downgrade, mismo precio)
-router.post('/cambiarPlan', stripeController.cambiarPlan);
+router.post('/cambiarPlan', soloAdministrador, stripeController.cambiarPlan);
 
 // Suscripción activa (para MiPlan.jsx y PlanesView.jsx)
 router.post(
@@ -19,16 +26,32 @@ router.post(
 );
 
 // Facturas
-router.post('/facturasUsuario', stripeController.facturasUsuario);
+router.post(
+  '/facturasUsuario',
+  soloAdministrador,
+  stripeController.facturasUsuario,
+);
 
 // Customer Portal
-router.post('/portalCliente', stripeController.portalCliente);
+router.post(
+  '/portalCliente',
+  soloAdministrador,
+  stripeController.portalCliente,
+);
 
 // Cancelar suscripción
-router.post('/cancelarSuscripcion', stripeController.cancelarSuscripcion);
+router.post(
+  '/cancelarSuscripcion',
+  soloAdministrador,
+  stripeController.cancelarSuscripcion,
+);
 
 // Portales específicos
-router.post('/portalGestionMetodos', stripeController.portalGestionMetodos);
+router.post(
+  '/portalGestionMetodos',
+  soloAdministrador,
+  stripeController.portalGestionMetodos,
+);
 router.post('/portalAddPaymentMethod', stripeController.portalAddPaymentMethod);
 
 // ═══════════════════════════════════════════════════════
