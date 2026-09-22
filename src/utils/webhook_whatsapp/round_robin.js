@@ -5,6 +5,9 @@ const ClientesChatCenter = require('../../models/clientes_chat_center.model');
 
 const presenceStore = require('../../sockets/presence/presenceStore');
 const {
+  vendedorExcluido,
+} = require('../../services/liberar_sin_respuesta.service');
+const {
   tieneColumnaCanales,
   canalDeSource,
 } = require('../canalesDepartamento');
@@ -466,7 +469,12 @@ async function asignarRoundRobinClienteExistente({
       source: cli?.source,
     });
 
+    // Si el chat llegó a «En espera» porque su vendedor no respondió a
+    // tiempo, no se le devuelve a ese mismo vendedor.
+    const excluido = await vendedorExcluido(id_cliente);
+
     const lista = listaAuto.filter((id) => {
+      if (excluido && id === excluido) return false;
       const p = presenceStore.getPresence(id);
       return p?.online === true;
     });
