@@ -126,9 +126,13 @@ async function resolverBajaSuscripcion({
       otra.status === 'trialing' && otra.trial_end
         ? fechaDe(otra.trial_end)
         : fechaDe(periodEndDeSub(otra));
+    // 'suspendido' solo lo pone invoice.payment_failed (no hay suspensión
+    // manual de cuentas en el backend): una sub nueva viva del mismo
+    // customer significa que ya pagó por otro lado (caso 1558: falló el
+    // cobro de la vieja, se re-suscribió el mismo día y quedó suspendido).
     const revive =
       ['active', 'trialing'].includes(otra.status) &&
-      ['cancelado', 'vencido'].includes(user.estado);
+      ['cancelado', 'vencido', 'suspendido'].includes(user.estado);
 
     if (aplicar) {
       await db.query(

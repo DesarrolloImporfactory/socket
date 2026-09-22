@@ -152,6 +152,48 @@ const fechaDe = (ts) => (ts ? new Date(ts * 1000) : null);
     { type: db.QueryTypes.SELECT },
   );
   const bdPorSub = new Map(todosBD.map((u) => [u.sub_id, u]));
+
+  // Pase 2: la sub guardada en BD ya murió, pero el mismo customer tiene otra
+  // viva en Stripe que nadie enganchó (se re-suscribió y el checkout no pisó
+  // el id, o llegó antes la baja de la vieja). Misma decisión que el webhook:
+  // resolverBajaSuscripcion con la sub vieja la reemplaza por la viva.
+  const vivasPorCustomer = new Map();
+  for (const s of stripeSubs.values()) {
+    if (!ESTADOS_VIVOS.includes(s.status)) continue;
+    if (!vivasPorCustomer.has(s.customer)) vivasPorCustomer.set(s.customer, []);
+    vivasPorCustomer.get(s.customer).push(s);
+  }
+  const muertosBD = await db.query(
+    `SELECT id_usuario, email_propietario AS email, estado, id_costumer,
+            stripe_subscription_id AS sub_id, stripe_subscription_status AS st
+       FROM usuarios_chat_center
+      WHERE stripe_subscription_id IS NOT NULL
+        AND id_costumer IS NOT NULL
+        AND (stripe_subscription_status IS NULL
+             OR stripe_subscription_status NOT IN (:vivos))`,
+    { replacements: { vivos: ESTADOS_VIVOS }, type: db.QueryTypes.SELECT },
+  );
+  for (const u of muertosBD) {
+    const vivas = vivasPorCustomer.get(u.id_costumer);
+    if (!vivas || vivas.some((s) => s.id === u.sub_id)) continue;
+    const vieja = stripeSubs.get(u.sub_id);
+    if (!vieja) continue; // sub de prueba o de otra cuenta: no hay con qué decidir
+    const r = await resolverBajaSuscripcion({
+      stripe,
+      sub: vieja,
+      id_usuario: u.id_usuario,
+      idPago: `reconcile_${vieja.id}_${Date.now()}`,
+      aplicar: APLICAR,
+    });
+    console.log(
+      `  → ${u.id_usuario} ${u.email} BD ${u.sub_id}/${u.st} estado=${u.estado} | customer con viva ${vivas
+        .map((s) => `${s.id}/${s.status}`)
+        .join(',')} ⇒ ${r.accion} ${JSON.stringify(r.detalle || {})}`,
+    );
+    if (r.accion === 'reemplazada') resumen.reemplazada++;
+    else resumen.ignorada++;
+  }
+
   const huerfanas = [...stripeSubs.values()].filter(
     (s) => s.status === 'active' && !bdPorSub.has(s.id),
   );
