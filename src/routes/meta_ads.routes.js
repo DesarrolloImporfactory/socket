@@ -6,7 +6,11 @@ const path = require('path');
 const router = express.Router();
 const metaAdsCtrl = require('../controllers/meta_ads.controller');
 const launcherCtrl = require('../controllers/meta_ads_launcher.controller');
-const { protect } = require('../middlewares/auth.middleware');
+const {
+  protect,
+  protectConfigOwner,
+} = require('../middlewares/auth.middleware');
+const excluirRoles = require('../middlewares/excluirRoles.middleware');
 
 /* Imagen del creativo: en memoria, se reenvía en base64 a act_X/adimages.
    8 MB = tope de Meta para imágenes de anuncio. */
@@ -87,38 +91,51 @@ const subirMediaAdHandler = (req, res, next) => {
   });
 };
 
+/* Hasta el 2026-09-22 todo lo de abajo (salvo el lanzador) iba SIN protect:
+   con solo un id_configuracion se podía desconectar la cuenta publicitaria,
+   pausar campañas o leer la inversión de cualquier cliente, y el repo es
+   público. Ahora: sesión obligatoria y la conexión debe ser de la cuenta
+   (protectConfigOwner lee id_configuracion de body o query). Todos los
+   handlers reciben id_configuracion, así que el guard aplica a todos. */
+router.use(protect);
+const deLaCuenta = protectConfigOwner;
+// Los valores (inversión, ROAS, compras) no son para el asesor de ventas.
+// Conectar/desconectar y el lanzador sí: hay asesores encargados de eso.
+const sinVentas = excluirRoles('ventas');
+
 // ── Conexión / Desconexión ──
 // Devuelve la URL del diálogo de OAuth, o url:null si la app de anuncios
 // todavía no migró (entonces el front sigue con FB.login).
-router.get('/login-url', metaAdsCtrl.getAdsLoginUrl);
-router.post('/conectar', metaAdsCtrl.conectarAdAccount);
-router.post('/desconectar', metaAdsCtrl.desconectarAdAccount);
-router.get('/conexion', metaAdsCtrl.obtenerConexion); // ?id_configuracion=
+router.get('/login-url', deLaCuenta, metaAdsCtrl.getAdsLoginUrl);
+router.post('/conectar', deLaCuenta, metaAdsCtrl.conectarAdAccount);
+router.post('/desconectar', deLaCuenta, metaAdsCtrl.desconectarAdAccount);
+router.get('/conexion', deLaCuenta, metaAdsCtrl.obtenerConexion); // ?id_configuracion=
 
 // ── Insights ──
-router.get('/insights/account', metaAdsCtrl.insightsAccount); // ?id_configuracion=&date_preset=last_30d
-router.get('/insights/campaigns', metaAdsCtrl.insightsCampaigns); // ?id_configuracion=&date_preset=last_30d
-router.get('/insights/top-ads', metaAdsCtrl.insightsTopAds); // ?id_configuracion=&date_preset=last_30d&limit=10
+router.get('/insights/account', deLaCuenta, sinVentas, metaAdsCtrl.insightsAccount); // ?id_configuracion=&date_preset=last_30d
+router.get('/insights/campaigns', deLaCuenta, sinVentas, metaAdsCtrl.insightsCampaigns); // ?id_configuracion=&date_preset=last_30d
+router.get('/insights/top-ads', deLaCuenta, sinVentas, metaAdsCtrl.insightsTopAds); // ?id_configuracion=&date_preset=last_30d&limit=10
 
 // ── Campañas (status, pausar, activar) ──
-router.get('/campaigns', metaAdsCtrl.listarCampanias); // ?id_configuracion=
-router.post('/campaigns/toggle', metaAdsCtrl.toggleCampania); // { id_configuracion, campaign_id, status }
+router.get('/campaigns', deLaCuenta, metaAdsCtrl.listarCampanias); // ?id_configuracion=
+router.post('/campaigns/toggle', deLaCuenta, metaAdsCtrl.toggleCampania); // { id_configuracion, campaign_id, status }
 
 // ── Ads ( pausar/activar un anuncio individual) ──
-router.post('/ads/toggle', metaAdsCtrl.toggleAd);
+router.post('/ads/toggle', deLaCuenta, metaAdsCtrl.toggleAd);
 
 // ── Pixel / CAPI ──
-router.post('/pixel/auto-detect', metaAdsCtrl.autoDetectPixel);
-router.post('/pixel/select', metaAdsCtrl.selectPixel);
-router.get('/pixel/status', metaAdsCtrl.getPixelStatus);
-router.post('/capi/toggle', metaAdsCtrl.toggleCapi);
-router.post('/capi/test-send', metaAdsCtrl.testSendCapi);
+router.post('/pixel/auto-detect', deLaCuenta, metaAdsCtrl.autoDetectPixel);
+router.post('/pixel/select', deLaCuenta, metaAdsCtrl.selectPixel);
+router.get('/pixel/status', deLaCuenta, metaAdsCtrl.getPixelStatus);
+router.post('/capi/toggle', deLaCuenta, metaAdsCtrl.toggleCapi);
+router.post('/capi/test-send', deLaCuenta, metaAdsCtrl.testSendCapi);
 // ── Sync manual (fuerza re-fetch de Meta) ──
-router.post('/sync', metaAdsCtrl.syncInsights);
+router.post('/sync', deLaCuenta, sinVentas, metaAdsCtrl.syncInsights);
 
 // ── Lanzador de campañas (tab "Lanzador") ──
-// A diferencia del resto del módulo, va con protect: estos endpoints crean
-// campañas que gastan dinero real en la cuenta del cliente.
+// Estos endpoints crean campañas que gastan dinero real en la cuenta del
+// cliente. El protect explícito de cada uno quedó de cuando el resto del
+// módulo no lo tenía; hoy es redundante con el router.use de arriba.
 router.get('/launcher/contexto', protect, launcherCtrl.contexto);
 router.get('/launcher/plantillas', protect, launcherCtrl.listarPlantillas);
 router.post(
