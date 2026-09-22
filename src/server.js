@@ -113,6 +113,9 @@ async function startServer() {
       // freno por rate limit. Sin esto /conexiones dice "Conectado" a números
       // que Meta ya tiene DISCONNECTED o sin acceso (cfg 1071, 2026-09-16).
       require('./cron/whatsappNumerosHealth.js');
+      // Devuelve a «En espera» los chats sin respuesta del vendedor en 3
+      // horas hábiles (L-V 8:00-17:00). Por ahora solo la configuración 242.
+      require('./cron/liberarChatsSinRespuesta.js');
       // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
       // con NODE_ENV=production; ver el comentario del archivo).
       require('./cron/rescatarTurnosPerdidos.js');
