@@ -39,7 +39,7 @@ Two kill switches, read from the commit message of the pushed HEAD:
 
 **`main` → no automatic deploy.** Until 2026-08-08 `developer.yml` was an FTP deploy triggered by `main` (`SamKirkland/FTP-Deploy-Action`); it was replaced by the SSH pipeline above, and nothing took over that trigger. Pushing to `main` today publishes nothing. Production is released with **Impormerge**, the internal deploy tool, once the work is consolidated on `main` — so landing code on `main` is a prerequisite for release, not the release itself.
 
-In practice not everything reaches `main` through a PR from `develop`: commits also get pushed straight to `main`. Before starting work, check whether `main` is ahead (`git log origin/develop..origin/main`) and merge it into `develop` first — otherwise a later `develop` → `main` merge silently reverts whatever was pushed directly.
+The rule is that **nothing is pushed straight to `main`**: every change lands on `develop` and reaches `main` through a PR. A normal merge never drops commits from either branch, so several people working on `develop` and opening PRs is safe. The only way a change gets lost is if someone bypasses this (direct push to `main`, then a conflict resolved by taking `develop`'s version, or a reset/force-push). If you ever see commits on `main` that are not on `develop` (`git log origin/develop..origin/main --no-merges`), merge `main` into `develop` before starting work; PR merge commits showing up there are normal and need no action.
 
 ## Backend architecture
 
