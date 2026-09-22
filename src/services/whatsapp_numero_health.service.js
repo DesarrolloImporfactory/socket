@@ -45,6 +45,11 @@ const ESTADOS_RECONECTAR = [
   'SUSPENDED', // valor legado de numero_status para el 100/33
   'TOKEN_EXPIRED',
   'SIN_ACCESO', // Meta 100/33: la WABA/número ya no existe o nos quitaron el acceso
+  // status CONNECTED pero platform_type ON_PREMISE / NOT_APPLICABLE: el
+  // número dejó de estar registrado en Cloud API (p. ej. el cliente lo
+  // verificó de nuevo en la app de WhatsApp Business). Meta no manda webhooks
+  // ni acepta envíos hasta volver a hacer /register. Reconectar lo hace.
+  'NO_REGISTRADO',
 ];
 
 /* Expresión SQL para los listados de conexiones (alias de tabla `c`). El
@@ -143,7 +148,8 @@ async function consultarEstadoNumero(cfg) {
       `https://graph.facebook.com/${graphVersion()}/${cfg.id_telefono}`,
       {
         params: {
-          fields: 'status,quality_rating,throughput,verified_name',
+          fields:
+            'status,quality_rating,throughput,verified_name,platform_type',
           access_token: cfg.token,
         },
         timeout: 10000,
@@ -151,11 +157,19 @@ async function consultarEstadoNumero(cfg) {
     );
     const data = resp.data || {};
     let uso = leerUsoGraph(resp.headers);
+    const plataforma = String(data.platform_type || '').toUpperCase();
 
     let status = 'CONNECTED';
     if (data.status && String(data.status).toUpperCase() !== 'CONNECTED') {
       // DISCONNECTED, PENDING, MIGRATED, BANNED, DELETED, RESTRICTED...
       status = String(data.status).toUpperCase();
+    } else if (plataforma && plataforma !== 'CLOUD_API') {
+      /* Caso cfg 486 (2026-09-22): status CONNECTED, WABA accesible, app
+         suscrita y webhook configurado, pero platform_type=ON_PREMISE y
+         throughput NOT_APPLICABLE desde que el cliente verificó el número
+         de nuevo (SMS "código de confirmación de Facebook"). Cloud API no
+         entrega ni recibe nada hasta volver a registrar el número. */
+      status = 'NO_REGISTRADO';
     } else if (data?.throughput?.level === 'NOT_ALLOWED') {
       status = 'BANNED';
     } else if (data?.quality_rating === 'RED') {
@@ -163,6 +177,7 @@ async function consultarEstadoNumero(cfg) {
     }
 
     let detalle = data.status ? `Meta status=${data.status}` : '';
+    if (plataforma) detalle += ` platform=${plataforma}`;
 
     /* Número CONNECTED pero ¿bajo nuestra WABA? Si el caller no trajo
        id_whatsapp en el SELECT no se puede verificar y se conserva el

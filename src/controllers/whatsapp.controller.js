@@ -2110,7 +2110,10 @@ exports.embeddedSignupComplete = async (req, res) => {
     async function fetchPhonesOf(wabaId) {
       const r = await safeGet(
         `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${wabaId}/phone_numbers`,
-        { fields: 'id,display_phone_number,status,code_verification_status' },
+        {
+          fields:
+            'id,display_phone_number,status,code_verification_status,platform_type,is_on_biz_app',
+        },
         bearer(SYS_TOKEN),
       );
       return r?.data?.data || [];
@@ -2156,12 +2159,32 @@ exports.embeddedSignupComplete = async (req, res) => {
     // 4) Registrar el número (REGISTER)
     const regUrl = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}/register`;
     const matchedStatus = String(matchedPhone?.status || '').toUpperCase();
+    /* /register es solo para números "API only". Un número en coexistencia
+       (is_on_biz_app=true: vive en la app de WhatsApp Business) lo registra
+       Meta durante el Embedded Signup; llamarlo nosotros rompería el enlace
+       con la app. Por eso coexistencia siempre salta al paso de suscribir.
+       Para API only, CONNECTED no basta: un número que quedó fuera de Cloud
+       API sigue CONNECTED pero con platform_type ON_PREMISE, y sin
+       /register Meta no entrega ni recibe (cfg 486, 2026-09-22, aunque ese
+       era coexistencia). Solo se salta si además está en CLOUD_API. */
+    const matchedPlatform = String(
+      matchedPhone?.platform_type || '',
+    ).toUpperCase();
+    const esCoexistencia = matchedPhone?.is_on_biz_app === true;
+    const yaRegistrado =
+      matchedStatus === 'CONNECTED' &&
+      (esCoexistencia || !matchedPlatform || matchedPlatform === 'CLOUD_API');
 
-    if (matchedStatus === 'CONNECTED') {
+    if (yaRegistrado) {
       console.log(
-        '[REGISTER][SKIP] Número ya CONNECTED. No se ejecuta /register.',
+        `[REGISTER][SKIP] Número CONNECTED (${esCoexistencia ? 'coexistencia' : 'Cloud API'}, platform_type=${matchedPlatform || '?'}). No se ejecuta /register.`,
       );
     } else {
+      if (matchedStatus === 'CONNECTED') {
+        console.log(
+          `[REGISTER] Número API only CONNECTED pero platform_type=${matchedPlatform}: se registra de nuevo en Cloud API.`,
+        );
+      }
       console.log('[POST][REGISTER] ->', regUrl, 'pin:', DEFAULT_TWOFA_PIN);
       try {
         await safePost(
@@ -2228,7 +2251,7 @@ exports.embeddedSignupComplete = async (req, res) => {
         `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}`,
         {
           fields:
-            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name,platform_type',
         },
         bearer(SYS_TOKEN),
       );
@@ -2240,7 +2263,7 @@ exports.embeddedSignupComplete = async (req, res) => {
         `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${phoneNumberId}`,
         {
           fields:
-            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name',
+            'id,display_phone_number,status,code_verification_status,quality_rating,verified_name,platform_type',
         },
         bearer(clientToken),
       );
@@ -2297,7 +2320,22 @@ exports.embeddedSignupComplete = async (req, res) => {
        hiciera, una reconexión sobre una fila marcada DISCONNECTED por el cron
        o el webhook seguiría saliendo "Pendiente" en /conexiones hasta la
        próxima revisión. */
-    const waStatusNuevo = String(info?.status || 'CONNECTED').toUpperCase();
+    let waStatusNuevo = String(info?.status || 'CONNECTED').toUpperCase();
+    /* Mismo criterio que whatsapp_numero_health: CONNECTED fuera de Cloud
+       API no entrega mensajes. Si tras reconectar Meta aún no lo registró en
+       Cloud API, la conexión queda como NO_REGISTRADO y /conexiones sigue
+       ofreciendo Reconectar en vez de mentir con "Conectado". */
+    const plataformaNueva = String(info?.platform_type || '').toUpperCase();
+    if (
+      waStatusNuevo === 'CONNECTED' &&
+      plataformaNueva &&
+      plataformaNueva !== 'CLOUD_API'
+    ) {
+      waStatusNuevo = 'NO_REGISTRADO';
+      console.log(
+        `[PN-INFO] Número CONNECTED pero platform_type=${plataformaNueva}: se guarda NO_REGISTRADO.`,
+      );
+    }
 
     if (idConfigToUse) {
       await db.query(
@@ -2363,6 +2401,27 @@ exports.embeddedSignupComplete = async (req, res) => {
     });
 
     console.log('[DB] OWNER UPSERT (by config) OK. ownerId=', ownerId);
+
+    /* Coexistencia: nosotros no registramos el número (Meta responde
+       "Register endpoint is not available for SMB businesses"); lo registra
+       Meta cuando el cliente completa la vinculación desde la app de
+       WhatsApp Business. Si el popup terminó pero el número sigue fuera de
+       Cloud API, decir "conectado" es mentir: la fila queda NO_REGISTRADO y
+       el front muestra el aviso (data.partial). */
+    if (waStatusNuevo === 'NO_REGISTRADO') {
+      return res.json({
+        success: false,
+        partial: true,
+        id_configuracion: idConfigToUse,
+        waba_id: wabaId,
+        phone_number_id: phoneNumberId,
+        telefono: displayNumber,
+        status: info?.status || null,
+        platform_type: info?.platform_type || null,
+        message:
+          'La cuenta quedó vinculada, pero Meta aún no tiene este número activo en la API. Completa la conexión desde la app de WhatsApp Business (mensaje de "Facebook Business" → Conectar → Confirmar) y vuelve a intentar.',
+      });
+    }
 
     return res.json({
       success: true,
