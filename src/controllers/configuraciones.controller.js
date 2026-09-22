@@ -182,7 +182,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
 });
 
 exports.listarConexionesSubUser = catchAsync(async (req, res) => {
-  const { id_usuario, id_sub_usuario } = req.body;
+  const { id_usuario } = req.body;
 
   if (!id_usuario) {
     return res
@@ -190,36 +190,32 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
       .json({ status: 'error', message: 'Falta id_usuario' });
   }
 
-  // Si no mandan subusuario, se asume "dueño" o modo legacy (devuelve todo del usuario)
-  // (si usted quiere exigirlo, cambie esto a 400)
-  let esAdmin = true;
+  /* El subusuario y su rol salen de la sesión (protect ya cargó la fila de
+     sub_usuarios_chat_center en req.sessionUser), nunca del body. Antes, si
+     el body no traía id_sub_usuario se asumía "dueño" y se devolvían TODAS
+     las conexiones de la cuenta: un subusuario de ventas las vio completas
+     al desconectar Meta Ads (2026-09-22, cuenta 254), porque una copia vieja
+     del fetch del front salió sin el campo. Con la sesión como fuente, una
+     petición incompleta o manipulada no amplía lo que el subusuario ve. */
+  const sesion = req.sessionUser || {};
+  const id_sub_usuario = sesion.id_sub_usuario || null;
+  const rol = sesion.rol || null;
 
-  if (id_sub_usuario) {
-    const subRow = await db.query(
-      `
-      SELECT rol
-      FROM sub_usuarios_chat_center
-      WHERE id_sub_usuario = ?
-        AND id_usuario = ?
-      LIMIT 1
-      `,
-      {
-        replacements: [id_sub_usuario, id_usuario],
-        type: db.QueryTypes.SELECT,
-      },
-    );
-
-    const rol = subRow?.[0]?.rol || null;
-
-    if (!rol) {
-      return res.status(403).json({
-        status: 'error',
-        message: 'Subusuario inválido o no pertenece al usuario.',
-      });
-    }
-
-    esAdmin = rol === 'administrador' || rol === 'super_administrador';
+  if (!id_sub_usuario || !rol) {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Sesión sin subusuario.',
+    });
   }
+
+  if (Number(sesion.id_usuario) !== Number(id_usuario)) {
+    return res.status(403).json({
+      status: 'error',
+      message: 'La cuenta solicitada no corresponde a esta sesión.',
+    });
+  }
+
+  const esAdmin = rol === 'administrador' || rol === 'super_administrador';
 
   const [rows] = await db.query(
     `
