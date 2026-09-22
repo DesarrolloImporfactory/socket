@@ -130,6 +130,13 @@ const MensajesClientes = db.define(
       defaultValue: 0,
       comment: '0=enviado, 1=entregado, 2=leído por cliente',
     },
+
+    // ── Precio real que Meta reporta en el status webhook (solo WhatsApp)
+    // NULL mientras Meta no lo mande. Ver mensajes_precio_meta_migration.sql.
+    precio_meta_tipo: { type: DataTypes.STRING(32), allowNull: true },
+    precio_meta_facturable: { type: DataTypes.TINYINT, allowNull: true },
+    precio_meta_categoria: { type: DataTypes.STRING(40), allowNull: true },
+    fep_expira_at: { type: DataTypes.DATE, allowNull: true },
   },
   {
     tableName: 'mensajes_clientes',

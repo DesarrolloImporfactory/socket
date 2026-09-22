@@ -147,6 +147,54 @@ function emitirMensajeActualizado(id_configuracion, mensaje, esUltimo) {
 }
 
 /**
+ * Guarda en el mensaje el precio que Meta reporta en el status y avisa al chat
+ * abierto, que marca los que salieron gratis por la ventana de 72 h.
+ *
+ * Es lo que Meta dice que cobró, no un cálculo nuestro: `pricing.type` vale
+ * 'free_entry_point' solo si el mensaje cayó dentro de una ventana abierta por
+ * un anuncio CTWA o el botón CTA de la página, y `conversation` (desde la v24.0
+ * de la API) solo viene en ese caso, con el vencimiento de las 72 h.
+ *
+ * Meta repite el pricing en sent, delivered y read. Se intenta con cada uno
+ * porque el 'sent' puede llegar antes de que el envío termine de guardar el
+ * mensaje; el `precio_meta_tipo: null` del where hace que solo el primero que
+ * encuentre la fila escriba y emita, y los demás no toquen nada.
+ */
+async function guardarPrecioMeta(id_configuracion, wamid, status) {
+  const pricing = status?.pricing;
+  if (!wamid || !pricing?.type) return;
+
+  const expira = Number(status?.conversation?.expiration_timestamp);
+  const datos = {
+    precio_meta_tipo: String(pricing.type).slice(0, 32),
+    precio_meta_facturable:
+      typeof pricing.billable === 'boolean' ? (pricing.billable ? 1 : 0) : null,
+    precio_meta_categoria: pricing.category
+      ? String(pricing.category).slice(0, 40)
+      : null,
+    fep_expira_at:
+      pricing.type === 'free_entry_point' && expira
+        ? new Date(expira * 1000)
+        : null,
+  };
+
+  const [cambiados] = await MensajeCliente.update(datos, {
+    where: { id_wamid_mensaje: wamid, id_configuracion, precio_meta_tipo: null },
+  });
+  if (!cambiados || !global.io) return;
+
+  // Igual que MESSAGE_STATUS_UPDATE: a todos, y cada pestaña descarta lo que
+  // no es de su id_configuracion.
+  global.io.emit('MESSAGE_PRICING_UPDATE', {
+    id_configuracion,
+    wamid,
+    precio_meta_tipo: datos.precio_meta_tipo,
+    precio_meta_facturable: datos.precio_meta_facturable,
+    fep_expira_at: datos.fep_expira_at,
+  });
+}
+
+/**
  * Aplica sobre el mensaje original la edición o el borrado que el cliente hizo
  * desde su WhatsApp. Devuelve true si encontró el original y lo actualizó.
  *
@@ -440,6 +488,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               `pricing=${JSON.stringify(status.pricing)} ` +
               `conv=${JSON.stringify(status.conversation || null)}\n`,
           );
+        }
+
+        // Precio real de Meta → etiqueta "sin costo · 72 h" en el chat.
+        // Un fallo acá no puede frenar los ticks ni el registro de errores.
+        if (status?.pricing) {
+          try {
+            await guardarPrecioMeta(id_configuracion, wamid, status);
+          } catch (err) {
+            await fsp.appendFile(
+              path.join(logsDir, 'debug_log.txt'),
+              `[${new Date().toISOString()}] ❌ Error guardando precio Meta ` +
+                `wamid=${wamid}: ${err.message}\n`,
+            );
+          }
         }
 
         /* Un status bueno con metodo_pago = 0 es la señal de que el cliente
