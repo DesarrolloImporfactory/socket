@@ -55,6 +55,8 @@ const {
 const { getTemplatesMetaMerged } = require('../utils/kanban_catalogo.provider');
 const {
   revisarConfiguracion,
+  persistirEstado,
+  esSinAcceso,
 } = require('../services/whatsapp_numero_health.service');
 
 exports.obtener_numeros = catchAsync(async (req, res, next) => {
@@ -103,6 +105,44 @@ exports.obtener_numeros = catchAsync(async (req, res, next) => {
   let wabaInfo = null;
   let portfolioOwner = null;
   let onBehalfOf = null;
+
+  /* WABA inaccesible (100/33 o permisos revocados): el cliente migró el
+     número a otra WABA o nos sacó de la suya. Pedir /phone_numbers a
+     continuación fallaría igual, y la vista de canales quedaba diciendo "no
+     hay números" sin que la conexión se marcara para reconectar. Se persiste
+     SIN_ACCESO aquí mismo para que /conexiones ofrezca el botón de reconectar
+     sin esperar al cron. */
+  {
+    const metaErr = wabaInfoResp.data?.error || null;
+    if (
+      wabaInfoResp.status >= 400 &&
+      wabaInfoResp.status !== 401 &&
+      metaErr &&
+      esSinAcceso(Number(metaErr.code), Number(metaErr.error_subcode))
+    ) {
+      await persistirEstado(id_configuracion, 'SIN_ACCESO');
+      console.log(
+        `[wa-health] cfg ${id_configuracion} → SIN_ACCESO · ObtenerNumeros: ` +
+          `WABA ${WABA_ID} ${metaErr.code}/${metaErr.error_subcode || '-'}`,
+      );
+      return res.status(200).json({
+        success: true,
+        data: [],
+        hint: 'meta_sin_acceso',
+        waba_info: null,
+        portfolio_owner: null,
+        on_behalf_of: null,
+        meta_error: {
+          http_status: wabaInfoResp.status,
+          code: metaErr.code,
+          type: metaErr.type,
+          message: metaErr.message,
+          fbtrace_id: metaErr.fbtrace_id,
+          error_subcode: metaErr.error_subcode,
+        },
+      });
+    }
+  }
 
   if (wabaInfoResp.status >= 200 && wabaInfoResp.status < 300) {
     wabaInfo = wabaInfoResp.data || null;
@@ -5762,7 +5802,7 @@ exports.numero_status = catchAsync(async (req, res, next) => {
   if (!id_configuracion) return res.json({ status: 'CONNECTED' });
 
   const [cfg] = await db.query(
-    `SELECT id, nombre_configuracion, token, id_telefono, wa_status, wa_status_at
+    `SELECT id, nombre_configuracion, token, id_telefono, id_whatsapp, wa_status, wa_status_at
      FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );

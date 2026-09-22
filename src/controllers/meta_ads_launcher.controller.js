@@ -8,6 +8,7 @@
  * (ver meta_ads_launcher_migration.sql — se aplican a mano, sin modelo).
  */
 
+const fs = require('fs');
 const { db } = require('../database/config');
 const logger = require('../utils/logger');
 const launcher = require('../services/metaAdsLauncher.service');
@@ -25,6 +26,37 @@ const PAISES_VALIDOS = /^[A-Z]{2}$/;
 // Tope de creativos por plantilla (= anuncios por conjunto). Debe coincidir
 // con MAX_IMAGENES del wizard del front.
 const MAX_CREATIVOS = 10;
+// Tope de zonas incluidas/excluidas por plantilla. Meta admite 200 regiones
+// y 250 ciudades por conjunto; México excluye decenas de zonas sin cobertura.
+const MAX_ZONAS = 200;
+
+/* Normaliza una zona de Meta ({key,name,type,country_code}) o null. */
+function normalizarZona(l) {
+  if (!l || !l.key || !['region', 'city'].includes(l.type)) return null;
+  return {
+    key: String(l.key).slice(0, 32),
+    name: String(l.name || '').slice(0, 120),
+    type: l.type,
+    country_code: l.country_code
+      ? String(l.country_code).slice(0, 2).toUpperCase()
+      : null,
+  };
+}
+
+/* Número de WhatsApp de la cuenta: el único destino válido de las campañas
+   del lanzador (todo el embudo del bot entra por él). */
+async function whatsappDeConfiguracion(id_configuracion) {
+  const [row] = await db.query(
+    `SELECT telefono, id_telefono FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const digitos = String(row?.telefono || '').replace(/\D/g, '');
+  if (!digitos) return null;
+  return {
+    numero: `+${digitos}`,
+    id_telefono: row?.id_telefono ? String(row.id_telefono) : null,
+  };
+}
 
 /* Normaliza y valida el cuerpo de una plantilla. Devuelve { ok, cfg | msg }. */
 function normalizarPlantilla(body) {
@@ -61,16 +93,9 @@ function normalizarPlantilla(body) {
   let lugares = [];
   if (modo === 'especifico') {
     lugares = (Array.isArray(geo?.lugares) ? geo.lugares : [])
-      .filter((l) => l && l.key && ['region', 'city'].includes(l.type))
-      .map((l) => ({
-        key: String(l.key).slice(0, 32),
-        name: String(l.name || '').slice(0, 120),
-        type: l.type,
-        country_code: l.country_code
-          ? String(l.country_code).slice(0, 2).toUpperCase()
-          : null,
-      }))
-      .slice(0, 25);
+      .map(normalizarZona)
+      .filter(Boolean)
+      .slice(0, MAX_ZONAS);
     if (!lugares.length) {
       return {
         ok: false,
@@ -83,17 +108,9 @@ function normalizarPlantilla(body) {
   // menos Cayambe". Van a excluded_geo_locations del conjunto.
   const incluidas = new Set(lugares.map((l) => l.key));
   const excluir = (Array.isArray(geo?.excluir) ? geo.excluir : [])
-    .filter((l) => l && l.key && ['region', 'city'].includes(l.type))
-    .filter((l) => !incluidas.has(String(l.key)))
-    .map((l) => ({
-      key: String(l.key).slice(0, 32),
-      name: String(l.name || '').slice(0, 120),
-      type: l.type,
-      country_code: l.country_code
-        ? String(l.country_code).slice(0, 2).toUpperCase()
-        : null,
-    }))
-    .slice(0, 25);
+    .map(normalizarZona)
+    .filter((l) => l && !incluidas.has(l.key))
+    .slice(0, MAX_ZONAS);
 
   // Hasta 10 creativos (imágenes o videos) = hasta 10 anuncios en el mismo
   // conjunto. El primero queda también en imagen_hash/imagen_url por
@@ -237,6 +254,9 @@ exports.contexto = async (req, res) => {
         paginas: [...vistas.values()],
         titular_token: titularToken,
         productos,
+        // Destino fijo de todas las campañas del lanzador (se muestra en el
+        // paso 4 para que el cliente vea a qué número llegarán los mensajes).
+        whatsapp: await whatsappDeConfiguracion(id_configuracion),
       },
     });
   } catch (err) {
@@ -446,9 +466,16 @@ exports.subirImagen = async (req, res) => {
 // Igual que subirImagen pero acepta también video: sube a act_X/advideos y
 // devuelve el video_id + la miniatura que Meta genera (con polling corto).
 exports.subirMedia = async (req, res) => {
+  // multer (diskStorage) deja el archivo en un temporal: se borra siempre al
+  // salir, haya ido bien o mal.
+  const tmpPath = req.file?.path || null;
+  const limpiar = () => {
+    if (tmpPath) fs.unlink(tmpPath, () => {});
+  };
   try {
     const id_configuracion = Number(req.body.id_configuracion);
     if (!id_configuracion || !req.file) {
+      limpiar();
       return res.status(400).json({
         success: false,
         message: 'id_configuracion y archivo (imagen o video) requeridos.',
@@ -457,6 +484,7 @@ exports.subirMedia = async (req, res) => {
 
     const conn = await getAdConnection(id_configuracion);
     if (!conn) {
+      limpiar();
       return res.json({
         success: false,
         message: 'No hay cuenta de ads conectada.',
@@ -466,27 +494,42 @@ exports.subirMedia = async (req, res) => {
     if (String(req.file.mimetype).startsWith('video/')) {
       const { video_id } = await launcher.subirVideo({
         conn,
-        buffer: req.file.buffer,
+        filePath: tmpPath,
         filename: req.file.originalname || 'video.mp4',
         mimetype: req.file.mimetype,
       });
-      const thumb = await launcher.obtenerMiniaturaVideo(conn, video_id);
+      limpiar();
+      // Sin miniatura aquí: mientras Meta procesa el video su miniatura es
+      // un cuadro gris de relleno, y guardarla dejaba tarjetas grises (y un
+      // anuncio con portada gris). El front muestra el video local y pide la
+      // miniatura real cuando el video queda `ready`; el lanzamiento la
+      // vuelve a pedir en ese momento.
       return res.json({
         success: true,
-        data: { tipo: 'video', video_id, thumb_url: thumb, url: thumb },
+        data: { tipo: 'video', video_id, thumb_url: null, url: null },
       });
     }
 
+    // Imágenes: tope de Meta 8 MB (el límite de multer es el de video).
+    if (req.file.size > 8 * 1024 * 1024) {
+      limpiar();
+      return res.status(400).json({
+        success: false,
+        message: 'La imagen supera los 8 MB.',
+      });
+    }
     const subida = await launcher.subirImagen({
       conn,
-      buffer: req.file.buffer,
+      buffer: fs.readFileSync(tmpPath),
       filename: req.file.originalname || 'creativo.jpg',
     });
+    limpiar();
     return res.json({
       success: true,
       data: { tipo: 'imagen', hash: subida.hash, url: subida.url },
     });
   } catch (err) {
+    limpiar();
     logger.error(`launcher subirMedia: ${err.message}`);
     return res.status(500).json({
       success: false,
@@ -547,6 +590,17 @@ exports.lanzar = async (req, res) => {
       });
     }
 
+    // Destino obligatorio: el WhatsApp de ESTA cuenta. Sin él no se crea
+    // nada (los mensajes del anuncio irían a un número que el bot no ve).
+    const whatsapp = await whatsappDeConfiguracion(id_configuracion);
+    if (!whatsapp) {
+      return res.json({
+        success: false,
+        message:
+          'Esta cuenta no tiene un número de WhatsApp conectado. El lanzador solo crea campañas que llegan al número de la cuenta; conéctalo primero.',
+      });
+    }
+
     // Permite forzar el estado en el momento del lanzamiento sin editar la
     // plantilla ("lanzar pausado para revisarlo primero").
     const estado_inicial = ['ACTIVE', 'PAUSED'].includes(req.body.estado)
@@ -562,6 +616,7 @@ exports.lanzar = async (req, res) => {
     const cfg = {
       nombre: plantilla.nombre,
       page_id: plantilla.page_id,
+      whatsapp,
       presupuesto_diario: plantilla.presupuesto_diario,
       paises: String(plantilla.paises || 'EC').split(','),
       geo: geoPlantilla,
@@ -620,14 +675,25 @@ exports.lanzar = async (req, res) => {
           type: db.QueryTypes.INSERT,
         },
       );
+      // 1487246 = "This WhatsApp phone number is not linked to your account":
+      // el número de la cuenta no está vinculado a la página/cuenta
+      // publicitaria en Meta. Se explica en claro qué hacer.
+      const numeroNoVinculado =
+        Number(err.meta_error?.error_subcode) === 1487246 ||
+        err.paso === 'verificar número de WhatsApp';
       return res.json({
         success: false,
-        message: `Meta rechazó el lanzamiento en el paso "${err.paso || '?'}": ${
-          err.meta_error?.error_user_msg ||
-          err.meta_error?.message ||
-          err.message
-        }`,
+        message: numeroNoVinculado
+          ? `No se creó la campaña: el WhatsApp de esta cuenta (${whatsapp.numero}) no está vinculado a la página "${
+              plantilla.page_name || plantilla.page_id
+            }" en Meta. Vincúlalo en la configuración de la página (WhatsApp) o en el Business Manager y vuelve a lanzar.`
+          : `Meta rechazó el lanzamiento en el paso "${err.paso || '?'}": ${
+              err.meta_error?.error_user_msg ||
+              err.meta_error?.message ||
+              err.message
+            }`,
         meta_error: err.meta_error || null,
+        whatsapp_numero: whatsapp.numero,
       });
     }
 
@@ -692,6 +758,10 @@ exports.lanzar = async (req, res) => {
       }
     }
 
+    logger.info(
+      `launcher lanzar cfg=${id_configuracion} plantilla=${id_plantilla} campaña=${paquete.campaign_id} whatsapp=${whatsapp.numero}`,
+    );
+
     return res.json({
       success: true,
       data: {
@@ -745,6 +815,193 @@ exports.buscarGeo = async (req, res) => {
       message: 'No se pudo buscar la zona. Inténtalo de nuevo.',
       meta_error: err.meta_error || err.message,
     });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 4b-2) RESOLVER ZONAS EN LOTE — el cliente pega/sube una lista de nombres
+// ══════════════════════════════════════════════
+// body: { id_configuracion, pais, nombres: [] | texto: "una por línea" }
+exports.resolverGeo = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    const pais = String(req.body.pais || '')
+      .trim()
+      .toUpperCase();
+    let nombres = Array.isArray(req.body.nombres) ? req.body.nombres : [];
+    if (!nombres.length && req.body.texto) {
+      nombres = String(req.body.texto)
+        .split(/[\n;,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    if (!id_configuracion || !nombres.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion y una lista de zonas requeridos.',
+      });
+    }
+    if (nombres.length > 250) {
+      return res.status(400).json({
+        success: false,
+        message: 'Máximo 250 zonas por lista.',
+      });
+    }
+    const conn = await getAdConnection(id_configuracion);
+    if (!conn) {
+      return res.json({
+        success: false,
+        message: 'No hay cuenta de ads conectada.',
+      });
+    }
+    const data = await launcher.resolverGeoMasivo({
+      conn,
+      nombres,
+      pais: PAISES_VALIDOS.test(pais) ? pais : null,
+    });
+    return res.json({ success: true, data });
+  } catch (err) {
+    logger.error(`launcher resolverGeo: ${err.message}`);
+    return res.status(500).json({
+      success: false,
+      message: 'No se pudo resolver la lista de zonas. Inténtalo de nuevo.',
+      meta_error: err.meta_error || err.message,
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+// 4b-3) LISTAS DE ZONAS GUARDADAS (reutilizables entre plantillas)
+// ══════════════════════════════════════════════
+// Tabla meta_ads_geo_listas: una lista por (cuenta, país) con nombre; las
+// filas con id_configuracion NULL son globales (las ve todo el mundo, las
+// siembra el super admin por SQL — p. ej. "México · zonas sin cobertura").
+exports.listarGeoListas = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion);
+    const pais = String(req.query.pais || '')
+      .trim()
+      .toUpperCase();
+    if (!id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id_configuracion requerido.' });
+    }
+    const rows = await db.query(
+      `SELECT id, id_configuracion, nombre, pais, lugares_json, updated_at
+         FROM meta_ads_geo_listas
+        WHERE eliminado = 0
+          AND (id_configuracion = ? OR id_configuracion IS NULL)
+          ${PAISES_VALIDOS.test(pais) ? 'AND pais = ?' : ''}
+        ORDER BY id_configuracion IS NULL, nombre ASC`,
+      {
+        replacements: PAISES_VALIDOS.test(pais)
+          ? [id_configuracion, pais]
+          : [id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    const data = rows.map((r) => {
+      let lugares = [];
+      try {
+        lugares = JSON.parse(r.lugares_json || '[]');
+      } catch {}
+      return {
+        id: r.id,
+        nombre: r.nombre,
+        pais: r.pais,
+        global: r.id_configuracion == null,
+        lugares: Array.isArray(lugares) ? lugares : [],
+        updated_at: r.updated_at,
+      };
+    });
+    return res.json({ success: true, data });
+  } catch (err) {
+    logger.error(`launcher listarGeoListas: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.guardarGeoLista = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.body.id_configuracion);
+    const id = Number(req.body.id) || null;
+    const nombre = String(req.body.nombre || '')
+      .trim()
+      .slice(0, 120);
+    const pais = String(req.body.pais || '')
+      .trim()
+      .toUpperCase();
+    const lugares = (Array.isArray(req.body.lugares) ? req.body.lugares : [])
+      .map(normalizarZona)
+      .filter(Boolean)
+      .slice(0, MAX_ZONAS);
+    if (!id_configuracion || !nombre || !PAISES_VALIDOS.test(pais)) {
+      return res.status(400).json({
+        success: false,
+        message: 'id_configuracion, nombre y país requeridos.',
+      });
+    }
+    if (!lugares.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'La lista debe tener al menos una zona.',
+      });
+    }
+    if (id) {
+      const [existe] = await db.query(
+        `SELECT id FROM meta_ads_geo_listas
+          WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
+        { replacements: [id, id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      if (!existe) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'Lista no encontrada.' });
+      }
+      await db.query(
+        `UPDATE meta_ads_geo_listas SET nombre = ?, pais = ?, lugares_json = ?
+          WHERE id = ? AND id_configuracion = ?`,
+        {
+          replacements: [nombre, pais, JSON.stringify(lugares), id, id_configuracion],
+        },
+      );
+      return res.json({ success: true, id });
+    }
+    const [insertId] = await db.query(
+      `INSERT INTO meta_ads_geo_listas (id_configuracion, nombre, pais, lugares_json)
+       VALUES (?, ?, ?, ?)`,
+      {
+        replacements: [id_configuracion, nombre, pais, JSON.stringify(lugares)],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+    return res.json({ success: true, id: insertId });
+  } catch (err) {
+    logger.error(`launcher guardarGeoLista: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.eliminarGeoLista = async (req, res) => {
+  try {
+    const id = Number(req.body.id);
+    const id_configuracion = Number(req.body.id_configuracion);
+    if (!id || !id_configuracion) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'id e id_configuracion requeridos.' });
+    }
+    // Solo las propias: las globales (id_configuracion NULL) no se borran aquí.
+    await db.query(
+      `UPDATE meta_ads_geo_listas SET eliminado = 1
+        WHERE id = ? AND id_configuracion = ?`,
+      { replacements: [id, id_configuracion] },
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    logger.error(`launcher eliminarGeoLista: ${err.message}`);
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 

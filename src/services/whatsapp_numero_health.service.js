@@ -19,6 +19,15 @@
  * o un rate limit no pueden pisar un estado real, porque el listado de
  * /conexiones muestra "Pendiente" + botón de conectar para cualquier estado de
  * ESTADOS_RECONECTAR y mandaríamos al cliente a reconectar sin motivo.
+ *
+ * Segundo caso (2026-09-22, cfg 486 "IMPORTACIONES MAU"): el cliente migró el
+ * número a OTRA WABA (verified_name distinto). El número sigue respondiendo
+ * CONNECTED con nuestro token, pero la WABA guardada da 100/33 y los mensajes
+ * dejaron de llegar. Como aquí solo se preguntaba por el número, el cron la
+ * volvía a marcar CONNECTED cada 6 h y /conexiones nunca ofrecía reconectar.
+ * Un barrido de 495 conexiones encontró 10 así, todas sin mensajes en 7 días.
+ * Por eso, cuando el número responde CONNECTED se verifica además la WABA:
+ * si no es accesible, el veredicto es SIN_ACCESO.
  */
 
 const axios = require('axios');
@@ -83,9 +92,41 @@ function leerUsoGraph(headers = {}) {
   return max;
 }
 
+/* ¿El error de Graph significa que el objeto ya no existe o nos quitaron el
+   acceso? 100/33 "Object with ID ... does not exist, cannot be loaded due to
+   missing permissions"; 10 y 200 son permisos revocados. */
+function esSinAcceso(code, sub) {
+  return (code === 100 && sub === 33) || code === 10 || code === 200;
+}
+
+/* GET /{waba_id}?fields=id con el token de la conexión. Solo se llama cuando
+   el número respondió CONNECTED, que es el único caso en que cambia el
+   veredicto. Devuelve { accesible: true } | { sinAcceso: true, detalle } |
+   { rateLimit: true, detalle } | { indeterminado: true, detalle }. */
+async function consultarAccesoWaba(cfg) {
+  try {
+    const resp = await axios.get(
+      `https://graph.facebook.com/${graphVersion()}/${cfg.id_whatsapp}`,
+      { params: { fields: 'id', access_token: cfg.token }, timeout: 10000 },
+    );
+    return { accesible: true, uso: leerUsoGraph(resp.headers) };
+  } catch (err) {
+    const meta = err?.response?.data?.error || null;
+    const code = Number(meta?.code);
+    const sub = Number(meta?.error_subcode);
+    const detalle = String(meta?.message || err.message || '').slice(0, 300);
+    const uso = leerUsoGraph(err?.response?.headers);
+    if (CODIGOS_RATE_LIMIT.has(code)) return { rateLimit: true, detalle, uso };
+    if (esSinAcceso(code, sub)) return { sinAcceso: true, detalle, uso };
+    return { indeterminado: true, detalle, uso };
+  }
+}
+
 /* Consulta GET /{phone_number_id}?fields=status,... con el token de la
-   conexión. Se pregunta por el número y no por la WABA porque el número sigue
-   respondiendo (status DISCONNECTED) aun cuando la WABA ya da 100/33.
+   conexión. Se pregunta primero por el número y no por la WABA porque el
+   número sigue respondiendo (status DISCONNECTED) aun cuando la WABA ya da
+   100/33. Si el número dice CONNECTED, se confirma que la WABA guardada siga
+   siendo accesible (ver cabecera: número migrado a otra WABA).
    Devuelve { status, definitivo, detalle, uso, rateLimit }. */
 async function consultarEstadoNumero(cfg) {
   if (!cfg?.id_telefono || !cfg?.token) {
@@ -102,14 +143,14 @@ async function consultarEstadoNumero(cfg) {
       `https://graph.facebook.com/${graphVersion()}/${cfg.id_telefono}`,
       {
         params: {
-          fields: 'status,quality_rating,throughput',
+          fields: 'status,quality_rating,throughput,verified_name',
           access_token: cfg.token,
         },
         timeout: 10000,
       },
     );
     const data = resp.data || {};
-    const uso = leerUsoGraph(resp.headers);
+    let uso = leerUsoGraph(resp.headers);
 
     let status = 'CONNECTED';
     if (data.status && String(data.status).toUpperCase() !== 'CONNECTED') {
@@ -121,12 +162,40 @@ async function consultarEstadoNumero(cfg) {
       status = 'FLAGGED';
     }
 
-    return {
-      status,
-      definitivo: true,
-      detalle: data.status ? `Meta status=${data.status}` : '',
-      uso,
-    };
+    let detalle = data.status ? `Meta status=${data.status}` : '';
+
+    /* Número CONNECTED pero ¿bajo nuestra WABA? Si el caller no trajo
+       id_whatsapp en el SELECT no se puede verificar y se conserva el
+       comportamiento anterior. */
+    if (status === 'CONNECTED' && cfg.id_whatsapp) {
+      const waba = await consultarAccesoWaba(cfg);
+      uso = Math.max(uso, waba.uso || 0);
+      if (waba.rateLimit) {
+        return {
+          status: 'RATE_LIMITED',
+          definitivo: false,
+          detalle: `WABA: ${waba.detalle}`,
+          uso,
+          rateLimit: true,
+        };
+      }
+      if (waba.sinAcceso) {
+        return {
+          status: 'SIN_ACCESO',
+          definitivo: true,
+          detalle:
+            `WABA ${cfg.id_whatsapp} inaccesible (${waba.detalle}); ` +
+            `el número responde CONNECTED como "${data.verified_name || '?'}"`,
+          uso,
+        };
+      }
+      if (waba.indeterminado) {
+        // Timeout o 5xx solo en la WABA: se mantiene el veredicto del número.
+        detalle += ` · WABA sin verificar: ${waba.detalle}`;
+      }
+    }
+
+    return { status, definitivo: true, detalle, uso };
   } catch (err) {
     const meta = err?.response?.data?.error || null;
     const code = Number(meta?.code);
@@ -146,10 +215,9 @@ async function consultarEstadoNumero(cfg) {
     if (code === 190) {
       return { status: 'TOKEN_EXPIRED', definitivo: true, detalle, uso };
     }
-    // 100/33 "Object with ID ... does not exist, cannot be loaded due to
-    // missing permissions": el número fue borrado, migrado a otro proveedor o
-    // el cliente nos sacó de su WABA. 10 y 200 son permisos revocados.
-    if ((code === 100 && sub === 33) || code === 10 || code === 200) {
+    // El número fue borrado, migrado a otro proveedor o el cliente nos sacó
+    // de su WABA.
+    if (esSinAcceso(code, sub)) {
       return { status: 'SIN_ACCESO', definitivo: true, detalle, uso };
     }
     // Timeout, 5xx de Meta, 100 con otro subcódigo (parámetro): no se sabe.
@@ -208,7 +276,7 @@ async function revisarTodas({
 } = {}) {
   const filtroIds = Array.isArray(ids) && ids.length ? `AND c.id IN (?)` : '';
   const rows = await db.query(
-    `SELECT c.id, c.nombre_configuracion, c.id_telefono, c.token, c.wa_status, c.wa_status_at
+    `SELECT c.id, c.nombre_configuracion, c.id_telefono, c.id_whatsapp, c.token, c.wa_status, c.wa_status_at
        FROM configuraciones c
       WHERE c.suspendido = 0
         AND COALESCE(c.id_telefono,'') <> ''
@@ -278,7 +346,7 @@ async function manejarAccountUpdate(wabaId, value = {}) {
   if (!wabaId) return { evento, afectadas: 0 };
 
   const configs = await db.query(
-    `SELECT id, nombre_configuracion, id_telefono, token, wa_status
+    `SELECT id, nombre_configuracion, id_telefono, id_whatsapp, token, wa_status
        FROM configuraciones
       WHERE id_whatsapp = ? AND suspendido = 0`,
     { replacements: [String(wabaId)], type: db.QueryTypes.SELECT },
@@ -321,6 +389,7 @@ async function manejarAccountUpdate(wabaId, value = {}) {
 module.exports = {
   ESTADOS_RECONECTAR,
   SQL_STATUS_WHATSAPP,
+  esSinAcceso,
   consultarEstadoNumero,
   persistirEstado,
   revisarConfiguracion,
