@@ -1,5 +1,8 @@
 const express = require('express');
 const multer = require('multer');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const router = express.Router();
 const metaAdsCtrl = require('../controllers/meta_ads.controller');
 const launcherCtrl = require('../controllers/meta_ads_launcher.controller');
@@ -35,17 +38,36 @@ const subirCreativoHandler = (req, res, next) => {
   });
 };
 
-/* Media del anuncio (imagen o video). Los videos van a act_X/advideos;
-   64 MB cubre de sobra un video de anuncio vertical. */
+/* Media del anuncio (imagen o video). Los videos van a act_X/advideos.
+   El archivo NO pasa por memoria: multer lo deja en un temporal de disco y
+   el service lo transmite a Meta en flujo (fs.openAsBlob), así el tope puede
+   ser generoso sin arriesgar la RAM del servidor con varias subidas a la
+   vez. El controller borra el temporal al terminar. Las imágenes mantienen
+   su tope de 8 MB (límite de Meta) validado en el controller. */
+const MAX_MEDIA_MB = 300;
 const MIMES_MEDIA = new Set([
   ...MIMES_IMAGEN,
   'video/mp4',
   'video/quicktime',
   'video/webm',
 ]);
+const DIR_TMP_MEDIA = path.join(os.tmpdir(), 'chatcenter-ads-media');
 const subirMediaAd = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 64 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      fs.mkdir(DIR_TMP_MEDIA, { recursive: true }, (err) =>
+        cb(err, DIR_TMP_MEDIA),
+      );
+    },
+    filename: (req, file, cb) =>
+      cb(
+        null,
+        `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${path.extname(
+          file.originalname || '',
+        )}`,
+      ),
+  }),
+  limits: { fileSize: MAX_MEDIA_MB * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (MIMES_MEDIA.has(file.mimetype)) return cb(null, true);
     cb(new Error('Formato no permitido: usa JPG, PNG, WEBP o MP4.'));
@@ -57,7 +79,7 @@ const subirMediaAdHandler = (req, res, next) => {
     if (err) {
       const message =
         err.code === 'LIMIT_FILE_SIZE'
-          ? 'El archivo supera los 64 MB.'
+          ? `El archivo supera los ${MAX_MEDIA_MB} MB.`
           : err.message;
       return res.status(400).json({ success: false, message });
     }
@@ -123,6 +145,11 @@ router.post(
 );
 router.post('/launcher/lanzar', protect, launcherCtrl.lanzar);
 router.get('/launcher/geo/buscar', protect, launcherCtrl.buscarGeo);
+// Zonas en lote (lista pegada / archivo) y listas guardadas reutilizables
+router.post('/launcher/geo/resolver', protect, launcherCtrl.resolverGeo);
+router.get('/launcher/geo/listas', protect, launcherCtrl.listarGeoListas); // ?id_configuracion=&pais=
+router.post('/launcher/geo/listas/guardar', protect, launcherCtrl.guardarGeoLista);
+router.post('/launcher/geo/listas/eliminar', protect, launcherCtrl.eliminarGeoLista);
 router.get('/launcher/media/video', protect, launcherCtrl.videoInfo); // ?id_configuracion=&video_id=
 router.get('/launcher/lanzamientos', protect, launcherCtrl.listarLanzamientos);
 

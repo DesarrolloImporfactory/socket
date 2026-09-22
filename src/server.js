@@ -127,6 +127,10 @@ async function startServer() {
     server = app.listen(process.env.PORT, () => {
       console.log(`Server listening on port ${process.env.PORT}`);
     });
+    // Node corta por defecto cualquier petición que tarde más de 5 min en
+    // llegar completa. Los videos del lanzador de campañas (hasta 300 MB)
+    // en una conexión lenta la superan: 30 min de margen para el cuerpo.
+    server.requestTimeout = 30 * 60 * 1000;
 
     // Socket.IO
     io = new Server(server, {

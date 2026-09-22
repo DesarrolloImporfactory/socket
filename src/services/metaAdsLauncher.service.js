@@ -10,6 +10,7 @@
  */
 
 const axios = require('axios');
+const fs = require('fs');
 const logger = require('../utils/logger');
 
 // La app se resuelve por conexión (meta_ad_connections.fb_app_id), no por
@@ -65,31 +66,98 @@ async function subirImagen({ conn, buffer, filename }) {
    Los videos van a act_X/advideos (host graph-video) y el creativo los
    referencia por video_id + una miniatura obligatoria. Meta procesa el video
    de forma asíncrona: la miniatura se obtiene con un pequeño polling. */
-async function subirVideo({ conn, buffer, filename, mimetype }) {
+/* Subida RESUMIBLE por trozos (protocolo start / transfer / finish de
+   act_X/advideos). Meta dicta el tamaño de cada trozo (start_offset →
+   end_offset) y aquí se lee solo ese tramo del temporal en disco, así la
+   memoria del servidor queda acotada al trozo aunque el video pese 300 MB
+   (axios serializa el FormData completo en memoria: por eso NO se manda el
+   archivo entero de una). Cada trozo se reintenta hasta 3 veces. Se acepta
+   `buffer` por compatibilidad con el endpoint viejo. */
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function subirVideo({ conn, filePath, buffer, filename, mimetype }) {
   const act = ACT(conn.ad_account_id);
-  const fd = new FormData();
-  fd.append(
-    'source',
-    new Blob([buffer], { type: mimetype || 'video/mp4' }),
-    filename || 'video.mp4',
-  );
-  const resp = await axios.post(
-    `https://graph-video.facebook.com/${process.env.GRAPH_VERSION}/${act}/advideos`,
-    fd,
-    {
+  const url = `https://graph-video.facebook.com/${process.env.GRAPH_VERSION}/${act}/advideos`;
+  const post = (data) =>
+    axios.post(url, data, {
       headers: { Authorization: `Bearer ${conn.access_token}` },
-      timeout: 180000,
+      timeout: 600000,
       maxBodyLength: Infinity,
       validateStatus: () => true,
-    },
+    });
+  const tipo = mimetype || 'video/mp4';
+  const nombre = filename || 'video.mp4';
+  const size = filePath ? fs.statSync(filePath).size : buffer.length;
+
+  // 1) start → sesión + video_id + primer tramo
+  const inicio = assertMeta(
+    await post(
+      new URLSearchParams({ upload_phase: 'start', file_size: String(size) }),
+    ),
+    'advideos start',
   );
-  const data = assertMeta(resp, 'advideos');
-  if (!data?.id) {
-    const err = new Error('Meta no devolvió el id del video.');
-    err.meta_error = data;
+  const { upload_session_id, video_id } = inicio;
+  let startOffset = Number(inicio.start_offset);
+  let endOffset = Number(inicio.end_offset);
+  if (!upload_session_id || !video_id) {
+    const err = new Error('Meta no abrió la sesión de subida del video.');
+    err.meta_error = inicio;
     throw err;
   }
-  return { video_id: String(data.id) };
+
+  // 2) transfer → un tramo por vuelta hasta que Meta devuelve start == end
+  const fd = filePath ? fs.openSync(filePath, 'r') : null;
+  try {
+    while (startOffset < endOffset) {
+      const len = endOffset - startOffset;
+      let trozo;
+      if (fd !== null) {
+        trozo = Buffer.alloc(len);
+        fs.readSync(fd, trozo, 0, len, startOffset);
+      } else {
+        trozo = buffer.subarray(startOffset, endOffset);
+      }
+      let resp;
+      for (let intento = 1; intento <= 3; intento++) {
+        const form = new FormData();
+        form.append('upload_phase', 'transfer');
+        form.append('upload_session_id', String(upload_session_id));
+        form.append('start_offset', String(startOffset));
+        form.append('video_file_chunk', new Blob([trozo], { type: tipo }), nombre);
+        resp = await post(form);
+        if (resp.status >= 200 && resp.status < 300) break;
+        logger.error(
+          `subirVideo: tramo ${startOffset}-${endOffset} falló (intento ${intento}): ${JSON.stringify(
+            resp.data?.error?.message || resp.status,
+          )}`,
+        );
+        if (intento < 3) await esperar(1500 * intento);
+      }
+      const data = assertMeta(resp, `advideos transfer @${startOffset}`);
+      startOffset = Number(data.start_offset);
+      endOffset = Number(data.end_offset);
+    }
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+
+  // 3) finish
+  const fin = assertMeta(
+    await post(
+      new URLSearchParams({
+        upload_phase: 'finish',
+        upload_session_id: String(upload_session_id),
+        title: nombre.slice(0, 100),
+      }),
+    ),
+    'advideos finish',
+  );
+  if (!fin?.success) {
+    const err = new Error('Meta no confirmó el cierre de la subida del video.');
+    err.meta_error = fin;
+    throw err;
+  }
+  return { video_id: String(video_id) };
 }
 
 async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
@@ -103,7 +171,9 @@ async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
       const pref = lista.find((t) => t.is_preferred) || lista[0];
       if (pref?.uri) return pref.uri;
     }
-    await new Promise((res) => setTimeout(res, 3000));
+    // Sin espera tras el último intento: quien llama decide si reintenta
+    // (el front la vuelve a pedir en segundo plano; el lanzamiento la exige).
+    if (i < intentos - 1) await new Promise((res) => setTimeout(res, 3000));
   }
   return null;
 }
@@ -196,7 +266,7 @@ function construirTargeting(cfg) {
 
 /* Búsqueda de zonas de segmentación (provincias y ciudades) con la misma
    búsqueda que usa el Administrador de anuncios. */
-async function buscarGeo({ conn, q, pais }) {
+async function buscarGeo({ conn, q, pais, limit = 12 }) {
   const ax = metaAx(conn.access_token);
   const resp = await ax.get(`${GRAPH_BASE}/search`, {
     params: {
@@ -204,7 +274,7 @@ async function buscarGeo({ conn, q, pais }) {
       q,
       country_code: pais || undefined,
       location_types: JSON.stringify(['region', 'city']),
-      limit: 12,
+      limit,
     },
   });
   const data = assertMeta(resp, 'buscar geo');
@@ -215,6 +285,131 @@ async function buscarGeo({ conn, q, pais }) {
     region: l.region || null,
     country_code: l.country_code || null,
   }));
+}
+
+/* Resolución MASIVA de zonas: el cliente pega una lista de nombres (una
+   provincia/estado o ciudad por línea — México excluye decenas de zonas sin
+   cobertura) y cada nombre se busca en Meta eligiendo la mejor coincidencia:
+   nombre exacto (sin tildes ni mayúsculas) con preferencia por región sobre
+   ciudad; si no hay exacta, el único resultado o el que empieza igual. Lo que
+   no se resuelve vuelve como no_encontrados con sugerencias para corregir. */
+const normalizarBasico = (s) =>
+  String(s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+const normalizarNombreGeo = (s) =>
+  normalizarBasico(s)
+    .replace(/\b(provincia|estado|departamento|region|de|del|la|el|los|las)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+// Nombres que el cliente escribe en español y Meta indexa en inglés u otra
+// forma. Clave = nombre normalizado (normalizarBasico); valor = q para Meta.
+const ALIAS_GEO = {
+  'ciudad de mexico': 'Mexico City',
+  cdmx: 'Mexico City',
+  'distrito federal': 'Mexico City',
+  // Meta llama "México" a la región del Estado de México.
+  'estado de mexico': 'México',
+  edomex: 'México',
+  michoacan: 'Michoacán de Ocampo',
+  'nuevo leon': 'Nuevo León',
+  'baja california norte': 'Baja California',
+};
+
+async function resolverGeoMasivo({ conn, nombres, pais, concurrencia = 5 }) {
+  const consultas = [
+    ...new Set(
+      (nombres || []).map((n) => String(n || '').trim()).filter(Boolean),
+    ),
+  ].slice(0, 250);
+  const encontrados = [];
+  const no_encontrados = [];
+  const vistos = new Set();
+
+  // Para ciudades el nombre visible lleva su estado/provincia: hay ciudades
+  // homónimas (Monterrey en Nuevo León y en Tamaulipas) y así el cliente ve
+  // cuál se eligió y corrige si hace falta.
+  const conRegion = (r) =>
+    r.type === 'city' && r.region && !r.name.includes(',')
+      ? { ...r, name: `${r.name}, ${r.region}` }
+      : r;
+
+  const resolverUno = async (consulta) => {
+    const crudo = normalizarBasico(consulta);
+    const q = ALIAS_GEO[crudo] || consulta;
+    let resultados = [];
+    try {
+      // Límite amplio: con 12 resultados la ciudad grande homónima puede
+      // quedar fuera (Monterrey NL detrás de los Monterrey chicos).
+      resultados = await buscarGeo({ conn, q, pais, limit: 30 });
+    } catch (e) {
+      logger.error(`resolverGeoMasivo "${consulta}": ${e.message}`);
+    }
+    const objetivo = normalizarNombreGeo(q);
+    // Meta a veces mete el estado en el propio nombre ("Monterrey, Nuevo
+    // Leon"): la parte antes de la coma también cuenta como nombre exacto.
+    const cand = resultados.map((r) => ({
+      r,
+      n: normalizarNombreGeo(r.name),
+      nb: normalizarBasico(r.name),
+      nbBase: normalizarBasico(String(r.name).split(',')[0]),
+    }));
+    const exacta = (c) =>
+      c.n === objetivo || c.nb === objetivo || c.nbBase === objetivo;
+    const parecida = (c) =>
+      exacta(c) || c.n.startsWith(objetivo) || objetivo.startsWith(c.n);
+    const regiones = cand.filter((c) => c.r.type === 'region');
+    const ciudadesExactas = cand.filter((c) => c.r.type === 'city' && exacta(c));
+    // En listas de cobertura el cliente habla de estados/provincias: si hay
+    // una región que coincide, gana sobre la ciudad homónima ("Michoacán"
+    // es el estado, no el pueblo de Tabasco).
+    const region = regiones.find(exacta)?.r || regiones.find(parecida)?.r;
+    if (!region && ciudadesExactas.length > 1) {
+      // Ciudades homónimas en distintos estados (Monterrey NL / Tamaulipas):
+      // no se adivina — el cliente elige entre las coincidencias.
+      no_encontrados.push({
+        consulta,
+        ambigua: true,
+        sugerencias: ciudadesExactas.slice(0, 4).map((c) => conRegion(c.r)),
+      });
+      return;
+    }
+    const elegido =
+      region ||
+      ciudadesExactas[0]?.r ||
+      (resultados.length === 1 ? resultados[0] : null) ||
+      cand.find(parecida)?.r ||
+      null;
+    if (elegido && !vistos.has(elegido.key)) {
+      vistos.add(elegido.key);
+      encontrados.push({ ...conRegion(elegido), consulta });
+    } else if (!elegido) {
+      no_encontrados.push({
+        consulta,
+        sugerencias: resultados.slice(0, 4).map(conRegion),
+      });
+    }
+  };
+
+  // Pool sencillo: N búsquedas a la vez para no disparar el rate limit.
+  let idx = 0;
+  const worker = async () => {
+    while (idx < consultas.length) {
+      const i = idx++;
+      await resolverUno(consultas[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrencia, consultas.length) }, worker),
+  );
+  // Se devuelve en el orden en que el cliente escribió la lista.
+  const orden = new Map(consultas.map((c, i) => [c, i]));
+  encontrados.sort((a, b) => orden.get(a.consulta) - orden.get(b.consulta));
+  return { encontrados, no_encontrados, total: consultas.length };
 }
 
 /* Mensaje de bienvenida del CTWA: lo que WhatsApp autocompleta cuando el
@@ -258,6 +453,15 @@ async function eliminarCampania(ax, campaignId) {
  * Devuelve { campaign_id, adset_id, creative_id, ad_id, welcome_aplicado }.
  */
 async function lanzarPaquete({ conn, cfg }) {
+  // Sin número de WhatsApp de la cuenta no se crea NADA: todo el embudo
+  // (bot, atribución, cierre) depende de que los mensajes entren por él.
+  if (!cfg.whatsapp?.numero) {
+    const err = new Error(
+      'La cuenta no tiene un número de WhatsApp conectado; el lanzador no crea campañas sin él.',
+    );
+    err.paso = 'número de WhatsApp';
+    throw err;
+  }
   const ax = metaAx(conn.access_token);
   const act = ACT(conn.ad_account_id);
   const status = cfg.estado_inicial === 'ACTIVE' ? 'ACTIVE' : 'PAUSED';
@@ -285,7 +489,12 @@ async function lanzarPaquete({ conn, cfg }) {
   const campaign_id = assertMeta(campResp, 'crear campaña').id;
 
   try {
-    // 2) Conjunto — presupuesto en centavos, destino WhatsApp
+    // 2) Conjunto — presupuesto en centavos, destino WhatsApp.
+    // El número de WhatsApp va EXPLÍCITO: con solo page_id Meta usa el número
+    // que la página tenga vinculado por defecto, y si la página tiene otro
+    // (caso México 2026-09-21) la campaña sale hacia un número ajeno al bot.
+    // Si el número no está vinculado a la cuenta, Meta rechaza el conjunto
+    // (subcode 1487246) y no se crea nada — ese es el comportamiento deseado.
     const adsetPayload = {
       name: nombreBase,
       campaign_id,
@@ -294,7 +503,13 @@ async function lanzarPaquete({ conn, cfg }) {
       optimization_goal: 'CONVERSATIONS',
       bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
       destination_type: 'WHATSAPP',
-      promoted_object: { page_id: cfg.page_id },
+      promoted_object: {
+        page_id: cfg.page_id,
+        whatsapp_phone_number: cfg.whatsapp.numero,
+        ...(cfg.whatsapp.id_telefono
+          ? { whats_app_business_phone_number_id: cfg.whatsapp.id_telefono }
+          : {}),
+      },
       targeting: construirTargeting(cfg),
       status,
     };
@@ -306,6 +521,30 @@ async function lanzarPaquete({ conn, cfg }) {
     }
     const adsetResp = await ax.post(`${GRAPH_BASE}/${act}/adsets`, adsetPayload);
     const adset_id = assertMeta(adsetResp, 'crear conjunto').id;
+
+    // Doble seguro: se relee el conjunto y, si Meta devuelve un número de
+    // WhatsApp distinto al de la cuenta, se aborta (el catch borra la
+    // campaña). Si el campo no viene en la respuesta no se puede comparar y
+    // se confía en que Meta ya validó el número al crear el conjunto.
+    const verif = await ax.get(`${GRAPH_BASE}/${adset_id}`, {
+      params: { fields: 'promoted_object' },
+    });
+    const numeroMeta = String(
+      verif.data?.promoted_object?.whatsapp_phone_number || '',
+    ).replace(/\D/g, '');
+    const numeroCfg = String(cfg.whatsapp.numero).replace(/\D/g, '');
+    if (numeroMeta && numeroMeta !== numeroCfg) {
+      const err = new Error(
+        `Meta asignó al conjunto el WhatsApp +${numeroMeta} y no el de la cuenta (+${numeroCfg}).`,
+      );
+      err.paso = 'verificar número de WhatsApp';
+      err.meta_error = {
+        message: err.message,
+        whatsapp_meta: numeroMeta,
+        whatsapp_cuenta: numeroCfg,
+      };
+      throw err;
+    }
 
     // 3-4) Un anuncio por creativo (hasta 10 variaciones dentro del mismo
     // conjunto): Meta reparte el presupuesto entre ellas y concentra el
@@ -334,13 +573,16 @@ async function lanzarPaquete({ conn, cfg }) {
       const creativo = creativos[i];
       const sufijo = creativos.length > 1 ? ` · V${i + 1}` : '';
 
-      // Los videos necesitan miniatura; si no llegó guardada (el video aún
-      // se procesaba al subirlo), se reintenta obtenerla aquí.
+      // Los videos necesitan miniatura y se pide SIEMPRE fresca aquí: la que
+      // pudo guardarse al subir suele ser el cuadro gris de "procesando" de
+      // Meta, y con esa el anuncio saldría con portada gris. La guardada
+      // queda solo como último recurso.
       let thumbVideo = null;
       if (creativo.tipo === 'video') {
         thumbVideo =
+          (await obtenerMiniaturaVideo(conn, creativo.video_id)) ||
           creativo.thumb_url ||
-          (await obtenerMiniaturaVideo(conn, creativo.video_id));
+          null;
       }
 
       const crearCreativo = async (conWelcome) => {
@@ -408,6 +650,7 @@ async function lanzarPaquete({ conn, cfg }) {
       ad_id: ads[0]?.ad_id || null,
       ads,
       welcome_aplicado: usarWelcome,
+      whatsapp_numero: cfg.whatsapp.numero,
     };
   } catch (err) {
     // Si cualquier paso posterior a la campaña falla, se limpia todo el
@@ -876,4 +1119,5 @@ module.exports = {
   listarPaginasDelToken,
   obtenerTitularToken,
   buscarGeo,
+  resolverGeoMasivo,
 };
