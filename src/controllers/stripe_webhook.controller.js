@@ -4,6 +4,9 @@ const referidosService = require('../services/referidos.service');
 const {
   auditarDesdeSistema,
 } = require('../services/suspension_audit.service');
+const {
+  resolverBajaSuscripcion,
+} = require('../services/stripe_baja.service');
 
 /* =========================
    Selección automática de variables por entorno (production vs test)
@@ -270,6 +273,10 @@ exports.stripeWebhook = async (req, res) => {
 
         if (!id_usuario) break;
 
+        // Sub que el usuario tenía ANTES de este checkout. Se lee aquí porque
+        // el UPDATE de abajo la pisa.
+        const subAnteriorId = await getActiveSubscriptionIdByUser(id_usuario);
+
         // Solo setear id_plataforma si viene (no tocar si no viene)
         const sql = `
           UPDATE usuarios_chat_center
@@ -284,6 +291,63 @@ exports.stripeWebhook = async (req, res) => {
           : [customerId, subscriptionId, id_usuario];
 
         await db.query(sql, { replacements });
+
+        /**
+         * Un checkout crea SIEMPRE una suscripción nueva. Si el usuario ya
+         * tenía otra viva (llegó aquí en vez de a cambiarPlan: p. ej. estaba
+         * 'vencido' y el front no lo trató como plan activo), la vieja quedaba
+         * huérfana en Stripe cobrándose cada mes al lado de la nueva (caso
+         * 1571: Method Ecommerce $29 + Plan ImporChat $39 a la vez).
+         * Se programa su cancelación al fin del periodo: no se le cobra más y
+         * conserva lo que ya pagó. Cuando termine llega
+         * customer.subscription.deleted y se ignora porque ya no es su sub.
+         */
+        if (
+          subscriptionId &&
+          subAnteriorId &&
+          subAnteriorId !== subscriptionId
+        ) {
+          try {
+            const subAnterior =
+              await stripe.subscriptions.retrieve(subAnteriorId);
+            const viva = ['active', 'trialing', 'past_due'].includes(
+              subAnterior.status,
+            );
+            if (viva && !subAnterior.cancel_at_period_end) {
+              await stripe.subscriptions.update(subAnteriorId, {
+                cancel_at_period_end: true,
+                metadata: {
+                  ...(subAnterior.metadata || {}),
+                  reemplazada_por: subscriptionId,
+                },
+              });
+              console.log('[stripe] checkout reemplaza sub anterior:', {
+                id_usuario,
+                subAnteriorId,
+                subscriptionId,
+              });
+              await db.query(
+                `INSERT IGNORE INTO transacciones_stripe_chat
+                 (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+                 VALUES (?, ?, ?, ?, NOW(), ?)`,
+                {
+                  replacements: [
+                    `reemplazo_${subAnteriorId}_${event.id}`,
+                    subAnteriorId,
+                    id_usuario,
+                    `reemplazada_por_${subscriptionId}`,
+                    customerId,
+                  ],
+                },
+              );
+            }
+          } catch (e) {
+            console.log(
+              '[stripe] no se pudo programar la baja de la sub anterior:',
+              e?.message,
+            );
+          }
+        }
 
         break;
       }
@@ -1619,6 +1683,46 @@ exports.stripeWebhook = async (req, res) => {
           },
         );
 
+        break;
+      }
+
+      /**
+       * 🪦 Suscripción terminada.
+       *
+       * Stripe manda ESTE evento (no `customer.subscription.updated` con
+       * status=canceled) cuando una cancelación programada llega al fin del
+       * periodo o cuando se cancela de inmediato. Sin este case el evento caía
+       * en `default` y el usuario quedaba con stripe_subscription_status =
+       * 'active' para siempre: el dashboard_admin contaba clientes que ya no
+       * pagaban. La decisión (cancelar, apuntar a otra sub viva del mismo
+       * customer, o ignorar porque no es su sub activa) vive en
+       * services/stripe_baja.service.js, compartida con el script de
+       * reconciliación.
+       */
+      case 'customer.subscription.deleted': {
+        const sub = event.data.object;
+        const subscriptionId = sub.id || null;
+        const customerId = sub.customer || null;
+
+        let id_usuario = Number(sub.metadata?.id_usuario) || null;
+        if (!id_usuario) {
+          id_usuario = await resolverIdUsuarioPorStripe(
+            subscriptionId,
+            customerId,
+          );
+        }
+
+        const resultado = await resolverBajaSuscripcion({
+          stripe,
+          sub,
+          id_usuario,
+          idPago: event.id,
+        });
+        console.log('[stripe] subscription_deleted:', {
+          id_usuario,
+          subscriptionId,
+          ...resultado,
+        });
         break;
       }
 
