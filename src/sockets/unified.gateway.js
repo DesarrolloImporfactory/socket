@@ -360,15 +360,27 @@ module.exports = function attachUnifiedGateway(io, services) {
       !lastIncomingAt ||
       Date.now() - lastIncomingAt.getTime() > 24 * 60 * 60 * 1000;
 
-    let opts = { messaging_type, tag, metadata };
+    // La etiqueta la decide la VENTANA, no quien envía.
+    //
+    // Meta permite HUMAN_AGENT sólo cuando una persona responde FUERA de la
+    // ventana estándar de 24h. Dentro de la ventana no hace falta, y ponerla
+    // igual es uso incorrecto de la etiqueta: el front la mandaba en TODOS los
+    // envíos de archivo (Modales.jsx) y aquí se dejaba pasar tal cual.
+    //
+    // Ponerla por defecto cuando la ventana cerró es correcto porque por este
+    // gateway sólo entran mensajes escritos por un agente desde la bandeja: el
+    // bot de IA (messenger.service) y el remarketing (cron/remarketing_ms)
+    // envían con fb.sendText y no pasan por aquí.
+    //
+    // Antes esto lanzaba un error si el front no mandaba etiqueta, y el front
+    // sólo la mandaba al enviar archivos: responder con TEXTO a alguien que
+    // escribió hace más de un día era imposible.
+    let opts = { metadata };
     if (olderThan24h) {
-      if (!tag)
-        throw new Error(
-          'Fuera de 24h: se requiere Message Tag (p.ej. HUMAN_AGENT).',
-        );
       opts.messaging_type = 'MESSAGE_TAG';
+      opts.tag = tag || 'HUMAN_AGENT';
     } else {
-      if (!opts.messaging_type) opts.messaging_type = 'RESPONSE';
+      opts.messaging_type = 'RESPONSE';
     }
 
     let picked = attachment;
@@ -469,13 +481,27 @@ module.exports = function attachUnifiedGateway(io, services) {
       !lastIncomingAt ||
       Date.now() - lastIncomingAt.getTime() > 24 * 60 * 60 * 1000;
 
-    let opts = { messaging_type, tag, metadata };
+    // La etiqueta la decide la VENTANA, no quien envía.
+    //
+    // Meta permite HUMAN_AGENT sólo cuando una persona responde FUERA de la
+    // ventana estándar de 24h. Dentro de la ventana no hace falta, y ponerla
+    // igual es uso incorrecto de la etiqueta: el front la mandaba en TODOS los
+    // envíos de archivo (Modales.jsx) y aquí se dejaba pasar tal cual.
+    //
+    // Ponerla por defecto cuando la ventana cerró es correcto porque por este
+    // gateway sólo entran mensajes escritos por un agente desde la bandeja: el
+    // bot de IA (messenger.service) y el remarketing (cron/remarketing_ms)
+    // envían con fb.sendText y no pasan por aquí.
+    //
+    // Antes esto lanzaba un error si el front no mandaba etiqueta, y el front
+    // sólo la mandaba al enviar archivos: responder con TEXTO a alguien que
+    // escribió hace más de un día era imposible.
+    let opts = { metadata };
     if (olderThan24h) {
-      if (!tag)
-        throw new Error('Fuera de 24h: se requiere Message Tag válido.');
       opts.messaging_type = 'MESSAGE_TAG';
+      opts.tag = tag || 'HUMAN_AGENT';
     } else {
-      if (!opts.messaging_type) opts.messaging_type = 'RESPONSE';
+      opts.messaging_type = 'RESPONSE';
     }
 
     // aceptar attachment de varias formas (front nuevo/legacy)

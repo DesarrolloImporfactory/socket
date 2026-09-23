@@ -21,37 +21,14 @@ const {
   mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
 const {
-  obtenerDatosClienteParaAssistant,
   informacionProductos,
-  informacionProductosVinculado,
   procesarCombosParaIA,
 } = require('../utils/datosClienteAssistant');
-
-exports.datosCliente = catchAsync(async (req, res, next) => {
-  const { id_plataforma, telefono } = req.body;
-
-  try {
-    const datosCliente = await obtenerDatosClienteParaAssistant(
-      id_plataforma,
-      telefono,
-    );
-
-    res.status(200).json({
-      status: '200',
-      data: datosCliente,
-    });
-  } catch (error) {
-    return next(
-      new AppError('Error al obtener datos del cliente para el assistant', 500),
-    );
-  }
-});
 
 exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   const {
     mensaje,
     id_thread,
-    id_plataforma,
     id_configuracion,
     telefono,
     business_phone_id,
@@ -76,59 +53,24 @@ exports.mensaje_assistant = catchAsync(async (req, res, next) => {
   }
 
   let bloqueInfo = '';
-  let tipoInfo = null;
 
-  if (id_plataforma) {
-    const datosCliente = await obtenerDatosClienteParaAssistant(
-      id_plataforma,
-      telefono,
-    );
-    bloqueInfo = datosCliente.bloque || '';
-    tipoInfo = datosCliente.tipo || null;
-  }
+  /* Antes, con id_plataforma, se buscaba la factura/guía del cliente en
+     facturas_cot para elegir entre la IA logística y la de ventas. Esas
+     tablas del ecommerce viejo ya no existen en la BD de Imporsuit, así que
+     siempre responde la IA de ventas. */
+  const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
+  const assistant_id = sales?.assistant_id;
+  const tiempo_remarketing = sales?.tiempo_remarketing;
+  const tipo_asistente = 'IA_ventas';
 
-  let assistant_id = null;
-  let tipo_asistente = '';
-  let tiempo_remarketing = null;
-
-  if (tipoInfo === 'datos_guia') {
-    const logistic = assistants.find(
-      (a) => a.tipo.toLowerCase() === 'logistico',
-    );
-    assistant_id = logistic?.assistant_id;
-    tipo_asistente = 'IA_logistica';
-  } else if (tipoInfo === 'datos_pedido') {
-    const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
-    assistant_id = sales?.assistant_id;
-
-    tiempo_remarketing = sales?.tiempo_remarketing;
-    tipo_asistente = 'IA_ventas';
-
-    if (sales?.productos && Array.isArray(sales.productos)) {
-      /* console.log('productos: ' + sales.productos); */
-
-      if (sales?.tomar_productos == 'imporsuit') {
-        bloqueInfo += await informacionProductosVinculado(sales.productos);
-      } else {
-        bloqueInfo += await informacionProductos(sales.productos);
-      }
-    }
-  } else {
-    const sales = assistants.find((a) => a.tipo.toLowerCase() === 'ventas');
-    assistant_id = sales?.assistant_id;
-
-    tiempo_remarketing = sales?.tiempo_remarketing;
-    tipo_asistente = 'IA_ventas';
-
-    if (sales?.productos && Array.isArray(sales.productos)) {
-      /* console.log('productos: ' + sales.productos); */
-
-      if (sales?.tomar_productos == 'imporsuit') {
-        bloqueInfo += await informacionProductosVinculado(sales.productos);
-      } else {
-        bloqueInfo += await informacionProductos(sales.productos);
-      }
-    }
+  /* Los productos 'imporsuit' eran ids de inventario_bodegas (tabla borrada):
+     no hay de dónde sacar su información, se omiten. */
+  if (
+    sales?.productos &&
+    Array.isArray(sales.productos) &&
+    sales?.tomar_productos != 'imporsuit'
+  ) {
+    bloqueInfo += await informacionProductos(sales.productos);
   }
 
   if (!assistant_id) {

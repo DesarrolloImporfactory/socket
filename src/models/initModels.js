@@ -7,10 +7,7 @@ const MensajesClientes = require('./mensaje_cliente.model');
 const ErroresChatMeta = require('./errores_chat_meta.model');
 const EtiquetasChatCenter = require('./etiquetas_chat_center.model');
 const EtiquetasAsignadas = require('./etiquetas_asignadas.model');
-const FacturasCot = require('./facturas_cot.model');
-const DetalleFactCot = require('./detalle_fact_cot.model');
 const Productos = require('./productos.model');
-const InventarioBodegas = require('./inventario_bodegas.model');
 const Usuarios_chat_center = require('./usuarios_chat_center.model');
 const Sub_usuarios_chat_center = require('./sub_usuarios_chat_center.model');
 const Departamentos_chat_center = require('./departamentos_chat_center.model');
@@ -26,9 +23,7 @@ const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model')
 const TikTokNotification = require('./tiktok_notification.model');
 const TikTokWebhookLog = require('./tiktok_webhook_log.model');
 const DropiIntegrations = require('./dropi_integrations.model');
-const ImporsuitApi = require('./imporsuit/api.model');
 const ImporsuitCursos = require('./imporsuit/cursos.model');
-const ImporsuitApiCursos = require('./imporsuit/api_cursos.model');
 const ProductosChatCenter = require('./productos_chat_center.model');
 const ProductosWizard = require('./productos_wizard.model');
 const ProductosWizardFlujo = require('./productos_wizard_flujo.model');
@@ -107,46 +102,6 @@ const initModel = () => {
     as: 'etiqueta',
   });
 
-  FacturasCot.hasMany(DetalleFactCot, {
-    foreignKey: 'id_factura',
-    as: 'detalles',
-  });
-
-  DetalleFactCot.belongsTo(FacturasCot, {
-    foreignKey: 'id_factura',
-    as: 'factura',
-  });
-
-  Plataforma.hasMany(FacturasCot, {
-    foreignKey: 'id_plataforma',
-    as: 'facturas',
-  });
-
-  FacturasCot.belongsTo(Plataforma, {
-    foreignKey: 'id_plataforma',
-    as: 'plataforma',
-  });
-
-  Plataforma.hasMany(DetalleFactCot, {
-    foreignKey: 'id_plataforma',
-    as: 'detalles',
-  });
-
-  DetalleFactCot.belongsTo(Plataforma, {
-    foreignKey: 'id_plataforma',
-    as: 'plataforma',
-  });
-
-  Productos.hasMany(DetalleFactCot, {
-    foreignKey: 'id_producto',
-    as: 'detalles',
-  });
-
-  DetalleFactCot.belongsTo(Productos, {
-    foreignKey: 'id_producto',
-    as: 'producto',
-  });
-
   Plataforma.hasMany(Productos, {
     foreignKey: 'id_plataforma',
     as: 'productos',
@@ -155,36 +110,6 @@ const initModel = () => {
   Productos.belongsTo(Plataforma, {
     foreignKey: 'id_plataforma',
     as: 'plataforma',
-  });
-
-  InventarioBodegas.belongsTo(Productos, {
-    foreignKey: 'id_producto',
-    as: 'producto',
-  });
-
-  Productos.hasMany(InventarioBodegas, {
-    foreignKey: 'id_producto',
-    as: 'inventarios',
-  });
-
-  Plataforma.hasMany(InventarioBodegas, {
-    foreignKey: 'id_plataforma',
-    as: 'inventarios',
-  });
-
-  InventarioBodegas.belongsTo(Plataforma, {
-    foreignKey: 'id_plataforma',
-    as: 'plataforma',
-  });
-
-  DetalleFactCot.belongsTo(InventarioBodegas, {
-    foreignKey: 'id_inventario',
-    as: 'inventario',
-  });
-
-  InventarioBodegas.hasMany(DetalleFactCot, {
-    foreignKey: 'id_inventario',
-    as: 'detalles',
   });
 
   // Relación: Usuarios tiene muchos Sub_usuarios
@@ -323,20 +248,7 @@ const initModel = () => {
     as: 'configuracion',
   });
 
-  // ===== APIs e Imporsuit =====
-  // API pertenece a un usuario (creador)
-  ImporsuitApi.belongsTo(User, {
-    foreignKey: 'id_users',
-    targetKey: 'id_users',
-    as: 'usuario',
-  });
-
-  User.hasMany(ImporsuitApi, {
-    foreignKey: 'id_users',
-    sourceKey: 'id_users',
-    as: 'apis',
-  });
-
+  // ===== Imporsuit =====
   // Curso pertenece a un instructor (usuario)
   ImporsuitCursos.belongsTo(User, {
     foreignKey: 'instructor',
@@ -350,41 +262,6 @@ const initModel = () => {
     as: 'cursos_instructor',
   });
 
-  // Relación muchos a muchos: API ↔ Cursos
-  ImporsuitApi.belongsToMany(ImporsuitCursos, {
-    through: ImporsuitApiCursos,
-    foreignKey: 'id_api',
-    otherKey: 'id_curso',
-    as: 'cursos',
-  });
-
-  ImporsuitCursos.belongsToMany(ImporsuitApi, {
-    through: ImporsuitApiCursos,
-    foreignKey: 'id_curso',
-    otherKey: 'id_api',
-    as: 'apis',
-  });
-
-  // Relación directa con la tabla intermedia
-  ImporsuitApi.hasMany(ImporsuitApiCursos, {
-    foreignKey: 'id_api',
-    as: 'api_cursos',
-  });
-
-  ImporsuitApiCursos.belongsTo(ImporsuitApi, {
-    foreignKey: 'id_api',
-    as: 'api',
-  });
-
-  ImporsuitCursos.hasMany(ImporsuitApiCursos, {
-    foreignKey: 'id_curso',
-    as: 'curso_apis',
-  });
-
-  ImporsuitApiCursos.belongsTo(ImporsuitCursos, {
-    foreignKey: 'id_curso',
-    as: 'curso',
-  });
   // ===== ProductosChatCenter ↔ CategoriasChatCenter =====
   ProductosChatCenter.belongsTo(CategoriasChatCenter, {
     foreignKey: 'id_categoria',
@@ -549,10 +426,7 @@ const getModels = () => {
     ErroresChatMeta,
     EtiquetasChatCenter,
     EtiquetasAsignadas,
-    FacturasCot,
-    DetalleFactCot,
     Productos,
-    InventarioBodegas,
     Usuarios_chat_center,
     Sub_usuarios_chat_center,
     Departamentos_chat_center,
@@ -568,9 +442,7 @@ const getModels = () => {
     TikTokNotification,
     TikTokWebhookLog,
     DropiIntegrations,
-    ImporsuitApi,
     ImporsuitCursos,
-    ImporsuitApiCursos,
     ProductosChatCenter,
     ProductosWizard,
     ProductosWizardFlujo,

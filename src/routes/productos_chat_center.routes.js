@@ -22,12 +22,6 @@ router.post(
 );
 
 router.post(
-  '/listarProductosImporsuit',
-  checkPlanActivo,
-  productos_chat_centerController.listarProductosImporsuit,
-);
-
-router.post(
   '/agregarProducto',
   uploadProductoMedia,
   productos_chat_centerController.agregarProducto,

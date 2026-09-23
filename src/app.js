@@ -8,7 +8,6 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const sanitizer = require('perfect-express-sanitizer');
 
-const productRouter = require('./routes/product.routes');
 const whatsappRouter = require('./routes/whatsapp.routes');
 const etiquetasChatCenterRouter = require('./routes/etiquetas_chat_center.routes');
 const etiquetasAsignadasRouter = require('./routes/etiquetas_asignadas.routes');
@@ -29,12 +28,6 @@ const kanbanAccionesRouter = require('./routes/kanban_acciones.routes');
 
 const configuracionesRouter = require('./routes/configuraciones.routes');
 
-const detalle_fact_cotRouter = require('./routes/detalle_fact_cot.routes');
-
-const facturas_cotRouter = require('./routes/facturas_cot.routes');
-
-const bodegaRouter = require('./routes/bodega.routes');
-
 const openai_assistantsRouter = require('./routes/openai_assistants.routes');
 
 const remarketing_pendientesRouter = require('./routes/remarketing_pendientes.routes');
@@ -49,8 +42,6 @@ const dropiWebhookRouter = require('./routes/dropi_webhook.routes');
 
 const aliclikIntegrationsRouter = require('./routes/aliclik_integrations.routes');
 const aliclikWebhookRouter = require('./routes/aliclik_webhook.routes');
-
-const chat_serviceRouter = require('./routes/chat_service.routes');
 
 const planesRouter = require('./routes/planes.routes');
 
@@ -96,8 +87,6 @@ const mentoriasErpRouter = require('./routes/mentorias_erp.routes');
 const debugRouter = require('./routes/debug.routes');
 
 const googleAuthRoutes = require('./routes/google_auth.routes');
-
-const pedidosRouter = require('./routes/pedidos.routes');
 
 const webhook_meta_whatsappRouter = require('./routes/webhook_meta_whatsapp.routes');
 
@@ -343,7 +332,6 @@ app.use('/api/v1', limiter);
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
-app.use('/api/v1/product', productRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
 app.use('/api/v1/dropi_plantillas', dropiPlantillastRouter);
 app.use('/api/v1/tutoriales', tutorialesRouter);
@@ -358,14 +346,10 @@ app.use(
 app.use('/api/v1/kanban_columnas', kanban_columnasRouter);
 app.use('/api/v1/kanban_acciones', kanbanAccionesRouter);
 app.use('/api/v1/configuraciones', configuracionesRouter);
-app.use('/api/v1/detalle_fact_cot', detalle_fact_cotRouter);
-app.use('/api/v1/facturas_cot', facturas_cotRouter);
-app.use('/api/v1/bodega', bodegaRouter);
 app.use('/api/v1/openai_assistants', openai_assistantsRouter);
 app.use('/api/v1/remarketing', remarketing_pendientesRouter);
 app.use('/api/v1/etiquetas_chat_center', etiquetasChatCenterRouter);
 app.use('/api/v1/etiquetas_asignadas', etiquetasAsignadasRouter);
-app.use('/api/v1/chat_service', chat_serviceRouter);
 app.use('/api/v1/planes', planesRouter);
 app.use('/api/v1/usuarios_chat_center', usuarios_chat_centerRouter);
 app.use('/api/v1/admin_usuarios', usuarios_admin_chat_centerRouter);
@@ -389,7 +373,6 @@ app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/mentorias_erp', mentoriasErpRouter);
 app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
-app.use('/api/v1/pedidos', pedidosRouter);
 app.use('/api/v1/messenger', messengerRouter);
 app.use('/api/v1/facebook_comentarios', facebookComentariosRouter);
 app.use('/api/v1/tiktok', tikTokRouter);

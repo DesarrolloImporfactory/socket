@@ -183,38 +183,6 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.listarProductosImporsuit = catchAsync(async (req, res, next) => {
-  const { id_plataforma } = req.body;
-
-  const productos = await db_2.query(
-    `
-    SELECT 
-      p.nombre_producto AS nombre,
-      ib.id_inventario AS id
-    FROM inventario_bodegas ib
-    INNER JOIN productos p ON ib.id_producto = p.id_producto
-    WHERE p.id_plataforma = ?
-    `,
-    {
-      replacements: [id_plataforma],
-      type: db_2.QueryTypes.SELECT,
-    },
-  );
-
-  if (!productos || productos.length === 0) {
-    return res.status(200).json({
-      status: 'success',
-      data: [],
-      message: 'No existen productos para esta plataforma.',
-    });
-  }
-
-  res.status(200).json({
-    status: 'success',
-    data: productos,
-  });
-});
-
 // URL base pública donde sirve /uploads
 const dominio = 'https://chat.imporfactory.app';
 
