@@ -213,63 +213,6 @@ class Sockets {
       });
 
       socket.on(
-        'GET_SERVIENTREGA',
-        async ({ ciudadO, ciudadD, provinciaD, monto_factura }) => {
-          try {
-            const chatService = new ChatService();
-
-            ciudadD = await chatService.getNombre(ciudadD, 'ciudad');
-            ciudadO = await chatService.getNombre(ciudadO, 'ciudad');
-            provinciaD = await chatService.getNombre(provinciaD, 'provincia');
-            const data = await chatService.getServientrega(
-              ciudadO.ciudad,
-              ciudadD.ciudad,
-              provinciaD.provincia,
-              monto_factura,
-            );
-
-            // Enviar los datos al cliente que hizo la solicitud
-            socket.emit('DATA_SERVIENTREGA_RESPONSE', data);
-          } catch (error) {
-            console.log('Error al solicitar la petición servi: ' + error);
-          }
-        },
-      );
-
-      socket.on(
-        'GET_TARIFAS',
-        async ({
-          ciudad,
-          provincia,
-          id_plataforma,
-          monto_factura,
-          recaudo,
-        }) => {
-          try {
-            const chatService = new ChatService();
-            const data = await chatService.getTarifas(
-              ciudad,
-              monto_factura,
-              recaudo,
-              id_plataforma,
-            );
-            // Enviar los datos al cliente que hizo la solicitud
-            socket.emit('DATA_TARIFAS_RESPONSE', data);
-          } catch (error) {
-            console.error(
-              'Error al obtener los datos DATA_TARIFAS_RESPONSE:',
-              error.message,
-            );
-
-            // Enviar mensaje de error al cliente en caso de fallo
-            socket.emit('ERROR_RESPONSE', {
-              message: 'Error al obtener los datos del admin. ' + error.message,
-            });
-          }
-        },
-      );
-
-      socket.on(
         'JOIN_PROGRAMADOS_CHAT',
         ({ id_configuracion, id_cliente_chat_center }) => {
           try {

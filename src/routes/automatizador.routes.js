@@ -4,10 +4,6 @@ const express = require('express');
 
 const router = express.Router();
 
-router.post(
-  '/obtenerProductosAutomatizador',
-  automatizadorController.obtenerProductosAutomatizador
-);
 
 router.post(
   '/obtenerCategoriasAutomatizador',

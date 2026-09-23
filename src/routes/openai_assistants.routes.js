@@ -10,8 +10,6 @@ const {
 } = require('../middlewares/imporiaSecret.middleware');
 
 // routes/openai_assistants.routes.js
-router.post('/datosCliente', openai_assistantsController.datosCliente);
-
 router.post(
   '/mensaje_assistant',
   openai_assistantsController.mensaje_assistant,

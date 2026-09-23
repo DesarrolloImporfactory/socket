@@ -2,7 +2,6 @@ const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
 const {
-  obtenerDatosClienteParaAssistant,
   obtenerDatosCalendarioParaAssistant,
   obtenerCalendarioClasImporfactory,
   procesarCombosParaIA,

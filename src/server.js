@@ -78,7 +78,7 @@ async function startServer() {
     }
 
     console.log('Database synced 😁');
-    console.log('Database 2 synced 😁 (API & Cursos tables created)');
+    console.log('Database 2 synced 😁');
 
     // ─── Crons ────────────────────────────────────────────────────
     // Los crons son GLOBALES, no locales al proceso: el GET_LOCK que usan
