@@ -836,6 +836,64 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
+          /* 2.6) El chat está ESPERANDO respuesta → no es remarketing.
+             El seguimiento de una columna con IA se agenda apenas entra el
+             mensaje del cliente, aunque el turno de IA haya fallado (sin
+             saldo, error de OpenAI). Si nadie —ni el bot ni una persona—
+             contestó ese último mensaje, mandarle "tu pedido está empacado"
+             una hora después es peor que el silencio: caso cfg 320,
+             2026-09-24, chat 904252 (escribió 08:05, sin saldo, y a las
+             09:06 recibió un remarketing como si ya se le hubiera vendido).
+             Solo aplica a columnas con IA activa: ahí un mensaje del cliente
+             sin respuesta significa que el bot falló. En columnas sin IA el
+             silencio es normal y la secuencia sigue como siempre. Los
+             remarketings anteriores del cron y los avisos del sistema no
+             cuentan como respuesta. */
+          const [columnaIA] = await db.query(
+            `SELECT 1 AS x FROM kanban_columnas
+              WHERE id_configuracion = ? AND estado_db = ? AND activa_ia = 1
+              LIMIT 1`,
+            {
+              replacements: [record.id_configuracion, record.estado_contacto_origen],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+          if (columnaIA) {
+            const [sinResponder] = await db.query(
+              `SELECT c.id FROM mensajes_clientes c
+                WHERE c.id_configuracion = ? AND c.celular_recibe = ?
+                  AND c.rol_mensaje = 0 AND c.deleted_at IS NULL
+                  AND NOT EXISTS (
+                        SELECT 1 FROM mensajes_clientes r
+                         WHERE r.id_configuracion = c.id_configuracion
+                           AND r.celular_recibe = c.celular_recibe
+                           AND r.rol_mensaje = 1 AND r.deleted_at IS NULL
+                           AND r.id > c.id
+                           AND (r.responsable IS NULL
+                                OR r.responsable NOT LIKE 'cron_remarketing%')
+                      )
+                ORDER BY c.id DESC LIMIT 1`,
+              {
+                replacements: [record.id_configuracion, String(cliente.id)],
+                type: db.QueryTypes.SELECT,
+              },
+            );
+            if (sinResponder) {
+              console.log(
+                `🟦 [DEBUG] ⏸ Chat ${cliente.id} tiene un mensaje del cliente sin responder (msg ${sinResponder.id}) — cancelando remarketing`,
+              );
+              await db.query(
+                `UPDATE remarketing_pendientes
+                 SET cancelado = 1,
+                     error_message = 'Chat sin responder por el bot',
+                     ultimo_intento_at = NOW()
+                 WHERE id = ?`,
+                { replacements: [record.id], type: db.QueryTypes.UPDATE },
+              );
+              continue;
+            }
+          }
+
           // 3) Config
           const cfg = await getConfigFromDB(Number(record.id_configuracion));
           if (!cfg?.ACCESS_TOKEN || !cfg?.PHONE_NUMBER_ID || !cfg?.WABA_ID) {
