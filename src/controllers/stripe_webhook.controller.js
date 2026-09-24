@@ -7,6 +7,11 @@ const {
 const {
   resolverBajaSuscripcion,
 } = require('../services/stripe_baja.service');
+const {
+  planPorPricePeriodico,
+  guardarPeriodoPago,
+  MESES_POR_PERIODO,
+} = require('../services/planes_periodos.service');
 
 /* =========================
    Selección automática de variables por entorno (production vs test)
@@ -56,6 +61,10 @@ const esColumnaMontoFaltante = (e) => {
 /* =========================
    Helpers
 ========================= */
+// Resuelve el plan a partir del price de Stripe. Primero el mensual
+// (planes_chat_center.id_price); si no, los periodos adelantados
+// (planes_periodos_chat_center: semestral/anual sobre el mismo id_plan).
+// `periodo` viene siempre: 'mensual' o el del periodo adelantado.
 const getPlanByPriceId = async (priceId) => {
   if (!priceId) return null;
 
@@ -66,8 +75,18 @@ const getPlanByPriceId = async (priceId) => {
      LIMIT 1`,
     { replacements: [priceId] },
   );
+  if (p) return { ...p, periodo: 'mensual' };
 
-  return p || null;
+  const pp = await planPorPricePeriodico(priceId);
+  if (!pp) return null;
+  const [[plan]] = await db.query(
+    `SELECT id_plan, nombre_plan, id_price, precio_plan
+     FROM planes_chat_center
+     WHERE id_plan = ?
+     LIMIT 1`,
+    { replacements: [pp.id_plan] },
+  );
+  return plan ? { ...plan, periodo: pp.periodo } : null;
 };
 
 //  Helper: obtener la suscripción activa guardada en BD para el usuario
@@ -939,6 +958,12 @@ exports.stripeWebhook = async (req, res) => {
           replacements: userReplacements,
         });
 
+        // Periodo de pago según el price cobrado (mensual/semestral/anual).
+        // Best-effort: si la columna aún no existe no tumba el webhook.
+        if (planRealByPrice?.periodo) {
+          await guardarPeriodoPago(id_usuario, planRealByPrice.periodo);
+        }
+
         console.log(
           '[stripe] usuarios_chat_center update result:',
           updateResult,
@@ -1033,6 +1058,8 @@ exports.stripeWebhook = async (req, res) => {
               subscriptionId,
               montoFacturadoCent: invoiceTotal,
               moneda: invoice.currency || 'usd',
+              // Una factura semestral/anual cubre 6/12 ciclos de una vez.
+              meses: MESES_POR_PERIODO[planRealByPrice?.periodo] || 1,
             });
           } catch (e) {
             console.log('[stripe] devengo de referido falló:', e?.message);
@@ -1498,6 +1525,11 @@ exports.stripeWebhook = async (req, res) => {
                 ],
               },
             );
+          }
+
+          // Periodo de pago según el price vigente de la sub (best-effort).
+          if (planRealByPrice?.periodo) {
+            await guardarPeriodoPago(id_usuario, planRealByPrice.periodo);
           }
 
           // Si checkPlanActivo ya lo había marcado 'vencido' (marca pegajosa)
