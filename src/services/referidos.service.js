@@ -230,6 +230,7 @@ const devengarPorFactura = async ({
   subscriptionId,
   montoFacturadoCent,
   moneda = 'usd',
+  meses = 1,
 }) => {
   try {
     if (!id_usuario_referido || !invoiceId) return null;
@@ -237,6 +238,15 @@ const devengarPorFactura = async ({
 
     const base = Number(montoFacturadoCent) || 0;
     if (base <= 0) return null; // Trials y facturas en $0 no cuentan ciclo.
+
+    // Una factura semestral/anual cubre `meses` ciclos de una vez (pago
+    // adelantado, 2026-09-24). Se registra UNA fila por factura (UNIQUE sobre
+    // invoice_id) cuyo ciclo_num es el ÚLTIMO ciclo cubierto, y la comisión
+    // se calcula mes a mes: cada mes cubierto vale base/meses y comisiona
+    // con el porcentaje que le toque a SU ciclo (0 antes de CICLO_INICIO).
+    // Así un referido anual nuevo paga comisión por los meses 3..12 en la
+    // misma factura, en vez de esperar tres años a "llegar al ciclo 3".
+    const mesesCubiertos = Math.max(1, Math.floor(Number(meses) || 1));
 
     const [usuario] = await db.query(
       `SELECT referido_por, referido_ciclos_previos
@@ -261,7 +271,11 @@ const devengarPorFactura = async ({
 
       const [ya] = await db.query(
         `SELECT ciclo_num FROM referidos_ciclos WHERE invoice_id = ?`,
-        { replacements: [invoiceId], type: db.QueryTypes.SELECT, transaction: t },
+        {
+          replacements: [invoiceId],
+          type: db.QueryTypes.SELECT,
+          transaction: t,
+        },
       );
       if (ya) return { ciclo: Number(ya.ciclo_num), repetido: true };
 
@@ -275,7 +289,8 @@ const devengarPorFactura = async ({
           transaction: t,
         },
       );
-      const ciclo = Number(max?.ult || previos) + 1;
+      const primero = Number(max?.ult || previos) + 1;
+      const ciclo = primero + mesesCubiertos - 1;
 
       await db.query(
         `INSERT IGNORE INTO referidos_ciclos
@@ -295,21 +310,28 @@ const devengarPorFactura = async ({
         },
       );
 
-      return { ciclo, repetido: false };
+      return { primero, ciclo, repetido: false };
     });
 
     if (!resultado || resultado.repetido) return null;
 
-    const porcentaje = porcentajeParaCiclo(resultado.ciclo);
-    if (porcentaje <= 0) {
+    // Comisión = Σ (base/meses × porcentaje del ciclo n) para cada mes
+    // cubierto. `porcentaje` guardado = el efectivo sobre la base completa,
+    // para que monto_base × porcentaje siga cuadrando en el panel.
+    let comision = 0;
+    for (let n = resultado.primero; n <= resultado.ciclo; n++) {
+      comision += (base / mesesCubiertos) * (porcentajeParaCiclo(n) / 100);
+    }
+    comision = Math.round(comision);
+    const porcentaje =
+      base > 0 ? Number(((comision * 100) / base).toFixed(2)) : 0;
+
+    if (comision <= 0) {
       console.log(
-        `[referidos] ciclo ${resultado.ciclo} de usuario ${id_usuario_referido}: aún no comisiona (arranca en ${CICLO_INICIO})`,
+        `[referidos] ciclos ${resultado.primero}-${resultado.ciclo} de usuario ${id_usuario_referido}: aún no comisiona (arranca en ${CICLO_INICIO})`,
       );
       return null;
     }
-
-    const comision = Math.round((base * porcentaje) / 100);
-    if (comision <= 0) return null;
 
     await db.query(
       `INSERT IGNORE INTO referidos_comisiones
@@ -338,7 +360,11 @@ const devengarPorFactura = async ({
       `[referidos] comisión devengada: referidor=${idReferidor} referido=${id_usuario_referido} ciclo=${resultado.ciclo} ${porcentaje}% = ${comision} cent`,
     );
 
-    return { id_usuario_referidor: idReferidor, ciclo: resultado.ciclo, comision };
+    return {
+      id_usuario_referidor: idReferidor,
+      ciclo: resultado.ciclo,
+      comision,
+    };
   } catch (e) {
     console.log('[referidos] devengarPorFactura falló:', e?.message);
     return null;
@@ -506,7 +532,9 @@ const proyectarReferido = (r, ciclosPagados) => {
   const aproximada = !(renov && renov > hoy);
 
   return {
-    fecha: sumarMeses(base, cobrosFaltantes - 1).toISOString().slice(0, 10),
+    fecha: sumarMeses(base, cobrosFaltantes - 1)
+      .toISOString()
+      .slice(0, 10),
     fecha_aproximada: aproximada,
     monto_cent: Math.round((precioCent * porcentaje) / 100),
     porcentaje,
@@ -667,8 +695,13 @@ const resumen = async (id_usuario) => {
   const credito =
     saldos.disponible_cent > 0 || hayCreditoPrevio
       ? await infoCredito(id_usuario, saldos)
-      : { puede: true, code: 'SIN_SALDO', message: null, proxima_factura: null,
-          credito_en_cuenta_cent: 0 };
+      : {
+          puede: true,
+          code: 'SIN_SALDO',
+          message: null,
+          proxima_factura: null,
+          credito_en_cuenta_cent: 0,
+        };
 
   return {
     codigo,
@@ -733,7 +766,12 @@ const infoCredito = async (id_usuario, saldos) => {
     credito_en_cuenta_cent: 0,
   };
 
-  if (!u) return { ...base, code: 'SIN_CUENTA', message: 'No se encontró tu cuenta.' };
+  if (!u)
+    return {
+      ...base,
+      code: 'SIN_CUENTA',
+      message: 'No se encontró tu cuenta.',
+    };
 
   if (!u.id_costumer) {
     return {
@@ -802,7 +840,12 @@ const infoCredito = async (id_usuario, saldos) => {
     credito = Math.abs(Math.min(0, Number(cliente?.balance || 0)));
   } catch (e) {
     console.log('[referidos] no se pudo leer el customer:', e?.message);
-    return { ...base, puede: true, code: 'SIN_PREVIA', credito_en_cuenta_cent: 0 };
+    return {
+      ...base,
+      puede: true,
+      code: 'SIN_PREVIA',
+      credito_en_cuenta_cent: 0,
+    };
   }
 
   try {
@@ -814,7 +857,9 @@ const infoCredito = async (id_usuario, saldos) => {
        nuevo, lo que se descontará es la suma de ambos, siempre topada por el
        total de la factura: nunca deja un importe negativo. */
     const total = Number(previa.total || 0);
-    const yaAFavor = Math.abs(Math.min(0, Number(previa.starting_balance || 0)));
+    const yaAFavor = Math.abs(
+      Math.min(0, Number(previa.starting_balance || 0)),
+    );
     const aFavorTras = yaAFavor + Number(saldos.disponible_cent || 0);
     const descuento = Math.min(total, aFavorTras);
 
@@ -860,7 +905,12 @@ const infoCredito = async (id_usuario, saldos) => {
       };
     }
     console.log('[referidos] previsualización de factura falló:', msg);
-    return { ...base, puede: true, code: 'SIN_PREVIA', credito_en_cuenta_cent: credito };
+    return {
+      ...base,
+      puede: true,
+      code: 'SIN_PREVIA',
+      credito_en_cuenta_cent: credito,
+    };
   }
 };
 
@@ -882,7 +932,11 @@ const aplicarCredito = async (id_usuario) => {
   const saldos = await obtenerSaldos(id_usuario);
 
   if (saldos.disponible_cent <= 0) {
-    return { ok: false, code: 'SIN_SALDO', message: 'No tienes saldo disponible todavía.' };
+    return {
+      ok: false,
+      code: 'SIN_SALDO',
+      message: 'No tienes saldo disponible todavía.',
+    };
   }
 
   /* Se vuelve a comprobar aquí y no solo en la pantalla: entre que se pintó el
@@ -900,7 +954,8 @@ const aplicarCredito = async (id_usuario) => {
     return {
       ok: false,
       code: 'SIN_CUSTOMER',
-      message: 'Tu cuenta no tiene un cliente de Stripe asociado. Contacta a soporte.',
+      message:
+        'Tu cuenta no tiene un cliente de Stripe asociado. Contacta a soporte.',
     };
   }
 
@@ -957,13 +1012,19 @@ const aplicarCredito = async (id_usuario) => {
     );
     await db.query(
       `UPDATE referidos_pagos SET estado = 'rechazado', nota_admin = ? WHERE id = ?`,
-      { replacements: [String(e?.message || 'error Stripe').slice(0, 255), idPago] },
+      {
+        replacements: [
+          String(e?.message || 'error Stripe').slice(0, 255),
+          idPago,
+        ],
+      },
     );
     console.log('[referidos] aplicarCredito falló en Stripe:', e?.message);
     return {
       ok: false,
       code: 'STRIPE_ERROR',
-      message: 'No se pudo aplicar el crédito. Inténtalo de nuevo en unos minutos.',
+      message:
+        'No se pudo aplicar el crédito. Inténtalo de nuevo en unos minutos.',
     };
   }
 };
@@ -1120,13 +1181,18 @@ const resolverSolicitud = async ({
   comprobante_url,
   id_sub_usuario_admin,
 }) => {
-  const [pago] = await db.query(
-    `SELECT * FROM referidos_pagos WHERE id = ?`,
-    { replacements: [id_pago], ...SELECT },
-  );
-  if (!pago) return { ok: false, code: 'NO_EXISTE', message: 'Solicitud no encontrada' };
+  const [pago] = await db.query(`SELECT * FROM referidos_pagos WHERE id = ?`, {
+    replacements: [id_pago],
+    ...SELECT,
+  });
+  if (!pago)
+    return { ok: false, code: 'NO_EXISTE', message: 'Solicitud no encontrada' };
   if (pago.estado === 'pagado' || pago.estado === 'rechazado') {
-    return { ok: false, code: 'YA_RESUELTA', message: 'Esa solicitud ya fue resuelta' };
+    return {
+      ok: false,
+      code: 'YA_RESUELTA',
+      message: 'Esa solicitud ya fue resuelta',
+    };
   }
 
   if (accion === 'pagar') {
@@ -1180,7 +1246,8 @@ const resolverSolicitud = async ({
 // ═══════════════════════════════════════════════════════════════
 
 /** 'YYYY-MM-DD' en hora de Ecuador (-05:00), que es la zona de la BD. */
-const ymdEc = (d) => new Date(d.getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+const ymdEc = (d) =>
+  new Date(d.getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
 
 const DIAS_RENDIMIENTO = new Set([7, 30, 90]);
 

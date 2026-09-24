@@ -2,6 +2,13 @@ const Stripe = require('stripe');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
+const {
+  MESES_POR_PERIODO,
+  normalizarPeriodo,
+  resolverPrecioPeriodo,
+  periodoPagoDeUsuario,
+  guardarPeriodoPago,
+} = require('../services/planes_periodos.service');
 
 // ─────────────────────────────────────────────────────────────
 // Selección automática de variables por entorno
@@ -23,7 +30,6 @@ const STRIPE_SECRET = envPick('STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY_TEST');
 // devolvía undefined y dejaba fecha_renovacion sin actualizar (o Invalid Date).
 const periodEndDeSub = (sub) =>
   sub?.current_period_end || sub?.items?.data?.[0]?.current_period_end || null;
-
 
 const FRONT_SUCCESS_URL = envPick(
   'FRONT_SUCCESS_URL',
@@ -359,7 +365,7 @@ exports.verificarTrialUsage = catchAsync(async (req, res, next) => {
 // ✅ MODIFICADO: Soporte trial 5 días + cupón $5 para Plan Comunidad
 // ─────────────────────────────────────────────────────────────
 exports.crearSesionPago = catchAsync(async (req, res, next) => {
-  const { id_usuario, id_plan, id_plataforma = null } = req.body;
+  const { id_usuario, id_plan, id_plataforma = null, periodo } = req.body;
 
   if (!id_usuario || !id_plan) {
     return next(new AppError('Faltan id_usuario o id_plan.', 400));
@@ -373,6 +379,29 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
+  // ─── Periodo de pago (mensual | semestral | anual) ───
+  // Semestral/anual cobran el periodo completo por adelantado con su propio
+  // price de Stripe (planes_periodos_chat_center). Sin trial ni cupón del
+  // primer mes: el descuento de esos periodos ya son los meses regalados, y
+  // el cupón de $5 está pensado para una factura mensual.
+  const periodoPago = normalizarPeriodo(periodo);
+  if (!periodoPago) {
+    return next(new AppError('Periodo de pago inválido.', 400));
+  }
+  const precioPeriodo =
+    periodoPago === 'mensual'
+      ? null
+      : await resolverPrecioPeriodo(id_plan, periodoPago);
+  if (periodoPago !== 'mensual' && !precioPeriodo) {
+    return next(
+      new AppError('Ese plan no tiene pago ' + periodoPago + '.', 400),
+    );
+  }
+  const esPeriodoAdelantado = !!precioPeriodo;
+  const priceCheckout = esPeriodoAdelantado
+    ? precioPeriodo.id_price
+    : plan.id_price;
+
   // ─── Trial Days Logic ───
   // Plan ImporChat (2/16): 7 días si no ha usado trial
   // Plan Comunidad (22): 5 días siempre (ya está gateado por código promo)
@@ -384,7 +413,9 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const shouldApplyTrialIC = eligibleTrial && isICPlan;
 
   let trialDays;
-  if (isComunidadPlan) {
+  if (esPeriodoAdelantado) {
+    trialDays = undefined;
+  } else if (isComunidadPlan) {
     const comunidadTrialEligible = Number(user.free_trial_used || 0) === 0;
     trialDays = comunidadTrialEligible ? TRIAL_DAYS_COMUNIDAD : undefined;
   } else if (shouldApplyTrialIC) {
@@ -398,7 +429,8 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
   const isPromoPlan = PROMO_PLANS.has(numPlan);
   const couponId = getCouponByPlan(id_plan);
   const promoNotUsedYet = Number(user.promo_plan2_used || 0) === 0;
-  const canApplyPromo = isPromoPlan && promoNotUsedYet && Boolean(couponId);
+  const canApplyPromo =
+    !esPeriodoAdelantado && isPromoPlan && promoNotUsedYet && Boolean(couponId);
 
   const successUrl = FRONT_SUCCESS_URL;
   const cancelUrl = FRONT_CANCEL_URL;
@@ -415,12 +447,13 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     id_usuario: String(id_usuario),
     id_plan: String(id_plan),
     id_plataforma: id_plataforma ? String(id_plataforma) : '',
+    periodo: periodoPago,
   };
 
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     payment_method_types: ['card'],
-    line_items: [{ price: plan.id_price, quantity: 1 }],
+    line_items: [{ price: priceCheckout, quantity: 1 }],
     ...customerParam,
     ...customerUpdateParam,
     client_reference_id: String(id_usuario),
@@ -442,6 +475,253 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     trialApplied: !!trialDays,
     trialDays: trialDays || 0,
     promoApplied: !!canApplyPromo,
+    periodo: periodoPago,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Cambiar periodo de pago (mensual ⇄ semestral ⇄ anual) del plan actual
+//
+// Mismo plan, distinto price de Stripe. No pasa por cambiarPlan a propósito:
+// aquel decide upgrade/downgrade comparando precio_plan de dos planes y aquí
+// el plan es el mismo.
+//  - A un periodo MÁS largo: se cobra ahora el periodo completo, con crédito
+//    por los días no usados del actual (billing_cycle_anchor: now). Si la
+//    tarjeta falla, Stripe rechaza el update y nada cambia
+//    (payment_behavior: error_if_incomplete): no hace falta estado pendiente.
+//  - A un periodo MÁS corto: se cambia el price sin prorrateo; el cliente usa
+//    lo que ya pagó y en la siguiente renovación paga el periodo nuevo.
+// ─────────────────────────────────────────────────────────────
+exports.cambiarPeriodo = catchAsync(async (req, res, next) => {
+  const { id_usuario, periodo } = req.body;
+  if (!id_usuario || !periodo) {
+    return next(new AppError('Faltan id_usuario o periodo.', 400));
+  }
+  const periodoNuevo = normalizarPeriodo(periodo);
+  if (!periodoNuevo) return next(new AppError('Periodo inválido.', 400));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+  if (!user.id_plan || !user.stripe_subscription_id) {
+    return next(
+      new AppError(
+        'Necesita una suscripción activa para cambiar el periodo.',
+        400,
+      ),
+    );
+  }
+  if (user.pending_change) {
+    return next(
+      new AppError(
+        'Tiene un cambio de plan pendiente. Espere a que se aplique antes de cambiar el periodo.',
+        400,
+      ),
+    );
+  }
+
+  const periodoActual = await periodoPagoDeUsuario(id_usuario);
+
+  const plan = await getPlanById(user.id_plan);
+  if (!plan?.id_price) return next(new AppError('Plan sin price.', 400));
+
+  let priceNuevo = plan.id_price;
+  if (periodoNuevo !== 'mensual') {
+    const pp = await resolverPrecioPeriodo(user.id_plan, periodoNuevo);
+    if (!pp) {
+      return next(
+        new AppError('Su plan no tiene pago ' + periodoNuevo + '.', 400),
+      );
+    }
+    priceNuevo = pp.id_price;
+  }
+
+  const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+    expand: ['items.data.price'],
+  });
+  if (!['active', 'trialing', 'past_due'].includes(sub.status)) {
+    return next(new AppError('La suscripción no está activa.', 400));
+  }
+  if (sub.status === 'trialing') {
+    return next(
+      new AppError(
+        'Podrá cambiar el periodo cuando termine su periodo de prueba.',
+        400,
+      ),
+    );
+  }
+
+  // ¿Hay un cambio a periodo más corto ya programado (schedule)?
+  let periodoPendiente = null;
+  if (sub.schedule) {
+    try {
+      const sc = await stripe.subscriptionSchedules.retrieve(sub.schedule);
+      periodoPendiente = normalizarPeriodo(sc?.metadata?.periodo_pendiente);
+      if (!sc?.metadata?.periodo_pendiente) periodoPendiente = null;
+    } catch (e) {
+      console.log('[cambiarPeriodo] schedule retrieve failed:', e?.message);
+    }
+  }
+
+  const addonPriceSet = await getAddonPriceSet();
+  const subItem =
+    sub.items?.data?.find((it) => !addonPriceSet.has(it.price?.id)) ||
+    sub.items?.data?.[0];
+  if (!subItem?.id) {
+    return next(new AppError('Suscripción sin subscription item.', 400));
+  }
+
+  // Ya está en ese periodo. Si además había uno más corto programado, pedir
+  // el actual significa "déjame como estoy": se libera el schedule.
+  if (periodoActual === periodoNuevo || subItem.price?.id === priceNuevo) {
+    await guardarPeriodoPago(id_usuario, periodoNuevo);
+    if (periodoPendiente && sub.schedule) {
+      await stripe.subscriptionSchedules.release(sub.schedule);
+      await db.query(
+        `INSERT IGNORE INTO transacciones_stripe_chat
+         (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+         VALUES (?, ?, ?, ?, NOW(), ?)`,
+        {
+          replacements: [
+            `periodo_${sub.id}_${Date.now()}`,
+            sub.id,
+            id_usuario,
+            `periodo_pendiente_cancelado:${periodoPendiente}`,
+            user.id_costumer || null,
+          ],
+        },
+      );
+      return res.status(200).json({
+        success: true,
+        periodo: periodoNuevo,
+        message: `Se canceló el cambio a pago ${periodoPendiente} que estaba programado. Sigue en pago ${periodoNuevo}.`,
+      });
+    }
+    return res
+      .status(200)
+      .json({ success: true, message: 'Ya está en ese periodo.' });
+  }
+  if (periodoPendiente === periodoNuevo) {
+    return res.status(200).json({
+      success: true,
+      periodo: periodoNuevo,
+      aplicado: 'siguiente_renovacion',
+      message: `El cambio a pago ${periodoNuevo} ya está programado para su próxima renovación.`,
+    });
+  }
+
+  const alarga =
+    MESES_POR_PERIODO[periodoNuevo] > MESES_POR_PERIODO[periodoActual];
+  const metadata = {
+    ...(sub.metadata || {}),
+    id_plan: String(user.id_plan),
+    periodo: periodoNuevo,
+  };
+  const addonItemsActuales = (sub.items?.data || [])
+    .filter((it) => addonPriceSet.has(it.price?.id))
+    .map((it) => ({ price: it.price.id, quantity: Number(it.quantity || 1) }));
+
+  let updated = null;
+  try {
+    if (alarga) {
+      // Un schedule vivo (p. ej. de un periodo más corto programado antes)
+      // se libera: el cobro inmediato manda.
+      if (sub.schedule) {
+        await stripe.subscriptionSchedules.release(sub.schedule);
+      }
+      updated = await stripe.subscriptions.update(sub.id, {
+        items: [{ id: subItem.id, price: priceNuevo }],
+        billing_cycle_anchor: 'now',
+        proration_behavior: 'always_invoice',
+        payment_behavior: 'error_if_incomplete',
+        metadata,
+      });
+    } else {
+      // A un periodo MÁS CORTO no se toca la sub directamente: al cambiar el
+      // intervalo Stripe reinicia el ciclo y factura el periodo nuevo YA
+      // (probado el 2026-09-24: anual→semestral con proration none cobró
+      // $195 al instante y tiró el año pagado). Se programa con un
+      // schedule, igual que el downgrade de plan: fase actual hasta el fin
+      // del periodo pagado y recién ahí el price nuevo. Al arrancar la fase
+      // 2 llega customer.subscription.updated con el price nuevo y el
+      // webhook actualiza periodo_pago solo.
+      const periodEnd = periodEndDeSub(sub);
+      let scheduleId = sub.schedule;
+      if (!scheduleId) {
+        const schedule = await stripe.subscriptionSchedules.create({
+          from_subscription: sub.id,
+        });
+        scheduleId = schedule.id;
+      }
+      await stripe.subscriptionSchedules.update(scheduleId, {
+        end_behavior: 'release',
+        phases: [
+          {
+            start_date: sub.items?.data?.[0]?.current_period_start,
+            end_date: periodEnd,
+            items: [
+              { price: subItem.price.id, quantity: 1 },
+              ...addonItemsActuales,
+            ],
+          },
+          {
+            start_date: periodEnd,
+            items: [{ price: priceNuevo, quantity: 1 }, ...addonItemsActuales],
+          },
+        ],
+        metadata: {
+          id_usuario: String(id_usuario),
+          periodo_pendiente: periodoNuevo,
+        },
+      });
+    }
+  } catch (e) {
+    console.log('[cambiarPeriodo] stripe update failed:', e?.message);
+    return res.status(alarga ? 402 : 400).json({
+      success: false,
+      message: alarga
+        ? 'No se pudo cobrar el nuevo periodo. Revise su método de pago e intente de nuevo.'
+        : 'No se pudo programar el cambio de periodo. Intente de nuevo.',
+      detalle: e?.message,
+    });
+  }
+
+  const nuevoFin =
+    updated && periodEndDeSub(updated)
+      ? new Date(periodEndDeSub(updated) * 1000)
+      : user.fecha_renovacion || null;
+  if (alarga) {
+    await guardarPeriodoPago(id_usuario, periodoNuevo);
+    if (nuevoFin) {
+      await db.query(
+        `UPDATE usuarios_chat_center SET fecha_renovacion = ? WHERE id_usuario = ?`,
+        { replacements: [nuevoFin, id_usuario] },
+      );
+    }
+  }
+
+  await db.query(
+    `INSERT IGNORE INTO transacciones_stripe_chat
+     (id_pago, id_suscripcion, id_usuario, estado_suscripcion, fecha, customer_id)
+     VALUES (?, ?, ?, ?, NOW(), ?)`,
+    {
+      replacements: [
+        `periodo_${sub.id}_${Date.now()}`,
+        sub.id,
+        id_usuario,
+        `periodo_changed:${periodoActual}->${periodoNuevo}`,
+        user.id_costumer || null,
+      ],
+    },
+  );
+
+  return res.status(200).json({
+    success: true,
+    periodo: periodoNuevo,
+    aplicado: alarga ? 'ahora' : 'siguiente_renovacion',
+    fecha_renovacion: nuevoFin,
+    message: alarga
+      ? 'Periodo cambiado. Se cobró el nuevo periodo con crédito por los días no usados.'
+      : 'Periodo cambiado. Se aplica en su próxima renovación.',
   });
 });
 
@@ -748,10 +1028,28 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       pending_effective_at: user.pending_effective_at || null,
       needs_card_capture:
         Number(user.id_plan) === 21 && !user.stripe_subscription_id,
+      periodo_pago: await periodoPagoDeUsuario(id_usuario),
+      // Cambio a periodo más corto programado (schedule) para la renovación.
+      periodo_pendiente: await periodoPendienteDeSub(sub),
     },
     user_flags: userFlags,
   });
 });
+
+// Periodo más corto programado con schedule (ver cambiarPeriodo). null si no
+// hay schedule o el schedule es de otra cosa (downgrade de plan).
+async function periodoPendienteDeSub(sub) {
+  if (!sub?.schedule) return null;
+  try {
+    const sc = await stripe.subscriptionSchedules.retrieve(sub.schedule);
+    return normalizarPeriodo(sc?.metadata?.periodo_pendiente) &&
+      sc?.metadata?.periodo_pendiente
+      ? normalizarPeriodo(sc.metadata.periodo_pendiente)
+      : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // Facturas del usuario
@@ -905,11 +1203,20 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     id_plan_nuevo,
     conexiones_suspender = [],
     subusuarios_suspender = [],
+    periodo,
   } = req.body;
 
   if (!id_usuario || !id_plan_nuevo) {
     return next(new AppError('Faltan id_usuario o id_plan_nuevo.', 400));
   }
+
+  // Periodo de pago del plan destino. Con semestral/anual el price destino es
+  // el del periodo y la comparación upgrade/downgrade se hace por el precio
+  // MENSUAL equivalente ($195/6 = $32.50), que es lo que define si el cliente
+  // sube o baja de plan; el cobro adelantado lo resuelve Stripe al cambiar de
+  // intervalo (reinicia el ciclo y factura el periodo nuevo con crédito).
+  const periodoDestino = normalizarPeriodo(periodo);
+  if (!periodoDestino) return next(new AppError('Periodo inválido.', 400));
 
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
@@ -958,10 +1265,28 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     .filter((it) => addonPriceSet.has(it.price?.id))
     .map((it) => ({ price: it.price.id, quantity: Number(it.quantity || 1) }));
 
+  let priceDestino = planNuevo.id_price;
+  let precioNuevo = Number(planNuevo?.precio_plan || 0);
+  const esPeriodoAdelantado = periodoDestino !== 'mensual';
+  if (esPeriodoAdelantado) {
+    const pp = await resolverPrecioPeriodo(id_plan_nuevo, periodoDestino);
+    if (!pp) {
+      return next(
+        new AppError('Ese plan no tiene pago ' + periodoDestino + '.', 400),
+      );
+    }
+    priceDestino = pp.id_price;
+    precioNuevo = pp.precio / pp.meses;
+  }
+
   const precioActual = Number(planActual?.precio_plan || 0);
-  const precioNuevo = Number(planNuevo?.precio_plan || 0);
-  const esUpgrade = precioNuevo > precioActual;
-  const esDowngrade = precioNuevo < precioActual;
+  // Con periodo adelantado nunca es "mismo precio": ese camino cambia el
+  // price sin prorrateo y con otro intervalo Stripe cobraría el periodo
+  // entero al instante sin crédito. Se trata como upgrade (cobro ahora).
+  const esUpgrade =
+    precioNuevo > precioActual ||
+    (esPeriodoAdelantado && precioNuevo === precioActual);
+  const esDowngrade = !esUpgrade && precioNuevo < precioActual;
 
   if (esUpgrade && sub.schedule) {
     try {
@@ -977,7 +1302,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
   // ─── MISMO PRECIO ───
   if (!esUpgrade && !esDowngrade) {
     await stripe.subscriptions.update(sub.id, {
-      items: [{ id: subItem.id, price: planNuevo.id_price }],
+      items: [{ id: subItem.id, price: priceDestino }],
       proration_behavior: 'none',
       payment_behavior: 'allow_incomplete',
       metadata: {
@@ -1042,7 +1367,10 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
     const cortarTrial = sub.status === 'trialing';
 
     const updated = await stripe.subscriptions.update(sub.id, {
-      items: [{ id: subItem.id, price: planNuevo.id_price }],
+      items: [{ id: subItem.id, price: priceDestino }],
+      // Periodo adelantado: reiniciar el ciclo hoy para que la factura sea
+      // el periodo completo menos el crédito de lo no usado.
+      ...(esPeriodoAdelantado ? { billing_cycle_anchor: 'now' } : {}),
       proration_behavior: 'always_invoice', // ← antes: 'create_prorations'
       payment_behavior: 'default_incomplete',
       ...(cortarTrial ? { trial_end: 'now' } : {}),
@@ -1050,6 +1378,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         ...(sub.metadata || {}),
         pending_plan_id: String(id_plan_nuevo),
         pending_change: 'upgrade',
+        periodo: periodoDestino,
       },
       expand: ['latest_invoice.payment_intent'],
     });
@@ -1208,10 +1537,7 @@ exports.cambiarPlan = catchAsync(async (req, res, next) => {
         },
         {
           start_date: periodEnd,
-          items: [
-            { price: planNuevo.id_price, quantity: 1 },
-            ...addonItemsActuales,
-          ],
+          items: [{ price: priceDestino, quantity: 1 }, ...addonItemsActuales],
         },
       ],
       metadata: {

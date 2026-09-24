@@ -14,6 +14,7 @@ const {
   tipoPlanUI,
   trialDiasParaPlan,
 } = require('../config/planes.config');
+const { periodosDePlan } = require('../services/planes_periodos.service');
 
 /**
  * ✅ Asigna un plan al usuario sin activarlo
@@ -169,34 +170,46 @@ exports.obtenerPlanes = async (req, res) => {
     );
     const productoActual = planActual?.id_product_stripe || null;
 
-    const data = (planes || []).map((plan) => {
-      const idPlan = Number(plan.id_plan);
-      const esActual = !!planActualId && planActualId === idPlan;
+    const data = await Promise.all(
+      (planes || []).map(async (plan) => {
+        const idPlan = Number(plan.id_plan);
+        const esActual = !!planActualId && planActualId === idPlan;
 
-      const esHermanoDelActual =
-        !!productoActual &&
-        !esActual &&
-        plan.id_product_stripe === productoActual;
+        const esHermanoDelActual =
+          !!productoActual &&
+          !esActual &&
+          plan.id_product_stripe === productoActual;
 
-      const visibilidad = hayColumnaVisibilidad
-        ? {
-            visible:
-              !esHermanoDelActual &&
-              (Number(plan.visible_publico) === 1 ||
-                desbloqueados.includes(idPlan) ||
-                esActual),
-          }
-        : {};
+        const visibilidad = hayColumnaVisibilidad
+          ? {
+              visible:
+                !esHermanoDelActual &&
+                (Number(plan.visible_publico) === 1 ||
+                  desbloqueados.includes(idPlan) ||
+                  esActual),
+            }
+          : {};
 
-      return {
-        ...plan,
-        ...visibilidad,
-        es_plan_actual: esActual,
-        tipo_ui: tipoPlanUI(plan),
-        trial_dias: trialDiasParaPlan(idPlan, usuario),
-        promo_aplicable: promoDisponible && promoPlans.has(idPlan),
-      };
-    });
+        // Periodos de pago adelantado (semestral/anual) del plan. Vacío para
+        // los planes que solo se cobran mes a mes (p. ej. los de $29).
+        let periodos = [];
+        try {
+          periodos = await periodosDePlan(idPlan, plan.precio_plan);
+        } catch (e) {
+          console.warn('[planes] periodos no disponibles:', e?.message);
+        }
+
+        return {
+          ...plan,
+          ...visibilidad,
+          es_plan_actual: esActual,
+          tipo_ui: tipoPlanUI(plan),
+          trial_dias: trialDiasParaPlan(idPlan, usuario),
+          promo_aplicable: promoDisponible && promoPlans.has(idPlan),
+          periodos,
+        };
+      }),
+    );
 
     return res.status(200).json({
       status: 'success',

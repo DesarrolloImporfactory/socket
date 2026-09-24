@@ -19,6 +19,13 @@ router.post('/crearSesionPago', stripeController.crearSesionPago);
 // Cambiar Plan (upgrade, downgrade, mismo precio)
 router.post('/cambiarPlan', soloAdministrador, stripeController.cambiarPlan);
 
+// Cambiar periodo de pago del plan actual (mensual ⇄ semestral ⇄ anual)
+router.post(
+  '/cambiarPeriodo',
+  soloAdministrador,
+  stripeController.cambiarPeriodo,
+);
+
 // Suscripción activa (para MiPlan.jsx y PlanesView.jsx)
 router.post(
   '/obtenerSuscripcionActiva',
