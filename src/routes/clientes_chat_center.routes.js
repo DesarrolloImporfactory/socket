@@ -7,6 +7,10 @@ const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
 
+const {
+  requireChatPropietario,
+} = require('../middlewares/chatPropietario.middleware');
+
 const { uploadExcel } = require('../middlewares/uploadExcel');
 
 const {
@@ -19,16 +23,19 @@ router.use(protect);
 // routes/clientes_chat_center.routes.js
 router.post(
   '/actualizar_cerrado',
+  requireChatPropietario('chatId'),
   clientes_chat_centerController.actualizar_cerrado,
 );
 
 router.post(
   '/actualizar_bot_openia',
+  requireChatPropietario('chatId'),
   clientes_chat_centerController.actualizar_bot_openia,
 );
 
 router.post(
   '/actualizar_enviar_remarketing',
+  requireChatPropietario('chatId'),
   clientes_chat_centerController.actualizar_enviar_remarketing,
 );
 

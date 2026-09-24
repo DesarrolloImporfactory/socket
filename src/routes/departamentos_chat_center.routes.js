@@ -5,6 +5,10 @@ const express = require('express');
 const router = express.Router();
 
 const { protect } = require('../middlewares/auth.middleware');
+
+const {
+  requireChatPropietario,
+} = require('../middlewares/chatPropietario.middleware');
 const checkPlanActivo = require('../middlewares/checkPlanActivo.middleware');
 const restrictToRoles = require('../middlewares/restrictTo.middleware');
 const excluirRoles = require('../middlewares/excluirRoles.middleware');
@@ -54,7 +58,11 @@ router.delete(
 
 router.post('/transferirChat', departamentos_chat_center.transferirChat);
 
-router.post('/asignar_encargado', departamentos_chat_center.asignar_encargado);
+router.post(
+  '/asignar_encargado',
+  requireChatPropietario('id_cliente_chat_center'),
+  departamentos_chat_center.asignar_encargado,
+);
 
 router.get(
   '/historial-encargados/:id_cliente_chat_center',
