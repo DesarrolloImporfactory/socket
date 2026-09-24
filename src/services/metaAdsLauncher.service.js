@@ -495,6 +495,10 @@ async function lanzarPaquete({ conn, cfg }) {
     // (caso México 2026-09-21) la campaña sale hacia un número ajeno al bot.
     // Si el número no está vinculado a la cuenta, Meta rechaza el conjunto
     // (subcode 1487246) y no se crea nada — ese es el comportamiento deseado.
+    // OJO: solo `whatsapp_phone_number`. Mandar además
+    // `whats_app_business_phone_number_id` hace que Meta responda
+    // "(#200) Permissions error" aunque cada campo por separado sea válido
+    // (probado con validate_only en las cuentas 610 y 822 el 2026-09-23).
     const adsetPayload = {
       name: nombreBase,
       campaign_id,
@@ -506,9 +510,6 @@ async function lanzarPaquete({ conn, cfg }) {
       promoted_object: {
         page_id: cfg.page_id,
         whatsapp_phone_number: cfg.whatsapp.numero,
-        ...(cfg.whatsapp.id_telefono
-          ? { whats_app_business_phone_number_id: cfg.whatsapp.id_telefono }
-          : {}),
       },
       targeting: construirTargeting(cfg),
       status,
