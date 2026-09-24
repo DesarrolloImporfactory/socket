@@ -238,6 +238,19 @@ const {
   mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
 
+/* Aviso dentro del chat cuando el bot NO pudo responder (sin saldo, error de
+   OpenAI). Antes el turno moría en silencio y la única pista quedaba en el
+   debug_log del servidor: el cliente veía un chat sin respuesta y nadie sabía
+   por qué (cfg 320, 2026-09-24: sin saldo de 06:02 a 08:24, el dueño recargó
+   y no avisó). Es una notificación rol 3 como la de "Te has asignado este
+   chat", NO se manda por WhatsApp, y lleva responsable 'sistema_ia' para que
+   el rescate de turnos no la cuente como respuesta. */
+const MensajeClienteModel = require('../models/mensaje_cliente.model');
+const {
+  enviarConsultaAPI,
+} = require('../utils/webhook_whatsapp/enviar_consulta_socket');
+const RESPONSABLE_AVISO_SISTEMA = 'sistema_ia';
+
 // La Responses API acumula historial vía previous_response_id; con muchos
 // turnos + file_search el contexto puede superar la ventana del modelo.
 function esContextoExcedido(err) {
@@ -625,7 +638,9 @@ async function marcarOpenAIInactivo(id_configuracion, motivo) {
 
 async function marcarOpenAIActivo(id_configuracion) {
   try {
-    await db.query(
+    // Con type UPDATE, mysql2 devuelve [res, filasAfectadas]; el WHERE
+    // openai_activo = 0 hace que solo cuente cuando de verdad estaba caída.
+    const [, filas] = await db.query(
       `UPDATE configuraciones
        SET openai_activo = 1,
            openai_error_at = NULL,
@@ -636,9 +651,92 @@ async function marcarOpenAIActivo(id_configuracion) {
         type: db.QueryTypes.UPDATE,
       },
     );
+    if (Number(filas) > 0) {
+      /* La cuenta estaba marcada sin saldo y acaba de responder: el dueño
+         recargó. Todo lo que quedó sin contestar mientras tanto se retoma
+         ahora, con el contexto de cada chat (ver rescatarTurnosPerdidos). */
+      await log(
+        `🟢 OpenAI vuelve a responder para config=${id_configuracion}: se reanudan los chats pendientes`,
+      );
+      require('../cron/rescatarTurnosPerdidos').reanudarChatsPendientes(
+        id_configuracion,
+        'primera llamada exitosa',
+      );
+    }
   } catch (err) {
     await log(`⚠️ No se pudo marcar openai_activo=1: ${err.message}`);
   }
+}
+
+/**
+ * Deja en el chat (solo visible para el equipo, no se envía al cliente) un
+ * aviso de por qué el bot no respondió. Uno por chat: si el último mensaje ya
+ * es un aviso del sistema no se repite, así un cliente que escribe cinco veces
+ * durante una caída no ve cinco carteles.
+ */
+async function avisarEnChatBotSinRespuesta({
+  id_configuracion,
+  id_cliente,
+  texto,
+}) {
+  try {
+    const [ultimo] = await db.query(
+      `SELECT rol_mensaje, responsable FROM mensajes_clientes
+        WHERE id_configuracion = ? AND celular_recibe = ? AND deleted_at IS NULL
+        ORDER BY id DESC LIMIT 1`,
+      {
+        replacements: [id_configuracion, String(id_cliente)],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (
+      ultimo &&
+      Number(ultimo.rol_mensaje) === 3 &&
+      ultimo.responsable === RESPONSABLE_AVISO_SISTEMA
+    )
+      return;
+
+    // Mismo formato que la notificación de asignación (chat.service):
+    // id_cliente = el contacto propietario de la cuenta, celular_recibe = el chat.
+    const [propietario] = await db.query(
+      `SELECT id FROM clientes_chat_center
+        WHERE id_configuracion = ? AND propietario = 1 LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
+    await MensajeClienteModel.create({
+      id_configuracion,
+      id_cliente: propietario?.id ?? id_cliente,
+      mid_mensaje: null,
+      tipo_mensaje: 'notificacion',
+      visto: 0,
+      texto_mensaje: texto,
+      rol_mensaje: 3,
+      celular_recibe: String(id_cliente),
+      responsable: RESPONSABLE_AVISO_SISTEMA,
+    });
+
+    // Refresca el chat abierto en el front (mismo camino que un mensaje nuevo).
+    enviarConsultaAPI(id_configuracion, id_cliente).catch(() => {});
+  } catch (err) {
+    await log(`⚠️ No se pudo dejar el aviso en el chat: ${err.message}`);
+  }
+}
+
+const AVISO_SIN_SALDO =
+  '🤖 El bot no respondió: la cuenta de OpenAI se quedó sin saldo. ' +
+  'Al recargar, el bot retoma este chat automáticamente.';
+
+function avisoErrorOpenAI(err) {
+  const detalle = String(
+    err?.response?.data?.error?.message || err?.message || 'error desconocido',
+  )
+    .replace(/\s+/g, ' ')
+    .slice(0, 160);
+  return (
+    `🤖 El bot no pudo responder ahora (OpenAI: ${detalle}). ` +
+    'Se reintenta solo en unos minutos.'
+  );
 }
 
 async function log(msg) {
@@ -1931,11 +2029,17 @@ async function procesarMensajeKanban(params) {
     }
   } catch (err) {
     if (esSinSaldo(err) || err.code === 'sin_saldo_openai') {
-      await log(`🚨 SIN SALDO OPENAI para config=${id_configuracion}`);
-      await marcarOpenAIInactivo(
-        id_configuracion,
-        err.motivoOpenAI || mensajeErrorOpenAI(err) || 'Sin saldo OpenAI',
+      const motivoSaldo =
+        err.motivoOpenAI || mensajeErrorOpenAI(err) || 'Sin saldo OpenAI';
+      await log(
+        `🚨 SIN SALDO OPENAI para config=${id_configuracion} cliente=${id_cliente} · OpenAI: ${motivoSaldo}`,
       );
+      await marcarOpenAIInactivo(id_configuracion, motivoSaldo);
+      await avisarEnChatBotSinRespuesta({
+        id_configuracion,
+        id_cliente,
+        texto: AVISO_SIN_SALDO,
+      });
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
 
@@ -1980,9 +2084,19 @@ async function procesarMensajeKanban(params) {
             id_configuracion,
             mensajeErrorOpenAI(err2) || 'Sin saldo OpenAI',
           );
+          await avisarEnChatBotSinRespuesta({
+            id_configuracion,
+            id_cliente,
+            texto: AVISO_SIN_SALDO,
+          });
           return { ok: false, motivo: 'sin_saldo_openai' };
         }
         await log(`❌ Error tras reset de hilo: ${err2.message}`);
+        await avisarEnChatBotSinRespuesta({
+          id_configuracion,
+          id_cliente,
+          texto: avisoErrorOpenAI(err2),
+        });
         throw err2;
       }
     } else {
@@ -2000,6 +2114,14 @@ async function procesarMensajeKanban(params) {
               (detalle.code ? ` [${detalle.code}]` : '')
             : ''),
       );
+      /* El cartel dice el motivo real (p. ej. "Rate limit reached for gpt-4o
+         … 30000 tokens per min", caso cfg 889): el equipo lo ve en el chat sin
+         entrar al servidor, y el rescate de turnos reintenta a los 5 min. */
+      await avisarEnChatBotSinRespuesta({
+        id_configuracion,
+        id_cliente,
+        texto: avisoErrorOpenAI(err),
+      });
       throw err;
     }
   }
@@ -4584,6 +4706,10 @@ module.exports = {
   procesarMensajeKanban,
   cancelarRemarketingKanban,
   programarRemarketingKanban,
+  // Aviso en el chat cuando el bot no pudo responder (exportado para probarlo
+  // suelto; en producción lo llama el propio turno de IA).
+  avisarEnChatBotSinRespuesta,
+  AVISO_SIN_SALDO,
   // Lo usa simular_conversacion.js para armar el catálogo inline EXACTAMENTE
   // como producción: si el puente cambia acá, la simulación cambia sola.
   PUENTE_INLINE,

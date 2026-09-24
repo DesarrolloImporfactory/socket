@@ -1512,10 +1512,20 @@ exports.openai_reintentar = catchAsync(async (req, res, next) => {
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
 
+  /* Los chats que escribieron mientras la cuenta estaba sin saldo se retoman
+     ahora mismo (mismo turno de IA, con el contexto de cada chat), no cuando
+     entre el próximo mensaje. Fire-and-forget: la respuesta al cliente no
+     espera. Ver src/cron/rescatarTurnosPerdidos.js. */
+  require('../cron/rescatarTurnosPerdidos').reanudarChatsPendientes(
+    id_configuracion,
+    'boton ya pague',
+  );
+
   return res.status(200).json({
     status: '200',
     ok: true,
     motivo: 'reactivado',
-    mensaje: 'Listo, tu cuenta de OpenAI vuelve a responder.',
+    mensaje:
+      'Listo, tu cuenta de OpenAI vuelve a responder. El bot está retomando los chats que quedaron sin respuesta.',
   });
 });
