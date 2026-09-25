@@ -429,7 +429,7 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
         id_cliente_chat_center,
         { attributes: ['id', 'id_encargado'] },
       );
-      if (chatOrigen && !puedeTransferir(actor, chatOrigen)) {
+      if (chatOrigen && !puedeTransferir(actor, chatOrigen, id_encargado)) {
         return next(
           new AppError(
             'Solo el encargado del chat o un administrador puede transferirlo.',
