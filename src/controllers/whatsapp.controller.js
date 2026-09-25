@@ -193,7 +193,12 @@ exports.obtener_numeros = catchAsync(async (req, res, next) => {
           'display_phone_number',
           'verified_name',
           'quality_rating',
+          // Desde octubre 2025 el límite es del portafolio y Meta dejó de
+          // devolver messaging_limit_tier (sin error: simplemente falta). El
+          // campo vigente es whatsapp_business_manager_messaging_limit; se
+          // piden los dos y abajo se normaliza al nombre que usa el front.
           'messaging_limit_tier',
+          'whatsapp_business_manager_messaging_limit',
           'status',
         ].join(','),
       },
@@ -248,9 +253,15 @@ exports.obtener_numeros = catchAsync(async (req, res, next) => {
     });
   }
 
-  const numbers = Array.isArray(numbersResp.data?.data)
-    ? numbersResp.data.data
-    : [];
+  const numbers = (
+    Array.isArray(numbersResp.data?.data) ? numbersResp.data.data : []
+  ).map((n) => ({
+    ...n,
+    messaging_limit_tier:
+      n.whatsapp_business_manager_messaging_limit ||
+      n.messaging_limit_tier ||
+      null,
+  }));
 
   if (numbers.length === 0) {
     return res.json({

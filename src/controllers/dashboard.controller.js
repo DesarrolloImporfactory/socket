@@ -8,6 +8,9 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 const EtiquetaService = require('../services/etiqueta.service');
 const catchAsync = require('../utils/catchAsync');
 const dashboardCache = require('./dashboardCache');
+const {
+  buildAtencionAsesores,
+} = require('../services/atencion_asesores.service');
 
 // TTL del cache en milisegundos.
 // Un dashboard de KPIs de atención no necesita frescura de segundos: subimos el
@@ -69,6 +72,7 @@ const VALID_SECTIONS = new Set([
   'charts',
   'agentLoad',
   'frequentTransfers',
+  'atencionAsesores',
 ]);
 const ALL_SECTIONS = [...VALID_SECTIONS];
 
@@ -366,6 +370,7 @@ async function executeDashboard(
       };
     if (sections.has('agentLoad')) empty.agentLoad = [];
     if (sections.has('frequentTransfers')) empty.frequentTransfers = [];
+    if (sections.has('atencionAsesores')) empty.atencionAsesores = null;
     empty.meta = {
       from,
       to,
@@ -390,6 +395,7 @@ async function executeDashboard(
     chartsResults,
     agentLoadResults,
     frequentTransfers,
+    atencionAsesores,
   ] = await Promise.all([
     sections.has('summary')
       ? dashboardCache.getOrRun(
@@ -436,6 +442,16 @@ async function executeDashboard(
           () => buildFrequentTransfers(ids, fromDT, toDT, agentId),
         )
       : null,
+    sections.has('atencionAsesores')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({
+            ...cacheBase,
+            section: 'atencionAsesores',
+          }),
+          CACHE_TTL,
+          () => buildAtencionAsesores(ids, id_usuario, fromDT, toDT, agentId),
+        )
+      : null,
   ]);
 
   const data = {};
@@ -445,6 +461,7 @@ async function executeDashboard(
   if (chartsResults !== null) data.charts = chartsResults;
   if (agentLoadResults !== null) data.agentLoad = agentLoadResults;
   if (frequentTransfers !== null) data.frequentTransfers = frequentTransfers;
+  if (atencionAsesores !== null) data.atencionAsesores = atencionAsesores;
 
   data.meta = {
     from,
@@ -955,3 +972,250 @@ async function buildFrequentTransfers(configIds, fromDT, toDT, agentId = null) {
     };
   });
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4) MODO DEL DASHBOARD POR CONEXIÓN
+// ════════════════════════════════════════════════════════════════════════════
+// /conexion-dashboard abre en "Resumen", que solo sirve a quien vende por
+// Dropi/Shopify. Una cuenta de atención al cliente (la 242, por ejemplo) no
+// tiene nada que ver ahí. El modo decide qué Resumen se muestra:
+//   dropshipping → el de ventas (Dropi, Shopify, anuncios)
+//   atencion     → cola de espera + asesores por hora + tiempos de respuesta
+// No hay columna en BD: se infiere de los datos (pedidos Dropi en los últimos
+// 60 días = dropshipping, si no = atención). Si el dueño quiere forzar otro
+// modo, el front lo recuerda por navegador (localStorage), sin migración.
+async function inferirModo(id_configuracion) {
+  const [row] = await db.query(
+    `SELECT 1 AS hay FROM dropi_orders_cache
+     WHERE id_configuracion = ?
+       AND order_created_at >= NOW() - INTERVAL 60 DAY
+     LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  return row ? 'dropshipping' : 'atencion';
+}
+
+exports.obtenerModoDashboard = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  const { id_usuario } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const propias = await getConfigIds(id_usuario, id_configuracion);
+  if (!propias.length) {
+    return res
+      .status(403)
+      .json({ status: 'error', message: 'La conexión no es de esta cuenta' });
+  }
+  return res.json({
+    status: 'success',
+    data: { modo_efectivo: await inferirModo(id_configuracion) },
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5) APERTURA DE CHAT (cronómetro del asesor)
+// ════════════════════════════════════════════════════════════════════════════
+// El asesor abre un chat con el cliente esperando → se registra la hora (una
+// vez por chat + mensaje pendiente + asesor) y se devuelve para que el
+// cronómetro de la cabecera arranque desde ahí aunque recargue o cambie de
+// chat. Ver models/atencion_aperturas.model.js.
+const AtencionAperturas = require('../models/atencion_aperturas.model');
+// "Atendida" y no "humana": si el bot ya le contestó al cliente, el cliente
+// no está esperando y el cronómetro no debe correr.
+const {
+  SQL_RESPUESTA_ATENDIDA,
+  PARAMS_RESPUESTA_ATENDIDA,
+} = require('../services/liberar_sin_respuesta.service');
+const {
+  obtenerHorario,
+  guardarHorario,
+  publico: horarioPublico,
+} = require('../services/atencion_horario.service');
+
+exports.abrirChatAtencion = catchAsync(async (req, res) => {
+  const { id_usuario, id_sub_usuario } = req.body;
+  const id_cliente = Number(req.body.id_cliente_chat_center);
+  if (!id_cliente || !id_sub_usuario) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Faltan id_cliente_chat_center o sesión de subusuario',
+    });
+  }
+
+  // El chat debe ser de una conexión de esta cuenta.
+  const [chat] = await db.query(
+    `SELECT ccc.id, ccc.id_configuracion, ccc.chat_cerrado, ccc.id_encargado,
+            su.nombre_encargado AS encargado_nombre
+     FROM clientes_chat_center ccc
+     INNER JOIN configuraciones c ON c.id = ccc.id_configuracion
+     LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = ccc.id_encargado
+     WHERE ccc.id = ? AND c.id_usuario = ? AND ccc.deleted_at IS NULL
+     LIMIT 1`,
+    { replacements: [id_cliente, id_usuario], type: db.QueryTypes.SELECT },
+  );
+  if (!chat) {
+    return res
+      .status(403)
+      .json({ status: 'error', message: 'El chat no es de esta cuenta' });
+  }
+  if (Number(chat.chat_cerrado) === 1) {
+    return res.json({ status: 'success', data: { esperando: false } });
+  }
+
+  // Primer mensaje del cliente posterior a la última respuesta (asesor o bot).
+  const [pend] = await db.query(
+    `SELECT MIN(m.created_at) AS mensaje_cliente_at
+     FROM mensajes_clientes m
+     WHERE m.id_configuracion = ? AND m.celular_recibe = ?
+       AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
+       AND m.created_at > COALESCE((
+         SELECT MAX(m.created_at) FROM mensajes_clientes m
+         WHERE m.id_configuracion = ? AND m.celular_recibe = ?
+           AND ${SQL_RESPUESTA_ATENDIDA}
+       ), '1970-01-01')`,
+    {
+      replacements: [
+        chat.id_configuracion,
+        id_cliente,
+        chat.id_configuracion,
+        id_cliente,
+        ...PARAMS_RESPUESTA_ATENDIDA,
+      ],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  if (!pend?.mensaje_cliente_at) {
+    return res.json({ status: 'success', data: { esperando: false } });
+  }
+
+  const horario = horarioPublico(await obtenerHorario(chat.id_configuracion));
+  const base = {
+    esperando: true,
+    mensaje_cliente_at: pend.mensaje_cliente_at,
+    horario,
+    encargado: chat.id_encargado
+      ? { id_sub_usuario: chat.id_encargado, nombre: chat.encargado_nombre }
+      : null,
+  };
+
+  /* ¿A quién se le cuenta el tiempo?
+     - Un asesor de ventas: siempre a él (abre el chat para atenderlo, tenga
+       o no encargado todavía).
+     - Un administrador (o cualquier rol que no sea ventas): solo si el chat
+       es suyo (id_encargado). Si entra a leer un chat de otro, no se registra
+       su apertura ni se le arranca reloj: ve el del encargado. */
+  const rol = req.sessionUser?.rol || null;
+  const esPropio =
+    rol === 'ventas' || Number(chat.id_encargado) === Number(id_sub_usuario);
+
+  if (esPropio) {
+    const [fila] = await AtencionAperturas.findOrCreate({
+      where: {
+        id_cliente_chat_center: id_cliente,
+        mensaje_cliente_at: pend.mensaje_cliente_at,
+        id_sub_usuario,
+      },
+      defaults: {
+        id_configuracion: chat.id_configuracion,
+        abierto_at: new Date(),
+      },
+    });
+    return res.json({
+      status: 'success',
+      data: { ...base, modo: 'propio', abierto_at: fila.abierto_at },
+    });
+  }
+
+  // Observador: la apertura del encargado; si no hay encargado o él no lo
+  // abrió, la más antigua de cualquier asesor.
+  const aperturas = await AtencionAperturas.findAll({
+    where: {
+      id_cliente_chat_center: id_cliente,
+      mensaje_cliente_at: pend.mensaje_cliente_at,
+    },
+    order: [['abierto_at', 'ASC']],
+  });
+  const delEncargado = chat.id_encargado
+    ? aperturas.find(
+        (a) => Number(a.id_sub_usuario) === Number(chat.id_encargado),
+      )
+    : null;
+  const elegida = delEncargado || aperturas[0] || null;
+  let quienAbrio = null;
+  if (elegida) {
+    const [su] = await db.query(
+      `SELECT id_sub_usuario, nombre_encargado FROM sub_usuarios_chat_center
+       WHERE id_sub_usuario = ? LIMIT 1`,
+      { replacements: [elegida.id_sub_usuario], type: db.QueryTypes.SELECT },
+    );
+    quienAbrio = su
+      ? { id_sub_usuario: su.id_sub_usuario, nombre: su.nombre_encargado }
+      : null;
+  }
+  return res.json({
+    status: 'success',
+    data: {
+      ...base,
+      modo: 'observador',
+      abierto_at: elegida ? elegida.abierto_at : null,
+      quien_abrio: quienAbrio,
+    },
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6) HORARIO DE ATENCIÓN (lo edita el administrador en el dashboard)
+// ════════════════════════════════════════════════════════════════════════════
+exports.obtenerHorarioAtencion = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  const { id_usuario } = req.body;
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const propias = await getConfigIds(id_usuario, id_configuracion);
+  if (!propias.length) {
+    return res
+      .status(403)
+      .json({ status: 'error', message: 'La conexión no es de esta cuenta' });
+  }
+  const horario = await obtenerHorario(id_configuracion);
+  return res.json({ status: 'success', data: horarioPublico(horario) });
+});
+
+exports.guardarHorarioAtencion = catchAsync(async (req, res) => {
+  const { id_usuario, id_sub_usuario } = req.body;
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const propias = await getConfigIds(id_usuario, id_configuracion);
+  if (!propias.length) {
+    return res
+      .status(403)
+      .json({ status: 'error', message: 'La conexión no es de esta cuenta' });
+  }
+  let horario;
+  try {
+    horario = await guardarHorario(
+      id_configuracion,
+      {
+        hora_inicio: req.body.hora_inicio,
+        hora_fin: req.body.hora_fin,
+        dias: req.body.dias,
+      },
+      id_sub_usuario,
+    );
+  } catch (e) {
+    return res.status(400).json({ status: 'error', message: e.message });
+  }
+  // Los tiempos cambian con el horario: que el próximo pedido recalcule.
+  dashboardCache.invalidateUser(id_usuario);
+  return res.json({ status: 'success', data: horarioPublico(horario) });
+});

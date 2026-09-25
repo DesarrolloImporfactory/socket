@@ -112,6 +112,10 @@ const {
 } = require('../utils/webhook_whatsapp/funciones_typing');
 
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
+const {
+  manejarWebhookLlamadas,
+  avisarRespuestaPermiso,
+} = require('../services/llamadas_whatsapp.service');
 
 async function ensureDir(dir) {
   try {
@@ -358,6 +362,18 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           await manejarAccountUpdate(data?.entry?.[0]?.id, value);
         } catch (e) {
           console.error('[wa-health][webhook] account_update falló:', e.message);
+        }
+        return;
+      }
+      /* calls (Business Calling API): el cliente llama al negocio o termina
+         la llamada. No trae mensajes; lo atiende el servicio de llamadas y
+         se corta aquí. Requiere el campo `calls` suscrito en el App
+         Dashboard de Meta. */
+      if (field === 'calls') {
+        try {
+          await manejarWebhookLlamadas(value);
+        } catch (e) {
+          console.error('[llamadas][webhook] falló:', e.message);
         }
         return;
       }
@@ -974,6 +990,22 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             texto_mensaje = `Respuesta de botón: ${interactive.button_reply?.title}`;
           } else if (interactive.type === 'list_reply') {
             texto_mensaje = `Respuesta de lista: ${interactive.list_reply?.title}`;
+          } else if (interactive.type === 'call_permission_reply') {
+            /* Respuesta a "¿podemos llamarte?" (llamadas de WhatsApp). Queda
+               como mensaje del cliente y se avisa al asesor para que el botón
+               de llamar del chat se actualice al momento. */
+            const rep = interactive.call_permission_reply || {};
+            texto_mensaje =
+              rep.response === 'accept'
+                ? `✅ Aceptó recibir llamadas de WhatsApp${rep.is_permanent ? ' (permanente)' : ' por 7 días'}`
+                : '❌ No aceptó recibir llamadas de WhatsApp';
+            avisarRespuestaPermiso(
+              id_configuracion,
+              mensaje_recibido?.from,
+              rep,
+            ).catch((e) =>
+              console.error('[llamadas] aviso de permiso falló:', e.message),
+            );
           }
           break;
 

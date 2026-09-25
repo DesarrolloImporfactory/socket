@@ -102,6 +102,7 @@ const cotizacionesRouter = require('./routes/cotizaciones.routes');
 const mediaRouter = require('./routes/media.routes');
 
 const dashboardRouter = require('./routes/dashboard.routes');
+const llamadasWhatsappRouter = require('./routes/llamadas_whatsapp.routes');
 
 const geminiRouter = require('./routes/gemini.routes');
 
@@ -391,6 +392,7 @@ app.use('/api/v1/enlaces_pago', enlacesPagoRouter);
 app.use('/api/v1/aliclik_webhook', aliclikWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
+app.use('/api/v1/llamadas', llamadasWhatsappRouter);
 app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 app.use('/api/v2/webhooks/shopify', shopifyWebhooksRouter);

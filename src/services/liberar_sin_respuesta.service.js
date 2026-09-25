@@ -100,6 +100,52 @@ const PARAMS_RESPUESTA_HUMANA = [
   ...RESPONSABLES_AUTOMATICOS,
 ];
 
+/** Misma regla que SQL_RESPUESTA_HUMANA pero en memoria (dashboard de atención). */
+function esResponsableAutomatico(responsable) {
+  if (!responsable) return false;
+  const r = String(responsable).trim();
+  if (/^(IA_|cron_)/i.test(r)) return true;
+  return RESPONSABLES_AUTOMATICOS.some(
+    (a) => a.toLowerCase() === r.toLowerCase(),
+  );
+}
+
+/* ── "Atendido" (cronómetro y dashboard de atención) ──
+   Distinto de "humano": acá el bot (IA_*) SÍ cuenta como respuesta, porque
+   si el bot le contestó al cliente, el cliente no está esperando. Lo único
+   que no cierra la espera son los envíos que no responden a nadie: las
+   plantillas del cron, los avisos de Dropi/Shopify, el remarketing, etc.
+   liberar_sin_respuesta sigue usando la versión humana: ahí la pregunta es
+   otra (si el vendedor asignado atendió). */
+const PREFIJOS_NO_RESPUESTA = ['cron\\_%'];
+const SQL_RESPUESTA_ATENDIDA = `
+  m.rol_mensaje = 1
+  AND m.deleted_at IS NULL
+  AND m.tipo_mensaje <> 'revoke'
+  AND NOT (
+    m.responsable IS NOT NULL AND (
+      ${PREFIJOS_NO_RESPUESTA.map(() => 'm.responsable LIKE ?').join(' OR ')}
+      OR m.responsable IN (${RESPONSABLES_AUTOMATICOS.map(() => '?').join(', ')})
+    )
+  )`;
+const PARAMS_RESPUESTA_ATENDIDA = [
+  ...PREFIJOS_NO_RESPUESTA,
+  ...RESPONSABLES_AUTOMATICOS,
+];
+
+/** Envío que no es respuesta a nadie (cron, avisos automáticos). */
+function esRemitenteNoRespuesta(responsable) {
+  if (!responsable) return false;
+  const r = String(responsable).trim();
+  if (/^cron_/i.test(r)) return true;
+  return RESPONSABLES_AUTOMATICOS.some(
+    (a) => a.toLowerCase() === r.toLowerCase(),
+  );
+}
+
+/** Respuesta del bot de IA. */
+const esBot = (responsable) => /^IA_/i.test(String(responsable || '').trim());
+
 /* ── Tiempo ──────────────────────────────────────────────────────────── */
 
 const MS_MIN = 60_000;
@@ -357,6 +403,13 @@ async function vendedorExcluido(id_cliente) {
 module.exports = {
   CONFIG,
   MOTIVO_LIBERADO,
+  SQL_RESPUESTA_HUMANA,
+  PARAMS_RESPUESTA_HUMANA,
+  SQL_RESPUESTA_ATENDIDA,
+  PARAMS_RESPUESTA_ATENDIDA,
+  esResponsableAutomatico,
+  esRemitenteNoRespuesta,
+  esBot,
   minutosHabiles,
   parseFechaBD,
   vencidos,
