@@ -47,4 +47,33 @@ router.post(
   dashboardController.obtenerDashboardAgente,
 );
 
+// ── El asesor abrió un chat con el cliente esperando (cronómetro) ───────
+// Sin excluirRoles: lo llaman justamente los asesores de ventas.
+router.post(
+  '/atencion/abrir',
+  checkPlanActivo,
+  dashboardController.abrirChatAtencion,
+);
+
+// ── Horario de atención (mide tiempos): leer cualquiera, guardar admin ──
+router.get(
+  '/atencion/horario',
+  checkPlanActivo,
+  dashboardController.obtenerHorarioAtencion,
+);
+router.post(
+  '/atencion/horario',
+  checkPlanActivo,
+  excluirRoles('ventas'),
+  dashboardController.guardarHorarioAtencion,
+);
+
+// ── Modo del dashboard por conexión (inferido: dropshipping / atención) ──
+router.get(
+  '/modo',
+  checkPlanActivo,
+  excluirRoles('ventas'),
+  dashboardController.obtenerModoDashboard,
+);
+
 module.exports = router;
