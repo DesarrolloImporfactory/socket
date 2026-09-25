@@ -61,10 +61,38 @@ const presenceIo = () => global.presenceIo || null;
 
 function emitirA(ids, evento, payload) {
   const io = presenceIo();
-  if (!io) return;
+  if (!io) {
+    console.error('[llamadas] sin namespace /presence: no se puede avisar', evento);
+    return;
+  }
   for (const id of new Set(ids.map(Number).filter(Boolean))) {
     io.to(`sub:${id}`).emit(evento, payload);
   }
+  // Diagnóstico: cuántas pestañas conectadas había en cada sala. Si sale 0,
+  // el asesor no tenía la app abierta (o está en otro proceso del server).
+  socketsEnSala(ids)
+    .then((conteo) =>
+      console.log(
+        `[llamadas] ${evento} → ${JSON.stringify(conteo)} (pid ${process.pid})`,
+      ),
+    )
+    .catch(() => {});
+}
+
+/** { id_sub_usuario: sockets conectados en su sala } */
+async function socketsEnSala(ids) {
+  const io = presenceIo();
+  const out = {};
+  if (!io) return out;
+  for (const id of new Set(ids.map(Number).filter(Boolean))) {
+    try {
+      const sockets = await io.in(`sub:${id}`).fetchSockets();
+      out[id] = sockets.length;
+    } catch {
+      out[id] = -1;
+    }
+  }
+  return out;
 }
 
 /** Equipo de la conexión: subusuarios de sus departamentos; si no hay
@@ -223,9 +251,20 @@ async function llamadaEntrante(configuracion, call, value) {
     permiso_round_robin: configuracion.permiso_round_robin,
   });
 
-  const destinatarios = cliente?.id_encargado
-    ? [Number(cliente.id_encargado)]
-    : await equipoDeConexion(configuracion.id, configuracion.id_usuario);
+  // Al encargado del chat; si no tiene, o ya no existe / está suspendido
+  // (pasa con contactos viejos), a todo el equipo de la conexión.
+  let destinatarios = [];
+  if (cliente?.id_encargado) {
+    const [enc] = await db.query(
+      `SELECT id_sub_usuario FROM sub_usuarios_chat_center
+       WHERE id_sub_usuario = ? AND suspendido = 0 LIMIT 1`,
+      { replacements: [cliente.id_encargado], type: db.QueryTypes.SELECT },
+    );
+    if (enc) destinatarios = [Number(enc.id_sub_usuario)];
+  }
+  if (!destinatarios.length) {
+    destinatarios = await equipoDeConexion(configuracion.id, configuracion.id_usuario);
+  }
 
   const inicio_at = new Date();
   await LlamadasWhatsapp.create({
@@ -451,15 +490,25 @@ async function terminar({ call_id, id_sub_usuario }) {
   return payloadPublico(call_id);
 }
 
-/** Llamadas timbrando o en curso que le tocan a este asesor (al recargar). */
-function activasPara(id_sub_usuario) {
+/** Llamadas timbrando o en curso que le tocan a este asesor (al recargar),
+ *  más un diagnóstico: si su sesión está en la sala de avisos de este proceso. */
+async function activasPara(id_sub_usuario) {
   const out = [];
   for (const [call_id, c] of activas) {
     if (c.estado === 'missed') continue;
     if (!c.destinatarios.map(Number).includes(Number(id_sub_usuario))) continue;
     out.push({ ...payloadPublico(call_id), sdp_offer: c.tomada_por ? null : c.sdp_offer });
   }
-  return out;
+  const conteo = await socketsEnSala([id_sub_usuario]);
+  return {
+    llamadas: out,
+    diagnostico: {
+      id_sub_usuario: Number(id_sub_usuario),
+      sockets_en_sala: conteo[Number(id_sub_usuario)] ?? 0,
+      pid: process.pid,
+      llamadas_vivas: activas.size,
+    },
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════

@@ -96,10 +96,10 @@ exports.terminar = catchAsync(async (req, res) => {
 
 /** Llamadas timbrando/en curso para este asesor (al abrir o recargar la app). */
 exports.activas = catchAsync(async (req, res) => {
-  return res.json({
-    status: 'success',
-    data: llamadas.activasPara(req.sessionUser.id_sub_usuario),
-  });
+  const { llamadas: lista, diagnostico } = await llamadas.activasPara(
+    req.sessionUser.id_sub_usuario,
+  );
+  return res.json({ status: 'success', data: lista, diagnostico });
 });
 
 exports.obtenerConfiguracion = catchAsync(async (req, res) => {
