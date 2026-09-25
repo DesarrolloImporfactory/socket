@@ -20,6 +20,26 @@ function safeJsonParse(str, fallback) {
   }
 }
 
+/* Nombre del renglón CON su variante: "Reloj Steel Arabe - NEGRO". Shopify
+   manda `title` (el producto) y `variant_title` (la opción elegida) por
+   separado; la plantilla mostraba solo el título y el negocio no sabía qué
+   color/modelo despachar (889, 2026-09-25). `Default Title` es la variante
+   fantasma de un producto sin opciones: no se muestra. */
+function varianteLineItem(li) {
+  const v = String(li?.variant_title || '').trim();
+  if (!v || /^default title$/i.test(v)) return '';
+  return v;
+}
+
+function nombreLineItem(li) {
+  const titulo = String(li?.title || '').trim() || 'Producto';
+  const variante = varianteLineItem(li);
+  if (!variante || titulo.toUpperCase().includes(variante.toUpperCase())) {
+    return titulo;
+  }
+  return `${titulo} - ${variante}`;
+}
+
 /* Resolver variable Dropi desde el order de Shopify */
 function resolveVariableShopify(varName, ctx) {
   const { order, shipping, billing, customer, lineItems, phone_normalizado } =
@@ -40,7 +60,7 @@ function resolveVariableShopify(varName, ctx) {
     case 'contenido':
       if (!lineItems.length) return 'Tu pedido';
       return lineItems
-        .map((p) => `${p.quantity || 1} x ${p.title || 'Producto'}`)
+        .map((p) => `${p.quantity || 1} x ${nombreLineItem(p)}`)
         .join(', ');
     case 'direccion': {
       const a1 = shipping.address1 || billing.address1 || '';
@@ -248,7 +268,7 @@ function buildRutaArchivoShopify(ctx) {
     celular: phone_normalizado,
     order_id: String(order.id || ''),
     contenido: lineItems
-      .map((p) => ` ${p.quantity || 1} x ${p.title || 'Producto'} `)
+      .map((p) => ` ${p.quantity || 1} x ${nombreLineItem(p)} `)
       .join(','),
     costo: String(order.total_price || '0'),
     ciudad: shipping.city || billing.city || '',

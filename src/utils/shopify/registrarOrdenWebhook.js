@@ -69,8 +69,13 @@ function extraerDatosOrden(order) {
     .join(' ')
     .trim();
 
+  /* `nombre` queda SIN la variante: el panel de pedidos sin subir lo matchea
+     contra el catálogo Dropi por nombre. La variante (color/modelo elegido
+     en Shopify) viaja aparte como `variedad`, el mismo campo que el panel
+     prellena para las variaciones de Dropi. */
   const productos = lineItems.map((li) => ({
     nombre: li.title || li.name || '',
+    variedad: varianteLineItem(li),
     cantidad: Number(li.quantity) || 1,
   }));
 
@@ -85,9 +90,18 @@ function extraerDatosOrden(order) {
     provincia: shipping.province || billing.province || '',
     productos,
     producto: productos[0]?.nombre || '',
+    variedad: productos[0]?.variedad || '',
     cantidad: String(productos[0]?.cantidad || 1),
     total: String(order.total_price || ''),
   };
+}
+
+// Variante elegida en Shopify ("NEGRO"); `Default Title` es la variante
+// fantasma de un producto sin opciones y no se guarda.
+function varianteLineItem(li) {
+  const v = String(li?.variant_title || '').trim();
+  if (!v || /^default title$/i.test(v)) return '';
+  return v;
 }
 
 function phoneDigits(v) {

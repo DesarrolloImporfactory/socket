@@ -108,7 +108,28 @@ function matchCampoPorNombre(lista, nombre, campo) {
   const contains = candidatos.filter(
     (p) => p.nombre && (p.nombre.includes(objetivo) || objetivo.includes(p.nombre)),
   );
-  return contains.length === 1 ? contains[0][campo] : null;
+  if (contains.length === 1) return contains[0][campo];
+  if (contains.length > 1) return null;
+
+  /* Palabras sueltas: el título de Shopify y el nombre del catálogo suelen
+     diferir en UNA palabra intercalada ("Reloj Sanda Multifuncion" vs "Reloj
+     Sanda Gold Multifuncion" — 889, 2026-09-25) y el contains de arriba, que
+     exige texto contiguo, caía a la imagen de EJEMPLO de la plantilla. Calza
+     si TODAS las palabras del más corto están en el más largo, con al menos
+     2 palabras en común; con dos candidatos sigue siendo ambiguo → null. */
+  const palabrasObj = new Set(objetivo.split(' ').filter(Boolean));
+  if (palabrasObj.size < 2) return null;
+  const porPalabras = candidatos.filter((p) => {
+    const palabrasProd = new Set(String(p.nombre || '').split(' ').filter(Boolean));
+    if (palabrasProd.size < 2) return false;
+    const [chico, grande] =
+      palabrasObj.size <= palabrasProd.size
+        ? [palabrasObj, palabrasProd]
+        : [palabrasProd, palabrasObj];
+    for (const w of chico) if (!grande.has(w)) return false;
+    return true;
+  });
+  return porPalabras.length === 1 ? porPalabras[0][campo] : null;
 }
 
 function matchImagenPorNombre(lista, nombre) {

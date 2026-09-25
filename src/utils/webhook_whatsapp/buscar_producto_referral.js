@@ -270,31 +270,54 @@ async function resolverProductoAnuncio(id_configuracion, headline, source_id) {
 
     // ── Aprender, solo de los niveles confiables ─────────────
     if (ad && (via === 'exacto' || via === 'contenido')) {
-      db.query(
-        `INSERT INTO anuncios_producto
-           (id_configuracion, source_id, id_producto, headline, via)
-         VALUES (?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           id_producto = VALUES(id_producto),
-           via = VALUES(via),
-           veces = veces + 1`,
-        {
-          replacements: [
-            id_configuracion,
-            ad,
-            producto.id,
-            nombre.slice(0, 500),
-            via,
-          ],
-          type: db.QueryTypes.INSERT,
-        },
-      ).catch(() => {});
+      aprenderAnuncioProducto({
+        id_configuracion,
+        source_id: ad,
+        id_producto: producto.id,
+        headline: nombre,
+        via,
+      });
     }
 
     return { producto, via };
   } catch (err) {
     return null;
   }
+}
+
+/**
+ * Graba en el mapa (anuncios_producto) qué producto publicita un anuncio.
+ * Fire-and-forget: nunca lanza. La usa la resolución de arriba y el wizard
+ * cuando identifica el producto por el TEXTO del primer mensaje.
+ */
+function aprenderAnuncioProducto({
+  id_configuracion,
+  source_id,
+  id_producto,
+  headline,
+  via,
+}) {
+  const ad = String(source_id || '').trim();
+  if (!ad || !id_producto) return;
+  db.query(
+    `INSERT INTO anuncios_producto
+       (id_configuracion, source_id, id_producto, headline, via)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       id_producto = VALUES(id_producto),
+       via = VALUES(via),
+       veces = veces + 1`,
+    {
+      replacements: [
+        id_configuracion,
+        ad,
+        id_producto,
+        String(headline || '').slice(0, 500),
+        via,
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  ).catch(() => {});
 }
 
 /**
@@ -311,4 +334,8 @@ async function buscarProductoPorReferral(id_configuracion, headline, source_id) 
   return armarBloqueProducto(r.producto, upsell);
 }
 
-module.exports = { buscarProductoPorReferral, resolverProductoAnuncio };
+module.exports = {
+  buscarProductoPorReferral,
+  resolverProductoAnuncio,
+  aprenderAnuncioProducto,
+};
