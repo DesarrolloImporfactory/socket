@@ -42,6 +42,9 @@ const dropiWebhookRouter = require('./routes/dropi_webhook.routes');
 
 const aliclikIntegrationsRouter = require('./routes/aliclik_integrations.routes');
 const aliclikWebhookRouter = require('./routes/aliclik_webhook.routes');
+// Stripe propio de cada cuenta + enlaces de pago desde el chat
+const stripeIntegrationsRouter = require('./routes/stripe_integrations.routes');
+const enlacesPagoRouter = require('./routes/enlaces_pago.routes');
 
 const planesRouter = require('./routes/planes.routes');
 
@@ -383,6 +386,8 @@ app.use('/api/v1/dropi_stats', require('./routes/dropi_stats.routes'));
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 app.use('/api/v1/aliclik_integrations', aliclikIntegrationsRouter);
+app.use('/api/v1/stripe_integrations', stripeIntegrationsRouter);
+app.use('/api/v1/enlaces_pago', enlacesPagoRouter);
 app.use('/api/v1/aliclik_webhook', aliclikWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
