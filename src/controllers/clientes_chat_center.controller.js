@@ -1825,9 +1825,34 @@ function parseEstado(raw) {
   return n;
 }
 
+/* Filtro por ENCARGADO (sub-usuario asignado, c.id_encargado). OJO: no es el
+   "Asesor", que es una etiqueta custom (id_etiqueta_asesor). Recibe CSV de
+   ids y admite "sin" para los contactos que no tienen encargado; varios
+   valores = OR. Devuelve null si no hay nada que filtrar. */
+function buildFiltroEncargado(raw) {
+  const valores = String(raw ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const ids = valores
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const sinEncargado = valores.includes('sin');
+
+  const conds = [];
+  if (ids.length) {
+    conds.push(`c.id_encargado IN (${ids.map(() => '?').join(',')})`);
+  }
+  if (sinEncargado) conds.push('c.id_encargado IS NULL');
+  if (!conds.length) return null;
+
+  return { frag: `(${conds.join(' OR ')})`, params: ids };
+}
+
 /* ============================================================
    GET /api/v1/clientes_chat_center/listar
    ?page=&limit=&q=&estado=&id_etiqueta=&sort=&id_configuracion=
+   &id_encargado=7,9,sin      (multi-select; "sin" = sin encargado)
    &id_etiqueta_asesor=1,2,3  (multi-select, comma-separated)
    &id_etiqueta_ciclo=4,5     (multi-select, comma-separated)
    &estado_contacto=nuevo,en_proceso  (multi-select, comma-separated)
@@ -1922,6 +1947,13 @@ exports.listarClientes = catchAsync(async (req, res) => {
       `c.id_etiqueta_asesor IN (${idsAsesor.map(() => '?').join(',')})`,
     );
     params.push(...idsAsesor);
+  }
+
+  // ── Multi-select: Encargado (sub-usuario asignado) ──
+  const filtroEncargado = buildFiltroEncargado(req.query.id_encargado);
+  if (filtroEncargado) {
+    whereParts.push(filtroEncargado.frag);
+    params.push(...filtroEncargado.params);
   }
 
   // ── Multi-select: Ciclo (IN) ──
@@ -3459,6 +3491,12 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
     params.push(...idsAsesor);
   }
 
+  const filtroEncargado = buildFiltroEncargado(req.body.id_encargado);
+  if (filtroEncargado) {
+    whereParts.push(filtroEncargado.frag);
+    params.push(...filtroEncargado.params);
+  }
+
   const idsCiclo = parseCSVNumbers(req.body.id_etiqueta_ciclo);
   if (idsCiclo.length === 1) {
     whereParts.push('c.id_etiqueta_ciclo = ?');
@@ -3746,6 +3784,57 @@ exports.productosAdDistintos = catchAsync(async (req, res, next) => {
   }
 
   return res.status(200).json({ status: 'success', data });
+});
+
+/* ============================================================
+   GET /api/v1/clientes_chat_center/encargados_filtro?id_configuracion=
+   Opciones del filtro "Encargado" de Contactos: sub-usuarios de la cuenta
+   que están en algún departamento de la configuración O que tienen algún
+   contacto asignado en ella (alguien pudo salir del departamento y seguir
+   con chats). El JOIN a configuraciones por id_usuario de la sesión evita
+   listar sub-usuarios de una configuración ajena.
+   ============================================================ */
+exports.encargadosFiltro = catchAsync(async (req, res, next) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) {
+    return next(new AppError('id_configuracion es requerido', 400));
+  }
+
+  const rows = await db.query(
+    `SELECT su.id_sub_usuario, su.nombre_encargado, su.usuario, su.suspendido
+       FROM sub_usuarios_chat_center su
+       INNER JOIN configuraciones cfg
+         ON cfg.id = :id_configuracion
+        AND cfg.id_usuario = su.id_usuario
+      WHERE su.id_usuario = :id_usuario
+        AND (
+          EXISTS (
+            SELECT 1
+              FROM sub_usuarios_departamento sud
+              INNER JOIN departamentos_chat_center dc
+                ON dc.id_departamento = sud.id_departamento
+             WHERE sud.id_sub_usuario = su.id_sub_usuario
+               AND dc.id_configuracion = :id_configuracion
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM clientes_chat_center c
+             WHERE c.id_encargado = su.id_sub_usuario
+               AND c.id_configuracion = :id_configuracion
+               AND c.deleted_at IS NULL
+          )
+        )
+      ORDER BY su.suspendido ASC, su.nombre_encargado ASC`,
+    {
+      replacements: {
+        id_configuracion,
+        id_usuario: req.sessionUser.id_usuario,
+      },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  return res.status(200).json({ status: 'success', data: rows });
 });
 
 exports.obtenerOrigenAnuncio = catchAsync(async (req, res, next) => {
