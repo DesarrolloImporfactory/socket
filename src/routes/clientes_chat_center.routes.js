@@ -143,6 +143,11 @@ router.get(
   clientes_chat_centerController.productosAdDistintos,
 );
 
+router.get(
+  '/encargados_filtro',
+  clientes_chat_centerController.encargadosFiltro,
+);
+
 router.post(
   '/etiquetas/multiples',
   EtiquetasAsignadasController.obtenerMultiples,
