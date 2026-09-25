@@ -21,6 +21,7 @@ const { db } = require('../database/config');
 const ProductosWizard = require('../models/productos_wizard.model');
 const {
   resolverProductoAnuncio,
+  aprenderAnuncioProducto,
 } = require('../utils/webhook_whatsapp/buscar_producto_referral');
 const {
   enviarMedioWhatsapp,
@@ -227,6 +228,20 @@ function elegirProductoPorTexto(mensaje, lista) {
     }
   }
   return empate ? null : mejor;
+}
+
+/* ¿El mensaje trae TODAS las palabras significativas del nombre? Es el
+   umbral para aprender el mapa anuncio→producto a partir del texto: el
+   prefill del anuncio nombra el producto completo; una adivinanza al 60% de
+   cobertura sirve para responder este turno, pero no para grabarla como
+   verdad del anuncio. */
+function nombreCompletoEnTexto(nombreProducto, mensaje) {
+  const palabrasMsg = new Set(normalizarPalabras(mensaje));
+  const sig = normalizarPalabras(nombreProducto).filter(
+    (w) => w.length >= 3 && !STOPWORDS_NOMBRE.has(w),
+  );
+  if (!sig.length || !palabrasMsg.size) return false;
+  return sig.every((w) => palabrasMsg.has(w));
 }
 
 async function resolverWizardPorTexto(id_configuracion, mensaje) {
@@ -792,6 +807,39 @@ async function intentarMensajeFijoWizard({
       referral.headline || '',
       referral.source_id || null,
     );
+    /* El anuncio no dice qué producto es (titular = nombre de la página,
+       "Gregor Relojes y Accesorios en Ecuador", y source_id sin mapear: cada
+       anuncio del conjunto trae un id distinto y el dueño vincula uno solo).
+       Pero el prefill del click-to-WhatsApp SÍ lo nombra ("Quiero más
+       información sobre el Reloj Poedagar Nautilius Blue"): se resuelve por
+       texto igual que un cliente sin anuncio, y si el nombre vino completo se
+       APRENDE el mapa para ese source_id — el siguiente cliente del mismo
+       anuncio resuelve por el nivel 0 y las respuestas rápidas/ficha del motor
+       encuentran el producto en los turnos siguientes (889, 2026-09-25: 5
+       anuncios distintos, solo 1 mapeado, 4 clientes sin paquete). */
+    if (!r) {
+      r = await resolverWizardPorTexto(id_configuracion, texto_mensaje);
+      if (r) {
+        await decir(
+          `wizard: anuncio sin producto (${referral.source_id || 'sin source_id'}); identificado por TEXTO → "${r.producto.nombre}" (id ${r.producto.id})`,
+        );
+        await sembrarProductoEnJuego({
+          id_cliente,
+          id_configuracion,
+          producto: r.producto,
+          texto_mensaje,
+        });
+        if (nombreCompletoEnTexto(r.producto.nombre, texto_mensaje)) {
+          aprenderAnuncioProducto({
+            id_configuracion,
+            source_id: referral.source_id,
+            id_producto: r.producto.id,
+            headline: referral.headline || r.producto.nombre,
+            via: 'texto',
+          });
+        }
+      }
+    }
   } else {
     // Sin anuncio: si el mensaje nombra sin ambigüedad un producto con bot
     // configurado, el flujo aplica igual. Si no se identifica con confianza,

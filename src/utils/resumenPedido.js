@@ -60,9 +60,16 @@ function parsearLineaProducto(linea) {
 
 /* Líneas del resumen: rótulo al inicio de línea con hasta 6 caracteres de
    adorno (emoji, asteriscos, guión), igual que el lector de kanban_ia. */
-const RE_PRODUCTO = /(?:^|\n)[^\n]{0,6}?Producto\s*:\s*([^\n]+)/gi;
-const RE_CANTIDAD = /(?:^|\n)[^\n]{0,6}?Cantidad\s*:\s*([^\n]+)/i;
-const RE_PRECIO = /^([^\n]{0,6}?(?:Precio\s+total|\bTotal)\s*:\s*)(.+)$/im;
+/* `[*_]*` antes de los dos puntos: el modelo a veces cierra la negrita ANTES
+   del ":" ("*Producto*: …"). El sanitizador ya lo normaliza, pero este
+   lector también lo tolera por si llega texto sin sanitizar. */
+const RE_PRODUCTO = /(?:^|\n)[^\n]{0,8}?Producto\s*[*_]*\s*:\s*([^\n]+)/gi;
+const RE_CANTIDAD = /(?:^|\n)[^\n]{0,8}?Cantidad\s*[*_]*\s*:\s*([^\n]+)/i;
+/* El grupo 1 (lo que se conserva al reemplazar el valor) incluye el cierre de
+   negrita DESPUÉS de los dos puntos ("*Precio total:* $66"): si cayera en el
+   valor, la corrección lo borraría y quedaría un asterisco suelto. */
+const RE_PRECIO =
+  /^([^\n]{0,8}?(?:Precio\s+total|\bTotal)\s*[*_]*\s*:\s*[*_]*\s*)(.+)$/im;
 
 function leerCombos(prod) {
   try {
@@ -127,8 +134,21 @@ async function corregirPrecioCombo(texto, id_configuracion, opts = {}) {
   const unitario = Number(prod.precio || 0);
   if (!(unitario > 0)) return null;
 
-  const cobroUnitarioXN = Math.abs(total - unitario * cantidad) <= 0.5;
-  if (!cobroUnitarioXN) return null; // otro motivo: no se adivina
+  /* La firma de "se olvidó del combo" es un precio de la lista multiplicado
+     por N: el unitario (caso 411: 2 x $20 = $40) o el precio de OTRO combo
+     leído como unitario (666, 2026-09-25: "2 x $35 = $70" cuando 2 por $35 ES
+     el combo; el cliente bajó a 1 unidad). Cualquier otro total (envío
+     sumado, descuento negociado) se respeta. */
+  const preciosLista = [
+    unitario,
+    ...leerCombos(prod)
+      .map((c) => parsearPrecio(c?.precio))
+      .filter((p) => p > 0),
+  ];
+  const multiplicoPorN = preciosLista.some(
+    (p) => Math.abs(total - p * cantidad) <= 0.5,
+  );
+  if (!multiplicoPorN) return null; // otro motivo: no se adivina
   if (precioCombo >= total - 0.5) return null; // el combo no es más barato
 
   const conSigno = /\$/.test(mPrecio[2]);

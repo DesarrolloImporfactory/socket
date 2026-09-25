@@ -58,6 +58,19 @@ function sanitizarRespuestaAgente(texto) {
   // Enlaces [texto](url) → la URL sola, que es lo único que WhatsApp abre.
   texto = texto.replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '$2');
 
+  /* Rótulos del resumen con el cierre de negrita ANTES de los dos puntos:
+     "- *📦 Producto*: TERBINAFINA x3" / "*💵 Precio total*: $66.00". Todos
+     los lectores del resumen (validador del cierre, ficha, auto-orden,
+     corrector de precio por combo) buscan "Producto\s*:" y ese asterisco
+     entre el rótulo y el ":" los dejaba ciegos: el total inflado pasó tal
+     cual al cliente (666, 2026-09-25, Wagner: 3 x $22 = $66 con combo de 3
+     por $36). Se mueve el cierre después de los dos puntos ("*Producto:*"),
+     que WhatsApp pinta igual y los lectores ya entienden. */
+  texto = texto.replace(
+    /^([^\n]{0,8}?)([*_])([^\n*_:]{2,40}?)\2[ \t]*:/gm,
+    '$1$2$3:$2',
+  );
+
   // Limpieza
   texto = texto.replace(/\n{3,}/g, '\n\n').trim();
 

@@ -100,6 +100,9 @@ async function startServer() {
       require('./cron/syncDropiOrdersHourly.js');
       require('./cron/syncAliclikOrders.js');
       require('./cron/cronEncuestasEnvio.js');
+      // Enlaces de pago del chat: consulta en el Stripe de cada cuenta si los
+      // pendientes ya se pagaron (respaldo de la consulta al abrir el chat).
+      require('./cron/sincronizarEnlacesPago.js');
       require('./cron/metricasSnapshot.js');
       require('./cron/botMetricasSnapshot.js');
       require('./cron/imporsuitEmailSync.js');
