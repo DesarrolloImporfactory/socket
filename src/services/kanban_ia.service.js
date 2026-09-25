@@ -2157,6 +2157,28 @@ async function procesarMensajeKanban(params) {
     await log(`🧹 Después: ${respuestaRaw.slice(0, 200)}`);
   }
 
+  /* ── 9.6 Total del pedido contra el catálogo ──
+     Si el bot cobró un precio de la lista x N habiendo un combo de N
+     unidades (caso 411: 2 x $20 = $40 con combo de 2 por $25), el total se
+     corrige ANTES de que lo vea el cliente. Corre en TODA respuesta que
+     traiga el resumen, no solo en el turno del tag de cierre: el prompt de
+     muchas cuentas manda primero el resumen ("¿confirmas?") y el tag llega
+     un turno después, así que el total inflado ya había salido cuando la
+     corrección se hacía en el cierre (666, 2026-09-25: Weruvia x3 a $75 con
+     combo de 3 por $36 — la clienta canceló: "dicen un valor y luego cobran
+     otro"). Sin línea de total sale sin consultar nada; nunca bloquea. */
+  try {
+    const corrPrecio = await corregirPrecioCombo(respuestaRaw, id_configuracion);
+    if (corrPrecio) {
+      respuestaRaw = corrPrecio.texto;
+      await log(
+        `💰 Precio total corregido al combo del catálogo: $${corrPrecio.de} → $${corrPrecio.a} (${corrPrecio.motivo})`,
+      );
+    }
+  } catch (ePrecio) {
+    await log(`⚠️ Corrección de precio por combo falló (se sigue igual): ${ePrecio.message}`);
+  }
+
   /* ── 9.7 Wizard: no recitar otra vez la lista de precios ───────
      El mensaje fijo ya dio precio, combos y foto y preguntó la ciudad; el
      guion trae "precio + combos + ¿cuántas unidades?" como paso siguiente y el
@@ -2410,25 +2432,9 @@ async function procesarMensajeKanban(params) {
             );
           }
         }
-        /* Total del pedido contra el catálogo: si el bot cobró unitario x N
-           habiendo un combo de N unidades (caso 411: 2 x $20 = $40 con
-           combo de 2 por $25), el total se corrige ANTES de que lo vea el
-           cliente, la plantilla de confirmación y el auto-orden. Solo esa
-           firma; cualquier otro total se respeta. Nunca bloquea el cierre. */
-        try {
-          const corrPrecio = await corregirPrecioCombo(
-            respuestaRaw,
-            id_configuracion,
-          );
-          if (corrPrecio) {
-            respuestaRaw = corrPrecio.texto;
-            await log(
-              `💰 Precio total corregido al combo del catálogo: $${corrPrecio.de} → $${corrPrecio.a} (${corrPrecio.motivo})`,
-            );
-          }
-        } catch (ePrecio) {
-          await log(`⚠️ Corrección de precio por combo falló (se sigue igual): ${ePrecio.message}`);
-        }
+        /* El total contra el catálogo ya se corrigió en el 9.6, sobre toda
+           respuesta con resumen (antes vivía solo aquí, en el turno del tag,
+           y el resumen del turno anterior salía inflado). */
         /* Red de seguridad del retiro en agencia (switch retiro_agencia):
            la línea 🏡 de un cierre con agencia se valida contra el
            directorio real y se corrige en código — el modelo a veces

@@ -1444,6 +1444,58 @@ async function suiteA() {
       'resumen multi-producto → no toca (lo valida el auto-orden)',
       (await corregirPrecioCombo(resumen411.replace('📦 Producto: Dr Melaxin x2', '📦 Producto: Dr Melaxin x2\n📦 Producto: Onn Watch TV x1'), 411, { productos: catalogo411 })) === null,
     );
+
+    /* Caso 666 (VitalLust, 2026-09-25): tres formas distintas del mismo error,
+       ninguna se corregía. Wagner: "- *📦 Producto*: TERBINAFINA x3" y
+       "- *💵 Precio total*: $66.00" (el asterisco ANTES de los dos puntos
+       dejaba ciegos a todos los lectores). Ricardo: "2 x $35 = $70" cuando 2
+       por $35 ES el combo (multiplicó el precio del combo). Angela: Weruvia
+       x3 a $75 en el turno del resumen, sin tag; la corrección solo corría en
+       el turno del tag → canceló ("dicen un valor y luego cobran otro"). */
+    const { sanitizarRespuestaAgente } = require('../src/utils/openia/sanitizador_agente');
+    const catalogo666 = [
+      { id: 4619, nombre: 'TERBINAFINA (HONGOS EN UÑAS)', precio: '22.00', combos_producto: JSON.stringify([{ cantidad: '2', precio: '27' }, { cantidad: '3', precio: '36' }, { cantidad: '', precio: '' }]) },
+      { id: 3037, nombre: 'A GAME GUT GASTRITIS', precio: '25.00', combos_producto: JSON.stringify([{ cantidad: '1', precio: '25' }, { cantidad: '2', precio: '35' }, { cantidad: '3', precio: '45' }]) },
+    ];
+    const resumenWagner =
+      'Aquí tienes el resumen de tu pedido:\n📋 *Resumen de Pedido*:\n- *Nombre*: Wagner Leonel Gorosabel Marcillo\n' +
+      '- *Teléfono*: 593985254795 (número desde el que escribes)\n- *Provincia*: Esmeraldas\n- *Ciudad*: Atacames\n' +
+      '- *🏡 Dirección*: Agencia Servientrega por confirmar — Atacames\n- *📦 Producto*: TERBINAFINA (HONGOS EN UÑAS) x3\n' +
+      '- *💵 Precio total*: $66.00\n- *🚚 Envío*: agencia servientrega\n\nPor favor confirma el pedido. 😊';
+    const wagnerSan = sanitizarRespuestaAgente(resumenWagner);
+    caso(
+      'caso 666: el sanitizador mueve el cierre de negrita después de los dos puntos ("*Producto:*")',
+      /- \*📦 Producto:\* TERBINAFINA/.test(wagnerSan) && /- \*💵 Precio total:\* \$66\.00/.test(wagnerSan) && /- \*Nombre:\* Wagner/.test(wagnerSan),
+      wagnerSan.slice(0, 200),
+    );
+    caso(
+      'caso 666: un asterisco de negrita normal ("*Hola* Wagner:") no se toca',
+      sanitizarRespuestaAgente('*Hola* Wagner, mira esto: precio') === '*Hola* Wagner, mira esto: precio',
+    );
+    const cW = await corregirPrecioCombo(wagnerSan, 666, { productos: catalogo666 });
+    caso(
+      'caso 666 (Wagner): "*Producto*: … x3" a $66 → $36 (combo de 3) tras sanitizar',
+      !!cW && cW.a === 36 && /Precio total:\* \$36\.00/.test(cW.texto) && !/\$66/.test(cW.texto),
+      cW ? cW.texto.slice(-160) : 'no corrigió',
+    );
+    const cW2 = await corregirPrecioCombo(resumenWagner, 666, { productos: catalogo666 });
+    caso(
+      'caso 666 (Wagner): el lector también entiende "*Producto*:" SIN sanitizar',
+      !!cW2 && cW2.a === 36,
+    );
+    const resumenRicardo =
+      'Aquí está el resumen:\n📇 *Nombre:* Ricardo Andy Vargas\n📞 *Teléfono:* 1500504897\n🌆 *Ciudad:* Tena (Napo)\n' +
+      '🏡 *Dirección:* Agencia Servientrega — Tena\n📦 *Producto:* A GAME GUT GASTRITIS x2\n💵 *Precio total:* $70.00 (2 x $35)';
+    const cR = await corregirPrecioCombo(resumenRicardo, 666, { productos: catalogo666 });
+    caso(
+      'caso 666 (Ricardo): "2 x $35 = $70" cuando 2 por $35 es el combo → $35',
+      !!cR && cR.a === 35 && /Precio total:\* \$35\.00/.test(cR.texto),
+      cR ? cR.texto.slice(-80) : 'no corrigió',
+    );
+    caso(
+      'caso 666: "$35.00 (2 frascos x $35)" ya es el combo → no toca',
+      (await corregirPrecioCombo(resumenRicardo.replace('$70.00 (2 x $35)', '$35.00 (2 frascos x $35)'), 666, { productos: catalogo666 })) === null,
+    );
   }
 
   /* ── Bloque 16: guardia de listas de oficinas (caso 411, Santa Elena, 2026-09-08) ──
