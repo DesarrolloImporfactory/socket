@@ -378,9 +378,17 @@ async function accionGraph(configuracion, body) {
   );
   if (r.status >= 400) {
     const err = r.data?.error || {};
-    const e = new Error(err.message || `Meta respondió ${r.status}`);
+    const e = new Error(traducirErrorMeta(err, r.status));
     e.meta = err;
     e.status = r.status;
+    // Para depurar una SDP rechazada: la causa de Meta y la SDP enviada.
+    console.error(
+      `[llamadas] Meta rechazó ${body.action} (${r.status}): ${e.message}`,
+      body.session?.sdp ? `
+--- SDP enviada ---
+${body.session.sdp}
+-------------------` : '',
+    );
     throw e;
   }
   return r.data;
@@ -528,7 +536,11 @@ function traducirErrorMeta(err, status) {
       'Mientras tanto, las llamadas de tus clientes siguen sonando en el teléfono.'
     );
   }
-  return err?.message || `WhatsApp respondió ${status}`;
+  // Meta manda la causa exacta (por ejemplo, de una SDP inválida) en
+  // error_data.details; sin eso el mensaje es solo "SDP Validation error".
+  const detalle = err?.error_data?.details || err?.details || '';
+  const base = err?.message || `WhatsApp respondió ${status}`;
+  return detalle ? `${base} — ${detalle}` : base;
 }
 
 async function leerConfiguracionLlamadas(id_configuracion) {

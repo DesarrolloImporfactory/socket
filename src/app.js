@@ -319,10 +319,23 @@ app.use((req, res, next) => {
     // precios y el sanitizador noSQL los borraría. Todo el grupo va con
     // protect (ver meta_ads.routes.js).
     '/api/v1/meta_ads/launcher',
+    // Llamadas de WhatsApp: el cuerpo lleva SDP de WebRTC y el sanitizador la
+    // mutila (a=group:BUNDLE → a=BUNDLE, raddr → rr, borra "$"), y Meta la
+    // rechaza con "SDP Validation error". Todo el grupo va con protect.
+    '/api/v1/llamadas',
   ];
 
   if (skipExact.includes(req.path)) return next();
   if (skipPrefixes.some((p) => req.path.startsWith(p))) return next();
+  // Webhook de WhatsApp con campo `calls`: trae la oferta SDP de Meta y el
+  // sanitizador la rompería antes de llegar al navegador del asesor. Solo se
+  // salta ese campo; los mensajes normales siguen sanitizados.
+  if (
+    req.path === '/api/v1/webhook_meta/webhook_whatsapp' &&
+    req.body?.entry?.[0]?.changes?.[0]?.field === 'calls'
+  ) {
+    return next();
+  }
 
   return sanitizer.clean({
     xss: true,
