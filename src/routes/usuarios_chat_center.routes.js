@@ -36,6 +36,12 @@ router.post(
   usuarios_chat_centerController.actualizarUsuario,
 );
 
+router.get(
+  '/chatsAsignados/:id_sub_usuario',
+  restrictToRoles('administrador'),
+  usuarios_chat_centerController.chatsAsignados,
+);
+
 router.delete(
   '/eliminarSubUsuario',
   restrictToRoles('administrador'),
