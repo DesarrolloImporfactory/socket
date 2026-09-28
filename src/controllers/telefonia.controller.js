@@ -39,9 +39,16 @@ exports.widget = catchAsync(async (req, res) => {
   if (!zadarma.configurado()) {
     return res.json({ status: 'success', data: { activo: false } });
   }
-  // Solo a cuentas con alguna conexión con telefonía: así no se gastan
-  // extensiones de la central en asesores que no van a llamar.
-  if (!(await zadarma.cuentaTieneTelefonia(req.sessionUser.id_usuario))) {
+  // Solo para la conexión abierta si tiene telefonía activa (y de la cuenta
+  // del asesor): así el teléfono no se carga en las demás conexiones ni se
+  // gastan extensiones en asesores que no van a llamar.
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) return res.json({ status: 'success', data: { activo: false } });
+  const [propia] = await db.query(
+    `SELECT id FROM configuraciones WHERE id = ? AND id_usuario = ? LIMIT 1`,
+    { replacements: [id_configuracion, req.sessionUser.id_usuario], type: db.QueryTypes.SELECT },
+  );
+  if (!propia || !(await zadarma.conexionTieneTelefonia(id_configuracion))) {
     return res.json({ status: 'success', data: { activo: false } });
   }
   try {
@@ -86,6 +93,7 @@ exports.llamar = catchAsync(async (req, res) => {
       id_configuracion,
       id_cliente,
       id_sub_usuario: req.sessionUser.id_sub_usuario,
+      modo: req.body.modo === 'callback' ? 'callback' : 'directo',
     });
     return res.json({ status: 'success', data });
   } catch (e) {

@@ -332,7 +332,10 @@ const costoCentavos = (segundos, tarifaMin) => Math.ceil((Math.max(0, segundos) 
 
 const soloDigitos = (t) => String(t || '').replace(/\D/g, '');
 
-async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
+/** modo 'directo': el navegador del asesor marca con el widget de Zadarma
+ *  (una sola pierna, sin timbre previo). modo 'callback': Zadarma llama a la
+ *  extensión y luego al cliente (por si el navegador no tiene micrófono). */
+async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'directo' }) {
   const cliente = await ClientesChatCenter.findByPk(id_cliente);
   if (!cliente || Number(cliente.id_configuracion) !== Number(id_configuracion)) {
     const e = new Error('El chat no es de esta conexión');
@@ -388,11 +391,13 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
     inicio_at: new Date(),
   });
 
-  try {
-    await api('/v1/request/callback/', { from: ext.extension, to: destino });
-  } catch (e) {
-    await fila.update({ estado: 'failed', disposition: e.message, fin_at: new Date() });
-    throw e;
+  if (modo === 'callback') {
+    try {
+      await api('/v1/request/callback/', { from: ext.extension, to: destino });
+    } catch (e) {
+      await fila.update({ estado: 'failed', disposition: e.message, fin_at: new Date() });
+      throw e;
+    }
   }
   emitirA([id_sub_usuario], 'TELEFONIA_ESTADO', {
     id: fila.id,
@@ -402,11 +407,19 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
   });
   return {
     id: fila.id,
+    modo,
     extension: ext.extension,
     telefono: destino,
+    caller_id: callerIdUsado,
     saldo_centavos: cuenta.saldo_centavos,
     tarifa_centavos_min: cuenta.tarifa_centavos_min,
   };
+}
+
+/** ¿Esta conexión tiene telefonía activa? */
+async function conexionTieneTelefonia(id_configuracion) {
+  const cuenta = await cuentaDe(id_configuracion);
+  return !!cuenta && Number(cuenta.activo) === 1;
 }
 
 /** ¿Está verificado en Zadarma el número de salida de la conexión? Se
@@ -646,6 +659,7 @@ module.exports = {
   asegurarExtension,
   cuentaDe,
   cuentaTieneTelefonia,
+  conexionTieneTelefonia,
   recargar,
   llamar,
   comprobarNumero,
