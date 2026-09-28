@@ -39,9 +39,16 @@ exports.widget = catchAsync(async (req, res) => {
   if (!zadarma.configurado()) {
     return res.json({ status: 'success', data: { activo: false } });
   }
-  // Solo a cuentas con alguna conexión con telefonía: así no se gastan
-  // extensiones de la central en asesores que no van a llamar.
-  if (!(await zadarma.cuentaTieneTelefonia(req.sessionUser.id_usuario))) {
+  // Solo para la conexión abierta si tiene telefonía activa (y de la cuenta
+  // del asesor): así el teléfono no se carga en las demás conexiones ni se
+  // gastan extensiones en asesores que no van a llamar.
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) return res.json({ status: 'success', data: { activo: false } });
+  const [propia] = await db.query(
+    `SELECT id FROM configuraciones WHERE id = ? AND id_usuario = ? LIMIT 1`,
+    { replacements: [id_configuracion, req.sessionUser.id_usuario], type: db.QueryTypes.SELECT },
+  );
+  if (!propia || !(await zadarma.conexionTieneTelefonia(id_configuracion))) {
     return res.json({ status: 'success', data: { activo: false } });
   }
   try {
@@ -86,6 +93,7 @@ exports.llamar = catchAsync(async (req, res) => {
       id_configuracion,
       id_cliente,
       id_sub_usuario: req.sessionUser.id_sub_usuario,
+      modo: req.body.modo === 'callback' ? 'callback' : 'directo',
     });
     return res.json({ status: 'success', data });
   } catch (e) {
@@ -243,10 +251,12 @@ exports.maestraGuardar = catchAsync(async (req, res) => {
   }
 });
 
-/** Conexiones con saldo telefónico configurado. */
+/** Conexiones con saldo telefónico configurado, con costo real por minuto,
+ *  margen y un resumen: cuánto saldo vendido hay pendiente frente a lo que
+ *  la cuenta de Zadarma puede pagar. */
 exports.cuentas = catchAsync(async (req, res) => {
   const rows = await db.query(
-    `SELECT tc.id_configuracion, c.nombre_configuracion, c.telefono, tc.saldo_centavos,
+    `SELECT tc.id_configuracion, c.nombre_configuracion, c.telefono, c.pais, tc.saldo_centavos,
             tc.tarifa_centavos_min, tc.caller_id, tc.activo, tc.updated_at,
             tn.verificado AS numero_verificado, tn.comprobado_at AS numero_comprobado_at,
             (SELECT COUNT(*) FROM telefonia_llamadas l WHERE l.id_configuracion = tc.id_configuracion) AS llamadas
@@ -256,7 +266,56 @@ exports.cuentas = catchAsync(async (req, res) => {
      ORDER BY tc.updated_at DESC, tc.id_configuracion DESC`,
     { type: db.QueryTypes.SELECT },
   );
-  return res.json({ status: 'success', data: rows });
+  await zadarma.cargarCredenciales();
+  let costoPorPais = {};
+  let balance = null;
+  if (zadarma.configurado()) {
+    balance = await zadarma.balance().catch(() => null);
+    for (const pais of new Set(rows.map((r) => String(r.pais || 'ec').toLowerCase()))) {
+      costoPorPais[pais] = await zadarma.costoReferencia(pais).catch(() => null);
+    }
+  }
+  let minutosVendidos = 0;
+  let costoPendiente = 0;
+  const data = rows.map((r) => {
+    const costo = costoPorPais[String(r.pais || 'ec').toLowerCase()];
+    const costoMin = costo?.centavos_min || null;
+    const minutos = r.tarifa_centavos_min > 0 ? r.saldo_centavos / r.tarifa_centavos_min : 0;
+    minutosVendidos += minutos;
+    if (costoMin) costoPendiente += minutos * costoMin;
+    return {
+      ...r,
+      costo_centavos_min: costoMin,
+      costo_descripcion: costo?.descripcion || null,
+      margen_pct: costoMin && r.tarifa_centavos_min > 0 ? Math.round(((r.tarifa_centavos_min - costoMin) / r.tarifa_centavos_min) * 100) : null,
+    };
+  });
+  const saldoZadarmaCentavos = balance ? Math.round(balance.balance * 100) : null;
+  return res.json({
+    status: 'success',
+    data,
+    resumen: {
+      asignado_centavos: rows.reduce((a, r) => a + Number(r.saldo_centavos || 0), 0),
+      minutos_vendidos: Math.round(minutosVendidos),
+      costo_pendiente_centavos: Math.round(costoPendiente),
+      saldo_zadarma_centavos: saldoZadarmaCentavos,
+      cubierto: saldoZadarmaCentavos == null ? null : saldoZadarmaCentavos >= Math.round(costoPendiente),
+    },
+  });
+});
+
+/** Costo real por minuto de Zadarma para el país de una conexión. */
+exports.costo = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  const [cfg] = id_configuracion
+    ? await db.query(`SELECT pais FROM configuraciones WHERE id = ? LIMIT 1`, { replacements: [id_configuracion], type: db.QueryTypes.SELECT })
+    : [null];
+  try {
+    const data = await zadarma.costoReferencia(cfg?.pais || req.query.pais || 'ec');
+    return res.json({ status: 'success', data });
+  } catch (e) {
+    return responderError(res, e);
+  }
 });
 
 /** Buscar conexiones por id o nombre para darles saldo. */

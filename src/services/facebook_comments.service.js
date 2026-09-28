@@ -227,6 +227,41 @@ async function marcarOculto({ id_configuracion, comment_id, oculto }) {
 /**
  * Punto de entrada desde el webhook: un elemento de entry.changes[].
  */
+/**
+ * Avisa a la bandeja de comentarios de que algo cambió.
+ *
+ * Hasta ahora la pantalla sólo consultaba al abrirse o al pulsar "Actualizar":
+ * un comentario podía estar minutos en la base sin que el agente lo viera, con
+ * el cliente esperando al otro lado. El chat lleva años resolviéndolo por
+ * socket; esto es lo mismo para comentarios.
+ *
+ * Se manda una SEÑAL, no el contenido. Dos motivos:
+ *
+ *  1. `IO.emit` sin sala reparte a TODOS los navegadores conectados —es la
+ *     convención que ya usa UPDATE_CHAT—, así que mandar el texto del
+ *     comentario se lo entregaría a clientes de otras cuentas. La señal sólo
+ *     lleva ids; el contenido se pide por el endpoint, que valida el dueño.
+ *  2. El front tiene que releer igual para recalcular contadores y el árbol
+ *     de respuestas, que se arman en el backend.
+ *
+ * Nunca lanza: esto corre dentro del webhook, y un fallo al avisar no puede
+ * hacer que Meta reintente el evento entero.
+ */
+function avisarBandejaComentarios({ id_configuracion, page_id, valor, verb }) {
+  try {
+    if (!global.io) return;
+    global.io.emit('COMENTARIO_ACTUALIZADO', {
+      id_configuracion,
+      page_id: String(page_id),
+      post_id: valor?.post_id || null,
+      comment_id: valor?.comment_id || null,
+      verb,
+    });
+  } catch (err) {
+    console.warn('[FB_FEED][WARN] no se pudo avisar a la bandeja:', err.message);
+  }
+}
+
 async function procesarCambioFeed(page_id, change) {
   if (change?.field !== 'feed') {
     console.log('[FB_FEED] ignorado: field =', change?.field);
@@ -275,20 +310,35 @@ async function procesarCambioFeed(page_id, change) {
       }),
   );
 
+  // El aviso va DESPUÉS de aplicar el cambio, no antes: si el front releyera
+  // mientras la escritura sigue en curso, pintaría el estado viejo y el
+  // comentario "nuevo" no aparecería hasta el siguiente evento.
+  let resultado;
   switch (verb) {
     case 'add':
     case 'edited':
-      return guardarComentario({ id_configuracion, page_id, valor });
+      resultado = await guardarComentario({ id_configuracion, page_id, valor });
+      break;
     case 'remove':
-      return marcarEliminado({ id_configuracion, comment_id: valor.comment_id });
+      resultado = await marcarEliminado({
+        id_configuracion,
+        comment_id: valor.comment_id,
+      });
+      break;
     case 'hide':
     case 'unhide':
-      return marcarOculto({
+      resultado = await marcarOculto({
         id_configuracion,
         comment_id: valor.comment_id,
         oculto: verb === 'hide',
       });
+      break;
+    default:
+      return;
   }
+
+  avisarBandejaComentarios({ id_configuracion, page_id, valor, verb });
+  return resultado;
 }
 
 /* ------------------------------------------------------------------ *
@@ -466,6 +516,89 @@ async function listarPosts({
 
   return {
     posts,
+    paginacion: {
+      pagina: pag.pagina,
+      limite: pag.limite,
+      total: Number(total),
+      total_paginas: Math.ceil(Number(total) / pag.limite) || 1,
+    },
+  };
+}
+
+/**
+ * Comentarios de TODA la cuenta, en una lista plana.
+ *
+ * La bandeja hasta ahora sólo sabía responder "¿qué pasa en esta publicación?".
+ * Esto responde la otra pregunta, que es la que se hace el agente: "¿quién está
+ * esperando?". Por eso no arma el árbol — devuelve comentarios sueltos con su
+ * publicación como contexto.
+ *
+ * Se excluyen los comentarios de la propia página: son respuestas nuestras, no
+ * gente esperando. En el hilo por publicación sí aparecen, que es donde la
+ * conversación tiene sentido.
+ *
+ * El orden se elige. "antiguos" primero trata la bandeja como cola de trabajo
+ * —lo que lleva más esperando está a punto de perderse—; "nuevos" la trata como
+ * cola de leads, donde el que acaba de comentar es el que más probablemente
+ * compra. Cuál conviene depende del negocio, así que decide quien la usa.
+ */
+async function listarComentariosPlano({
+  id_configuracion,
+  estado = 'pendientes',
+  q = '',
+  orden = 'antiguos',
+  pagina,
+  limite,
+}) {
+  const pag = normalizarPaginacion({ pagina, limite });
+
+  const donde = [
+    'c.id_configuracion = ?',
+    'c.eliminado_at IS NULL',
+    'c.es_de_la_pagina = 0',
+  ];
+  const valores = [id_configuracion];
+
+  if (estado === 'pendientes') donde.push('c.respondido = 0');
+  else if (estado === 'respondidos') donde.push('c.respondido = 1');
+
+  const busqueda = String(q || '').trim();
+  if (busqueda) {
+    donde.push('(c.mensaje LIKE ? OR c.from_nombre LIKE ?)');
+    valores.push(`%${busqueda}%`, `%${busqueda}%`);
+  }
+
+  const where = donde.join(' AND ');
+  const dir = orden === 'nuevos' ? 'DESC' : 'ASC';
+
+  const comentarios = await db.query(
+    `SELECT c.id_facebook_comment, c.id_facebook_post, c.comment_id,
+            c.from_nombre, c.mensaje, c.media_url, c.comentado_at,
+            c.respondido, c.privado_enviado, c.privado_error, c.oculto,
+            p.post_id, p.mensaje AS post_mensaje,
+            p.media_url AS post_media_url, p.tipo AS post_tipo,
+            p.permalink_url AS post_permalink_url
+       FROM facebook_comments c
+       JOIN facebook_posts p ON p.id_facebook_post = c.id_facebook_post
+      WHERE ${where}
+      ORDER BY c.comentado_at ${dir}, c.id_facebook_comment ${dir}
+      LIMIT ? OFFSET ?`,
+    {
+      replacements: [...valores, pag.limite, pag.offset],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const [{ total }] = await db.query(
+    `SELECT COUNT(*) AS total
+       FROM facebook_comments c
+       JOIN facebook_posts p ON p.id_facebook_post = c.id_facebook_post
+      WHERE ${where}`,
+    { replacements: valores, type: db.QueryTypes.SELECT },
+  );
+
+  return {
+    comentarios,
     paginacion: {
       pagina: pag.pagina,
       limite: pag.limite,
@@ -1008,6 +1141,7 @@ module.exports = {
   recalcularContadores,
   listarPosts,
   listarComentarios,
+  listarComentariosPlano,
   resumen,
   responder,
   responderEnPrivado,

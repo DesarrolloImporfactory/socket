@@ -39,6 +39,29 @@ exports.listarComentarios = catchAsync(async (req, res, next) => {
   res.json({ ok: true, id_facebook_post, ...data });
 });
 
+// GET /api/v1/facebook_comentarios/comentarios
+//   ?id_configuracion=10&estado=pendientes|respondidos|todos&orden=antiguos|nuevos&q=texto
+//
+// La bandeja plana: comentarios de toda la cuenta, sin agrupar por publicación.
+exports.listarComentariosPlano = catchAsync(async (req, res) => {
+  const { estado, orden, q, pagina, limite } = req.query;
+
+  const data = await FacebookComments.listarComentariosPlano({
+    id_configuracion: leerIdConfiguracion(req),
+    // Se validan acá y no en el servicio para que un valor raro en la query no
+    // acabe concatenado en el SQL.
+    estado: ['pendientes', 'respondidos', 'todos'].includes(estado)
+      ? estado
+      : 'pendientes',
+    orden: orden === 'nuevos' ? 'nuevos' : 'antiguos',
+    q,
+    pagina,
+    limite,
+  });
+
+  res.json({ ok: true, ...data });
+});
+
 // GET /api/v1/facebook_comentarios/resumen?id_configuracion=10
 exports.resumen = catchAsync(async (req, res) => {
   const data = await FacebookComments.resumen({

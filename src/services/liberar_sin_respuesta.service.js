@@ -117,21 +117,16 @@ function esResponsableAutomatico(responsable) {
    plantillas del cron, los avisos de Dropi/Shopify, el remarketing, etc.
    liberar_sin_respuesta sigue usando la versión humana: ahí la pregunta es
    otra (si el vendedor asignado atendió). */
-const PREFIJOS_NO_RESPUESTA = ['cron\\_%'];
+/* Decisión del 2026-09-28: CUALQUIER mensaje que salga de nosotros (persona,
+   bot, plantilla del cron o aviso) deja al cliente atendido. Un aviso de
+   seguimiento (e-commerce) o de cobro (ventas) dejaba "esperando 2 días" a
+   clientes ya atendidos; se unifica con el criterio del sidebar
+   (vista_chats.mensaje_rol). Solo un mensaje del cliente abre la espera. */
 const SQL_RESPUESTA_ATENDIDA = `
   m.rol_mensaje = 1
   AND m.deleted_at IS NULL
-  AND m.tipo_mensaje <> 'revoke'
-  AND NOT (
-    m.responsable IS NOT NULL AND (
-      ${PREFIJOS_NO_RESPUESTA.map(() => 'm.responsable LIKE ?').join(' OR ')}
-      OR m.responsable IN (${RESPONSABLES_AUTOMATICOS.map(() => '?').join(', ')})
-    )
-  )`;
-const PARAMS_RESPUESTA_ATENDIDA = [
-  ...PREFIJOS_NO_RESPUESTA,
-  ...RESPONSABLES_AUTOMATICOS,
-];
+  AND m.tipo_mensaje <> 'revoke'`;
+const PARAMS_RESPUESTA_ATENDIDA = [];
 
 /** Envío que no es respuesta a nadie (cron, avisos automáticos). */
 function esRemitenteNoRespuesta(responsable) {

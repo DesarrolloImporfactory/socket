@@ -14,6 +14,7 @@ router.use(protect, protectConfigOwner);
 
 router.get('/posts', ctrl.listarPosts);
 router.get('/posts/:id_facebook_post/comentarios', ctrl.listarComentarios);
+router.get('/comentarios', ctrl.listarComentariosPlano);
 router.get('/resumen', ctrl.resumen);
 
 // Escritura: publican en Facebook con el token de la página.
