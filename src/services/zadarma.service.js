@@ -41,6 +41,7 @@ const TelefoniaExtensiones = require('../models/telefonia_extensiones.model');
 const TelefoniaCuentas = require('../models/telefonia_cuentas.model');
 const TelefoniaMovimientos = require('../models/telefonia_movimientos.model');
 const TelefoniaMaestra = require('../models/telefonia_maestra.model');
+const TelefoniaNumeros = require('../models/telefonia_numeros.model');
 const { encryptToken, decryptToken, last4 } = require('../utils/cryptoToken');
 const { emitirA, notificarEnChat } = require('./llamadas_whatsapp.service');
 
@@ -359,13 +360,21 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
   }
   const ext = await asegurarExtension(id_sub_usuario);
 
-  // El cliente debe ver el número de la tienda, no uno desconocido.
+  // Sale con el número propio de la conexión solo si Zadarma lo tiene
+  // verificado; si no, se limpia el CallerID de la extensión (que pudo
+  // quedar con el número de otro cliente) y la llamada sale "desconocida".
+  let callerIdUsado = null;
   if (cuenta.caller_id) {
     try {
       await api(`/v1/pbx/internal/${ext.extension}/callerid/`, { number: soloDigitos(cuenta.caller_id) }, 'PUT');
+      callerIdUsado = soloDigitos(cuenta.caller_id);
     } catch (e) {
-      console.warn('[telefonia] no se pudo fijar el CallerID:', e.message);
+      console.warn(`[telefonia] CallerID ${cuenta.caller_id} rechazado por Zadarma (cfg ${id_configuracion}): ${e.message}`);
+      await TelefoniaNumeros.upsert({ id_configuracion, numero: soloDigitos(cuenta.caller_id), verificado: 0, detalle: e.message, comprobado_at: new Date() }).catch(() => {});
     }
+  }
+  if (!callerIdUsado) {
+    await api(`/v1/pbx/internal/${ext.extension}/callerid/`, {}, 'DELETE').catch(() => {});
   }
 
   const fila = await TelefoniaLlamadas.create({
@@ -374,7 +383,7 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
     id_sub_usuario,
     extension: ext.extension,
     telefono_cliente: destino,
-    caller_id: cuenta.caller_id || null,
+    caller_id: callerIdUsado,
     estado: 'pedida',
     inicio_at: new Date(),
   });
@@ -398,6 +407,33 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario }) {
     saldo_centavos: cuenta.saldo_centavos,
     tarifa_centavos_min: cuenta.tarifa_centavos_min,
   };
+}
+
+/** ¿Está verificado en Zadarma el número de salida de la conexión? Se
+ *  intenta fijar en una extensión de la central (y se limpia después). */
+async function comprobarNumero(id_configuracion, numero) {
+  const num = soloDigitos(numero);
+  if (!num) {
+    const e = new Error('Número vacío');
+    e.status = 400;
+    throw e;
+  }
+  const { numbers } = await extensionesCentral();
+  const ext = numbers[0];
+  if (!ext) throw new Error('La central de Zadarma no tiene extensiones');
+  let verificado = 0;
+  let detalle = 'Verificado en Zadarma';
+  try {
+    await api(`/v1/pbx/internal/${ext}/callerid/`, { number: num }, 'PUT');
+    verificado = 1;
+  } catch (e) {
+    detalle = /confirmed|purchased/i.test(e.message)
+      ? 'Este número no está verificado en Zadarma. Verifícalo en my.zadarma.com (Configuración → Conexión SIP → Identificador de llamada): al dueño del número le llega un código por llamada o SMS.'
+      : e.message;
+  }
+  await api(`/v1/pbx/internal/${ext}/callerid/`, {}, 'DELETE').catch(() => {});
+  await TelefoniaNumeros.upsert({ id_configuracion, numero: num, verificado, detalle, comprobado_at: new Date() });
+  return { numero: num, verificado: verificado === 1, detalle };
 }
 
 /* ── Webhooks ──────────────────────────────────────────────────────────── */
@@ -543,7 +579,7 @@ async function manejarWebhook(body) {
 
 /** Registra la URL de webhooks en Zadarma (valida con zd_echo) y enciende la
  *  grabación de todas las extensiones. Se corre una vez desde /diagnostico. */
-async function configurarCuenta(urlWebhook) {
+async function configurarCuenta(urlWebhook, emailGrabaciones = null) {
   const salida = {};
   try {
     salida.webhook = await api('/v1/pbx/callinfo/url/', { url: urlWebhook }, 'POST');
@@ -557,11 +593,20 @@ async function configurarCuenta(urlWebhook) {
     }
     throw e;
   }
-  try {
-    salida.grabacion = await api('/v1/pbx/internal/recording/', { status: 'on' }, 'PUT');
-  } catch (e) {
-    salida.grabacion = { error: e.message };
+  // La grabación se enciende por extensión (Zadarma exige el id de la
+  // extensión y un correo al que avisar; sin ellos responde "Wrong PBX
+  // number" / 'check "Email" field').
+  const { numbers } = await extensionesCentral();
+  const grabacion = { encendidas: [], errores: [] };
+  for (const ext of numbers) {
+    try {
+      await api('/v1/pbx/internal/recording/', { id: ext, status: 'on', email: emailGrabaciones || undefined }, 'PUT');
+      grabacion.encendidas.push(ext);
+    } catch (e) {
+      grabacion.errores.push(`${ext}: ${e.message}`);
+    }
   }
+  salida.grabacion = grabacion;
   try {
     const fila = await TelefoniaMaestra.findByPk(1);
     if (fila) await fila.update({ webhook_url: urlWebhook, webhook_instalado_at: new Date() });
@@ -575,6 +620,11 @@ async function diagnostico() {
   const out = { configurado: configurado() };
   if (!out.configurado) return out;
   out.balance = await balance().catch((e) => ({ error: e.message }));
+  // Plan de llamadas (Standard = por segundo, Economy = por minuto) y si
+  // está activo: Zadarma lo activa con la primera recarga.
+  out.plan = await api('/v1/tariff/')
+    .then((d) => ({ nombre: d.info?.tariff_name, activo: String(d.info?.is_active) === 'true', costo_mensual: Number(d.info?.cost || 0) }))
+    .catch((e) => ({ error: e.message }));
   out.sip_principal = await sipPrincipal().catch((e) => ({ error: e.message }));
   out.central = await extensionesCentral().catch((e) => ({ error: e.message }));
   out.extensiones_asignadas = await TelefoniaExtensiones.findAll({
@@ -598,6 +648,7 @@ module.exports = {
   cuentaTieneTelefonia,
   recargar,
   llamar,
+  comprobarNumero,
   firmaValida,
   manejarWebhook,
   configurarCuenta,

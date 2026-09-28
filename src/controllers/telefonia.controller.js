@@ -142,7 +142,34 @@ exports.configurarCuenta = catchAsync(async (req, res) => {
   if (req.body.tarifa_centavos_min !== undefined) cambios.tarifa_centavos_min = Math.max(1, Math.round(Number(req.body.tarifa_centavos_min)));
   if (req.body.activo !== undefined) cambios.activo = req.body.activo ? 1 : 0;
   await cuenta.update(cambios);
-  return res.json({ status: 'success', data: cuenta });
+  // Al guardar un número se comprueba de una vez si Zadarma lo acepta.
+  let numero = null;
+  if (cambios.caller_id) {
+    try {
+      numero = await zadarma.comprobarNumero(id_configuracion, cambios.caller_id);
+    } catch (e) {
+      numero = { numero: cambios.caller_id, verificado: false, detalle: e.message };
+    }
+  }
+  return res.json({ status: 'success', data: { cuenta, numero } });
+});
+
+/** Vuelve a comprobar en Zadarma el número de salida de una conexión. */
+exports.comprobarNumero = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const cuenta = await zadarma.cuentaDe(id_configuracion);
+  const numero = req.body.numero || cuenta?.caller_id;
+  if (!numero) {
+    return res.status(400).json({ status: 'error', message: 'La conexión no tiene número de salida' });
+  }
+  try {
+    return res.json({ status: 'success', data: await zadarma.comprobarNumero(id_configuracion, numero) });
+  } catch (e) {
+    return responderError(res, e);
+  }
 });
 
 /** Estado de la cuenta maestra y de la central (super administrador). */
@@ -156,7 +183,7 @@ exports.instalar = catchAsync(async (req, res) => {
     req.body.url ||
     `${process.env.API_PUBLIC_URL || 'https://chat.imporfactory.app'}/api/v1/telefonia/webhook`;
   try {
-    const data = await zadarma.configurarCuenta(url);
+    const data = await zadarma.configurarCuenta(url, req.body.email || req.sessionUser.email || null);
     return res.json({ status: 'success', data: { url, ...data } });
   } catch (e) {
     return responderError(res, e);
@@ -221,9 +248,11 @@ exports.cuentas = catchAsync(async (req, res) => {
   const rows = await db.query(
     `SELECT tc.id_configuracion, c.nombre_configuracion, c.telefono, tc.saldo_centavos,
             tc.tarifa_centavos_min, tc.caller_id, tc.activo, tc.updated_at,
+            tn.verificado AS numero_verificado, tn.comprobado_at AS numero_comprobado_at,
             (SELECT COUNT(*) FROM telefonia_llamadas l WHERE l.id_configuracion = tc.id_configuracion) AS llamadas
      FROM telefonia_cuentas tc
      LEFT JOIN configuraciones c ON c.id = tc.id_configuracion
+     LEFT JOIN telefonia_numeros tn ON tn.id_configuracion = tc.id_configuracion AND tn.numero = tc.caller_id
      ORDER BY tc.updated_at DESC, tc.id_configuracion DESC`,
     { type: db.QueryTypes.SELECT },
   );

@@ -24,7 +24,8 @@ router.get('/movimientos', ctrl.movimientos);
 
 // ── Super administrador (Imporfactory) ──
 router.post('/recargar', requireSuperAdmin, ctrl.recargar);
-router.post('/cuenta', requireSuperAdmin, ctrl.configurarCuenta); // caller_id, tarifa, activo
+router.post('/cuenta', requireSuperAdmin, ctrl.configurarCuenta); // caller_id, tarifa, activo (comprueba el número)
+router.post('/cuenta/comprobar-numero', requireSuperAdmin, ctrl.comprobarNumero); // ¿verificado en Zadarma?
 router.get('/diagnostico', requireSuperAdmin, ctrl.diagnostico);
 router.post('/instalar', requireSuperAdmin, ctrl.instalar); // registra webhook + grabación
 router.get('/maestra', requireSuperAdmin, ctrl.maestraEstado); // llaves guardadas + saldo Zadarma
