@@ -111,6 +111,40 @@ exports.historial = catchAsync(async (req, res) => {
   return res.json({ status: 'success', data: rows });
 });
 
+/**
+ * Historial paginado de una conexión (super administrador), con el asesor,
+ * el cliente y el número con el que salió cada llamada. Sirve para responder
+ * "¿desde qué número salió?" ante una queja: `caller_id` es lo que Zadarma
+ * reporta haber enviado; si la operadora lo reemplazó, eso ya no se ve.
+ */
+exports.historialAdmin = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const offset = (page - 1) * limit;
+  const [{ total }] = await db.query(
+    `SELECT COUNT(*) AS total FROM telefonia_llamadas WHERE id_configuracion = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const rows = await db.query(
+    `SELECT l.id, l.id_sub_usuario, l.id_cliente_chat_center, l.extension, l.telefono_cliente,
+            l.caller_id, l.estado, l.disposition, l.inicio_at, l.fin_at, l.duracion_seg,
+            l.costo_centavos, l.grabada, l.grabacion_url,
+            su.nombre_encargado AS asesor, cc.nombre_cliente AS cliente
+     FROM telefonia_llamadas l
+     LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = l.id_sub_usuario
+     LEFT JOIN clientes_chat_center cc ON cc.id = l.id_cliente_chat_center
+     WHERE l.id_configuracion = ?
+     ORDER BY l.id DESC
+     LIMIT ? OFFSET ?`,
+    { replacements: [id_configuracion, limit, offset], type: db.QueryTypes.SELECT },
+  );
+  return res.json({ status: 'success', data: rows, total: Number(total), page, limit });
+});
+
 exports.movimientos = catchAsync(async (req, res) => {
   const id_configuracion = await verificarConexion(req, res);
   if (!id_configuracion) return undefined;
