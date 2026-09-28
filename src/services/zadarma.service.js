@@ -278,6 +278,28 @@ async function llaveWidget(id_sub_usuario) {
   return { key: ext.widget_key, sip: ext.sip_login, extension: ext.extension };
 }
 
+/* ── Costo real por minuto (para avisar si la tarifa no es rentable) ──
+   Zadarma cobra según el destino; se consulta con un número de muestra a
+   celular del país de la conexión y se cachea una hora. */
+const MUESTRA_POR_PAIS = { ec: '593990000000', co: '573000000000', mx: '5215500000000', pe: '519000000000', gt: '50250000000', us: '13050000000' };
+const costoCache = new Map(); // pais → { centavos, descripcion, at }
+async function costoReferencia(pais = 'ec') {
+  const key = String(pais || 'ec').toLowerCase();
+  const c = costoCache.get(key);
+  if (c && Date.now() - c.at < 3600_000) return c;
+  const numero = MUESTRA_POR_PAIS[key] || MUESTRA_POR_PAIS.ec;
+  const d = await api('/v1/info/price/', { number: numero });
+  const out = {
+    pais: key,
+    centavos_min: Math.round(Number(d.info?.price || 0) * 100),
+    descripcion: d.info?.description || '',
+    currency: d.info?.currency || 'USD',
+    at: Date.now(),
+  };
+  costoCache.set(key, out);
+  return out;
+}
+
 /* ── Saldo por conexión ────────────────────────────────────────────────── */
 
 /** Cuenta telefónica de una conexión. Solo se CREA cuando el super admin le
@@ -658,6 +680,7 @@ module.exports = {
   llaveWidget,
   asegurarExtension,
   cuentaDe,
+  costoReferencia,
   cuentaTieneTelefonia,
   conexionTieneTelefonia,
   recargar,

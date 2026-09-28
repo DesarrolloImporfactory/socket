@@ -30,7 +30,8 @@ router.get('/diagnostico', requireSuperAdmin, ctrl.diagnostico);
 router.post('/instalar', requireSuperAdmin, ctrl.instalar); // registra webhook + grabación
 router.get('/maestra', requireSuperAdmin, ctrl.maestraEstado); // llaves guardadas + saldo Zadarma
 router.post('/maestra', requireSuperAdmin, ctrl.maestraGuardar); // guarda llaves (prueba contra Zadarma)
-router.get('/cuentas', requireSuperAdmin, ctrl.cuentas); // conexiones con saldo
+router.get('/cuentas', requireSuperAdmin, ctrl.cuentas); // conexiones con saldo + cobertura
+router.get('/costo', requireSuperAdmin, ctrl.costo); // costo real por minuto según país
 router.get('/conexiones', requireSuperAdmin, ctrl.conexiones); // buscador para dar saldo
 
 module.exports = router;
