@@ -17,6 +17,8 @@ const { Op } = require('sequelize');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
 const catchAsync = require('../utils/catchAsync');
+const { db } = require('../database/config');
+const { tieneColumnaAccion } = require('../utils/historialEncargados');
 
 exports.listarUsuarios = catchAsync(async (req, res, next) => {
   // El id_usuario sale de la sesión, no del body (evita listar cuentas ajenas)
@@ -218,8 +220,53 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
   });
 });
 
+/* Chats (WhatsApp y los unificados de clientes_chat_center) que tiene
+   asignados un subusuario. Lo usa el modal de eliminar para avisar antes de
+   borrar: si no se reasignan, quedan apuntando a un usuario que ya no existe
+   y nadie los ve en «En espera». */
+async function contarChatsAsignados(id_sub_usuario) {
+  const [row] = await db.query(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(chat_cerrado = 0), 0) AS abiertos
+       FROM clientes_chat_center
+      WHERE id_encargado = ?
+        AND deleted_at IS NULL`,
+    { replacements: [id_sub_usuario], type: db.QueryTypes.SELECT },
+  );
+  return {
+    total: Number(row?.total || 0),
+    abiertos: Number(row?.abiertos || 0),
+  };
+}
+
+// GET /chatsAsignados/:id_sub_usuario
+exports.chatsAsignados = catchAsync(async (req, res, next) => {
+  const id_sub_usuario = Number(req.params.id_sub_usuario);
+  const subUsuario = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
+
+  if (
+    !subUsuario ||
+    Number(subUsuario.id_usuario) !== Number(req.sessionUser.id_usuario)
+  ) {
+    return res.status(404).json({
+      status: 'fail',
+      message: 'Subusuario no encontrado',
+    });
+  }
+
+  const conteo = await contarChatsAsignados(id_sub_usuario);
+  res.status(200).json({ status: 'success', data: conteo });
+});
+
 exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
   const { id_sub_usuario } = req.body;
+  // A quién pasan sus chats: un id de subusuario, o null/'' = «En espera».
+  const reasignarA =
+    req.body.reasignar_a === undefined ||
+    req.body.reasignar_a === null ||
+    req.body.reasignar_a === ''
+      ? null
+      : Number(req.body.reasignar_a);
 
   if (!id_sub_usuario) {
     return res.status(400).json({
@@ -275,11 +322,88 @@ exports.eliminarSubUsuario = catchAsync(async (req, res, next) => {
     }
   }
 
-  await subUsuario.destroy();
+  // El destino tiene que ser otro subusuario activo de la misma cuenta
+  if (reasignarA !== null) {
+    const destino = await Sub_usuarios_chat_center.findByPk(reasignarA);
+    if (
+      !destino ||
+      Number(destino.id_usuario) !== Number(subUsuario.id_usuario) ||
+      Number(destino.suspendido) === 1 ||
+      Number(reasignarA) === Number(id_sub_usuario)
+    ) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'El usuario elegido para recibir los chats no es válido',
+      });
+    }
+  }
+
+  const motivo =
+    reasignarA === null
+      ? `Usuario eliminado (${subUsuario.nombre_encargado || subUsuario.usuario}): devuelto a En espera`
+      : `Usuario eliminado (${subUsuario.nombre_encargado || subUsuario.usuario}): chat reasignado`;
+  const conAccion = await tieneColumnaAccion();
+
+  // Todo o nada: si falla algo, el usuario no se borra y los chats siguen con él
+  const reasignados = await db.transaction(async (transaction) => {
+    // El historial va ANTES del UPDATE: después ya no se sabe qué chats eran suyos
+    await db.query(
+      `INSERT INTO historial_encargados
+         (id_cliente_chat_center, id_departamento_asginado,
+          id_encargado_anterior, id_encargado_nuevo, motivo${
+            conAccion ? ', id_sub_usuario_accion' : ''
+          })
+       SELECT c.id, c.id_departamento, c.id_encargado, ?, ?${
+         conAccion ? ', ?' : ''
+       }
+         FROM clientes_chat_center c
+        WHERE c.id_encargado = ?
+          AND c.deleted_at IS NULL`,
+      {
+        replacements: [
+          reasignarA,
+          motivo,
+          ...(conAccion ? [req.sessionUser.id_sub_usuario] : []),
+          id_sub_usuario,
+        ],
+        type: db.QueryTypes.INSERT,
+        transaction,
+      },
+    );
+
+    const [, filas] = await db.query(
+      `UPDATE clientes_chat_center
+          SET id_encargado = ?
+        WHERE id_encargado = ?
+          AND deleted_at IS NULL`,
+      {
+        replacements: [reasignarA, id_sub_usuario],
+        type: db.QueryTypes.UPDATE,
+        transaction,
+      },
+    );
+
+    // Tablas propias de Messenger/Instagram, que guardan su propio encargado
+    for (const tabla of ['messenger_conversations', 'instagram_conversations']) {
+      await db.query(
+        `UPDATE ${tabla} SET id_encargado = ? WHERE id_encargado = ?`,
+        {
+          replacements: [reasignarA, id_sub_usuario],
+          type: db.QueryTypes.UPDATE,
+          transaction,
+        },
+      );
+    }
+
+    await subUsuario.destroy({ transaction });
+    return filas;
+  });
 
   res.status(200).json({
     status: 'success',
     message: 'Subusuario eliminado correctamente',
+    chats_reasignados: reasignados,
+    reasignados_a: reasignarA,
   });
 });
 

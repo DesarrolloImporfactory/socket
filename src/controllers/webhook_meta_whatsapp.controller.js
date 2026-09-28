@@ -799,6 +799,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
       // === Inicializar variables para el mensaje ===
       let texto_mensaje = '';
+      /* Respuesta del cliente a "¿podemos llamarte?" (llamadas de WhatsApp):
+         se guarda en el chat pero NO es conversación, así que el bot no
+         debe contestarla ("Entiendo, no te preocupes…" tras un ❌). */
+      let esRespuestaPermisoLlamada = false;
       let ruta_archivo = null;
       let tipo_button = '';
 
@@ -995,6 +999,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                como mensaje del cliente y se avisa al asesor para que el botón
                de llamar del chat se actualice al momento. */
             const rep = interactive.call_permission_reply || {};
+            esRespuestaPermisoLlamada = true;
             texto_mensaje =
               rep.response === 'accept'
                 ? `✅ Aceptó recibir llamadas de WhatsApp${rep.is_permanent ? ' (permanente)' : ' por 7 días'}`
@@ -1431,7 +1436,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         }
 
         /* validar si el chat ah sido cerrado */
-        if (bot_openia === 1) {
+        if (bot_openia === 1 && !esRespuestaPermisoLlamada) {
           let total_tokens = 0;
 
           /* ── El thread SOLO lo necesitan las ramas viejas ──────────────
