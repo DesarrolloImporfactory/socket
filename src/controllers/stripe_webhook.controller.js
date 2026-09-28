@@ -1456,9 +1456,38 @@ exports.stripeWebhook = async (req, res) => {
           isActiveSub = !!activeSubId && activeSubId === subscriptionId;
         }
 
+        /**
+         * Sub RETIRADA: no es la que el usuario tiene guardada y ya está
+         * marcada para morir. Este evento NO puede escribir la fila del
+         * usuario.
+         *
+         * Caso 2153 (2026-09-27): falló la renovación (past_due), el cliente
+         * pagó por checkout una sub nueva y checkout.session.completed
+         * programó cancel_at_period_end en la vieja. Ese update nuestro
+         * dispara customer.subscription.updated de la sub VIEJA, que llegaba
+         * después de los eventos de la nueva y, como trae metadata.id_usuario,
+         * pisaba stripe_subscription_id/status con la vieja: past_due +
+         * cancelación programada. Mi plan la leía y mostraba "Suspendido"
+         * aunque el pago estaba hecho. 4 de los 7 reemplazos desde el 22-09
+         * quedaron así (depende del orden en que Stripe entrega los eventos).
+         */
+        const subRetirada =
+          !!sub.metadata?.reemplazada_por ||
+          (!!activeSubId && !isActiveSub && !!cancelAtPeriodEnd);
+
+        if (subRetirada) {
+          console.log('[stripe] IGNORE subscription.updated (sub retirada):', {
+            id_usuario,
+            subscriptionId,
+            activeSubId,
+            status,
+            reemplazada_por: sub.metadata?.reemplazada_por || null,
+          });
+        }
+
         const isUpgradePending = pendingChange === 'upgrade' && !!pendingPlanId;
 
-        if (id_usuario) {
+        if (id_usuario && !subRetirada) {
           /**
            * Si hay UPGRADE pendiente, NO escribir id_plan aquí (customer.subscription.updated),
            * porque Stripe dispara este evento al cambiar el price aunque aún no se haya pagado.
@@ -1571,7 +1600,7 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
-        if (shouldApplyDowngradeNow && id_usuario) {
+        if (shouldApplyDowngradeNow && id_usuario && !subRetirada) {
           try {
             await db.query(
               `UPDATE usuarios_chat_center
@@ -1689,8 +1718,9 @@ exports.stripeWebhook = async (req, res) => {
           }
         }
 
-        const estadoTx =
-          status === 'canceled' || sub.ended_at
+        const estadoTx = subRetirada
+          ? 'subscription_updated_ignored_sub_retirada'
+          : status === 'canceled' || sub.ended_at
             ? isActiveSub
               ? 'subscription_canceled'
               : 'subscription_canceled_ignored_non_active_sub'

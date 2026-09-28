@@ -920,9 +920,15 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     }
   }
 
+  // past_due también busca otra sub: si el cliente ya pagó una nueva por
+  // checkout y la BD quedó apuntando a la vieja rebotada (caso 2153), la
+  // elegida es la active y no se le muestra "Suspendido" con el pago hecho.
+  // Si la past_due es la única viva, pick devuelve esa misma.
   const statusBad =
     !sub ||
-    ['canceled', 'unpaid'].includes(String(sub.status || '').toLowerCase());
+    ['canceled', 'unpaid', 'past_due'].includes(
+      String(sub.status || '').toLowerCase(),
+    );
 
   if (statusBad && user.id_costumer) {
     try {

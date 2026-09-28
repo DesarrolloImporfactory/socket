@@ -759,6 +759,8 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, sdp_offer 
 }
 
 module.exports = {
+  emitirA,
+  notificarEnChat,
   manejarWebhookLlamadas,
   aceptar,
   confirmar,
