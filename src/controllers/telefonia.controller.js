@@ -156,7 +156,7 @@ exports.instalar = catchAsync(async (req, res) => {
     req.body.url ||
     `${process.env.API_PUBLIC_URL || 'https://chat.imporfactory.app'}/api/v1/telefonia/webhook`;
   try {
-    const data = await zadarma.configurarCuenta(url);
+    const data = await zadarma.configurarCuenta(url, req.body.email || req.sessionUser.email || null);
     return res.json({ status: 'success', data: { url, ...data } });
   } catch (e) {
     return responderError(res, e);

@@ -543,7 +543,7 @@ async function manejarWebhook(body) {
 
 /** Registra la URL de webhooks en Zadarma (valida con zd_echo) y enciende la
  *  grabación de todas las extensiones. Se corre una vez desde /diagnostico. */
-async function configurarCuenta(urlWebhook) {
+async function configurarCuenta(urlWebhook, emailGrabaciones = null) {
   const salida = {};
   try {
     salida.webhook = await api('/v1/pbx/callinfo/url/', { url: urlWebhook }, 'POST');
@@ -557,11 +557,20 @@ async function configurarCuenta(urlWebhook) {
     }
     throw e;
   }
-  try {
-    salida.grabacion = await api('/v1/pbx/internal/recording/', { status: 'on' }, 'PUT');
-  } catch (e) {
-    salida.grabacion = { error: e.message };
+  // La grabación se enciende por extensión (Zadarma exige el id de la
+  // extensión y un correo al que avisar; sin ellos responde "Wrong PBX
+  // number" / 'check "Email" field').
+  const { numbers } = await extensionesCentral();
+  const grabacion = { encendidas: [], errores: [] };
+  for (const ext of numbers) {
+    try {
+      await api('/v1/pbx/internal/recording/', { id: ext, status: 'on', email: emailGrabaciones || undefined }, 'PUT');
+      grabacion.encendidas.push(ext);
+    } catch (e) {
+      grabacion.errores.push(`${ext}: ${e.message}`);
+    }
   }
+  salida.grabacion = grabacion;
   try {
     const fila = await TelefoniaMaestra.findByPk(1);
     if (fila) await fila.update({ webhook_url: urlWebhook, webhook_instalado_at: new Date() });
