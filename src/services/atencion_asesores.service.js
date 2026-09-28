@@ -312,11 +312,9 @@ async function buildAtencionAsesores(
         }
         continue;
       }
-      // Cron/avisos automáticos: no responden a nadie, no tocan la espera.
-      if (esRemitenteNoRespuesta(m.responsable)) continue;
-      // El bot sí atiende al cliente: cierra la espera, pero no es actividad
-      // de ningún asesor ni muestra de su tiempo.
-      if (esBot(m.responsable)) {
+      // Bot, cron o aviso automático: dejan al cliente atendido (cierran la
+      // espera) pero no son actividad ni tiempo de ningún asesor.
+      if (esRemitenteNoRespuesta(m.responsable) || esBot(m.responsable)) {
         esperaDesde = null;
         continue;
       }
