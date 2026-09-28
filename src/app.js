@@ -103,6 +103,7 @@ const mediaRouter = require('./routes/media.routes');
 
 const dashboardRouter = require('./routes/dashboard.routes');
 const llamadasWhatsappRouter = require('./routes/llamadas_whatsapp.routes');
+const telefoniaRouter = require('./routes/telefonia.routes');
 
 const geminiRouter = require('./routes/gemini.routes');
 
@@ -323,6 +324,10 @@ app.use((req, res, next) => {
     // mutila (a=group:BUNDLE → a=BUNDLE, raddr → rr, borra "$"), y Meta la
     // rechaza con "SDP Validation error". Todo el grupo va con protect.
     '/api/v1/llamadas',
+    // Telefonía por saldo (Zadarma): el webhook llega form-urlencoded y con
+    // firma sobre los campos; el sanitizador los cambiaría y la firma
+    // fallaría. Las demás rutas van con protect.
+    '/api/v1/telefonia',
   ];
 
   if (skipExact.includes(req.path)) return next();
@@ -406,6 +411,7 @@ app.use('/api/v1/aliclik_webhook', aliclikWebhookRouter);
 app.use('/api/v1/media', mediaRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/llamadas', llamadasWhatsappRouter);
+app.use('/api/v1/telefonia', telefoniaRouter);
 app.use('/api/v1/gemini', geminiRouter);
 app.use('/api/v1/shopify', ShopifyConnectionsRouter);
 app.use('/api/v2/webhooks/shopify', shopifyWebhooksRouter);
