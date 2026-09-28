@@ -584,6 +584,11 @@ async function diagnostico() {
   const out = { configurado: configurado() };
   if (!out.configurado) return out;
   out.balance = await balance().catch((e) => ({ error: e.message }));
+  // Plan de llamadas (Standard = por segundo, Economy = por minuto) y si
+  // está activo: Zadarma lo activa con la primera recarga.
+  out.plan = await api('/v1/tariff/')
+    .then((d) => ({ nombre: d.info?.tariff_name, activo: String(d.info?.is_active) === 'true', costo_mensual: Number(d.info?.cost || 0) }))
+    .catch((e) => ({ error: e.message }));
   out.sip_principal = await sipPrincipal().catch((e) => ({ error: e.message }));
   out.central = await extensionesCentral().catch((e) => ({ error: e.message }));
   out.extensiones_asignadas = await TelefoniaExtensiones.findAll({
