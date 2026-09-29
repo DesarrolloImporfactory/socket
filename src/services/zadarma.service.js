@@ -44,6 +44,8 @@ const TelefoniaMaestra = require('../models/telefonia_maestra.model');
 const TelefoniaNumeros = require('../models/telefonia_numeros.model');
 const { encryptToken, decryptToken, last4 } = require('../utils/cryptoToken');
 const { emitirA, notificarEnChat } = require('./llamadas_whatsapp.service');
+const fs = require('fs').promises;
+const path = require('path');
 
 const BASE = 'https://api.zadarma.com';
 
@@ -532,6 +534,56 @@ const correrMinutos = (texto, min) => {
  * Lo que la operadora del destino muestre después (a veces reemplaza el
  * número por uno de pasarela) no lo reporta nadie.
  */
+/**
+ * Trae la grabación a nuestro servidor y la borra de la nube de Zadarma.
+ *
+ * El plan Standard da 200 MB de nube y, según soporte (29-09-2026), al
+ * llenarse SE DEJA DE GRABAR y el espacio solo se libera a mano, una por
+ * una, pidiéndolo por chat. Por eso cada grabación se descarga apenas
+ * Zadarma avisa (NOTIFY_RECORD), se guarda en uploads/telefonia/<cfg>/ y se
+ * borra allá con DELETE /v1/pbx/record/request/. Así la nube queda siempre
+ * casi vacía y el historial apunta a nuestra copia, sin el vencimiento de
+ * 60 días de los enlaces de Zadarma.
+ *
+ * Si la descarga falla se deja el enlace de Zadarma (60 días) y NO se
+ * borra: antes perder la copia de allá que quedarse sin nada.
+ */
+const DOMINIO_PUBLICO = () =>
+  (process.env.PUBLIC_BASE_URL || 'https://chat.imporfactory.app').replace(/\/$/, '');
+
+async function traerGrabacion(fila) {
+  const callId = fila.call_id_with_rec;
+  if (!callId) return null;
+  let enlace = null;
+  try {
+    const d = await api('/v1/pbx/record/request/', { call_id: callId, lifetime: 5184000 });
+    enlace = d.link || (Array.isArray(d.links) ? d.links[0] : null);
+  } catch (e) {
+    console.warn('[telefonia] no se pudo pedir la grabación:', e.message);
+    return null;
+  }
+  if (!enlace) return null;
+  try {
+    const r = await axios.get(enlace, { responseType: 'arraybuffer', timeout: 60000 });
+    if (!r.data || r.data.length < 1000) throw new Error(`archivo vacío (${r.data?.length || 0} bytes)`);
+    const ext = /\.(wav|ogg|m4a)(\?|$)/i.exec(enlace)?.[1]?.toLowerCase() || 'mp3';
+    const dir = path.join(__dirname, '..', 'uploads', 'telefonia', String(fila.id_configuracion));
+    await fs.mkdir(dir, { recursive: true });
+    const nombre = `${fila.id}.${ext}`;
+    await fs.writeFile(path.join(dir, nombre), Buffer.from(r.data));
+    const url = `${DOMINIO_PUBLICO()}/uploads/telefonia/${fila.id_configuracion}/${nombre}`;
+    await fila.update({ grabada: 1, grabacion_url: url });
+    await api('/v1/pbx/record/request/', { call_id: callId }, 'DELETE').catch((e) =>
+      console.warn('[telefonia] grabación copiada pero no se pudo borrar en Zadarma:', e.message),
+    );
+    return url;
+  } catch (e) {
+    console.warn('[telefonia] no se pudo descargar la grabación, queda el enlace de Zadarma:', e.message);
+    await fila.update({ grabada: 1, grabacion_url: enlace });
+    return enlace;
+  }
+}
+
 async function callerIdEnviado(body, fila) {
   if (body.caller_id && soloDigitos(body.caller_id)) return soloDigitos(body.caller_id);
   const inicio = body.call_start || null;
@@ -635,17 +687,8 @@ async function manejarWebhook(body) {
       ? await TelefoniaLlamadas.findOne({ where: { pbx_call_id: body.pbx_call_id } })
       : null;
     if (!fila) return;
-    let url = null;
-    try {
-      const d = await api('/v1/pbx/record/request/', {
-        call_id: body.call_id_with_rec,
-        lifetime: 5184000, // 60 días, el máximo que permite Zadarma
-      });
-      url = d.link || (Array.isArray(d.links) ? d.links[0] : null);
-    } catch (e) {
-      console.warn('[telefonia] no se pudo pedir la grabación:', e.message);
-    }
-    await fila.update({ grabada: 1, call_id_with_rec: body.call_id_with_rec, grabacion_url: url });
+    await fila.update({ grabada: 1, call_id_with_rec: body.call_id_with_rec });
+    await traerGrabacion(fila);
     return;
   }
   // NOTIFY_START / NOTIFY_END / NOTIFY_ANSWER / NOTIFY_INTERNAL: llamadas
@@ -731,6 +774,7 @@ module.exports = {
   comprobarNumero,
   firmaValida,
   manejarWebhook,
+  traerGrabacion,
   configurarCuenta,
   diagnostico,
   costoCentavos,
