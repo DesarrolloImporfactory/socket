@@ -44,8 +44,15 @@ const {
   publico: horarioPublico,
 } = require('./atencion_horario.service');
 
-/** Umbrales del semáforo (mismos que el cronómetro del chat en el front). */
+/** Umbrales del semáforo por defecto (mismos que el cronómetro del chat en el
+ *  front). Desde el 2026-09-29 cada conexión puede fijar los suyos junto al
+ *  horario (atencion_horario.service → horario.limites); estos rigen si no. */
 const UMBRALES_MIN = { advertencia: 5, critico: 10 };
+
+/** Peor espera: la mayor en segundos hábiles, con el chat que la causó. */
+function registrarPeor(acc, candidato) {
+  if (!acc.peor || candidato.seg > acc.peor.seg) acc.peor = candidato;
+}
 
 /* Horario en el que se cuentan las esperas: lo configura el administrador
    por conexión (atencion_horario.service.js; por defecto L-V 08:00-17:00).
@@ -97,6 +104,7 @@ function nuevoAcumulador(base) {
     esperas: [], // segundos hábiles
     esperas_reales: [], // segundos de reloj
     manejos: [], // segundos desde que abrió el chat hasta que contestó
+    peor: null, // { seg, seg_real, chat, desde, respondido } — la espera más larga
     por_hora: Array.from({ length: 24 }, (_, h) => ({
       h,
       chats: new Set(),
@@ -106,12 +114,12 @@ function nuevoAcumulador(base) {
   };
 }
 
-function cerrarAcumulador(acc) {
+function cerrarAcumulador(acc, umbrales = UMBRALES_MIN) {
   const buckets = { ok: 0, advertencia: 0, critico: 0 };
   for (const seg of acc.esperas) {
     const min = seg / 60;
-    if (min >= UMBRALES_MIN.critico) buckets.critico += 1;
-    else if (min >= UMBRALES_MIN.advertencia) buckets.advertencia += 1;
+    if (min >= umbrales.critico) buckets.critico += 1;
+    else if (min >= umbrales.advertencia) buckets.advertencia += 1;
     else buckets.ok += 1;
   }
   return {
@@ -300,7 +308,10 @@ async function buildAtencionAsesores(
     manejos: [],
     chats: new Set(),
     mensajes: 0,
+    peor: null,
   };
+  const sinResponder = { cantidad: 0, peor: null };
+  const umbrales = horario.limites || UMBRALES_MIN;
   for (const [chat, lista] of porChat) {
     let esperaDesde = null; // { loc, real }
     for (const m of lista) {
@@ -342,6 +353,15 @@ async function buildAtencionAsesores(
           acc.esperas_reales.push(segReal);
           totales.esperas.push(segHabil);
           totales.esperas_reales.push(segReal);
+          const candidato = {
+            seg: segHabil,
+            seg_real: segReal,
+            chat: Number(chat),
+            desde: esperaDesde.real,
+            respondido: real,
+          };
+          registrarPeor(acc, candidato);
+          registrarPeor(totales, candidato);
           // Manejo: desde que ABRIÓ el chat hasta esta respuesta. Se toma la
           // apertura del mismo asesor que contestó; si no la hay (contestó
           // sin abrirlo, o lo abrió otro), la más antigua.
@@ -363,6 +383,24 @@ async function buildAtencionAsesores(
           }
         }
         esperaDesde = null;
+      }
+    }
+    // Chat que terminó el período con el cliente esperando: no tiene tiempo
+    // de respuesta, tiene tiempo de espera (hasta ahora, o hasta el fin del
+    // rango si se mira un período pasado). No es de ningún asesor todavía,
+    // así que solo entra en la vista de toda la conexión.
+    if (esperaDesde !== null && !agentId && esperaDesde.loc <= hastaLoc) {
+      const corte = Math.min(Date.now(), parseFechaBD(toDT) ?? Date.now());
+      if (corte > esperaDesde.real) {
+        const pendiente = {
+          seg: Math.round(minutosHabiles(esperaDesde.real, corte, horario) * 60),
+          seg_real: Math.round((corte - esperaDesde.real) / 1000),
+          chat: Number(chat),
+          desde: esperaDesde.real,
+          respondido: null,
+        };
+        sinResponder.cantidad += 1;
+        registrarPeor(sinResponder, pendiente);
       }
     }
   }
@@ -403,25 +441,44 @@ async function buildAtencionAsesores(
   }
 
   const asesores = [...porId.values()]
-    .map(cerrarAcumulador)
+    .map((a) => cerrarAcumulador(a, umbrales))
     .map((a) => ({ ...a, conectado_seg: Math.round(a.conectado_seg) }))
     .sort((a, b) => b.chats - a.chats || b.mensajes - a.mensajes);
 
   const bucketsTot = { ok: 0, advertencia: 0, critico: 0 };
   for (const seg of totales.esperas) {
     const min = seg / 60;
-    if (min >= UMBRALES_MIN.critico) bucketsTot.critico += 1;
-    else if (min >= UMBRALES_MIN.advertencia) bucketsTot.advertencia += 1;
+    if (min >= umbrales.critico) bucketsTot.critico += 1;
+    else if (min >= umbrales.advertencia) bucketsTot.advertencia += 1;
     else bucketsTot.ok += 1;
   }
 
+  // Nombre del cliente de los dos «peores» (el tablero los enlaza al chat).
+  const idsPeores = [totales.peor?.chat, sinResponder.peor?.chat].filter(Boolean);
+  if (idsPeores.length) {
+    const nombres = await db.query(
+      `SELECT id, TRIM(CONCAT_WS(' ', nombre_cliente, apellido_cliente)) AS nombre,
+              celular_cliente AS celular, id_configuracion
+         FROM clientes_chat_center WHERE id IN (?)`,
+      { replacements: [idsPeores], type: db.QueryTypes.SELECT },
+    );
+    const porIdChat = new Map(nombres.map((n) => [Number(n.id), n]));
+    for (const p of [totales.peor, sinResponder.peor]) {
+      if (!p) continue;
+      const n = porIdChat.get(p.chat);
+      p.cliente = n?.nombre || null;
+      p.celular = n?.celular || null;
+      p.id_configuracion = n ? Number(n.id_configuracion) : null;
+    }
+  }
+
   return {
-    umbrales_min: UMBRALES_MIN,
+    umbrales_min: umbrales,
     horario: horarioPublico(horario),
     departamentos,
     asesores,
     otros: [...otros.values()]
-      .map(cerrarAcumulador)
+      .map((a) => cerrarAcumulador(a, umbrales))
       .filter((a) => a.mensajes > 0)
       .map(({ por_hora, conectado_seg, ...resto }) => resto)
       .sort((a, b) => b.chats - a.chats),
@@ -436,6 +493,11 @@ async function buildAtencionAsesores(
       manejos: totales.manejos.length,
       manejo_mediana_seg: percentil(totales.manejos, 0.5),
       ...bucketsTot,
+      // La espera más larga que SÍ tuvo respuesta en el período, con su chat.
+      peor: totales.peor,
+      // Chats que terminaron el período con el cliente esperando (solo en la
+      // vista de toda la conexión): cuántos y el que más lleva.
+      sin_responder: agentId ? null : sinResponder,
       truncado: mensajes.length >= LIMITE_MENSAJES,
     },
   };

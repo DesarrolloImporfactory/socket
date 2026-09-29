@@ -20,7 +20,11 @@ const TelefoniaLlamadas = db.define(
     /** Extensión de la central (100, 101…) que usó el asesor. */
     extension: { type: DataTypes.STRING(20), allowNull: false },
     telefono_cliente: { type: DataTypes.STRING(30), allowNull: false },
-    /** Número que vio el cliente en pantalla (CallerID verificado). */
+    /** Número con el que salió la llamada. Al pedirla es el que intentamos
+     *  poner en la extensión (null si el de la conexión no está confirmado);
+     *  al cerrarla se reemplaza por el que Zadarma reporta haber enviado
+     *  (`from` de /v1/statistics/). Lo que la operadora muestre después no
+     *  lo reporta nadie. */
     caller_id: { type: DataTypes.STRING(30), allowNull: true },
     /** Id de Zadarma; llega en los webhooks. */
     pbx_call_id: { type: DataTypes.STRING(120), allowNull: true },

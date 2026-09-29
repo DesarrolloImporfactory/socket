@@ -512,6 +512,47 @@ const fmtDuracion = (seg) => {
   return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
 };
 
+/* Corre una fecha "YYYY-MM-DD HH:MM:SS" (hora de la cuenta Zadarma) unos
+   minutos, sin tocar la zona: la API de estadísticas usa la misma hora. */
+const correrMinutos = (texto, min) => {
+  const d = new Date(`${String(texto).replace(' ', 'T')}Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + min * 60000).toISOString().slice(0, 19).replace('T', ' ');
+};
+
+/**
+ * Número con el que salió la llamada, según el registro de Zadarma.
+ *
+ * El caller ID que ponemos en la extensión es una intención: si el número de
+ * la conexión no está confirmado, Zadarma usa el del SIP de la centralita y
+ * el asesor no se entera. La única fuente que dice qué número se envió de
+ * verdad es el campo `from` de /v1/statistics/ (el registro general de la
+ * cuenta, no el de la centralita, que solo trae "Extension 100"). Se busca
+ * la llamada por destino en una ventana de minutos alrededor del inicio.
+ * Lo que la operadora del destino muestre después (a veces reemplaza el
+ * número por uno de pasarela) no lo reporta nadie.
+ */
+async function callerIdEnviado(body, fila) {
+  if (body.caller_id && soloDigitos(body.caller_id)) return soloDigitos(body.caller_id);
+  const inicio = body.call_start || null;
+  const destino = soloDigitos(body.destination || fila.telefono_cliente);
+  if (!inicio || !destino) return null;
+  try {
+    const d = await api('/v1/statistics/', {
+      start: correrMinutos(inicio, -2),
+      end: correrMinutos(inicio, 3),
+    });
+    const lista = Array.isArray(d.stats) ? d.stats : [];
+    const hit = lista
+      .filter((c) => String(c.to || '').endsWith(destino) && c.from)
+      .sort((a, b) => String(b.callstart).localeCompare(String(a.callstart)))[0];
+    return hit ? soloDigitos(String(hit.from)) : null;
+  } catch (e) {
+    console.warn('[telefonia] no se pudo leer el número de salida:', e.message);
+    return null;
+  }
+}
+
 async function manejarWebhook(body) {
   const ev = body.event;
   if (ev === 'NOTIFY_OUT_START') {
@@ -543,8 +584,10 @@ async function manejarWebhook(body) {
               : 'failed';
     const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
     const costo = estado === 'answered' ? costoCentavos(duracion, cuenta.tarifa_centavos_min) : 0;
+    const enviado = await callerIdEnviado(body, fila);
     await fila.update({
       pbx_call_id: body.pbx_call_id || fila.pbx_call_id,
+      caller_id: enviado || fila.caller_id,
       estado,
       disposition: body.disposition || null,
       duracion_seg: duracion,

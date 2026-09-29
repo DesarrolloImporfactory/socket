@@ -1,0 +1,21 @@
+require('dotenv').config({ path: 'D:/socket/.env' });
+const { db } = require('../src/database/config');
+const { buildAtencionAsesores } = require('../src/services/atencion_asesores.service');
+const { buildCasosIncidencias } = require('../src/services/casos_incidencias.service');
+const { obtenerHorario, publico } = require('../src/services/atencion_horario.service');
+(async () => {
+  const h = await obtenerHorario(265);
+  console.log('horario 265:', JSON.stringify(publico(h)));
+  const t0 = Date.now();
+  const a = await buildAtencionAsesores([265], 254, '2026-09-22 00:00:00', '2026-09-29 23:59:59', null);
+  const T = a.totales;
+  const fmt = (p) => p && { min_habiles: +(p.seg / 60).toFixed(1), min_reales: +(p.seg_real / 60).toFixed(1), chat: p.chat, cliente: p.cliente, cfg: p.id_configuracion };
+  console.log(`atencion (${Date.now() - t0} ms): respuestas=${T.respuestas} mediana=${T.mediana_seg}s p90=${T.p90_seg}s ok/adv/crit=${T.ok}/${T.advertencia}/${T.critico}`);
+  console.log('umbrales:', JSON.stringify(a.umbrales_min));
+  console.log('peor respondido:', JSON.stringify(fmt(T.peor)));
+  console.log('sin responder:', T.sin_responder.cantidad, JSON.stringify(fmt(T.sin_responder.peor)));
+  console.log('peor por asesor (top 3):', JSON.stringify(a.asesores.filter((x) => x.peor).slice(0, 3).map((x) => ({ n: x.nombre, min: +(x.peor.seg / 60).toFixed(1) }))));
+  console.log('casos:', JSON.stringify(await buildCasosIncidencias([265], '2026-09-01 00:00:00', '2026-09-29 23:59:59')));
+  console.log('casos cfg sin destinatarios:', JSON.stringify(await buildCasosIncidencias([242], '2026-09-01 00:00:00', '2026-09-29 23:59:59')));
+  await db.close();
+})().catch((e) => { console.error('ERROR', e.stack); process.exit(1); });
