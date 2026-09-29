@@ -174,7 +174,11 @@ async function api(method, params = {}, httpMethod = 'GET') {
     throw e;
   }
   const { query, authorization } = firmar(method, params);
-  const esGet = httpMethod === 'GET' || httpMethod === 'DELETE';
+  /* Como el cliente oficial (user-api-v1/lib/Client.php): solo GET lleva
+     los parámetros en la URL; POST, PUT y DELETE los mandan en el cuerpo.
+     Con DELETE en la URL Zadarma respondía "Not authorized" (la firma se
+     calcula sobre el cuerpo), y el borrado de grabaciones no funcionaba. */
+  const esGet = httpMethod === 'GET';
   const url = `${BASE}${method}${esGet && query ? `?${query}` : ''}`;
   const r = await axios({
     method: httpMethod,
