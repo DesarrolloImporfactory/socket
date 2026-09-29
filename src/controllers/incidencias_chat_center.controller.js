@@ -233,7 +233,8 @@ exports.listar = catchAsync(async (req, res, next) => {
     casos
       ? `SELECT i.id, i.id_sub_usuario, i.autor_nombre, i.descripcion, i.created_at,
                 i.tipo, i.id_sub_usuario_destino, s.nombre_encargado AS destino_nombre,
-                i.escalado_resuelto, i.resolucion_comentario, i.resolucion_fecha
+                i.escalado_resuelto, i.resolucion_comentario, i.resolucion_fecha,
+                i.id_configuracion
                 ${conEstado ? ', i.estado_caso' : ''}
            FROM incidencias_chat_center i
            LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = i.id_sub_usuario_destino
@@ -247,14 +248,26 @@ exports.listar = catchAsync(async (req, res, next) => {
   );
 
   const yo = Number(req.sessionUser?.id_sub_usuario) || null;
-  const eventos = casos ? await eventosDe(rows.filter((r) => r.tipo).map((r) => r.id)) : null;
+  const hayCasos = casos && rows.some((r) => r.tipo);
+  const eventos = hayCasos ? await eventosDe(rows.filter((r) => r.tipo).map((r) => r.id)) : null;
+  // Quién puede resolver / poner en espera desde el propio chat: la misma
+  // regla que en Seguimiento de casos (casoParaActuar).
+  const acceso = hayCasos ? await accesoCasos(req) : null;
+  const puedeActuar = (r) => {
+    if (!r.tipo || !acceso?.acceso) return false;
+    if (!acceso.configs.includes(Number(r.id_configuracion))) return false;
+    if (Number(r.escalado_resuelto) === 1) return false;
+    return acceso.esAdmin || Number(r.id_sub_usuario_destino) === acceso.idSub;
+  };
   res.json({
     status: 'success',
     data: rows.map((r) => ({
       ...r,
       propia: Number(r.id_sub_usuario) === yo,
       ...(eventos && r.tipo ? { eventos: eventos[r.id] || [] } : {}),
+      ...(r.tipo ? { puede_resolver: puedeActuar(r) } : {}),
     })),
+    espera_habilitada: !!conEstado,
   });
 });
 
