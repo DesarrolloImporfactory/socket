@@ -11,6 +11,9 @@ const dashboardCache = require('./dashboardCache');
 const {
   buildAtencionAsesores,
 } = require('../services/atencion_asesores.service');
+const {
+  buildCasosIncidencias,
+} = require('../services/casos_incidencias.service');
 
 // TTL del cache en milisegundos.
 // Un dashboard de KPIs de atención no necesita frescura de segundos: subimos el
@@ -73,6 +76,8 @@ const VALID_SECTIONS = new Set([
   'agentLoad',
   'frequentTransfers',
   'atencionAsesores',
+  // Casos escalados / oportunidades de Incidencias (services/casos_incidencias).
+  'casosIncidencias',
 ]);
 const ALL_SECTIONS = [...VALID_SECTIONS];
 
@@ -371,6 +376,7 @@ async function executeDashboard(
     if (sections.has('agentLoad')) empty.agentLoad = [];
     if (sections.has('frequentTransfers')) empty.frequentTransfers = [];
     if (sections.has('atencionAsesores')) empty.atencionAsesores = null;
+    if (sections.has('casosIncidencias')) empty.casosIncidencias = { habilitado: false };
     empty.meta = {
       from,
       to,
@@ -396,6 +402,7 @@ async function executeDashboard(
     agentLoadResults,
     frequentTransfers,
     atencionAsesores,
+    casosIncidencias,
   ] = await Promise.all([
     sections.has('summary')
       ? dashboardCache.getOrRun(
@@ -452,6 +459,13 @@ async function executeDashboard(
           () => buildAtencionAsesores(ids, id_usuario, fromDT, toDT, agentId),
         )
       : null,
+    sections.has('casosIncidencias')
+      ? dashboardCache.getOrRun(
+          dashboardCache.buildKey({ ...cacheBase, section: 'casosIncidencias' }),
+          CACHE_TTL,
+          () => buildCasosIncidencias(configIds, fromDT, toDT),
+        )
+      : null,
   ]);
 
   const data = {};
@@ -462,6 +476,7 @@ async function executeDashboard(
   if (agentLoadResults !== null) data.agentLoad = agentLoadResults;
   if (frequentTransfers !== null) data.frequentTransfers = frequentTransfers;
   if (atencionAsesores !== null) data.atencionAsesores = atencionAsesores;
+  if (casosIncidencias !== null) data.casosIncidencias = casosIncidencias;
 
   data.meta = {
     from,
@@ -1209,6 +1224,9 @@ exports.guardarHorarioAtencion = catchAsync(async (req, res) => {
         hora_inicio: req.body.hora_inicio,
         hora_fin: req.body.hora_fin,
         dias: req.body.dias,
+        // Límite de respuesta (parte 4 de incidencias); opcionales.
+        limite_advertencia_min: req.body.limite_advertencia_min,
+        limite_critico_min: req.body.limite_critico_min,
       },
       id_sub_usuario,
     );
