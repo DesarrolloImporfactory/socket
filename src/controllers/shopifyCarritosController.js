@@ -77,7 +77,11 @@ exports.handleOrderCreate = catchAsync(async (req, res) => {
          (con o sin teléfono) en shopify_ordenes_webhook. Los
          dashboards la cruzan con Dropi para clasificar el canal. */
       const phone_norm_raw = phone_raw
-        ? normalizarTelefono(phone_raw, req.shopifyConfig.prefijo_pais)
+        ? normalizarTelefono(
+            phone_raw,
+            req.shopifyConfig.prefijo_pais,
+            shippingAddress.country_code || billingAddress.country_code,
+          )
         : null;
       const phone_normalizado =
         phone_norm_raw && phone_norm_raw.length >= 10 ? phone_norm_raw : null;
@@ -261,7 +265,11 @@ exports.handleAbandonedDraft = catchAsync(async (req, res) => {
 
       /* Normalizar teléfono */
       const phone_normalizado_raw = phone_raw
-        ? normalizarTelefono(phone_raw, shopifyConfig.prefijo_pais)
+        ? normalizarTelefono(
+            phone_raw,
+            shopifyConfig.prefijo_pais,
+            shippingAddress.country_code || billingAddress.country_code,
+          )
         : null;
       const phone_normalizado =
         phone_normalizado_raw && phone_normalizado_raw.length >= 10
