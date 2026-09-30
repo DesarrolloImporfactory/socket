@@ -107,7 +107,7 @@ async function eventosDe(ids) {
   const limpios = [...new Set(ids.map(Number).filter(Boolean))];
   if (!limpios.length || !(await tieneEventos())) return null;
   const rows = await db.query(
-    `SELECT id, id_incidencia, accion, comentario, autor_nombre, created_at
+    `SELECT id, id_incidencia, accion, comentario, id_sub_usuario, autor_nombre, created_at
        FROM incidencias_casos_eventos
       WHERE id_incidencia IN (:ids)
       ORDER BY created_at ASC, id ASC`,
@@ -576,9 +576,238 @@ exports.listarCasos = catchAsync(async (req, res, next) => {
     conteos,
     asesores,
     espera_habilitada: conEstado,
+    es_admin: acceso.esAdmin,
     total: Number(total),
     pagina: page,
     total_paginas: Math.max(Math.ceil(Number(total) / limit), 1),
+  });
+});
+
+// ─── Desempeño de los responsables (pedido 2026-09-30) ──────────────────────
+//
+// No mide los casos sino a quien los recibe (Johan, Vivi): cuánto tardó en
+// responder cada uno y qué respondió. «Respondió» es lo primero que pase:
+//   - le escribió al cliente en ese chat después de que se creó el caso
+//     (mensajes_clientes, rol 1, responsable = su nombre_encargado), o
+//   - actuó sobre el caso (lo puso en espera o lo resolvió).
+// Si lo resolvió otra persona (un admin), el caso cuenta como resuelto pero
+// no como respondido por el responsable.
+
+/** Horas para responder un caso; pasado eso, sin respuesta = vencido. */
+const HORAS_LIMITE_RESPUESTA = 24;
+/** Tope de casos por consulta: la vista es un historial, no una bandeja. */
+const MAX_CASOS_DESEMPENO = 500;
+
+const minutosEntre = (desde, hasta) =>
+  desde && hasta ? Math.max(Math.round((new Date(hasta) - new Date(desde)) / 60000), 0) : null;
+
+const promedio = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+function mediana(xs) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+}
+
+/**
+ * GET /incidencias_chat_center/casos-desempeno
+ * query: dias (30), tipo ('' | oportunidad | escalamiento), id_responsable.
+ *
+ * Solo administradores: es la vista para supervisar a los responsables.
+ * Devuelve el resumen por responsable y el historial caso por caso con sus
+ * tiempos, en la ventana de `dias`.
+ */
+exports.desempenoCasos = catchAsync(async (req, res, next) => {
+  const acceso = await accesoCasos(req);
+  if (!acceso.acceso || !acceso.esAdmin) {
+    return next(new AppError('Solo los administradores ven el desempeño de los responsables', 403));
+  }
+
+  const dias = Math.min(Math.max(Number(req.query.dias) || 30, 1), 365);
+  const tipo = TIPOS_CASO[req.query.tipo] ? req.query.tipo : '';
+  const idResponsable = Number(req.query.id_responsable) || null;
+
+  const conEstado = await tieneEstadoCaso();
+  const est = estadoSql(conEstado);
+
+  const where = [
+    'i.deleted_at IS NULL',
+    'i.tipo IS NOT NULL',
+    'i.id_configuracion IN (:configs)',
+    'i.created_at >= DATE_SUB(NOW(), INTERVAL :dias DAY)',
+  ];
+  const repl = { configs: acceso.configs, dias, max: MAX_CASOS_DESEMPENO };
+  if (tipo) {
+    where.push('i.tipo = :tipo');
+    repl.tipo = tipo;
+  }
+  if (idResponsable) {
+    where.push('i.id_sub_usuario_destino = :resp');
+    repl.resp = idResponsable;
+  }
+
+  // El primer mensaje del responsable en ese chat desde que se creó el caso.
+  // Usa idx_mc_conf_cel_rol_del_at (id_configuracion, celular_recibe,
+  // rol_mensaje, deleted_at, created_at).
+  const filas = await db.query(
+    `SELECT i.id, i.id_cliente_chat_center AS id_chat, i.id_configuracion, i.tipo,
+            i.created_at AS fecha, i.descripcion AS motivo, i.autor_nombre AS asesor,
+            i.id_sub_usuario_destino AS id_responsable, d.nombre_encargado AS responsable,
+            TRIM(CONCAT_WS(' ', c.nombre_cliente, c.apellido_cliente)) AS cliente,
+            c.celular_cliente AS celular,
+            ${est} AS estado,
+            i.resolucion_fecha, i.resolucion_por, r.nombre_encargado AS resuelto_por,
+            ${conEstado ? 'i.espera_fecha, i.espera_por,' : ''}
+            TIMESTAMPDIFF(MINUTE, i.created_at, NOW()) AS minutos_abierto,
+            (SELECT m.id FROM mensajes_clientes m
+              WHERE m.id_configuracion = i.id_configuracion
+                AND m.celular_recibe = i.id_cliente_chat_center
+                AND m.rol_mensaje = 1
+                AND m.deleted_at IS NULL
+                AND m.created_at >= i.created_at
+                AND m.responsable = d.nombre_encargado
+              ORDER BY m.created_at ASC, m.id ASC
+              LIMIT 1) AS id_primer_mensaje
+       FROM incidencias_chat_center i
+       LEFT JOIN clientes_chat_center c ON c.id = i.id_cliente_chat_center
+       LEFT JOIN sub_usuarios_chat_center d ON d.id_sub_usuario = i.id_sub_usuario_destino
+       LEFT JOIN sub_usuarios_chat_center r ON r.id_sub_usuario = i.resolucion_por
+      WHERE ${where.join(' AND ')}
+      ORDER BY i.created_at DESC, i.id DESC
+      LIMIT :max`,
+    { replacements: repl, type: db.QueryTypes.SELECT },
+  );
+
+  const idsMensaje = filas.map((f) => Number(f.id_primer_mensaje)).filter(Boolean);
+  const mensajes = {};
+  if (idsMensaje.length) {
+    const rows = await db.query(
+      `SELECT id, created_at, tipo_mensaje, texto_mensaje, template_name
+         FROM mensajes_clientes WHERE id IN (:ids)`,
+      { replacements: { ids: idsMensaje }, type: db.QueryTypes.SELECT },
+    );
+    for (const m of rows) mensajes[m.id] = m;
+  }
+  const eventos = await eventosDe(filas.map((f) => f.id));
+
+  const limiteMin = HORAS_LIMITE_RESPUESTA * 60;
+  const casos = filas.map((f) => {
+    const dest = Number(f.id_responsable);
+
+    // Primera acción del responsable sobre el caso: de la línea de tiempo, o
+    // de las columnas del caso si la tabla de eventos no existe.
+    let accion = null;
+    if (eventos) {
+      const e = (eventos[f.id] || []).find(
+        (x) => x.accion !== 'creado' && Number(x.id_sub_usuario) === dest,
+      );
+      if (e) accion = { accion: e.accion, fecha: e.created_at, comentario: e.comentario };
+    } else {
+      const cands = [];
+      if (f.espera_fecha && Number(f.espera_por) === dest) {
+        cands.push({ accion: 'en_espera', fecha: f.espera_fecha });
+      }
+      if (f.resolucion_fecha && Number(f.resolucion_por) === dest) {
+        cands.push({ accion: 'resuelto', fecha: f.resolucion_fecha });
+      }
+      accion = cands.sort((a, b) => new Date(a.fecha) - new Date(b.fecha))[0] || null;
+    }
+
+    const m = mensajes[f.id_primer_mensaje] || null;
+    const mensaje = m
+      ? {
+          fecha: m.created_at,
+          tipo: m.tipo_mensaje,
+          texto: (m.texto_mensaje || (m.template_name ? `Plantilla: ${m.template_name}` : '')).slice(0, 500),
+        }
+      : null;
+
+    // Lo que pase primero: escribirle al cliente o actuar sobre el caso.
+    const primera = [mensaje && { via: 'mensaje', fecha: mensaje.fecha }, accion && { via: 'accion', fecha: accion.fecha }]
+      .filter(Boolean)
+      .sort((a, b) => new Date(a.fecha) - new Date(b.fecha))[0] || null;
+    const minRespuesta = primera ? minutosEntre(f.fecha, primera.fecha) : null;
+
+    let cumplimiento;
+    if (primera) cumplimiento = minRespuesta <= limiteMin ? 'a_tiempo' : 'tarde';
+    else if (f.estado === 'resuelto') cumplimiento = 'resuelto_por_otro';
+    else cumplimiento = Number(f.minutos_abierto) > limiteMin ? 'vencido' : 'pendiente';
+
+    return {
+      id: f.id,
+      id_chat: f.id_chat,
+      id_configuracion: f.id_configuracion,
+      tipo: f.tipo,
+      fecha: f.fecha,
+      motivo: f.motivo,
+      asesor: f.asesor,
+      cliente: f.cliente,
+      celular: f.celular,
+      id_responsable: f.id_responsable,
+      responsable: f.responsable,
+      estado: f.estado,
+      mensaje,
+      accion,
+      primera_respuesta: primera,
+      minutos_respuesta: minRespuesta,
+      minutos_resolucion: f.estado === 'resuelto' ? minutosEntre(f.fecha, f.resolucion_fecha) : null,
+      resuelto_por: f.resuelto_por,
+      minutos_abierto: Number(f.minutos_abierto),
+      cumplimiento,
+    };
+  });
+
+  // Resumen por responsable.
+  const porResp = new Map();
+  for (const c of casos) {
+    const k = Number(c.id_responsable) || 0;
+    if (!porResp.has(k)) {
+      porResp.set(k, { id: k, nombre: c.responsable || 'Sin responsable', lista: [] });
+    }
+    porResp.get(k).lista.push(c);
+  }
+  const responsables = [...porResp.values()].map(({ id, nombre, lista }) => {
+    const tiemposResp = lista.map((c) => c.minutos_respuesta).filter((x) => x !== null);
+    const tiemposResol = lista.map((c) => c.minutos_resolucion).filter((x) => x !== null);
+    const cuenta = (v) => lista.filter((c) => c.cumplimiento === v).length;
+    const respondidos = tiemposResp.length;
+    return {
+      id,
+      nombre,
+      casos: lista.length,
+      respondidos,
+      a_tiempo: cuenta('a_tiempo'),
+      tarde: cuenta('tarde'),
+      vencidos: cuenta('vencido'),
+      pendientes: cuenta('pendiente'),
+      resueltos_por_otro: cuenta('resuelto_por_otro'),
+      resueltos: lista.filter((c) => c.estado === 'resuelto').length,
+      respondio_por_chat: lista.filter((c) => c.mensaje).length,
+      pct_a_tiempo: Math.round((cuenta('a_tiempo') * 100) / lista.length),
+      promedio_respuesta_min: promedio(tiemposResp),
+      mediana_respuesta_min: mediana(tiemposResp),
+      promedio_resolucion_min: promedio(tiemposResol),
+    };
+  });
+
+  const destinatarios = await db.query(
+    `SELECT DISTINCT d.id_sub_usuario AS id, s.nombre_encargado AS nombre
+       FROM incidencias_casos_destinatarios d
+       JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = d.id_sub_usuario
+      WHERE d.id_configuracion IN (:configs)
+      ORDER BY nombre`,
+    { replacements: { configs: acceso.configs }, type: db.QueryTypes.SELECT },
+  );
+
+  res.json({
+    status: 'success',
+    data: casos,
+    responsables,
+    destinatarios,
+    horas_limite: HORAS_LIMITE_RESPUESTA,
+    dias,
+    truncado: filas.length >= MAX_CASOS_DESEMPENO,
   });
 });
 

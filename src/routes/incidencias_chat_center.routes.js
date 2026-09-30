@@ -15,6 +15,8 @@ router.post('/caso', incidencias.crearCaso);
 // Seguimiento de casos (vista de Johan): acceso, listado, resolver, en espera.
 router.get('/casos-acceso', incidencias.casosAcceso);
 router.get('/casos', incidencias.listarCasos);
+// Desempeño de los responsables (solo admins): tiempos de respuesta e historial.
+router.get('/casos-desempeno', incidencias.desempenoCasos);
 router.patch('/caso/:id/resolver', incidencias.resolverCaso);
 router.patch('/caso/:id/espera', incidencias.esperaCaso);
 router.delete('/:id', incidencias.eliminar);
