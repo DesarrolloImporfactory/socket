@@ -1277,19 +1277,26 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
     }
 
     if (esCuentaMX) {
-      /* México: ni Servientrega ni directorio de agencias. Las cuentas con
-         prompt viejo (v6.0 y anteriores) todavía dicen "agencia
-         Servientrega": esta regla, al inicio del input, lo neutraliza. */
+      /* México: la entrega es SIEMPRE a domicilio. No hay Servientrega, ni
+         directorio de agencias, ni sucursal de paquetería donde el cliente
+         pueda recoger (Global Outlet MX, 2026-09-29: el bot de Pendiente
+         Confirmación ofreció "recoger en la sucursal de la paquetería", y
+         eso no existe allá). Las cuentas con prompt viejo todavía preguntan
+         "¿domicilio o agencia?": esta regla, al inicio del input, lo
+         neutraliza. */
       bloque +=
-        `🏦 RETIRO EN SUCURSAL (México): aquí NO existe Servientrega ni un ` +
-        `directorio de agencias; si tus instrucciones la nombran, ignóralo y ` +
-        `habla de "la sucursal de la paquetería". Si el cliente prefiere ` +
-        `recoger su pedido, pídele su ciudad y el nombre o una referencia ` +
-        `(colonia, calle) de la sucursal donde quiere retirar; nunca digas ` +
-        `"la más cercana" sin saber cuál es ni inventes sucursales. Sigue ` +
-        `pidiendo el código postal. Al cerrar pon "🚚 Envio: agencia" y en la ` +
-        `línea de dirección "Sucursal <referencia> — <ciudad>".\n\n`;
-      say(`✅ Regla de retiro en sucursal (México) inyectada`);
+        `🏠 ENTREGA EN MÉXICO — SIEMPRE A DOMICILIO: aquí NO existe retiro en ` +
+        `agencia, sucursal, oficina ni punto de recogida, y no se nombra ` +
+        `ninguna paquetería o transportadora. Si tus instrucciones hablan de ` +
+        `"agencia", "sucursal de la paquetería" o "Servientrega", ignóralo: ` +
+        `NUNCA preguntes si prefiere domicilio o agencia, ni ofrezcas recoger ` +
+        `el paquete. Si el cliente pregunta si puede recogerlo o retirarlo, ` +
+        `respóndele con amabilidad que el envío es únicamente a domicilio ` +
+        `(pago al recibir) y pídele su dirección completa (calle, número, ` +
+        `colonia y referencia) con el código postal; si no puede recibir, ` +
+        `puede hacerlo otra persona en esa u otra dirección. Al cerrar, la ` +
+        `línea es siempre "🚚 Envio: domicilio".\n\n`;
+      say(`✅ Regla de entrega solo a domicilio (México) inyectada`);
     } else if (retiroDirectorio) {
       bloque +=
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +

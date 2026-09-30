@@ -423,6 +423,7 @@ function camposFaltantesCierre(respuesta, ficha = null) {
     /(?:^|\n)[^\n]{0,6}?Direcci[oó]n[^:\n]{0,25}:\s*([^\n]+)/i,
   );
   const agencia = campo(/(?:^|\n)[^\n]{0,6}?Agencia[^:\n]*:\s*([^\n]+)/i);
+  const envio = campo(/(?:^|\n)[^\n]{0,6}?Env[ií]o\s*:\s*([^\n]+)/i);
 
   const faltan = [];
 
@@ -494,13 +495,30 @@ function camposFaltantesCierre(respuesta, ficha = null) {
      la agencia por confirmar del flujo 7.4 cierra así a propósito. */
   const entregaOk = (v) =>
     v !== null && (/por confirmar/i.test(v) || !esValorRelleno(v));
-  if (!entregaOk(direccion) && !entregaOk(agencia)) {
+  if (ficha?._esMexico) {
+    /* México: la entrega es SOLO a domicilio. Un cierre con "Envio: agencia",
+       una línea de agencia o una dirección tipo "Sucursal X" no sirve: Dropi
+       MX no tiene retiro y el auto-orden forzaría una transportadora que no
+       existe. Se exige la dirección de la casa, sin "por confirmar". */
+    const pareceRetiro =
+      agencia !== null ||
+      /agencia|servientrega|oficina|sucursal|retiro/i.test(envio || '') ||
+      /^\s*(?:sucursal|agencia|oficina|retiro)\b/i.test(direccion || '');
+    const domicilioOk =
+      direccion !== null &&
+      !esValorRelleno(direccion) &&
+      !/por confirmar/i.test(direccion);
+    if (!domicilioOk || pareceRetiro) {
+      faltan.push(
+        '- Dirección de domicilio (calle, número, colonia y una referencia): ' +
+          'en México no existe retiro en agencia ni sucursal, el envío es ' +
+          'solo a domicilio y la línea de envío es "🚚 Envio: domicilio"',
+      );
+    }
+  } else if (!entregaOk(direccion) && !entregaOk(agencia)) {
     faltan.push(
-      ficha?._esMexico
-        ? '- Dirección exacta (calle, número, colonia y una referencia), o la ' +
-            'sucursal de la paquetería si prefieres retirarlo'
-        : '- Dirección exacta (dos calles y una referencia), o la agencia ' +
-            'Servientrega si prefieres retirarlo',
+      '- Dirección exacta (dos calles y una referencia), o la agencia ' +
+        'Servientrega si prefieres retirarlo',
     );
   }
 
