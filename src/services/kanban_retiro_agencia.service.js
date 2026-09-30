@@ -144,6 +144,37 @@ async function estaActivo(id_configuracion) {
   return Number(row?.retiro_agencia_activo) === 1;
 }
 
+/* Modalidad que la tienda prefiere SUGERIR cuando el cliente todavía no
+   eligió (configuraciones.modalidad_envio_preferida, migración
+   modalidad_envio_preferida_migration.sql). 'agencia' = el bot ofrece primero
+   la oficina Servientrega y el domicilio como alternativa — para tiendas que
+   despachan casi todo por retiro (caso 711 NOVASHOP, 2026-09-29: su prompt
+   decía "por defecto oficina" y la ficha/el guion base igual pedían la
+   dirección de la casa). NULL = pregunta neutra. Si la columna aún no existe,
+   se comporta como neutra. */
+async function modalidadPreferida(id_configuracion) {
+  try {
+    const [row] = await db.query(
+      `SELECT modalidad_envio_preferida FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    const v = String(row?.modalidad_envio_preferida || '').toLowerCase();
+    return v === 'agencia' || v === 'domicilio' ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function setModalidadPreferida(id_configuracion, modalidad) {
+  const v = String(modalidad || '').toLowerCase();
+  const valor = v === 'agencia' || v === 'domicilio' ? v : null;
+  await db.query(
+    `UPDATE configuraciones SET modalidad_envio_preferida = ? WHERE id = ?`,
+    { replacements: [valor, id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+  return valor;
+}
+
 async function columnasIA(id_configuracion) {
   return db.query(
     `SELECT id, nombre, estado_db, instrucciones, vector_store_docs_id
@@ -586,6 +617,7 @@ async function estado(id_configuracion) {
   return {
     piloto: await enPiloto(id_configuracion),
     activo,
+    modalidad_preferida: await modalidadPreferida(id_configuracion),
     archivo: archivo
       ? {
           id: archivo.id,
@@ -843,6 +875,10 @@ const GUARDIA_MARCA_SECTOR =
   '¿En qué sector estás o cerca de qué punto conocido? 📍 Así te paso las oficinas Servientrega que te quedan más cerca';
 const GUARDIA_MARCA_MODALIDAD =
   '¿Te lo enviamos a tu domicilio o prefieres retirarlo en una oficina Servientrega? 📦';
+/* La misma pregunta con la oficina primero: tiendas con modalidad preferida
+   'agencia'. Es otra marca fija y kanban_ia la reconoce igual que la neutra. */
+const GUARDIA_MARCA_MODALIDAD_AGENCIA =
+  '¿Prefieres retirarlo en una oficina Servientrega de tu ciudad (pagas al retirar) o te lo enviamos a tu domicilio? 📦';
 const GUARDIA_MARCA_DOMICILIO = 'Perfecto, te lo enviamos a domicilio 😊';
 const GUARDIA_MARCA_REFERENCIA =
   'prefieres retirar? Dame el sector o una referencia cercana 📍';
@@ -1118,6 +1154,7 @@ function validarListaDelModelo({
   oficinas,
   mensajeCliente = '',
   historialBot = [],
+  preferirAgencia = false,
 }) {
   const items = itemsOficinaEnRespuesta(respuesta);
   if (!items.length) return null;
@@ -1134,7 +1171,9 @@ function validarListaDelModelo({
       };
     }
     return {
-      texto: `${ciudad ? `Perfecto, enviamos a ${ciudad} 😊 ` : ''}${GUARDIA_MARCA_MODALIDAD}`,
+      texto: `${ciudad ? `Perfecto, enviamos a ${ciudad} 😊 ` : ''}${
+        preferirAgencia ? GUARDIA_MARCA_MODALIDAD_AGENCIA : GUARDIA_MARCA_MODALIDAD
+      }`,
       motivo: 'ofreció oficinas sin que el cliente eligiera retiro: se pregunta la modalidad',
     };
   }
@@ -1204,6 +1243,8 @@ async function guardiaOficinaRetiro({
   const { agenciaConcreta } = require('../utils/fichaPedido');
   if (/\[(generar_guia|asesor|cancelados)\]:true/i.test(t)) return null;
   if (!(await estaActivo(id_configuracion))) return null;
+  const preferirAgencia =
+    (await modalidadPreferida(id_configuracion)) === 'agencia';
 
   /* Caso A — el modelo escribió una lista de oficinas: se valida contra el
      directorio real ANTES de mirar la modalidad (la lista inventada del caso
@@ -1220,9 +1261,42 @@ async function guardiaOficinaRetiro({
           oficinas,
           mensajeCliente,
           historialBot,
+          preferirAgencia,
         });
         if (r) return r;
       }
+    }
+  }
+
+  /* Caso D — modalidad preferida "agencia": el cliente todavía no eligió ni
+     dio una dirección, y el modelo ya le pide la dirección de la casa. El
+     prompt de la tienda dice "por defecto oficina Servientrega", pero la
+     ficha y el guion base empujaban a domicilio (caso 711 NOVASHOP,
+     2026-09-29: "dirección exacta (2 calles y una referencia)" a todos). Se
+     reemplaza por la pregunta de modalidad con la oficina primero, UNA vez:
+     si ya se preguntó, el cliente está respondiendo y no se interviene. */
+  if (
+    preferirAgencia &&
+    ficha &&
+    !ficha.entrega &&
+    !String(ficha.direccion || '').trim() &&
+    /direcci[oó]n exacta|dos calles|2 calles|tu direcci[oó]n|direcci[oó]n de (?:tu )?(?:casa|domicilio|entrega)/i.test(
+      t,
+    )
+  ) {
+    const historialBot = await ultimosDelBot(id_configuracion, id_cliente);
+    const yaPregunto = historialBot.some(
+      (m) =>
+        m.includes(GUARDIA_MARCA_MODALIDAD) ||
+        m.includes(GUARDIA_MARCA_MODALIDAD_AGENCIA),
+    );
+    if (!yaPregunto) {
+      const ciudad = String(ficha.ciudad || '').trim();
+      return {
+        texto: `${ciudad ? `Perfecto, enviamos a ${ciudad} 😊 ` : ''}${GUARDIA_MARCA_MODALIDAD_AGENCIA}`,
+        motivo:
+          'pidió la dirección de casa sin que el cliente eligiera modalidad (la tienda prefiere oficina): se pregunta con la oficina primero',
+      };
     }
   }
 
@@ -1319,6 +1393,8 @@ module.exports = {
   PILOTO_CONFIGS,
   enPiloto,
   estaActivo,
+  modalidadPreferida,
+  setModalidadPreferida,
   activar,
   desactivar,
   lanzarToggle,
@@ -1331,6 +1407,7 @@ module.exports = {
   GUARDIA_MARCA_OFERTA,
   GUARDIA_MARCA_SECTOR,
   GUARDIA_MARCA_MODALIDAD,
+  GUARDIA_MARCA_MODALIDAD_AGENCIA,
   GUARDIA_MARCA_DOMICILIO,
   GUARDIA_MARCA_REFERENCIA,
   GUARDIA_MARCA_PORCONFIRMAR,

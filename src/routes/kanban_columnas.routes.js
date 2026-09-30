@@ -69,5 +69,6 @@ const RetiroAgenciaController = require('../controllers/kanban_retiro_agencia.co
 router.post('/retiro_agencia_estado', RetiroAgenciaController.estado);
 router.post('/retiro_agencia_toggle', RetiroAgenciaController.toggle);
 router.post('/retiro_agencia_preview', RetiroAgenciaController.preview);
+router.post('/retiro_agencia_preferencia', RetiroAgenciaController.preferencia);
 
 module.exports = router;

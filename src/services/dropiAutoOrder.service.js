@@ -786,7 +786,13 @@ async function autoCrearOrdenDropi({
        agencia Servientrega" con la ciudad — lo mismo que escribe a mano un
        vendedor en ese caso. Se hace ANTES del extractor IA para no gastar
        una llamada buscando una dirección que no existe. */
+    /* México: no existe retiro en agencia (la entrega es solo a domicilio),
+       así que ni se inventa una dirección de agencia ni se fuerza
+       Servientrega más abajo; si el resumen llegó con "agencia", la orden
+       va a domicilio con la dirección que haya. */
+    const esMexico = String(country_code || '').toUpperCase() === 'MX';
     const direccionDeAgencia = () => {
+      if (esMexico) return;
       if (datosBot.direccion || !esEnvioAgenciaServientrega(datosBot)) return;
       const ag = String(datosBot.agencia || '').trim();
       datosBot.direccion =
@@ -805,7 +811,6 @@ async function autoCrearOrdenDropi({
 
     /* México: el código postal también es clave (Dropi MX no cotiza sin él),
        así que si el resumen no lo trae se le pide al extractor IA. */
-    const esMexico = String(country_code || '').toUpperCase() === 'MX';
     const faltanClaves = [
       'producto',
       'ciudad',
@@ -2027,7 +2032,7 @@ async function autoCrearOrdenDropi({
     // si Servientrega NO está entre las cotizaciones de esa ruta, caemos a la
     // más barata para no bloquear la venta.
     let mejor = validas[0];
-    if (esEnvioAgenciaServientrega(datosBot)) {
+    if (!esMexico && esEnvioAgenciaServientrega(datosBot)) {
       const servi = validas.find((q) =>
         nombreTransportadora(q).includes('SERVIENTREGA'),
       );

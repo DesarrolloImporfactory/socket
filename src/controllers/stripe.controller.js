@@ -995,6 +995,29 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Renovación rebotada (past_due/unpaid): Stripe ya abrió el periodo nuevo y
+  // su current_period_end queda un mes adelante AUNQUE la factura no se pagó.
+  // Si el front cuenta los días contra esa fecha le muestra "22 días
+  // restantes" a quien debe el mes entero (caso 2627). Aquí se decide: sin
+  // pago no hay días, y se le manda la factura abierta para que la salde.
+  // Si Stripe no respondió, la BD manda: 'suspendido'/past_due la escribió el
+  // webhook al rebotar el cobro, y sin la factura a mano igual son 0 días.
+  const sinPago =
+    estadoFinal === 'suspendido' ||
+    ['past_due', 'unpaid'].includes(String(stripeStatus || '').toLowerCase());
+  const pagoPendiente = sinPago
+    ? (await pagoPendienteDeSub(sub)) || {
+        invoice_id: null,
+        monto: null,
+        moneda: 'usd',
+        vencio_el: null,
+        intentos: 0,
+        proximo_intento: null,
+        hosted_invoice_url: null,
+      }
+    : null;
+  const diasRestantes = sinPago ? 0 : diasRestantesHasta(fechaRenovacion);
+
   // ── Ajustar tools_access si tiene recursos promo para Insta Landing ──
   let effectiveToolsAccess = planDb?.tools_access || 'both';
   if (effectiveToolsAccess !== 'both') {
@@ -1014,6 +1037,8 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       descripcion_plan: planDb?.descripcion_plan || '',
       estado: estadoFinal,
       fecha_renovacion: fechaRenovacion,
+      dias_restantes: diasRestantes,
+      pago_pendiente: pagoPendiente,
       stripe_subscription_status: stripeStatus,
       cancel_at_period_end: cancelAtPeriodEnd,
       cancel_at: cancelAt,
@@ -1041,6 +1066,69 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
     user_flags: userFlags,
   });
 });
+
+// Días enteros que faltan para `fecha` (0 si ya pasó o no hay fecha). El día
+// de la renovación pagada devuelve el ciclo completo (30): eso es correcto,
+// acaba de pagar el mes.
+function diasRestantesHasta(fecha) {
+  if (!fecha) return 0;
+  const fin = new Date(fecha).getTime();
+  if (Number.isNaN(fin)) return 0;
+  return Math.max(0, Math.ceil((fin - Date.now()) / (24 * 60 * 60 * 1000)));
+}
+
+// Factura del ciclo que Stripe no logró cobrar. Solo existe cuando la sub
+// está past_due/unpaid; en cualquier otro estado devuelve null. Nunca lanza:
+// si Stripe falla, el front igual ve "suspendido" y 0 días, solo pierde el
+// botón de pagar.
+async function pagoPendienteDeSub(sub) {
+  if (!sub || !['past_due', 'unpaid'].includes(String(sub.status || '')))
+    return null;
+
+  const inicioPeriodo =
+    sub?.current_period_start || sub?.items?.data?.[0]?.current_period_start;
+  const base = {
+    invoice_id: null,
+    monto: null,
+    moneda: 'usd',
+    // El cobro que rebotó es el del inicio del periodo abierto: esa es la
+    // fecha que el cliente reconoce como "se me venció".
+    vencio_el: inicioPeriodo ? new Date(inicioPeriodo * 1000) : null,
+    intentos: 0,
+    proximo_intento: null,
+    hosted_invoice_url: null,
+  };
+
+  const invId =
+    typeof sub.latest_invoice === 'string'
+      ? sub.latest_invoice
+      : sub.latest_invoice?.id || null;
+  if (!invId) return base;
+
+  try {
+    const inv =
+      typeof sub.latest_invoice === 'object' && sub.latest_invoice
+        ? sub.latest_invoice
+        : await stripe.invoices.retrieve(invId);
+    // Ya pagada o anulada a mano: la sub sigue past_due hasta que Stripe la
+    // reconcilie, pero no hay nada que cobrar.
+    if (inv.status !== 'open') return base;
+    return {
+      invoice_id: inv.id,
+      monto: Number(inv.amount_due || inv.total || 0),
+      moneda: inv.currency || 'usd',
+      vencio_el: base.vencio_el || new Date(inv.created * 1000),
+      intentos: Number(inv.attempt_count || 0),
+      proximo_intento: inv.next_payment_attempt
+        ? new Date(inv.next_payment_attempt * 1000)
+        : null,
+      hosted_invoice_url: inv.hosted_invoice_url || null,
+    };
+  } catch (e) {
+    console.warn('Stripe latest_invoice retrieve fail:', e?.message);
+    return base;
+  }
+}
 
 // Periodo más corto programado con schedule (ver cambiarPeriodo). null si no
 // hay schedule o el schedule es de otra cosa (downgrade de plan).
@@ -1079,6 +1167,13 @@ exports.facturasUsuario = catchAsync(async (req, res, next) => {
     created: inv.created,
     paid: inv.paid,
     amount_paid: inv.amount_paid,
+    // Una factura abierta tiene amount_paid = 0: el front mostraba USD 0.00
+    // justo en la que el cliente debe. Lo adeudado va aparte.
+    amount_due: inv.amount_due,
+    total: inv.total,
+    currency: inv.currency,
+    attempt_count: inv.attempt_count,
+    next_payment_attempt: inv.next_payment_attempt,
     hosted_invoice_url: inv.hosted_invoice_url,
     invoice_pdf: inv.invoice_pdf,
     status: inv.status,

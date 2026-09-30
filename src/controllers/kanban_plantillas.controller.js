@@ -2161,7 +2161,10 @@ async function _sincronizarEstructuraColumnas(
   return cambios;
 }
 
-async function _resincronizarUnaConfiguracion(id_configuracion) {
+async function _resincronizarUnaConfiguracion(
+  id_configuracion,
+  { soloPrompts = false } = {},
+) {
   try {
     // 1. Cargar config del cliente
     const [config] = await db.query(
@@ -2220,12 +2223,17 @@ async function _resincronizarUnaConfiguracion(id_configuracion) {
     // enciende las que pasaron a ser IA (p. ej. pendiente_confirmacion). Aditivo
     // y aislado: si falla, el resync de prompts sigue igual.
     let cambiosEstructura = { agregadas: [], actualizadas: [] };
+    /* soloPrompts (scripts de actualización masiva): recompila las columnas
+       IA que YA existen y nada más — no crea columnas ni enciende bots que el
+       cliente apagó. El botón "Actualizar tablero" sigue haciendo todo. */
     try {
-      cambiosEstructura = await _sincronizarEstructuraColumnas(
-        id_configuracion,
-        colsPlantilla,
-        config.api_key_openai,
-      );
+      if (!soloPrompts) {
+        cambiosEstructura = await _sincronizarEstructuraColumnas(
+          id_configuracion,
+          colsPlantilla,
+          config.api_key_openai,
+        );
+      }
     } catch (e) {
       console.error(
         `[resincronizar] estructura cfg=${id_configuracion}: ${e.message}`,
@@ -3249,6 +3257,7 @@ async function _instalarFaltantes(id_configuracion) {
 }
 
 exports._instalarFaltantes = _instalarFaltantes;
+exports._resincronizarUnaConfiguracion = _resincronizarUnaConfiguracion;
 
 /* ══════════════════════════════════════════════════════════════
    MEJORAS DISPONIBLES

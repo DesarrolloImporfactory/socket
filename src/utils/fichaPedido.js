@@ -534,7 +534,8 @@ function direccionTieneReferencia(f) {
 /** ¿La dirección del cliente son SOLO calles? (el retiro en agencia no aplica). */
 function direccionIncompleta(ficha) {
   const f = ficha || {};
-  if (f.entrega === 'agencia') return false;
+  // México: no hay retiro, la dirección de domicilio se exige igual.
+  if (f.entrega === 'agencia' && !f._esMexico) return false;
   if (!String(f.direccion || '').trim()) return false;
   return !direccionTieneNumeracion(f.direccion) && !direccionTieneReferencia(f);
 }
@@ -560,19 +561,13 @@ function intentosPedirReferencia(items, direccion) {
     .length;
 }
 
-/* En México no existe Servientrega: allá el retiro es en la "sucursal de
-   la paquetería" (ficha._esMexico, la marca kanban_ia por el país de la
-   integración Dropi). Ecuador y el resto conservan el texto de siempre. */
+/* Etiqueta de la agencia de retiro (solo cuentas con Servientrega). En
+   México no existe retiro de ningún tipo —la entrega es solo a domicilio—
+   y los caminos que llegan acá lo excluyen con ficha._esMexico. */
 function etiquetaAgencia(f) {
   const ag = String((f && f.agencia) || '').trim();
-  const mx = Boolean(f && f._esMexico);
-  if (!ag) {
-    return mx
-      ? 'Sucursal de la paquetería por confirmar'
-      : 'Agencia Servientrega por confirmar';
-  }
+  if (!ag) return 'Agencia Servientrega por confirmar';
   if (/^(agencia|sucursal)/i.test(ag)) return ag;
-  if (mx) return `Sucursal ${ag}`;
   return /servientrega/i.test(ag) ? `Agencia ${ag}` : `Agencia Servientrega ${ag}`;
 }
 
@@ -602,18 +597,22 @@ function faltantesFicha(ficha, opts = {}) {
   else if (!nombreCompleto(f.nombre))
     faltan.push(`Apellido (solo dio el nombre "${f.nombre}")`);
 
-  const agenciaOk = f.entrega === 'agencia';
+  /* México: no existe retiro en agencia ni sucursal (la entrega es solo a
+     domicilio), así que pedir "agencia" nunca exime de la dirección. */
+  const mxDir = Boolean(opts.mexico || f._esMexico);
+  const agenciaOk = f.entrega === 'agencia' && !mxDir;
   if (!f.ciudad && !f.direccion && !agenciaOk) faltan.push('Ciudad');
   if (!f.direccion && !agenciaOk) {
-    const mxDir = Boolean(opts.mexico || f._esMexico);
     faltan.push(
-      f.entrega === 'domicilio'
-        ? mxDir
-          ? 'Dirección exacta (calle, número, colonia y una referencia)'
-          : 'Dirección exacta (dos calles y una referencia)'
-        : mxDir
-          ? 'Dirección exacta (calle, número, colonia y una referencia), o si prefiere retirar en la sucursal de la paquetería'
-          : 'Dirección exacta (dos calles y una referencia), o si prefiere retirar en una agencia Servientrega',
+      mxDir
+        ? 'Dirección exacta de domicilio (calle, número, colonia y una referencia) — en México la entrega es SOLO a domicilio, no ofrezcas retiro en sucursal'
+        : f.entrega === 'domicilio'
+          ? 'Dirección exacta (dos calles y una referencia)'
+          : opts.preferirAgencia && !f.entrega
+            ? /* La tienda prefiere retiro: sin modalidad elegida se ofrece
+                 primero la oficina, no la dirección de la casa. */
+              'La modalidad de entrega: ofrécele PRIMERO retirar en una oficina Servientrega de su ciudad (paga al retirar) y, solo como alternativa, el envío a domicilio; NO pidas la dirección de casa hasta que elija'
+            : 'Dirección exacta (dos calles y una referencia), o si prefiere retirar en una agencia Servientrega',
     );
   } else if (direccionIncompleta(f) && Number(f._intentosDireccion || 0) < 1) {
     /* Dirección de solo calles: se pide UNA vez lo que le falta. A la segunda
@@ -630,7 +629,7 @@ function faltantesFicha(ficha, opts = {}) {
      ingresar un código postal", ~10 auto-órdenes/día en sep-2026). Se pide
      como dato del pedido, junto con la dirección. Solo en cuentas de México:
      en Ecuador y el resto no existe ese dato y pedirlo sería ruido. */
-  if ((opts.mexico || f._esMexico) && !f.codigo_postal) {
+  if (mxDir && !f.codigo_postal) {
     faltan.push('Código postal (5 dígitos) de la dirección de entrega');
   }
 
@@ -666,6 +665,7 @@ function bloqueFichaPedido(
     retiroDirectorio = false,
     variantes = [],
     mexico = false,
+    preferirAgencia = false,
   } = {},
 ) {
   if (!fichaTieneDatos(ficha)) return '';
@@ -696,13 +696,13 @@ function bloqueFichaPedido(
           : `La oficina se elige del directorio ANTES de pedir nombre o teléfono (mira la sección RETIRO EN AGENCIA SERVIENTREGA). En el resumen, la línea de dirección es la oficina elegida (sector — dirección del directorio) o, solo si el cliente no eligió tras 2 intentos, "Agencia Servientrega de ${f.ciudad || '[su ciudad]'} — por confirmar con un asesor". "🚚 Envio: agencia servientrega".`),
     );
   } else if (f.entrega === 'agencia' && (mexico || f._esMexico)) {
-    /* México: sin Servientrega ni directorio. El cliente nombra la sucursal
-       de la paquetería (o queda por confirmar) y el código postal se sigue
-       pidiendo porque la paquetería no cotiza sin él. */
+    /* México: no existe retiro en agencia ni en sucursal de paquetería; la
+       entrega es SOLO a domicilio. El cliente pidió recoger: se le explica
+       y se le pide la dirección igual. */
     lineas.push(
-      `✅ Entrega: RETIRO EN SUCURSAL de la paquetería${f.agencia ? ` (${f.agencia})` : f.ciudad ? ` (${f.ciudad})` : ''}. ` +
-        `En México NO existe Servientrega: si tus instrucciones la nombran, ignóralo. Para retiro NO pidas dirección de domicilio, pero SÍ el código postal. ` +
-        `En el resumen escribe la línea de dirección como "🏡 Direccion: ${etiquetaAgencia(f)} — ${f.ciudad || 'su ciudad'}" y "🚚 Envio: agencia".`,
+      `⚠️ Entrega: el cliente pidió RECOGER/RETIRAR el pedido, pero en México la entrega es ÚNICAMENTE a domicilio: no hay agencia, sucursal ni punto de recogida (no nombres ninguna paquetería). ` +
+        `Díselo con amabilidad y pídele su dirección completa (calle, número, colonia, referencia) y el código postal; si no puede recibir, puede hacerlo otra persona en esa u otra dirección. ` +
+        `En el resumen la línea es siempre "🚚 Envio: domicilio".`,
     );
   } else if (f.entrega === 'agencia') {
     lineas.push(
@@ -728,12 +728,11 @@ function bloqueFichaPedido(
       intentos < 1
         ? `⚠️ CANDADO DE DIRECCIÓN: "${f.direccion}" son solo calles, sin numeración de casa ni referencia — así la transportadora NO entrega. ` +
             `En ESTE mensaje pídele el número de la casa y una referencia para llegar (un negocio cercano, el color de la casa, un punto conocido). No cierres el pedido todavía.`
-        : `⚠️ CANDADO DE DIRECCIÓN: ya le pediste la numeración y la referencia y no las dio. NO se las vuelvas a pedir. ` +
-            `Dile con naturalidad que sin numeración ni referencia el repartidor no llega, y ofrécele retirar el pedido en ${
-              mexico || f._esMexico
-                ? 'la sucursal de la paquetería más cercana a esa dirección'
-                : 'la agencia Servientrega más cercana a esa dirección'
-            }` +
+        : mexico || f._esMexico
+          ? `⚠️ CANDADO DE DIRECCIÓN: ya le pediste la numeración y la referencia y no las dio. NO se las vuelvas a pedir, y NO ofrezcas retiro (en México no existe: la entrega es solo a domicilio). ` +
+            `Dile con naturalidad que con esa dirección el repartidor puede tener dificultad para llegar y que esté atento a su teléfono el día de la entrega; cierra con la dirección tal cual la dio.`
+          : `⚠️ CANDADO DE DIRECCIÓN: ya le pediste la numeración y la referencia y no las dio. NO se las vuelvas a pedir. ` +
+            `Dile con naturalidad que sin numeración ni referencia el repartidor no llega, y ofrécele retirar el pedido en la agencia Servientrega más cercana a esa dirección` +
             (retiroDirectorio
               ? ` (ofrécele de 3 a 5 oficinas REALES del directorio de su ciudad y espera cuál elige).`
               : ` de su ciudad.`) +
@@ -746,7 +745,12 @@ function bloqueFichaPedido(
     );
   else if (f.cantidad) lineas.push(`✅ Cantidad: ${f.cantidad}`);
 
-  const faltan = faltantesFicha(f, { retiroDirectorio, variantes, mexico });
+  const faltan = faltantesFicha(f, {
+    retiroDirectorio,
+    variantes,
+    mexico,
+    preferirAgencia,
+  });
 
   let txt =
     `📋 FICHA DEL PEDIDO — lo que el cliente YA DIJO en esta conversación. La leyó el sistema de SUS mensajes y manda sobre tu memoria:\n` +
@@ -925,7 +929,8 @@ function completarResumenConFicha(texto, ficha) {
       if (iD >= 0) reemplazarValor(iD, val);
       else insertar(`🏡 Direccion: ${val}`);
       completados.push('direccion');
-    } else if (ficha.entrega === 'agencia') {
+    } else if (ficha.entrega === 'agencia' && !ficha._esMexico) {
+      // México: sin retiro; la dirección de domicilio la exige el validador.
       const val = `${etiquetaAgencia(ficha)} — ${ficha.ciudad || 'ciudad por confirmar'}`;
       if (iD >= 0) reemplazarValor(iD, val);
       else insertar(`🏡 Direccion: ${val}`);
@@ -946,9 +951,17 @@ function completarResumenConFicha(texto, ficha) {
   }
 
   // Envío: para retiro en agencia el auto-orden necesita saberlo.
-  if (ficha.entrega === 'agencia') {
-    // México: "agencia" a secas (allá no existe Servientrega).
-    const valorEnvio = ficha._esMexico ? 'agencia' : 'agencia servientrega';
+  if (ficha._esMexico) {
+    /* México: la entrega es solo a domicilio. Si el modelo escribió
+       "agencia"/"sucursal" en la línea de envío, se corrige: el auto-orden
+       forzaría una transportadora de retiro que allá no existe. */
+    const iE = idxDe(/^[^\n]{0,6}?Env[ií]o\s*:/i);
+    if (iE >= 0 && /agencia|servientrega|oficina|sucursal|retiro/i.test(valorDe(iE))) {
+      reemplazarValor(iE, 'domicilio');
+      completados.push('envio');
+    }
+  } else if (ficha.entrega === 'agencia') {
+    const valorEnvio = 'agencia servientrega';
     const iE = idxDe(/^[^\n]{0,6}?Env[ií]o\s*:/i);
     if (iE < 0) {
       insertar(`🚚 Envio: ${valorEnvio}`);

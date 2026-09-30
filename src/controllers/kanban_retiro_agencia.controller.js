@@ -62,6 +62,28 @@ exports.toggle = catchAsync(async (req, res, next) => {
   });
 });
 
+/* POST /kanban_columnas/retiro_agencia_preferencia
+   { id_configuracion, modalidad: 'agencia' | null }
+   Qué sugiere el bot primero cuando el cliente aún no eligió cómo recibir.
+   Solo tiene efecto con el switch encendido (el runtime lo consulta ahí). */
+exports.preferencia = catchAsync(async (req, res, next) => {
+  const id = validarIdConfig(req, next);
+  if (!id) return;
+  if (!(await retiroAgencia.enPiloto(id))) {
+    return next(
+      new AppError(
+        'El retiro en agencia Servientrega está disponible para tableros de E-commerce Ecuador',
+        403,
+      ),
+    );
+  }
+  const modalidad = await retiroAgencia.setModalidadPreferida(
+    id,
+    req.body?.modalidad,
+  );
+  res.status(200).json({ success: true, data: { modalidad_preferida: modalidad } });
+});
+
 /* POST /kanban_columnas/retiro_agencia_preview  { id_configuracion }
    Devuelve el texto del archivo que el bot consulta — la respuesta a
    "¿por qué mi bot no ofreció tal agencia?". */

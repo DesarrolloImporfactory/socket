@@ -783,8 +783,24 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          —copiada de un fragmento de file_search, de la memoria del hilo o
          inventada— se bloquea en el envío. */
       if (opts?.id_cliente) {
+        /* Con un producto EN JUEGO, los "nombrados" por una sola palabra no
+           habilitan su media: con "LAPIZ CUBRE CANAS" el candado dejaba salir
+           la foto del "LAPIZ MICROBLADING para cejas" (12 chats en una
+           semana, cfg 711, sep-2026) y la del "Cubre canas en barra". Solo
+           cuenta lo que la persona nombró completo (todas sus palabras
+           útiles); sin producto en juego se sigue como antes. */
+        const nombradoCompleto = (p) => {
+          const tokens = palabrasUtiles(p.nombre);
+          return (
+            tokens.length > 0 &&
+            tokens.every((t) => palabrasMsg.some((m) => mismaPalabra(t, m)))
+          );
+        };
+        const conMedia = enJuego
+          ? [enJuego, ...nombrados.filter(nombradoCompleto)]
+          : [enJuego, ...nombrados];
         const ofrecidas = [];
-        for (const p of [enJuego, ...nombrados].filter(Boolean)) {
+        for (const p of conMedia.filter(Boolean)) {
           if (p.imagen_url) ofrecidas.push(normalizarUrlMedia(p.imagen_url));
           if (p.video_url) ofrecidas.push(normalizarUrlMedia(p.video_url));
           if (p.documento_url)
@@ -1267,35 +1283,56 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
        posición lleva la regla DEL DIRECTORIO; la legacy queda para las
        cuentas sin switch, que no tienen directorio que consultar. */
     let retiroDirectorio = false;
+    /* Modalidad preferida de la tienda (configuraciones.modalidad_envio_preferida):
+       con 'agencia', la pregunta de modalidad ofrece primero la oficina. */
+    let preferirAgencia = false;
     try {
       const {
         estaActivo: retiroAgenciaActivo,
+        modalidadPreferida,
       } = require('../services/kanban_retiro_agencia.service');
       retiroDirectorio = await retiroAgenciaActivo(id_configuracion);
+      if (retiroDirectorio && typeof modalidadPreferida === 'function') {
+        preferirAgencia =
+          (await modalidadPreferida(id_configuracion)) === 'agencia';
+      }
     } catch (_) {
       /* sin el service (tests aislados): rige la legacy */
     }
 
     if (esCuentaMX) {
-      /* México: ni Servientrega ni directorio de agencias. Las cuentas con
-         prompt viejo (v6.0 y anteriores) todavía dicen "agencia
-         Servientrega": esta regla, al inicio del input, lo neutraliza. */
+      /* México: la entrega es SIEMPRE a domicilio. No hay Servientrega, ni
+         directorio de agencias, ni sucursal de paquetería donde el cliente
+         pueda recoger (Global Outlet MX, 2026-09-29: el bot de Pendiente
+         Confirmación ofreció "recoger en la sucursal de la paquetería", y
+         eso no existe allá). Las cuentas con prompt viejo todavía preguntan
+         "¿domicilio o agencia?": esta regla, al inicio del input, lo
+         neutraliza. */
       bloque +=
-        `🏦 RETIRO EN SUCURSAL (México): aquí NO existe Servientrega ni un ` +
-        `directorio de agencias; si tus instrucciones la nombran, ignóralo y ` +
-        `habla de "la sucursal de la paquetería". Si el cliente prefiere ` +
-        `recoger su pedido, pídele su ciudad y el nombre o una referencia ` +
-        `(colonia, calle) de la sucursal donde quiere retirar; nunca digas ` +
-        `"la más cercana" sin saber cuál es ni inventes sucursales. Sigue ` +
-        `pidiendo el código postal. Al cerrar pon "🚚 Envio: agencia" y en la ` +
-        `línea de dirección "Sucursal <referencia> — <ciudad>".\n\n`;
-      say(`✅ Regla de retiro en sucursal (México) inyectada`);
+        `🏠 ENTREGA EN MÉXICO — SIEMPRE A DOMICILIO: aquí NO existe retiro en ` +
+        `agencia, sucursal, oficina ni punto de recogida, y no se nombra ` +
+        `ninguna paquetería o transportadora. Si tus instrucciones hablan de ` +
+        `"agencia", "sucursal de la paquetería" o "Servientrega", ignóralo: ` +
+        `NUNCA preguntes si prefiere domicilio o agencia, ni ofrezcas recoger ` +
+        `el paquete. Si el cliente pregunta si puede recogerlo o retirarlo, ` +
+        `respóndele con amabilidad que el envío es únicamente a domicilio ` +
+        `(pago al recibir) y pídele su dirección completa (calle, número, ` +
+        `colonia y referencia) con el código postal; si no puede recibir, ` +
+        `puede hacerlo otra persona en esa u otra dirección. Al cerrar, la ` +
+        `línea es siempre "🚚 Envio: domicilio".\n\n`;
+      say(`✅ Regla de entrega solo a domicilio (México) inyectada`);
     } else if (retiroDirectorio) {
       bloque +=
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +
         `"RETIRO EN AGENCIA SERVIENTREGA" DE TUS INSTRUCCIONES:\n` +
         `- Ninguna oficina antes de que el cliente ELIJA retiro con sus ` +
-        `palabras: saber su ciudad no es elegir. Sin modalidad, pregúntala.\n` +
+        `palabras: saber su ciudad no es elegir. Sin modalidad, ` +
+        (preferirAgencia
+          ? `ofrécele PRIMERO retirar en una oficina Servientrega de su ciudad ` +
+            `(paga al retirar; es lo que esta tienda prefiere) y menciona el ` +
+            `domicilio solo como alternativa; NO pidas dirección de casa hasta ` +
+            `que elija.\n`
+          : `pregúntala.\n`) +
         `- En cuanto el cliente elija agencia/oficina, tu SIGUIENTE mensaje es ` +
         `ofrecerle de 3 a 5 oficinas REALES del directorio (file_search) de SU ` +
         `ciudad, cada una con sector y dirección copiados tal cual. Si la ` +
