@@ -1529,17 +1529,24 @@ async function procesarMensajeKanban(params) {
            apenas el cliente decía agencia y el cierre "Agencia Servientrega —
            ciudad" sin oficina. */
         let retiroDirectorioFicha = false;
+        let preferirAgenciaFicha = false;
         try {
           const {
             estaActivo: retiroAgenciaActivo,
+            modalidadPreferida,
           } = require('./kanban_retiro_agencia.service');
           retiroDirectorioFicha = await retiroAgenciaActivo(id_configuracion);
+          if (retiroDirectorioFicha) {
+            preferirAgenciaFicha =
+              (await modalidadPreferida(id_configuracion)) === 'agencia';
+          }
         } catch (_) {
           /* sin el service: comportamiento de siempre */
         }
         const bloqueFicha = bloqueFichaPedido(fichaPedido, {
           trigger: accCierreVenta.trigger,
           retiroDirectorio: retiroDirectorioFicha,
+          preferirAgencia: preferirAgenciaFicha,
           variantes: fichaPedido?._variantes || [],
           mexico: Boolean(fichaPedido?._esMexico),
         });
@@ -1559,6 +1566,7 @@ async function procesarMensajeKanban(params) {
               GUARDIA_MARCA_OFERTA,
               GUARDIA_MARCA_SECTOR,
               GUARDIA_MARCA_MODALIDAD,
+              GUARDIA_MARCA_MODALIDAD_AGENCIA,
               GUARDIA_MARCA_DOMICILIO,
               GUARDIA_MARCA_REFERENCIA,
               GUARDIA_MARCA_PORCONFIRMAR,
@@ -1577,7 +1585,9 @@ async function procesarMensajeKanban(params) {
             const fueSector =
               txtUlt.includes(GUARDIA_MARCA_SECTOR) ||
               txtUlt.includes(GUARDIA_MARCA_REFERENCIA);
-            const fueModalidad = txtUlt.includes(GUARDIA_MARCA_MODALIDAD);
+            const fueModalidad =
+              txtUlt.includes(GUARDIA_MARCA_MODALIDAD) ||
+              txtUlt.includes(GUARDIA_MARCA_MODALIDAD_AGENCIA);
             const fueAvance =
               txtUlt.includes(GUARDIA_MARCA_DOMICILIO) ||
               txtUlt.includes(GUARDIA_MARCA_PORCONFIRMAR);
@@ -2971,11 +2981,13 @@ async function procesarMensajeKanban(params) {
     }
   }
 
-  if (
-    !fotoYaEnPaquete &&
-    tieneAccion('contexto_productos') &&
-    !/\[(producto|servicio|upsell)_imagen_url\]/i.test(respuestaRaw)
-  ) {
+  /* Lo que va al extractor de media. Solo difiere de respuestaRaw cuando el
+     código cambió una foto de otro producto por la del nombrado (abajo). */
+  let respuestaParaMedia = respuestaRaw;
+  const yaTraeImagen = /\[(producto|servicio|upsell)_imagen_url\]/i.test(
+    respuestaRaw,
+  );
+  if (!fotoYaEnPaquete && tieneAccion('contexto_productos')) {
     try {
       const conImagen = await db.query(
         `SELECT nombre, imagen_url FROM productos_chat_center
@@ -3002,7 +3014,7 @@ async function procesarMensajeKanban(params) {
          mano. */
       const mencionado = productoNombrado(respuestaRaw, conImagen);
 
-      if (mencionado) {
+      if (mencionado && !yaTraeImagen) {
         /* No se comprueba acá si ya se envió: de eso se encarga el filtro del
            paso 12, que es por donde pasan también las etiquetas que escribe el
            propio prompt. Tener el control en dos lados fue justamente el
@@ -3021,6 +3033,43 @@ async function procesarMensajeKanban(params) {
         await log(
           `📷 Se adjunta la foto de "${mencionado.nombre}" (el bot no la había mandado)`,
         );
+      } else if (mencionado?.imagen_url && yaTraeImagen) {
+        /* El modelo SÍ puso una foto, pero de OTRO producto del catálogo:
+           copió la url de un vecino de file_search ("LAPIZ MICROBLADING" cuando
+           el texto hablaba del "LAPIZ CUBRE CANAS": 12 chats en una semana,
+           cfg 711, sep-2026; y la barra por el lápiz). Si el texto nombra un
+           producto y la foto es de otro, se cambia por la del nombrado. Las
+           etiquetas de upsell no se tocan: esa sí es otro producto a propósito. */
+        const fn = (u) => {
+          const s = String(u || '').split('?')[0];
+          try {
+            return decodeURIComponent(s.slice(s.lastIndexOf('/') + 1)).toLowerCase();
+          } catch (_) {
+            return s.slice(s.lastIndexOf('/') + 1).toLowerCase();
+          }
+        };
+        const fnMencionado = fn(mencionado.imagen_url);
+        let cambiadas = 0;
+        respuestaParaMedia = respuestaRaw.replace(
+          /\[producto_imagen_url\]:\s*(\S+)/gi,
+          (todo, url) => {
+            const dueno = conImagen.find((p) => fn(p.imagen_url) === fn(url));
+            if (
+              !dueno ||
+              fn(url) === fnMencionado ||
+              norm(dueno.nombre) === norm(mencionado.nombre)
+            )
+              return todo;
+            cambiadas += 1;
+            return `[producto_imagen_url]: ${normalizarUrlMedia(mencionado.imagen_url)}`;
+          },
+        );
+        if (cambiadas) {
+          ofrecerMedia(id_cliente, [normalizarUrlMedia(mencionado.imagen_url)]);
+          await log(
+            `📷 La foto era de otro producto: se reemplaza por la de "${mencionado.nombre}"`,
+          );
+        }
       }
     } catch (e) {
       await log(`⚠️ No se pudo adjuntar la imagen del producto: ${e.message}`);
@@ -3029,7 +3078,7 @@ async function procesarMensajeKanban(params) {
 
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
-  const media = extraerMedia(`${respuestaRaw}${adjuntoImagen}`);
+  const media = extraerMedia(`${respuestaParaMedia}${adjuntoImagen}`);
   const { texto } = media;
   soloTexto = texto;
 

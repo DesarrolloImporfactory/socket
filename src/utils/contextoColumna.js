@@ -783,8 +783,24 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
          —copiada de un fragmento de file_search, de la memoria del hilo o
          inventada— se bloquea en el envío. */
       if (opts?.id_cliente) {
+        /* Con un producto EN JUEGO, los "nombrados" por una sola palabra no
+           habilitan su media: con "LAPIZ CUBRE CANAS" el candado dejaba salir
+           la foto del "LAPIZ MICROBLADING para cejas" (12 chats en una
+           semana, cfg 711, sep-2026) y la del "Cubre canas en barra". Solo
+           cuenta lo que la persona nombró completo (todas sus palabras
+           útiles); sin producto en juego se sigue como antes. */
+        const nombradoCompleto = (p) => {
+          const tokens = palabrasUtiles(p.nombre);
+          return (
+            tokens.length > 0 &&
+            tokens.every((t) => palabrasMsg.some((m) => mismaPalabra(t, m)))
+          );
+        };
+        const conMedia = enJuego
+          ? [enJuego, ...nombrados.filter(nombradoCompleto)]
+          : [enJuego, ...nombrados];
         const ofrecidas = [];
-        for (const p of [enJuego, ...nombrados].filter(Boolean)) {
+        for (const p of conMedia.filter(Boolean)) {
           if (p.imagen_url) ofrecidas.push(normalizarUrlMedia(p.imagen_url));
           if (p.video_url) ofrecidas.push(normalizarUrlMedia(p.video_url));
           if (p.documento_url)
@@ -1267,11 +1283,19 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
        posición lleva la regla DEL DIRECTORIO; la legacy queda para las
        cuentas sin switch, que no tienen directorio que consultar. */
     let retiroDirectorio = false;
+    /* Modalidad preferida de la tienda (configuraciones.modalidad_envio_preferida):
+       con 'agencia', la pregunta de modalidad ofrece primero la oficina. */
+    let preferirAgencia = false;
     try {
       const {
         estaActivo: retiroAgenciaActivo,
+        modalidadPreferida,
       } = require('../services/kanban_retiro_agencia.service');
       retiroDirectorio = await retiroAgenciaActivo(id_configuracion);
+      if (retiroDirectorio && typeof modalidadPreferida === 'function') {
+        preferirAgencia =
+          (await modalidadPreferida(id_configuracion)) === 'agencia';
+      }
     } catch (_) {
       /* sin el service (tests aislados): rige la legacy */
     }
@@ -1302,7 +1326,13 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega) — MANDA LA SECCIÓN ` +
         `"RETIRO EN AGENCIA SERVIENTREGA" DE TUS INSTRUCCIONES:\n` +
         `- Ninguna oficina antes de que el cliente ELIJA retiro con sus ` +
-        `palabras: saber su ciudad no es elegir. Sin modalidad, pregúntala.\n` +
+        `palabras: saber su ciudad no es elegir. Sin modalidad, ` +
+        (preferirAgencia
+          ? `ofrécele PRIMERO retirar en una oficina Servientrega de su ciudad ` +
+            `(paga al retirar; es lo que esta tienda prefiere) y menciona el ` +
+            `domicilio solo como alternativa; NO pidas dirección de casa hasta ` +
+            `que elija.\n`
+          : `pregúntala.\n`) +
         `- En cuanto el cliente elija agencia/oficina, tu SIGUIENTE mensaje es ` +
         `ofrecerle de 3 a 5 oficinas REALES del directorio (file_search) de SU ` +
         `ciudad, cada una con sector y dirección copiados tal cual. Si la ` +

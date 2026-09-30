@@ -665,6 +665,7 @@ function bloqueFichaPedido(
     retiroDirectorio = false,
     variantes = [],
     mexico = false,
+    preferirAgencia = false,
   } = {},
 ) {
   if (!fichaTieneDatos(ficha)) return '';
@@ -744,7 +745,12 @@ function bloqueFichaPedido(
     );
   else if (f.cantidad) lineas.push(`✅ Cantidad: ${f.cantidad}`);
 
-  const faltan = faltantesFicha(f, { retiroDirectorio, variantes, mexico });
+  const faltan = faltantesFicha(f, {
+    retiroDirectorio,
+    variantes,
+    mexico,
+    preferirAgencia,
+  });
 
   let txt =
     `📋 FICHA DEL PEDIDO — lo que el cliente YA DIJO en esta conversación. La leyó el sistema de SUS mensajes y manda sobre tu memoria:\n` +
