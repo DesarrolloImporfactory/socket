@@ -103,6 +103,15 @@ router.post(
   ctrl.listOrdersFromCache,
 );
 
+// Novedades pendientes por solucionar (consulta en vivo a Dropi) y detalle
+// de la gestión de una novedad (history_new_orders).
+router.post(
+  '/novedades/pendientes',
+  auth.protectConfigOwner,
+  ctrl.listNovedadesPendientes,
+);
+router.post('/novedades/detalle', auth.protectConfigOwner, ctrl.detalleNovedad);
+
 //Obtener Productos Dropi
 router.post('/products/index', auth.protectConfigOwner, ctrl.listProductsIndex);
 
