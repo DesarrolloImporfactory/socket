@@ -291,10 +291,22 @@ exports.reiniciar = catchAsync(async (req, res, next) => {
      viejo, al reinstalar sigue habiendo una versión aplicada de una plantilla
      que ya no existe y el aviso de "actualización disponible" reaparece sin
      motivo. */
+  /* Si el tablero que se borra era de proveeduría, la cuenta deja de ser
+     proveedor: el flag lo puso la plantilla, así que se va con ella. */
+  let eraProveedor = false;
+  try {
+    eraProveedor = Boolean(
+      (await _setupDeLaPlantillaInstalada(id_configuracion)).es_proveedor,
+    );
+  } catch (_) {
+    eraProveedor = false;
+  }
   await db.query(
     `UPDATE configuraciones
      SET kanban_global_activo = 0, kanban_global_id = NULL,
-         prompt_version = NULL, pais_plantilla = NULL
+         prompt_version = NULL, pais_plantilla = NULL${
+           eraProveedor ? ', es_proveedor = 0' : ''
+         }
      WHERE id = ?`,
     { replacements: [id_configuracion] },
   );
@@ -693,6 +705,7 @@ exports.listarGlobales = catchAsync(async (req, res) => {
       citas: cols.some((c) =>
         (c.acciones || []).some((a) => a.tipo_accion === 'agendar_cita'),
       ),
+      proveedor: setup.es_proveedor,
     };
 
     const columnasPreview = cols
@@ -1341,6 +1354,12 @@ function _resolverSetup(dataPlantilla) {
     respuestas_rapidas_items: arr(s.respuestas_rapidas_items),
     remarketing_items: arr(s.remarketing_items),
     dropi_config_items: arr(s.dropi_config_items),
+    /* Plantilla de proveeduría: al aplicarla la cuenta pasa a
+       configuraciones.es_proveedor = 1 (el catálogo del bot sube con ID Dropi
+       y stock; la cuenta sale del ranking de proveedores Dropi) y "Reiniciar
+       tablero" la devuelve a 0. Solo explícito: las demás plantillas no tocan
+       el flag. */
+    es_proveedor: s.es_proveedor === true,
   };
 }
 
@@ -1468,6 +1487,18 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     `[aplicarGlobal] cfg=${id_configuracion} setup=`,
     JSON.stringify(setup),
   );
+
+  if (setup.es_proveedor) {
+    try {
+      await db.query(
+        `UPDATE configuraciones SET es_proveedor = 1 WHERE id = ?`,
+        { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+      );
+      console.log(`[aplicarGlobal] cfg=${id_configuracion} marcada como proveedor (es_proveedor = 1)`);
+    } catch (e) {
+      console.warn('[aplicarGlobal] no se pudo marcar es_proveedor:', e.message);
+    }
+  }
 
   const nombreTiendaResuelto =
     (empresa && empresa.trim()) || nombreEmpresaConfig || null;

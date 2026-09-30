@@ -1278,7 +1278,11 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
        file_search. Las columnas siguen en la base con lo ya cargado. */
     if (r.material) bloque_prompt += `[ficha_tecnica_url]: ${r.material}\n`;
     if (r.landing_url) bloque_prompt += `[landing_url]: ${r.landing_url}\n`;
-    if (r.precio_proveedor)
+    /* En una cuenta PROVEEDORA precio_proveedor es SU costo: si viaja al
+       catálogo, el bot lo cotiza como "precio mayorista" (prueba en la 10,
+       2026-09-30: quiso vender a $15 un producto de $25 con costo 15). Para
+       el dropshipper sigue igual: es el precio de su proveedor Dropi. */
+    if (r.precio_proveedor && !esProveedor)
       bloque_prompt += `precio_proveedor ${r.precio_proveedor}\n`;
 
     const baseReturn = {
@@ -1300,7 +1304,7 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
       producto_video_url: video_url,
       material: r.material || null,
       landing_url: r.landing_url || null,
-      precio_proveedor: r.precio_proveedor || null,
+      precio_proveedor: esProveedor ? null : r.precio_proveedor || null,
       es_variable: Number(r.es_variable) === 1,
       variedades: r.variantes_texto || null,
       combos_producto: combos_json,

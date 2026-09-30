@@ -141,6 +141,20 @@ async function getActiveIntegration(id_configuracion) {
 exports.listarProductos = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.body;
 
+  /* Cuenta proveedora (tablero "Agente de Proveeduría"): el front usa esto
+     para presentar los combos como "Precios por cantidad" y explicar cómo
+     los cobra el bot. Un dropshipper ve el formulario de siempre. */
+  let esProveedor = false;
+  try {
+    const [cfg] = await db.query(
+      `SELECT COALESCE(es_proveedor, 0) AS es_proveedor FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    esProveedor = Number(cfg?.es_proveedor || 0) === 1;
+  } catch (_) {
+    esProveedor = false;
+  }
+
   const productos = await ProductosChatCenter.findAll({
     where: { id_configuracion },
   });
@@ -149,6 +163,7 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
     return res.status(200).json({
       status: 'success',
       data: [],
+      es_proveedor: esProveedor,
       message: 'No existen productos para esta configuración.',
     });
   }
@@ -176,6 +191,7 @@ exports.listarProductos = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: 'success',
+    es_proveedor: esProveedor,
     data: productos.map((p) => ({
       ...p.toJSON(),
       variaciones: porProducto.get(p.id) || [],
