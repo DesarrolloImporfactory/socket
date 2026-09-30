@@ -456,7 +456,7 @@ exports.crearColumna = catchAsync(async (req, res, next) => {
     return next(new AppError('Tablero no encontrado', 404));
 
   // Sanitizar estado_db → lowercase snake_case
-  const estado_db_clean = estado_db.trim().toLowerCase().replace(/\s+/g, '_');
+  let estado_db_clean = estado_db.trim().toLowerCase().replace(/\s+/g, '_');
 
   // Verificar duplicado (único por cuenta, sin importar el tablero)
   const [dup] = await db.query(
@@ -467,8 +467,25 @@ exports.crearColumna = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.SELECT,
     },
   );
-  if (dup)
-    return next(new AppError('Ya existe una columna con ese estado_db', 409));
+  if (dup) {
+    /* auto_estado_db: la clave la generó el front a partir del nombre (el
+       cliente ya no la escribe). Si choca con una columna de OTRO tablero de
+       la cuenta, se le agrega un sufijo en vez de devolverle un error sobre
+       un campo que nunca vio. */
+    if (!req.body.auto_estado_db)
+      return next(new AppError('Ya existe una columna con ese estado_db', 409));
+    const usados = new Set(
+      (
+        await db.query(
+          `SELECT estado_db FROM kanban_columnas WHERE id_configuracion = ?`,
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        )
+      ).map((r) => String(r.estado_db || '').toLowerCase()),
+    );
+    let sufijo = 2;
+    while (usados.has(`${estado_db_clean}_${sufijo}`)) sufijo += 1;
+    estado_db_clean = `${estado_db_clean}_${sufijo}`;
+  }
 
   // Obtener el máximo orden actual del tablero
   const t = whereTablero(tablero);
