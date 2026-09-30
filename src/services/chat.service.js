@@ -412,6 +412,10 @@ class ChatService {
             where: {
               celular_recibe: id_cliente,
               id_configuracion: id_configuracion,
+              // Filas dadas de baja (p. ej. el globito suelto de un revoke
+              // que ya quedó aplicado sobre el mensaje original, ver
+              // scripts/repararRevokesDesdeApp.js) no se pintan.
+              deleted_at: null,
             },
             attributes: [
               'texto_mensaje',

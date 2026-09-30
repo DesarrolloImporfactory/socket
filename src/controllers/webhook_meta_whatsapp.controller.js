@@ -112,6 +112,7 @@ const {
 } = require('../utils/webhook_whatsapp/funciones_typing');
 
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
+const { buscarContactoWa } = require('../utils/unified/dedupeContacto');
 const {
   manejarWebhookLlamadas,
   avisarRespuestaPermiso,
@@ -199,6 +200,74 @@ async function guardarPrecioMeta(id_configuracion, wamid, status) {
 }
 
 /**
+ * Saca el identificador propio del mensaje de adentro de un wamid.
+ *
+ * Un wamid es base64 de un sobre binario: el JID del chat + el id del mensaje
+ * (20 hex). El MISMO mensaje tiene dos wamids distintos según quién lo mire:
+ * la Cloud API lo arma con el teléfono del cliente
+ *   ("593989858919" + "CE60A8FBC5A92630A505")
+ * y la app de WhatsApp Business (coexistencia) con el LID del chat
+ *   ("EC.1416637059792758" + "CE60A8FBC5A92630A505").
+ * Por eso, cuando el dueño de la cuenta borra desde su celular un mensaje que
+ * salió por la API (el bot, una plantilla), el `original_message_id` del
+ * revoke NO coincide textual con el wamid guardado, aunque sea el mismo
+ * mensaje. Comparar por este id de 20 hex sí los empareja.
+ */
+function idInternoDeWamid(wamid) {
+  const b64 = String(wamid || '').replace(/^wamid\./, '');
+  if (!b64) return null;
+  try {
+    const crudo = Buffer.from(b64, 'base64').toString('latin1');
+    const m = crudo.match(/([0-9A-F]{16,})[^0-9A-F]*$/i);
+    return m ? m[1].toUpperCase() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Busca el mensaje al que apunta un revoke/edit cuando el wamid no coincide
+ * textual: resuelve el chat por el teléfono del contacto y compara el id
+ * interno contra los mensajes recientes de ese chat. La ventana de "eliminar
+ * para todos" de WhatsApp es de 2 días, así que 3 días de margen sobran; el
+ * tope de filas es para no decodificar un chat entero por un solo evento.
+ */
+async function buscarOriginalPorIdInterno({
+  wamid,
+  id_configuracion,
+  telefono_cliente,
+}) {
+  const idBuscado = idInternoDeWamid(wamid);
+  if (!idBuscado) return null;
+
+  const id_chat = await buscarContactoWa({
+    id_configuracion,
+    telefono: telefono_cliente,
+  });
+  if (!id_chat) return null;
+
+  const filas = await db.query(
+    `SELECT id, id_wamid_mensaje
+       FROM mensajes_clientes
+      WHERE id_configuracion = :cfg
+        AND celular_recibe = :chat
+        AND id_wamid_mensaje IS NOT NULL
+        AND created_at >= NOW() - INTERVAL 3 DAY
+      ORDER BY id DESC
+      LIMIT 400`,
+    {
+      replacements: { cfg: id_configuracion, chat: id_chat },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const fila = filas.find(
+    (f) => idInternoDeWamid(f.id_wamid_mensaje) === idBuscado,
+  );
+  return fila ? MensajeCliente.findByPk(fila.id) : null;
+}
+
+/**
  * Aplica sobre el mensaje original la edición o el borrado que el cliente hizo
  * desde su WhatsApp. Devuelve true si encontró el original y lo actualizó.
  *
@@ -207,12 +276,22 @@ async function guardarPrecioMeta(id_configuracion, wamid, status) {
  * mensaje nuevo. Las ventanas las hace cumplir WhatsApp del lado del cliente
  * (15 minutos para editar, 2 días para eliminar para todos), así que si el
  * evento llegó es porque estaba dentro de plazo: no hace falta revalidarlo.
+ *
+ * `telefono_cliente` es el número del contacto del chat: se usa cuando el
+ * wamid no coincide textual (borrado hecho desde la app de WhatsApp Business
+ * sobre un mensaje que salió por la API, ver idInternoDeWamid) para buscar el
+ * original entre los mensajes recientes de ESE chat comparando el id interno.
+ * Caso real (2026-09-30, cfg 548): el dueño borró desde su celular un mensaje
+ * del bot de la noche anterior; el revoke no encontraba el original y quedaba
+ * un globito suelto "🚫 Mensaje eliminado por el usuario" a la hora del
+ * borrado, firmado por WhatsApp Business, que se leía como un mensaje nuevo.
  */
 async function aplicarEdicionORevoke({
   tipo_mensaje,
   mensaje_recibido,
   id_configuracion,
   texto_nuevo,
+  telefono_cliente = null,
 }) {
   const originalWamid =
     tipo_mensaje === 'revoke'
@@ -221,9 +300,17 @@ async function aplicarEdicionORevoke({
 
   if (!originalWamid) return false;
 
-  const original = await MensajeCliente.findOne({
+  let original = await MensajeCliente.findOne({
     where: { id_wamid_mensaje: originalWamid, id_configuracion },
   });
+
+  if (!original && telefono_cliente) {
+    original = await buscarOriginalPorIdInterno({
+      wamid: originalWamid,
+      id_configuracion,
+      telefono_cliente,
+    });
+  }
 
   // Puede no estar: mensajes anteriores a que guardáramos el wamid, o de otra
   // conexión. En ese caso el llamador sigue con el flujo viejo y deja al menos
@@ -1047,8 +1134,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         case 'revoke': {
           const originalId =
             mensaje_recibido?.revoke?.original_message_id || '';
-          // Texto “humano” opcional para logs
-          texto_mensaje = '🚫 Mensaje eliminado por el usuario';
+          // Texto “humano” opcional para logs. Si el evento llegó como echo,
+          // el que borró fue el dueño de la cuenta desde la app de WhatsApp
+          // Business, no el cliente: decirlo evita leerlo como un mensaje
+          // nuevo enviado desde el celular.
+          texto_mensaje = isSMBEcho
+            ? '🚫 Mensaje eliminado desde la app de WhatsApp Business'
+            : '🚫 Mensaje eliminado por el usuario';
           // Si quieres guardar referencia (opcional)
           ruta_archivo = originalId
             ? JSON.stringify({ original_message_id: originalId })
@@ -1077,6 +1169,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           mensaje_recibido,
           id_configuracion,
           texto_nuevo: texto_mensaje,
+          telefono_cliente: phone_whatsapp_from,
         });
 
         if (aplicado) {

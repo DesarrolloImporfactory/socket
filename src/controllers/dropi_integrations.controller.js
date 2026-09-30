@@ -940,6 +940,177 @@ exports.listMyOrders = catchAsync(async (req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
+   Novedades Dropi pendientes por solucionar
+   Dropi las entrega en GET /orders/myorders con los filtros
+   haveIncidenceProcesamiento=true (pendientes, sin gestión del
+   usuario ni de la transportadora) e issue_solved_by_parent_order=
+   false (sin gestión del usuario). El texto de la novedad viene en
+   novedad_servientrega (el nombre es histórico: aplica a todas las
+   transportadoras). El detalle de la gestión (solución, aclaración,
+   nuevos datos) está en history_new_orders del detalle de la orden.
+   distribution_company.incidence_solution_method dice cómo se
+   soluciona en esa transportadora (p. ej. "URL" en Gintracom).
+   ═══════════════════════════════════════════════════════════ */
+
+function mapNovedadDropi(o) {
+  const dc = o?.distribution_company || {};
+  return {
+    order_id: o?.id,
+    status: o?.status || null,
+    guia: o?.shipping_guide || null,
+    transportadora: o?.shipping_company || dc.name || null,
+    metodo_solucion: dc.incidence_solution_method || null,
+    novedad: o?.novedad_servientrega || null,
+    solucionada_por_operador: !!o?.issue_solved_by_operator,
+    solucionada_por_usuario: !!o?.issue_solved_by_parent_order,
+    cliente: {
+      nombre: [o?.name, o?.surname].filter(Boolean).join(' ').trim() || null,
+      telefono: o?.phone || null,
+      direccion: o?.dir || null,
+      ciudad: o?.city || null,
+      provincia: o?.state || null,
+    },
+    productos: (o?.orderdetails || []).map((d) => ({
+      nombre: d?.product?.name || d?.integration_product_name || 'Producto',
+      cantidad: Number(d?.quantity) || 1,
+    })),
+    total: o?.total_order ?? null,
+    created_at: o?.created_at || null,
+    updated_at: o?.updated_at || null,
+  };
+}
+
+exports.listNovedadesPendientes = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const page = Math.max(1, toInt(req.body?.page) || 1);
+  const pageSize = Math.min(50, Math.max(1, toInt(req.body?.page_size) || 20));
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    return next(
+      new AppError(
+        'No existe una integración Dropi activa para esta configuración',
+        404,
+      ),
+    );
+  }
+
+  const integrationKey = getIntegrationKey(integration);
+  if (!integrationKey || !String(integrationKey).trim()) {
+    return next(new AppError('Dropi key inválida o no disponible', 400));
+  }
+
+  // Se pide uno de más para saber si hay página siguiente.
+  const dropiResponse = await dropiService.listMyOrders({
+    integrationKey,
+    country_code: integration.country_code,
+    params: {
+      result_number: pageSize + 1,
+      start: (page - 1) * pageSize,
+      filter_date_by: 'FECHA DE CREADO',
+      haveIncidenceProcesamiento: true,
+      issue_solved_by_parent_order: false,
+    },
+  });
+
+  const objects = dropiResponse?.objects || dropiResponse?.data?.objects || [];
+  const hasMore = objects.length > pageSize;
+  const pagina = hasMore ? objects.slice(0, pageSize) : objects;
+
+  const enriched = await enrichOrdersWithChatAndAgent({
+    id_configuracion,
+    objects: pagina,
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      page,
+      page_size: pageSize,
+      hasMore,
+      novedades: enriched.map((o) => ({
+        ...mapNovedadDropi(o),
+        has_chat: o.has_chat,
+        chat_id_cliente: o.chat_id_cliente || null,
+        agent_assigned: o.agent_assigned,
+      })),
+    },
+  });
+});
+
+exports.detalleNovedad = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const order_id = toInt(req.body?.order_id);
+  if (!id_configuracion || !order_id) {
+    return next(
+      new AppError('id_configuracion y order_id son requeridos', 400),
+    );
+  }
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    return next(
+      new AppError(
+        'No existe una integración Dropi activa para esta configuración',
+        404,
+      ),
+    );
+  }
+
+  const integrationKey = getIntegrationKey(integration);
+  if (!integrationKey || !String(integrationKey).trim()) {
+    return next(new AppError('Dropi key inválida o no disponible', 400));
+  }
+
+  const det = await dropiService.getOrderDetail({
+    integrationKey,
+    orderId: order_id,
+    country_code: integration.country_code,
+  });
+  const o = det?.objects || det?.data || det;
+  if (!o || !o.id) {
+    return next(new AppError('Orden no encontrada en Dropi', 404));
+  }
+
+  // Gestiones de la novedad, de la más reciente a la más antigua.
+  const gestiones = (o.history_new_orders || [])
+    .map((h) => ({
+      id: h.id,
+      novedad: h.novedad || null,
+      comentario: h.comentario || null,
+      solucion: h.solution || null,
+      opciones_solucion: h.solution_list || null,
+      aclaracion: h.aclaracion || null,
+      observacion: h.observation || null,
+      nueva_direccion: h.dir || null,
+      nuevo_nombre: h.name || null,
+      nuevo_telefono: h.phone || null,
+      solucionada_por: h.solved_by_user || h.user_solved || null,
+      fecha_solucion: h.date_solution || null,
+      created_at: h.created_at || null,
+    }))
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+  const estados = (o.history || []).map((h) => ({
+    status: h.status,
+    novedad: h.novedad_servientrega || null,
+    created_at: h.created_at,
+  }));
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      ...mapNovedadDropi(o),
+      gestiones,
+      estados,
+    },
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
    listOrdersFromCache
    Vista Pedidos: lee dropi_orders_cache (NO golpea la API de
    Dropi en cada búsqueda/página). Enriquece con chat/agente,
