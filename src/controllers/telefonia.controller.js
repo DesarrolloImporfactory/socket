@@ -325,6 +325,22 @@ exports.recargar = catchAsync(async (req, res) => {
   return res.json({ status: 'success', data: { saldo_centavos: saldo } });
 });
 
+/** Quita saldo a una conexión (super administrador). Sin centavos = todo. */
+exports.retirar = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const centavos = req.body.centavos != null ? Math.round(Number(req.body.centavos)) : Number.MAX_SAFE_INTEGER;
+  const saldo = await zadarma.retirar(
+    id_configuracion,
+    centavos,
+    req.sessionUser.id_sub_usuario,
+    req.body.detalle || 'Retiro desde /telefonia',
+  );
+  return res.json({ status: 'success', data: { saldo_centavos: saldo } });
+});
+
 /** Caller ID y tarifa de una conexión (super administrador). */
 exports.configurarCuenta = catchAsync(async (req, res) => {
   const id_configuracion = Number(req.body.id_configuracion);
