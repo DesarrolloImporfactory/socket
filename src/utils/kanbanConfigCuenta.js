@@ -22,12 +22,48 @@ const { esConfigSoporte } = require('./configsSoporte');
 
 let avisoSinMigrar = false;
 
+/* - agenda_automatica: ¿el bot crea la cita en el calendario (true) o deja una
+     solicitud para que una persona la confirme (false)? Es el `modo` de TODAS
+     las acciones agendar_cita de la cuenta; null si no tiene ninguna. Un solo
+     switch porque un tablero con agenda la repite en 4-5 columnas. */
+async function accionesAgenda(id_configuracion) {
+  return db.query(
+    `SELECT ka.id, ka.config
+       FROM kanban_acciones ka
+       JOIN kanban_columnas kc ON kc.id = ka.id_kanban_columna
+      WHERE kc.id_configuracion = ? AND ka.tipo_accion = 'agendar_cita'`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+}
+
+const configDe = (raw) => {
+  try {
+    let c = raw;
+    while (typeof c === 'string') c = JSON.parse(c);
+    return c && typeof c === 'object' ? c : {};
+  } catch {
+    return {};
+  }
+};
+
 async function getKanbanConfigCuenta(id_configuracion) {
   const out = {
     volver_al_cerrar: true,
     mostrar_membresia: esConfigSoporte(id_configuracion),
+    agenda_automatica: null,
   };
   if (!id_configuracion) return out;
+  try {
+    const acciones = await accionesAgenda(id_configuracion);
+    if (acciones.length) {
+      // Automática solo si NINGUNA quedó en solicitud.
+      out.agenda_automatica = acciones.every(
+        (a) => configDe(a.config).modo !== 'solicitud',
+      );
+    }
+  } catch (err) {
+    console.warn('[kanbanConfigCuenta] agenda_automatica:', err.message);
+  }
   try {
     const [row] = await db.query(
       `SELECT kanban_volver_al_cerrar FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -48,8 +84,23 @@ async function getKanbanConfigCuenta(id_configuracion) {
 
 async function setKanbanConfigCuenta(
   id_configuracion,
-  { volver_al_cerrar } = {},
+  { volver_al_cerrar, agenda_automatica } = {},
 ) {
+  if (agenda_automatica !== undefined) {
+    const modo = agenda_automatica ? 'auto' : 'solicitud';
+    for (const a of await accionesAgenda(id_configuracion)) {
+      const config = { ...configDe(a.config), modo };
+      // Sin columna destino la solicitud se guarda igual, pero la tarjeta no
+      // tiene a dónde ir: por_agendar es la de las plantillas.
+      if (modo === 'solicitud' && !config.estado_solicitud) {
+        config.estado_solicitud = 'por_agendar';
+      }
+      await db.query(`UPDATE kanban_acciones SET config = ? WHERE id = ?`, {
+        replacements: [JSON.stringify(config), a.id],
+        type: db.QueryTypes.UPDATE,
+      });
+    }
+  }
   if (volver_al_cerrar === undefined) return;
   await db.query(
     `UPDATE configuraciones SET kanban_volver_al_cerrar = ? WHERE id = ?`,

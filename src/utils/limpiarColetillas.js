@@ -51,8 +51,12 @@ function limpiarColetillas(texto) {
 
   let salida = texto;
 
+  /* Una frase que ofrece un asesor no es relleno, es información: "Si tienes
+     alguna duda, un asesor te acompaña en el proceso" (soporte IMPORSHOP). */
   for (const patron of PATRONES) {
-    salida = salida.replace(new RegExp(patron.source, 'gi'), '');
+    salida = salida.replace(new RegExp(patron.source, 'gi'), (m) =>
+      /asesor/i.test(m) ? m : '',
+    );
   }
 
   salida = limpiarSobrantes(salida);

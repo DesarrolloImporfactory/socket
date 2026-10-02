@@ -203,4 +203,34 @@ async function intentarEnviarEncuesta({
   }
 }
 
-module.exports = { intentarEnviarEncuesta };
+/**
+ * Encuesta al mover el chat a la columna "Resuelto" (bot con [resuelto]:true o
+ * tarjeta arrastrada), además de la de siempre al cerrar el chat. Pasar a
+ * asesor no la dispara. Mismo criterio que el cierre: solo WhatsApp.
+ */
+async function encuestaAlResolver({ id_cliente, id_encargado = null }) {
+  try {
+    const [chat] = await db.query(
+      `SELECT c.id, c.id_configuracion, c.nombre_cliente, c.id_encargado, v.source
+         FROM clientes_chat_center c
+         LEFT JOIN vista_chats v ON v.id = c.id AND v.id_configuracion = c.id_configuracion
+        WHERE c.id = :id LIMIT 1`,
+      { replacements: { id: id_cliente }, type: QueryTypes.SELECT },
+    );
+    if (!chat?.id_configuracion) return { programado: false, razon: 'sin_chat' };
+    if (chat.source && chat.source !== 'wa') {
+      return { programado: false, razon: 'no_whatsapp' };
+    }
+    return await intentarEnviarEncuesta({
+      idConfiguracion: chat.id_configuracion,
+      idClienteChatCenter: chat.id,
+      idEncargado: chat.id_encargado || id_encargado,
+      nombreCliente: chat.nombre_cliente || '',
+    });
+  } catch (err) {
+    console.error('[encuesta] ❌ encuestaAlResolver:', err.message);
+    return { programado: false, razon: 'error', error: err.message };
+  }
+}
+
+module.exports = { intentarEnviarEncuesta, encuestaAlResolver };

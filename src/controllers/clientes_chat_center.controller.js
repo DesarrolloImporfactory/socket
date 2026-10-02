@@ -63,7 +63,11 @@ const ChatService = require('../services/chat.service');
 const { Op, fn, col } = require('sequelize');
 const crypto = require('crypto');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
-const { intentarEnviarEncuesta } = require('../utils/encuestaSatisfaccion');
+const {
+  intentarEnviarEncuesta,
+  encuestaAlResolver,
+} = require('../utils/encuestaSatisfaccion');
+const { ESTADO_RESUELTO } = require('../utils/kanbanReabrirResuelto');
 const ExcelJS = require('exceljs');
 const {
   rellenarEmailClienteSiVacio,
@@ -1633,7 +1637,14 @@ exports.actualizarEstadoDinamico = async (req, res) => {
     // ── Actualizar ──
     if (id_tablero === null) {
       // Tablero principal: es lo que leen el bot, remarketing y el webhook.
+      const yaResuelto = cliente.estado_contacto === ESTADO_RESUELTO;
       await cliente.update({ estado_contacto: nuevo_estado });
+      if (nuevo_estado === ESTADO_RESUELTO && !yaResuelto) {
+        encuestaAlResolver({
+          id_cliente: cliente.id,
+          id_encargado: req.sessionUser?.id_sub_usuario || null,
+        });
+      }
     } else {
       // Tablero secundario: no toca estado_contacto. Un contacto ocupa una
       // sola columna por tablero (uq_cliente_tablero).
