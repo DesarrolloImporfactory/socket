@@ -35,7 +35,8 @@ exports.requireChatPropietario = (campo = 'chatId') =>
     }
 
     const [chat] = await db.query(
-      `SELECT c.id, c.id_encargado, c.id_configuracion, cf.id_usuario
+      `SELECT c.id, c.id_encargado, c.chat_cerrado, c.celular_cliente,
+              c.id_configuracion, cf.id_usuario
          FROM clientes_chat_center c
          INNER JOIN configuraciones cf ON cf.id = c.id_configuracion
         WHERE c.id = ?
