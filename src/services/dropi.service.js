@@ -314,6 +314,37 @@ exports.getProductDetail = async ({
   }
 };
 
+/**
+ * POST /orders/saveincidencesolution  (Solventar novedades)
+ * Es el endpoint que usa el panel de Dropi al solucionar una novedad
+ * (capturado desde https://api.dropi.ec/api/...). payload = { data: [ {...} ] }:
+ * acepta varias órdenes a la vez; cada una lleva order_id, solution (texto),
+ * selectValueConfirma ({ value, descripcion }: la opción elegida, p. ej.
+ * { 1, "Volver a ofrecer" }), dateToSend y, si aplica, los datos nuevos
+ * (direccionConfirma, nombreConfirma, telefonoBaseConfirma…).
+ * Responde { isSuccess, message: "Novedades reportadas con éxito!" }.
+ */
+exports.saveIncidenceSolution = async ({
+  integrationKey,
+  payload,
+  country_code,
+}) => {
+  try {
+    const dropiHttp = getDropiHttp(country_code);
+    const { data } = await dropiHttp.post(
+      '/orders/saveincidencesolution',
+      payload,
+      {
+        headers: dropiHeaders(integrationKey),
+        timeout: 20000,
+      },
+    );
+    return data;
+  } catch (err) {
+    throw normalizeDropiError(err);
+  }
+};
+
 exports.getOriginCityForShipping = async ({
   integrationKey,
   productId,

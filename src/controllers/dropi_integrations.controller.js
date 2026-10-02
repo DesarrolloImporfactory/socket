@@ -1110,6 +1110,99 @@ exports.detalleNovedad = catchAsync(async (req, res, next) => {
   });
 });
 
+/* Fecha de hoy en Ecuador (YYYY-MM-DD) para dateToSend por defecto. */
+function hoyEcuador() {
+  return new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+}
+
+/* Solventar una novedad en Dropi. Arma el mismo payload que el panel de
+   Dropi manda a /orders/saveincidencesolution (capturado del navegador):
+   la opción elegida va en selectValueConfirma y el texto en solution; los
+   datos nuevos (dirección, nombre, teléfono) solo cuando la opción los pide. */
+exports.solucionarNovedad = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const order_id = toInt(req.body?.order_id);
+  const solucion = String(req.body?.solucion || '').trim();
+  const opcionValue = toInt(req.body?.opcion?.value);
+  const opcionDescripcion = String(req.body?.opcion?.descripcion || '').trim();
+  const fecha_envio = String(req.body?.fecha_envio || '').trim() || hoyEcuador();
+
+  if (!id_configuracion || !order_id) {
+    return next(
+      new AppError('id_configuracion y order_id son requeridos', 400),
+    );
+  }
+  if (!solucion) {
+    return next(new AppError('Escribe la solución de la novedad', 400));
+  }
+  if (!opcionValue || !opcionDescripcion) {
+    return next(new AppError('Elige el tipo de solución', 400));
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha_envio)) {
+    return next(new AppError('fecha_envio debe ser YYYY-MM-DD', 400));
+  }
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    return next(
+      new AppError(
+        'No existe una integración Dropi activa para esta configuración',
+        404,
+      ),
+    );
+  }
+
+  const integrationKey = getIntegrationKey(integration);
+  if (!integrationKey || !String(integrationKey).trim()) {
+    return next(new AppError('Dropi key inválida o no disponible', 400));
+  }
+
+  const txt = (v) => String(v ?? '').trim();
+  const payload = {
+    data: [
+      {
+        order_id,
+        direccionConfirma: txt(req.body?.nueva_direccion),
+        nombreConfirma: txt(req.body?.nuevo_nombre),
+        datosAdicionalDir: txt(req.body?.datos_adicionales_direccion),
+        telefonoBaseConfirma: txt(req.body?.nuevo_telefono),
+        fechaConfirma: txt(req.body?.fecha_confirma),
+        solution: solucion,
+        essolucion: 1,
+        tipocategoria: toInt(req.body?.tipo_categoria) || 0,
+        selectValueConfirma: {
+          value: opcionValue,
+          descripcion: opcionDescripcion,
+        },
+        dateToSend: fecha_envio,
+        location_url: txt(req.body?.location_url),
+      },
+    ],
+  };
+
+  const dropiResponse = await dropiService.saveIncidenceSolution({
+    integrationKey,
+    payload,
+    country_code: integration.country_code,
+  });
+
+  // Dropi puede responder 200 con isSuccess=false: no se da por solventada.
+  if (dropiResponse?.isSuccess === false) {
+    return next(
+      new AppError(
+        `Dropi: ${dropiResponse?.message || 'no aceptó la solución'}`,
+        400,
+      ),
+    );
+  }
+
+  return res.json({
+    isSuccess: true,
+    message: dropiResponse?.message || 'Novedad solventada',
+    data: dropiResponse,
+  });
+});
+
 /* ═══════════════════════════════════════════════════════════
    listOrdersFromCache
    Vista Pedidos: lee dropi_orders_cache (NO golpea la API de

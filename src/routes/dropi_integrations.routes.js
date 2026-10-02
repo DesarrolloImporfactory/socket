@@ -111,6 +111,12 @@ router.post(
   ctrl.listNovedadesPendientes,
 );
 router.post('/novedades/detalle', auth.protectConfigOwner, ctrl.detalleNovedad);
+// Solventar una novedad (POST /orders/saveincidencesolution en Dropi).
+router.post(
+  '/novedades/solucionar',
+  auth.protectConfigOwner,
+  ctrl.solucionarNovedad,
+);
 
 //Obtener Productos Dropi
 router.post('/products/index', auth.protectConfigOwner, ctrl.listProductsIndex);
