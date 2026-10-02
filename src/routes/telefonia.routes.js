@@ -32,6 +32,10 @@ router.get('/maestra', requireSuperAdmin, ctrl.maestraEstado); // llaves guardad
 router.post('/maestra', requireSuperAdmin, ctrl.maestraGuardar); // guarda llaves (prueba contra Zadarma)
 router.get('/cuentas', requireSuperAdmin, ctrl.cuentas); // conexiones con saldo + cobertura
 router.get('/admin/historial', requireSuperAdmin, ctrl.historialAdmin); // llamadas de una conexión, paginado
+router.get('/ia', requireSuperAdmin, ctrl.iaEstado); // llave de OpenAI para transcribir/resumir + conteo de análisis
+router.post('/ia', requireSuperAdmin, ctrl.iaGuardar); // guarda la llave (la prueba contra OpenAI)
+router.post('/ia/activar', requireSuperAdmin, ctrl.iaActivar); // enciende/apaga el análisis
+router.post('/ia/reanalizar', requireSuperAdmin, ctrl.iaReanalizar); // reintenta las que quedaron sin llave o con error
 router.get('/costo', requireSuperAdmin, ctrl.costo); // costo real por minuto según país
 router.get('/conexiones', requireSuperAdmin, ctrl.conexiones); // buscador para dar saldo
 
