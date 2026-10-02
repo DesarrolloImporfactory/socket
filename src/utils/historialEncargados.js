@@ -78,8 +78,15 @@ const SUB_USUARIOS_AUTOASIGNAN = [377];
 
 /**
  * Puede transferir quien tiene el chat, cualquiera si el chat está sin
- * asignar (los de «En espera», que cualquiera puede tomar), o un admin.
- * Además, los de SUB_USUARIOS_AUTOASIGNAN cuando el destino son ellos mismos.
+ * asignar (los de «En espera», que cualquiera puede tomar) o cerrado, o un
+ * admin. Además, los de SUB_USUARIOS_AUTOASIGNAN cuando el destino son ellos
+ * mismos.
+ *
+ * Un chat CERRADO cuenta como libre a propósito: conserva al encargado que lo
+ * atendió, pero ese dueño ya es provisional. Si el cliente vuelve a escribir,
+ * el round robin lo reparte entre los conectados y se lo da a otro sin
+ * preguntar (393 veces en 14 días en la cfg 242, medido el 2026-10-02). Que un
+ * asesor lo retome a mano es lo mismo que ya hace el sistema solo.
  *
  * Es la misma regla que ya aplica la lista de chats; hacía falta repetirla
  * acá porque al chat también se llega por el kanban o por /chat/:id, que no
@@ -89,6 +96,7 @@ function puedeTransferir(actor, chat, idEncargadoDestino = null) {
   if (!actor || !chat) return false;
   if (ROLES_ADMIN.includes(actor.rol)) return true;
   if (chat.id_encargado == null) return true;
+  if (Number(chat.chat_cerrado) === 1) return true;
   if (String(chat.id_encargado) === String(actor.id_sub_usuario)) return true;
   return (
     SUB_USUARIOS_AUTOASIGNAN.includes(Number(actor.id_sub_usuario)) &&

@@ -427,7 +427,8 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
     if (id_cliente_chat_center) {
       const chatOrigen = await Clientes_chat_center.findByPk(
         id_cliente_chat_center,
-        { attributes: ['id', 'id_encargado'] },
+        // chat_cerrado entra porque un chat cerrado cuenta como libre
+        { attributes: ['id', 'id_encargado', 'chat_cerrado'] },
       );
       if (chatOrigen && !puedeTransferir(actor, chatOrigen, id_encargado)) {
         return next(
@@ -922,20 +923,68 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
 
   const id_departamento = Departamento?.id_departamento ?? null;
 
+  /* Tomar un chat CERRADO lo reabre: si alguien lo retoma es porque lo va a
+     trabajar, y dejarlo cerrado lo escondería en «Resueltos». El chat llega
+     en req.chat desde requireChatPropietario, que ya lo leyó. */
+  const estabaCerrado = Number(req.chat?.chat_cerrado) === 1;
+
   await crearHistorial(
     {
       id_cliente_chat_center,
+      id_encargado_anterior: req.chat?.id_encargado ?? null,
       id_encargado_nuevo: id_encargado,
-      motivo: 'Auto-asignacion de chat',
+      motivo: estabaCerrado
+        ? 'Chat cerrado retomado por otro asesor'
+        : 'Auto-asignacion de chat',
       id_departamento_asginado: id_departamento,
     },
     req.sessionUser?.id_sub_usuario,
   );
 
   await Clientes_chat_center.update(
-    { id_encargado },
+    estabaCerrado ? { id_encargado, chat_cerrado: 0 } : { id_encargado },
     { where: { id: id_cliente_chat_center } },
   );
+
+  /* Nota dentro de la conversación, igual que la de las transferencias: así
+     el siguiente que abra el chat ve por qué cambió de manos sin tener que
+     abrir el historial. Solo al retomar un chat cerrado; tomar uno de «En
+     espera» no le quita nada a nadie y no necesita explicación. */
+  if (estabaCerrado) {
+    const [propietario, config, anterior] = await Promise.all([
+      Clientes_chat_center.findOne({
+        where: { id_configuracion, propietario: 1 },
+        attributes: ['id'],
+      }),
+      Configuraciones.findByPk(id_configuracion, {
+        attributes: ['id_telefono'],
+      }),
+      req.chat?.id_encargado
+        ? Sub_usuarios_chat_center.findByPk(req.chat.id_encargado, {
+            attributes: ['nombre_encargado'],
+          })
+        : null,
+    ]);
+
+    if (propietario) {
+      const quienToma = req.sessionUser?.nombre_encargado || 'Un asesor';
+      const quienLoTenia = anterior?.nombre_encargado;
+
+      await MensajesClientes.create({
+        id_configuracion,
+        id_cliente: propietario.id,
+        mid_mensaje: config?.id_telefono ?? null,
+        tipo_mensaje: 'notificacion',
+        visto: 0,
+        texto_mensaje: quienLoTenia
+          ? `${quienToma} retomó este chat, que estaba cerrado y lo atendía ${quienLoTenia}.`
+          : `${quienToma} retomó este chat, que estaba cerrado.`,
+        rol_mensaje: 3,
+        celular_recibe: id_cliente_chat_center,
+        uid_whatsapp: req.chat?.celular_cliente ?? null,
+      });
+    }
+  }
 
   enviarConsultaAPI(id_configuracion, id_cliente_chat_center);
 
