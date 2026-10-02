@@ -1110,36 +1110,95 @@ exports.detalleNovedad = catchAsync(async (req, res, next) => {
   });
 });
 
-/* Fecha de hoy en Ecuador (YYYY-MM-DD) para dateToSend por defecto. */
+/* Fecha de hoy en Ecuador (YYYY-MM-DD). */
 function hoyEcuador() {
   return new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
 }
 
-/* Solventar una novedad en Dropi. Arma el mismo payload que el panel de
-   Dropi manda a /orders/saveincidencesolution (capturado del navegador):
-   la opción elegida va en selectValueConfirma y el texto en solution; los
-   datos nuevos (dirección, nombre, teléfono) solo cuando la opción los pide. */
+/* Solventar una novedad en Dropi (POST /orders/saveincidencesolution).
+   Replica lo que hace el modal de novedades del panel de Dropi (leído de su
+   bundle, componente app-first-modal-confirmations-serv-dialog):
+
+   - accion "devolver": devolución al remitente. NO es una opción del select:
+     el panel manda un payload aparte (confirmBtnReturnRemitente) con
+     CLIENTE_CANCELA_ENTREGA_ENVIO=true y tipocategoria=1. Vale para todas las
+     transportadoras (es el botón "NO" del panel, y la opción "Efectuar
+     devolución" = 3 de Gintracom).
+   - Gintracom: selectValueConfirma es el objeto { value, descripcion }
+     (1 = Volver a ofrecer, 2 = Ajustar recaudo, este último con collection =
+     nuevo recaudo) y dateToSend es obligatoria y posterior a hoy.
+   - Resto (Servientrega, Laar, Urbano, Veloces…): selectValueConfirma = "1" y
+     dateToSend vacía; la solución va en solution y los datos que cada
+     transportadora exige (nombre, dirección, celular) en los *Confirma. */
 exports.solucionarNovedad = catchAsync(async (req, res, next) => {
   const id_configuracion = toInt(req.body?.id_configuracion);
   const order_id = toInt(req.body?.order_id);
-  const solucion = String(req.body?.solucion || '').trim();
-  const opcionValue = toInt(req.body?.opcion?.value);
-  const opcionDescripcion = String(req.body?.opcion?.descripcion || '').trim();
-  const fecha_envio = String(req.body?.fecha_envio || '').trim() || hoyEcuador();
+  const accion = String(req.body?.accion || 'solucionar');
+  const txt = (v) => String(v ?? '').trim();
 
   if (!id_configuracion || !order_id) {
     return next(
       new AppError('id_configuracion y order_id son requeridos', 400),
     );
   }
-  if (!solucion) {
-    return next(new AppError('Escribe la solución de la novedad', 400));
-  }
-  if (!opcionValue || !opcionDescripcion) {
-    return next(new AppError('Elige el tipo de solución', 400));
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha_envio)) {
-    return next(new AppError('fecha_envio debe ser YYYY-MM-DD', 400));
+
+  let item;
+  if (accion === 'devolver') {
+    item = {
+      order_id,
+      CLIENTE_CANCELA_ENTREGA_ENVIO: true,
+      solution: 'DEVOLVER AL REMITENTE',
+      essolucion: 1,
+      tipocategoria: 1,
+    };
+  } else {
+    const solucion = txt(req.body?.solucion);
+    if (!solucion) {
+      return next(new AppError('Escribe la solución de la novedad', 400));
+    }
+
+    // Gintracom: opción como objeto. El resto: "1" como el panel.
+    let selectValueConfirma = '1';
+    let dateToSend = '';
+    if (req.body?.opcion) {
+      const value = toInt(req.body.opcion.value);
+      const descripcion = txt(req.body.opcion.descripcion);
+      if (![1, 2].includes(value) || !descripcion) {
+        return next(new AppError('Tipo de solución no válido', 400));
+      }
+      dateToSend = txt(req.body?.fecha_envio);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateToSend)) {
+        return next(new AppError('Elige la posible fecha de entrega', 400));
+      }
+      if (dateToSend <= hoyEcuador()) {
+        return next(
+          new AppError('La fecha de entrega debe ser posterior a hoy', 400),
+        );
+      }
+      selectValueConfirma = { value, descripcion };
+      if (value === 2) {
+        const recaudo = Math.round(Number(req.body?.nuevo_recaudo) * 100) / 100;
+        if (!Number.isFinite(recaudo) || recaudo < 0) {
+          return next(new AppError('Ingresa el nuevo valor a recaudar', 400));
+        }
+        selectValueConfirma.collection = recaudo;
+      }
+    }
+
+    item = {
+      order_id,
+      direccionConfirma: txt(req.body?.nueva_direccion),
+      nombreConfirma: txt(req.body?.nuevo_nombre),
+      datosAdicionalDir: txt(req.body?.datos_adicionales_direccion),
+      telefonoBaseConfirma: txt(req.body?.nuevo_telefono),
+      fechaConfirma: '',
+      solution: solucion,
+      essolucion: 1,
+      tipocategoria: 0,
+      selectValueConfirma,
+      dateToSend,
+      location_url: txt(req.body?.location_url),
+    };
   }
 
   const integration = await getActiveIntegration(id_configuracion);
@@ -1157,32 +1216,9 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
-  const txt = (v) => String(v ?? '').trim();
-  const payload = {
-    data: [
-      {
-        order_id,
-        direccionConfirma: txt(req.body?.nueva_direccion),
-        nombreConfirma: txt(req.body?.nuevo_nombre),
-        datosAdicionalDir: txt(req.body?.datos_adicionales_direccion),
-        telefonoBaseConfirma: txt(req.body?.nuevo_telefono),
-        fechaConfirma: txt(req.body?.fecha_confirma),
-        solution: solucion,
-        essolucion: 1,
-        tipocategoria: toInt(req.body?.tipo_categoria) || 0,
-        selectValueConfirma: {
-          value: opcionValue,
-          descripcion: opcionDescripcion,
-        },
-        dateToSend: fecha_envio,
-        location_url: txt(req.body?.location_url),
-      },
-    ],
-  };
-
   const dropiResponse = await dropiService.saveIncidenceSolution({
     integrationKey,
-    payload,
+    payload: { data: [item] },
     country_code: integration.country_code,
   });
 
@@ -1198,7 +1234,11 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
 
   return res.json({
     isSuccess: true,
-    message: dropiResponse?.message || 'Novedad solventada',
+    message:
+      dropiResponse?.message ||
+      (accion === 'devolver'
+        ? 'Pedido enviado a devolución'
+        : 'Novedad solventada'),
     data: dropiResponse,
   });
 });
