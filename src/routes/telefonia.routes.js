@@ -26,6 +26,7 @@ router.get('/movimientos', ctrl.movimientos);
 router.post('/recargar', requireSuperAdmin, ctrl.recargar);
 router.post('/retirar', requireSuperAdmin, ctrl.retirar); // quita saldo (libera cobertura en Zadarma)
 router.post('/apagar', requireSuperAdmin, ctrl.apagar); // apaga la telefonía y devuelve el saldo
+router.post('/cuenta/quitar', requireSuperAdmin, ctrl.quitarCuenta); // borra la fila (apagada y en cero)
 router.post('/cuenta', requireSuperAdmin, ctrl.configurarCuenta); // caller_id, tarifa, activo (comprueba el número)
 router.post('/cuenta/comprobar-numero', requireSuperAdmin, ctrl.comprobarNumero); // ¿verificado en Zadarma?
 router.get('/diagnostico', requireSuperAdmin, ctrl.diagnostico);
