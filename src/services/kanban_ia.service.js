@@ -128,6 +128,9 @@ async function variantesProductoFicha(id_configuracion, nombreProducto) {
   }
 }
 
+const { encuestaAlResolver } = require('../utils/encuestaSatisfaccion');
+const { ESTADO_RESUELTO } = require('../utils/kanbanReabrirResuelto');
+
 // Agrupa los mensajes que el cliente manda en ráfaga en un solo turno de IA
 const {
   esperarRafaga,
@@ -2510,6 +2513,15 @@ async function procesarMensajeKanban(params) {
       await log(
         `🔄 Estado cambiado a "${estadoDestino}" (trigger="${trigger}")`,
       );
+
+      // El bot dio el caso por resuelto: encuesta de satisfacción (si la
+      // cuenta tiene una con envío automático).
+      if (estadoDestino === ESTADO_RESUELTO) {
+        const enc = await encuestaAlResolver({ id_cliente });
+        await log(
+          `📝 Encuesta al resolver: ${enc.programado ? `programada (${enc.delay_minutos} min)` : enc.razon}`,
+        );
+      }
 
       //  Auto-orden Dropi: el trigger movió al cliente a generar_guia.
       // Se extraen los datos del resumen del bot con regex (emoji opcional);

@@ -113,6 +113,7 @@ const {
 
 const { ensureUnifiedClient } = require('../utils/unified/ensureUnifiedClient');
 const { buscarContactoWa } = require('../utils/unified/dedupeContacto');
+const { reabrirSiResuelto } = require('../utils/kanbanReabrirResuelto');
 const {
   manejarWebhookLlamadas,
   avisarRespuestaPermiso,
@@ -1526,6 +1527,16 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               err.message
             }\n`,
           );
+        }
+
+        /* Chat en "Resuelto" que vuelve a escribir: caso nuevo, vuelve a la
+           columna principal con o sin bot (ver utils/kanbanReabrirResuelto). */
+        if (tipo_configuracion === 'kanban' && !isHistory) {
+          estado_contacto = await reabrirSiResuelto({
+            id_configuracion,
+            id_cliente,
+            estado_contacto,
+          });
         }
 
         /* validar si el chat ah sido cerrado */

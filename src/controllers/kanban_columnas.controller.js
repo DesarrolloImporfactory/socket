@@ -145,16 +145,19 @@ exports.listarColumnas = catchAsync(async (req, res, next) => {
 
 // ─── Ajustes del tablero a nivel de cuenta ────────────────────
 // POST /kanban_columnas/actualizar_config
-// Body: { id_configuracion, volver_al_cerrar }
+// Body: { id_configuracion, volver_al_cerrar?, agenda_automatica? }
 exports.actualizarConfig = catchAsync(async (req, res, next) => {
-  const { id_configuracion, volver_al_cerrar } = req.body;
+  const { id_configuracion, volver_al_cerrar, agenda_automatica } = req.body;
   if (!id_configuracion)
     return next(new AppError('Falta id_configuracion', 400));
-  if (volver_al_cerrar === undefined)
+  if (volver_al_cerrar === undefined && agenda_automatica === undefined)
     return next(new AppError('No se enviaron ajustes para actualizar', 400));
 
   try {
-    await setKanbanConfigCuenta(id_configuracion, { volver_al_cerrar });
+    await setKanbanConfigCuenta(id_configuracion, {
+      volver_al_cerrar,
+      agenda_automatica,
+    });
   } catch (err) {
     console.error('[kanban_columnas/actualizar_config]', err.message);
     return next(
