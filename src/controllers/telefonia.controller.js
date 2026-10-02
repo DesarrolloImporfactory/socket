@@ -1,6 +1,7 @@
 const { db } = require('../database/config');
 const catchAsync = require('../utils/catchAsync');
 const zadarma = require('../services/zadarma.service');
+const telefoniaIA = require('../services/telefonia_ia.service');
 const TelefoniaLlamadas = require('../models/telefonia_llamadas.model');
 const TelefoniaMovimientos = require('../models/telefonia_movimientos.model');
 
@@ -101,14 +102,105 @@ exports.llamar = catchAsync(async (req, res) => {
   }
 });
 
+/** Columnas del historial con asesor, cliente y análisis IA (misma lista
+ *  para el administrador de la conexión y para el super admin). */
+const SQL_HISTORIAL_SELECT = `
+  SELECT l.id, l.id_sub_usuario, l.id_cliente_chat_center, l.extension, l.telefono_cliente,
+         l.caller_id, l.estado, l.disposition, l.inicio_at, l.fin_at, l.duracion_seg,
+         l.costo_centavos, l.grabada, l.grabacion_url,
+         su.nombre_encargado AS asesor, cc.nombre_cliente AS cliente,
+         a.estado AS ia_estado, a.resumen AS ia_resumen, a.analisis AS ia_analisis,
+         a.transcripcion AS ia_transcripcion, a.error AS ia_error
+  FROM telefonia_llamadas l
+  LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = l.id_sub_usuario
+  LEFT JOIN clientes_chat_center cc ON cc.id = l.id_cliente_chat_center
+  LEFT JOIN telefonia_analisis a ON a.id_llamada = l.id`;
+
+const parsearAnalisis = (r) => {
+  let analisis = null;
+  if (r.ia_analisis) {
+    try {
+      analisis = JSON.parse(r.ia_analisis);
+    } catch {
+      analisis = null;
+    }
+  }
+  const { ia_analisis, ...resto } = r;
+  return { ...resto, ia_analisis: analisis };
+};
+
+/**
+ * Historial de llamadas de una conexión para su administrador (dashboard de
+ * atención) y para el chat: rango de fechas opcional, filtro por cliente, y
+ * un resumen (totales y por asesor) para las tarjetas.
+ */
 exports.historial = catchAsync(async (req, res) => {
   const id_configuracion = await verificarConexion(req, res);
   if (!id_configuracion) return undefined;
   const id_cliente = Number(req.query.id_cliente_chat_center) || null;
-  const where = { id_configuracion };
-  if (id_cliente) where.id_cliente_chat_center = id_cliente;
-  const rows = await TelefoniaLlamadas.findAll({ where, order: [['id', 'DESC']], limit: 100 });
-  return res.json({ status: 'success', data: rows });
+  const desde = /^\d{4}-\d{2}-\d{2}$/.test(req.query.desde || '') ? `${req.query.desde} 00:00:00` : null;
+  const hasta = /^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta || '') ? `${req.query.hasta} 23:59:59` : null;
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+  const cond = ['l.id_configuracion = ?'];
+  const repl = [id_configuracion];
+  if (id_cliente) {
+    cond.push('l.id_cliente_chat_center = ?');
+    repl.push(id_cliente);
+  }
+  if (desde) {
+    cond.push('l.inicio_at >= ?');
+    repl.push(desde);
+  }
+  if (hasta) {
+    cond.push('l.inicio_at <= ?');
+    repl.push(hasta);
+  }
+  const rows = await db.query(`${SQL_HISTORIAL_SELECT} WHERE ${cond.join(' AND ')} ORDER BY l.id DESC LIMIT ?`, {
+    replacements: [...repl, limit],
+    type: db.QueryTypes.SELECT,
+  });
+  const data = rows.map(parsearAnalisis);
+  const porAsesor = {};
+  const tot = { llamadas: 0, contestadas: 0, segundos: 0, costo_centavos: 0, resultados: {} };
+  for (const r of data) {
+    const k = r.id_sub_usuario;
+    porAsesor[k] = porAsesor[k] || { id_sub_usuario: k, asesor: r.asesor || `Asesor ${k}`, llamadas: 0, contestadas: 0, segundos: 0, costo_centavos: 0 };
+    porAsesor[k].llamadas += 1;
+    tot.llamadas += 1;
+    if (r.estado === 'answered') {
+      porAsesor[k].contestadas += 1;
+      porAsesor[k].segundos += Number(r.duracion_seg) || 0;
+      porAsesor[k].costo_centavos += Number(r.costo_centavos) || 0;
+      tot.contestadas += 1;
+      tot.segundos += Number(r.duracion_seg) || 0;
+      tot.costo_centavos += Number(r.costo_centavos) || 0;
+    }
+    const res_ = r.ia_analisis?.resultado;
+    if (res_) tot.resultados[res_] = (tot.resultados[res_] || 0) + 1;
+  }
+  const cuenta = await zadarma.cuentaDe(id_configuracion);
+  return res.json({
+    status: 'success',
+    data,
+    resumen: {
+      ...tot,
+      por_asesor: Object.values(porAsesor).sort((a, b) => b.llamadas - a.llamadas),
+      saldo_centavos: cuenta?.saldo_centavos ?? null,
+      tarifa_centavos_min: cuenta?.tarifa_centavos_min ?? null,
+      activo: cuenta ? Number(cuenta.activo) === 1 : false,
+    },
+  });
+});
+
+/* ── Análisis con IA (super administrador): conteo y reintento. La llave es
+      la de cada conexión (/asistentes); aquí no se guarda ninguna. ── */
+exports.iaEstado = catchAsync(async (req, res) => {
+  return res.json({ status: 'success', data: await telefoniaIA.estadoAnalisis() });
+});
+
+exports.iaReanalizar = catchAsync(async (req, res) => {
+  const r = await telefoniaIA.reanalizarPendientes(Number(req.body.limite) || 50);
+  return res.json({ status: 'success', data: r });
 });
 
 /**
@@ -129,20 +221,11 @@ exports.historialAdmin = catchAsync(async (req, res) => {
     `SELECT COUNT(*) AS total FROM telefonia_llamadas WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
-  const rows = await db.query(
-    `SELECT l.id, l.id_sub_usuario, l.id_cliente_chat_center, l.extension, l.telefono_cliente,
-            l.caller_id, l.estado, l.disposition, l.inicio_at, l.fin_at, l.duracion_seg,
-            l.costo_centavos, l.grabada, l.grabacion_url,
-            su.nombre_encargado AS asesor, cc.nombre_cliente AS cliente
-     FROM telefonia_llamadas l
-     LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = l.id_sub_usuario
-     LEFT JOIN clientes_chat_center cc ON cc.id = l.id_cliente_chat_center
-     WHERE l.id_configuracion = ?
-     ORDER BY l.id DESC
-     LIMIT ? OFFSET ?`,
-    { replacements: [id_configuracion, limit, offset], type: db.QueryTypes.SELECT },
-  );
-  return res.json({ status: 'success', data: rows, total: Number(total), page, limit });
+  const rows = await db.query(`${SQL_HISTORIAL_SELECT} WHERE l.id_configuracion = ? ORDER BY l.id DESC LIMIT ? OFFSET ?`, {
+    replacements: [id_configuracion, limit, offset],
+    type: db.QueryTypes.SELECT,
+  });
+  return res.json({ status: 'success', data: rows.map(parsearAnalisis), total: Number(total), page, limit });
 });
 
 exports.movimientos = catchAsync(async (req, res) => {
@@ -157,11 +240,81 @@ exports.movimientos = catchAsync(async (req, res) => {
 });
 
 /** Recarga manual (super administrador). centavos > 0. */
+/**
+ * Cobertura: cuánto costarían en Zadarma todos los minutos vendidos que aún
+ * no se usaron, contra el saldo real de la cuenta maestra. Lo usa la tabla
+ * de /telefonia y el candado de las recargas.
+ */
+async function coberturaZadarma() {
+  const rows = await db.query(
+    `SELECT tc.id_configuracion, tc.saldo_centavos, tc.tarifa_centavos_min, c.pais
+     FROM telefonia_cuentas tc LEFT JOIN configuraciones c ON c.id = tc.id_configuracion
+     WHERE tc.saldo_centavos > 0`,
+    { type: db.QueryTypes.SELECT },
+  );
+  await zadarma.cargarCredenciales();
+  const costoPorPais = {};
+  let balance = null;
+  if (zadarma.configurado()) {
+    balance = await zadarma.balance().catch(() => null);
+    for (const pais of new Set(rows.map((r) => String(r.pais || 'ec').toLowerCase()))) {
+      costoPorPais[pais] = await zadarma.costoReferencia(pais).catch(() => null);
+    }
+  }
+  let costoPendiente = 0;
+  for (const r of rows) {
+    const costoMin = costoPorPais[String(r.pais || 'ec').toLowerCase()]?.centavos_min || 0;
+    if (r.tarifa_centavos_min > 0 && costoMin) costoPendiente += (r.saldo_centavos / r.tarifa_centavos_min) * costoMin;
+  }
+  return {
+    saldo_zadarma_centavos: balance ? Math.round(balance.balance * 100) : null,
+    costo_pendiente_centavos: Math.round(costoPendiente),
+    costoPorPais,
+  };
+}
+
 exports.recargar = catchAsync(async (req, res) => {
   const id_configuracion = Number(req.body.id_configuracion);
   const centavos = Math.round(Number(req.body.centavos));
   if (!id_configuracion || !Number.isFinite(centavos) || centavos <= 0) {
     return res.status(400).json({ status: 'error', message: 'id_configuracion y centavos (> 0) son requeridos' });
+  }
+  /* Candado (2026-10-02): no se puede vender saldo que Zadarma no pueda
+     pagar. Si todos los clientes usaran sus minutos, el costo total en
+     Zadarma tiene que caber en el saldo de la cuenta maestra; si no, un
+     cliente con saldo en ChatCenter vería "puedes llamar" y la llamada se
+     cortaría. Antes era solo un aviso. */
+  const cuenta = await zadarma.cuentaDe(id_configuracion, { crear: true });
+  const [cfg] = await db.query(`SELECT pais FROM configuraciones WHERE id = ? LIMIT 1`, {
+    replacements: [id_configuracion],
+    type: db.QueryTypes.SELECT,
+  });
+  const cob = await coberturaZadarma();
+  const costoMin = cob.costoPorPais[String(cfg?.pais || 'ec').toLowerCase()]?.centavos_min || 0;
+  if (cob.saldo_zadarma_centavos != null && costoMin && cuenta.tarifa_centavos_min > 0) {
+    const costoNuevo = (centavos / cuenta.tarifa_centavos_min) * costoMin;
+    const disponible = cob.saldo_zadarma_centavos - cob.costo_pendiente_centavos;
+    if (costoNuevo > disponible) {
+      const maxRecarga = Math.max(0, Math.floor((disponible / costoMin) * cuenta.tarifa_centavos_min));
+      return res.status(400).json({
+        status: 'error',
+        code: 'SALDO_ZADARMA_INSUFICIENTE',
+        message:
+          `Esta recarga vendería minutos que Zadarma no puede pagar: costarían $${(costoNuevo / 100).toFixed(2)} ` +
+          `y en Zadarma quedan $${(Math.max(0, disponible) / 100).toFixed(2)} sin comprometer ` +
+          `(saldo $${(cob.saldo_zadarma_centavos / 100).toFixed(2)}, ya vendido $${(cob.costo_pendiente_centavos / 100).toFixed(2)}). ` +
+          (maxRecarga > 0
+            ? `Máximo que puedes cargar ahora a esta conexión: $${(maxRecarga / 100).toFixed(2)}. `
+            : '') +
+          'Recarga primero la cuenta de Zadarma.',
+        data: {
+          saldo_zadarma_centavos: cob.saldo_zadarma_centavos,
+          costo_pendiente_centavos: cob.costo_pendiente_centavos,
+          costo_nuevo_centavos: Math.round(costoNuevo),
+          max_recarga_centavos: maxRecarga,
+        },
+      });
+    }
   }
   const saldo = await zadarma.recargar(
     id_configuracion,
