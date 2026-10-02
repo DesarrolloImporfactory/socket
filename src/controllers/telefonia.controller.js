@@ -249,7 +249,7 @@ async function coberturaZadarma() {
   const rows = await db.query(
     `SELECT tc.id_configuracion, tc.saldo_centavos, tc.tarifa_centavos_min, c.pais
      FROM telefonia_cuentas tc LEFT JOIN configuraciones c ON c.id = tc.id_configuracion
-     WHERE tc.saldo_centavos > 0`,
+     WHERE tc.saldo_centavos > 0 AND tc.activo = 1`,
     { type: db.QueryTypes.SELECT },
   );
   await zadarma.cargarCredenciales();
@@ -321,6 +321,41 @@ exports.recargar = catchAsync(async (req, res) => {
     centavos,
     req.sessionUser.id_sub_usuario,
     req.body.detalle || 'Recarga manual',
+  );
+  return res.json({ status: 'success', data: { saldo_centavos: saldo } });
+});
+
+/** Apaga la telefonía de una conexión y le devuelve el saldo (super admin).
+ *  Así lo apagado deja de comprometer saldo de Zadarma y queda libre para
+ *  otras conexiones. Encender es /cuenta con activo=true (arranca en cero). */
+exports.apagar = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const cuenta = await zadarma.cuentaDe(id_configuracion, { crear: true });
+  const saldo = await zadarma.retirar(
+    id_configuracion,
+    Number.MAX_SAFE_INTEGER,
+    req.sessionUser.id_sub_usuario,
+    'Apagado desde /telefonia',
+  );
+  await cuenta.update({ activo: 0, updated_at: new Date() });
+  return res.json({ status: 'success', data: { saldo_centavos: saldo, activo: 0 } });
+});
+
+/** Quita saldo a una conexión (super administrador). Sin centavos = todo. */
+exports.retirar = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const centavos = req.body.centavos != null ? Math.round(Number(req.body.centavos)) : Number.MAX_SAFE_INTEGER;
+  const saldo = await zadarma.retirar(
+    id_configuracion,
+    centavos,
+    req.sessionUser.id_sub_usuario,
+    req.body.detalle || 'Retiro desde /telefonia',
   );
   return res.json({ status: 'success', data: { saldo_centavos: saldo } });
 });
@@ -467,7 +502,8 @@ exports.cuentas = catchAsync(async (req, res) => {
   const data = rows.map((r) => {
     const costo = costoPorPais[String(r.pais || 'ec').toLowerCase()];
     const costoMin = costo?.centavos_min || null;
-    const minutos = r.tarifa_centavos_min > 0 ? r.saldo_centavos / r.tarifa_centavos_min : 0;
+    // Una conexión apagada no puede llamar: su saldo no compromete a Zadarma.
+    const minutos = Number(r.activo) === 1 && r.tarifa_centavos_min > 0 ? r.saldo_centavos / r.tarifa_centavos_min : 0;
     minutosVendidos += minutos;
     if (costoMin) costoPendiente += minutos * costoMin;
     return {

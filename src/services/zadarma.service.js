@@ -352,6 +352,15 @@ async function movimiento({ id_configuracion, tipo, centavos, id_llamada = null,
 const recargar = (id_configuracion, centavos, id_sub_usuario, detalle) =>
   movimiento({ id_configuracion, tipo: 'recarga', centavos: Math.abs(centavos), id_sub_usuario, detalle });
 
+/** Quita saldo a una conexión (hasta dejarla en cero): libera la cobertura
+ *  en Zadarma, por ejemplo al terminar pruebas o si se cargó de más. */
+async function retirar(id_configuracion, centavos, id_sub_usuario, detalle) {
+  const cuenta = await cuentaDe(id_configuracion, { crear: true });
+  const monto = Math.min(Math.abs(centavos), Number(cuenta.saldo_centavos));
+  if (monto <= 0) return Number(cuenta.saldo_centavos);
+  return movimiento({ id_configuracion, tipo: 'retiro', centavos: -monto, id_sub_usuario, detalle });
+}
+
 /** Centavos que cuesta una llamada de N segundos a la tarifa de la cuenta
  *  (cobro por segundo, redondeado hacia arriba al centavo). */
 const costoCentavos = (segundos, tarifaMin) => Math.ceil((Math.max(0, segundos) * tarifaMin) / 60);
@@ -800,6 +809,7 @@ module.exports = {
   cuentaTieneTelefonia,
   conexionTieneTelefonia,
   recargar,
+  retirar,
   llamar,
   comprobarNumero,
   firmaValida,
