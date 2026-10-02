@@ -9,10 +9,10 @@
  *      en el chat del cliente, para que el asesor y el administrador lo vean
  *      sin salir de la conversación.
  *
- * Llave: la maestra de /telefonia (telefonia_ia) y, si no hay, la
- * api_key_openai de la conexión (leída con leerApiKeyOpenAI, nunca cruda).
- * Sin ninguna de las dos, la llamada queda en 'sin_llave' y se reintenta la
- * próxima vez que alguien guarde una llave (reanalizarPendientes).
+ * Llave: la api_key_openai de la conexión, la misma del bot (/asistentes),
+ * leída con leerApiKeyOpenAI. Así cada negocio ve y regula su propio gasto
+ * de IA; no hay llave maestra (decisión 2026-10-02). Sin llave, la llamada
+ * queda en 'sin_llave' y se reintenta con reanalizarPendientes.
  *
  * Costos de referencia (2026-09): transcripción $0.003/min; gpt-5-mini
  * $0.25 por millón de tokens de entrada y $2 por millón de salida. Una
@@ -21,119 +21,48 @@
 const axios = require('axios');
 const FormData = require('form-data');
 const { db } = require('../database/config');
-const TelefoniaIA = require('../models/telefonia_ia.model');
 const TelefoniaAnalisis = require('../models/telefonia_analisis.model');
 const TelefoniaLlamadas = require('../models/telefonia_llamadas.model');
 const Configuraciones = require('../models/configuraciones.model');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
-const { encryptToken, decryptToken, last4 } = require('../utils/cryptoToken');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const { emitirA, notificarEnChat } = require('./llamadas_whatsapp.service');
 
 const log = (...a) => console.log('[telefonia-ia]', ...a);
+const MODELO_TRANSCRIPCION = 'gpt-4o-mini-transcribe';
+const MODELO_RESUMEN = 'gpt-5-mini';
 
-/* ── Llave ─────────────────────────────────────────────────────────────── */
-
-async function filaMaestra() {
-  try {
-    return await TelefoniaIA.findByPk(1);
-  } catch (e) {
-    if (/doesn't exist/i.test(e?.message || '')) return null;
-    throw e;
-  }
-}
-
-/** { key, origen, modelos } o null si no hay con qué analizar. */
 async function llaveParaConexion(id_configuracion) {
-  const m = await filaMaestra();
-  const modelos = {
-    transcripcion: m?.modelo_transcripcion || 'gpt-4o-mini-transcribe',
-    resumen: m?.modelo_resumen || 'gpt-5-mini',
-  };
-  if (m && Number(m.activo) === 1 && m.api_key_enc) {
-    try {
-      const key = decryptToken(m.api_key_enc).trim();
-      if (key) return { key, origen: 'maestra', modelos };
-    } catch (e) {
-      console.error('[telefonia-ia] no se pudo descifrar la llave maestra:', e.message);
-    }
-  }
   const cfg = await Configuraciones.findByPk(id_configuracion, { attributes: ['id', 'api_key_openai'] });
-  const key = leerApiKeyOpenAI(cfg?.api_key_openai);
-  return key ? { key, origen: 'conexion', modelos } : null;
+  return leerApiKeyOpenAI(cfg?.api_key_openai);
 }
 
-async function estadoLlave() {
-  const m = await filaMaestra();
-  const [pend] = await db.query(
-    `SELECT SUM(estado = 'sin_llave') AS sin_llave, SUM(estado = 'error') AS con_error,
-            SUM(estado = 'listo') AS listas, SUM(costo_centavos) AS costo_centavos
-     FROM telefonia_analisis`,
-    { type: db.QueryTypes.SELECT },
-  ).catch(() => [{}]);
+/** Conteo global para la pantalla del super admin. */
+async function estadoAnalisis() {
+  const [r] = await db
+    .query(
+      `SELECT SUM(estado = 'sin_llave') AS sin_llave, SUM(estado = 'error') AS con_error,
+              SUM(estado = 'listo') AS listas, SUM(costo_centavos) AS costo_centavos
+       FROM telefonia_analisis`,
+      { type: db.QueryTypes.SELECT },
+    )
+    .catch(() => [{}]);
   return {
-    configurada: !!m?.api_key_enc,
-    activo: m ? Number(m.activo) === 1 : false,
-    api_key_last4: m?.api_key_last4 || null,
-    modelo_transcripcion: m?.modelo_transcripcion || 'gpt-4o-mini-transcribe',
-    modelo_resumen: m?.modelo_resumen || 'gpt-5-mini',
-    updated_at: m?.updated_at || null,
-    analisis: {
-      listas: Number(pend?.listas || 0),
-      sin_llave: Number(pend?.sin_llave || 0),
-      con_error: Number(pend?.con_error || 0),
-      costo_centavos: Number(pend?.costo_centavos || 0),
-    },
+    modelo_transcripcion: MODELO_TRANSCRIPCION,
+    modelo_resumen: MODELO_RESUMEN,
+    listas: Number(r?.listas || 0),
+    sin_llave: Number(r?.sin_llave || 0),
+    con_error: Number(r?.con_error || 0),
+    costo_centavos: Number(r?.costo_centavos || 0),
   };
-}
-
-/** Prueba la llave contra OpenAI antes de guardarla (lista de modelos). */
-async function guardarLlave({ api_key, activo = true, id_sub_usuario = null }) {
-  const key = String(api_key || '').trim();
-  if (!/^sk-/.test(key)) {
-    const e = new Error('La llave de OpenAI debe empezar con "sk-"');
-    e.status = 400;
-    throw e;
-  }
-  const r = await axios.get('https://api.openai.com/v1/models/gpt-5-mini', {
-    headers: { Authorization: `Bearer ${key}` },
-    timeout: 15000,
-    validateStatus: () => true,
-  });
-  if (r.status === 401) {
-    const e = new Error('OpenAI rechazó la llave (401). Revisa que esté completa y vigente.');
-    e.status = 400;
-    throw e;
-  }
-  if (r.status >= 400) {
-    const e = new Error(`OpenAI respondió ${r.status}: ${r.data?.error?.message || 'sin detalle'}`);
-    e.status = 400;
-    throw e;
-  }
-  await TelefoniaIA.upsert({
-    id: 1,
-    api_key_enc: encryptToken(key),
-    api_key_last4: last4(key),
-    activo: activo ? 1 : 0,
-    actualizado_por: id_sub_usuario,
-    updated_at: new Date(),
-  });
-  setImmediate(() => reanalizarPendientes().catch((e) => log('reanálisis falló:', e.message)));
-  return estadoLlave();
-}
-
-async function apagarLlave(activo) {
-  const m = await filaMaestra();
-  if (m) await m.update({ activo: activo ? 1 : 0, updated_at: new Date() });
-  return estadoLlave();
 }
 
 /* ── OpenAI ────────────────────────────────────────────────────────────── */
 
-async function transcribir({ key, modelo, buffer, nombre }) {
+async function transcribir({ key, buffer, nombre }) {
   const form = new FormData();
   form.append('file', buffer, { filename: nombre || 'llamada.mp3', contentType: 'audio/mpeg' });
-  form.append('model', modelo);
+  form.append('model', MODELO_TRANSCRIPCION);
   form.append('language', 'es');
   form.append('response_format', 'json');
   const r = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
@@ -156,17 +85,17 @@ const PROMPT_RESUMEN = `Eres el supervisor de un equipo de ventas y atención al
 - "mejoras": lista de 1 a 3 sugerencias cortas y concretas para que el asesor lo haga mejor la próxima vez.
 Si la transcripción es un buzón de voz, música o no hay conversación real, usa resultado "no_contesto", resumen "No hubo conversación." y listas vacías.`;
 
-async function resumir({ key, modelo, transcripcion, contexto }) {
+async function resumir({ key, transcripcion, contexto }) {
   const body = {
-    model: modelo,
+    model: MODELO_RESUMEN,
     instructions: PROMPT_RESUMEN,
     // OpenAI exige la palabra "JSON" en el input (no basta en instructions)
     // para aceptar text.format json_object.
     input: `${contexto}\nResponde en JSON con el formato indicado.\n\nTRANSCRIPCIÓN:\n${transcripcion.slice(0, 60000)}`,
     text: { format: { type: 'json_object' } },
     max_output_tokens: 1200,
+    reasoning: { effort: 'low' },
   };
-  if (/^gpt-5/i.test(modelo)) body.reasoning = { effort: 'low' };
   const r = await axios.post('https://api.openai.com/v1/responses', body, {
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     timeout: 120000,
@@ -217,8 +146,8 @@ async function analizarLlamada(fila, { buffer = null } = {}) {
   if (an && an.estado === 'listo') return an;
   if (!an) an = await TelefoniaAnalisis.create({ id_llamada, id_configuracion: fila.id_configuracion });
 
-  const llave = await llaveParaConexion(fila.id_configuracion);
-  if (!llave) {
+  const key = await llaveParaConexion(fila.id_configuracion);
+  if (!key) {
     await an.update({ estado: 'sin_llave', updated_at: new Date() });
     return an;
   }
@@ -229,12 +158,7 @@ async function analizarLlamada(fila, { buffer = null } = {}) {
       const r = await axios.get(fila.grabacion_url, { responseType: 'arraybuffer', timeout: 60000 });
       audio = Buffer.from(r.data);
     }
-    const transcripcion = await transcribir({
-      key: llave.key,
-      modelo: llave.modelos.transcripcion,
-      buffer: audio,
-      nombre: `llamada-${id_llamada}.mp3`,
-    });
+    const transcripcion = await transcribir({ key, buffer: audio, nombre: `llamada-${id_llamada}.mp3` });
     const cliente = fila.id_cliente_chat_center ? await ClientesChatCenter.findByPk(fila.id_cliente_chat_center) : null;
     const [su] = await db.query(
       `SELECT nombre_encargado FROM sub_usuarios_chat_center WHERE id_sub_usuario = ? LIMIT 1`,
@@ -244,12 +168,7 @@ async function analizarLlamada(fila, { buffer = null } = {}) {
     let json = null;
     let usage = {};
     if (transcripcion.length >= 20) {
-      ({ json, usage } = await resumir({
-        key: llave.key,
-        modelo: llave.modelos.resumen,
-        transcripcion,
-        contexto,
-      }));
+      ({ json, usage } = await resumir({ key, transcripcion, contexto }));
     } else {
       json = { resumen: 'No hubo conversación.', resultado: 'no_contesto', objeciones: [], compromisos: [], mejoras: [] };
     }
@@ -264,12 +183,12 @@ async function analizarLlamada(fila, { buffer = null } = {}) {
       transcripcion,
       resumen: json?.resumen || null,
       analisis: json ? JSON.stringify(json) : null,
-      modelo_transcripcion: llave.modelos.transcripcion,
-      modelo_resumen: llave.modelos.resumen,
+      modelo_transcripcion: MODELO_TRANSCRIPCION,
+      modelo_resumen: MODELO_RESUMEN,
       tokens_entrada: usage.input_tokens || null,
       tokens_salida: usage.output_tokens || null,
       costo_centavos: costo,
-      origen_llave: llave.origen,
+      origen_llave: 'conexion',
       error: null,
       updated_at: new Date(),
     });
@@ -297,8 +216,9 @@ async function analizarLlamada(fila, { buffer = null } = {}) {
   }
 }
 
-/** Reintenta las que quedaron sin llave o con error (al guardar una llave,
- *  o a mano). Máximo `limite` por corrida para no reventar el rate limit. */
+/** Reintenta las que quedaron sin llave o con error (cuando el negocio ya
+ *  guardó su llave en /asistentes, o a mano desde /telefonia). Máximo
+ *  `limite` por corrida para no reventar el rate limit. */
 async function reanalizarPendientes(limite = 50) {
   const pend = await TelefoniaAnalisis.findAll({
     where: db.literal("estado IN ('sin_llave','error','pendiente')"),
@@ -316,9 +236,7 @@ async function reanalizarPendientes(limite = 50) {
 }
 
 module.exports = {
-  estadoLlave,
-  guardarLlave,
-  apagarLlave,
+  estadoAnalisis,
   analizarLlamada,
   reanalizarPendientes,
   ETIQUETA_RESULTADO,

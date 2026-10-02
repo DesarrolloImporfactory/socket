@@ -192,26 +192,10 @@ exports.historial = catchAsync(async (req, res) => {
   });
 });
 
-/* ── Análisis con IA (super administrador) ── */
+/* ── Análisis con IA (super administrador): conteo y reintento. La llave es
+      la de cada conexión (/asistentes); aquí no se guarda ninguna. ── */
 exports.iaEstado = catchAsync(async (req, res) => {
-  return res.json({ status: 'success', data: await telefoniaIA.estadoLlave() });
-});
-
-exports.iaGuardar = catchAsync(async (req, res) => {
-  try {
-    const data = await telefoniaIA.guardarLlave({
-      api_key: req.body.api_key,
-      activo: req.body.activo !== false,
-      id_sub_usuario: req.sessionUser.id_sub_usuario,
-    });
-    return res.json({ status: 'success', data });
-  } catch (e) {
-    return responderError(res, e);
-  }
-});
-
-exports.iaActivar = catchAsync(async (req, res) => {
-  return res.json({ status: 'success', data: await telefoniaIA.apagarLlave(!!req.body.activo) });
+  return res.json({ status: 'success', data: await telefoniaIA.estadoAnalisis() });
 });
 
 exports.iaReanalizar = catchAsync(async (req, res) => {
