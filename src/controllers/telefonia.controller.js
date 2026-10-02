@@ -344,6 +344,22 @@ exports.apagar = catchAsync(async (req, res) => {
   return res.json({ status: 'success', data: { saldo_centavos: saldo, activo: 0 } });
 });
 
+/** Borra la fila de saldo de una conexión apagada y en cero (super admin).
+ *  El historial de llamadas y los movimientos se conservan. */
+exports.quitarCuenta = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.body.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const cuenta = await zadarma.cuentaDe(id_configuracion);
+  if (!cuenta) return res.json({ status: 'success' });
+  if (Number(cuenta.saldo_centavos) > 0) {
+    return res.status(400).json({ status: 'error', message: 'La conexión todavía tiene saldo. Apágala primero (eso lo devuelve).' });
+  }
+  await cuenta.destroy();
+  return res.json({ status: 'success' });
+});
+
 /** Quita saldo a una conexión (super administrador). Sin centavos = todo. */
 exports.retirar = catchAsync(async (req, res) => {
   const id_configuracion = Number(req.body.id_configuracion);
