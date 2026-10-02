@@ -15,6 +15,7 @@
  *
  *   node scripts/instalarBotSoporteImporshop.js --cfg=10 --media=media.json            → muestra qué haría
  *   node scripts/instalarBotSoporteImporshop.js --cfg=10 --media=media.json --aplicar  → aplica
+ *   ... --reenviar-media  → además prende "reenviar videos fijos" en la columna
  *
  * media.json: { video_material, video_estado_guia, video_retener,
  *               video_novedades, imagen_horarios } con URLs directas (mp4/png).
@@ -40,6 +41,12 @@ const accionEstado = (estado) =>
     palabras_clave: { tipo: 'CONTAINS', valor: `[${estado}]:true` },
     accion: { tipo: 'cambiar_estado', estado_destino: estado },
   });
+
+// --reenviar-media: los videos tutoriales salen cada vez que se responde el
+// tema (reenviar_fijos, sin la ventana de 48 h del dedupe). Sin la bandera no
+// se toca: lo maneja el switch de la configuración del kanban.
+const REENVIAR = process.argv.includes('--reenviar-media');
+const CONFIG_MEDIA = REENVIAR ? JSON.stringify({ reenviar_fijos: true }) : null;
 
 const COLUMNAS_NECESARIAS = [
   { estado_db: 'asesor', nombre: 'Asesor', color_fondo: '#FFF7ED', color_texto: '#C2410C', icono: 'bx bx-user' },
@@ -101,6 +108,7 @@ async function main() {
     if (a.tipo_accion === 'enviar_media' && !vistas.has('media')) {
       vistas.add('media');
       quiere = 1;
+      config = CONFIG_MEDIA;
     } else if (
       a.tipo_accion === 'cambiar_estado' &&
       ['asesor', 'resuelto'].includes(destino) &&
@@ -116,7 +124,7 @@ async function main() {
     }
   }
   const nuevas = [];
-  if (!vistas.has('media')) nuevas.push({ tipo: 'enviar_media', config: '{}', orden: 3 });
+  if (!vistas.has('media')) nuevas.push({ tipo: 'enviar_media', config: CONFIG_MEDIA || '{}', orden: 3 });
   for (const d of ['asesor', 'resuelto']) {
     if (!vistas.has(d)) nuevas.push({ tipo: 'cambiar_estado', config: accionEstado(d), orden: 1 });
   }

@@ -36,6 +36,20 @@ async function accionesAgenda(id_configuracion) {
   );
 }
 
+/* - reenviar_media_fija: los videos/imágenes escritos en el prompt salen cada
+     vez que el bot responde ese tema (sin la ventana de 48 h del dedupe). Es
+     `reenviar_fijos` en TODAS las acciones enviar_media; null si no hay
+     ninguna. Apagado por defecto: así se evita el spam de la misma foto. */
+async function accionesMedia(id_configuracion) {
+  return db.query(
+    `SELECT ka.id, ka.config
+       FROM kanban_acciones ka
+       JOIN kanban_columnas kc ON kc.id = ka.id_kanban_columna
+      WHERE kc.id_configuracion = ? AND ka.tipo_accion = 'enviar_media'`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+}
+
 const configDe = (raw) => {
   try {
     let c = raw;
@@ -51,8 +65,19 @@ async function getKanbanConfigCuenta(id_configuracion) {
     volver_al_cerrar: true,
     mostrar_membresia: esConfigSoporte(id_configuracion),
     agenda_automatica: null,
+    reenviar_media_fija: null,
   };
   if (!id_configuracion) return out;
+  try {
+    const media = await accionesMedia(id_configuracion);
+    if (media.length) {
+      out.reenviar_media_fija = media.some(
+        (a) => configDe(a.config).reenviar_fijos === true,
+      );
+    }
+  } catch (err) {
+    console.warn('[kanbanConfigCuenta] reenviar_media_fija:', err.message);
+  }
   try {
     const acciones = await accionesAgenda(id_configuracion);
     if (acciones.length) {
@@ -84,8 +109,19 @@ async function getKanbanConfigCuenta(id_configuracion) {
 
 async function setKanbanConfigCuenta(
   id_configuracion,
-  { volver_al_cerrar, agenda_automatica } = {},
+  { volver_al_cerrar, agenda_automatica, reenviar_media_fija } = {},
 ) {
+  if (reenviar_media_fija !== undefined) {
+    for (const a of await accionesMedia(id_configuracion)) {
+      const config = { ...configDe(a.config) };
+      if (reenviar_media_fija) config.reenviar_fijos = true;
+      else delete config.reenviar_fijos;
+      await db.query(`UPDATE kanban_acciones SET config = ? WHERE id = ?`, {
+        replacements: [JSON.stringify(config), a.id],
+        type: db.QueryTypes.UPDATE,
+      });
+    }
+  }
   if (agenda_automatica !== undefined) {
     const modo = agenda_automatica ? 'auto' : 'solicitud';
     for (const a of await accionesAgenda(id_configuracion)) {
