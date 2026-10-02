@@ -349,6 +349,10 @@ async function filtrarMediaNueva({
   urls,
   etiqueta = 'media',
   log,
+  /* Urls que se reenvían cada vez (videos tutoriales fijos del prompt, opción
+     `reenviar_fijos` de enviar_media): sin ventana de 48 h, solo el candado
+     de 2 min contra el doble envío. */
+  sinVentana = new Set(),
 }) {
   const decir = typeof log === 'function' ? log : async () => {};
   const vistas = new Set();
@@ -379,6 +383,11 @@ async function filtrarMediaNueva({
        se envió". Marcando de este lado del `await`, la segunda ya encuentra la
        marca de la primera. */
     marcarEnviado(id_cliente, url);
+
+    if (sinVentana.has(url)) {
+      salida.push(url);
+      continue;
+    }
 
     try {
       if (await mediaYaEnviada({ id_cliente, id_configuracion, url })) {

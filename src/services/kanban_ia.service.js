@@ -3170,12 +3170,24 @@ async function procesarMensajeKanban(params) {
      La lógica vive en `utils/dedupeMedia` porque las ramas `ventas` e
      `imporshop` del webhook mandan fotos por su propio camino y necesitan
      exactamente el mismo control. */
+  /* `reenviar_fijos` en enviar_media: la media escrita en el propio prompt
+     (videos tutoriales de soporte, cfg 261) sale cada vez que se responde ese
+     tema; sin la opción, "mira el video ⬆️" llegaba sin video si ya se había
+     mandado en las últimas 48 h. La del catálogo sigue con su ventana. */
+  const sinVentana = new Set();
+  if (getAcciones('enviar_media').some((a) => parseConfig(a).reenviar_fijos)) {
+    const prompt = String(assistantInfo.instructions || '');
+    for (const u of [...media.imagenes, ...media.videos]) {
+      if (prompt.includes(u)) sinVentana.add(u);
+    }
+  }
   const imagenes = await filtrarMediaNueva({
     id_cliente,
     id_configuracion,
     urls: media.imagenes,
     etiqueta: 'imagen',
     log,
+    sinVentana,
   });
   const videos = await filtrarMediaNueva({
     id_cliente,
@@ -3183,6 +3195,7 @@ async function procesarMensajeKanban(params) {
     urls: media.videos,
     etiqueta: 'video',
     log,
+    sinVentana,
   });
 
   for (const url of imagenes) {
