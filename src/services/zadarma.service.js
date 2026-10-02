@@ -352,6 +352,15 @@ async function movimiento({ id_configuracion, tipo, centavos, id_llamada = null,
 const recargar = (id_configuracion, centavos, id_sub_usuario, detalle) =>
   movimiento({ id_configuracion, tipo: 'recarga', centavos: Math.abs(centavos), id_sub_usuario, detalle });
 
+/** Quita saldo a una conexión (hasta dejarla en cero): libera la cobertura
+ *  en Zadarma, por ejemplo al terminar pruebas o si se cargó de más. */
+async function retirar(id_configuracion, centavos, id_sub_usuario, detalle) {
+  const cuenta = await cuentaDe(id_configuracion, { crear: true });
+  const monto = Math.min(Math.abs(centavos), Number(cuenta.saldo_centavos));
+  if (monto <= 0) return Number(cuenta.saldo_centavos);
+  return movimiento({ id_configuracion, tipo: 'retiro', centavos: -monto, id_sub_usuario, detalle });
+}
+
 /** Centavos que cuesta una llamada de N segundos a la tarifa de la cuenta
  *  (cobro por segundo, redondeado hacia arriba al centavo). */
 const costoCentavos = (segundos, tarifaMin) => Math.ceil((Math.max(0, segundos) * tarifaMin) / 60);
@@ -570,16 +579,42 @@ async function traerGrabacion(fila) {
   try {
     const r = await axios.get(enlace, { responseType: 'arraybuffer', timeout: 60000 });
     if (!r.data || r.data.length < 1000) throw new Error(`archivo vacío (${r.data?.length || 0} bytes)`);
+    const audio = Buffer.from(r.data);
     const ext = /\.(wav|ogg|m4a)(\?|$)/i.exec(enlace)?.[1]?.toLowerCase() || 'mp3';
-    const dir = path.join(__dirname, '..', 'uploads', 'telefonia', String(fila.id_configuracion));
-    await fs.mkdir(dir, { recursive: true });
     const nombre = `${fila.id}.${ext}`;
-    await fs.writeFile(path.join(dir, nombre), Buffer.from(r.data));
-    const url = `${DOMINIO_PUBLICO()}/uploads/telefonia/${fila.id_configuracion}/${nombre}`;
+    /* Primero S3 (el mismo uploader de las fotos del chat), para que la
+       grabación no dependa del disco del servidor; si el uploader falla,
+       queda en uploads/telefonia/<cfg>/ y se sirve desde aquí. */
+    let url = null;
+    try {
+      const { uploadToUploader } = require('../utils/whatsappTemplate.helpers');
+      const s3 = await uploadToUploader({
+        buffer: audio,
+        originalname: nombre,
+        mimetype: ext === 'wav' ? 'audio/wav' : ext === 'ogg' ? 'audio/ogg' : 'audio/mpeg',
+        folder: `telefonia/${fila.id_configuracion}`,
+      });
+      url = s3?.fileUrl || null;
+    } catch (e) {
+      console.warn('[telefonia] uploader S3 falló, guardo local:', e.message);
+    }
+    if (!url) {
+      const dir = path.join(__dirname, '..', 'uploads', 'telefonia', String(fila.id_configuracion));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, nombre), audio);
+      url = `${DOMINIO_PUBLICO()}/uploads/telefonia/${fila.id_configuracion}/${nombre}`;
+    }
     await fila.update({ grabada: 1, grabacion_url: url });
     await api('/v1/pbx/record/request/', { call_id: callId }, 'DELETE').catch((e) =>
       console.warn('[telefonia] grabación copiada pero no se pudo borrar en Zadarma:', e.message),
     );
+    // Transcripción y resumen con IA, en segundo plano.
+    setImmediate(() => {
+      const ia = require('./telefonia_ia.service');
+      ia.analizarLlamada(fila, { buffer: audio }).catch((e) =>
+        console.error('[telefonia] análisis IA falló:', e.message),
+      );
+    });
     return url;
   } catch (e) {
     console.warn('[telefonia] no se pudo descargar la grabación, queda el enlace de Zadarma:', e.message);
@@ -774,6 +809,7 @@ module.exports = {
   cuentaTieneTelefonia,
   conexionTieneTelefonia,
   recargar,
+  retirar,
   llamar,
   comprobarNumero,
   firmaValida,

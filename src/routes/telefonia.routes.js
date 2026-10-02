@@ -24,6 +24,9 @@ router.get('/movimientos', ctrl.movimientos);
 
 // ── Super administrador (Imporfactory) ──
 router.post('/recargar', requireSuperAdmin, ctrl.recargar);
+router.post('/retirar', requireSuperAdmin, ctrl.retirar); // quita saldo (libera cobertura en Zadarma)
+router.post('/apagar', requireSuperAdmin, ctrl.apagar); // apaga la telefonía y devuelve el saldo
+router.post('/cuenta/quitar', requireSuperAdmin, ctrl.quitarCuenta); // borra la fila (apagada y en cero)
 router.post('/cuenta', requireSuperAdmin, ctrl.configurarCuenta); // caller_id, tarifa, activo (comprueba el número)
 router.post('/cuenta/comprobar-numero', requireSuperAdmin, ctrl.comprobarNumero); // ¿verificado en Zadarma?
 router.get('/diagnostico', requireSuperAdmin, ctrl.diagnostico);
@@ -32,6 +35,8 @@ router.get('/maestra', requireSuperAdmin, ctrl.maestraEstado); // llaves guardad
 router.post('/maestra', requireSuperAdmin, ctrl.maestraGuardar); // guarda llaves (prueba contra Zadarma)
 router.get('/cuentas', requireSuperAdmin, ctrl.cuentas); // conexiones con saldo + cobertura
 router.get('/admin/historial', requireSuperAdmin, ctrl.historialAdmin); // llamadas de una conexión, paginado
+router.get('/ia', requireSuperAdmin, ctrl.iaEstado); // conteo de análisis con IA (la llave es la de cada conexión)
+router.post('/ia/reanalizar', requireSuperAdmin, ctrl.iaReanalizar); // reintenta las que quedaron sin llave o con error
 router.get('/costo', requireSuperAdmin, ctrl.costo); // costo real por minuto según país
 router.get('/conexiones', requireSuperAdmin, ctrl.conexiones); // buscador para dar saldo
 
