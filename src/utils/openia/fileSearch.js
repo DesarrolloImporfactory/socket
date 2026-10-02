@@ -214,7 +214,11 @@ function usaCatalogoInline(id_configuracion) {
 // turno 2 (16k+16k acumulados) en cualquier conversación de más de un turno.
 // La 666 (31.094) queda fuera por poco: subirla es otro escalón de costo
 // (~900 msgs/día) que se decide aparte.
-const TOPE_CATALOGO_INLINE = 30000;
+//
+// ── 2026-10-01: sube a 32.000 ─────────────────────────────────
+// La 285 creció a 30.182 y volvió a file_search (la batería lo cazó). Con
+// 32k vuelve con margen y entran 434, 277 y 666 (31.395–31.759).
+const TOPE_CATALOGO_INLINE = 32000;
 
 // La pregunta de verdad: ¿esta columna va por inline en esta llamada?
 // Necesita los tokens del catálogo de la columna, no solo la cuenta.
