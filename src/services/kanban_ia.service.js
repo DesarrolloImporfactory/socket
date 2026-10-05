@@ -1350,6 +1350,47 @@ async function procesarMensajeKanban(params) {
         await log(
           `🕐 Último mensaje fue remarketing (${ultimoMsg.responsable}): inyectado como contexto cliente=${id_cliente}`,
         );
+      } else if (
+        /* Las columnas con cierre de venta ya reciben los mensajes de las
+           personas del negocio en el paso 6.8 (a); esto cubre el resto
+           (soporte, proveeduría, servicios), que no tenía nada. */
+        !accCierreVenta &&
+        ultimoMsg &&
+        String(ultimoMsg.texto_mensaje || '').trim() &&
+        new Date(ultimoMsg.created_at).getTime() >=
+          Date.now() - 24 * 60 * 60 * 1000
+      ) {
+        /* ÚLTIMO MENSAJE = UN ASESOR HUMANO. Lo que escribe una persona desde
+           el panel (o desde la app de WhatsApp Business) tampoco entra en la
+           cadena de Responses, así que el bot retoma la conversación ciego a
+           lo último que se le dijo al cliente. Caso cfg 261 (2026-10-02): la
+           asesora escribió "debes subir la garantía a dropi" y cerró el chat;
+           el cliente preguntó "¿hay algún video que me enseñe cómo?" y el bot
+           —que solo vio esa pregunta suelta— le mandó el video de NOVEDADES.
+           `responsable` trae el nombre de quien escribió; lo que empieza con
+           IA_, cron_ o es un emisor del sistema no cuenta. */
+        const resp = String(ultimoMsg.responsable || '').trim();
+        const esHumano =
+          resp &&
+          !/^(IA_|IA$|cron_|dropi|aliclik|sistema|instagram|messenger|respondedor|encuesta|bot\b)/i.test(
+            resp,
+          );
+        if (esHumano) {
+          // El panel antepone la firma "*Nombre* 🎤:" al texto: no aporta.
+          const textoHumano = String(ultimoMsg.texto_mensaje)
+            .replace(/^\s*\*[^*\n]{1,60}\*\s*🎤:?\s*\n?/u, '')
+            .trim()
+            .slice(0, 600);
+          if (textoHumano) {
+            bloqueContexto +=
+              `🧑‍💼 LO ÚLTIMO QUE SE LE ESCRIBIÓ AL CLIENTE lo envió una persona de tu equipo (no fuiste tú y NO está en tu memoria):\n` +
+              `"${textoHumano}"\n` +
+              `El cliente está respondiendo a ESO: interpreta su mensaje en ese contexto (si dice "¿cómo?", "¿hay un video?", "¿y eso dónde?", "ok", habla de lo que le indicó tu compañero) y no contradigas lo que ya se le dijo.\n\n`;
+            await log(
+              `🧑‍💼 Último mensaje fue de un asesor humano (${resp}): inyectado como contexto cliente=${id_cliente}`,
+            );
+          }
+        }
       }
     } catch (e) {
       await log(`⚠️ Error inyectando remarketing previo: ${e.message}`);
