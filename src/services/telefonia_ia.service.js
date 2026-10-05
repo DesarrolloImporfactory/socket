@@ -249,6 +249,42 @@ async function reanalizarPendientes(limite = 50) {
 }
 
 /**
+ * Análisis que quedaron a medias (lo usa el cron de reconciliación):
+ *   - llamadas con grabación ya en nuestro almacenamiento y SIN fila de
+ *     análisis: el servidor se reinició antes de empezar;
+ *   - análisis en 'pendiente' (se reinició a mitad) o 'error' de las últimas
+ *     3 horas (falla pasajera de OpenAI);
+ *   - 'sin_llave' de las últimas 24 h, por si el negocio ya guardó su llave.
+ * Solo últimas 24 h y pocas por corrida: nunca reintenta para siempre.
+ */
+async function analizarRezagadas(limite = 10) {
+  const filas = await db.query(
+    `SELECT l.id
+     FROM telefonia_llamadas l
+     LEFT JOIN telefonia_analisis a ON a.id_llamada = l.id
+     WHERE l.estado = 'answered' AND l.grabacion_url IS NOT NULL AND l.grabacion_url NOT LIKE '%api.zadarma.com%'
+       AND l.fin_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) AND l.fin_at < DATE_SUB(NOW(), INTERVAL 3 MINUTE)
+       AND (
+         a.id_llamada IS NULL
+         OR (a.estado = 'pendiente' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 10 MINUTE))
+         OR (a.estado = 'error' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+             AND a.created_at > DATE_SUB(NOW(), INTERVAL 3 HOUR))
+         OR (a.estado = 'sin_llave' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 30 MINUTE))
+       )
+     ORDER BY l.id DESC LIMIT ?`,
+    { replacements: [limite], type: db.QueryTypes.SELECT },
+  );
+  let listas = 0;
+  for (const { id } of filas) {
+    const fila = await TelefoniaLlamadas.findByPk(id);
+    if (!fila) continue;
+    const r = await analizarLlamada(fila);
+    if (r.estado === 'listo') listas += 1;
+  }
+  return { intentadas: filas.length, listas };
+}
+
+/**
  * Vuelve a clasificar llamadas ya analizadas usando la transcripción
  * guardada (no se transcribe de nuevo ni se avisa al chat). Sirve cuando
  * cambian las etiquetas de resultado, como al separar "pendiente de pago"
@@ -297,6 +333,7 @@ module.exports = {
   estadoAnalisis,
   analizarLlamada,
   reanalizarPendientes,
+  analizarRezagadas,
   reclasificar,
   ETIQUETA_RESULTADO,
 };
