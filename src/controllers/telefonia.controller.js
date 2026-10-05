@@ -220,7 +220,7 @@ exports.historialAdmin = catchAsync(async (req, res) => {
   if (!id_configuracion) {
     return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
   }
-  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 20));
   const page = Math.max(1, Number(req.query.page) || 1);
   const offset = (page - 1) * limit;
   const [{ total }] = await db.query(
