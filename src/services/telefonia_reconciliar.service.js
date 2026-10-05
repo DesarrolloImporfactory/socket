@@ -91,8 +91,41 @@ function emparejar(llamadas, stats) {
  * @param {number}  o.soloConfig  limita a una conexión (pruebas)
  * @param {boolean} o.conGrabaciones / o.conAnalisis  pasos 2 y 3
  */
-async function reconciliar({ dryRun = false, statsPbx = null, soloConfig = null, conGrabaciones = true, conAnalisis = true } = {}) {
-  const out = { abiertas: 0, cerradas: 0, cobrado_centavos: 0, no_marco: 0, sin_cierre: 0, en_espera: 0, grabaciones: 0, analisis: 0, detalle: [] };
+/** Como emparejar(), pero contra el registro general (/v1/statistics/), que
+ *  no trae la extensión: se usa destino + hora. Cada registro, una vez. */
+function emparejarGeneral(llamadas, stats) {
+  const regs = (stats || []).map((s, i) => ({ s, i, ms: aMs(s.callstart), to: digitos(s.to) }));
+  const candidatos = [];
+  for (const l of llamadas) {
+    const t = aMs(l.inicio_at);
+    const dest = digitos(l.telefono_cliente);
+    if (!dest) continue;
+    for (const r of regs) {
+      if (!r.to.endsWith(dest)) continue;
+      const d = r.ms - t;
+      if (d < -15_000 || d > 4 * MIN) continue;
+      candidatos.push({ id: l.id, i: r.i, dist: Math.abs(d) });
+    }
+  }
+  candidatos.sort((a, b) => a.dist - b.dist);
+  const pares = new Map();
+  const usados = new Set();
+  for (const c of candidatos) {
+    if (pares.has(c.id) || usados.has(c.i)) continue;
+    pares.set(c.id, regs[c.i].s);
+    usados.add(c.i);
+  }
+  return pares;
+}
+
+async function reconciliar({ dryRun = false, statsPbx = null, statsGeneral = null, soloConfig = null, conGrabaciones = true, conAnalisis = true, costoDe, margen } = {}) {
+  // costoDe(llamada, registro) y margen: solo para pruebas (evitan consultar
+  // a Zadarma). En producción cerrarLlamada lee el costo real por su cuenta.
+  const extraCobro = (l, s) => ({
+    ...(costoDe ? { costo_zadarma_usd: costoDe(l, s) } : {}),
+    ...(margen !== undefined ? { margen } : {}),
+  });
+  const out = { abiertas: 0, cerradas: 0, cobrado_centavos: 0, no_marco: 0, sin_cierre: 0, en_espera: 0, ajustadas: 0, ajuste_centavos: 0, grabaciones: 0, analisis: 0, detalle: [] };
   const ahora = ahoraEc();
   const filtroCfg = soloConfig ? { id_configuracion: soloConfig } : {};
 
@@ -153,7 +186,7 @@ async function reconciliar({ dryRun = false, statsPbx = null, soloConfig = null,
           out.cerradas += 1;
           continue;
         }
-        const r = await zadarma.cerrarLlamada(l, datos);
+        const r = await zadarma.cerrarLlamada(l, { ...datos, ...extraCobro(l, s) });
         if (r) {
           out.cerradas += 1;
           out.cobrado_centavos += r.costo_centavos;
@@ -180,6 +213,72 @@ async function reconciliar({ dryRun = false, statsPbx = null, soloConfig = null,
         { estado: 'failed', disposition: provisional, fin_at: new Date(), duracion_seg: 0, costo_centavos: 0 },
         { where: { id: l.id, fin_at: null } },
       );
+    }
+  }
+
+  /* ── 1b. Ajuste al costo real ──
+     Las llamadas contestadas que se cobraron con la tarifa fija (Zadarma no
+     entregó el costo al colgar) se llevan a lo que Zadarma cobró de verdad.
+     De paso se completa el número con el que salió cada llamada. Una sola
+     consulta al registro general cubre todas. */
+  {
+    const reciente = { [Op.and]: [{ [Op.gt]: db.literal(`DATE_SUB(NOW(), INTERVAL ${VENTANA_HORAS} HOUR)`) }, { [Op.lt]: db.literal('DATE_SUB(NOW(), INTERVAL 2 MINUTE)') }] };
+    const pendientes = await TelefoniaLlamadas.findAll({
+      where: {
+        ...filtroCfg,
+        fin_at: reciente,
+        [Op.or]: [{ estado: 'answered', costo_zadarma_usd: null }, { caller_id: null, disposition: { [Op.notIn]: zadarma.CIERRES_PROVISIONALES } }],
+      },
+      order: [['id', 'ASC']],
+      limit: 400,
+    });
+    if (pendientes.length) {
+      let general = statsGeneral;
+      if (!general) {
+        try {
+          const tiempos = pendientes.map((l) => aMs(l.inicio_at));
+          const d = await zadarma.api('/v1/statistics/', { start: aTexto(Math.min(...tiempos) - 2 * MIN), end: aTexto(Math.max(...tiempos) + 6 * MIN) });
+          general = Array.isArray(d.stats) ? d.stats : [];
+        } catch (e) {
+          out.error_registro_general = e.message;
+          general = null;
+        }
+      }
+      if (general) {
+        // Igual que arriba: emparejan TODAS las llamadas del período, para que
+        // cada registro lo reclame su llamada y no otra al mismo número.
+        const desdePeriodo = aTexto(Math.min(...pendientes.map((l) => aMs(l.inicio_at))) - 5 * MIN);
+        const delPeriodo = await TelefoniaLlamadas.findAll({
+          // Sin los intentos que nunca se marcaron: esos no existen en Zadarma.
+          where: {
+            ...filtroCfg,
+            inicio_at: { [Op.gte]: db.literal(db.escape(desdePeriodo)) },
+            [Op.or]: [{ disposition: null }, { disposition: { [Op.notIn]: zadarma.CIERRES_PROVISIONALES } }],
+          },
+          attributes: ['id', 'telefono_cliente', 'inicio_at'],
+        });
+        const pares = emparejarGeneral(delPeriodo, general);
+        for (const l of pendientes) {
+          const g = pares.get(l.id);
+          if (!g) continue;
+          const from = g.from ? digitos(g.from) : null;
+          const sinCosto = l.estado === 'answered' && l.costo_zadarma_usd == null && Number(g.billseconds) > 0 && Number.isFinite(Number(g.billcost));
+          if (sinCosto) {
+            if (dryRun) {
+              out.ajustadas += 1;
+              out.detalle.push({ id: l.id, accion: 'ajustar_costo', cobrado_centavos: l.costo_centavos, zadarma_usd: Number(g.billcost) });
+              continue;
+            }
+            const r = await zadarma.ajustarACostoReal(l, { costo_zadarma_usd: Number(g.billcost), from, ...(margen !== undefined ? { margen } : {}) });
+            if (r) {
+              out.ajustadas += 1;
+              out.ajuste_centavos += r.ajuste_centavos;
+            }
+          } else if (!l.caller_id && from && !dryRun) {
+            await TelefoniaLlamadas.update({ caller_id: from }, { where: { id: l.id, caller_id: null } });
+          }
+        }
+      }
     }
   }
 

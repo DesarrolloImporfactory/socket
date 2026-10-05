@@ -16,7 +16,15 @@ const TelefoniaCuentas = db.define(
     id_configuracion: { type: DataTypes.INTEGER, allowNull: false, primaryKey: true },
     /** Saldo en centavos de dólar. */
     saldo_centavos: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-    /** Precio de venta por minuto, en centavos (40 = $0.40/min). */
+    /** Fracción de centavo que sobró del último cobro (0 ≤ resto < 1). Cada
+     *  llamada se cobra por su costo real, que casi nunca es un número
+     *  entero de centavos; la fracción se arrastra a la siguiente para que
+     *  lo cobrado nunca se aleje más de 1 centavo del costo real acumulado.
+     *  Columna agregada a mano (telefonia_cobro_real_migration.sql). */
+    resto_centavos: { type: DataTypes.DECIMAL(8, 6), allowNull: false, defaultValue: 0 },
+    /** Precio de venta por minuto a celulares del PAÍS de la conexión, en
+     *  centavos (40 = $0.40/min). Fija el margen: las llamadas a cualquier
+     *  destino se cobran con ese mismo margen sobre su costo real en Zadarma. */
     tarifa_centavos_min: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 40 },
     /** Número propio del cliente verificado en Zadarma, sin "+". */
     caller_id: { type: DataTypes.STRING(30), allowNull: true },

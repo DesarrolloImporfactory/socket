@@ -37,6 +37,10 @@ const TelefoniaLlamadas = db.define(
     duracion_seg: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     /** Centavos descontados del saldo de la conexión. */
     costo_centavos: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    /** Lo que Zadarma le cobró a Imporfactory por esta llamada (billcost de
+     *  /v1/statistics/). null = no se pudo leer y se cobró por la tarifa fija.
+     *  Columna agregada a mano (telefonia_cobro_real_migration.sql). */
+    costo_zadarma_usd: { type: DataTypes.DECIMAL(10, 4), allowNull: true },
     grabada: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 0 },
     call_id_with_rec: { type: DataTypes.STRING(160), allowNull: true },
     /** Enlace a la grabación (vigencia larga pedida a Zadarma). */
