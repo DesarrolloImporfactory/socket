@@ -40,6 +40,7 @@ const {
   fmtPrecio,
   paqueteMedia,
   componerMensajeInicial,
+  refrescarPreciosMensaje,
 } = require('../utils/wizardProducto/componerMensajeInicial');
 const {
   esSaludoOGenerico,
@@ -99,6 +100,47 @@ async function wizardActivoDeProducto(id_producto) {
     for (const [k, v] of CACHE_WIZARD) if (v.ts < limite) CACHE_WIZARD.delete(k);
   }
   return wizard;
+}
+
+/* El mensaje fijo guardado, con sus líneas de precio al día con el catálogo
+   (ver refrescarPreciosMensaje). Es la red de seguridad del runtime: cubre los
+   wizards cuyo texto quedó viejo y cualquier camino que cambie el precio sin
+   pasar por el formulario de producto (carga masiva, importación). */
+function mensajeFijoVigente(wizard, producto) {
+  const guardado = String(wizard?.mensaje_inicial || '').trim();
+  if (!guardado) return '';
+  return refrescarPreciosMensaje(guardado, producto, wizard.tipo_venta).trim();
+}
+
+/* Al guardar un producto: si tiene wizard y su mensaje fijo quedó con precios
+   distintos a los del catálogo, se reescriben sus líneas de precio y se
+   guarda, para que la vista previa del panel muestre lo mismo que se envía.
+   Nunca lanza: es un efecto secundario del guardado del producto. */
+async function refrescarMensajeFijoDeProducto(id_producto) {
+  try {
+    const fila = await ProductosWizard.findOne({ where: { id_producto } });
+    if (!fila) return false;
+    const guardado = String(fila.mensaje_inicial || '');
+    if (!guardado.trim()) return false;
+    const [producto] = await db.query(
+      `SELECT id, precio, combos_producto FROM productos_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [id_producto], type: db.QueryTypes.SELECT },
+    );
+    if (!producto) return false;
+    const nuevo = refrescarPreciosMensaje(guardado, producto, fila.tipo_venta);
+    if (nuevo === guardado) return false;
+    await fila.update({ mensaje_inicial: nuevo });
+    olvidarWizard(id_producto);
+    console.log(
+      `[wizard] mensaje fijo del producto ${id_producto} actualizado con los precios del catálogo`,
+    );
+    return true;
+  } catch (e) {
+    console.warn(
+      `[wizard] no se pudo refrescar el mensaje fijo del producto ${id_producto}: ${e.message}`,
+    );
+    return false;
+  }
 }
 
 /** Invalida la cache (la llama el servicio al guardar desde el panel). */
@@ -451,7 +493,7 @@ async function enviarPaqueteInicial({
   const decir = logDe(log);
   const { imagenes, videos, documentos } = paqueteMedia({ producto, wizard });
   let texto =
-    String(wizard.mensaje_inicial || '').trim() ||
+    mensajeFijoVigente(wizard, producto) ||
     componerMensajeInicial({ producto, wizard });
   const gancho = String(wizard.pregunta_gancho || '').trim();
   if (omitirGancho && gancho && texto.includes(gancho)) {
@@ -652,7 +694,7 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
      "no repitas precios" no alcanzaba contra un paso numerado con su texto
      literal: hay que mostrarle el mensaje que salió y decirle QUÉ paso de su
      guion ya quedó hecho. */
-  const mensajeFijo = String(wizard.mensaje_inicial || '').trim();
+  const mensajeFijo = mensajeFijoVigente(wizard, producto);
   if (mensajeFijo && wizard.tipo_venta !== 'servicio') {
     const preguntaFinal = mensajeFijo
       .split('\n')
@@ -868,15 +910,25 @@ async function intentarMensajeFijoWizard({
   }
 
   const textoFijo =
-    String(wizard.mensaje_inicial || '').trim() ||
+    mensajeFijoVigente(wizard, producto) ||
     componerMensajeInicial({ producto, wizard });
+  /* Quien ya recibió el paquete con el texto GUARDADO (precios de antes) hace
+     menos de 48 h tampoco lo recibe otra vez solo porque cambió el precio. */
+  const textoGuardado = String(wizard.mensaje_inicial || '').trim();
 
   if (
-    await yaSeEnvioMensajeInicial({
+    (await yaSeEnvioMensajeInicial({
       id_configuracion,
       id_cliente,
       mensaje_inicial: textoFijo,
-    })
+    })) ||
+    (textoGuardado &&
+      textoGuardado !== textoFijo &&
+      (await yaSeEnvioMensajeInicial({
+        id_configuracion,
+        id_cliente,
+        mensaje_inicial: textoGuardado,
+      })))
   ) {
     await decir(`wizard: paquete ya enviado hace <${VENTANA_REENVIO_HORAS}h; sigue la IA`);
     return { ...nada, bloqueMotor };
@@ -2283,6 +2335,7 @@ module.exports = {
   RESPONSABLES_SIN_IA,
   wizardActivoDeProducto,
   olvidarWizard,
+  refrescarMensajeFijoDeProducto,
   resolverWizardDelAnuncio,
   wizardDelClienteEnJuego,
   bloqueWizardParaMotor,

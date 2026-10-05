@@ -791,6 +791,18 @@ exports.actualizarProducto = catchAsync(async (req, res, next) => {
   syncCatalogoTodasColumnasConfig(idConfigSync).catch((e) =>
     console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
   );
+  /* Si el producto tiene wizard, su mensaje fijo lleva los precios escritos:
+     se rehacen con los del catálogo recién guardado. Sin esto el negocio
+     cambiaba el precio aquí y el primer mensaje del bot seguía con el viejo.
+     Se espera (es una consulta corta y nunca lanza) para que el wizard, que
+     recarga apenas llega esta respuesta, ya muestre el mensaje corregido. */
+  try {
+    await require('../services/producto_wizard_runtime.service').refrescarMensajeFijoDeProducto(
+      productoId,
+    );
+  } catch (_) {
+    /* el wizard es opcional: nunca frena el guardado del producto */
+  }
   res.status(200).json({ status: 'success', data: producto });
 
   // ← Conversión en background (después del res.json)

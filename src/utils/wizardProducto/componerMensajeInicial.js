@@ -145,6 +145,64 @@ function componerMensajeInicial({ producto, wizard }) {
   return partes.join('\n\n').trim();
 }
 
+/* ── Precios del mensaje fijo, siempre los del catálogo ──
+   El mensaje fijo se GUARDA ya compuesto (y el negocio lo puede editar), así
+   que sus líneas de precio son una foto del día en que se armó. Si después el
+   negocio cambia el precio o los combos del producto, el catálogo y la IA
+   usan el precio nuevo pero el primer mensaje sigue saliendo con el viejo
+   (cfg 322, 2026-10-05: subió Rodillera y Mallas de $23,99 a $25,99 y el bot
+   "seguía dando los precios anteriores" aunque resincronizó tres veces).
+
+   Esta función rehace SOLO las líneas con forma de precio ("💵 1 por $23,99",
+   "🔥 2 por $29,99"; en servicios "💵 Precio: $40") con los valores vigentes.
+   El resto del texto —intro, envío, pregunta— no se toca. Si el negocio
+   escribió los precios a su manera y ninguna línea tiene esa forma, no se
+   adivina: el texto vuelve igual. Y si las líneas ya coinciden con el
+   catálogo, también vuelve igual (se respeta el formato que tenga). */
+const RE_LINEA_PRECIO = /^\s*(?:\S{1,8}\s+)?(\d{1,3})\s+por\s+\$\s?(\d[\d.,]*)\s*$/u;
+const RE_LINEA_PRECIO_SERVICIO = /^\s*(?:\S{1,8}\s+)?Precio:\s*\$\s?(\d[\d.,]*)\s*$/iu;
+
+function refrescarPreciosMensaje(texto, producto, tipo_venta) {
+  const original = String(texto || '');
+  if (!original.trim() || !producto) return original;
+  const nuevas = lineasPrecio(producto, tipo_venta);
+  if (!nuevas.length) return original;
+
+  const esServicio = tipo_venta === 'servicio';
+  const lineas = original.split('\n');
+  const leer = (l) => {
+    if (esServicio) {
+      const m = l.match(RE_LINEA_PRECIO_SERVICIO);
+      return m ? { cantidad: 1, precio: aNumero(m[1]) } : null;
+    }
+    const m = l.match(RE_LINEA_PRECIO);
+    return m ? { cantidad: Number(m[1]), precio: aNumero(m[2]) } : null;
+  };
+  const halladas = lineas
+    .map((l, i) => ({ i, dato: leer(l) }))
+    .filter((x) => x.dato);
+  if (!halladas.length) return original;
+
+  // ¿Ya dicen lo mismo que el catálogo? Entonces no se toca nada.
+  const vigentes = esServicio
+    ? [{ cantidad: 1, precio: aNumero(producto.precio) }]
+    : [
+        ...(aNumero(producto.precio) > 0
+          ? [{ cantidad: 1, precio: aNumero(producto.precio) }]
+          : []),
+        ...combosValidos(producto.combos_producto),
+      ];
+  const firma = (lista) =>
+    lista.map((x) => `${x.cantidad}:${Number(x.precio).toFixed(2)}`).join('|');
+  if (firma(halladas.map((x) => x.dato)) === firma(vigentes)) return original;
+
+  const indices = new Set(halladas.map((x) => x.i));
+  const primero = halladas[0].i;
+  const resto = lineas.filter((_, i) => !indices.has(i));
+  resto.splice(primero, 0, ...nuevas);
+  return resto.join('\n');
+}
+
 /** Normaliza un item de media del wizard; devuelve null si no sirve. */
 function normalizarItemMedia(m) {
   if (!m) return null;
@@ -261,6 +319,7 @@ module.exports = {
   lineasPrecio,
   preguntaGanchoPorDefecto,
   componerMensajeInicial,
+  refrescarPreciosMensaje,
   limitarMedia,
   mediaFijaDelProducto,
   paqueteMedia,
