@@ -4,6 +4,8 @@ const zadarma = require('../services/zadarma.service');
 const telefoniaIA = require('../services/telefonia_ia.service');
 const TelefoniaLlamadas = require('../models/telefonia_llamadas.model');
 const TelefoniaMovimientos = require('../models/telefonia_movimientos.model');
+const TelefoniaRevisiones = require('../models/telefonia_revisiones.model');
+const TelefoniaCalidad = require('../models/telefonia_calidad.model');
 
 /**
  * Telefonía por saldo (Zadarma). Ver services/zadarma.service.js.
@@ -108,19 +110,26 @@ exports.llamar = catchAsync(async (req, res) => {
   }
 });
 
-/** Columnas del historial con asesor, cliente y análisis IA (misma lista
- *  para el administrador de la conexión y para el super admin). */
+/** Columnas del historial con asesor, cliente, análisis IA, seguimiento del
+ *  supervisor y calidad de red (misma lista para el administrador de la
+ *  conexión y para el super admin). */
 const SQL_HISTORIAL_SELECT = `
-  SELECT l.id, l.id_sub_usuario, l.id_cliente_chat_center, l.extension, l.telefono_cliente,
+  SELECT l.id, l.id_configuracion, l.id_sub_usuario, l.id_cliente_chat_center, l.extension, l.telefono_cliente,
          l.caller_id, l.estado, l.disposition, l.inicio_at, l.fin_at, l.duracion_seg,
          l.costo_centavos, l.grabada, l.grabacion_url,
          su.nombre_encargado AS asesor, cc.nombre_cliente AS cliente,
          a.estado AS ia_estado, a.resumen AS ia_resumen, a.analisis AS ia_analisis,
-         a.transcripcion AS ia_transcripcion, a.error AS ia_error
+         a.transcripcion AS ia_transcripcion, a.error AS ia_error,
+         r.estado AS rev_estado, r.nota AS rev_nota, r.updated_at AS rev_at, ru.nombre_encargado AS rev_por,
+         q.perdida_subida_pct AS red_perdida_subida, q.perdida_bajada_pct AS red_perdida_bajada,
+         q.jitter_ms AS red_jitter_ms, q.rtt_ms AS red_rtt_ms
   FROM telefonia_llamadas l
   LEFT JOIN sub_usuarios_chat_center su ON su.id_sub_usuario = l.id_sub_usuario
   LEFT JOIN clientes_chat_center cc ON cc.id = l.id_cliente_chat_center
-  LEFT JOIN telefonia_analisis a ON a.id_llamada = l.id`;
+  LEFT JOIN telefonia_analisis a ON a.id_llamada = l.id
+  LEFT JOIN telefonia_revisiones r ON r.id_llamada = l.id
+  LEFT JOIN sub_usuarios_chat_center ru ON ru.id_sub_usuario = r.id_sub_usuario
+  LEFT JOIN telefonia_calidad q ON q.id_llamada = l.id`;
 
 const parsearAnalisis = (r) => {
   let analisis = null;
@@ -136,18 +145,19 @@ const parsearAnalisis = (r) => {
 };
 
 /**
- * Historial de llamadas de una conexión para su administrador (dashboard de
- * atención) y para el chat: rango de fechas opcional, filtro por cliente, y
- * un resumen (totales y por asesor) para las tarjetas.
+ * Historial de llamadas de una conexión con su resumen (totales y por
+ * asesor). Rango de fechas opcional (desde/hasta, YYYY-MM-DD, hora Ecuador)
+ * y filtro por cliente. Lo usan el dashboard de atención (administrador de
+ * la conexión), el chat y el historial de /telefonia (super admin).
  */
-exports.historial = catchAsync(async (req, res) => {
-  const id_configuracion = await verificarConexion(req, res);
-  if (!id_configuracion) return undefined;
-  const id_cliente = Number(req.query.id_cliente_chat_center) || null;
-  const desde = /^\d{4}-\d{2}-\d{2}$/.test(req.query.desde || '') ? `${req.query.desde} 00:00:00` : null;
-  const hasta = /^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta || '') ? `${req.query.hasta} 23:59:59` : null;
-  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
-  const cond = ['l.id_configuracion = ?'];
+async function construirHistorial(id_configuracion, query) {
+  const id_cliente = Number(query.id_cliente_chat_center) || null;
+  const desde = /^\d{4}-\d{2}-\d{2}$/.test(query.desde || '') ? `${query.desde} 00:00:00` : null;
+  const hasta = /^\d{4}-\d{2}-\d{2}$/.test(query.hasta || '') ? `${query.hasta} 23:59:59` : null;
+  const limit = Math.min(1000, Math.max(1, Number(query.limit) || 500));
+  // 'no_marco' = intento que el navegador nunca llegó a marcar: no es una
+  // llamada (Zadarma ni se enteró) y no debe contar ni listarse.
+  const cond = ['l.id_configuracion = ?', "(l.disposition IS NULL OR l.disposition <> 'no_marco')"];
   const repl = [id_configuracion];
   if (id_cliente) {
     cond.push('l.id_cliente_chat_center = ?');
@@ -182,11 +192,10 @@ exports.historial = catchAsync(async (req, res) => {
       tot.costo_centavos += Number(r.costo_centavos) || 0;
     }
     const res_ = r.ia_analisis?.resultado;
-    if (res_) tot.resultados[res_] = (tot.resultados[res_] || 0) + 1;
+    if (res_ && res_ !== 'no_contesto') tot.resultados[res_] = (tot.resultados[res_] || 0) + 1;
   }
   const cuenta = await zadarma.cuentaDe(id_configuracion);
-  return res.json({
-    status: 'success',
+  return {
     data,
     resumen: {
       ...tot,
@@ -195,7 +204,23 @@ exports.historial = catchAsync(async (req, res) => {
       tarifa_centavos_min: cuenta?.tarifa_centavos_min ?? null,
       activo: cuenta ? Number(cuenta.activo) === 1 : false,
     },
-  });
+  };
+}
+
+exports.historial = catchAsync(async (req, res) => {
+  const id_configuracion = await verificarConexion(req, res);
+  if (!id_configuracion) return undefined;
+  return res.json({ status: 'success', ...(await construirHistorial(id_configuracion, req.query)) });
+});
+
+/** Lo mismo para el super administrador, de cualquier conexión. */
+exports.historialAdmin = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const out = await construirHistorial(id_configuracion, req.query);
+  return res.json({ status: 'success', ...out, total: out.data.length });
 });
 
 /* ── Análisis con IA (super administrador): conteo y reintento. La llave es
@@ -209,29 +234,81 @@ exports.iaReanalizar = catchAsync(async (req, res) => {
   return res.json({ status: 'success', data: r });
 });
 
-/**
- * Historial paginado de una conexión (super administrador), con el asesor,
- * el cliente y el número con el que salió cada llamada. Sirve para responder
- * "¿desde qué número salió?" ante una queja: `caller_id` es lo que Zadarma
- * reporta haber enviado; si la operadora lo reemplazó, eso ya no se ve.
- */
-exports.historialAdmin = catchAsync(async (req, res) => {
-  const id_configuracion = Number(req.query.id_configuracion);
-  if (!id_configuracion) {
-    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+/** Vuelve a clasificar (sin transcribir de nuevo) las llamadas ya analizadas:
+ *  sirve cuando cambian las etiquetas de resultado. */
+exports.iaReclasificar = catchAsync(async (req, res) => {
+  const r = await telefoniaIA.reclasificar({ dias: Number(req.body.dias) || 30, limite: Number(req.body.limite) || 200 });
+  return res.json({ status: 'success', data: r });
+});
+
+/* ── Seguimiento del supervisor sobre una llamada ──
+   Quien supervisa (administrador o administrador limitado de la conexión, o
+   el super admin) deja constancia de qué se hizo con una llamada marcada
+   para revisar: pendiente (la marca a mano), resuelta o escalada, con nota. */
+const ESTADOS_REVISION = ['pendiente', 'resuelta', 'escalada'];
+exports.revision = catchAsync(async (req, res) => {
+  const id_llamada = Number(req.body.id_llamada);
+  const estado = String(req.body.estado || '');
+  if (!id_llamada || (estado && !ESTADOS_REVISION.includes(estado))) {
+    return res.status(400).json({ status: 'error', message: 'id_llamada y estado (pendiente, resuelta o escalada) son requeridos' });
   }
-  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 20));
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const offset = (page - 1) * limit;
-  const [{ total }] = await db.query(
-    `SELECT COUNT(*) AS total FROM telefonia_llamadas WHERE id_configuracion = ?`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  const llamada = await TelefoniaLlamadas.findByPk(id_llamada);
+  if (!llamada) return res.status(404).json({ status: 'error', message: 'La llamada no existe' });
+  const [yo] = await db.query(
+    `SELECT rol, nombre_encargado FROM sub_usuarios_chat_center WHERE id_sub_usuario = ? LIMIT 1`,
+    { replacements: [req.sessionUser.id_sub_usuario], type: db.QueryTypes.SELECT },
   );
-  const rows = await db.query(`${SQL_HISTORIAL_SELECT} WHERE l.id_configuracion = ? ORDER BY l.id DESC LIMIT ? OFFSET ?`, {
-    replacements: [id_configuracion, limit, offset],
+  const [propia] = await db.query(`SELECT id FROM configuraciones WHERE id = ? AND id_usuario = ? LIMIT 1`, {
+    replacements: [llamada.id_configuracion, req.sessionUser.id_usuario],
     type: db.QueryTypes.SELECT,
   });
-  return res.json({ status: 'success', data: rows.map(parsearAnalisis), total: Number(total), page, limit });
+  const esSuper = yo?.rol === 'super_administrador';
+  if (!esSuper && (!propia || yo?.rol === 'ventas')) {
+    return res.status(403).json({ status: 'error', message: 'Tu rol no puede dar seguimiento a las llamadas de esta conexión' });
+  }
+  if (!estado) {
+    await TelefoniaRevisiones.destroy({ where: { id_llamada } });
+    return res.json({ status: 'success', data: null });
+  }
+  await TelefoniaRevisiones.upsert({
+    id_llamada,
+    id_configuracion: llamada.id_configuracion,
+    estado,
+    nota: String(req.body.nota || '').slice(0, 2000) || null,
+    id_sub_usuario: req.sessionUser.id_sub_usuario,
+    updated_at: new Date(),
+  });
+  return res.json({
+    status: 'success',
+    data: { rev_estado: estado, rev_nota: String(req.body.nota || '').slice(0, 2000) || null, rev_por: yo?.nombre_encargado || null, rev_at: new Date() },
+  });
+});
+
+/* ── Calidad de red de la llamada (la mide el navegador del asesor) ──
+   El teléfono corre en el navegador: si la red del asesor pierde paquetes,
+   el cliente lo oye entrecortado. El widget manda al colgar el promedio de
+   pérdida, jitter y latencia para poder distinguir "internet del asesor"
+   de "ruta de Zadarma". */
+exports.calidad = catchAsync(async (req, res) => {
+  const id_llamada = Number(req.body.id_llamada);
+  const llamada = id_llamada ? await TelefoniaLlamadas.findByPk(id_llamada) : null;
+  if (!llamada || Number(llamada.id_sub_usuario) !== Number(req.sessionUser.id_sub_usuario)) {
+    return res.status(404).json({ status: 'error', message: 'La llamada no es tuya' });
+  }
+  const num = (v, max) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.min(max, Math.round(n * 100) / 100) : null;
+  };
+  await TelefoniaCalidad.upsert({
+    id_llamada,
+    muestras: Math.min(100000, Math.round(Number(req.body.muestras) || 0)),
+    perdida_subida_pct: num(req.body.perdida_subida_pct, 100),
+    perdida_bajada_pct: num(req.body.perdida_bajada_pct, 100),
+    jitter_ms: num(req.body.jitter_ms, 10000),
+    rtt_ms: num(req.body.rtt_ms, 60000),
+    updated_at: new Date(),
+  });
+  return res.json({ status: 'success' });
 });
 
 exports.movimientos = catchAsync(async (req, res) => {
