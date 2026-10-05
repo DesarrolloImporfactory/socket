@@ -362,6 +362,27 @@ async function llaveWidget(id_sub_usuario) {
    celular del país de la conexión y se cachea una hora. */
 const MUESTRA_POR_PAIS = { ec: '593990000000', co: '573000000000', mx: '5215500000000', pe: '519000000000', gt: '50250000000', us: '13050000000' };
 const costoCache = new Map(); // pais → { centavos, descripcion, at }
+/** Costo de Zadarma por minuto (en centavos, con decimales) hacia un número
+ *  concreto. Se cachea 6 h por los primeros 6 dígitos, que es lo que define
+ *  país y operadora. null si Zadarma no responde. */
+const costoDestinoCache = new Map(); // prefijo → { centavos, at }
+async function costoDestino(numero) {
+  const n = soloDigitos(numero);
+  if (n.length < 8) return null;
+  const pref = n.slice(0, 6);
+  const c = costoDestinoCache.get(pref);
+  if (c && Date.now() - c.at < 6 * 3600_000) return c.centavos;
+  try {
+    const d = await api('/v1/info/price/', { number: n });
+    const centavos = Number(d.info?.price) * 100;
+    if (!Number.isFinite(centavos)) return null;
+    costoDestinoCache.set(pref, { centavos, at: Date.now() });
+    return centavos;
+  } catch {
+    return null;
+  }
+}
+
 async function costoReferencia(pais = 'ec') {
   const key = String(pais || 'ec').toLowerCase();
   const c = costoCache.get(key);
@@ -464,8 +485,20 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'di
     e.status = 403;
     throw e;
   }
+  /* Precio por minuto hacia ESTE destino: costo de Zadarma para ese número
+     por el margen de la conexión. Sirve para exigir un minuto de saldo y
+     para que el teléfono del asesor sepa cuándo cortar por saldo (a México
+     alcanza para muchos más minutos que a Ecuador). Si no se puede
+     consultar, se usa el precio fijo de la conexión. */
+  let tarifaDestino = Number(cuenta.tarifa_centavos_min);
+  try {
+    const [costo, factor] = await Promise.all([costoDestino(destino), margenDe(cuenta, id_configuracion)]);
+    if (costo != null && factor != null) tarifaDestino = Math.max(0.01, costo * factor);
+  } catch {
+    /* se queda el precio fijo */
+  }
   // Mínimo un minuto de saldo para arrancar; el consumo real va por segundo.
-  if (Number(cuenta.saldo_centavos) < Number(cuenta.tarifa_centavos_min)) {
+  if (Number(cuenta.saldo_centavos) < Math.ceil(tarifaDestino)) {
     const e = new Error('Saldo insuficiente para llamar. Recarga para continuar.');
     e.status = 402;
     e.code = 'SIN_SALDO';
@@ -533,6 +566,8 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'di
     caller_id: callerIdUsado,
     saldo_centavos: cuenta.saldo_centavos,
     tarifa_centavos_min: cuenta.tarifa_centavos_min,
+    // Precio estimado por minuto hacia este destino (para el corte por saldo).
+    tarifa_destino_centavos_min: Math.round(tarifaDestino * 100) / 100,
   };
 }
 
@@ -714,25 +749,114 @@ async function traerGrabacion(fila) {
   }
 }
 
-async function callerIdEnviado(body, fila) {
-  if (body.caller_id && soloDigitos(body.caller_id)) return soloDigitos(body.caller_id);
-  const inicio = body.call_start || null;
-  const destino = soloDigitos(body.destination || fila.telefono_cliente);
-  if (!inicio || !destino) return null;
+/** "YYYY-MM-DD HH:MM:SS" en hora de Ecuador, venga como texto de la base o
+ *  como Date. Es la escala en la que Zadarma entrega sus estadísticas. */
+const textoEc = (v) => {
+  if (!v) return null;
+  if (v instanceof Date) return new Date(v.getTime() - 5 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
+  return String(v).slice(0, 19).replace('T', ' ');
+};
+
+/**
+ * Registro de la llamada en /v1/statistics/ (el general de la cuenta): trae
+ * el número con el que salió (`from`) y, sobre todo, lo que Zadarma COBRÓ
+ * por ella (`billcost`). Se busca por destino en una ventana de minutos y
+ * se toma la más cercana a la hora de inicio. Devuelve null si no aparece.
+ */
+async function registroGeneral(inicio, destino) {
+  const ini = textoEc(inicio);
+  const dest = soloDigitos(destino);
+  if (!ini || !dest) return null;
+  const d = await api('/v1/statistics/', { start: correrMinutos(ini, -2), end: correrMinutos(ini, 4) });
+  const t0 = new Date(`${ini.replace(' ', 'T')}Z`).getTime();
+  const hit = (Array.isArray(d.stats) ? d.stats : [])
+    .filter((c) => String(c.to || '').endsWith(dest))
+    .map((c) => ({ c, dist: Math.abs(new Date(`${String(c.callstart).replace(' ', 'T')}Z`).getTime() - t0) }))
+    .sort((a, b) => a.dist - b.dist)[0];
+  if (!hit) return null;
+  return {
+    from: hit.c.from ? soloDigitos(String(hit.c.from)) : null,
+    billcost: Number.isFinite(Number(hit.c.billcost)) ? Number(hit.c.billcost) : null,
+    billseconds: Number(hit.c.billseconds) || 0,
+  };
+}
+
+/**
+ * Margen de la conexión: cuánto cobra respecto a lo que cuesta. Sale de su
+ * precio por minuto frente al costo de Zadarma a un celular de su país
+ * (25 ¢ sobre 25 ¢ = 1, al costo; 40 ¢ sobre 25 ¢ = 1.6). Ese mismo factor
+ * se aplica al costo real de cada llamada, vaya al país que vaya.
+ * null si no se pudo consultar el costo de referencia.
+ */
+async function margenDe(cuenta, id_configuracion) {
   try {
-    const d = await api('/v1/statistics/', {
-      start: correrMinutos(inicio, -2),
-      end: correrMinutos(inicio, 3),
+    const [cfg] = await db.query(`SELECT pais FROM configuraciones WHERE id = ? LIMIT 1`, {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
     });
-    const lista = Array.isArray(d.stats) ? d.stats : [];
-    const hit = lista
-      .filter((c) => String(c.to || '').endsWith(destino) && c.from)
-      .sort((a, b) => String(b.callstart).localeCompare(String(a.callstart)))[0];
-    return hit ? soloDigitos(String(hit.from)) : null;
-  } catch (e) {
-    console.warn('[telefonia] no se pudo leer el número de salida:', e.message);
+    const ref = await costoReferencia(cfg?.pais || 'ec');
+    if (!(ref.centavos_min > 0) || !(cuenta.tarifa_centavos_min > 0)) return null;
+    return cuenta.tarifa_centavos_min / ref.centavos_min;
+  } catch {
     return null;
   }
+}
+
+/**
+ * Descuenta del saldo un monto EXACTO en centavos (con decimales) y devuelve
+ * los centavos enteros que se cobraron. La fracción que sobra queda en
+ * resto_centavos de la cuenta y se suma al siguiente cobro, de modo que lo
+ * cobrado en total nunca se aleja más de 1 centavo del costo real: el saldo
+ * de la conexión y el de Zadarma se mueven a la par. Va en una transacción
+ * con la fila bloqueada: dos llamadas que cierran a la vez no se pisan.
+ */
+async function cobrarExacto({ id_configuracion, exacto_centavos, id_llamada, detalle, tipo = 'consumo' }) {
+  return db.transaction(async (t) => {
+    const cuenta = await TelefoniaCuentas.findByPk(id_configuracion, { transaction: t, lock: t.LOCK.UPDATE });
+    // exacto puede ser negativo: un ajuste a favor de la conexión (se le
+    // había cobrado de más con la tarifa fija y el costo real era menor).
+    const total = (Number(exacto_centavos) || 0) + (Number(cuenta.resto_centavos) || 0);
+    const cargo = Math.floor(total + 1e-9);
+    const resto = Math.max(0, total - cargo);
+    const saldo = Number(cuenta.saldo_centavos) - cargo;
+    await cuenta.update({ saldo_centavos: saldo, resto_centavos: resto.toFixed(6), updated_at: new Date() }, { transaction: t });
+    if (cargo !== 0) {
+      await TelefoniaMovimientos.create(
+        { id_configuracion, tipo, centavos: -cargo, saldo_despues_centavos: saldo, id_llamada, detalle },
+        { transaction: t },
+      );
+    }
+    return { cargo, saldo };
+  });
+}
+
+/**
+ * Ajusta al costo real una llamada que se cobró con la tarifa fija porque
+ * Zadarma no entregó el costo al colgar (limita sus consultas de
+ * estadísticas a unas pocas por minuto). Lo llama el cron de reconciliación
+ * con el `billcost` ya leído. Cobra o devuelve solo la diferencia.
+ */
+async function ajustarACostoReal(fila, { costo_zadarma_usd, from = null, margen } = {}) {
+  if (costo_zadarma_usd == null) return null;
+  const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
+  const factor = margen !== undefined ? margen : await margenDe(cuenta, fila.id_configuracion);
+  if (factor == null) return null;
+  // Se "reclama" la fila de forma atómica: solo un proceso hace el ajuste.
+  const [n] = await TelefoniaLlamadas.update(
+    { costo_zadarma_usd, ...(from && !fila.caller_id ? { caller_id: from } : {}) },
+    { where: { id: fila.id, costo_zadarma_usd: null } },
+  );
+  if (n !== 1) return null;
+  const yaCobrado = Number(fila.costo_centavos) || 0;
+  const r = await cobrarExacto({
+    id_configuracion: fila.id_configuracion,
+    exacto_centavos: costo_zadarma_usd * 100 * factor - yaCobrado,
+    id_llamada: fila.id,
+    tipo: 'ajuste',
+    detalle: `Ajuste al costo real · Zadarma $${Number(costo_zadarma_usd).toFixed(4)} (se había cobrado ${yaCobrado} ¢ por tarifa fija)`,
+  });
+  await TelefoniaLlamadas.update({ costo_centavos: Math.max(0, yaCobrado + r.cargo) }, { where: { id: fila.id } });
+  return { ajuste_centavos: r.cargo, saldo_centavos: r.saldo };
 }
 
 const estadoDe = (disposition) => {
@@ -759,10 +883,14 @@ const CIERRES_PROVISIONALES = ['no_marco', 'sin_cierre'];
  * si el webhook y el cron llegan a la vez, o corren dos servidores contra la
  * misma base, uno solo cobra. Devuelve null si otro ya la cerró.
  */
-async function cerrarLlamada(fila, { duracion = 0, disposition = null, grabada = false, call_id_with_rec = null, pbx_call_id = null, caller_id = null, avisar = true } = {}) {
+async function cerrarLlamada(
+  fila,
+  { duracion = 0, disposition = null, grabada = false, call_id_with_rec = null, pbx_call_id = null, caller_id = null, avisar = true, costo_zadarma_usd, margen } = {},
+) {
   const estado = estadoDe(disposition);
   const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
-  const costo = estado === 'answered' ? costoCentavos(duracion, cuenta.tarifa_centavos_min) : 0;
+  // 1. Se cierra primero (atómico) y recién después se cobra: solo quien
+  //    gana el cierre llega a descontar saldo.
   const [cerradas] = await TelefoniaLlamadas.update(
     {
       pbx_call_id: pbx_call_id || fila.pbx_call_id,
@@ -770,7 +898,7 @@ async function cerrarLlamada(fila, { duracion = 0, disposition = null, grabada =
       estado,
       disposition: disposition || null,
       duracion_seg: duracion,
-      costo_centavos: costo,
+      costo_centavos: 0,
       grabada: grabada ? 1 : 0,
       call_id_with_rec: call_id_with_rec || fila.call_id_with_rec,
       fin_at: new Date(),
@@ -779,16 +907,46 @@ async function cerrarLlamada(fila, { duracion = 0, disposition = null, grabada =
   );
   if (cerradas !== 1) return null;
   await fila.reload();
-  if (costo > 0) {
-    await movimiento({
+
+  /* 2. Cuánto cobrar. Lo que Zadarma cobró de verdad por ESTA llamada, por
+        el margen de la conexión. Antes era una tarifa única por minuto: una
+        conexión "al costo" a 25 ¢ pagaba 25 ¢ también a México, donde
+        Zadarma cobra 2 ¢, y su saldo se acababa antes que el de Zadarma
+        (242, 2026-10-05: $1.63 de más en 12 llamadas). Si el costo real no
+        se puede leer, respaldo: la tarifa fija por los segundos hablados. */
+  let costo = 0;
+  let saldo = Number(cuenta.saldo_centavos);
+  let costoReal = null;
+  if (estado === 'answered') {
+    if (costo_zadarma_usd !== undefined) {
+      costoReal = costo_zadarma_usd;
+    } else {
+      /* Un solo intento. Zadarma limita las consultas de estadísticas a
+         unas pocas por minuto: si varios asesores cuelgan a la vez, alguna
+         falla. En ese caso se cobra por la tarifa fija y la llamada queda
+         con costo_zadarma_usd NULL; el cron la ajusta al costo real en su
+         siguiente pasada (una sola consulta para todas). */
+      const reg = await registroGeneral(fila.inicio_at, fila.telefono_cliente).catch(() => null);
+      if (reg && reg.billseconds > 0) costoReal = reg.billcost;
+      if (reg?.from && !caller_id) await fila.update({ caller_id: reg.from });
+    }
+    const factor = margen !== undefined ? margen : await margenDe(cuenta, fila.id_configuracion);
+    const exacto =
+      costoReal != null && factor != null
+        ? costoReal * 100 * factor
+        : (Math.max(0, duracion) * cuenta.tarifa_centavos_min) / 60;
+    const r = await cobrarExacto({
       id_configuracion: fila.id_configuracion,
-      tipo: 'consumo',
-      centavos: -costo,
+      exacto_centavos: exacto,
       id_llamada: fila.id,
-      detalle: `${duracion} s a ${fila.telefono_cliente}`,
+      detalle: `${duracion} s a ${fila.telefono_cliente}${costoReal != null ? ` · Zadarma $${Number(costoReal).toFixed(4)}` : ' · tarifa fija'}`,
     });
+    costo = r.cargo;
+    saldo = r.saldo;
+    await fila.update({ costo_centavos: costo, costo_zadarma_usd: costoReal });
   }
-  const saldo = (await cuentaDe(fila.id_configuracion, { crear: true })).saldo_centavos;
+  // (No contestada: no se consulta nada aquí para no gastar el cupo de
+  // estadísticas de Zadarma; el número con el que salió lo completa el cron.)
   if (avisar) {
     const cfg = await Configuraciones.findByPk(fila.id_configuracion);
     const cliente = fila.id_cliente_chat_center
@@ -834,13 +992,15 @@ async function manejarWebhook(body) {
   if (ev === 'NOTIFY_OUT_END') {
     const fila = await llamadaDe(body);
     if (!fila) return;
+    // El número con el que salió y el costo real los lee cerrarLlamada del
+    // registro general de Zadarma (una sola consulta para las dos cosas).
     await cerrarLlamada(fila, {
       duracion: Number(body.duration || 0),
       disposition: body.disposition || null,
       grabada: Number(body.is_recorded) === 1,
       call_id_with_rec: body.call_id_with_rec || null,
       pbx_call_id: body.pbx_call_id || null,
-      caller_id: await callerIdEnviado(body, fila),
+      caller_id: body.caller_id && soloDigitos(body.caller_id) ? soloDigitos(body.caller_id) : null,
     });
     return;
   }
@@ -938,6 +1098,10 @@ module.exports = {
   firmaValida,
   manejarWebhook,
   cerrarLlamada,
+  ajustarACostoReal,
+  registroGeneral,
+  margenDe,
+  costoDestino,
   CIERRES_PROVISIONALES,
   traerGrabacion,
   configurarCuenta,
