@@ -244,25 +244,82 @@ async function nombreSubUsuario(id_sub_usuario) {
 
 /** Devuelve la extensión del asesor; si no tiene, le asigna la primera libre
  *  de la central. Si no quedan libres, hay que crear más en "Mi PBX". */
+/* Las extensiones de la central se cachean un minuto: se consultan en cada
+   apertura del teléfono y Zadarma limita las llamadas a la API. */
+let centralCache = { numbers: null, at: 0 };
+async function numerosCentral() {
+  if (centralCache.numbers && Date.now() - centralCache.at < 60_000) return centralCache.numbers;
+  const { numbers } = await extensionesCentral();
+  centralCache = { numbers, at: Date.now() };
+  return numbers;
+}
+
+/** Minutos sin uso tras los cuales una extensión se puede dar a otro asesor. */
+const MIN_INACTIVIDAD_RECICLAR = 15;
+
+/**
+ * Extensión del asesor. Hay pocas (el plan incluye 5) y muchos asesores, así
+ * que se asignan al que de verdad va a llamar y se reciclan:
+ *   1. Si ya tiene una y sigue existiendo en la central, se le refresca el
+ *      último uso y se devuelve. Si la borraron en Zadarma (pasó con la 101:
+ *      "It's not your SIP"), se olvida y se busca otra.
+ *   2. Si hay una libre en la central, se asigna.
+ *   3. Si no, se le quita a quien lleve más de 15 min sin usarla y no esté
+ *      en una llamada; a ese asesor se le avisa por socket para que su
+ *      teléfono se desregistre.
+ *   4. Si todas están en uso reciente, error 409 (se muestra solo al
+ *      intentar llamar, no al abrir el chat).
+ */
 async function asegurarExtension(id_sub_usuario) {
+  const numbers = await numerosCentral();
+  const ahora = new Date();
   const actual = await TelefoniaExtensiones.findOne({ where: { id_sub_usuario } });
-  if (actual) return actual;
-  const [{ numbers }, sip] = await Promise.all([extensionesCentral(), sipPrincipal()]);
-  const usadas = new Set(
-    (await TelefoniaExtensiones.findAll({ attributes: ['extension'] })).map((e) => e.extension),
-  );
-  const libre = numbers.find((n) => !usadas.has(n));
+  if (actual) {
+    if (numbers.includes(String(actual.extension))) {
+      await actual.update({ ultimo_uso_at: ahora });
+      return actual;
+    }
+    console.warn(`[telefonia] la extensión ${actual.extension} ya no existe en la central; se reasigna al asesor ${id_sub_usuario}`);
+    await actual.destroy();
+  }
+  const sip = await sipPrincipal();
+  const asignadas = await TelefoniaExtensiones.findAll({ order: [['ultimo_uso_at', 'ASC']] });
+  const usadas = new Set(asignadas.map((e) => String(e.extension)));
+  let libre = numbers.find((n) => !usadas.has(String(n)));
+  if (!libre) {
+    const limite = new Date(Date.now() - MIN_INACTIVIDAD_RECICLAR * 60_000);
+    for (const e of asignadas) {
+      if (!numbers.includes(String(e.extension))) {
+        await e.destroy(); // extensión borrada en Zadarma: la fila sobra
+        continue;
+      }
+      if (e.ultimo_uso_at && new Date(e.ultimo_uso_at) > limite) continue;
+      const [enLlamada] = await db.query(
+        `SELECT id FROM telefonia_llamadas WHERE id_sub_usuario = ? AND fin_at IS NULL AND inicio_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE) LIMIT 1`,
+        { replacements: [e.id_sub_usuario], type: db.QueryTypes.SELECT },
+      );
+      if (enLlamada) continue;
+      libre = String(e.extension);
+      const anterior = e.id_sub_usuario;
+      await e.destroy();
+      emitirA([anterior], 'TELEFONIA_EXTENSION_LIBERADA', { extension: libre });
+      console.log(`[telefonia] extensión ${libre} reciclada: del asesor ${anterior} al ${id_sub_usuario}`);
+      break;
+    }
+  }
   if (!libre) {
     const e = new Error(
-      'No quedan extensiones libres en la central de Zadarma. Crea más en Mi PBX → Extensiones.',
+      `Todas las extensiones de Zadarma están en uso por otros asesores (${numbers.length} en total). Intenta en unos minutos o pide que creen más en Mi centralita → Extensiones.`,
     );
     e.status = 409;
+    e.code = 'SIN_EXTENSION';
     throw e;
   }
   return TelefoniaExtensiones.create({
     id_sub_usuario,
     extension: libre,
     sip_login: `${sip}-${libre}`,
+    ultimo_uso_at: ahora,
   });
 }
 
@@ -273,7 +330,22 @@ async function llaveWidget(id_sub_usuario) {
   const vigente =
     ext.widget_key && ext.widget_key_vence_at && new Date(ext.widget_key_vence_at) > new Date();
   if (!vigente) {
-    const d = await api('/v1/webrtc/get_key/', { sip: ext.sip_login }, 'GET');
+    let d;
+    try {
+      d = await api('/v1/webrtc/get_key/', { sip: ext.sip_login }, 'GET');
+    } catch (e) {
+      // "It's not your SIP": la extensión se borró en Zadarma después de
+      // asignarla. Se olvida la fila, se vacía el caché y se reintenta una vez.
+      if (!/not your sip/i.test(e.message || '')) throw e;
+      await ext.destroy();
+      centralCache = { numbers: null, at: 0 };
+      const otra = await asegurarExtension(id_sub_usuario);
+      d = await api('/v1/webrtc/get_key/', { sip: otra.sip_login }, 'GET');
+      const key2 = d.key || d.data?.key;
+      if (!key2) throw new Error('Zadarma no devolvió la llave del widget');
+      await otra.update({ widget_key: key2, widget_key_vence_at: new Date(Date.now() + 60 * 3600 * 1000) });
+      return { key: key2, sip: otra.sip_login, extension: otra.extension };
+    }
     const key = d.key || d.data?.key;
     if (!key) throw new Error('Zadarma no devolvió la llave del widget');
     await ext.update({
