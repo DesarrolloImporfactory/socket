@@ -21,6 +21,8 @@ router.get('/saldo', ctrl.saldo); // saldo y tarifa de la conexión
 router.post('/llamar', ctrl.llamar); // callback: suena el widget, luego el cliente
 router.get('/historial', ctrl.historial);
 router.get('/movimientos', ctrl.movimientos);
+router.post('/revision', ctrl.revision); // seguimiento del supervisor (no ventas; lo valida el controlador)
+router.post('/calidad', ctrl.calidad); // calidad de red medida por el navegador al colgar
 
 // ── Super administrador (Imporfactory) ──
 router.post('/recargar', requireSuperAdmin, ctrl.recargar);
@@ -37,6 +39,7 @@ router.get('/cuentas', requireSuperAdmin, ctrl.cuentas); // conexiones con saldo
 router.get('/admin/historial', requireSuperAdmin, ctrl.historialAdmin); // llamadas de una conexión, paginado
 router.get('/ia', requireSuperAdmin, ctrl.iaEstado); // conteo de análisis con IA (la llave es la de cada conexión)
 router.post('/ia/reanalizar', requireSuperAdmin, ctrl.iaReanalizar); // reintenta las que quedaron sin llave o con error
+router.post('/ia/reclasificar', requireSuperAdmin, ctrl.iaReclasificar); // re-etiqueta las ya analizadas (sin transcribir de nuevo)
 router.get('/costo', requireSuperAdmin, ctrl.costo); // costo real por minuto según país
 router.get('/conexiones', requireSuperAdmin, ctrl.conexiones); // buscador para dar saldo
 

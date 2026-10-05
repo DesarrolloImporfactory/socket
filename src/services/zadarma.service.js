@@ -648,11 +648,19 @@ const DOMINIO_PUBLICO = () =>
   (process.env.PUBLIC_BASE_URL || 'https://chat.imporfactory.app').replace(/\/$/, '');
 
 async function traerGrabacion(fila) {
-  const callId = fila.call_id_with_rec;
-  if (!callId) return null;
+  /* Zadarma identifica la grabación por call_id (llega en NOTIFY_RECORD o
+     sale de las estadísticas) o por pbx_call_id (llega en NOTIFY_OUT_START).
+     Si el aviso de grabación se perdió en un reinicio, el cron la pide con
+     el que tenga. */
+  const idGrabacion = fila.call_id_with_rec
+    ? { call_id: fila.call_id_with_rec }
+    : fila.pbx_call_id
+      ? { pbx_call_id: fila.pbx_call_id }
+      : null;
+  if (!idGrabacion) return null;
   let enlace = null;
   try {
-    const d = await api('/v1/pbx/record/request/', { call_id: callId, lifetime: 5184000 });
+    const d = await api('/v1/pbx/record/request/', { ...idGrabacion, lifetime: 5184000 });
     enlace = d.link || (Array.isArray(d.links) ? d.links[0] : null);
   } catch (e) {
     console.warn('[telefonia] no se pudo pedir la grabación:', e.message);
@@ -688,7 +696,7 @@ async function traerGrabacion(fila) {
       url = `${DOMINIO_PUBLICO()}/uploads/telefonia/${fila.id_configuracion}/${nombre}`;
     }
     await fila.update({ grabada: 1, grabacion_url: url });
-    await api('/v1/pbx/record/request/', { call_id: callId }, 'DELETE').catch((e) =>
+    await api('/v1/pbx/record/request/', idGrabacion, 'DELETE').catch((e) =>
       console.warn('[telefonia] grabación copiada pero no se pudo borrar en Zadarma:', e.message),
     );
     // Transcripción y resumen con IA, en segundo plano.
@@ -727,6 +735,88 @@ async function callerIdEnviado(body, fila) {
   }
 }
 
+const estadoDe = (disposition) => {
+  const d = String(disposition || '').toLowerCase();
+  if (d === 'answered') return 'answered';
+  if (d === 'busy') return 'busy';
+  if (d === 'cancel' || d === 'cancelled') return 'cancel';
+  if (/no ?answer/.test(d)) return 'no_answer';
+  return 'failed';
+};
+
+/** Cierres "sin evidencia" que hizo el cron (la llamada nunca se marcó, o
+ *  pasó demasiado tiempo abierta): si después llega el dato real de Zadarma,
+ *  se pueden volver a cerrar con él. Un cierre con datos reales es definitivo. */
+const CIERRES_PROVISIONALES = ['no_marco', 'sin_cierre'];
+
+/**
+ * Cierra una llamada con los datos reales de Zadarma: estado, duración,
+ * costo, descuento del saldo, aviso en el chat y evento al asesor.
+ *
+ * Es el ÚNICO camino de cierre, lo usan el webhook (NOTIFY_OUT_END) y el
+ * cron de reconciliación (services/telefonia_reconciliar.service.js). El
+ * UPDATE es atómico (solo cierra si sigue abierta o con cierre provisional):
+ * si el webhook y el cron llegan a la vez, o corren dos servidores contra la
+ * misma base, uno solo cobra. Devuelve null si otro ya la cerró.
+ */
+async function cerrarLlamada(fila, { duracion = 0, disposition = null, grabada = false, call_id_with_rec = null, pbx_call_id = null, caller_id = null, avisar = true } = {}) {
+  const estado = estadoDe(disposition);
+  const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
+  const costo = estado === 'answered' ? costoCentavos(duracion, cuenta.tarifa_centavos_min) : 0;
+  const [cerradas] = await TelefoniaLlamadas.update(
+    {
+      pbx_call_id: pbx_call_id || fila.pbx_call_id,
+      caller_id: caller_id || fila.caller_id,
+      estado,
+      disposition: disposition || null,
+      duracion_seg: duracion,
+      costo_centavos: costo,
+      grabada: grabada ? 1 : 0,
+      call_id_with_rec: call_id_with_rec || fila.call_id_with_rec,
+      fin_at: new Date(),
+    },
+    { where: { id: fila.id, [Op.or]: [{ fin_at: null }, { disposition: { [Op.in]: CIERRES_PROVISIONALES } }] } },
+  );
+  if (cerradas !== 1) return null;
+  await fila.reload();
+  if (costo > 0) {
+    await movimiento({
+      id_configuracion: fila.id_configuracion,
+      tipo: 'consumo',
+      centavos: -costo,
+      id_llamada: fila.id,
+      detalle: `${duracion} s a ${fila.telefono_cliente}`,
+    });
+  }
+  const saldo = (await cuentaDe(fila.id_configuracion, { crear: true })).saldo_centavos;
+  if (avisar) {
+    const cfg = await Configuraciones.findByPk(fila.id_configuracion);
+    const cliente = fila.id_cliente_chat_center
+      ? await ClientesChatCenter.findByPk(fila.id_cliente_chat_center)
+      : null;
+    const quien = await nombreSubUsuario(fila.id_sub_usuario);
+    const texto =
+      estado === 'answered'
+        ? `📞 ${quien} llamó por teléfono · ${fmtDuracion(duracion)} · $${(costo / 100).toFixed(2)}`
+        : estado === 'busy'
+          ? `📵 ${quien} llamó por teléfono y estaba ocupado`
+          : estado === 'no_answer'
+            ? `📵 ${quien} llamó por teléfono y no contestaron`
+            : `📵 ${quien} intentó llamar por teléfono (${disposition || 'sin conexión'})`;
+    if (cfg) await notificarEnChat(cfg, cliente, texto);
+    emitirA([fila.id_sub_usuario], 'TELEFONIA_ESTADO', {
+      id: fila.id,
+      estado,
+      duracion_seg: duracion,
+      costo_centavos: costo,
+      saldo_centavos: saldo,
+      telefono: fila.telefono_cliente,
+      id_cliente_chat_center: fila.id_cliente_chat_center,
+    });
+  }
+  return { estado, costo_centavos: costo, saldo_centavos: saldo };
+}
+
 async function manejarWebhook(body) {
   const ev = body.event;
   if (ev === 'NOTIFY_OUT_START') {
@@ -744,63 +834,13 @@ async function manejarWebhook(body) {
   if (ev === 'NOTIFY_OUT_END') {
     const fila = await llamadaDe(body);
     if (!fila) return;
-    const duracion = Number(body.duration || 0);
-    const disposition = String(body.disposition || '').toLowerCase();
-    const estado =
-      disposition === 'answered'
-        ? 'answered'
-        : disposition === 'busy'
-          ? 'busy'
-          : disposition === 'cancel' || disposition === 'cancelled'
-            ? 'cancel'
-            : /no ?answer/.test(disposition)
-              ? 'no_answer'
-              : 'failed';
-    const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
-    const costo = estado === 'answered' ? costoCentavos(duracion, cuenta.tarifa_centavos_min) : 0;
-    const enviado = await callerIdEnviado(body, fila);
-    await fila.update({
-      pbx_call_id: body.pbx_call_id || fila.pbx_call_id,
-      caller_id: enviado || fila.caller_id,
-      estado,
+    await cerrarLlamada(fila, {
+      duracion: Number(body.duration || 0),
       disposition: body.disposition || null,
-      duracion_seg: duracion,
-      costo_centavos: costo,
-      grabada: Number(body.is_recorded) === 1 ? 1 : 0,
-      call_id_with_rec: body.call_id_with_rec || fila.call_id_with_rec,
-      fin_at: new Date(),
-    });
-    if (costo > 0) {
-      await movimiento({
-        id_configuracion: fila.id_configuracion,
-        tipo: 'consumo',
-        centavos: -costo,
-        id_llamada: fila.id,
-        detalle: `${duracion} s a ${fila.telefono_cliente}`,
-      });
-    }
-    const cfg = await Configuraciones.findByPk(fila.id_configuracion);
-    const cliente = fila.id_cliente_chat_center
-      ? await ClientesChatCenter.findByPk(fila.id_cliente_chat_center)
-      : null;
-    const quien = await nombreSubUsuario(fila.id_sub_usuario);
-    const texto =
-      estado === 'answered'
-        ? `📞 ${quien} llamó por teléfono · ${fmtDuracion(duracion)} · $${(costo / 100).toFixed(2)}`
-        : estado === 'busy'
-          ? `📵 ${quien} llamó por teléfono y estaba ocupado`
-          : estado === 'no_answer'
-            ? `📵 ${quien} llamó por teléfono y no contestaron`
-            : `📵 ${quien} intentó llamar por teléfono (${body.disposition || 'sin conexión'})`;
-    if (cfg) await notificarEnChat(cfg, cliente, texto);
-    emitirA([fila.id_sub_usuario], 'TELEFONIA_ESTADO', {
-      id: fila.id,
-      estado,
-      duracion_seg: duracion,
-      costo_centavos: costo,
-      saldo_centavos: (await cuentaDe(fila.id_configuracion, { crear: true })).saldo_centavos,
-      telefono: fila.telefono_cliente,
-      id_cliente_chat_center: fila.id_cliente_chat_center,
+      grabada: Number(body.is_recorded) === 1,
+      call_id_with_rec: body.call_id_with_rec || null,
+      pbx_call_id: body.pbx_call_id || null,
+      caller_id: await callerIdEnviado(body, fila),
     });
     return;
   }
@@ -897,6 +937,8 @@ module.exports = {
   comprobarNumero,
   firmaValida,
   manejarWebhook,
+  cerrarLlamada,
+  CIERRES_PROVISIONALES,
   traerGrabacion,
   configurarCuenta,
   diagnostico,

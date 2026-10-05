@@ -116,6 +116,10 @@ async function startServer() {
       // freno por rate limit. Sin esto /conexiones dice "Conectado" a números
       // que Meta ya tiene DISCONNECTED o sin acceso (cfg 1071, 2026-09-16).
       require('./cron/whatsappNumerosHealth.js');
+      // Telefonía por saldo: cada 10 min cierra y cobra las llamadas cuyo
+      // aviso de Zadarma se perdió (por ejemplo en un deploy), trae las
+      // grabaciones pendientes y termina los análisis de IA a medias.
+      require('./cron/telefoniaReconciliar.js');
       // Devuelve a «En espera» los chats sin respuesta del vendedor en 3
       // horas hábiles (L-V 8:00-17:00). Por ahora solo la configuración 242.
       require('./cron/liberarChatsSinRespuesta.js');

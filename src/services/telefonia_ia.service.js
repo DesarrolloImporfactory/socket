@@ -75,7 +75,17 @@ async function transcribir({ key, buffer, nombre }) {
 
 const PROMPT_RESUMEN = `Eres el supervisor de un equipo de ventas y atención al cliente que trabaja por WhatsApp y teléfono. Te paso la transcripción de una llamada que un asesor hizo a un cliente. Responde SOLO con un JSON con estas claves:
 - "resumen": 3 a 5 líneas en español, en pasado, qué se habló y en qué quedó. Sin saludos ni relleno.
-- "resultado": uno de "venta_cerrada", "interesado", "sin_interes", "no_contesto", "reagendar", "reclamo", "otro".
+- "resultado": EXACTAMENTE uno de estos, según lo que el cliente dijo (no lo que el asesor esperaba):
+    "venta_cerrada"  = el cliente YA pagó: dice que ya transfirió, que está transfiriendo en ese momento, que ya depositó o envía/confirma el comprobante.
+    "pendiente_pago" = el cliente ACEPTÓ comprar y se comprometió a pagar, abonar, transferir o inscribirse, pero todavía no lo hizo ("hoy le transfiero", "mañana hago el abono", "ya me voy a inscribir").
+    "interesado"     = muestra interés, pide información o precios, pero NO se comprometió a pagar.
+    "reagendar"      = pide que lo llamen otro día u otra hora, o no podía hablar.
+    "sin_interes"    = dice que no le interesa, que no puede o que ya no quiere.
+    "reclamo"        = se queja de un producto, cobro, servicio o de la atención.
+    "soporte"        = llamada de ayuda o seguimiento sin venta: dudas de acceso, de uso, de un pedido en curso.
+    "no_contesto"    = buzón de voz, música, tono o nadie habla.
+    "otro"           = ninguna de las anteriores.
+  Ante la duda entre "interesado" y "pendiente_pago": si hay una promesa concreta de pago o inscripción, es "pendiente_pago".
 - "motivo": una frase con el motivo principal de la llamada.
 - "objeciones": lista de objeciones o dudas del cliente (puede ir vacía).
 - "compromisos": lista de lo que el asesor o el cliente se comprometió a hacer (puede ir vacía).
@@ -83,7 +93,8 @@ const PROMPT_RESUMEN = `Eres el supervisor de un equipo de ventas y atención al
 - "sentimiento": "positivo", "neutral" o "negativo" (del cliente).
 - "calidad_atencion": entero 1 a 5 de cómo atendió el asesor (claridad, cortesía, resolver).
 - "mejoras": lista de 1 a 3 sugerencias cortas y concretas para que el asesor lo haga mejor la próxima vez.
-Si la transcripción es un buzón de voz, música o no hay conversación real, usa resultado "no_contesto", resumen "No hubo conversación." y listas vacías.`;
+- "monto_comprometido": si el cliente mencionó cuánto va a pagar o abonar, el texto tal cual ("abono de 50 dólares"); si no, null.
+Si la transcripción es un buzón de voz, música o no hay conversación real, usa resultado "no_contesto", resumen "No hubo conversación.", listas vacías y "calidad_atencion": null (no hay atención que calificar).`;
 
 async function resumir({ key, transcripcion, contexto }) {
   const body = {
@@ -128,6 +139,8 @@ const PRECIOS = {
 
 const ETIQUETA_RESULTADO = {
   venta_cerrada: '✅ Venta cerrada',
+  pendiente_pago: '💵 Pendiente de pago',
+  soporte: '🛟 Soporte',
   interesado: '🟢 Interesado',
   sin_interes: '🔴 Sin interés',
   no_contesto: '📵 No hubo conversación',
@@ -235,9 +248,92 @@ async function reanalizarPendientes(limite = 50) {
   return { intentadas: pend.length, listas: ok };
 }
 
+/**
+ * Análisis que quedaron a medias (lo usa el cron de reconciliación):
+ *   - llamadas con grabación ya en nuestro almacenamiento y SIN fila de
+ *     análisis: el servidor se reinició antes de empezar;
+ *   - análisis en 'pendiente' (se reinició a mitad) o 'error' de las últimas
+ *     3 horas (falla pasajera de OpenAI);
+ *   - 'sin_llave' de las últimas 24 h, por si el negocio ya guardó su llave.
+ * Solo últimas 24 h y pocas por corrida: nunca reintenta para siempre.
+ */
+async function analizarRezagadas(limite = 10) {
+  const filas = await db.query(
+    `SELECT l.id
+     FROM telefonia_llamadas l
+     LEFT JOIN telefonia_analisis a ON a.id_llamada = l.id
+     WHERE l.estado = 'answered' AND l.grabacion_url IS NOT NULL AND l.grabacion_url NOT LIKE '%api.zadarma.com%'
+       AND l.fin_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) AND l.fin_at < DATE_SUB(NOW(), INTERVAL 3 MINUTE)
+       AND (
+         a.id_llamada IS NULL
+         OR (a.estado = 'pendiente' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 10 MINUTE))
+         OR (a.estado = 'error' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+             AND a.created_at > DATE_SUB(NOW(), INTERVAL 3 HOUR))
+         OR (a.estado = 'sin_llave' AND COALESCE(a.updated_at, a.created_at) < DATE_SUB(NOW(), INTERVAL 30 MINUTE))
+       )
+     ORDER BY l.id DESC LIMIT ?`,
+    { replacements: [limite], type: db.QueryTypes.SELECT },
+  );
+  let listas = 0;
+  for (const { id } of filas) {
+    const fila = await TelefoniaLlamadas.findByPk(id);
+    if (!fila) continue;
+    const r = await analizarLlamada(fila);
+    if (r.estado === 'listo') listas += 1;
+  }
+  return { intentadas: filas.length, listas };
+}
+
+/**
+ * Vuelve a clasificar llamadas ya analizadas usando la transcripción
+ * guardada (no se transcribe de nuevo ni se avisa al chat). Sirve cuando
+ * cambian las etiquetas de resultado, como al separar "pendiente de pago"
+ * de "interesado" (2026-10-05). Cuesta solo el resumen: fracciones de centavo.
+ */
+async function reclasificar({ dias = 30, limite = 200 } = {}) {
+  const filas = await db.query(
+    `SELECT a.id_llamada FROM telefonia_analisis a
+     WHERE a.estado = 'listo' AND a.transcripcion IS NOT NULL AND CHAR_LENGTH(a.transcripcion) >= 20
+       AND a.created_at > DATE_SUB(NOW(), INTERVAL ? DAY)
+     ORDER BY a.id_llamada DESC LIMIT ?`,
+    { replacements: [dias, limite], type: db.QueryTypes.SELECT },
+  );
+  let ok = 0;
+  let cambiadas = 0;
+  for (const { id_llamada } of filas) {
+    const an = await TelefoniaAnalisis.findByPk(id_llamada);
+    const fila = await TelefoniaLlamadas.findByPk(id_llamada);
+    if (!an || !fila) continue;
+    const key = await llaveParaConexion(fila.id_configuracion);
+    if (!key) continue;
+    try {
+      const { json } = await resumir({
+        key,
+        transcripcion: an.transcripcion,
+        contexto: `Duración: ${fila.duracion_seg || 0} segundos.`,
+      });
+      if (!json) continue;
+      let antes = null;
+      try {
+        antes = JSON.parse(an.analisis || '{}').resultado || null;
+      } catch {
+        antes = null;
+      }
+      if (antes !== json.resultado) cambiadas += 1;
+      await an.update({ resumen: json.resumen || an.resumen, analisis: JSON.stringify(json), updated_at: new Date() });
+      ok += 1;
+    } catch (e) {
+      console.error(`[telefonia-ia] reclasificar ${id_llamada}:`, e?.response?.data?.error?.message || e.message);
+    }
+  }
+  return { revisadas: filas.length, actualizadas: ok, cambiaron_de_resultado: cambiadas };
+}
+
 module.exports = {
   estadoAnalisis,
   analizarLlamada,
   reanalizarPendientes,
+  analizarRezagadas,
+  reclasificar,
   ETIQUETA_RESULTADO,
 };
