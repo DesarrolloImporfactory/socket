@@ -23,7 +23,16 @@ const DIAS_ATRIBUCION = 30; // orden atribuida si hubo conversación IA en los 3
 
 /* Estados del kanban e-commerce que significan "la venta se cerró": el chat
    llegó a generar guía o a cualquier etapa posterior del flujo logístico.
-   'cancelados' cuenta como cierre (hubo orden) — la pérdida se ve aparte. */
+
+   'cancelados' NO va en esta lista: en esa columna caen dos cosas distintas.
+   (a) El pedido que el bot SÍ cerró y después se canceló en Dropi — eso es
+       cierre del bot (él vendió; que luego se caiga ya no es su tema).
+   (b) El cliente que le dijo que NO al bot (tag [cancelados]:true) — eso
+       nunca fue una venta.
+   Medido el 2026-10-05 sobre 500 contactos en cancelados: 82 % eran (b). Con
+   'cancelados' en la lista, cada rechazo contaba como venta cerrada. Ahora un
+   cancelado cuenta SOLO si hay evidencia de que el bot confirmó el pedido:
+   escribió el resumen o hubo intento de auto-orden (ver el embudo). */
 const ESTADOS_CIERRE = [
   'generar_guia',
   'guia_generada',
@@ -33,7 +42,6 @@ const ESTADOS_CIERRE = [
   'retiro_agencia',
   'novedad',
   'devolucion',
-  'cancelados',
 ];
 
 function normTel(t) {
@@ -57,6 +65,25 @@ async function q(sql, replacements = []) {
   return db.query(sql, { replacements, type: db.QueryTypes.SELECT });
 }
 
+/* ¿Ya existe bot_metricas_diarias.cierres_respondieron? La migración la
+   aplica una persona a mano y el código puede llegar antes al servidor: sin
+   este chequeo, el upsert nocturno y el tablero reventarían por "Unknown
+   column". Mientras falte, todo sigue como antes (y el tablero cae al
+   cálculo viejo). Se consulta una vez por proceso hasta que aparezca. */
+let _tieneCierresResp = null;
+async function tieneCierresRespondieron() {
+  if (_tieneCierresResp === true) return true;
+  try {
+    const cols = await q(
+      `SHOW COLUMNS FROM bot_metricas_diarias LIKE 'cierres_respondieron'`,
+    );
+    _tieneCierresResp = cols.length > 0;
+  } catch (_) {
+    _tieneCierresResp = false;
+  }
+  return _tieneCierresResp;
+}
+
 /**
  * Recalcula la ventana [hoy - diasVentana, hoy] y hace upsert en
  * bot_metricas_diarias. Devuelve un resumen de la corrida.
@@ -78,7 +105,19 @@ async function recalcularVentana(diasVentana = 35) {
            COUNT(*)                                    AS convers_ia,
            SUM(t.ultimo_in > t.primer_ia)              AS convers_respondieron,
            SUM(t.resp_ia)                              AS respuestas_ia,
-           SUM(cc.estado_contacto IN (${listaCierre})) AS cierres_kanban,
+           SUM(
+             cc.estado_contacto IN (${listaCierre})
+             OR (cc.estado_contacto = 'cancelados'
+                 AND (t.resumen_bot = 1 OR al.id_cliente IS NOT NULL))
+           )                                           AS cierres_kanban,
+           /* Mismo criterio de cierre, solo entre quienes respondieron ese
+              día: numerador del "% de cierre sobre quienes conversaron". */
+           SUM(
+             t.ultimo_in > t.primer_ia
+             AND (cc.estado_contacto IN (${listaCierre})
+                  OR (cc.estado_contacto = 'cancelados'
+                      AND (t.resumen_bot = 1 OR al.id_cliente IS NOT NULL)))
+           )                                           AS cierres_respondieron,
            SUM(cc.estado_contacto = 'entregada')       AS entregadas_kanban
       FROM (
         SELECT DATE(created_at) AS fecha,
@@ -87,16 +126,30 @@ async function recalcularVentana(diasVentana = 35) {
                SUM(rol_mensaje = 1 AND responsable LIKE 'IA\\_%') AS resp_ia,
                MIN(CASE WHEN rol_mensaje = 1 AND responsable LIKE 'IA\\_%'
                         THEN created_at END)           AS primer_ia,
-               MAX(CASE WHEN rol_mensaje = 0 THEN created_at END) AS ultimo_in
+               MAX(CASE WHEN rol_mensaje = 0 THEN created_at END) AS ultimo_in,
+               /* El bot escribió el resumen del pedido ese día (rótulos del
+                  cierre): es la confirmación, aunque después se cancele. */
+               MAX(rol_mensaje = 1 AND responsable LIKE 'IA\\_%'
+                   AND texto_mensaje LIKE '%Producto:%'
+                   AND (texto_mensaje LIKE '%Nombre:%'
+                        OR texto_mensaje LIKE '%Cliente:%')) AS resumen_bot
           FROM mensajes_clientes
          WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
          GROUP BY DATE(created_at), id_configuracion, celular_recibe
         HAVING resp_ia > 0
       ) t
       LEFT JOIN clientes_chat_center cc ON cc.id = t.celular_recibe
+      /* Intento de auto-orden = el bot cerró con su tag (tabla chica). La
+         ventana va más atrás que la del embudo: el pedido pudo confirmarse
+         días antes de la conversación que se está contando. */
+      LEFT JOIN (
+        SELECT DISTINCT id_cliente
+          FROM dropi_auto_ordenes_log
+         WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+      ) al ON al.id_cliente = t.celular_recibe
      GROUP BY t.fecha, t.id_configuracion
     `,
-    [...ESTADOS_CIERRE, dias],
+    [...ESTADOS_CIERRE, ...ESTADOS_CIERRE, dias, dias + 30],
   );
 
   /* 2) Auto-orden por (día, cuenta). Tabla chica, directo. */
@@ -207,6 +260,7 @@ async function recalcularVentana(diasVentana = 35) {
         convers_respondieron: 0,
         respuestas_ia: 0,
         cierres_kanban: 0,
+        cierres_respondieron: 0,
         entregadas_kanban: 0,
         auto_intentos: 0,
         auto_creadas: 0,
@@ -227,6 +281,7 @@ async function recalcularVentana(diasVentana = 35) {
     f.convers_respondieron = Number(e.convers_respondieron) || 0;
     f.respuestas_ia = Number(e.respuestas_ia) || 0;
     f.cierres_kanban = Number(e.cierres_kanban) || 0;
+    f.cierres_respondieron = Number(e.cierres_respondieron) || 0;
     f.entregadas_kanban = Number(e.entregadas_kanban) || 0;
   }
   for (const a of auto) {
@@ -241,24 +296,29 @@ async function recalcularVentana(diasVentana = 35) {
   }
 
   const rows = [...filas.values()].filter((f) => f.fecha && f.id_configuracion);
+  /* La columna nueva solo viaja si ya existe en la base (ver
+     tieneCierresRespondieron): `fields` limita el INSERT a lo que hay. */
+  const conResp = await tieneCierresRespondieron();
+  const metricas = [
+    'convers_ia',
+    'convers_respondieron',
+    'respuestas_ia',
+    'cierres_kanban',
+    ...(conResp ? ['cierres_respondieron'] : []),
+    'entregadas_kanban',
+    'auto_intentos',
+    'auto_creadas',
+    'auto_fallidas',
+    'ordenes_total',
+    'cierres_bot',
+    'entregadas_bot',
+    'canceladas_bot',
+  ];
   const LOTE = 2000;
   for (let i = 0; i < rows.length; i += LOTE) {
     await BotMetricasDiarias.bulkCreate(rows.slice(i, i + LOTE), {
-      updateOnDuplicate: [
-        'convers_ia',
-        'convers_respondieron',
-        'respuestas_ia',
-        'cierres_kanban',
-        'entregadas_kanban',
-        'auto_intentos',
-        'auto_creadas',
-        'auto_fallidas',
-        'ordenes_total',
-        'cierres_bot',
-        'entregadas_bot',
-        'canceladas_bot',
-        'updated_at',
-      ],
+      fields: ['fecha', 'id_configuracion', ...metricas, 'created_at', 'updated_at'],
+      updateOnDuplicate: [...metricas, 'updated_at'],
     });
   }
 
@@ -270,4 +330,8 @@ async function recalcularVentana(diasVentana = 35) {
   };
 }
 
-module.exports = { recalcularVentana, DIAS_ATRIBUCION };
+module.exports = {
+  recalcularVentana,
+  tieneCierresRespondieron,
+  DIAS_ATRIBUCION,
+};
