@@ -1088,6 +1088,7 @@ cron.schedule('*/1 * * * *', async () => {
                   ejecutarConResponsesAPI,
                   limpiarTagsAcciones,
                   limpiarMetaRemarketing,
+                  esCadenaInvalida,
                 } = require('../services/kanban_ia.service');
                 const {
                   obtenerUltimoResponseId,
@@ -1116,8 +1117,7 @@ cron.schedule('*/1 * * * *', async () => {
                    paquete y el referral sí dicen de qué producto se trata. */
                 const TRIGGER_RM =
                   '[ACCIÓN INTERNA: GENERAR_REMARKETING] Sigue ESTRICTAMENTE las instrucciones de remarketing en additional_instructions. NO saludes, NO te presentes, NO preguntes ciudad ni datos nuevos, NO actúes como si fuera un primer contacto. Devuelve ÚNICAMENTE el mensaje de remarketing según el ángulo y estructura indicados. Si la conversación NO menciona un producto o necesidad concreta, redacta el mensaje genérico (tu pedido, lo que te interesó) SIN inventar nombres y SIN placeholders como [producto].';
-                let inputRemarketing = TRIGGER_RM;
-                if (!previous_response_id) {
+                const armarInputSinCadena = async () => {
                   const {
                     construirRecapConversacion,
                   } = require('../services/kanban_ia.service');
@@ -1125,34 +1125,55 @@ cron.schedule('*/1 * * * *', async () => {
                     record.id_cliente_chat_center,
                   );
                   if (recap && recap.trim()) {
-                    inputRemarketing =
-                      `[CONTEXTO DE LA CONVERSACIÓN — el recordatorio habla SOLO del producto de ESTA conversación, jamás de otro del catálogo]\n${recap}\n\n` +
-                      TRIGGER_RM;
                     console.log(
                       `🟦 [DEBUG IA] sin cadena: recap sembrado (${recap.length} chars)`,
                     );
-                  } else {
-                    inputRemarketing =
-                      TRIGGER_RM +
-                      ' IMPORTANTE: no hay historial de esta conversación: NO nombres NINGÚN producto específico del catálogo — habla solo de "tu pedido".';
-                    console.log(
-                      `🟦 [DEBUG IA] sin cadena NI historial: remarketing genérico forzado`,
+                    return (
+                      `[CONTEXTO DE LA CONVERSACIÓN — el recordatorio habla SOLO del producto de ESTA conversación, jamás de otro del catálogo]\n${recap}\n\n` +
+                      TRIGGER_RM
                     );
                   }
-                }
+                  console.log(
+                    `🟦 [DEBUG IA] sin cadena NI historial: remarketing genérico forzado`,
+                  );
+                  return (
+                    TRIGGER_RM +
+                    ' IMPORTANTE: no hay historial de esta conversación: NO nombres NINGÚN producto específico del catálogo — habla solo de "tu pedido".'
+                  );
+                };
 
-                const r = await ejecutarConResponsesAPI({
-                  previous_response_id,
-                  instructions: colRow.instrucciones,
-                  additional_instructions: prompt_ia_resuelto,
-                  input: inputRemarketing,
-                  model: colRow.modelo || 'gpt-4o-mini',
-                  max_tokens: colRow.max_tokens || 300,
-                  vector_store_id: colRow.vector_store_id || null,
-                  vector_store_docs_id: colRow.vector_store_docs_id || null,
-                  api_key_openai,
-                  id_configuracion: record.id_configuracion,
-                });
+                const llamarIA = (cadena, input) =>
+                  ejecutarConResponsesAPI({
+                    previous_response_id: cadena,
+                    instructions: colRow.instrucciones,
+                    additional_instructions: prompt_ia_resuelto,
+                    input,
+                    model: colRow.modelo || 'gpt-4o-mini',
+                    max_tokens: colRow.max_tokens || 300,
+                    vector_store_id: colRow.vector_store_id || null,
+                    vector_store_docs_id: colRow.vector_store_docs_id || null,
+                    api_key_openai,
+                    id_configuracion: record.id_configuracion,
+                  });
+
+                let r;
+                if (!previous_response_id) {
+                  r = await llamarIA(null, await armarInputSinCadena());
+                } else {
+                  try {
+                    r = await llamarIA(previous_response_id, TRIGGER_RM);
+                  } catch (eCadena) {
+                    /* La cadena apunta a una respuesta que esta llave no ve
+                       (response_id de otro proyecto de OpenAI o caducado).
+                       Mismo trato que kanban_ia: se reintenta sin cadena con
+                       el recap, en vez de dar el remarketing por fallido. */
+                    if (!esCadenaInvalida(eCadena)) throw eCadena;
+                    console.log(
+                      `🟦 [DEBUG IA] previous_response_id inválido: se reintenta sin cadena`,
+                    );
+                    r = await llamarIA(null, await armarInputSinCadena());
+                  }
+                }
 
                 // ejecutarConResponsesAPI ya limpia las citas, pero NO los tags
                 // de acción ([asesor]:true…) ni el acuse al sistema ("Aquí

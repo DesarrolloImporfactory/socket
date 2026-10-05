@@ -342,6 +342,60 @@ async function validarApiKeyOpenAI(api_key) {
   return true;
 }
 
+/* ── Cadenas de Responses al cambiar de llave ────────────────────────────────
+   Los response_id viven por PROYECTO de OpenAI: si la llave nueva es de otro
+   proyecto, el previous_response_id guardado de cada cliente apunta a una
+   respuesta que esa llave no ve y OpenAI devuelve 404 "Previous response with
+   id … not found" (cfg 261, 01→02-10-2026: 17 clientes sin bot). El turno ya
+   se cura solo al primer mensaje (kanban_ia reintenta con el recap), pero acá
+   se evita incluso ese primer tropiezo: se prueban las cadenas más recientes
+   con la llave nueva y, si alguna no existe, se reinician TODAS las de la
+   cuenta — el próximo mensaje de cada cliente arranca con el recap de
+   mensajes_clientes, igual que tras un desborde de contexto.
+   Se prueban varias y no una porque una sola puede haber caducado por su
+   cuenta (OpenAI las retiene ~30 días) y eso no diría nada del proyecto.
+   Nunca frena el guardado: ante cualquier error de red se deja como está. */
+async function reiniciarCadenasSiCambioProyecto(id_configuracion, api_key) {
+  const cadenas = await db.query(
+    `SELECT t.response_id
+       FROM openai_threads t
+       JOIN clientes_chat_center c ON c.id = t.id_cliente_chat_center
+      WHERE c.id_configuracion = ? AND t.response_id IS NOT NULL
+      ORDER BY t.fecha_creado DESC
+      LIMIT 3`,
+    { replacements: [id_configuracion], type: QueryTypes.SELECT },
+  );
+  if (!cadenas.length) return { probadas: 0, reiniciadas: 0 };
+
+  const headers = getClientHeaders(api_key);
+  let rotas = 0;
+  for (const { response_id } of cadenas) {
+    try {
+      await axios.get(`https://api.openai.com/v1/responses/${response_id}`, {
+        headers,
+        timeout: 15000,
+      });
+    } catch (e) {
+      if (e?.response?.status === 404) rotas++;
+      // Otro error (red, 5xx) no dice nada del proyecto: no cuenta.
+    }
+  }
+  if (!rotas) return { probadas: cadenas.length, reiniciadas: 0 };
+
+  const [, meta] = await db.query(
+    `UPDATE openai_threads t
+       JOIN clientes_chat_center c ON c.id = t.id_cliente_chat_center
+        SET t.response_id = NULL
+      WHERE c.id_configuracion = ? AND t.response_id IS NOT NULL`,
+    { replacements: [id_configuracion], type: QueryTypes.UPDATE },
+  );
+  const reiniciadas = Number(meta?.affectedRows ?? meta) || 0;
+  console.log(
+    `[api_key_openai] cfg ${id_configuracion}: la llave nueva no ve ${rotas}/${cadenas.length} cadenas → ${reiniciadas} cadenas reiniciadas`,
+  );
+  return { probadas: cadenas.length, reiniciadas };
+}
+
 // Crea assistant en la cuenta del cliente según la plantilla
 async function crearAssistantEnCuentaCliente(templateRow, api_key) {
   const headers = getClientHeaders(api_key);
@@ -571,6 +625,18 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     },
   );
 
+  // 2.c) Si la llave es de OTRO proyecto de OpenAI, las cadenas de Responses
+  //      guardadas quedan huérfanas: se reinician acá, no al primer 404.
+  let cadenas = { probadas: 0, reiniciadas: 0 };
+  try {
+    cadenas = await reiniciarCadenasSiCambioProyecto(id_configuracion, api_key);
+  } catch (e) {
+    console.error(
+      `[api_key_openai] cfg ${id_configuracion}: no se pudieron revisar las cadenas:`,
+      e?.message,
+    );
+  }
+
   // 3) Bootstrap assistants (crear clones en la cuenta del cliente)
   const bootstrap = await bootstrapAssistantsForClient(
     id_configuracion,
@@ -585,9 +651,13 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
   return res.status(200).json({
     status: '200',
     message:
-      'API key actualizada y assistants creados/asegurados correctamente',
+      'API key actualizada y assistants creados/asegurados correctamente' +
+      (cadenas.reiniciadas
+        ? `. La llave es de otro proyecto de OpenAI: se reinició la memoria de ${cadenas.reiniciadas} conversaciones (el bot las retoma con el historial del chat)`
+        : ''),
     bootstrap, // created / skipped / failed
     cuenta,
+    cadenas_reiniciadas: cadenas.reiniciadas,
   });
 });
 

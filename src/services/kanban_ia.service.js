@@ -265,6 +265,23 @@ function esContextoExcedido(err) {
   );
 }
 
+/* "Previous response with id 'resp_…' not found": la cadena guardada apunta a
+   una respuesta que esta llave no ve. Los response_id viven por PROYECTO de
+   OpenAI: si la cuenta corrió un rato con una llave de otro proyecto (cfg 261,
+   noche del 01-10-2026 al 02-10 ~10:00) o la respuesta caducó, todos los
+   clientes que escribieron en ese rato quedan con una cadena rota. Sin esta
+   detección el error caía al cartel genérico y el rescate de turnos reintentaba
+   con el MISMO id cada 5 min: el bot no respondía a esos clientes hasta que
+   obtenerUltimoResponseId vencía la cadena a los 14 días. */
+function esCadenaInvalida(err) {
+  const status = err?.response?.status;
+  const msg = String(err?.response?.data?.error?.message || '').toLowerCase();
+  return (
+    (status === 404 || status === 400) &&
+    (msg.includes('previous_response') || msg.includes('previous response'))
+  );
+}
+
 // Reconstruye un transcript compacto de la conversación desde NUESTRA BD.
 // Se usa para re-sembrar el contexto cuando se resetea el hilo por
 // context_length_exceeded, de modo que el asistente NO pierda de qué producto
@@ -2115,13 +2132,20 @@ async function procesarMensajeKanban(params) {
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
 
-    // Contexto excedido (solo Responses API): reintentar UNA vez SIN encadenar,
-    // pero RE-SEMBRANDO el hilo con un resumen de la conversación (desde nuestra
-    // BD) para no perder el producto ni los datos del cliente. Se auto-cura.
-    if (USAR_RESPONSES_API && previous_response_id && esContextoExcedido(err)) {
+    // Contexto excedido o cadena rota (solo Responses API): reintentar UNA vez
+    // SIN encadenar, pero RE-SEMBRANDO el hilo con un resumen de la
+    // conversación (desde nuestra BD) para no perder el producto ni los datos
+    // del cliente. Se auto-cura: al responder se guarda el response_id nuevo y
+    // la cadena vieja deja de usarse.
+    if (
+      USAR_RESPONSES_API &&
+      previous_response_id &&
+      (esContextoExcedido(err) || esCadenaInvalida(err))
+    ) {
       const recap = await construirRecapConversacion(id_cliente);
       await log(
-        `♻️ context_length_exceeded — reset de hilo con recap (${recap.length} chars) cliente=${id_cliente}`,
+        `♻️ ${esCadenaInvalida(err) ? 'previous_response_id inválido' : 'context_length_exceeded'} ` +
+          `— reset de hilo con recap (${recap.length} chars) cliente=${id_cliente}`,
       );
 
       const inputConRecap = recap
@@ -4869,6 +4893,10 @@ module.exports = {
   // recordatorio a ciegas y ofrecía OTRO producto del catálogo (cfg 610:
   // entró por cuchillos y el remarketing le habló del cinturón menstrual).
   construirRecapConversacion,
+  // La usa el cron de remarketing: si la cadena guardada apunta a una
+  // respuesta que la llave no ve, reintenta sin cadena con el recap en vez de
+  // dar el remarketing por fallido.
+  esCadenaInvalida,
   // Expuesta para poder verificar el agendamiento sin levantar toda la
   // conversación: es el camino donde una falla no se ve (la tarjeta se mueve
   // igual aunque la cita no se cree).
