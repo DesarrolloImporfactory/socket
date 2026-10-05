@@ -23,6 +23,11 @@ const TelefoniaExtensiones = db.define(
     /** Llave temporal del widget (dura 72 h) y cuándo vence. */
     widget_key: { type: DataTypes.STRING(200), allowNull: true },
     widget_key_vence_at: { type: DataTypes.DATE, allowNull: true },
+    /** Última vez que el asesor pidió el teléfono o llamó. Sin uso en 15 min
+     *  la extensión puede reciclarse a otro asesor (hay pocas y muchos
+     *  asesores; solo las ocupa quien llama). Columna agregada a mano el
+     *  2026-10-05 (telefonia_extensiones_ultimo_uso_migration.sql). */
+    ultimo_uso_at: { type: DataTypes.DATE, allowNull: true },
     created_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   },
   {

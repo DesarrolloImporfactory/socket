@@ -56,6 +56,12 @@ exports.widget = catchAsync(async (req, res) => {
     const data = await zadarma.llaveWidget(req.sessionUser.id_sub_usuario);
     return res.json({ status: 'success', data: { activo: true, ...data } });
   } catch (e) {
+    // Sin extensión libre no es un error del asesor: el teléfono simplemente
+    // no se prepara ahora. Va en 200 para que el front no muestre un aviso
+    // rojo a quien solo abrió el chat; el motivo se enseña al intentar llamar.
+    if (e.status === 409) {
+      return res.json({ status: 'success', data: { activo: false, motivo: e.message, code: e.code || 'SIN_EXTENSION' } });
+    }
     return responderError(res, e);
   }
 });
