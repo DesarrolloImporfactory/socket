@@ -34,6 +34,13 @@ const BotMetricasDiarias = db.define(
        historial de cambios de estado, se usa el estado actual (cohorte):
        los días recientes maduran con cada recálculo. */
     cierres_kanban: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
+    /* De esos cierres, los de contactos que SÍ respondieron ese día. Es el
+       numerador del indicador principal del tablero: % de cierre sobre
+       quienes conversaron con el bot (cierres_respondieron ÷
+       convers_respondieron). Quien escribió por el anuncio y nunca contestó
+       no es una venta que el bot pudiera cerrar. Columna agregada con
+       bot_metricas_cierres_respondieron_migration.sql. */
+    cierres_respondieron: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
     entregadas_kanban: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: 0 },
 
     /* Órdenes Dropi del día (dropi_orders_cache, creadas por quien sea) */

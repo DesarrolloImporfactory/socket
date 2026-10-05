@@ -33,6 +33,7 @@
  */
 const crypto = require('crypto');
 const axios = require('axios');
+const { Op } = require('sequelize');
 const { db } = require('../database/config');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
@@ -488,6 +489,16 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'di
   if (!callerIdUsado) {
     await api(`/v1/pbx/internal/${ext.extension}/callerid/`, {}, 'DELETE').catch(() => {});
   }
+
+  /* Una fila "pedida" sin pbx_call_id es una llamada que el navegador nunca
+     marcó (el widget estaba desregistrado, el asesor cerró la pestaña…).
+     Zadarma jamás avisará de ella, así que se cierra como "no_marco" antes
+     de abrir la nueva; si no, quedan abiertas para siempre y confunden al
+     webhook (busca la última sin cerrar de esa extensión y destino). */
+  await TelefoniaLlamadas.update(
+    { estado: 'failed', disposition: 'no_marco', fin_at: new Date(), duracion_seg: 0, costo_centavos: 0 },
+    { where: { id_sub_usuario, estado: 'pedida', pbx_call_id: null, inicio_at: { [Op.lt]: new Date(Date.now() - 60_000) } } },
+  );
 
   const fila = await TelefoniaLlamadas.create({
     id_configuracion,

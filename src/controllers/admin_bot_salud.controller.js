@@ -9,7 +9,10 @@
 // "tasa de cierre" con esta definición saldría 0 y ensuciaría el promedio.
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
-const { recalcularVentana } = require('../services/botMetricas.service');
+const {
+  recalcularVentana,
+  tieneCierresRespondieron,
+} = require('../services/botMetricas.service');
 
 function rangoDias(req) {
   return Math.min(Math.max(parseInt(req.query.dias, 10) || 30, 1), 90);
@@ -30,11 +33,18 @@ const SOLO_ECOMMERCE = `
                WHERE ke.id_configuracion = m.id_configuracion
                  AND ke.es_dropi_principal = 1)`;
 
-const CAMPOS_SUMA = `
+/* INDICADOR PRINCIPAL: % de cierre sobre quienes conversaron con el bot =
+   cierres_respondieron ÷ convers_respondieron. Más de la mitad de las
+   conversaciones son personas que escriben por el anuncio y nunca contestan:
+   dividir entre todas medía al anuncio, no al bot. El % sobre el total queda
+   como dato del embudo. Mientras la columna no exista (migración sin
+   aplicar) va NULL y el front cae al cálculo anterior. */
+const camposSuma = (conResp) => `
   SUM(m.convers_ia)            AS convers_ia,
   SUM(m.convers_respondieron)  AS convers_respondieron,
   SUM(m.respuestas_ia)         AS respuestas_ia,
   SUM(m.cierres_kanban)        AS cierres_kanban,
+  ${conResp ? 'SUM(m.cierres_respondieron)' : 'NULL'} AS cierres_respondieron,
   SUM(m.entregadas_kanban)     AS entregadas_kanban,
   SUM(m.auto_intentos)         AS auto_intentos,
   SUM(m.auto_creadas)          AS auto_creadas,
@@ -63,6 +73,7 @@ exports.resumen = catchAsync(async (req, res) => {
     ? 'AND m.id_configuracion = :cfg'
     : SOLO_ECOMMERCE;
   const base = { cfg: idConfig, d: dias, d2: dias * 2 };
+  const CAMPOS_SUMA = camposSuma(await tieneCierresRespondieron());
 
   const [actual] = await q(
     `SELECT ${CAMPOS_SUMA}
@@ -121,6 +132,11 @@ exports.resumen = catchAsync(async (req, res) => {
    ══════════════════════════════════════════════════════════════ */
 exports.cuentas = catchAsync(async (req, res) => {
   const dias = rangoDias(req);
+  const conResp = await tieneCierresRespondieron();
+  const sumResp = (cond) =>
+    conResp
+      ? `SUM(CASE WHEN ${cond} THEN m.cierres_respondieron ELSE 0 END)`
+      : 'NULL';
 
   /* Una sola pasada sobre 2×dias: el CASE separa período actual y anterior. */
   const rows = await q(
@@ -138,6 +154,9 @@ exports.cuentas = catchAsync(async (req, res) => {
            SUM(CASE WHEN m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.entregadas_bot ELSE 0 END)       AS entregadas_bot,
            SUM(CASE WHEN m.fecha <  DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.convers_ia ELSE 0 END)           AS prev_convers_ia,
            SUM(CASE WHEN m.fecha <  DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.cierres_kanban ELSE 0 END)       AS prev_cierres_kanban,
+           ${sumResp('m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY)')} AS cierres_respondieron,
+           ${sumResp('m.fecha <  DATE_SUB(CURDATE(), INTERVAL :d DAY)')} AS prev_cierres_respondieron,
+           SUM(CASE WHEN m.fecha <  DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.convers_respondieron ELSE 0 END) AS prev_convers_respondieron,
            (SELECT GROUP_CONCAT(DISTINCT COALESCE(kc.modelo, 'default'))
               FROM kanban_columnas kc
              WHERE kc.id_configuracion = m.id_configuracion
@@ -158,8 +177,15 @@ exports.cuentas = catchAsync(async (req, res) => {
   const data = rows.map((r) => {
     const convers = Number(r.convers_ia) || 0;
     const cierres = Number(r.cierres_kanban) || 0;
-    const pctCierre = pctO(cierres, convers);
-    const pctCierrePrev = pctO(r.prev_cierres_kanban, r.prev_convers_ia);
+    /* % de cierre sobre quienes respondieron (indicador principal). Sin la
+       columna nueva, el cálculo de siempre sobre el total. */
+    const pctCierre = conResp
+      ? pctO(r.cierres_respondieron, r.convers_respondieron)
+      : pctO(cierres, convers);
+    const pctCierrePrev = conResp
+      ? pctO(r.prev_cierres_respondieron, r.prev_convers_respondieron)
+      : pctO(r.prev_cierres_kanban, r.prev_convers_ia);
+    const pctCierreTotal = pctO(cierres, convers);
     return {
       id_configuracion: r.id_configuracion,
       nombre: r.nombre_configuracion || '(sin nombre)',
@@ -178,6 +204,9 @@ exports.cuentas = catchAsync(async (req, res) => {
       cierres_kanban: cierres,
       cierres_ordenes: Number(r.cierres_bot) || 0,
       pct_cierre: pctCierre !== null ? Number(pctCierre.toFixed(1)) : null,
+      pct_cierre_total:
+        pctCierreTotal !== null ? Number(pctCierreTotal.toFixed(1)) : null,
+      cierres_respondieron: conResp ? Number(r.cierres_respondieron) || 0 : null,
       pct_cierre_prev:
         pctCierrePrev !== null ? Number(pctCierrePrev.toFixed(1)) : null,
       /* Delta en PUNTOS porcentuales vs el período anterior (null si no hay
@@ -207,6 +236,7 @@ exports.embudo = catchAsync(async (req, res) => {
 
   const filtro = idConfig ? 'AND m.id_configuracion = ?' : SOLO_ECOMMERCE;
   const repl = idConfig ? [dias, idConfig] : [dias];
+  const CAMPOS_SUMA = camposSuma(await tieneCierresRespondieron());
 
   const [tot] = await q(
     `SELECT ${CAMPOS_SUMA}
@@ -226,7 +256,17 @@ exports.embudo = catchAsync(async (req, res) => {
       embudo: [
         { paso: 'Conversaciones IA', valor: n(tot?.convers_ia) },
         { paso: 'Cliente respondió', valor: n(tot?.convers_respondieron) },
-        { paso: 'Cerró venta (generar guía)', valor: n(tot?.cierres_kanban) },
+        /* Mismo dato que el indicador principal: pedidos confirmados entre
+           quienes respondieron (así el 'pasó el X%' del embudo coincide con
+           el % de cierre). Sin la columna nueva, los cierres de siempre. */
+        {
+          paso: 'Cerró venta (generar guía)',
+          valor:
+            tot?.cierres_respondieron !== null &&
+            tot?.cierres_respondieron !== undefined
+              ? n(tot.cierres_respondieron)
+              : n(tot?.cierres_kanban),
+        },
         { paso: 'Entregadas', valor: n(tot?.entregadas_kanban) },
       ],
       auto: {
