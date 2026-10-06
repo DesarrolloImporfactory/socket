@@ -97,9 +97,14 @@ router.post(
   configuracionesController.editarConexion,
 );
 
+/* Todos los mensajes de una conexión en un Excel. Iba sin candado de rol: un
+   asesor de ventas podía pedirlo por API y llevarse las conversaciones de
+   toda la conexión, no solo las suyas. Mismo criterio que exportar un chat
+   (/clientes_chat_center/exportar_chat_xlsx). */
 router.post(
   '/exportar_mensajes_xlsx',
   ...imporchatGuard,
+  restrictToRoles('administrador', 'super_administrador'),
   protectConfigOwner,
   configuracionesController.exportarMensajesXLSX,
 );
