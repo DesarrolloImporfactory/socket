@@ -6,6 +6,26 @@ const ChatService = require('../services/chat.service');
 const BATCH_SIZE = 30;
 const MAX_INTENTOS = 3;
 
+/* Mensajes del cliente que cierran la conversación en vez de seguirla: un
+   agradecimiento, un "ok", un emoji, una reacción. Si lo único que escribió
+   después del cierre es esto, la encuesta sí se manda. */
+const RE_ACUSE =
+  /^(?:(?:muchas|mil|muchisimas)\s+)?gracias(?:\s+.{0,25})?$|^(?:ok|okey|okay|oki|listo|perfecto|dale|vale|de acuerdo|excelente|genial|bueno|ya|entendido|super|buenisimo|igualmente|bendiciones)(?:\s+(?:muchas\s+)?gracias)?$/;
+
+function esAcuse(m) {
+  const tipo = String(m?.tipo_mensaje || '').toLowerCase();
+  if (tipo === 'reaction' || tipo === 'sticker') return true;
+  if (tipo && tipo !== 'text') return false; // foto, audio, documento: sigue el caso
+  const t = String(m?.texto_mensaje || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return !t || RE_ACUSE.test(t);
+}
+
 async function withLock(lockName, fn) {
   const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
     replacements: [lockName],
@@ -72,6 +92,49 @@ async function procesarEnviosPendientes() {
         );
         console.log(
           `[cron-encuestas] Cancelado envio=${envio.id} (respuesta ya no es pendiente)`,
+        );
+        continue;
+      }
+
+      /* El cliente siguió escribiendo después de que se programó la encuesta:
+         la conversación no terminó. Mandarle "¿cómo fue tu experiencia?"
+         encima de su pregunta sin contestar es justo lo contrario de lo que
+         busca la encuesta (cfg 261, 2026-10-05: le llegó 6 segundos
+         después de pedir fotos). Un "gracias" o un 👍 no cuentan: eso sí es
+         el final. Se marca 'expirada' y no 'pendiente' para que el cooldown
+         no bloquee la encuesta del próximo cierre. */
+      const posteriores = await db.query(
+        `SELECT m.tipo_mensaje, m.texto_mensaje
+           FROM mensajes_clientes m
+          WHERE m.celular_recibe = :chatId
+            AND m.id_configuracion = :cfg
+            AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
+            AND m.created_at > (SELECT e.created_at
+                                  FROM encuestas_envios_programados e
+                                 WHERE e.id = :id)
+          ORDER BY m.id ASC LIMIT 8`,
+        {
+          replacements: {
+            chatId: String(envio.id_cliente_chat_center),
+            cfg: envio.id_configuracion,
+            id: envio.id,
+          },
+          type: QueryTypes.SELECT,
+        },
+      );
+      if (posteriores.some((m) => !esAcuse(m))) {
+        await db.query(
+          `UPDATE encuestas_envios_programados
+           SET estado = 'cancelado', error_ultimo = 'cliente_siguio_escribiendo'
+           WHERE id = :id`,
+          { replacements: { id: envio.id }, type: QueryTypes.UPDATE },
+        );
+        await db.query(
+          `UPDATE encuestas_respuestas SET estado = 'expirada', updated_at = NOW() WHERE id = :id`,
+          { replacements: { id: envio.id_respuesta }, type: QueryTypes.UPDATE },
+        );
+        console.log(
+          `[cron-encuestas] Cancelado envio=${envio.id} (el cliente siguió escribiendo tras el cierre)`,
         );
         continue;
       }
