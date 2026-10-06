@@ -138,6 +138,20 @@ const {
   VENTANA_MS,
 } = require('../utils/agruparRafaga');
 
+// Ajustes del bot por cuenta (espera, mensaje de respaldo, números del equipo,
+// pausa cuando atiende una persona) y media fija del prompt con su plantilla.
+const {
+  getAjustesIA,
+  esNumeroExcluido,
+  esResponsableHumano,
+} = require('../utils/ajustesIA');
+const {
+  separarMediaFija,
+  plantillasEnviadas,
+} = require('../utils/mediaFijaPrompt');
+// Para que el rescate de turnos no repita los que el bot calló a propósito.
+const { anotarSilencio } = require('../utils/turnosCallados');
+
 // Un turno de OpenAI a la vez por cliente: los huecos >8s que la ráfaga ya no
 // agrupa corrían en paralelo y bifurcaban la cadena de previous_response_id
 // (ver el encabezado de utils/turnoPorCliente.js).
@@ -777,6 +791,66 @@ function avisoErrorOpenAI(err) {
   );
 }
 
+/* Mensaje de respaldo AL CLIENTE cuando el bot no pudo responder (ajustes →
+   mensaje_fallback). El cartel de arriba solo lo ve el equipo: el cliente se
+   quedaba sin nada (cfg 261, 2026-10-02: 28 chats sin respuesta en hora y
+   media sin saldo). Sale sin IA, una sola vez cada 12 h por chat, y el chat
+   pasa a "asesor" porque el texto promete una persona.
+   Ojo: al quedar un mensaje nuestro después del cliente, el rescate de turnos
+   ya no reintenta ese chat — es lo correcto, ya se le dijo que lo atiende un
+   asesor. Nunca lanza. */
+const RESPONSABLE_RESPALDO = 'IA_respaldo';
+async function enviarRespaldoAlCliente({
+  ajustesIA,
+  canal,
+  id_configuracion,
+  id_cliente,
+}) {
+  const texto = ajustesIA?.mensaje_fallback;
+  if (!texto || !canal?.enviarTexto) return false;
+  try {
+    const [reciente] = await db.query(
+      `SELECT id FROM mensajes_clientes
+        WHERE celular_recibe = ? AND id_configuracion = ?
+          AND rol_mensaje = 1 AND responsable = ? AND deleted_at IS NULL
+          AND created_at >= NOW() - INTERVAL 12 HOUR
+        LIMIT 1`,
+      {
+        replacements: [String(id_cliente), id_configuracion, RESPONSABLE_RESPALDO],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (reciente) return false;
+
+    await canal.enviarTexto({
+      texto,
+      responsable: RESPONSABLE_RESPALDO,
+      total_tokens: 0,
+    });
+
+    const [colAsesor] = await db.query(
+      `SELECT id FROM kanban_columnas
+        WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
+        LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (colAsesor) {
+      await db.query(
+        `UPDATE clientes_chat_center SET estado_contacto = 'asesor' WHERE id = ?`,
+        { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
+      );
+    }
+    await log(
+      `🛟 Mensaje de respaldo enviado al cliente=${id_cliente} (config=${id_configuracion})` +
+        (colAsesor ? ' y chat movido a "asesor"' : ''),
+    );
+    return true;
+  } catch (err) {
+    await log(`⚠️ No se pudo enviar el mensaje de respaldo: ${err.message}`);
+    return false;
+  }
+}
+
 async function log(msg) {
   await fs.mkdir(logsDir, { recursive: true });
   await fs.appendFile(
@@ -896,6 +970,21 @@ async function procesarMensajeKanban(params) {
     return { ok: false, motivo: 'bot_apagado' };
   }
 
+  /* ── 0.07 Ajustes del bot de esta cuenta ──────────────────
+     Sin fila de ajustes (casi todas las cuentas) esto no cambia nada. */
+  const ajustesIA = await getAjustesIA(id_configuracion);
+
+  /* Números del propio equipo (bodega, otros asesores): le escriben a la
+     línea para coordinar y el bot les contestaba como a un cliente (cfg 261,
+     bodega, 2026-10-02). */
+  if (esNumeroExcluido(ajustesIA, telefono)) {
+    await log(
+      `🙈 ${telefono} está en numeros_excluidos de config=${id_configuracion}: el bot no le responde`,
+    );
+    anotarSilencio(id_configuracion, id_cliente);
+    return { ok: true, motivo: 'numero_excluido', silencio: true };
+  }
+
   // ── 0.1 Decidir qué API usar ──────────────────────────────
   const USAR_RESPONSES_API = usaResponsesApi(id_configuracion);
 
@@ -912,7 +1001,15 @@ async function procesarMensajeKanban(params) {
      utils/agruparRafaga.js. */
   /* Ventana adaptativa: un mensaje que ya viene cerrado espera 3,5 s en vez de
      8; el panel de pruebas, 1,5 s. Ver utils/agruparRafaga.js. */
-  const ventanaMs = ventanaPara(mensaje, { esPrueba: Boolean(params.es_prueba) });
+  /* La cuenta puede fijar su propia espera (ajustes → espera_rafaga_seg): en
+     soporte el cliente escribe "buen día" / "una consulta" / foto / "el ID
+     es…" con 10-20 s entre pedazos y la ventana adaptativa le contestaba cada
+     uno (cfg 261, 2026-10-05: cuatro respuestas a un solo pedido). El panel
+     de pruebas conserva su ventana corta. */
+  const ventanaMs =
+    ajustesIA.espera_rafaga_ms && !params.es_prueba
+      ? ajustesIA.espera_rafaga_ms
+      : ventanaPara(mensaje, { esPrueba: Boolean(params.es_prueba) });
   if (ventanaMs !== VENTANA_MS) {
     await log(`⏱️ Ráfaga: ventana ${ventanaMs} ms para este mensaje`);
   }
@@ -964,6 +1061,47 @@ async function procesarMensajeKanban(params) {
       `ℹ️ IA inactiva para columna "${columna.nombre}" (activa_ia=${columna.activa_ia})`,
     );
     return { ok: false, motivo: 'ia_inactiva' };
+  }
+
+  /* ── 1.1 Pausa cuando el chat lo está atendiendo una persona ──
+     En las columnas que la cuenta marque (ajustes → pausa_humano, típicamente
+     "asesor") el bot sigue prendido para no dejar mudo al cliente que espera
+     días a que lo atiendan, pero si alguien del equipo escribió hace menos de
+     N minutos la conversación es de esa persona: el bot no se mete. */
+  if (
+    ajustesIA.pausa_humano &&
+    ajustesIA.pausa_humano.estados.includes(
+      String(estado_contacto || '').toLowerCase(),
+    )
+  ) {
+    try {
+      const recientes = await db.query(
+        `SELECT responsable FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL
+            AND created_at >= NOW() - INTERVAL ? MINUTE
+          ORDER BY id DESC LIMIT 10`,
+        {
+          replacements: [
+            String(id_cliente),
+            id_configuracion,
+            ajustesIA.pausa_humano.minutos,
+          ],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const humano = recientes.find((m) => esResponsableHumano(m.responsable));
+      if (humano) {
+        await log(
+          `🤫 Columna "${columna.nombre}": ${humano.responsable} escribió hace menos de ` +
+            `${ajustesIA.pausa_humano.minutos} min; el bot no interviene (cliente=${id_cliente})`,
+        );
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'pausa_humano', silencio: true };
+      }
+    } catch (ePausa) {
+      await log(`⚠️ pausa_humano: ${ePausa.message}`);
+    }
   }
 
   // 🔍 DEBUG: ver qué assistant está corriendo REALMENTE
@@ -1387,12 +1525,7 @@ async function procesarMensajeKanban(params) {
            `responsable` trae el nombre de quien escribió; lo que empieza con
            IA_, cron_ o es un emisor del sistema no cuenta. */
         const resp = String(ultimoMsg.responsable || '').trim();
-        const esHumano =
-          resp &&
-          !/^(IA_|IA$|cron_|dropi|aliclik|sistema|instagram|messenger|respondedor|encuesta|bot\b)/i.test(
-            resp,
-          );
-        if (esHumano) {
+        if (esResponsableHumano(resp)) {
           // El panel antepone la firma "*Nombre* 🎤:" al texto: no aporta.
           const textoHumano = String(ultimoMsg.texto_mensaje)
             .replace(/^\s*\*[^*\n]{1,60}\*\s*🎤:?\s*\n?/u, '')
@@ -1411,6 +1544,40 @@ async function procesarMensajeKanban(params) {
       }
     } catch (e) {
       await log(`⚠️ Error inyectando remarketing previo: ${e.message}`);
+    }
+  }
+
+  /* ── Plantillas fijas que el cliente YA recibió ──
+     Opción `fijos_no_repetir_horas` de enviar_media. El modelo no ve fechas:
+     sin este dato no puede saber si la plantilla del rastreo salió hace diez
+     minutos o hace una semana, y la repetía tal cual a cada guía que el
+     cliente iba pegando (cfg 261, 2026-10-02: tres veces seguidas). Qué
+     hacer con una plantilla repetida lo dice el prompt de la cuenta; acá solo
+     se le da el hecho. */
+  const horasNoRepetir = Number(
+    getAcciones('enviar_media')
+      .map((a) => parseConfig(a).fijos_no_repetir_horas)
+      .find((h) => Number(h) > 0),
+  );
+  if (USAR_RESPONSES_API && horasNoRepetir > 0) {
+    try {
+      const yaEnviadas = await plantillasEnviadas({
+        id_cliente,
+        id_configuracion,
+        prompt: assistantInfo.instructions,
+        horas: horasNoRepetir,
+      });
+      if (yaEnviadas.length) {
+        bloqueContexto +=
+          `📌 PLANTILLAS QUE ESTE CLIENTE YA RECIBIÓ en las últimas ${horasNoRepetir} horas (con su video o imagen):\n` +
+          yaEnviadas.map((a) => `- "${a}"`).join('\n') +
+          `\nNO las repitas: si vuelve con ese mismo tema aplica la regla de PLANTILLA YA ENVIADA de tus instrucciones.\n\n`;
+        await log(
+          `📌 ${yaEnviadas.length} plantilla(s) fija(s) ya enviadas en ${horasNoRepetir} h: avisado al modelo cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ plantillas ya enviadas: ${e.message}`);
     }
   }
 
@@ -2129,6 +2296,7 @@ async function procesarMensajeKanban(params) {
         id_cliente,
         texto: AVISO_SIN_SALDO,
       });
+      await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
       return { ok: false, motivo: 'sin_saldo_openai' };
     }
 
@@ -2185,6 +2353,7 @@ async function procesarMensajeKanban(params) {
             id_cliente,
             texto: AVISO_SIN_SALDO,
           });
+          await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
           return { ok: false, motivo: 'sin_saldo_openai' };
         }
         await log(`❌ Error tras reset de hilo: ${err2.message}`);
@@ -2193,6 +2362,7 @@ async function procesarMensajeKanban(params) {
           id_cliente,
           texto: avisoErrorOpenAI(err2),
         });
+        await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
         throw err2;
       }
     } else {
@@ -2218,6 +2388,7 @@ async function procesarMensajeKanban(params) {
         id_cliente,
         texto: avisoErrorOpenAI(err),
       });
+      await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
       throw err;
     }
   }
@@ -3239,6 +3410,32 @@ async function procesarMensajeKanban(params) {
      (videos tutoriales de soporte, cfg 261) sale cada vez que se responde ese
      tema; sin la opción, "mira el video ⬆️" llegaba sin video si ya se había
      mandado en las últimas 48 h. La del catálogo sigue con su ventana. */
+  /* `fijos_con_plantilla` en enviar_media: el video/imagen escrito en el
+     prompt sale SOLO si en la respuesta viene también su plantilla (el texto
+     con el link y los pasos). El modelo a veces pone la etiqueta sola junto
+     al mensaje de paso a asesor y al cliente le llegaba un video suelto sin
+     explicación (cfg 261, 2026-10-02). Ver utils/mediaFijaPrompt.js. */
+  if (
+    getAcciones('enviar_media').some((a) => parseConfig(a).fijos_con_plantilla)
+  ) {
+    const promptFijos = String(assistantInfo.instructions || '');
+    for (const clave of ['imagenes', 'videos']) {
+      const { conservar, descartar } = separarMediaFija({
+        urls: media[clave],
+        texto: soloTexto,
+        prompt: promptFijos,
+      });
+      if (descartar.length) {
+        media[clave] = conservar;
+        await log(
+          `🎬 Media fija sin su plantilla en la respuesta: no se envía (${descartar
+            .map((u) => u.split('/').pop())
+            .join(', ')}) cliente=${id_cliente}`,
+        );
+      }
+    }
+  }
+
   const sinVentana = new Set();
   if (getAcciones('enviar_media').some((a) => parseConfig(a).reenviar_fijos)) {
     const prompt = String(assistantInfo.instructions || '');
@@ -3561,6 +3758,11 @@ async function procesarMensajeKanban(params) {
 
   // ✅ Si llegó hasta aquí, OpenAI está funcionando
   await marcarOpenAIActivo(id_configuracion);
+
+  /* El turno corrió y no había texto que mandar (el modelo calló a propósito
+     en una columna de espera, resumen repetido, guardia anti-bucle): se anota
+     para que el rescate de turnos no lo tome por un turno caído. */
+  if (!soloTexto) anotarSilencio(id_configuracion, id_cliente);
 
   return { ok: true, respuesta_enviada: soloTexto, total_tokens };
 }

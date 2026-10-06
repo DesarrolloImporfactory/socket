@@ -34,6 +34,7 @@ const {
   tieneColumnaAccion,
   crearHistorial,
   puedeTransferir,
+  puedeAutoasignarseEnLinea,
 } = require('../utils/historialEncargados');
 
 /** Columnas de sub_usuarios_departamento que se escriben en bulkCreate. */
@@ -428,9 +429,19 @@ exports.transferirChat = catchAsync(async (req, res, next) => {
       const chatOrigen = await Clientes_chat_center.findByPk(
         id_cliente_chat_center,
         // chat_cerrado entra porque un chat cerrado cuenta como libre
-        { attributes: ['id', 'id_encargado', 'chat_cerrado'] },
+        // id_configuracion: la autoasignación por línea (242/265) lo mira
+        { attributes: ['id', 'id_encargado', 'chat_cerrado', 'id_configuracion'] },
       );
-      if (chatOrigen && !puedeTransferir(actor, chatOrigen, id_encargado)) {
+      if (
+        chatOrigen &&
+        !puedeTransferir(actor, chatOrigen, id_encargado) &&
+        !(await puedeAutoasignarseEnLinea(
+          actor,
+          chatOrigen,
+          id_encargado,
+          id_departamento,
+        ))
+      ) {
         return next(
           new AppError(
             'Solo el encargado del chat o un administrador puede transferirlo.',

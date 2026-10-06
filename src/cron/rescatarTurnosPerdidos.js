@@ -62,6 +62,9 @@ const RESPONSABLE_AVISO_SISTEMA = 'sistema_ia';
 
 const enCurso = new Set(); // 'global' | 'cfg:<id>' — candado en memoria
 
+// Chats donde el bot calló a propósito: no son turnos perdidos.
+const { calloDespuesDe } = require('../utils/turnosCallados');
+
 /**
  * Detecta y corre los turnos pendientes.
  *
@@ -217,6 +220,12 @@ async function rescatarPendientes({
         },
       );
       if (algoDespues) continue;
+
+      /* El bot ya corrió este turno y decidió no escribir (pausa porque
+         atiende una persona, columna de espera): no es un turno perdido. */
+      if (calloDespuesDe(g.id_configuracion, g.id_cliente, g.ultimo_cli_at)) {
+        continue;
+      }
 
       const cli = {
         celular_cliente: g.celular_cliente,

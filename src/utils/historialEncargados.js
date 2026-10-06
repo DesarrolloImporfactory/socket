@@ -105,8 +105,59 @@ function puedeTransferir(actor, chat, idEncargadoDestino = null) {
   );
 }
 
+/**
+ * Líneas donde un asesor puede ASIGNARSE a sí mismo el chat abierto de otro,
+ * aunque no esté en SUB_USUARIOS_AUTOASIGNAN. Pedido del 2026-10-06: el botón
+ * «Ir al chat» de «Mis Cotizaciones» (Imporsuit) lleva al asesor al chat del
+ * cliente de su cotización, que muchas veces atiende un compañero. Son las
+ * dos líneas de Imporfactory donde se atienden cotizaciones: Ventas (242) y
+ * Soporte Importaciones (265).
+ *
+ * Espejo de LINEAS_AUTOASIGNACION_COTIZACION en chatcenter-front.
+ */
+const LINEAS_AUTOASIGNACION = [242, 265];
+
+/**
+ * Complemento de `puedeTransferir` para esas líneas: el destino tiene que ser
+ * el propio asesor (no puede pasarle el chat ajeno a un tercero) y el asesor
+ * tiene que trabajar en la línea del chat —estar en el departamento al que se
+ * transfiere, y que ese departamento sea de esa línea—.
+ *
+ * Va aparte, y no dentro de `puedeTransferir`, porque consulta la base y
+ * porque solo vale para la transferencia: `requireChatPropietario` sigue sin
+ * dejar cerrar ni tocar el chat de otro.
+ */
+async function puedeAutoasignarseEnLinea(
+  actor,
+  chat,
+  idEncargadoDestino,
+  idDepartamento,
+) {
+  if (!actor?.id_sub_usuario || !chat || !idDepartamento) return false;
+  if (!LINEAS_AUTOASIGNACION.includes(Number(chat.id_configuracion))) {
+    return false;
+  }
+  if (String(idEncargadoDestino) !== String(actor.id_sub_usuario)) return false;
+
+  const filas = await db.query(
+    `SELECT 1
+       FROM sub_usuarios_departamento s
+       INNER JOIN departamentos_chat_center d
+               ON d.id_departamento = s.id_departamento
+      WHERE s.id_sub_usuario = ? AND s.id_departamento = ?
+        AND d.id_configuracion = ?
+      LIMIT 1`,
+    {
+      replacements: [actor.id_sub_usuario, idDepartamento, chat.id_configuracion],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  return filas.length > 0;
+}
+
 module.exports = {
   tieneColumnaAccion,
   crearHistorial,
   puedeTransferir,
+  puedeAutoasignarseEnLinea,
 };

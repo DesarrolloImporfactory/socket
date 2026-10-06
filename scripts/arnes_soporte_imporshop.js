@@ -19,7 +19,12 @@ const { extraerUrlsMedia } = require('../src/utils/urlsMedia');
 const { limpiarColetillas } = require('../src/utils/limpiarColetillas');
 const { limpiarMarkdown } = require('../src/utils/formatoWhatsapp');
 const { leerApiKeyOpenAI } = require('../src/utils/openia/apiKeyOpenAI');
-const { promptSoporteImporshop } = require('../src/utils/prompt_soporte_imporshop.data');
+const {
+  promptSoporteImporshop,
+  promptSoporteImporshopEspera,
+  MENSAJE_RECIBIDO,
+} = require('../src/utils/prompt_soporte_imporshop.data');
+const { separarMediaFija } = require('../src/utils/mediaFijaPrompt');
 
 const SOLO = process.argv[2] && process.argv[2] !== 'todos' ? process.argv[2] : null;
 const MODELO = process.argv[3] || 'gpt-4o';
@@ -30,6 +35,7 @@ const MEDIA = {
   video_estado_guia: 'https://media.test/imporshop_estado_guia.mp4',
   video_retener: 'https://media.test/imporshop_retener_guia.mp4',
   video_novedades: 'https://media.test/imporshop_novedades.mp4',
+  video_garantia: 'https://media.test/imporshop_garantia.mp4',
   imagen_horarios: 'https://media.test/horarios_corte_imporshop.png',
 };
 const V = {
@@ -37,12 +43,20 @@ const V = {
   guia: /imporshop_estado_guia\.mp4/,
   retener: /imporshop_retener_guia\.mp4/,
   novedades: /imporshop_novedades\.mp4/,
+  garantia: /imporshop_garantia\.mp4/,
   horarios: /horarios_corte_imporshop\.png/,
 };
 const SALUDO = /¡?hola!?\s*¿?c[oó]mo est[aá]s/i;
 const ASESOR = '[asesor]:true';
 const RESUELTO = '[resuelto]:true';
 const AUDIO_ILEGIBLE = '[El cliente envió un audio que no se pudo transcribir]';
+const ESPERA = '[espera]:true';
+// Lo que kanban_ia inyecta cuando el último mensaje al cliente fue de una persona.
+const ctxAsesor = (texto) =>
+  '🧑‍💼 LO ÚLTIMO QUE SE LE ESCRIBIÓ AL CLIENTE lo envió una persona de tu equipo (no fuiste tú y NO está en tu memoria):\n' +
+  `"${texto}"\n` +
+  'El cliente está respondiendo a ESO: interpreta su mensaje en ese contexto (si dice "¿cómo?", "¿hay un video?", "¿y eso dónde?", "ok", habla de lo que le indicó tu compañero) y no contradigas lo que ya se le dijo.';
+const INVENTA = /caja protegida|empacad[oa] en|incluye (sus|los) accesorios|accesorios b[aá]sicos|viene con/i;
 
 /* Cada turno queda como { crudo, texto, medias, tags }. `texto` es lo que lee
    el cliente; `medias` lo que sale como adjunto. */
@@ -192,6 +206,197 @@ const ESCENARIOS = [
       !V.horarios.test(t.medias.join()) && 'sin imagen de horarios',
     ],
   },
+  /* ── Manual de corrección de Evelyn (2026-10-05) ── */
+  {
+    nombre: 'm1_accesorios_no_inventa',
+    mensajes: ['¿Qué accesorios trae el proyector?'],
+    checks: ([t]) => [
+      !t.tags.includes(ASESOR) && 'pregunta fuera del prompt no pasó a asesor',
+      t.medias.length && 'mandó media junto al paso a asesor',
+      INVENTA.test(t.texto) && 'inventó información del producto',
+    ],
+  },
+  {
+    nombre: 'm2_guia_sin_numero',
+    mensajes: ['Mi guía no se mueve'],
+    checks: ([t]) => [
+      !V.guia.test(t.medias.join()) && 'sin video ESTADO DE GUÍA',
+      !/imporchina\.com\/r\/track/.test(t.texto) && 'sin link de rastreo',
+      /track\?guia=/.test(t.texto) && 'armó un link con guía que el cliente no dio',
+      t.tags.length && `puso tag ${t.tags}`,
+    ],
+  },
+  {
+    nombre: 'm2b_informacion_de_guia',
+    mensajes: ['buenas, necesito información de mi guía, no despachan'],
+    checks: ([t]) => [
+      !V.guia.test(t.medias.join()) && 'sin video ESTADO DE GUÍA',
+      !/imporchina\.com\/r\/track/.test(t.texto) && 'sin link de rastreo',
+    ],
+  },
+  {
+    nombre: 'm3_guia_con_numero',
+    mensajes: ['Guía 189881459 no se mueve'],
+    checks: ([t]) => [
+      !V.guia.test(t.medias.join()) && 'sin video ESTADO DE GUÍA',
+      !/imporchina\.com\/r\/track/.test(t.texto) && 'sin link de rastreo',
+    ],
+  },
+  {
+    nombre: 'm4_cancelar_guia',
+    mensajes: ['Necesito cancelar la guía D002086260'],
+    checks: ([t]) => [
+      !V.retener.test(t.medias.join()) && 'sin video RETENER',
+      !/imporchina\.com\/r\/retener/.test(t.texto) && 'sin link de retener',
+      /lamento mucho el inconveniente|como lleg[oó]/i.test(t.texto) && 'respondió con la plantilla de garantía',
+      /maps\.app\.goo/.test(t.texto) && 'respondió con la ubicación',
+    ],
+  },
+  {
+    nombre: 'm4b_guia_y_luego_cancelar',
+    // Caso real cfg 261: venía de una garantía y mandó la guía suelta.
+    mensajes: ['D002086260\nME AYUDA CANCELANDO ESA GUIA'],
+    checks: ([t]) => [
+      !V.retener.test(t.medias.join()) && 'sin video RETENER',
+      /lamento mucho el inconveniente/i.test(t.texto) && 'respondió con la plantilla de garantía',
+    ],
+  },
+  {
+    nombre: 'm5_fotos_y_accesorios',
+    mensajes: ['Fotos reales y qué accesorios trae del ID 186860'],
+    checks: ([t]) => [
+      !V.material.test(t.medias.join()) && 'sin video MATERIAL',
+      !/catalogo-imporshop-comunidad/.test(t.texto) && 'sin link del catálogo',
+      INVENTA.test(t.texto) && 'inventó información del producto',
+    ],
+  },
+  {
+    nombre: 'm6_stock_y_luego_fotos',
+    mensajes: ['tienen stock de la licuadora pro winner?', '¿me pasas fotos?'],
+    checks: ([t1, t2]) => [
+      !/\bID\b/i.test(t1.texto) && 'no pidió el ID',
+      !V.material.test(t2.medias.join()) && 'pidió fotos y no recibió MATERIAL',
+      !/catalogo-imporshop-comunidad/.test(t2.texto) && 'sin link del catálogo',
+    ],
+  },
+  {
+    nombre: 'm8_tres_mensajes_juntos',
+    // Como llega tras la espera de 20 s: los tres pedazos en un solo turno.
+    mensajes: ['hola\nnecesito\nmaterial'],
+    checks: ([t]) => [
+      !SALUDO.test(t.texto) && 'sin saludo',
+      !V.material.test(t.medias.join()) && 'sin video MATERIAL',
+    ],
+  },
+  {
+    nombre: 'm10_como_subo_garantia',
+    mensajes: ['¿Cómo subo una garantía?'],
+    checks: ([t]) => [
+      !V.garantia.test(t.medias.join()) && 'sin video de GARANTÍA',
+      V.novedades.test(t.medias.join()) && 'mandó el video de NOVEDADES',
+      /las novedades se gestionan/i.test(t.texto) && 'respondió con el texto de novedades',
+    ],
+  },
+  {
+    nombre: 'video_garantia_tras_asesor',
+    // Caso real cfg 261: la asesora dijo "sube la garantía a Dropi".
+    contextos: [ctxAsesor('hola buenas tardes, debes subir la garantia a dropi')],
+    mensajes: ['Hay algún video q me enseñe como?'],
+    checks: ([t]) => [
+      !V.garantia.test(t.medias.join()) && 'sin video de GARANTÍA',
+      V.novedades.test(t.medias.join()) && 'mandó el video de NOVEDADES',
+    ],
+  },
+  {
+    nombre: 'no_repite_plantilla',
+    // Caso real cfg 261: tres rastreos seguidos.
+    mensajes: ['buenas, la guía D002055195 no tiene movimiento', 'D002058148', 'D002055229'],
+    checks: ([t1, t2, t3]) => [
+      !V.guia.test(t1.medias.join()) && 'turno 1 sin video ESTADO DE GUÍA',
+      (t2.medias.length || t3.medias.length) && 'repitió el video',
+      !t2.tags.includes(ASESOR) && 'la segunda guía no pasó a asesor',
+      /para agilizar el proceso/i.test(t2.texto + t3.texto) && 'repitió la plantilla de rastreo',
+    ],
+  },
+  {
+    nombre: 'video_solo_con_plantilla',
+    // Caso real cfg 261: "No sirve" → video del catálogo + mensaje de asesor.
+    mensajes: ['necesito imágenes reales de la malla térmica, parte delantera y posterior', 'No sirve'],
+    checks: ([t1, t2]) => [
+      !V.material.test(t1.medias.join()) && 'turno 1 sin video MATERIAL',
+      !t2.tags.includes(ASESOR) && '"No sirve" no pasó a asesor',
+      t2.medias.length && 'mandó el video junto al mensaje de asesor',
+    ],
+  },
+  {
+    nombre: 'no_defiende_al_asesor',
+    // Caso real cfg 261: inventó por qué no se podía retener.
+    contextos: [ctxAsesor('te comento que la guía ya se encuentra empacada y lista para despacho desde el viernes, por lo que ya no nos es posible retenerla en este momento.')],
+    mensajes: ['Pero cómo'],
+    checks: ([t]) => [
+      !t.tags.includes(ASESOR) && 'no pasó a asesor',
+      /sistema de la bodega|no permite|en proceso de env[ií]o/i.test(t.texto) && 'explicó/defendió lo que dijo el asesor',
+    ],
+  },
+  {
+    nombre: 'privatizar_con_id',
+    // Caso real cfg 261: dio el ID 140088 y se lo pidieron.
+    mensajes: ['buenos días su ayuda por favor privatizando más unidades del Ahorrador De Energia Electrica ID 140088'],
+    checks: ([t]) => [
+      !t.tags.includes(ASESOR) && 'privatizar no pasó a asesor',
+      /cu[eé]ntanos el ID/i.test(t.texto) && 'pidió el ID que el cliente ya dio',
+    ],
+  },
+  {
+    nombre: 'cuantas_unidades',
+    mensajes: ['me gustaria saber mas sobre este producto 167378', 'quiero saber cuantas unidades vienen, vi anuncios de paquetes de 6'],
+    checks: ([t1, t2]) => [
+      !V.material.test(t1.medias.join()) && 'turno 1 sin video MATERIAL',
+      !t2.tags.includes(ASESOR) && 'pregunta puntual del producto no pasó a asesor',
+      /\b(1|una|6|seis) unidad/i.test(t2.texto) && 'respondió cuántas unidades vienen',
+    ],
+  },
+
+  /* ── Modo espera (columna Asesor) ── */
+  {
+    nombre: 'espera_dato_plantilla_silencio',
+    espera: true,
+    // Caso real cfg 261: 35 de 37 mensajes sin respuesta.
+    mensajes: ['ID: 175239', 'Ayúdenme con imágenes reales del producto', 'sigo esperando'],
+    checks: ([t1, t2, t3]) => [
+      t1.texto.trim() !== MENSAJE_RECIBIDO && 'el dato no recibió el "¡Recibido! ✅" exacto',
+      !V.material.test(t2.medias.join()) && 'pidió imágenes y no recibió MATERIAL',
+      t3.texto.trim() && `debía callar y dijo: ${t3.texto.slice(0, 60)}`,
+    ],
+  },
+  {
+    nombre: 'espera_cancelar_guia',
+    espera: true,
+    mensajes: ['Guía V4003189450, necesito cancelarla antes de que salga a la transportadora'],
+    checks: ([t]) => [!V.retener.test(t.medias.join()) && 'sin plantilla/video RETENER'],
+  },
+  {
+    nombre: 'espera_gracias_calla',
+    espera: true,
+    mensajes: ['gracias, quedo atento'],
+    checks: ([t]) => [t.texto.trim() && `debía callar y dijo: ${t.texto.slice(0, 60)}`],
+  },
+  {
+    nombre: 'espera_reclamo_no_explica',
+    espera: true,
+    contextos: [ctxAsesor('la guía ya se encuentra empacada, ya no nos es posible retenerla')],
+    mensajes: ['pero por qué me dicen que ya no se puede? la generé hoy', 'necesito que me atiendan'],
+    checks: ([t1, t2]) => [
+      t1.texto.trim() !== MENSAJE_RECIBIDO && 'el reclamo no recibió el "¡Recibido! ✅" exacto',
+      t2.texto.trim() && `repitió en vez de callar: ${t2.texto.slice(0, 60)}`,
+    ],
+  },
+  {
+    nombre: 'espera_horarios',
+    espera: true,
+    mensajes: ['y a qué hora es el corte de servientrega hoy?'],
+    checks: ([t]) => [!V.horarios.test(t.medias.join()) && 'sin imagen de horarios'],
+  },
   {
     nombre: 'talla_no_en_dropi',
     mensajes: ['en dropi no hay la talla 3xl del conjunto deportivo, como la solicito?'],
@@ -201,9 +406,19 @@ const ESCENARIOS = [
   },
 ];
 
-function checksGlobales(turnos) {
+function checksGlobales(turnos, esc, prompt) {
   const e = [];
   turnos.forEach((t, i) => {
+    if (/NUMERO_DE_GUIA|ID_DEL_PRODUCTO/.test(t.crudo)) e.push(`turno ${i + 1}: marcador visible (NUMERO_DE_GUIA)`);
+    const huerfana = separarMediaFija({ urls: t.medias, texto: t.crudo, prompt }).descartar;
+    if (huerfana.length) e.push(`turno ${i + 1}: media sin su plantilla (${huerfana.map((u) => u.split('/').pop())})`);
+    if (esc.espera) {
+      if (t.tags.length) e.push(`turno ${i + 1}: en espera no debe mover el chat (${t.tags})`);
+      if (/asesor revisa tu caso/i.test(t.texto)) e.push(`turno ${i + 1}: en espera repitió el paso a asesor`);
+      if (SALUDO.test(t.texto)) e.push(`turno ${i + 1}: en espera saludó`);
+      return;
+    }
+    if (t.crudo.toLowerCase().includes(ESPERA)) e.push(`turno ${i + 1}: usó [espera] fuera del modo espera`);
     if (i > 0 && SALUDO.test(t.texto)) e.push(`turno ${i + 1} volvió a saludar`);
     if (t.tags.length > 1) e.push(`turno ${i + 1} con ${t.tags.length} tags`);
     if (/\*\*|^#{1,6}\s/m.test(t.crudo)) e.push(`turno ${i + 1} escribió markdown`);
@@ -237,8 +452,11 @@ function checksGlobales(turnos) {
       WHERE id_kanban_columna = 317 AND activo = 1 ORDER BY orden`,
     { type: db.QueryTypes.SELECT },
   );
-  const instructions = promptSoporteImporshop(MEDIA);
-  console.log(`modelo ${MODELO} · prompt ${instructions.length} chars\n`);
+  const PROMPT_PRINCIPAL = promptSoporteImporshop(MEDIA);
+  const PROMPT_ESPERA = promptSoporteImporshopEspera(MEDIA);
+  console.log(
+    `modelo ${MODELO} · prompt ${PROMPT_PRINCIPAL.length} chars · espera ${PROMPT_ESPERA.length} chars\n`,
+  );
 
   let fallasTotal = 0;
   let tokIn = 0;
@@ -249,15 +467,19 @@ function checksGlobales(turnos) {
     const turnos = [];
     const historial = [];
     let prev = null;
+    const instructions = esc.espera ? PROMPT_ESPERA : PROMPT_PRINCIPAL;
     try {
-      for (const mensaje of esc.mensajes) {
+      for (const [n, mensaje] of esc.mensajes.entries()) {
         const contexto = await construirContextoColumna(261, acciones, null, {
           mensaje,
           id_cliente: 0,
           historial: [{ rol_mensaje: 0, texto_mensaje: mensaje }, ...historial],
         });
-        const input = String(contexto || '').trim()
-          ? `🧾 Contexto adicional:\n\n${contexto.trim()}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
+        const bloque = [esc.contextos?.[n], String(contexto || '').trim()]
+          .filter(Boolean)
+          .join('\n\n');
+        const input = bloque
+          ? `🧾 Contexto adicional:\n\n${bloque}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
           : mensaje;
         const r = await ejecutarConResponsesAPI({
           previous_response_id: prev,
@@ -293,7 +515,7 @@ function checksGlobales(turnos) {
       continue;
     }
 
-    const fallas = [...esc.checks(turnos), ...checksGlobales(turnos)].filter(Boolean);
+    const fallas = [...esc.checks(turnos), ...checksGlobales(turnos, esc, instructions)].filter(Boolean);
     console.log(fallas.length ? ` ✖ ${fallas.length}` : ' ✔');
     for (const f of fallas) console.log(`     - ${f}`);
     fallasTotal += fallas.length;
