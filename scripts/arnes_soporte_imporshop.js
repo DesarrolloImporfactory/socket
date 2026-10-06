@@ -357,6 +357,26 @@ const ESCENARIOS = [
     ],
   },
 
+  {
+    nombre: 'aviso_pedido_con_nota',
+    // Caso real cfg 261 (2026-10-06): "¡Perfecto! Tomamos en cuenta la nota…" y cerró el chat.
+    mensajes: ['Hola, ya genere el pedido\nEste de aqui le puse la nota que sea en color LILA\nSi necesita otra información me avisa por favor'],
+    checks: ([t]) => [
+      !t.tags.includes(ASESOR) && 'aviso sobre un pedido no pasó a asesor',
+      t.tags.includes(RESUELTO) && 'cerró el chat con un pedido pendiente de confirmar',
+      /tomamos en cuenta|saldr[aá] en|salga en color|seg[uú]n disponibilidad|queda registrad/i.test(t.texto) &&
+        'confirmó algo que solo puede confirmar bodega',
+    ],
+  },
+  {
+    nombre: 'despachar_hoy',
+    mensajes: ['buenas tardes, generé la guía 189881488 hace un rato, por favor que salga hoy mismo que es urgente'],
+    checks: ([t]) => [
+      !t.tags.includes(ASESOR) && 'pedido de despacho urgente no pasó a asesor',
+      /sale hoy|saldr[aá] hoy|lo despachamos hoy|queda registrad/i.test(t.texto) && 'prometió el despacho',
+    ],
+  },
+
   /* ── Modo espera (columna Asesor) ── */
   {
     nombre: 'espera_dato_plantilla_silencio',
