@@ -70,6 +70,10 @@ const {
 const { ESTADO_RESUELTO } = require('../utils/kanbanReabrirResuelto');
 const ExcelJS = require('exceljs');
 const {
+  mensajeAFila,
+  CANALES: CANALES_CHAT,
+} = require('../utils/chatAExcel');
+const {
   rellenarEmailClienteSiVacio,
 } = require('../services/imporsuitEmailSync.service');
 const {
@@ -3738,6 +3742,185 @@ exports.exportarContactosXLSX = catchAsync(async (req, res, next) => {
 
   sheet.commit();
   await workbook.commit();
+});
+
+/* Exportar la conversación de UN chat a Excel (menú de tres puntos de /chat).
+   Solo administradores: la ruta lleva restrictToRoles y además
+   requireChatPropietario, que deja en req.chat el chat ya validado contra la
+   cuenta de quien pide (el id llega del body y no se confía en él).
+
+   Lectura directa y sin efectos: getChatsByClient, el que usa el panel, marca
+   los mensajes como vistos y trae datos de membresías; exportar no debe apagar
+   el contador de no leídos del asesor. */
+exports.exportarChatXLSX = catchAsync(async (req, res, next) => {
+  const { id: idChat, id_configuracion } = req.chat;
+
+  const [contacto] = await db.query(
+    `SELECT c.nombre_cliente, c.apellido_cliente, c.celular_cliente, c.source,
+            cf.nombre_configuracion, cf.telefono
+       FROM clientes_chat_center c
+       INNER JOIN configuraciones cf ON cf.id = c.id_configuracion
+      WHERE c.id = ?
+      LIMIT 1`,
+    { replacements: [idChat], type: db.QueryTypes.SELECT },
+  );
+
+  /* celular_recibe guarda el id del contacto (no un teléfono); id_cliente es
+     el dueño de la cuenta y filtrar por él no devuelve nada. La fecha sale ya
+     formateada de MySQL: como Date, ExcelJS la escribe en UTC y la hora
+     aparece corrida cinco horas. meta_unificado solo se trae para los
+     adjuntos de Messenger/Instagram, que es donde vive su url. */
+  const mensajes = await db.query(
+    `SELECT mc.id, mc.source, mc.tipo_mensaje, mc.rol_mensaje, mc.responsable,
+            mc.texto_mensaje, mc.texto_original, mc.editado_at,
+            mc.eliminado_at, mc.ruta_archivo, mc.template_name,
+            mc.estado_meta,
+            IF(mc.tipo_mensaje = 'attachment', mc.attachments_unificado, NULL)
+              AS attachments_unificado,
+            IF(mc.tipo_mensaje = 'attachment', mc.meta_unificado, NULL)
+              AS meta_unificado,
+            DATE_FORMAT(mc.created_at, '%d/%m/%Y') AS fecha,
+            DATE_FORMAT(mc.created_at, '%H:%i:%s') AS hora,
+            (SELECT COALESCE(e.mensaje_error,
+                             CONCAT('Error código ', e.codigo_error))
+               FROM errores_chat_meta e
+              WHERE e.id_wamid_mensaje = mc.id_wamid_mensaje
+              LIMIT 1) AS error_envio
+       FROM mensajes_clientes mc
+      WHERE mc.id_configuracion = ?
+        AND mc.celular_recibe = ?
+        AND mc.deleted_at IS NULL
+      ORDER BY mc.created_at ASC, mc.id ASC`,
+    { replacements: [id_configuracion, idChat], type: db.QueryTypes.SELECT },
+  );
+
+  if (!mensajes.length) {
+    return next(new AppError('Este chat no tiene mensajes para exportar', 404));
+  }
+
+  const nombreContacto =
+    [contacto?.nombre_cliente, contacto?.apellido_cliente]
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+      .join(' ') || 'Cliente';
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'ImporChat';
+  wb.created = new Date();
+
+  // ── Hoja 1: la conversación ──
+  const ws = wb.addWorksheet('Conversación', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+  ws.columns = [
+    { header: 'Fecha', key: 'fecha', width: 12 },
+    { header: 'Hora', key: 'hora', width: 10 },
+    { header: 'De', key: 'de', width: 10 },
+    { header: 'Enviado por', key: 'enviado_por', width: 24 },
+    { header: 'Tipo', key: 'tipo', width: 16 },
+    { header: 'Mensaje', key: 'mensaje', width: 80 },
+    { header: 'Archivo', key: 'archivo', width: 44 },
+    { header: 'Estado', key: 'estado', width: 12 },
+    { header: 'Observación', key: 'nota', width: 44 },
+  ];
+  ws.autoFilter = { from: 'A1', to: 'I1' };
+
+  const cabecera = ws.getRow(1);
+  cabecera.height = 28;
+  cabecera.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF171931' },
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF4F46E5' } } };
+  });
+
+  // Una celda de Excel admite 32.767 caracteres; pasarse corrompe el archivo.
+  const MAX_CELDA = 32000;
+  const recortar = (s) => {
+    const texto = String(s ?? '');
+    return texto.length > MAX_CELDA ? `${texto.slice(0, MAX_CELDA)}…` : texto;
+  };
+
+  for (const m of mensajes) {
+    const fila = mensajeAFila(m, { nombreContacto });
+    const row = ws.addRow({
+      ...fila,
+      mensaje: recortar(fila.mensaje),
+      nota: recortar(fila.nota),
+    });
+
+    row.alignment = { vertical: 'top' };
+    row.getCell('mensaje').alignment = { vertical: 'top', wrapText: true };
+    row.getCell('nota').alignment = { vertical: 'top', wrapText: true };
+
+    // Un solo enlace por celda (y Excel no acepta más de ~2.000 caracteres).
+    if (fila.archivo && !fila.archivo.includes('\n') && fila.archivo.length < 2000) {
+      const celda = row.getCell('archivo');
+      celda.value = { text: fila.archivo, hyperlink: fila.archivo };
+      celda.font = { color: { argb: 'FF2563EB' }, underline: true };
+    }
+
+    // Lo que escribió el cliente va sombreado: se distingue de un vistazo
+    // quién habla sin tener que leer la columna «De».
+    if (fila.de === 'Cliente') {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF1F5F9' },
+        };
+      });
+    }
+  }
+
+  // ── Hoja 2: de qué chat es el archivo ──
+  const resumen = wb.addWorksheet('Resumen');
+  resumen.columns = [
+    { key: 'campo', width: 24 },
+    { key: 'valor', width: 60 },
+  ];
+  const primero = mensajes[0];
+  const ultimo = mensajes[mensajes.length - 1];
+  [
+    ['Contacto', nombreContacto],
+    ['Teléfono / usuario', contacto?.celular_cliente || ''],
+    ['Canal', CANALES_CHAT[contacto?.source] || contacto?.source || ''],
+    ['Conexión', contacto?.nombre_configuracion || ''],
+    ['Teléfono de la conexión', contacto?.telefono || ''],
+    ['Total de mensajes', mensajes.length],
+    ['Primer mensaje', `${primero.fecha} ${primero.hora}`],
+    ['Último mensaje', `${ultimo.fecha} ${ultimo.hora}`],
+    ['Zona horaria', 'Ecuador (GMT-5)'],
+    [
+      'Exportado por',
+      req.sessionUser?.nombre_encargado || req.sessionUser?.usuario || '',
+    ],
+    [
+      'Exportado el',
+      new Date().toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
+    ],
+  ].forEach(([campo, valor]) => {
+    const row = resumen.addRow({ campo, valor });
+    row.getCell('campo').font = { bold: true };
+    row.getCell('valor').alignment = { horizontal: 'left' };
+  });
+
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  );
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="chat_${idChat}_${Date.now()}.xlsx"`,
+  );
+  res.setHeader('Content-Length', buffer.length);
+  return res.end(buffer);
 });
 
 const cacheProductosAd = new Map(); // id_configuracion -> { data, exp }

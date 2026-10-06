@@ -12,6 +12,7 @@ const {
 } = require('../middlewares/chatPropietario.middleware');
 
 const { uploadExcel } = require('../middlewares/uploadExcel');
+const restrictToRoles = require('../middlewares/restrictTo.middleware');
 
 const {
   requireIdConfiguracion,
@@ -190,6 +191,16 @@ router.post(
 router.post(
   '/exportar_contactos_xlsx',
   clientes_chat_centerController.exportarContactosXLSX,
+);
+
+/* Descargar la conversación de un chat en Excel. Solo el administrador de la
+   cuenta (y soporte interno): ni ventas ni admin_limitado. El front esconde
+   el botón, pero el candado real es este. */
+router.post(
+  '/exportar_chat_xlsx',
+  restrictToRoles('administrador', 'super_administrador'),
+  requireChatPropietario('chatId'),
+  clientes_chat_centerController.exportarChatXLSX,
 );
 
 router.get(
