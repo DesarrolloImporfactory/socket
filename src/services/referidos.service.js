@@ -244,8 +244,8 @@ const devengarPorFactura = async ({
     // invoice_id) cuyo ciclo_num es el ÚLTIMO ciclo cubierto, y la comisión
     // se calcula mes a mes: cada mes cubierto vale base/meses y comisiona
     // con el porcentaje que le toque a SU ciclo (0 antes de CICLO_INICIO).
-    // Así un referido anual nuevo paga comisión por los meses 3..12 en la
-    // misma factura, en vez de esperar tres años a "llegar al ciclo 3".
+    // Así un referido anual nuevo paga comisión por los meses 2..12 en la
+    // misma factura, en vez de esperar un año a "llegar al ciclo 2".
     const mesesCubiertos = Math.max(1, Math.floor(Number(meses) || 1));
 
     const [usuario] = await db.query(
@@ -497,9 +497,9 @@ const sumarMeses = (fecha, n) => {
  * Cuándo y cuánto va a comisionar un referido que todavía no ha generado nada.
  *
  * POR QUÉ EXISTE
- * Un referidor que trae diez cuentas y ve $0.00 durante dos meses no concluye
+ * Un referidor que trae diez cuentas y ve $0.00 durante un mes no concluye
  * "todavía no maduran": concluye que no le están pagando. La regla de arrancar
- * en el ciclo 3 es defendible, pero solo si la pantalla dice EN QUÉ FECHA
+ * en CICLO_INICIO es defendible, pero solo si la pantalla dice EN QUÉ FECHA
  * empieza a cobrar y CUÁNTO. Sin eso, el programa se lee como una estafa
  * justo en el momento en que más ilusión tiene el que refiere.
  *

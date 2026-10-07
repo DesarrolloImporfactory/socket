@@ -30,15 +30,19 @@ const num = (envKey, fallback) => {
 /**
  * Primer ciclo de facturación que genera comisión.
  *
- * Es 3 porque los dos primeros no dejan margen: el mes 1 se vende a $5 con
- * cupón promocional (PROMO_FIRST_MONTH_PRICE en planes.config.js) y el mes 2
- * apenas recupera ese subsidio. Pagar 25% antes del mes 3 significaría pagarle
- * al referidor con dinero que todavía no se ganó.
+ * Es 2 porque el mes 1 no deja margen: se vende a $5 con cupón promocional
+ * (PROMO_FIRST_MONTH_PRICE en planes.config.js). Pagar 25% sobre ese mes
+ * significaría pagarle al referidor con dinero que todavía no se ganó.
+ *
+ * Hasta el 2026-10-07 arrancaba en el 3 (el mes 2 se consideraba recuperación
+ * del subsidio). Se adelantó al 2 por decisión comercial. Como cada comisión
+ * guarda su porcentaje por fila, el cambio solo afecta lo que se devengue de
+ * aquí en adelante: los ciclos 2 ya registrados sin comisión no se reescriben.
  */
-const CICLO_INICIO = num('REFERIDOS_CICLO_INICIO', 3);
+const CICLO_INICIO = num('REFERIDOS_CICLO_INICIO', 2);
 
 /**
- * Porcentaje único, del ciclo 3 en adelante y sin tope de tiempo.
+ * Porcentaje único, de CICLO_INICIO en adelante y sin tope de tiempo.
  *
  * Antes había una escalera —25% hasta el ciclo 12 y 10% residual del 13 en
  * adelante—. Se eliminó: el 25% es vitalicio mientras el referido siga pagando.
