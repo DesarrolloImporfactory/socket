@@ -81,6 +81,7 @@ const {
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 const { getKanbanConfigCuenta } = require('../utils/kanbanConfigCuenta');
 const { adornarMembresias } = require('../utils/membresiaImporsuit');
+const { adornarIncidencias } = require('../utils/incidenciasResumen');
 const {
   _internal: { parseTablero },
 } = require('./kanban_columnas.controller');
@@ -1243,6 +1244,15 @@ exports.listarContactosEstadoDinamico = catchAsync(async (req, res, next) => {
       });
     } catch {
       /* adorno opcional: el tablero nunca se cae por esto */
+    }
+
+    /* Última incidencia + conteo (la bitácora del panel derecho de /chat).
+       Sin gate por cuenta: quien no registra incidencias no recibe filas y
+       la tarjeta no pinta nada. */
+    try {
+      await adornarIncidencias(items);
+    } catch {
+      /* idem: adorno opcional */
     }
 
     /* Membresía Imporsuit (fecha de inscripción + días para vencer). Solo
