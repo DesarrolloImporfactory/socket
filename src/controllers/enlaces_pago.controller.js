@@ -120,6 +120,10 @@ exports.historial = catchAsync(async (req, res, next) => {
   const q = String(req.query.q || '')
     .trim()
     .slice(0, 60);
+  // Filtro opcional por moneda (código ISO de 3 letras, ej. usd / mxn).
+  const moneda = /^[a-z]{3}$/i.test(String(req.query.moneda || ''))
+    ? String(req.query.moneda).toLowerCase()
+    : null;
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const page = Math.max(1, Number(req.query.page) || 1);
   const offset = (page - 1) * limit;
@@ -155,6 +159,10 @@ exports.historial = catchAsync(async (req, res, next) => {
     );
     repl.q = `%${q}%`;
   }
+  if (moneda) {
+    where.push('LOWER(e.moneda) = :moneda');
+    repl.moneda = moneda;
+  }
   const W = where.join(' AND ');
   const JOINS = `
     FROM enlaces_pago e
@@ -175,32 +183,68 @@ exports.historial = catchAsync(async (req, res, next) => {
   );
 
   // Totales del mismo filtro (sin paginar) para las tarjetas de arriba.
-  const [tot] = await db.query(
-    `SELECT COUNT(*) AS total,
-            SUM(e.estado = 'pagado') AS pagados,
-            SUM(e.estado = 'pendiente') AS pendientes,
-            SUM(e.estado = 'anulado') AS anulados,
-            SUM(CASE WHEN e.estado = 'pagado' THEN e.monto ELSE 0 END) AS monto_pagado,
-            SUM(CASE WHEN e.estado = 'pendiente' THEN e.monto ELSE 0 END) AS monto_pendiente,
-            COUNT(DISTINCT e.id_sub_usuario) AS asesores
-     ${JOINS}
-     WHERE ${W}`,
-    { replacements: repl, type: db.QueryTypes.SELECT },
-  );
+  // Los conteos son globales; los montos van SEPARADOS por moneda porque una
+  // misma cuenta puede cobrar en USD y MXN y sumarlos daba una cifra sin
+  // sentido. Aparte, la lista de monedas que la cuenta ha usado alguna vez
+  // (sin filtro) para poblar el selector del front.
+  const [[tot], porMoneda, monedasCuenta] = await Promise.all([
+    db.query(
+      `SELECT COUNT(*) AS total,
+              SUM(e.estado = 'pagado') AS pagados,
+              SUM(e.estado = 'pendiente') AS pendientes,
+              SUM(e.estado = 'anulado') AS anulados,
+              COUNT(DISTINCT e.id_sub_usuario) AS asesores
+       ${JOINS}
+       WHERE ${W}`,
+      { replacements: repl, type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT LOWER(COALESCE(e.moneda, 'usd')) AS moneda,
+              SUM(e.estado = 'pagado') AS pagados,
+              SUM(e.estado = 'pendiente') AS pendientes,
+              SUM(CASE WHEN e.estado = 'pagado' THEN e.monto ELSE 0 END) AS monto_pagado,
+              SUM(CASE WHEN e.estado = 'pendiente' THEN e.monto ELSE 0 END) AS monto_pendiente
+       ${JOINS}
+       WHERE ${W}
+       GROUP BY LOWER(COALESCE(e.moneda, 'usd'))
+       ORDER BY monto_pagado DESC, moneda ASC`,
+      { replacements: repl, type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT DISTINCT LOWER(COALESCE(moneda, 'usd')) AS moneda
+       FROM enlaces_pago
+       WHERE id_configuracion = :id_configuracion
+       ORDER BY moneda ASC`,
+      { replacements: { id_configuracion }, type: db.QueryTypes.SELECT },
+    ),
+  ]);
+
+  const por_moneda = (porMoneda || []).map((m) => ({
+    moneda: m.moneda,
+    pagados: Number(m.pagados || 0),
+    pendientes: Number(m.pendientes || 0),
+    monto_pagado: Number(m.monto_pagado || 0),
+    monto_pendiente: Number(m.monto_pendiente || 0),
+  }));
 
   return res.json({
     isSuccess: true,
     data: rows,
     page,
     limit,
+    monedas: (monedasCuenta || []).map((m) => m.moneda),
     totales: {
       total: Number(tot?.total || 0),
       pagados: Number(tot?.pagados || 0),
       pendientes: Number(tot?.pendientes || 0),
       anulados: Number(tot?.anulados || 0),
-      monto_pagado: Number(tot?.monto_pagado || 0),
-      monto_pendiente: Number(tot?.monto_pendiente || 0),
       asesores: Number(tot?.asesores || 0),
+      por_moneda,
+      // Compatibilidad: solo tienen sentido cuando hay una sola moneda.
+      monto_pagado:
+        por_moneda.length === 1 ? por_moneda[0].monto_pagado : null,
+      monto_pendiente:
+        por_moneda.length === 1 ? por_moneda[0].monto_pendiente : null,
     },
   });
 });
