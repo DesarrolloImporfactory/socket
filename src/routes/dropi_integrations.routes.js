@@ -118,6 +118,20 @@ router.post(
   ctrl.solucionarNovedad,
 );
 
+// IA en modo sugerencia: propone la solución leyendo el chat con el cliente.
+// No envía nada a Dropi.
+router.post(
+  '/novedades/sugerir',
+  auth.protectConfigOwner,
+  ctrl.sugerirSolucionNovedad,
+);
+// Registro propio de novedades (historial, reincidencias, resultados).
+router.post(
+  '/novedades/registro',
+  auth.protectConfigOwner,
+  ctrl.listarRegistroNovedades,
+);
+
 //Obtener Productos Dropi
 router.post('/products/index', auth.protectConfigOwner, ctrl.listProductsIndex);
 

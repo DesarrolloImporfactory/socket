@@ -109,4 +109,15 @@ router.post(
   productos_chat_centerController.desvincularAnuncioProducto,
 );
 
+/* Id del producto en el proveedor (Dropi/Aliclik), editable sin reimportar.
+   Cada cambio queda en productos_external_id_historial. */
+router.post(
+  '/cambiarIdExterno',
+  productos_chat_centerController.cambiarIdExterno,
+);
+router.post(
+  '/historialIdExterno',
+  productos_chat_centerController.historialIdExterno,
+);
+
 module.exports = router;

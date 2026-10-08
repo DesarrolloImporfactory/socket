@@ -32,6 +32,9 @@ const {
   obtenerOCrearContactoWa,
 } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+const {
+  registrarDesdeOrdenes: registrarNovedadesDesdeOrdenes,
+} = require('./dropi_novedades.service');
 const { resolverLugarRetiro } = require('../utils/lugarRetiroAgencia');
 const { esRetiroEnOrigen } = require('../utils/retiroEnOrigen');
 
@@ -706,6 +709,28 @@ async function upsertOrders(cacheInsertFields, orders) {
           type: db.QueryTypes.UPDATE,
         },
       );
+    }
+  } catch (_) {}
+
+  /* Registro de novedades (dropi_novedades): abre la novedad cuando la orden
+     entra en NOVEDAD, la pasa a "en ruta" cuando sale y la cierra cuando el
+     pedido termina; si vuelve a caer en novedad la marca como reincidencia
+     para que la gestione un asesor. Best-effort: el servicio no lanza y
+     tolera que las tablas aún no existan. */
+  try {
+    if (cacheInsertFields.id_configuracion) {
+      await registrarNovedadesDesdeOrdenes({
+        id_configuracion: cacheInsertFields.id_configuracion,
+        ordenes: orders.map((o) => ({
+          id: o.id,
+          status: o.status,
+          clasificado: classifyDropiStatus(o.status),
+          guia: o.shipping_guide,
+          transportadora: o.shipping_company || o.distribution_company?.name,
+          novedad: o.novedad_servientrega,
+          solucionadaPorUsuario: o.issue_solved_by_parent_order,
+        })),
+      });
     }
   } catch (_) {}
 }

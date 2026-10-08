@@ -2058,3 +2058,262 @@ exports.desvincularAnuncioProducto = catchAsync(async (req, res) => {
   );
   return res.status(200).json({ ok: true });
 });
+
+/* ═══════════════════════════════════════════════════════════════
+   ID externo editable (Dropi / Aliclik) + historial
+   ───────────────────────────────────────────────────────────────
+   Cuando el proveedor deja sin stock un producto y lo vuelve a publicar
+   con otro id, el cliente tenía que reimportarlo y rehacer wizard, combos,
+   anuncios y ajustes solo porque `external_id` no se podía tocar. Acá se
+   cambia el id EN EL MISMO producto: el cron de stock, el auto-orden y el
+   catálogo del kanban leen `external_id` en vivo, así que con esto ya
+   apuntan al producto nuevo.
+
+   Cada cambio queda en productos_external_id_historial (quién, cuándo, de
+   qué id a cuál y cómo se llamaba ese id en el proveedor). La fila más vieja
+   conserva en external_id_anterior el id con el que se descargó. Sin la
+   tabla (productos_external_id_historial_migration.sql) el cambio se
+   rechaza: nunca se mueve el id sin dejar rastro.
+
+   Lo que NO cambia solo: los `dropi_variation_id` de las variantes y los
+   `id_dropi` de los combos (apuntan a otros ids del proveedor y se editan
+   en el mismo formulario). El front lo avisa al guardar. */
+const { Op: OpSeq } = require('sequelize');
+const FUENTES_ID_EDITABLE = [DROPI_SOURCE, ALICLIK_SOURCE];
+const etiquetaFuente = (s) => (s === ALICLIK_SOURCE ? 'Aliclik' : 'Dropi');
+
+/* Cómo llama el proveedor a ese id. Es evidencia para el historial y para
+   que el cliente confirme que apuntó al producto correcto. Si la API del
+   proveedor no responde, no se frena el cambio: queda como "no verificado". */
+async function nombreEnProveedor({ id_configuracion, source, external_id }) {
+  const sinVerificar = { nombre: null, verificado: false, existe: null };
+  try {
+    if (source === DROPI_SOURCE) {
+      const integration = await getActiveIntegration(id_configuracion);
+      if (!integration) return sinVerificar;
+      const integrationKey = decryptToken(integration.integration_key_enc);
+      if (!integrationKey) return sinVerificar;
+      const detail = await dropiService.getProductDetail({
+        integrationKey,
+        productId: external_id,
+        country_code: integration.country_code,
+      });
+      const prod = detail?.objects;
+      return {
+        nombre: prod?.name ? String(prod.name).slice(0, 255) : null,
+        verificado: true,
+        existe: Boolean(prod),
+      };
+    }
+    if (source === ALICLIK_SOURCE) {
+      const prod = await aliclikOrdersService.buscarProductoAliclikPorId({
+        id_configuracion,
+        productId: external_id,
+      });
+      return {
+        nombre: prod?.nombre ? String(prod.nombre).slice(0, 255) : null,
+        verificado: true,
+        existe: Boolean(prod),
+      };
+    }
+  } catch (e) {
+    // Dropi responde 404 cuando el id no existe: eso sí es una verificación.
+    const st = Number(e?.statusCode || e?.status || e?.response?.status);
+    if (st === 404) return { nombre: null, verificado: true, existe: false };
+    console.warn(
+      `[cambiarIdExterno] no se pudo consultar ${source} #${external_id}: ${e.message}`,
+    );
+  }
+  return sinVerificar;
+}
+
+const esTablaFaltante = (e) =>
+  e?.original?.code === 'ER_NO_SUCH_TABLE' ||
+  e?.parent?.code === 'ER_NO_SUCH_TABLE' ||
+  /doesn't exist/i.test(String(e?.message || ''));
+
+exports.cambiarIdExterno = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const id_producto = toInt(req.body?.id_producto);
+  const nuevoId = toInt(req.body?.external_id);
+  const motivo = str(req.body?.motivo).trim().slice(0, 255) || null;
+  const forzar =
+    req.body?.forzar === true ||
+    String(req.body?.forzar).toLowerCase() === 'true' ||
+    Number(req.body?.forzar) === 1;
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!id_producto) return next(new AppError('id_producto es requerido', 400));
+  if (!nuevoId)
+    return next(new AppError('Escribe el nuevo ID (solo números).', 400));
+
+  const producto = await ProductosChatCenter.findOne({
+    where: { id: id_producto, id_configuracion, eliminado: 0 },
+  });
+  if (!producto) return next(new AppError('Producto no encontrado.', 404));
+
+  const source = String(producto.external_source || '').toUpperCase();
+  if (!FUENTES_ID_EDITABLE.includes(source) || producto.external_id == null) {
+    return next(
+      new AppError(
+        'Este producto no viene de Dropi ni de Aliclik, así que no tiene un ID que actualizar.',
+        400,
+      ),
+    );
+  }
+  const fuente = etiquetaFuente(source);
+
+  const anterior = Number(producto.external_id);
+  if (anterior === nuevoId)
+    return next(new AppError(`Este producto ya usa el ID ${nuevoId}.`, 400));
+
+  /* Mismo criterio de duplicado que el import: dos productos vivos con el
+     mismo id del proveedor confunden al auto-orden y al sync de stock. */
+  const repetido = await ProductosChatCenter.findOne({
+    where: {
+      id_configuracion,
+      external_source: source,
+      external_id: nuevoId,
+      eliminado: 0,
+      id: { [OpSeq.ne]: id_producto },
+    },
+    attributes: ['id', 'nombre'],
+  });
+  if (repetido) {
+    return next(
+      new AppError(
+        `Ya tienes otro producto con el ID ${nuevoId} de ${fuente}: "${repetido.nombre}". Elimínalo primero o revisa el ID.`,
+        409,
+      ),
+    );
+  }
+
+  const enProveedor = await nombreEnProveedor({
+    id_configuracion,
+    source,
+    external_id: nuevoId,
+  });
+  if (enProveedor.verificado && enProveedor.existe === false && !forzar) {
+    return res.status(400).json({
+      status: 'fail',
+      code: 'ID_EXTERNO_NO_EXISTE',
+      message: `No encontramos ningún producto con el ID ${nuevoId} en tu cuenta de ${fuente}. Revísalo antes de guardar.`,
+    });
+  }
+
+  const quien = req.sessionUser || {};
+  const usuario =
+    String(quien.nombre_encargado || quien.usuario || quien.email || '')
+      .trim()
+      .slice(0, 255) || null;
+
+  const t = await db.transaction();
+  try {
+    await db.query(
+      `INSERT INTO productos_external_id_historial
+         (id_producto, id_configuracion, external_source, external_id_anterior,
+          external_id_nuevo, nombre_proveedor, verificado, motivo,
+          id_sub_usuario, usuario)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          producto.id,
+          id_configuracion,
+          source,
+          anterior,
+          nuevoId,
+          enProveedor.nombre,
+          enProveedor.verificado && enProveedor.existe ? 1 : 0,
+          motivo,
+          quien.id_sub_usuario || null,
+          usuario,
+        ],
+        type: db.QueryTypes.INSERT,
+        transaction: t,
+      },
+    );
+    producto.external_id = nuevoId;
+    producto.fecha_actualizacion = new Date();
+    await producto.save({ transaction: t });
+    await t.commit();
+  } catch (e) {
+    await t.rollback();
+    if (esTablaFaltante(e)) {
+      console.error(
+        '[cambiarIdExterno] falta productos_external_id_historial_migration.sql',
+      );
+      return next(
+        new AppError(
+          'No pudimos guardar el cambio. Intenta de nuevo o escríbenos a soporte.',
+          500,
+        ),
+      );
+    }
+    throw e;
+  }
+
+  console.log(
+    `[cambiarIdExterno] cfg=${id_configuracion} producto=${producto.id} ${source} #${anterior} → #${nuevoId}` +
+      ` (${enProveedor.verificado ? (enProveedor.existe ? 'verificado' : 'forzado') : 'sin verificar'}) por ${usuario || quien.id_sub_usuario || '?'}`,
+  );
+
+  // El catálogo cacheado del kanban lleva el id del proveedor: se rehace.
+  syncCatalogoTodasColumnasConfig(id_configuracion).catch((e) =>
+    console.error(`⚠️ Error sync kanban catálogo: ${e.message}`),
+  );
+
+  return res.status(200).json({
+    status: 'success',
+    data: producto,
+    external_id_anterior: anterior,
+    nombre_proveedor: enProveedor.nombre,
+    verificado: Boolean(enProveedor.verificado && enProveedor.existe),
+    message: enProveedor.nombre
+      ? `Este producto ahora usa el ID ${nuevoId} de ${fuente} ("${enProveedor.nombre}").`
+      : `Este producto ahora usa el ID ${nuevoId} de ${fuente}.`,
+  });
+});
+
+/* Historial de ids de un producto, del más reciente al más viejo. Si no hay
+   filas, el id original es el actual (nunca se ha cambiado). */
+exports.historialIdExterno = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const id_producto = toInt(req.body?.id_producto);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!id_producto) return next(new AppError('id_producto es requerido', 400));
+
+  const producto = await ProductosChatCenter.findOne({
+    where: { id: id_producto, id_configuracion },
+    attributes: ['id', 'external_source', 'external_id'],
+  });
+  if (!producto) return next(new AppError('Producto no encontrado.', 404));
+
+  let filas = [];
+  let migracion_pendiente = false;
+  try {
+    filas = await db.query(
+      `SELECT id, external_source, external_id_anterior, external_id_nuevo,
+              nombre_proveedor, verificado, motivo, usuario, fecha
+         FROM productos_external_id_historial
+        WHERE id_producto = ?
+        ORDER BY id DESC`,
+      { replacements: [id_producto], type: db.QueryTypes.SELECT },
+    );
+  } catch (e) {
+    if (!esTablaFaltante(e)) throw e;
+    migracion_pendiente = true;
+  }
+
+  const masVieja = filas[filas.length - 1];
+  return res.status(200).json({
+    status: 'success',
+    data: filas,
+    external_id_actual: producto.external_id,
+    external_id_original: masVieja
+      ? masVieja.external_id_anterior
+      : producto.external_id,
+    migracion_pendiente,
+  });
+});

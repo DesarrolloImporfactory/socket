@@ -11,6 +11,8 @@ const { db } = require('../database/config');
 const { encryptToken, last4, decryptToken } = require('../utils/cryptoToken');
 const dropiService = require('../services/dropi.service');
 const dropiOrdersService = require('../services/dropiOrders.service');
+const dropiNovedades = require('../services/dropi_novedades.service');
+const dropiNovedadesIA = require('../services/dropi_novedades_ia.service');
 const DropiDailyMetrics = require('../models/dropi_daily_metrics.model');
 const ProductosChatCenter = require('../models/productos_chat_center.model');
 const { isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
@@ -1025,6 +1027,25 @@ exports.listNovedadesPendientes = catchAsync(async (req, res, next) => {
     objects: pagina,
   });
 
+  // El listado en vivo también alimenta el registro: así entran las
+  // novedades anteriores a que existiera y las que el webhook no trajo.
+  await dropiNovedades.registrarDesdeOrdenes({
+    id_configuracion,
+    ordenes: pagina.map((o) => ({
+      id: o.id,
+      status: o.status,
+      clasificado: classifyDropiStatus(o.status),
+      guia: o.shipping_guide,
+      transportadora: o.shipping_company || o.distribution_company?.name,
+      novedad: o.novedad_servientrega,
+      solucionadaPorUsuario: o.issue_solved_by_parent_order,
+    })),
+  });
+  const registro = await dropiNovedades.resumenPorOrdenes(
+    id_configuracion,
+    pagina.map((o) => o.id),
+  );
+
   return res.json({
     isSuccess: true,
     data: {
@@ -1036,6 +1057,8 @@ exports.listNovedadesPendientes = catchAsync(async (req, res, next) => {
         has_chat: o.has_chat,
         chat_id_cliente: o.chat_id_cliente || null,
         agent_assigned: o.agent_assigned,
+        // numero (1ª, 2ª novedad…), veces_ofrecida, requiere_asesor.
+        registro: registro.get(String(o.id)) || null,
       })),
     },
   });
@@ -1100,13 +1123,155 @@ exports.detalleNovedad = catchAsync(async (req, res, next) => {
     created_at: h.created_at,
   }));
 
+  // Dropi es la fuente de verdad de cuántas novedades tuvo el pedido.
+  const ofrecidasDropi = gestiones.filter((g) => g.solucion).length;
+  await dropiNovedades.sincronizarConGestionesDropi({
+    id_configuracion,
+    order_id,
+    totalNovedades: gestiones.length,
+    ofrecidas: ofrecidasDropi,
+  });
+  const registro = await dropiNovedades.historialDeOrden(
+    id_configuracion,
+    order_id,
+  );
+
   return res.json({
     isSuccess: true,
     data: {
       ...mapNovedadDropi(o),
       gestiones,
       estados,
+      total_novedades: gestiones.length,
+      veces_ofrecida: Math.max(ofrecidasDropi, registro.veces_ofrecida),
+      registro,
     },
+  });
+});
+
+/* Datos de la novedad que necesita la IA, sacados del detalle de Dropi. */
+async function cargarNovedadParaIA({ id_configuracion, order_id, integration }) {
+  const det = await dropiService.getOrderDetail({
+    integrationKey: getIntegrationKey(integration),
+    orderId: order_id,
+    country_code: integration.country_code,
+  });
+  const o = det?.objects || det?.data || det;
+  if (!o || !o.id) return null;
+
+  const gestiones = o.history_new_orders || [];
+  const ultima = gestiones[gestiones.length - 1] || null;
+  const [conChat] = await enrichOrdersWithChatAndAgent({
+    id_configuracion,
+    objects: [o],
+  });
+  const registro = await dropiNovedades.historialDeOrden(
+    id_configuracion,
+    order_id,
+  );
+
+  return {
+    orden: {
+      ...mapNovedadDropi(o),
+      // La API REST de Dropi entrega las fechas en hora local, sin zona.
+      fechaNovedad: ultima?.created_at
+        ? String(ultima.created_at).replace('T', ' ').slice(0, 19)
+        : null,
+    },
+    idCliente: conChat?.chat_id_cliente || null,
+    registro: {
+      totalNovedades: gestiones.length,
+      vecesOfrecida: Math.max(
+        gestiones.filter((g) => g.solution).length,
+        registro.veces_ofrecida,
+      ),
+    },
+  };
+}
+
+/* IA en modo sugerencia: propone la solución a partir del chat con el
+   cliente. No envía nada a Dropi; el asesor la revisa en el modal. */
+exports.sugerirSolucionNovedad = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const order_id = toInt(req.body?.order_id);
+  if (!id_configuracion || !order_id) {
+    return next(
+      new AppError('id_configuracion y order_id son requeridos', 400),
+    );
+  }
+
+  const integration = await getActiveIntegration(id_configuracion);
+  if (!integration) {
+    return next(
+      new AppError(
+        'No existe una integración Dropi activa para esta configuración',
+        404,
+      ),
+    );
+  }
+  if (!getIntegrationKey(integration)) {
+    return next(new AppError('Dropi key inválida o no disponible', 400));
+  }
+
+  const ctx = await cargarNovedadParaIA({
+    id_configuracion,
+    order_id,
+    integration,
+  });
+  if (!ctx) return next(new AppError('Orden no encontrada en Dropi', 404));
+
+  let sugerencia;
+  try {
+    sugerencia = await dropiNovedadesIA.sugerirSolucion({
+      id_configuracion,
+      orden: ctx.orden,
+      idCliente: ctx.idCliente,
+      registro: ctx.registro,
+    });
+  } catch (err) {
+    // Errores del negocio (sin key, sin saldo) llegan con .codigo.
+    if (err?.codigo) {
+      const e = new AppError(err.message, 400);
+      e.code = err.codigo;
+      return next(e);
+    }
+    throw err;
+  }
+
+  await dropiNovedades.registrarEvento({
+    id_configuracion,
+    order_id,
+    evento: 'sugerencia_ia',
+    origen: 'ia',
+    usuario: req.sessionUser,
+    descripcion: `IA (${sugerencia.decision}, confianza ${sugerencia.confianza}): ${sugerencia.motivo}`,
+    detalle: sugerencia,
+    requiereAsesor:
+      sugerencia.decision === 'escalar' ? `IA: ${sugerencia.motivo}` : null,
+  });
+
+  return res.json({ isSuccess: true, data: sugerencia });
+});
+
+/* Registro propio de novedades (pestaña Historial) + contadores de 30 días. */
+exports.listarRegistroNovedades = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const page = Math.max(1, toInt(req.body?.page) || 1);
+  const pageSize = Math.min(50, Math.max(1, toInt(req.body?.page_size) || 20));
+
+  const data = await dropiNovedades.listarRegistro({
+    id_configuracion,
+    estado: String(req.body?.estado || ''),
+    page,
+    pageSize,
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: { ...data, page, page_size: pageSize },
   });
 });
 
@@ -1216,14 +1381,40 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
 
-  const dropiResponse = await dropiService.saveIncidenceSolution({
-    integrationKey,
-    payload: { data: [item] },
-    country_code: integration.country_code,
-  });
+  // Para el registro: qué se envió y si salió de una sugerencia de la IA.
+  const sugeridaPorIA = req.body?.sugerida_por_ia === true;
+  const tipo_solucion =
+    accion === 'devolver'
+      ? 'devolucion'
+      : item.selectValueConfirma?.value === 2
+        ? 'ajustar_recaudo'
+        : 'volver_a_ofrecer';
+  const registrarFallo = (mensaje) =>
+    dropiNovedades.registrarEvento({
+      id_configuracion,
+      order_id,
+      evento: 'error_dropi',
+      origen: 'asesor',
+      usuario: req.sessionUser,
+      descripcion: `Dropi rechazó la solución: ${mensaje}`,
+      detalle: { enviado: item },
+    });
+
+  let dropiResponse;
+  try {
+    dropiResponse = await dropiService.saveIncidenceSolution({
+      integrationKey,
+      payload: { data: [item] },
+      country_code: integration.country_code,
+    });
+  } catch (err) {
+    await registrarFallo(err?.message || 'error de Dropi');
+    throw err;
+  }
 
   // Dropi puede responder 200 con isSuccess=false: no se da por solventada.
   if (dropiResponse?.isSuccess === false) {
+    await registrarFallo(dropiResponse?.message || 'no aceptó la solución');
     return next(
       new AppError(
         `Dropi: ${dropiResponse?.message || 'no aceptó la solución'}`,
@@ -1231,6 +1422,25 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
       ),
     );
   }
+
+  await dropiNovedades.registrarSolucion({
+    id_configuracion,
+    order_id,
+    accion,
+    tipo_solucion,
+    solucion: item.solution,
+    usuario: req.sessionUser,
+    payload: {
+      enviado: item,
+      sugerida_por_ia: sugeridaPorIA,
+      ia_editada: sugeridaPorIA && req.body?.ia_editada === true,
+    },
+    datosOrden: {
+      transportadora: txt(req.body?.transportadora) || null,
+      novedad: txt(req.body?.novedad) || null,
+      guia: txt(req.body?.guia) || null,
+    },
+  });
 
   return res.json({
     isSuccess: true,
