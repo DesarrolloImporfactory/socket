@@ -31,6 +31,7 @@ router.post('/apagar', requireSuperAdmin, ctrl.apagar); // apaga la telefonía y
 router.post('/cuenta/quitar', requireSuperAdmin, ctrl.quitarCuenta); // borra la fila (apagada y en cero)
 router.post('/cuenta', requireSuperAdmin, ctrl.configurarCuenta); // caller_id, tarifa, activo (comprueba el número)
 router.post('/cuenta/comprobar-numero', requireSuperAdmin, ctrl.comprobarNumero); // ¿verificado en Zadarma?
+router.get('/cuenta/compartibles', requireSuperAdmin, ctrl.compartibles); // conexiones del mismo dueño con las que puede compartir saldo
 router.get('/diagnostico', requireSuperAdmin, ctrl.diagnostico);
 router.post('/instalar', requireSuperAdmin, ctrl.instalar); // registra webhook + grabación
 router.get('/maestra', requireSuperAdmin, ctrl.maestraEstado); // llaves guardadas + saldo Zadarma
