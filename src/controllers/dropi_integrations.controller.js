@@ -1061,6 +1061,9 @@ exports.listNovedadesPendientes = catchAsync(async (req, res, next) => {
         agent_assigned: o.agent_assigned,
         // numero (1ª, 2ª novedad…), veces_ofrecida, requiere_asesor.
         registro: registro.get(String(o.id)) || null,
+        // País de la integración: el formulario de solventar solo está
+        // verificado para Ecuador (ver TRANSPORTADORAS_VERIFICADAS).
+        pais: String(integration.country_code || '').toUpperCase(),
       })),
     },
   });
@@ -1277,6 +1280,34 @@ exports.listarRegistroNovedades = catchAsync(async (req, res, next) => {
   });
 });
 
+/* Transportadoras cuyo formulario de solución está copiado del panel de
+   Dropi y probado. Cada transportadora (y cada país) pide campos distintos y
+   con otro significado: en COORDI de México, por ejemplo, la opción "1" es
+   "Entregar hoy" y exige dirección. Enviar el payload de Ecuador a una que no
+   está en esta lista puede registrar una solución equivocada, así que esas se
+   siguen solventando desde el panel de Dropi hasta que se agreguen aquí (y en
+   camposPorTransportadora del front). */
+const PAIS_VERIFICADO = 'EC';
+const TRANSPORTADORAS_VERIFICADAS = new Set([
+  'GINTRACOM',
+  'SERVIENTREGA',
+  'LAARCOURIER',
+  'LAAR',
+  'URBANO',
+  'VELOCES',
+]);
+
+function motivoNoSolventable({ pais, transportadora }) {
+  if (String(pais || '').toUpperCase() !== PAIS_VERIFICADO) {
+    return 'Por ahora las novedades de este país se solventan desde el panel de Dropi.';
+  }
+  const t = String(transportadora || '').toUpperCase().replace(/s+/g, '');
+  if (t && !TRANSPORTADORAS_VERIFICADAS.has(t)) {
+    return `Por ahora las novedades de ${transportadora} se solventan desde el panel de Dropi.`;
+  }
+  return null;
+}
+
 /* Fecha de hoy en Ecuador (YYYY-MM-DD). */
 function hoyEcuador() {
   return new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
@@ -1382,6 +1413,12 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
   if (!integrationKey || !String(integrationKey).trim()) {
     return next(new AppError('Dropi key inválida o no disponible', 400));
   }
+
+  const noSolventable = motivoNoSolventable({
+    pais: integration.country_code,
+    transportadora: req.body?.transportadora,
+  });
+  if (noSolventable) return next(new AppError(noSolventable, 400));
 
   // Para el registro: qué se envió y si salió de una sugerencia de la IA.
   const sugeridaPorIA = req.body?.sugerida_por_ia === true;
