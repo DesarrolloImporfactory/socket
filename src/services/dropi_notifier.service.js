@@ -729,6 +729,8 @@ async function upsertOrders(cacheInsertFields, orders) {
           transportadora: o.shipping_company || o.distribution_company?.name,
           novedad: o.novedad_servientrega,
           solucionadaPorUsuario: o.issue_solved_by_parent_order,
+          telefono: o.phone,
+          cliente: [o.name, o.surname].filter(Boolean).join(' '),
         })),
       });
     }

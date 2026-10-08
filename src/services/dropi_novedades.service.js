@@ -28,6 +28,7 @@
  */
 
 const { db } = require('../database/config');
+const notificaciones = require('./notificaciones.service');
 
 const FINALES = new Set(['entregada', 'devolucion', 'cancelada', 'indemnizada']);
 const EN_RUTA = new Set(['en_transito', 'en_reparto', 'retiro_agencia']);
@@ -97,9 +98,55 @@ async function agregarEvento({
   );
 }
 
+/* Avisa por la campana que una novedad la tiene que ver una persona: al
+   encargado del chat de ese cliente y a los administradores de la cuenta (sin
+   encargado, solo a los administradores). Una vez por novedad y por usuario
+   (clave "novedad:<id>"). Best-effort: notificaciones.service no lanza. */
+async function avisarRequiereAsesor({ fila, motivo, telefono, cliente }) {
+  const cfg = Number(fila.id_configuracion);
+  let tel = telefono || null;
+  let nombre = cliente || null;
+  if (!tel) {
+    // El evento no traía el teléfono: se toma del cache de órdenes.
+    const [o] = await db.query(
+      `SELECT phone, name, surname FROM dropi_orders_cache
+        WHERE id_configuracion = ? AND dropi_order_id = ? LIMIT 1`,
+      { replacements: [cfg, fila.dropi_order_id], type: db.QueryTypes.SELECT },
+    );
+    tel = o?.phone || null;
+    nombre = nombre || [o?.name, o?.surname].filter(Boolean).join(' ') || null;
+  }
+
+  const dest = await notificaciones.destinatariosDeChat({
+    id_configuracion: cfg,
+    telefono: tel,
+  });
+  if (!dest.ids.length) return;
+
+  await notificaciones.notificar({
+    destinatarios: dest.ids,
+    id_configuracion: cfg,
+    tipo: 'novedad_dropi',
+    titulo: `Novedad requiere asesor · Pedido #${fila.dropi_order_id}`,
+    mensaje: [fila.novedad, motivo].filter(Boolean).join(' — '),
+    url: `/novedades-dropi?orden=${fila.dropi_order_id}`,
+    datos: {
+      order_id: fila.dropi_order_id,
+      guia: fila.shipping_guide || null,
+      transportadora: fila.transportadora || null,
+      numero: fila.numero,
+      cliente: nombre,
+      // Dueño del chat: a quién le toca gestionarla. null = sin encargado.
+      encargado: dest.encargado?.nombre || null,
+      id_cliente_chat: dest.id_cliente,
+    },
+    clave: `novedad:${fila.id}`,
+  });
+}
+
 /* Abre la novedad número `numero` de la orden. INSERT IGNORE: el webhook y el
    cron pueden ver la misma orden a la vez y la clave única evita duplicarla. */
-async function abrirNovedad({ id_configuracion, orden, numero }) {
+async function abrirNovedad({ id_configuracion, orden, numero, avisar = true }) {
   const reincide = numero > 1;
   const motivo = reincide
     ? `Reincidencia: es la ${ordinal(numero)} novedad del pedido (ya se volvió a ofrecer ${numero - 1} ${numero - 1 === 1 ? 'vez' : 'veces'})`
@@ -146,6 +193,14 @@ async function abrirNovedad({ id_configuracion, orden, numero }) {
       : `Novedad detectada: ${orden.novedad || 'sin detalle'}`,
     detalle: { status: orden.status, transportadora: orden.transportadora },
   });
+  if (reincide && avisar) {
+    await avisarRequiereAsesor({
+      fila,
+      motivo,
+      telefono: orden.telefono,
+      cliente: orden.cliente,
+    });
+  }
   return fila;
 }
 
@@ -171,7 +226,8 @@ async function cerrarNovedad({ fila, resultado, descripcion }) {
  * Lo llaman el webhook y el cron (vía upsertOrders) y el listado en vivo.
  *
  * ordenes: [{ id, status, clasificado, guia, transportadora, novedad,
- *             solucionadaPorUsuario }]
+ *             solucionadaPorUsuario, telefono, cliente }]
+ *   - telefono / cliente: del pedido; sirven para avisar al encargado del chat
  *   - clasificado: resultado de classifyDropiStatus(status)
  *   - solucionadaPorUsuario: issue_solved_by_parent_order de Dropi (true /
  *     false / undefined si el origen no lo trae)
@@ -335,6 +391,8 @@ async function registrarSolucion({
           id_configuracion: cfg,
           orden: { id: order_id, status: 'NOVEDAD', ...(datosOrden || {}) },
           numero: Number(m?.n || 0) + 1,
+          // La está solventando alguien ahora mismo: no hace falta avisarle.
+          avisar: false,
         });
         if (!fila) return;
       }
@@ -391,7 +449,7 @@ async function registrarEvento({
     'registrarEvento',
     async () => {
       const [fila] = await db.query(
-        `SELECT id FROM dropi_novedades
+        `SELECT * FROM dropi_novedades
           WHERE id_configuracion = ? AND dropi_order_id = ?
           ORDER BY numero DESC LIMIT 1`,
         { replacements: [cfg, order_id], type: db.QueryTypes.SELECT },
@@ -407,6 +465,9 @@ async function registrarEvento({
             type: db.QueryTypes.UPDATE,
           },
         );
+        if (fila.estado !== 'cerrada') {
+          await avisarRequiereAsesor({ fila, motivo: requiereAsesor });
+        }
       }
       await agregarEvento({
         id_novedad: fila.id,
@@ -440,7 +501,7 @@ async function sincronizarConGestionesDropi({
     'sincronizarConGestionesDropi',
     async () => {
       const [fila] = await db.query(
-        `SELECT id, requiere_asesor FROM dropi_novedades
+        `SELECT * FROM dropi_novedades
           WHERE id_configuracion = ? AND dropi_order_id = ? AND estado <> 'cerrada'
           ORDER BY numero DESC LIMIT 1`,
         { replacements: [cfg, order_id], type: db.QueryTypes.SELECT },
@@ -460,6 +521,7 @@ async function sincronizarConGestionesDropi({
         descripcion: motivo,
         detalle: { totalNovedades, ofrecidas },
       });
+      await avisarRequiereAsesor({ fila, motivo });
     },
     undefined,
   );

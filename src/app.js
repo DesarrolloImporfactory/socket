@@ -402,6 +402,8 @@ app.use('/api/v1/webhook_meta', webhook_meta_whatsappRouter);
 app.use('/api/v1/instagram', instagramRouter);
 app.use('/api/v1/dropi_integrations', droppiIntegrationsRouter);
 app.use('/api/v1/dropi_stats', require('./routes/dropi_stats.routes'));
+// Notificaciones internas (campana del encabezado).
+app.use('/api/v1/notificaciones', require('./routes/notificaciones.routes'));
 app.use('/api/v1/cotizaciones', cotizacionesRouter);
 app.use('/api/v1/dropi_webhook', dropiWebhookRouter);
 app.use('/api/v1/aliclik_integrations', aliclikIntegrationsRouter);
