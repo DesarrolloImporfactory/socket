@@ -415,6 +415,28 @@ async function cuentaDe(id_configuracion, { crear = false } = {}) {
   return cuenta;
 }
 
+/**
+ * Cuenta de la que SALE el saldo de una conexión (2026-10-08). Varias
+ * conexiones del mismo dueño pueden compartir una sola bolsa: la fila de la
+ * conexión apunta con id_configuracion_saldo a la titular, y es la titular
+ * la que tiene el saldo y el precio por minuto. Si no comparte (o la titular
+ * ya no existe), es su propia fila. activo y caller_id siguen siendo los de
+ * cada conexión: aquí solo se resuelve el dinero.
+ */
+async function cuentaSaldoDe(id_configuracion, { crear = false } = {}) {
+  const propia = await cuentaDe(id_configuracion, { crear });
+  if (!propia) return null;
+  const idSaldo = Number(propia.id_configuracion_saldo) || 0;
+  if (!idSaldo || idSaldo === Number(id_configuracion)) return propia;
+  const titular = await TelefoniaCuentas.findByPk(idSaldo);
+  return titular || propia;
+}
+
+/** "· conexión #N" para el detalle de un movimiento que se asienta en la
+ *  titular pero lo originó otra conexión que comparte su saldo. */
+const detalleCompartido = (detalle, id_origen, id_saldo) =>
+  Number(id_origen) !== Number(id_saldo) ? `${detalle || ''}${detalle ? ' ' : ''}· conexión #${id_origen}` : detalle;
+
 /** ¿La cuenta (id_usuario) tiene alguna conexión con telefonía activa? Decide
  *  si al asesor se le carga el widget y se le asigna extensión. */
 async function cuentaTieneTelefonia(id_usuario) {
@@ -427,32 +449,87 @@ async function cuentaTieneTelefonia(id_usuario) {
   return !!row;
 }
 
-async function movimiento({ id_configuracion, tipo, centavos, id_llamada = null, id_sub_usuario = null, detalle = null }) {
-  const cuenta = await cuentaDe(id_configuracion, { crear: true });
+/** Asienta un movimiento en la cuenta de la que sale el saldo de la
+ *  conexión (la titular si comparte). Con `propia: true` se obliga a mover la
+ *  fila de ESA conexión aunque comparta: lo usa el traslado del saldo al
+ *  empezar a compartir. */
+async function movimiento({ id_configuracion, tipo, centavos, id_llamada = null, id_sub_usuario = null, detalle = null, propia = false }) {
+  const cuenta = propia ? await cuentaDe(id_configuracion, { crear: true }) : await cuentaSaldoDe(id_configuracion, { crear: true });
   const nuevo = Number(cuenta.saldo_centavos) + Number(centavos);
   await cuenta.update({ saldo_centavos: nuevo, updated_at: new Date() });
   await TelefoniaMovimientos.create({
-    id_configuracion,
+    id_configuracion: cuenta.id_configuracion,
     tipo,
     centavos,
     saldo_despues_centavos: nuevo,
     id_llamada,
     id_sub_usuario,
-    detalle,
+    detalle: detalleCompartido(detalle, id_configuracion, cuenta.id_configuracion),
   });
   return nuevo;
 }
 
+/** Recarga. Si la conexión comparte saldo, el dinero entra a la titular. */
 const recargar = (id_configuracion, centavos, id_sub_usuario, detalle) =>
   movimiento({ id_configuracion, tipo: 'recarga', centavos: Math.abs(centavos), id_sub_usuario, detalle });
 
 /** Quita saldo a una conexión (hasta dejarla en cero): libera la cobertura
- *  en Zadarma, por ejemplo al terminar pruebas o si se cargó de más. */
+ *  en Zadarma, por ejemplo al terminar pruebas o si se cargó de más.
+ *  Solo toca la fila PROPIA: a una conexión que comparte no se le retira
+ *  nada (el saldo es de la titular y de las demás que lo comparten). */
 async function retirar(id_configuracion, centavos, id_sub_usuario, detalle) {
   const cuenta = await cuentaDe(id_configuracion, { crear: true });
   const monto = Math.min(Math.abs(centavos), Number(cuenta.saldo_centavos));
   if (monto <= 0) return Number(cuenta.saldo_centavos);
-  return movimiento({ id_configuracion, tipo: 'retiro', centavos: -monto, id_sub_usuario, detalle });
+  return movimiento({ id_configuracion, tipo: 'retiro', centavos: -monto, id_sub_usuario, detalle, propia: true });
+}
+
+/**
+ * Hace que una conexión use el saldo de otra (titular) del mismo dueño, o
+ * vuelva a saldo propio (id_titular = null). Si al empezar a compartir la
+ * conexión todavía tenía saldo propio, se traslada a la titular para que no
+ * quede dinero "muerto" en una fila que ya no se consulta.
+ */
+async function compartirSaldo(id_configuracion, id_titular, id_sub_usuario) {
+  const cuenta = await cuentaDe(id_configuracion, { crear: true });
+  const idTitular = Number(id_titular) || null;
+  if (idTitular && idTitular !== Number(id_configuracion)) {
+    const [propiaCfg] = await db.query(`SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`, {
+      replacements: [id_configuracion],
+      type: db.QueryTypes.SELECT,
+    });
+    const [titularCfg] = await db.query(`SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1`, {
+      replacements: [idTitular],
+      type: db.QueryTypes.SELECT,
+    });
+    const fallo = (m) => {
+      const e = new Error(m);
+      e.status = 400;
+      throw e;
+    };
+    if (!propiaCfg || !titularCfg || Number(propiaCfg.id_usuario) !== Number(titularCfg.id_usuario)) {
+      fallo('Solo se puede compartir el saldo entre conexiones del mismo dueño');
+    }
+    const titular = await cuentaDe(idTitular);
+    if (!titular) fallo(`La conexión #${idTitular} no tiene telefonía: dale saldo primero`);
+    if (Number(titular.id_configuracion_saldo)) {
+      fallo(`La conexión #${idTitular} ya usa el saldo de #${titular.id_configuracion_saldo}: comparte directamente de esa`);
+    }
+    const seguidoras = await TelefoniaCuentas.count({ where: { id_configuracion_saldo: id_configuracion } });
+    if (seguidoras > 0) {
+      fallo(`Otras ${seguidoras} conexión(es) usan el saldo de #${id_configuracion}; primero quítales el saldo compartido`);
+    }
+    // Traslado del saldo propio que quedaba, para que no se pierda.
+    const sobrante = Number(cuenta.saldo_centavos);
+    if (sobrante > 0) {
+      await movimiento({ id_configuracion, tipo: 'retiro', centavos: -sobrante, id_sub_usuario, detalle: `Traslado al saldo compartido de #${idTitular}`, propia: true });
+      await movimiento({ id_configuracion: idTitular, tipo: 'recarga', centavos: sobrante, id_sub_usuario, detalle: `Traslado del saldo de #${id_configuracion} (pasa a compartir)` });
+    }
+    await cuenta.update({ id_configuracion_saldo: idTitular, resto_centavos: 0, updated_at: new Date() });
+    return { id_configuracion_saldo: idTitular, trasladado_centavos: sobrante };
+  }
+  await cuenta.update({ id_configuracion_saldo: null, updated_at: new Date() });
+  return { id_configuracion_saldo: null, trasladado_centavos: 0 };
 }
 
 /** Centavos que cuesta una llamada de N segundos a la tarifa de la cuenta
@@ -485,20 +562,22 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'di
     e.status = 403;
     throw e;
   }
+  // Saldo y precio salen de la bolsa (la titular si esta conexión comparte).
+  const bolsa = await cuentaSaldoDe(id_configuracion);
   /* Precio por minuto hacia ESTE destino: costo de Zadarma para ese número
      por el margen de la conexión. Sirve para exigir un minuto de saldo y
      para que el teléfono del asesor sepa cuándo cortar por saldo (a México
      alcanza para muchos más minutos que a Ecuador). Si no se puede
      consultar, se usa el precio fijo de la conexión. */
-  let tarifaDestino = Number(cuenta.tarifa_centavos_min);
+  let tarifaDestino = Number(bolsa.tarifa_centavos_min);
   try {
-    const [costo, factor] = await Promise.all([costoDestino(destino), margenDe(cuenta, id_configuracion)]);
+    const [costo, factor] = await Promise.all([costoDestino(destino), margenDe(bolsa, id_configuracion)]);
     if (costo != null && factor != null) tarifaDestino = Math.max(0.01, costo * factor);
   } catch {
     /* se queda el precio fijo */
   }
   // Mínimo un minuto de saldo para arrancar; el consumo real va por segundo.
-  if (Number(cuenta.saldo_centavos) < Math.ceil(tarifaDestino)) {
+  if (Number(bolsa.saldo_centavos) < Math.ceil(tarifaDestino)) {
     const e = new Error('Saldo insuficiente para llamar. Recarga para continuar.');
     e.status = 402;
     e.code = 'SIN_SALDO';
@@ -564,8 +643,8 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, modo = 'di
     extension: ext.extension,
     telefono: destino,
     caller_id: callerIdUsado,
-    saldo_centavos: cuenta.saldo_centavos,
-    tarifa_centavos_min: cuenta.tarifa_centavos_min,
+    saldo_centavos: bolsa.saldo_centavos,
+    tarifa_centavos_min: bolsa.tarifa_centavos_min,
     // Precio estimado por minuto hacia este destino (para el corte por saldo).
     tarifa_destino_centavos_min: Math.round(tarifaDestino * 100) / 100,
   };
@@ -812,7 +891,14 @@ async function margenDe(cuenta, id_configuracion) {
  */
 async function cobrarExacto({ id_configuracion, exacto_centavos, id_llamada, detalle, tipo = 'consumo' }) {
   return db.transaction(async (t) => {
-    const cuenta = await TelefoniaCuentas.findByPk(id_configuracion, { transaction: t, lock: t.LOCK.UPDATE });
+    // Se cobra en la bolsa: la titular si la conexión comparte saldo. La
+    // fila que se bloquea es la de la bolsa (es la que comparten todas).
+    const propia = await TelefoniaCuentas.findByPk(id_configuracion, { transaction: t });
+    const idBolsa = (propia && Number(propia.id_configuracion_saldo)) || Number(id_configuracion);
+    let cuenta = await TelefoniaCuentas.findByPk(idBolsa, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!cuenta) {
+      cuenta = propia || (await TelefoniaCuentas.findByPk(id_configuracion, { transaction: t, lock: t.LOCK.UPDATE }));
+    }
     // exacto puede ser negativo: un ajuste a favor de la conexión (se le
     // había cobrado de más con la tarifa fija y el costo real era menor).
     const total = (Number(exacto_centavos) || 0) + (Number(cuenta.resto_centavos) || 0);
@@ -822,7 +908,14 @@ async function cobrarExacto({ id_configuracion, exacto_centavos, id_llamada, det
     await cuenta.update({ saldo_centavos: saldo, resto_centavos: resto.toFixed(6), updated_at: new Date() }, { transaction: t });
     if (cargo !== 0) {
       await TelefoniaMovimientos.create(
-        { id_configuracion, tipo, centavos: -cargo, saldo_despues_centavos: saldo, id_llamada, detalle },
+        {
+          id_configuracion: cuenta.id_configuracion,
+          tipo,
+          centavos: -cargo,
+          saldo_despues_centavos: saldo,
+          id_llamada,
+          detalle: detalleCompartido(detalle, id_configuracion, cuenta.id_configuracion),
+        },
         { transaction: t },
       );
     }
@@ -838,7 +931,8 @@ async function cobrarExacto({ id_configuracion, exacto_centavos, id_llamada, det
  */
 async function ajustarACostoReal(fila, { costo_zadarma_usd, from = null, margen } = {}) {
   if (costo_zadarma_usd == null) return null;
-  const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
+  // Precio y saldo de la bolsa (la titular si la conexión comparte).
+  const cuenta = await cuentaSaldoDe(fila.id_configuracion, { crear: true });
   const factor = margen !== undefined ? margen : await margenDe(cuenta, fila.id_configuracion);
   if (factor == null) return null;
   // Se "reclama" la fila de forma atómica: solo un proceso hace el ajuste.
@@ -888,7 +982,8 @@ async function cerrarLlamada(
   { duracion = 0, disposition = null, grabada = false, call_id_with_rec = null, pbx_call_id = null, caller_id = null, avisar = true, costo_zadarma_usd, margen } = {},
 ) {
   const estado = estadoDe(disposition);
-  const cuenta = await cuentaDe(fila.id_configuracion, { crear: true });
+  // Precio y saldo de la bolsa (la titular si la conexión comparte).
+  const cuenta = await cuentaSaldoDe(fila.id_configuracion, { crear: true });
   // 1. Se cierra primero (atómico) y recién después se cobra: solo quien
   //    gana el cierre llega a descontar saldo.
   const [cerradas] = await TelefoniaLlamadas.update(
@@ -1088,6 +1183,8 @@ module.exports = {
   llaveWidget,
   asegurarExtension,
   cuentaDe,
+  cuentaSaldoDe,
+  compartirSaldo,
   costoReferencia,
   cuentaTieneTelefonia,
   conexionTieneTelefonia,

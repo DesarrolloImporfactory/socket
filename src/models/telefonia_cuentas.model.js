@@ -14,6 +14,12 @@ const TelefoniaCuentas = db.define(
   'telefonia_cuentas',
   {
     id_configuracion: { type: DataTypes.INTEGER, allowNull: false, primaryKey: true },
+    /** Conexión TITULAR cuyo saldo (y precio por minuto) usa esta conexión.
+     *  Varias conexiones del mismo dueño (id_usuario) comparten una sola
+     *  bolsa: las recargas y los consumos se asientan en la titular. NULL =
+     *  saldo propio. Un solo nivel (la titular no comparte de nadie).
+     *  Columna agregada a mano (telefonia_saldo_compartido_migration.sql). */
+    id_configuracion_saldo: { type: DataTypes.INTEGER, allowNull: true },
     /** Saldo en centavos de dólar. */
     saldo_centavos: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     /** Fracción de centavo que sobró del último cobro (0 ≤ resto < 1). Cada

@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 const zadarma = require('../services/zadarma.service');
 const telefoniaIA = require('../services/telefonia_ia.service');
 const TelefoniaLlamadas = require('../models/telefonia_llamadas.model');
+const TelefoniaCuentas = require('../models/telefonia_cuentas.model');
 const TelefoniaMovimientos = require('../models/telefonia_movimientos.model');
 const TelefoniaRevisiones = require('../models/telefonia_revisiones.model');
 const TelefoniaCalidad = require('../models/telefonia_calidad.model');
@@ -78,14 +79,17 @@ exports.saldo = catchAsync(async (req, res) => {
     // Sin cuenta asignada por el super admin: el chat no muestra el botón.
     return res.json({ status: 'success', data: { activo: false } });
   }
+  // El dinero sale de la bolsa (la titular si esta conexión comparte saldo).
+  const bolsa = await zadarma.cuentaSaldoDe(id_configuracion);
   return res.json({
     status: 'success',
     data: {
       activo: zadarma.configurado() && Number(cuenta.activo) === 1,
-      saldo_centavos: cuenta.saldo_centavos,
-      tarifa_centavos_min: cuenta.tarifa_centavos_min,
+      saldo_centavos: bolsa.saldo_centavos,
+      tarifa_centavos_min: bolsa.tarifa_centavos_min,
       caller_id: cuenta.caller_id,
-      minutos_disponibles: Math.floor(cuenta.saldo_centavos / cuenta.tarifa_centavos_min),
+      minutos_disponibles: Math.floor(bolsa.saldo_centavos / bolsa.tarifa_centavos_min),
+      comparte_con: Number(bolsa.id_configuracion) !== Number(id_configuracion) ? bolsa.id_configuracion : null,
     },
   });
 });
@@ -195,14 +199,16 @@ async function construirHistorial(id_configuracion, query) {
     if (res_ && res_ !== 'no_contesto') tot.resultados[res_] = (tot.resultados[res_] || 0) + 1;
   }
   const cuenta = await zadarma.cuentaDe(id_configuracion);
+  const bolsa = cuenta ? await zadarma.cuentaSaldoDe(id_configuracion) : null;
   return {
     data,
     resumen: {
       ...tot,
       por_asesor: Object.values(porAsesor).sort((a, b) => b.llamadas - a.llamadas),
-      saldo_centavos: cuenta?.saldo_centavos ?? null,
-      tarifa_centavos_min: cuenta?.tarifa_centavos_min ?? null,
+      saldo_centavos: bolsa?.saldo_centavos ?? null,
+      tarifa_centavos_min: bolsa?.tarifa_centavos_min ?? null,
       activo: cuenta ? Number(cuenta.activo) === 1 : false,
+      comparte_con: bolsa && Number(bolsa.id_configuracion) !== Number(id_configuracion) ? bolsa.id_configuracion : null,
     },
   };
 }
@@ -314,8 +320,10 @@ exports.calidad = catchAsync(async (req, res) => {
 exports.movimientos = catchAsync(async (req, res) => {
   const id_configuracion = await verificarConexion(req, res);
   if (!id_configuracion) return undefined;
+  // Si comparte saldo, los movimientos están asentados en la titular.
+  const bolsa = await zadarma.cuentaSaldoDe(id_configuracion);
   const rows = await TelefoniaMovimientos.findAll({
-    where: { id_configuracion },
+    where: { id_configuracion: bolsa ? bolsa.id_configuracion : id_configuracion },
     order: [['id', 'DESC']],
     limit: 200,
   });
@@ -367,9 +375,12 @@ exports.recargar = catchAsync(async (req, res) => {
      Zadarma tiene que caber en el saldo de la cuenta maestra; si no, un
      cliente con saldo en ChatCenter vería "puedes llamar" y la llamada se
      cortaría. Antes era solo un aviso. */
-  const cuenta = await zadarma.cuentaDe(id_configuracion, { crear: true });
+  // Si la conexión comparte saldo, la recarga entra a la titular y se evalúa
+  // con el precio por minuto de la titular.
+  await zadarma.cuentaDe(id_configuracion, { crear: true });
+  const cuenta = await zadarma.cuentaSaldoDe(id_configuracion);
   const [cfg] = await db.query(`SELECT pais FROM configuraciones WHERE id = ? LIMIT 1`, {
-    replacements: [id_configuracion],
+    replacements: [cuenta.id_configuracion],
     type: db.QueryTypes.SELECT,
   });
   const cob = await coberturaZadarma();
@@ -405,7 +416,15 @@ exports.recargar = catchAsync(async (req, res) => {
     req.sessionUser.id_sub_usuario,
     req.body.detalle || 'Recarga manual',
   );
-  return res.json({ status: 'success', data: { saldo_centavos: saldo } });
+  return res.json({
+    status: 'success',
+    data: {
+      saldo_centavos: saldo,
+      // Conexión en la que quedó el dinero (la titular si comparte saldo).
+      id_configuracion_saldo: Number(cuenta.id_configuracion) !== id_configuracion ? cuenta.id_configuracion : null,
+      tarifa_centavos_min: cuenta.tarifa_centavos_min,
+    },
+  });
 });
 
 /** Apaga la telefonía de una conexión y le devuelve el saldo (super admin).
@@ -417,12 +436,11 @@ exports.apagar = catchAsync(async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
   }
   const cuenta = await zadarma.cuentaDe(id_configuracion, { crear: true });
-  const saldo = await zadarma.retirar(
-    id_configuracion,
-    Number.MAX_SAFE_INTEGER,
-    req.sessionUser.id_sub_usuario,
-    'Apagado desde /telefonia',
-  );
+  // Si comparte saldo, no hay nada propio que devolver: la bolsa sigue
+  // siendo de la titular y de las demás conexiones que la usan.
+  const saldo = Number(cuenta.id_configuracion_saldo)
+    ? 0
+    : await zadarma.retirar(id_configuracion, Number.MAX_SAFE_INTEGER, req.sessionUser.id_sub_usuario, 'Apagado desde /telefonia');
   await cuenta.update({ activo: 0, updated_at: new Date() });
   return res.json({ status: 'success', data: { saldo_centavos: saldo, activo: 0 } });
 });
@@ -439,6 +457,10 @@ exports.quitarCuenta = catchAsync(async (req, res) => {
   if (Number(cuenta.saldo_centavos) > 0) {
     return res.status(400).json({ status: 'error', message: 'La conexión todavía tiene saldo. Apágala primero (eso lo devuelve).' });
   }
+  const seguidoras = await TelefoniaCuentas.count({ where: { id_configuracion_saldo: id_configuracion } });
+  if (seguidoras > 0) {
+    return res.status(400).json({ status: 'error', message: `Otras ${seguidoras} conexión(es) usan el saldo de esta. Quítales el saldo compartido primero.` });
+  }
   await cuenta.destroy();
   return res.json({ status: 'success' });
 });
@@ -448,6 +470,13 @@ exports.retirar = catchAsync(async (req, res) => {
   const id_configuracion = Number(req.body.id_configuracion);
   if (!id_configuracion) {
     return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const propia = await zadarma.cuentaDe(id_configuracion);
+  if (propia && Number(propia.id_configuracion_saldo)) {
+    return res.status(400).json({
+      status: 'error',
+      message: `Esta conexión usa el saldo de #${propia.id_configuracion_saldo}. Retira desde esa conexión.`,
+    });
   }
   const centavos = req.body.centavos != null ? Math.round(Number(req.body.centavos)) : Number.MAX_SAFE_INTEGER;
   const saldo = await zadarma.retirar(
@@ -466,9 +495,24 @@ exports.configurarCuenta = catchAsync(async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
   }
   const cuenta = await zadarma.cuentaDe(id_configuracion, { crear: true });
+  // Saldo compartido: id_configuracion_saldo = conexión titular (mismo
+  // dueño) o null para volver a saldo propio. Si tenía saldo, se traslada.
+  let compartido = null;
+  if (req.body.id_configuracion_saldo !== undefined) {
+    try {
+      compartido = await zadarma.compartirSaldo(id_configuracion, req.body.id_configuracion_saldo, req.sessionUser.id_sub_usuario);
+    } catch (e) {
+      return responderError(res, e);
+    }
+    await cuenta.reload();
+  }
   const cambios = { updated_at: new Date() };
   if (req.body.caller_id !== undefined) cambios.caller_id = String(req.body.caller_id || '').replace(/\D/g, '') || null;
-  if (req.body.tarifa_centavos_min !== undefined) cambios.tarifa_centavos_min = Math.max(1, Math.round(Number(req.body.tarifa_centavos_min)));
+  // El precio por minuto es de la bolsa: en una conexión que comparte no se
+  // toca (se cambia en la titular).
+  if (req.body.tarifa_centavos_min !== undefined && !Number(cuenta.id_configuracion_saldo)) {
+    cambios.tarifa_centavos_min = Math.max(1, Math.round(Number(req.body.tarifa_centavos_min)));
+  }
   if (req.body.activo !== undefined) cambios.activo = req.body.activo ? 1 : 0;
   await cuenta.update(cambios);
   // Al guardar un número se comprueba de una vez si Zadarma lo acepta.
@@ -480,7 +524,27 @@ exports.configurarCuenta = catchAsync(async (req, res) => {
       numero = { numero: cambios.caller_id, verificado: false, detalle: e.message };
     }
   }
-  return res.json({ status: 'success', data: { cuenta, numero } });
+  return res.json({ status: 'success', data: { cuenta, numero, compartido } });
+});
+
+/** Conexiones del MISMO dueño con las que esta puede compartir saldo (super
+ *  admin): las que ya tienen telefonía y no comparten a su vez de otra. */
+exports.compartibles = catchAsync(async (req, res) => {
+  const id_configuracion = Number(req.query.id_configuracion);
+  if (!id_configuracion) {
+    return res.status(400).json({ status: 'error', message: 'Falta id_configuracion' });
+  }
+  const rows = await db.query(
+    `SELECT c.id, c.nombre_configuracion, c.telefono, tc.saldo_centavos, tc.tarifa_centavos_min, tc.activo
+     FROM configuraciones c
+     INNER JOIN telefonia_cuentas tc ON tc.id_configuracion = c.id
+     WHERE c.id_usuario = (SELECT id_usuario FROM configuraciones WHERE id = ? LIMIT 1)
+       AND c.id <> ? AND tc.id_configuracion_saldo IS NULL
+     ORDER BY tc.saldo_centavos DESC, c.id DESC`,
+    { replacements: [id_configuracion, id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const seguidoras = await TelefoniaCuentas.count({ where: { id_configuracion_saldo: id_configuracion } });
+  return res.json({ status: 'success', data: rows, seguidoras });
 });
 
 /** Vuelve a comprobar en Zadarma el número de salida de una conexión. */
@@ -577,12 +641,19 @@ exports.maestraGuardar = catchAsync(async (req, res) => {
  *  la cuenta de Zadarma puede pagar. */
 exports.cuentas = catchAsync(async (req, res) => {
   const rows = await db.query(
-    `SELECT tc.id_configuracion, c.nombre_configuracion, c.telefono, c.pais, tc.saldo_centavos,
-            tc.tarifa_centavos_min, tc.caller_id, tc.activo, tc.updated_at,
+    `SELECT tc.id_configuracion, c.nombre_configuracion, c.telefono, c.pais, c.id_usuario,
+            tc.id_configuracion_saldo, ct.nombre_configuracion AS nombre_titular,
+            /* Si comparte, el saldo y el precio que se muestran son los de la bolsa (titular). */
+            COALESCE(tt.saldo_centavos, tc.saldo_centavos) AS saldo_centavos,
+            COALESCE(tt.tarifa_centavos_min, tc.tarifa_centavos_min) AS tarifa_centavos_min,
+            tc.caller_id, tc.activo, tc.updated_at,
             tn.verificado AS numero_verificado, tn.comprobado_at AS numero_comprobado_at,
-            (SELECT COUNT(*) FROM telefonia_llamadas l WHERE l.id_configuracion = tc.id_configuracion) AS llamadas
+            (SELECT COUNT(*) FROM telefonia_llamadas l WHERE l.id_configuracion = tc.id_configuracion) AS llamadas,
+            (SELECT COUNT(*) FROM telefonia_cuentas s WHERE s.id_configuracion_saldo = tc.id_configuracion) AS seguidoras
      FROM telefonia_cuentas tc
      LEFT JOIN configuraciones c ON c.id = tc.id_configuracion
+     LEFT JOIN telefonia_cuentas tt ON tt.id_configuracion = tc.id_configuracion_saldo
+     LEFT JOIN configuraciones ct ON ct.id = tc.id_configuracion_saldo
      LEFT JOIN telefonia_numeros tn ON tn.id_configuracion = tc.id_configuracion AND tn.numero = tc.caller_id
      ORDER BY tc.updated_at DESC, tc.id_configuracion DESC`,
     { type: db.QueryTypes.SELECT },
@@ -602,7 +673,10 @@ exports.cuentas = catchAsync(async (req, res) => {
     const costo = costoPorPais[String(r.pais || 'ec').toLowerCase()];
     const costoMin = costo?.centavos_min || null;
     // Una conexión apagada no puede llamar: su saldo no compromete a Zadarma.
-    const minutos = Number(r.activo) === 1 && r.tarifa_centavos_min > 0 ? r.saldo_centavos / r.tarifa_centavos_min : 0;
+    // Una que comparte muestra el saldo de la titular: se cuenta una sola vez
+    // (en la titular), no por cada conexión que lo usa.
+    const minutos =
+      Number(r.activo) === 1 && !r.id_configuracion_saldo && r.tarifa_centavos_min > 0 ? r.saldo_centavos / r.tarifa_centavos_min : 0;
     minutosVendidos += minutos;
     if (costoMin) costoPendiente += minutos * costoMin;
     return {
@@ -617,7 +691,7 @@ exports.cuentas = catchAsync(async (req, res) => {
     status: 'success',
     data,
     resumen: {
-      asignado_centavos: rows.reduce((a, r) => a + Number(r.saldo_centavos || 0), 0),
+      asignado_centavos: rows.filter((r) => !r.id_configuracion_saldo).reduce((a, r) => a + Number(r.saldo_centavos || 0), 0),
       minutos_vendidos: Math.round(minutosVendidos),
       costo_pendiente_centavos: Math.round(costoPendiente),
       saldo_zadarma_centavos: saldoZadarmaCentavos,

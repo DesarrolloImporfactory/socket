@@ -1,12 +1,8 @@
 const Stripe = require('stripe');
 const { db } = require('../database/config');
 const referidosService = require('../services/referidos.service');
-const {
-  auditarDesdeSistema,
-} = require('../services/suspension_audit.service');
-const {
-  resolverBajaSuscripcion,
-} = require('../services/stripe_baja.service');
+const { auditarDesdeSistema } = require('../services/suspension_audit.service');
+const { resolverBajaSuscripcion } = require('../services/stripe_baja.service');
 const {
   planPorPricePeriodico,
   guardarPeriodoPago,
@@ -124,17 +120,46 @@ const resolverIdUsuarioPorStripe = async (subscriptionId, customerId) => {
        LIMIT 1`,
       { replacements: [customerId] },
     );
+    if (!u?.id_usuario) return null;
     // Por customer solo si el usuario no apunta a OTRA suscripción distinta
     if (
-      u?.id_usuario &&
-      (!u.stripe_subscription_id ||
-        !subscriptionId ||
-        u.stripe_subscription_id === subscriptionId)
+      !u.stripe_subscription_id ||
+      !subscriptionId ||
+      u.stripe_subscription_id === subscriptionId
     ) {
+      return Number(u.id_usuario);
+    }
+    // Apunta a OTRA sub. Se acepta igual si esa otra ya murió en Stripe: es
+    // la sub nueva que se le creó desde el dashboard (sin metadata) a un
+    // cliente cuya anterior se canceló. Caso 2256 (2026-10-08): la factura
+    // $0 del trial llegó con el id viejo todavía en BD, aquí se rechazaba,
+    // payment_succeeded no escribía nada y el usuario seguía 'suspendido'
+    // con la sub nueva en trialing. Si la sub guardada sigue viva, sí es un
+    // add-on u otra sub ajena y se mantiene el rechazo.
+    if (await subTerminadaEnStripe(u.stripe_subscription_id)) {
+      console.log(
+        '[stripe] id_usuario por customer (sub en BD ya terminada):',
+        {
+          id_usuario: u.id_usuario,
+          sub_en_bd: u.stripe_subscription_id,
+          sub_evento: subscriptionId,
+        },
+      );
       return Number(u.id_usuario);
     }
   }
   return null;
+};
+
+const subTerminadaEnStripe = async (subId) => {
+  try {
+    const s = await stripe.subscriptions.retrieve(subId);
+    return ['canceled', 'incomplete_expired'].includes(s?.status);
+  } catch (e) {
+    if (e?.code === 'resource_missing') return true;
+    console.log('[stripe] subTerminadaEnStripe retrieve failed:', e?.message);
+    return false;
+  }
 };
 
 // Completa la fila de transacciones_stripe_chat de una factura pagada con el
@@ -1387,7 +1412,9 @@ exports.stripeWebhook = async (req, res) => {
         // con el trial_end viejo: el login mandaba a /planes y checkPlanActivo
         // bloqueaba al vencer la gracia aunque en Stripe el trial siguiera vivo.
         // En trial, la "renovación" es el fin del trial (primer cobro).
-        const trialEndUpd = sub.trial_end ? new Date(sub.trial_end * 1000) : null;
+        const trialEndUpd = sub.trial_end
+          ? new Date(sub.trial_end * 1000)
+          : null;
         const fechaRenovacionUpd =
           status === 'trialing' && trialEndUpd ? trialEndUpd : currentPeriodEnd;
 
@@ -1564,16 +1591,22 @@ exports.stripeWebhook = async (req, res) => {
           // Si checkPlanActivo ya lo había marcado 'vencido' (marca pegajosa)
           // pero Stripe dice que sigue en trial/activo con fecha por delante,
           // se le devuelve el acceso: el vencimiento era del dato viejo.
+          // 'suspendido'/'cancelado' (los pone el rebote de cobro y la baja)
+          // también se levantan, pero solo si esta sub trae un plan real:
+          // una sub de add-on activa no revive una cuenta cuyo plan rebotó.
           if (
             (status === 'trialing' || status === 'active') &&
             fechaRenovacionUpd &&
             fechaRenovacionUpd.getTime() > Date.now()
           ) {
+            const estadosARevivir = planRealId
+              ? ['vencido', 'suspendido', 'cancelado']
+              : ['vencido'];
             await db.query(
               `UPDATE usuarios_chat_center
                SET estado = 'activo'
-               WHERE id_usuario = ? AND estado = 'vencido'`,
-              { replacements: [id_usuario] },
+               WHERE id_usuario = ? AND estado IN (?)`,
+              { replacements: [id_usuario, estadosARevivir] },
             );
           }
 
@@ -1827,7 +1860,10 @@ exports.stripeWebhook = async (req, res) => {
             invoiceId = charge?.invoice || null;
           }
         } catch (e) {
-          console.log('[stripe] no se pudo resolver el charge de la disputa:', e?.message);
+          console.log(
+            '[stripe] no se pudo resolver el charge de la disputa:',
+            e?.message,
+          );
         }
         if (invoiceId) {
           await referidosService.revertirPorFactura(invoiceId, 'contracargo');
