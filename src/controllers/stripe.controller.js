@@ -935,9 +935,31 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       const picked = await pickCurrentStripeSubscription(user.id_costumer);
       if (picked) {
         sub = picked;
+        // La sub elegida viva levanta el bloqueo de la BD. Antes este sync
+        // solo escribía id/status y dejaba estado='suspendido' y el trial_end
+        // viejo: la respuesta de aquí decía "activo" pero checkPlanActivo
+        // (que lee la fila) seguía devolviendo ACCOUNT_BLOCKED. Caso 2256
+        // (2026-10-08): sub nueva creada a mano en el dashboard tras la baja
+        // de la anterior. Mismo criterio que stripe_baja.service.
+        const subViva = ['active', 'trialing'].includes(sub.status);
+        const revivir =
+          subViva &&
+          ['suspendido', 'cancelado', 'vencido'].includes(
+            String(user.estado || '').toLowerCase(),
+          );
+        const trialEndPick = sub.trial_end
+          ? new Date(sub.trial_end * 1000)
+          : null;
+        const fechaRenPick =
+          sub.status === 'trialing' && trialEndPick
+            ? trialEndPick
+            : periodEndDeSub(sub)
+              ? new Date(periodEndDeSub(sub) * 1000)
+              : null;
         if (
           user.stripe_subscription_id !== sub.id ||
-          user.stripe_subscription_status !== sub.status
+          user.stripe_subscription_status !== sub.status ||
+          revivir
         ) {
           try {
             await db.query(
@@ -946,7 +968,10 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
                    stripe_subscription_status = ?,
                    cancel_at_period_end = ?,
                    cancel_at = ?,
-                   canceled_at = ?
+                   canceled_at = ?,
+                   trial_end = COALESCE(?, trial_end),
+                   fecha_renovacion = COALESCE(?, fecha_renovacion),
+                   estado = ?
                WHERE id_usuario = ?
                LIMIT 1`,
               {
@@ -956,10 +981,14 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
                   sub.cancel_at_period_end ? 1 : 0,
                   sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
                   sub.canceled_at ? new Date(sub.canceled_at * 1000) : null,
+                  subViva ? trialEndPick : null,
+                  subViva ? fechaRenPick : null,
+                  revivir ? 'activo' : user.estado,
                   id_usuario,
                 ],
               },
             );
+            if (revivir) estadoFinal = 'activo';
           } catch (e) {
             console.warn('DB sync fail:', e?.message);
           }
