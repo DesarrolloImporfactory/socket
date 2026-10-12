@@ -145,6 +145,7 @@ const adminBotSaludRouter = require('./routes/admin_bot_salud.routes');
 const adminAvisosRouter = require('./routes/admin_avisos.routes');
 
 const seguimientosRouter = require('./routes/seguimientos.routes');
+const recuperacionRouter = require('./routes/recuperacion.routes');
 
 const path = require('path');
 
@@ -434,6 +435,7 @@ app.use('/api/v1/admin_dashboard', adminDashboardRouter);
 app.use('/api/v1/admin_bot_salud', adminBotSaludRouter);
 app.use('/api/v1/admin_avisos', adminAvisosRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
+app.use('/api/v1/recuperacion', recuperacionRouter);
 // API pública para terceros (auth por API key) + gestión de llaves
 app.use('/api/public/v1', require('./routes/public_api.routes'));
 app.use('/api/v1/api_keys', require('./routes/api_keys.routes'));
