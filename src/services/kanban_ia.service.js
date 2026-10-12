@@ -143,6 +143,8 @@ const {
 const {
   getAjustesIA,
   esNumeroExcluido,
+  esNumeroPermitido,
+  dentroDeHorario,
   esResponsableHumano,
 } = require('../utils/ajustesIA');
 const {
@@ -983,6 +985,29 @@ async function procesarMensajeKanban(params) {
     );
     anotarSilencio(id_configuracion, id_cliente);
     return { ok: true, motivo: 'numero_excluido', silencio: true };
+  }
+
+  /* Lista blanca y horario del bot (ajustes → solo_numeros, horario). Nacieron
+     con la línea de soporte 265 (2026-10-12): de día atiende el equipo y el
+     bot cubre solo la noche; y antes de abrirlo a los clientes se prueba en la
+     línea real con unos pocos teléfonos. En los dos casos el bot calla y el
+     chat sigue su camino normal hacia el equipo. "Probar como cliente" del
+     panel se salta ambos: quien prueba quiere ver al bot contestar ya. */
+  if (!params.es_prueba) {
+    if (!esNumeroPermitido(ajustesIA, telefono)) {
+      await log(
+        `🧪 config=${id_configuracion} está en prueba (solo_numeros) y ${telefono} no está en la lista: el bot no le responde`,
+      );
+      anotarSilencio(id_configuracion, id_cliente);
+      return { ok: true, motivo: 'numero_no_permitido', silencio: true };
+    }
+    if (!dentroDeHorario(ajustesIA)) {
+      await log(
+        `🌙 Fuera del horario del bot de config=${id_configuracion}${ajustesIA.horario_invalido ? ' (horario mal escrito en ia_ajustes: se calla por seguridad)' : ''}: el bot no interviene (cliente=${id_cliente})`,
+      );
+      anotarSilencio(id_configuracion, id_cliente);
+      return { ok: true, motivo: 'fuera_de_horario', silencio: true };
+    }
   }
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
@@ -1893,6 +1918,50 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── 6.9 Soporte Expertos (ajustes → soporte_expertos) ────
+     La línea de soporte de la 265 no vende: contesta con datos. Antes de
+     llamar al modelo se arma lo que necesita para no inventar — la carga del
+     cliente buscada por SU teléfono, las fichas de la base más cercanas a lo
+     que escribió y qué adjuntos llegaron — y, después, la respuesta pasa por
+     una guardia (paso 9.5). El motor no tiene llamadas a funciones, así que
+     entra como contexto del turno, igual que la orden de Dropi del 6.5.
+     Sin el ajuste este bloque no corre: ninguna otra cuenta cambia. Si algo
+     falla acá el turno sigue como siempre, sin el contexto extra. */
+  let turnoExpertos = null;
+  if (ajustesIA.soporte_expertos) {
+    try {
+      const { prepararTurno } = require('../utils/soporteExpertos/turno');
+      turnoExpertos = await prepararTurno({
+        mensaje,
+        telefono,
+        tipo_mensaje: params.tipo_mensaje,
+        id_configuracion,
+        id_cliente,
+        /* La carga se busca por el número de WhatsApp del remitente, y eso
+           solo vale cuando el número lo entrega Meta. Dos casos en que NO se
+           consulta (el bot pide la marca o la cotización para logística):
+           - Instagram o Messenger: no hay teléfono.
+           - «Probar como cliente» (wamid.PANEL…): el teléfono lo escribe quien
+             usa el panel. Consultar ahí sería dejar que cualquiera con sesión
+             vea la carga de un número ajeno con solo teclearlo. */
+        opciones:
+          canal.source === 'wa' && !params.es_prueba
+            ? ajustesIA.soporte_expertos
+            : { ...ajustesIA.soporte_expertos, cargas: false },
+        log,
+      });
+      if (turnoExpertos.bloque) bloqueContexto += `${turnoExpertos.bloque}\n\n`;
+      // El mensaje como lo tiene que ver el modelo: con sus adjuntos nombrados
+      // en vez del relleno genérico de «no se puede leer».
+      if (turnoExpertos.mensaje) mensajeFinal = turnoExpertos.mensaje;
+    } catch (eExp) {
+      /* Sin contexto el turno sigue, pero NO sin guardia: el paso 9.5 revisa
+         igual, con los hechos mínimos (solo los textos fijos). */
+      turnoExpertos = null;
+      await log(`⚠️ soporte_expertos (contexto): ${eExp.message}`).catch(() => {});
+    }
+  }
+
   // ── 7. Construir input / enviar al thread ─────────────────
   let inputFinal = mensajeFinal;
 
@@ -2422,6 +2491,42 @@ async function procesarMensajeKanban(params) {
       `🧹 Sanitizador aplicado. Antes: ${respuestaCruda.slice(0, 200)}`,
     );
     await log(`🧹 Después: ${respuestaRaw.slice(0, 200)}`);
+  }
+
+  /* ── 9.5 Soporte Expertos: la guardia ─────────────────────
+     Cifra, plazo o enlace que no sale de un dato leído, presentarse como
+     persona, un marcador sin llenar: no se manda; sale el texto seguro del
+     turno. Voseo y cargos internos se corrigen. Ver
+     utils/soporteExpertos/guardia.js. */
+  if (ajustesIA.soporte_expertos?.guardia) {
+    try {
+      const {
+        revisarTurno,
+        hechosDeEmergencia,
+      } = require('../utils/soporteExpertos/turno');
+      // Si el 6.9 falló no hay hechos del turno: se revisa con los mínimos.
+      const rev = revisarTurno(
+        respuestaRaw,
+        turnoExpertos?.hechos || hechosDeEmergencia(mensaje),
+      );
+      if (rev.cambiada) {
+        await log(
+          `🛡️ soporte_expertos: respuesta ${rev.corregida ? 'corregida' : 'REEMPLAZADA por el texto seguro'} ` +
+            `(${rev.motivos.join('; ')}) cliente=${id_cliente}. Antes: ${respuestaRaw.slice(0, 300)}`,
+        ).catch(() => {});
+        respuestaRaw = rev.texto;
+      }
+    } catch (eGuardia) {
+      /* La guardia no pudo revisar: lo que no se revisó no se manda. Sale el
+         texto seguro del turno (o el paso a asesor). Si ni eso se puede
+         cargar, el error sube y el turno termina sin enviar nada. */
+      await log(
+        `⚠️ soporte_expertos (guardia): ${eGuardia.message} — se manda el texto seguro en lugar de la respuesta sin revisar`,
+      ).catch(() => {});
+      respuestaRaw =
+        turnoExpertos?.hechos?.textoSeguro ||
+        require('../utils/soporteExpertos/textos').MENSAJE_ASESOR;
+    }
   }
 
   /* ── 9.6 Total del pedido contra el catálogo ──

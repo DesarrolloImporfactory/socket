@@ -1,0 +1,843 @@
+[
+ {
+  "nombre": "borrador: no es una carga",
+  "esperado": {
+   "paso": 0,
+   "paso_nombre": null,
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 0,
+    "recibidas": 0,
+    "pendientes": [],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": null,
+   "avisos": [
+    "La cotización está en borrador: todavía no es una compra. No informes estado de carga; pásalo a Pricing."
+   ]
+  }
+ },
+ {
+  "nombre": "anulada",
+  "esperado": {
+   "paso": 0,
+   "paso_nombre": null,
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 0,
+    "pendientes": [
+     "EC-1020001"
+    ],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": null,
+   "avisos": [
+    "La cotización figura como anulado. No informes estado de carga; pásalo a Pricing."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 1 sin marcas",
+  "esperado": {
+   "paso": 1,
+   "paso_nombre": "Cotización registrada",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 0,
+    "recibidas": 0,
+    "pendientes": [],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu cotización N.º 103 está registrada. Todavía no tenemos registrada la llegada de tu mercadería a nuestra bodega en China. Cuando llegue, te aviso por este chat.",
+   "avisos": [
+    "La cotización no tiene marcas de envío registradas. Confírmalo con Pricing antes de informar."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 1 con una marca sin recibir",
+  "esperado": {
+   "paso": 1,
+   "paso_nombre": "Cotización registrada",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 0,
+    "pendientes": [
+     "EC-1040001"
+    ],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu cotización N.º 104 está registrada. Todavía no tenemos registrada la llegada de tu mercadería a nuestra bodega en China. Cuando tu proveedor la entregue rotulada con tu marca de envío (EC-1040001), te aviso por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 1 con dos marcas sin recibir",
+  "esperado": {
+   "paso": 1,
+   "paso_nombre": "Cotización registrada",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 2,
+    "recibidas": 0,
+    "pendientes": [
+     "EC-1050001",
+     "EC-1050002"
+    ],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu cotización N.º 105 está registrada. Todavía no tenemos registrada la llegada de tu mercadería a nuestra bodega en China. Cuando tu proveedor la entregue rotulada con tu marca de envío (EC-1050001 y EC-1050002), te aviso por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 2 completa, una marca con cajas",
+  "esperado": {
+   "paso": 2,
+   "paso_nombre": "Recibido en China",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 12
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, ya recibimos tu mercadería en nuestra bodega de China: 12 cajas con la marca EC-1060001. Está a la espera de contenedor; apenas se le asigne uno, te lo confirmo por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 2 completa, una caja",
+  "esperado": {
+   "paso": 2,
+   "paso_nombre": "Recibido en China",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 1
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, ya recibimos tu mercadería en nuestra bodega de China: 1 caja con la marca EC-1070001. Está a la espera de contenedor; apenas se le asigne uno, te lo confirmo por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 2 incompleta",
+  "esperado": {
+   "paso": 2,
+   "paso_nombre": "Recibido en China",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 3,
+    "recibidas": 1,
+    "pendientes": [
+     "EC-1080002",
+     "EC-1080003"
+    ],
+    "cajas": 8
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, en nuestra bodega de China ya recibimos 1 de tus 3 marcas de envío (8 cajas). Falta por llegar: EC-1080002 y EC-1080003. Cuando esté completa pasa al siguiente contenedor y te aviso por aquí.",
+   "avisos": [
+    "Recepción incompleta: falta EC-1080002 y EC-1080003. Sugiérele al cliente que confirme el envío con su proveedor."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 2 recibida por subestado, sin fecha",
+  "esperado": {
+   "paso": 2,
+   "paso_nombre": "Recibido en China",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 3
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, ya recibimos tu mercadería en nuestra bodega de China: 3 cajas con la marca EC-1090001. Está a la espera de contenedor; apenas se le asigne uno, te lo confirmo por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 3 contenedor nuevo",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-01",
+    "estado": "generado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1100001 ya está asignada al contenedor EC-PRUEBA-01. Te aviso por este chat cuando salga hacia Ecuador.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 3 contenedor viejo (dato dudoso)",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-02",
+    "estado": "cerrado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": true,
+   "texto_cliente": null,
+   "avisos": [
+    "Este contenedor figura sin salir desde el 20 de agosto: el estado del sistema puede estar desactualizado. No informes con este dato; pide el estado real a Logística y responde con eso."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 3 a los 30 días justos (todavía no es dudoso)",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-03",
+    "estado": "borrador",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1120001 ya está asignada al contenedor EC-PRUEBA-03. Te aviso por este chat cuando salga hacia Ecuador.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 3 a los 31 días sin fecha del contenedor (usa la de asignación)",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-04",
+    "estado": "generado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": true,
+   "texto_cliente": null,
+   "avisos": [
+    "Este contenedor figura sin salir desde el 11 de septiembre: el estado del sistema puede estar desactualizado. No informes con este dato; pide el estado real a Logística y responde con eso."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 3 parcial",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-05",
+    "estado": "generado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 2,
+    "recibidas": 2,
+    "pendientes": [],
+    "cajas": 7
+   },
+   "entregada": false,
+   "parcial": true,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, una parte de tu carga de la cotización N.º 114 ya está asignada al contenedor EC-PRUEBA-05. Te aviso por este chat cuando salga hacia Ecuador.",
+   "avisos": [
+    "Solo una parte de esta cotización está en contenedor; el resto sigue en la bodega de China."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 4 con fecha estimada",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-06",
+    "estado": "entransito",
+    "fecha_estimada": "2026-10-24",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-06, donde viaja tu carga EC-1150001, ya está en tránsito hacia Ecuador. La fecha estimada de llegada que tenemos registrada es el 24 de octubre; es una estimación y puede moverse.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 4 sin fecha estimada",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-07",
+    "estado": "entransito",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-07, donde viaja tu carga EC-1160001, ya está en tránsito hacia Ecuador. Todavía no tengo una fecha estimada confirmada; apenas el sistema la muestre, te escribo.",
+   "avisos": [
+    "No hay fecha estimada en el sistema. No des una fecha de memoria: si el cliente insiste, abre un caso a Logística."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 4 con fecha 0000",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-08",
+    "estado": "entransito",
+    "fecha_estimada": "0000-00-00",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-08, donde viaja tu carga EC-1170001, ya está en tránsito hacia Ecuador. Todavía no tengo una fecha estimada confirmada; apenas el sistema la muestre, te escribo.",
+   "avisos": [
+    "No hay fecha estimada en el sistema. No des una fecha de memoria: si el cliente insiste, abre un caso a Logística."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 4 a México, varias marcas",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "MX-PRUEBA-09",
+    "estado": "entransito",
+    "fecha_estimada": "2026-11-03 00:00:00",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 2,
+    "recibidas": 2,
+    "pendientes": [],
+    "cajas": 9
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor MX-PRUEBA-09, donde viaja tu carga de la cotización N.º 118, ya está en tránsito hacia México. La fecha estimada de llegada que tenemos registrada es el 3 de noviembre; es una estimación y puede moverse.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 5 aduana, con estimada (no se nombra)",
+  "esperado": {
+   "paso": 5,
+   "paso_nombre": "En aduana",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-10",
+    "estado": "aduana",
+    "fecha_estimada": "2026-10-15",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1190001 viaja en el contenedor EC-PRUEBA-10, que hoy está en aduana. Todavía no tengo una fecha de entrega confirmada; apenas se libere, te escribo por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 5 aduana sin estimada y saldo vencido",
+  "esperado": {
+   "paso": 5,
+   "paso_nombre": "En aduana",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-11",
+    "estado": "aduana",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1200001 viaja en el contenedor EC-PRUEBA-11, que hoy está en aduana. Todavía no tengo una fecha de entrega confirmada; apenas se libere, te escribo por este chat.",
+   "avisos": [
+    "No hay fecha estimada en el sistema. No des una fecha de memoria: si el cliente insiste, abre un caso a Logística.",
+    "Tiene un saldo vencido registrado. Pásalo a Cobranza antes de coordinar la entrega."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 6 liberado",
+  "esperado": {
+   "paso": 6,
+   "paso_nombre": "Liberado",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-12",
+    "estado": "liberado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-12, donde viaja tu carga EC-1210001, ya fue liberado de aduana y va camino a nuestra bodega. Cuando esté lista para la entrega, te contactamos para coordinar.",
+   "avisos": [
+    "Tiene un saldo pendiente registrado. Si pregunta por pagos, va a Cobranza."
+   ]
+  }
+ },
+ {
+  "nombre": "paso 7 en bodega con fecha",
+  "esperado": {
+   "paso": 7,
+   "paso_nombre": "En bodega de destino",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-13",
+    "estado": "bodega_destino",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": "2026-10-09"
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1220001 ya está en nuestra bodega de Ecuador desde el 9 de octubre. El siguiente paso es coordinar la entrega.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "paso 7 finalizado sin fecha",
+  "esperado": {
+   "paso": 7,
+   "paso_nombre": "En bodega de destino",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-14",
+    "estado": "finalizado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1230001 ya está en nuestra bodega de Ecuador. El siguiente paso es coordinar la entrega.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "entregada con fecha",
+  "esperado": {
+   "paso": 7,
+   "paso_nombre": "En bodega de destino",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-15",
+    "estado": "finalizado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": true,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, según nuestro registro tu carga EC-1240001 fue entregada el 3 de octubre. Si necesitas algo más, quedo pendiente.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "entregada sin fecha",
+  "esperado": {
+   "paso": 7,
+   "paso_nombre": "En bodega de destino",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-16",
+    "estado": "bodega_destino",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 2,
+    "recibidas": 2,
+    "pendientes": [],
+    "cajas": 10
+   },
+   "entregada": true,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, según nuestro registro tu carga de la cotización N.º 125 fue entregada. Si necesitas algo más, quedo pendiente.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "lista para retirar (no es entregada)",
+  "esperado": {
+   "paso": 7,
+   "paso_nombre": "En bodega de destino",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-17",
+    "estado": "bodega_destino",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": "2026-10-10"
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1260001 ya está en nuestra bodega de Ecuador desde el 10 de octubre. El siguiente paso es coordinar la entrega.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "dos contenedores: manda el más avanzado",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-19",
+    "estado": "entransito",
+    "fecha_estimada": "2026-10-30",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [
+    "EC-PRUEBA-18"
+   ],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-19, donde viaja tu carga EC-1270001, ya está en tránsito hacia Ecuador. La fecha estimada de llegada que tenemos registrada es el 30 de octubre; es una estimación y puede moverse.",
+   "avisos": [
+    "La cotización está repartida en 2 contenedores (también EC-PRUEBA-18). Se muestra el más avanzado."
+   ]
+  }
+ },
+ {
+  "nombre": "dos contenedores en el mismo paso: el asignado más tarde",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-21",
+    "estado": "entransito",
+    "fecha_estimada": "2026-11-01",
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [
+    "EC-PRUEBA-20"
+   ],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-21, donde viaja tu carga EC-1280001, ya está en tránsito hacia Ecuador. La fecha estimada de llegada que tenemos registrada es el 1 de noviembre; es una estimación y puede moverse.",
+   "avisos": [
+    "La cotización está repartida en 2 contenedores (también EC-PRUEBA-20). Se muestra el más avanzado."
+   ]
+  }
+ },
+ {
+  "nombre": "estado de contenedor desconocido (cae al paso 3)",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-22",
+    "estado": "raro",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, tu carga EC-1290001 ya está asignada al contenedor EC-PRUEBA-22. Te aviso por este chat cuando salga hacia Ecuador.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "viejo pero ya entregada (sí hay texto)",
+  "esperado": {
+   "paso": 3,
+   "paso_nombre": "En contenedor",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-23",
+    "estado": "cerrado",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 5
+   },
+   "entregada": true,
+   "parcial": false,
+   "dato_dudoso": true,
+   "texto_cliente": "Hola Marta, según nuestro registro tu carga EC-1300001 fue entregada el 1 de octubre. Si necesitas algo más, quedo pendiente.",
+   "avisos": [
+    "Este contenedor figura sin salir desde el 10 de junio: el estado del sistema puede estar desactualizado. No informes con este dato; pide el estado real a Logística y responde con eso."
+   ]
+  }
+ },
+ {
+  "nombre": "nombre con código HTML y destino sin dato",
+  "esperado": {
+   "paso": 1,
+   "paso_nombre": "Cotización registrada",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 0,
+    "pendientes": [
+     "EC-1310001"
+    ],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola José, tu cotización N.º 131 está registrada. Todavía no tenemos registrada la llegada de tu mercadería a nuestra bodega en China. Cuando tu proveedor la entregue rotulada con tu marca de envío (EC-1310001), te aviso por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "nombre que es un correo (va sin nombre)",
+  "esperado": {
+   "paso": 1,
+   "paso_nombre": "Cotización registrada",
+   "contenedor": null,
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 0,
+    "pendientes": [
+     "EC-1320001"
+    ],
+    "cajas": 0
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola, tu cotización N.º 132 está registrada. Todavía no tenemos registrada la llegada de tu mercadería a nuestra bodega en China. Cuando tu proveedor la entregue rotulada con tu marca de envío (EC-1320001), te aviso por este chat.",
+   "avisos": []
+  }
+ },
+ {
+  "nombre": "rechazada con contenedor (el contenedor manda)",
+  "esperado": {
+   "paso": 4,
+   "paso_nombre": "En tránsito",
+   "contenedor": {
+    "nombre": "EC-PRUEBA-24",
+    "estado": "entransito",
+    "fecha_estimada": null,
+    "fecha_puerto": null,
+    "fecha_bodega_destino": null
+   },
+   "otros_contenedores": [],
+   "recepcion": {
+    "marcas": 1,
+    "recibidas": 1,
+    "pendientes": [],
+    "cajas": 2
+   },
+   "entregada": false,
+   "parcial": false,
+   "dato_dudoso": false,
+   "texto_cliente": "Hola Marta, el contenedor EC-PRUEBA-24, donde viaja tu carga EC-1330001, ya está en tránsito hacia Ecuador. Todavía no tengo una fecha estimada confirmada; apenas el sistema la muestre, te escribo.",
+   "avisos": [
+    "No hay fecha estimada en el sistema. No des una fecha de memoria: si el cliente insiste, abre un caso a Logística."
+   ]
+  }
+ }
+]
