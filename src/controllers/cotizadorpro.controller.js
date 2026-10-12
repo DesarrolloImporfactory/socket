@@ -12,6 +12,7 @@ const {
 const UsuarioPlataforma = require('../models/usuario_plataforma.model');
 const { db_2 } = require('../database/config');
 const axios = require('axios');
+const https = require('https');
 const FormData = require('form-data');
 const { promisify } = require('util');
 const { exec } = require('child_process');
@@ -133,9 +134,22 @@ const crearPlantillaWhatsApp = (
   };
 };
 
-// Helper: Enviar template de WhatsApp
-const enviarTemplateWhatsApp = async (plantilla) => {
-  const response = await axios.post(
+/**
+ * Conexión nueva en cada envío de plantilla. Sin esto el envío reutiliza la
+ * conexión que dejó abierta la subida del video a Meta; si Meta ya la cerró,
+ * la petición muere con «socket hang up» antes de salir (12-oct-2026: ninguna
+ * cotización se pudo enviar).
+ */
+const agenteSinReuso = new https.Agent({ keepAlive: false });
+
+/** Meta cortó la conexión sin responder: la petición no llegó a procesarse. */
+const esCorteDeConexion = (err) =>
+  !err.response &&
+  (['ECONNRESET', 'EPIPE'].includes(err.code) ||
+    /socket hang up/i.test(err.message || ''));
+
+const postPlantillaAMeta = (plantilla) =>
+  axios.post(
     `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${process.env.CONFIGURACION_WS}/messages`,
     plantilla,
     {
@@ -144,9 +158,55 @@ const enviarTemplateWhatsApp = async (plantilla) => {
         Authorization: `Bearer ${process.env.FB_PROVIDER_TOKEN}`,
       },
       params: { debug: 'all' },
+      httpsAgent: agenteSinReuso,
+      timeout: 30000,
       validateStatus: () => true, // no lanzar excepcion, manejar todos los status
     },
   );
+
+// Helper: Enviar template de WhatsApp
+const enviarTemplateWhatsApp = async (plantilla) => {
+  let response;
+  try {
+    response = await postPlantillaAMeta(plantilla);
+  } catch (err) {
+    // Un corte de conexión se reintenta UNA vez. Un timeout no: Meta pudo
+    // haber recibido el mensaje y reintentarlo lo duplicaría.
+    if (!esCorteDeConexion(err)) {
+      const sinRespuesta = !err.response;
+      console.error(
+        '[WA_TEMPLATE] Sin respuesta de Meta | template: %s | %s %s',
+        plantilla?.template?.name,
+        err.code || '',
+        err.message,
+      );
+      if (sinRespuesta) {
+        throw new Error(
+          'WhatsApp (Meta) no respondió a tiempo. Puede que el mensaje sí haya salido: revisa el chat del cliente antes de reintentar.',
+        );
+      }
+      throw err;
+    }
+    console.warn(
+      '[WA_TEMPLATE] Meta cortó la conexión (%s) | template: %s | reintentando una vez',
+      err.code || err.message,
+      plantilla?.template?.name,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      response = await postPlantillaAMeta(plantilla);
+    } catch (err2) {
+      console.error(
+        '[WA_TEMPLATE] Segundo intento fallido | template: %s | %s %s',
+        plantilla?.template?.name,
+        err2.code || '',
+        err2.message,
+      );
+      throw new Error(
+        'WhatsApp (Meta) cortó la conexión dos veces y el mensaje no salió. Vuelve a intentarlo en un minuto.',
+      );
+    }
+  }
   if (response.data.__debug) {
     console.log(
       '[WA_TEMPLATE] Debug info de Meta:',
