@@ -126,6 +126,9 @@ async function startServer() {
       // Rescata turnos de IA perdidos por reinicios del servidor (solo corre
       // con NODE_ENV=production; ver el comentario del archivo).
       require('./cron/rescatarTurnosPerdidos.js');
+      // Secuencias de recuperación desde Expertos: encola plantillas para
+      // templateProgramadoMasivo. Nace apagado; se prende en /recuperacion.
+      require('./cron/recuperacionAutomatizaciones.js');
     } else {
       console.warn('⏸️  Crons DESACTIVADOS (CRONS_ENABLED=false)');
     }

@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middlewares/auth.middleware');
-const requireGestorClientes = require('../middlewares/requireGestorClientes.middleware');
+// Historial de seguimientos: lo usan el panel interno y /recuperacion (asesores elegidos).
+const requireGestorClientes = require('../middlewares/requireRecuperacion.middleware');
 const ctrl = require('../controllers/seguimientos.controller');
 
 router.use(protect);

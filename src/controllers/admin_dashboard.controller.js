@@ -1,5 +1,7 @@
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
+const AppError = require('../utils/appError');
+const { cobrosEnRango } = require('../services/stripe_cobros.service');
 const {
   metricasEnVivo,
   COND_COBRO_REAL,
@@ -327,4 +329,24 @@ exports.clientesPorCategoria = catchAsync(async (req, res) => {
     total: rows.length,
     data: rows,
   });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   GET /admin_dashboard/cobros?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+   Cobros reales en Stripe: exitosos, fallidos (con motivo),
+   reembolsos, comisiones y facturas abiertas pendientes de cobro.
+   ══════════════════════════════════════════════════════════════ */
+exports.cobros = catchAsync(async (req, res, next) => {
+  const { desde, hasta } = req.query;
+  try {
+    const data = await cobrosEnRango(desde, hasta, {
+      fresh: req.query.fresh === '1',
+    });
+    res.json({ status: 'success', data });
+  } catch (e) {
+    if (e?.type?.startsWith?.('Stripe')) {
+      return next(new AppError(`Stripe: ${e.message}`, 502));
+    }
+    return next(new AppError(e.message || 'Error consultando cobros', 400));
+  }
 });

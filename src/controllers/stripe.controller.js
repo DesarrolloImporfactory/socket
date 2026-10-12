@@ -379,6 +379,23 @@ exports.crearSesionPago = catchAsync(async (req, res, next) => {
     return next(new AppError('Plan inválido o sin id_price en Stripe.', 400));
   }
 
+  // ─── Candado: sin checkout para quien ya tiene suscripción ───
+  // Un checkout crea SIEMPRE una suscripción nueva. Entre el 23-09 y el
+  // 12-10-2026 diez clientes con la renovación rebotada (sub past_due,
+  // estado 'suspendido') llegaron aquí desde /planes, porque el front solo
+  // trata como "plan activo" los estados activo/trial y les ofrecía
+  // "Comenzar ahora": pagaron una sub nueva y, como el checkout dejó en el
+  // customer una tarjeta que sí pasa, Stripe cobró además la factura vieja en
+  // el siguiente reintento (3116: $29 el 08-10 y otros $29 el 10-10 por el
+  // mismo mes). La decisión vive aquí y no en el front porque cuatro pantallas
+  // llaman a este endpoint.
+  //  - past_due/unpaid con factura abierta → 409 PAGO_PENDIENTE con la
+  //    factura: se paga ESA y el webhook reactiva solo.
+  //  - active/trialing con un plan real → 409 SUSCRIPCION_VIVA: el cambio de
+  //    plan va por cambiarPlan (prorratea y no duplica).
+  const candado = await candadoCheckoutConSubViva(user);
+  if (candado) return res.status(409).json(candado);
+
   // ─── Periodo de pago (mensual | semestral | anual) ───
   // Semestral/anual cobran el periodo completo por adelantado con su propio
   // price de Stripe (planes_periodos_chat_center). Sin trial ni cupón del
@@ -1157,6 +1174,72 @@ async function pagoPendienteDeSub(sub) {
     console.warn('Stripe latest_invoice retrieve fail:', e?.message);
     return base;
   }
+}
+
+// Sub viva del usuario para decidir si procede un checkout: primero la que
+// guarda la BD; si esa murió o no hay, la más reciente viva del customer
+// (la BD puede apuntar a una sub vieja: ver sub reemplazada en el webhook).
+const SUB_VIVA = ['active', 'trialing', 'past_due', 'unpaid'];
+async function subVivaDelUsuario(user) {
+  let sub = null;
+  if (user.stripe_subscription_id) {
+    try {
+      sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id, {
+        expand: ['items.data.price'],
+      });
+    } catch (e) {
+      if (e?.code !== 'resource_missing') {
+        console.warn('subVivaDelUsuario retrieve fail:', e?.message);
+      }
+    }
+  }
+  if (!sub || !SUB_VIVA.includes(sub.status)) {
+    const picked = await pickCurrentStripeSubscription(user.id_costumer).catch(
+      () => null,
+    );
+    sub = picked && SUB_VIVA.includes(picked.status) ? picked : null;
+  }
+  return sub;
+}
+
+// null = puede abrir checkout; si no, el cuerpo del 409 que explica por qué.
+async function candadoCheckoutConSubViva(user) {
+  const sub = await subVivaDelUsuario(user);
+  if (!sub) return null;
+
+  // Solo cuenta una sub que lleve un plan real: una sub que es solo add-on
+  // (Conexión $5 suelta, caso 3255) no impide contratar un plan.
+  const addonPriceSet = await getAddonPriceSet();
+  const tienePlanReal = (sub.items?.data || []).some(
+    (it) => it?.price?.id && !addonPriceSet.has(it.price.id),
+  );
+  if (!tienePlanReal) return null;
+
+  if (['past_due', 'unpaid'].includes(sub.status)) {
+    const pp = await pagoPendienteDeSub(sub);
+    if (pp?.hosted_invoice_url) {
+      return {
+        success: false,
+        code: 'PAGO_PENDIENTE',
+        message:
+          'Tiene una renovación pendiente de pago. Pague esa factura para reactivar su cuenta; no es necesario contratar de nuevo.',
+        pago_pendiente: pp,
+        stripe_subscription_id: sub.id,
+      };
+    }
+    // past_due sin factura abierta (la anularon a mano): no hay nada que
+    // cobrar dos veces; Stripe la terminará sola y el checkout puede seguir.
+    return null;
+  }
+
+  return {
+    success: false,
+    code: 'SUSCRIPCION_VIVA',
+    message:
+      'Ya tiene una suscripción vigente. Para cambiar de plan use "Cambiar a este plan"; no se crea otra suscripción.',
+    stripe_subscription_id: sub.id,
+    stripe_subscription_status: sub.status,
+  };
 }
 
 // Periodo más corto programado con schedule (ver cambiarPeriodo). null si no
