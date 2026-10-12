@@ -26,6 +26,7 @@ const { _internal: publicApi } = require('./public_api.controller');
 /* Configuraciones de soporte donde se habilita la sección. Agregar ids acá
    es lo único que hace falta para extenderla a otra conexión. */
 const { CONFIGS_SOPORTE } = require('../utils/configsSoporte');
+const recuperacion = require('../services/recuperacion.service');
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -83,9 +84,19 @@ async function armarCuenta(id_usuario, coincidencia, detalle) {
     { replacements: { id: id_usuario }, type: db.QueryTypes.SELECT },
   );
 
+  // Situación comercial (embudo de recuperación, recurrencia, caso, último
+  // seguimiento): la cabecera del chat la muestra resumida. Si falla, la
+  // ficha sale igual sin ella.
+  let situacion = null;
+  try {
+    situacion = await recuperacion.situacionDeUsuario(id_usuario);
+  } catch (e) {
+    console.warn('[cartera] situacion no disponible:', e?.message);
+  }
   return {
     coincidencia, // por dónde lo encontramos
     detalle, // el valor que hizo match, para que el asesor lo vea
+    situacion,
     usuario: {
       id_usuario: Number(usuario.id_usuario),
       nombre: usuario.nombre || '',

@@ -159,7 +159,8 @@ const SQL_COHORTES = `
              ORDER BY c.id LIMIT 1) AS nombre_conexion,
            CASE
              WHEN u.estado = 'suspendido'
-               OR u.stripe_subscription_status IN ('past_due','unpaid') THEN 'pago_rebotado'
+               OR (COALESCE(u.stripe_subscription_id, '') <> ''
+                   AND u.stripe_subscription_status IN ('past_due','unpaid')) THEN 'pago_rebotado'
              WHEN u.cancel_at_period_end = 1 AND u.estado = 'activo'
                AND (u.cancel_at IS NULL OR u.cancel_at >= NOW())
                AND COALESCE(u.stripe_subscription_status, '') <> 'canceled' THEN 'cancelacion_programada'
@@ -407,6 +408,86 @@ async function sincronizarCasosGlobal() {
   const antes = await casosAbiertos();
   const despues = await sincronizarCasos(base, antes);
   return { en_riesgo: base.length, abiertos_antes: antes.size, abiertos_despues: despues.size };
+}
+
+/**
+ * Situación comercial de UNA cuenta, para la cabecera del chat de soporte:
+ * en qué parte del embudo está (o si es un cliente a mantener), caso abierto
+ * y quién lo lleva, último seguimiento, pagos reales y conexiones. Es lo que
+ * el asesor necesita ver antes de responder, sin abrir el panel derecho.
+ */
+async function situacionDeUsuario(id_usuario) {
+  await ensureTablas();
+  const [u] = await db.query(
+    `SELECT u.id_usuario, u.nombre AS empresa, u.estado, u.id_plan, p.nombre_plan, p.precio_plan,
+            u.stripe_subscription_id, u.stripe_subscription_status AS stripe_status,
+            u.cancel_at_period_end, u.cancel_at, u.fecha_renovacion, u.trial_end, u.permanente,
+            u.created_at AS registrado_en,
+            (SELECT COUNT(*) FROM configuraciones c WHERE c.id_usuario = u.id_usuario AND c.suspendido = 0) AS conexiones_activas,
+            (SELECT COUNT(*) FROM configuraciones c WHERE c.id_usuario = u.id_usuario AND c.suspendido = 1) AS conexiones_suspendidas,
+            (SELECT COUNT(*) FROM transacciones_stripe_chat t WHERE t.id_usuario = u.id_usuario AND t.id_pago LIKE 'in_%' AND t.monto > 0) AS pagos_reales,
+            (SELECT MAX(t.fecha) FROM transacciones_stripe_chat t WHERE t.id_usuario = u.id_usuario AND t.id_pago LIKE 'in_%' AND t.monto > 0) AS ultimo_pago
+       FROM usuarios_chat_center u
+       LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
+      WHERE u.id_usuario = ? LIMIT 1`,
+    { replacements: [id_usuario], type: db.QueryTypes.SELECT },
+  );
+  if (!u) return null;
+
+  const [enRiesgo] = await db.query(`SELECT * FROM (${SQL_COHORTES}) x WHERE x.id_usuario = ?`, {
+    replacements: [id_usuario],
+    type: db.QueryTypes.SELECT,
+  });
+  const cohorte = enRiesgo?.cohorte || null;
+  const fechaClave = enRiesgo ? fechaClaveDe(enRiesgo) : u.fecha_renovacion;
+  const caso = await casoAbiertoDe(id_usuario);
+  const ultimos = await ultimosSeguimientos([id_usuario]);
+  const seg = ultimos.get(id_usuario) || null;
+  const pagos = Number(u.pagos_reales || 0);
+
+  // Nivel para el asesor, en una palabra:
+  //  - riesgo: está en el embudo (la cohorte dice por qué);
+  //  - recurrente: paga hace 2+ meses y está activo → cliente a mantener;
+  //  - pagando: activo con 1 cobro real;
+  //  - permanente: cortesía VIP;
+  //  - activo (sin cobros aún) / inactivo / sin cuenta de pago.
+  let nivel;
+  if (cohorte) nivel = 'riesgo';
+  else if (Number(u.permanente) === 1) nivel = 'permanente';
+  else if (u.estado === 'activo' && u.stripe_status === 'active' && pagos >= 2) nivel = 'recurrente';
+  else if (u.estado === 'activo' && u.stripe_status === 'active') nivel = 'pagando';
+  else if (u.estado === 'activo') nivel = 'activo';
+  else nivel = u.estado || 'inactivo';
+
+  return {
+    nivel,
+    cohorte,
+    cohorte_label: cohorte ? COHORTES[cohorte]?.label || cohorte : null,
+    cohorte_descripcion: cohorte ? COHORTES[cohorte]?.descripcion || null : null,
+    prioridad: cohorte ? COHORTES[cohorte]?.prioridad || null : null,
+    estado: u.estado,
+    stripe_status: u.stripe_status,
+    tiene_stripe: !!u.stripe_subscription_id,
+    permanente: Number(u.permanente) === 1,
+    plan: u.nombre_plan || null,
+    precio_plan: u.precio_plan != null ? Number(u.precio_plan) : null,
+    fecha_clave: fechaClave,
+    dias: diasHasta(fechaClave),
+    fecha_renovacion: u.fecha_renovacion,
+    cancel_at_period_end: Number(u.cancel_at_period_end) === 1,
+    trial_end: u.trial_end,
+    registrado_en: u.registrado_en,
+    pagos_reales: pagos,
+    ultimo_pago: u.ultimo_pago,
+    conexiones_activas: Number(u.conexiones_activas || 0),
+    conexiones_suspendidas: Number(u.conexiones_suspendidas || 0),
+    caso: caso
+      ? { id_caso: caso.id_caso, asignado_a_id: caso.asignado_a_id, asignado_a_nombre: caso.asignado_a_nombre, abierto_en: caso.abierto_en, cohorte_inicial: caso.cohorte }
+      : null,
+    ultimo_seguimiento: seg
+      ? { fecha: seg.fecha_seguimiento, tipo: seg.tipo, resultado: seg.resultado, por: seg.ejecutado_por_nombre, asunto: seg.asunto, proximo_contacto: seg.proximo_contacto, total: Number(seg.total_seguimientos || 0) }
+      : null,
+  };
 }
 
 async function embudo({ id_sub_usuario, id_usuario }) {
@@ -939,6 +1020,7 @@ module.exports = {
   embudo,
   clientesEnRiesgo,
   sincronizarCasosGlobal,
+  situacionDeUsuario,
   abrirChatExpertos,
   conexionExpertos,
   asignarCaso,
