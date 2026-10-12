@@ -13,5 +13,6 @@ router.get('/cancelaciones_mes', ctrl.cancelacionesMes);
 router.get('/desglose_planes', ctrl.desglosePlanes);
 router.post('/snapshot_now', ctrl.snapshotAhora);
 router.get('/clientes_por_categoria', ctrl.clientesPorCategoria);
+router.get('/cobros', ctrl.cobros);
 
 module.exports = router;
