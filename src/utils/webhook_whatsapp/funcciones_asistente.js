@@ -301,6 +301,10 @@ async function enviarAsistenteKanban({
   // true = mensaje inyectado desde "Probar como cliente" (wamid.PANEL…):
   // la ventana de ráfaga baja para que la prueba no se sienta lenta.
   es_prueba = false,
+  // text | audio | image | video | document… del mensaje de WhatsApp. Solo lo
+  // lee el bot de soporte (ia_ajustes → soporte_expertos) para saber que un
+  // texto vacío era un video o que el texto es una nota de voz transcrita.
+  tipo_mensaje = null,
 }) {
   try {
     const resultado = await procesarMensajeKanban({
@@ -314,6 +318,7 @@ async function enviarAsistenteKanban({
       estado_contacto,
       bloque_producto_referral,
       es_prueba,
+      tipo_mensaje,
     });
     await log(`✅ Kanban IA resultado: ${JSON.stringify(resultado)}`);
     return resultado;
