@@ -354,21 +354,55 @@ exports.stripeWebhook = async (req, res) => {
           try {
             const subAnterior =
               await stripe.subscriptions.retrieve(subAnteriorId);
-            const viva = ['active', 'trialing', 'past_due'].includes(
+            const viva = ['active', 'trialing', 'past_due', 'unpaid'].includes(
               subAnterior.status,
             );
-            if (viva && !subAnterior.cancel_at_period_end) {
+            // past_due/unpaid: el periodo de la vieja NO se pagó y la nueva
+            // lo cubre. Programarle solo la baja al fin del periodo dejaba su
+            // factura abierta con reintentos, y como este checkout acaba de
+            // guardar en el customer una tarjeta que sí pasa, Stripe la
+            // cobraba días después: el cliente pagaba el mes dos veces (7
+            // casos entre el 23-09 y el 10-10-2026; 3116 pagó $29 el 08-10 y
+            // $29 el 10-10). Se anulan sus facturas abiertas y se cancela YA.
+            // La BD ya apunta a la nueva (UPDATE de arriba), así que el
+            // customer.subscription.deleted que esto dispara se ignora
+            // (resolverBajaSuscripcion: no es la sub guardada).
+            const sinPagar = ['past_due', 'unpaid'].includes(
+              subAnterior.status,
+            );
+            if (viva && (sinPagar || !subAnterior.cancel_at_period_end)) {
               await stripe.subscriptions.update(subAnteriorId, {
-                cancel_at_period_end: true,
+                ...(sinPagar ? {} : { cancel_at_period_end: true }),
                 metadata: {
                   ...(subAnterior.metadata || {}),
                   reemplazada_por: subscriptionId,
                 },
               });
+              if (sinPagar) {
+                for (const status of ['open', 'draft']) {
+                  const list = await stripe.invoices.list({
+                    subscription: subAnteriorId,
+                    status,
+                    limit: 20,
+                  });
+                  for (const inv of list?.data || []) {
+                    if (inv.status === 'draft') await stripe.invoices.del(inv.id);
+                    else await stripe.invoices.voidInvoice(inv.id);
+                    console.log('[stripe] factura de sub reemplazada anulada:', {
+                      id_usuario,
+                      subAnteriorId,
+                      invoice: inv.id,
+                      amount_due: inv.amount_due,
+                    });
+                  }
+                }
+                await stripe.subscriptions.cancel(subAnteriorId);
+              }
               console.log('[stripe] checkout reemplaza sub anterior:', {
                 id_usuario,
                 subAnteriorId,
                 subscriptionId,
+                sinPagar,
               });
               await db.query(
                 `INSERT IGNORE INTO transacciones_stripe_chat
@@ -752,6 +786,57 @@ exports.stripeWebhook = async (req, res) => {
             '[stripe] WARNING: id_usuario not found. Skipping usuarios_chat_center update.',
           );
           break;
+        }
+
+        /**
+         * Factura de una sub REEMPLAZADA por un checkout (metadata
+         * reemplazada_por, ver checkout.session.completed). Su pago llega
+         * cuando Stripe reintenta la factura vieja con la tarjeta que el
+         * checkout acaba de guardar: es un cobro duplicado, no una
+         * renovación. Antes el SET directo de abajo volvía a apuntar la fila
+         * del usuario a la sub vieja (3116, 932 y 274 quedaron así y Mi plan
+         * leía la sub equivocada). Se deja la transacción marcada para
+         * reembolsarla (scripts/repararDobleCobroCheckout.js) y se sale.
+         * Solo si la sub que la reemplazó sigue viva: si esa murió, la vieja
+         * vuelve a ser la buena y se sincroniza normal.
+         */
+        if (metaSub?.reemplazada_por) {
+          let nuevaViva = false;
+          try {
+            const nueva = await stripe.subscriptions.retrieve(
+              metaSub.reemplazada_por,
+            );
+            nuevaViva = ['active', 'trialing', 'past_due', 'unpaid'].includes(
+              nueva?.status,
+            );
+          } catch (e) {
+            console.log('[stripe] sub reemplazante no se pudo leer:', e?.message);
+          }
+          if (nuevaViva) {
+            console.log('[stripe] cobro de sub reemplazada (doble cobro):', {
+              invoiceId: invoice.id,
+              subscriptionId,
+              reemplazada_por: metaSub.reemplazada_por,
+              id_usuario,
+              monto: invoiceMonto,
+            });
+            await db.query(
+              `UPDATE transacciones_stripe_chat
+                  SET estado_suscripcion = ?,
+                      id_usuario = COALESCE(id_usuario, ?)
+                WHERE id_pago = ?`,
+              {
+                replacements: [
+                  hasRealCharge
+                    ? 'cobro_sub_reemplazada'
+                    : 'ignorada_sub_reemplazada',
+                  id_usuario,
+                  invoice.id,
+                ],
+              },
+            );
+            break;
+          }
         }
 
         /**
