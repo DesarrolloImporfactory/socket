@@ -66,6 +66,12 @@ const {
   TEXTO_AUDIO_ILEGIBLE,
 } = require('../utils/openia/transcribirAudio');
 
+// Ajustes del bot por cuenta: horario, lista blanca y bot de soporte.
+const {
+  getAjustesIA,
+  calladoPorHorarioOLista,
+} = require('../utils/ajustesIA');
+
 const {
   cancelarRemarketingEnNode,
   obtenerThreadId,
@@ -1568,8 +1574,30 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               ? null
               : await obtenerThreadId(id_cliente, api_key_openai);
 
+          /* ── ¿Vale la pena leer el audio o la imagen? ─────────────────
+             Transcribir y describir cuestan una llamada a OpenAI cada uno y
+             solo sirven para que el bot conteste. Si el horario o la lista
+             blanca de la cuenta (ia_ajustes → horario, solo_numeros) van a
+             callar al bot con este mensaje, se saltan: la 265 atiende con
+             personas de día y con el bot solo de noche, y sin esto se leía
+             cada foto y cada audio que llega de día sin que nadie lo use.
+             Una cuenta sin esos dos ajustes no cambia. «Probar como cliente»
+             se salta el candado, igual que en kanban_ia. Ante cualquier
+             error se lee como siempre. */
+          let ajustesBot = null;
+          let botCallado = false;
+          try {
+            ajustesBot = await getAjustesIA(id_configuracion);
+            botCallado =
+              tipo_configuracion === 'kanban' &&
+              !/^wamid\.PANEL/.test(String(wamid_entrante || '')) &&
+              calladoPorHorarioOLista(ajustesBot, phone_whatsapp_from);
+          } catch (_) {
+            botCallado = false;
+          }
+
           // Si es audio y tienes ruta de archivo, intentar transcribir
-          if (tipo_mensaje === 'audio' && ruta_archivo) {
+          if (tipo_mensaje === 'audio' && ruta_archivo && !botCallado) {
             const texto_transcrito = await transcribirAudioDesdeArchivo(
               ruta_archivo,
               api_key_openai,
@@ -1628,10 +1656,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
           // Si es imagen, describirla para que la IA pueda "leerla".
           // Mismo criterio que el audio: sin flag, siempre que la IA esté activa.
-          if (tipo_mensaje === 'image' && ruta_archivo) {
+          if (tipo_mensaje === 'image' && ruta_archivo && !botCallado) {
+            /* La línea de soporte lee otras cosas en una foto que una tienda
+               (capturas de la plataforma, proformas, comprobantes): usa su
+               propio prompt de visión. El resto de cuentas, el de siempre. */
             const descripcion = await describirImagenDesdeArchivo(
               ruta_archivo,
               api_key_openai,
+              ajustesBot?.soporte_expertos
+                ? {
+                    prompt: require('../utils/soporteExpertos/adjuntos')
+                      .PROMPT_VISION_EXPERTOS,
+                  }
+                : undefined,
             );
 
             // El caption del cliente, si escribió algo junto a la foto
@@ -2733,6 +2770,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 // una ventana de ráfaga corta para que la prueba no se
                 // sienta lenta. Un mensaje real de Meta nunca trae ese id.
                 es_prueba: /^wamid\.PANEL/.test(String(wamid_entrante || '')),
+                tipo_mensaje,
               });
             }
 

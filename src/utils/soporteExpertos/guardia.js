@@ -1,0 +1,360 @@
+/* Última revisión de lo que escribió el modelo, ANTES de que le llegue al
+   cliente. Es código, no otro prompt: lo que el prompt prohíbe y el modelo
+   escribe igual, acá se ataja.
+
+   Son los mismos candados que usa el asistente interno de los asesores en
+   Imporsuit (`Class/AsistenteFront::revisar`), que en la prueba en papel con
+   365 conversaciones frenaron cerca del 2 % de las respuestas, más los que
+   pide un bot que le habla directo al cliente:
+
+     1. cifra, plazo, monto, enlace, correo o ESTADO de una carga («ya está en
+        aduana») que no esté respaldado por un dato leído (las fichas de la
+        base, la carga del cliente, los textos fijos);
+     2. voseo — se corrige a tuteo con una tabla de formas conocidas;
+     3. cargo interno («Pricing», «supervisor») — se cambia por el nombre que
+        sí puede leer el cliente;
+     4. presentarse como una persona;
+     5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima.
+
+   Lo que no se puede corregir con certeza no se manda: sale el texto seguro
+   del turno (el estado oficial de la carga, si era eso lo que preguntó, o el
+   paso a asesor). Un «un asesor te escribe» de más cuesta poco; una fecha
+   inventada cuesta la confianza del cliente.
+
+   Lo que el CLIENTE escribió solo respalda sus CÓDIGOS: se le puede repetir su
+   número de cotización, su marca o cuántas unidades dijo. No respalda plazos,
+   montos ni cifras sueltas: que él diga «¿llega el 15?» o «¿son 850?» no
+   autoriza al bot a contestar «sí, el 15» ni «sí, 850».
+
+   Antes de revisar se quitan dos cosas que el modelo agrega y no son un dato:
+   la despedida del final («¡Buen fin de semana!») y el formato de enlace de
+   markdown. Así una buena respuesta no se pierde por un «hasta pronto». */
+
+'use strict';
+
+const { sinTildes } = require('./texto');
+const { MENSAJE_ASESOR } = require('./textos');
+
+const MAX_RESPUESTA = 1500;
+
+const RE_TAG = /\[[a-z_]+\]\s*:\s*(?:true|false)/gi;
+const RE_URL = /(?:https?:\/\/|www\.)[^\s<>"'«»]+/gi;
+const RE_CORREO = /[\w.+-]+@[\w-]+\.[\w.-]*[a-z]/gi;
+const RE_MARCADOR = /\{\{|\}\}|\[[^\]\n]{1,30}\]|\{[a-zñ_ ]{2,30}\}|N\.º\s*…/iu;
+
+/* ── Voseo → tuteo ─────────────────────────────────────────────────────── */
+const VOSEO_A_TU = {
+  'con vos': 'contigo', 'a vos': 'a ti', 'para vos': 'para ti', 'de vos': 'de ti', vos: 'tú', sos: 'eres',
+  tenés: 'tienes', tenes: 'tienes', podés: 'puedes', podes: 'puedes', querés: 'quieres', queres: 'quieres',
+  sabés: 'sabes', hacés: 'haces', necesitás: 'necesitas', pagás: 'pagas', mandás: 'mandas',
+  enviás: 'envías', esperás: 'esperas', comprás: 'compras', usás: 'usas', pasás: 'pasas',
+  confirmás: 'confirmas', perdés: 'pierdes', entendés: 'entiendes', debés: 'debes',
+  decís: 'dices', venís: 'vienes', asumís: 'asumes', pedís: 'pides', recibís: 'recibes',
+  escribís: 'escribes', elegís: 'eliges', seguís: 'sigues', preferís: 'prefieres', vivís: 'vives',
+  mirá: 'mira', esperá: 'espera', revisá: 'revisa', ingresá: 'ingresa', entrá: 'entra',
+  probá: 'prueba', buscá: 'busca', usá: 'usa', contá: 'cuenta', enviá: 'envía', mandá: 'manda',
+  tomá: 'toma', hacé: 'haz', andá: 've', vení: 'ven', avisá: 'avisa', llamá: 'llama', dejá: 'deja',
+  fijate: 'fíjate', decime: 'dime', pasame: 'pásame', mandame: 'mándame', enviame: 'envíame',
+  contame: 'cuéntame', avisame: 'avísame', confirmame: 'confírmame', escribime: 'escríbeme',
+  indicame: 'indícame', compartime: 'compárteme', dejame: 'déjame', esperame: 'espérame',
+  pedile: 'pídele', preguntale: 'pregúntale', decile: 'dile', mandale: 'mándale', escribile: 'escríbele',
+  comunicate: 'comunícate', acordate: 'acuérdate', quedate: 'quédate',
+};
+/* «estás», «puedes», «envíame» son tuteo y no están en la tabla. Las formas
+   ambiguas («escribí», «pedí», «abrí» también son «yo» en pasado) tampoco:
+   corregirlas rompería frases correctas. */
+const FORMAS_VOSEO = Object.keys(VOSEO_A_TU).sort((a, b) => b.length - a.length);
+const RE_VOSEO = new RegExp(`(?<!\\p{L})(${FORMAS_VOSEO.join('|')})(?!\\p{L})`, 'giu');
+
+function corregirVoseo(texto) {
+  let cambios = 0;
+  const out = texto.replace(RE_VOSEO, (m) => {
+    const tu = VOSEO_A_TU[m.toLowerCase()];
+    if (!tu) return m;
+    cambios += 1;
+    return m[0] === m[0].toUpperCase() && m[0] !== m[0].toLowerCase() ? tu[0].toUpperCase() + tu.slice(1) : tu;
+  });
+  return { texto: out, cambios };
+}
+
+/* ── Cargos internos → como se le dicen al cliente ─────────────────────── */
+const CARGOS = [
+  { re: 'l[ií]der comercial', articulo: 'la', nombre: 'persona responsable' },
+  { re: 'supervisor(?:a|es)?', articulo: 'la', nombre: 'persona responsable' },
+  { re: '(?:(?:[aá]rea|equipo|departamento)\\s+de\\s+)?pricing', articulo: 'el', nombre: 'área de precios' },
+  { re: 'front\\s+de\\s+ecommerce', articulo: 'el', nombre: 'equipo de ecommerce' },
+  { re: 'front(?:\\s+de\\s+importaciones)?', articulo: '', nombre: 'tu asesor' },
+];
+const RE_CARGO_RESTANTE =
+  /(?<!\p{L})(supervisor(?:a|es)?|pricing|l[ií]der comercial|front(?: de (?:ecommerce|importaciones))?)(?!\p{L})/iu;
+
+function cambiarCargos(texto) {
+  let out = texto;
+  let cambios = 0;
+  for (const c of CARGOS) {
+    const re = new RegExp(`(?<!\\p{L})(?:(al|del|el|la|un|una|los|las)\\s+)?${c.re}(?!\\p{L})`, 'giu');
+    out = out.replace(re, (m, art) => {
+      cambios += 1;
+      const a = String(art || '').toLowerCase();
+      let nuevo;
+      if (!c.articulo) nuevo = a === 'al' ? `a ${c.nombre}` : a === 'del' ? `de ${c.nombre}` : c.nombre;
+      else if (a === 'al') nuevo = c.articulo === 'el' ? `al ${c.nombre}` : `a la ${c.nombre}`;
+      else if (a === 'del') nuevo = c.articulo === 'el' ? `del ${c.nombre}` : `de la ${c.nombre}`;
+      else nuevo = `${c.articulo} ${c.nombre}`;
+      return art && m[0] !== m[0].toLowerCase() ? nuevo[0].toUpperCase() + nuevo.slice(1) : nuevo;
+    });
+  }
+  return { texto: out, cambios };
+}
+
+/* ── Presentarse como persona ──────────────────────────────────────────── */
+const RE_PERSONA =
+  /(?<!\p{L})(mi nombre es|me llamo|hablas con (?!el asistente|un asistente)|est[aá]s hablando con (?!el asistente|un asistente)|(?<!no )soy\s+(?:(?:tu|su|una?|el|la)\s+)?(?:asesor|asesora|ejecutiv[oa]|agente|encargad[oa]|persona|human[oa]|especialista|representante|coordinador[a]?)(?!\p{L})|(?<!no )soy (?:parte )?del equipo)/iu;
+// Con nombre propio: «Soy Carla», «Habla Carla», «te saluda Andrés». Un área
+// («Te atiende Logística») no es una persona.
+const RE_PERSONA_NOMBRE =
+  /(?<!\p{L})(?:[Ss]oy|[Hh]abla|(?:[Tt]e|[Ll]es?)\s+(?:saluda|habla|atiende|escribe))\s+(?!IMPORFACTORY|Log[ií]stica|Cobranza|Soporte|Precios|Ecommerce|Contabilidad)[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}(?=[\s,.!]|$)/u;
+
+/* ── Plazos y promesas de tiempo ───────────────────────────────────────── */
+const NUMERO_EN_LETRAS =
+  'un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\\p{L}+|veinte|veinti\\p{L}+|' +
+  '(?:treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa)(?: y \\p{L}+)?|cien|ciento(?: \\p{L}+)?|' +
+  'unos|unas|pocos|pocas|par de|algunos|algunas|varios|varias|muchos|muchas|cuantos|cuantas';
+const UNIDAD_DE_TIEMPO = 'minutos?|horas?|hrs?|d[ií]as?|semanas?|mes(?:es)?|años?';
+const MESES = 'enero|febrero|marzo|abril|mayo|junio|julio|agosto|sep?tiembre|octubre|noviembre|diciembre';
+/* Van primero las expresiones completas («24 de octubre», «30 minutos»): se
+   comparan ENTERAS contra el respaldo. Con las cifras sueltas no alcanza: si
+   el dato leído dice «24 de octubre» y un texto fijo dice «30 minutos», un
+   «llega el 30 de octubre» o un «en 24 horas» pasarían cifra por cifra. */
+const RE_PLAZO = new RegExp(
+  '(?<![\\p{L}\\d])(' +
+    `\\d{1,2}\\s+de\\s+(?:${MESES})(?:\\s+de(?:l)?\\s+\\d{4})?|` +
+    '\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?|' +
+    `\\d+(?:\\s*(?:a|o|y|-)\\s*\\d+)?\\s*(?:${UNIDAD_DE_TIEMPO})|` +
+    // un día suelto: «llega el 30», «el día 7», «para el 15»
+    `(?:el|al|del)\\s+(?:d[ií]a\\s+)?\\d{1,2}(?![\\d%/-])(?!\\s*(?:de\\s+(?:${MESES})|${UNIDAD_DE_TIEMPO}|unidades|cajas|marcas|cargas|productos|piezas|pcs|bultos))|` +
+    'pasado mañana|mañana|hoy mismo|hoy|anteayer|antier|ayer|anoche|esta (?:tarde|noche|mañana)|' +
+    '(?:esta|la pr[oó]xima|la otra|la siguiente|la primera|la segunda|la tercera|la cuarta|la [uú]ltima) semana|' +
+    '(?:este|el pr[oó]ximo|el otro|el siguiente) mes|' +
+    '(?:semana|mes|año|quincena) (?:que viene|entrante|pr[oó]xim[oa]|siguiente|pasad[oa]|anterior)|' +
+    `pr[oó]xim[oa]s? (?:${UNIDAD_DE_TIEMPO})|` +
+    'en el transcurso de(?:l| la| el)? (?:d[ií]a|semana|tarde|mañana|mes)|durante el d[ií]a|a lo largo del d[ií]a|' +
+    'lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|' +
+    `${MESES}|` +
+    'fin(?:es)? de (?:mes|semana|año)|finales de|mediados de|principios de|inicios de|quincena|' +
+    `hace (?:(?:${NUMERO_EN_LETRAS}|\\d+) )?(?:${UNIDAD_DE_TIEMPO}|poco|rato)|` +
+    'en breve|en seguida|enseguida|de inmediato|inmediatamente|en un momento|en unos momentos|a primera hora|lo antes posible|' +
+    'muy pronto|pronto|dentro de poco|en poco tiempo|en cualquier momento|ya casi|m[aá]s tarde|al rato|' +
+    `(?:${NUMERO_EN_LETRAS})\\s+(?:${UNIDAD_DE_TIEMPO})` +
+    ')(?!\\p{L})',
+  'giu',
+);
+/* Plata y porcentajes, en cifras o en letras: la expresión entera tiene que
+   estar en el respaldo. */
+const MONEDA = 'd[oó]lares|usd|pesos|rmb|yuanes|yuan|soles';
+const RE_DINERO = new RegExp(
+  `(?:us\\$|\\$|usd)\\s*\\d[\\d.,]*|\\d[\\d.,]*\\s*(?:${MONEDA}|%|por ciento)|` +
+    `(?<!\\p{L})(?:${NUMERO_EN_LETRAS}|mil|dos ?cientos|tres ?cientos|cuatro ?cientos|quinientos|seis ?cientos|sete ?cientos|ocho ?cientos|nove ?cientos|mill[oó]n(?:es)?|medio)(?:\\s+(?:y\\s+|mil\\s+)?\\p{L}+){0,2}?\\s+(?:${MONEDA}|por ciento)(?!\\p{L})`,
+  'giu',
+);
+/* Un dominio escrito sin «http» también es un enlace («tracking.ejemplo.app/…»). */
+const RE_DOMINIO =
+  /(?<![\p{L}\d@.-])(?:[a-z0-9-]+\.)+(?:com|app|net|org|ec|mx|io|co|pro|me|link|ly|info|site|online|store|shop|page|dev)(?![\p{L}\d-])(?:\/[^\s<>"'«»]*)?/giu;
+
+const plano = (t) => sinTildes(t).replace(/\s+/g, ' ');
+/** Solo palabras y números, separados por un espacio (para comparar frases). */
+const limpio = (t) => sinTildes(t).replace(/[^a-z0-9/%$-]+/g, ' ').trim();
+
+/* Afirmaciones sobre DÓNDE está una carga. No llevan cifras ni plazos, así que
+   los otros candados no las ven: «tu carga ya está en aduana» dicho sin dato
+   es tan inventado como una fecha. Solo pasan si la misma frase está en el
+   respaldo de estado (cuando se consultó la carga, SOLO su bloque; si no, las
+   fichas). Se busca sobre el texto ya sin tildes.
+   Costo conocido: si en el turno se consultó la carga y el cliente preguntó
+   otra cosa que usa una de estas frases («¿qué significa en aduana?»), la
+   respuesta de la ficha no pasa y sale el texto seguro del turno. Es el lado
+   barato del error: lo otro es decirle a alguien dónde está una carga que no
+   se leyó. «En la bodega de China» no está en la lista a propósito. */
+const RE_ESTADO_CARGA =
+  /\b(en transito|en aduana|retenid[oa]s?|detenid[oa]s?|en inspeccion|en aforo|liberad[oa]s?|asignad[oa] a(?:l| un) contenedor|en nuestra bodega|en (?:la )?bodega de (?:destino|ecuador|mexico)|recibimos tu mercaderia|(?:fue|fueron|ha sido) (?:entregad|despachad|embarcad|enviad)[oa]s?|despachad[oa]s?|embarcad[oa]s?|(?:ya )?(?:salio|salieron|zarpo|llego|llegaron|arribo|desembarco)|en camino|por llegar|(?:en|al) (?:el )?puerto|en alta mar|nacionalizad[oa]s?|list[oa]s? para (?:retirar|el retiro|la entrega|entregar))\b/g;
+
+/* ── Lo que se quita antes de revisar ──────────────────────────────────── */
+const RE_DESPEDIDA =
+  /^[¡!\s]*(?:hasta (?:pronto|luego|manana|la proxima|entonces)|que tengas (?:un |una )?(?:muy |buen |buena |excelente |lindo |linda |feliz |bonito |bonita )*(?:dia|tarde|noche|fin de semana|semana|domingo|jornada)[^.!?]*|(?:muy )?buen(?:as|os|a)? (?:dia|dias|tarde|tardes|noche|noches|fin de semana|semana|jornada)|feliz (?:dia|tarde|noche|fin de semana|semana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)|saludos(?: cordiales)?|un (?:abrazo|saludo)|bendiciones|gracias por (?:escribir|escribirnos|comunicarte|contactarnos)[^.!?]*|quedo atent[oa][^.!?]*|estamos para (?:servirte|ayudarte)[^.!?]*)[.!\s]*$/;
+
+/** Quita la despedida del final, si hay algo antes. Devuelve { texto, cambios }. */
+function quitarDespedida(texto) {
+  const partes = String(texto).split(/(?<=[.!?…])\s+|\n+/).filter((x) => x.trim());
+  let cambios = 0;
+  while (partes.length > 1 && RE_DESPEDIDA.test(sinTildes(partes[partes.length - 1]).trim())) {
+    partes.pop();
+    cambios += 1;
+  }
+  if (!cambios) return { texto, cambios: 0 };
+  // Se conserva el texto tal cual hasta donde empezaba la despedida.
+  const ultimo = partes[partes.length - 1];
+  const hasta = texto.lastIndexOf(ultimo) + ultimo.length;
+  return { texto: texto.slice(0, hasta).trimEnd(), cambios };
+}
+
+/** «[texto](https://…)» → la dirección sola (WhatsApp no entiende markdown). */
+function aplanarEnlaces(texto) {
+  let cambios = 0;
+  const out = String(texto).replace(/\[([^\]\n]{1,80})\]\(((?:https?:\/\/|www\.)[^)\s]+)\)/g, (_, t, url) => {
+    cambios += 1;
+    const mismo = url.replace(/^https?:\/\//, '').replace(/\/$/, '') === t.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    return mismo ? url : `${t}: ${url}`;
+  });
+  return { texto: out, cambios };
+}
+
+/** «2,5» y «2.50» son la misma cifra. */
+function numero(n) {
+  let x = String(n).replace(',', '.');
+  if (x.includes('.')) x = x.replace(/0+$/, '').replace(/\.$/, '');
+  x = x.replace(/^0+/, '');
+  return x === '' ? '0' : x;
+}
+const cifras = (t) => (String(t).match(/\d+(?:[.,]\d+)?/g) || []).map(numero);
+
+/* Dónde SÍ se puede repetir una cifra que escribió el cliente: como código
+   (su cotización, su marca, su guía) o como cantidad de unidades. */
+const RE_CODIGO_DEL_CLIENTE = new RegExp(
+  '((?:cotizaci[oó]n(?:es)?|pedido|orden|gu[ií]a|referencia|marca|c[oó]digo|ticket|caso)\\s*(?:n\\.?\\s*[ºo°]?\\.?|nro\\.?|n[uú]mero|#|:)?\\s*|#\\s*|\\b[A-Za-z]{2}-)(\\d[\\d]*)|' +
+    '(\\d+)(\\s*(?:unidades|cajas|piezas|pcs|productos|bultos)\\b)',
+  'giu',
+);
+
+/** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
+function datoSinRespaldo(texto, firme, eco, estado = firme) {
+  const firmePlano = plano(firme);
+  const firmeMinus = firme.toLowerCase();
+  const estadoPlano = plano(estado);
+  for (const url of texto.match(RE_URL) || []) {
+    if (!firmeMinus.includes(url.replace(/[.,;:)]+$/, '').toLowerCase())) {
+      return 'traía un enlace que no está en la base';
+    }
+  }
+  let sinEnlaces = texto.replace(RE_URL, ' ');
+  for (const correo of sinEnlaces.match(RE_CORREO) || []) {
+    if (!firmeMinus.includes(correo.toLowerCase())) return 'repetía un correo que no está en la base';
+  }
+  sinEnlaces = sinEnlaces.replace(RE_CORREO, ' ');
+  for (const dominio of sinEnlaces.match(RE_DOMINIO) || []) {
+    if (!firmeMinus.includes(dominio.replace(/[.,;:)]+$/, '').toLowerCase())) {
+      return `traía la dirección «${dominio}», que no está en la base`;
+    }
+  }
+  sinEnlaces = sinEnlaces.replace(RE_DOMINIO, ' ');
+
+  /* Una FECHA («24 de octubre») vale si está tal cual en el respaldo. Una
+     duración, un «hoy» o un día suelto («el 30») necesitan además a su
+     vecina: «30 minutos antes» sale del texto de las clases, pero «en 30
+     minutos te paso la cotización» no, y las dos traen «30 minutos». */
+  const firmeLimpio = ` ${limpio(firme)} `;
+  for (const m of sinEnlaces.matchAll(RE_PLAZO)) {
+    const plazo = limpio(m[0]);
+    let respaldado;
+    if (/^\d{1,2} de |^\d{1,2}[/-]\d/.test(plazo)) {
+      respaldado = firmeLimpio.includes(` ${plazo} `);
+    } else {
+      const antes = limpio(sinEnlaces.slice(0, m.index)).split(' ').pop() || '';
+      const despues = limpio(sinEnlaces.slice(m.index + m[0].length)).split(' ')[0] || '';
+      respaldado =
+        (antes && firmeLimpio.includes(` ${antes} ${plazo} `)) ||
+        (despues && firmeLimpio.includes(` ${plazo} ${despues} `)) ||
+        (!antes && !despues && firmeLimpio.includes(` ${plazo} `));
+    }
+    if (!respaldado) return `traía el plazo «${m[0]}», que no sale de un dato leído`;
+  }
+  for (const monto of sinEnlaces.match(RE_DINERO) || []) {
+    if (!firmePlano.includes(plano(monto))) return `traía el monto «${monto.trim()}», que no sale de un dato leído`;
+  }
+  for (const frase of plano(sinEnlaces).match(RE_ESTADO_CARGA) || []) {
+    if (!estadoPlano.includes(frase)) return `afirmaba «${frase}» sobre una carga sin un dato leído que lo diga`;
+  }
+
+  // Cifras: las del respaldo, más las del cliente SOLO como código o cantidad.
+  const delRespaldo = new Set(cifras(firme));
+  const delCliente = new Set(cifras(eco));
+  const sinCodigos = sinEnlaces.replace(RE_CODIGO_DEL_CLIENTE, (todo, pre, cod, cant, unidad) => {
+    const n = cod ?? cant;
+    if (!delCliente.has(numero(n))) return todo;
+    return cod !== undefined ? `${pre} ` : ` ${unidad}`;
+  });
+  // «1. …», «2) …» al inicio de una línea son el orden de los pasos, no un dato.
+  const sinOrden = sinCodigos.replace(/^[ \t]*\d{1,2}[.)][ \t]+/gm, '');
+  for (const c of cifras(sinOrden)) {
+    if (!delRespaldo.has(c)) return `traía la cifra «${c}», que no sale de un dato leído`;
+  }
+  return null;
+}
+
+/**
+ * @param {string} respuesta  lo que escribió el modelo (ya pasado por el sanitizador del motor)
+ * @param {object} hechos     lo que arma `turno.js`:
+ *   - respaldo.firme   textos fijos + fichas + carga del cliente (lo que SÍ se puede afirmar)
+ *   - respaldo.eco     lo que escribió el cliente en este turno (solo respalda sus códigos)
+ *   - respaldo.estado  contra qué se comparan las frases de estado de una carga. Cuando
+ *                      en el turno se consultó la carga, es SOLO su bloque: una ficha que
+ *                      explica los pasos no autoriza a decir «la tuya está en aduana».
+ *   - textoSeguro      con qué se reemplaza una respuesta que no pasa
+ * @returns {{texto:string, cambiada:boolean, corregida:boolean, motivos:string[]}}
+ */
+function revisarRespuesta(respuesta, hechos = {}) {
+  const h = hechos || {};
+  const original = String(respuesta ?? '');
+  const tags = original.match(RE_TAG) || [];
+  let visible = original.replace(RE_TAG, '').trim();
+  const motivos = [];
+
+  // Silencio a propósito ([espera]:true y nada más): no hay nada que revisar.
+  if (!visible) return { texto: original, cambiada: false, corregida: false, motivos };
+
+  const firme = String(h.respaldo?.firme || '');
+  const eco = String(h.respaldo?.eco || '');
+  const seguro = h.textoSeguro || MENSAJE_ASESOR;
+
+  // 1. Lo que se puede corregir con certeza.
+  const pasos = [
+    [aplanarEnlaces, 'enlace en markdown aplanado'],
+    [quitarDespedida, 'despedida quitada'],
+    [corregirVoseo, 'voseo corregido'],
+    [cambiarCargos, 'cargo interno cambiado'],
+  ];
+  for (const [fn, motivo] of pasos) {
+    const r = fn(visible);
+    if (r.cambios) motivos.push(motivo);
+    visible = r.texto;
+  }
+  const corregida = motivos.length > 0;
+
+  // 2. Lo que no se manda.
+  let falla = null;
+  if (RE_MARCADOR.test(visible)) falla = 'traía un marcador sin llenar';
+  else if (visible.length > MAX_RESPUESTA) falla = 'respuesta demasiado larga';
+  else if (RE_CARGO_RESTANTE.test(visible)) falla = 'nombraba un cargo interno';
+  else if (RE_PERSONA.test(visible) || RE_PERSONA_NOMBRE.test(visible)) falla = 'se presentaba como una persona';
+  else falla = datoSinRespaldo(visible, firme, eco, h.respaldo?.estado ?? firme);
+
+  if (falla) {
+    motivos.push(falla);
+    return { texto: seguro, cambiada: true, corregida: false, motivos };
+  }
+  if (corregida) {
+    if (visible[0] !== visible[0].toUpperCase()) visible = visible[0].toUpperCase() + visible.slice(1);
+    return { texto: [visible, ...tags].join('\n'), cambiada: true, corregida: true, motivos };
+  }
+  return { texto: original, cambiada: false, corregida: false, motivos };
+}
+
+module.exports = {
+  revisarRespuesta,
+  corregirVoseo,
+  cambiarCargos,
+  quitarDespedida,
+  aplanarEnlaces,
+  datoSinRespaldo,
+  RE_PLAZO,
+  MAX_RESPUESTA,
+};

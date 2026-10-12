@@ -18,6 +18,27 @@
    - pausa_humano        { minutos, estados }: en esas columnas el bot calla si
                          una persona del equipo escribió hace menos de N
                          minutos — el chat lo está atendiendo alguien.
+   - horario             { desde: "16:00", hasta: "08:00", dias_completos: [0],
+                         utc: -5 }: el bot solo contesta dentro de esa franja.
+                         Fuera de ella calla y el chat queda para el equipo,
+                         como si el bot no existiera. Si `desde` es mayor que
+                         `hasta` la franja cruza la medianoche (16:00 → 08:00).
+                         `dias_completos` (0 = domingo … 6 = sábado) son días
+                         en que contesta las 24 horas. `utc` es el desfase de
+                         la cuenta en horas (por defecto -5, Ecuador). Nació
+                         con la línea de soporte 265 (2026-10-12): de día
+                         atiende el equipo y el bot cubre la noche.
+   - solo_numeros        lista blanca para probar un bot en una línea real: si
+                         trae teléfonos, el bot SOLO les contesta a esos y
+                         calla con todos los demás. Vacía = sin efecto.
+   - soporte_expertos    true o { cargas, fichas, guardia }: enciende lo que
+                         el bot de soporte de la 265 hace alrededor del modelo
+                         (utils/soporteExpertos/turno.js): busca la carga del
+                         cliente por su teléfono, trae las fichas de la base
+                         más cercanas a lo que escribió, lee qué adjuntos
+                         llegaron y pasa la respuesta por la guardia. Cada
+                         parte se apaga poniéndola en false. Sin este ajuste
+                         nada de eso corre.
 
    Va en un JSON y no en cuatro columnas porque son ajustes de pocas cuentas y
    van a aparecer más. Si la columna todavía no existe (falta aplicar
@@ -35,6 +56,9 @@ const SIN_AJUSTES = Object.freeze({
   mensaje_fallback: null,
   numeros_excluidos: [],
   pausa_humano: null,
+  horario: null,
+  solo_numeros: [],
+  soporte_expertos: null,
 });
 
 // id_configuracion → { ts, valor }
@@ -43,12 +67,65 @@ let avisoSinMigrar = false;
 
 const soloDigitos = (v) => String(v ?? '').replace(/\D/g, '');
 
+const UTC_POR_DEFECTO = -5; // Ecuador, sin horario de verano
+
+/* "16:00" / "8:30" / "8" → minutos desde la medianoche; null si no es una hora. */
+function minutosDelDia(v) {
+  const m = /^\s*(\d{1,2})(?::(\d{2}))?\s*$/.exec(String(v ?? ''));
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2] || 0);
+  if (h > 24 || min > 59 || (h === 24 && min > 0)) return null;
+  return (h % 24) * 60 + min;
+}
+
+/* Un horario mal escrito NO puede terminar en "bot las 24 horas": si la franja
+   no se entiende se devuelve null y, para que eso no pase desapercibido, queda
+   anotado `horario_invalido` (quien lea los ajustes calla el bot). */
+function normalizarHorario(h) {
+  if (h === undefined || h === null) return { horario: null, invalido: false };
+  if (typeof h !== 'object') return { horario: null, invalido: true };
+  const desde = minutosDelDia(h.desde);
+  const hasta = minutosDelDia(h.hasta);
+  const dias = (Array.isArray(h.dias_completos) ? h.dias_completos : [])
+    .map(Number)
+    .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+  const utc = Number(h.utc);
+  const hayFranja = desde !== null && hasta !== null && desde !== hasta;
+  if (!hayFranja && !dias.length) return { horario: null, invalido: true };
+  return {
+    horario: {
+      desde_min: hayFranja ? desde : null,
+      hasta_min: hayFranja ? hasta : null,
+      dias_completos: [...new Set(dias)],
+      utc: Number.isFinite(utc) && utc >= -12 && utc <= 14 ? utc : UTC_POR_DEFECTO,
+    },
+    invalido: false,
+  };
+}
+
+/* true → todo encendido; un objeto apaga lo que traiga en false. */
+function normalizarSoporteExpertos(v) {
+  if (v === true) return { cargas: true, fichas: true, guardia: true };
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  return {
+    cargas: v.cargas !== false,
+    fichas: v.fichas !== false,
+    guardia: v.guardia !== false,
+  };
+}
+
 function normalizar(raw) {
   let c = raw;
   try {
     while (typeof c === 'string') c = JSON.parse(c);
   } catch {
-    return SIN_AJUSTES;
+    /* JSON roto. Sin horario eso es "sin ajustes", como siempre. Pero si el
+       texto traía un horario, caer a "sin ajustes" sería soltar al bot las 24
+       horas en una cuenta que lo quería solo de noche: ahí se calla. */
+    return /"horario"/.test(String(raw))
+      ? { ...SIN_AJUSTES, horario_invalido: true }
+      : SIN_AJUSTES;
   }
   if (!c || typeof c !== 'object') return SIN_AJUSTES;
 
@@ -58,6 +135,7 @@ function normalizar(raw) {
   const estados = Array.isArray(c.pausa_humano?.estados)
     ? c.pausa_humano.estados.map((e) => String(e).toLowerCase().trim()).filter(Boolean)
     : [];
+  const { horario, invalido: horarioInvalido } = normalizarHorario(c.horario);
 
   return {
     espera_rafaga_ms:
@@ -72,6 +150,12 @@ function normalizar(raw) {
       Number.isFinite(minutos) && minutos > 0 && estados.length
         ? { minutos: Math.min(minutos, 24 * 60), estados }
         : null,
+    horario,
+    horario_invalido: horarioInvalido,
+    solo_numeros: (Array.isArray(c.solo_numeros) ? c.solo_numeros : [])
+      .map(soloDigitos)
+      .filter((n) => n.length >= 7),
+    soporte_expertos: normalizarSoporteExpertos(c.soporte_expertos),
   };
 }
 
@@ -115,6 +199,49 @@ function esNumeroExcluido(ajustes, telefono) {
   return ajustes.numeros_excluidos.some((n) => cola(n) === cola(tel));
 }
 
+/* ¿El bot puede contestar a esta hora? Sin `horario` siempre puede. Con un
+   horario que no se pudo leer, NO: es preferible un bot callado a uno que le
+   contesta a toda la cuenta a mediodía por un error de tipeo. */
+function dentroDeHorario(ajustes, ahora = new Date()) {
+  if (ajustes?.horario_invalido) return false;
+  const h = ajustes?.horario;
+  if (!h) return true;
+
+  // Hora local de la cuenta sin depender de la zona del servidor.
+  const local = new Date(ahora.getTime() + h.utc * 60 * 60 * 1000);
+  if (h.dias_completos.includes(local.getUTCDay())) return true;
+  if (h.desde_min === null) return false;
+
+  const m = local.getUTCHours() * 60 + local.getUTCMinutes();
+  return h.desde_min < h.hasta_min
+    ? m >= h.desde_min && m < h.hasta_min
+    : m >= h.desde_min || m < h.hasta_min; // cruza la medianoche
+}
+
+/* Lista blanca de pruebas: vacía deja pasar a todos. Misma comparación por los
+   últimos 9 dígitos que `esNumeroExcluido`. */
+function esNumeroPermitido(ajustes, telefono) {
+  if (!ajustes?.solo_numeros?.length) return true;
+  const tel = soloDigitos(telefono);
+  if (tel.length < 7) return false;
+  const cola = (n) => n.slice(-9);
+  return ajustes.solo_numeros.some((n) => cola(n) === cola(tel));
+}
+
+/* ¿El horario o la lista blanca van a callar al bot con este teléfono ahora?
+   Es la misma pregunta que hace kanban_ia al entrar, puesta aparte para que el
+   webhook la haga ANTES de gastar en transcribir un audio o leer una imagen:
+   con el bot de la 265 encendido solo de noche, sin esto se transcribía y se
+   describía todo lo que llega de día, que nadie del bot va a usar. Una cuenta
+   sin `horario` ni `solo_numeros` responde siempre false: queda como estaba. */
+function calladoPorHorarioOLista(ajustes, telefono, ahora = new Date()) {
+  if (!ajustes) return false;
+  const tieneCandado =
+    Boolean(ajustes.horario) || Boolean(ajustes.horario_invalido) || Boolean(ajustes.solo_numeros?.length);
+  if (!tieneCandado) return false;
+  return !esNumeroPermitido(ajustes, telefono) || !dentroDeHorario(ajustes, ahora);
+}
+
 /* `responsable` trae el nombre de quien escribió. Lo que empieza con IA_, cron_
    o es un emisor del sistema (encuesta, notifier, respondedor) no es una
    persona. "Whatsapp Business" sí: es el eco de la app de coexistencia, o sea
@@ -133,6 +260,9 @@ module.exports = {
   getAjustesIA,
   invalidarAjustesIA,
   esNumeroExcluido,
+  esNumeroPermitido,
+  dentroDeHorario,
   esResponsableHumano,
+  calladoPorHorarioOLista,
   normalizar,
 };

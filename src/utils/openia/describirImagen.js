@@ -59,12 +59,17 @@ function mimePorExtension(ruta) {
 // ══════════════════════════════════════════════════════════════
 // Llamada única a OpenAI. Recibe la imagen ya en data URL.
 // ══════════════════════════════════════════════════════════════
-async function pedirDescripcion(dataUrl, apiKeyOpenAI, etiquetaLog) {
+async function pedirDescripcion(
+  dataUrl,
+  apiKeyOpenAI,
+  etiquetaLog,
+  prompt = PROMPT_VISION,
+) {
   const res = await axios.post(
     'https://api.openai.com/v1/responses',
     {
       model: MODELO,
-      instructions: PROMPT_VISION,
+      instructions: prompt || PROMPT_VISION,
       input: [
         {
           role: 'user',
@@ -108,7 +113,14 @@ async function pedirDescripcion(dataUrl, apiKeyOpenAI, etiquetaLog) {
 // src/uploads/... Se lee del disco (no por URL) por la misma razón que el
 // audio: en desarrollo el archivo es local pero la URL apunta a producción.
 // ══════════════════════════════════════════════════════════════
-async function describirImagenDesdeArchivo(rutaArchivo, apiKeyOpenAI) {
+// `opciones.prompt`: prompt de visión propio de la cuenta (la línea de soporte
+// usa el suyo). Tiene que conservar el formato de salida «[IMAGEN: tipo] …».
+// Sin opciones, el prompt de siempre.
+async function describirImagenDesdeArchivo(
+  rutaArchivo,
+  apiKeyOpenAI,
+  opciones = {},
+) {
   try {
     if (!rutaArchivo || !apiKeyOpenAI) return null;
 
@@ -126,7 +138,12 @@ async function describirImagenDesdeArchivo(rutaArchivo, apiKeyOpenAI) {
     const b64 = await fs.readFile(rutaAbsoluta, { encoding: 'base64' });
     const dataUrl = `data:${mimePorExtension(rutaAbsoluta)};base64,${b64}`;
 
-    return await pedirDescripcion(dataUrl, apiKeyOpenAI, 'VISION][WA');
+    return await pedirDescripcion(
+      dataUrl,
+      apiKeyOpenAI,
+      'VISION][WA',
+      opciones?.prompt,
+    );
   } catch (err) {
     console.log(
       `[VISION][WA][ERROR] ${err?.response?.data?.error?.message || err.message}`,
