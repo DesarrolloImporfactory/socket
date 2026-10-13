@@ -635,13 +635,23 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
              inyectaba un producto y este bloque anclaba otro. Una sola verdad. */
           let desdeAnuncio = null;
           try {
+            // Un anuncio anterior al reinicio o al colchón no es de esta conversación.
+            const {
+              anclaProductoVigente,
+            } = require('./webhook_whatsapp/colchonMensajeIlegible');
+            const vigente = (fecha) =>
+              anclaProductoVigente({
+                id_configuracion,
+                id_cliente: opts.id_cliente,
+                fecha_ancla: fecha,
+              });
             const [ultimoAd] = await db.query(
-              `SELECT headline, source_id FROM cliente_productos_ad
+              `SELECT headline, source_id, created_at FROM cliente_productos_ad
                 WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
               { replacements: [opts.id_cliente], type: db.QueryTypes.SELECT },
             );
 
-            if (ultimoAd) {
+            if (ultimoAd && (await vigente(ultimoAd.created_at))) {
               const {
                 resolverProductoAnuncio,
               } = require('./webhook_whatsapp/buscar_producto_referral');
@@ -661,11 +671,14 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                el título guardado en el propio cliente, por contención. */
             if (!desdeAnuncio) {
               const [cliRow] = await db.query(
-                `SELECT ultimo_producto_ad FROM clientes_chat_center
-                  WHERE id = ? LIMIT 1`,
+                `SELECT ultimo_producto_ad, ultimo_producto_ad_at
+                   FROM clientes_chat_center WHERE id = ? LIMIT 1`,
                 { replacements: [opts.id_cliente], type: db.QueryTypes.SELECT },
               );
-              if (cliRow?.ultimo_producto_ad) {
+              if (
+                cliRow?.ultimo_producto_ad &&
+                (await vigente(cliRow.ultimo_producto_ad_at))
+              ) {
                 desdeAnuncio = buscarEn([
                   { texto_mensaje: cliRow.ultimo_producto_ad },
                 ]);

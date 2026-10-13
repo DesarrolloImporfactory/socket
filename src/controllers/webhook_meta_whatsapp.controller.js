@@ -51,6 +51,16 @@ const {
   intentarRespuestaPostVenta,
 } = require('../services/producto_wizard_runtime.service');
 
+// Primer mensaje ilegible (unsupported): ofrece los productos en pauta.
+const {
+  intentarColchonMensajeIlegible,
+  interpretarRespuestaColchon,
+  mensajeParaIaColchon,
+} = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+const {
+  sembrarProductoEnJuego,
+} = require('../services/producto_wizard_runtime.service');
+
 // Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
 // columnas del flujo Dropi que no tienen agente.
 const { intentarRespuestaLogistica } = require('../utils/respondedorLogistico');
@@ -897,6 +907,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
          se guarda en el chat pero NO es conversación, así que el bot no
          debe contestarla ("Entiendo, no te preocupes…" tras un ❌). */
       let esRespuestaPermisoLlamada = false;
+      // Lo que tocó el cliente en el colchón de mensaje ilegible (o null).
+      let eleccionColchon = null;
       let ruta_archivo = null;
       let tipo_button = '';
 
@@ -1084,7 +1096,10 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
 
         case 'interactive':
           const interactive = mensaje_recibido?.interactive || {};
-          if (interactive.type === 'button_reply') {
+          eleccionColchon = interpretarRespuestaColchon(interactive);
+          if (eleccionColchon) {
+            texto_mensaje = eleccionColchon.texto;
+          } else if (interactive.type === 'button_reply') {
             texto_mensaje = `Respuesta de botón: ${interactive.button_reply?.title}`;
           } else if (interactive.type === 'list_reply') {
             texto_mensaje = `Respuesta de lista: ${interactive.list_reply?.title}`;
@@ -2655,18 +2670,51 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   `[${new Date().toISOString()}] ${m}\n`,
                 )
                 .catch(() => {});
-            try {
-              const wiz = await intentarMensajeFijoWizard({
+
+            // 1.4 Colchón: primer mensaje ilegible y sin anuncio → botones
+            // con los productos en pauta en vez de la pregunta abierta.
+            if (tipo_mensaje === 'unsupported' && !referral && !botCallado) {
+              const colchon = await intentarColchonMensajeIlegible({
                 id_configuracion,
                 id_cliente,
+                id_mensaje: creacion_mensaje.id,
                 telefono: phone_whatsapp_from,
                 business_phone_id,
                 accessToken,
                 estado_contacto,
-                referral,
-                texto_mensaje,
                 log: logWizard,
               });
+              if (colchon.manejado) saltarIA = true;
+            }
+            // El cliente tocó una opción: el producto queda "en juego" igual
+            // que si hubiera entrado por el anuncio.
+            if (eleccionColchon) {
+              mensaje_para_ia = mensajeParaIaColchon(eleccionColchon);
+              if (!eleccionColchon.otro && eleccionColchon.nombre) {
+                await sembrarProductoEnJuego({
+                  id_cliente,
+                  id_configuracion,
+                  producto: { nombre: eleccionColchon.nombre },
+                  texto_mensaje,
+                });
+              }
+            }
+
+            try {
+              const wiz = saltarIA
+                ? null
+                : await intentarMensajeFijoWizard({
+                    id_configuracion,
+                    id_cliente,
+                    telefono: phone_whatsapp_from,
+                    business_phone_id,
+                    accessToken,
+                    estado_contacto,
+                    referral,
+                    texto_mensaje,
+                    log: logWizard,
+                    id_producto_elegido: eleccionColchon?.id_producto || null,
+                  });
               // La ficha del wizard reemplaza al bloque genérico del referral:
               // trae descripción IA, combos válidos, FAQs y stock en vivo.
               if (wiz?.bloqueMotor) bloque_producto_referral = wiz.bloqueMotor;

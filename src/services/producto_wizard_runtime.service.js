@@ -158,10 +158,14 @@ function olvidarWizard(id_producto) {
 async function enriquecerProductoWizard(producto) {
   try {
     const [fila] = await db.query(
-      `SELECT es_variable FROM productos_chat_center WHERE id = ? LIMIT 1`,
+      `SELECT p.es_variable, COALESCE(c.es_proveedor, 0) AS es_proveedor
+         FROM productos_chat_center p
+         LEFT JOIN configuraciones c ON c.id = p.id_configuracion
+        WHERE p.id = ? LIMIT 1`,
       { replacements: [producto.id], type: db.QueryTypes.SELECT },
     );
     producto.es_variable = Number(fila?.es_variable) === 1 ? 1 : 0;
+    producto.es_proveedor = Number(fila?.es_proveedor) === 1 ? 1 : 0;
     producto.variaciones = producto.es_variable
       ? await db.query(
           `SELECT atributo, valor, stock, precio_sugerido
@@ -291,7 +295,14 @@ async function resolverWizardPorTexto(id_configuracion, mensaje) {
   if (!lista.length) return null;
   const elegido = elegirProductoPorTexto(mensaje, lista);
   if (!elegido) return null;
-  const wizard = await wizardActivoDeProducto(elegido.id);
+  const r = await resolverWizardPorId(elegido.id);
+  return r ? { ...r, via: 'texto' } : null;
+}
+
+/* Producto ya identificado (p. ej. el cliente lo tocó en los botones del
+   colchón de mensaje ilegible): solo hace falta que tenga wizard activo. */
+async function resolverWizardPorId(id_producto) {
+  const wizard = await wizardActivoDeProducto(id_producto);
   if (!wizard) return null;
   const [producto] = await db.query(
     `SELECT id, id_configuracion, nombre, descripcion, precio, imagen_url,
@@ -299,12 +310,12 @@ async function resolverWizardPorTexto(id_configuracion, mensaje) {
             id_producto_upsell, nombre_upsell, descripcion_upsell,
             precio_upsell, imagen_upsell_url
        FROM productos_chat_center
-      WHERE id = ? LIMIT 1`,
-    { replacements: [elegido.id], type: db.QueryTypes.SELECT },
+      WHERE id = ? AND eliminado = 0 LIMIT 1`,
+    { replacements: [id_producto], type: db.QueryTypes.SELECT },
   );
   if (!producto) return null;
   await enriquecerProductoWizard(producto);
-  return { producto, wizard, via: 'texto' };
+  return { producto, wizard, via: 'id' };
 }
 
 /* Ancla el producto identificado por texto como "producto en juego" del
@@ -319,11 +330,26 @@ async function sembrarProductoEnJuego({
 }) {
   try {
     const [ultimo] = await db.query(
-      `SELECT headline FROM cliente_productos_ad
+      `SELECT headline, created_at FROM cliente_productos_ad
         WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
       { replacements: [id_cliente], type: db.QueryTypes.SELECT },
     );
-    if (String(ultimo?.headline || '') === String(producto.nombre)) return;
+    // El mismo producto se omite solo si su ancla sigue vigente; una
+    // anterior al reinicio o al colchón ya no cuenta y se renueva.
+    if (String(ultimo?.headline || '') === String(producto.nombre)) {
+      const {
+        anclaProductoVigente,
+      } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+      if (
+        await anclaProductoVigente({
+          id_configuracion,
+          id_cliente,
+          fecha_ancla: ultimo.created_at,
+        })
+      ) {
+        return;
+      }
+    }
     await db.query(
       `INSERT INTO cliente_productos_ad
          (id_cliente, id_configuracion, headline, body_ad, source_url, source_id, ctwa_clid, mensaje_cliente)
@@ -351,7 +377,7 @@ async function sembrarProductoEnJuego({
 async function wizardDelClienteEnJuego(id_configuracion, id_cliente) {
   try {
     const [ad] = await db.query(
-      `SELECT headline, source_id FROM cliente_productos_ad
+      `SELECT headline, source_id, created_at FROM cliente_productos_ad
         WHERE id_cliente = ? AND id_configuracion = ?
         ORDER BY id DESC LIMIT 1`,
       {
@@ -360,6 +386,18 @@ async function wizardDelClienteEnJuego(id_configuracion, id_cliente) {
       },
     );
     if (!ad) return null;
+    const {
+      anclaProductoVigente,
+    } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+    if (
+      !(await anclaProductoVigente({
+        id_configuracion,
+        id_cliente,
+        fecha_ancla: ad.created_at,
+      }))
+    ) {
+      return null;
+    }
     return await resolverWizardDelAnuncio(
       id_configuracion,
       ad.headline,
@@ -657,7 +695,10 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
   const faqs = leerJson(wizard.respuestas_rapidas_json, []).filter(
     (f) => f && f.activa !== 0 && f.pregunta && f.respuesta,
   );
-  const stock = Number(producto.stock);
+  /* El stock solo cuenta en cuentas proveedoras, igual que en el catálogo.
+     Un dropshipper con producto manual sin stock (guardado como 0) hacía que
+     el bot dijera "agotado" con 150 en bodega (cfg 486, 2026-10-11). */
+  const stock = producto.es_proveedor ? Number(producto.stock) : NaN;
   const sinStock = Number.isFinite(stock) && stock <= 0;
   const ajustes = ajustesIaWizard(wizard);
 
@@ -761,7 +802,7 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
       `🎨 Variedades (el cliente debe elegir una): ${producto.variaciones
         .map(
           (v) =>
-            `${v.atributo ? `${v.atributo} ` : ''}${v.valor}${v.stock != null ? ` (stock ${v.stock})` : ''}`,
+            `${v.atributo ? `${v.atributo} ` : ''}${v.valor}${producto.es_proveedor && v.stock != null ? ` (stock ${v.stock})` : ''}`,
         )
         .join(' · ')}`,
     );
@@ -838,12 +879,21 @@ async function intentarMensajeFijoWizard({
   referral,
   texto_mensaje,
   log,
+  // Producto que el cliente tocó en el colchón de mensaje ilegible.
+  id_producto_elegido = null,
 }) {
   const nada = { paqueteEnviado: false, saltarIA: false, bloqueMotor: null };
   const decir = logDe(log);
 
   let r = null;
-  if (referral) {
+  if (id_producto_elegido) {
+    r = await resolverWizardPorId(id_producto_elegido);
+    if (r) {
+      await decir(
+        `wizard: producto elegido en el colchón → "${r.producto.nombre}" (id ${r.producto.id})`,
+      );
+    }
+  } else if (referral) {
     r = await resolverWizardDelAnuncio(
       id_configuracion,
       referral.headline || '',
@@ -2334,6 +2384,9 @@ module.exports = {
   RESPONSABLE_FLUJO,
   RESPONSABLES_SIN_IA,
   wizardActivoDeProducto,
+  resolverWizardPorId,
+  sembrarProductoEnJuego,
+  botHabilitado,
   olvidarWizard,
   refrescarMensajeFijoDeProducto,
   resolverWizardDelAnuncio,

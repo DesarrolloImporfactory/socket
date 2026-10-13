@@ -2072,10 +2072,27 @@ async function procesarMensajeKanban(params) {
       id_configuracion == 476)
   ) { */
   const [cli] = await db.query(
-    `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+    `SELECT ultimo_producto_ad, ultimo_producto_ad_at
+       FROM clientes_chat_center WHERE id = ? LIMIT 1`,
     { replacements: [id_cliente], type: db.QueryTypes.SELECT },
   );
-  const ultimoProductoAd = (cli?.ultimo_producto_ad || '').trim();
+  // Un ancla anterior al reinicio o al colchón ya no es de esta conversación.
+  const {
+    anclaProductoVigente,
+  } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+  const anclaVigente = await anclaProductoVigente({
+    id_configuracion,
+    id_cliente,
+    fecha_ancla: cli?.ultimo_producto_ad_at,
+  });
+  const ultimoProductoAd = anclaVigente
+    ? (cli?.ultimo_producto_ad || '').trim()
+    : '';
+  if (!anclaVigente && cli?.ultimo_producto_ad) {
+    await log(
+      `📎 ultimo_producto_ad="${cli.ultimo_producto_ad}" ignorado: es anterior al reinicio o al colchón`,
+    );
+  }
 
   if (ultimoProductoAd) {
     const {

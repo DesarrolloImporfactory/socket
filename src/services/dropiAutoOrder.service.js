@@ -45,6 +45,9 @@
 const axios = require('axios');
 const { db } = require('../database/config');
 const { decryptToken } = require('../utils/cryptoToken');
+const {
+  anclaProductoVigente,
+} = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
 const dropiService = require('./dropi.service');
 const DropiIntegrations = require('../models/dropi_integrations.model');
 const {
@@ -1065,7 +1068,7 @@ async function autoCrearOrdenDropi({
     if (!prodLocal && !esMultiProducto) {
       // b) headline del último anuncio por el que entró este cliente
       const [ad] = await db.query(
-        `SELECT headline FROM cliente_productos_ad
+        `SELECT headline, created_at FROM cliente_productos_ad
          WHERE id_cliente = ? AND id_configuracion = ?
          ORDER BY id DESC LIMIT 1`,
         {
@@ -1073,7 +1076,16 @@ async function autoCrearOrdenDropi({
           type: db.QueryTypes.SELECT,
         },
       );
-      const headline = String(ad?.headline || '').trim();
+      // Un anuncio anterior al reinicio o al colchón no es de este pedido.
+      const headline =
+        ad &&
+        (await anclaProductoVigente({
+          id_configuracion,
+          id_cliente,
+          fecha_ancla: ad.created_at,
+        }))
+          ? String(ad.headline || '').trim()
+          : '';
       if (headline) {
         prodLocal = matchEnLista(productos, headline, (p) => p.nombre);
         if (prodLocal) fuenteProducto = `headline_ad ("${headline}")`;
@@ -1083,10 +1095,19 @@ async function autoCrearOrdenDropi({
     if (!prodLocal && !esMultiProducto) {
       // c) respaldo: ultimo_producto_ad guardado en el cliente
       const [cli] = await db.query(
-        `SELECT ultimo_producto_ad FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+        `SELECT ultimo_producto_ad, ultimo_producto_ad_at
+           FROM clientes_chat_center WHERE id = ? LIMIT 1`,
         { replacements: [id_cliente], type: db.QueryTypes.SELECT },
       );
-      const upa = String(cli?.ultimo_producto_ad || '').trim();
+      const upa =
+        cli &&
+        (await anclaProductoVigente({
+          id_configuracion,
+          id_cliente,
+          fecha_ancla: cli.ultimo_producto_ad_at,
+        }))
+          ? String(cli.ultimo_producto_ad || '').trim()
+          : '';
       if (upa) {
         prodLocal = matchEnLista(productos, upa, (p) => p.nombre);
         if (prodLocal) fuenteProducto = `ultimo_producto_ad ("${upa}")`;
