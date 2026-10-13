@@ -330,11 +330,26 @@ async function sembrarProductoEnJuego({
 }) {
   try {
     const [ultimo] = await db.query(
-      `SELECT headline FROM cliente_productos_ad
+      `SELECT headline, created_at FROM cliente_productos_ad
         WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
       { replacements: [id_cliente], type: db.QueryTypes.SELECT },
     );
-    if (String(ultimo?.headline || '') === String(producto.nombre)) return;
+    // El mismo producto se omite solo si su ancla sigue vigente; una
+    // anterior al reinicio o al colchón ya no cuenta y se renueva.
+    if (String(ultimo?.headline || '') === String(producto.nombre)) {
+      const {
+        anclaProductoVigente,
+      } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+      if (
+        await anclaProductoVigente({
+          id_configuracion,
+          id_cliente,
+          fecha_ancla: ultimo.created_at,
+        })
+      ) {
+        return;
+      }
+    }
     await db.query(
       `INSERT INTO cliente_productos_ad
          (id_cliente, id_configuracion, headline, body_ad, source_url, source_id, ctwa_clid, mensaje_cliente)
@@ -362,7 +377,7 @@ async function sembrarProductoEnJuego({
 async function wizardDelClienteEnJuego(id_configuracion, id_cliente) {
   try {
     const [ad] = await db.query(
-      `SELECT headline, source_id FROM cliente_productos_ad
+      `SELECT headline, source_id, created_at FROM cliente_productos_ad
         WHERE id_cliente = ? AND id_configuracion = ?
         ORDER BY id DESC LIMIT 1`,
       {
@@ -371,6 +386,18 @@ async function wizardDelClienteEnJuego(id_configuracion, id_cliente) {
       },
     );
     if (!ad) return null;
+    const {
+      anclaProductoVigente,
+    } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+    if (
+      !(await anclaProductoVigente({
+        id_configuracion,
+        id_cliente,
+        fecha_ancla: ad.created_at,
+      }))
+    ) {
+      return null;
+    }
     return await resolverWizardDelAnuncio(
       id_configuracion,
       ad.headline,

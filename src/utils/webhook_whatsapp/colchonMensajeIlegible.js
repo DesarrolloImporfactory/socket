@@ -179,6 +179,32 @@ async function intentarColchonMensajeIlegible({
   }
 }
 
+/* ¿Sigue valiendo el producto anclado al cliente (anuncio o elección)? No,
+   si es anterior al "Reiniciar conversación" o al colchón: ahí empezó una
+   conversación sin producto conocido. Sin esto, tras "Otro producto" el bot
+   seguía vendiendo el anuncio de semanas atrás (cfg 610, 2026-10-13). */
+async function anclaProductoVigente({ id_configuracion, id_cliente, fecha_ancla }) {
+  if (!fecha_ancla) return true;
+  try {
+    const [r] = await db.query(
+      `SELECT
+         (SELECT reinicio_conversacion_at FROM clientes_chat_center WHERE id = ?) AS reinicio,
+         (SELECT MAX(created_at) FROM mensajes_clientes
+           WHERE id_configuracion = ? AND celular_recibe = ? AND responsable = ?) AS colchon`,
+      {
+        replacements: [id_cliente, id_configuracion, String(id_cliente), RESPONSABLE_COLCHON],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    const ancla = new Date(fecha_ancla).getTime();
+    if (r?.reinicio && new Date(r.reinicio).getTime() > ancla) return false;
+    if (r?.colchon && new Date(r.colchon).getTime() > ancla) return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 /* Lee la respuesta del cliente a los botones/lista del colchón. El texto
    completo viene en la descripción de la fila (el título va recortado). */
 function interpretarRespuestaColchon(interactive) {
@@ -206,6 +232,7 @@ module.exports = {
   RESPONSABLE_COLCHON,
   opcionesEnPauta,
   puedeOfrecer,
+  anclaProductoVigente,
   intentarColchonMensajeIlegible,
   interpretarRespuestaColchon,
   mensajeParaIaColchon,
