@@ -20,10 +20,17 @@
        se informa ninguna: lo ve una persona.
      · No se leen ni se devuelven montos, saldos ni pagos.
 
+   QUÉ ES UNA CARGA EN CURSO: una cotización que ya subió a un contenedor, o
+   una que alguien aceptó y de la que la bodega de China ya recibió algo. Una
+   cotización recién generada, o aprobada pero sin nada recibido, todavía no
+   viaja: no se lista. Si no queda ninguna, el bot responde «sin carga» y el
+   caso pasa a logística. (En la prueba con conversaciones reales, 21 de las
+   44 «cargas» leídas eran cotizaciones de ese tipo, una de marzo.)
+
    REGLA DE ORO: sin fecha en el dato, no hay fecha. Una fecha estimada que ya
    pasó tampoco se nombra. Un contenedor que lleva más de 30 días «asignado»
    sin salir no se informa (el estado del sistema puede estar viejo), ni una
-   carga repartida en varios contenedores, ni una cotización sin marcas. */
+   carga repartida en varios contenedores. */
 
 'use strict';
 
@@ -193,11 +200,30 @@ function esHistorica(cot, estado, hoy) {
     const dias = ant(fecha(cont?.fecha_bodega_destino) ?? fecha(cont?.fecha_asignada));
     return dias === null || dias > DIAS_EN_BODEGA_SIN_ENTREGA;
   }
-  if (estado.paso === 1 && String(cot.estado || '').toLowerCase() === 'generado') {
+  // Sin nada recibido en China ni contenedor: vence esté en el estado que esté
+  // (antes solo vencían las `generado`; una `bodega` de marzo no vencía nunca).
+  if (estado.paso === 1) {
     const dias = ant(fecha(cot.fecha_creacion));
     return dias === null || dias > DIAS_COTIZACION_SIN_AVANZAR;
   }
   return false;
+}
+
+/* Estados en los que alguien ya aceptó la cotización: los mismos que Imporsuit
+   trata como «aceptados» (CotizadorproModel). `generado` no está: es una
+   cotización que nadie aprobó todavía. Un estado que no se conoce tampoco. */
+const ACEPTADAS = ['aprobado', 'contactado', 'bodega', 'carga', 'proximo', 'transito', 'entregado'];
+
+/* ¿La cotización está de verdad en el flujo de carga? Solo si ya subió a un
+   contenedor (paso 3 en adelante), o si alguien la aceptó Y la bodega de China
+   ya recibió al menos una de sus marcas (paso 2). El paso 1 —cotización
+   registrada, nada recibido— no es una carga: decirle «tu cotización está
+   registrada; todavía no llega a China» a quien pregunta por su mercadería
+   tapa la carga que sí viaja y puede contradecir lo que le dijo su asesor.
+   Ante la duda se muestra de menos: el caso lo ve una persona. */
+function enFlujo(cot, estado) {
+  if (estado.paso >= 3) return true;
+  return estado.paso === 2 && ACEPTADAS.includes(String(cot.estado || '').trim().toLowerCase());
 }
 
 const VACIO = (estado, motivo) => ({
@@ -317,8 +343,11 @@ async function buscar(telefono, cola, consultar, hoy) {
   const contDe = agrupar(contenedores, 'id_cotizacion');
   const entregaDe = new Map((entregas || []).map((e) => [Number(e.id_cotizacion), e]));
 
-  // 6. Estado de cada una, con la regla del portal.
+  // 6. Estado de cada una, con la regla del portal. Solo quedan las que están
+  //    en el flujo de carga; las entregadas hace rato y las que nunca avanzaron, no.
   const activas = [];
+  let historicas = 0;
+  let fueraDeFlujo = 0;
   for (const f of filas) {
     const id = Number(f.id_cotizacion);
     const susContenedores = contDe.get(id) || [];
@@ -334,18 +363,26 @@ async function buscar(telefono, cola, consultar, hoy) {
       entrega: entregaDe.get(id) || null,
     };
     const e = estadoDeCarga(cot, hoy, abiertoDesde, { conNombre: false, descartarEstimadaVencida: true });
-    if (e.paso === 0 || esHistorica(cot, e, hoy)) continue;
+    if (e.paso === 0) continue;
+    if (esHistorica(cot, e, hoy)) {
+      historicas++;
+      continue;
+    }
+    if (!enFlujo(cot, e)) {
+      fueraDeFlujo++;
+      continue;
+    }
 
     /* Cuándo NO se informa aunque haya dato. Son los casos en que el portal le
        pone un aviso al asesor para que lo interprete o lo confirme antes de
        hablar; el bot no puede hacer eso, así que lo ve una persona:
          - dato_dudoso         contenedor «asignado» hace más de 30 días
-         - sin_marcas          cotización sin marcas de envío registradas
          - varios_contenedores la carga va repartida: «está en tránsito» sería
-                               cierto solo para una parte */
-    const sinMarcas = e.paso <= 2 && e.recepcion.marcas === 0;
+                               cierto solo para una parte
+       (La cotización sin marcas registradas ya no llega hasta aquí: sin nada
+       recibido en China no está en el flujo.) */
     const repartida = e.otros_contenedores.length > 0 && !e.entregada;
-    const motivo = e.dato_dudoso ? 'dato_dudoso' : sinMarcas ? 'sin_marcas' : repartida ? 'varios_contenedores' : null;
+    const motivo = e.dato_dudoso ? 'dato_dudoso' : repartida ? 'varios_contenedores' : null;
     const cont = e.contenedor ? susContenedores.find((c) => String(c.nombre) === e.contenedor.nombre) : null;
     const nota = !motivo && !e.entregada ? String(cont?.nota_cliente || '').replace(/\s+/g, ' ').trim().slice(0, 300) : '';
     const notaFecha = nota ? fecha(cont?.nota_cliente_fecha) : null;
@@ -383,7 +420,15 @@ async function buscar(telefono, cola, consultar, hoy) {
     marcas: [...new Set((marcas || []).map((m) => String(m.codigo).toUpperCase()))],
   };
   if (!activas.length) {
-    return { ...VACIO('solo_historicas', 'solo cargas entregadas o cotizaciones antiguas'), propias: propiasOut };
+    /* Nada en curso. Para el cliente es lo mismo («no encuentro una carga en
+       curso» y pasa a logística); el estado solo distingue si lo que hay es
+       historia o son cotizaciones que todavía no viajan. */
+    return historicas
+      ? { ...VACIO('solo_historicas', 'solo cargas entregadas o cotizaciones antiguas'), propias: propiasOut }
+      : {
+          ...VACIO('sin_carga', `solo cotizaciones que todavía no están en el flujo de carga (${fueraDeFlujo}): sin nada recibido en China y sin contenedor`),
+          propias: propiasOut,
+        };
   }
 
   // Primero lo que sigue en camino; dentro de eso, lo más reciente.
@@ -536,6 +581,7 @@ module.exports = {
   codigosEnMensaje,
   esCorreoDePrueba,
   esHistorica,
+  enFlujo,
   consultarImporsuit,
   MAX_CARGAS,
 };

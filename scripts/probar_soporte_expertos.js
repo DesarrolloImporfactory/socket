@@ -153,7 +153,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   r = await cargas(TEL.dudoso);
   prueba('contenedor «asignado» hace 53 días: NO se informa (lo confirma logística)', r.estado === 'encontradas' && r.cargas[0].informable === false && r.cargas[0].motivo === 'dato_dudoso' && r.cargas[0].texto_cliente === null && textoParaCliente(r, T.MENSAJE_ASESOR) === null);
   r = await cargas(TEL.sin_marcas);
-  prueba('cotización aprobada sin marcas registradas: NO se informa', r.cargas[0].informable === false && r.cargas[0].motivo === 'sin_marcas');
+  prueba('cotización aprobada sin marcas registradas: NO se informa (sin nada recibido en China no es una carga en curso)', r.estado === 'sin_carga' && r.cargas.length === 0 && igual(r.propias.cotizaciones, [9030]));
   r = await cargas(TEL.repartida);
   prueba('carga repartida en dos contenedores: NO se informa («en tránsito» sería cierto solo para una parte)', r.cargas[0].informable === false && r.cargas[0].motivo === 'varios_contenedores' && r.cargas[0].texto_cliente === null && !/28 de octubre|EC-PRUEBA-SEP-K/.test(bloqueCarga(r, { mensajeAsesor: T.MENSAJE_ASESOR })));
   r = await cargas(TEL.sin_carga);
