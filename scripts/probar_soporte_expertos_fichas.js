@@ -23,7 +23,8 @@ const rutaDb = require.resolve(path.join(__dirname, '../src/database/config'));
 require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: { db: {}, db_2: {} } };
 
 const { crearBuscador, buscadorDeArchivo, bloqueFichas, UMBRAL_CERCANIA, MAX_FICHAS } = require('../src/utils/soporteExpertos/fichas');
-const { revisarRespuesta, completarPase } = require('../src/utils/soporteExpertos/guardia');
+const { revisarRespuesta, completarPase, ofreceLoQueNoPuede } = require('../src/utils/soporteExpertos/guardia');
+const { esSoloSaludo, esReclamo, reclamaPorDemora } = require('../src/utils/soporteExpertos/senales');
 const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
 const T = require('../src/utils/soporteExpertos/textos');
 const { promptSoporteExpertos } = require('../src/utils/prompt_soporte_expertos.data');
@@ -324,6 +325,142 @@ const NADA = [
     prueba('con un solo producto también pasa', !x.cambiada);
     x = rev('Tu cotización 4521 y tu marca EC-2609112 quedan anotadas. Un asesor te escribe apenas abramos.', 'mi cotización es la 4521 y la marca EC-2609112');
     prueba('los códigos que ya se aceptaban (cotización, marca) siguen pasando', !x.cambiada, x.motivos.join('; '));
+  }
+
+  /* ───────────────────────────────────────────────────────────────────── */
+  console.log('\n9. Guardia: ofrecer lo que el bot no puede hacer');
+  {
+    const rev = (texto, firme = FIJOS) => revisarRespuesta(texto, { respaldo: { firme, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
+    for (const malo of [
+      'Claro, te cotizo ese producto.',
+      'Si quieres te llamamos para explicarte.',
+      'Te agendo una reunión con tu asesor.',
+      'Lo reviso y te aviso.',
+      'Voy a revisar tu pago.',
+      'Puedo cotizarte el envío si me das las medidas.',
+      'Déjame verificar tu comprobante.',
+      '¿Quieres que te pidamos más fotos o un video de la bodega?',
+      'Ya verifiqué tu pago y está correcto.',
+      'Te cambio la clave y te la envío por aquí.',
+      'Te busco proveedores de ese producto.',
+      'Lo consulto con logística y te confirmo.',
+    ]) {
+      const x = rev(malo);
+      prueba(`«${malo}» → no sale: va el texto seguro`, x.cambiada && !x.corregida && x.texto === T.MENSAJE_ASESOR && /ofrecía hacer algo que el bot no puede/.test(x.motivos.join(' ')), x.motivos.join('; '));
+    }
+    for (const bueno of [
+      `${T.MENSAJE_ASESOR} Para que el área de precios te cotice ese producto del catálogo, dime cuántas unidades piensas comprar.`,
+      'Recibí tu comprobante. Lo sumo a tu caso para cobranza; un asesor lo revisa y te escribe apenas abramos.',
+      'Recibí tu nota de voz, pero no la pude escuchar. Escríbeme lo que necesitas y lo dejo anotado para el asesor.',
+      `${T.MENSAJE_ASESOR} Para que el área de logística revise tu carga, envíame tu marca de envío o tu número de cotización.`,
+      'Recibí tu mensaje. Tu asesor lo revisa y te escribe apenas abramos.',
+      T.MENSAJE_SOLO_TU_NUMERO,
+      T.MENSAJE_SIN_CARGA,
+      'El cambio de clave se hace desde la pantalla de ingreso. Un asesor te escribe apenas abramos.',
+    ]) {
+      const x = rev(bueno);
+      prueba(`«${bueno.slice(0, 74)}…» → pasa (habla de lo que hace OTRO, o de dejarlo anotado)`, !x.cambiada, x.motivos.join('; '));
+    }
+    prueba('si una ficha lo dice con esas palabras, está respaldado', ofreceLoQueNoPuede('Si no lo encuentras, te busco yo el contacto.', 'Si no lo encuentras, te busco yo el contacto.') === null && ofreceLoQueNoPuede('Te busco el contacto.', FIJOS) !== null);
+    {
+      // Ninguna ficha ni texto fijo cae por esta regla al copiarse tal cual.
+      const caen = real.fichas.filter((f) => ofreceLoQueNoPuede([f.respuesta_base, ...f.pasos, f.pedir].join('\n'), ''));
+      prueba(`copiar una ficha no dispara la regla (lo que una ficha ofrece queda respaldado por ella): ${caen.length} fichas traen un ofrecimiento propio`,
+        real.fichas.every((f) => {
+          const txt = [f.respuesta_base, ...f.pasos].filter(Boolean).join('\n');
+          return !txt || ofreceLoQueNoPuede(txt, `${FIJOS}\n${txt}`) === null;
+        }));
+      prueba('ningún texto fijo ofrece algo que el bot no puede', Object.values(T.TEXTOS_FIJOS).every((v) => ofreceLoQueNoPuede(v, '') === null));
+    }
+  }
+
+  console.log('\n10. Guardia: un reclamo no va a cobranza, ni se le repite el estado a quien reclama por la demora');
+  {
+    prueba('señal de reclamo: marcas fuertes', ['esto es una estafa', 'quiero poner un reclamo', 'devuélvanme mi dinero', 'nadie me responde', 'exijo una solución', 'quiero un reembolso', 'ya le pagué al proveedor y no me ha enviado nada, con quién hablo', 'llevo tres semanas esperando una respuesta'].every(esReclamo));
+    prueba('…y una consulta normal no es reclamo', !['a qué cuenta deposito?', 'ya pagué, les mando el comprobante', 'cuándo llega mi carga', 'todavía no llega mi pedido', 'hola buenas noches', 'quiero cotizar un producto', 'mañana deposito', 'con quién hablo para cotizar'].some(esReclamo));
+    prueba('señal de reclamo por demora', ['ya debería haber llegado hace rato', 'llevo tres meses esperando mi carga', 'esto es una burla', 'es demasiado tiempo'].every(reclamaPorDemora) && !['cuándo llega mi carga', 'ya llegó mi carga?', 'hasta cuándo puedo entregar en la bodega', 'nadie me responde, dónde está mi carga'].some(reclamaPorDemora));
+
+    const turno = (mensaje, tel, id) => prepararTurno({ mensaje, telefono: tel, tipo_mensaje: 'text', id_configuracion: 265, id_cliente: id, deps: { consultar: baseDeMentira().consultar, hoy: HOY, buscador: real } });
+    olvidarTodo();
+    let t = await turno('ya le pagué al proveedor y no me ha enviado nada, con quién hablo', TEL.sin_carga, 'r1');
+    prueba('reclamo de alguien que pagó: el turno lo marca, avisa al modelo y el texto seguro es el del reclamo', t.hechos.reclamo && /⚠️ RECLAMO/.test(t.bloque) && t.bloque.includes(T.MENSAJE_RECLAMO) && t.hechos.textoSeguro === T.MENSAJE_RECLAMO);
+    prueba('…y no llega la ficha de cómo pagarle al proveedor (va a cobranza)', !t.hechos.fichas.includes('pagar-al-proveedor'));
+    let x = revisarTurno('Recibí tu mensaje. Para que cobranza lo revise, envíame tu comprobante y tu número de cotización. Un asesor te escribe apenas abramos.', t.hechos);
+    prueba('…si el modelo igual lo manda a cobranza y pide el comprobante, sale el texto del reclamo', x.cambiada && x.texto === T.MENSAJE_RECLAMO && /reclamo a cobranza/.test(x.motivos.join(' ')));
+    x = revisarTurno(T.MENSAJE_RECLAMO, t.hechos);
+    prueba('…y la respuesta correcta pasa sin tocarse', !x.cambiada);
+    olvidarTodo();
+    t = await turno('buenas, a qué cuenta deposito el valor de mi cotización?', TEL.sin_carga, 'r2');
+    x = revisarTurno('Recibí tu mensaje. Para cobranza, envíame tu número de cotización. Un asesor te escribe apenas abramos.', t.hechos);
+    prueba('una consulta de pago normal SÍ puede ir a cobranza', !t.hechos.reclamo && !/⚠️ RECLAMO/.test(t.bloque) && !x.cambiada, x.motivos.join('; '));
+
+    olvidarTodo();
+    t = await turno('llevo tres meses esperando mi carga, esto es una burla, ya debería haber llegado hace rato', TEL.transito_con_fecha, 'r3');
+    prueba('reclamo por la demora con carga leída: el texto seguro pasa a logística y NO es el estado', t.hechos.reclamoPorDemora && t.hechos.textoSeguro === T.MENSAJE_RECLAMO_CARGA && t.bloque.includes(T.MENSAJE_RECLAMO_CARGA));
+    const estado = 'Entiendo tu preocupación. Hola, el contenedor EC-PRUEBA-OCT-A, donde viaja tu carga EC-9001001, ya está en tránsito hacia Ecuador. La fecha estimada de llegada que tenemos registrada es el 24 de octubre; es una estimación y puede moverse.';
+    x = revisarTurno(estado, t.hechos);
+    prueba('…si el modelo le repite el estado (aunque sea el texto oficial), sale el paso a logística', x.cambiada && x.texto === T.MENSAJE_RECLAMO_CARGA && /repetía el estado/.test(x.motivos.join(' ')), x.motivos.join('; '));
+    x = revisarTurno(T.MENSAJE_RECLAMO_CARGA, t.hechos);
+    prueba('…y la respuesta correcta pasa sin tocarse', !x.cambiada);
+    olvidarTodo();
+    t = await turno('Buen día ya llegaría la mercadería', TEL.transito_con_fecha, 'r4');
+    x = revisarTurno(t.hechos.textoSeguro, t.hechos);
+    prueba('quien solo pregunta por su carga sigue recibiendo el estado', !t.hechos.reclamoPorDemora && !t.hechos.reclamo && t.hechos.textoSeguro.startsWith('Hola, el contenedor') && !x.cambiada);
+    olvidarTodo();
+    t = await turno('nadie me responde, dónde está mi carga?', TEL.transito_con_fecha, 'r5');
+    x = revisarTurno(t.bloque.match(/TEXTO PARA EL CLIENTE[^\n]*\n([^\n]+)/)?.[1] || 'Hola, el contenedor EC-PRUEBA-OCT-A, donde viaja tu carga EC-9001001, ya está en tránsito hacia Ecuador.', t.hechos);
+    prueba('molesto porque nadie responde, pero pregunta dónde está: el estado NO se frena (no reclama por la demora)', t.hechos.reclamo && !t.hechos.reclamoPorDemora && !/repetía el estado/.test(x.motivos.join(' ')));
+    prueba('los dos textos del reclamo son «Entiendo tu preocupación.» más un texto fijo: nada nuevo, sin fecha', T.MENSAJE_RECLAMO === `${T.FRASE_RECLAMO} ${T.MENSAJE_ASESOR}` && T.MENSAJE_RECLAMO_CARGA === `${T.FRASE_RECLAMO} ${T.MENSAJE_CARGA_A_LOGISTICA}`);
+  }
+
+  console.log('\n11. Guardia: no callar ante el primer saludo');
+  {
+    prueba('solo saluda: saludo, botón o mensaje de entrada de la plataforma', ['hola', 'Hola, ¿cómo estás?', 'buenas noches', 'Buenos días!!', 'hola buenas tardes una consulta', 'Comunicarme ahora', 'Hola soy parte del CLUB DE IMPORTADORES', 'Hola soy parte del CLUB DE IMPORTADORES y necesito comunicarme con mi asesor', 'necesito ayuda por favor'].every(esSoloSaludo));
+    prueba('…y no lo es si dice qué necesita, agradece o confirma', !['hola, qué es el cbm', 'hola ya llegó mi carga?', 'ok gracias', 'gracias', 'listo', '', '??', 'hola necesito ayuda con mi cotización'].some(esSoloSaludo));
+    const turno = (mensaje, id, tipo = 'text') => prepararTurno({ mensaje, telefono: TEL.sin_carga, tipo_mensaje: tipo, id_configuracion: 265, id_cliente: id, deps: { consultar: baseDeMentira().consultar, hoy: HOY, buscador: real } });
+    olvidarTodo();
+    let t = await turno('Hola, ¿cómo estás?', 's1');
+    let x = revisarTurno('[espera]:true', t.hechos);
+    prueba('primer saludo y el modelo calla: sale el saludo fijo', t.hechos.saludoSinContestar && x.cambiada && x.texto === T.MENSAJE_SALUDO && /callaba ante un saludo/.test(x.motivos.join(' ')));
+    x = revisarTurno(T.MENSAJE_SALUDO, t.hechos);
+    prueba('…si el modelo saludó bien, no se toca', !x.cambiada);
+    t = await turno('hola?', 's1');
+    x = revisarTurno('[espera]:true', t.hechos);
+    prueba('vuelve a saludar a los pocos minutos: ya no es el primero y el silencio se respeta', !t.hechos.saludoSinContestar && !x.cambiada);
+    olvidarTodo();
+    t = await turno('ok gracias', 's2');
+    x = revisarTurno('[espera]:true', t.hechos);
+    prueba('un «ok gracias» sigue sin respuesta', !t.hechos.saludoSinContestar && !x.cambiada);
+    olvidarTodo();
+    t = await turno('', 's3', 'sticker');
+    x = revisarTurno('[espera]:true', t.hechos);
+    prueba('un sticker solo sigue sin respuesta', !t.hechos.saludoSinContestar && !x.cambiada);
+    prueba('sin hechos del turno (emergencia) el silencio no se cambia', !revisarTurno('[espera]:true', null).cambiada);
+  }
+
+  console.log('\n12. Guardia: el aviso de «un asesor te escribe», una sola vez');
+  {
+    const rev = (texto) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
+    let x = rev(`${T.MENSAJE_ROBOT} ${T.MENSAJE_ASESOR}`);
+    prueba('texto del asistente automático + paso a asesor pegado: queda solo el primero', x.cambiada && x.corregida && x.texto === T.MENSAJE_ROBOT, x.texto);
+    x = rev(`${T.MENSAJE_ASESOR} ${T.MENSAJE_CARGA_A_LOGISTICA}`);
+    prueba('paso a asesor + paso a logística: queda uno', x.corregida && (x.texto.match(/apenas abramos/g) || []).length === 1);
+    prueba('un solo aviso no se toca', !rev(T.MENSAJE_ASESOR).cambiada && !rev(T.MENSAJE_ROBOT).cambiada && !rev(T.MENSAJE_RECLAMO).cambiada && !rev(T.MENSAJE_SIN_CARGA).cambiada);
+  }
+
+  console.log('\n13. Prompt y textos: lo que es de redacción');
+  {
+    const p2 = promptSoporteExpertos();
+    prueba('lista lo que no puede ofrecer (cotizar, revisar un pago, cambiar una clave, llamar, pedir fotos), afirmando o preguntando', /No ofreces hacer lo que no puedes hacer: cotizar, revisar o verificar un pago o una cuenta, cambiar o enviar una clave, llamar/.test(p2) && /ni preguntando \(«¿quieres que te pidamos más fotos\?»\)/.test(p2));
+    prueba('un reclamo manda sobre un pago: no va a cobranza ni se pide el comprobante', /Un reclamo manda sobre todo lo demás, también sobre un pago: NO va a cobranza y NO se le pide el comprobante/.test(p2));
+    prueba('«Entiendo tu preocupación.» solo ante un reclamo', /SOLO si el cliente reclama o está molesto, la primera frase es: «Entiendo tu preocupación\.»/.test(p2) && /En una consulta normal[^\n]*esa frase NO va/.test(p2));
+    prueba('el saludo se calla solo si ya lo contestó el bot', /Callas con \[espera\]:true SOLO si ese saludo ya se lo contestaste TÚ/.test(p2) && /nadie que saluda se queda sin respuesta/.test(p2));
+    prueba('el paso a asesor va una sola vez por mensaje', /Va UNA sola vez por mensaje/.test(p2));
+    prueba('nombra el aviso ⚠️ que arma el código', p2.includes('🔒, ⚠️ o ℹ️'));
+    prueba('trae los textos del reclamo tal cual', p2.includes(T.MENSAJE_RECLAMO) && p2.includes(T.MENSAJE_RECLAMO_CARGA));
+    const sinRegla2 = p2.replace(/NUNCA voseo \([^)]*\)/, '');
+    prueba('sin voseo ni «usted» en lo nuevo, y sin promesas de fecha en los textos', !/(?<!\p{L})(vos|ten[eé]s|pod[eé]s|quer[eé]s|decime|pasame|mandame|enviame|contame|avisame)(?!\p{L})/iu.test(sinRegla2) && [T.MENSAJE_RECLAMO, T.MENSAJE_RECLAMO_CARGA, T.CIERRE_ASESOR].every((v) => !/\b(hoy|mañana|lunes|martes|miércoles|jueves|viernes|pronto|en breve|usted)\b/i.test(v)));
+    prueba(`el prompt sigue por debajo de la versión 1 (${p2.length} de 28.347)`, p2.length < 28347);
   }
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);

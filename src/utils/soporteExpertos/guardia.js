@@ -16,7 +16,16 @@
      4. presentarse como una persona;
      5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima;
      6. contestar con una ficha que pasa el caso a una persona (`pasar_a`) sin
-        decirle al cliente que un asesor lo retoma — se le agrega el aviso.
+        decirle al cliente que un asesor lo retoma — se le agrega el aviso;
+     7. ofrecer algo que el bot no puede hacer («te cotizo», «te llamamos»,
+        «¿quieres que te pidamos más fotos?», «ya verifiqué tu pago»);
+     8. mandar un RECLAMO a cobranza o pedirle el comprobante, y repetirle el
+        estado de la carga a quien reclama por la demora;
+     9. callar ante el primer saludo — sale el saludo fijo;
+    10. el aviso de «un asesor te escribe» dos veces en el mismo mensaje — se
+        deja uno.
+   Los puntos 7 a 10 salen de la prueba en papel de la versión 2: son lo que
+   la guardia no veía y sí importó.
 
    Lo que no se puede corregir con certeza no se manda: sale el texto seguro
    del turno (el estado oficial de la carga, si era eso lo que preguntó, o el
@@ -35,7 +44,7 @@
 'use strict';
 
 const { sinTildes } = require('./texto');
-const { MENSAJE_ASESOR, CIERRE_ASESOR } = require('./textos');
+const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO } = require('./textos');
 
 const MAX_RESPUESTA = 1500;
 
@@ -304,6 +313,56 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   return null;
 }
 
+/* ── Ofrecer lo que el bot no puede hacer ──────────────────────────────── */
+/* El bot no cotiza, no revisa pagos, no cambia claves, no llama, no agenda, no
+   busca proveedores ni pide fotos: lo único que puede ofrecer es dejarlo
+   anotado. Se buscan solo formas en PRIMERA persona o un ofrecimiento directo;
+   «para que el área de precios te cotice» o «un asesor lo revisa» hablan de
+   otros y pasan. Va sobre el texto con tildes: «revisé» (yo, pasado) no es
+   «revise» (que un asesor lo revise). */
+const HACER =
+  'cotizar|llamar|agendar|programar|buscar|conseguir|revisar|verificar|validar|comprobar|confirmar|cambiar|restablecer|resetear|reiniciar|' +
+  'generar|calcular|averiguar|reembolsar|devolver|gestionar|tramitar|solucionar|resolver|arreglar|activar|habilitar|desbloquear|rastrear|consultar|pedir|solicitar';
+const RE_OFRECE = new RegExp(
+  '(?<!\\p{L})(?:' +
+    // «te cotizo», «te llamamos», «les agendo», «te lo reviso»
+    '(?:te|le|les)\\s+(?:lo\\s+|la\\s+|los\\s+|las\\s+)?(?:cotizo|cotizamos|cotizaré|llamo|llamamos|llamaré|llamaremos|marco|agendo|agendamos|busco|buscamos|consigo|conseguimos|' +
+    'reviso|verifico|valido|cambio|restablezco|reseteo|reinicio|genero|calculo|averiguo|reembolso|reembolsamos|devuelvo|devolvemos|gestiono|tramito|soluciono|resuelvo|arreglo|activo|habilito|desbloqueo|rastreo)|' +
+    // «lo reviso», «la cotizo», «lo consulto con logística»
+    '(?:lo|la|los|las)\\s+(?:reviso|verifico|valido|cotizo|consulto|gestiono|soluciono|resuelvo|averiguo)|' +
+    // «puedo cotizarte», «voy a revisar», «déjame verificar» (no «no puedo…»)
+    `(?<!no\\s)(?<!no te\\s)(?<!tampoco\\s)(?:puedo|podemos|voy a|vamos a|d[eé]jame|perm[ií]teme)\\s+(?:(?:te|le|lo|la|les)\\s+)?(?:${HACER})(?:te|le|les|lo|la|los|las|telo|tela|selo|sela)?|` +
+    // «¿quieres que te pidamos más fotos?», «si quieres te cotizo»
+    '(?:quieres|deseas|necesitas|prefieres|te gustar[ií]a) que\\s+(?:(?:te|le|lo|la|les|se)\\s+)*(?:cotic|llam|agend|program|busqu|consig|revis|verifi|valid|comprob|confirm|cambi|restablez|resete|gener|calcul|averig|reembols|devolv|devuelv|gestion|tramit|solucion|resolv|resuelv|arregl|activ|habilit|desbloque|rastre|pid|solicit|envi|mand)\\p{L}*|' +
+    // «ya verifiqué tu pago», «revisé tu captura»
+    '(?:revisé|verifiqué|validé|comprobé|confirmé|coticé|agendé|gestioné|solucioné|consulté|rastreé)' +
+    ')(?!\\p{L})',
+  'iu',
+);
+
+/** El ofrecimiento que no sale de un dato leído, o null. */
+function ofreceLoQueNoPuede(texto, firme) {
+  const m = texto.match(RE_OFRECE);
+  if (!m) return null;
+  // Si una ficha o un texto fijo lo dice con esas palabras, está respaldado.
+  if (plano(firme).includes(plano(m[0]))) return null;
+  return m[0].trim();
+}
+
+/* ── Un reclamo no va a cobranza ───────────────────────────────────────── */
+const RE_A_COBRANZA = /(?<!\p{L})(?:cobranza|comprobante|contabilidad|n[uú]mero de cotizaci[oó]n)(?!\p{L})/iu;
+
+/* ── El aviso de «un asesor te escribe», una sola vez ──────────────────── */
+/** «Soy el asistente automático… Un asesor te escribe apenas abramos. Recibí
+    tu mensaje. Un asesor lo revisa y te escribe apenas abramos.» → sin lo
+    segundo. Solo se quita el paso a asesor EXACTO, y solo si queda otro aviso. */
+function quitarAvisoRepetido(texto) {
+  if ((texto.match(/apenas abramos/gi) || []).length < 2 || !texto.includes(MENSAJE_ASESOR)) return { texto, cambios: 0 };
+  const sin = texto.replace(MENSAJE_ASESOR, ' ').replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n').trim();
+  if (!/apenas abramos/i.test(sin)) return { texto, cambios: 0 };
+  return { texto: sin, cambios: 1 };
+}
+
 /* ── Una ficha con `pasar_a` no cierra sola ────────────────────────────── */
 const RE_PASA_A_ASESOR = /apenas abramos/i;
 const PALABRAS_DE_MUESTRA = 6;
@@ -343,6 +402,9 @@ function completarPase(texto, fichasConPase) {
  *   - textoSeguro      con qué se reemplaza una respuesta que no pasa
  *   - fichasConPase    [{ id, partes }] fichas con `pasar_a` vistas en la conversación:
  *                      si la respuesta usa una, tiene que llevar el paso a asesor
+ *   - reclamo          el cliente reclama: no va a cobranza ni se le pide comprobante
+ *   - reclamoPorDemora reclama por la demora de su carga: no se le repite el estado
+ *   - saludoSinContestar  es el primer saludo de la conversación: no se calla
  * @returns {{texto:string, cambiada:boolean, corregida:boolean, motivos:string[]}}
  */
 function revisarRespuesta(respuesta, hechos = {}) {
@@ -352,8 +414,14 @@ function revisarRespuesta(respuesta, hechos = {}) {
   let visible = original.replace(RE_TAG, '').trim();
   const motivos = [];
 
-  // Silencio a propósito ([espera]:true y nada más): no hay nada que revisar.
-  if (!visible) return { texto: original, cambiada: false, corregida: false, motivos };
+  // Silencio a propósito ([espera]:true y nada más): no hay nada que revisar…
+  if (!visible) {
+    // …salvo ante el primer saludo: nadie le contestó todavía.
+    if (h.saludoSinContestar) {
+      return { texto: MENSAJE_SALUDO, cambiada: true, corregida: false, motivos: ['callaba ante un saludo que nadie había contestado'] };
+    }
+    return { texto: original, cambiada: false, corregida: false, motivos };
+  }
 
   const firme = String(h.respaldo?.firme || '');
   const eco = String(h.respaldo?.eco || '');
@@ -365,6 +433,7 @@ function revisarRespuesta(respuesta, hechos = {}) {
     [quitarDespedida, 'despedida quitada'],
     [corregirVoseo, 'voseo corregido'],
     [cambiarCargos, 'cargo interno cambiado'],
+    [quitarAvisoRepetido, 'aviso de «un asesor te escribe» repetido: se dejó uno'],
   ];
   for (const [fn, motivo] of pasos) {
     const r = fn(visible);
@@ -380,6 +449,13 @@ function revisarRespuesta(respuesta, hechos = {}) {
   else if (RE_CARGO_RESTANTE.test(visible)) falla = 'nombraba un cargo interno';
   else if (RE_PERSONA.test(visible) || RE_PERSONA_NOMBRE.test(visible)) falla = 'se presentaba como una persona';
   else falla = datoSinRespaldo(visible, firme, eco, h.respaldo?.estado ?? firme);
+
+  if (!falla) {
+    const ofrece = ofreceLoQueNoPuede(visible, firme);
+    if (ofrece) falla = `ofrecía hacer algo que el bot no puede («${ofrece}»)`;
+    else if ((h.reclamo || h.reclamoPorDemora) && RE_A_COBRANZA.test(visible)) falla = 'mandaba un reclamo a cobranza o le pedía un comprobante';
+    else if (h.reclamoPorDemora && RE_ESTADO_CARGA.test(plano(visible))) falla = 'le repetía el estado de la carga a quien reclama por la demora';
+  }
 
   if (falla) {
     motivos.push(falla);
@@ -408,6 +484,8 @@ module.exports = {
   aplanarEnlaces,
   datoSinRespaldo,
   completarPase,
+  ofreceLoQueNoPuede,
+  quitarAvisoRepetido,
   RE_PLAZO,
   MAX_RESPUESTA,
 };

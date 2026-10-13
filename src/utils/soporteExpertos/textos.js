@@ -43,6 +43,15 @@ const MENSAJE_SOLO_TU_NUMERO =
 const MENSAJE_ADJUNTO_SIN_TEXTO =
   'Recibí lo que enviaste, pero no lo puedo abrir. Cuéntame en un mensaje qué necesitas con eso y lo dejo anotado para el asesor.';
 
+/* ── Tras la prueba en papel de la versión 2 (pendientes de aprobación) ──
+   No traen palabras nuevas: son «Entiendo tu preocupación.» (que el prompt ya
+   mandaba ante un reclamo) más un texto fijo. Están aquí porque ahora también
+   los pone el CÓDIGO cuando el modelo manda un reclamo a cobranza o le repite
+   el estado de la carga a quien reclama por la demora. */
+const FRASE_RECLAMO = 'Entiendo tu preocupación.';
+const MENSAJE_RECLAMO = `${FRASE_RECLAMO} ${MENSAJE_ASESOR}`;
+const MENSAJE_RECLAMO_CARGA = `${FRASE_RECLAMO} ${MENSAJE_CARGA_A_LOGISTICA}`;
+
 const TODOS = {
   MENSAJE_ASESOR,
   MENSAJE_SALUDO,
@@ -55,6 +64,8 @@ const TODOS = {
   MENSAJE_CARGA_A_LOGISTICA,
   MENSAJE_SOLO_TU_NUMERO,
   MENSAJE_ADJUNTO_SIN_TEXTO,
+  MENSAJE_RECLAMO,
+  MENSAJE_RECLAMO_CARGA,
 };
 
-module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, TEXTOS_FIJOS: Object.freeze(TODOS) };
+module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, FRASE_RECLAMO, TEXTOS_FIJOS: Object.freeze(TODOS) };
