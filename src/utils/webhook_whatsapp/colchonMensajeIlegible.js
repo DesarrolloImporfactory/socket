@@ -88,16 +88,20 @@ async function opcionesEnPauta(id_configuracion) {
 
 /* Solo para el PRIMER mensaje de la conversación: Meta también entrega como
    `unsupported` las ediciones de mensajes, y a mitad de chat no hay que
-   preguntar por el producto. Tampoco si ya se sabe cuál es o ya se ofreció. */
+   preguntar por el producto. Tampoco si ya se sabe cuál es. Respeta el
+   "Reiniciar conversación" del panel (reinicio_conversacion_at). */
 async function puedeOfrecer({ id_configuracion, id_cliente, id_mensaje }) {
   const [previo] = await db.query(
     `SELECT id FROM mensajes_clientes
       WHERE id_configuracion = ? AND celular_recibe = ? AND id < ?
         AND rol_mensaje IN (0, 1)
         AND created_at >= (SELECT x.created_at FROM mensajes_clientes x WHERE x.id = ?) - INTERVAL 24 HOUR
+        AND created_at >= COALESCE(
+              (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
+              '1970-01-01')
       LIMIT 1`,
     {
-      replacements: [id_configuracion, String(id_cliente), id_mensaje, id_mensaje],
+      replacements: [id_configuracion, String(id_cliente), id_mensaje, id_mensaje, id_cliente],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -105,8 +109,11 @@ async function puedeOfrecer({ id_configuracion, id_cliente, id_mensaje }) {
   const [conocido] = await db.query(
     `SELECT id FROM cliente_productos_ad
       WHERE id_cliente = ? AND created_at >= NOW() - INTERVAL 7 DAY
+        AND created_at >= COALESCE(
+              (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
+              '1970-01-01')
       LIMIT 1`,
-    { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    { replacements: [id_cliente, id_cliente], type: db.QueryTypes.SELECT },
   );
   return !conocido;
 }
