@@ -120,7 +120,7 @@ const RE_CODIGO = /\b[a-z]{1,6}-?\d+(?:-\d+)*\b/g;
    son las que, además, inflaban «lo que sobra» de un mensaje bien preguntado. */
 const RELLENO = new Set(
   // «entiendo» queda en «ent» (pierde «-iendo» como si fuera un gerundio)
-  'signific ent entiend entend comprend explic quer ten dic dij disculp noch salud amabl gentil'.split(' '),
+  'signific ent entiend entend comprend explic quer qui ten dic dij disculp noch salud amabl gentil'.split(' '),
 );
 /* Como `raices` de texto.js, con dos diferencias: se va el relleno, y una
    palabra en «-ador/-adora» (cotizador, calculadora, importador, ganador) no
@@ -244,10 +244,18 @@ function crearBuscador(fichasCrudas) {
   const N = fichas.length;
 
   const indice = fichas.map((f) => {
-    // El id («no-puedo-entrar-plataforma») también es una frase del tema. Y si
-    // la ficha no trae preguntas (la forma de la versión 1, donde el tema era
-    // un título: «Qué es el CBM»), el tema hace de pregunta.
-    const frases = [...f.preguntas, f.id.replace(/[-_]+/g, ' '), ...(f.preguntas.length ? [] : [f.tema])]
+    /* El id también es una frase del tema cuando dice algo («no-puedo-entrar-
+       plataforma»). Un id de una sola palabra («wechat», «proforma») es el
+       NOMBRE del tema: como frase, cualquier mensaje que lo nombrara la
+       cubría entera. Y si la ficha no trae preguntas (la forma de la versión
+       1, donde el tema era un título: «Qué es el CBM»), el tema hace de
+       pregunta. */
+    const idComoFrase = f.id.replace(/[-_]+/g, ' ');
+    const frases = [
+      ...f.preguntas,
+      ...(new Set(raicesUtiles(idComoFrase)).size > 1 || !f.preguntas.length ? [idComoFrase] : []),
+      ...(f.preguntas.length ? [] : [f.tema]),
+    ]
       .map((p) => {
         const plano = sinTildes(p);
         return { raices: new Set(raicesUtiles(p)), formas: formasDe(plano), aviso: RE_AVISO.test(plano) };

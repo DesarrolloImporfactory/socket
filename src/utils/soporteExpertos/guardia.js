@@ -227,6 +227,16 @@ const RE_CODIGO_DEL_CLIENTE = new RegExp(
   'giu',
 );
 
+/* Un CÓDIGO DE PRODUCTO que el cliente escribió («me interesa el producto
+   SGTE-58 … del catálogo de Ideas de Productos») no es un monto ni una fecha:
+   se le puede repetir tal cual. En la prueba en papel fue el único reemplazo
+   de la guardia y era un falso positivo: con tres productos el modelo repetía
+   los tres códigos y el «58» contaba como cifra sin respaldo. Vale solo el
+   código ENTERO y solo si está en lo que escribió el cliente; letras pegadas a
+   una moneda o a una fecha («USD850», «dia15») no son un código. */
+const RE_CODIGO_DE_PRODUCTO = /(?<![\p{L}\d])(?!(?:usd|us|rmb|cny|mxn|eur|dia|el|al|del)-?\d)[a-z]{2,10}-?\d{1,8}(?:-[a-z\d]+)*(?![\p{L}\d])/giu;
+const codigoNormal = (c) => sinTildes(c).replace(/[^a-z0-9]/g, '');
+
 /** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
 function datoSinRespaldo(texto, firme, eco, estado = firme) {
   const firmePlano = plano(firme);
@@ -279,7 +289,9 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   // Cifras: las del respaldo, más las del cliente SOLO como código o cantidad.
   const delRespaldo = new Set(cifras(firme));
   const delCliente = new Set(cifras(eco));
-  const sinCodigos = sinEnlaces.replace(RE_CODIGO_DEL_CLIENTE, (todo, pre, cod, cant, unidad) => {
+  const codigosDeProducto = new Set((sinTildes(eco).match(RE_CODIGO_DE_PRODUCTO) || []).map(codigoNormal));
+  const sinProductos = sinEnlaces.replace(RE_CODIGO_DE_PRODUCTO, (c) => (codigosDeProducto.has(codigoNormal(c)) ? ' ' : c));
+  const sinCodigos = sinProductos.replace(RE_CODIGO_DEL_CLIENTE, (todo, pre, cod, cant, unidad) => {
     const n = cod ?? cant;
     if (!delCliente.has(numero(n))) return todo;
     return cod !== undefined ? `${pre} ` : ` ${unidad}`;
