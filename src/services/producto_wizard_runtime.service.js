@@ -295,7 +295,14 @@ async function resolverWizardPorTexto(id_configuracion, mensaje) {
   if (!lista.length) return null;
   const elegido = elegirProductoPorTexto(mensaje, lista);
   if (!elegido) return null;
-  const wizard = await wizardActivoDeProducto(elegido.id);
+  const r = await resolverWizardPorId(elegido.id);
+  return r ? { ...r, via: 'texto' } : null;
+}
+
+/* Producto ya identificado (p. ej. el cliente lo tocó en los botones del
+   colchón de mensaje ilegible): solo hace falta que tenga wizard activo. */
+async function resolverWizardPorId(id_producto) {
+  const wizard = await wizardActivoDeProducto(id_producto);
   if (!wizard) return null;
   const [producto] = await db.query(
     `SELECT id, id_configuracion, nombre, descripcion, precio, imagen_url,
@@ -303,12 +310,12 @@ async function resolverWizardPorTexto(id_configuracion, mensaje) {
             id_producto_upsell, nombre_upsell, descripcion_upsell,
             precio_upsell, imagen_upsell_url
        FROM productos_chat_center
-      WHERE id = ? LIMIT 1`,
-    { replacements: [elegido.id], type: db.QueryTypes.SELECT },
+      WHERE id = ? AND eliminado = 0 LIMIT 1`,
+    { replacements: [id_producto], type: db.QueryTypes.SELECT },
   );
   if (!producto) return null;
   await enriquecerProductoWizard(producto);
-  return { producto, wizard, via: 'texto' };
+  return { producto, wizard, via: 'id' };
 }
 
 /* Ancla el producto identificado por texto como "producto en juego" del
@@ -845,12 +852,21 @@ async function intentarMensajeFijoWizard({
   referral,
   texto_mensaje,
   log,
+  // Producto que el cliente tocó en el colchón de mensaje ilegible.
+  id_producto_elegido = null,
 }) {
   const nada = { paqueteEnviado: false, saltarIA: false, bloqueMotor: null };
   const decir = logDe(log);
 
   let r = null;
-  if (referral) {
+  if (id_producto_elegido) {
+    r = await resolverWizardPorId(id_producto_elegido);
+    if (r) {
+      await decir(
+        `wizard: producto elegido en el colchón → "${r.producto.nombre}" (id ${r.producto.id})`,
+      );
+    }
+  } else if (referral) {
     r = await resolverWizardDelAnuncio(
       id_configuracion,
       referral.headline || '',
@@ -2341,6 +2357,9 @@ module.exports = {
   RESPONSABLE_FLUJO,
   RESPONSABLES_SIN_IA,
   wizardActivoDeProducto,
+  resolverWizardPorId,
+  sembrarProductoEnJuego,
+  botHabilitado,
   olvidarWizard,
   refrescarMensajeFijoDeProducto,
   resolverWizardDelAnuncio,

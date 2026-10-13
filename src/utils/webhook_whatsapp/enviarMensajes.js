@@ -181,6 +181,105 @@ async function enviarMensajeWhatsapp({
   }
 }
 
+/* Opciones tocables: hasta 3 con títulos cortos van como botones; si no,
+   como lista (título 24, descripción 72). En el chat queda el texto con las
+   opciones, para que el asesor y el recap de la IA vean qué se ofreció. */
+async function enviarOpcionesWhatsapp({
+  phone_whatsapp_to,
+  business_phone_id,
+  accessToken,
+  id_configuracion,
+  cuerpo,
+  opciones, // [{ id, titulo, descripcion? }]
+  boton_lista = 'Ver opciones',
+  texto_registro,
+  responsable = '',
+}) {
+  const corto = (s, n) => {
+    const t = String(s || '').trim();
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  const comoBotones =
+    opciones.length <= 3 && opciones.every((o) => o.titulo.length <= 20);
+  const interactive = comoBotones
+    ? {
+        type: 'button',
+        body: { text: cuerpo },
+        action: {
+          buttons: opciones.map((o) => ({
+            type: 'reply',
+            reply: { id: o.id, title: o.titulo },
+          })),
+        },
+      }
+    : {
+        type: 'list',
+        body: { text: cuerpo },
+        action: {
+          button: corto(boton_lista, 20),
+          sections: [
+            {
+              title: 'Opciones',
+              rows: opciones.slice(0, 10).map((o) => ({
+                id: o.id,
+                title: corto(o.titulo, 24),
+                ...(o.descripcion
+                  ? { description: corto(o.descripcion, 72) }
+                  : {}),
+              })),
+            },
+          ],
+        },
+      };
+
+  const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${business_phone_id}/messages`;
+  try {
+    const response = await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        to: phone_whatsapp_to,
+        type: 'interactive',
+        interactive,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    const mensajeId = response.data?.messages?.[0]?.id;
+    if (!mensajeId) return { ok: false, error: 'sin id de mensaje' };
+
+    const config = await Configuraciones.findOne({
+      where: { id: id_configuracion, suspendido: 0 },
+    });
+    if (config) {
+      await procesarMensajeTexto({
+        id_configuracion,
+        business_phone_id,
+        nombre_cliente: config.nombre_configuracion,
+        apellido_cliente: '',
+        telefono_configuracion: config.telefono,
+        phone_whatsapp_to,
+        tipo_mensaje: 'text',
+        texto_mensaje: texto_registro || cuerpo,
+        ruta_archivo: null,
+        responsable,
+        wamid: mensajeId,
+        total_tokens: 0,
+      });
+    }
+    return { ok: true, formato: comoBotones ? 'botones' : 'lista' };
+  } catch (err) {
+    const e = err.response?.data?.error || err.message;
+    registrarErrorEnvio(phone_whatsapp_to, e);
+    await logError(`❌ Error en enviarOpcionesWhatsapp: ${JSON.stringify(e)}`);
+    return { ok: false, error: e };
+  }
+}
+
 async function logInfo(msg) {
   await fs.appendFile(
     path.join(logsDir, 'debug_log.txt'),
@@ -195,4 +294,8 @@ async function logError(msg) {
   );
 }
 
-module.exports = { enviarMensajeTextoWhatsApp, enviarMensajeWhatsapp };
+module.exports = {
+  enviarMensajeTextoWhatsApp,
+  enviarMensajeWhatsapp,
+  enviarOpcionesWhatsapp,
+};
