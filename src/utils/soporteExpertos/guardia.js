@@ -14,7 +14,9 @@
      3. cargo interno («Pricing», «supervisor») — se cambia por el nombre que
         sí puede leer el cliente;
      4. presentarse como una persona;
-     5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima.
+     5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima;
+     6. contestar con una ficha que pasa el caso a una persona (`pasar_a`) sin
+        decirle al cliente que un asesor lo retoma — se le agrega el aviso.
 
    Lo que no se puede corregir con certeza no se manda: sale el texto seguro
    del turno (el estado oficial de la carga, si era eso lo que preguntó, o el
@@ -33,7 +35,7 @@
 'use strict';
 
 const { sinTildes } = require('./texto');
-const { MENSAJE_ASESOR } = require('./textos');
+const { MENSAJE_ASESOR, CIERRE_ASESOR } = require('./textos');
 
 const MAX_RESPUESTA = 1500;
 
@@ -290,6 +292,34 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   return null;
 }
 
+/* ── Una ficha con `pasar_a` no cierra sola ────────────────────────────── */
+const RE_PASA_A_ASESOR = /apenas abramos/i;
+const PALABRAS_DE_MUESTRA = 6;
+
+/** ¿La respuesta trae un tramo de esa ficha (6 palabras seguidas, o la parte
+    entera si es más corta)? Así se sabe que el modelo contestó CON la ficha. */
+function usaFicha(respuestaLimpia, partes) {
+  for (const parte of partes || []) {
+    const w = limpio(parte).split(' ').filter(Boolean);
+    if (w.length < 4) continue;
+    const n = Math.min(PALABRAS_DE_MUESTRA, w.length);
+    for (let i = 0; i + n <= w.length; i++) {
+      if (respuestaLimpia.includes(` ${w.slice(i, i + n).join(' ')} `)) return true;
+    }
+  }
+  return false;
+}
+
+/** Si contestó con una ficha que pasa a una persona y no avisó del paso a
+    asesor, lo agrega. Devuelve { texto, cambios, ficha }. */
+function completarPase(texto, fichasConPase) {
+  if (!fichasConPase?.length || RE_PASA_A_ASESOR.test(texto)) return { texto, cambios: 0 };
+  const respuestaLimpia = ` ${limpio(texto)} `;
+  const usada = fichasConPase.find((f) => usaFicha(respuestaLimpia, f.partes));
+  if (!usada) return { texto, cambios: 0 };
+  return { texto: `${texto.trimEnd()}\n${CIERRE_ASESOR}`, cambios: 1, ficha: usada.id };
+}
+
 /**
  * @param {string} respuesta  lo que escribió el modelo (ya pasado por el sanitizador del motor)
  * @param {object} hechos     lo que arma `turno.js`:
@@ -299,6 +329,8 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
  *                      en el turno se consultó la carga, es SOLO su bloque: una ficha que
  *                      explica los pasos no autoriza a decir «la tuya está en aduana».
  *   - textoSeguro      con qué se reemplaza una respuesta que no pasa
+ *   - fichasConPase    [{ id, partes }] fichas con `pasar_a` vistas en la conversación:
+ *                      si la respuesta usa una, tiene que llevar el paso a asesor
  * @returns {{texto:string, cambiada:boolean, corregida:boolean, motivos:string[]}}
  */
 function revisarRespuesta(respuesta, hechos = {}) {
@@ -341,7 +373,15 @@ function revisarRespuesta(respuesta, hechos = {}) {
     motivos.push(falla);
     return { texto: seguro, cambiada: true, corregida: false, motivos };
   }
-  if (corregida) {
+
+  // 3. Lo que se completa: una ficha que pasa a una persona no cierra sola.
+  const pase = completarPase(visible, h.fichasConPase);
+  if (pase.cambios) {
+    motivos.push(`usaba la ficha «${pase.ficha}», que pasa a una persona, sin el paso a asesor: agregado`);
+    visible = pase.texto;
+  }
+
+  if (corregida || pase.cambios) {
     if (visible[0] !== visible[0].toUpperCase()) visible = visible[0].toUpperCase() + visible.slice(1);
     return { texto: [visible, ...tags].join('\n'), cambiada: true, corregida: true, motivos };
   }
@@ -355,6 +395,7 @@ module.exports = {
   quitarDespedida,
   aplanarEnlaces,
   datoSinRespaldo,
+  completarPase,
   RE_PLAZO,
   MAX_RESPUESTA,
 };

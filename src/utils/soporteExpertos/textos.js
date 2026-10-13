@@ -15,7 +15,10 @@ const LINKS = {
 };
 
 /* ── Los de la versión 1 (sin cambios) ── */
-const MENSAJE_ASESOR = 'Recibí tu mensaje. Un asesor lo revisa y te escribe apenas abramos.';
+// La segunda mitad del paso a asesor. La guardia la agrega cuando el modelo
+// contestó con una ficha que pasa a una persona y se olvidó de decirlo.
+const CIERRE_ASESOR = 'Un asesor lo revisa y te escribe apenas abramos.';
+const MENSAJE_ASESOR = `Recibí tu mensaje. ${CIERRE_ASESOR}`;
 const MENSAJE_SALUDO =
   'Hola. Cuéntame qué necesitas. Si hace falta un asesor, lo dejo anotado para que te escriba apenas abramos.';
 const MENSAJE_RECIBIDO = 'Recibido. Lo sumo a tu caso para el asesor.';
@@ -54,4 +57,4 @@ const TODOS = {
   MENSAJE_ADJUNTO_SIN_TEXTO,
 };
 
-module.exports = { LINKS, ...TODOS, TEXTOS_FIJOS: Object.freeze(TODOS) };
+module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, TEXTOS_FIJOS: Object.freeze(TODOS) };

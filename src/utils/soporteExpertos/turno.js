@@ -6,7 +6,8 @@
      1. lee qué llegó además de texto (nota de voz, imagen, documento…);
      2. si el mensaje habla de la carga, la busca por el teléfono del que
         escribe y arma el bloque con su estado real;
-     3. trae las 3 fichas de la base más cercanas a lo que escribió;
+     3. trae las fichas de la base que pasan el umbral de cercanía (3 como
+        mucho, y ninguna si nada se parece lo suficiente);
      4. marca si está pidiendo datos de otra persona.
    Devuelve el bloque de contexto, el mensaje como lo debe ver el modelo y los
    «hechos» del turno.
@@ -134,6 +135,12 @@ async function prepararTurno(p) {
   for (const { ficha } of fichas) fichasVistas.set(ficha.id, ficha);
   guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas });
 
+  /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
+     La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió. */
+  const fichasConPase = [...fichasVistas.values()]
+    .filter((f) => f.pasar_a && f.respuesta_base)
+    .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos] }));
+
   const bloqueDeCarga = carga ? bloques.find((b) => b.startsWith('📦')) || '' : '';
   const firme = [
     ...Object.values(T.TEXTOS_FIJOS),
@@ -153,7 +160,7 @@ async function prepararTurno(p) {
 
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
-      ` · fichas=[${fichas.map((f) => f.ficha.id).join(', ')}]` +
+      ` · fichas=[${fichas.map((f) => `${f.ficha.id} ${f.cercania ?? ''}`.trim()).join(', ')}]` +
       ` · adjuntos=${adj.adjuntos.map((a) => a.tipo + (a.leido ? '' : '✗')).join(',') || '0'}` +
       (adj.esNotaDeVoz ? ' · nota de voz' : '') +
       (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : ''),
@@ -165,6 +172,7 @@ async function prepararTurno(p) {
     hechos: {
       carga,
       fichas: fichas.map((f) => f.ficha.id),
+      fichasConPase,
       adjuntos: adj.adjuntos,
       pideDatosDeOtro: otro.pide,
       respaldo: {
@@ -188,6 +196,7 @@ function hechosDeEmergencia(mensaje = '') {
   return {
     carga: null,
     fichas: [],
+    fichasConPase: [],
     adjuntos: [],
     pideDatosDeOtro: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
