@@ -189,10 +189,52 @@ async function listarPendientes() {
 // Clientes con 2+ suscripciones vivas a la vez. Es el síntoma del doble cobro:
 // una renovación rebotó, el cliente volvió a contratar por checkout y la vieja
 // siguió viva. `reemplazada_por` en la metadata de la vieja confirma el caso.
+/* Precios que son add-ons (Conexión adicional, Subusuario adicional…). Una sub
+   hecha SOLO de add-ons no es "otro plan": misma regla que el candado del
+   checkout (stripe.controller → getAddonPriceSet). */
+let _addons = null;
+async function addonPriceSet() {
+  if (_addons) return _addons;
+  try {
+    const rows = await db.query(
+      `SELECT id_price_prod, id_price_test FROM addons_chat_center WHERE activo = 1`,
+      { type: db.QueryTypes.SELECT },
+    );
+    _addons = new Set(
+      (rows || [])
+        .map((a) => (MODO === 'live' ? a.id_price_prod : a.id_price_test))
+        .filter(Boolean),
+    );
+  } catch (e) {
+    console.warn('[cobros] no se pudo leer addons_chat_center:', e?.message);
+    _addons = new Set();
+  }
+  return _addons;
+}
+
+/* Una sub "programada" ya tiene fecha de muerte: Stripe la cancela sola al
+   cerrar el periodo (cancel_at_period_end / cancel_at). Es lo que deja el
+   webhook cuando el cliente vuelve a contratar por checkout con la vieja aún
+   activa; no hay nada que corregir a mano. */
+const programada = (s) => Boolean(s.cancel_at_period_end || s.cancel_at);
+const terminaEl = (s) =>
+  s.cancel_at ? isoDe(s.cancel_at) : s.cancel_at_period_end ? isoDe(s.current_period_end) : null;
+
+/**
+ * Clientes con dos o más suscripciones vivas que llevan un plan.
+ * Cada caso trae `pendiente`: true si hay que actuar (dos planes vivos sin
+ * fecha de fin); false si la sobrante ya está programada para cancelarse
+ * (caso rmtobar1994, 2026-10-12: Method Ecommerce + Conexiones muere el 19
+ * oct y la BD ya apunta a la nueva — el tab lo mostraba como "por corregir").
+ */
 async function listarDoblesSubs() {
+  const addons = await addonPriceSet();
   const porCust = new Map();
   for await (const s of stripe.subscriptions.list({ status: 'all', limit: 100 })) {
     if (!SUB_VIVA.includes(s.status)) continue;
+    const items = s.items?.data || [];
+    // Solo add-ons (p. ej. una Conexión $10 suelta): no cuenta como otro plan.
+    if (items.length && items.every((it) => addons.has(it?.price?.id))) continue;
     const cid = idDe(s.customer);
     if (!cid) continue;
     if (!porCust.has(cid)) porCust.set(cid, []);
@@ -203,18 +245,26 @@ async function listarDoblesSubs() {
     if (subs.length < 2) continue;
     const detalle = [];
     for (const s of subs.sort((a, b) => a.created - b.created)) {
-      const it = s.items?.data?.[0];
+      const items = s.items?.data || [];
+      const nombres = [];
+      for (const it of items) {
+        const n = await nombreProducto(idDe(it?.price?.product));
+        if (n) nombres.push(n);
+      }
       detalle.push({
         id: s.id,
         status: s.status,
         creada: isoDe(s.created),
-        monto: cents(it?.price?.unit_amount) * (it?.quantity || 1),
-        producto: await nombreProducto(idDe(it?.price?.product)),
+        monto: items.reduce((t, it) => t + cents(it?.price?.unit_amount) * (it?.quantity || 1), 0),
+        producto: nombres.join(' + ') || null,
         cancel_at_period_end: !!s.cancel_at_period_end,
+        termina: terminaEl(s),
         reemplazada_por: s.metadata?.reemplazada_por || null,
       });
     }
-    dobles.push({ customer_id: cid, subs: detalle });
+    // Pendiente = quedan dos o más planes vivos SIN fecha de fin.
+    const sinFin = subs.filter((s) => !programada(s));
+    dobles.push({ customer_id: cid, subs: detalle, pendiente: sinFin.length >= 2 });
   }
   return dobles;
 }
@@ -476,7 +526,7 @@ async function cobrosEnRango(desde, hasta, { fresh = false } = {}) {
       // Parte del pendiente que ya no se va a cobrar sola
       pendiente_muerto: r2(pendientesMuertas.reduce((s, p) => s + p.monto, 0)),
       pendiente_muerto_facturas: pendientesMuertas.length,
-      clientes_doble_sub: dobles.length,
+      clientes_doble_sub: dobles.filter((d) => d.pendiente).length,
     },
     por_dia: [...porDia.values()]
       .map((d) => ({
@@ -491,7 +541,12 @@ async function cobrosEnRango(desde, hasta, { fresh = false } = {}) {
       .sort((a, b) => b.cantidad - a.cantidad),
     cobros: filas,
     pendientes,
-    alertas: { dobles },
+    alertas: {
+      // Por corregir a mano: dos planes vivos sin fecha de fin.
+      dobles: dobles.filter((d) => d.pendiente),
+      // Ya resueltos: la sobrante está programada para cancelarse (informativo).
+      dobles_programadas: dobles.filter((d) => !d.pendiente),
+    },
     generado: new Date().toISOString(),
   };
 
