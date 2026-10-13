@@ -158,10 +158,14 @@ function olvidarWizard(id_producto) {
 async function enriquecerProductoWizard(producto) {
   try {
     const [fila] = await db.query(
-      `SELECT es_variable FROM productos_chat_center WHERE id = ? LIMIT 1`,
+      `SELECT p.es_variable, COALESCE(c.es_proveedor, 0) AS es_proveedor
+         FROM productos_chat_center p
+         LEFT JOIN configuraciones c ON c.id = p.id_configuracion
+        WHERE p.id = ? LIMIT 1`,
       { replacements: [producto.id], type: db.QueryTypes.SELECT },
     );
     producto.es_variable = Number(fila?.es_variable) === 1 ? 1 : 0;
+    producto.es_proveedor = Number(fila?.es_proveedor) === 1 ? 1 : 0;
     producto.variaciones = producto.es_variable
       ? await db.query(
           `SELECT atributo, valor, stock, precio_sugerido
@@ -657,7 +661,10 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
   const faqs = leerJson(wizard.respuestas_rapidas_json, []).filter(
     (f) => f && f.activa !== 0 && f.pregunta && f.respuesta,
   );
-  const stock = Number(producto.stock);
+  /* El stock solo cuenta en cuentas proveedoras, igual que en el catálogo.
+     Un dropshipper con producto manual sin stock (guardado como 0) hacía que
+     el bot dijera "agotado" con 150 en bodega (cfg 486, 2026-10-11). */
+  const stock = producto.es_proveedor ? Number(producto.stock) : NaN;
   const sinStock = Number.isFinite(stock) && stock <= 0;
   const ajustes = ajustesIaWizard(wizard);
 
@@ -761,7 +768,7 @@ function bloqueWizardParaMotor({ producto, wizard }, { hayCatalogo = true } = {}
       `🎨 Variedades (el cliente debe elegir una): ${producto.variaciones
         .map(
           (v) =>
-            `${v.atributo ? `${v.atributo} ` : ''}${v.valor}${v.stock != null ? ` (stock ${v.stock})` : ''}`,
+            `${v.atributo ? `${v.atributo} ` : ''}${v.valor}${producto.es_proveedor && v.stock != null ? ` (stock ${v.stock})` : ''}`,
         )
         .join(' · ')}`,
     );
