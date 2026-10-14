@@ -204,4 +204,42 @@ function resolverVariedad(pedida, etiquetas) {
   return null;
 }
 
-module.exports = { resolverVariedad, etiquetaEnTexto, normalizarVariedad: normalizar };
+/* Variedad combinada ("Talla / Color: M - Negro, L - Blanco"): el panel de
+   productos guarda así las combinaciones. Devuelve la línea que le explica al
+   bot que tiene que conseguir los dos datos, o '' si es de un solo tipo. */
+function avisoVariedadCombinada(variantesTexto) {
+  const [atributo, valores = ''] = String(variantesTexto || '').split(/:(.*)/s);
+  const tipos = atributo.split(' / ').map((t) => t.trim()).filter(Boolean);
+  if (tipos.length < 2) return '';
+  // Valores por dimensión ("M, L, XL" y "Blanco, Negro"): una lista plana de
+  // combinaciones hacía que el bot tomara "el negro" como variedad completa.
+  const porTipo = tipos.map(() => []);
+  for (const combo of valores.split(',')) {
+    const partes = combo.split(' - ').map((x) => x.trim());
+    if (partes.length !== tipos.length) continue;
+    partes.forEach((x, i) => {
+      if (x && !porTipo[i].includes(x)) porTipo[i].push(x);
+    });
+  }
+  const opciones = (i) => {
+    const l = porTipo[i];
+    return l.length > 1 ? `${l.slice(0, -1).join(', ')} o ${l[l.length - 1]}` : l[0] || '';
+  };
+  const pregunta = tipos
+    .map((t, i) => `qué ${t.toLowerCase()}${porTipo[i].length ? ` (${opciones(i)})` : ''}`)
+    .join(' y ');
+  return (
+    `Son DOS datos que el cliente tiene que decir: ${tipos.join(' y ').toLowerCase()}. ` +
+    `Pregunta así: "¿${pregunta.charAt(0).toUpperCase()}${pregunta.slice(1)}?". ` +
+    `Nunca recites las combinaciones una por una. Si dice solo uno de los datos ` +
+    `("el negro", "talla M"), pregunta el que falta y NO pases al envío. ` +
+    `Si pide varias unidades, los dos datos de cada una.`
+  );
+}
+
+module.exports = {
+  resolverVariedad,
+  etiquetaEnTexto,
+  normalizarVariedad: normalizar,
+  avisoVariedadCombinada,
+};
