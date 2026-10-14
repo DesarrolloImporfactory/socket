@@ -33,8 +33,9 @@ const normalizar = (s) =>
    a un producto cuenta para ese producto; uno sin mapear se ofrece con su
    titular (el cliente vino por ese anuncio aunque nadie lo haya vinculado). */
 async function opcionesEnPauta(id_configuracion) {
-  const filas = await db.query(
+  let filas = await db.query(
     `SELECT a.headline, p.id AS id_producto, p.nombre,
+            MAX(ap.id_producto) AS id_mapeado,
             COUNT(DISTINCT a.id_cliente) AS leads
        FROM cliente_productos_ad a
        LEFT JOIN anuncios_producto ap
@@ -52,6 +53,10 @@ async function opcionesEnPauta(id_configuracion) {
   );
 
   const porClave = new Map();
+  /* Anuncio vinculado a un producto que ya se borró: el negocio dejó de
+     venderlo, no se ofrece con su titular (cfg 476 ofrecía "Freidora con
+     Canasta" días después de eliminarla). */
+  filas = filas.filter((f) => f.id_producto || !f.id_mapeado);
   // Primero los mapeados: así un titular igual al nombre se suma al producto.
   const orden = [...filas].sort((x, y) => (y.id_producto ? 1 : 0) - (x.id_producto ? 1 : 0));
   for (const f of orden) {
