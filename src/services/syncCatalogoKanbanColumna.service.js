@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { catalogoInlineActivo } = require('../utils/openia/fileSearch');
+const { avisoVariedadCombinada } = require('../utils/variedadMatch');
 
 // ✅ ACTIVO: generación del catálogo en texto plano para mandarlo dentro de
 // las instrucciones en vez de usar file_search.
@@ -1266,6 +1267,8 @@ function normalizeCatalogProducts(rows, esProveedor = false) {
     if (Number(r.es_variable) === 1 && r.variantes_texto) {
       bloque_prompt += `⚠️ PRODUCTO VARIABLE — pregunta cuál quiere antes de cerrar y ponla en "🎨 Variedad:" del resumen. Si pide varias, escribe cuántas de cada una ("Negro x2, Cafe x1") y que sumen la cantidad total. NUNCA menciones el stock ni listes las opciones numeradas.\n`;
       bloque_prompt += `Variedades disponibles → ${r.variantes_texto}\n`;
+      const aviso = avisoVariedadCombinada(r.variantes_texto);
+      if (aviso) bloque_prompt += `${aviso}\n`;
     } else {
       // Se dice explícitamente para que el bot NO agregue la línea de más:
       // el resumen ya es largo y en productos simples no aporta nada.

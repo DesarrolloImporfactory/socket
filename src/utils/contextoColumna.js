@@ -15,6 +15,7 @@ const { db } = require('../database/config');
 const { enlaceUbicacionSede } = require('./ubicacionSede');
 const { normalizarUrlMedia } = require('./urlsMedia');
 const { ofrecerMedia, mediaYaEnviada } = require('./dedupeMedia');
+const { avisoVariedadCombinada } = require('./variedadMatch');
 
 /* Palabras que no distinguen un producto de otro. Sin esto, "quiero información
    del tratamiento facial" traería cualquier cosa que diga "facial". */
@@ -1402,7 +1403,12 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
       if (conOpciones.length) {
         bloque +=
           `🎨 Productos que SÍ o SÍ necesitan variedad antes de cerrar:\n` +
-          conOpciones.map((v) => `- ${v.nombre} → ${v.opciones}`).join('\n') +
+          conOpciones
+            .map((v) => {
+              const aviso = avisoVariedadCombinada(v.opciones);
+              return `- ${v.nombre} → ${v.opciones}${aviso ? `\n  ${aviso}` : ''}`;
+            })
+            .join('\n') +
           `\n` +
           `Si el pedido es de uno de estos, el cliente tiene que nombrar la ` +
           `variedad CON SUS PALABRAS antes del cierre, y va en la línea ` +
