@@ -368,6 +368,45 @@ function numeroCompartido(f, activas, enEmbudo) {
 // Igual que el chat (chat.service findChats): estos roles abren cualquier chat.
 const ROLES_VEN_TODO = ['administrador', 'admin_limitado'];
 
+/**
+ * Última automatización que le salió a cada cliente (enviada o en cola), para
+ * que el embudo muestre «contactado por automatización» aparte del seguimiento manual.
+ */
+async function ultimasAutomatizaciones(ids) {
+  if (!ids.length) return new Map();
+  let rows;
+  try {
+    rows = await db.query(
+      `SELECT e.id_usuario, e.estado, e.orden, a.nombre AS secuencia, p.titulo,
+              COALESCE(e.enviado_en, e.created_at) AS fecha, e.respondio_en
+         FROM recuperacion_automatizacion_envios e
+         JOIN recuperacion_automatizaciones a ON a.id = e.id_automatizacion
+         LEFT JOIN recuperacion_automatizacion_pasos p ON p.id = e.id_paso
+        WHERE e.id_usuario IN (:ids) AND e.estado IN ('enviado','encolado')
+        ORDER BY e.id`,
+      { replacements: { ids }, type: db.QueryTypes.SELECT },
+    );
+  } catch (e) {
+    if (e?.original?.code === 'ER_NO_SUCH_TABLE') return new Map();
+    throw e;
+  }
+  const map = new Map();
+  for (const r of rows) {
+    const prev = map.get(r.id_usuario);
+    map.set(r.id_usuario, {
+      secuencia: r.secuencia,
+      paso: r.orden,
+      titulo: r.titulo,
+      estado: r.estado,
+      fecha: r.fecha,
+      // Si respondió a cualquiera de los mensajes, queda marcado.
+      respondio_en: r.respondio_en || prev?.respondio_en || null,
+      total: (prev?.total || 0) + 1,
+    });
+  }
+  return map;
+}
+
 async function ultimosSeguimientos(ids) {
   if (!ids.length) return new Map();
   const rows = await db.query(
@@ -584,6 +623,7 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   let abiertos = await casosAbiertos();
   abiertos = await sincronizarCasos(base, abiertos);
   const ultimos = await ultimosSeguimientos(ids);
+  const autos = await ultimasAutomatizaciones(ids);
   const chats = await chatsExpertos(base.map((r) => telefonoDe(r).digits));
   const veTodo = ROLES_VEN_TODO.includes(rol);
   const activas = await cuentasActivasPorNumero();
@@ -652,6 +692,7 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
           }
         : null,
       total_seguimientos: u?.total_seguimientos || 0,
+      automatizacion: autos.get(r.id_usuario) || null,
       proximo_contacto: u?.proximo_contacto || null,
       proximo_vencido: !!(proximo && proximo < hoy),
       proximo_en_7d: !!(proximo && proximo >= hoy && proximo <= en7),
@@ -680,6 +721,7 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   const resumen = {};
   for (const k of Object.keys(COHORTES)) resumen[k] = { n: 0, monto: 0 };
   let sinContacto = 0;
+  let soloAutomatizacion = 0;
   let misCasos = 0;
   let sinAsignar = 0;
   let paraHoy = 0;
@@ -687,7 +729,8 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   for (const f of filas) {
     resumen[f.cohorte].n += 1;
     resumen[f.cohorte].monto += f.precio_plan || 0;
-    if (!f.ultimo_seguimiento) sinContacto += 1;
+    if (!f.ultimo_seguimiento && !f.automatizacion) sinContacto += 1;
+    if (!f.ultimo_seguimiento && f.automatizacion) soloAutomatizacion += 1;
     if (f.caso?.es_mio) misCasos += 1;
     if (f.caso && !f.caso.asignado_a_id) sinAsignar += 1;
     if (f.proximo_vencido || (f.proximo_contacto && new Date(f.proximo_contacto) <= new Date(hoy.getTime() + 86399000))) paraHoy += 1;
@@ -714,6 +757,7 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
       en_riesgo: filas.length,
       mrr_en_riesgo: r2(filas.reduce((s, f) => s + (f.precio_plan || 0), 0)),
       sin_contacto: sinContacto,
+      solo_automatizacion: soloAutomatizacion,
       mis_casos: misCasos,
       sin_asignar: sinAsignar,
       para_hoy: paraHoy,
