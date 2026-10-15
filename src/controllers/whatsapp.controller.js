@@ -53,6 +53,7 @@ const {
   invalidarTemplatesDeWaba,
 } = require('../services/whatsapp.service');
 const { getTemplatesMetaMerged } = require('../utils/kanban_catalogo.provider');
+const { paisDesdeTelefono } = require('../utils/paisDesdeTelefono');
 const {
   revisarConfiguracion,
   persistirEstado,
@@ -2379,15 +2380,17 @@ exports.embeddedSignupComplete = async (req, res) => {
       const [ins] = await db.query(
         `INSERT INTO configuraciones
            (id_usuario, key_imporsuit, nombre_configuracion,
-            telefono, id_telefono, id_whatsapp, token, webhook_url,
+            telefono, pais, id_telefono, id_whatsapp, token, webhook_url,
             wa_status, wa_status_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
         {
           replacements: [
             id_usuario,
             key_imporsuit,
             nombre_configuracion,
             displayNumber,
+            // Sin esto quedaba el default 'ec' aunque el número fuera de MX.
+            paisDesdeTelefono(displayNumber) || 'ec',
             phoneNumberId,
             wabaId,
             permanentPartnerTok,

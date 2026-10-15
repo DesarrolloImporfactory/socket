@@ -3,6 +3,10 @@ const catchAsync = require('../utils/catchAsync');
 const ExcelJS = require('exceljs');
 const { db } = require('../database/config');
 const {
+  paisDesdeTelefono,
+  normalizarPais,
+} = require('../utils/paisDesdeTelefono');
+const {
   liberarConexionesDeConfiguracion,
 } = require('../utils/unified/conexionCanal');
 const {
@@ -502,14 +506,26 @@ exports.agregarConfiguracion = catchAsync(async (req, res, next) => {
     // Generar clave única
     const key_imporsuit = generarClaveUnica();
 
+    // País elegido en el modal; si no llega, se deduce del número. Antes no
+    // se guardaba y todas quedaban con el default 'ec' (también las de MX).
+    const pais =
+      normalizarPais(req.body.pais) || paisDesdeTelefono(telefono) || 'ec';
+
     // Insertar en `configuraciones`
     const insertSql = `
       INSERT INTO configuraciones
-        (id_usuario, nombre_configuracion, telefono, key_imporsuit, created_at)
-      VALUES (?, ?, ?, ?, NOW())
+        (id_usuario, nombre_configuracion, telefono, pais, key_imporsuit,
+         created_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
     `;
     const [insertResult] = await db.query(insertSql, {
-      replacements: [id_usuario, nombre_configuracion, telefono, key_imporsuit],
+      replacements: [
+        id_usuario,
+        nombre_configuracion,
+        telefono,
+        pais,
+        key_imporsuit,
+      ],
     });
 
     return res.status(200).json({

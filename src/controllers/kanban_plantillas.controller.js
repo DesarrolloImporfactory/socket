@@ -21,6 +21,10 @@ const {
 } = require('../services/kanban_retiro_agencia.service');
 
 const axios = require('axios');
+const {
+  urlTrackingTransportadora,
+  urlRastreadorSinGuia,
+} = require('../utils/trackingTransportadora');
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 
 /* Identificador de asistente para las cuentas por Responses API.
@@ -1855,30 +1859,139 @@ exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
 // catalogoSetup ahora vive en kanban_plantillas_admin.controller.js
 // (ruta: POST /kanban_plantillas_admin/catalogo_setup)
 
-exports.trackingRedirect = (req, res) => {
+/* Botón "Seguimiento del pedido" / "Rastrear mi envío". Antes adivinaba la
+   transportadora por el prefijo de la guía y todo lo desconocido iba a
+   Servientrega Ecuador (las guías de México caían ahí). Ahora la
+   transportadora sale de la orden: link directo si existe, si no → estado. */
+exports.trackingRedirect = catchAsync(async (req, res) => {
   const g = String(req.params.guide || '').trim();
-  if (!g) return res.status(400).send('Guía requerida');
+  if (!g || g === '-') return res.status(400).send('Guía requerida');
 
-  const upper = g.toUpperCase();
-  let url;
+  const [orden] = await db.query(
+    `SELECT dropi_order_id, shipping_company, status, classified_status,
+            city, provincia, updated_at
+       FROM dropi_orders_cache
+      WHERE shipping_guide = ?
+      ORDER BY synced_at DESC
+      LIMIT 1`,
+    { replacements: [g], type: db.QueryTypes.SELECT },
+  );
 
-  if (
-    upper.startsWith('LC') ||
-    upper.startsWith('IMP') ||
-    upper.startsWith('MKP')
-  )
-    url = `https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=${encodeURIComponent(g)}`;
-  else if (upper.startsWith('D0') || upper.startsWith('I0'))
-    url = `https://ec.gintracom.site/web/site/tracking?guia=${encodeURIComponent(g)}`;
-  else if (upper.startsWith('V'))
-    url = `https://tracking.veloces.app/tracking-client/${encodeURIComponent(g)}`;
-  else if (upper.startsWith('WYB'))
-    url = `https://app.urbano.com.ec/plugin/etracking/etracking/?guia=${encodeURIComponent(g)}`;
-  else
-    url = `https://www.servientrega.com.ec/Tracking/?guia=${encodeURIComponent(g)}&tipo=GUIA`;
+  if (orden) {
+    const url = urlTrackingTransportadora(orden.shipping_company, g);
+    if (url) return res.redirect(url);
+    // CSP propia: la de helmet bloquea el script del botón "copiar guía".
+    const nonce = require('crypto').randomBytes(16).toString('base64');
+    return res
+      .set('Cache-Control', 'no-store')
+      .set(
+        'Content-Security-Policy',
+        `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`,
+      )
+      .send(paginaEstadoEnvio(orden, g, nonce));
+  }
 
+  // Orden que no está en caché (vieja, de Ecuador): comportamiento de siempre.
+  const url =
+    urlTrackingTransportadora('', g) ||
+    urlTrackingTransportadora('SERVIENTREGA', g);
   return res.redirect(url);
+});
+
+const escHtml = (s) =>
+  String(s ?? '').replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        c
+      ],
+  );
+
+// classified_status → [título, detalle, paso de la barra (0-2), tono]
+const ESTADO_CLIENTE = {
+  pendiente: [
+    'Estamos preparando tu pedido',
+    'Pronto saldrá hacia tu dirección.',
+    0,
+    'azul',
+  ],
+  en_transito: [
+    'Tu pedido está en camino',
+    'La transportadora lo está llevando a tu dirección. Mantente atento a su llamada.',
+    1,
+    'azul',
+  ],
+  retiro_agencia: [
+    'Tu pedido está listo para retirar',
+    'Acércate a la agencia de la transportadora con tu número de guía.',
+    1,
+    'azul',
+  ],
+  novedad: [
+    'Tu envío tiene una novedad',
+    'La transportadora no pudo completar la entrega. Escríbenos por WhatsApp para coordinar.',
+    1,
+    'ambar',
+  ],
+  entregada: ['Tu pedido fue entregado', 'Gracias por tu compra.', 2, 'verde'],
+  devolucion: [
+    'Tu envío está en devolución',
+    'Escríbenos por WhatsApp si quieres recibirlo.',
+    1,
+    'ambar',
+  ],
+  cancelada: [
+    'Este envío fue cancelado',
+    'Si crees que es un error, escríbenos por WhatsApp.',
+    0,
+    'gris',
+  ],
 };
+
+function paginaEstadoEnvio(orden, guia, nonce) {
+  const [titulo, detalle, paso, tono] =
+    ESTADO_CLIENTE[orden.classified_status] || ESTADO_CLIENTE.en_transito;
+  const destino = [orden.city, orden.provincia].filter(Boolean).join(', ');
+  // Viene como texto 'YYYY-MM-DD HH:mm:ss' en -05 (dateStrings); no convertir.
+  const m = String(orden.updated_at || '').match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/,
+  );
+  const fecha = m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}` : '';
+  const rastreador = urlRastreadorSinGuia(orden.shipping_company);
+  const fila = (k, v) =>
+    v ? `<div class="f"><span>${k}</span><b>${escHtml(v)}</b></div>` : '';
+  const pasos = ['Preparando', 'En camino', 'Entregado']
+    .map((p, i) => `<li class="${i <= paso ? 'on' : ''}">${p}</li>`)
+    .join('');
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Estado de tu envío</title><style>
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f1f5f9;color:#0f172a}
+.c{max-width:440px;margin:32px auto;padding:0 16px}
+.k{background:#fff;border-radius:14px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.s{color:#64748b;font-size:.85rem;margin:0 0 14px}
+.e{border-radius:10px;padding:16px;margin-bottom:18px}.e h1{font-size:1.15rem;margin:0 0 6px}.e p{margin:0;font-size:.92rem;line-height:1.4}
+.azul{background:#eff6ff;color:#1e3a8a}.verde{background:#ecfdf5;color:#065f46}.ambar{background:#fffbeb;color:#92400e}.gris{background:#f1f5f9;color:#334155}
+ol{display:flex;list-style:none;padding:0;margin:0 0 18px;gap:6px}
+ol li{flex:1;text-align:center;font-size:.75rem;color:#94a3b8;padding-top:10px;border-top:4px solid #e2e8f0}
+ol li.on{color:#1d4ed8;border-color:#1d4ed8;font-weight:600}
+.f{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid #e2e8f0;font-size:.92rem}
+.f span{color:#64748b}.f b{text-align:right;word-break:break-all;font-weight:600}
+.b{display:block;text-align:center;margin-top:12px;padding:12px;border-radius:10px;font-weight:600;font-size:.92rem;text-decoration:none;border:0;width:100%;cursor:pointer;font-family:inherit}
+.p{background:#1d4ed8;color:#fff}.o{background:#fff;color:#1d4ed8;border:1px solid #bfdbfe}
+.n{color:#64748b;font-size:.8rem;margin-top:16px;line-height:1.4}
+</style></head><body><div class="c"><div class="k">
+<p class="s">Pedido #${escHtml(orden.dropi_order_id)}</p>
+<div class="e ${tono}"><h1>${titulo}</h1><p>${detalle}</p></div>
+${tono === 'gris' ? '' : `<ol>${pasos}</ol>`}
+${fila('Transportadora', orden.shipping_company)}${fila('Número de guía', guia)}${fila('Destino', destino)}${fila('Último movimiento', String(orden.status || '').toLowerCase())}${fila('Actualizado', fecha)}
+<button class="b o" id="cp" data-g="${escHtml(guia)}">Copiar número de guía</button>
+${rastreador ? `<a class="b p" href="${escHtml(rastreador)}" target="_blank" rel="noopener">Rastrear en ${escHtml(orden.shipping_company)}</a>` : ''}
+<p class="n">Si tienes dudas sobre tu entrega, responde al chat de WhatsApp donde recibiste este enlace.</p>
+</div></div><script nonce="${nonce}">
+document.getElementById('cp').addEventListener('click',function(){var b=this;navigator.clipboard&&navigator.clipboard.writeText(b.dataset.g).then(function(){b.textContent='Guía copiada'})});
+</script></body></html>`;
+}
 
 // GET /kanban_plantillas/carrito/:token
 // El botón "Finalizar compra" del template de carritos abandonados apunta
