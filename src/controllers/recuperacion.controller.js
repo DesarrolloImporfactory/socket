@@ -36,6 +36,7 @@ exports.embudo = catchAsync(async (req, res) => {
   const data = await svc.embudo({
     id_sub_usuario: req.sessionUser.id_sub_usuario,
     id_usuario: req.sessionUser.id_usuario,
+    rol: req.sessionUser.rol,
   });
   const asignables = req.recuperacion?.puede_asignar ? await svc.asignables() : [];
   res.json({ status: 'success', data: { ...data, asignables, permisos: req.recuperacion } });
@@ -119,7 +120,7 @@ exports.abrirChatExpertos = catchAsync(async (req, res, next) => {
     const data = await svc.abrirChatExpertos({ id_usuario, sessionUser: req.sessionUser });
     res.json({ status: 'success', data });
   } catch (e) {
-    return next(new AppError(e.message, 400));
+    return next(new AppError(e.message, e.code === 'CHAT_DE_OTRO' ? 409 : 400));
   }
 });
 
@@ -175,7 +176,11 @@ exports.crearPlantillasAutomatizacion = catchAsync(async (req, res, next) => {
 
 /** GET /recuperacion/automatizaciones/envios?id=&limit= — bitácora */
 exports.enviosAutomatizacion = catchAsync(async (req, res) => {
-  const data = await autoSvc.envios({ id_automatizacion: Number(req.query.id) || null, limit: req.query.limit });
+  const data = await autoSvc.envios({
+    id_automatizacion: Number(req.query.id) || null,
+    estado: req.query.estado || null,
+    limit: req.query.limit,
+  });
   res.json({ status: 'success', data });
 });
 
@@ -189,20 +194,26 @@ exports.simularAutomatizacion = catchAsync(async (req, res) => {
  * POST /recuperacion/automatizaciones/:id/enviar-ahora
  * body: { id_paso, id_usuarios?: [] }  Envío manual: un paso concreto a los
  * clientes elegidos (o a toda la cohorte), saltando las esperas pero no el
- * "ya respondió" ni el tope diario. Lo puede usar cualquier asesor.
+ * "ya respondió", la cola, el paso ya recibido ni el tope diario. Lo puede
+ * usar cualquier asesor.
  */
 exports.enviarAhoraAutomatizacion = catchAsync(async (req, res, next) => {
   const id = Number(req.params.id);
   const id_paso = Number(req.body?.id_paso);
   if (!id || !id_paso) return next(new AppError('id y id_paso requeridos', 400));
   const ids = Array.isArray(req.body?.id_usuarios) ? req.body.id_usuarios.map(Number).filter(Boolean) : null;
-  const r = await autoSvc.correr({
-    soloAuto: id,
-    forzar: true,
-    pasoForzado: id_paso,
-    idsUsuarios: ids,
-    origen: `manual:${nombreDe(req) || req.sessionUser.id_sub_usuario}`,
-  });
+  const r = await autoSvc.conCandado(
+    () =>
+      autoSvc.correr({
+        soloAuto: id,
+        forzar: true,
+        pasoForzado: id_paso,
+        idsUsuarios: ids,
+        origen: `manual:${nombreDe(req) || req.sessionUser.id_sub_usuario}`,
+      }),
+    { esperaSeg: 5 },
+  );
+  if (r?.ocupado) return next(new AppError('Ya hay un envío de recuperación en curso. Intenta en un par de minutos.', 409));
   if (r?.error) return next(new AppError(r.error, 400));
   res.json({ status: 'success', data: r.resumen?.[0] || null });
 });

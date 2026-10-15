@@ -283,6 +283,43 @@ async function conexionExpertos(id_usuario_asesor) {
   };
 }
 
+/**
+ * Chat de cada número en la conexión de Expertos: quién lo atiende y cuándo
+ * fue el último mensaje. Map por últimos 9 dígitos (0969… = 593969…).
+ */
+async function chatsExpertos(digitsList) {
+  const claves = [...new Set((digitsList || []).filter(Boolean).map((d) => String(d).slice(-9)))];
+  if (!claves.length) return new Map();
+  const rows = await db.query(
+    `SELECT x.* FROM (
+       SELECT RIGHT(REGEXP_REPLACE(cc.celular_cliente, '[^0-9]', ''), 9) AS clave,
+              cc.id AS id_cliente, cc.id_encargado, cc.ultimo_mensaje_at,
+              s.nombre_encargado, s.usuario
+         FROM clientes_chat_center cc
+         LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = cc.id_encargado
+        WHERE cc.id_configuracion = :cfg AND cc.deleted_at IS NULL AND cc.propietario != 1
+     ) x WHERE x.clave IN (:claves)
+     ORDER BY x.ultimo_mensaje_at DESC`,
+    { replacements: { cfg: ID_CONEXION_EXPERTOS, claves }, type: db.QueryTypes.SELECT },
+  );
+  const map = new Map();
+  // Si hay duplicados del mismo número, manda el chat con actividad más reciente.
+  for (const r of rows) {
+    if (map.has(r.clave)) continue;
+    map.set(r.clave, {
+      id_cliente: r.id_cliente,
+      encargado_id: r.id_encargado ? Number(r.id_encargado) : null,
+      encargado_nombre: r.id_encargado ? (r.nombre_encargado || r.usuario || 'otro asesor').trim() : null,
+      ultimo_mensaje_at: r.ultimo_mensaje_at || null,
+    });
+  }
+  return map;
+}
+const chatDe = (map, digits) => (digits ? map.get(String(digits).slice(-9)) || null : null);
+
+// Igual que el chat (chat.service findChats): estos roles abren cualquier chat.
+const ROLES_VEN_TODO = ['administrador', 'admin_limitado'];
+
 async function ultimosSeguimientos(ids) {
   if (!ids.length) return new Map();
   const rows = await db.query(
@@ -490,7 +527,7 @@ async function situacionDeUsuario(id_usuario) {
   };
 }
 
-async function embudo({ id_sub_usuario, id_usuario }) {
+async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   await ensureTablas();
   const expertos = await conexionExpertos(id_usuario);
   const base = await db.query(SQL_COHORTES, { type: db.QueryTypes.SELECT });
@@ -499,6 +536,8 @@ async function embudo({ id_sub_usuario, id_usuario }) {
   let abiertos = await casosAbiertos();
   abiertos = await sincronizarCasos(base, abiertos);
   const ultimos = await ultimosSeguimientos(ids);
+  const chats = await chatsExpertos(base.map((r) => telefonoDe(r).digits));
+  const veTodo = ROLES_VEN_TODO.includes(rol);
 
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
@@ -511,10 +550,22 @@ async function embudo({ id_sub_usuario, id_usuario }) {
     const proximo = u?.proximo_contacto ? new Date(u.proximo_contacto) : null;
     const promesa = u?.resultado === 'promesa_pago';
     const tel = telefonoDe(r);
+    const chat = chatDe(chats, tel.digits);
     return {
       id_usuario: r.id_usuario,
       empresa: r.empresa,
       email: r.email,
+      // Chat en Expertos: si lo atiende otra persona, el asesor no lo puede
+      // abrir (el chat se lo niega); el front le dice a quién pedírselo.
+      chat_expertos: chat
+        ? {
+            encargado_id: chat.encargado_id,
+            encargado_nombre: chat.encargado_nombre,
+            ultimo_mensaje_at: chat.ultimo_mensaje_at,
+            es_mio: chat.encargado_id === Number(id_sub_usuario),
+            bloqueado: !!chat.encargado_id && chat.encargado_id !== Number(id_sub_usuario) && !veTodo,
+          }
+        : null,
       whatsapp: tel.display,
       whatsapp_digits: tel.digits,
       whatsapp_url: tel.url,
@@ -995,6 +1046,19 @@ async function abrirChatExpertos({ id_usuario, sessionUser }) {
   });
   if (!cliente?.id) throw new Error('No se pudo crear el contacto en la conexión de Expertos');
 
+  // El chat de otro asesor no se abre desde aquí: se pide la transferencia.
+  const enc = cliente.id_encargado ? Number(cliente.id_encargado) : null;
+  if (enc && enc !== Number(sessionUser.id_sub_usuario) && !ROLES_VEN_TODO.includes(sessionUser.rol)) {
+    const [s] = await db.query(
+      `SELECT nombre_encargado, usuario FROM sub_usuarios_chat_center WHERE id_sub_usuario = ? LIMIT 1`,
+      { replacements: [enc], type: db.QueryTypes.SELECT },
+    );
+    const nombre = (s?.nombre_encargado || s?.usuario || 'otro asesor').trim();
+    const e = new Error(`Este chat lo atiende ${nombre}. Pídele que te lo transfiera para poder abrirlo.`);
+    e.code = 'CHAT_DE_OTRO';
+    throw e;
+  }
+
   if (!cliente.id_encargado && sessionUser.id_sub_usuario) {
     await db.query(
       `UPDATE clientes_chat_center SET id_encargado = ?, chat_cerrado = 0 WHERE id = ?`,
@@ -1023,6 +1087,7 @@ module.exports = {
   situacionDeUsuario,
   abrirChatExpertos,
   conexionExpertos,
+  chatsExpertos,
   asignarCaso,
   cerrarCaso,
   abrirCasoSiFalta,
