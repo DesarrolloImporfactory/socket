@@ -129,6 +129,7 @@ const autoSvc = require('../services/recuperacion_automatizaciones.service');
 
 /** GET /recuperacion/automatizaciones — secuencias, pasos y métricas (30 días). */
 exports.listarAutomatizaciones = catchAsync(async (req, res) => {
+  await autoSvc.sincronizarAhora().catch((e) => console.warn('[recup-auto] sync al listar:', e?.message));
   const [lista, expertos] = await Promise.all([
     autoSvc.listar(),
     svc.conexionExpertos(req.sessionUser.id_usuario),
