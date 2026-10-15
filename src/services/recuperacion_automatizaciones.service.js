@@ -595,8 +595,10 @@ async function sincronizar(expertos) {
       WHERE e.estado = 'encolado' AND t.estado IN ('enviado','error','cancelado')`,
     { type: db.QueryTypes.UPDATE },
   );
-  // 2) ¿respondió? Primer mensaje entrante del cliente en Expertos después del envío.
-  //    Se cruza por los últimos 9 dígitos (0969… y 593969… son el mismo número).
+  // 2) ¿respondió? Primer mensaje entrante al contacto al que se envió
+  //    (mensajes_clientes.celular_recibe es el ID del contacto, no el teléfono).
+  //    No cuentan las bienvenidas automáticas: lo que llega en los primeros 60 s
+  //    si el número es una conexión de ImporChat (su bot) o 15 s si no.
   await db.query(
     `UPDATE recuperacion_automatizacion_envios e
        JOIN (
@@ -604,15 +606,32 @@ async function sincronizar(expertos) {
            FROM recuperacion_automatizacion_envios e2
            JOIN mensajes_clientes m
              ON m.id_configuracion = :cfg AND m.rol_mensaje = 0
-            AND RIGHT(REPLACE(REPLACE(m.celular_recibe, ' ', ''), '+', ''), 9) = RIGHT(e2.telefono, 9)
+            AND m.celular_recibe = e2.id_cliente_chat
             AND m.created_at > COALESCE(e2.enviado_en, e2.created_at)
-          WHERE e2.estado = 'enviado' AND e2.respondio_en IS NULL
+                 + INTERVAL IF(e2.telefono IN (:conexiones), 60, 15) SECOND
+          WHERE e2.estado = 'enviado' AND e2.respondio_en IS NULL AND e2.id_cliente_chat IS NOT NULL
             AND e2.created_at >= DATE_SUB(NOW(), INTERVAL 45 DAY)
           GROUP BY e2.id
        ) r ON r.id = e.id
         SET e.respondio_en = r.primera`,
-    { replacements: { cfg: expertos.id_configuracion }, type: db.QueryTypes.UPDATE },
+    { replacements: { cfg: expertos.id_configuracion, conexiones: await telefonosConexiones() }, type: db.QueryTypes.UPDATE },
   );
+}
+
+// Teléfonos (dígitos, como se guardan en los envíos) de las conexiones activas de ImporChat.
+async function telefonosConexiones() {
+  const rows = await db.query(
+    `SELECT DISTINCT REGEXP_REPLACE(telefono, '[^0-9]', '') AS t FROM configuraciones WHERE suspendido = 0 AND telefono IS NOT NULL`,
+    { type: db.QueryTypes.SELECT },
+  );
+  const set = new Set();
+  for (const r of rows) {
+    const t = String(r.t || '');
+    if (t.length < 9) continue;
+    set.add(t);
+    if (t.startsWith('0')) set.add(`593${t.slice(1)}`);
+  }
+  return set.size ? [...set] : [''];
 }
 
 /* ── Motor ── */
@@ -634,13 +653,13 @@ async function historialPorUsuario(ids) {
   return { porAuto: map, todos: rows };
 }
 
-async function conversacionActiva(expertos, digits) {
+async function conversacionActiva(expertos, idContacto) {
+  if (!idContacto) return false;
   const [r] = await db.query(
     `SELECT COUNT(*) AS n FROM mensajes_clientes
-      WHERE id_configuracion = ? AND rol_mensaje = 0
-        AND RIGHT(REPLACE(REPLACE(celular_recibe, ' ', ''), '+', ''), 9) = RIGHT(?, 9)
+      WHERE id_configuracion = ? AND rol_mensaje = 0 AND celular_recibe = ?
         AND created_at >= DATE_SUB(NOW(), INTERVAL ${DIAS_CONVERSACION_ACTIVA} DAY)`,
-    { replacements: [expertos.id_configuracion, digits], type: db.QueryTypes.SELECT },
+    { replacements: [expertos.id_configuracion, idContacto], type: db.QueryTypes.SELECT },
   );
   return Number(r?.n || 0) > 0;
 }
@@ -668,14 +687,17 @@ function chatAjenoActivo(auto, chat, asesorCaso) {
   };
 }
 
-/** Deja en la bitácora que se pausó; si ya estaba pausado, solo actualiza el detalle. */
-async function registrarPausa({ auto, paso, f, detalle, origen }) {
+/**
+ * Deja en la bitácora por qué no se envió (pausado / omitido). Si la última fila
+ * del cliente ya dice lo mismo, solo la actualiza: no se repite cada hora.
+ */
+async function registrarNoEnvio({ auto, paso, f, detalle, origen, estado = 'pausado' }) {
   const [ult] = await db.query(
-    `SELECT id, estado FROM recuperacion_automatizacion_envios
+    `SELECT id, estado, detalle FROM recuperacion_automatizacion_envios
       WHERE id_automatizacion = ? AND id_usuario = ? ORDER BY id DESC LIMIT 1`,
     { replacements: [auto.id, f.id_usuario], type: db.QueryTypes.SELECT },
   );
-  if (ult?.estado === 'pausado') {
+  if (ult?.estado === estado && (estado === 'pausado' || ult.detalle === detalle)) {
     await db.query(`UPDATE recuperacion_automatizacion_envios SET detalle = ?, id_paso = ?, orden = ? WHERE id = ?`, {
       replacements: [detalle, paso.id, paso.orden, ult.id],
       type: db.QueryTypes.UPDATE,
@@ -685,9 +707,74 @@ async function registrarPausa({ auto, paso, f, detalle, origen }) {
   await db.query(
     `INSERT INTO recuperacion_automatizacion_envios
        (id_automatizacion, id_paso, orden, id_usuario, telefono, nombre_template, origen, estado, detalle)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pausado', ?)`,
-    { replacements: [auto.id, paso.id, paso.orden, f.id_usuario, f.whatsapp_digits || null, paso.nombre_template || null, origen, detalle], type: db.QueryTypes.INSERT },
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    { replacements: [auto.id, paso.id, paso.orden, f.id_usuario, f.whatsapp_digits || null, paso.nombre_template || null, origen, estado, detalle], type: db.QueryTypes.INSERT },
   );
+}
+
+/**
+ * Números (últimos 9 dígitos) de cuentas ACTIVAS. Si el cliente del embudo tiene
+ * otra cuenta activa con el mismo WhatsApp, ya volvió con otro correo: no se le
+ * cobra la vieja (caso Jordy: 3177 suspendida, 3322 en prueba).
+ */
+const cuentasActivasPorNumero = () => recuperacion.cuentasActivasPorNumero();
+
+// Cohortes de salida: ahí sí se omite al que ya volvió con otra cuenta activa.
+// En nutrición (prueba / sin tarjeta) la cuenta misma está activa: la regla no aplica.
+const { COHORTES_SALIDA } = recuperacion;
+
+const claveNum = (d) => String(d || '').replace(/\D/g, '').slice(-9);
+
+/** Último mensaje de automatización por NÚMERO (cualquier cuenta, cualquier secuencia). */
+async function ultimoEnvioPorNumero() {
+  const rows = await db.query(
+    `SELECT RIGHT(telefono, 9) AS k, MAX(created_at) AS ult FROM recuperacion_automatizacion_envios
+      WHERE estado NOT IN ('omitido','pausado') AND telefono IS NOT NULL
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 60 DAY)
+      GROUP BY RIGHT(telefono, 9)`,
+    { type: db.QueryTypes.SELECT },
+  );
+  return new Map(rows.map((r) => [r.k, r.ult]));
+}
+
+/**
+ * Una sola cuenta por número dentro de una secuencia: la que ya tiene historial
+ * en ella; si ninguna, la más nueva. Devuelve Map número → id_usuario.
+ */
+function duenoPorNumero(auto, candidatos, porAuto) {
+  const grupos = new Map();
+  for (const f of candidatos) {
+    const k = claveNum(f.whatsapp_digits);
+    if (k.length !== 9) continue;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(f);
+  }
+  const dueno = new Map();
+  for (const [k, fs] of grupos) {
+    const conHist = fs.filter((f) => (porAuto.get(`${auto.id}|${f.id_usuario}`) || []).length);
+    const elegido = (conHist.length ? conHist : fs).reduce((a, b) => (b.id_usuario > a.id_usuario ? b : a));
+    dueno.set(k, elegido);
+  }
+  return dueno;
+}
+
+function mismoNumeroQue(dueno, f) {
+  const d = dueno.get(claveNum(f.whatsapp_digits));
+  if (!d || d.id_usuario === f.id_usuario) return null;
+  return {
+    motivo: 'mismo WhatsApp que otra cuenta de la secuencia',
+    detalle: `Mismo WhatsApp que la cuenta ${d.email || ''} (${d.id_usuario}): la secuencia va solo por esa, para no escribirle dos veces.`.slice(0, 255),
+  };
+}
+
+function otraCuentaActiva(mapa, f) {
+  if (!COHORTES_SALIDA.includes(f.cohorte)) return null;
+  const otras = (mapa.get(String(f.whatsapp_digits || '').slice(-9)) || []).filter((o) => o.id_usuario !== f.id_usuario);
+  if (!otras.length) return null;
+  return {
+    motivo: 'tiene otra cuenta activa con el mismo número',
+    detalle: `Ya usa otra cuenta activa con este número: ${otras.map((o) => `${o.email} (${o.id_usuario})`).join(', ')}. No se le cobra la anterior.`.slice(0, 255),
+  };
 }
 
 /**
@@ -766,6 +853,8 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
     if (!prev || new Date(r.created_at) > new Date(prev)) ultimoGlobal.set(r.id_usuario, r.created_at);
   }
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
+  const activasPorNumero = await cuentasActivasPorNumero();
+  const ultimoNumero = await ultimoEnvioPorNumero();
 
   const resumen = [];
   for (const auto of autos) {
@@ -786,6 +875,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
 
     let candidatos = filas.filter((f) => auto.cohortes.includes(f.cohorte));
     if (Array.isArray(idsUsuarios)) candidatos = candidatos.filter((f) => idsUsuarios.includes(f.id_usuario));
+    const dueno = duenoPorNumero(auto, candidatos, porAuto);
 
     for (const f of candidatos) {
       const omitir_ = (m) => { r.omitidos += 1; r.motivos[m] = (r.motivos[m] || 0) + 1; };
@@ -794,26 +884,35 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
       const hist = porAuto.get(`${auto.id}|${f.id_usuario}`) || [];
       const d = decidirPaso(auto, pasos, hist, { forzar, pasoForzado: pasoF });
       if (!d.paso) { omitir_(d.motivo); continue; }
+      const duplicada = otraCuentaActiva(activasPorNumero, f) || mismoNumeroQue(dueno, f);
+      if (duplicada) {
+        omitir_(duplicada.motivo);
+        await registrarNoEnvio({ auto, paso: d.paso, f, detalle: duplicada.detalle, origen, estado: 'omitido' }).catch(() => {});
+        continue;
+      }
       if (!forzar) {
-        const ug = ultimoGlobal.get(f.id_usuario);
+        // Por cuenta y por número: dos cuentas con el mismo WhatsApp son la misma persona.
+        const ug = [ultimoGlobal.get(f.id_usuario), ultimoNumero.get(claveNum(f.whatsapp_digits))].filter(Boolean)
+          .sort((a, b) => new Date(b) - new Date(a))[0];
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) { omitir_(`ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`); continue; }
       }
       const caso = casosAbiertos.get(f.id_usuario) || null;
       const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), caso?.asignado_a_id);
       if (ajeno) {
         omitir_(ajeno.motivo);
-        await registrarPausa({ auto, paso: d.paso, f, detalle: ajeno.detalle, origen }).catch((e) =>
+        await registrarNoEnvio({ auto, paso: d.paso, f, detalle: ajeno.detalle, origen }).catch((e) =>
           console.warn('[recup-auto] no se pudo registrar la pausa:', e?.message),
         );
         continue;
       }
-      if (await conversacionActiva(expertos, f.whatsapp_digits)) { omitir_('escribió hace poco: ya hay conversación'); continue; }
+      if (await conversacionActiva(expertos, chats.get(String(f.whatsapp_digits).slice(-9))?.id_cliente)) { omitir_('escribió hace poco: ya hay conversación'); continue; }
       if (cupo <= 0) { omitir_('tope diario alcanzado'); continue; }
       try {
         await encolar({ auto, paso: d.paso, f, expertos, origen, id_caso: caso?.id_caso || null, asesor_id: caso?.asignado_a_id || null });
         r.encolados += 1;
         cupo -= 1;
         ultimoGlobal.set(f.id_usuario, new Date().toISOString());
+        ultimoNumero.set(claveNum(f.whatsapp_digits), new Date().toISOString());
       } catch (e) {
         r.errores.push(`${f.empresa || f.email}: ${e.message}`);
         await omitir({ auto, paso: d.paso, f, motivo: `error al encolar: ${e.message}`.slice(0, 255), origen });
@@ -855,6 +954,9 @@ async function simular({ id_automatizacion }) {
   const filas = (await recuperacion.clientesEnRiesgo()).filter((f) => auto.cohortes.includes(f.cohorte));
   const { porAuto, todos } = await historialPorUsuario(filas.map((f) => f.id_usuario));
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
+  const activasPorNumero = await cuentasActivasPorNumero();
+  const ultimoNumero = await ultimoEnvioPorNumero();
+  const dueno = duenoPorNumero(auto, filas, porAuto);
   const asesorDe = new Map(
     (await db.query(`SELECT id_usuario, asignado_a_id FROM recuperacion_casos_chat_center WHERE estado = 'abierto'`, { type: db.QueryTypes.SELECT })).map((c) => [c.id_usuario, c.asignado_a_id]),
   );
@@ -872,11 +974,14 @@ async function simular({ id_automatizacion }) {
     if (!pasos.length) motivo = 'sin plantillas configuradas';
     else if (!f.whatsapp_digits) motivo = 'sin número';
     else if (f.telefono_fuente === 'conexion' && !auto.incluir_numero_conexion) motivo = 'solo tiene el número de su bot';
+    else if (otraCuentaActiva(activasPorNumero, f)) motivo = 'tiene otra cuenta activa con el mismo número';
+    else if (mismoNumeroQue(dueno, f)) motivo = 'mismo WhatsApp que otra cuenta de la secuencia';
     else {
       const d = decidirPaso(auto, pasos, porAuto.get(`${auto.id}|${f.id_usuario}`) || []);
       if (!d.paso) motivo = d.motivo;
       else {
-        const ug = ultimoGlobal.get(f.id_usuario);
+        const ug = [ultimoGlobal.get(f.id_usuario), ultimoNumero.get(claveNum(f.whatsapp_digits))].filter(Boolean)
+          .sort((a, b) => new Date(b) - new Date(a))[0];
         const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), asesorDe.get(f.id_usuario));
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) motivo = `ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`;
         else if (ajeno) motivo = ajeno.motivo;
