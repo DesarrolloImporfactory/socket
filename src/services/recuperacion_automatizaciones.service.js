@@ -687,14 +687,17 @@ function chatAjenoActivo(auto, chat, asesorCaso) {
   };
 }
 
-/** Deja en la bitácora que se pausó; si ya estaba pausado, solo actualiza el detalle. */
-async function registrarPausa({ auto, paso, f, detalle, origen }) {
+/**
+ * Deja en la bitácora por qué no se envió (pausado / omitido). Si la última fila
+ * del cliente ya dice lo mismo, solo la actualiza: no se repite cada hora.
+ */
+async function registrarNoEnvio({ auto, paso, f, detalle, origen, estado = 'pausado' }) {
   const [ult] = await db.query(
-    `SELECT id, estado FROM recuperacion_automatizacion_envios
+    `SELECT id, estado, detalle FROM recuperacion_automatizacion_envios
       WHERE id_automatizacion = ? AND id_usuario = ? ORDER BY id DESC LIMIT 1`,
     { replacements: [auto.id, f.id_usuario], type: db.QueryTypes.SELECT },
   );
-  if (ult?.estado === 'pausado') {
+  if (ult?.estado === estado && (estado === 'pausado' || ult.detalle === detalle)) {
     await db.query(`UPDATE recuperacion_automatizacion_envios SET detalle = ?, id_paso = ?, orden = ? WHERE id = ?`, {
       replacements: [detalle, paso.id, paso.orden, ult.id],
       type: db.QueryTypes.UPDATE,
@@ -704,9 +707,39 @@ async function registrarPausa({ auto, paso, f, detalle, origen }) {
   await db.query(
     `INSERT INTO recuperacion_automatizacion_envios
        (id_automatizacion, id_paso, orden, id_usuario, telefono, nombre_template, origen, estado, detalle)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pausado', ?)`,
-    { replacements: [auto.id, paso.id, paso.orden, f.id_usuario, f.whatsapp_digits || null, paso.nombre_template || null, origen, detalle], type: db.QueryTypes.INSERT },
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    { replacements: [auto.id, paso.id, paso.orden, f.id_usuario, f.whatsapp_digits || null, paso.nombre_template || null, origen, estado, detalle], type: db.QueryTypes.INSERT },
   );
+}
+
+/**
+ * Números (últimos 9 dígitos) de cuentas ACTIVAS. Si el cliente del embudo tiene
+ * otra cuenta activa con el mismo WhatsApp, ya volvió con otro correo: no se le
+ * cobra la vieja (caso Jordy: 3177 suspendida, 3322 en prueba).
+ */
+async function cuentasActivasPorNumero() {
+  const rows = await db.query(
+    `SELECT id_usuario, email_propietario AS email, whatsapp_lead FROM usuarios_chat_center
+      WHERE estado = 'activo' AND COALESCE(whatsapp_lead, '') <> ''`,
+    { type: db.QueryTypes.SELECT },
+  );
+  const map = new Map();
+  for (const r of rows) {
+    const k = String(r.whatsapp_lead).replace(/\D/g, '').slice(-9);
+    if (k.length !== 9) continue;
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(r);
+  }
+  return map;
+}
+
+function otraCuentaActiva(mapa, f) {
+  const otras = (mapa.get(String(f.whatsapp_digits || '').slice(-9)) || []).filter((o) => o.id_usuario !== f.id_usuario);
+  if (!otras.length) return null;
+  return {
+    motivo: 'tiene otra cuenta activa con el mismo número',
+    detalle: `Ya usa otra cuenta activa con este número: ${otras.map((o) => `${o.email} (${o.id_usuario})`).join(', ')}. No se le cobra la anterior.`.slice(0, 255),
+  };
 }
 
 /**
@@ -785,6 +818,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
     if (!prev || new Date(r.created_at) > new Date(prev)) ultimoGlobal.set(r.id_usuario, r.created_at);
   }
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
+  const activasPorNumero = await cuentasActivasPorNumero();
 
   const resumen = [];
   for (const auto of autos) {
@@ -813,6 +847,12 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
       const hist = porAuto.get(`${auto.id}|${f.id_usuario}`) || [];
       const d = decidirPaso(auto, pasos, hist, { forzar, pasoForzado: pasoF });
       if (!d.paso) { omitir_(d.motivo); continue; }
+      const duplicada = otraCuentaActiva(activasPorNumero, f);
+      if (duplicada) {
+        omitir_(duplicada.motivo);
+        await registrarNoEnvio({ auto, paso: d.paso, f, detalle: duplicada.detalle, origen, estado: 'omitido' }).catch(() => {});
+        continue;
+      }
       if (!forzar) {
         const ug = ultimoGlobal.get(f.id_usuario);
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) { omitir_(`ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`); continue; }
@@ -821,7 +861,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
       const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), caso?.asignado_a_id);
       if (ajeno) {
         omitir_(ajeno.motivo);
-        await registrarPausa({ auto, paso: d.paso, f, detalle: ajeno.detalle, origen }).catch((e) =>
+        await registrarNoEnvio({ auto, paso: d.paso, f, detalle: ajeno.detalle, origen }).catch((e) =>
           console.warn('[recup-auto] no se pudo registrar la pausa:', e?.message),
         );
         continue;
@@ -874,6 +914,7 @@ async function simular({ id_automatizacion }) {
   const filas = (await recuperacion.clientesEnRiesgo()).filter((f) => auto.cohortes.includes(f.cohorte));
   const { porAuto, todos } = await historialPorUsuario(filas.map((f) => f.id_usuario));
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
+  const activasPorNumero = await cuentasActivasPorNumero();
   const asesorDe = new Map(
     (await db.query(`SELECT id_usuario, asignado_a_id FROM recuperacion_casos_chat_center WHERE estado = 'abierto'`, { type: db.QueryTypes.SELECT })).map((c) => [c.id_usuario, c.asignado_a_id]),
   );
@@ -891,6 +932,7 @@ async function simular({ id_automatizacion }) {
     if (!pasos.length) motivo = 'sin plantillas configuradas';
     else if (!f.whatsapp_digits) motivo = 'sin número';
     else if (f.telefono_fuente === 'conexion' && !auto.incluir_numero_conexion) motivo = 'solo tiene el número de su bot';
+    else if (otraCuentaActiva(activasPorNumero, f)) motivo = 'tiene otra cuenta activa con el mismo número';
     else {
       const d = decidirPaso(auto, pasos, porAuto.get(`${auto.id}|${f.id_usuario}`) || []);
       if (!d.paso) motivo = d.motivo;
