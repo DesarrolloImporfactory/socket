@@ -634,6 +634,17 @@ async function telefonosConexiones() {
   return set.size ? [...set] : [''];
 }
 
+// Al abrir la pestaña se recalculan estados y respuestas (no esperar al cron de
+// los :20). Máximo una vez por minuto.
+let ultimaSync = 0;
+async function sincronizarAhora() {
+  if (Date.now() - ultimaSync < 60 * 1000) return;
+  ultimaSync = Date.now();
+  await ensureTablas();
+  const expertos = await recuperacion.conexionExpertos(null);
+  if (expertos?.id_configuracion) await sincronizar(expertos);
+}
+
 /* ── Motor ── */
 async function historialPorUsuario(ids) {
   if (!ids.length) return new Map();
@@ -1084,6 +1095,7 @@ module.exports = {
   envios,
   correr,
   conCandado,
+  sincronizarAhora,
   simular,
   MIN_DIAS_ENTRE_MENSAJES,
 };
