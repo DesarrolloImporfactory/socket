@@ -595,8 +595,10 @@ async function sincronizar(expertos) {
       WHERE e.estado = 'encolado' AND t.estado IN ('enviado','error','cancelado')`,
     { type: db.QueryTypes.UPDATE },
   );
-  // 2) ¿respondió? Primer mensaje entrante del cliente en Expertos después del envío.
-  //    Se cruza por los últimos 9 dígitos (0969… y 593969… son el mismo número).
+  // 2) ¿respondió? Primer mensaje entrante al contacto al que se envió
+  //    (mensajes_clientes.celular_recibe es el ID del contacto, no el teléfono).
+  //    No cuentan las bienvenidas automáticas: lo que llega en los primeros 60 s
+  //    si el número es una conexión de ImporChat (su bot) o 15 s si no.
   await db.query(
     `UPDATE recuperacion_automatizacion_envios e
        JOIN (
@@ -604,15 +606,32 @@ async function sincronizar(expertos) {
            FROM recuperacion_automatizacion_envios e2
            JOIN mensajes_clientes m
              ON m.id_configuracion = :cfg AND m.rol_mensaje = 0
-            AND RIGHT(REPLACE(REPLACE(m.celular_recibe, ' ', ''), '+', ''), 9) = RIGHT(e2.telefono, 9)
+            AND m.celular_recibe = e2.id_cliente_chat
             AND m.created_at > COALESCE(e2.enviado_en, e2.created_at)
-          WHERE e2.estado = 'enviado' AND e2.respondio_en IS NULL
+                 + INTERVAL IF(e2.telefono IN (:conexiones), 60, 15) SECOND
+          WHERE e2.estado = 'enviado' AND e2.respondio_en IS NULL AND e2.id_cliente_chat IS NOT NULL
             AND e2.created_at >= DATE_SUB(NOW(), INTERVAL 45 DAY)
           GROUP BY e2.id
        ) r ON r.id = e.id
         SET e.respondio_en = r.primera`,
-    { replacements: { cfg: expertos.id_configuracion }, type: db.QueryTypes.UPDATE },
+    { replacements: { cfg: expertos.id_configuracion, conexiones: await telefonosConexiones() }, type: db.QueryTypes.UPDATE },
   );
+}
+
+// Teléfonos (dígitos, como se guardan en los envíos) de las conexiones activas de ImporChat.
+async function telefonosConexiones() {
+  const rows = await db.query(
+    `SELECT DISTINCT REGEXP_REPLACE(telefono, '[^0-9]', '') AS t FROM configuraciones WHERE suspendido = 0 AND telefono IS NOT NULL`,
+    { type: db.QueryTypes.SELECT },
+  );
+  const set = new Set();
+  for (const r of rows) {
+    const t = String(r.t || '');
+    if (t.length < 9) continue;
+    set.add(t);
+    if (t.startsWith('0')) set.add(`593${t.slice(1)}`);
+  }
+  return set.size ? [...set] : [''];
 }
 
 /* ── Motor ── */
@@ -634,13 +653,13 @@ async function historialPorUsuario(ids) {
   return { porAuto: map, todos: rows };
 }
 
-async function conversacionActiva(expertos, digits) {
+async function conversacionActiva(expertos, idContacto) {
+  if (!idContacto) return false;
   const [r] = await db.query(
     `SELECT COUNT(*) AS n FROM mensajes_clientes
-      WHERE id_configuracion = ? AND rol_mensaje = 0
-        AND RIGHT(REPLACE(REPLACE(celular_recibe, ' ', ''), '+', ''), 9) = RIGHT(?, 9)
+      WHERE id_configuracion = ? AND rol_mensaje = 0 AND celular_recibe = ?
         AND created_at >= DATE_SUB(NOW(), INTERVAL ${DIAS_CONVERSACION_ACTIVA} DAY)`,
-    { replacements: [expertos.id_configuracion, digits], type: db.QueryTypes.SELECT },
+    { replacements: [expertos.id_configuracion, idContacto], type: db.QueryTypes.SELECT },
   );
   return Number(r?.n || 0) > 0;
 }
@@ -807,7 +826,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
         );
         continue;
       }
-      if (await conversacionActiva(expertos, f.whatsapp_digits)) { omitir_('escribió hace poco: ya hay conversación'); continue; }
+      if (await conversacionActiva(expertos, chats.get(String(f.whatsapp_digits).slice(-9))?.id_cliente)) { omitir_('escribió hace poco: ya hay conversación'); continue; }
       if (cupo <= 0) { omitir_('tope diario alcanzado'); continue; }
       try {
         await encolar({ auto, paso: d.paso, f, expertos, origen, id_caso: caso?.id_caso || null, asesor_id: caso?.asignado_a_id || null });
