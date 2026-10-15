@@ -200,3 +200,30 @@ exports.llamar = catchAsync(async (req, res) => {
     return responderError(res, e);
   }
 });
+
+/* ── Llamar desde otra conexión y nombre con el que se presenta ── */
+exports.obtenerAjustes = catchAsync(async (req, res) => {
+  const id_configuracion = await verificarConexion(req, res);
+  if (!id_configuracion) return undefined;
+  try {
+    const data = await llamadas.leerAjustes(id_configuracion);
+    return res.json({ status: 'success', data });
+  } catch (e) {
+    return responderError(res, e);
+  }
+});
+
+exports.guardarAjustes = catchAsync(async (req, res) => {
+  const id_configuracion = await verificarConexion(req, res);
+  if (!id_configuracion) return undefined;
+  try {
+    const data = await llamadas.guardarAjustes({
+      id_configuracion,
+      id_configuracion_llamadas: req.body.id_configuracion_llamadas,
+      nombre_llamadas: req.body.nombre_llamadas,
+    });
+    return res.json({ status: 'success', data });
+  } catch (e) {
+    return responderError(res, e);
+  }
+});

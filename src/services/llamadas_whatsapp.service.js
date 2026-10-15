@@ -344,6 +344,12 @@ async function llamadaTerminada(configuracion, call) {
 
   const idCliente = fila?.id_cliente_chat_center || c?.id_cliente || null;
   const cliente = idCliente ? await ClientesChatCenter.findByPk(idCliente) : null;
+  // Llamada por número puente: el webhook llega al puente, el chat es de otra
+  const idCfgChat = Number(fila?.id_configuracion || c?.id_configuracion) || configuracion.id;
+  const cfgChat =
+    idCfgChat !== Number(configuracion.id)
+      ? (await Configuraciones.findByPk(idCfgChat)) || configuracion
+      : configuracion;
   const quien = fila?.id_sub_usuario ? await nombreSubUsuario(fila.id_sub_usuario) : c?.tomada_por_nombre;
   const saliente = (fila?.direccion || c?.direccion) === 'BUSINESS_INITIATED';
   const rechazadaPorCliente = c?.estado === 'rejected_cliente';
@@ -358,7 +364,7 @@ async function llamadaTerminada(configuracion, call) {
       : estadoFinal === 'rejected'
         ? `📵 Llamada de WhatsApp rechazada${quien ? ` por ${quien}` : ''}`
         : `📵 Llamada de WhatsApp perdida: nadie contestó`;
-  await notificarEnChat(configuracion, cliente, texto);
+  await notificarEnChat(cfgChat, cliente, texto);
 
   if (c) {
     clearTimeout(c.timer);
@@ -543,7 +549,27 @@ function traducirErrorMeta(err, status) {
   return detalle ? `${base} — ${detalle}` : base;
 }
 
+/** Estado de llamadas del número + la conexión puente, si tiene una. */
 async function leerConfiguracionLlamadas(id_configuracion) {
+  const propio = await leerCallingNumero(id_configuracion);
+  const { id_configuracion_llamadas } = await ajustesLlamadas(id_configuracion);
+  let puente = null;
+  if (id_configuracion_llamadas && id_configuracion_llamadas !== Number(id_configuracion)) {
+    const cfgP = await Configuraciones.findByPk(id_configuracion_llamadas);
+    if (cfgP) {
+      const est = await leerCallingNumero(cfgP.id).catch(() => ({ activo: false }));
+      puente = {
+        id_configuracion: cfgP.id,
+        nombre: cfgP.nombre_configuracion,
+        telefono: cfgP.telefono,
+        activo: est.activo === true && Number(cfgP.suspendido) !== 1,
+      };
+    }
+  }
+  return { ...propio, puente };
+}
+
+async function leerCallingNumero(id_configuracion) {
   const cfg = await cargarConfig(id_configuracion);
   const r = await ax(cfg.token).get(`${GRAPH()}/${cfg.id_telefono}/settings`);
   if (r.status >= 400) {
@@ -588,6 +614,187 @@ async function activarLlamadas(id_configuracion, activo) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   CONEXIÓN PUENTE Y NOMBRE
+   Un número en coexistencia (app + API) no puede llamar: Meta exige solo
+   Cloud API. Esa conexión puede llamar DESDE otra de la misma cuenta
+   (configuraciones.id_configuracion_llamadas). El chat, el historial y las
+   notas siguen en la conexión del chat; el permiso y la llamada salen por
+   el número puente, así que el cliente ve ese número.
+   ═══════════════════════════════════════════════════════════════════════ */
+const esColumnaFaltante = (e) =>
+  /ER_BAD_FIELD_ERROR|Unknown column/i.test(`${e?.original?.code || ''} ${e?.message || ''}`);
+
+/** Ajustes de llamadas de la conexión. Tolera la migración sin aplicar. */
+async function ajustesLlamadas(id_configuracion) {
+  try {
+    const [row] = await db.query(
+      `SELECT id_configuracion_llamadas, nombre_llamadas
+         FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    return {
+      id_configuracion_llamadas: Number(row?.id_configuracion_llamadas) || null,
+      nombre_llamadas: String(row?.nombre_llamadas || '').trim() || null,
+    };
+  } catch (e) {
+    if (esColumnaFaltante(e)) return { id_configuracion_llamadas: null, nombre_llamadas: null };
+    throw e;
+  }
+}
+
+/** { cfgChat, cfgLlama }: la conexión del chat y la que hace la llamada. */
+async function conexionQueLlama(id_configuracion) {
+  const cfgChat = await cargarConfig(id_configuracion);
+  const { id_configuracion_llamadas: idPuente } = await ajustesLlamadas(id_configuracion);
+  if (!idPuente || idPuente === Number(cfgChat.id)) return { cfgChat, cfgLlama: cfgChat };
+  const cfgLlama = await Configuraciones.findOne({
+    where: { id: idPuente, id_usuario: cfgChat.id_usuario, suspendido: 0 },
+  });
+  if (!cfgLlama) {
+    const e = new Error('La conexión desde la que se llama ya no está disponible. Revísala en la configuración de llamadas.');
+    e.status = 400;
+    throw e;
+  }
+  return { cfgChat, cfgLlama };
+}
+
+/* Nombre verificado del número en WhatsApp (cache 1 h). */
+const cacheNombreWa = new Map();
+async function nombreWhatsapp(cfg) {
+  const c = cacheNombreWa.get(cfg.id_telefono);
+  if (c && Date.now() - c.at < 3600_000) return c.nombre;
+  const r = await ax(cfg.token).get(`${GRAPH()}/${cfg.id_telefono}`, {
+    params: { fields: 'verified_name' },
+  });
+  const nombre = r.status < 400 ? String(r.data?.verified_name || '').trim() || null : null;
+  cacheNombreWa.set(cfg.id_telefono, { nombre, at: Date.now() });
+  return nombre;
+}
+
+/** Con qué nombre se presenta el negocio: personalizado > WhatsApp > conexión. */
+async function nombrePresentacion(cfgChat) {
+  const { nombre_llamadas } = await ajustesLlamadas(cfgChat.id);
+  if (nombre_llamadas) return nombre_llamadas;
+  const wa = await nombreWhatsapp(cfgChat).catch(() => null);
+  return wa || cfgChat.nombre_configuracion;
+}
+
+async function leerAjustes(id_configuracion) {
+  const cfg = await cargarConfig(id_configuracion);
+  const ajustes = await ajustesLlamadas(id_configuracion);
+  const opciones = await db.query(
+    `SELECT id, nombre_configuracion, telefono
+       FROM configuraciones
+      WHERE id_usuario = ? AND id <> ? AND suspendido = 0
+        AND id_telefono IS NOT NULL AND id_telefono <> ''
+      ORDER BY nombre_configuracion`,
+    { replacements: [cfg.id_usuario, cfg.id], type: db.QueryTypes.SELECT },
+  );
+  return {
+    ...ajustes,
+    nombre_whatsapp: await nombreWhatsapp(cfg).catch(() => null),
+    nombre_configuracion: cfg.nombre_configuracion,
+    opciones,
+  };
+}
+
+async function guardarAjustes({ id_configuracion, id_configuracion_llamadas, nombre_llamadas }) {
+  const cfg = await cargarConfig(id_configuracion);
+  const idPuente = Number(id_configuracion_llamadas) || null;
+  if (idPuente) {
+    const p = await Configuraciones.findOne({
+      where: { id: idPuente, id_usuario: cfg.id_usuario, suspendido: 0 },
+    });
+    if (!p || p.id === cfg.id) {
+      const e = new Error('Elige otra conexión activa de esta misma cuenta');
+      e.status = 400;
+      throw e;
+    }
+    const est = await leerCallingNumero(p.id);
+    if (!est.activo) {
+      const e = new Error(`«${p.nombre_configuracion}» no tiene las llamadas de WhatsApp encendidas. Enciéndelas primero en esa conexión.`);
+      e.status = 400;
+      throw e;
+    }
+  }
+  const nombre = String(nombre_llamadas || '').trim().slice(0, 100) || null;
+  try {
+    await db.query(
+      `UPDATE configuraciones SET id_configuracion_llamadas = ?, nombre_llamadas = ? WHERE id = ?`,
+      { replacements: [idPuente, nombre, cfg.id] },
+    );
+  } catch (e) {
+    if (esColumnaFaltante(e)) {
+      const err = new Error('Falta aplicar la migración llamadas_puente_migration.sql');
+      err.status = 500;
+      throw err;
+    }
+    throw e;
+  }
+  return leerAjustes(id_configuracion);
+}
+
+/* ── Ventana de 24 h y plantilla de permiso ──
+   Fuera de la ventana, Meta acepta el mensaje libre "¿podemos llamarte?"
+   pero nunca llega. Ahí va la plantilla con el componente
+   call_permission_request: abre la conversación y pide el permiso. */
+const PLANTILLA_PERMISO = 'permiso_llamada_whatsapp';
+const TEXTO_PLANTILLA =
+  'Hola, te escribimos de {{1}}. Queremos llamarte por WhatsApp para atenderte mejor. ¿Nos das permiso? Toca el botón de abajo.';
+
+/** ¿El cliente le escribió a este número en las últimas 24 h? (23 h de margen) */
+async function ventanaAbierta(cfgLlama, telefono) {
+  const { buscarContactoWa } = require('../utils/unified/dedupeContacto');
+  const idCli = await buscarContactoWa({ id_configuracion: cfgLlama.id, telefono });
+  if (!idCli) return false;
+  const [row] = await db.query(
+    `SELECT 1 AS ok FROM mensajes_clientes
+      WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 0
+        AND deleted_at IS NULL AND created_at >= NOW() - INTERVAL 23 HOUR
+      LIMIT 1`,
+    { replacements: [cfgLlama.id, idCli], type: db.QueryTypes.SELECT },
+  );
+  return !!row;
+}
+
+/** Busca la plantilla en la WABA; si no existe, la crea. Devuelve su estado. */
+const cachePlantilla = new Map(); // waba → { status, language, at }
+async function asegurarPlantillaPermiso(cfg) {
+  const waba = cfg.id_whatsapp;
+  if (!waba) return { status: 'SIN_WABA' };
+  const c = cachePlantilla.get(waba);
+  if (c && c.status === 'APPROVED' && Date.now() - c.at < 3600_000) return c;
+  const base = `${GRAPH()}/${waba}/message_templates`;
+  const r = await ax(cfg.token).get(base, {
+    params: { name: PLANTILLA_PERMISO, fields: 'name,status,language,rejected_reason' },
+  });
+  if (r.status >= 400) {
+    return { status: 'ERROR', error: traducirErrorMeta(r.data?.error || {}, r.status) };
+  }
+  const t = (r.data?.data || []).find((x) => x.name === PLANTILLA_PERMISO);
+  if (t) {
+    const out = { status: t.status, language: t.language, rejected_reason: t.rejected_reason, at: Date.now() };
+    cachePlantilla.set(waba, out);
+    return out;
+  }
+  const cr = await ax(cfg.token).post(base, {
+    name: PLANTILLA_PERMISO,
+    language: 'es',
+    category: 'UTILITY',
+    components: [
+      { type: 'BODY', text: TEXTO_PLANTILLA, example: { body_text: [['Imporfactory']] } },
+      { type: 'call_permission_request' },
+    ],
+  });
+  if (cr.status >= 400) {
+    return { status: 'ERROR', error: traducirErrorMeta(cr.data?.error || {}, cr.status) };
+  }
+  const out = { status: cr.data?.status || 'PENDING', language: 'es', at: Date.now() };
+  cachePlantilla.set(waba, out);
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    FASE 2: PERMISO Y LLAMADA SALIENTE (el negocio llama al cliente)
    Reglas de Meta: hay que pedir permiso (1 solicitud por 24 h, 2 por
    semana); si el cliente acepta dura 7 días (o permanente si él lo marca).
@@ -610,8 +817,12 @@ async function clienteDeConexion(id_configuracion, id_cliente) {
 
 /** Estado del permiso del cliente (GET /{PHONE_NUMBER_ID}/call_permissions). */
 async function estadoPermiso(id_configuracion, id_cliente) {
-  const cfg = await cargarConfig(id_configuracion);
+  const { cfgLlama: cfg } = await conexionQueLlama(id_configuracion);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
+  const desde =
+    Number(cfg.id) !== Number(id_configuracion)
+      ? { id_configuracion: cfg.id, nombre: cfg.nombre_configuracion, telefono: cfg.telefono }
+      : null;
   const r = await ax(cfg.token).get(
     `${GRAPH()}/${cfg.id_telefono}/call_permissions`,
     { params: { user_wa_id: cliente.celular_cliente } },
@@ -622,6 +833,7 @@ async function estadoPermiso(id_configuracion, id_cliente) {
       status: 'desconocido',
       puede_pedir: false,
       puede_llamar: false,
+      desde,
       error: traducirErrorMeta(err, r.status),
     };
   }
@@ -636,26 +848,64 @@ async function estadoPermiso(id_configuracion, id_cliente) {
     puede_pedir: accion('send_call_permission_request')?.can_perform_action === true,
     puede_llamar: accion('start_call')?.can_perform_action === true,
     limites: acciones,
+    desde,
+    // Sin conversación en 24 h el permiso sale como plantilla
+    ventana_abierta: await ventanaAbierta(cfg, cliente.celular_cliente).catch(() => false),
   };
 }
 
 /** Manda al cliente el mensaje interactivo de "¿podemos llamarte?". */
 async function solicitarPermiso({ id_configuracion, id_cliente, id_sub_usuario, texto }) {
-  const cfg = await cargarConfig(id_configuracion);
+  const { cfgChat, cfgLlama: cfg } = await conexionQueLlama(id_configuracion);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
-  const cuerpo =
-    String(texto || '').trim() ||
-    `Hola, somos ${cfg.nombre_configuracion}. ¿Podemos llamarte por WhatsApp para atenderte mejor? Toca "Aceptar" y te llamamos.`;
+  const nombreNegocio = await nombrePresentacion(cfgChat);
+  const abierta = await ventanaAbierta(cfg, cliente.celular_cliente);
+
+  let cuerpo;
+  let mensaje;
+  if (abierta) {
+    cuerpo =
+      String(texto || '').trim() ||
+      `Hola, somos ${nombreNegocio}. ¿Podemos llamarte por WhatsApp para atenderte mejor? Toca "Aceptar" y te llamamos.`;
+    mensaje = {
+      type: 'interactive',
+      interactive: {
+        type: 'call_permission_request',
+        action: { name: 'call_permission_request' },
+        body: { text: cuerpo },
+      },
+    };
+  } else {
+    const plantilla = await asegurarPlantillaPermiso(cfg);
+    if (plantilla.status !== 'APPROVED') {
+      const e = new Error(
+        plantilla.status === 'PENDING'
+          ? 'El cliente no escribe hace más de 24 h: el permiso va por plantilla y WhatsApp aún la está revisando (suele tardar minutos). Intenta de nuevo en un rato.'
+          : plantilla.status === 'REJECTED'
+            ? `WhatsApp rechazó la plantilla de permiso de llamada${plantilla.rejected_reason ? ` (${plantilla.rejected_reason})` : ''}.`
+            : `No se pudo preparar la plantilla de permiso de llamada: ${plantilla.error || plantilla.status}`,
+      );
+      e.status = 409;
+      throw e;
+    }
+    cuerpo = TEXTO_PLANTILLA.replace('{{1}}', nombreNegocio);
+    mensaje = {
+      type: 'template',
+      template: {
+        name: PLANTILLA_PERMISO,
+        language: { code: plantilla.language || 'es' },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: nombreNegocio }] },
+        ],
+      },
+    };
+  }
+
   const r = await ax(cfg.token).post(`${GRAPH()}/${cfg.id_telefono}/messages`, {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to: cliente.celular_cliente,
-    type: 'interactive',
-    interactive: {
-      type: 'call_permission_request',
-      action: { name: 'call_permission_request' },
-      body: { text: cuerpo },
-    },
+    ...mensaje,
   });
   if (r.status >= 400) {
     const err = r.data?.error || {};
@@ -679,7 +929,9 @@ async function solicitarPermiso({ id_configuracion, id_cliente, id_sub_usuario, 
     uid_whatsapp: cliente.celular_cliente,
     id_wamid_mensaje: wamid,
     responsable: nombre,
-    texto_mensaje: `📞 Solicitud de permiso para llamar: "${cuerpo}"`,
+    texto_mensaje: `📞 Solicitud de permiso para llamar${abierta ? '' : ' (plantilla)'}${
+      cfg.id !== cfgChat.id ? ` desde ${cfg.nombre_configuracion}` : ''
+    }: "${cuerpo}"`,
     celular_recibe: cliente.id,
     informacion_suficiente: 1,
     visto: 0,
@@ -691,7 +943,7 @@ async function solicitarPermiso({ id_configuracion, id_cliente, id_sub_usuario, 
   } catch (e) {
     console.error('[llamadas] refresco del chat falló:', e.message);
   }
-  return { wamid };
+  return { wamid, via: abierta ? 'mensaje' : 'plantilla' };
 }
 
 /** El cliente respondió a la solicitud (llega como mensaje interactivo). */
@@ -712,13 +964,145 @@ async function avisarRespuestaPermiso(id_configuracion, telefono, reply) {
     is_permanent: reply?.is_permanent === true,
     expiration_timestamp: reply?.expiration_timestamp || null,
   });
+
+  // Conexiones que llaman por este número: el chat del cliente vive allá
+  let vinculadas = [];
+  try {
+    vinculadas = await db.query(
+      `SELECT id FROM configuraciones
+        WHERE id_configuracion_llamadas = ? AND suspendido = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+  } catch (e) {
+    if (!esColumnaFaltante(e)) throw e;
+  }
+  for (const { id } of vinculadas) {
+    const cfgChat = await Configuraciones.findByPk(id);
+    const idCli = cfgChat ? await buscarContactoWa({ id_configuracion: id, telefono }) : null;
+    if (!idCli) continue;
+    const cli = await ClientesChatCenter.findByPk(idCli);
+    const dest = cli?.id_encargado
+      ? [Number(cli.id_encargado)]
+      : await equipoDeConexion(id, cfgChat.id_usuario);
+    // La respuesta en sí llega al chat como espejo (reflejarEnConexionesQueLlaman)
+    emitirA(dest, 'LLAMADA_PERMISO', {
+      id_configuracion: id,
+      id_cliente_chat_center: idCli,
+      telefono,
+      response: reply?.response || null,
+      is_permanent: reply?.is_permanent === true,
+      expiration_timestamp: reply?.expiration_timestamp || null,
+    });
+  }
+}
+
+/* ── Espejo ──
+   Lo que el cliente le escribe al número puente se copia (solo lectura) al
+   chat de la conexión que lo llama: rol 3 + tipo 'espejo', así no cuenta en
+   métricas ni dispara bots. Solo hasta 72 h y 10 mensajes desde la última
+   llamada o pedido de permiso por el puente; al pasar el tope, un aviso. */
+const ESPEJO_HORAS = 72;
+const ESPEJO_MAX = 10;
+const ETIQUETA_ESPEJO = {
+  image: '[Imagen]',
+  video: '[Video]',
+  audio: '[Audio]',
+  document: '[Documento]',
+  sticker: '[Sticker]',
+  location: '[Ubicación]',
+};
+
+async function reflejarEnConexionesQueLlaman({ id_configuracion, telefono, tipo_mensaje, texto_mensaje }) {
+  let vinculadas = [];
+  try {
+    vinculadas = await db.query(
+      `SELECT id FROM configuraciones
+        WHERE id_configuracion_llamadas = ? AND suspendido = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+  } catch (e) {
+    if (esColumnaFaltante(e)) return;
+    throw e;
+  }
+  if (!vinculadas.length) return;
+
+  const puente = await Configuraciones.findByPk(id_configuracion);
+  if (!puente) return;
+  const { buscarContactoWa } = require('../utils/unified/dedupeContacto');
+  const texto =
+    String(texto_mensaje || '').trim() || ETIQUETA_ESPEJO[tipo_mensaje] || `[${tipo_mensaje || 'Mensaje'}]`;
+
+  for (const { id } of vinculadas) {
+    const idCli = await buscarContactoWa({ id_configuracion: id, telefono });
+    if (!idCli) continue;
+    // Última llamada o pedido de permiso por el puente (dentro de 72 h)
+    const [ultimo] = await db.query(
+      `SELECT MAX(t) AS desde FROM (
+         SELECT MAX(created_at) AS t FROM mensajes_clientes
+          WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 1
+            AND mid_mensaje = ? AND created_at >= NOW() - INTERVAL ${ESPEJO_HORAS} HOUR
+         UNION ALL
+         SELECT MAX(inicio_at) FROM llamadas_whatsapp
+          WHERE id_configuracion = ? AND id_cliente_chat_center = ?
+            AND direccion = 'BUSINESS_INITIATED' AND inicio_at >= NOW() - INTERVAL ${ESPEJO_HORAS} HOUR
+       ) x`,
+      {
+        replacements: [id, idCli, puente.id_telefono, id, idCli],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!ultimo?.desde) continue;
+
+    // Tope de mensajes por llamada; al pasarlo, un solo aviso y se corta
+    const [{ n, avisado }] = await db.query(
+      `SELECT SUM(tipo_mensaje = 'espejo') AS n,
+              SUM(tipo_mensaje = 'notificacion' AND texto_mensaje LIKE 'El cliente siguió escribiendo en %') AS avisado
+         FROM mensajes_clientes
+        WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 3
+          AND created_at >= ?`,
+      { replacements: [id, idCli, ultimo.desde], type: db.QueryTypes.SELECT },
+    );
+    if (Number(avisado) > 0) continue;
+    const cfgChat = await Configuraciones.findByPk(id);
+    const cli = await ClientesChatCenter.findByPk(idCli);
+    if (Number(n) >= ESPEJO_MAX) {
+      await notificarEnChat(
+        cfgChat,
+        cli,
+        `El cliente siguió escribiendo en ${puente.nombre_configuracion}. Míralo en esa conexión.`,
+      );
+      continue;
+    }
+
+    const propietario = await ClientesChatCenter.findOne({
+      where: { id_configuracion: id, propietario: 1 },
+      attributes: ['id'],
+    });
+    await MensajesClientes.create({
+      id_configuracion: id,
+      id_cliente: propietario?.id || null,
+      mid_mensaje: puente.id_telefono,
+      tipo_mensaje: 'espejo',
+      rol_mensaje: 3,
+      texto_mensaje: texto,
+      responsable: puente.nombre_configuracion,
+      celular_recibe: idCli,
+      uid_whatsapp: telefono,
+      visto: 0,
+    });
+    try {
+      await enviarConsultaAPI(id, idCli);
+    } catch (e) {
+      console.error('[llamadas] refresco del chat (espejo) falló:', e.message);
+    }
+  }
 }
 
 /** El asesor llama al cliente: POST /calls action connect con su oferta. */
 async function llamar({ id_configuracion, id_cliente, id_sub_usuario, sdp_offer }) {
-  const cfg = await cargarConfig(id_configuracion);
+  const { cfgChat: cfg, cfgLlama } = await conexionQueLlama(id_configuracion);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
-  const data = await accionGraph(cfg, {
+  const data = await accionGraph(cfgLlama, {
     to: cliente.celular_cliente,
     action: 'connect',
     session: { sdp_type: 'offer', sdp: sdp_offer },
@@ -773,4 +1157,8 @@ module.exports = {
   solicitarPermiso,
   avisarRespuestaPermiso,
   llamar,
+  leerAjustes,
+  guardarAjustes,
+  reflejarEnConexionesQueLlaman,
+  asegurarPlantillaPermiso,
 };
