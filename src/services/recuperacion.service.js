@@ -317,6 +317,54 @@ async function chatsExpertos(digitsList) {
 }
 const chatDe = (map, digits) => (digits ? map.get(String(digits).slice(-9)) || null : null);
 
+// Cohortes de salida: si la persona ya volvió con otra cuenta activa del mismo
+// WhatsApp, no se le escribe por esta. En nutrición (prueba / sin tarjeta) no aplica.
+const COHORTES_SALIDA = ['pago_rebotado', 'cancelacion_programada', 'vencido', 'cancelado_reciente'];
+const claveNum = (d) => String(d || '').replace(/\D/g, '').slice(-9);
+
+/** Cuentas ACTIVAS por número (últimos 9 dígitos de whatsapp_lead). */
+async function cuentasActivasPorNumero() {
+  const rows = await db.query(
+    `SELECT id_usuario, email_propietario AS email, whatsapp_lead FROM usuarios_chat_center
+      WHERE estado = 'activo' AND COALESCE(whatsapp_lead, '') <> ''`,
+    { type: db.QueryTypes.SELECT },
+  );
+  const map = new Map();
+  for (const r of rows) {
+    const k = claveNum(r.whatsapp_lead);
+    if (k.length !== 9) continue;
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(r);
+  }
+  return map;
+}
+
+/**
+ * Aviso para el asesor cuando el WhatsApp del cliente lo comparte otra cuenta:
+ * no_molestar si ya volvió con otra cuenta activa; si no, solo coordinar.
+ */
+function numeroCompartido(f, activas, enEmbudo) {
+  const k = claveNum(f.whatsapp_digits);
+  if (k.length !== 9) return null;
+  const otrasActivas = (activas.get(k) || []).filter((o) => o.id_usuario !== f.id_usuario);
+  if (COHORTES_SALIDA.includes(f.cohorte) && otrasActivas.length) {
+    return {
+      no_molestar: true,
+      cuentas: otrasActivas.map((o) => ({ id_usuario: o.id_usuario, email: o.email })),
+      texto: `Ya usa otra cuenta activa con este número (${otrasActivas.map((o) => o.email).join(', ')}). No lo contactes por esta cuenta.`,
+    };
+  }
+  const otrasEmbudo = (enEmbudo.get(k) || []).filter((o) => o.id_usuario !== f.id_usuario);
+  if (otrasEmbudo.length) {
+    return {
+      no_molestar: false,
+      cuentas: otrasEmbudo.map((o) => ({ id_usuario: o.id_usuario, email: o.email })),
+      texto: `Mismo WhatsApp que ${otrasEmbudo.map((o) => o.email).join(', ')} (también en el embudo): es la misma persona, coordínalo con quien lleve ese caso.`,
+    };
+  }
+  return null;
+}
+
 // Igual que el chat (chat.service findChats): estos roles abren cualquier chat.
 const ROLES_VEN_TODO = ['administrador', 'admin_limitado'];
 
@@ -538,6 +586,14 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   const ultimos = await ultimosSeguimientos(ids);
   const chats = await chatsExpertos(base.map((r) => telefonoDe(r).digits));
   const veTodo = ROLES_VEN_TODO.includes(rol);
+  const activas = await cuentasActivasPorNumero();
+  const enEmbudo = new Map();
+  for (const r of base) {
+    const k = claveNum(telefonoDe(r).digits);
+    if (k.length !== 9) continue;
+    if (!enEmbudo.has(k)) enEmbudo.set(k, []);
+    enEmbudo.get(k).push({ id_usuario: r.id_usuario, email: r.email });
+  }
 
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
@@ -571,6 +627,7 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
       whatsapp_url: tel.url,
       telefono_fuente: tel.fuente,
       conexion_nombre: tel.conexion_nombre,
+      numero_compartido: numeroCompartido({ id_usuario: r.id_usuario, cohorte: r.cohorte, whatsapp_digits: tel.digits }, activas, enEmbudo),
       id_plan: r.id_plan,
       nombre_plan: r.nombre_plan,
       precio_plan: r.precio_plan != null ? Number(r.precio_plan) : null,
@@ -1088,6 +1145,8 @@ module.exports = {
   abrirChatExpertos,
   conexionExpertos,
   chatsExpertos,
+  cuentasActivasPorNumero,
+  COHORTES_SALIDA,
   asignarCaso,
   cerrarCaso,
   abrirCasoSiFalta,

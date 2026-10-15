@@ -717,25 +717,11 @@ async function registrarNoEnvio({ auto, paso, f, detalle, origen, estado = 'paus
  * otra cuenta activa con el mismo WhatsApp, ya volvió con otro correo: no se le
  * cobra la vieja (caso Jordy: 3177 suspendida, 3322 en prueba).
  */
-async function cuentasActivasPorNumero() {
-  const rows = await db.query(
-    `SELECT id_usuario, email_propietario AS email, whatsapp_lead FROM usuarios_chat_center
-      WHERE estado = 'activo' AND COALESCE(whatsapp_lead, '') <> ''`,
-    { type: db.QueryTypes.SELECT },
-  );
-  const map = new Map();
-  for (const r of rows) {
-    const k = String(r.whatsapp_lead).replace(/\D/g, '').slice(-9);
-    if (k.length !== 9) continue;
-    if (!map.has(k)) map.set(k, []);
-    map.get(k).push(r);
-  }
-  return map;
-}
+const cuentasActivasPorNumero = () => recuperacion.cuentasActivasPorNumero();
 
 // Cohortes de salida: ahí sí se omite al que ya volvió con otra cuenta activa.
 // En nutrición (prueba / sin tarjeta) la cuenta misma está activa: la regla no aplica.
-const COHORTES_SALIDA = ['pago_rebotado', 'cancelacion_programada', 'vencido', 'cancelado_reciente'];
+const { COHORTES_SALIDA } = recuperacion;
 
 const claveNum = (d) => String(d || '').replace(/\D/g, '').slice(-9);
 
