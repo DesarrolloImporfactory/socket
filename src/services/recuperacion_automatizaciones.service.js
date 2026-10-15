@@ -195,6 +195,7 @@ async function ensureTablas() {
       ciclico TINYINT(1) NOT NULL DEFAULT 0,
       intervalo_dias INT NOT NULL DEFAULT 3,
       max_por_dia INT NOT NULL DEFAULT 100,
+      pausa_chat_ajeno_dias INT NOT NULL DEFAULT 3,
       incluir_numero_conexion TINYINT(1) NOT NULL DEFAULT 0,
       stripe_coupon_id VARCHAR(60) NOT NULL DEFAULT 'RECUPERACION10',
       actualizado_por VARCHAR(190) NULL,
@@ -232,7 +233,7 @@ async function ensureTablas() {
       nombre_template VARCHAR(120) NULL,
       parametros_resueltos JSON NULL,
       origen VARCHAR(20) NOT NULL DEFAULT 'cron',
-      estado ENUM('encolado','enviado','error','omitido') NOT NULL DEFAULT 'encolado',
+      estado ENUM('encolado','enviado','error','omitido','pausado') NOT NULL DEFAULT 'encolado',
       detalle VARCHAR(255) NULL,
       enviado_en DATETIME NULL,
       respondio_en DATETIME NULL,
@@ -243,6 +244,27 @@ async function ensureTablas() {
       KEY ix_usuario (id_usuario, created_at),
       KEY ix_envio_prog (id_envio_programado)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  // Tablas creadas antes de la pausa por chat ajeno (2026-10-15).
+  const [col] = await db.query(
+    `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'recuperacion_automatizaciones' AND COLUMN_NAME = 'pausa_chat_ajeno_dias'`,
+    { type: db.QueryTypes.SELECT },
+  );
+  if (!Number(col?.n)) {
+    await db.query(`ALTER TABLE recuperacion_automatizaciones ADD COLUMN pausa_chat_ajeno_dias INT NOT NULL DEFAULT 3 AFTER max_por_dia`);
+  }
+  // 'pausado': no se envió porque el chat estaba en conversación con otra persona.
+  const [enumEstado] = await db.query(
+    `SELECT COLUMN_TYPE AS t FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'recuperacion_automatizacion_envios' AND COLUMN_NAME = 'estado'`,
+    { type: db.QueryTypes.SELECT },
+  );
+  if (enumEstado && !String(enumEstado.t).includes('pausado')) {
+    await db.query(
+      `ALTER TABLE recuperacion_automatizacion_envios
+         MODIFY estado ENUM('encolado','enviado','error','omitido','pausado') NOT NULL DEFAULT 'encolado'`,
+    );
+  }
   await sembrar();
   await sincronizarTextos();
   tablasListas = true;
@@ -311,6 +333,7 @@ async function listar() {
             SUM(estado = 'enviado') AS enviados,
             SUM(estado = 'error') AS errores,
             SUM(estado = 'omitido') AS omitidos,
+            SUM(estado = 'pausado') AS pausados,
             SUM(respondio_en IS NOT NULL) AS respondieron,
             SUM(descuento_aplicado = 1) AS descuentos,
             COUNT(DISTINCT id_usuario) AS clientes,
@@ -349,6 +372,7 @@ async function listar() {
         enviados: Number(s.enviados || 0),
         errores: Number(s.errores || 0),
         omitidos: Number(s.omitidos || 0),
+        pausados: Number(s.pausados || 0),
         respondieron: Number(s.respondieron || 0),
         descuentos: Number(s.descuentos || 0),
         clientes: Number(s.clientes || 0),
@@ -361,7 +385,7 @@ async function listar() {
 
 async function actualizar(id, cambios, actualizado_por) {
   await ensureTablas();
-  const permitidos = ['activa', 'inicia_en', 'solo_sin_respuesta', 'intervalo_dias', 'max_por_dia', 'incluir_numero_conexion', 'stripe_coupon_id', 'descripcion'];
+  const permitidos = ['activa', 'inicia_en', 'solo_sin_respuesta', 'intervalo_dias', 'max_por_dia', 'pausa_chat_ajeno_dias', 'incluir_numero_conexion', 'stripe_coupon_id', 'descripcion'];
   const sets = [];
   const reps = [];
   for (const k of permitidos) {
@@ -370,6 +394,7 @@ async function actualizar(id, cambios, actualizado_por) {
     if (['activa', 'solo_sin_respuesta', 'incluir_numero_conexion'].includes(k)) v = v ? 1 : 0;
     if (k === 'inicia_en') v = v ? new Date(v) : null;
     if (['intervalo_dias', 'max_por_dia'].includes(k)) v = Math.max(1, Number(v) || 1);
+    if (k === 'pausa_chat_ajeno_dias') v = Math.max(0, Number(v) || 0);
     sets.push(`${k} = ?`);
     reps.push(v);
   }
@@ -399,7 +424,8 @@ async function actualizarPaso(idPaso, cambios) {
   await db.query(`UPDATE recuperacion_automatizacion_pasos SET ${sets.join(', ')} WHERE id = ?`, { replacements: reps, type: db.QueryTypes.UPDATE });
 }
 
-async function envios({ id_automatizacion = null, limit = 100 } = {}) {
+const ESTADOS_ENVIO = ['encolado', 'enviado', 'error', 'omitido', 'pausado'];
+async function envios({ id_automatizacion = null, estado = null, limit = 100 } = {}) {
   await ensureTablas();
   return db.query(
     `SELECT e.*, a.nombre AS automatizacion, p.titulo AS paso_titulo,
@@ -410,9 +436,11 @@ async function envios({ id_automatizacion = null, limit = 100 } = {}) {
        LEFT JOIN recuperacion_automatizacion_pasos p ON p.id = e.id_paso
        LEFT JOIN usuarios_chat_center u ON u.id_usuario = e.id_usuario
        LEFT JOIN template_envios_programados t ON t.id = e.id_envio_programado
-      ${id_automatizacion ? 'WHERE e.id_automatizacion = :id' : ''}
+      WHERE 1 = 1
+        ${id_automatizacion ? 'AND e.id_automatizacion = :id' : ''}
+        ${ESTADOS_ENVIO.includes(estado) ? 'AND e.estado = :estado' : ''}
       ORDER BY e.id DESC LIMIT :limit`,
-    { replacements: { id: id_automatizacion, limit: Math.min(Number(limit) || 100, 500) }, type: db.QueryTypes.SELECT },
+    { replacements: { id: id_automatizacion, estado, limit: Math.min(Number(limit) || 100, 500) }, type: db.QueryTypes.SELECT },
   );
 }
 
@@ -593,7 +621,7 @@ async function historialPorUsuario(ids) {
   const rows = await db.query(
     `SELECT id_automatizacion, id_usuario, orden, estado, created_at, enviado_en, respondio_en
        FROM recuperacion_automatizacion_envios
-      WHERE id_usuario IN (:ids) AND estado <> 'omitido'
+      WHERE id_usuario IN (:ids) AND estado NOT IN ('omitido','pausado')
       ORDER BY id`,
     { replacements: { ids }, type: db.QueryTypes.SELECT },
   );
@@ -618,6 +646,49 @@ async function conversacionActiva(expertos, digits) {
 }
 
 const diasDesde = (d) => (Date.now() - new Date(d).getTime()) / 86400000;
+
+/**
+ * El chat en Expertos lo atiende otra persona (no el asesor del caso) y tuvo
+ * mensajes hace menos de `pausa_chat_ajeno_dias`: no se le cae una plantilla
+ * de cobro en medio de esa conversación. Se reintenta solo cuando se aquiete.
+ * La automatización nunca mueve el chat. Devuelve el motivo o null.
+ */
+function chatAjenoActivo(auto, chat, asesorCaso) {
+  const dias = Number(auto.pausa_chat_ajeno_dias ?? 3);
+  if (!dias || !chat?.encargado_id) return null;
+  if (asesorCaso && chat.encargado_id === Number(asesorCaso)) return null;
+  if (!chat.ultimo_mensaje_at || diasDesde(chat.ultimo_mensaje_at) >= dias) return null;
+  const ultimo = new Date(chat.ultimo_mensaje_at);
+  const reintento = new Date(ultimo.getTime() + dias * 86400000);
+  const f = (d, hora) =>
+    d.toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: 'numeric', month: 'short', ...(hora ? { hour: '2-digit', minute: '2-digit' } : {}) });
+  return {
+    motivo: `en conversación con otra persona (< ${dias} días)`,
+    detalle: `Conversa con ${chat.encargado_nombre || 'otro asesor'} (último mensaje ${f(ultimo, true)}). No se interrumpe: se reintenta desde el ${f(reintento)} si el chat sigue quieto.`.slice(0, 255),
+  };
+}
+
+/** Deja en la bitácora que se pausó; si ya estaba pausado, solo actualiza el detalle. */
+async function registrarPausa({ auto, paso, f, detalle, origen }) {
+  const [ult] = await db.query(
+    `SELECT id, estado FROM recuperacion_automatizacion_envios
+      WHERE id_automatizacion = ? AND id_usuario = ? ORDER BY id DESC LIMIT 1`,
+    { replacements: [auto.id, f.id_usuario], type: db.QueryTypes.SELECT },
+  );
+  if (ult?.estado === 'pausado') {
+    await db.query(`UPDATE recuperacion_automatizacion_envios SET detalle = ?, id_paso = ?, orden = ? WHERE id = ?`, {
+      replacements: [detalle, paso.id, paso.orden, ult.id],
+      type: db.QueryTypes.UPDATE,
+    });
+    return;
+  }
+  await db.query(
+    `INSERT INTO recuperacion_automatizacion_envios
+       (id_automatizacion, id_paso, orden, id_usuario, telefono, nombre_template, origen, estado, detalle)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pausado', ?)`,
+    { replacements: [auto.id, paso.id, paso.orden, f.id_usuario, f.whatsapp_digits || null, paso.nombre_template || null, origen, detalle], type: db.QueryTypes.INSERT },
+  );
+}
 
 /**
  * Qué paso toca para este cliente en esta automatización, o null con el
@@ -694,6 +765,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
     const prev = ultimoGlobal.get(r.id_usuario);
     if (!prev || new Date(r.created_at) > new Date(prev)) ultimoGlobal.set(r.id_usuario, r.created_at);
   }
+  const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
 
   const resumen = [];
   for (const auto of autos) {
@@ -707,7 +779,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
     if (pasoForzado && !pasoF) { r.errores.push('El paso elegido no tiene plantilla o está inactivo'); continue; }
 
     const [hoy] = await db.query(
-      `SELECT COUNT(*) AS n FROM recuperacion_automatizacion_envios WHERE id_automatizacion = ? AND estado <> 'omitido' AND created_at >= CURDATE()`,
+      `SELECT COUNT(*) AS n FROM recuperacion_automatizacion_envios WHERE id_automatizacion = ? AND estado NOT IN ('omitido','pausado') AND created_at >= CURDATE()`,
       { replacements: [auto.id], type: db.QueryTypes.SELECT },
     );
     let cupo = Math.max(0, auto.max_por_dia - Number(hoy?.n || 0));
@@ -726,10 +798,18 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
         const ug = ultimoGlobal.get(f.id_usuario);
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) { omitir_(`ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`); continue; }
       }
+      const caso = casosAbiertos.get(f.id_usuario) || null;
+      const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), caso?.asignado_a_id);
+      if (ajeno) {
+        omitir_(ajeno.motivo);
+        await registrarPausa({ auto, paso: d.paso, f, detalle: ajeno.detalle, origen }).catch((e) =>
+          console.warn('[recup-auto] no se pudo registrar la pausa:', e?.message),
+        );
+        continue;
+      }
       if (await conversacionActiva(expertos, f.whatsapp_digits)) { omitir_('escribió hace poco: ya hay conversación'); continue; }
       if (cupo <= 0) { omitir_('tope diario alcanzado'); continue; }
       try {
-        const caso = casosAbiertos.get(f.id_usuario) || null;
         await encolar({ auto, paso: d.paso, f, expertos, origen, id_caso: caso?.id_caso || null, asesor_id: caso?.asignado_a_id || null });
         r.encolados += 1;
         cupo -= 1;
@@ -774,6 +854,10 @@ async function simular({ id_automatizacion }) {
   const pasos = auto.pasos.filter((p) => p.activo && p.nombre_template);
   const filas = (await recuperacion.clientesEnRiesgo()).filter((f) => auto.cohortes.includes(f.cohorte));
   const { porAuto, todos } = await historialPorUsuario(filas.map((f) => f.id_usuario));
+  const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
+  const asesorDe = new Map(
+    (await db.query(`SELECT id_usuario, asignado_a_id FROM recuperacion_casos_chat_center WHERE estado = 'abierto'`, { type: db.QueryTypes.SELECT })).map((c) => [c.id_usuario, c.asignado_a_id]),
+  );
   const ultimoGlobal = new Map();
   for (const r of todos) {
     const prev = ultimoGlobal.get(r.id_usuario);
@@ -793,7 +877,9 @@ async function simular({ id_automatizacion }) {
       if (!d.paso) motivo = d.motivo;
       else {
         const ug = ultimoGlobal.get(f.id_usuario);
+        const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), asesorDe.get(f.id_usuario));
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) motivo = `ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`;
+        else if (ajeno) motivo = ajeno.motivo;
         else paso = d.paso;
       }
     }

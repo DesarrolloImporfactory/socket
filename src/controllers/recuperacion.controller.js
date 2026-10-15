@@ -36,6 +36,7 @@ exports.embudo = catchAsync(async (req, res) => {
   const data = await svc.embudo({
     id_sub_usuario: req.sessionUser.id_sub_usuario,
     id_usuario: req.sessionUser.id_usuario,
+    rol: req.sessionUser.rol,
   });
   const asignables = req.recuperacion?.puede_asignar ? await svc.asignables() : [];
   res.json({ status: 'success', data: { ...data, asignables, permisos: req.recuperacion } });
@@ -119,7 +120,7 @@ exports.abrirChatExpertos = catchAsync(async (req, res, next) => {
     const data = await svc.abrirChatExpertos({ id_usuario, sessionUser: req.sessionUser });
     res.json({ status: 'success', data });
   } catch (e) {
-    return next(new AppError(e.message, 400));
+    return next(new AppError(e.message, e.code === 'CHAT_DE_OTRO' ? 409 : 400));
   }
 });
 
@@ -175,7 +176,11 @@ exports.crearPlantillasAutomatizacion = catchAsync(async (req, res, next) => {
 
 /** GET /recuperacion/automatizaciones/envios?id=&limit= — bitácora */
 exports.enviosAutomatizacion = catchAsync(async (req, res) => {
-  const data = await autoSvc.envios({ id_automatizacion: Number(req.query.id) || null, limit: req.query.limit });
+  const data = await autoSvc.envios({
+    id_automatizacion: Number(req.query.id) || null,
+    estado: req.query.estado || null,
+    limit: req.query.limit,
+  });
   res.json({ status: 'success', data });
 });
 
