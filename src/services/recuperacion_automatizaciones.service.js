@@ -733,7 +733,56 @@ async function cuentasActivasPorNumero() {
   return map;
 }
 
+// Cohortes de salida: ahí sí se omite al que ya volvió con otra cuenta activa.
+// En nutrición (prueba / sin tarjeta) la cuenta misma está activa: la regla no aplica.
+const COHORTES_SALIDA = ['pago_rebotado', 'cancelacion_programada', 'vencido', 'cancelado_reciente'];
+
+const claveNum = (d) => String(d || '').replace(/\D/g, '').slice(-9);
+
+/** Último mensaje de automatización por NÚMERO (cualquier cuenta, cualquier secuencia). */
+async function ultimoEnvioPorNumero() {
+  const rows = await db.query(
+    `SELECT RIGHT(telefono, 9) AS k, MAX(created_at) AS ult FROM recuperacion_automatizacion_envios
+      WHERE estado NOT IN ('omitido','pausado') AND telefono IS NOT NULL
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 60 DAY)
+      GROUP BY RIGHT(telefono, 9)`,
+    { type: db.QueryTypes.SELECT },
+  );
+  return new Map(rows.map((r) => [r.k, r.ult]));
+}
+
+/**
+ * Una sola cuenta por número dentro de una secuencia: la que ya tiene historial
+ * en ella; si ninguna, la más nueva. Devuelve Map número → id_usuario.
+ */
+function duenoPorNumero(auto, candidatos, porAuto) {
+  const grupos = new Map();
+  for (const f of candidatos) {
+    const k = claveNum(f.whatsapp_digits);
+    if (k.length !== 9) continue;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(f);
+  }
+  const dueno = new Map();
+  for (const [k, fs] of grupos) {
+    const conHist = fs.filter((f) => (porAuto.get(`${auto.id}|${f.id_usuario}`) || []).length);
+    const elegido = (conHist.length ? conHist : fs).reduce((a, b) => (b.id_usuario > a.id_usuario ? b : a));
+    dueno.set(k, elegido);
+  }
+  return dueno;
+}
+
+function mismoNumeroQue(dueno, f) {
+  const d = dueno.get(claveNum(f.whatsapp_digits));
+  if (!d || d.id_usuario === f.id_usuario) return null;
+  return {
+    motivo: 'mismo WhatsApp que otra cuenta de la secuencia',
+    detalle: `Mismo WhatsApp que la cuenta ${d.email || ''} (${d.id_usuario}): la secuencia va solo por esa, para no escribirle dos veces.`.slice(0, 255),
+  };
+}
+
 function otraCuentaActiva(mapa, f) {
+  if (!COHORTES_SALIDA.includes(f.cohorte)) return null;
   const otras = (mapa.get(String(f.whatsapp_digits || '').slice(-9)) || []).filter((o) => o.id_usuario !== f.id_usuario);
   if (!otras.length) return null;
   return {
@@ -819,6 +868,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
   }
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
   const activasPorNumero = await cuentasActivasPorNumero();
+  const ultimoNumero = await ultimoEnvioPorNumero();
 
   const resumen = [];
   for (const auto of autos) {
@@ -839,6 +889,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
 
     let candidatos = filas.filter((f) => auto.cohortes.includes(f.cohorte));
     if (Array.isArray(idsUsuarios)) candidatos = candidatos.filter((f) => idsUsuarios.includes(f.id_usuario));
+    const dueno = duenoPorNumero(auto, candidatos, porAuto);
 
     for (const f of candidatos) {
       const omitir_ = (m) => { r.omitidos += 1; r.motivos[m] = (r.motivos[m] || 0) + 1; };
@@ -847,14 +898,16 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
       const hist = porAuto.get(`${auto.id}|${f.id_usuario}`) || [];
       const d = decidirPaso(auto, pasos, hist, { forzar, pasoForzado: pasoF });
       if (!d.paso) { omitir_(d.motivo); continue; }
-      const duplicada = otraCuentaActiva(activasPorNumero, f);
+      const duplicada = otraCuentaActiva(activasPorNumero, f) || mismoNumeroQue(dueno, f);
       if (duplicada) {
         omitir_(duplicada.motivo);
         await registrarNoEnvio({ auto, paso: d.paso, f, detalle: duplicada.detalle, origen, estado: 'omitido' }).catch(() => {});
         continue;
       }
       if (!forzar) {
-        const ug = ultimoGlobal.get(f.id_usuario);
+        // Por cuenta y por número: dos cuentas con el mismo WhatsApp son la misma persona.
+        const ug = [ultimoGlobal.get(f.id_usuario), ultimoNumero.get(claveNum(f.whatsapp_digits))].filter(Boolean)
+          .sort((a, b) => new Date(b) - new Date(a))[0];
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) { omitir_(`ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`); continue; }
       }
       const caso = casosAbiertos.get(f.id_usuario) || null;
@@ -873,6 +926,7 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
         r.encolados += 1;
         cupo -= 1;
         ultimoGlobal.set(f.id_usuario, new Date().toISOString());
+        ultimoNumero.set(claveNum(f.whatsapp_digits), new Date().toISOString());
       } catch (e) {
         r.errores.push(`${f.empresa || f.email}: ${e.message}`);
         await omitir({ auto, paso: d.paso, f, motivo: `error al encolar: ${e.message}`.slice(0, 255), origen });
@@ -915,6 +969,8 @@ async function simular({ id_automatizacion }) {
   const { porAuto, todos } = await historialPorUsuario(filas.map((f) => f.id_usuario));
   const chats = await recuperacion.chatsExpertos(filas.map((f) => f.whatsapp_digits));
   const activasPorNumero = await cuentasActivasPorNumero();
+  const ultimoNumero = await ultimoEnvioPorNumero();
+  const dueno = duenoPorNumero(auto, filas, porAuto);
   const asesorDe = new Map(
     (await db.query(`SELECT id_usuario, asignado_a_id FROM recuperacion_casos_chat_center WHERE estado = 'abierto'`, { type: db.QueryTypes.SELECT })).map((c) => [c.id_usuario, c.asignado_a_id]),
   );
@@ -933,11 +989,13 @@ async function simular({ id_automatizacion }) {
     else if (!f.whatsapp_digits) motivo = 'sin número';
     else if (f.telefono_fuente === 'conexion' && !auto.incluir_numero_conexion) motivo = 'solo tiene el número de su bot';
     else if (otraCuentaActiva(activasPorNumero, f)) motivo = 'tiene otra cuenta activa con el mismo número';
+    else if (mismoNumeroQue(dueno, f)) motivo = 'mismo WhatsApp que otra cuenta de la secuencia';
     else {
       const d = decidirPaso(auto, pasos, porAuto.get(`${auto.id}|${f.id_usuario}`) || []);
       if (!d.paso) motivo = d.motivo;
       else {
-        const ug = ultimoGlobal.get(f.id_usuario);
+        const ug = [ultimoGlobal.get(f.id_usuario), ultimoNumero.get(claveNum(f.whatsapp_digits))].filter(Boolean)
+          .sort((a, b) => new Date(b) - new Date(a))[0];
         const ajeno = chatAjenoActivo(auto, chats.get(String(f.whatsapp_digits).slice(-9)), asesorDe.get(f.id_usuario));
         if (ug && diasDesde(ug) < MIN_DIAS_ENTRE_MENSAJES) motivo = `ya recibió otra automatización hace < ${MIN_DIAS_ENTRE_MENSAJES} días`;
         else if (ajeno) motivo = ajeno.motivo;
