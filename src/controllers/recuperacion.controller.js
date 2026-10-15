@@ -189,20 +189,26 @@ exports.simularAutomatizacion = catchAsync(async (req, res) => {
  * POST /recuperacion/automatizaciones/:id/enviar-ahora
  * body: { id_paso, id_usuarios?: [] }  Envío manual: un paso concreto a los
  * clientes elegidos (o a toda la cohorte), saltando las esperas pero no el
- * "ya respondió" ni el tope diario. Lo puede usar cualquier asesor.
+ * "ya respondió", la cola, el paso ya recibido ni el tope diario. Lo puede
+ * usar cualquier asesor.
  */
 exports.enviarAhoraAutomatizacion = catchAsync(async (req, res, next) => {
   const id = Number(req.params.id);
   const id_paso = Number(req.body?.id_paso);
   if (!id || !id_paso) return next(new AppError('id y id_paso requeridos', 400));
   const ids = Array.isArray(req.body?.id_usuarios) ? req.body.id_usuarios.map(Number).filter(Boolean) : null;
-  const r = await autoSvc.correr({
-    soloAuto: id,
-    forzar: true,
-    pasoForzado: id_paso,
-    idsUsuarios: ids,
-    origen: `manual:${nombreDe(req) || req.sessionUser.id_sub_usuario}`,
-  });
+  const r = await autoSvc.conCandado(
+    () =>
+      autoSvc.correr({
+        soloAuto: id,
+        forzar: true,
+        pasoForzado: id_paso,
+        idsUsuarios: ids,
+        origen: `manual:${nombreDe(req) || req.sessionUser.id_sub_usuario}`,
+      }),
+    { esperaSeg: 5 },
+  );
+  if (r?.ocupado) return next(new AppError('Ya hay un envío de recuperación en curso. Intenta en un par de minutos.', 409));
   if (r?.error) return next(new AppError(r.error, 400));
   res.json({ status: 'success', data: r.resumen?.[0] || null });
 });

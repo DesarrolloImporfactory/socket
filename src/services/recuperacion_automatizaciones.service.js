@@ -621,11 +621,11 @@ const diasDesde = (d) => (Date.now() - new Date(d).getTime()) / 86400000;
 
 /**
  * Qué paso toca para este cliente en esta automatización, o null con el
- * motivo. `forzar` (envío manual) salta las esperas pero no el "ya respondió".
+ * motivo. `forzar` (envío manual) salta las esperas pero no el "ya respondió",
+ * ni la cola, ni repite un paso que el cliente ya recibió.
  */
 function decidirPaso(auto, pasos, hist, { forzar = false, pasoForzado = null } = {}) {
-  if (pasoForzado) return { paso: pasoForzado };
-  if (!hist.length) return { paso: pasos[0] };
+  if (!hist.length) return { paso: pasoForzado || pasos[0] };
   const ultimo = hist[hist.length - 1];
   if (ultimo.estado === 'encolado') return { motivo: 'hay un envío en cola' };
   if (auto.solo_sin_respuesta) {
@@ -638,6 +638,14 @@ function decidirPaso(auto, pasos, hist, { forzar = false, pasoForzado = null } =
       const ultimaRespuesta = Math.max(...respuestas.map((h) => new Date(h.respondio_en).getTime()));
       if ((Date.now() - ultimaRespuesta) / 86400000 < 30) return { motivo: 'respondió hace menos de 30 días: tips en pausa' };
     }
+  }
+  if (pasoForzado) {
+    // Manual: no repite un paso ya enviado (nutrición: no en 60 días). Uno con error sí se reintenta.
+    const yaLoTiene = hist.some(
+      (h) => h.orden === pasoForzado.orden && h.estado !== 'error' && (!auto.ciclico || diasDesde(h.created_at) < 60),
+    );
+    if (yaLoTiene) return { motivo: `ya recibió el paso ${pasoForzado.orden}` };
+    return { paso: pasoForzado };
   }
   if (ultimo.estado === 'error') {
     if (!forzar && diasDesde(ultimo.created_at) < 2) return { motivo: 'último envío falló hace menos de 2 días' };
@@ -733,6 +741,28 @@ async function correr({ ahora = new Date(), soloAuto = null, forzar = false, pas
     }
   }
   return { ahora: ahora.toISOString(), expertos: { id_configuracion: expertos.id_configuracion, nombre: expertos.nombre }, resumen };
+}
+
+/**
+ * Candado compartido entre el cron y «Enviar ahora»: si corren a la vez, los dos
+ * leen el historial antes de encolar y el paso sale duplicado. GET_LOCK es por
+ * conexión; la transacción fija una del pool para tomarlo y soltarlo.
+ */
+const LOCK = 'recuperacion_automatizaciones';
+async function conCandado(fn, { esperaSeg = 1 } = {}) {
+  return db.transaction(async (t) => {
+    const [row] = await db.query(`SELECT GET_LOCK(?, ?) AS got`, {
+      replacements: [LOCK, esperaSeg],
+      type: db.QueryTypes.SELECT,
+      transaction: t,
+    });
+    if (Number(row?.got) !== 1) return { ocupado: true };
+    try {
+      return await fn();
+    } finally {
+      await db.query(`DO RELEASE_LOCK(?)`, { replacements: [LOCK], type: db.QueryTypes.RAW, transaction: t }).catch(() => {});
+    }
+  });
 }
 
 /** Qué pasaría si corriera ahora (sin encolar): para el botón "Simular". */
@@ -862,6 +892,7 @@ module.exports = {
   actualizarPaso,
   envios,
   correr,
+  conCandado,
   simular,
   MIN_DIAS_ENTRE_MENSAJES,
 };

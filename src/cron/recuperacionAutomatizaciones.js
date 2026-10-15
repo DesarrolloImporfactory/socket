@@ -11,8 +11,7 @@
  * cobro a las 3 a. m. no recupera a nadie.
  */
 const cron = require('node-cron');
-const { db } = require('../database/config');
-const { correr } = require('../services/recuperacion_automatizaciones.service');
+const { correr, conCandado } = require('../services/recuperacion_automatizaciones.service');
 const { sincronizarCasosGlobal } = require('../services/recuperacion.service');
 
 // Cada hora, todo el día: abre/cierra casos del embudo aunque nadie tenga la
@@ -33,25 +32,10 @@ cron.schedule(
   { timezone: 'America/Guayaquil' },
 );
 
-const LOCK = 'recuperacion_automatizaciones';
-
-async function withLock(fn) {
-  const [row] = await db.query(`SELECT GET_LOCK(?, 1) AS got`, {
-    replacements: [LOCK],
-    type: db.QueryTypes.SELECT,
-  });
-  if (!row || Number(row.got) !== 1) return;
-  try {
-    await fn();
-  } finally {
-    await db.query(`DO RELEASE_LOCK(?)`, { replacements: [LOCK], type: db.QueryTypes.RAW }).catch(() => {});
-  }
-}
-
 cron.schedule(
   '20 9-19 * * *',
   async () => {
-    await withLock(async () => {
+    await conCandado(async () => {
       try {
         const r = await correr({ origen: 'cron' });
         if (r?.error) {
@@ -68,7 +52,7 @@ cron.schedule(
       } catch (e) {
         console.error('[recup-auto] error:', e?.message);
       }
-    });
+    }).catch((e) => console.error('[recup-auto] candado:', e?.message));
   },
   { timezone: 'America/Guayaquil' },
 );
