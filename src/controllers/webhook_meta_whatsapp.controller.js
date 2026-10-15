@@ -133,6 +133,7 @@ const { reabrirSiResuelto } = require('../utils/kanbanReabrirResuelto');
 const {
   manejarWebhookLlamadas,
   avisarRespuestaPermiso,
+  reflejarEnConexionesQueLlaman,
 } = require('../services/llamadas_whatsapp.service');
 
 async function ensureDir(dir) {
@@ -1469,6 +1470,19 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_configuracion,
           id_cliente,
         );
+
+        // Si otra conexión llama a este cliente por este número, el mensaje
+        // se refleja (solo lectura) en el chat de esa conexión
+        if (!isHistory) {
+          reflejarEnConexionesQueLlaman({
+            id_configuracion,
+            telefono: phone_whatsapp_from,
+            tipo_mensaje: tipo_mensaje_final,
+            texto_mensaje,
+          }).catch((e) =>
+            console.error('[llamadas] espejo falló:', e.message),
+          );
+        }
 
         // Dashboard real-time: nuevo mensaje entrante
         dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {

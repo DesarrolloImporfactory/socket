@@ -31,4 +31,8 @@ router.get('/historial', ctrl.historial);
 router.get('/configuracion', ctrl.obtenerConfiguracion);
 router.post('/configuracion', excluirRoles('ventas'), ctrl.guardarConfiguracion);
 
+// Llamar desde otra conexión de la cuenta + nombre con el que se presenta
+router.get('/ajustes', ctrl.obtenerAjustes);
+router.post('/ajustes', excluirRoles('ventas'), ctrl.guardarAjustes);
+
 module.exports = router;
