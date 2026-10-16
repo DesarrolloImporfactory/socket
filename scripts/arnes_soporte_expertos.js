@@ -557,7 +557,7 @@ function checksGlobales(t, i, esc) {
   if (/(?<!\p{L})no (lo )?sé(?!\p{L})|no tengo (esa )?informaci[oó]n/iu.test(t.texto)) e.push(`${n}: dice «no sé»`);
   if (/\b(hoy|mañana|esta (tarde|noche))\b.{0,40}(te |le )?(escrib|contact|llam|respond)|(escrib|contact|llam|respond)\w*.{0,25}\b(hoy|mañana)\b/i.test(t.texto)) e.push(`${n}: promete cuándo escribe el asesor`);
   if (i > 0 && /^(hola|buen[oa]s)\b/i.test(t.texto)) e.push(`${n}: volvió a saludar`);
-  if (!esc.largo_libre && t.texto.length > 750 && !/cargas registradas/.test(t.texto)) e.push(`${n}: respuesta larga (${t.texto.length} caracteres)`);
+  if (!esc.largo_libre && t.texto.length > 750 && !/cargas registradas|más avanzadas:/.test(t.texto)) e.push(`${n}: respuesta larga (${t.texto.length} caracteres)`);
   if (t.crudo.toLowerCase().includes(ESPERA) && t.texto) e.push(`${n}: [espera]:true junto con texto`);
   return e;
 }

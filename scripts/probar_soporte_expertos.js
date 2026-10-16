@@ -165,7 +165,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   r = await cargas(TEL.entregada);
   prueba('entregada hace 9 días: la cuenta; la de hace 7 meses, no', r.estado === 'encontradas' && igual(r.cargas.map((c) => c.id_cotizacion), [9010]) && /fue entregada el 3 de octubre/.test(r.cargas[0].texto_cliente));
   r = await cargas(TEL.seis_cargas);
-  prueba('seis cargas en curso: lista 4 y avisa que hay 2 más', r.cargas.length === 4 && r.hay_mas === 2 && /otras 2 cargas registradas/.test(textoParaCliente(r, T.MENSAJE_ASESOR)));
+  prueba('seis cargas en curso: lista 4 y avisa que hay 2 más', r.cargas.length === 4 && r.hay_mas === 2 && /^Hola, con este número tienes 6 cargas; estas son las 4 más avanzadas:\n/.test(textoParaCliente(r, T.MENSAJE_ASESOR)) && /\nDe las otras 2, el área de logística te confirma su estado\.$/.test(textoParaCliente(r, T.MENSAJE_ASESOR)));
   r = await cargas(TEL.cargas_mezcladas);
   prueba(
     'varias cargas: primero la más avanzada (aduana, tránsito, paso 1), después la que no se puede informar; la entregada queda fuera de las 4',
