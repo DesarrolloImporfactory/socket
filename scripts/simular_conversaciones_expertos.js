@@ -15,6 +15,7 @@
   Uso:
     node scripts/simular_conversaciones_expertos.js --etiqueta=v2 [--n=63] [--guiones] [--solo-guiones]
          [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real] [--proveedor=claude]
+         [--guiones-archivo=<ruta>.json] [--repeticiones=1]
     (sin --real corre en seco: no llama a OpenAI. Con --real muestra el costo estimado
      y espera 10 segundos antes de empezar, para cortarlo con Ctrl+C.)
     node scripts/simular_conversaciones_expertos.js --informe=<archivo>.json [--veredictos=<archivo>.veredictos.json]
@@ -244,7 +245,7 @@ async function correr() {
 
   const convs = [];
   const solo = arg('persona');
-  if (!tiene('solo-guiones')) {
+  if (!tiene('solo-guiones') && !arg('guiones-archivo')) {
     let personas = PERSONAS.filter((p) => !solo || p.id === solo);
     const n = Number(arg('n')) || personas.length;
     personas = personas.slice(0, n);
@@ -252,9 +253,14 @@ async function correr() {
       convs.push({ id: `${etiqueta}_${p.id}`, telefono: p.telefono, persona: p, contexto_motor: p.contexto_motor,
         meta: { id: `${etiqueta}_${p.id}`, origen: 'persona', persona: p.id, pais: p.pais, categoria: p.categoria, objetivo: p.objetivo } });
   }
-  if (tiene('guiones') || tiene('solo-guiones')) {
-    for (const g of GUIONES)
-      for (const rep of [1, 2])
+  // --guiones-archivo=ruta.json: guiones sacados de chats reales (mismo formato
+  // que guiones_fijos.js, con el teléfono ya resuelto); --repeticiones=1 los corre una vez.
+  const archivoGuiones = arg('guiones-archivo');
+  const listaGuiones = archivoGuiones ? JSON.parse(fs.readFileSync(path.resolve(archivoGuiones), 'utf8')) : GUIONES;
+  const reps = Number(arg('repeticiones')) || 2;
+  if (tiene('guiones') || tiene('solo-guiones') || archivoGuiones) {
+    for (const g of listaGuiones)
+      for (let rep = 1; rep <= reps; rep++)
         convs.push({ id: `${etiqueta}_${g.id}_r${rep}`, telefono: g.telefono, guion: g.turnos, contexto_motor: g.contexto_motor,
           meta: { id: `${etiqueta}_${g.id}_r${rep}`, origen: 'guion', guion: g.id, repeticion: rep, pais: g.pais, categoria: g.categoria } });
   }
