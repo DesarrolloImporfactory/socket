@@ -140,9 +140,9 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   r = await cargas(TEL.fecha_vencida);
   prueba('en tránsito con la fecha estimada vencida: no la da', r.cargas[0].paso === 4 && r.cargas[0].fecha_estimada === null && r.cargas[0].estimada_vencida && /Todavía no tengo una fecha estimada confirmada/.test(r.cargas[0].texto_cliente));
   r = await cargas(TEL.dos_cargas);
-  prueba('teléfono que solo está en la plataforma del alumno: encuentra sus dos cargas', r.estado === 'encontradas' && igual(r.cargas.map((c) => c.id_cotizacion), [9003, 9004]) && igual(r.cargas.map((c) => c.paso), [2, 7]));
-  prueba('…recibida a medias en China: dice qué marca falta', igual(r.cargas[0].marcas_pendientes, ['EC-9003002']) && /Falta por llegar: EC-9003002/.test(r.cargas[0].texto_cliente));
-  prueba('…en bodega de destino con su fecha de llegada', /ya está en nuestra bodega de Ecuador desde el 8 de octubre/.test(r.cargas[1].texto_cliente));
+  prueba('teléfono que solo está en la plataforma del alumno: encuentra sus dos cargas, la más avanzada primero', r.estado === 'encontradas' && igual(r.cargas.map((c) => c.id_cotizacion), [9004, 9003]) && igual(r.cargas.map((c) => c.paso), [7, 2]));
+  prueba('…recibida a medias en China: dice qué marca falta', igual(r.cargas[1].marcas_pendientes, ['EC-9003002']) && /Falta por llegar: EC-9003002/.test(r.cargas[1].texto_cliente));
+  prueba('…en bodega de destino con su fecha de llegada', /ya está en nuestra bodega de Ecuador desde el 8 de octubre/.test(r.cargas[0].texto_cliente));
   const dosCargas = r;
   r = await cargas(TEL.mexico_liberado);
   prueba('México, guardado sin código de país: liberado (paso 6)', r.estado === 'encontradas' && r.cargas[0].paso === 6 && r.cargas[0].destino === 'México' && /ya fue liberado de aduana/.test(r.cargas[0].texto_cliente));
@@ -166,6 +166,11 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   prueba('entregada hace 9 días: la cuenta; la de hace 7 meses, no', r.estado === 'encontradas' && igual(r.cargas.map((c) => c.id_cotizacion), [9010]) && /fue entregada el 3 de octubre/.test(r.cargas[0].texto_cliente));
   r = await cargas(TEL.seis_cargas);
   prueba('seis cargas en curso: lista 4 y avisa que hay 2 más', r.cargas.length === 4 && r.hay_mas === 2 && /otras 2 cargas registradas/.test(textoParaCliente(r, T.MENSAJE_ASESOR)));
+  r = await cargas(TEL.cargas_mezcladas);
+  prueba(
+    'varias cargas: primero la más avanzada (aduana, tránsito, paso 1), después la que no se puede informar; la entregada queda fuera de las 4',
+    igual(r.cargas.map((c) => c.id_cotizacion), [9053, 9052, 9051, 9055]) && r.hay_mas === 1 && r.cargas[3].informable === false,
+  );
   r = await cargas(TEL.cuenta_prueba);
   prueba('cotización de una cuenta de pruebas del equipo: no se muestra', r.estado === 'sin_carga');
   prueba('esCorreoDePrueba: la lista, las variantes y ningún Jara de verdad', esCorreoDePrueba('jeimyjara@hotmail.com') && esCorreoDePrueba('jeim5111235512jara@hotmail.com') && esCorreoDePrueba('desarrollo2imporfactory@gmail.com') && !esCorreoDePrueba('jjara@gmail.com') && !esCorreoDePrueba('maria.jaramillo@gmail.com') && !esCorreoDePrueba(''));
@@ -231,7 +236,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   b = bloqueCarga(await cargas(TEL.aduana), { mensajeAsesor: T.MENSAJE_ASESOR });
   prueba('sin fecha: el bloque lo dice con todas las letras', /Fecha: NO hay ninguna fecha que se pueda dar/.test(b) && !FECHA.test(b));
   b = bloqueCarga(dosCargas, { mensajeAsesor: T.MENSAJE_ASESOR });
-  prueba('dos cargas: un solo texto con una línea por carga', /con este número tienes 2 cargas registradas:\n- Cotización N\.º 9003: En nuestra bodega de China/.test(b) && /\n- Cotización N\.º 9004: Tu carga EC-9004001 ya está en nuestra bodega/.test(b));
+  prueba('dos cargas: un solo texto con una línea por carga', /con este número tienes 2 cargas registradas:\n- Cotización N\.º 9004: Tu carga EC-9004001 ya está en nuestra bodega/.test(b) && /\n- Cotización N\.º 9003: En nuestra bodega de China/.test(b));
   b = bloqueCarga(await cargas(TEL.dudoso), { mensajeAsesor: T.MENSAJE_ASESOR });
   prueba('dato dudoso: «NO SE PUEDE INFORMAR», sin paso ni contenedor, y va a logística', /NO SE PUEDE INFORMAR/.test(b) && !/Paso \d de 7/.test(b) && !/EC-PRUEBA/.test(b) && /paso a asesor para el área de logística/.test(b));
   b = bloqueCarga(await cargas(TEL.sin_carga), { mensajeAsesor: T.MENSAJE_ASESOR });

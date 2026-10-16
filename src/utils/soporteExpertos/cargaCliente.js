@@ -431,10 +431,14 @@ async function buscar(telefono, cola, consultar, hoy) {
         };
   }
 
-  // Primero lo que sigue en camino; dentro de eso, lo más reciente.
+  /* Lo que sigue en camino antes que lo entregado; dentro de eso, primero lo
+     que se puede informar; después lo más avanzado (una carga en aduana antes
+     que una que recién llega a China) y, a igual paso, lo más reciente. */
   activas.sort(
     (a, b) =>
       Number(a.entregada) - Number(b.entregada) ||
+      Number(!a.informable) - Number(!b.informable) ||
+      (b.paso || 0) - (a.paso || 0) ||
       String(b.fecha_creacion || '').localeCompare(String(a.fecha_creacion || '')) ||
       b.id_cotizacion - a.id_cotizacion,
   );

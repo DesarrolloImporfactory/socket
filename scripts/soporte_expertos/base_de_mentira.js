@@ -32,6 +32,7 @@ const TEL = {
   recibida_parcial: '593901234518', // Saúl: llegó 1 de 2 marcas a China
   repartida: '593901234519', // Tomás: una cotización repartida en dos contenedores
   whatsapp_sin_codigo: '593901234520', // Úrsula: WhatsApp de alumno sin código de país; una carga a Ecuador y otra a México
+  cargas_mezcladas: '593901234521', // Vera: paso 1, tránsito, aduana, una dudosa y una entregada
   peru_gemelo: '51901234501', // número de Perú con el mismo número nacional que Ana
   desconocido: '593901234599',
 };
@@ -76,6 +77,12 @@ const DATOS = {
     c(9040, 'transito', '', 790, 'Cuenta Del Equipo'),
     c(9041, 'transito', '', 720, 'Úrsula Ejemplo', { pais_destino: 'mx' }),
     c(9042, 'transito', '', 720, 'Úrsula Ejemplo', { pais_destino: 'ec' }),
+    // Vera: cinco cargas en pasos distintos; la fecha de creación va al revés del avance.
+    c(9051, 'bodega', '0901234521', 721, 'Vera Ejemplo', { fecha_creacion: '2026-10-01' }),
+    c(9052, 'transito', '0901234521', 721, 'Vera Ejemplo', { fecha_creacion: '2026-07-01' }),
+    c(9053, 'transito', '0901234521', 721, 'Vera Ejemplo', { fecha_creacion: '2026-08-01' }),
+    c(9054, 'entregado', '0901234521', 721, 'Vera Ejemplo', { fecha_creacion: '2026-09-01' }),
+    c(9055, 'carga', '0901234521', 721, 'Vera Ejemplo', { fecha_creacion: '2026-09-25' }),
   ],
   // WhatsApp de la plataforma más antigua de cada usuario
   usuarios: [
@@ -102,6 +109,7 @@ const DATOS = {
     m(9031, 'EC-9031001', '2026-10-03', 8),
     m(9032, 'EC-9032001', '2026-10-06', 5), m(9032, 'EC-9032002'),
     m(9033, 'EC-9033001', '2026-09-05', 30),
+    ...[9051, 9052, 9053, 9054, 9055].map((id) => m(id, `EC-${id}001`, '2026-09-05', 3)),
     m(9040, 'EC-9040001', '2026-09-05', 3), m(9041, 'MX-9041001', '2026-09-05', 3), m(9042, 'EC-9042001', '2026-09-05', 3),
   ],
   contenedores: [
@@ -122,10 +130,15 @@ const DATOS = {
     k(9033, 534, 'EC-PRUEBA-OCT-L', 'generado', { fecha_asignada: '2026-10-06', desde: '2026-10-04' }),
     k(9040, 540, 'EC-PRUEBA-OCT-M', 'entransito'), k(9041, 541, 'MX-PRUEBA-OCT-N', 'entransito', { destino: 'mx' }),
     k(9042, 542, 'EC-PRUEBA-OCT-O', 'entransito'),
+    k(9052, 552, 'EC-PRUEBA-OCT-P', 'entransito'),
+    k(9053, 553, 'EC-PRUEBA-SEP-Q', 'aduana'),
+    k(9054, 554, 'EC-PRUEBA-AGO-R', 'finalizado'),
+    k(9055, 555, 'EC-PRUEBA-AGO-S', 'cerrado', { fecha_asignada: '2026-10-08', desde: '2026-08-20' }),
   ],
   entregas: [
     { id_cotizacion: 9010, estado: 'entregada', fecha_entrega: '2026-10-03' },
     { id_cotizacion: 9011, estado: 'entregada', fecha_entrega: '2026-03-02' },
+    { id_cotizacion: 9054, estado: 'entregada', fecha_entrega: '2026-10-08' },
   ],
 };
 
