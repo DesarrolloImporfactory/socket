@@ -4,6 +4,7 @@ const ctrl = require('../controllers/public_api.controller');
 const cfgCtrl = require('../controllers/public_config.controller');
 const msjCtrl = require('../controllers/public_mensajes.controller');
 const { apiKeyAuth, requireScope } = require('../middlewares/apiKey.middleware');
+const { autenticarCobrosImporsuit } = require('../middlewares/ssoImporsuit.middleware');
 
 const router = express.Router();
 
@@ -33,6 +34,18 @@ const limiterEnvios = rateLimit({
     error: 'Demasiados envíos. Máximo 20 por minuto por API key.',
   },
 });
+
+// Aviso de pago pendiente a un cliente de Imporsuit (lo dispara el PHP cuando
+// un suspendido intenta ingresar). Va ANTES del apiKeyAuth global porque se
+// autentica con el JWT de la semilla del SSO (Class/AvisoPagoChatCenter.php);
+// una API key con mensajes:write también sirve. Monto y enlace salen de la
+// cartera; con candado anti-repetición. Solo conexiones con plantillas de cobro.
+router.post(
+  '/cobros/aviso-pago',
+  autenticarCobrosImporsuit,
+  limiterEnvios,
+  msjCtrl.avisoPagoImporsuit,
+);
 
 router.use(apiKeyAuth, limiter);
 

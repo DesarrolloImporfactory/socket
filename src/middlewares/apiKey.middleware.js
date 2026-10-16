@@ -74,6 +74,8 @@ exports.apiKeyAuth = catchAsync(async (req, res, next) => {
 });
 
 exports.hashKey = hashKey;
+/* Lectura del Bearer compartida con ssoImporsuit.middleware.js. */
+exports.leerKey = leerKey;
 
 /* Autorización por scope. Los GET históricos usan 'read' (toda llave lo
    tiene por defecto); los endpoints de escritura exigen su scope explícito

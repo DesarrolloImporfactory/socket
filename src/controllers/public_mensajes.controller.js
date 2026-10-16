@@ -40,6 +40,13 @@ const ChatService = require('../services/chat.service');
 const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
+const {
+  PLANTILLA_AVISO_PAGO_DEFAULT,
+  plantillasEnlacePagoDeConfig,
+  consultarSaldoVencidoPor,
+  resolverDestinatarioImporsuit,
+  ultimoAvisoPagoCobro,
+} = require('../utils/enlacePagoImporsuit');
 
 const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
 
@@ -481,5 +488,205 @@ exports.enviarMedia = catchAsync(async (req, res, next) => {
   return res.json({
     isSuccess: true,
     data: { wamid, chat_id: chatId, tipo },
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   POST /cobros/aviso-pago   (scope mensajes:write)
+   Aviso de pago pendiente a un cliente de IMPORSUIT. Lo dispara el PHP de
+   Imporsuit cuando un usuario suspendido por falta de pago intenta iniciar
+   sesión: además del modal con el botón de pago, le llega la plantilla por
+   WhatsApp desde la conexión dueña de la llave (242, ImporFactory Ventas).
+
+   Body: { id_users } o { email }  (la cuenta de Imporsuit)
+         nombre_template    opcional, una plantilla de cobro de la conexión
+                            (por defecto aviso_pago_pendiente)
+         horas_sin_repetir  opcional, candado anti-repetición (72 por defecto)
+         origen             opcional, etiqueta para la auditoría
+
+   Nunca se manda a quien está al día ni se repite dentro de la ventana:
+   en esos casos responde 200 con enviado:false y el motivo, para que el
+   PHP solo lo registre (un intento de ingreso no debe fallar por esto).
+   Monto y enlace NO los manda Imporsuit: se calculan acá desde la cartera
+   (utils/enlacePagoImporsuit) y el enlace apunta a Cobros/pagar/{uuid},
+   que cobra en el Stripe de Imporsuit.
+   ═══════════════════════════════════════════════════════════ */
+
+exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
+  const b = req.body || {};
+  const cfg = req.id_configuracion;
+
+  const plantillas = plantillasEnlacePagoDeConfig(cfg);
+  if (!plantillas) {
+    return next(
+      new AppError(
+        'Esta conexión no tiene plantillas de cobro de Imporsuit configuradas.',
+        409,
+      ),
+    );
+  }
+
+  const nombre_template = String(
+    b.nombre_template || PLANTILLA_AVISO_PAGO_DEFAULT,
+  ).trim();
+  if (!plantillas[nombre_template]) {
+    return next(
+      new AppError(
+        `nombre_template debe ser una plantilla de cobro de la conexión: ${Object.keys(plantillas).join(', ')}.`,
+        400,
+      ),
+    );
+  }
+
+  const idUsers = Number(b.id_users) || 0;
+  const email = String(b.email || '').trim();
+  if (!idUsers && !email) {
+    return next(new AppError('Falta id_users o email de la cuenta de Imporsuit.', 400));
+  }
+
+  const horas = Math.min(
+    24 * 30,
+    Math.max(1, Number(b.horas_sin_repetir) || 72),
+  );
+  const origen = String(b.origen || 'api').slice(0, 60);
+  const recurso = `cobros.aviso_pago.${idUsers || email}`.slice(0, 190);
+
+  const omitir = async (motivo, extra = {}) => {
+    await auditar(req, {
+      recurso,
+      accion: 'skip',
+      previo: null,
+      nuevo: { motivo, nombre_template, origen, ...extra },
+    });
+    return res.json({
+      isSuccess: true,
+      data: { enviado: false, motivo, nombre_template, ...extra },
+    });
+  };
+
+  // 1) La cuenta y su WhatsApp (contacto del chat por correo, o el de su
+  //    plataforma en Imporsuit — en ese caso el envío crea el chat).
+  const dest = await resolverDestinatarioImporsuit({
+    idConfiguracion: cfg,
+    idUsers,
+    email,
+  });
+  if (!dest) return omitir('SIN_CUENTA');
+  if (!dest.telefono) return omitir('SIN_TELEFONO', { email: dest.email });
+
+  const cc = await paisDeLaConexion(cfg);
+  const telefono = formatPhoneForWhatsApp(dest.telefono, cc);
+  if (!telefono || onlyDigits(telefono).length < 8) {
+    return omitir('SIN_TELEFONO', { email: dest.email, telefono: dest.telefono });
+  }
+
+  // 2) Si está al día no se le dice que debe. El envío lo vuelve a comprobar.
+  const saldo = await consultarSaldoVencidoPor({ idUsers: dest.id_users });
+  if (!saldo) return omitir('SIN_SALDO_VENCIDO', { email: dest.email });
+
+  // 3) Candado: ni en cada intento de ingreso ni encima de un cobro manual.
+  const previo = await ultimoAvisoPagoCobro({
+    idConfiguracion: cfg,
+    telefono,
+    idCliente: dest.id_cliente_chat_center,
+    horas,
+  });
+  if (previo) {
+    return omitir('YA_AVISADO', {
+      email: dest.email,
+      ultimo_aviso: previo.created_at,
+      plantilla_previa: previo.template_name,
+      horas_sin_repetir: horas,
+    });
+  }
+
+  const responsable = `api:${req.apiKey?.nombre || 'imporsuit'}`.slice(0, 100);
+
+  let resultado;
+  try {
+    /* template_parameters vacío a propósito: la plantilla es de cobro y el
+       servicio los calcula desde la cartera (nombre, monto, enlace). */
+    resultado = await sendWhatsappMessageTemplateScheduled({
+      telefono,
+      telefono_configuracion: null,
+      id_configuracion: cfg,
+      responsable,
+      nombre_template,
+      template_parameters: [],
+      email_imporsuit: dest.email,
+    });
+  } catch (e) {
+    if (e?.name === 'SinSaldoVencidoError') {
+      return omitir(e.code, { email: dest.email, detalle: e.message });
+    }
+    await auditar(req, {
+      recurso,
+      accion: 'send_error',
+      previo: null,
+      nuevo: { nombre_template, origen, error: e.message, meta: e.meta_error || null },
+    });
+    return next(
+      new AppError(
+        e.meta_error?.message
+          ? `Meta rechazó el envío: ${e.meta_error.message}`
+          : e.message,
+        e.meta_status && e.meta_status >= 400 ? 422 : 502,
+      ),
+    );
+  }
+
+  const chatId = await buscarContactoWa({ id_configuracion: cfg, telefono });
+
+  /* Si el envío creó el contacto, dejarle nombre y correo: así el asesor lo
+     reconoce en el chat y el próximo cobro (manual o automático) ya lo
+     encuentra por correo. Nunca pisa lo que ya estaba escrito. */
+  if (chatId) {
+    await db.query(
+      `UPDATE clientes_chat_center
+          SET nombre_cliente = IF(COALESCE(nombre_cliente,'') = '', ?, nombre_cliente),
+              email_cliente = IF(COALESCE(email_cliente,'') = '', ?, email_cliente)
+        WHERE id = ? AND id_configuracion = ?`,
+      {
+        replacements: [
+          String(dest.nombre_users || '').slice(0, 100),
+          String(dest.email || '').slice(0, 150),
+          chatId,
+          cfg,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+    enviarConsultaAPI(cfg, String(chatId)).catch(() => {});
+  }
+
+  await auditar(req, {
+    recurso,
+    accion: 'send',
+    previo: null,
+    nuevo: {
+      nombre_template,
+      origen,
+      email: dest.email,
+      telefono: onlyDigits(telefono),
+      monto: saldo.total.toFixed(2),
+      cuotas: saldo.cuotas,
+      wamid: resultado.wamid,
+      chat_id: chatId,
+    },
+  });
+
+  return res.json({
+    isSuccess: true,
+    data: {
+      enviado: true,
+      motivo: 'ENVIADO',
+      nombre_template,
+      wamid: resultado.wamid,
+      chat_id: chatId,
+      telefono: onlyDigits(telefono),
+      email: dest.email,
+      monto: saldo.total.toFixed(2),
+      cuotas: saldo.cuotas,
+    },
   });
 });
