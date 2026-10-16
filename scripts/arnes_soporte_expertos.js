@@ -60,9 +60,7 @@ const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/sopor
 const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
 const T = require('../src/utils/soporteExpertos/textos');
 const { promptSoporteExpertos } = require('../src/utils/prompt_soporte_expertos.data');
-const { sanitizarRespuestaAgente } = require('../src/utils/openia/sanitizador_agente');
-const { limpiarColetillas } = require('../src/utils/limpiarColetillas');
-const { limpiarMarkdown } = require('../src/utils/formatoWhatsapp');
+const { procesar, entrada, crearLlamador } = require('./soporte_expertos/bot_real');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
 
 const FICHAS = buscadorDeArchivo();
@@ -583,22 +581,6 @@ function evaluar(esc, turnos) {
   return fallas;
 }
 
-/* El mismo recorrido que hace kanban_ia con la respuesta del modelo. */
-function procesar(respuestaModelo, hechos) {
-  const sanitizada = sanitizarRespuestaAgente(String(respuestaModelo || ''));
-  const rev = revisarTurno(sanitizada, hechos);
-  const crudo = rev.texto;
-  const sinTags = crudo.replace(/\[[^\]]+\]:\s*(true|false)/gi, '').trim();
-  const texto = limpiarMarkdown(limpiarColetillas(sinTags));
-  return { crudo, texto, guardia: rev };
-}
-
-const entrada = (ctx, turno) => {
-  const bloque = [turno.contexto_motor, ctx.bloque].filter(Boolean).join('\n\n');
-  const mensaje = ctx.mensaje || turno.cliente;
-  return bloque ? `🧾 Contexto adicional:\n\n${bloque}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}` : mensaje;
-};
-
 async function armarContextos(esc) {
   olvidarTodo();
   const base = baseDeMentira(DATOS, esc.base || {});
@@ -632,19 +614,10 @@ const valor = (d, ctx) => (typeof d === 'function' ? d(ctx) : d);
   let llamar = null;
   let cerrar = async () => {};
   if (REAL) {
-    const { db } = require('../src/database/config');
-    const { ejecutarConResponsesAPI } = require('../src/services/kanban_ia.service');
-    const { leerApiKeyOpenAI } = require('../src/utils/openia/apiKeyOpenAI');
-    const [c10] = await db.query('SELECT api_key_openai FROM configuraciones WHERE id = 10', { type: db.QueryTypes.SELECT });
-    const api_key_openai = leerApiKeyOpenAI(c10?.api_key_openai);
-    if (!api_key_openai) throw new Error('cfg 10 sin api key');
-    const instructions = promptSoporteExpertos();
-    llamar = async (input, prev) =>
-      ejecutarConResponsesAPI({
-        previous_response_id: prev, instructions, additional_instructions: null, input,
-        model: MODELO, max_tokens: 900, vector_store_id: null, api_key_openai, id_configuracion: 10,
-      });
-    cerrar = () => db.close();
+    const bot = await crearLlamador({ modelo: MODELO });
+    llamar = bot.llamar;
+    cerrar = bot.cerrar;
+    const { instructions } = bot;
     console.log(`MODO REAL · modelo ${MODELO} · prompt ${instructions.length} caracteres · ${FICHAS.version}\n`);
   } else {
     console.log(`MODO EN SECO (sin red, sin base, sin OpenAI) · prompt ${promptSoporteExpertos().length} caracteres · ${FICHAS.version}`);
