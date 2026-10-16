@@ -14,7 +14,18 @@
      3. cargo interno («Pricing», «supervisor») — se cambia por el nombre que
         sí puede leer el cliente;
      4. presentarse como una persona;
-     5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima.
+     5. marcador sin llenar («[nombre]», «{{…}}») o respuesta larguísima;
+     6. contestar con una ficha que pasa el caso a una persona (`pasar_a`) sin
+        decirle al cliente que un asesor lo retoma — se le agrega el aviso;
+     7. ofrecer algo que el bot no puede hacer («te cotizo», «te llamamos»,
+        «¿quieres que te pidamos más fotos?», «ya verifiqué tu pago»);
+     8. mandar un RECLAMO a cobranza o pedirle el comprobante, y repetirle el
+        estado de la carga a quien reclama por la demora;
+     9. callar ante el primer saludo — sale el saludo fijo;
+    10. el aviso de «un asesor te escribe» dos veces en el mismo mensaje — se
+        deja uno.
+   Los puntos 7 a 10 salen de la prueba en papel de la versión 2: son lo que
+   la guardia no veía y sí importó.
 
    Lo que no se puede corregir con certeza no se manda: sale el texto seguro
    del turno (el estado oficial de la carga, si era eso lo que preguntó, o el
@@ -33,7 +44,7 @@
 'use strict';
 
 const { sinTildes } = require('./texto');
-const { MENSAJE_ASESOR } = require('./textos');
+const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO, PREGUNTA_CANTIDAD } = require('./textos');
 
 const MAX_RESPUESTA = 1500;
 
@@ -225,6 +236,16 @@ const RE_CODIGO_DEL_CLIENTE = new RegExp(
   'giu',
 );
 
+/* Un CÓDIGO DE PRODUCTO que el cliente escribió («me interesa el producto
+   SGTE-58 … del catálogo de Ideas de Productos») no es un monto ni una fecha:
+   se le puede repetir tal cual. En la prueba en papel fue el único reemplazo
+   de la guardia y era un falso positivo: con tres productos el modelo repetía
+   los tres códigos y el «58» contaba como cifra sin respaldo. Vale solo el
+   código ENTERO y solo si está en lo que escribió el cliente; letras pegadas a
+   una moneda o a una fecha («USD850», «dia15») no son un código. */
+const RE_CODIGO_DE_PRODUCTO = /(?<![\p{L}\d])(?!(?:usd|us|rmb|cny|mxn|eur|dia|el|al|del)-?\d)[a-z]{2,10}-?\d{1,8}(?:-[a-z\d]+)*(?![\p{L}\d])/giu;
+const codigoNormal = (c) => sinTildes(c).replace(/[^a-z0-9]/g, '');
+
 /** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
 function datoSinRespaldo(texto, firme, eco, estado = firme) {
   const firmePlano = plano(firme);
@@ -277,7 +298,9 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   // Cifras: las del respaldo, más las del cliente SOLO como código o cantidad.
   const delRespaldo = new Set(cifras(firme));
   const delCliente = new Set(cifras(eco));
-  const sinCodigos = sinEnlaces.replace(RE_CODIGO_DEL_CLIENTE, (todo, pre, cod, cant, unidad) => {
+  const codigosDeProducto = new Set((sinTildes(eco).match(RE_CODIGO_DE_PRODUCTO) || []).map(codigoNormal));
+  const sinProductos = sinEnlaces.replace(RE_CODIGO_DE_PRODUCTO, (c) => (codigosDeProducto.has(codigoNormal(c)) ? ' ' : c));
+  const sinCodigos = sinProductos.replace(RE_CODIGO_DEL_CLIENTE, (todo, pre, cod, cant, unidad) => {
     const n = cod ?? cant;
     if (!delCliente.has(numero(n))) return todo;
     return cod !== undefined ? `${pre} ` : ` ${unidad}`;
@@ -290,6 +313,96 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   return null;
 }
 
+/* ── Ofrecer lo que el bot no puede hacer ──────────────────────────────── */
+/* El bot no cotiza, no revisa pagos, no cambia claves, no llama, no agenda, no
+   busca proveedores ni pide fotos: lo único que puede ofrecer es dejarlo
+   anotado. Se buscan solo formas en PRIMERA persona o un ofrecimiento directo;
+   «para que el área de precios te cotice» o «un asesor lo revisa» hablan de
+   otros y pasan. Va sobre el texto con tildes: «revisé» (yo, pasado) no es
+   «revise» (que un asesor lo revise). */
+const HACER =
+  'cotizar|llamar|agendar|programar|buscar|conseguir|revisar|verificar|validar|comprobar|confirmar|cambiar|restablecer|resetear|reiniciar|' +
+  'generar|calcular|averiguar|reembolsar|devolver|gestionar|tramitar|solucionar|resolver|arreglar|activar|habilitar|desbloquear|rastrear|consultar|pedir|solicitar';
+const RE_OFRECE = new RegExp(
+  '(?<!\\p{L})(?:' +
+    // «te cotizo», «te llamamos», «les agendo», «te lo reviso»
+    '(?:te|le|les)\\s+(?:lo\\s+|la\\s+|los\\s+|las\\s+)?(?:cotizo|cotizamos|cotizaré|llamo|llamamos|llamaré|llamaremos|marco|agendo|agendamos|busco|buscamos|consigo|conseguimos|' +
+    'reviso|verifico|valido|cambio|restablezco|reseteo|reinicio|genero|calculo|averiguo|reembolso|reembolsamos|devuelvo|devolvemos|gestiono|tramito|soluciono|resuelvo|arreglo|activo|habilito|desbloqueo|rastreo)|' +
+    // «lo reviso», «la cotizo», «lo consulto con logística»
+    '(?:lo|la|los|las)\\s+(?:reviso|verifico|valido|cotizo|consulto|gestiono|soluciono|resuelvo|averiguo)|' +
+    // «puedo cotizarte», «voy a revisar», «déjame verificar» (no «no puedo…»)
+    `(?<!no\\s)(?<!no te\\s)(?<!tampoco\\s)(?:puedo|podemos|voy a|vamos a|d[eé]jame|perm[ií]teme)\\s+(?:(?:te|le|lo|la|les)\\s+)?(?:${HACER})(?:te|le|les|lo|la|los|las|telo|tela|selo|sela)?|` +
+    // «¿quieres que te pidamos más fotos?», «si quieres te cotizo»
+    '(?:quieres|deseas|necesitas|prefieres|te gustar[ií]a) que\\s+(?:(?:te|le|lo|la|les|se)\\s+)*(?:cotic|llam|agend|program|busqu|consig|revis|verifi|valid|comprob|confirm|cambi|restablez|resete|gener|calcul|averig|reembols|devolv|devuelv|gestion|tramit|solucion|resolv|resuelv|arregl|activ|habilit|desbloque|rastre|pid|solicit|envi|mand)\\p{L}*|' +
+    // «ya verifiqué tu pago», «revisé tu captura»
+    '(?:revisé|verifiqué|validé|comprobé|confirmé|coticé|agendé|gestioné|solucioné|consulté|rastreé)' +
+    ')(?!\\p{L})',
+  'iu',
+);
+
+/** El ofrecimiento que no sale de un dato leído, o null. */
+function ofreceLoQueNoPuede(texto, firme) {
+  const m = texto.match(RE_OFRECE);
+  if (!m) return null;
+  // Si una ficha o un texto fijo lo dice con esas palabras, está respaldado.
+  if (plano(firme).includes(plano(m[0]))) return null;
+  return m[0].trim();
+}
+
+/* ── Un reclamo no va a cobranza ───────────────────────────────────────── */
+const RE_A_COBRANZA = /(?<!\p{L})(?:cobranza|comprobante|contabilidad|n[uú]mero de cotizaci[oó]n)(?!\p{L})/iu;
+
+/* ── El aviso de «un asesor te escribe», una sola vez ──────────────────── */
+/** «Soy el asistente automático… Un asesor te escribe apenas abramos. Recibí
+    tu mensaje. Un asesor lo revisa y te escribe apenas abramos.» → sin lo
+    segundo. Solo se quita el paso a asesor EXACTO, y solo si queda otro aviso. */
+function quitarAvisoRepetido(texto) {
+  if ((texto.match(/apenas abramos/gi) || []).length < 2 || !texto.includes(MENSAJE_ASESOR)) return { texto, cambios: 0 };
+  const sin = texto.replace(MENSAJE_ASESOR, ' ').replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n').trim();
+  if (!/apenas abramos/i.test(sin)) return { texto, cambios: 0 };
+  return { texto: sin, cambios: 1 };
+}
+
+/* ── Una ficha con `pasar_a` no cierra sola ────────────────────────────── */
+const RE_PASA_A_ASESOR = /apenas abramos/i;
+const PALABRAS_DE_MUESTRA = 6;
+
+/** ¿La respuesta trae un tramo de esa ficha (6 palabras seguidas, o la parte
+    entera si es más corta)? Así se sabe que el modelo contestó CON la ficha. */
+function usaFicha(respuestaLimpia, partes) {
+  for (const parte of partes || []) {
+    const w = limpio(parte).split(' ').filter(Boolean);
+    if (w.length < 4) continue;
+    const n = Math.min(PALABRAS_DE_MUESTRA, w.length);
+    for (let i = 0; i + n <= w.length; i++) {
+      if (respuestaLimpia.includes(` ${w.slice(i, i + n).join(' ')} `)) return true;
+    }
+  }
+  return false;
+}
+
+/* La ficha pide la cantidad (`pedir` nombra «cuántas unidades piensas comprar»)
+   y la respuesta todavía no la pregunta. «Cuántas unidades vienen en cada caja»
+   es otro dato (el del proveedor): no cuenta. */
+const RE_PIDE_CANTIDAD =
+  /cu[aá]ntas (?:unidades|piezas) (?:piensas|quieres|quisieras|vas a|deseas|planeas|necesitas|te interesa)|qu[eé] cantidad (?:piensas|quieres|quisieras|vas a|deseas|necesitas|te interesa)|cantidad (?:que|de unidades que) (?:piensas|quieres|vas a|deseas|necesitas)/i;
+const pideCantidad = (ficha) => /cuantas unidades piensas/.test(limpio(ficha.pedir || ''));
+
+/** Si contestó con una ficha que pasa a una persona y no avisó del paso a
+    asesor, lo agrega. Si esa ficha además pide la cantidad y ni el cliente la
+    dijo ni la respuesta la pregunta, la pide (riesgo anotado por Daniel el
+    16-10: la ficha «cotizar-datos» sola se quedaba sin pedir las unidades).
+    Devuelve { texto, cambios, ficha, cantidad }. */
+function completarPase(texto, fichasConPase, { dioCantidad = false } = {}) {
+  if (!fichasConPase?.length || RE_PASA_A_ASESOR.test(texto)) return { texto, cambios: 0 };
+  const respuestaLimpia = ` ${limpio(texto)} `;
+  const usada = fichasConPase.find((f) => usaFicha(respuestaLimpia, f.partes));
+  if (!usada) return { texto, cambios: 0 };
+  const cantidad = pideCantidad(usada) && !dioCantidad && !RE_PIDE_CANTIDAD.test(texto);
+  const cierre = cantidad ? `${CIERRE_ASESOR}\n${PREGUNTA_CANTIDAD}` : CIERRE_ASESOR;
+  return { texto: `${texto.trimEnd()}\n${cierre}`, cambios: 1, ficha: usada.id, cantidad };
+}
+
 /**
  * @param {string} respuesta  lo que escribió el modelo (ya pasado por el sanitizador del motor)
  * @param {object} hechos     lo que arma `turno.js`:
@@ -299,6 +412,13 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
  *                      en el turno se consultó la carga, es SOLO su bloque: una ficha que
  *                      explica los pasos no autoriza a decir «la tuya está en aduana».
  *   - textoSeguro      con qué se reemplaza una respuesta que no pasa
+ *   - fichasConPase    [{ id, partes, pedir }] fichas con `pasar_a` vistas en la conversación:
+ *                      si la respuesta usa una, tiene que llevar el paso a asesor
+ *   - dioCantidad      el cliente ya dijo cuántas unidades quiere (en este turno o antes):
+ *                      al completar una ficha de cotización no se le vuelve a pedir
+ *   - reclamo          el cliente reclama: no va a cobranza ni se le pide comprobante
+ *   - reclamoPorDemora reclama por la demora de su carga: no se le repite el estado
+ *   - saludoSinContestar  es el primer saludo de la conversación: no se calla
  * @returns {{texto:string, cambiada:boolean, corregida:boolean, motivos:string[]}}
  */
 function revisarRespuesta(respuesta, hechos = {}) {
@@ -308,8 +428,14 @@ function revisarRespuesta(respuesta, hechos = {}) {
   let visible = original.replace(RE_TAG, '').trim();
   const motivos = [];
 
-  // Silencio a propósito ([espera]:true y nada más): no hay nada que revisar.
-  if (!visible) return { texto: original, cambiada: false, corregida: false, motivos };
+  // Silencio a propósito ([espera]:true y nada más): no hay nada que revisar…
+  if (!visible) {
+    // …salvo ante el primer saludo: nadie le contestó todavía.
+    if (h.saludoSinContestar) {
+      return { texto: MENSAJE_SALUDO, cambiada: true, corregida: false, motivos: ['callaba ante un saludo que nadie había contestado'] };
+    }
+    return { texto: original, cambiada: false, corregida: false, motivos };
+  }
 
   const firme = String(h.respaldo?.firme || '');
   const eco = String(h.respaldo?.eco || '');
@@ -321,6 +447,7 @@ function revisarRespuesta(respuesta, hechos = {}) {
     [quitarDespedida, 'despedida quitada'],
     [corregirVoseo, 'voseo corregido'],
     [cambiarCargos, 'cargo interno cambiado'],
+    [quitarAvisoRepetido, 'aviso de «un asesor te escribe» repetido: se dejó uno'],
   ];
   for (const [fn, motivo] of pasos) {
     const r = fn(visible);
@@ -337,11 +464,29 @@ function revisarRespuesta(respuesta, hechos = {}) {
   else if (RE_PERSONA.test(visible) || RE_PERSONA_NOMBRE.test(visible)) falla = 'se presentaba como una persona';
   else falla = datoSinRespaldo(visible, firme, eco, h.respaldo?.estado ?? firme);
 
+  if (!falla) {
+    const ofrece = ofreceLoQueNoPuede(visible, firme);
+    if (ofrece) falla = `ofrecía hacer algo que el bot no puede («${ofrece}»)`;
+    else if ((h.reclamo || h.reclamoPorDemora) && RE_A_COBRANZA.test(visible)) falla = 'mandaba un reclamo a cobranza o le pedía un comprobante';
+    else if (h.reclamoPorDemora && RE_ESTADO_CARGA.test(plano(visible))) falla = 'le repetía el estado de la carga a quien reclama por la demora';
+  }
+
   if (falla) {
     motivos.push(falla);
     return { texto: seguro, cambiada: true, corregida: false, motivos };
   }
-  if (corregida) {
+
+  // 3. Lo que se completa: una ficha que pasa a una persona no cierra sola.
+  const pase = completarPase(visible, h.fichasConPase, { dioCantidad: Boolean(h.dioCantidad) });
+  if (pase.cambios) {
+    motivos.push(
+      `usaba la ficha «${pase.ficha}», que pasa a una persona, sin el paso a asesor: agregado` +
+        (pase.cantidad ? ' (y se le pide cuántas unidades, que no había dicho)' : ''),
+    );
+    visible = pase.texto;
+  }
+
+  if (corregida || pase.cambios) {
     if (visible[0] !== visible[0].toUpperCase()) visible = visible[0].toUpperCase() + visible.slice(1);
     return { texto: [visible, ...tags].join('\n'), cambiada: true, corregida: true, motivos };
   }
@@ -355,6 +500,9 @@ module.exports = {
   quitarDespedida,
   aplanarEnlaces,
   datoSinRespaldo,
+  completarPase,
+  ofreceLoQueNoPuede,
+  quitarAvisoRepetido,
   RE_PLAZO,
   MAX_RESPUESTA,
 };

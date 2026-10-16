@@ -17,6 +17,11 @@ const PRECIOS = {
   'gpt-4o': { input: 2.5, cached: 1.25, output: 10.0 },
   'gpt-4o-mini': { input: 0.15, cached: 0.075, output: 0.6 },
   'gpt-3.5-turbo': { input: 0.5, cached: 0.5, output: 1.5 },
+  // Anthropic (proveedor «claude»): precios públicos 2026-10. El panel de
+  // consumo recibe el mismo desglose { modelo, input, cached, output }.
+  'claude-opus-5-5': { input: 4.0, cached: 0.2, output: 20.0 },
+  'claude-sonnet-5-5': { input: 2.0, cached: 0.2, output: 10.0 },
+  'claude-haiku-5-5': { input: 0.1, cached: 0.01, output: 0.5 },
 };
 
 const MODELO_DEFECTO = 'gpt-4o-mini';

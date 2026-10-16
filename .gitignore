@@ -6,3 +6,6 @@ src/logs/
 src/uploads/*
 *.logs
 backups_prompts/
+
+# Salidas del simulador del bot de soporte Expertos
+scripts/soporte_expertos/simulaciones/

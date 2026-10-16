@@ -15,6 +15,16 @@ const {
   enmascararApiKeyOpenAI,
 } = require('../utils/openia/apiKeyOpenAI');
 const {
+  leerApiKeyClaude,
+  prepararApiKeyClaudeParaGuardar,
+  enmascararApiKeyClaude,
+} = require('../utils/claude/apiKeyClaude');
+const {
+  validarApiKeyClaude,
+  esApiKeyClaudeInvalida,
+  mensajeErrorClaude,
+} = require('../utils/claude/claude');
+const {
   esSinSaldoOpenAI,
   esApiKeyInvalida,
   esRateLimitTransitorio,
@@ -232,7 +242,7 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
 
   try {
     const [configuracion] = await db.query(
-      'SELECT api_key_openai FROM configuraciones WHERE id = ?',
+      'SELECT api_key_openai, proveedor_ia, api_key_claude FROM configuraciones WHERE id = ?',
       {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
@@ -294,6 +304,10 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
       status: 200,
       data: {
         api_key_openai,
+        // Proveedor con el que responde el bot y la llave de Claude, también
+        // solo enmascarada («sk-ant-••••AbCd»).
+        proveedor_ia: configuracion.proveedor_ia || 'openai',
+        api_key_claude: enmascararApiKeyClaude(configuracion.api_key_claude),
         logistico: logistico || {},
         ventas: ventas || {},
       },
@@ -726,6 +740,126 @@ exports.eliminar_api_key_openai = catchAsync(async (req, res, next) => {
   return res.status(200).json({
     status: '200',
     message: 'API Key eliminada y asistentes suspendidos correctamente',
+  });
+});
+
+/* ── Claude (Anthropic) como proveedor alternativo ───────────────────────────
+   La llave se valida en vivo (GET /v1/models, no gasta tokens), se guarda
+   cifrada y nunca vuelve al navegador. No crea nada en Anthropic: el prompt
+   y el modelo viven en kanban_columnas. Al guardar una llave nueva se limpia
+   el estado de «sin saldo» (openai_activo) porque ese diagnóstico es de la
+   llave anterior, sea del proveedor que sea.
+   POST /api/v1/openai_assistants/actualizar_api_key_claude { id_configuracion, api_key } */
+exports.actualizar_api_key_claude = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  const api_key = String(req.body.api_key || '').trim();
+  if (!id_configuracion || !api_key) {
+    return next(new AppError('Faltan campos: id_configuracion, api_key', 400));
+  }
+  if (!api_key.startsWith('sk-ant-')) {
+    return next(
+      new AppError('Esa no es una API Key de Claude: empiezan con «sk-ant-».', 400),
+    );
+  }
+
+  try {
+    await validarApiKeyClaude(api_key);
+  } catch (e) {
+    const detalle = esApiKeyClaudeInvalida(e)
+      ? 'API Key de Claude inválida o revocada.'
+      : `No se pudo validar la API Key con Anthropic: ${mensajeErrorClaude(e)}`;
+    return next(new AppError(detalle, 400));
+  }
+
+  await db.query(
+    `UPDATE configuraciones
+        SET api_key_claude = ?,
+            openai_activo = 1,
+            openai_error_at = NULL,
+            openai_error_msg = NULL
+      WHERE id = ?`,
+    {
+      replacements: [prepararApiKeyClaudeParaGuardar(api_key), id_configuracion],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  return res.status(200).json({
+    status: '200',
+    message: 'API Key de Claude validada y guardada',
+  });
+});
+
+/* Borra la llave de Claude. Si el bot estaba respondiendo con Claude, vuelve
+   a OpenAI para no dejarlo mudo (si tampoco hay llave de OpenAI, el motor ya
+   lo dice en el log y no responde).
+   POST /api/v1/openai_assistants/eliminar_api_key_claude { id_configuracion } */
+exports.eliminar_api_key_claude = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion) return next(new AppError('Falta id_configuracion', 400));
+
+  await db.query(
+    `UPDATE configuraciones
+        SET api_key_claude = NULL,
+            proveedor_ia = 'openai',
+            openai_activo = 1,
+            openai_error_at = NULL,
+            openai_error_msg = NULL
+      WHERE id = ?`,
+    { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  return res.status(200).json({
+    status: '200',
+    message: 'API Key de Claude eliminada; el bot vuelve a responder con OpenAI',
+  });
+});
+
+/* Con qué proveedor responde el bot. Exige que la llave de ese proveedor esté
+   guardada: cambiar a uno sin llave dejaría el bot callado.
+   POST /api/v1/openai_assistants/actualizar_proveedor_ia { id_configuracion, proveedor } */
+exports.actualizar_proveedor_ia = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  const proveedor = String(req.body.proveedor || '').trim().toLowerCase();
+  if (!id_configuracion || !['openai', 'claude'].includes(proveedor)) {
+    return next(new AppError('Faltan campos: id_configuracion, proveedor (openai | claude)', 400));
+  }
+
+  const [row] = await db.query(
+    `SELECT api_key_openai, api_key_claude FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!row) return next(new AppError('Configuración no encontrada', 404));
+
+  const tieneLlave =
+    proveedor === 'claude'
+      ? Boolean(leerApiKeyClaude(row.api_key_claude))
+      : Boolean(leerApiKeyOpenAI(row.api_key_openai));
+  if (!tieneLlave) {
+    return next(
+      new AppError(
+        proveedor === 'claude'
+          ? 'Primero guarda una API Key de Claude.'
+          : 'Primero guarda una API Key de OpenAI.',
+        400,
+      ),
+    );
+  }
+
+  await db.query(
+    `UPDATE configuraciones
+        SET proveedor_ia = ?, openai_activo = 1, openai_error_at = NULL, openai_error_msg = NULL
+      WHERE id = ?`,
+    { replacements: [proveedor, id_configuracion], type: db.QueryTypes.UPDATE },
+  );
+
+  return res.status(200).json({
+    status: '200',
+    proveedor_ia: proveedor,
+    message:
+      proveedor === 'claude'
+        ? 'El bot ahora responde con Claude'
+        : 'El bot ahora responde con OpenAI',
   });
 });
 

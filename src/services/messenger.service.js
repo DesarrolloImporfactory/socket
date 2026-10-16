@@ -1,6 +1,7 @@
 const fb = require('../utils/facebookGraph');
 const { db } = require('../database/config');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
 const Store = require('./messenger_store.service');
 const dashboardEmitter = require('../controllers/dashboardEmitter');
 const { rehostAttachments } = require('../utils/rehostMediaMeta');
@@ -170,7 +171,7 @@ async function runKanbanIaMS({
 
     // 1) ¿La configuración es de tipo kanban? ¿Tiene API key de OpenAI?
     const [cfg] = await db.query(
-      `SELECT tipo_configuracion, api_key_openai
+      `SELECT tipo_configuracion, api_key_openai, proveedor_ia, api_key_claude
          FROM configuraciones
         WHERE id = ? LIMIT 1`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -178,7 +179,10 @@ async function runKanbanIaMS({
     if (!cfg || cfg.tipo_configuracion !== 'kanban') return;
 
     const api_key_openai = leerApiKeyOpenAI(cfg.api_key_openai);
-    if (!api_key_openai) return;
+    const proveedor_ia = cfg.proveedor_ia || 'openai';
+    const api_key_claude = leerApiKeyClaude(cfg.api_key_claude);
+    // Sin la llave del proveedor elegido no hay bot.
+    if (proveedor_ia === 'claude' ? !api_key_claude : !api_key_openai) return;
 
     // 2) Estado del contacto + gate del bot (igual que en WhatsApp)
     const [contacto] = await db.query(
@@ -318,6 +322,8 @@ async function runKanbanIaMS({
       mensaje: mensajeIA,
       estado_contacto,
       api_key_openai,
+      proveedor_ia,
+      api_key_claude,
       business_phone_id: null,
       accessToken: null,
       canal,

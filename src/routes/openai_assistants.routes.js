@@ -47,6 +47,24 @@ router.post(
   openai_assistantsController.eliminar_api_key_openai,
 );
 
+/* Proveedor alternativo: Claude (Anthropic). Misma protección que la llave de
+   OpenAI. El cliente elige en Asistentes AI con cuál responde el bot. */
+router.post(
+  '/actualizar_api_key_claude',
+  protect,
+  openai_assistantsController.actualizar_api_key_claude,
+);
+router.post(
+  '/eliminar_api_key_claude',
+  protect,
+  openai_assistantsController.eliminar_api_key_claude,
+);
+router.post(
+  '/actualizar_proveedor_ia',
+  protect,
+  openai_assistantsController.actualizar_proveedor_ia,
+);
+
 router.post(
   '/actualizar_ia_logisctica',
   openai_assistantsController.actualizar_ia_logisctica,

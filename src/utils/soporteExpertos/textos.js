@@ -15,7 +15,10 @@ const LINKS = {
 };
 
 /* ── Los de la versión 1 (sin cambios) ── */
-const MENSAJE_ASESOR = 'Recibí tu mensaje. Un asesor lo revisa y te escribe apenas abramos.';
+// La segunda mitad del paso a asesor. La guardia la agrega cuando el modelo
+// contestó con una ficha que pasa a una persona y se olvidó de decirlo.
+const CIERRE_ASESOR = 'Un asesor lo revisa y te escribe apenas abramos.';
+const MENSAJE_ASESOR = `Recibí tu mensaje. ${CIERRE_ASESOR}`;
 const MENSAJE_SALUDO =
   'Hola. Cuéntame qué necesitas. Si hace falta un asesor, lo dejo anotado para que te escriba apenas abramos.';
 const MENSAJE_RECIBIDO = 'Recibido. Lo sumo a tu caso para el asesor.';
@@ -40,6 +43,22 @@ const MENSAJE_SOLO_TU_NUMERO =
 const MENSAJE_ADJUNTO_SIN_TEXTO =
   'Recibí lo que enviaste, pero no lo puedo abrir. Cuéntame en un mensaje qué necesitas con eso y lo dejo anotado para el asesor.';
 
+/* ── Tras la prueba en papel de la versión 2 (pendientes de aprobación) ──
+   No traen palabras nuevas: son «Entiendo tu preocupación.» (que el prompt ya
+   mandaba ante un reclamo) más un texto fijo. Están aquí porque ahora también
+   los pone el CÓDIGO cuando el modelo manda un reclamo a cobranza o le repite
+   el estado de la carga a quien reclama por la demora. */
+const FRASE_RECLAMO = 'Entiendo tu preocupación.';
+const MENSAJE_RECLAMO = `${FRASE_RECLAMO} ${MENSAJE_ASESOR}`;
+const MENSAJE_RECLAMO_CARGA = `${FRASE_RECLAMO} ${MENSAJE_CARGA_A_LOGISTICA}`;
+
+/* La ficha `cotizar-datos` ya no pide la cantidad (para no pedirla dos veces):
+   la pide el prompt junto con el paso a asesor. Si el modelo manda la ficha
+   sola y la guardia le completa el paso, también completa este pedido, salvo
+   que el cliente ya haya dicho cuántas unidades quiere (senales.dioCantidad).
+   Es la misma frase que trae la ficha `cotizar-producto-del-catalogo`. */
+const PREGUNTA_CANTIDAD = 'Dime cuántas unidades piensas comprar.';
+
 const TODOS = {
   MENSAJE_ASESOR,
   MENSAJE_SALUDO,
@@ -52,6 +71,8 @@ const TODOS = {
   MENSAJE_CARGA_A_LOGISTICA,
   MENSAJE_SOLO_TU_NUMERO,
   MENSAJE_ADJUNTO_SIN_TEXTO,
+  MENSAJE_RECLAMO,
+  MENSAJE_RECLAMO_CARGA,
 };
 
-module.exports = { LINKS, ...TODOS, TEXTOS_FIJOS: Object.freeze(TODOS) };
+module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, FRASE_RECLAMO, PREGUNTA_CANTIDAD, TEXTOS_FIJOS: Object.freeze(TODOS) };

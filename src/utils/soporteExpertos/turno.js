@@ -6,8 +6,10 @@
      1. lee qué llegó además de texto (nota de voz, imagen, documento…);
      2. si el mensaje habla de la carga, la busca por el teléfono del que
         escribe y arma el bloque con su estado real;
-     3. trae las 3 fichas de la base más cercanas a lo que escribió;
-     4. marca si está pidiendo datos de otra persona.
+     3. trae las fichas de la base que pasan el umbral de cercanía (3 como
+        mucho, y ninguna si nada se parece lo suficiente);
+     4. marca si está pidiendo datos de otra persona, si reclama y si solo
+        saluda (señales para la guardia; ver `senales.js`).
    Devuelve el bloque de contexto, el mensaje como lo debe ver el modelo y los
    «hechos» del turno.
 
@@ -26,6 +28,7 @@ const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = r
 const { buscadorDeArchivo, bloqueFichas } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad } = require('./senales');
 const T = require('./textos');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
@@ -121,6 +124,21 @@ async function prepararTurno(p) {
     }
   }
 
+  // ── Reclamo ───────────────────────────────────────────────────────────
+  /* En la prueba en papel un reclamo («pagué y no me enviaron nada, ¿con quién
+     hablo?») salió a cobranza pidiendo el comprobante, y a quien reclamaba por
+     la demora se le repitió el estado. El aviso se lo dice al modelo; si igual
+     lo hace, la guardia lo frena con el texto seguro de más abajo. */
+  const reclamo = !otro.pide && esReclamo(dicho);
+  const reclamoPorDemora = !otro.pide && Boolean(carga) && reclamaPorDemora(dicho);
+  if (reclamo || reclamoPorDemora) {
+    bloques.push(
+      '⚠️ RECLAMO: el cliente reclama o está molesto. Va a la persona responsable (no a cobranza ni a otra área) y NO se le pide ningún dato ni comprobante. ' +
+        'No discutas, no expliques, no justifiques y no repitas el estado de su carga. ' +
+        `Responde exactamente: ${reclamoPorDemora ? T.MENSAJE_RECLAMO_CARGA : T.MENSAJE_RECLAMO}`,
+    );
+  }
+
   // ── Qué hacer con un adjunto que no se pudo leer y vino solo ──────────
   if (adj.soloIlegible) {
     bloques.push(
@@ -132,7 +150,17 @@ async function prepararTurno(p) {
   // ── Hechos del turno: con esto revisa la guardia ──────────────────────
   const fichasVistas = new Map(previo?.fichas || []);
   for (const { ficha } of fichas) fichasVistas.set(ficha.id, ficha);
-  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas });
+  /* Si en esta conversación ya dijo cuántas unidades quiere, se recuerda: una
+     ficha de cotización que la guardia complete no se la vuelve a pedir. */
+  const cantidadDicha = Boolean(previo?.dioCantidad) || dioCantidad(dicho);
+  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas, dioCantidad: cantidadDicha });
+
+  /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
+     La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió
+     (y, si la ficha pide la cantidad, también la pide cuando falta). */
+  const fichasConPase = [...fichasVistas.values()]
+    .filter((f) => f.pasar_a && f.respuesta_base)
+    .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir || '' }));
 
   const bloqueDeCarga = carga ? bloques.find((b) => b.startsWith('📦')) || '' : '';
   const firme = [
@@ -150,13 +178,23 @@ async function prepararTurno(p) {
     else if (carga.estado === 'sin_carga' || carga.estado === 'solo_historicas') textoSeguro = T.MENSAJE_SIN_CARGA;
     else textoSeguro = T.MENSAJE_CARGA_A_LOGISTICA;
   }
+  // Un reclamo no se contesta con el estado ni con el paso a cobranza.
+  if (reclamoPorDemora) textoSeguro = T.MENSAJE_RECLAMO_CARGA;
+  else if (reclamo) textoSeguro = T.MENSAJE_RECLAMO;
+
+  /* El primer saludo de la conversación no se queda sin respuesta. «Primero» =
+     no hay nada de este cliente en la memoria (20 minutos): si ya venía
+     escribiendo, el saludo anterior ya se contestó, o el modelo calla por algo. */
+  const saludoSinContestar = !previo && !adj.adjuntos.length && esSoloSaludo(dicho);
 
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
-      ` · fichas=[${fichas.map((f) => f.ficha.id).join(', ')}]` +
+      ` · fichas=[${fichas.map((f) => `${f.ficha.id} ${f.cercania ?? ''}`.trim()).join(', ')}]` +
       ` · adjuntos=${adj.adjuntos.map((a) => a.tipo + (a.leido ? '' : '✗')).join(',') || '0'}` +
       (adj.esNotaDeVoz ? ' · nota de voz' : '') +
-      (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : ''),
+      (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : '') +
+      (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
+      (saludoSinContestar ? ' · primer saludo' : ''),
   );
 
   return {
@@ -165,8 +203,13 @@ async function prepararTurno(p) {
     hechos: {
       carga,
       fichas: fichas.map((f) => f.ficha.id),
+      fichasConPase,
       adjuntos: adj.adjuntos,
       pideDatosDeOtro: otro.pide,
+      reclamo,
+      reclamoPorDemora,
+      saludoSinContestar,
+      dioCantidad: cantidadDicha,
       respaldo: {
         firme,
         eco: String(p.mensaje || ''),
@@ -188,8 +231,13 @@ function hechosDeEmergencia(mensaje = '') {
   return {
     carga: null,
     fichas: [],
+    fichasConPase: [],
     adjuntos: [],
     pideDatosDeOtro: false,
+    reclamo: false,
+    reclamoPorDemora: false,
+    saludoSinContestar: false,
+    dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,
   };
