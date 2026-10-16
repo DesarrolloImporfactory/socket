@@ -7,6 +7,7 @@ const {
   pruneTemplateCache,
 } = require('../services/whatsapp.service');
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
+const { estaBloqueado } = require('../utils/contactosBloqueados');
 
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
@@ -231,6 +232,21 @@ cron.schedule('* * * * *', async () => {
           const itemStart = Date.now();
 
           try {
+            // Números en la lista de no contactar: el envío se cierra en
+            // error con el motivo, sin consumir intento ni llegar a Meta.
+            // (No 'cancelado': ese estado lo lee la lógica de lote cancelado.)
+            if (await estaBloqueado(item.telefono)) {
+              await db.query(
+                `UPDATE template_envios_programados
+                 SET estado = 'error',
+                     error_message = '[BLOQUEADO] El contacto está en la lista de no contactar',
+                     actualizado_en = NOW()
+                 WHERE id = ? AND estado = 'pendiente'`,
+                { replacements: [item.id], type: db.QueryTypes.UPDATE },
+              );
+              continue;
+            }
+
             // Corta-fuegos por plan. Va ANTES de la toma atómica para no
             // consumir un intento del registro: si el cliente paga, el envío
             // programado sigue pendiente y sale, en vez de haberse quemado.

@@ -17,6 +17,7 @@ const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const { obtenerOCrearContactoWa } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
+const { estaBloqueado } = require('../utils/contactosBloqueados');
 // Mismo interruptor que kanban y que el remarketing de IG: acá NO se decide nada.
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 const {
@@ -829,6 +830,19 @@ cron.schedule('*/1 * * * *', async () => {
               `UPDATE remarketing_pendientes
                SET cancelado = 1,
                    error_message = 'Cliente con enviar_remarketing=0',
+                   ultimo_intento_at = NOW()
+               WHERE id = ?`,
+              { replacements: [record.id], type: db.QueryTypes.UPDATE },
+            );
+            continue;
+          }
+
+          // 2.55) Número en la lista de no contactar → cancelar sin enviar
+          if (await estaBloqueado(cliente.celular_cliente || record.telefono)) {
+            await db.query(
+              `UPDATE remarketing_pendientes
+               SET cancelado = 1,
+                   error_message = 'Contacto en la lista de no contactar',
                    ultimo_intento_at = NOW()
                WHERE id = ?`,
               { replacements: [record.id], type: db.QueryTypes.UPDATE },

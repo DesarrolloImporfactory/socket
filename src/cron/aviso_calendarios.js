@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { db } = require('../database/config');
 const { sendWhatsappMessageTemplate } = require('../services/whatsapp.service'); // Si es necesario
+const { estaBloqueado } = require('../utils/contactosBloqueados');
 
 const moment = require('moment-timezone');
 const {
@@ -132,6 +133,9 @@ cron.schedule('*/1 * * * *', async () => {
           let meeting_url = reunion.meeting_url;
           let nombre = reunion.nombre;
           let telefono = reunion.telefono;
+
+          // Números en la lista de no contactar: ningún aviso automático.
+          if (await estaBloqueado(telefono)) continue;
 
           const configuraciones = await db.query(
             `SELECT token, id_whatsapp, id_telefono, template_notificar_calendario,
