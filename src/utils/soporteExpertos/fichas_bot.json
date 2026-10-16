@@ -38,11 +38,10 @@
    "les mando la foto del producto para que me coticen",
    "necesito un costeo"
   ],
-  "respuesta_base": "Las cotizaciones las hace el área de precios. Se necesitan 3 datos que te da tu proveedor: el precio por unidad, cuántas unidades vienen en cada caja y el volumen de la caja (CBM) o sus medidas; además, cuántas unidades piensas comprar. Sirve una captura de la respuesta del proveedor o la proforma. Una foto del producto sola no alcanza.",
+  "respuesta_base": "Las cotizaciones las hace el área de precios. Se necesitan 3 datos que te da tu proveedor: el precio por unidad, cuántas unidades vienen en cada caja y el volumen de la caja (CBM) o sus medidas. Sirve una captura de la respuesta del proveedor o la proforma. Una foto del producto sola no alcanza.",
   "pasos": [
    "Pídele a tu proveedor: precio por unidad, unidades por caja y CBM (o largo, ancho y alto de la caja).",
-   "Envía por aquí la captura de su respuesta o la proforma.",
-   "Dime cuántas unidades piensas comprar."
+   "Envía por aquí la captura de su respuesta o la proforma."
   ],
   "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
   "pasar_a": "pricing",
