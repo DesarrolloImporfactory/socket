@@ -14,7 +14,9 @@
 
   Uso:
     node scripts/simular_conversaciones_expertos.js --etiqueta=v2 [--n=63] [--guiones] [--solo-guiones]
-         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--seco]
+         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real]
+    (sin --real corre en seco: no llama a OpenAI. Con --real muestra el costo estimado
+     y espera 10 segundos antes de empezar, para cortarlo con Ctrl+C.)
     node scripts/simular_conversaciones_expertos.js --informe=<archivo>.json [--veredictos=<archivo>.veredictos.json]
     node scripts/simular_conversaciones_expertos.js --rubrica
 
@@ -29,7 +31,8 @@ const path = require('path');
 
 const arg = (k) => (process.argv.find((a) => a.startsWith(`--${k}=`)) || '').split('=').slice(1).join('=');
 const tiene = (k) => process.argv.includes(`--${k}`);
-const SECO = tiene('seco');
+// En seco por defecto: la llave de la cuenta 10 es prepago y se gasta solo con --real.
+const SECO = !tiene('real');
 const CARPETA = path.join(__dirname, 'soporte_expertos', 'simulaciones');
 
 /* ── Rúbrica del juez ──────────────────────────────────────────────────── */
@@ -234,6 +237,14 @@ async function correr() {
 
   const prompt = promptSoporteExpertos();
   console.log(`${SECO ? 'EN SECO' : `REAL · bot ${modeloBot} · cliente ${MODELO_CLIENTE}`} · prompt ${prompt.length} caracteres · ${convs.length} conversaciones · ${paralelo} a la vez`);
+  if (!SECO) {
+    // Estimado grueso: ~4,5 turnos por conversación y ~9.000 tokens de entrada por turno del
+    // bot (prompt + fichas + la conversación guardada), más el cliente simulado.
+    const turnos = convs.length * 4.5;
+    const usd = turnos * (9000 * 2 + 150 * 8) / 1e6 + turnos * (1500 * 0.4 + 60 * 1.6) / 1e6;
+    console.log(`Costo estimado: ~${usd.toFixed(2)} USD de la llave de la cuenta 10. Empieza en 10 s (Ctrl+C para cortar).`);
+    await new Promise((r) => setTimeout(r, 10000));
+  }
   const ctx = { responderTurno, llamar, consultar: base.consultar, buscador, hoy: HOY, apiKey };
   const salida = new Array(convs.length);
   let siguiente = 0;
