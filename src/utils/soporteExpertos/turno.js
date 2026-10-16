@@ -28,7 +28,7 @@ const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = r
 const { buscadorDeArchivo, bloqueFichas } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
-const { esSoloSaludo, esReclamo, reclamaPorDemora } = require('./senales');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad } = require('./senales');
 const T = require('./textos');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
@@ -150,13 +150,17 @@ async function prepararTurno(p) {
   // ── Hechos del turno: con esto revisa la guardia ──────────────────────
   const fichasVistas = new Map(previo?.fichas || []);
   for (const { ficha } of fichas) fichasVistas.set(ficha.id, ficha);
-  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas });
+  /* Si en esta conversación ya dijo cuántas unidades quiere, se recuerda: una
+     ficha de cotización que la guardia complete no se la vuelve a pedir. */
+  const cantidadDicha = Boolean(previo?.dioCantidad) || dioCantidad(dicho);
+  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas, dioCantidad: cantidadDicha });
 
   /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
-     La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió. */
+     La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió
+     (y, si la ficha pide la cantidad, también la pide cuando falta). */
   const fichasConPase = [...fichasVistas.values()]
     .filter((f) => f.pasar_a && f.respuesta_base)
-    .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos] }));
+    .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir || '' }));
 
   const bloqueDeCarga = carga ? bloques.find((b) => b.startsWith('📦')) || '' : '';
   const firme = [
@@ -205,6 +209,7 @@ async function prepararTurno(p) {
       reclamo,
       reclamoPorDemora,
       saludoSinContestar,
+      dioCantidad: cantidadDicha,
       respaldo: {
         firme,
         eco: String(p.mensaje || ''),
@@ -232,6 +237,7 @@ function hechosDeEmergencia(mensaje = '') {
     reclamo: false,
     reclamoPorDemora: false,
     saludoSinContestar: false,
+    dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,
   };

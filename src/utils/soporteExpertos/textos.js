@@ -52,6 +52,13 @@ const FRASE_RECLAMO = 'Entiendo tu preocupación.';
 const MENSAJE_RECLAMO = `${FRASE_RECLAMO} ${MENSAJE_ASESOR}`;
 const MENSAJE_RECLAMO_CARGA = `${FRASE_RECLAMO} ${MENSAJE_CARGA_A_LOGISTICA}`;
 
+/* La ficha `cotizar-datos` ya no pide la cantidad (para no pedirla dos veces):
+   la pide el prompt junto con el paso a asesor. Si el modelo manda la ficha
+   sola y la guardia le completa el paso, también completa este pedido, salvo
+   que el cliente ya haya dicho cuántas unidades quiere (senales.dioCantidad).
+   Es la misma frase que trae la ficha `cotizar-producto-del-catalogo`. */
+const PREGUNTA_CANTIDAD = 'Dime cuántas unidades piensas comprar.';
+
 const TODOS = {
   MENSAJE_ASESOR,
   MENSAJE_SALUDO,
@@ -68,4 +75,4 @@ const TODOS = {
   MENSAJE_RECLAMO_CARGA,
 };
 
-module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, FRASE_RECLAMO, TEXTOS_FIJOS: Object.freeze(TODOS) };
+module.exports = { LINKS, ...TODOS, CIERRE_ASESOR, FRASE_RECLAMO, PREGUNTA_CANTIDAD, TEXTOS_FIJOS: Object.freeze(TODOS) };

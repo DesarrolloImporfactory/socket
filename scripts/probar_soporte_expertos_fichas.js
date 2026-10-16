@@ -261,6 +261,35 @@ const NADA = [
     prueba(`copiar tal cual cualquiera de las ${real.fichas.filter((f) => f.pasar_a && f.respuesta_base).length} fichas que pasan a una persona nunca sale sin «apenas abramos»`, sinAviso.length === 0, sinAviso.slice(0, 5).join(', '));
     prueba(`copiar tal cual cualquiera de las ${real.fichas.filter((f) => !f.pasar_a && f.respuesta_base).length} fichas que cierran solas no se toca`, tocadas.length === 0, tocadas.slice(0, 3).join(' | '));
     prueba('completarPase: sin fichas con pase, o sin usar ninguna, devuelve el texto igual', completarPase('hola', []).cambios === 0 && completarPase('hola', hechos([conPase]).fichasConPase).cambios === 0);
+
+    /* Riesgo anotado por Daniel (16-10): la ficha «cotizar-datos» ya no pide la
+       cantidad; si el modelo la manda sola, la guardia completaba el paso a
+       asesor pero no pedía cuántas unidades. Ahora lo pide, salvo que ya las
+       haya dicho o que la respuesta ya lo pregunte. */
+    const cotizar = real.fichas.find((f) => f.id === 'cotizar-datos');
+    const conPedir = (fichas, dioCantidad = false) => ({ ...hechos(fichas), fichasConPase: fichas.filter((f) => f.pasar_a && f.respuesta_base).map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir })), dioCantidad });
+    prueba('la ficha cotizar-datos ya no pide la cantidad en su texto (solo las unidades por caja), pero sí en `pedir`', !/cu[aá]ntas unidades piensas|cantidad que/i.test([cotizar.respuesta_base, ...cotizar.pasos].join(' ')) && /cuántas unidades piensas comprar/.test(cotizar.pedir));
+    x = revisarRespuesta(cotizar.respuesta_base, conPedir([cotizar]));
+    prueba('cotizar-datos sola y el cliente no dijo la cantidad: paso a asesor + «cuántas unidades»', x.cambiada && x.texto === `${cotizar.respuesta_base}\n${T.CIERRE_ASESOR}\n${T.PREGUNTA_CANTIDAD}` && /se le pide cuántas unidades/.test(x.motivos.join(' ')));
+    x = revisarRespuesta(cotizar.respuesta_base, conPedir([cotizar], true));
+    prueba('…si ya dijo cuántas unidades (en este turno o antes), solo el paso a asesor', x.cambiada && x.texto === `${cotizar.respuesta_base}\n${T.CIERRE_ASESOR}`);
+    x = revisarRespuesta(`${cotizar.respuesta_base} ¿Cuántas unidades piensas comprar?`, conPedir([cotizar]));
+    prueba('…si la respuesta ya pregunta la cantidad, no se repite', x.cambiada && x.texto.endsWith(T.CIERRE_ASESOR) && !x.texto.includes(T.PREGUNTA_CANTIDAD));
+    x = revisarRespuesta(`${cotizar.respuesta_base} ${T.MENSAJE_ASESOR}`, conPedir([cotizar]));
+    prueba('…si ya trae el paso a asesor, la guardia no toca nada (la cantidad la pide el prompt)', !x.cambiada);
+    x = revisarRespuesta(conPase.respuesta_base, conPedir([conPase]));
+    prueba('una ficha con pase que no pide cantidad (no-puedo-entrar-plataforma) solo recibe el paso a asesor', x.cambiada && x.texto === `${conPase.respuesta_base}\n${T.CIERRE_ASESOR}`);
+    prueba('la pregunta fija es la misma frase de la ficha del catálogo y no trae cifras', T.PREGUNTA_CANTIDAD === 'Dime cuántas unidades piensas comprar.' && real.fichas.find((f) => f.id === 'cotizar-producto-del-catalogo').respuesta_base.endsWith(T.PREGUNTA_CANTIDAD.replace(/^Dime/, 'dime')) && !/\d/.test(T.PREGUNTA_CANTIDAD));
+  }
+  {
+    // La señal «ya dijo cuántas unidades» (senales.dioCantidad), sin modelo.
+    const { dioCantidad } = require('../src/utils/soporteExpertos/senales');
+    const SI = ['quiero traer 500', 'hola quiero cotizar unos audífonos inalámbricos, cuánto me sale traer 500?', 'es para que me coticen, quiero 500 unidades', 'serían unas 300 piezas', 'necesito 1.000 unidades', 'quisiera importar 200', 'unos 50 pares', '100 unds', 'cien unidades', 'entre 100 y 200', 'mínimo 50', 'para empezar con 30', '2 cajas', 'son 12 pcs', 'quiero comprar 80 kits'];
+    const NO = ['quiero cotizar unas lámparas', 'que datos necesitan para cotizar', '2.5 dólares, 50 por caja', 'el precio es 3,20 por unidad', 'mi cotización es la 4521', 'EC-2609112', 'mi número es 0991234567', 'la caja mide 60x40x50', 'el cbm es 0.12', 'llevo 15 días esperando', 'pagué 150 dólares', 'son 3 datos que pide el proveedor?', 'hola buenas noches', ''];
+    const malSi = SI.filter((q) => !dioCantidad(q));
+    const malNo = NO.filter((q) => dioCantidad(q));
+    prueba(`dioCantidad ve la cantidad en las ${SI.length} formas de decirla`, malSi.length === 0, malSi.join(' | '));
+    prueba(`dioCantidad no confunde precios, códigos, medidas ni teléfonos (${NO.length} casos)`, malNo.length === 0, malNo.join(' | '));
   }
   {
     // El turno completo, con la base real.
@@ -280,6 +309,26 @@ const NADA = [
     olvidarTodo();
     t = await turno('qué es el cbm?', 'f4');
     prueba('«qué es el cbm?»: lleva la ficha, y como cierra sola no entra en la lista de la guardia', t.hechos.fichas[0] === 'cbm' && !t.hechos.fichasConPase.some((f) => f.id === 'cbm'));
+
+    // La cantidad en el turno completo: se ve, se recuerda y la guardia la pide solo cuando falta.
+    let r2;
+    const cotizar = real.fichas.find((f) => f.id === 'cotizar-datos');
+    olvidarTodo();
+    t = await turno('que datos necesitan para cotizar un producto?', 'f5');
+    r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
+    prueba('«qué datos necesitan para cotizar»: lleva cotizar-datos con su `pedir`, y sin cantidad dicha la guardia completa pase + cantidad', t.hechos.fichasConPase.some((f) => f.id === 'cotizar-datos' && /cuántas unidades/.test(f.pedir)) && t.hechos.dioCantidad === false && r2.texto.endsWith(`${T.CIERRE_ASESOR}\n${T.PREGUNTA_CANTIDAD}`));
+    t = await turno('quiero traer 500', 'f5');
+    r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
+    prueba('…al turno siguiente dice «quiero traer 500»: dioCantidad y la guardia ya no la pide', t.hechos.dioCantidad === true && r2.texto.endsWith(T.CIERRE_ASESOR) && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
+    t = await turno('y el cbm lo pido al proveedor?', 'f5');
+    prueba('…y se recuerda en los mensajes que siguen (20 minutos)', t.hechos.dioCantidad === true);
+    olvidarTodo();
+    t = await turno('hola quiero cotizar unos audífonos inalámbricos, cuánto me sale traer 500?', 'f6');
+    r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
+    prueba('el escenario del arnés (cantidad en el primer mensaje): la guardia completa el pase sin volver a pedir la cantidad', t.hechos.dioCantidad === true && r2.cambiada && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
+    olvidarTodo();
+    t = await turno('hola', 'f7');
+    prueba('hechos de emergencia y un turno sin fichas traen dioCantidad en false', t.hechos.dioCantidad === false && revisarTurno('hola', undefined).cambiada === false);
   }
 
   /* ───────────────────────────────────────────────────────────────────── */
@@ -301,36 +350,36 @@ const NADA = [
       'Hola, me interesa el producto SGTE-58 (Altavoz portátil) del catálogo de Ideas de Productos.\n' +
       'Hola, me interesa el producto HOG-112 (Lámpara de mesa) del catálogo de Ideas de Productos.\n' +
       'Hola, me interesa el producto BLZ7 (Bolso de viaje) del catálogo de Ideas de Productos.';
-    const rev = (texto, eco = TRES) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco }, textoSeguro: T.MENSAJE_ASESOR });
-    let x = rev(`Hola. ${T.MENSAJE_ASESOR} Para que el área de precios te cotice SGTE-58, HOG-112 y BLZ7, dime cuántas unidades de cada uno piensas comprar.`);
+    const r2 = (texto, eco = TRES) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco }, textoSeguro: T.MENSAJE_ASESOR });
+    let x = r2(`Hola. ${T.MENSAJE_ASESOR} Para que el área de precios te cotice SGTE-58, HOG-112 y BLZ7, dime cuántas unidades de cada uno piensas comprar.`);
     prueba('tres productos del catálogo: repetir sus tres códigos ya NO dispara la guardia (era el único reemplazo de la prueba, y falso)', !x.cambiada, x.motivos.join('; '));
-    x = rev('Para cotizar el sgte 58 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.');
-    prueba('…ni escrito en minúsculas', !rev('Para cotizar el sgte-58 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.').cambiada);
+    x = r2('Para cotizar el sgte 58 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.');
+    prueba('…ni escrito en minúsculas', !r2('Para cotizar el sgte-58 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.').cambiada);
     prueba('…pero el código tiene que ir ENTERO: «sgte 58» suelto es una cifra', x.cambiada && /cifra «58»/.test(x.motivos.join(' ')));
-    x = rev('Para cotizar el SGTE-59 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.');
+    x = r2('Para cotizar el SGTE-59 dime cuántas unidades piensas comprar. Un asesor te escribe apenas abramos.');
     prueba('un código que el cliente NO escribió sigue frenado', x.cambiada && x.texto === T.MENSAJE_ASESOR && /cifra «59»/.test(x.motivos.join(' ')));
-    x = rev('El SGTE-58 te sale en 58 dólares.');
+    x = r2('El SGTE-58 te sale en 58 dólares.');
     prueba('el número del código no respalda un monto («58 dólares»)', x.cambiada && /monto «58 dólares»/.test(x.motivos.join(' ')));
-    x = rev('El SGTE-58 llega el 58.');
+    x = r2('El SGTE-58 llega el 58.');
     prueba('…ni una fecha («el 58»)', x.cambiada && /plazo/.test(x.motivos.join(' ')));
-    x = rev('El SGTE-58 llega en 58 días.');
+    x = r2('El SGTE-58 llega en 58 días.');
     prueba('…ni un plazo («58 días»)', x.cambiada && /plazo «58 días»/.test(x.motivos.join(' ')));
-    x = rev('Del SGTE-58 necesitas 58 como mínimo.');
+    x = r2('Del SGTE-58 necesitas 58 como mínimo.');
     prueba('…ni la misma cifra suelta en otra parte de la respuesta', x.cambiada && /cifra «58»/.test(x.motivos.join(' ')));
-    x = rev('Sí, son USD850.', 'te deposito USD850 y listo');
+    x = r2('Sí, son USD850.', 'te deposito USD850 y listo');
     prueba('letras pegadas a una moneda no son un código («USD850»)', x.cambiada);
-    x = rev('Sí, el dia15.', 'me llega el dia15?');
+    x = r2('Sí, el dia15.', 'me llega el dia15?');
     prueba('…ni pegadas a una fecha («dia15»)', x.cambiada);
-    x = rev(`${T.MENSAJE_ASESOR} Dime cuántas unidades del SGTE-58 piensas comprar.`, 'Hola, me interesa el producto SGTE-58 (Altavoz portátil) del catálogo de Ideas de Productos.');
+    x = r2(`${T.MENSAJE_ASESOR} Dime cuántas unidades del SGTE-58 piensas comprar.`, 'Hola, me interesa el producto SGTE-58 (Altavoz portátil) del catálogo de Ideas de Productos.');
     prueba('con un solo producto también pasa', !x.cambiada);
-    x = rev('Tu cotización 4521 y tu marca EC-2609112 quedan anotadas. Un asesor te escribe apenas abramos.', 'mi cotización es la 4521 y la marca EC-2609112');
+    x = r2('Tu cotización 4521 y tu marca EC-2609112 quedan anotadas. Un asesor te escribe apenas abramos.', 'mi cotización es la 4521 y la marca EC-2609112');
     prueba('los códigos que ya se aceptaban (cotización, marca) siguen pasando', !x.cambiada, x.motivos.join('; '));
   }
 
   /* ───────────────────────────────────────────────────────────────────── */
   console.log('\n9. Guardia: ofrecer lo que el bot no puede hacer');
   {
-    const rev = (texto, firme = FIJOS) => revisarRespuesta(texto, { respaldo: { firme, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
+    const r2 = (texto, firme = FIJOS) => revisarRespuesta(texto, { respaldo: { firme, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
     for (const malo of [
       'Claro, te cotizo ese producto.',
       'Si quieres te llamamos para explicarte.',
@@ -345,7 +394,7 @@ const NADA = [
       'Te busco proveedores de ese producto.',
       'Lo consulto con logística y te confirmo.',
     ]) {
-      const x = rev(malo);
+      const x = r2(malo);
       prueba(`«${malo}» → no sale: va el texto seguro`, x.cambiada && !x.corregida && x.texto === T.MENSAJE_ASESOR && /ofrecía hacer algo que el bot no puede/.test(x.motivos.join(' ')), x.motivos.join('; '));
     }
     for (const bueno of [
@@ -358,7 +407,7 @@ const NADA = [
       T.MENSAJE_SIN_CARGA,
       'El cambio de clave se hace desde la pantalla de ingreso. Un asesor te escribe apenas abramos.',
     ]) {
-      const x = rev(bueno);
+      const x = r2(bueno);
       prueba(`«${bueno.slice(0, 74)}…» → pasa (habla de lo que hace OTRO, o de dejarlo anotado)`, !x.cambiada, x.motivos.join('; '));
     }
     prueba('si una ficha lo dice con esas palabras, está respaldado', ofreceLoQueNoPuede('Si no lo encuentras, te busco yo el contacto.', 'Si no lo encuentras, te busco yo el contacto.') === null && ofreceLoQueNoPuede('Te busco el contacto.', FIJOS) !== null);
@@ -440,12 +489,12 @@ const NADA = [
 
   console.log('\n12. Guardia: el aviso de «un asesor te escribe», una sola vez');
   {
-    const rev = (texto) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
-    let x = rev(`${T.MENSAJE_ROBOT} ${T.MENSAJE_ASESOR}`);
+    const r2 = (texto) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
+    let x = r2(`${T.MENSAJE_ROBOT} ${T.MENSAJE_ASESOR}`);
     prueba('texto del asistente automático + paso a asesor pegado: queda solo el primero', x.cambiada && x.corregida && x.texto === T.MENSAJE_ROBOT, x.texto);
-    x = rev(`${T.MENSAJE_ASESOR} ${T.MENSAJE_CARGA_A_LOGISTICA}`);
+    x = r2(`${T.MENSAJE_ASESOR} ${T.MENSAJE_CARGA_A_LOGISTICA}`);
     prueba('paso a asesor + paso a logística: queda uno', x.corregida && (x.texto.match(/apenas abramos/g) || []).length === 1);
-    prueba('un solo aviso no se toca', !rev(T.MENSAJE_ASESOR).cambiada && !rev(T.MENSAJE_ROBOT).cambiada && !rev(T.MENSAJE_RECLAMO).cambiada && !rev(T.MENSAJE_SIN_CARGA).cambiada);
+    prueba('un solo aviso no se toca', !r2(T.MENSAJE_ASESOR).cambiada && !r2(T.MENSAJE_ROBOT).cambiada && !r2(T.MENSAJE_RECLAMO).cambiada && !r2(T.MENSAJE_SIN_CARGA).cambiada);
   }
 
   console.log('\n13. Prompt y textos: lo que es de redacción');

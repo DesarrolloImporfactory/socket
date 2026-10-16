@@ -44,7 +44,7 @@
 'use strict';
 
 const { sinTildes } = require('./texto');
-const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO } = require('./textos');
+const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO, PREGUNTA_CANTIDAD } = require('./textos');
 
 const MAX_RESPUESTA = 1500;
 
@@ -381,14 +381,26 @@ function usaFicha(respuestaLimpia, partes) {
   return false;
 }
 
+/* La ficha pide la cantidad (`pedir` nombra «cuántas unidades piensas comprar»)
+   y la respuesta todavía no la pregunta. «Cuántas unidades vienen en cada caja»
+   es otro dato (el del proveedor): no cuenta. */
+const RE_PIDE_CANTIDAD =
+  /cu[aá]ntas (?:unidades|piezas) (?:piensas|quieres|quisieras|vas a|deseas|planeas|necesitas|te interesa)|qu[eé] cantidad (?:piensas|quieres|quisieras|vas a|deseas|necesitas|te interesa)|cantidad (?:que|de unidades que) (?:piensas|quieres|vas a|deseas|necesitas)/i;
+const pideCantidad = (ficha) => /cuantas unidades piensas/.test(limpio(ficha.pedir || ''));
+
 /** Si contestó con una ficha que pasa a una persona y no avisó del paso a
-    asesor, lo agrega. Devuelve { texto, cambios, ficha }. */
-function completarPase(texto, fichasConPase) {
+    asesor, lo agrega. Si esa ficha además pide la cantidad y ni el cliente la
+    dijo ni la respuesta la pregunta, la pide (riesgo anotado por Daniel el
+    16-10: la ficha «cotizar-datos» sola se quedaba sin pedir las unidades).
+    Devuelve { texto, cambios, ficha, cantidad }. */
+function completarPase(texto, fichasConPase, { dioCantidad = false } = {}) {
   if (!fichasConPase?.length || RE_PASA_A_ASESOR.test(texto)) return { texto, cambios: 0 };
   const respuestaLimpia = ` ${limpio(texto)} `;
   const usada = fichasConPase.find((f) => usaFicha(respuestaLimpia, f.partes));
   if (!usada) return { texto, cambios: 0 };
-  return { texto: `${texto.trimEnd()}\n${CIERRE_ASESOR}`, cambios: 1, ficha: usada.id };
+  const cantidad = pideCantidad(usada) && !dioCantidad && !RE_PIDE_CANTIDAD.test(texto);
+  const cierre = cantidad ? `${CIERRE_ASESOR}\n${PREGUNTA_CANTIDAD}` : CIERRE_ASESOR;
+  return { texto: `${texto.trimEnd()}\n${cierre}`, cambios: 1, ficha: usada.id, cantidad };
 }
 
 /**
@@ -400,8 +412,10 @@ function completarPase(texto, fichasConPase) {
  *                      en el turno se consultó la carga, es SOLO su bloque: una ficha que
  *                      explica los pasos no autoriza a decir «la tuya está en aduana».
  *   - textoSeguro      con qué se reemplaza una respuesta que no pasa
- *   - fichasConPase    [{ id, partes }] fichas con `pasar_a` vistas en la conversación:
+ *   - fichasConPase    [{ id, partes, pedir }] fichas con `pasar_a` vistas en la conversación:
  *                      si la respuesta usa una, tiene que llevar el paso a asesor
+ *   - dioCantidad      el cliente ya dijo cuántas unidades quiere (en este turno o antes):
+ *                      al completar una ficha de cotización no se le vuelve a pedir
  *   - reclamo          el cliente reclama: no va a cobranza ni se le pide comprobante
  *   - reclamoPorDemora reclama por la demora de su carga: no se le repite el estado
  *   - saludoSinContestar  es el primer saludo de la conversación: no se calla
@@ -463,9 +477,12 @@ function revisarRespuesta(respuesta, hechos = {}) {
   }
 
   // 3. Lo que se completa: una ficha que pasa a una persona no cierra sola.
-  const pase = completarPase(visible, h.fichasConPase);
+  const pase = completarPase(visible, h.fichasConPase, { dioCantidad: Boolean(h.dioCantidad) });
   if (pase.cambios) {
-    motivos.push(`usaba la ficha «${pase.ficha}», que pasa a una persona, sin el paso a asesor: agregado`);
+    motivos.push(
+      `usaba la ficha «${pase.ficha}», que pasa a una persona, sin el paso a asesor: agregado` +
+        (pase.cantidad ? ' (y se le pide cuántas unidades, que no había dicho)' : ''),
+    );
     visible = pase.texto;
   }
 

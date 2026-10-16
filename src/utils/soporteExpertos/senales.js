@@ -67,4 +67,22 @@ function reclamaPorDemora(texto) {
   return RE_DEMORA.test(llano(texto));
 }
 
-module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora };
+/* Ya dijo CUÁNTAS UNIDADES quiere comprar («quiero traer 500», «300 unidades»,
+   «unas 50 piezas»). Lo usa la guardia cuando completa una ficha de cotización
+   que el modelo mandó sin el paso a asesor: si la cantidad ya está dicha no se
+   vuelve a pedir (la ficha `cotizar-datos` ya no la trae para no pedirla dos
+   veces). Generoso a propósito: una señal falsa solo deja de pedir la cantidad;
+   una que se escapa la pide de nuevo. «2,5 dólares» o «50 por caja» no cuentan. */
+const RE_CANTIDAD = new RegExp(
+  '\\b(?:' +
+    '\\d{1,6}(?:[.,]\\d{3})*\\s*(?:unidades|unidad|unids?|unds?|uds?|u|piezas|pzas?|pcs|pares|docenas?|cajas|cartones|juegos|kits|sets|pallets?)\\b|' +
+    '(?:traer|traerme|comprar|importar|pedir|cotizar|cotizarme|coticen|quiero|quisiera|necesito|unas?|unos|aproximadamente|aprox|minimo|maximo|entre|primero|iniciar con|empezar con)\\s+(?:unas?\\s+|unos\\s+|de\\s+|solo\\s+|al menos\\s+)?\\d{1,6}(?:[.,]\\d{3})*\\b|' +
+    '(?:mil|dos mil|tres mil|cinco mil|cien|ciento|doscient[ao]s|trescient[ao]s|quinient[ao]s|diez|doce|quince|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa)\\s+(?:unidades|piezas|pares|cajas|docenas)' +
+    ')\\b',
+);
+
+function dioCantidad(texto) {
+  return RE_CANTIDAD.test(llano(texto));
+}
+
+module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad };
