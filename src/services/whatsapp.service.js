@@ -729,6 +729,10 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
   header_parameters = null,
   header_media_url = null,
   header_media_name = null,
+
+  // Solo plantillas de cobro de Imporsuit: correo de la cuenta cuando quien
+  // pide el envío ya lo sabe (aviso automático al suspendido). Opcional.
+  email_imporsuit = null,
 }) => {
   const startedAt = Date.now();
 
@@ -759,6 +763,7 @@ exports.sendWhatsappMessageTemplateScheduled = async ({
     idConfiguracion: id_configuracion,
     nombreTemplate: nombre_template,
     telefono: telefonoLimpio,
+    emailConocido: email_imporsuit,
   });
   if (enlacePago) {
     template_parameters = construirParametrosEnlacePago(enlacePago);
