@@ -305,6 +305,10 @@ async function enviarAsistenteKanban({
   // lee el bot de soporte (ia_ajustes → soporte_expertos) para saber que un
   // texto vacío era un video o que el texto es una nota de voz transcrita.
   tipo_mensaje = null,
+  // Proveedor con el que responde la cuenta (configuraciones.proveedor_ia)
+  // y su llave de Claude ya descifrada. Sin ellos, OpenAI como siempre.
+  proveedor_ia = 'openai',
+  api_key_claude = null,
 }) {
   try {
     const resultado = await procesarMensajeKanban({
@@ -319,6 +323,8 @@ async function enviarAsistenteKanban({
       bloque_producto_referral,
       es_prueba,
       tipo_mensaje,
+      proveedor_ia,
+      api_key_claude,
     });
     await log(`✅ Kanban IA resultado: ${JSON.stringify(resultado)}`);
     return resultado;

@@ -6,6 +6,7 @@ const path = require('path');
 
 const { db } = require('../database/config');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
 const ClientesChatCenter = require('../models/clientes_chat_center.model');
 const MensajeCliente = require('../models/mensaje_cliente.model');
 const Templates_chat_center = require('../models/templates_chat_center.model');
@@ -574,6 +575,9 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
       const telefono_configuracion = configuracion.telefono;
       const nombre_configuracion = configuracion.nombre_configuracion;
       const api_key_openai = leerApiKeyOpenAI(configuracion.api_key_openai);
+      // Proveedor del bot del kanban (OpenAI o Claude) y la llave de Claude.
+      const proveedor_ia = configuracion.proveedor_ia || 'openai';
+      const api_key_claude = leerApiKeyClaude(configuracion.api_key_claude);
       const tipo_configuracion = configuracion.tipo_configuracion;
       /* buscar id_configuracion */
 
@@ -2824,6 +2828,8 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                 id_cliente,
                 telefono: phone_whatsapp_from,
                 api_key_openai,
+                proveedor_ia,
+                api_key_claude,
                 business_phone_id,
                 accessToken,
                 estado_contacto,

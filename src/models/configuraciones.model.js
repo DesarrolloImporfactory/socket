@@ -76,6 +76,19 @@ const Configuraciones = db.define(
       type: DataTypes.STRING(1000),
       allowNull: true,
     },
+    /* Con qué proveedor responde el bot del kanban. Se elige en Asistentes AI.
+       'claude' exige api_key_claude; la de OpenAI se sigue usando para lo que
+       Claude no cubre (audios, visión, Dropi). Ver utils/claude/claude.js. */
+    proveedor_ia: {
+      type: DataTypes.ENUM('openai', 'claude'),
+      allowNull: false,
+      defaultValue: 'openai',
+    },
+    // Cifrada igual que api_key_openai (utils/claude/apiKeyClaude.js).
+    api_key_claude: {
+      type: DataTypes.STRING(1000),
+      allowNull: true,
+    },
     created_at: {
       type: DataTypes.DATE,
       allowNull: true,

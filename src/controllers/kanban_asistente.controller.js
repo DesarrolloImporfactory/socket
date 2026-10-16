@@ -9,6 +9,7 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+const { IDS_CLAUDE } = require('../utils/claude/claude');
 
 const {
   compilarPromptFinal,
@@ -192,15 +193,20 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
   if (!id) return next(new AppError('Falta id', 400));
 
   const [col] = await db.query(
-    `SELECT id, assistant_id, instrucciones, modelo, nombre,
-            vector_store_id, vector_store_docs_id, id_configuracion
-     FROM kanban_columnas WHERE id = ? LIMIT 1`,
+    `SELECT kc.id, kc.assistant_id, kc.instrucciones, kc.modelo, kc.nombre,
+            kc.vector_store_id, kc.vector_store_docs_id, kc.id_configuracion,
+            c.proveedor_ia
+     FROM kanban_columnas kc
+     INNER JOIN configuraciones c ON c.id = kc.id_configuracion
+     WHERE kc.id = ? LIMIT 1`,
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
+  // El panel muestra los modelos del proveedor con el que responde la cuenta.
+  const proveedor_ia = col.proveedor_ia || 'openai';
 
   if (!col.assistant_id) {
-    return res.status(200).json({ success: true, data: null });
+    return res.status(200).json({ success: true, data: null, proveedor_ia });
   }
 
   // Sin key la cuenta no puede hablar con OpenAI, pero el prompt y el modelo
@@ -310,6 +316,7 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
       vector_store_docs_id: col.vector_store_docs_id,
       archivos,
       sin_api_key: !apiKey,
+      proveedor_ia,
     },
   });
 });
@@ -340,7 +347,7 @@ exports.crearAsistente = catchAsync(async (req, res, next) => {
     instrucciones?.trim() ||
     `Eres un asistente de ventas. Responde en español de forma cordial y profesional.`;
 
-  const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
+  const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo', ...IDS_CLAUDE];
   if (!MODELOS_VALIDOS.includes(modelo))
     return next(
       new AppError(
@@ -525,7 +532,7 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
   ) {
     console.log('SISTEMA VIEJO CON ASSISTANTS');
     const apiKey = await getApiKey(col.id_configuracion);
-    const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'];
+    const MODELOS_VALIDOS = ['gpt-5-mini', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo', ...IDS_CLAUDE];
     const modeloFinal =
       modelo && MODELOS_VALIDOS.includes(modelo) ? modelo : undefined;
 
@@ -880,7 +887,8 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
 
   const [columna] = await db.query(
     `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
-            kc.vector_store_docs_id, kc.id_configuracion, c.api_key_openai
+            kc.vector_store_docs_id, kc.id_configuracion, c.api_key_openai,
+            c.proveedor_ia
      FROM kanban_columnas kc
      INNER JOIN configuraciones c ON c.id = kc.id_configuracion
      WHERE kc.id = ? AND kc.activo = 1 LIMIT 1`,
@@ -888,6 +896,18 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   );
 
   if (!columna) return next(new AppError('Columna no encontrada', 404));
+  /* Este chat de prueba encadena con previous_response_id de OpenAI y no
+     guarda la conversación: con Claude no hay cómo seguir el hilo. La prueba
+     real con Claude es «Probar como cliente real», que entra por el webhook
+     y usa el mismo motor que producción. */
+  if ((columna.proveedor_ia || 'openai') === 'claude') {
+    return next(
+      new AppError(
+        'Esta cuenta responde con Claude: prueba el bot con «Probar como cliente real» (este chat de prueba interno es solo para OpenAI).',
+        400,
+      ),
+    );
+  }
   columna.api_key_openai = leerApiKeyOpenAI(columna.api_key_openai);
   if (!columna.api_key_openai)
     return next(new AppError('Sin API key de OpenAI', 400));

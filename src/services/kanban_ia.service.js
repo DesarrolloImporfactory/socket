@@ -29,6 +29,16 @@ const {
   usaResponsesApi,
   usaRecapConversacion,
 } = require('../utils/openia/responsesApi');
+/* Proveedor alternativo por cuenta (configuraciones.proveedor_ia = 'claude').
+   Mismo cerebro: prompt, catálogo inline, acciones y guardia no cambian; solo
+   la llamada al modelo. Ver utils/claude/claude.js para las diferencias. */
+const {
+  ejecutarConClaude,
+  esSinSaldoClaude,
+  esApiKeyClaudeInvalida,
+  mensajeErrorClaude,
+  modeloClaude,
+} = require('../utils/claude/claude');
 
 const {
   enviarMensajeWhatsapp,
@@ -882,6 +892,9 @@ async function procesarMensajeKanban(params) {
     business_phone_id,
     accessToken,
     bloque_producto_referral,
+    // 'openai' (por defecto) o 'claude'. Quien no lo pase sigue en OpenAI.
+    proveedor_ia = 'openai',
+    api_key_claude = null,
   } = params;
 
   // `let` porque la agrupación de ráfaga (más abajo) lo reemplaza por el texto
@@ -1012,6 +1025,17 @@ async function procesarMensajeKanban(params) {
 
   // ── 0.1 Decidir qué API usar ──────────────────────────────
   const USAR_RESPONSES_API = usaResponsesApi(id_configuracion);
+  /* Claude va por el camino de Responses (input armado con recap, catálogo
+     inline, sin threads) pero sin cadena: cada turno manda el recap. Sin
+     llave de Claude el bot no responde con nada —no se cae en silencio a
+     OpenAI, porque el cliente eligió Claude a propósito—. */
+  const USAR_CLAUDE = String(proveedor_ia || 'openai') === 'claude';
+  if (USAR_CLAUDE && !api_key_claude) {
+    await log(
+      `🟠 config=${id_configuracion} responde con Claude pero no tiene API Key de Claude: el bot no interviene (cliente=${id_cliente})`,
+    );
+    return { ok: false, motivo: 'sin_api_key_claude' };
+  }
 
   /* ── Agrupar la ráfaga ────────────────────────────────────
      Si el cliente escribe en pedazos, cada mensaje llega acá por separado y
@@ -1182,7 +1206,12 @@ async function procesarMensajeKanban(params) {
   let id_thread = null;
   let headers_assistants = null;
 
-  if (USAR_RESPONSES_API) {
+  if (USAR_CLAUDE) {
+    // Sin estado en Anthropic: la conversación se rearma con el recap de
+    // mensajes_clientes en cada turno (misma siembra que usa OpenAI cuando no
+    // hay cadena). previous_response_id queda en null a propósito.
+    await log(`🟠 Claude (${modeloClaude(null)} por defecto): sin cadena, se siembra con el recap`);
+  } else if (USAR_RESPONSES_API) {
     previous_response_id = await obtenerUltimoResponseId(id_cliente);
     await log(
       previous_response_id
@@ -2174,11 +2203,19 @@ async function procesarMensajeKanban(params) {
   // pasan por ejecutarAsistente y nunca veían este bloque.
   const catalogoInline = (columna.catalogo_inline || '').trim();
   const inlineTokens = Number(columna.catalogo_inline_tokens || 0);
+  /* Con Claude no hay file_search: el catálogo solo puede ir inline, así que
+     se fuerza si existe (sin mirar la lista de cuentas habilitadas ni el
+     tope). Sin catálogo inline guardado, Claude responde sin catálogo. */
   const usarInline =
-    !!catalogoInline && catalogoInlineActivo(id_configuracion, inlineTokens);
+    !!catalogoInline &&
+    (USAR_CLAUDE || catalogoInlineActivo(id_configuracion, inlineTokens));
 
   if (usarInline) {
     await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
+  } else if (USAR_CLAUDE && (columna.vector_store_id || columna.vector_store_docs_id)) {
+    await log(
+      `🟠 Claude no tiene file_search: ${columna.vector_store_id ? 'el catálogo (sin inline guardado) ' : ''}${columna.vector_store_docs_id ? 'los documentos subidos ' : ''}no llegan al modelo en este turno`,
+    );
   } else if (columna.vector_store_id && wizardEnJuego) {
     // Fase 3 del wizard: con la ficha en juego el catálogo NO va por
     // file_search — sus fragmentos duplican lo que la ficha ya trae y quedan
@@ -2304,7 +2341,7 @@ async function procesarMensajeKanban(params) {
      acá se recoge. Si pasó de null a un id, el input ya se armó con la
      siembra del recap y va así: contexto repetido una vez sale más barato
      que perder la rama. */
-  if (USAR_RESPONSES_API) {
+  if (USAR_RESPONSES_API && !USAR_CLAUDE) {
     const cadenaFresca = await obtenerUltimoResponseId(id_cliente);
     if (cadenaFresca !== previous_response_id) {
       await log(
@@ -2316,7 +2353,30 @@ async function procesarMensajeKanban(params) {
   }
 
   try {
-    if (USAR_RESPONSES_API) {
+    if (USAR_CLAUDE) {
+      await log(`🟠 entro con CLAUDE (${modeloClaude(assistantInfo.model)})`);
+
+      // Mismo armado de instrucciones que Responses: catálogo inline pegado al
+      // prompt y prefacio del wizard arriba de todo.
+      let instruccionesClaude = bloqueCatalogo
+        ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
+        : assistantInfo.instructions;
+      if (prefacioWizard) {
+        instruccionesClaude = `${prefacioWizard}\n\n${instruccionesClaude}`;
+      }
+
+      resultado = await ejecutarConClaude({
+        instructions: instruccionesClaude,
+        additional_instructions: prefacioWizard
+          ? null
+          : instruccionesProducto || null,
+        input: inputFinal,
+        model: assistantInfo.model,
+        max_tokens: columna.max_tokens || 500,
+        api_key_claude,
+        log,
+      });
+    } else if (USAR_RESPONSES_API) {
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
 
       let instruccionesFinales = bloqueCatalogo
@@ -2370,6 +2430,37 @@ async function procesarMensajeKanban(params) {
       });
     }
   } catch (err) {
+    if (USAR_CLAUDE) {
+      /* Los errores de Anthropic no tienen la forma de los de OpenAI (vienen
+         del SDK, no de axios): se resuelven acá y no siguen al resto del
+         catch. Sin saldo o llave inválida apagan el bot igual que con OpenAI
+         (openai_activo=0 es «la IA de la cuenta no puede responder», sea del
+         proveedor que sea) y el equipo lo ve en el chat. */
+      const detalle = mensajeErrorClaude(err);
+      if (esSinSaldoClaude(err) || esApiKeyClaudeInvalida(err)) {
+        const motivo = esApiKeyClaudeInvalida(err)
+          ? `Claude: API Key inválida o revocada (${detalle})`
+          : `Claude: sin saldo (${detalle})`;
+        await log(`🚨 ${motivo} · config=${id_configuracion} cliente=${id_cliente}`);
+        await marcarOpenAIInactivo(id_configuracion, motivo);
+        await avisarEnChatBotSinRespuesta({
+          id_configuracion,
+          id_cliente,
+          texto: `🤖 El bot no pudo responder: ${motivo}. Revisa la API Key de Claude en Asistentes AI.`,
+        });
+        await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
+        return { ok: false, motivo: 'sin_saldo_claude' };
+      }
+      await log(`❌ Error ejecutando Claude: ${detalle}`);
+      await avisarEnChatBotSinRespuesta({
+        id_configuracion,
+        id_cliente,
+        texto: `🤖 El bot no pudo responder ahora (Claude: ${detalle.slice(0, 160)}). Se reintenta solo en unos minutos.`,
+      });
+      await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
+      throw err;
+    }
+
     if (esSinSaldo(err) || err.code === 'sin_saldo_openai') {
       const motivoSaldo =
         err.motivoOpenAI || mensajeErrorOpenAI(err) || 'Sin saldo OpenAI';
@@ -2484,8 +2575,8 @@ async function procesarMensajeKanban(params) {
     return { ok: false, motivo: 'sin_respuesta_asistente' };
   }
 
-  // Guardar contexto según API
-  if (USAR_RESPONSES_API) {
+  // Guardar contexto según API (Claude no encadena: no hay nada que guardar)
+  if (USAR_RESPONSES_API && !USAR_CLAUDE) {
     await guardarResponseId(id_cliente, resultado.response_id);
     await log(`💾 response_id guardado: ${resultado.response_id}`);
   }
