@@ -329,6 +329,11 @@ app.use((req, res, next) => {
     // firma sobre los campos; el sanitizador los cambiaría y la firma
     // fallaría. Las demás rutas van con protect.
     '/api/v1/telefonia',
+    // Puente a Imporsuit: conceptos y notas de deudas/pagos llevan "$" y el
+    // sanitizador noSQL lo borraría antes de reenviar. Va con protect y el
+    // cuerpo no toca esta BD: lo valida Imporsuit, igual que cuando el
+    // navegador lo llamaba directo.
+    '/api/v1/imporsuit_puente',
   ];
 
   if (skipExact.includes(req.path)) return next();
@@ -443,6 +448,12 @@ app.use('/api/v1/api_keys', require('./routes/api_keys.routes'));
 app.use(
   '/api/v1/imporchat_cartera',
   require('./routes/imporchat_cartera.routes'),
+);
+// Puente a Imporsuit (Carterachat / Cotizachat): la llave se agrega acá, no
+// viaja en el navegador
+app.use(
+  '/api/v1/imporsuit_puente',
+  require('./routes/imporsuit_puente.routes'),
 );
 
 app.all('*', (req, res, next) => {
