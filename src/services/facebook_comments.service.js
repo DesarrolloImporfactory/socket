@@ -31,6 +31,12 @@ const {
   emitUpdateChatMS,
 } = require('./messenger.service');
 const Store = require('./messenger_store.service');
+const {
+  promptFinal,
+  normalizarOpciones,
+  REGLAS_DEL_SISTEMA,
+  OPCIONES_POR_DEFECTO,
+} = require('../utils/comentarios/promptComentarios');
 
 // Verbos que Meta manda en value.verb para item='comment'.
 const VERBOS_CONOCIDOS = new Set(['add', 'edited', 'remove', 'hide', 'unhide']);
@@ -491,11 +497,15 @@ async function listarPosts({
   const filtro = solo_pendientes ? 'AND sin_responder > 0' : '';
 
   const posts = await db.query(
-    `SELECT id_facebook_post, page_id, post_id, mensaje, tipo, media_url,
-            permalink_url, publicado_at, total_comentarios, sin_responder,
-            ultimo_comentario_at, detalle_refrescado_at
-       FROM facebook_posts
-      WHERE id_configuracion = ? ${filtro}
+    `SELECT fp.id_facebook_post, fp.page_id, fp.post_id, fp.mensaje, fp.tipo,
+            fp.media_url, fp.permalink_url, fp.publicado_at,
+            fp.total_comentarios, fp.sin_responder, fp.ultimo_comentario_at,
+            fp.detalle_refrescado_at, fp.id_producto,
+            pr.nombre AS producto_nombre
+       FROM facebook_posts fp
+       LEFT JOIN productos_chat_center pr
+         ON pr.id = fp.id_producto AND pr.id_configuracion = fp.id_configuracion
+      WHERE fp.id_configuracion = ? ${filtro}
       ORDER BY ultimo_comentario_at DESC, id_facebook_post DESC
       LIMIT ? OFFSET ?`,
     {
@@ -577,9 +587,13 @@ async function listarComentariosPlano({
             c.respondido, c.privado_enviado, c.privado_error, c.oculto,
             p.post_id, p.mensaje AS post_mensaje,
             p.media_url AS post_media_url, p.tipo AS post_tipo,
-            p.permalink_url AS post_permalink_url
+            p.permalink_url AS post_permalink_url,
+            p.id_producto AS post_id_producto,
+            pr.nombre AS post_producto_nombre
        FROM facebook_comments c
        JOIN facebook_posts p ON p.id_facebook_post = c.id_facebook_post
+       LEFT JOIN productos_chat_center pr
+         ON pr.id = p.id_producto AND pr.id_configuracion = p.id_configuracion
       WHERE ${where}
       ORDER BY c.comentado_at ${dir}, c.id_facebook_comment ${dir}
       LIMIT ? OFFSET ?`,
@@ -609,6 +623,83 @@ async function listarComentariosPlano({
 }
 
 /**
+ * Productos que se pueden vincular a una publicación.
+ *
+ * Van primero los que tienen respuestas rápidas cargadas, porque son los que de
+ * verdad cambian la sugerencia: con ellos el asistente contesta con el texto
+ * que escribió el negocio y sin gastar tokens. El resto igual sirve —nombre,
+ * precio y descripción ya son contexto—, solo que rinde menos.
+ */
+async function listarProductosVinculables({ id_configuracion, q = '' }) {
+  const donde = ['p.id_configuracion = ?', '(p.eliminado IS NULL OR p.eliminado = 0)'];
+  const valores = [id_configuracion];
+
+  const busqueda = String(q || '').trim();
+  if (busqueda) {
+    donde.push('p.nombre LIKE ?');
+    valores.push(`%${busqueda}%`);
+  }
+
+  const productos = await db.query(
+    `SELECT p.id, p.nombre, p.precio, p.imagen_url,
+            CASE WHEN CHAR_LENGTH(COALESCE(w.respuestas_rapidas_json, '')) > 5
+                 THEN 1 ELSE 0 END AS tiene_respuestas
+       FROM productos_chat_center p
+       LEFT JOIN productos_wizard w ON w.id_producto = p.id
+      WHERE ${donde.join(' AND ')}
+      ORDER BY tiene_respuestas DESC, p.nombre ASC
+      LIMIT 200`,
+    { replacements: valores, type: db.QueryTypes.SELECT },
+  );
+
+  return { productos };
+}
+
+/**
+ * Vincula (o desvincula, con id_producto null) una publicación a un producto.
+ *
+ * Es manual a propósito. Se miró si el anuncio permitía deducirlo
+ * —anuncios_producto enlaza anuncio → producto— y el `source_id` del anuncio no
+ * aparece dentro del `post_id` en ningún caso, así que auto-vincular hoy sería
+ * adivinar. Cuando la bandeja tenga volumen se podrá intentar por nombre.
+ */
+async function vincularProducto({ id_configuracion, post_id, id_producto }) {
+  const [post] = await db.query(
+    `SELECT id_facebook_post FROM facebook_posts
+      WHERE id_configuracion = ? AND post_id = ? LIMIT 1`,
+    { replacements: [id_configuracion, post_id], type: db.QueryTypes.SELECT },
+  );
+  if (!post) throw new Error('La publicación no existe en esta cuenta');
+
+  const idProd = id_producto ? Number(id_producto) : null;
+
+  // El producto tiene que ser de la MISMA cuenta. Sin esta comprobación, un
+  // id de otro negocio metería su catálogo en el prompt de este.
+  if (idProd) {
+    const [prod] = await db.query(
+      `SELECT id FROM productos_chat_center
+        WHERE id = ? AND id_configuracion = ? LIMIT 1`,
+      { replacements: [idProd, id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    if (!prod) throw new Error('Ese producto no existe en esta cuenta');
+  }
+
+  await db.query(
+    `UPDATE facebook_posts
+        SET id_producto = ?, producto_vinculado_at = ${idProd ? 'NOW()' : 'NULL'}
+      WHERE id_facebook_post = ?`,
+    { replacements: [idProd, post.id_facebook_post], type: db.QueryTypes.UPDATE },
+  );
+
+  console.log(
+    `[FB_COMENT] 🔗 post=${post_id} · cfg=${id_configuracion} · ` +
+      `producto=${idProd ?? '(ninguno)'}`,
+  );
+
+  return { id_facebook_post: post.id_facebook_post, id_producto: idProd };
+}
+
+/**
  * Hilo completo de una publicación, ya armado como árbol.
  *
  * El árbol se arma acá y no en el front porque la relación es por
@@ -624,18 +715,23 @@ async function listarComentarios({
   id_facebook_post,
   incluir_ocultos = true,
 }) {
-  const filtro = incluir_ocultos ? '' : 'AND oculto = 0';
+  const filtro = incluir_ocultos ? '' : 'AND c.oculto = 0';
 
   const filas = await db.query(
-    `SELECT id_facebook_comment, comment_id, parent_comment_id, from_id,
-            from_nombre, mensaje, media_url, permalink_url, es_de_la_pagina,
-            oculto, respondido, respondido_at, respuesta_comment_id,
-            privado_enviado, privado_at, privado_error, id_cliente, comentado_at
-       FROM facebook_comments
-      WHERE id_configuracion = ?
-        AND id_facebook_post = ?
-        AND eliminado_at IS NULL ${filtro}
-      ORDER BY comentado_at ASC, id_facebook_comment ASC`,
+    `SELECT c.id_facebook_comment, c.comment_id, c.parent_comment_id,
+            c.from_id, c.from_nombre, c.mensaje, c.media_url, c.permalink_url,
+            c.es_de_la_pagina, c.oculto, c.respondido, c.respondido_at,
+            c.respuesta_comment_id, c.privado_enviado, c.privado_at,
+            c.privado_error, c.id_cliente, c.comentado_at,
+            c.origen_respuesta,
+            COALESCE(su.nombre_encargado, su.usuario) AS respondido_por_nombre
+       FROM facebook_comments c
+       LEFT JOIN sub_usuarios_chat_center su
+         ON su.id_sub_usuario = c.respondido_por
+      WHERE c.id_configuracion = ?
+        AND c.id_facebook_post = ?
+        AND c.eliminado_at IS NULL ${filtro}
+      ORDER BY c.comentado_at ASC, c.id_facebook_comment ASC`,
     {
       replacements: [id_configuracion, id_facebook_post],
       type: db.QueryTypes.SELECT,
@@ -770,9 +866,28 @@ function describirErrorMeta(err) {
  * cree que no se envió y responde dos veces. La operación es idempotente
  * (COALESCE en respondido_at), así que que ocurra dos veces no hace daño.
  */
-async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario }) {
+/* Orígenes que la bandeja sabe mostrar. Lo que llegue fuera de esta lista se
+   guarda como 'persona': un valor inventado por un cliente de la API no debe
+   poder pintar una respuesta humana como si la hubiera escrito la IA. */
+const ORIGENES_VALIDOS = new Set([
+  'persona',
+  'rapida',
+  'rapida_editada',
+  'ia',
+  'ia_editada',
+]);
+
+async function responder({
+  id_configuracion,
+  comment_id,
+  mensaje,
+  id_sub_usuario,
+  origen,
+}) {
   const texto = String(mensaje || '').trim();
   if (!texto) throw new Error('El mensaje no puede estar vacío');
+
+  const origenGuardado = ORIGENES_VALIDOS.has(origen) ? origen : 'persona';
 
   const c = await cargarComentarioConToken({ id_configuracion, comment_id });
   if (!c) throw new Error('El comentario no existe en esta cuenta');
@@ -845,8 +960,8 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
         `INSERT INTO facebook_comments
            (id_configuracion, id_facebook_post, page_id, post_id, comment_id,
             parent_comment_id, from_id, from_nombre, mensaje,
-            es_de_la_pagina, comentado_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+            es_de_la_pagina, comentado_at, origen_respuesta, respondido_por)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), ?, ?)
          ON DUPLICATE KEY UPDATE
            mensaje    = VALUES(mensaje),
            updated_at = NOW()`,
@@ -861,6 +976,8 @@ async function responder({ id_configuracion, comment_id, mensaje, id_sub_usuario
             c.page_id, // el autor es la página
             c.page_name || null,
             texto,
+            origenGuardado,
+            id_sub_usuario || null,
           ],
           type: db.QueryTypes.INSERT,
         },
@@ -908,6 +1025,453 @@ async function nombreDelAgente(id_sub_usuario) {
     // el guardado del mensaje por eso.
     return 'Respuesta a comentario';
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Sugerencia de respuesta (IA)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Instrucciones del asistente de comentarios para esta cuenta.
+ *
+ * Se arman en utils/comentarios/promptComentarios.js, que mantiene separadas
+ * dos cosas que antes estaban mezcladas en un texto quemado:
+ *
+ *   - lo que decide el negocio (tuteo, si publica precios, qué no prometer),
+ *     que se guarda estructurado en openai_assistants.config_json;
+ *   - las reglas que sostienen el sistema (no inventar, no pedir datos
+ *     personales en público, devolver sólo el texto), que se añaden siempre
+ *     por código y no se pueden quitar desde la interfaz.
+ *
+ * Y `prompt` es el modo avanzado: reemplaza la parte del negocio, nunca las
+ * reglas. Un comentario es público y permanente — se puede cambiar cómo habla
+ * el asistente, no quitarle los frenos.
+ *
+ * Una cuenta sin fila configurada no es un error: usa los valores por defecto.
+ */
+async function cargarInstruccionesComentarios(id_configuracion) {
+  const [a] = await db.query(
+    `SELECT prompt, config_json, nombre_bot
+       FROM openai_assistants
+      WHERE id_configuracion = ? AND tipo = 'comentarios'
+        AND activo = 1 AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  let opciones = null;
+  if (a?.config_json) {
+    try {
+      opciones = JSON.parse(a.config_json);
+    } catch {
+      // JSON roto: se sigue con los valores por defecto en vez de dejar la
+      // cuenta sin asistente. El formulario lo reescribe al siguiente guardado.
+      console.warn(
+        `[FB_COMENT] config_json inválido en el asistente de comentarios de cfg=${id_configuracion}`,
+      );
+    }
+  }
+
+  const avanzado = String(a?.prompt || '').trim();
+
+  return {
+    instrucciones: promptFinal({ avanzado, opciones }),
+    usando: !a
+      ? 'Configuración por defecto'
+      : avanzado
+        ? `${a.nombre_bot || 'Asistente de comentarios'} · prompt propio`
+        : a.nombre_bot || 'Configuración de la cuenta',
+    personalizado: Boolean(a),
+    modo_avanzado: Boolean(avanzado),
+  };
+}
+
+/**
+ * Redacta un borrador de respuesta para un comentario.
+ *
+ * NO publica nada: devuelve texto para que el agente lo lea, lo corrija si
+ * hace falta y decida. Esa frontera es a propósito — es lo que declaramos a
+ * Meta sobre pages_manage_engagement ("initiated by the agent from the
+ * ChatCenter interface"), y es lo que evita que una alucinación termine
+ * publicada en la página de un cliente.
+ *
+ * Reutiliza el motor de OpenAI del kanban (ejecutarConResponsesAPI) en vez de
+ * montar otro camino: si algún día cambia el modelo o el manejo de errores,
+ * cambia en un sitio.
+ */
+async function sugerirRespuesta({ id_configuracion, comment_id }) {
+  const c = await cargarComentarioConToken({ id_configuracion, comment_id });
+  if (!c) throw new Error('El comentario no existe en esta cuenta');
+  if (c.es_de_la_pagina) {
+    throw new Error('Ese comentario lo escribió la página, no un cliente');
+  }
+
+  const texto = String(c.mensaje || '').trim();
+
+  const {
+    cargarProductoDelPost,
+    cargarVariaciones,
+    bloqueProducto,
+  } = require('../utils/comentarios/contextoProducto');
+
+  const prod = await cargarProductoDelPost({
+    id_configuracion,
+    id_facebook_post: c.id_facebook_post,
+  });
+
+  /* ── NIVEL 1 · respuesta rápida del producto, 0 tokens ────────────────
+     El negocio ya escribió qué contestar a sus preguntas frecuentes, y el
+     matcher de utils/wizardProducto/respuestasRapidas.js sabe elegirla. Es
+     conservador a propósito: ante la duda devuelve null y el turno sigue a la
+     IA. Se sugiere el texto tal cual porque son palabras del negocio, no del
+     modelo; si queda largo para un comentario el agente lo recorta antes de
+     publicar, que para eso esto no publica nada. */
+  if (prod?.usar_respuestas_rapidas && prod.faqs.length && texto) {
+    const {
+      elegirRespuestaRapida,
+    } = require('../utils/wizardProducto/respuestasRapidas');
+    const match = elegirRespuestaRapida(texto, prod.faqs);
+    if (match?.faq?.respuesta) {
+      console.log(
+        `[FB_COMENT] ⚡ quemada para comment=${comment_id} · cfg=${id_configuracion} · ` +
+          `producto=${prod.id} · score=${match.score} · 0 tokens`,
+      );
+      return {
+        sugerencia: String(match.faq.respuesta).trim(),
+        usando: 'Respuesta rápida del producto',
+        origen: 'respuesta_rapida',
+        producto: { id: prod.id, nombre: prod.nombre },
+        pregunta: match.faq.pregunta || null,
+      };
+    }
+  }
+
+  /* ── NIVEL 2 y 3 · el modelo ─────────────────────────────────────────── */
+  const [cfg] = await db.query(
+    `SELECT api_key_openai, nombre_configuracion
+       FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  // La columna está cifrada (AES-256-GCM). Toda lectura pasa por este lector,
+  // que acepta los dos formatos —cifrado y texto plano heredado— y devuelve la
+  // key lista para usar como Bearer. Leer el valor crudo manda el texto cifrado
+  // a OpenAI y devuelve 401 sin decir por qué.
+  const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+  const apiKey = leerApiKeyOpenAI(cfg?.api_key_openai);
+
+  if (!apiKey) {
+    throw new Error(
+      'Esta cuenta no tiene configurada su clave de OpenAI. Se configura en Asistentes.',
+    );
+  }
+
+  // El tipo 'comentarios' convive con 'ventas' y 'logistico' en la misma tabla:
+  // la columna existe justo para tener varios asistentes por cuenta.
+  const asistente = await cargarInstruccionesComentarios(id_configuracion);
+  const instrucciones = asistente.instrucciones;
+
+  const [post] = await db.query(
+    `SELECT mensaje FROM facebook_posts WHERE id_facebook_post = ? LIMIT 1`,
+    { replacements: [c.id_facebook_post], type: db.QueryTypes.SELECT },
+  );
+
+  /* Con producto vinculado entra SU ficha, no el catálogo. El bot de kanban sí
+     inyecta el catálogo entero (catalogo_inline, que llega a ~64.000
+     caracteres): tiene sentido en una conversación de venta, donde el cliente
+     pregunta por cualquier cosa. Acá se contesta con dos frases, así que pagar
+     eso en cada sugerencia sale caro y encima responde peor. */
+  let bloque = null;
+  if (prod) {
+    const variaciones = prod.es_variable ? await cargarVariaciones(prod.id) : [];
+    bloque = bloqueProducto(prod, variaciones);
+  }
+
+  const entrada = [
+    `Negocio: ${cfg.nombre_configuracion || '(sin nombre)'}`,
+    post?.mensaje ? `Publicación: ${String(post.mensaje).slice(0, 600)}` : null,
+    bloque,
+    bloque
+      ? 'Si preguntan por OTRO producto distinto a este, no lo inventes: dile ' +
+        'que le escribes al privado y ahí se lo resuelves.'
+      : 'No sabes de qué producto habla esta publicación. No des precios ni ' +
+        'características: reconoce el comentario e invítalo al privado.',
+    `Comentario de ${c.from_nombre || 'un cliente'}: ${texto || '(sin texto)'}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const { ejecutarConResponsesAPI } = require('./kanban_ia.service');
+
+  const r = await ejecutarConResponsesAPI({
+    instructions: instrucciones,
+    input: entrada,
+    model: 'gpt-4o-mini',
+    max_tokens: 200,
+    api_key_openai: apiKey,
+    id_configuracion,
+  });
+
+  const salida = String(r?.respuesta || r?.text || r || '').trim();
+  if (!salida) throw new Error('El asistente no devolvió ninguna respuesta');
+
+  console.log(
+    `[FB_COMENT] 🤖 sugerencia para comment=${comment_id} · cfg=${id_configuracion} · ` +
+      `${asistente.usando} · ` +
+      `producto=${prod ? prod.id : '(sin vincular)'} · ${salida.length} chars`,
+  );
+
+  return {
+    sugerencia: salida,
+    usando: asistente.usando,
+    origen: prod ? 'ia_con_producto' : 'ia_sin_producto',
+    producto: prod ? { id: prod.id, nombre: prod.nombre } : null,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Configuración del asistente de comentarios
+ * ------------------------------------------------------------------ */
+
+/**
+ * Lo que necesita la pantalla de configuración.
+ *
+ * Devuelve las opciones guardadas, el prompt avanzado si lo hay, y el texto
+ * completo que recibiría el modelo. Ese último campo es el importante: sin
+ * verlo, configurar un asistente es escribir a ciegas y enterarte del
+ * resultado en la página de tu cliente.
+ */
+async function obtenerAsistenteComentarios({ id_configuracion }) {
+  // El nombre del negocio es para la vista previa: ahí la respuesta se dibuja
+  // como el comentario que va a ser, y firmada por la página que la publica.
+  const [cfg] = await db.query(
+    `SELECT nombre_configuracion FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  const [a] = await db.query(
+    `SELECT id, nombre_bot, prompt, config_json, activo
+       FROM openai_assistants
+      WHERE id_configuracion = ? AND tipo = 'comentarios'
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  let guardadas = null;
+  if (a?.config_json) {
+    try {
+      guardadas = JSON.parse(a.config_json);
+    } catch {
+      guardadas = null;
+    }
+  }
+
+  const opciones = normalizarOpciones(guardadas);
+  const avanzado = String(a?.prompt || '').trim();
+
+  return {
+    existe: Boolean(a),
+    negocio: cfg?.nombre_configuracion || 'Tu página',
+    activo: a ? Number(a.activo) === 1 : true,
+    nombre_bot: a?.nombre_bot || 'Asistente de comentarios',
+    opciones,
+    // Vacío mientras nadie escriba el suyo: el modo avanzado es opt-in.
+    avanzado,
+    modo_avanzado: Boolean(avanzado),
+    // Para que la pantalla pueda enseñar qué se manda, y qué parte no se toca.
+    vista_previa: promptFinal({ avanzado, opciones }),
+    reglas_del_sistema: REGLAS_DEL_SISTEMA,
+    por_defecto: OPCIONES_POR_DEFECTO,
+  };
+}
+
+/**
+ * Guarda la configuración. Crea la fila la primera vez.
+ *
+ * `avanzado` vacío devuelve la cuenta al modo por opciones: no se borra nada
+ * más, así que se puede ir y volver sin perder lo configurado.
+ */
+async function guardarAsistenteComentarios({
+  id_configuracion,
+  opciones,
+  avanzado,
+  nombre_bot,
+  activo,
+}) {
+  const limpias = normalizarOpciones(opciones);
+  // Tope generoso pero tope: el prompt viaja en cada llamada al modelo, y uno
+  // de 20.000 caracteres se paga en todas las sugerencias de esa cuenta.
+  const texto = String(avanzado || '').trim().slice(0, 4000);
+
+  const [a] = await db.query(
+    `SELECT id FROM openai_assistants
+      WHERE id_configuracion = ? AND tipo = 'comentarios'
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  const nombre = String(nombre_bot || '').trim().slice(0, 100) ||
+    'Asistente de comentarios';
+  const encendido = activo === false || activo === 0 ? 0 : 1;
+
+  if (a) {
+    await db.query(
+      `UPDATE openai_assistants
+          SET prompt = ?, config_json = ?, nombre_bot = ?, activo = ?
+        WHERE id = ?`,
+      {
+        replacements: [
+          texto || null,
+          JSON.stringify(limpias),
+          nombre,
+          encendido,
+          a.id,
+        ],
+        type: db.QueryTypes.UPDATE,
+      },
+    );
+  } else {
+    await db.query(
+      `INSERT INTO openai_assistants
+         (id_configuracion, tipo, nombre_bot, prompt, config_json, activo,
+          fecha_registro)
+       VALUES (?, 'comentarios', ?, ?, ?, ?, NOW())`,
+      {
+        replacements: [
+          id_configuracion,
+          nombre,
+          texto || null,
+          JSON.stringify(limpias),
+          encendido,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  }
+
+  console.log(
+    `[FB_COMENT] 💾 asistente de comentarios guardado · cfg=${id_configuracion} · ` +
+      `${texto ? 'modo avanzado' : 'por opciones'} · ${encendido ? 'activo' : 'apagado'}`,
+  );
+
+  return obtenerAsistenteComentarios({ id_configuracion });
+}
+
+/**
+ * Prueba unas instrucciones contra un comentario inventado.
+ *
+ * No publica, no guarda y no necesita que el comentario exista. Acepta
+ * opciones SIN guardar, que es el punto: se ve qué sale antes de decidir.
+ *
+ * Es el mismo camino que sigue una sugerencia real —respuesta rápida primero,
+ * modelo después— para que lo que se prueba sea lo que va a pasar.
+ */
+async function probarPrompt({
+  id_configuracion,
+  texto,
+  id_producto,
+  opciones,
+  avanzado,
+}) {
+  const comentario = String(texto || '').trim();
+  if (!comentario) throw new Error('Escribe un comentario de ejemplo');
+
+  const [cfg] = await db.query(
+    `SELECT api_key_openai, nombre_configuracion
+       FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+
+  const {
+    cargarProductoPorId,
+    cargarVariaciones,
+    bloqueProducto,
+  } = require('../utils/comentarios/contextoProducto');
+
+  const prod = id_producto
+    ? await cargarProductoPorId({ id_configuracion, id_producto })
+    : null;
+
+  /* Nivel 1: si una respuesta rápida contesta, el prompt no interviene. Hay que
+     enseñarlo igual, porque explica por qué a veces "el prompt no hace nada". */
+  if (prod?.usar_respuestas_rapidas && prod.faqs.length) {
+    const {
+      elegirRespuestaRapida,
+    } = require('../utils/wizardProducto/respuestasRapidas');
+    const match = elegirRespuestaRapida(comentario, prod.faqs);
+    if (match?.faq?.respuesta) {
+      return {
+        sugerencia: String(match.faq.respuesta).trim(),
+        origen: 'respuesta_rapida',
+        producto: { id: prod.id, nombre: prod.nombre },
+        pregunta: match.faq.pregunta || null,
+        nota:
+          'Esta la contestó una respuesta rápida del producto, sin pasar por' +
+          ' el modelo. El prompt no interviene y no cuesta tokens.',
+      };
+    }
+  }
+
+  const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+  const apiKey = leerApiKeyOpenAI(cfg?.api_key_openai);
+  if (!apiKey) {
+    throw new Error(
+      'Esta cuenta no tiene configurada su clave de OpenAI. Se configura en Asistentes.',
+    );
+  }
+
+  const instrucciones = promptFinal({
+    avanzado: String(avanzado || '').trim(),
+    opciones,
+  });
+
+  let bloque = null;
+  if (prod) {
+    const variaciones = prod.es_variable ? await cargarVariaciones(prod.id) : [];
+    bloque = bloqueProducto(prod, variaciones);
+  }
+
+  const entrada = [
+    `Negocio: ${cfg?.nombre_configuracion || '(sin nombre)'}`,
+    bloque,
+    bloque
+      ? 'Si preguntan por OTRO producto distinto a este, no lo inventes: dile ' +
+        'que le escribes al privado y ahí se lo resuelves.'
+      : 'No sabes de qué producto habla esta publicación. No des precios ni ' +
+        'características: reconoce el comentario e invítalo al privado.',
+    `Comentario de un cliente: ${comentario}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const { ejecutarConResponsesAPI } = require('./kanban_ia.service');
+
+  const t0 = Date.now();
+  const r = await ejecutarConResponsesAPI({
+    instructions: instrucciones,
+    input: entrada,
+    model: 'gpt-4o-mini',
+    max_tokens: 200,
+    api_key_openai: apiKey,
+    id_configuracion,
+  });
+
+  const salida = String(r?.respuesta || r?.text || r || '').trim();
+  if (!salida) throw new Error('El asistente no devolvió ninguna respuesta');
+
+  return {
+    sugerencia: salida,
+    origen: prod ? 'ia_con_producto' : 'ia_sin_producto',
+    producto: prod ? { id: prod.id, nombre: prod.nombre } : null,
+    ms: Date.now() - t0,
+    nota: prod
+      ? null
+      : 'Sin producto: el asistente sólo puede reconocer el comentario y' +
+        ' mandar al privado. Vincula un producto a la publicación para que' +
+        ' pueda responder de verdad.',
+  };
 }
 
 /**
@@ -1142,7 +1706,16 @@ module.exports = {
   listarPosts,
   listarComentarios,
   listarComentariosPlano,
+  listarProductosVinculables,
+  vincularProducto,
   resumen,
   responder,
   responderEnPrivado,
+  sugerirRespuesta,
+  // Lo usan el probador de prompts y scripts/probarSugerenciaComentarios.js:
+  // así se prueba EXACTAMENTE lo que corre en producción, y no una copia.
+  cargarInstruccionesComentarios,
+  obtenerAsistenteComentarios,
+  guardarAsistenteComentarios,
+  probarPrompt,
 };
