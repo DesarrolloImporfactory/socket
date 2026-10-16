@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { db } = require('../database/config');
 const { QueryTypes } = require('sequelize');
 const ChatService = require('../services/chat.service');
+const { estaBloqueado } = require('../utils/contactosBloqueados');
 
 const BATCH_SIZE = 30;
 const MAX_INTENTOS = 3;
@@ -171,6 +172,24 @@ async function procesarEnviosPendientes() {
           );
           continue;
         }
+      }
+
+      // Números en la lista de no contactar: la encuesta no sale.
+      if (await estaBloqueado(envio.celular)) {
+        await db.query(
+          `UPDATE encuestas_envios_programados
+           SET estado = 'cancelado', error_ultimo = 'contacto_bloqueado'
+           WHERE id = :id`,
+          { replacements: { id: envio.id }, type: QueryTypes.UPDATE },
+        );
+        await db.query(
+          `UPDATE encuestas_respuestas SET estado = 'expirada', updated_at = NOW() WHERE id = :id`,
+          {
+            replacements: { id: envio.id_respuesta },
+            type: QueryTypes.UPDATE,
+          },
+        );
+        continue;
       }
 
       const dataAdmin = await chatService.getDataAdmin(envio.id_configuracion);
