@@ -14,7 +14,7 @@
 
   Uso:
     node scripts/simular_conversaciones_expertos.js --etiqueta=v2 [--n=63] [--guiones] [--solo-guiones]
-         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real]
+         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real] [--proveedor=claude]
     (sin --real corre en seco: no llama a OpenAI. Con --real muestra el costo estimado
      y espera 10 segundos antes de empezar, para cortarlo con Ctrl+C.)
     node scripts/simular_conversaciones_expertos.js --informe=<archivo>.json [--veredictos=<archivo>.veredictos.json]
@@ -33,6 +33,9 @@ const arg = (k) => (process.argv.find((a) => a.startsWith(`--${k}=`)) || '').spl
 const tiene = (k) => process.argv.includes(`--${k}`);
 // En seco por defecto: la llave de la cuenta 10 es prepago y se gasta solo con --real.
 const SECO = !tiene('real');
+// --proveedor=claude: bot y cliente con Claude (prueba el prompt, no gpt-4.1). La llave sale de
+// ANTHROPIC_API_KEY o de ~/.config/impor/anthropic_key; no lee la base, así que corre en la Mac.
+const CLAUDE = arg('proveedor') === 'claude';
 const CARPETA = path.join(__dirname, 'soporte_expertos', 'simulaciones');
 
 /* ── Rúbrica del juez ──────────────────────────────────────────────────── */
@@ -98,7 +101,7 @@ function controlesAutomaticos(t, contexto, mensajesCliente) {
 }
 
 /* ── Cliente simulado ──────────────────────────────────────────────────── */
-const MODELO_CLIENTE = 'gpt-4.1-mini';
+const MODELO_CLIENTE = CLAUDE ? 'claude-haiku-5-5' : 'gpt-4.1-mini';
 function sistemaCliente(p) {
   return [
     'Eres un CLIENTE que escribe por WhatsApp a la línea de soporte de IMPORFACTORY (cursos para importar desde China y carga grupal a Ecuador y México). Fuera de horario te atiende un asistente automático.',
@@ -110,7 +113,18 @@ function sistemaCliente(p) {
   ].filter(Boolean).join('\n');
 }
 
-async function turnoCliente(apiKey, p, historial) {
+async function turnoCliente({ apiKey, claude }, p, historial) {
+  if (claude) {
+    // Claude pide que la conversación empiece por el usuario: el arranque va siempre.
+    const messages = [{ role: 'user', content: '(escribe tu primer mensaje)' }];
+    for (const h of historial) {
+      messages.push({ role: 'assistant', content: h.cliente || '(mandaste un archivo sin texto)' });
+      messages.push({ role: 'user', content: h.enviado ? `Asistente: ${h.enviado}` : '(el asistente no respondió nada)' });
+    }
+    const r = await claude.messages.create({ model: MODELO_CLIENTE, max_tokens: 1500, system: sistemaCliente(p), messages });
+    const texto = r.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+    return { texto, usage: { in: r.usage?.input_tokens || 0, out: r.usage?.output_tokens || 0 } };
+  }
   const messages = [{ role: 'system', content: sistemaCliente(p) }];
   for (const h of historial) {
     messages.push({ role: 'assistant', content: h.cliente || '(mandaste un archivo sin texto)' });
@@ -124,7 +138,8 @@ async function turnoCliente(apiKey, p, historial) {
   });
   const j = await r.json();
   if (!r.ok) throw new Error(`cliente simulado: ${j.error?.message || r.status}`);
-  return { texto: String(j.choices?.[0]?.message?.content || '').trim(), usage: j.usage || {} };
+  return { texto: String(j.choices?.[0]?.message?.content || '').trim(),
+    usage: { in: j.usage?.prompt_tokens || 0, out: j.usage?.completion_tokens || 0 } };
 }
 
 /* Un turno del cliente con su adjunto, como lo deja el motor. */
@@ -138,10 +153,10 @@ function conAdjunto(p, i, texto) {
 
 /* ── Una conversación ──────────────────────────────────────────────────── */
 async function conversar(ctx, conv) {
-  const { responderTurno, llamar, consultar, buscador, hoy, apiKey } = ctx;
+  const { responderTurno, llamar, consultar, buscador, hoy } = ctx;
   const turnos = [];
   let prev = null;
-  const uso = { botIn: 0, botOut: 0, cliIn: 0, cliOut: 0 };
+  const uso = { botIn: 0, botOut: 0, botCacheLee: 0, botCacheEscribe: 0, cliIn: 0, cliOut: 0 };
   const max = conv.guion ? conv.guion.length : conv.persona.max_turnos || 4;
   const pendientes = [];
   for (let i = 0; i < max; i++) {
@@ -152,9 +167,9 @@ async function conversar(ctx, conv) {
       let texto;
       if (SECO) texto = i === 0 ? conv.persona.objetivo.split(';')[0] : '[FIN]';
       else {
-        const c = await turnoCliente(apiKey, conv.persona, turnos);
-        uso.cliIn += c.usage.prompt_tokens || 0;
-        uso.cliOut += c.usage.completion_tokens || 0;
+        const c = await turnoCliente(ctx, conv.persona, turnos);
+        uso.cliIn += c.usage.in;
+        uso.cliOut += c.usage.out;
         texto = c.texto;
       }
       const fin = /\[FIN\]/i.test(texto);
@@ -173,6 +188,8 @@ async function conversar(ctx, conv) {
     prev = r.response_id;
     uso.botIn += r.usage?.input || 0;
     uso.botOut += r.usage?.output || 0;
+    uso.botCacheLee += r.usage?.cache_lee || 0;
+    uso.botCacheEscribe += r.usage?.cache_escribe || 0;
     const contexto = [i === 0 ? conv.contexto_motor : '', r.ctx.bloque].filter(Boolean).join('\n\n');
     const t = {
       turno: i + 1, cliente: entradaCliente.cliente, tipo: entradaCliente.tipo || 'text',
@@ -191,13 +208,13 @@ async function conversar(ctx, conv) {
 
 /* ── Corrida ───────────────────────────────────────────────────────────── */
 async function correr() {
-  if (SECO) {
+  if (SECO || CLAUDE) {
     const rutaDb = require.resolve(path.join(__dirname, '../src/database/config'));
     require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: { db: {}, db_2: {} } };
   } else {
     require('dotenv').config();
   }
-  const { responderTurno, crearLlamador } = require('./soporte_expertos/bot_real');
+  const { responderTurno, crearLlamador, crearLlamadorClaude } = require('./soporte_expertos/bot_real');
   const { baseDeMentira, DATOS, HOY } = require('./soporte_expertos/base_de_mentira');
   const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
   const { promptSoporteExpertos } = require('../src/utils/prompt_soporte_expertos.data');
@@ -205,14 +222,21 @@ async function correr() {
   const { GUIONES } = require('./soporte_expertos/guiones_fijos');
 
   const etiqueta = arg('etiqueta') || 'prueba';
-  const modeloBot = arg('modelo-bot') || 'gpt-4.1';
+  const modeloBot = arg('modelo-bot') || (CLAUDE ? 'claude-sonnet-5-5' : 'gpt-4.1');
   const paralelo = Number(arg('paralelo')) || 4;
   const buscador = buscadorDeArchivo();
   const base = baseDeMentira(DATOS);
   let llamar = null;
   let apiKey = null;
+  let claude = null;
   let cerrar = async () => {};
-  if (!SECO) {
+  if (!SECO && CLAUDE) {
+    const archivoLlave = path.join(require('os').homedir(), '.config', 'impor', 'anthropic_key');
+    const llave = process.env.ANTHROPIC_API_KEY || (fs.existsSync(archivoLlave) ? fs.readFileSync(archivoLlave, 'utf8').trim() : '');
+    const bot = crearLlamadorClaude({ apiKey: llave, modelo: modeloBot });
+    ({ llamar, cerrar } = bot);
+    claude = bot.cliente;
+  } else if (!SECO) {
     const bot = await crearLlamador({ modelo: modeloBot });
     ({ llamar, cerrar } = bot);
     apiKey = bot.api_key_openai;
@@ -240,12 +264,15 @@ async function correr() {
   if (!SECO) {
     // Estimado grueso: ~4,5 turnos por conversación y ~9.000 tokens de entrada por turno del
     // bot (prompt + fichas + la conversación guardada), más el cliente simulado.
+    // Con Claude el prompt va en caché (5.500 tokens a 0,1×) y la salida trae el razonamiento.
     const turnos = convs.length * 4.5;
-    const usd = turnos * (9000 * 2 + 150 * 8) / 1e6 + turnos * (1500 * 0.4 + 60 * 1.6) / 1e6;
-    console.log(`Costo estimado: ~${usd.toFixed(2)} USD de la llave de la cuenta 10. Empieza en 10 s (Ctrl+C para cortar).`);
+    const usd = CLAUDE
+      ? turnos * (4000 * 2 + 5500 * 0.2 + 600 * 10) / 1e6 + turnos * (1500 * 0.1 + 300 * 0.5) / 1e6
+      : turnos * (9000 * 2 + 150 * 8) / 1e6 + turnos * (1500 * 0.4 + 60 * 1.6) / 1e6;
+    console.log(`Costo estimado: ~${usd.toFixed(2)} USD de la llave ${CLAUDE ? 'de Claude' : 'de la cuenta 10'}. Empieza en 10 s (Ctrl+C para cortar).`);
     await new Promise((r) => setTimeout(r, 10000));
   }
-  const ctx = { responderTurno, llamar, consultar: base.consultar, buscador, hoy: HOY, apiKey };
+  const ctx = { responderTurno, llamar, consultar: base.consultar, buscador, hoy: HOY, apiKey, claude };
   const salida = new Array(convs.length);
   let siguiente = 0;
   const trabajador = async () => {
@@ -254,7 +281,7 @@ async function correr() {
       try {
         salida[k] = await conversar(ctx, convs[k]);
       } catch (e) {
-        salida[k] = { ...convs[k].meta, turnos: [], error: e.response?.data?.error?.message || e.message };
+        salida[k] = { ...convs[k].meta, turnos: [], error: e.response?.data?.error?.message || e.error?.error?.message || e.message };
       }
       const s = salida[k];
       const autos = s.turnos.reduce((a, t) => a + t.auto.length, 0);
@@ -264,11 +291,14 @@ async function correr() {
   await Promise.all(Array.from({ length: Math.min(paralelo, convs.length) }, trabajador));
 
   const uso = salida.reduce((a, s) => {
-    for (const k of ['botIn', 'botOut', 'cliIn', 'cliOut']) a[k] += s.uso?.[k] || 0;
+    for (const k of Object.keys(a)) a[k] += s.uso?.[k] || 0;
     return a;
-  }, { botIn: 0, botOut: 0, cliIn: 0, cliOut: 0 });
-  // Precios de lista por millón de tokens (USD): gpt-4.1 2/8, gpt-4.1-mini 0,4/1,6. Sin descontar caché.
-  const costo = (uso.botIn * 2 + uso.botOut * 8 + uso.cliIn * 0.4 + uso.cliOut * 1.6) / 1e6;
+  }, { botIn: 0, botOut: 0, botCacheLee: 0, botCacheEscribe: 0, cliIn: 0, cliOut: 0 });
+  // Precios de lista por millón de tokens (USD). OpenAI sin descontar caché: gpt-4.1 2/8,
+  // gpt-4.1-mini 0,4/1,6. Claude: sonnet-5-5 2/10 (caché: leer 0,2, escribir 2,5), haiku-5-5 0,1/0,5.
+  const costo = CLAUDE
+    ? (uso.botIn * 2 + uso.botCacheLee * 0.2 + uso.botCacheEscribe * 2.5 + uso.botOut * 10 + uso.cliIn * 0.1 + uso.cliOut * 0.5) / 1e6
+    : (uso.botIn * 2 + uso.botOut * 8 + uso.cliIn * 0.4 + uso.cliOut * 1.6) / 1e6;
   const fecha = new Date().toISOString().slice(0, 10);
   fs.mkdirSync(CARPETA, { recursive: true });
   const archivo = path.join(CARPETA, `${fecha}_${etiqueta}.json`);
@@ -277,7 +307,7 @@ async function correr() {
     prompt_caracteres: prompt.length, fichas: buscador.version, uso, costo_usd_estimado: Number(costo.toFixed(2)),
     conversaciones: salida,
   }, null, 2));
-  console.log(`\n📊 tokens bot ${uso.botIn}+${uso.botOut} · cliente ${uso.cliIn}+${uso.cliOut} · ≈ ${costo.toFixed(2)} USD (precio de lista, sin caché)`);
+  console.log(`\n📊 tokens bot ${uso.botIn}+${uso.botOut}${CLAUDE ? ` (caché ${uso.botCacheLee} leídos, ${uso.botCacheEscribe} escritos)` : ''} · cliente ${uso.cliIn}+${uso.cliOut} · ≈ ${costo.toFixed(2)} USD (precio de lista)`);
   console.log(`💾 ${archivo}`);
   fs.writeFileSync(archivo.replace(/\.json$/, '.html'), informe(JSON.parse(fs.readFileSync(archivo, 'utf8')), null));
   await cerrar();
