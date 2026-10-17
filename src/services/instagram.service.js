@@ -251,6 +251,7 @@ async function runKanbanIaIG({
           imagenUrl,
           api_key_openai,
           'IG',
+          { proveedor_ia, api_key_claude },
         );
         // Si la visión falla se avisa igual, para que la IA no reciba vacío.
         mensajeIA = (descripcion || '[El cliente envió una imagen]').trim();

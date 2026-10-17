@@ -1758,7 +1758,11 @@ async function procesarMensajeKanban(params) {
         ultimosBot.some((m) => PIDE_DATOS.test(String(m.texto_mensaje || ''))) ||
         PIDE_DATOS.test(String(mensaje || '')) ||
         /\d{9,}/.test(String(mensaje || ''));
-      if (enFaseDatos && api_key_openai && !columna.es_dropi_principal) {
+      if (
+        enFaseDatos &&
+        (api_key_openai || USAR_CLAUDE) &&
+        !columna.es_dropi_principal
+      ) {
         const [cfgPais] = await db.query(
           `SELECT pais_plantilla FROM configuraciones WHERE id = ? LIMIT 1`,
           { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -1767,6 +1771,8 @@ async function procesarMensajeKanban(params) {
           id_configuracion,
           id_cliente,
           api_key_openai,
+          proveedor_ia,
+          api_key_claude,
           paisNombre: nombrePaisDe({
             pais_plantilla: cfgPais?.pais_plantilla,
             telefono,
@@ -2214,7 +2220,7 @@ async function procesarMensajeKanban(params) {
     await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
   } else if (USAR_CLAUDE && (columna.vector_store_id || columna.vector_store_docs_id)) {
     await log(
-      `🟠 Claude no tiene file_search: ${columna.vector_store_id ? 'el catálogo (sin inline guardado) ' : ''}${columna.vector_store_docs_id ? 'los documentos subidos ' : ''}no llegan al modelo en este turno`,
+      `🟠 Claude no tiene file_search: ${columna.vector_store_id ? 'el catálogo (sin inline guardado) no llega al modelo en este turno' : ''}${columna.vector_store_docs_id ? ' · los documentos subidos solo llegan si tienen texto extraído (ver 📎)' : ''}`,
     );
   } else if (columna.vector_store_id && wizardEnJuego) {
     // Fase 3 del wizard: con la ficha en juego el catálogo NO va por
@@ -2361,6 +2367,20 @@ async function procesarMensajeKanban(params) {
       let instruccionesClaude = bloqueCatalogo
         ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
         : assistantInfo.instructions;
+      /* Documentos de conocimiento: sin file_search van inline con su texto
+         extraído (utils/claude/documentos.js). Vacío si no hay ninguno. */
+      try {
+        const { bloqueDocumentosClaude } = require('../utils/claude/documentos');
+        const docsClaude = await bloqueDocumentosClaude(columna.id);
+        if (docsClaude.bloque) {
+          instruccionesClaude += `\n\n${docsClaude.bloque}`;
+          await log(
+            `📎 Documentos de conocimiento inline para Claude: ${docsClaude.docs} archivo(s), ${docsClaude.chars} chars`,
+          );
+        }
+      } catch (eDocs) {
+        await log(`⚠️ Documentos para Claude no cargados: ${eDocs.message}`);
+      }
       if (prefacioWizard) {
         instruccionesClaude = `${prefacioWizard}\n\n${instruccionesClaude}`;
       }
@@ -3092,6 +3112,8 @@ async function procesarMensajeKanban(params) {
               id_configuracion,
               id_cliente,
               api_key_openai,
+              proveedor_ia,
+              api_key_claude,
               datosBot,
               force,
               dedupe: true,

@@ -142,9 +142,19 @@ async function pedirTranscripcion(form, apiKeyOpenAI, etiquetaLog, contexto, ref
 // src/uploads/... Se lee del disco (no por URL) porque en desarrollo el archivo
 // es local pero la URL guardada apunta a producción.
 // ══════════════════════════════════════════════════════════════
+/* Anthropic no transcribe voz: los audios SIEMPRE van por la llave de OpenAI
+   del cliente, aunque el bot responda con Claude. Sin esa llave no hay
+   transcripción y el bot recibe «[audio que no se pudo transcribir]». No hay
+   llave de la casa a propósito: todo corre del lado del cliente (decisión de
+   Sebastian, 2026-10-17); la UI de Asistentes lo avisa. */
+function llaveTranscripcion(apiKeyOpenAI) {
+  return apiKeyOpenAI || null;
+}
+
 async function transcribirAudioDesdeArchivo(rutaArchivo, apiKeyOpenAI, ref) {
   try {
-    if (!rutaArchivo || !apiKeyOpenAI) return null;
+    const llave = llaveTranscripcion(apiKeyOpenAI);
+    if (!rutaArchivo || !llave) return null;
 
     const rutaRelativa = String(rutaArchivo).replace(DOMINIO_PUBLICO, '');
     // __dirname = <raiz>/src/utils/openia → '..','..' deja <raiz>/src, que es
@@ -177,7 +187,7 @@ async function transcribirAudioDesdeArchivo(rutaArchivo, apiKeyOpenAI, ref) {
 
     return await pedirTranscripcion(
       form,
-      apiKeyOpenAI,
+      llave,
       'WHISPER][WA',
       CONTEXTO_POR_CANAL.WA,
       ref,
@@ -200,7 +210,8 @@ async function transcribirAudioDesdeArchivo(rutaArchivo, apiKeyOpenAI, ref) {
 async function transcribirAudioDesdeUrl(url, apiKeyOpenAI, canal = 'IG', ref) {
   const etiqueta = `WHISPER][${canal}`;
   try {
-    if (!url || !apiKeyOpenAI) return null;
+    const llave = llaveTranscripcion(apiKeyOpenAI);
+    if (!url || !llave) return null;
 
     const audioRes = await axios.get(url, {
       responseType: 'arraybuffer',
@@ -230,7 +241,7 @@ async function transcribirAudioDesdeUrl(url, apiKeyOpenAI, canal = 'IG', ref) {
 
     return await pedirTranscripcion(
       form,
-      apiKeyOpenAI,
+      llave,
       etiqueta,
       CONTEXTO_POR_CANAL[canal] || CONTEXTO_POR_CANAL.IG,
       ref,
@@ -246,6 +257,7 @@ async function transcribirAudioDesdeUrl(url, apiKeyOpenAI, canal = 'IG', ref) {
 }
 
 module.exports = {
+  llaveTranscripcion,
   transcribirAudioDesdeArchivo,
   transcribirAudioDesdeUrl,
   TEXTO_AUDIO_ILEGIBLE,

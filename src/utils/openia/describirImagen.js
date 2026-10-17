@@ -17,6 +17,11 @@
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
+// Fase 2 Claude: si la cuenta responde con Claude, la foto la lee Claude
+// (visión nativa) con la misma consigna; así una cuenta sin llave de OpenAI
+// también ve las fotos. Se decide por `opciones.proveedor_ia` +
+// `opciones.api_key_claude` en las dos entradas.
+const { usaClaude, describirImagenClaude } = require('../claude/claude');
 
 const DOMINIO_PUBLICO = 'https://chat.imporfactory.app';
 const MODELO = 'gpt-4o-mini';
@@ -108,6 +113,19 @@ async function pedirDescripcion(
   return limpio;
 }
 
+// Misma consigna, leída por Claude. Devuelve null si salió vacío, como la de
+// OpenAI, para que quien llama avise «[El cliente envió una imagen]».
+async function pedirDescripcionClaude({ mime, b64, prompt, api_key_claude, etiquetaLog }) {
+  const texto = await describirImagenClaude({
+    api_key_claude,
+    mime,
+    b64,
+    prompt: prompt || PROMPT_VISION,
+  });
+  if (!texto) console.log(`[${etiquetaLog}] respuesta de visión (Claude) vacía`);
+  return texto;
+}
+
 // ══════════════════════════════════════════════════════════════
 // WhatsApp: la imagen ya fue descargada por descargarImagenWhatsapp y vive en
 // src/uploads/... Se lee del disco (no por URL) por la misma razón que el
@@ -122,7 +140,8 @@ async function describirImagenDesdeArchivo(
   opciones = {},
 ) {
   try {
-    if (!rutaArchivo || !apiKeyOpenAI) return null;
+    const conClaude = usaClaude(opciones);
+    if (!rutaArchivo || (!apiKeyOpenAI && !conClaude)) return null;
 
     const rutaRelativa = rutaArchivo.replace(DOMINIO_PUBLICO, '');
     // __dirname = <raiz>/src/utils/openia → '..','..' deja <raiz>/src, que es
@@ -136,6 +155,15 @@ async function describirImagenDesdeArchivo(
     }
 
     const b64 = await fs.readFile(rutaAbsoluta, { encoding: 'base64' });
+    if (conClaude) {
+      return await pedirDescripcionClaude({
+        mime: mimePorExtension(rutaAbsoluta),
+        b64,
+        prompt: opciones?.prompt,
+        api_key_claude: opciones.api_key_claude,
+        etiquetaLog: 'VISION][WA',
+      });
+    }
     const dataUrl = `data:${mimePorExtension(rutaAbsoluta)};base64,${b64}`;
 
     return await pedirDescripcion(
@@ -158,9 +186,15 @@ async function describirImagenDesdeArchivo(
 // manda en base64, para no depender de que OpenAI pueda alcanzar una URL
 // firmada que además expira.
 // ══════════════════════════════════════════════════════════════
-async function describirImagenDesdeUrl(url, apiKeyOpenAI, canal = 'IG') {
+async function describirImagenDesdeUrl(
+  url,
+  apiKeyOpenAI,
+  canal = 'IG',
+  opciones = {},
+) {
   try {
-    if (!url || !apiKeyOpenAI) return null;
+    const conClaude = usaClaude(opciones);
+    if (!url || (!apiKeyOpenAI && !conClaude)) return null;
 
     const imgRes = await axios.get(url, {
       responseType: 'arraybuffer',
@@ -175,6 +209,15 @@ async function describirImagenDesdeUrl(url, apiKeyOpenAI, canal = 'IG') {
     }
 
     const b64 = Buffer.from(imgRes.data).toString('base64');
+    if (conClaude) {
+      return await pedirDescripcionClaude({
+        mime,
+        b64,
+        prompt: opciones?.prompt,
+        api_key_claude: opciones.api_key_claude,
+        etiquetaLog: `VISION][${canal}`,
+      });
+    }
     return await pedirDescripcion(
       `data:${mime};base64,${b64}`,
       apiKeyOpenAI,

@@ -63,6 +63,9 @@ const {
 const { resolveRegion } = require('../utils/phoneFactor');
 const { resolverVariedad, etiquetaEnTexto } = require('../utils/variedadMatch');
 const { elegirTelefonoOrden } = require('../utils/telefonoDropi');
+// Fase 2 Claude: el extractor de datos del pedido va por el proveedor de la
+// cuenta (Claude si responde con Claude y tiene llave; si no, OpenAI).
+const { extraerJsonIA, proveedorExtractor } = require('../utils/claude/extractorJson');
 // Ubicación GPS compartida por WhatsApp → ciudad/provincia/dirección reales
 const {
   parseUbicacionJson,
@@ -490,6 +493,8 @@ async function completarDatosConIA({
   id_cliente,
   datosBot,
   api_key_openai,
+  proveedor_ia = 'openai',
+  api_key_claude = null,
   paisNombre = 'Ecuador',
 }) {
   try {
@@ -529,16 +534,12 @@ async function completarDatosConIA({
     );
     const transcript = lineas.join('\n').slice(-8000);
 
-    const { data } = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
+    const ia =
+      (await extraerJsonIA({
+        api_key_openai,
+        proveedor_ia,
+        api_key_claude,
+        system:
               `Extrae los datos del pedido confirmado de esta conversación de ventas COD en ${paisNombre}. ` +
               'Responde SOLO un JSON con claves: nombre, telefono, provincia, ciudad, direccion, codigo_postal, producto, precio_total, cantidad, modalidad_envio, variedad. ' +
               'codigo_postal = el código postal de 5 dígitos que el CLIENTE escribió para su dirección; null si no lo dio (no lo deduzcas). ' +
@@ -556,17 +557,8 @@ async function completarDatosConIA({
               `provincia = provincia de ${paisNombre} a la que pertenece la ciudad: dedúcela SIEMPRE de la ciudad, aunque nadie la haya escrito en la conversación. ` +
               'modalidad_envio = "agencia servientrega" si el cliente pidió retirar en una agencia/oficina Servientrega; si es envío normal a domicilio, "domicilio". ' +
               'Si un dato no aparece en la conversación, usa null. NO inventes.',
-          },
-          { role: 'user', content: transcript },
-        ],
-      },
-      {
-        headers: { Authorization: `Bearer ${api_key_openai}` },
-        timeout: 20000,
-      },
-    );
-
-    const ia = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
+        user: transcript,
+      })) || {};
 
     // Merge: regex gana, IA rellena vacíos. El spread inicial conserva las
     // llaves que este merge no conoce — `productos` (pedido multi-producto),
@@ -648,6 +640,10 @@ async function autoCrearOrdenDropi({
   id_cliente,
   datosBot,
   api_key_openai = null,
+  // Fase 2 Claude: con proveedor claude + llave, el extractor IA corre aunque
+  // no haya llave de OpenAI.
+  proveedor_ia = 'openai',
+  api_key_claude = null,
   force = false,
   // Solo el camino del bot lo prende. El panel de "pedidos sin subir" llama sin
   // esta bandera a propósito: ahí un humano está creando la orden a mano —para
@@ -656,6 +652,9 @@ async function autoCrearOrdenDropi({
   dedupe = false,
 }) {
   // datosBot: { nombre, telefono, provincia, ciudad, direccion, producto, precio, cantidad }
+  const puedeExtraer =
+    Boolean(api_key_openai) ||
+    proveedorExtractor({ proveedor_ia, api_key_claude }) === 'claude';
   const ctx = {
     id_configuracion,
     id_cliente,
@@ -822,12 +821,14 @@ async function autoCrearOrdenDropi({
       'provincia',
       ...(esMexico ? ['codigo_postal'] : []),
     ].some((k) => !datosBot?.[k]);
-    if (faltanClaves && api_key_openai) {
+    if (faltanClaves && puedeExtraer) {
       datosBot = await completarDatosConIA({
         id_configuracion,
         id_cliente,
         datosBot,
         api_key_openai,
+        proveedor_ia,
+        api_key_claude,
         paisNombre,
       });
       ctx.datos_bot = datosBot; // que el log refleje lo que realmente se usó
@@ -1388,12 +1389,14 @@ async function autoCrearOrdenDropi({
          dejarla manual. Solo en el pedido de UN producto: el extractor
          devuelve UNA variedad y en un pedido de varios no sabría de cuál
          renglón es. */
-      if (!pedida && !esMultiProducto && api_key_openai && !datosBot?._fuente_ia) {
+      if (!pedida && !esMultiProducto && puedeExtraer && !datosBot?._fuente_ia) {
         datosBot = await completarDatosConIA({
           id_configuracion,
           id_cliente,
           datosBot,
           api_key_openai,
+          proveedor_ia,
+          api_key_claude,
           paisNombre,
         });
         ctx.datos_bot = datosBot;
