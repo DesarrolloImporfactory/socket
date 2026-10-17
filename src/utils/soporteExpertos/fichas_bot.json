@@ -67,7 +67,12 @@
    "quiero cotizar un producto de la boveda",
    "di clic en comprar en china y me trajo aqui",
    "me interesa este producto de ideas de productos",
-   "quiero comprar uno de los productos que salen en la plataforma"
+   "quiero comprar uno de los productos que salen en la plataforma",
+   "cuantas unidades vienen por caja del producto de ideas",
+   "el producto del catalogo incluye toda la pieza o solo el filtro",
+   "quiero ver otra caja con productos diferentes",
+   "unidades por caja y precio del producto de la boveda",
+   "hay stock del producto de ideas de productos"
   ],
   "respuesta_base": "Ese producto ya está en el catálogo, así que no hace falta pedirle datos al proveedor. Para que el área de precios te lo cotice, dime cuántas unidades piensas comprar.",
   "pasos": [],
@@ -168,7 +173,11 @@
    "que datos le pido al chino",
    "como le pido la cotizacion al proveedor",
    "necesito pdf o excel del proveedor",
-   "que informacion tiene que darme el proveedor"
+   "que informacion tiene que darme el proveedor",
+   "cuantas unidades vienen por caja",
+   "el proveedor tiene stock para el proximo barco",
+   "que cantidades tiene disponibles el proveedor",
+   "pide cantidades minimas al proveedor"
   ],
   "respuesta_base": "Pídele 3 datos: el precio por unidad (EXW más envío a Yiwu), cuántas unidades vienen en cada caja y el volumen de la caja (CBM). Si no te da el CBM, pídele las medidas de la caja. No hace falta un PDF ni un Excel: sirve una captura de su mensaje.",
   "pasos": [],
@@ -1084,7 +1093,11 @@
    "no me deja entrar a imporsuit",
    "me pasan mis accesos",
    "ya pague y no tengo acceso",
-   "nunca me llegaron mis credenciales"
+   "nunca me llegaron mis credenciales",
+   "mi acceso sigue pendiente de confirmacion",
+   "no logro acceder al portal import suit",
+   "tengo problemas con mi cuenta",
+   "recibo las invitaciones en mi correo antiguo"
   ],
   "respuesta_base": "Lo primero es confirmar con qué correo te registraste y que esté bien escrito. El enlace para crear una clave nueva se envía solo a tu correo registrado: por chat no se dan claves.",
   "pasos": [],
@@ -1138,7 +1151,9 @@
    "no tengo el cotizador",
    "no me salen las herramientas premium",
    "por que no veo el cotizador",
-   "mi plan incluye infoaduana?"
+   "mi plan incluye infoaduana?",
+   "que plan tengo",
+   "mi plan no me deja ver todo"
   ],
   "respuesta_base": "Infoaduana y el cotizador están en «herramientas premium» y no todos los planes las incluyen. Con tu correo de registro se confirma si tu plan las tiene.",
   "pasos": [],
@@ -1186,7 +1201,12 @@
    "que son las plantillas de productos",
    "cual es la diferencia entre ideas y plantillas",
    "que es la boveda de productos",
-   "para que sirve el boton comprar en china"
+   "para que sirve el boton comprar en china",
+   "donde veo productos para decidir",
+   "tienen catalogo de productos para importar",
+   "que productos tienen disponibles para importar",
+   "me pasan el catalogo con medidas de los productos",
+   "hay creativos para los productos de la boveda"
   ],
   "respuesta_base": "Las ideas de productos son productos para importar, con su precio y su proveedor; el botón «Comprar en China» te lleva al asesor para hacer la compra. Las plantillas de productos son productos que IMPORFACTORY ya trajo, con el material para venderlos: página de venta, videos, anuncios e imágenes.",
   "pasos": [],
@@ -1256,7 +1276,10 @@
    "no me deja ver la siguiente clase",
    "sale un candado en el modulo",
    "como desbloqueo las clases",
-   "no puedo avanzar en el curso"
+   "no puedo avanzar en el curso",
+   "puedo avanzar con las siguientes clases sin terminar la 3",
+   "no puedo avanzar con los videos del modulo 2",
+   "no puedo avanzar en el proceso"
   ],
   "respuesta_base": "El curso está pensado para verse en orden. Para pasar a la siguiente lección da clic en «Marcar como completado» y se desbloquea.",
   "pasos": [
@@ -1281,7 +1304,10 @@
    "no estoy en el grupo",
    "para que sirve el grupo del ciclo",
    "me sacaron del grupo",
-   "donde mandan las instrucciones de carga"
+   "donde mandan las instrucciones de carga",
+   "no me llegan notificaciones de clases nuevas",
+   "no puedo escribir en el grupo de soporte",
+   "como logro que me acepten en el grupo"
   ],
   "respuesta_base": "Por el grupo de WhatsApp de tu ciclo se envían las notificaciones, las instrucciones de carga con la dirección de la bodega en China y los tutoriales (instalar WeChat, agregar un contacto, la guía de negociación). Conviene que estés dentro del grupo.",
   "pasos": [],
@@ -1307,7 +1333,11 @@
    "no me pasaron el enlace",
    "no puedo entrar a la sesion en vivo",
    "por donde es la clase",
-   "cual es el zoom de hoy"
+   "cual es el zoom de hoy",
+   "no puedo entrar a la reunion por zoom",
+   "la reunion en vivo no carga ni conecta",
+   "enviame el link de la reunion",
+   "no me llego el link"
   ],
   "respuesta_base": "El enlace para entrar a la clase en vivo es siempre el mismo: https://new.imporsuitpro.com/clase Se abre 30 minutos antes de cada clase. Fuera de ese rato te muestra cuándo es la próxima, con la hora de Ecuador y la de México. Las clases anteriores quedan grabadas en la plataforma.",
   "pasos": [],
@@ -1333,7 +1363,9 @@
    "no pude entrar a la clase donde la veo",
    "donde estan las grabaciones",
    "me perdi la clase de ayer",
-   "suben las clases a la plataforma"
+   "suben las clases a la plataforma",
+   "no escuche el audio de la sesion en vivo",
+   "pido una clase por zoom porque perdi la sesion"
   ],
   "respuesta_base": "Todas las clases se graban y quedan disponibles en la plataforma. Igual conviene verlas en vivo, porque hay espacio de preguntas y respuestas.",
   "pasos": [],
@@ -2004,7 +2036,9 @@
    "ya hice la transferencia",
    "recibieron mi pago",
    "adjunto deposito",
-   "ya deposite ayer y no me confirman"
+   "ya deposite ayer y no me confirman",
+   "les confirmo que pague el 50 restante",
+   "ya pague a la otra cuenta que me indicaron"
   ],
   "respuesta_base": "Los pagos los valida cobranza con tu comprobante y tu número de cotización.",
   "pasos": [],
@@ -2084,7 +2118,9 @@
    "ustedes pueden pagarle al proveedor por mi",
    "como le pago al chino",
    "no tengo como pagar a china",
-   "el proveedor solo acepta transferencia en yuanes"
+   "el proveedor solo acepta transferencia en yuanes",
+   "se puede pagar desde estados unidos",
+   "como funciona alipay para pagar al proveedor"
   ],
   "respuesta_base": "Puedes pagarle tú directamente (por ejemplo por Alibaba, con pago protegido) o la empresa puede hacer el pago por ti a través de su agente en China. Si quieres que lo haga la empresa, cobranza te indica el valor y los pasos.",
   "pasos": [],
@@ -2111,7 +2147,9 @@
    "necesito factura de mi importacion",
    "la factura sale a mi nombre",
    "cuando me dan la factura",
-   "facturan con mi ruc"
+   "facturan con mi ruc",
+   "que es esta factura que me llego",
+   "a que corresponde esta factura"
   ],
   "respuesta_base": "Las facturas las lleva el área de cobranza.",
   "pasos": [],
@@ -2495,7 +2533,9 @@
    "no recuerdo mi contrasena",
    "como cambio mi clave",
    "como recupero mi contrasena",
-   "me pide cambiar la contrasena"
+   "me pide cambiar la contrasena",
+   "quiero actualizar mi clave",
+   "no recuerdo la contrasena que cree"
   ],
   "respuesta_base": "En la pantalla de ingreso da clic en «Olvidaste tu contraseña», escribe tu correo de registro y te llega un correo para restaurarla. La primera vez que entras, el sistema te pide cambiar la contraseña: anótala.",
   "pasos": [
@@ -2526,7 +2566,9 @@
    "no encuentro el curso",
    "entro y no me sale nada",
    "me sale otra pagina",
-   "cual es el link correcto de la plataforma"
+   "cual es el link correcto de la plataforma",
+   "que pagina es esta",
+   "como copio el link de imporfactory desde el computador"
   ],
   "respuesta_base": "Si tu plataforma se ve distinta a la de las clases o no encuentras el curso, lo más probable es que hayas entrado a la plataforma antigua. La actual es imporfactory.app.",
   "pasos": [],
@@ -2551,7 +2593,11 @@
    "me dice acceso suspendido",
    "me bloquearon la plataforma por pago",
    "ya pague la cuota y sigo sin acceso",
-   "por que me quitaron el acceso"
+   "por que me quitaron el acceso",
+   "no he pagado la membresia del club pierdo los beneficios",
+   "no pude pagar las mensualidades y quiero seguir el curso",
+   "puedo seguir consultando si no he pagado el saldo",
+   "tengo cuotas atrasadas del club"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -2576,7 +2622,11 @@
    "necesito el codigo de dropkiller",
    "me pasan la clave de dropkiller",
    "dropkiller me pide verificacion",
-   "cual es el usuario de dropkiller"
+   "cual es el usuario de dropkiller",
+   "cuales son las credenciales de dropkiller",
+   "como ingreso a dropkiller en incognito",
+   "dropkiller ya no se va a usar",
+   "quien me da el acceso de dropkiller"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -2890,7 +2940,14 @@
    "quiero que me devuelvan la plata",
    "quiero darme de baja",
    "quiero cancelar mi membresia",
-   "ya no quiero el curso"
+   "ya no quiero el curso",
+   "me hacen un cobro automatico repetido en mi tarjeta",
+   "pague un plan en la cuenta equivocada quiero cancelarlo",
+   "como cancelo las suscripciones mensuales que me facturan",
+   "quiero cancelar el cobro mensual",
+   "me cobran 39 dolares y no uso nada",
+   "como cancelo la suscripcion del club",
+   "me empezaron a cobrar despues de los meses gratis"
   ],
   "respuesta_base": "Entiendo tu pedido. Tu caso pasa a la persona responsable.",
   "pasos": [],
@@ -3197,7 +3254,9 @@
    "dropi no me valida el numero",
    "como creo mi cuenta de dropi",
    "me registre como proveedor por error",
-   "donde esta el link de dropi"
+   "donde esta el link de dropi",
+   "como ingreso a dropi",
+   "que necesito para empezar en dropi"
   ],
   "respuesta_base": "La cuenta de Dropi se crea con el enlace de la comunidad, que está en la descripción de la lección, y con el perfil «Dropshipper». En Ecuador el celular se escribe sin el 0 para que lo valide. Después se llenan los «Datos personales» y se activa la autenticación en dos factores con Google Authenticator.",
   "pasos": [
@@ -3529,7 +3588,11 @@
    "cuanto pago despues de los meses gratis",
    "cuanto dura la prueba gratis",
    "como cancelo imporchat",
-   "que plan de imporchat me conviene"
+   "que plan de imporchat me conviene",
+   "no tengo acceso a imporchat por falta de pago",
+   "como reactivo imporchat despues de pagar",
+   "pague un plan de imporchat en la cuenta equivocada",
+   "como cancelo el plan de imporchat que pague"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -3768,7 +3831,11 @@
    "que pagos tengo que hacer para el bot",
    "openai es aparte de imporchat",
    "que me cobra meta",
-   "de que es el cobro de whatsapp"
+   "de que es el cobro de whatsapp",
+   "donde veo el detalle de los consumos de meta",
+   "me salen cargos de facebook que no reconozco",
+   "por que me hacen debitos pequenos en mi tarjeta",
+   "que son los saldos a pagar si no he tenido ventas"
   ],
   "respuesta_base": "Son pagos distintos: IMPORCHAT, el saldo de OpenAI que usa el bot, y Meta. Meta cobra dos cosas: la pauta de tus anuncios y las plantillas de WhatsApp Business. El detalle de los cobros de Meta se ve en «Facturación y pagos», en el administrador de anuncios.",
   "pasos": [],
@@ -4481,7 +4548,13 @@
    "tienen stock de este producto",
    "donde veo el stock de sus bodegas",
    "cuantas unidades quedan",
-   "cuando llega mas stock"
+   "cuando llega mas stock",
+   "hay stock de este producto en dropi",
+   "sigue disponible la aspiradora portatil",
+   "hay stock en la bodega de mexico",
+   "el producto desaparecio de dropi",
+   "la talla esta agotada cuando reponen",
+   "no encuentro el producto en dropi por el codigo"
   ],
   "respuesta_base": "El catálogo de IMPORSHOP está enlazado en la lección; cada producto tiene la pestaña «Material». El stock no se confirma por este chat.",
   "pasos": [],
@@ -4711,7 +4784,9 @@
    "quiero ser proveedor en dropi",
    "como subo mis productos a dropi",
    "importe mercaderia y quiero que la vendan otros",
-   "puedo vender mis productos en su catalogo"
+   "puedo vender mis productos en su catalogo",
+   "cumplo requisitos de catalogo y stock para bodega en dropi mexico",
+   "quien da seguimiento a mi tienda de proveedor en dropi"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -5275,7 +5350,9 @@
    "ya confirme el pedido y sigue igual",
    "el bot puso otra transportadora",
    "como cambio la transportadora del pedido",
-   "el cliente quiere retiro en oficina"
+   "el cliente quiere retiro en oficina",
+   "donde confirmo el pedido",
+   "que hago despues de que el bot sube la orden"
   ],
   "respuesta_base": "Después de confirmar, Dropi tarda unos minutos en avisar y recién ahí el cliente cambia de columna. Si quieres otra transportadora o el cliente pidió retiro en oficina, eso se cambia en Dropi con «Editar orden» antes de confirmar.",
   "pasos": [],
@@ -5356,7 +5433,10 @@
    "hice mal la orden como la cancelo",
    "el cliente ya no quiere el pedido",
    "la orden me sale rechazado",
-   "puedo cancelar una guia generada"
+   "puedo cancelar una guia generada",
+   "el cliente cancelo la compra a la hora",
+   "como cancelo una guia duplicada",
+   "me equivoque de transportadora y ya genere la guia"
   ],
   "respuesta_base": "Si la orden sigue en «Pendiente», se cancela con un botón. Si ya está en «Guía generada», se anula por ticket en Dropi; cuando Dropi la aprueba, la orden queda en «Rechazado», y eso es lo correcto. Si la guía ya tiene movimiento, ya no se puede anular.",
   "pasos": [
@@ -5387,7 +5467,9 @@
    "el cliente ya recibio y en dropi sigue en agencia",
    "como pido que actualicen el estado",
    "no me sale entregado",
-   "el pedido sigue para retirar en agencia y ya lo entregaron"
+   "el pedido sigue para retirar en agencia y ya lo entregaron",
+   "el cliente ya retiro y sigue igual el estado",
+   "ya entregaron y dropi no actualiza"
   ],
   "respuesta_base": "Si el cliente ya lo recibió y pasado un tiempo sigue «para retirar en agencia», se pide por ticket en Dropi la actualización del estado, con cuatro datos: fecha de entrega, foto de la guía recibida, imagen del producto y número de guía. Cuando Dropi responde, el pedido debe pasar a «Entregado».",
   "pasos": [
@@ -5416,7 +5498,9 @@
    "llego incompleto el pedido",
    "llego otro producto",
    "el producto no funciona que hago",
-   "que pasa despues de crear la garantia"
+   "que pasa despues de crear la garantia",
+   "revisar mi caso de garantia pendiente",
+   "quien asume si la ficha del producto estaba incompleta"
   ],
   "respuesta_base": "La garantía se registra en Dropi sobre una orden entregada: «Mis pedidos» → icono «Garantías» de la orden. Se elige el tipo (orden incompleta, mal funcionamiento, producto roto u orden diferente), se describe el caso y se sube una foto. Queda en «Mis garantías» como pendiente para el proveedor.",
   "pasos": [
@@ -5447,7 +5531,9 @@
    "donde soluciono las novedades",
    "la transportadora no pudo entregar",
    "que hago con una novedad",
-   "cuanto tiempo tengo para gestionar la novedad"
+   "cuanto tiempo tengo para gestionar la novedad",
+   "como reprogramo la entrega",
+   "debo llamar al cliente por el pedido"
   ],
   "respuesta_base": "Las novedades están en Dropi: «Mis pedidos» → «Novedades». Lees el motivo, contactas a tu cliente, acuerdas la solución y la registras con «Solucionar». El video muestra el caso de Gintracom, que no entrega los domingos.",
   "pasos": [
@@ -5501,7 +5587,10 @@
    "no me sale la ciudad del cliente",
    "la transportadora esta bloqueada",
    "no hay cobertura para esa ciudad",
-   "no me deja elegir transportadora"
+   "no me deja elegir transportadora",
+   "no se activa el courier sin cobertura en el sector",
+   "como envio a un sector sin ruta",
+   "donde esta el semaforo de ciudades con cobertura"
   ],
   "respuesta_base": "Si la ciudad no aparece o la transportadora sale bloqueada, es que no hay cobertura: se elige otra transportadora o se acuerda con el cliente el retiro en una agencia. Al crear la orden solo salen con su flete las transportadoras que sí llegan.",
   "pasos": [],
@@ -5575,7 +5664,14 @@
    "como retiro mi dinero de dropi",
    "donde veo mi cartera",
    "como recargo la wallet",
-   "dropi no me ha pagado"
+   "dropi no me ha pagado",
+   "pago congelado en payoneer no llega a dropi mexico",
+   "el idioma colombia en dropi afecta la recarga",
+   "cuanto tarda en acreditarse la wallet",
+   "el dinero de la wallet sirve para pagar pedidos",
+   "hice una recarga y no se refleja en la plataforma",
+   "si agrego saldo y no lo uso se pierde",
+   "por que me hacen un debito en dropi"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -5600,7 +5696,8 @@
    "dropi mexico me pide saldo en la wallet",
    "no puedo generar guias en dropi mexico",
    "me pide recargar para mi primera guia",
-   "como activo los beneficios de dropi mexico"
+   "como activo los beneficios de dropi mexico",
+   "mi pago de payoneer no se acredita en dropi mexico"
   ],
   "respuesta_base": "En México los beneficios de Dropi no se activan solos: los activa el equipo.",
   "pasos": [],
@@ -5647,7 +5744,10 @@
    "cuantos dias tarda la entrega",
    "que le digo al cliente que pregunta por su pedido",
    "en cuanto llega el pedido al cliente",
-   "cuanto demora servientrega"
+   "cuanto demora servientrega",
+   "que transportadora recomiendan",
+   "es buena servientrega en quito",
+   "se puede lanzar campana en feriado por las transportadoras"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -5860,7 +5960,10 @@
    "se me acabo la membresia",
    "por que ya no puedo ver el curso",
    "cuanto dura mi acceso",
-   "tengo que renovar"
+   "tengo que renovar",
+   "cuanto tengo que pagar por los accesos cada ano",
+   "como retomo el curso si estuve fuera del pais",
+   "no he podido avanzar por problemas personales me extienden el acceso"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -5874,6 +5977,717 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §6 («te va a durar toda tu vida»)",
    "AGENTE_24_7/prompt_agente_expertos_v1.txt · tabla del bloque D"
+  ]
+ },
+ {
+  "id": "prod-datos-tecnicos-de-un-producto",
+  "tema": "ecommerce-producto",
+  "pais": "todos",
+  "preguntas": [
+   "este ventilador es recargable",
+   "que medidas tiene el calentador",
+   "la freidora viene con tapa",
+   "en que colores viene la banda",
+   "me pasan la ficha tecnica del producto",
+   "mis clientes me piden la ficha tecnica",
+   "el soporte para laptop trae ventilador",
+   "que capacidad tiene este producto"
+  ],
+  "respuesta_base": "Los datos técnicos de un producto de IMPORSHOP (medidas, colores, si es recargable) no se confirman por este chat. Tu consulta pasa al equipo de ecommerce. Envíame el número del producto en Dropi y tu país.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "ecommerce",
+  "pedir": "el número del producto en Dropi y tu país",
+  "no_decir": [
+   "No afirmar medidas, colores, voltaje, capacidad ni funciones: la ficha de producto interna no trae medidas a propósito.",
+   "No opinar sobre la calidad ni sobre si sirve para un uso concreto.",
+   "No afirmar que hay o no hay stock."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §1.4, fila «Ficha de producto» (no trae stock ni medidas, a propósito)",
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §3, fila «Stock, publicación o precio de un producto de IMPORSHOP» (número de Dropi y país)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §14"
+  ]
+ },
+ {
+  "id": "proveedor-ficha-tecnica",
+  "tema": "proveedor",
+  "pais": "todos",
+  "preguntas": [
+   "el proveedor no me da la ficha tecnica",
+   "como se si la maquina es buena",
+   "pide caracteristicas del cargador",
+   "sirve para lavar motores",
+   "traeran el producto en otros colores",
+   "el producto viene en mas colores",
+   "que potencia tiene la maquina del proveedor"
+  ],
+  "respuesta_base": "Los datos técnicos del producto que quieres importar te los da tu proveedor: pídele su ficha técnica. Si es una máquina, conviene además una verificación antes del embarque.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No opinar sobre la calidad del producto ni sobre si sirve para un uso.",
+   "No dar el costo de una inspección o verificación: la cifra de clase no está vigente.",
+   "No confirmar colores ni variantes: los confirma el proveedor."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/ago05.md · §4.8 «Verificar una máquina antes de pagarla o embarcarla», paso 3"
+  ]
+ },
+ {
+  "id": "comprar-stock-de-imporshop",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "quiero comprar ahorradores con stock disponible",
+   "puedo comprar los productos que tienen en stock",
+   "que productos hay en bodega para comprar",
+   "tienen catalogo de la bodega de quito para comprar por mayor",
+   "quedan aires acondicionados disponibles",
+   "me venden al costo lo que tienen en bodega",
+   "quiero comprar un ahorrador y dos vinchas"
+  ],
+  "respuesta_base": "El stock de IMPORSHOP es de una empresa aparte y no se vende al costo de importación. Lo que sí puedes hacer es cotizar cajas de las ideas de productos, que viajan en los contenedores de la empresa. Tu consulta de stock pasa al área comercial.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "comercial",
+  "pedir": "qué producto, cuántas unidades y tu país",
+  "no_decir": [
+   "No afirmar que hay o no hay stock, ni cuándo llega.",
+   "No dar precios al por mayor ni el precio que se dijo en clase.",
+   "No ofrecer bodega ni fulfillment."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/pre_logistica_2.md · tabla de afirmaciones («IMPORSHOP no vende su stock al costo de importación», p377 00:12:45; «Cajas de ideas de productos… a precio de contenedor», p377 00:09:42)",
+   "ENTRENAMIENTO_FRONT/notas/pre_logistica_2.md · preguntas del chat, fila 42",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §14"
+  ]
+ },
+ {
+  "id": "catalogo-del-club-cuando-llega",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "cuando entregan el catalogo del club de importadores",
+   "cuando estara disponible el catalogo",
+   "me prometieron un catalogo de productos",
+   "no me han enviado el catalogo",
+   "hay catalogo de mercaderia nueva para navidad"
+  ],
+  "respuesta_base": "",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "asesor",
+  "pedir": "tu país y el correo con que entraste a la plataforma",
+  "no_decir": [
+   "No dar fecha de entrega de ningún catálogo: no hay dato.",
+   "No prometer un catálogo de temporada ni un catálogo privado."
+  ],
+  "fuentes": [
+   "Sin fuente vigente para la fecha: HUECOS (para_daniel)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §14 (catálogo privado)"
+  ]
+ },
+ {
+  "id": "ped-estados-de-dropi",
+  "tema": "ecommerce-pedidos",
+  "pais": "todos",
+  "preguntas": [
+   "que significa pendiente de confirmacion",
+   "mi pedido lleva dias en pendiente",
+   "que es guia generada",
+   "la orden sigue en el mismo estado",
+   "que significa packing",
+   "me salio cancelado por transportadora",
+   "la orden sigue en bodega de origen",
+   "guia generada hace dias y no despachan"
+  ],
+  "respuesta_base": "«Pendiente confirmación» es un pedido que subió la IA o la landing: falta que tú revises los datos y lo confirmes. «Pendiente» solo significa que los datos ya están en Dropi; en «Guía generada» y «Preparado para transportadora» (o «Packing») el proveedor lo está empacando, y el envío recién empieza cuando pasa a la transportadora. «Cancelado por transportadora» es que la transportadora no llega a esa dirección.",
+  "pasos": [
+   "Abre la orden con la lupa (detalles) y revisa el «Historial de movimientos», no solo el estado de Dropi.",
+   "En «Pendiente confirmación», revisa que ciudad, provincia, dirección y nombre estén bien, y confirma.",
+   "Si la transportadora canceló, busca con tu cliente otra dirección o el retiro en una agencia.",
+   "Si el pedido no se mueve, abre un caso en el CAS de Dropi."
+  ],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No dar plazos de despacho del proveedor ni de cancelación de Dropi: las dos clases dan cifras distintas (24 + 24 horas y 72 horas).",
+   "No prometer días de entrega.",
+   "No revisar ni explicar el estado de un pedido concreto del cliente."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §2 y §3 (00:30:55–00:43:37: pendiente confirmación, pendiente, guía generada, preparado, cancelado por transportadora, packing)",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §7, «Tramos útiles» (historial de movimientos 00:43:37)",
+   "ENTRENAMIENTO_FRONT/transcripciones/ago12.md · [00:31:58], [00:34:08], [00:38:18], [00:42:35], [00:44:42]",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · «Contradicciones entre las dos clases», fila «Plazo del proveedor»"
+  ]
+ },
+ {
+  "id": "ped-cas-de-dropi",
+  "tema": "ecommerce-pedidos",
+  "pais": "todos",
+  "preguntas": [
+   "mis guias estan paradas sin movimiento",
+   "la transportadora dice que fue y nunca llego",
+   "el cliente ya recibio y no cambia el estado",
+   "donde reclamo a la transportadora",
+   "que es el cas de dropi",
+   "cuanto demora dropi en responder el ticket",
+   "donde veo la respuesta de mi ticket",
+   "guia de servientrega sin movimiento hace dias"
+  ],
+  "respuesta_base": "Los problemas con la transportadora se reclaman en el CAS de Dropi, su centro de soluciones. Se abre con el icono de los audífonos de la orden, en «Mis pedidos» o en «Novedades», y se abre un caso por cada orden. La respuesta llega en el menú izquierdo «CAS» → «Bandeja de entrada» y «Tickets».",
+  "pasos": [
+   "Icono de audífonos en la orden → «Transportadora».",
+   "Elige «Orden sin movimiento», «Solicitar corrección de estado» o «Informar sobre novedad de la orden».",
+   "Escribe una descripción corta, sube la foto de la guía y una evidencia (captura del tracking, prueba de que se recibió o mensaje del cliente) y guarda.",
+   "Revisa la respuesta en «CAS» → «Bandeja de entrada»."
+  ],
+  "enlace": "",
+  "pasar_a": "ecommerce",
+  "pedir": "número de orden, número de guía, qué pasó y captura del caso sin respuesta (solo si el CAS no contesta)",
+  "no_decir": [
+   "No dar el tiempo de respuesta de Dropi ni de la transportadora.",
+   "No prometer indemnización ni compensación de Dropi.",
+   "No ofrecer que una persona del equipo lo atiende «por interno» ni a cualquier hora.",
+   "No abrir el caso por él ni dar teléfonos de agencias o transportadoras."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §2 (01:10:28–01:14:33, el CAS) y §3 («Un CAS por cada orden»)",
+   "ENTRENAMIENTO_FRONT/transcripciones/ago12.md · [01:10:28], [01:11:30], [01:12:31], [01:13:31], [01:14:33]",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §7, punto 2 (datos para escalar: orden, guía, descripción e imagen)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · línea 76 (sin plazos de Dropi ni compensaciones)",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 1 §6.B y Clase 2 §6.B (atención sin horario, indemnización)"
+  ]
+ },
+ {
+  "id": "ped-corregir-datos-de-la-guia",
+  "tema": "ecommerce-pedidos",
+  "pais": "todos",
+  "preguntas": [
+   "el cliente me dicto mal el numero",
+   "puse mal el nombre y ya genere la guia",
+   "como corrijo la direccion del pedido",
+   "se generaron dos guias del mismo cliente",
+   "quiero cambiar la agencia de servientrega",
+   "no puedo corregir la direccion de un pedido en transito",
+   "el cliente quiere retirar en agencia servientrega"
+  ],
+  "respuesta_base": "Si la orden aún no está confirmada, los datos y la transportadora se corrigen en Dropi con «Editar orden». Con la guía ya hecha, se puede cancelar o anular mientras siga en «Pendiente», «Guía generada» o «Preparado para transportadora», con la evidencia de que el proveedor la retuvo. Si ya está en ruta, ya no se puede retener.",
+  "pasos": [
+   "Antes de confirmar: abre la orden → «Editar orden» y corrige.",
+   "Con guía generada: pide al proveedor que retenga la guía y te mande la evidencia.",
+   "Botón flotante → «Envíanos un mensaje» → «Envíos y transportadoras» → «Anular una guía»: motivo (por ejemplo, me equivoqué en un dato), número de guía y evidencia.",
+   "En Ecuador, para retiro en una agencia de Servientrega: verifica en la web de Servientrega que sea un «centro de soluciones» y escribe en la dirección «Retiro CS» más la dirección de la agencia."
+  ],
+  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=630&modulo=134",
+  "pasar_a": "ecommerce",
+  "pedir": "número de orden, número de guía y qué dato está mal (solo si la guía ya está en ruta)",
+  "no_decir": [
+   "No decir cómo cambiar dirección, teléfono, nombre o agencia en una guía ya generada sin anularla: ningún video lo explica.",
+   "Si Dropi no deja corregir por una novedad en la transportadora, no inventar pasos: pasa al equipo de ecommerce.",
+   "No anular ni editar por él, ni dar plazos de Dropi."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.json · m2_10 (pendiente de confirmación: todavía se aprueba o se cambia la transportadora)",
+   "fichas_bot.json · ped-no-pasa-a-guia-creada («Editar orden» antes de confirmar; m5_ventas_dudas.md §7)",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §3 (00:39:23–00:42:35, anular solo en tres estados con evidencia de guía retenida)",
+   "ENTRENAMIENTO_FRONT/transcripciones/ago12.md · [00:40:27], [00:41:31] (motivos: me equivoqué, dijiste mal el nombre) y [00:42:35] (en ruta ya no se puede)",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §5 (01:22:05, «Retiro CS» y centros de soluciones) · ENTRENAMIENTO_FRONT/transcripciones/ago12.md [01:23:05], [01:24:06]",
+   "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §3 y §7 (hueco: editar guía sin cancelar)"
+  ]
+ },
+ {
+  "id": "ped-cobros-devoluciones-y-pago-anticipado",
+  "tema": "ecommerce-pedidos",
+  "pais": "todos",
+  "preguntas": [
+   "por que me restan el envio si se devolvio el pedido",
+   "por que me hacen un debito en dropi",
+   "quien paga la devolucion",
+   "el dinero de la wallet sirve para pagar pedidos",
+   "como funciona el pago anticipado en dropi",
+   "los clientes quieren pagar con tarjeta",
+   "como cobro un abono al cliente",
+   "como es cobrar sin recaudo"
+  ],
+  "respuesta_base": "Con pago anticipado, Dropi descuenta de tu wallet el precio de proveedor y el flete, por eso necesitas saldo. En contra entrega la transportadora cobra al cliente y Dropi reparte: flete a la transportadora, producto al proveedor y tu ganancia a tu wallet.",
+  "pasos": [
+   "A domicilio la transportadora cobra en efectivo; ninguna transportadora cobra con tarjeta.",
+   "Puedes pedir un abono al cliente y poner el resto como valor a recaudar en la guía.",
+   "Si no entiendes un débito puntual, pasa el caso con el número de orden."
+  ],
+  "enlace": "",
+  "pasar_a": "ecommerce",
+  "pedir": "número de orden y captura del movimiento de la wallet (solo si pregunta por un débito puntual)",
+  "no_decir": [
+   "No decir quién paga el envío de una devolución: las fuentes se contradicen y falta la confirmación de Daniel.",
+   "No decir cuánto cuesta un envío ni una devolución: los valores de la clase eran de ese día.",
+   "En México no afirmar si se cobra la devolución: en clase solo se dijo «tengo entendido».",
+   "No decir cuánto saldo hace falta, cuándo se acredita la wallet ni cuánto cobra un retiro.",
+   "No prometer reembolsos ni compensaciones de Dropi."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 1 §3 (01:03:26 y 01:57:21: en Ecuador la devolución la asume el vendedor) y §7, punto 4",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §3 (00:29:47 ida y vuelta; 00:38:18 cancelado por transportadora sin cobro; 00:13:50 y 01:17:50 pago anticipado y saldo; 01:19:53 reparto; 01:20:58 abono; 01:39:07 efectivo y sin tarjeta)",
+   "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §6.B (México «tengo entendido»; retiros «desconozco») y §6.B fletes del día",
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · líneas 193-194 (el alumno oyó que la devolución la paga él)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · línea 76"
+  ]
+ },
+ {
+  "id": "dropi-cuenta-correo-pais-y-privados",
+  "tema": "ecommerce-tienda",
+  "pais": "todos",
+  "preguntas": [
+   "me registre en dropi con el correo equivocado",
+   "cree mi cuenta de dropi en ecuador pero vivo en mexico",
+   "como cambio mi cuenta de dropi a mexico",
+   "no me llega el correo de recuperacion de dropi",
+   "cuanto tarda dropi en aprobar un producto privado",
+   "puedo vender productos privados",
+   "me pasan el numero del ejecutivo de dropi",
+   "que numero pongo en documento con el ine"
+  ],
+  "respuesta_base": "",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "ecommerce",
+  "pedir": "tu país y el correo con el que te registraste en Dropi",
+  "no_decir": [
+   "No explicar cómo cambiar el correo o el país de una cuenta de Dropi: ninguna fuente lo dice.",
+   "No hablar de catálogo privado ni dar plazo de aprobación de un producto privado.",
+   "No decir qué documento o número exige Dropi.",
+   "No dar contactos de Dropi ni pedir contraseñas o códigos."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · línea 67 (accesos que el front no arregla: correo mal escrito o que no llega) y línea 258 (país y correo con que se registró)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · línea 88 (sin catálogo privado) y línea 76 (sin plazos de Dropi)",
+   "fichas_bot.json · eco-crear-cuenta-dropi, no_decir (no pedir contraseñas ni códigos)"
+  ]
+ },
+ {
+  "id": "pago-estado-de-mi-cuenta",
+  "tema": "pagos",
+  "pais": "todos",
+  "preguntas": [
+   "cuanto saldo pendiente tiene mi importacion",
+   "por que no coincide mi saldo con lo que me indican",
+   "me pasan un cuadro de lo que he pagado y lo que debo",
+   "el total no coincide con lo que pague",
+   "me cobran un monto distinto al acordado",
+   "la diferencia es por el tipo de cambio?",
+   "tengo saldo a favor, se descuenta en mi otra importacion",
+   "confirmame mi situacion de pagos y adeudo"
+  ],
+  "respuesta_base": "Tu estado de cuenta (pagos registrados, saldo y cuotas) lo revisa cobranza con tu número de cotización. Por este chat no se dan ni se confirman saldos.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "contabilidad",
+  "pedir": "número de cotización",
+  "no_decir": [
+   "No dar saldos, montos pendientes, saldo a favor ni cuántas cuotas faltan.",
+   "No dar ni explicar el tipo de cambio usado: no hay dato oficial.",
+   "No decir que un saldo a favor se descuenta en otra importación."
+  ],
+  "fuentes": [
+   "fichas_bot.json · `pago-a-que-cuenta` (ficha oficial `pagos`: «los pagos, saldos y comprobantes los revisa cobranza»)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 «Pagos: cuentas, recargos, formas y momentos» (no dice saldos)"
+  ]
+ },
+ {
+  "id": "pago-aviso-cuota-vencida",
+  "tema": "pagos",
+  "pais": "todos",
+  "preguntas": [
+   "que significa el mensaje de cuota vencida",
+   "me llego un aviso de cuota vencida de mi cotizacion",
+   "que es el cobro vencido por cotizacion por cajas",
+   "si ya pague por que me llega cuota vencida",
+   "que es la cuota de cotizacion por cajas",
+   "este mensaje de cobro vencido es real",
+   "por que me envian tantos mensajes si ya pague"
+  ],
+  "respuesta_base": "Ese aviso lo envía el sistema de forma automática según la cotización registrada a tu nombre. Cobranza revisa si de verdad tienes algo pendiente, con el número de cotización que aparece en el mensaje.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "contabilidad",
+  "pedir": "número de cotización que aparece en el aviso y, si ya pagaste, tu comprobante",
+  "no_decir": [
+   "No decir que el aviso es un error ni que no hay que pagar.",
+   "No decir montos, fechas de vencimiento ni que el servicio se suspende.",
+   "No confirmar que un pago ya está registrado."
+  ],
+  "fuentes": [
+   "memory/project_entrega_cajas_3_pasos_2026-10-13.md · «Las cotizaciones por cajas disparan avisos automáticos de cuota vencida» y «los avisos de cuotas de importaciones salen solos por la línea 265»",
+   "fichas_bot.json · `pago-confirmar-comprobante` (los pagos los valida cobranza con comprobante y número de cotización)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6"
+  ]
+ },
+ {
+  "id": "pago-al-proveedor-estado",
+  "tema": "pagos",
+  "pais": "todos",
+  "preguntas": [
+   "ya le pagaron a mi proveedor",
+   "pagan hoy el 50 al proveedor",
+   "que paso con el pago a mi proveedor",
+   "se realizo el otro pago pendiente",
+   "ya se libero el pago",
+   "el proveedor dice que recibio menos yuanes",
+   "cuanto tarda el pago al proveedor despues de mi transferencia",
+   "ya pague y quiero que el proveedor prepare el pedido"
+  ],
+  "respuesta_base": "Cuando la empresa le paga a tu proveedor por ti, el estado de ese pago lo revisa cobranza. Si tu proveedor reclama una diferencia, envía lo que te escribió para que lo revisen con tu cotización.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "contabilidad",
+  "pedir": "número de cotización y nombre del proveedor",
+  "no_decir": [
+   "No confirmar que se pagó al proveedor ni cuándo se pagará.",
+   "No dar plazos entre tu transferencia y el pago al proveedor.",
+   "No decir montos en yuanes, tipo de cambio, comisiones ni recargos.",
+   "No prometer que el proveedor prepara el pedido en una fecha."
+  ],
+  "fuentes": [
+   "fichas_bot.json · `pagar-al-proveedor` (PORTAL_PUESTOS/plantillas/propuestas/p13.json aprobada: la empresa puede pagar por ti a través de su agente en China; cobranza indica valor y pasos)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 y §1"
+  ]
+ },
+ {
+  "id": "pago-enlace-de-pago",
+  "tema": "pagos",
+  "pais": "todos",
+  "preguntas": [
+   "no me llego el link de pago a mi correo",
+   "cuando me envian la liga de pago",
+   "que hago con el enlace de pago que me enviaron",
+   "ya se genero el link de pago pendiente",
+   "pueden crear el enlace de pago con el correo de mi empresa",
+   "me pasan el link para pagar"
+  ],
+  "respuesta_base": "Por este chat no se envían enlaces de pago. Las dudas sobre un enlace de pago las revisa cobranza con tu número de cotización. Los pagos se hacen solo a la empresa, nunca a la cuenta personal de un tercero.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "contabilidad",
+  "pedir": "número de cotización y el correo donde esperas el enlace",
+  "no_decir": [
+   "No mandar ni reenviar enlaces de pago.",
+   "No decir el monto del enlace ni el recargo con tarjeta.",
+   "No confirmar que un enlace recibido es válido."
+  ],
+  "fuentes": [
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 («no pasa cuentas bancarias ni enlaces de pago»)",
+   "fichas_bot.json · `pago-a-que-cuenta` (ficha oficial `pagos`: solo cuentas de la empresa, nunca de un tercero)",
+   "fichas_bot.json · `pago-con-tarjeta` (no mandar enlaces de pago; recargo sin dato oficial)"
+  ]
+ },
+ {
+  "id": "pago-no-puedo-pagar-a-tiempo",
+  "tema": "pagos",
+  "pais": "todos",
+  "preguntas": [
+   "voy a pagar en dos dias por un problema de salud",
+   "no tengo efectivo para continuar con el pago",
+   "no puedo cumplir la cuota acordada",
+   "tuve un contratiempo y no pude enviar el pago",
+   "como cancelo un pago pendiente",
+   "no pude pagar las mensualidades y quiero seguir"
+  ],
+  "respuesta_base": "Gracias por avisar. Tu caso pasa a cobranza con tu número de cotización.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "contabilidad",
+  "pedir": "número de cotización",
+  "no_decir": [
+   "No aceptar ni negar una prórroga, un convenio o la cancelación de un pago.",
+   "No decir qué pasa con la carga, el acceso o los beneficios si no paga.",
+   "No dar montos ni fechas."
+  ],
+  "fuentes": [
+   "fichas_bot.json · `pago-a-que-cuenta` (ficha oficial `pagos`: pagos y saldos los revisa cobranza)",
+   "fichas_bot.json · `reembolso-o-baja` (ConocimientoFront `reclamos-y-garantias`: «tu caso pasa a la persona responsable», sin plazos ni condiciones)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6"
+  ]
+ },
+ {
+  "id": "error-en-la-plataforma",
+  "tema": "plataforma y accesos",
+  "pais": "todos",
+  "preguntas": [
+   "me sale un error en la plataforma",
+   "no me deja avanzar te mando captura",
+   "el proceso no me deja continuar",
+   "la plataforma se queda en blanco",
+   "no se pueden ver los videos en la plataforma",
+   "el paso del video no me funciona",
+   "me sale un mensaje que no aparece en el curso",
+   "que significa este mensaje que me sale"
+  ],
+  "respuesta_base": "Si no avanzas en una lección del curso, revisa que hayas dado clic en «Marcar como completado» en la lección anterior: así se desbloquea la siguiente. Si es otro error, escríbeme en qué plataforma pasa (la del curso, IMPORCHAT, Dropi o Meta), en qué lección o paso estás y qué dice el mensaje, y queda anotado para tu asesor.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "asesor",
+  "pedir": "en qué plataforma pasa, la lección o el paso donde está y el texto del mensaje de error escrito",
+  "no_decir": [
+   "No decir que se revisó la captura ni describir lo que muestra: el bot no puede revisar capturas.",
+   "No decir «es una falla del sistema» ni «ya lo están arreglando».",
+   "No inventar pasos de solución (borrar caché, cambiar de navegador, reinstalar): no hay fuente.",
+   "No ofrecer soporte remoto por AnyDesk ni tomar control de la computadora."
+  ],
+  "fuentes": [
+   "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `clases-bloqueadas` («Marcar como completado»)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §16 «Lo que el bot no puede hacer» (no revisa capturas)",
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · «A quién se pasa lo que no le toca» (lo que necesita el asesor: país, correo y en qué paso va; falla de IMPORCHAT: no decir que es del sistema)",
+   "fichas_bot.json · `ia-falla-de-imporchat` (no_decir)"
+  ]
+ },
+ {
+  "id": "documentos-de-la-clase",
+  "tema": "clases",
+  "pais": "todos",
+  "preguntas": [
+   "donde encuentro los documentos del curso",
+   "no encuentro los pdf que mencionan en los videos",
+   "donde esta la plantilla de excel de la clase",
+   "pasame los documentos de la clase de rfq",
+   "donde estan las tarjetas de proveedores de la sesion",
+   "donde descargo el material de la clase",
+   "en que parte de la plataforma esta el archivo"
+  ],
+  "respuesta_base": "Los apuntes, documentos y plantillas de cada clase se dejan debajo de la clase grabada, en la plataforma. Varios también se envían al grupo de WhatsApp de tu ciclo. Si no lo encuentras, dime qué clase es y qué documento buscas, y queda anotado para tu asesor.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "asesor",
+  "pedir": "el nombre de la clase o del módulo y el documento que busca",
+  "no_decir": [
+   "No dar contraseñas de documentos ni de cuentas.",
+   "No inventar enlaces de descarga ni reenviar archivos copiados de otro chat.",
+   "No prometer en cuánto tiempo se sube un documento a la plataforma."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/ago05.md · fila «Los apuntes de la clase se dejan debajo de la clase grabada» [00:17:14]",
+   "ENTRENAMIENTO_FRONT/notas/ago06.md · misma fila [00:12:59], [00:59:03]",
+   "ENTRENAMIENTO_FRONT/notas/pre_logistica_2.md · fila 18 «¿Dónde está la plantilla de Excel? Debajo de la clase, y se envía al grupo de WhatsApp» [p378 00:29:25]",
+   "ENTRENAMIENTO_FRONT/notas/ago04.md · tarjetas de proveedores debajo del video y al grupo [00:35:51], [00:43:25]",
+   "fichas_bot.json · `grupo-de-whatsapp`"
+  ]
+ },
+ {
+  "id": "encuesta-del-curso",
+  "tema": "plataforma y accesos",
+  "pais": "todos",
+  "preguntas": [
+   "el link de la encuesta no abre",
+   "no puedo abrir la encuesta",
+   "donde encuentro la encuesta del video de bienvenida",
+   "no me han enviado la encuesta",
+   "donde hago la encuesta del club",
+   "tengo que volver a llenar la encuesta",
+   "la encuesta sale en ingles"
+  ],
+  "respuesta_base": "La encuesta de diagnóstico pregunta por tu capital y si ya tienes una idea de producto. Tus respuestas le llegan a tu asesor para darte una mejor asesoría. Si no te abre o no te llegó, queda anotado para que tu asesor te la reenvíe.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "asesor",
+  "pedir": "el correo con el que te registraste",
+  "no_decir": [
+   "No inventar ni reenviar un enlace de encuesta: el bot no lo tiene.",
+   "No confirmar si su encuesta quedó registrada ni pedirle que la repita.",
+   "No traducir ni resumir una encuesta que el bot no ha visto."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/oct01.md · fila «Encuesta de diagnóstico (capital, si ya tienes idea de producto) para guiarte mejor» [01:05:21] y §4.1 punto 3",
+   "ENTRENAMIENTO_FRONT/notas/pre_logistica_1.md · fila «Una encuesta llega al asesor para asesorarte mejor» [p324 00:13:34]",
+   "ENTRENAMIENTO_FRONT/notas/ago01.md · pregunta 16 «no se me abre la encuesta» → se le manda el enlace [01:17:29]"
+  ]
+ },
+ {
+  "id": "kit-del-importador",
+  "tema": "plataforma y accesos",
+  "pais": "todos",
+  "preguntas": [
+   "que es el kit del importador",
+   "donde esta el kit del importador",
+   "el asesor no me entrega el kit del importador",
+   "la plataforma me pide el kit del importador y se queda bloqueada",
+   "como accedo al kit",
+   "donde veo el protocolo de proveedor seguro"
+  ],
+  "respuesta_base": "El Kit del Importador son videos cortos del curso sobre el protocolo de proveedor seguro: dónde buscar proveedores (Alibaba, YiwuGo y 1688) y los 5 puntos para verificarlos. Están en el módulo 1, «Protocolo proveedor seguro». Si te aparece bloqueado, queda anotado con tu correo para que tu asesor lo revise.",
+  "pasos": [],
+  "enlace": "https://player.mediadelivery.net/embed/635104/4fc20afd-2b52-4e14-8612-6313561d4631?t=0",
+  "pasar_a": "asesor",
+  "pedir": "el correo con el que te registraste (solo si le aparece bloqueado)",
+  "no_decir": [
+   "No repetir las promesas del video de bienvenida del kit («en menos de 30 minutos», «en una sola tarde») ni sus cifras de trayectoria.",
+   "No decir que el asesor tiene que entregar el kit ni que se desbloquea con un pago: no hay fuente.",
+   "No dar el costo de la insignia «verificado» de Alibaba: las clases dan cifras distintas."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_FRONT/notas/pre_tutoriales_kit.md · §1 tabla general, filas p791 y p795 (limpios) y §3.2",
+   "ENTRENAMIENTO_FRONT/MAPA_TUTORIALES.md · P25 «Dónde buscar proveedores seguros» (MÓDULO 1 | PROTOCOLO PROVEEDOR SEGURO; «se le puede reenviar al alumno»)",
+   "PORTAL_PUESTOS/CURSO_ONBOARDING_FRONT.md · lecciones 1.4 y 1.5 (Kit)"
+  ]
+ },
+ {
+  "id": "eco-incogniton",
+  "tema": "ecommerce-producto",
+  "pais": "todos",
+  "preguntas": [
+   "para que sirve incogniton",
+   "no puedo instalar incogniton me da error",
+   "no puedo descargar la app incogniton",
+   "incogniton me pide crear una cuenta",
+   "como entro a dropkiller con incognito",
+   "donde descargo incogniton",
+   "ya instale el programa y no abre la herramienta"
+  ],
+  "respuesta_base": "Incogniton es el programa por el que se entra a las herramientas de la comunidad, como Dropkiller: no se entra directo a Dropkiller. Se descarga desde el enlace que está debajo del video «Busca un producto ganador», del módulo 3 del Dropsystem. No crees una cuenta nueva: inicia sesión con los datos que da esa lección.",
+  "pasos": [
+   "Descarga Incogniton desde el enlace que está debajo del video «Busca un producto ganador».",
+   "Inicia sesión con los datos de la lección; no crees una cuenta nueva.",
+   "Si te pide una actualización, actualízalo.",
+   "Abre el perfil «herramientas» y da clic en «Iniciar».",
+   "Si se cierra la herramienta, escribe su nombre en ese mismo espacio y vuelve a abrirla."
+  ],
+  "enlace": "",
+  "pasar_a": "ecommerce",
+  "pedir": "el sistema de tu computadora y el mensaje que te sale, escrito (si no logra instalarlo)",
+  "no_decir": [
+   "Nunca escribir el correo, la clave ni los códigos de la cuenta compartida de herramientas.",
+   "No decir cuánto cuesta Dropkiller: en clase se dieron cifras distintas.",
+   "No confirmar si funciona con otros navegadores (Dolphin Anty u otros) ni en Linux: no hay fuente; lo ve el equipo."
+  ],
+  "fuentes": [
+   "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.json · m3_01 «Busca un producto ganador» (pasos 00:00:00–00:01:02 y errores_y_soluciones)",
+   "ENTRENAMIENTO_FRONT/notas/oct02.md · fila «Dropkiller (acceso)» [00:56:09] («No entren directo a Dropkiller») y pregunta 15 (no crear cuenta)",
+   "ENTRENAMIENTO_FRONT/notas/oct01.md · pregunta 11 (Linux: lo revisa el equipo técnico) [01:26:25]",
+   "fichas_bot.json · `dropkiller-acceso` (no_decir sobre la cuenta compartida)"
+  ]
+ },
+ {
+  "id": "planes-precio-y-que-incluye",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "cuanto cuesta el curso",
+   "cuanto cuesta entrar al club de importadores",
+   "que beneficios tiene pagar 39 dolares al mes",
+   "que incluye la membresia del club",
+   "cual es la diferencia entre mapa, vip mapa y club",
+   "me pasan una proforma del valor total del curso",
+   "un amigo quiere entrar al club como hace",
+   "por que pagar 697 si el curso dice 197"
+  ],
+  "respuesta_base": "No todos los planes incluyen lo mismo: Infoaduana y el cotizador, por ejemplo, no vienen en todos. El precio y lo que incluye cada plan te lo confirma el área comercial.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "comercial",
+  "pedir": "qué plan o curso te interesa y si estás en Ecuador o México",
+  "no_decir": [
+   "No dar ningún precio de curso, Club, Mapa, VIP, membresía ni franquicia, ni confirmar o corregir una cifra que el cliente oyó o leyó (197, 697, 167, 39, 15 mil pesos): no hay lista de precios vigente en las fuentes.",
+   "No comparar planes ni decir qué incluye cada uno: no hay fuente.",
+   "No ofrecer ni confirmar descuentos, promociones o precio especial por ser alumno anterior o del Club.",
+   "No emitir proformas ni pasar enlaces de pago o cuentas."
+  ],
+  "fuentes": [
+   "fichas_bot.json · ficha `herramientas-premium` (IMPORSUIT ConocimientoFront.php · `herramientas-premium`: «no todos los planes las incluyen»; no_decir «No dar precios de planes»)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §2 «Precios, tarifas y descuentos», §6 «Pagos» y §15 (no confirma promesas oídas en clase)",
+   "memory/project_alexandra_quishpi_ventas242_2026-09-21.md · las membresías y sus cuotas las lleva la línea de Ventas (plantillas `membresia_*` y `cuota_*`), no Expertos",
+   "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §5-§6 (ofertas con precio ya vencidas: «3 meses por 5 dólares», cierre de inscripciones)"
+  ]
+ },
+ {
+  "id": "renovar-o-retomar-membresia",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "como renuevo la membresia",
+   "mi membresia esta por vencer que hago",
+   "cuanto pagaria de renovacion si sigo importando",
+   "quiero retomar mi suscripcion vencida de imporsuit",
+   "me volvi a suscribir al club que tengo que hacer",
+   "cuanto pago cada año por los accesos a la plataforma",
+   "puedo pausar mi membresia",
+   "quiero reinscribirme al club"
+  ],
+  "respuesta_base": "",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "comercial",
+  "pedir": "el correo con el que te registraste",
+  "no_decir": [
+   "No dar montos, plazos ni vigencia de renovación, reinscripción o pausa: no hay regla escrita.",
+   "No confirmar ni negar que el acceso es de por vida (ver ficha `eco-acceso-de-por-vida`).",
+   "No decir qué pasa con el acceso al vencer ni prometer cuándo se reactiva."
+  ],
+  "fuentes": [
+   "fichas_bot.json · ficha `eco-acceso-de-por-vida` (no_decir «No dar precios de renovación»)",
+   "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §6 («te va a durar toda tu vida» se puede reclamar como acceso de por vida)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 (no dice cuántos pagos, de cuánto ni cuándo vence) y §15",
+   "memory/project_alexandra_quishpi_ventas242_2026-09-21.md · membresías y cuotas en la línea de Ventas"
+  ]
+ },
+ {
+  "id": "franquicia",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "que es la franquicia",
+   "cuanto cuesta la franquicia para estudiantes",
+   "compre la franquicia en el congreso y no se que sigue",
+   "pague la franquicia de mexico y no tengo asesor",
+   "me habilitan los modulos de franquicia en la plataforma",
+   "puedo dar acceso a mi socio con otro correo",
+   "ustedes eligen el producto y el proveedor en la franquicia",
+   "como van las franquicias hay cupos"
+  ],
+  "respuesta_base": "",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "comercial",
+  "pedir": "el correo con el que te registraste y si es la franquicia de Ecuador o de México",
+  "no_decir": [
+   "No explicar qué es la franquicia, qué incluye, cuánto dura, cuánto cuesta ni si hay cupos: no hay fuente escrita (la oferta del congreso quedó «pendiente de precio»).",
+   "No decir quién elige producto o proveedor, ni hablar de descuentos logísticos, bodega o fulfillment.",
+   "No confirmar pagos de franquicia ni prometer activar módulos o accesos extra."
+  ],
+  "fuentes": [
+   "memory/project_presentacion_evento_20sep.md · deck de la oferta de franquicia «pendiente de precio/nombre/asesores/fecha»",
+   "memory/project_reporte_oportunidades_ventas242_2026-09-22.md · la bienvenida a la franquicia sale por la línea de Ventas («Bienvenido a la Franquicia»)",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 (no confirma pagos), §14 (no ofrece bodega ni fulfillment) y §15"
+  ]
+ },
+ {
+  "id": "evento-pase-vip",
+  "tema": "comercial",
+  "pais": "todos",
+  "preguntas": [
+   "como me inscribo al pase vip del evento",
+   "puedo llevar a mi pareja con el pase vip",
+   "a que hora y donde es la cena vip en quito",
+   "tengo el 10 por ciento de descuento del evento sin ser del club",
+   "donde es la fila para la entrada vip",
+   "quiero mi entrada al congreso"
+  ],
+  "respuesta_base": "",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "comercial",
+  "pedir": "",
+  "no_decir": [
+   "No dar fecha, hora, lugar, precio ni condiciones del evento o del pase VIP (acompañantes, descuentos): no hay fuente vigente.",
+   "No confirmar descuentos ni promesas del evento."
+  ],
+  "fuentes": [
+   "memory/project_alexandra_quishpi_ventas242_2026-09-21.md · los avisos del congreso VIP salen por la línea de Ventas (plantillas `congreso_vip_*`)",
+   "memory/project_reporte_oportunidades_ventas242_2026-09-22.md · pedidos de entrada al congreso atendidos en Ventas",
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §2 (descuentos) y §15 (promesas)"
   ]
  }
 ]
