@@ -594,16 +594,52 @@ async function previewMensaje(id_producto, id_configuracion, wizardInput = {}) {
    OpenAI — helpers
    ══════════════════════════════════════════════════════════════ */
 
+/* Solo para las IMÁGENES del wizard (gpt-image): eso no tiene equivalente en
+   Claude, así que siempre pide la llave de OpenAI. */
 async function apiKeyObligatoria(id_configuracion) {
   const key = await obtenerApiKeyOpenAI(id_configuracion);
   if (!key) {
     throw errorCon(
-      'Conecta tu API key de OpenAI en Asistentes para generar con IA.',
+      'Las imágenes de producto con IA se generan con OpenAI: conecta una API Key de OpenAI en Asistentes (aunque el bot responda con Claude).',
       'OPENAI_KEY_MISSING',
       400,
     );
   }
   return key;
+}
+
+/* Fase 2 Claude: textos del wizard y simulador van por el proveedor de la
+   cuenta. Devuelve { api_key_openai, proveedor_ia, api_key_claude, usarClaude }
+   y lanza si no hay con qué generar. */
+async function llavesObligatorias(id_configuracion) {
+  const { llavesDeCuenta } = require('../utils/claude/claude');
+  const llaves = await llavesDeCuenta(id_configuracion);
+  if (!llaves.api_key_openai && !llaves.usarClaude) {
+    throw errorCon(
+      'Conecta tu API key de OpenAI o de Claude en Asistentes para generar con IA.',
+      'OPENAI_KEY_MISSING',
+      400,
+    );
+  }
+  return llaves;
+}
+
+function traducirErrorClaude(e) {
+  const { mensajeErrorClaude, esSinSaldoClaude, esApiKeyClaudeInvalida } =
+    require('../utils/claude/claude');
+  if (esApiKeyClaudeInvalida(e))
+    return errorCon(
+      'Tu API Key de Claude no es válida o fue revocada. Revísala en Asistentes.',
+      'OPENAI_KEY_INVALID',
+      400,
+    );
+  if (esSinSaldoClaude(e))
+    return errorCon(
+      'Tu cuenta de Claude no tiene saldo. Recárgala en console.anthropic.com.',
+      'OPENAI_NO_CREDIT',
+      402,
+    );
+  return errorCon(`Claude: ${mensajeErrorClaude(e)}`, 'OPENAI_ERROR', 502);
 }
 
 function traducirErrorOpenAI(e) {
@@ -816,7 +852,8 @@ Reglas obligatorias:
 - No inventes envío, garantía ni tiempos: si la ficha no los trae, usa lo genérico del negocio ("envío a todo el país, pagas al recibir") sin cifras.`;
 
 async function generarTextos({ id_configuracion, id_producto, wizardInput }) {
-  const apiKey = await apiKeyObligatoria(id_configuracion);
+  const llaves = await llavesObligatorias(id_configuracion);
+  const apiKey = llaves.api_key_openai;
   const producto = await cargarProducto(id_producto, id_configuracion);
   if (!producto) throw errorCon('Producto no encontrado.', 'NOT_FOUND', 404);
 
@@ -851,20 +888,49 @@ async function generarTextos({ id_configuracion, id_producto, wizardInput }) {
     .filter(Boolean)
     .join('\n\n');
 
-  const { json, modelo, total_tokens } = await responsesJson({
-    apiKey,
-    model: MODELO_TEXTOS,
-    instructions: INSTRUCCIONES_TEXTOS,
-    input: [
-      {
-        role: 'user',
-        content: [{ type: 'input_text', text: `FICHA CRUDA DEL PRODUCTO:\n\n${ficha}` }],
-      },
-    ],
-    schema: SCHEMA_TEXTOS,
-    nombreSchema: 'wizard_producto_textos',
-    maxTokens: 4000,
-  });
+  let json;
+  let modelo;
+  let total_tokens;
+  if (llaves.usarClaude) {
+    const { claudeJson, MODELO_REDACTOR } = require('../utils/claude/claude');
+    let r;
+    try {
+      r = await claudeJson({
+        api_key_claude: llaves.api_key_claude,
+        system: INSTRUCCIONES_TEXTOS,
+        input: `FICHA CRUDA DEL PRODUCTO:\n\n${ficha}`,
+        schema: SCHEMA_TEXTOS,
+        model: MODELO_REDACTOR,
+        max_tokens: 4000,
+        effort: 'medium',
+      });
+    } catch (e) {
+      throw traducirErrorClaude(e);
+    }
+    if (!r.json) {
+      throw errorCon(
+        'La IA devolvió una respuesta que no se pudo leer. Intenta de nuevo.',
+        'OPENAI_EMPTY',
+        502,
+      );
+    }
+    ({ json, modelo, total_tokens } = r);
+  } else {
+    ({ json, modelo, total_tokens } = await responsesJson({
+      apiKey,
+      model: MODELO_TEXTOS,
+      instructions: INSTRUCCIONES_TEXTOS,
+      input: [
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text: `FICHA CRUDA DEL PRODUCTO:\n\n${ficha}` }],
+        },
+      ],
+      schema: SCHEMA_TEXTOS,
+      nombreSchema: 'wizard_producto_textos',
+      maxTokens: 4000,
+    }));
+  }
 
   const bullets = (json.bullets_beneficios || [])
     .map((b) => String(b || '').trim())
@@ -1648,7 +1714,8 @@ async function simularTurno({
   const faq_omitida = matchFaq && compra ? matchFaq.faq.pregunta : null;
 
   // 2) IA de la columna que atiende (la inicial, o la que siguió el hilo)
-  const apiKey = await apiKeyObligatoria(id_configuracion);
+  const llaves = await llavesObligatorias(id_configuracion);
+  const apiKey = llaves.api_key_openai;
   const CAMPOS_COL = `id, nombre, estado_db, instrucciones, modelo, max_tokens, vector_store_id,
               vector_store_docs_id, catalogo_inline, catalogo_inline_tokens, activa_ia`;
   let col = null;
@@ -1825,6 +1892,8 @@ async function simularTurno({
           id_configuracion,
           id_cliente: `sim_${id_configuracion}_${id_producto}`,
           api_key_openai: apiKey,
+          proveedor_ia: llaves.proveedor_ia,
+          api_key_claude: llaves.api_key_claude,
           paisNombre: nombrePaisDe({ pais_plantilla: cfgPais?.pais_plantilla, telefono: cfgPais?.telefono }),
           transcriptExterno,
         });
@@ -1841,9 +1910,12 @@ async function simularTurno({
   }
 
   const catalogoInline = String(col.catalogo_inline || '').trim();
+  // Con Claude no hay file_search: el catálogo va inline si existe (igual
+  // que en el motor en vivo).
   const usarInline =
     Boolean(catalogoInline) &&
-    catalogoInlineActivo(id_configuracion, Number(col.catalogo_inline_tokens || 0));
+    (llaves.usarClaude ||
+      catalogoInlineActivo(id_configuracion, Number(col.catalogo_inline_tokens || 0)));
 
   /* Nota de rescate (igual que el paso 6.7 del motor): si el turno anterior
      fue un cierre bloqueado, el modelo cree que ya cerró (su resumen quedó en
@@ -1907,21 +1979,51 @@ async function simularTurno({
       ];
 
   let r;
-  try {
-    r = await ejecutarConResponsesAPI({
-      previous_response_id: previous_response_id || null,
-      instructions,
-      additional_instructions: null,
-      input,
-      model: col.modelo || 'gpt-4o-mini',
-      max_tokens: col.max_tokens || 500,
-      vector_store_id: usarInline ? null : col.vector_store_id || null,
-      vector_store_docs_id: col.vector_store_docs_id || null,
-      api_key_openai: apiKey,
-      id_configuracion,
-    });
-  } catch (e) {
-    throw traducirErrorOpenAI(e);
+  if (llaves.usarClaude) {
+    /* Claude no encadena: cada turno lleva el recap (el front manda el
+       historial). Si todavía no hay historial pero sí mensaje fijo, el fijo
+       entra como primer turno del asistente. Los documentos de conocimiento
+       van inline, como en el motor. */
+    const { ejecutarConClaude } = require('../utils/claude/claude');
+    const { bloqueDocumentosClaude } = require('../utils/claude/documentos');
+    const docs = await bloqueDocumentosClaude(col.id);
+    let entradaClaude = textoInput;
+    if (!hist.length && mensaje_fijo) {
+      entradaClaude =
+        `[CONTEXTO DE LA CONVERSACIÓN PREVIA — retómala, NO saludes de nuevo ni pidas datos ya dados]\nAsistente: ${recortar(String(mensaje_fijo), 500)}\n\n` +
+        `[MENSAJE ACTUAL DEL CLIENTE]\n${texto}`;
+    }
+    try {
+      r = await ejecutarConClaude({
+        instructions: docs.bloque ? `${instructions}\n\n${docs.bloque}` : instructions,
+        additional_instructions: null,
+        input: entradaClaude,
+        model: col.modelo,
+        max_tokens: col.max_tokens || 500,
+        api_key_claude: llaves.api_key_claude,
+      });
+      // Sin cadena: que el siguiente turno vuelva a sembrar con el historial.
+      r.response_id = null;
+    } catch (e) {
+      throw traducirErrorClaude(e);
+    }
+  } else {
+    try {
+      r = await ejecutarConResponsesAPI({
+        previous_response_id: previous_response_id || null,
+        instructions,
+        additional_instructions: null,
+        input,
+        model: col.modelo || 'gpt-4o-mini',
+        max_tokens: col.max_tokens || 500,
+        vector_store_id: usarInline ? null : col.vector_store_id || null,
+        vector_store_docs_id: col.vector_store_docs_id || null,
+        api_key_openai: apiKey,
+        id_configuracion,
+      });
+    } catch (e) {
+      throw traducirErrorOpenAI(e);
+    }
   }
 
   let crudo = String(r?.respuesta || '');
@@ -2134,6 +2236,7 @@ async function simularTurno({
 }
 
 module.exports = {
+  SCHEMA_TEXTOS, // lo usa scripts/probar_claude_fase2.js
   simularTurno,
   limpiarPasosFlujo,
   cargarVariaciones,
