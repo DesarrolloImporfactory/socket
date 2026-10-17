@@ -337,9 +337,10 @@ const NADA = [
   prueba('nombra el bloque como «posiblemente relacionadas»', prompt.includes('📚 FICHAS DE LA BASE posiblemente relacionadas'));
   prueba('la regla C exige que responda EXACTAMENTE lo que preguntó: la misma pregunta, no el mismo tema', /La usas SOLO si responde EXACTAMENTE lo que preguntó: la misma pregunta, no el mismo tema/.test(prompt));
   prueba('…y si ninguna responde, es paso a asesor con el dato que falta', /Si NINGUNA responde exactamente, no las uses ni las menciones: es D\. El MENSAJE DE PASO A ASESOR y, si hace falta, el dato que falta/.test(prompt));
-  prueba('…ante la duda, pasa', /Ante la duda entre contestar con una ficha y pasar, pasas/.test(prompt));
+  prueba('…ante la duda, contesta lo que sí sabe y pasa solo lo que falta', /Ante la duda, contestas lo que la ficha o P sí dicen y pasas solo lo que falte/.test(prompt));
   prueba('dice que una ficha que pasa a una persona NUNCA va sola', /\(NO CIERRA SOLA\)/.test(prompt) && /Una ficha así NUNCA va sola/.test(prompt));
-  prueba('la gestión que ya lleva con su asesor manda sobre cualquier ficha', /Sigue una gestión que ya lleva con su asesor[^\n]*Eso manda sobre cualquier ficha/.test(prompt));
+  prueba('su cotización o su pago van a una persona; «qué sigue» se explica con el proceso', /pregunta por SU cotización o SU pago \(eso es D; si pregunta qué sigue en el proceso, es P\)/.test(prompt));
+  prueba('el proceso de importación va siempre en el prompt, con sus 6 partes y sin cifras', /P\) EL PROCESO DE IMPORTACIÓN\. Lo sabes siempre/.test(prompt) && /6\. Viaje y entrega/.test(prompt) && /Aquí no hay precios, plazos ni fechas/.test(prompt));
   prueba('trae ejemplos de «habla del tema pero no contesta» (aviso y otra pregunta)', /Listo, ya instalé WeChat/.test(prompt) && /es el tema, no la pregunta/.test(prompt));
   prueba(`sigue cabiendo holgado y por debajo de la versión 1 (${prompt.length} caracteres)`, prompt.length < 28347);
 
