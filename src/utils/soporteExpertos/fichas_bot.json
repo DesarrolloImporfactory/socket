@@ -36,7 +36,14 @@
    "cuanto me sale traer esto",
    "que necesito para que me coticen",
    "les mando la foto del producto para que me coticen",
-   "necesito un costeo"
+   "necesito un costeo",
+   "me ayudas cotizando esta lista",
+   "encontre otro proveedor me ayudas cotizando",
+   "quiero traer arboles de navidad me ayudan cotizando",
+   "ya tengo productos especificos para importar",
+   "el precio unitario es tanto y el flete tanto me cotizan",
+   "necesito cotizar varios productos",
+   "me cotizan este producto que encontre"
   ],
   "respuesta_base": "Las cotizaciones las hace el área de precios. Se necesitan 3 datos que te da tu proveedor: el precio por unidad, cuántas unidades vienen en cada caja y el volumen de la caja (CBM) o sus medidas. Sirve una captura de la respuesta del proveedor o la proforma. Una foto del producto sola no alcanza.",
   "pasos": [
@@ -97,7 +104,9 @@
    "que es una proforma invoice",
    "mi proveedor me mando un PI que es eso",
    "la proforma sirve para cotizar",
-   "tengo que pedir proforma"
+   "tengo que pedir proforma",
+   "ya me enviaron la proforma me ayudas verificando",
+   "me revisan la proforma del proveedor"
   ],
   "respuesta_base": "La proforma es el documento que te entrega tu proveedor con el detalle de tu pedido. Es lo que el área de precios necesita para cotizar.",
   "pasos": [],
@@ -267,7 +276,11 @@
    "que direccion le doy al proveedor",
    "do you have a forwarder que le respondo",
    "necesito las instrucciones de carga",
-   "direccion de yiwu porfa"
+   "direccion de yiwu porfa",
+   "le digo al proveedor que se contacte con el agente en china",
+   "el proveedor tiene que hablar con su agente en china",
+   "debo decirle al proveedor que se contacte con el agente en china",
+   "el proveedor se contacta con el agente en china"
   ],
   "respuesta_base": "Es lo primero que suelen preguntar los proveedores. La respuesta es pasarle el documento de «instrucciones de carga» de IMPORFACTORY: viene en chino y en español y trae la dirección de la bodega en China y los datos para coordinar la entrega. Se lo pasas tal cual, sin modificar nada. El documento se entrega por privado y por el grupo de WhatsApp de tu ciclo.",
   "pasos": [],
@@ -441,7 +454,13 @@
    "tienen lista de proveedores",
    "donde estan los proveedores verificados",
    "no encuentro proveedor para mi producto",
-   "me pasan contacto de un proveedor"
+   "me pasan contacto de un proveedor",
+   "necesito otro contacto para importar de china",
+   "me ayudan con los proveedores para mi primera importacion",
+   "sobre los contactos de los proveedores",
+   "tienen contactos de proveedores de accesorios",
+   "necesito algun otro contacto de proveedor en china",
+   "me pasan otro contacto para importar"
   ],
   "respuesta_base": "El primer lugar es el directorio de proveedores de la plataforma, en «Importaciones»: cada tarjeta dice qué tipo de producto vende el proveedor; unas traen el ID de WeChat para escribirle y otras un botón «Ver en Alibaba». Si no encuentras ahí tu producto, envía una foto del producto y queda anotado para tu asesor.",
   "pasos": [],
@@ -686,7 +705,10 @@
    "que sigue despues de recibido en china",
    "que es liberado",
    "por que etapas pasa mi carga",
-   "que significa en aduana"
+   "que significa en aduana",
+   "despues del pago que sigue",
+   "ya pague que prosigue",
+   "que pasa despues de que pago"
   ],
   "respuesta_base": "Una carga pasa por estos pasos, en orden: cotización registrada, recibido en China, en contenedor, en tránsito, en aduana, liberado y en bodega de destino. Cuando llega a la bodega de destino se coordina la entrega.",
   "pasos": [],
@@ -740,7 +762,11 @@
    "cuantos dias se demora el barco",
    "cuanto tarda en llegar a ecuador",
    "cuanto tarda a mexico",
-   "en clase dijeron 45 dias es verdad"
+   "en clase dijeron 45 dias es verdad",
+   "cualquier producto demora ese tiempo",
+   "siempre se demora tanto",
+   "cualquier producto demora ese lapso",
+   "todo demora ese tiempo"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -813,7 +839,11 @@
    "se pueden traer cosmeticos",
    "puedo traer suplementos",
    "me dejan traer baterias",
-   "se puede traer vapes"
+   "se puede traer vapes",
+   "que ropa se puede traer",
+   "ustedes estan trayendo juguetes",
+   "se puede traer un carro electrico",
+   "puedo importar maquinas o generadores"
   ],
   "respuesta_base": "Hay productos que necesitan permisos y otros que no pueden venir en carga grupal, por eso se revisa caso por caso. Para revisarlo se necesita una foto del producto y para qué se usa.",
   "pasos": [],
@@ -1907,7 +1937,12 @@
    "necesito ruc para importar",
    "necesito rfc",
    "tengo que estar en el padron de importadores",
-   "puedo importar como persona natural"
+   "puedo importar como persona natural",
+   "en mexico me piden el padron de importadores",
+   "me piden el numero de patente de mi agente aduanal",
+   "me piden el padron de importadores",
+   "que es el padron de importadores",
+   "necesito numero de patente de agente aduanal"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -1933,7 +1968,11 @@
    "necesito que llegue rapido",
    "puedo traer por courier",
    "cuanto demora por avion",
-   "por dhl me sale mejor?"
+   "por dhl me sale mejor?",
+   "el envio express por avion me sale muy caro",
+   "el proveedor me cobra mucho por el envio aereo",
+   "el proveedor me cobra el envio express por avion",
+   "el envio por avion cuesta mucho"
   ],
   "respuesta_base": "En clase se explica que el avión se usa para muestras, urgencias y cosas muy pequeñas, y que por avión se paga por kilos. Si tu carga puede venir por vía aérea lo revisa el área de precios.",
   "pasos": [],
@@ -2380,7 +2419,9 @@
    "pide inen",
    "necesita nom",
    "cuanto cuesta el registro sanitario",
-   "que permisos pide cofepris"
+   "que permisos pide cofepris",
+   "para articulos usados se requiere inen",
+   "los productos usados necesitan permiso"
   ],
   "respuesta_base": "Hay productos que necesitan permisos y otros que no pueden venir en carga grupal, por eso se revisa caso por caso.",
   "pasos": [],
@@ -6688,6 +6729,49 @@
    "memory/project_alexandra_quishpi_ventas242_2026-09-21.md · los avisos del congreso VIP salen por la línea de Ventas (plantillas `congreso_vip_*`)",
    "memory/project_reporte_oportunidades_ventas242_2026-09-22.md · pedidos de entrada al congreso atendidos en Ventas",
    "AGENTE_24_7/base_v2/NO_DECIR.md · §2 (descuentos) y §15 (promesas)"
+  ]
+ },
+ {
+  "id": "como-importar-con-imporfactory",
+  "tema": "carga",
+  "pais": "todos",
+  "preguntas": [
+   "cual es el procedimiento para importar con ustedes",
+   "quiero usar el servicio para importar desde china",
+   "como es el proceso de importacion con ustedes",
+   "cual seria la logistica para traer mi producto",
+   "deseo traer mercaderia de china me ayudan",
+   "voy a hacer mi primera importacion como empiezo",
+   "ya tengo el producto definido como sigo",
+   "que pasos sigo para importar",
+   "como funciona el servicio de importacion",
+   "hice el curso hace tiempo y quiero importar",
+   "cual seria el procedimiento y la logistica para realizarlo",
+   "cual es el procedimiento para importar",
+   "quisiera usar el servicio de importacion",
+   "quiero importar unos productos desde china con ustedes"
+  ],
+  "respuesta_base": "Así funciona la importación con IMPORFACTORY: tu mercadería viaja en carga grupal, en un contenedor compartido con otros importadores, por eso se puede enviar desde una sola caja.",
+  "pasos": [
+   "Consigue tu proveedor y pídele 3 datos: precio por unidad, cuántas unidades vienen en cada caja y el volumen de la caja (CBM) o sus medidas.",
+   "Envía esos datos por aquí: el área de precios te hace la cotización.",
+   "Si la aceptas, el área comercial coordina contigo el pago y recibes tu marca de envío y las instrucciones para tu proveedor.",
+   "Tu proveedor entrega en la bodega de IMPORFACTORY en Yiwu (China) y tu carga sale en el siguiente contenedor; se te avisa cada paso hasta la entrega en tu país."
+  ],
+  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "pasar_a": "",
+  "pedir": "si ya tienes proveedor: precio por unidad, unidades por caja y CBM o medidas de la caja (sirve una captura o la proforma)",
+  "no_decir": [
+   "Ningún precio, flete ni plazo de tránsito.",
+   "No dar el mínimo de compra en metros cúbicos ni en dinero: no hay dato oficial.",
+   "No decir si su producto se puede traer: eso se revisa caso por caso (ficha producto-se-puede-traer).",
+   "No dar fecha de salida del próximo contenedor."
+  ],
+  "fuentes": [
+   "fichas_bot.json · carga-grupal (ConocimientoFront `carga-grupal`)",
+   "fichas_bot.json · que-pedir-al-proveedor (ConocimientoFront `que-pedir-al-proveedor`; lección 323)",
+   "fichas_bot.json · cotizar-datos (ConocimientoFront)",
+   "fichas_bot.json · acepto-la-cotizacion (PORTAL_PUESTOS p07.json aprobada)"
   ]
  }
 ]
