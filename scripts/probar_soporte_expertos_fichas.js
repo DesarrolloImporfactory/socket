@@ -22,7 +22,7 @@ const path = require('path');
 const rutaDb = require.resolve(path.join(__dirname, '../src/database/config'));
 require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: { db: {}, db_2: {} } };
 
-const { crearBuscador, buscadorDeArchivo, bloqueFichas, UMBRAL_CERCANIA, MAX_FICHAS } = require('../src/utils/soporteExpertos/fichas');
+const { crearBuscador, buscadorDeArchivo, bloqueFichas, buscarConRescate, UMBRAL_RESCATE, UMBRAL_CERCANIA, MAX_FICHAS } = require('../src/utils/soporteExpertos/fichas');
 const { revisarRespuesta, completarPase, ofreceLoQueNoPuede } = require('../src/utils/soporteExpertos/guardia');
 const { esSoloSaludo, esReclamo, reclamaPorDemora } = require('../src/utils/soporteExpertos/senales');
 const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
@@ -510,6 +510,17 @@ const NADA = [
     const sinRegla2 = p2.replace(/NUNCA voseo \([^)]*\)/, '');
     prueba('sin voseo ni «usted» en lo nuevo, y sin promesas de fecha en los textos', !/(?<!\p{L})(vos|ten[eé]s|pod[eé]s|quer[eé]s|decime|pasame|mandame|enviame|contame|avisame)(?!\p{L})/iu.test(sinRegla2) && [T.MENSAJE_RECLAMO, T.MENSAJE_RECLAMO_CARGA, T.CIERRE_ASESOR].every((v) => !/\b(hoy|mañana|lunes|martes|miércoles|jueves|viernes|pronto|en breve|usted)\b/i.test(v)));
     prueba(`el prompt sigue por debajo de la versión 1 (${p2.length} de 28.347)`, p2.length < 28347);
+  }
+
+  console.log('\n14. Rescate de importación: una ficha de carga, cotización o proveedor aunque el mensaje sea largo');
+  {
+    const r = (q) => buscarConRescate(real, q, { pais: 'ec' });
+    const largo = 'quisiera ver la posibilidad de usar el servicio para la importación unos generadores electricos desde china';
+    const x = r(largo);
+    prueba(`un mensaje largo de importación encuentra ficha (${x.map((y) => y.ficha.id).join(', ') || 'ninguna'})`, x.length === 1 && x[0].rescate === true && ['carga', 'cotización', 'proveedor'].includes(x[0].ficha.tema));
+    prueba('si el buscador normal ya encontró, el rescate no cambia nada', JSON.stringify(r('como cotizo un producto').map((y) => y.ficha.id)) === JSON.stringify(buscar('como cotizo un producto').map((y) => y.ficha.id)));
+    prueba('un saludo o una cita no se rescatan', !r('Johan como te va buenas tardes').length && !r('Confirmado, nos reunimos a las 3pm').length);
+    prueba('el rescate trae una sola ficha y nunca de otro tema', r(largo).length <= 1 && UMBRAL_RESCATE < UMBRAL_CERCANIA);
   }
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
