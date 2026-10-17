@@ -246,6 +246,25 @@ const RE_CODIGO_DEL_CLIENTE = new RegExp(
 const RE_CODIGO_DE_PRODUCTO = /(?<![\p{L}\d])(?!(?:usd|us|rmb|cny|mxn|eur|dia|el|al|del)-?\d)[a-z]{2,10}-?\d{1,8}(?:-[a-z\d]+)*(?![\p{L}\d])/giu;
 const codigoNormal = (c) => sinTildes(c).replace(/[^a-z0-9]/g, '');
 
+/* La lista de los pasos por los que pasa TODA carga («cotización registrada,
+   recibido en China, en contenedor, en tránsito, en aduana, liberado y en
+   bodega de destino») explica el proceso: no afirma nada de la carga de este
+   cliente. Sin esto, «¿cómo funciona la importación?» se cambiaba por el paso
+   a asesor (simulación del 17-oct). Se quita solo la frase o línea que nombra
+   4 pasos distintos o más: «tu carga está en tránsito» sigue frenándose. */
+const RE_PASO_DEL_PROCESO = /cotizacion registrada|recibido en china|en contenedor|en transito|en aduana|liberad[oa]|bodega de destino/g;
+/* «Tu mensaje llegó cortado», «el enlace sí me llegó»: ese «llegó» es de un
+   mensaje, no de la carga (4 respuestas cambiadas en la simulación del 17-oct). */
+const RE_LLEGO_NO_ES_CARGA =
+  /\b(?:(?:mensaje|enlace|link|archivo|audio|nota de voz|correo|documento|foto|imagen|captura|comprobante|proforma|punto \d+|consulta|pregunta)(?: \S+){0,2} llego|(?:me|te|nos) llego)\b/g;
+function sinListaDePasos(texto) {
+  return String(texto)
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((f) => new Set(plano(f).match(RE_PASO_DEL_PROCESO) || []).size < 4)
+    .map((f) => plano(f).replace(RE_LLEGO_NO_ES_CARGA, ' '))
+    .join(' ');
+}
+
 /** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
 function datoSinRespaldo(texto, firme, eco, estado = firme) {
   const firmePlano = plano(firme);
@@ -291,7 +310,7 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   for (const monto of sinEnlaces.match(RE_DINERO) || []) {
     if (!firmePlano.includes(plano(monto))) return `traía el monto «${monto.trim()}», que no sale de un dato leído`;
   }
-  for (const frase of plano(sinEnlaces).match(RE_ESTADO_CARGA) || []) {
+  for (const frase of plano(sinListaDePasos(sinEnlaces)).match(RE_ESTADO_CARGA) || []) {
     if (!estadoPlano.includes(frase)) return `afirmaba «${frase}» sobre una carga sin un dato leído que lo diga`;
   }
 
