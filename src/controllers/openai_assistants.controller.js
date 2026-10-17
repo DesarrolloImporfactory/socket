@@ -784,10 +784,34 @@ exports.actualizar_api_key_claude = catchAsync(async (req, res, next) => {
     },
   );
 
+  // De qué organización de Anthropic es la llave (mismo fin que con OpenAI:
+  // saber dónde recargar). null si no se pudo; nunca frena el guardado.
+  const { obtenerCuentaClaude } = require('../utils/claude/cuentaClaude');
+  const cuenta = await obtenerCuentaClaude(api_key);
+
   return res.status(200).json({
     status: '200',
     message: 'API Key de Claude validada y guardada',
+    cuenta,
   });
+});
+
+/* De qué organización de Anthropic es la llave de Claude guardada.
+   GET /api/v1/openai_assistants/claude_cuenta?id_configuracion= */
+exports.claude_cuenta = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.query;
+  if (!id_configuracion) {
+    return next(new AppError('Falta el campo id_configuracion', 400));
+  }
+  const [row] = await db.query(
+    `SELECT api_key_claude FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!row) return next(new AppError('Configuración no encontrada', 404));
+  const apiKey = leerApiKeyClaude(row.api_key_claude);
+  const { obtenerCuentaClaude } = require('../utils/claude/cuentaClaude');
+  const cuenta = apiKey ? await obtenerCuentaClaude(apiKey) : null;
+  res.status(200).json({ status: '200', cuenta });
 });
 
 /* Borra la llave de Claude. Si el bot estaba respondiendo con Claude, vuelve
@@ -826,10 +850,11 @@ exports.actualizar_proveedor_ia = catchAsync(async (req, res, next) => {
   }
 
   const [row] = await db.query(
-    `SELECT api_key_openai, api_key_claude FROM configuraciones WHERE id = ? LIMIT 1`,
+    `SELECT api_key_openai, api_key_claude, proveedor_ia FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   if (!row) return next(new AppError('Configuración no encontrada', 404));
+  const proveedorAnterior = String(row.proveedor_ia || 'openai').toLowerCase();
 
   const tieneLlave =
     proveedor === 'claude'
@@ -853,9 +878,38 @@ exports.actualizar_proveedor_ia = catchAsync(async (req, res, next) => {
     { replacements: [proveedor, id_configuracion], type: db.QueryTypes.UPDATE },
   );
 
+  /* Al cambiar de proveedor se corta la cadena de OpenAI (previous_response_id)
+     de todos los clientes de la cuenta. Claude no encadena —cada turno se
+     siembra con el recap de mensajes_clientes— y mientras el bot respondía con
+     Claude la cadena de OpenAI quedó congelada en el último turno de OpenAI:
+     al volver, el bot retomaría desde ahí y no sabría nada de lo conversado
+     con Claude. Sin cadena, el siguiente turno de OpenAI se siembra con el
+     recap (los últimos 30 mensajes de la BD), que sí trae todo. En el sentido
+     OpenAI → Claude no hace falta, pero cortar en ambos deja un solo criterio:
+     cambiar de proveedor = conversación rearmada desde nuestra BD. */
+  let cadenas_reiniciadas = 0;
+  if (proveedorAnterior !== proveedor) {
+    try {
+      const [, meta] = await db.query(
+        `UPDATE openai_threads t
+           JOIN clientes_chat_center c ON c.id = t.id_cliente_chat_center
+            SET t.response_id = NULL
+          WHERE c.id_configuracion = ? AND t.response_id IS NOT NULL`,
+        { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
+      );
+      cadenas_reiniciadas = Number(meta?.affectedRows ?? meta) || 0;
+      console.log(
+        `[proveedor_ia] cfg ${id_configuracion}: ${proveedorAnterior} → ${proveedor} · ${cadenas_reiniciadas} cadenas de OpenAI reiniciadas (se siembran con el recap)`,
+      );
+    } catch (e) {
+      console.error('[proveedor_ia] no se pudieron reiniciar las cadenas:', e.message);
+    }
+  }
+
   return res.status(200).json({
     status: '200',
     proveedor_ia: proveedor,
+    cadenas_reiniciadas,
     message:
       proveedor === 'claude'
         ? 'El bot ahora responde con Claude'
