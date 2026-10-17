@@ -102,6 +102,116 @@ async function getApiKey(id_configuracion) {
 // Igual que getApiKey pero devuelve null en vez de fallar: para los endpoints
 // de solo lectura, que deben seguir mostrando lo que hay en BD aunque la
 // cuenta se haya quedado sin key.
+/* ── Fase 2 Claude: registro del archivo con su texto ──────────
+   Claude no tiene file_search, así que el texto del documento se extrae al
+   subirlo (utils/claude/textoDeArchivo.js) y se guarda en kanban_archivos +
+   kanban_columna_archivos; el motor lo mete inline cuando la cuenta responde
+   con Claude (utils/claude/documentos.js). Una cuenta SIN llave de OpenAI y
+   con Claude sube el archivo igual: queda solo en nuestra BD con un id
+   `local_…` en openai_file_id (la columna es NOT NULL), que es el id que ve
+   el front. Si la columna texto_extraido aún no
+   existe (migración kanban_archivos_texto_extraido_migration.sql pendiente),
+   el registro se hace sin texto y se avisa en consola. */
+async function registrarArchivoConTexto({
+  col,
+  archivo,
+  openai_file_id = null,
+  vector_store_id = null,
+  vector_store_file_id = null,
+  status = 'completed',
+  extraido = null,
+  id_sub_usuario = null,
+}) {
+  const kanbanArchivos = require('../services/kanban_archivos.service');
+  const file_id =
+    openai_file_id ||
+    `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const storage_path = await kanbanArchivos
+    .guardarCopiaLocal(archivo.buffer, col.id_configuracion, archivo.originalname)
+    .catch(() => null);
+  const [id_archivo] = await db.query(
+    `INSERT INTO kanban_archivos
+       (id_configuracion, nombre_original, mime, bytes, openai_file_id,
+        storage_path, status, id_sub_usuario)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    {
+      replacements: [
+        col.id_configuracion,
+        archivo.originalname,
+        archivo.mimetype,
+        archivo.size,
+        file_id,
+        storage_path,
+        status,
+        id_sub_usuario,
+      ],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+  let conTexto = false;
+  if (extraido?.texto) {
+    try {
+      await db.query(
+        `UPDATE kanban_archivos SET texto_extraido = ?, texto_chars = ? WHERE id = ?`,
+        {
+          replacements: [extraido.texto, extraido.chars, id_archivo],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+      conTexto = true;
+    } catch (e) {
+      console.error(
+        `[subirArchivo] no se guardó el texto para Claude (¿falta kanban_archivos_texto_extraido_migration.sql?): ${e.message}`,
+      );
+    }
+  }
+  await db.query(
+    `INSERT INTO kanban_columna_archivos
+       (id_kanban_columna, id_archivo, vector_store_id, vector_store_file_id, status)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       vector_store_id = VALUES(vector_store_id),
+       vector_store_file_id = VALUES(vector_store_file_id),
+       status = VALUES(status)`,
+    {
+      replacements: [col.id, id_archivo, vector_store_id, vector_store_file_id, status],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+  return { id_archivo, file_id, conTexto, storage_path };
+}
+
+const esIdLocal = (file_id) => /^local_/.test(String(file_id || ''));
+
+/* Archivos de la columna que SOLO viven en nuestra BD (subidos con Claude y
+   sin llave de OpenAI) + qué archivos de OpenAI ya tienen texto para Claude. */
+async function archivosLocalesDeColumna(id_kanban_columna) {
+  try {
+    const filas = await db.query(
+      `SELECT ka.id, ka.nombre_original, ka.bytes, ka.openai_file_id,
+              ka.created_at, ka.texto_chars
+         FROM kanban_columna_archivos kca
+         INNER JOIN kanban_archivos ka ON ka.id = kca.id_archivo
+        WHERE kca.id_kanban_columna = ? AND ka.deleted_at IS NULL
+        ORDER BY ka.created_at ASC`,
+      { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+    );
+    return filas;
+  } catch (e) {
+    if (!/texto_chars/i.test(String(e?.message))) throw e;
+    // Migración pendiente: sin la columna texto_chars.
+    return db.query(
+      `SELECT ka.id, ka.nombre_original, ka.bytes, ka.openai_file_id,
+              ka.created_at, NULL AS texto_chars
+         FROM kanban_columna_archivos kca
+         INNER JOIN kanban_archivos ka ON ka.id = kca.id_archivo
+        WHERE kca.id_kanban_columna = ? AND ka.deleted_at IS NULL
+        ORDER BY ka.created_at ASC`,
+      { replacements: [id_kanban_columna], type: db.QueryTypes.SELECT },
+    );
+  }
+}
+
 async function getApiKeyOpcional(id_configuracion) {
   const [row] = await db.query(
     `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
@@ -302,11 +412,37 @@ exports.obtenerAsistente = catchAsync(async (req, res, next) => {
     }
   };
 
-  const [archivosCatalogo, archivosDocs] = await Promise.all([
+  const [archivosCatalogo, archivosDocs, locales] = await Promise.all([
     listarArchivos(col.vector_store_id, 'catalogo'),
     listarArchivos(col.vector_store_docs_id, 'documento'),
+    archivosLocalesDeColumna(col.id).catch(() => []),
   ]);
-  const archivos = [...archivosDocs, ...archivosCatalogo];
+  /* Fase 2 Claude: los archivos que solo viven en nuestra BD (subidos sin
+     llave de OpenAI) se listan con id `local_<n>`; y cada archivo de OpenAI
+     que ya tiene texto extraído se marca `leido_claude`. */
+  const textoPorFileId = new Map();
+  const soloLocales = [];
+  for (const l of locales) {
+    if (!esIdLocal(l.openai_file_id)) {
+      if (Number(l.texto_chars) > 0) textoPorFileId.set(l.openai_file_id, true);
+    } else {
+      soloLocales.push({
+        id: l.openai_file_id,
+        nombre: l.nombre_original,
+        bytes: Number(l.bytes) || 0,
+        status: 'completed',
+        created: l.created_at,
+        origen: 'documento',
+        leido_claude: Number(l.texto_chars) > 0,
+        solo_claude: true,
+      });
+    }
+  }
+  const archivos = [
+    ...archivosDocs.map((a) => ({ ...a, leido_claude: textoPorFileId.has(a.id) })),
+    ...archivosCatalogo,
+    ...soloLocales,
+  ];
 
   return res.status(200).json({
     success: true,
@@ -616,6 +752,60 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       new AppError('La columna no tiene asistente. Créalo primero.', 400),
     );
 
+  /* Fase 2 Claude: el texto se extrae siempre que se pueda (para que el
+     documento sirva con Claude, ahora o si la cuenta cambia de proveedor). */
+  const { llavesDeCuenta } = require('../utils/claude/claude');
+  const { extraerTexto } = require('../utils/claude/textoDeArchivo');
+  const llaves = await llavesDeCuenta(col.id_configuracion);
+  const extraido = await extraerTexto(archivo.buffer, {
+    mime: archivo.mimetype,
+    nombre: archivo.originalname,
+  }).catch((e) => {
+    console.error(`[subirArchivo] no se pudo extraer texto de "${archivo.originalname}": ${e.message}`);
+    return null;
+  });
+
+  /* Sin llave de OpenAI pero con Claude: el archivo no va a OpenAI; queda en
+     nuestra BD con su texto y Claude lo lee inline. */
+  if (!llaves.api_key_openai && llaves.usarClaude) {
+    if (!extraido?.texto) {
+      return next(
+        new AppError(
+          `No se pudo leer el texto de "${archivo.originalname}". Con Claude sirven PDF, DOCX, XLSX, CSV, TXT, MD, JSON y HTML con texto (no imágenes escaneadas).`,
+          400,
+        ),
+      );
+    }
+    const reg = await registrarArchivoConTexto({
+      col,
+      archivo,
+      status: 'completed',
+      extraido,
+      id_sub_usuario: req.user?.id || null,
+    });
+    if (!reg.conTexto) {
+      return next(
+        new AppError(
+          'El archivo se guardó pero no su texto: falta aplicar la migración kanban_archivos_texto_extraido_migration.sql.',
+          500,
+        ),
+      );
+    }
+    return res.status(200).json({
+      success: true,
+      file_id: reg.file_id,
+      nombre: archivo.originalname,
+      bytes: archivo.size,
+      status: 'completed',
+      origen: 'documento',
+      leido_claude: true,
+      solo_claude: true,
+      texto_chars: extraido.chars,
+      vector_store_id: col.vector_store_id,
+      vector_store_docs_id: col.vector_store_docs_id,
+    });
+  }
+
   const apiKey = await getApiKey(col.id_configuracion);
   const USAR_RESPONSES_API = usaResponsesApi(col.id_configuracion);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -770,6 +960,26 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       });
     }
 
+    /* ── Registro con texto para Claude (best-effort) ──────────
+       El archivo ya está en OpenAI; acá queda también en nuestra BD con el
+       texto extraído, para que Claude lo lea inline. No tumba la subida. */
+    let leido_claude = false;
+    try {
+      const reg = await registrarArchivoConTexto({
+        col,
+        archivo,
+        openai_file_id: file_id,
+        vector_store_id: vectorStoreId,
+        vector_store_file_id: vsFileId,
+        status,
+        extraido,
+        id_sub_usuario: req.user?.id || null,
+      });
+      leido_claude = reg.conTexto;
+    } catch (e) {
+      console.error(`[subirArchivo] registro local falló: ${e.message}`);
+    }
+
     /* ── Adopción del directorio de agencias ──────────────────
        Si el archivo subido se llama EXACTAMENTE como el directorio del switch
        de retiro en agencia y el switch está encendido, se adopta como el
@@ -807,6 +1017,8 @@ exports.subirArchivo = catchAsync(async (req, res, next) => {
       bytes: archivo.size,
       status: 'completed',
       origen: docsSeparados ? 'documento' : 'catalogo',
+      leido_claude,
+      texto_chars: extraido?.chars || 0,
       // Se devuelven los dos por separado para que el front no tenga que
       // adivinar cuál cambió. Los que ya usan `vector_store_id` siguen
       // recibiéndolo con el mismo significado de siempre.
@@ -835,6 +1047,29 @@ exports.eliminarArchivo = catchAsync(async (req, res, next) => {
     { replacements: [id], type: db.QueryTypes.SELECT },
   );
   if (!col) return next(new AppError('Columna no encontrada', 404));
+
+  /* Fase 2 Claude: el registro local del archivo (texto para Claude) se
+     retira de esta columna; si ninguna otra lo usa, se marca borrado. Para un
+     archivo que solo vive en nuestra BD (id `local_…`) esto es todo. */
+  const soloLocal = esIdLocal(file_id);
+  try {
+    await db.query(
+      `DELETE kca FROM kanban_columna_archivos kca
+         INNER JOIN kanban_archivos ka ON ka.id = kca.id_archivo
+        WHERE kca.id_kanban_columna = ? AND ka.openai_file_id = ?`,
+      { replacements: [col.id, file_id], type: db.QueryTypes.DELETE },
+    );
+    await db.query(
+      `UPDATE kanban_archivos SET deleted_at = NOW()
+        WHERE openai_file_id = ? AND id_configuracion = ? AND deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM kanban_columna_archivos x WHERE x.id_archivo = kanban_archivos.id)`,
+      { replacements: [file_id, col.id_configuracion], type: db.QueryTypes.UPDATE },
+    );
+  } catch (e) {
+    console.error(`[eliminarArchivo] registro local: ${e.message}`);
+    if (soloLocal) return next(new AppError('No se pudo eliminar el archivo', 500));
+  }
+  if (soloLocal) return res.status(200).json({ success: true });
 
   const apiKey = await getApiKey(col.id_configuracion);
   const errores = [];
@@ -886,9 +1121,9 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   if (!id || !mensaje) return next(new AppError('Faltan campos', 400));
 
   const [columna] = await db.query(
-    `SELECT kc.instrucciones, kc.modelo, kc.vector_store_id,
-            kc.vector_store_docs_id, kc.id_configuracion, c.api_key_openai,
-            c.proveedor_ia
+    `SELECT kc.id, kc.instrucciones, kc.modelo, kc.max_tokens, kc.vector_store_id,
+            kc.vector_store_docs_id, kc.catalogo_inline, kc.id_configuracion,
+            c.api_key_openai, c.proveedor_ia, c.api_key_claude
      FROM kanban_columnas kc
      INNER JOIN configuraciones c ON c.id = kc.id_configuracion
      WHERE kc.id = ? AND kc.activo = 1 LIMIT 1`,
@@ -896,21 +1131,18 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   );
 
   if (!columna) return next(new AppError('Columna no encontrada', 404));
-  /* Este chat de prueba encadena con previous_response_id de OpenAI y no
-     guarda la conversación: con Claude no hay cómo seguir el hilo. La prueba
-     real con Claude es «Probar como cliente real», que entra por el webhook
-     y usa el mismo motor que producción. */
-  if ((columna.proveedor_ia || 'openai') === 'claude') {
-    return next(
-      new AppError(
-        'Esta cuenta responde con Claude: prueba el bot con «Probar como cliente real» (este chat de prueba interno es solo para OpenAI).',
-        400,
-      ),
-    );
+  /* Fase 2 Claude: con Claude no hay cadena de previous_response_id, así que
+     el front manda el historial del chat (`historial`) y acá se rearma la
+     conversación con el recap, igual que hace el motor en producción. */
+  const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
+  const api_key_claude = leerApiKeyClaude(columna.api_key_claude);
+  const esClaude =
+    (columna.proveedor_ia || 'openai') === 'claude' && Boolean(api_key_claude);
+  if (!esClaude) {
+    columna.api_key_openai = leerApiKeyOpenAI(columna.api_key_openai);
+    if (!columna.api_key_openai)
+      return next(new AppError('Sin API key de OpenAI', 400));
   }
-  columna.api_key_openai = leerApiKeyOpenAI(columna.api_key_openai);
-  if (!columna.api_key_openai)
-    return next(new AppError('Sin API key de OpenAI', 400));
 
   /* Mismo contexto que en producción (sedes, disponibilidad de la agenda). Sin
      esto la prueba mentía: el prompt decide la cobertura con la lista de sedes
@@ -958,6 +1190,57 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
     ...(previous_response_id && { previous_response_id }),
   };
 
+  let outputText = '';
+  let responseIdSalida = null;
+  if (esClaude) {
+    const {
+      ejecutarConClaude,
+      mensajeErrorClaude,
+    } = require('../utils/claude/claude');
+    const { bloqueDocumentosClaude } = require('../utils/claude/documentos');
+    const { PUENTE_INLINE } = require('../services/kanban_ia.service');
+
+    const historial = Array.isArray(req.body.historial) ? req.body.historial : [];
+    const recap = historial
+      .filter((m) => m && m.texto && (m.rol === 'user' || m.rol === 'assistant'))
+      .slice(-30)
+      .map(
+        (m) =>
+          `${m.rol === 'user' ? 'Cliente' : 'Asistente'}: ${String(m.texto).slice(0, 500)}`,
+      )
+      .join('\n');
+    const inline = String(columna.catalogo_inline || '').trim();
+    const docs = await bloqueDocumentosClaude(columna.id);
+    const instrucciones = [
+      columna.instrucciones,
+      inline ? `${PUENTE_INLINE}\n\n${inline}` : '',
+      docs.bloque,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const cuerpo = bloqueContexto.trim()
+      ? `🧾 Contexto adicional:\n\n${bloqueContexto.trim()}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
+      : mensaje;
+    const input = recap
+      ? `[CONTEXTO DE LA CONVERSACIÓN PREVIA — retómala, NO saludes de nuevo ni pidas datos ya dados]\n${recap}\n\n${cuerpo}`
+      : cuerpo;
+    try {
+      const r = await ejecutarConClaude({
+        instructions: instrucciones,
+        additional_instructions: null,
+        input,
+        model: columna.modelo,
+        max_tokens: columna.max_tokens || 500,
+        api_key_claude,
+      });
+      outputText = r?.respuesta || '';
+    } catch (err) {
+      console.log('🔴 ERROR DE CLAUDE (chat de prueba):', mensajeErrorClaude(err));
+      return next(
+        new AppError(`Claude: ${mensajeErrorClaude(err)}`, err?.status || 500),
+      );
+    }
+  } else {
   let response;
   try {
     response = await axios.post('https://api.openai.com/v1/responses', body, {
@@ -984,8 +1267,9 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   }
 
   const data = response.data;
+  responseIdSalida = data.id;
 
-  const outputText =
+  outputText =
     data.output_text ||
     data.output
       ?.filter((o) => o.type === 'message')
@@ -994,6 +1278,7 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
       ?.map((c) => c.text)
       ?.join('') ||
     '';
+  }
 
   /* Mismo post-proceso que producción. El chat de prueba mostraba el texto
      crudo, así que la fecha del bloque de agendamiento se veía "2026-08-06
@@ -1061,7 +1346,7 @@ exports.chat_prueba = catchAsync(async (req, res, next) => {
   return res.json({
     success: true,
     respuesta: respuestaLimpia,
-    response_id: data.id,
+    response_id: responseIdSalida,
     acciones_detectadas,
     siguiente_columna: siguiente,
     // Los triggers que esta columna sabe reconocer, para poder decir "esperaba
