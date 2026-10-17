@@ -25,7 +25,7 @@
 const { leerAdjuntos } = require('./adjuntos');
 const { hablaDeCarga, pideDatosDeOtro } = require('./intencion');
 const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = require('./cargaCliente');
-const { buscadorDeArchivo, bloqueFichas } = require('./fichas');
+const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
 const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad } = require('./senales');
@@ -116,7 +116,7 @@ async function prepararTurno(p) {
     try {
       const buscador = deps.buscador || buscadorDeArchivo();
       const pais = paisDelTelefono(p.telefono);
-      fichas = buscador.buscar(dicho, { pais: pais === 'ec' || pais === 'mx' ? pais : null });
+      fichas = buscarConRescate(buscador, dicho, { pais: pais === 'ec' || pais === 'mx' ? pais : null });
       const bloque = bloqueFichas(fichas, { hayCarga: Boolean(textoCarga) });
       if (bloque) bloques.push(bloque);
     } catch (e) {

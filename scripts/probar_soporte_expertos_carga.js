@@ -381,7 +381,7 @@ const turno = (mensaje, tel, extra = {}) =>
   prueba('una en tránsito y tres que no viajan: se cuenta UNA sola carga', r.estado === 'encontradas' && r.cargas.length === 1 && r.cargas[0].id_cotizacion === 9110 && r.hay_mas === 0);
   prueba('…las cuatro siguen siendo suyas (ninguna se señala como ajena)', [9110, 9111, 9112, 9113].every((id) => r.propias.cotizaciones.includes(id)));
   let texto = textoParaCliente(r, T.MENSAJE_ASESOR);
-  prueba('…el texto para el cliente es el de la que viaja, sin lista ni «tu cotización está registrada»', texto.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A, donde viaja tu carga EC-9110001, ya está en tránsito hacia Ecuador.') && /30 de octubre/.test(texto) && !/tienes \d+ cargas registradas/.test(texto) && !NO_VIAJA.test(texto) && !/911[123]/.test(texto));
+  prueba('…el texto para el cliente es el de la que viaja, sin lista ni «tu cotización está registrada»', texto.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A, donde viaja tu carga EC-9110001, ya está en tránsito hacia Ecuador.') && /30 de octubre/.test(texto) && !/tienes \d+ cargas( registradas|;)/.test(texto) && !NO_VIAJA.test(texto) && !/911[123]/.test(texto));
   b = bloqueCarga(r, { mensajeAsesor: T.MENSAJE_ASESOR });
   prueba('…y el bloque del modelo dice «1 carga en curso», sin las otras tres', /Tiene 1 carga en curso con este número\./.test(b) && !/911[123]/.test(b) && !NO_VIAJA.test(b));
   r = await cargas(Q.aprobada_y_borrador);

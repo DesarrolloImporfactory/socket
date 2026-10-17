@@ -54,6 +54,39 @@ async function crearLlamador({ modelo = 'gpt-4.1', max_tokens = 900 } = {}) {
 }
 
 /*
+  Lo mismo con Claude, solo para simular cuando no hay saldo de OpenAI: prueba el
+  prompt, no el modelo de producción. No toca la base: la llave llega de afuera.
+  Claude no guarda la conversación, así que cada respuesta se guarda aquí con un
+  id propio y el siguiente turno la retoma, como previous_response_id.
+*/
+function crearLlamadorClaude({ apiKey, modelo = 'claude-sonnet-5-5', max_tokens = 4000, esfuerzo = 'low' } = {}) {
+  if (!apiKey) throw new Error('falta la llave de Claude');
+  const Anthropic = require('@anthropic-ai/sdk');
+  const cliente = new Anthropic({ apiKey });
+  const instructions = promptSoporteExpertos();
+  const historias = new Map();
+  let n = 0;
+  const llamar = async (input, prev) => {
+    const messages = [...(historias.get(prev) || []), { role: 'user', content: input }];
+    const r = await cliente.messages.create({
+      model: modelo, max_tokens, output_config: { effort: esfuerzo },
+      system: [{ type: 'text', text: instructions, cache_control: { type: 'ephemeral' } }],
+      messages,
+    });
+    const id = `claude_${++n}`;
+    historias.set(id, [...messages, { role: 'assistant', content: r.content }]);
+    const u = r.usage || {};
+    return {
+      respuesta: r.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim(),
+      response_id: id,
+      usage: { input: u.input_tokens || 0, output: u.output_tokens || 0,
+        cache_lee: u.cache_read_input_tokens || 0, cache_escribe: u.cache_creation_input_tokens || 0 },
+    };
+  };
+  return { llamar, instructions, cliente, cerrar: async () => {} };
+}
+
+/*
   Un turno completo. `llamar` es el de crearLlamador; sin él se usa `doble`
   (texto o función del contexto) como respuesta del modelo.
   Devuelve { crudo, enviado, ctx, response_id, usage, guardia, modelo }:
@@ -83,4 +116,4 @@ async function responderTurno({
   return { crudo: p.crudo, enviado: p.texto, ctx, response_id, usage, guardia: p.guardia, modelo: respuesta };
 }
 
-module.exports = { procesar, entrada, crearLlamador, responderTurno };
+module.exports = { procesar, entrada, crearLlamador, crearLlamadorClaude, responderTurno };

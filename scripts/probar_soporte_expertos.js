@@ -27,7 +27,7 @@ const {
 const { crearBuscador, buscadorDeArchivo, bloqueFichas, validarFichas, RUTA_FICHAS } = require('../src/utils/soporteExpertos/fichas');
 const { leerAdjuntos, PROMPT_VISION_EXPERTOS } = require('../src/utils/soporteExpertos/adjuntos');
 const { hablaDeCarga, pideDatosDeOtro } = require('../src/utils/soporteExpertos/intencion');
-const { revisarRespuesta } = require('../src/utils/soporteExpertos/guardia');
+const { revisarRespuesta, datoSinRespaldo } = require('../src/utils/soporteExpertos/guardia');
 const { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
 const T = require('../src/utils/soporteExpertos/textos');
 const { promptSoporteExpertos } = require('../src/utils/prompt_soporte_expertos.data');
@@ -165,7 +165,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   r = await cargas(TEL.entregada);
   prueba('entregada hace 9 días: la cuenta; la de hace 7 meses, no', r.estado === 'encontradas' && igual(r.cargas.map((c) => c.id_cotizacion), [9010]) && /fue entregada el 3 de octubre/.test(r.cargas[0].texto_cliente));
   r = await cargas(TEL.seis_cargas);
-  prueba('seis cargas en curso: lista 4 y avisa que hay 2 más', r.cargas.length === 4 && r.hay_mas === 2 && /otras 2 cargas registradas/.test(textoParaCliente(r, T.MENSAJE_ASESOR)));
+  prueba('seis cargas en curso: lista 4 y avisa que hay 2 más', r.cargas.length === 4 && r.hay_mas === 2 && /^Hola, con este número tienes 6 cargas; estas son las 4 más avanzadas:\n/.test(textoParaCliente(r, T.MENSAJE_ASESOR)) && /\nDe las otras 2, el área de logística te confirma su estado\.$/.test(textoParaCliente(r, T.MENSAJE_ASESOR)));
   r = await cargas(TEL.cargas_mezcladas);
   prueba(
     'varias cargas: primero la más avanzada (aduana, tránsito, paso 1), después la que no se puede informar; la entregada queda fuera de las 4',
@@ -587,6 +587,16 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   prueba('el prompt no usa voseo (fuera de la regla que lo prohíbe)', !/(?<!\p{L})(vos|ten[eé]s|pod[eé]s|quer[eé]s|sabés|necesitás|mirá|fijate|decime|pasame|mandame|enviame|contame|avisame)(?!\p{L})/iu.test(sinRegla2));
   prueba('los textos fijos no prometen día ni hora, ni usan voseo ni «usted»', Object.values(T.TEXTOS_FIJOS).every((v) => !/\b(hoy|mañana|lunes|martes|miércoles|jueves|viernes|minutos? más|en breve|pronto)\b/i.test(v.replace('30 minutos antes de cada clase', '')) && !/\busted\b|ten[eé]s|pod[eé]s|enviame/i.test(v)));
   prueba('ningún texto fijo nombra a una persona ni se presenta como tal', Object.values(T.TEXTOS_FIJOS).every((v) => !/\bsoy [A-ZÁÉÍÓÚ][a-z]+\b(?<!Soy el)/.test(v.replace('Soy el asistente automático de IMPORFACTORY', ''))));
+
+  console.log('\n16. Explicar el proceso no es afirmar el estado de una carga');
+  {
+    const lista = 'La carga pasa por cotización registrada, recibido en China, en contenedor, en tránsito, en aduana, liberado y en bodega de destino. Se te avisa cada paso.';
+    prueba('la lista de los 7 pasos pasa sin bloque 📦', datoSinRespaldo(lista, '', '') === null);
+    prueba('«tu carga ya está en tránsito» sin bloque 📦 se sigue frenando', datoSinRespaldo('Tu carga ya está en tránsito.', '', '') !== null);
+    prueba('«tu mensaje llegó cortado» y «el enlace me llegó» no son la carga', datoSinRespaldo('Tu mensaje llegó cortado. El enlace sí me llegó.', '', '') === null);
+    prueba('«tu carga llegó» sin bloque 📦 se sigue frenando', datoSinRespaldo('Tu carga ya llegó a Guayaquil.', '', '') !== null);
+    prueba('tres pasos dichos de su carga se siguen frenando', datoSinRespaldo('Tu carga está en tránsito, luego en aduana y después liberada.', '', '') !== null);
+  }
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);

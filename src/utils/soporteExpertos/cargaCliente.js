@@ -473,8 +473,13 @@ function textoParaCliente(resultado, mensajeAsesor) {
     texto = cs[0].texto_cliente;
   } else {
     if (!cs.some((c) => c.informable)) return null;
+    // Si hay más de las que caben, se dice el total y cuáles se muestran: van
+    // ordenadas por paso, así que son las más avanzadas, no las más recientes.
+    const total = cs.length + (resultado.hay_mas || 0);
     texto =
-      `Hola, con este número tienes ${cs.length} cargas registradas:\n` +
+      (resultado.hay_mas > 0
+        ? `Hola, con este número tienes ${total} cargas; estas son las ${cs.length} más avanzadas:\n`
+        : `Hola, con este número tienes ${cs.length} cargas registradas:\n`) +
       cs
         .map((c) => {
           if (!c.informable) return `- Cotización N.º ${c.id_cotizacion}: ${pendiente}`;
@@ -485,7 +490,7 @@ function textoParaCliente(resultado, mensajeAsesor) {
         .join('\n');
   }
   if (resultado.hay_mas > 0) {
-    texto += `\nTienes ${resultado.hay_mas === 1 ? 'otra carga registrada' : `otras ${resultado.hay_mas} cargas registradas`}: el área de logística te confirma su estado.`;
+    texto += `\n${resultado.hay_mas === 1 ? 'De la otra carga' : `De las otras ${resultado.hay_mas}`}, el área de logística te confirma su estado.`;
   }
   return texto;
 }

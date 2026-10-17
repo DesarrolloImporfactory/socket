@@ -495,11 +495,39 @@ function bloqueFichas(resultados, o = {}) {
   return L.join('\n');
 }
 
+/* RESCATE DE IMPORTACIÓN. Los mensajes reales de importación son largos y
+   conversados («hice el curso hace años y quisiera usar el servicio para
+   traer unos generadores…»): la pregunta queda diluida y ninguna ficha llega
+   a 0,70, así que el bot solo decía «un asesor lo revisa» aunque la base
+   tuviera la respuesta. En 95 mensajes reales que el bot nunca vio, solo 24
+   encontraban ficha. Sumar frases a `preguntas` no alcanzaba: cada cliente lo
+   dice distinto.
+   Si nada pasa el umbral, entra UNA ficha desde 0,55, y solo de los temas de
+   importación (carga, cotización, proveedor). Con el umbral bajo para todos
+   los temas entraban cruces malos (a «quiero comenzar a importar», la de
+   precios de planes; a una duda de envío, una de Dropi). El bloque de fichas
+   ya le pide al modelo usarla solo si contesta lo que preguntó. */
+const UMBRAL_RESCATE = 0.55;
+const TEMAS_RESCATE = new Set(['carga', 'cotización', 'proveedor']);
+
+function buscarConRescate(buscador, mensaje, o = {}) {
+  const r = buscador.buscar(mensaje, o);
+  if (r.length) return r;
+  return buscador
+    .buscar(mensaje, { ...o, minimo: UMBRAL_RESCATE })
+    .filter((x) => TEMAS_RESCATE.has(x.ficha.tema))
+    .slice(0, 1)
+    .map((x) => ({ ...x, rescate: true }));
+}
+
 module.exports = {
   RUTA_FICHAS,
   MAX_FICHAS,
   UMBRAL_CERCANIA,
   PUNTAJE_MINIMO,
+  UMBRAL_RESCATE,
+  TEMAS_RESCATE,
+  buscarConRescate,
   crearBuscador,
   buscadorDeArchivo,
   bloqueFichas,

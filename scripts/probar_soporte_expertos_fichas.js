@@ -22,7 +22,7 @@ const path = require('path');
 const rutaDb = require.resolve(path.join(__dirname, '../src/database/config'));
 require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: { db: {}, db_2: {} } };
 
-const { crearBuscador, buscadorDeArchivo, bloqueFichas, UMBRAL_CERCANIA, MAX_FICHAS } = require('../src/utils/soporteExpertos/fichas');
+const { crearBuscador, buscadorDeArchivo, bloqueFichas, buscarConRescate, UMBRAL_RESCATE, UMBRAL_CERCANIA, MAX_FICHAS } = require('../src/utils/soporteExpertos/fichas');
 const { revisarRespuesta, completarPase, ofreceLoQueNoPuede } = require('../src/utils/soporteExpertos/guardia');
 const { esSoloSaludo, esReclamo, reclamaPorDemora } = require('../src/utils/soporteExpertos/senales');
 const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
@@ -337,9 +337,10 @@ const NADA = [
   prueba('nombra el bloque como «posiblemente relacionadas»', prompt.includes('📚 FICHAS DE LA BASE posiblemente relacionadas'));
   prueba('la regla C exige que responda EXACTAMENTE lo que preguntó: la misma pregunta, no el mismo tema', /La usas SOLO si responde EXACTAMENTE lo que preguntó: la misma pregunta, no el mismo tema/.test(prompt));
   prueba('…y si ninguna responde, es paso a asesor con el dato que falta', /Si NINGUNA responde exactamente, no las uses ni las menciones: es D\. El MENSAJE DE PASO A ASESOR y, si hace falta, el dato que falta/.test(prompt));
-  prueba('…ante la duda, pasa', /Ante la duda entre contestar con una ficha y pasar, pasas/.test(prompt));
+  prueba('…ante la duda, contesta lo que sí sabe y pasa solo lo que falta', /Ante la duda, contestas lo que la ficha o P sí dicen y pasas solo lo que falte/.test(prompt));
   prueba('dice que una ficha que pasa a una persona NUNCA va sola', /\(NO CIERRA SOLA\)/.test(prompt) && /Una ficha así NUNCA va sola/.test(prompt));
-  prueba('la gestión que ya lleva con su asesor manda sobre cualquier ficha', /Sigue una gestión que ya lleva con su asesor[^\n]*Eso manda sobre cualquier ficha/.test(prompt));
+  prueba('su cotización o su pago van a una persona; «qué sigue» se explica con el proceso', /pregunta por SU cotización o SU pago \(eso es D; si pregunta qué sigue en el proceso, es P\)/.test(prompt));
+  prueba('el proceso de importación va siempre en el prompt, con sus 6 partes y sin cifras', /P\) EL PROCESO DE IMPORTACIÓN\. Lo sabes siempre/.test(prompt) && /6\. Viaje y entrega/.test(prompt) && /Aquí no hay precios, plazos ni fechas/.test(prompt));
   prueba('trae ejemplos de «habla del tema pero no contesta» (aviso y otra pregunta)', /Listo, ya instalé WeChat/.test(prompt) && /es el tema, no la pregunta/.test(prompt));
   prueba(`sigue cabiendo holgado y por debajo de la versión 1 (${prompt.length} caracteres)`, prompt.length < 28347);
 
@@ -427,6 +428,9 @@ const NADA = [
   {
     prueba('señal de reclamo: marcas fuertes', ['esto es una estafa', 'quiero poner un reclamo', 'devuélvanme mi dinero', 'nadie me responde', 'exijo una solución', 'quiero un reembolso', 'ya le pagué al proveedor y no me ha enviado nada, con quién hablo', 'llevo tres semanas esperando una respuesta'].every(esReclamo));
     prueba('…y una consulta normal no es reclamo', !['a qué cuenta deposito?', 'ya pagué, les mando el comprobante', 'cuándo llega mi carga', 'todavía no llega mi pedido', 'hola buenas noches', 'quiero cotizar un producto', 'mañana deposito', 'con quién hablo para cotizar'].some(esReclamo));
+    prueba('…ni un chiste de fútbol o una risa sin nada del servicio (simulación 16-oct)', !['jaja ecuador perdió, qué estafa de árbitro', 'pésimo partido el de ayer', 'una burla lo de la tri jaja', 'denunciaron al árbitro jajaja', 'oye y la tri? reclamaron el gol', '😂 pésimo el árbitro', 'cómo quedó el partido de ecuador?'].some((m) => esReclamo(m) || reclamaPorDemora(m)));
+    prueba('…ni el cliente que solo da su marca, su cotización o un código', !['MX-PEPE', 'mi marca es MX-PEPE', 'Mi marca de envío es MX-PEPE, cotización 4521', 'EC-2609112', 'es la cotización 4521', 'ec 2609112 y MX-2609113'].some((m) => esReclamo(m) || reclamaPorDemora(m)));
+    prueba('…pero con la marca y un reclamo de verdad, o riéndose de la empresa, sí es reclamo', ['MX-PEPE y es una estafa lo que hacen con mi carga', 'jaja qué estafa son ustedes', 'jaja ya pagué y nada, devuélvanme mi plata', 'me siento estafado por ustedes', 'cotización 4521, una burla lo que hacen'].every(esReclamo) && reclamaPorDemora('cotización 4521, ya debería haber llegado'));
     prueba('señal de reclamo por demora', ['ya debería haber llegado hace rato', 'llevo tres meses esperando mi carga', 'esto es una burla', 'es demasiado tiempo'].every(reclamaPorDemora) && !['cuándo llega mi carga', 'ya llegó mi carga?', 'hasta cuándo puedo entregar en la bodega', 'nadie me responde, dónde está mi carga'].some(reclamaPorDemora));
 
     const turno = (mensaje, tel, id) => prepararTurno({ mensaje, telefono: tel, tipo_mensaje: 'text', id_configuracion: 265, id_cliente: id, deps: { consultar: baseDeMentira().consultar, hoy: HOY, buscador: real } });
@@ -510,6 +514,17 @@ const NADA = [
     const sinRegla2 = p2.replace(/NUNCA voseo \([^)]*\)/, '');
     prueba('sin voseo ni «usted» en lo nuevo, y sin promesas de fecha en los textos', !/(?<!\p{L})(vos|ten[eé]s|pod[eé]s|quer[eé]s|decime|pasame|mandame|enviame|contame|avisame)(?!\p{L})/iu.test(sinRegla2) && [T.MENSAJE_RECLAMO, T.MENSAJE_RECLAMO_CARGA, T.CIERRE_ASESOR].every((v) => !/\b(hoy|mañana|lunes|martes|miércoles|jueves|viernes|pronto|en breve|usted)\b/i.test(v)));
     prueba(`el prompt sigue por debajo de la versión 1 (${p2.length} de 28.347)`, p2.length < 28347);
+  }
+
+  console.log('\n14. Rescate de importación: una ficha de carga, cotización o proveedor aunque el mensaje sea largo');
+  {
+    const r = (q) => buscarConRescate(real, q, { pais: 'ec' });
+    const largo = 'quisiera ver la posibilidad de usar el servicio para la importación unos generadores electricos desde china';
+    const x = r(largo);
+    prueba(`un mensaje largo de importación encuentra ficha (${x.map((y) => y.ficha.id).join(', ') || 'ninguna'})`, x.length === 1 && x[0].rescate === true && ['carga', 'cotización', 'proveedor'].includes(x[0].ficha.tema));
+    prueba('si el buscador normal ya encontró, el rescate no cambia nada', JSON.stringify(r('como cotizo un producto').map((y) => y.ficha.id)) === JSON.stringify(buscar('como cotizo un producto').map((y) => y.ficha.id)));
+    prueba('un saludo o una cita no se rescatan', !r('Johan como te va buenas tardes').length && !r('Confirmado, nos reunimos a las 3pm').length);
+    prueba('el rescate trae una sola ficha y nunca de otro tema', r(largo).length <= 1 && UMBRAL_RESCATE < UMBRAL_CERCANIA);
   }
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);

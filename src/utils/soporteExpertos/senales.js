@@ -54,8 +54,45 @@ const RE_RECLAMO = new RegExp(
     ')',
 );
 
+/* Lo que NO es reclamo aunque traiga una palabra fuerte. En la simulación del
+   16-oct un chiste de fútbol («qué estafa de árbitro jaja») y un cliente que
+   solo daba su marca salieron marcados ⚠️ RECLAMO, y el aviso cambia la
+   respuesta entera. Se descarta cuando:
+   · habla de fútbol o de un espectáculo, o se ríe, y nada del mensaje toca el
+     servicio (su carga, un pago, una respuesta que espera, la empresa…);
+   · el mensaje es su marca, un número de cotización o un código y poco más. */
+const RE_TEMA_AJENO = new RegExp(
+  '\\b(?:partid[oa]s?|gol(?:es|azo)?|arbitro|la tri|seleccion|mundial|eliminatorias|liga|campeonato|copa|futbol|estadio|hincha\\w*|penal(?:es)?|' +
+    'serie|pelicula|novela|concierto|chiste|meme)\\b|' +
+    '\\b(?:ecuador|mexico|argentina|brasil|colombia|peru|chile|barcelona|emelec|liga de quito|america|chivas|cruz azul|pumas|tigres|monterrey|real madrid)\\b.{0,30}\\b(?:gano|ganamos|perdio|perdimos|empato|jugo|juega|jugaron|vs)\\b',
+);
+const RE_RISA = /\b(?:ja|je|ji)(?:ja|je|ji)+\w*|\bjsjs\w*|\bxd+\b|\blol\b/;
+const RE_RISA_EMOJI = /[\u{1F602}\u{1F923}\u{1F606}\u{1F639}]/u;
+const RE_ANCLA_SERVICIO = new RegExp(
+  '\\b(?:carga|pedido|mercaderia|mercancia|contenedor|cotizacion(?:es)?|pago|pague|deposit\\w+|transfer\\w+|dinero|plata|reembols\\w+|' +
+    'asesor\\w*|ustedes|respuesta|responden|contestan|atienden|curso|clase|plataforma|servicio|empresa|imporfactory|imporsuit|expertos|' +
+    'proveedor|envio|guia|marca|bodega|aduana|dropi|tienda|cobr\\w+|saldo|cuota|factura|comprobante)\\b',
+);
+function temaAjeno(texto, t) {
+  const ajeno = RE_TEMA_AJENO.test(t) || RE_RISA.test(t) || RE_RISA_EMOJI.test(String(texto || ''));
+  return ajeno && !RE_ANCLA_SERVICIO.test(t);
+}
+
+/* Su marca (EC-2609112, MX-PEPE), un número de cotización o un código, con
+   hasta tres palabras de relleno («mi marca es MX-PEPE»). */
+const RE_CODIGO = /\b[A-Za-z]{2,4}-[A-Za-z0-9]{2,12}\b|\b[A-Za-z]{1,4} ?\d{3,12}\b|\b\d{3,9}\b/g;
+const RE_RELLENO = /\b(?:mi|la|el|es|esta|este|esa|ese|marca|codigo|cotizacion|numero|n|no|de|envio|contenedor|carga|ok|si|claro|listo|gracias|aqui|ahi|hola|buenas|buenos|dias|tardes|noches|te|les|paso|mando|dejo|seria|serian|y|con|por|favor|porfa)\b/g;
+function soloCodigo(texto) {
+  const crudo = String(texto || '');
+  if (!RE_CODIGO.test(crudo)) return false;
+  RE_CODIGO.lastIndex = 0;
+  const resto = llano(crudo.replace(RE_CODIGO, ' ')).replace(RE_RELLENO, ' ').trim();
+  return resto.split(/\s+/).filter(Boolean).length <= 3;
+}
+
 function esReclamo(texto) {
-  return RE_RECLAMO.test(llano(texto));
+  const t = llano(texto);
+  return RE_RECLAMO.test(t) && !temaAjeno(texto, t) && !soloCodigo(texto);
 }
 
 /* Reclama por la DEMORA de su carga. A este cliente no se le repite el estado:
@@ -64,7 +101,8 @@ const RE_DEMORA =
   /\b(?:ya deberia (?:haber )?(?:llegado|salido|estar)|llevo (?:\w+ ){1,3}(?:dias|semanas|meses) esperando|una burla|demasiado tiempo|(?:mucha|tanta|demasiada) demora|se (?:han |estan )?demora\w* (?:mucho|demasiado)|cuanto mas (?:tengo|hay|debo|voy)|sigue sin llegar)\b/;
 
 function reclamaPorDemora(texto) {
-  return RE_DEMORA.test(llano(texto));
+  const t = llano(texto);
+  return RE_DEMORA.test(t) && !temaAjeno(texto, t) && !soloCodigo(texto);
 }
 
 /* Ya dijo CUÁNTAS UNIDADES quiere comprar («quiero traer 500», «300 unidades»,
