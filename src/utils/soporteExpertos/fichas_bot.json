@@ -50,7 +50,7 @@
    "Pídele a tu proveedor: precio por unidad, unidades por caja y CBM (o largo, ancho y alto de la caja).",
    "Envía por aquí la captura de su respuesta o la proforma."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "pricing",
   "pedir": "precio por unidad que te dio el proveedor, unidades por caja, CBM o medidas de la caja, y cuántas unidades piensas comprar (sirve una captura o la proforma)",
   "no_decir": [
@@ -131,7 +131,7 @@
   ],
   "respuesta_base": "El CBM es el volumen de tu carga en metros cúbicos: cuánto espacio ocupa. En carga grupal, con ese volumen se calcula el flete.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -160,7 +160,7 @@
    "Pídele también cuántas unidades vienen en cada caja y el precio por unidad.",
    "Envía la captura de su respuesta por aquí."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -190,7 +190,7 @@
   ],
   "respuesta_base": "Pídele 3 datos: el precio por unidad (EXW más envío a Yiwu), cuántas unidades vienen en cada caja y el volumen de la caja (CBM). Si no te da el CBM, pídele las medidas de la caja. No hace falta un PDF ni un Excel: sirve una captura de su mensaje.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -212,7 +212,7 @@
   ],
   "respuesta_base": "EXW quiere decir que el proveedor entrega la mercadería afuera de su bodega: es el precio en fábrica, sin transporte ni trámites. Se recomienda pedir siempre «EXW más envío a Yiwu», porque en Yiwu está la bodega y de ahí en adelante la logística la hace IMPORFACTORY.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=363&modulo=112",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=363",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -234,7 +234,7 @@
   ],
   "respuesta_base": "FOB significa «libre a bordo»: el proveedor deja la carga sobre el barco y por eso cobra el transporte al puerto y el trámite de exportación. En carga grupal generalmente sale más caro y no hace falta. Si tu proveedor te da precio FOB, pídele que cotice EXW más envío a Yiwu.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=363&modulo=112",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=363",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -460,10 +460,22 @@
    "sobre los contactos de los proveedores",
    "tienen contactos de proveedores de accesorios",
    "necesito algun otro contacto de proveedor en china",
-   "me pasan otro contacto para importar"
+   "me pasan otro contacto para importar",
+   "aun no tengo proveedor",
+   "todavia no tengo proveedor",
+   "no tengo proveedor",
+   "no tengo proveedor que hago",
+   "como consigo un proveedor",
+   "como encuentro proveedor",
+   "donde encuentro proveedores confiables",
+   "recien empiezo y no tengo proveedor"
   ],
-  "respuesta_base": "El primer lugar es el directorio de proveedores de la plataforma, en «Importaciones»: cada tarjeta dice qué tipo de producto vende el proveedor; unas traen el ID de WeChat para escribirle y otras un botón «Ver en Alibaba». Si no encuentras ahí tu producto, envía una foto del producto y queda anotado para tu asesor.",
-  "pasos": [],
+  "respuesta_base": "Para conseguir proveedor empiezas por el Directorio de Proveedores de la plataforma: son proveedores verificados, cada tarjeta dice qué vende y trae su contacto de WeChat o WhatsApp. Buscas por tu producto, les escribes a varios a la vez y a cada uno le pides 3 datos: el precio por unidad (EXW más envío a Yiwu), cuántas unidades vienen en cada caja y el volumen de la caja (CBM).",
+  "pasos": [
+   "Directorio de Proveedores: https://imporfactory.app/proveedores",
+   "Si no está tu producto, búscalo en YiwuGo (productos de consumo) o en Alibaba (máquinas y materia prima).",
+   "Cuando te contesten, envíame aquí la captura y el área de precios te hace la cotización."
+  ],
   "enlace": "",
   "pasar_a": "",
   "pedir": "foto del producto (solo si no lo encontró en el directorio)",
@@ -1051,7 +1063,7 @@
   ],
   "respuesta_base": "Las clases son para aprender. El asesor es para ir dando pasos firmes en el proceso: conviene llegar con el producto o la pregunta puntual. El camino es el mismo para todos: producto, proveedor, cotización, pagos, carga y entrega.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=290&modulo=106",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=290",
   "pasar_a": "asesor",
   "pedir": "",
   "no_decir": [
@@ -1160,7 +1172,7 @@
   ],
   "respuesta_base": "Entras en imporfactory.app con el correo con el que te registraste y tu contraseña. En «Inicio» están los cursos, las próximas sesiones y los eventos en vivo. En «Importaciones» están los cursos, las ideas de productos, los proveedores, Infoaduana y el cotizador. También está la Impor IA: eliges el país y le haces preguntas.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=338&modulo=106",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=338",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -1207,11 +1219,12 @@
    "como busco en infoaduana",
    "infoaduana no me da resultados",
    "para que sirve infoaduana",
-   "como veo quien importa mi producto"
+   "como veo quien importa mi producto",
+   "como se a cuanto importan otros"
   ],
   "respuesta_base": "Infoaduana es una herramienta para ver las importaciones que se han hecho en un país, buscando por producto. Si una palabra da pocos resultados, prueba con otra parecida (por ejemplo «laptop», «laptops», «portátil»), porque depende de cómo se escribió el producto en la factura.",
   "pasos": [],
-  "enlace": "",
+  "enlace": "https://imporfactory.app/infoaduana",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -1240,7 +1253,7 @@
   ],
   "respuesta_base": "Las ideas de productos son productos para importar, con su precio y su proveedor; el botón «Comprar en China» te lleva al asesor para hacer la compra. Las plantillas de productos son productos que IMPORFACTORY ya trajo, con el material para venderlos: página de venta, videos, anuncios e imágenes.",
   "pasos": [],
-  "enlace": "",
+  "enlace": "https://imporfactory.app/ideas-productos",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -1554,7 +1567,7 @@
   ],
   "respuesta_base": "El área de precios revisa qué opciones hay según tu volumen. Una forma de bajar el costo es aumentar el pedido: si sumas productos más baratos que hagan volumen, los costos se reparten en toda la carga. Si tienes otra cotización para comparar, envíala completa.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=322&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=322",
   "pasar_a": "pricing",
   "pedir": "número de cotización y, si tienes otra cotización para comparar, envíala completa",
   "no_decir": [
@@ -1582,7 +1595,7 @@
   ],
   "respuesta_base": "Prorratear es repartir el costo del transporte entre más unidades para que cada una salga más barata. Se logra sumando cajas o mezclando productos grandes con productos pequeños que caben muchos en poco espacio. Tú escoges los productos; el cálculo lo hace el equipo.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=322&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=322",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -1779,16 +1792,27 @@
    "como saco mi costo por unidad",
    "me pasan el excel de costeo",
    "no encuentro la calculadora de importacion",
-   "como calculo cuanto me sale cada producto"
+   "como calculo cuanto me sale cada producto",
+   "donde esta la calculadora",
+   "como calculo cuanto me cuesta importar",
+   "tienen calculadora de importacion",
+   "como uso la calculadora",
+   "quiero calcular el costo de mi importacion",
+   "cuanto me saldria todo con impuestos",
+   "cuanto me saldria traer con impuestos y todo",
+   "cuanto pagaria de impuestos y flete",
+   "cuanto me cuesta traer mi producto puesto aqui",
+   "quiero saber cuanto me sale todo"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "La Calculadora de importación está en la plataforma, en «Importaciones». Eliges el país (Ecuador, México o Colombia), agregas cada producto con su precio, unidades por caja, número de cajas y medidas o CBM de la caja, y te calcula flete, aranceles e IVA y el total de tu importación. Es una referencia para decidir: el valor final es el de tu cotización del área de precios.",
   "pasos": [],
-  "enlace": "",
-  "pasar_a": "asesor",
+  "enlace": "https://imporfactory.app/calculadora",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No mandar un enlace ni un archivo de calculadora: no está definido cuál es la oficial (la de la plataforma o el Excel).",
-   "No hacer el costeo en el chat."
+   "No hacer el costeo en el chat.",
+   "tarifas o porcentajes de memoria"
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p43.json y p64.json (pendientes; duda abierta sobre cuál es la calculadora oficial)"
@@ -1972,13 +1996,25 @@
    "el envio express por avion me sale muy caro",
    "el proveedor me cobra mucho por el envio aereo",
    "el proveedor me cobra el envio express por avion",
-   "el envio por avion cuesta mucho"
+   "el envio por avion cuesta mucho",
+   "y si viene en avion",
+   "y por avion",
+   "se puede por avion",
+   "cuanto cuesta por avion",
+   "quiero traer por avion",
+   "envio aereo",
+   "por avion es mas rapido",
+   "mandar por dhl",
+   "traer por fedex"
   ],
-  "respuesta_base": "En clase se explica que el avión se usa para muestras, urgencias y cosas muy pequeñas, y que por avión se paga por kilos. Si tu carga puede venir por vía aérea lo revisa el área de precios.",
-  "pasos": [],
+  "respuesta_base": "La carga grupal viaja en barco y se paga por el espacio que ocupa (CBM): es la forma de traer mercadería en cantidad. El avión se usa para muestras, urgencias y cosas muy pequeñas, y se paga por kilo, así que sale rápido pero caro para lo que trae. Una muestra te la envía el mismo proveedor por DHL o FedEx; si quieres probar un producto de tendencia, conviene más traer una caja en la carga grupal.",
+  "pasos": [
+   "En Ideas de Productos ves productos marcados como aéreos, con su costo ya calculado: https://imporfactory.app/ideas-productos",
+   "Si igual quieres traer tu carga por avión, envíame el precio por unidad, cuántas unidades vienen en cada caja, y el peso y las medidas de la caja, y lo dejo anotado para que el área de precios lo revise."
+  ],
   "enlace": "",
-  "pasar_a": "pricing",
-  "pedir": "qué producto es, el peso, las medidas de la caja y cuántas unidades",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
    "No dar días de tránsito aéreo.",
    "No afirmar que la empresa ofrece envío aéreo como servicio: no está confirmado.",
@@ -2318,12 +2354,19 @@
    "como se cuanto paga de arancel",
    "que porcentaje paga la ropa",
    "donde veo el arancel",
-   "la impor ia me dio un arancel es correcto"
+   "la impor ia me dio un arancel es correcto",
+   "que impuestos pago al importar",
+   "que es una subpartida arancelaria",
+   "como se la partida arancelaria",
+   "que arancel paga un juguete",
+   "que arancel paga mi producto",
+   "cuanto de arancel paga la ropa",
+   "que impuesto paga este producto"
   ],
-  "respuesta_base": "En la plataforma está la Impor IA: eliges tu país y le preguntas por tu producto. Lo que responde es una referencia; el arancel definitivo va en tu cotización.",
+  "respuesta_base": "En la plataforma está ImporIA, el asistente de importaciones: eliges tu país y le preguntas por tu producto, y te orienta con la subpartida, el arancel y los impuestos. Lo que responde es una referencia; el arancel definitivo va en tu cotización.",
   "pasos": [],
-  "enlace": "",
-  "pasar_a": "pricing",
+  "enlace": "https://imporfactory.app/imporia",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No dar el porcentaje de arancel de ningún producto.",
@@ -2800,12 +2843,18 @@
    "que me recomiendan importar",
    "que producto me conviene importar",
    "que se vende mas",
-   "tengo poco capital que traigo"
+   "tengo poco capital que traigo",
+   "aun no tengo producto",
+   "que producto se vende",
+   "no tengo idea de que importar"
   ],
-  "respuesta_base": "En la plataforma están las ideas de productos, con su precio y su proveedor, y en carga grupal se puede empezar desde una caja. Qué producto te conviene lo conversas con tu asesor.",
-  "pasos": [],
+  "respuesta_base": "Para elegir producto tienes dos herramientas en la plataforma: Ideas de Productos, con productos que puedes traer de China y sus costos ya calculados, e Infoaduana, para ver qué se está importando en tu país. En carga grupal puedes empezar desde una caja, así que conviene probar con un producto antes de traer mucho.",
+  "pasos": [
+   "Ideas de Productos: https://imporfactory.app/ideas-productos",
+   "Infoaduana: https://imporfactory.app/infoaduana"
+  ],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No recomendar un producto.",
@@ -3076,7 +3125,7 @@
    "Cuenta de Dropi como Dropshipper, en la comunidad.",
    "WhatsApp Business con un chip nuevo."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=646&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=646",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3131,7 +3180,7 @@
    "Escribe «Quiero crear mi tienda» y responde sus preguntas (la primera: en qué país vas a vender).",
    "Si no te gusta ningún nombre, pídele más; luego pídele el logo y los cambios que quieras."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=646&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=646",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3162,7 +3211,7 @@
    "Categoría «Compras y ventas minoristas» y horario «Siempre abierto».",
    "Sube el logo como foto de perfil."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=647&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=647",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3192,7 +3241,7 @@
    "Engranaje → «Información del negocio» → «Editar»: dirección, ciudad, provincia, código postal y teléfono.",
    "Confirma el correo en «Correo electrónico» → «Editar» con el código que te llega."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=648&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=648",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3218,7 +3267,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=874&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=874",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste y en qué paso estás",
   "no_decir": [
@@ -3245,7 +3294,7 @@
    "Elige la zona horaria y la divisa de tu país.",
    "Marca «Mi negocio» y termina."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=649&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=649",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3274,7 +3323,7 @@
    "«Centro de cuentas» → «Contraseña y seguridad» → «Autenticación en dos pasos».",
    "Elige la cuenta de Facebook y el método: app de autenticación (recomendado) o SMS."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=629&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=629",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3306,7 +3355,7 @@
    "«Configuración» → «Datos personales» → guardar.",
    "Ingresa el código que llega a tu correo y activa los dos factores con Google Authenticator."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=650&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=650",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3338,7 +3387,7 @@
    "Tipo de trámite: «Ingreso a una comunidad» o «Cambio de comunidad», y elige IMPORFACTORY.",
    "Envía la solicitud y espera la respuesta de Dropi."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=875&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=875",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3365,7 +3414,7 @@
   ],
   "respuesta_base": "Si Dropi te pide un código para entrar o para retirar y no te llega, es el de dos factores: sale en la aplicación Google Authenticator de tu teléfono. Cada código dura poco; si no entra, espera el siguiente y vuelve a escribirlo.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=650&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=650",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3398,7 +3447,7 @@
    "Logo como foto de perfil, dirección y descripción.",
    "Empieza a calentar el número con actividad real."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=848&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=848",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3422,7 +3471,7 @@
   ],
   "respuesta_base": "Calentar el número es darle actividad real antes de usarlo para vender: mandar y recibir mensajes, guardar contactos y subir estados.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=848&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=848",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -3446,7 +3495,7 @@
   ],
   "respuesta_base": "Es opcional: se crea un perfil de negocio en Google para aparecer en Google Maps. Si lo creaste y no se ve, está en verificación.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=912&modulo=135",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=912",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3605,7 +3654,7 @@
    "Agrega tu negocio y el número que vas a conectar.",
    "Registra el método de pago y da en «Empezar prueba»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=651&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=651",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste (solo si ya te cobró o no te deja entrar)",
   "no_decir": [
@@ -3691,7 +3740,7 @@
    "En el teléfono abre el mensaje que llega, «Conectar a la plataforma para empresas» y escanea el código.",
    "Elige la zona horaria, confirma y «Finalizar»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=654&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=654",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3716,7 +3765,7 @@
   ],
   "respuesta_base": "Cuando se queda en «procesando conexión» suele haber una ventana del navegador abierta detrás: búscala y sigue los pasos ahí.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=654&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=654",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste (solo si sigue sin conectar)",
   "no_decir": [
@@ -3738,7 +3787,7 @@
   ],
   "respuesta_base": "Para México el número se escribe con 52, luego 1 y luego tu número. Si ya lo habías creado mal, edita la tarjeta de la conexión o elimínala y créala de nuevo.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=654&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=654",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste (solo si sigue sin conectar)",
   "no_decir": [
@@ -3760,7 +3809,7 @@
   ],
   "respuesta_base": "En ese paso Meta pide el enlace de una tienda verificable. Sirve el enlace de tu tienda en Shopify, si tienes, o el del catálogo de productos que ya creaste en IMPORCHAT.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=641&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=641",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3789,7 +3838,7 @@
    "Si ya está, revisa en «Cuentas de WhatsApp» → «Configuración de pago» si hay un cobro en «Error» y resuélvelo ahí.",
    "Vuelve a IMPORCHAT y reactiva el check de la conexión."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=634&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=634",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3818,7 +3867,7 @@
    "Revisa que tengas saldo en OpenAI.",
    "Da en «Editar», enciende el bot y «Guardar»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=655&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=655",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste (solo si ya revisaste las tres cosas)",
   "no_decir": [
@@ -3850,7 +3899,7 @@
    "Paso 3: «Ir a recargar saldo» y compra créditos con tu tarjeta.",
    "Después «Editar», elige venta de productos, enciende el bot y «Guardar»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=655&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=655",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3880,7 +3929,7 @@
   ],
   "respuesta_base": "Son pagos distintos: IMPORCHAT, el saldo de OpenAI que usa el bot, y Meta. Meta cobra dos cosas: la pauta de tus anuncios y las plantillas de WhatsApp Business. El detalle de los cobros de Meta se ve en «Facturación y pagos», en el administrador de anuncios.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=645&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=645",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3907,7 +3956,7 @@
   ],
   "respuesta_base": "La tarjeta se pone en dos lugares de Meta: en la cuenta de WhatsApp y en la cuenta publicitaria. La lección muestra dónde está cada uno.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=661&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=661",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -3932,7 +3981,7 @@
   ],
   "respuesta_base": "La página de Facebook y el Instagram se agregan al portafolio comercial de Meta; la lección muestra los dos pasos. Si no te aparecen al conectar, es porque todavía no están agregados al portafolio.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=868&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=868",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3960,7 +4009,7 @@
    "En IMPORCHAT: «Ir al chat» → menú → «Integraciones» → «Dropi» → «Vincular ahora».",
    "Pega el token, elige tu país y pon el mismo nombre que usaste en Dropi."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=656&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=656",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -3991,7 +4040,7 @@
    "Elige «Agente de e-commerce», pon el nombre de tu tienda y tu país, y «Aplicar plantilla».",
    "Para ver a cada cliente: «Contactos» → «Estado de contactos»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=658&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=658",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4015,7 +4064,7 @@
   ],
   "respuesta_base": "El nombre del bot se cambia en la columna «Contacto inicial» → «Asistente» → «Personalizar prompt». El remarketing le escribe al cliente que dejó de responder; si no sale ninguno, falta activar «Remarketing automático» en la columna.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=659&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=659",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4043,7 +4092,7 @@
   ],
   "respuesta_base": "La plantilla la revisa y la aprueba Meta, tiene costo y sirve para escribirle a un cliente fuera de las 24 horas. La respuesta rápida es gratis y solo funciona con la ventana de 24 horas abierta. Una plantilla solo se puede enviar cuando está «aprobada».",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=857&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=857",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4070,7 +4119,7 @@
   ],
   "respuesta_base": "WhatsApp cierra la ventana a las 24 horas del último mensaje del cliente. Para volver a escribirle se envía una plantilla aprobada: en el chat, «+» → «Enviar template».",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=331&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=331",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4093,7 +4142,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=857&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=857",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4121,7 +4170,7 @@
    "Actualiza el tablero.",
    "Vuelve a pegar tu prompt y guarda."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=869&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=869",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4147,7 +4196,7 @@
   ],
   "respuesta_base": "Si una regla de «Personalizar prompt» no se cumple, es porque choca con el prompt: hay que editar esa interacción en el prompt completo. Un cambio de prompt tarda unos minutos en aplicarse. Si el cliente compra y no cambia de columna, revisa que no se hayan borrado las etiquetas del prompt.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=869&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=869",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste y qué le pediste al bot",
   "no_decir": [
@@ -4172,7 +4221,7 @@
   ],
   "respuesta_base": "El bot se apaga para todos en «Integraciones» → «Asistentes de AI» → «Editar». Para un solo chat se apaga desde el Chat Center, en ese chat: el bot y el remarketing.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=869&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=869",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -4194,7 +4243,7 @@
   ],
   "respuesta_base": "Cada producto puede tener su flujo: un mensaje fijo, imágenes y respuestas por palabra clave. El mensaje fijo y las respuestas por palabra clave no gastan créditos de OpenAI.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=898&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=898",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4219,7 +4268,7 @@
   ],
   "respuesta_base": "Pasa cuando el título del anuncio no es idéntico al nombre del producto en IMPORCHAT. El título del anuncio debe ser el nombre exacto del producto y el mensaje predefinido «Hola, quiero comprar el» más ese nombre. Si el anuncio ya está publicado, se vincula por su ID al producto.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=900&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=900",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4244,7 +4293,7 @@
   ],
   "respuesta_base": "En IMPORCHAT, en el menú, está «Conectar Meta Ads»: eliges tu portafolio comercial y tu página. Después, en «Conexiones», eliges la cuenta publicitaria y «Consultar»: la sección «Ads atribuidos» muestra qué anuncio trae las ventas.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=636&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=636",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4269,7 +4318,7 @@
   ],
   "respuesta_base": "Hay dos formas: «Envío masivo», que usa una plantilla sin variables, y «Flujos masivos», que se programan por columna y sí llevan los datos de cada cliente. Los masivos usan plantillas, y las plantillas tienen costo de Meta.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=920&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=920",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4292,7 +4341,7 @@
   ],
   "respuesta_base": "Pasa cuando el «Contexto de productos» no es el de tu catálogo. Se corrige en «Acciones»: bórralo y vuelve a sincronizarlo con tus productos, que tienen que estar cargados antes.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=331&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=331",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -4314,7 +4363,7 @@
   ],
   "respuesta_base": "La cadena que tiene que estar completa es: cuenta creada desde la plataforma, WhatsApp conectado, llave y saldo de OpenAI, Dropi vinculado, producto importado con su ID y bot encendido.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=655&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=655",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste, tu país y en qué paso de esa cadena estás",
   "no_decir": [
@@ -4383,7 +4432,7 @@
   ],
   "respuesta_base": "En Dropi: «Productos» → «Proveedores» → IMPORSHOP → el producto. Ahí aparece el «precio de proveedor», que es tu costo.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=771&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=771",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4413,7 +4462,7 @@
    "En la calculadora pon el costo del proveedor; la lección indica qué CPA objetivo y qué margen usar.",
    "Compara el precio que te da con el de la competencia en la biblioteca de anuncios."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=635&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=635",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4441,7 +4490,7 @@
   ],
   "respuesta_base": "En la calculadora, el CPA es el costo por acción, es decir, lo que te cuesta en publicidad cada venta. No es lo mismo que el CAC.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=755&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=755",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4468,7 +4517,7 @@
   ],
   "respuesta_base": "El precio de la calculadora se compara con el de la competencia en la biblioteca de anuncios. Si la calculadora te da un poco más que la competencia, la lección muestra que se baja un poco el margen para quedar en un precio parecido.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=771&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=771",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4494,7 +4543,7 @@
   ],
   "respuesta_base": "El simulador de la calculadora da tres veredictos según tu costo por mensaje y tu porcentaje de cierre: «en target» (mantener), «marginal» (ajustado) y «kill» (apagar).",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=758&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=758",
   "pasar_a": "ecommerce",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
@@ -4519,7 +4568,7 @@
   ],
   "respuesta_base": "Los combos se calculan en la misma calculadora. La idea de la lección: en la segunda unidad el flete y los costos fijos ya están pagados, así que solo se suma el costo de proveedor; por eso el combo no vale el doble.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=757&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=757",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4542,7 +4591,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=758&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=758",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4567,7 +4616,7 @@
   ],
   "respuesta_base": "Una alternativa para elegir es el catálogo de IMPORSHOP: cada producto tiene una pestaña «Material» con anuncios listos, imágenes para la landing e imágenes reales.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=774&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=774",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4599,7 +4648,7 @@
   ],
   "respuesta_base": "El catálogo de IMPORSHOP está enlazado en la lección; cada producto tiene la pestaña «Material». El stock no se confirma por este chat.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=774&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=774",
   "pasar_a": "ecommerce",
   "pedir": "el nombre o el ID del producto en Dropi y tu país",
   "no_decir": [
@@ -4624,7 +4673,7 @@
   ],
   "respuesta_base": "En el catálogo de IMPORSHOP, la pestaña «Material» de cada producto abre una carpeta con anuncios listos, imágenes para la landing e imágenes reales del producto. Las imágenes reales sirven para dar confianza al cerrar la venta.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=774&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=774",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4681,7 +4730,7 @@
    "En «Editar» pon tu precio, tus combos y el material en «Catálogos».",
    "«Actualizar»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=773&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=773",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4707,7 +4756,7 @@
   ],
   "respuesta_base": "El bot dice el precio que está en el producto de IMPORCHAT. Entra a «Productos» → «Listado» → «Editar», iguala el precio y los combos a los de tu calculadora, corrige la descripción y da en «Actualizar».",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=773&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=773",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -4730,7 +4779,7 @@
   ],
   "respuesta_base": "En el producto, en la parte de «Catálogos», se pega el enlace de una carpeta de Drive con el material; el bot lo envía si el cliente lo pide. Las imágenes del primer mensaje se configuran en el flujo del producto.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=773&modulo=111",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=773",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4754,7 +4803,7 @@
   ],
   "respuesta_base": "En IMPORCHAT se arma un catálogo con tus productos y te da un enlace para compartir. Ese mismo enlace sirve cuando Meta te pide un sitio web al conectar tu número.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=657&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=657",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -4776,7 +4825,7 @@
   ],
   "respuesta_base": "Las variedades y los combos se cargan en IMPORCHAT cada uno con su propio ID de Dropi. La lección muestra cómo crear el producto variable y los combos.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=867&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=867",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4802,7 +4851,7 @@
   ],
   "respuesta_base": "Son dos herramientas: la calculadora, para poner el precio antes de vender, y el control diario, para registrar cada día el gasto en publicidad y los mensajes. La rentabilidad del día es la venta total menos el costo del producto, el flete y la publicidad. Si falta un día en la tabla es porque no hubo órdenes: se agrega a mano con su gasto.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=638&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=638",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4855,7 +4904,7 @@
   ],
   "respuesta_base": "Cuando completas los módulos 1 y 2 del Dropsystem se desbloquea en la plataforma «Agenda tu implementación»: es la sesión para acompañarte a lanzar tu primera campaña, y la agendas tú desde ahí.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=737&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
   "pasar_a": "ecommerce",
   "pedir": "el correo con el que te registraste (solo si ya completaste los módulos 1 y 2 y no te aparece)",
   "no_decir": [
@@ -4886,7 +4935,7 @@
    "Título del anuncio idéntico al nombre del producto en IMPORCHAT y mensaje «quiero comprar» más el producto.",
    "Duplica el anuncio y cambia el video en cada copia."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=737&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4913,7 +4962,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=737&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4938,7 +4987,7 @@
   ],
   "respuesta_base": "En Ecuador la lección excluye Galápagos. Para México se excluyen los estados sin contraentrega, pero no hay una lista publicada.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=737&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -4962,7 +5011,7 @@
   ],
   "respuesta_base": "El título del anuncio es el nombre del producto, idéntico a como está en IMPORCHAT. En la parte del chat se crea una plantilla con el mensaje predefinido «Hola, quiero comprar el» más el nombre del producto. Así el bot sabe de qué producto le escriben.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=877&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=877",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -4988,7 +5037,7 @@
   ],
   "respuesta_base": "En la lección se duplica el anuncio y en cada copia se cambia solo el video. Con las semanas el costo por mensaje sube: eso se resuelve con creativos nuevos, no con más presupuesto, y los creativos nuevos van en una campaña nueva.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=737&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5013,7 +5062,7 @@
   ],
   "respuesta_base": "La lección arma una vista de columnas para campañas a WhatsApp: entrega, resultados, importe gastado, costo por resultado, CPM, CPC, CTR, alcance y frecuencia. El costo por mensaje es el «costo por resultado».",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=781&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=781",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5037,7 +5086,7 @@
   ],
   "respuesta_base": "La lección crea dos reglas automáticas: una que apaga los anuncios que gastan sin dar resultados y otra que sube el presupuesto cuando el costo está bajo el objetivo. Revisa bien los montos antes de crear la regla: un error en la coma la cambia por completo. Las reglas se aplican a lo que tengas en la cuenta, así que conviene tener ahí solo campañas de este tipo.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=640&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=640",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5065,7 +5114,7 @@
   ],
   "respuesta_base": "La decisión se toma anuncio por anuncio, nunca por el promedio de la campaña. Un anuncio que se apaga se queda apagado: no se edita, se crea otro.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=753&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=753",
   "pasar_a": "ecommerce",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
@@ -5092,7 +5141,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=754&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=754",
   "pasar_a": "ecommerce",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
@@ -5118,7 +5167,7 @@
   ],
   "respuesta_base": "Si los mensajes llegan bien y no hay ventas, el anuncio no se apaga: el problema está en el bot o en la oferta. La lección lo revisa en tres etapas: tráfico, bot y oferta.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=754&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=754",
   "pasar_a": "ecommerce",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
@@ -5144,7 +5193,7 @@
   ],
   "respuesta_base": "Es normal que Meta gaste solo en algunos anuncios. Los que quedaron sin gasto se prueban en una campaña nueva.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=751&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=751",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -5166,7 +5215,7 @@
   ],
   "respuesta_base": "La campaña winner es una campaña nueva a la que se duplican los anuncios que ya venden; la campaña de testeo sigue encendida. Lo que funciona no se toca.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=637&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=637",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -5193,7 +5242,7 @@
   ],
   "respuesta_base": "La estructura que enseña la lección es una campaña, un conjunto de anuncios abierto y varios anuncios.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=750&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=750",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -5216,7 +5265,7 @@
   ],
   "respuesta_base": "",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=752&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=752",
   "pasar_a": "ecommerce",
   "pedir": "",
   "no_decir": [
@@ -5240,7 +5289,7 @@
   ],
   "respuesta_base": "Un anuncio que ya corrió no se edita: se crea otro. Y lo que está funcionando no se toca.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=753&modulo=110",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=753",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -5341,7 +5390,7 @@
    "Cuando el bot cierre un pedido, abre el chat: la orden está a la derecha.",
    "Revisa los datos y da en «Confirmar pedido»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=759&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=759",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5372,7 +5421,7 @@
    "«Corregir y crear»: corrige el dato y elige el producto de tu catálogo.",
    "«Crear orden en Dropi»: queda pendiente de confirmación."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=870&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=870",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -5397,7 +5446,7 @@
   ],
   "respuesta_base": "Después de confirmar, Dropi tarda unos minutos en avisar y recién ahí el cliente cambia de columna. Si quieres otra transportadora o el cliente pidió retiro en oficina, eso se cambia en Dropi con «Editar orden» antes de confirmar.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=759&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=759",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5430,7 +5479,7 @@
    "Pon cantidad y precio por unidad, y revisa el «Total a recaudar».",
    "Elige con o sin recaudo y la transportadora, y verifica la orden en «Mis pedidos»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=786&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=786",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5456,7 +5505,7 @@
   ],
   "respuesta_base": "Dropi multiplica la cantidad por el precio de la unidad. Si vendiste 2 por 50, pones cantidad 2 y precio 25, y revisas al final el «Total a recaudar».",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=786&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=786",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -5486,7 +5535,7 @@
    "Dropi te pide la evidencia de que el proveedor retuvo la guía: envíala en el ticket.",
    "Cuando Dropi aprueba, la orden aparece como «Rechazado»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=630&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=630",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5518,7 +5567,7 @@
    "Reúne los cuatro datos (pídeselos a tu cliente si hace falta).",
    "«Crear solicitud» → «Crear ticket» y espera la respuesta de Dropi."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=632&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=632",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5550,7 +5599,7 @@
    "Descripción y foto de evidencia, y «Aceptar».",
    "Revisa que aparezca en «Mis garantías»."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=633&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=633",
   "pasar_a": "ecommerce",
   "pedir": "número de orden y descripción del problema (solo si es un producto de IMPORSHOP o la garantía no avanza)",
   "no_decir": [
@@ -5582,7 +5631,7 @@
    "Contacta a tu cliente por llamada y por WhatsApp y acuerda qué hacer.",
    "«Solucionar»: elige la opción, indica el día de entrega acordado y envía."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=642&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=642",
   "pasar_a": "ecommerce",
   "pedir": "número de guía y transportadora (solo si no es Gintracom o la novedad no se resuelve)",
   "no_decir": [
@@ -5608,7 +5657,7 @@
   ],
   "respuesta_base": "En Dropi, el icono de la huella muestra el historial del cliente con su número de teléfono: si suele recibir y cómo le ha ido con cada transportadora. En Ecuador el número se pega sin el 593. Con eso eliges la transportadora con la que ese cliente tiene mejor historial.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=644&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=644",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5635,7 +5684,7 @@
   ],
   "respuesta_base": "Si la ciudad no aparece o la transportadora sale bloqueada, es que no hay cobertura: se elige otra transportadora o se acuerda con el cliente el retiro en una agencia. Al crear la orden solo salen con su flete las transportadoras que sí llegan.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=331&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=331",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5684,7 +5733,7 @@
   ],
   "respuesta_base": "La rutina diaria empieza por la columna «Generar guía» y después «Asesor». Se mueven solas las columnas de remarketing, «Asesor» y «Generar guía»; «Guías generadas» y el entregado se mueven a mano.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=331&modulo=109",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=331",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5814,7 +5863,7 @@
   ],
   "respuesta_base": "Aliclik es el equivalente a Dropi para Perú; la lección muestra cómo crear y ver los pedidos desde el chat. Aliclik pide la latitud y la longitud de la dirección. Si no vendes en Perú, Aliclik no se toca al inicio.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=884&modulo=136",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=884",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -5911,7 +5960,7 @@
   ],
   "respuesta_base": "Dentro del Dropsystem hay una sección «Dudas frecuentes» con videos cortos para los problemas más comunes: cuentas de Meta y pagos, conexiones, campañas y pedidos en Dropi. Cada video dura pocos minutos.",
   "pasos": [],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=629&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=629",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [],
@@ -6225,7 +6274,7 @@
    "Botón flotante → «Envíanos un mensaje» → «Envíos y transportadoras» → «Anular una guía»: motivo (por ejemplo, me equivoqué en un dato), número de guía y evidencia.",
    "En Ecuador, para retiro en una agencia de Servientrega: verifica en la web de Servientrega que sea un «centro de soluciones» y escribe en la dirección «Retiro CS» más la dirección de la agencia."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=32&contenido=630&modulo=134",
+  "enlace": "https://imporfactory.app/cursos/32?contenido=630",
   "pasar_a": "ecommerce",
   "pedir": "número de orden, número de guía y qué dato está mal (solo si la guía ya está en ruta)",
   "no_decir": [
@@ -6758,7 +6807,7 @@
    "Si la aceptas, el área comercial coordina contigo el pago y recibes tu marca de envío y las instrucciones para tu proveedor.",
    "Tu proveedor entrega en la bodega de IMPORFACTORY en Yiwu (China) y tu carga sale en el siguiente contenedor; se te avisa cada paso hasta la entrega en tu país."
   ],
-  "enlace": "https://new.imporsuitpro.com/curso?view=30&contenido=323&modulo=108",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "",
   "pedir": "si ya tienes proveedor: precio por unidad, unidades por caja y CBM o medidas de la caja (sirve una captura o la proforma)",
   "no_decir": [
@@ -6773,5 +6822,97 @@
    "fichas_bot.json · cotizar-datos (ConocimientoFront)",
    "fichas_bot.json · acepto-la-cotizacion (PORTAL_PUESTOS p07.json aprobada)"
   ]
+ },
+ {
+  "tema": "plataforma y accesos",
+  "pais": "todos",
+  "preguntas": [
+   "que herramientas tiene la plataforma",
+   "que hay en importaciones",
+   "para que sirve la plataforma",
+   "que puedo usar en la plataforma",
+   "donde estan las herramientas",
+   "que incluye importaciones"
+  ],
+  "respuesta_base": "En la plataforma, en «Importaciones», tienes 6 herramientas para todo el camino:",
+  "pasos": [
+   "Ideas de Productos, productos con sus costos calculados: https://imporfactory.app/ideas-productos",
+   "Directorio de Proveedores, con su WeChat o WhatsApp: https://imporfactory.app/proveedores",
+   "Calculadora de importación, flete, aranceles e IVA: https://imporfactory.app/calculadora",
+   "Seguimiento de mi carga, por dónde viene tu pedido: https://imporfactory.app/seguimiento-carga",
+   "Infoaduana, qué se importa en tu país: https://imporfactory.app/infoaduana",
+   "ImporIA, asistente para tus dudas de importación: https://imporfactory.app/imporia"
+  ],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [],
+  "fuentes": [
+   "imporfactory.app/importaciones (18-oct-2026)"
+  ],
+  "id": "herramientas-de-la-plataforma"
+ },
+ {
+  "tema": "carga",
+  "pais": "todos",
+  "preguntas": [
+   "donde veo mi carga en la plataforma",
+   "como hago seguimiento de mi carga",
+   "hay un rastreo de mi pedido",
+   "donde reviso por donde viene mi carga",
+   "tienen tracking"
+  ],
+  "respuesta_base": "En la plataforma, en «Importaciones» → «Seguimiento de mi carga», ves en qué parte va tu pedido: en la bodega de China, en el barco, en aduana o ya en la bodega de destino, y la llegada estimada cuando la naviera la confirma.",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/seguimiento-carga",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "fechas o plazos"
+  ],
+  "fuentes": [
+   "imporfactory.app/seguimiento-carga (18-oct-2026)"
+  ],
+  "id": "seguimiento-de-mi-carga-plataforma"
+ },
+ {
+  "tema": "plataforma y accesos",
+  "pais": "todos",
+  "preguntas": [
+   "que es imporia",
+   "como uso la ia de la plataforma",
+   "tienen un asistente de ia",
+   "donde le pregunto a la ia"
+  ],
+  "respuesta_base": "ImporIA es el asistente con IA de la plataforma para tus dudas de importación: impuestos, subpartida arancelaria o cómo calcular el costo total. Está en «Importaciones» → «ImporIA».",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/imporia",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [],
+  "fuentes": [
+   "imporfactory.app/imporia (18-oct-2026)"
+  ],
+  "id": "imporia"
+ },
+ {
+  "tema": "otros",
+  "pais": "todos",
+  "preguntas": [
+   "tienen un checklist",
+   "paso a paso para importar",
+   "lista de pasos para importar sin errores",
+   "como se que no me salto nada"
+  ],
+  "respuesta_base": "En la plataforma está el Checklist del importador: el paso a paso para importar sin errores, y vas marcando cada punto a medida que avanzas.",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/checklist",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [],
+  "fuentes": [
+   "imporfactory.app/checklist (18-oct-2026)"
+  ],
+  "id": "checklist-del-importador"
  }
 ]
