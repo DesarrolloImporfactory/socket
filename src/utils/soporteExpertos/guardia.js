@@ -231,7 +231,7 @@ const cifras = (t) => (String(t).match(/\d+(?:[.,]\d+)?/g) || []).map(numero);
 /* Dónde SÍ se puede repetir una cifra que escribió el cliente: como código
    (su cotización, su marca, su guía) o como cantidad de unidades. */
 const RE_CODIGO_DEL_CLIENTE = new RegExp(
-  '((?:cotizaci[oó]n(?:es)?|pedido|orden|gu[ií]a|referencia|marca|c[oó]digo|ticket|caso)\\s*(?:n\\.?\\s*[ºo°]?\\.?|nro\\.?|n[uú]mero|#|:)?\\s*|#\\s*|\\b[A-Za-z]{2}-)(\\d[\\d]*)|' +
+  '((?:cotizaci[oó]n(?:es)?|pedido|orden|gu[ií]a|referencia|marca|c[oó]digo|ticket|caso|producto|modelo|opci[oó]n)\\s*(?:n\\.?\\s*[ºo°]?\\.?|nro\\.?|n[uú]mero|#|:)?\\s*|#\\s*|\\b[A-Za-z]{2}-)(\\d[\\d]*)|' +
     '(\\d+)(\\s*(?:unidades|cajas|piezas|pcs|productos|bultos|proveedores|marcas)\\b)',
   'giu',
 );

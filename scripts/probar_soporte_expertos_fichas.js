@@ -560,6 +560,13 @@ const NADA = [
     prueba('«vi en ideas de productos… me interesa» trae cómo cotizarlo', r('vi en ideas de productos unas freidoras de aire, me interesa')[0] === 'me-interesa-producto-de-ideas');
   }
 
+  console.log('\n17. Mensajes reales del fin de semana 17-19 oct: repetir «producto 2» del cliente');
+  {
+    const { datoSinRespaldo } = require('../src/utils/soporteExpertos/guardia');
+    const pasa = (t, eco = '') => datoSinRespaldo(t, '', eco, '') === null;
+    prueba('«producto 2» que escribió el cliente se puede repetir; «producto 3» no', pasa('Recibí los datos del producto 2.', 'Producto 2 me interesa') && !pasa('Recibí los datos del producto 3.', 'Producto 2 me interesa'));
+  }
+
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);
 })().catch((e) => {
