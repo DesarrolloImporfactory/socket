@@ -468,7 +468,12 @@
    "como consigo un proveedor",
    "como encuentro proveedor",
    "donde encuentro proveedores confiables",
-   "recien empiezo y no tengo proveedor"
+   "recien empiezo y no tengo proveedor",
+   "compro en alibaba o en yiwugo",
+   "alibaba o yiwugo",
+   "es mejor alibaba o yiwugo",
+   "donde compro en china",
+   "en que pagina busco proveedores"
   ],
   "respuesta_base": "Para conseguir proveedor empiezas por el Directorio de Proveedores de la plataforma: son proveedores verificados, cada tarjeta dice qué vende y trae su contacto de WeChat o WhatsApp. Buscas por tu producto, les escribes a varios a la vez y a cada uno le pides 3 datos: el precio por unidad (EXW más envío a Yiwu), cuántas unidades vienen en cada caja y el volumen de la caja (CBM).",
   "pasos": [
@@ -6914,5 +6919,52 @@
    "imporfactory.app/checklist (18-oct-2026)"
   ],
   "id": "checklist-del-importador"
+ },
+ {
+  "tema": "cotización",
+  "pais": "todos",
+  "preguntas": [
+   "esos precios ya incluyen todo",
+   "el precio de ideas de productos incluye el envio",
+   "la calculadora ya incluye impuestos",
+   "por que en ideas de productos sale mas barato que lo que me cotizaron",
+   "la calculadora me da un valor y la cotizacion otro"
+  ],
+  "respuesta_base": "Los costos que ves en Ideas de Productos y en la Calculadora de importación son una referencia para decidir. El valor final, con el flete y los impuestos de tu producto y tu cantidad, es el de la cotización que te hace el área de precios.",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/calculadora",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "tarifas o porcentajes de memoria"
+  ],
+  "fuentes": [
+   "imporfactory.app/importaciones (18-oct-2026)"
+  ],
+  "id": "precio-de-las-herramientas"
+ },
+ {
+  "tema": "cotización",
+  "pais": "todos",
+  "preguntas": [
+   "vi en ideas de productos un producto que me interesa",
+   "me interesa un producto de ideas de productos",
+   "quiero traer un producto de ideas de productos",
+   "como cotizo un producto de ideas de productos",
+   "vi en ideas de productos",
+   "vi un producto en ideas de productos y me interesa",
+   "me interesa uno de ideas de productos",
+   "vi en la plataforma un producto que me gusto"
+  ],
+  "respuesta_base": "En la tarjeta del producto, en Ideas de Productos, está el botón «Cotizar por WhatsApp» para pedir su cotización. También puedes enviarme aquí el nombre del producto y cuántas unidades quieres, y lo dejo anotado para que el área de precios te cotice.",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/ideas-productos",
+  "pasar_a": "pricing",
+  "pedir": "nombre del producto y cuántas unidades quieres",
+  "no_decir": [],
+  "fuentes": [
+   "imporfactory.app/ideas-productos (18-oct-2026)"
+  ],
+  "id": "me-interesa-producto-de-ideas"
  }
 ]

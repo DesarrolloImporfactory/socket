@@ -543,6 +543,23 @@ const NADA = [
     prueba('la meta es resolver en la primera respuesta', /lo resuelva con tu PRIMERA respuesta/.test(p3));
   }
 
+  console.log('\n16. Juicio a ciegas de 90 conversaciones (18-oct-2026): la guardia ya no tapa respuestas buenas');
+  {
+    const { datoSinRespaldo } = require('../src/utils/soporteExpertos/guardia');
+    const firme = Object.values(T.LINKS).join(' ');
+    const pasa = (t, eco = '') => datoSinRespaldo(t, firme, eco, '') === null;
+    prueba('«estás en la parte 2… le pides 3 datos» no es una cifra inventada', pasa('Aún no tienes proveedor, así que estás en la parte 2. A cada uno le pides 3 datos.'));
+    prueba('«las partes 1 y 2 del camino» tampoco', pasa('Como recién empiezas, vas en las partes 1 y 2 del camino.'));
+    prueba('repetir «3 proveedores» que dijo el cliente pasa; «4 proveedores» no', pasa('Si con 3 proveedores va junto, lo confirma una persona.', 'tengo 3 proveedores distintos') && !pasa('Son 4 proveedores.', 'tengo 3 proveedores'));
+    prueba('describir las etapas de Seguimiento de mi carga no afirma nada de SU carga', pasa('Ves en qué parte va tu pedido: en la bodega de China, en el barco, en aduana o ya en la bodega de destino.'));
+    prueba('«tu carga ya está en aduana» sin dato sigue frenándose', !pasa('Tu carga ya está en aduana.'));
+    prueba('«no te los puedo confirmar» no es un ofrecimiento; «puedo confirmarte» sí', ofreceLoQueNoPuede('Los días de tránsito no te los puedo confirmar por aquí.', '') === null && !!ofreceLoQueNoPuede('Puedo confirmarte la fecha.', ''));
+    const r = (q) => buscarConRescate(real, q, { pais: 'ec' }).map((y) => y.ficha.id);
+    prueba('«compro en alibaba o en yiwugo» trae el directorio', r('compro en alibaba o en yiwugo')[0] === 'directorio-de-proveedores');
+    prueba('«esos precios ya incluyen todo?» trae que la herramienta es una referencia', r('esos precios ya incluyen todo?')[0] === 'precio-de-las-herramientas');
+    prueba('«vi en ideas de productos… me interesa» trae cómo cotizarlo', r('vi en ideas de productos unas freidoras de aire, me interesa')[0] === 'me-interesa-producto-de-ideas');
+  }
+
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);
 })().catch((e) => {
