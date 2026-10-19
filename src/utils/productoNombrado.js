@@ -116,4 +116,55 @@ function productoNombrado(texto, productos) {
   return mejor;
 }
 
-module.exports = { productoNombrado, tokensProducto, normalizar, VACIAS };
+/**
+ * Todos los productos del catálogo que el texto nombra (misma regla que
+ * productoNombrado, sin elegir ganador). Sirve para saber si el texto es un
+ * LISTADO ("¿cuál te interesa: X, Y o Z?") y no la presentación de un producto.
+ *
+ * CASO REAL (1356, Saidy, 2026-10-15): la clienta pidió "el catálogo", el bot
+ * listó los tres productos en pauta y el código le adjuntó la foto de la
+ * Trituradora (el nombre con más palabras coincidentes) como si fuera el
+ * producto en juego. Medido en 7 días: 53 turnos así en México, con la foto
+ * de un producto que nadie había elegido.
+ *
+ * @param {string} texto
+ * @param {Array<{nombre:string}>} productos
+ * @returns {object[]}  productos nombrados (sin duplicar por nombre)
+ */
+function productosNombrados(texto, productos) {
+  const dicho = normalizar(texto);
+  if (!dicho) return [];
+  const vistos = new Set();
+  const candidatos = [];
+  for (const p of productos || []) {
+    const tk = tokensProducto(p?.nombre);
+    if (aciertosDe(dicho, tk) < aciertosNecesarios(tk.length)) continue;
+    const clave = normalizar(p.nombre);
+    if (vistos.has(clave)) continue;
+    vistos.add(clave);
+    candidatos.push({ p, tk: new Set(tk) });
+  }
+  /* Nombres anidados cuentan como UNA mención: "TRITURADOR DE CAFE Y GRANOS"
+     también satisface a "TRITURADOR PARA GRANOS" (sus palabras útiles son un
+     subconjunto), y eso no convierte la presentación de un producto en un
+     listado. Se queda el más específico. */
+  return candidatos
+    .filter(
+      ({ tk }) =>
+        !candidatos.some(
+          (o) =>
+            o.tk !== tk &&
+            o.tk.size > tk.size &&
+            [...tk].every((t) => o.tk.has(t)),
+        ),
+    )
+    .map(({ p }) => p);
+}
+
+module.exports = {
+  productoNombrado,
+  productosNombrados,
+  tokensProducto,
+  normalizar,
+  VACIAS,
+};
