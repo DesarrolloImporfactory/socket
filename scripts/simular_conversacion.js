@@ -286,8 +286,15 @@ async function main() {
     /* El mensaje va MARCADO al final del contexto, como en producción: pegado
        sin rótulo tras miles de caracteres, un "1" o un "Una" se pierde
        (incidente cfg 366). */
-    const input = contexto.trim()
-      ? `🧾 Contexto adicional:\n\n${contexto.trim()}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
+    /* SIM_CONTEXTO_EXTRA: texto que kanban_ia inyecta por fuera de
+       contextoColumna (p. ej. el bloque del experimento de precio en México),
+       para probar una regla nueva antes de desplegarla. Va al final del
+       contexto, en la misma posición que en producción. */
+    const contextoFinal = [contexto.trim(), String(process.env.SIM_CONTEXTO_EXTRA || '').trim()]
+      .filter(Boolean)
+      .join('\n\n');
+    const input = contextoFinal
+      ? `🧾 Contexto adicional:\n\n${contextoFinal}\n\n💬 MENSAJE ACTUAL DEL CLIENTE (responde a ESTO):\n${mensaje}`
       : mensaje;
 
     const turno = await correr(col, input, cadena);
