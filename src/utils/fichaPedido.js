@@ -42,7 +42,7 @@
  * en la fase de datos, frente a los 20–40k del turno principal. Se cachea por
  * cliente mientras no haya mensajes nuevos del cliente. */
 
-const axios = require('axios');
+
 const { db } = require('../database/config');
 const { parseUbicacionJson, geocodificarMensaje } = require('./geoUbicacion');
 
@@ -324,6 +324,10 @@ async function extraerFichaPedido({
   id_configuracion,
   id_cliente,
   api_key_openai,
+  // Fase 2 Claude: con proveedor claude + llave, el extractor va por Claude
+  // (utils/claude/extractorJson.js) y la cuenta no necesita llave de OpenAI.
+  proveedor_ia = 'openai',
+  api_key_claude = null,
   paisNombre = 'Ecuador',
   log = async () => {},
   /* Transcript armado por quien llama (simulador del wizard de producto: la
@@ -332,7 +336,12 @@ async function extraerFichaPedido({
      nCliente }. Si no viene, se lee la BD como siempre. */
   transcriptExterno = null,
 }) {
-  if (!api_key_openai) return null;
+  const { extraerJsonIA, proveedorExtractor } = require('./claude/extractorJson');
+  if (
+    !api_key_openai &&
+    proveedorExtractor({ proveedor_ia, api_key_claude }) !== 'claude'
+  )
+    return null;
   const ahora = Date.now();
   const { transcript, textoCliente, items, firma, nCliente } =
     transcriptExterno || (await cargarTranscript(id_configuracion, id_cliente));
@@ -346,16 +355,13 @@ async function extraerFichaPedido({
 
   let ia = {};
   try {
-    const { data } = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
+    ia =
+      (await extraerJsonIA({
+        api_key_openai,
+        proveedor_ia,
+        api_key_claude,
+        timeout: 15000,
+        system:
               `Lees una conversación de ventas por WhatsApp (pago contra entrega, ${paisNombre}) y extraes los datos del pedido que el CLIENTE ya dio. ` +
               'Responde SOLO un JSON con las claves: nombre, telefono, ciudad, provincia, direccion, referencia, entrega, agencia, producto, cantidad, variedad, codigo_postal, confirmo_pedido. ' +
               'REGLA DE ORO: cada valor tiene que salir de un mensaje del CLIENTE, escrito por él. Lo que diga el ASISTENTE o el VENDEDOR no vale como dato del cliente (el vendedor a veces escribe la dirección de una agencia: eso NO es la dirección del cliente). Si el cliente no lo dijo, null. NO inventes ni completes. ' +
@@ -369,15 +375,10 @@ async function extraerFichaPedido({
               'producto = el producto que el cliente quiere, con el nombre que usa el ASISTENTE para ese producto (acá sí vale el asistente porque es el nombre del catálogo). cantidad = número de unidades que el cliente eligió ("uno", "solo uno", "una" = 1; "combo de dos", "el de 2", "dos unidades" = 2); null si no eligió. variedad = color/talla/modelo que el cliente eligió, si el producto lo pide; null si no. ' +
               'codigo_postal = el código postal (5 dígitos) que el CLIENTE escribió para su dirección; null si no lo dio (no lo deduzcas de la ciudad). ' +
               'confirmo_pedido = true SOLO si el asistente ya le mostró un resumen del pedido y el cliente respondió afirmando que está correcto ("sí", "correcto", "así es", "listo", "dale", "está bien"); false en cualquier otro caso.',
-          },
-          // El transcript puede venir de afuera (simulador) ya recortado a
-          // mano: se limpia igual por si trae un emoji partido.
-          { role: 'user', content: sinSurrogatesSueltos(transcript) },
-        ],
-      },
-      { headers: { Authorization: `Bearer ${api_key_openai}` }, timeout: 15000 },
-    );
-    ia = JSON.parse(data?.choices?.[0]?.message?.content || '{}') || {};
+        // El transcript puede venir de afuera (simulador) ya recortado a
+        // mano: se limpia igual por si trae un emoji partido.
+        user: sinSurrogatesSueltos(transcript),
+      })) || {};
   } catch (err) {
     await log(`⚠️ fichaPedido: extractor falló (${err?.message}); sin ficha`);
     return enCache?.ficha || null;

@@ -1696,12 +1696,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             const descripcion = await describirImagenDesdeArchivo(
               ruta_archivo,
               api_key_openai,
-              ajustesBot?.soporte_expertos
-                ? {
-                    prompt: require('../utils/soporteExpertos/adjuntos')
-                      .PROMPT_VISION_EXPERTOS,
-                  }
-                : undefined,
+              {
+                ...(ajustesBot?.soporte_expertos
+                  ? {
+                      prompt: require('../utils/soporteExpertos/adjuntos')
+                        .PROMPT_VISION_EXPERTOS,
+                    }
+                  : {}),
+                // Fase 2 Claude: con proveedor claude la lee Claude.
+                proveedor_ia,
+                api_key_claude,
+              },
             );
 
             // El caption del cliente, si escribió algo junto a la foto

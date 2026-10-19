@@ -23,6 +23,9 @@
 const axios = require('axios');
 const { db } = require('../database/config');
 const { obtenerApiKeyOpenAI } = require('./producto_descripcion_ia.service');
+// Fase 2 Claude: si la cuenta responde con Claude, la sugerencia la escribe
+// Claude (mismo esquema JSON) y no hace falta llave de OpenAI.
+const { llavesDeCuenta, claudeJson } = require('../utils/claude/claude');
 const { ejecutarTool } = require('./asistente_cuenta.service');
 
 const MODELO = 'gpt-4o-mini';
@@ -196,10 +199,11 @@ function camposPorTransportadora(transportadora) {
  * registro: { vecesOfrecida, totalNovedades }
  */
 async function sugerirSolucion({ id_configuracion, orden, idCliente, registro }) {
-  const apiKey = await obtenerApiKeyOpenAI(id_configuracion);
-  if (!apiKey) {
+  const llaves = await llavesDeCuenta(id_configuracion);
+  const apiKey = llaves.api_key_openai || (await obtenerApiKeyOpenAI(id_configuracion));
+  if (!apiKey && !llaves.usarClaude) {
     throw errorNegocio(
-      'Este negocio todavía no tiene conectada una API Key de OpenAI. Conéctala en Asistentes para usar las sugerencias.',
+      'Este negocio todavía no tiene conectada una API Key de OpenAI ni de Claude. Conéctala en Asistentes para usar las sugerencias.',
       'OPENAI_KEY_MISSING',
     );
   }
@@ -214,6 +218,49 @@ async function sugerirSolucion({ id_configuracion, orden, idCliente, registro })
     guiaTransportadora(orden),
   ]);
 
+  const entrada = construirEntrada({
+    orden,
+    conversacion,
+    guia,
+    registro,
+    camposRequeridos: camposPorTransportadora(orden.transportadora),
+  });
+
+  if (llaves.usarClaude) {
+    let r;
+    try {
+      r = await claudeJson({
+        api_key_claude: llaves.api_key_claude,
+        system: PROMPT_SISTEMA,
+        input: entrada,
+        schema: ESQUEMA,
+        max_tokens: 1200,
+      });
+    } catch (e) {
+      console.error(`[NOVEDAD_IA] Claude ${e?.status || ''} — ${e?.message}`);
+      if (e?.status === 401)
+        throw errorNegocio(
+          'Tu API Key de Claude no es válida o fue revocada. Revísala en Asistentes.',
+          'OPENAI_KEY_INVALID',
+        );
+      if (e?.status === 429 || /credit balance|too low/i.test(String(e?.message)))
+        throw errorNegocio(
+          'Tu cuenta de Claude no tiene saldo o llegó a su límite de uso.',
+          'OPENAI_RATE_LIMIT',
+        );
+      throw errorNegocio(
+        'Claude no respondió. Intenta de nuevo en un momento.',
+        'OPENAI_ERROR',
+      );
+    }
+    if (!r.json)
+      throw errorNegocio(
+        'La IA devolvió una respuesta que no se pudo leer. Intenta de nuevo.',
+        'OPENAI_EMPTY',
+      );
+    return aplicarReglas({ ia: r.json, conversacion, reincidencia, registro });
+  }
+
   let data;
   try {
     ({ data } = await axios.post(
@@ -224,18 +271,7 @@ async function sugerirSolucion({ id_configuracion, orden, idCliente, registro })
         input: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text: construirEntrada({
-                  orden,
-                  conversacion,
-                  guia,
-                  registro,
-                  camposRequeridos: camposPorTransportadora(orden.transportadora),
-                }),
-              },
-            ],
+            content: [{ type: 'input_text', text: entrada }],
           },
         ],
         text: {
@@ -351,4 +387,4 @@ function aplicarReglas({ ia, conversacion, reincidencia, registro }) {
   return sug;
 }
 
-module.exports = { sugerirSolucion, aplicarReglas };
+module.exports = { sugerirSolucion, aplicarReglas, ESQUEMA };

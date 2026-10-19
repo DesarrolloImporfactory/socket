@@ -51,8 +51,25 @@ exports.resumen = catchAsync(async (req, res) => {
       .json({ status: 'fail', message: 'id_configuracion es obligatorio.' });
   }
   dias = Math.min(Math.max(dias, 1), 90);
+  /* Filtro por proveedor: 'openai' | 'claude' | '' (todos). Una cuenta con las
+     dos llaves puede haber respondido un tramo con cada uno; sin esto, para
+     ver cuánto le costó Claude tendría que dejar el bot respondiendo con
+     Claude. El proveedor de cada respuesta sale del modelo guardado en
+     json_analytics_mensaje (claude-* → Claude; lo demás, y lo viejo sin
+     analytics, OpenAI). Las respuestas sin IA no tienen proveedor y se
+     cuentan siempre. */
+  const proveedorFiltro = ['openai', 'claude'].includes(
+    String(req.body?.proveedor || '').toLowerCase(),
+  )
+    ? String(req.body.proveedor).toLowerCase()
+    : '';
+  const proveedorDe = (a) =>
+    a && /^claude-/i.test(String(a.modelo || '')) ? 'claude' : 'openai';
 
-  const modeloRef = await modeloReferencia(id_configuracion);
+  let modeloRef = await modeloReferencia(id_configuracion);
+  if (proveedorFiltro === 'claude' && !/^claude-/i.test(modeloRef)) {
+    modeloRef = 'claude-opus-5-5';
+  }
 
   /* Una sola pasada por los mensajes salientes del bot en el rango. Se traen
      solo los campos necesarios; el desglose por día se arma en JS para poder
@@ -85,6 +102,9 @@ exports.resumen = catchAsync(async (req, res) => {
     costo_salida_usd: 0,
     costo_exacto_msgs: 0,
   };
+  // Cuántas respuestas con IA salieron con cada proveedor en el período, sin
+  // aplicar el filtro: el front muestra el selector solo si hubo de los dos.
+  const porProveedor = { openai: 0, claude: 0 };
   const precioRef = PRECIOS[modeloRef] || PRECIOS['gpt-4o-mini'];
   for (const f of filas) {
     const dia =
@@ -116,6 +136,10 @@ exports.resumen = catchAsync(async (req, res) => {
       }
       continue;
     }
+    const a = leerAnalytics(f.json_analytics_mensaje);
+    const prov = proveedorDe(a);
+    porProveedor[prov] += 1;
+    if (proveedorFiltro && prov !== proveedorFiltro) continue;
     d.msgs_ia += 1;
     tot.msgs_ia += 1;
     const tokens = Number(f.tokens) || 0;
@@ -126,7 +150,6 @@ exports.resumen = catchAsync(async (req, res) => {
        los mensajes viejos sin desglose se reparten 95/5 entrada/salida —
        el mismo supuesto de costoEstimadoPorTokens. La caché es donde vive
        el ahorro real: cuesta ~10x menos que la entrada normal. */
-    const a = leerAnalytics(f.json_analytics_mensaje);
     let costo = 0;
     if (a) {
       const p = PRECIOS[normalizarModelo(a.modelo)] || precioRef;
@@ -217,12 +240,16 @@ exports.resumen = catchAsync(async (req, res) => {
       },
       modelo_referencia: modeloRef,
       precio_referencia: PRECIOS[modeloRef],
+      proveedor: proveedorFiltro || 'todos',
+      por_proveedor: porProveedor,
       precios_actualizados: ACTUALIZADO,
       rango_dias: dias,
       medicion_desde,
       rango_incompleto,
       nota:
-        'Costo estimado con los precios públicos de OpenAI. Las respuestas que guardan modelo y tokens se calculan exactas; las anteriores se estiman con el modelo de la columna. La factura real es la de tu cuenta de OpenAI.',
+        proveedorFiltro === 'claude'
+          ? 'Costo calculado con los precios públicos de Anthropic y el modelo real de cada respuesta. La factura real es la de tu cuenta de Anthropic.'
+          : 'Costo estimado con los precios públicos de OpenAI y Anthropic. Las respuestas que guardan modelo y tokens se calculan exactas; las anteriores se estiman con el modelo de la columna. La factura real es la de tu cuenta de OpenAI o de Anthropic.',
     },
   });
 });

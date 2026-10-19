@@ -113,12 +113,20 @@ exports.probarAutoOrden = async (req, res) => {
       },
     );
 
+    // Proveedor de la cuenta: si responde con Claude, el extractor va por
+    // Claude aunque el panel no haya mandado llave de OpenAI.
+    const llaves = await require('../utils/claude/claude').llavesDeCuenta(
+      id_configuracion,
+    );
+
     // ── Ejecuta el flujo (síncrono) ──
     const resultado = await autoCrearOrdenDropi({
       id_configuracion,
       id_cliente: id_cliente || null,
       datosBot,
-      api_key_openai,
+      api_key_openai: api_key_openai || llaves.api_key_openai,
+      proveedor_ia: llaves.proveedor_ia,
+      api_key_claude: llaves.api_key_claude,
       force,
     });
 

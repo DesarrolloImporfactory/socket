@@ -87,7 +87,157 @@ const PUENTE_INLINE =
   'catálogo; si un producto no está en él, no existe; nunca inventes nada que ' +
   'no aparezca escrito ahí. Si además tienes la herramienta file_search ' +
   'disponible, contiene únicamente documentos de apoyo (guías, agencias, ' +
-  'políticas), NO el catálogo: úsala solo para eso.';
+  'políticas), NO el catálogo: úsala solo para eso.\n' +
+  /* La regla "PRODUCTO NO EXISTE → déjame revisar + [asesor]" de los prompts
+     se escribió para file_search, donde no encontrar algo no probaba que no
+     existiera. Con el catálogo completo adelante el modelo SÍ puede afirmar
+     que un producto no está, y la regla vieja lo dejaba sin salida: "no digas
+     que no lo tienes" + "no inventes" terminó en "¿quieres también mallas
+     navideñas además del proyector?" (1356, Saidy, 2026-10-15: las mallas no
+     existían y el bot las dio por disponibles). Se separa en dos casos:
+     - producto ADICIONAL durante una venta en curso → decir que no está y
+       seguir con el que está en juego (no hay nada que un asesor pueda
+       "revisar");
+     - producto PRINCIPAL que no aparece → sigue "déjame revisar" + asesor:
+       muchas veces está con otro nombre (el del anuncio ≠ el del catálogo) y
+       el humano lo rescata (EC, oct-2026: 81 % de esos chats reciben respuesta
+       humana después). */
+  '⚠️ ESTA NOTA CORRIGE la regla "PRODUCTO NO EXISTE → déjame revisar en el ' +
+  'catálogo + [asesor]" de las instrucciones. Como tienes el catálogo COMPLETO, ' +
+  'hay dos casos distintos:\n' +
+  '(a) Ya hay un producto en juego (el cliente vino por él, o ya le diste su ' +
+  'precio) y pregunta por OTRO que no está en el catálogo ("¿tienen también ' +
+  'X?", "¿y X?", "¿no tienen X?"): NO digas "déjame revisar", NO pases a ' +
+  'asesor, NO lo trates como disponible, NO preguntes si lo quiere agregar. ' +
+  'Dile en una frase que X no lo manejas (si tienes algo de ese tipo en el ' +
+  'catálogo, nómbralo; si no, no ofrezcas nada) y retoma el producto en juego ' +
+  'con UNA pregunta. Ejemplo: cliente con el proyector en juego pregunta "¿y ' +
+  'tienen mallas navideñas?" → "Mallas no manejamos, de Navidad solo tengo el ' +
+  'Mini Proyector 🎄 ¿Te lo envío a Quito, 1 unidad o el combo de 2?".\n' +
+  '(b) El producto que no encuentras es el PRINCIPAL (vino por él y no hay otro ' +
+  'en juego): ahí sí aplica "déjame revisar en el catálogo la disponibilidad" ' +
+  '+ [asesor]:true, porque puede estar con otro nombre.';
+
+/* ── Experimento: respuesta al precio en México (desde 2026-10-18) ──
+   Medido en la semana del 11 al 17 de octubre (9.325 chats IA en MX): el 38 %
+   de los clientes pregunta el precio, y de los que lo reciben del modelo,
+   cuando la respuesta lista los combos vuelve el 42-45 % y cierra el 1-2 %;
+   cuando da solo el precio unitario y pregunta la ciudad vuelve el 55 % y
+   cierra el 8,5 % (dentro de la misma cuenta 1159: 42 %/1,6 % contra 56 %/7 %).
+   En Ecuador la diferencia es chica y mixta (combos 42 %/9 %, sin combos
+   45 %/10 %), así que la regla es SOLO MX. Como la correlación no prueba la
+   causa, va como A/B por paridad del id del cliente: pares reciben la regla,
+   impares siguen igual, y el log deja el brazo para medirlo con los mismos
+   scripts (precio.js) sobre la semana siguiente. Para apagarlo: AB_PRECIO_MX
+   = false. Para aplicarlo a todos cuando se confirme: AB_PRECIO_MX_TODOS. */
+const AB_PRECIO_MX = true;
+const AB_PRECIO_MX_TODOS = false;
+const RE_PREGUNTA_PRECIO =
+  /\b(precio|precios|presio|prezio|cu[aá]nto (cuesta|cuestan|vale|valen|sale|salen|es|cobran|seria|sería)|costo|costos|valor|q precio|que precio|en cu[aá]nto)\b|\bcu[aá]nto\s*\??$/i;
+/* "¿cuánto tarda?", "costo del envío", "cuántos días" preguntan otra cosa:
+   ahí la regla de precio no aplica. */
+const RE_NO_ES_PRECIO =
+  /\b(tarda|tardan|demora|demoran|tiempo|llega|llegan|entrega|entregan|env[ií]o|envios|env[ií]os|pesa|mide|miden|garant[ií]a)\b/i;
+function preguntaPorPrecio(texto) {
+  const t = String(texto || '').trim();
+  if (!t || t.length > 160) return false; // un párrafo largo no es "¿precio?"
+  if (!RE_PREGUNTA_PRECIO.test(t)) return false;
+  if (/\b(costo|precio|valor)\s+(de|del)?\s*(env[ií]o|envio)/i.test(t)) return false;
+  if (
+    RE_NO_ES_PRECIO.test(t) &&
+    !/\b(precio|precios|presio|cuesta|cuestan|vale|valen|costo)\b/i.test(t)
+  )
+    return false;
+  return true;
+}
+const _cachePaisMX = new Map(); // id_configuracion → { esMX, hasta }
+async function esCuentaMexico(id_configuracion) {
+  const c = _cachePaisMX.get(id_configuracion);
+  if (c && c.hasta > Date.now()) return c.esMX;
+  let esMX = false;
+  try {
+    const [integ] = await db.query(
+      `SELECT country_code FROM dropi_integrations
+        WHERE id_configuracion = ? AND is_active = 1 AND deleted_at IS NULL
+        ORDER BY id DESC LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    let pais = integ?.country_code;
+    if (!pais) {
+      const [cfg] = await db.query(
+        `SELECT pais_plantilla, pais FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+      );
+      pais = cfg?.pais_plantilla || cfg?.pais;
+    }
+    esMX = String(pais || '').toUpperCase() === 'MX';
+  } catch (_) {
+    esMX = false;
+  }
+  _cachePaisMX.set(id_configuracion, { esMX, hasta: Date.now() + 10 * 60 * 1000 });
+  return esMX;
+}
+const BLOQUE_PRECIO_MX =
+  '💵 CÓMO RESPONDER ESTA PREGUNTA DE PRECIO (regla de México, manda sobre ' +
+  'las instrucciones de arriba): el cliente acaba de preguntar cuánto cuesta. ' +
+  'Responde en máximo 4 líneas con: (1) el precio de UNA unidad del producto en ' +
+  'juego, tal cual está en el catálogo; (2) una frase corta con el beneficio ' +
+  'concreto del producto (qué resuelve), sin adjetivos vacíos; (3) "envío ' +
+  'gratis y pagas al recibir" en una sola línea; (4) la foto del producto con ' +
+  '[producto_imagen_url]: si todavía no se la mandaste; (5) cierra con UNA sola ' +
+  'pregunta: ¿a qué ciudad se lo enviamos? NO listes en este mensaje los ' +
+  'combos ni los precios por 2, 3 o 5 unidades: esos los ofreces DESPUÉS, al ' +
+  'preguntar la cantidad o si el cliente pide más de una. Si el cliente ' +
+  'preguntó expresamente por el combo o por varias unidades, entonces sí dale ' +
+  'ese precio. Nunca inventes precios: solo los del catálogo.';
+
+/* ── Objeción de precio (ambos países, desde 2026-10-18) ──
+   Medido 11-17 oct: 370 chats EC y 136 MX con "está caro / lo pienso / sale
+   de mi presupuesto". Ningún prompt lo maneja: el bot repite "¿a qué ciudad?"
+   (EC 86 → 4,7 % cierre), se despide (65 → 1,5 %) o pregunta la cantidad
+   (28 → 3,6 %). Cuando argumenta valor (37 → 8,1 %) o hace otra pregunta
+   (30 → 13,3 %) vuelve el 65 % y cierra el doble. Y quien pide descuento
+   cierra 34 %: es un lead caliente, no un rechazo. Este bloque se inyecta
+   solo en el turno en que aparece la objeción; el log `💬 [objeción precio]`
+   permite medirlo después con scripts/analisis_bot/objecion.js. */
+const OBJECION_PRECIO_ACTIVA = true;
+const RE_OBJECION_PRECIO =
+  /\b(car[oa]|car[ií]sim[oa]s?|muy alto|mucho dinero|mucha plata|no me alcanza|presupuesto|no tengo (dinero|plata|para)|m[aá]s barato|m[aá]s econ[oó]mic[oa]|lo pienso|lo voy a pensar|d[eé]jame pensar|deja lo pienso|lo checo|lo consulto|le comento a mi|lo platico|lo hablo con|no por ahora|quiz[aá]s? despu[eé]s|tal vez despu[eé]s|m[aá]s adelante|otro d[ií]a|en la quincena|cuando cobre|cuando me paguen|hay descuento|alg[uú]n descuento|me hace (un )?descuento|una rebaja|rebajita)\b/i;
+/* Rechazo claro: ahí no se insiste (lo maneja la regla [cancelados] del prompt). */
+/* Sin \b al final: en JS "é" no es carácter de palabra y "compré\b" no casa. */
+const RE_RECHAZO_CLARO =
+  /\b(no me interesa|ya (lo |la )?compr[eé]|ya lo consegu[ií]|ya lo tengo|no insistan|no me escriban|d[eé]jenme en paz|no quiero nada|no gracias ya no)(?![a-z])/i;
+function esObjecionDePrecio(texto) {
+  const t = String(texto || '').trim();
+  if (!t || t.length > 220) return false;
+  if (RE_RECHAZO_CLARO.test(t)) return false;
+  return RE_OBJECION_PRECIO.test(t);
+}
+const RE_SOLO_ESO_TIENEN =
+  /\b(solo eso tienen|apenas tienen eso|apenas tienen|nada m[aá]s tienen|eso nom[aá]s tienen|solo tienen eso|no tienen (m[aá]s|otra cosa|otro modelo|otros modelos|otro color|otros colores|otra opci[oó]n)|es lo [uú]nico que tienen)\b/i;
+const BLOQUE_OBJECION_PRECIO =
+  '💬 EL CLIENTE ACABA DE PONER UNA OBJECIÓN DE PRECIO (o pidió descuento). ' +
+  'Manda sobre el guion: NO repitas la pregunta de la ciudad, NO preguntes la ' +
+  'cantidad, NO te despidas con "cuando quieras me avisas". Responde en máximo ' +
+  '3 líneas: (1) valida en una frase corta, sin discutir ni justificarte; (2) ' +
+  'UN argumento concreto de valor: qué resuelve o qué incluye el producto en ' +
+  'juego. Si estaba mirando un combo o varias unidades, recuérdale que puede ' +
+  'llevar 1 sola unidad a su precio EXACTO del catálogo; NO le presentes un ' +
+  'combo más caro como "ahorro", NO inventes descuentos, promociones ni precios ' +
+  'que no estén escritos en el catálogo, y NUNCA le ofrezcas OTRO producto ' +
+  'distinto por ser más barato: vino por este; (3) "pagas al recibir y el ' +
+  'envío es gratis" en una sola frase; (4) cierra con UNA pregunta sin presión ' +
+  'y sin pedirle que elija cantidades, por ejemplo "¿te lo envío?" o "¿te lo ' +
+  'aparto y te escribo el [día]?". Si dijo que será ' +
+  'después (quincena, lo pienso, lo consulto), ofrece escribirle en unos días ' +
+  'y NO lo mandes a cancelados. Solo si dice NO de forma clara (no me ' +
+  'interesa, ya compré) despídete en una línea y pon [cancelados]:true.';
+const BLOQUE_SOLO_ESO_TIENEN =
+  '💬 EL CLIENTE ESTÁ DECEPCIONADO CON EL SURTIDO ("¿solo eso tienen?"). NO es ' +
+  'un sí: no preguntes la cantidad ni des el pedido por hecho. Reconoce en una ' +
+  'frase que por ahora es lo que hay, da UN beneficio concreto del producto en ' +
+  'juego y pregunta si se lo envía. Si pidió algo que no está en el catálogo, ' +
+  'dilo claro; no inventes productos.';
 
 // Auto-creación de órdenes en Dropi cuando el bot confirma la venta
 const {
@@ -192,7 +342,10 @@ const {
 
 // ¿Qué producto del catálogo nombra un texto? Compartido por el enrutado a
 // venta_producto y el adjunto de la foto del producto (ver su encabezado).
-const { productoNombrado } = require('../utils/productoNombrado');
+const {
+  productoNombrado,
+  productosNombrados,
+} = require('../utils/productoNombrado');
 
 // Ubicación compartida por WhatsApp → dirección/ciudad/provincia en palabras
 const {
@@ -1315,6 +1468,45 @@ async function procesarMensajeKanban(params) {
     { mensaje: mensajeParaBuscar, id_cliente },
   );
 
+  // ── 6.4 Experimento MX: respuesta a la pregunta de precio ──
+  /* Solo en columnas de venta (contexto_productos), solo cuando el texto es
+     del cliente y pregunta el precio, solo cuentas de México y solo el brazo
+     B (id de cliente par) mientras AB_PRECIO_MX_TODOS sea false. El log deja
+     el brazo en ambos casos para poder medir la semana siguiente. */
+  if (
+    AB_PRECIO_MX &&
+    tieneAccion('contexto_productos') &&
+    mensajeParaBuscar &&
+    preguntaPorPrecio(mensajeParaBuscar)
+  ) {
+    try {
+      if (await esCuentaMexico(id_configuracion)) {
+        const brazoB = AB_PRECIO_MX_TODOS || Number(id_cliente) % 2 === 0;
+        if (brazoB) bloqueContexto += `${BLOQUE_PRECIO_MX}\n\n`;
+        await log(
+          `🧪 [AB precio MX] brazo=${brazoB ? 'B (precio unitario, sin combos)' : 'A (control)'} cliente=${id_cliente}`,
+        );
+      }
+    } catch (e) {
+      await log(`⚠️ [AB precio MX] no se pudo evaluar: ${e.message}`);
+    }
+  }
+
+  // ── 6.4b Objeción de precio / decepción con el surtido (ambos países) ──
+  if (
+    OBJECION_PRECIO_ACTIVA &&
+    tieneAccion('contexto_productos') &&
+    mensajeParaBuscar
+  ) {
+    if (RE_SOLO_ESO_TIENEN.test(mensajeParaBuscar)) {
+      bloqueContexto += `${BLOQUE_SOLO_ESO_TIENEN}\n\n`;
+      await log(`💬 [solo eso tienen] bloque inyectado`);
+    } else if (esObjecionDePrecio(mensajeParaBuscar)) {
+      bloqueContexto += `${BLOQUE_OBJECION_PRECIO}\n\n`;
+      await log(`💬 [objeción precio] bloque inyectado`);
+    }
+  }
+
   // ── 6.5 Columna principal Dropi: inyectar la orden ya existente ──
   // La plantilla de confirmación se envió por fuera del thread, así que el
   // asistente no la ve. Le pasamos los datos reales de la orden (del cache)
@@ -1758,7 +1950,11 @@ async function procesarMensajeKanban(params) {
         ultimosBot.some((m) => PIDE_DATOS.test(String(m.texto_mensaje || ''))) ||
         PIDE_DATOS.test(String(mensaje || '')) ||
         /\d{9,}/.test(String(mensaje || ''));
-      if (enFaseDatos && api_key_openai && !columna.es_dropi_principal) {
+      if (
+        enFaseDatos &&
+        (api_key_openai || USAR_CLAUDE) &&
+        !columna.es_dropi_principal
+      ) {
         const [cfgPais] = await db.query(
           `SELECT pais_plantilla FROM configuraciones WHERE id = ? LIMIT 1`,
           { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -1767,6 +1963,8 @@ async function procesarMensajeKanban(params) {
           id_configuracion,
           id_cliente,
           api_key_openai,
+          proveedor_ia,
+          api_key_claude,
           paisNombre: nombrePaisDe({
             pais_plantilla: cfgPais?.pais_plantilla,
             telefono,
@@ -2214,7 +2412,7 @@ async function procesarMensajeKanban(params) {
     await log(`📄 Catálogo INLINE (${inlineTokens} tokens) — sin file_search`);
   } else if (USAR_CLAUDE && (columna.vector_store_id || columna.vector_store_docs_id)) {
     await log(
-      `🟠 Claude no tiene file_search: ${columna.vector_store_id ? 'el catálogo (sin inline guardado) ' : ''}${columna.vector_store_docs_id ? 'los documentos subidos ' : ''}no llegan al modelo en este turno`,
+      `🟠 Claude no tiene file_search: ${columna.vector_store_id ? 'el catálogo (sin inline guardado) no llega al modelo en este turno' : ''}${columna.vector_store_docs_id ? ' · los documentos subidos solo llegan si tienen texto extraído (ver 📎)' : ''}`,
     );
   } else if (columna.vector_store_id && wizardEnJuego) {
     // Fase 3 del wizard: con la ficha en juego el catálogo NO va por
@@ -2361,6 +2559,20 @@ async function procesarMensajeKanban(params) {
       let instruccionesClaude = bloqueCatalogo
         ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
         : assistantInfo.instructions;
+      /* Documentos de conocimiento: sin file_search van inline con su texto
+         extraído (utils/claude/documentos.js). Vacío si no hay ninguno. */
+      try {
+        const { bloqueDocumentosClaude } = require('../utils/claude/documentos');
+        const docsClaude = await bloqueDocumentosClaude(columna.id);
+        if (docsClaude.bloque) {
+          instruccionesClaude += `\n\n${docsClaude.bloque}`;
+          await log(
+            `📎 Documentos de conocimiento inline para Claude: ${docsClaude.docs} archivo(s), ${docsClaude.chars} chars`,
+          );
+        }
+      } catch (eDocs) {
+        await log(`⚠️ Documentos para Claude no cargados: ${eDocs.message}`);
+      }
       if (prefacioWizard) {
         instruccionesClaude = `${prefacioWizard}\n\n${instruccionesClaude}`;
       }
@@ -3092,6 +3304,8 @@ async function procesarMensajeKanban(params) {
               id_configuracion,
               id_cliente,
               api_key_openai,
+              proveedor_ia,
+              api_key_claude,
               datosBot,
               force,
               dedupe: true,
@@ -3473,7 +3687,27 @@ async function procesarMensajeKanban(params) {
          pedido" (405, Celia y 4 clientes más, 2026-08-20): al pedir la
          dirección llegaba la foto de otro producto y el negocio la borraba a
          mano. */
-      const mencionado = productoNombrado(respuestaRaw, conImagen);
+      let mencionado = productoNombrado(respuestaRaw, conImagen);
+
+      /* Si el texto nombra DOS o más productos es un listado ("¿cuál te
+         interesa: X, Y o Z?", el menú tras "quiero ver el catálogo"), no la
+         presentación de uno: ahí no hay producto en juego y la foto sobra.
+         Antes ganaba el nombre con más palabras coincidentes y salía la foto
+         de un producto que nadie eligió (1356, Saidy, 2026-10-15: pidió el
+         catálogo y recibió la Trituradora; 53 turnos así en México en una
+         semana). Con 100 productos tampoco se van a mandar 100 fotos: el
+         texto alcanza y la foto llega cuando el cliente elija. */
+      if (mencionado) {
+        const listado = productosNombrados(respuestaRaw, conImagen);
+        if (listado.length >= 2) {
+          await log(
+            `📷 El texto nombra ${listado.length} productos (${listado
+              .map((p) => p.nombre)
+              .join(' | ')}): es un listado, no se adjunta foto`,
+          );
+          mencionado = null;
+        }
+      }
 
       if (mencionado && !yaTraeImagen) {
         /* No se comprueba acá si ya se envió: de eso se encarga el filtro del

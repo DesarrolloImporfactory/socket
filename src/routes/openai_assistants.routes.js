@@ -107,6 +107,13 @@ router.get(
   openai_assistantsController.openai_cuenta,
 );
 
+/* De qué organización de Anthropic es la llave de Claude guardada. */
+router.get(
+  '/claude_cuenta',
+  protect,
+  openai_assistantsController.claude_cuenta,
+);
+
 /* "Ya pagué": comprueba contra OpenAI y reactiva si de verdad hay saldo.
    Va con protect —a diferencia del resto de este router— porque dispara una
    llamada facturable contra la cuenta del cliente: sin sesión, cualquiera

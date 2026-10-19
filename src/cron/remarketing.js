@@ -1039,7 +1039,8 @@ cron.schedule('*/1 * * * *', async () => {
             console.log(`🟦 [DEBUG] >>> Entrando a bloque IA`);
             try {
               const [cfgRow] = await db.query(
-                `SELECT api_key_openai, openai_activo FROM configuraciones WHERE id = ? LIMIT 1`,
+                `SELECT api_key_openai, openai_activo, proveedor_ia, api_key_claude
+                   FROM configuraciones WHERE id = ? LIMIT 1`,
                 {
                   replacements: [record.id_configuracion],
                   type: db.QueryTypes.SELECT,
@@ -1048,11 +1049,27 @@ cron.schedule('*/1 * * * *', async () => {
               if (cfgRow) {
                 cfgRow.api_key_openai = leerApiKeyOpenAI(cfgRow.api_key_openai);
               }
+              /* Fase 2 Claude: si la cuenta responde con Claude, el
+                 recordatorio lo redacta Claude con el prompt de la columna y
+                 el recap de la conversación (sin cadena), y no hace falta
+                 llave de OpenAI. */
+              const {
+                usaClaude,
+                ejecutarConClaude,
+              } = require('../utils/claude/claude');
+              const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
+              const api_key_claude = cfgRow
+                ? leerApiKeyClaude(cfgRow.api_key_claude)
+                : null;
+              const usarClaude = usaClaude({
+                proveedor_ia: cfgRow?.proveedor_ia,
+                api_key_claude,
+              });
               console.log(
-                `🟦 [DEBUG IA] cfgRow: api_key=${cfgRow?.api_key_openai ? 'SI' : 'NO'} openai_activo=${cfgRow?.openai_activo}`,
+                `🟦 [DEBUG IA] cfgRow: api_key=${cfgRow?.api_key_openai ? 'SI' : 'NO'} openai_activo=${cfgRow?.openai_activo} proveedor=${usarClaude ? 'claude' : 'openai'}`,
               );
 
-              if (!cfgRow?.api_key_openai) {
+              if (!cfgRow?.api_key_openai && !usarClaude) {
                 throw new Error('Sin api_key_openai en configuración');
               }
               if (cfgRow.openai_activo === 0) {
@@ -1061,8 +1078,8 @@ cron.schedule('*/1 * * * *', async () => {
               const api_key_openai = leerApiKeyOpenAI(cfgRow.api_key_openai);
 
               const [colRow] = await db.query(
-                `SELECT assistant_id, max_tokens, instrucciones, modelo,
-                        vector_store_id, vector_store_docs_id
+                `SELECT id, assistant_id, max_tokens, instrucciones, modelo,
+                        vector_store_id, vector_store_docs_id, catalogo_inline
                  FROM kanban_columnas
                  WHERE id_configuracion = ?
                    AND LOWER(estado_db) = LOWER(?)
@@ -1087,7 +1104,7 @@ cron.schedule('*/1 * * * *', async () => {
 
               let textoIA;
 
-              if (usaResponsesApi(record.id_configuracion)) {
+              if (usarClaude || usaResponsesApi(record.id_configuracion)) {
                 // Responses API: el prompt sale de kanban_columnas y el contexto
                 // de previous_response_id. No hace falta assistant_id ni thread.
                 //
@@ -1114,9 +1131,10 @@ cron.schedule('*/1 * * * *', async () => {
                   );
                 }
 
-                const previous_response_id = await obtenerUltimoResponseId(
-                  record.id_cliente_chat_center,
-                );
+                // Claude no encadena: siempre con el recap.
+                const previous_response_id = usarClaude
+                  ? null
+                  : await obtenerUltimoResponseId(record.id_cliente_chat_center);
                 console.log(
                   `🟦 [DEBUG IA] responses: previous_response_id=${previous_response_id || 'NO'}`,
                 );
@@ -1156,8 +1174,38 @@ cron.schedule('*/1 * * * *', async () => {
                   );
                 };
 
+                /* Con Claude: el prompt de la columna + catálogo inline (si
+                   lo hay) + documentos de conocimiento, el ángulo de
+                   remarketing como instrucción adicional, y el recap como
+                   entrada. Mismo armado que el motor en vivo. */
+                const llamarIAClaude = async (input) => {
+                  const { PUENTE_INLINE } = require('../services/kanban_ia.service');
+                  const {
+                    bloqueDocumentosClaude,
+                  } = require('../utils/claude/documentos');
+                  const inline = String(colRow.catalogo_inline || '').trim();
+                  const docs = await bloqueDocumentosClaude(colRow.id);
+                  const instructions = [
+                    colRow.instrucciones,
+                    inline ? `${PUENTE_INLINE}\n\n${inline}` : '',
+                    docs.bloque,
+                  ]
+                    .filter(Boolean)
+                    .join('\n\n');
+                  return ejecutarConClaude({
+                    instructions,
+                    additional_instructions: prompt_ia_resuelto,
+                    input,
+                    model: colRow.modelo,
+                    max_tokens: colRow.max_tokens || 300,
+                    api_key_claude,
+                  });
+                };
+
                 const llamarIA = (cadena, input) =>
-                  ejecutarConResponsesAPI({
+                  usarClaude
+                    ? llamarIAClaude(input)
+                    : ejecutarConResponsesAPI({
                     previous_response_id: cadena,
                     instructions: colRow.instrucciones,
                     additional_instructions: prompt_ia_resuelto,
