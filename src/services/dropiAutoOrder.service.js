@@ -295,6 +295,42 @@ function leerRepartoExplicito(texto, variantes) {
   return mencionadas.map((m) => ({ ...m.variante, qty: m.qty }));
 }
 
+/* Alcaldía de la Ciudad de México según los dos primeros dígitos del código
+   postal (SEPOMEX: 01xxx–16xxx). Devuelve null si el estado no es CDMX, si la
+   ciudad que dio el cliente NO es genérica (ya nombró una alcaldía o un
+   municipio) o si el CP no es de la capital. */
+const ALCALDIAS_CDMX_POR_CP = {
+  '01': 'ÁLVARO OBREGÓN',
+  '02': 'AZCAPOTZALCO',
+  '03': 'BENITO JUÁREZ',
+  '04': 'COYOACÁN',
+  '05': 'CUAJIMALPA DE MORELOS',
+  '06': 'CUAUHTÉMOC',
+  '07': 'GUSTAVO A. MADERO',
+  '08': 'IZTACALCO',
+  '09': 'IZTAPALAPA',
+  '10': 'LA MAGDALENA CONTRERAS',
+  '11': 'MIGUEL HIDALGO',
+  '12': 'MILPA ALTA',
+  '13': 'TLÁHUAC',
+  '14': 'TLALPAN',
+  '15': 'VENUSTIANO CARRANZA',
+  '16': 'XOCHIMILCO',
+};
+/* Se compara sobre normalizarTexto(): mayúsculas, sin acentos, puntuación → espacio. */
+const RE_CDMX_GENERICO =
+  /CIUDAD DE MEXICO|DISTRITO FEDERAL|^(CDMX|CD MX|MEXICO|MEXICO CITY|DF|D F|CD DE MEXICO|CIUDAD MEXICO|MEXICO DF|MEXICO D F|MEXICO CDMX|CDMX MEXICO)$/;
+function alcaldiaCdmxPorCodigoPostal({ estado, ciudad, codigo_postal }) {
+  if (!/CIUDAD DE M[EÉ]XICO|^CDMX$|DISTRITO FEDERAL/i.test(String(estado || ''))) {
+    return null;
+  }
+  const c = normalizarTexto(ciudad);
+  if (c && !RE_CDMX_GENERICO.test(c)) return null;
+  const cp = String(codigo_postal || '').replace(/\D/g, '');
+  if (cp.length !== 5) return null;
+  return ALCALDIAS_CDMX_POR_CP[cp.slice(0, 2)] || null;
+}
+
 function matchEnLista(lista, objetivo, pickName) {
   const target = normalizarTexto(objetivo);
   if (!target) return null;
@@ -1692,6 +1728,34 @@ async function autoCrearOrdenDropi({
     }
     const nombreCiudad = (x) => x.name || x.city || x.nombre;
     let city = matchEnLista(cities, datosBot.ciudad, nombreCiudad);
+
+    /* Ciudad de México: para Dropi la "ciudad" es la ALCALDÍA (Iztapalapa,
+       Gustavo A. Madero…), pero la gente escribe "Ciudad de México", "CDMX",
+       "México" o "DF" — y eso no casa con ninguna de las 16-32 entradas del
+       estado (17 fallos en 14 días, oct-2026, todos con el resto de datos
+       completos). En México el código postal es obligatorio y sus dos
+       primeros dígitos identifican la alcaldía (01 Álvaro Obregón … 16
+       Xochimilco), así que se resuelve por ahí sin preguntarle nada más al
+       cliente. Solo cuando el estado es CDMX y el nombre que dio es genérico;
+       si escribió la alcaldía, el match normal ya la encontró arriba. */
+    if (!city && String(country_code || '').toUpperCase() === 'MX') {
+      const alcaldia = alcaldiaCdmxPorCodigoPostal({
+        estado: state.name || state.department || state.nombre,
+        ciudad: datosBot.ciudad,
+        codigo_postal: datosBot.codigo_postal,
+      });
+      if (alcaldia) {
+        const porAlcaldia = matchEnLista(cities, alcaldia, nombreCiudad);
+        if (porAlcaldia) {
+          console.log(
+            `[AutoOrden] CDMX: "${datosBot.ciudad}" + CP ${datosBot.codigo_postal} → alcaldía ${nombreCiudad(porAlcaldia)}`,
+          );
+          city = porAlcaldia;
+          datosBot._alcaldia_por_cp = nombreCiudad(porAlcaldia);
+          ctx.datos_bot = datosBot;
+        }
+      }
+    }
 
     /* Ciudad que no está en la provincia que puso el bot: casi siempre la
        ciudad es real y la provincia es la equivocada ("Tabacundo" en
