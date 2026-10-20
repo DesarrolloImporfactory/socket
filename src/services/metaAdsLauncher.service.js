@@ -196,6 +196,132 @@ async function obtenerInfoVideo(conn, video_id) {
   };
 }
 
+/* ── URLs firmadas del CDN de Meta ──
+   `adimages.url` y `video.picture` llevan `oe=<hex>` (expiración, ~5 días).
+   La plantilla las guarda al subir el creativo y a la semana la portada
+   del card y la vista previa devuelven 403 (en la 610, 16 de 20 plantillas
+   el 2026-10-20). Antes de listar se piden de nuevo SOLO las vencidas o por
+   vencer, en dos llamadas por lote (hashes de imagen / ids de video), y el
+   controller persiste las nuevas para no volver a pedirlas en días. */
+const MARGEN_RENOVACION_MS = 24 * 3600 * 1000;
+
+function urlFirmadaVencida(url, ahora = Date.now()) {
+  if (!url) return true;
+  const m = /[?&]oe=([0-9a-f]+)/i.exec(String(url));
+  if (!m) return false; // sin firma: no caduca
+  return parseInt(m[1], 16) * 1000 - ahora < MARGEN_RENOVACION_MS;
+}
+
+function creativosDe(p) {
+  let items = [];
+  try {
+    const parsed = p.imagenes_json ? JSON.parse(p.imagenes_json) : null;
+    if (Array.isArray(parsed)) items = parsed;
+  } catch {}
+  if (!items.length && p.imagen_hash) {
+    items = [{ tipo: 'imagen', hash: p.imagen_hash, url: p.imagen_url || null }];
+  }
+  return items.map((it) => ({ tipo: it.tipo || 'imagen', ...it }));
+}
+
+const enLotes = (arr, n) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+};
+
+/* Devuelve Map<id_plantilla, { imagen_url, imagenes_json }> solo con las
+   plantillas cuyas URLs cambiaron. No lanza: si Meta falla se devuelve lo
+   que se alcanzó a renovar. */
+async function refrescarUrlsCreativos({ conn, plantillas }) {
+  const cambios = new Map();
+  const hashes = new Set();
+  const videos = new Set();
+  const pendientes = [];
+  for (const p of plantillas) {
+    const items = creativosDe(p);
+    let necesita = false;
+    for (const it of items) {
+      if (it.tipo === 'video') {
+        if (it.video_id && urlFirmadaVencida(it.thumb_url || it.url)) {
+          videos.add(String(it.video_id));
+          necesita = true;
+        }
+      } else if (it.hash && urlFirmadaVencida(it.url)) {
+        hashes.add(String(it.hash));
+        necesita = true;
+      }
+    }
+    if (necesita) pendientes.push({ p, items });
+  }
+  if (!pendientes.length) return cambios;
+
+  const ax = metaAx(conn.access_token);
+  const nuevasImg = new Map();
+  const nuevasVid = new Map();
+  try {
+    for (const lote of enLotes([...hashes], 50)) {
+      const r = await ax.get(
+        `${GRAPH_BASE}/${ACT(conn.ad_account_id)}/adimages`,
+        { params: { hashes: JSON.stringify(lote), fields: 'hash,url' } },
+      );
+      if (r.status >= 200 && r.status < 300) {
+        for (const im of r.data?.data || []) {
+          if (im.hash && im.url) nuevasImg.set(String(im.hash), im.url);
+        }
+      } else {
+        logger.warn(
+          `refrescarUrlsCreativos adimages: ${r.status} ${JSON.stringify(r.data?.error || '')}`,
+        );
+      }
+    }
+    for (const lote of enLotes([...videos], 50)) {
+      const r = await ax.get(`${GRAPH_BASE}/`, {
+        params: { ids: lote.join(','), fields: 'picture' },
+      });
+      if (r.status >= 200 && r.status < 300) {
+        for (const [id, v] of Object.entries(r.data || {})) {
+          if (v?.picture) nuevasVid.set(String(id), v.picture);
+        }
+      } else {
+        logger.warn(
+          `refrescarUrlsCreativos videos: ${r.status} ${JSON.stringify(r.data?.error || '')}`,
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn(`refrescarUrlsCreativos: ${err.message}`);
+  }
+  if (!nuevasImg.size && !nuevasVid.size) return cambios;
+
+  for (const { p, items } of pendientes) {
+    let tocado = false;
+    const nuevos = items.map((it) => {
+      if (it.tipo === 'video') {
+        const u = nuevasVid.get(String(it.video_id));
+        if (u && u !== it.thumb_url) {
+          tocado = true;
+          return { ...it, thumb_url: u, url: u };
+        }
+        return it;
+      }
+      const u = nuevasImg.get(String(it.hash));
+      if (u && u !== it.url) {
+        tocado = true;
+        return { ...it, url: u };
+      }
+      return it;
+    });
+    if (!tocado) continue;
+    const primera = nuevos[0];
+    cambios.set(p.id, {
+      imagen_url: primera?.url || primera?.thumb_url || p.imagen_url || null,
+      imagenes_json: JSON.stringify(nuevos),
+    });
+  }
+  return cambios;
+}
+
 /* Offset UTC de la zona horaria de la cuenta publicitaria (ej. "-05:00"
    para America/Guayaquil). La hora programada se interpreta en la hora
    local del cliente, no en UTC. */
@@ -1116,6 +1242,7 @@ module.exports = {
   subirVideo,
   obtenerMiniaturaVideo,
   obtenerInfoVideo,
+  refrescarUrlsCreativos,
   lanzarPaquete,
   listarPaginasDelToken,
   obtenerTitularToken,
